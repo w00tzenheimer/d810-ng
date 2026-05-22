@@ -48,7 +48,7 @@ from d810.optimizers.microcode.flow.flattening.strategies.guarded_state_machine 
     collect_guarded_state_machine_fixes,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.local_select_loop import (
-    LocalSelectLoopFix,
+    LocalSelectLoopCandidate,
     collect_local_select_loop_fixes,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.side_effect_select_loop import (
@@ -297,7 +297,7 @@ class SimpleFlatteningCleanupDetection:
     fix_predecessor_branch_arm_fixes: tuple[FixPredecessorBranchArmFix, ...] = ()
     tail_goto_merges: tuple[TailGotoMergeCandidate, ...] = ()
     guarded_state_machine_fixes: tuple[GuardedStateMachineFix, ...] = ()
-    local_select_loop_fixes: tuple[LocalSelectLoopFix, ...] = ()
+    local_select_loop_fixes: tuple[LocalSelectLoopCandidate, ...] = ()
     side_effect_select_loop_fixes: tuple[SideEffectSelectLoopFix, ...] = ()
     collection_errors: tuple[str, ...] = ()
     maturity: int = 0
@@ -690,7 +690,7 @@ class LiveSimpleFlatteningCleanupBackend:
                 )
 
         guarded_state_machine_fixes: tuple[GuardedStateMachineFix, ...] = ()
-        local_select_loop_fixes: tuple[LocalSelectLoopFix, ...] = ()
+        local_select_loop_fixes: tuple[LocalSelectLoopCandidate, ...] = ()
         side_effect_select_loop_fixes: tuple[SideEffectSelectLoopFix, ...] = ()
         try:
             if maturity in self.guarded_state_machine_maturities:

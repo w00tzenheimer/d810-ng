@@ -12,7 +12,7 @@ from d810.cfg.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.cfg.graph_modification import DuplicateAndRedirect, RedirectGoto
+from d810.cfg.graph_modification import DuplicateBlock, RedirectGoto
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
 )
@@ -31,6 +31,10 @@ INIT = 0xF4F94852
 DEFAULT_ARM = 0x8BB78DF7
 COPY_ARM = 0x349E12AF
 REALLOC_ARM = 0xC3400665
+DIRECT_INIT = 0x62CE9A1C
+DIRECT_EXIT_ARM = 0xDD6E5D96
+DIRECT_PAYLOAD_ARM = 0x0FCD789F
+DIRECT_LOW_LIMIT = 0x0FCD789E
 
 
 def _reg(reg: int, size: int = 4) -> MopSnapshot:
@@ -219,6 +223,41 @@ def _latched_selector_loop_cfg() -> FlowGraph:
     return FlowGraph(blocks=blocks, entry_serial=21, func_ea=0x1000)
 
 
+def _direct_exit_selector_loop_cfg() -> FlowGraph:
+    selector = _reg(40)
+    state = _reg(41)
+    previous = _reg(42)
+    blocks = {
+        4: _block(4, (6,), (), _mov(_num(DIRECT_EXIT_ARM), selector)),
+        5: _block(5, (6,), (), _mov(_num(DIRECT_PAYLOAD_ARM), selector)),
+        6: _block(6, (7,), (4, 5), _mov(_num(DIRECT_INIT), state)),
+        7: _block(
+            7,
+            (8, 12),
+            (6, 8, 9),
+            _mov(state, previous),
+            _jle(state, _num(DIRECT_LOW_LIMIT), 12),
+        ),
+        8: _block(
+            8,
+            (9, 7),
+            (7,),
+            _mov(selector, state),
+            _jz(previous, _num(DIRECT_INIT), 7),
+        ),
+        9: _block(
+            9,
+            (10, 7),
+            (8,),
+            _mov(previous, state),
+            _jnz(previous, _num(DIRECT_PAYLOAD_ARM), 7),
+        ),
+        10: _block(10, (12,), (9,), _payload()),
+        12: _block(12, (), (7, 10), _payload()),
+    }
+    return FlowGraph(blocks=blocks, entry_serial=4, func_ea=0x1000)
+
+
 def test_collect_side_effect_select_loop_fixes_proves_pred_armed_shell() -> None:
     assert collect_side_effect_select_loop_fixes(_selector_loop_cfg()) == (
         SideEffectSelectLoopFix(
@@ -237,6 +276,17 @@ def test_collect_side_effect_select_loop_fixes_proves_latched_selector_shell() -
             header_block=26,
             per_pred_targets=((21, 30), (22, 25)),
             terminal_redirects=((25, 26, 34), (32, 26, 34)),
+        ),
+    )
+
+
+def test_collect_side_effect_select_loop_fixes_proves_direct_exit_shell() -> None:
+    assert collect_side_effect_select_loop_fixes(_direct_exit_selector_loop_cfg()) == (
+        SideEffectSelectLoopFix(
+            init_block=6,
+            header_block=7,
+            per_pred_targets=((4, 12), (5, 10)),
+            terminal_redirects=(),
         ),
     )
 
@@ -263,12 +313,57 @@ def test_side_effect_select_loop_strategy_plans_duplicate_and_terminal_exits() -
     assert fragment.ownership.blocks == frozenset({6, 8, 14})
     assert fragment.ownership.edges == frozenset({(4, 6), (5, 6), (8, 9), (14, 9)})
     assert fragment.modifications == [
-        DuplicateAndRedirect(
-            source_serial=6,
-            per_pred_targets=((4, 8), (5, 12)),
+        DuplicateBlock(
+            source_block=6,
+            target_block=8,
+            pred_serial=4,
+            patch_kind="side_effect_select_loop",
+        ),
+        DuplicateBlock(
+            source_block=6,
+            target_block=12,
+            pred_serial=5,
+            patch_kind="side_effect_select_loop",
         ),
         RedirectGoto(from_serial=8, old_target=9, new_target=15),
         RedirectGoto(from_serial=14, old_target=9, new_target=15),
+    ]
+
+
+def test_side_effect_select_loop_strategy_plans_direct_exit_duplication() -> None:
+    cfg = _direct_exit_selector_loop_cfg()
+    fixes = collect_side_effect_select_loop_fixes(cfg)
+    cfg = replace(
+        cfg,
+        metadata={
+            SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY: (
+                serialize_side_effect_select_loop_fixes(fixes)
+            )
+        },
+    )
+
+    fragment = SideEffectSelectLoopStrategy().plan(
+        AnalysisSnapshot(mba=object(), flow_graph=cfg),
+    )
+
+    assert fragment is not None
+    assert fragment.strategy_name == "side_effect_select_loop"
+    assert fragment.family == FAMILY_CLEANUP
+    assert fragment.ownership.blocks == frozenset({6})
+    assert fragment.ownership.edges == frozenset({(4, 6), (5, 6)})
+    assert fragment.modifications == [
+        DuplicateBlock(
+            source_block=6,
+            target_block=12,
+            pred_serial=4,
+            patch_kind="side_effect_select_loop",
+        ),
+        DuplicateBlock(
+            source_block=6,
+            target_block=10,
+            pred_serial=5,
+            patch_kind="side_effect_select_loop",
+        ),
     ]
 
 

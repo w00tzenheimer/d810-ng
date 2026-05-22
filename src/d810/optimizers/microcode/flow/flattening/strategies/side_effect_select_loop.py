@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnKind, OperandKind
 from d810.cfg.graph_modification import (
-    DuplicateAndRedirect,
+    DuplicateBlock,
     GraphModification,
     RedirectGoto,
 )
@@ -313,6 +313,32 @@ def _explore_payload_terminals(
     return terminals
 
 
+def _can_reach_block(
+    cfg: FlowGraph,
+    start: int,
+    target: int,
+    *,
+    max_depth: int = 16,
+) -> bool:
+    stack: list[tuple[int, int]] = [(int(start), 0)]
+    seen: set[int] = set()
+    while stack:
+        serial, depth = stack.pop()
+        if depth > max_depth:
+            continue
+        if int(serial) == int(target):
+            return True
+        if serial in seen:
+            continue
+        seen.add(serial)
+        block = cfg.get_block(serial)
+        if block is None:
+            continue
+        for succ in block.succs:
+            stack.append((int(succ), depth + 1))
+    return False
+
+
 def _find_side_effect_select_loop(
     cfg: FlowGraph,
     init_block: BlockSnapshot,
@@ -354,7 +380,11 @@ def _find_side_effect_select_loop(
             int(header.serial),
             target_env,
         )
-        if not terminals:
+        if not terminals and _can_reach_block(
+            cfg,
+            int(target_serial),
+            int(header.serial),
+        ):
             reject(f"no_payload_terminal:{int(target_serial)}")
             return None
         per_pred_targets.append((int(pred_serial), int(target_serial)))
@@ -385,8 +415,8 @@ def _find_side_effect_select_loop(
     if len({target for _pred, target in per_pred_targets}) != len(per_pred_targets):
         reject("duplicate_pred_targets")
         return None
-    if exit_target is None or len(terminal_redirects) < 2:
-        reject("missing_exit_or_terminal_redirects")
+    if not per_pred_targets:
+        reject("missing_pred_targets")
         return None
     return SideEffectSelectLoopFix(
         init_block=int(init_block.serial),
@@ -506,15 +536,15 @@ def build_side_effect_select_loop_modifications(
     """Translate side-effect selector-loop evidence into graph edits."""
     modifications: list[GraphModification] = []
     for fix in fixes:
-        modifications.append(
-            DuplicateAndRedirect(
-                source_serial=int(fix.init_block),
-                per_pred_targets=tuple(
-                    (int(pred), int(target))
-                    for pred, target in fix.per_pred_targets
-                ),
+        for pred, target in fix.per_pred_targets:
+            modifications.append(
+                DuplicateBlock(
+                    source_block=int(fix.init_block),
+                    target_block=int(target),
+                    pred_serial=int(pred),
+                    patch_kind="side_effect_select_loop",
+                )
             )
-        )
         for src, old, new in fix.terminal_redirects:
             modifications.append(
                 RedirectGoto(
@@ -530,10 +560,10 @@ def _build_ownership(modifications: Sequence[GraphModification]) -> OwnershipSco
     blocks: set[int] = set()
     edges: set[tuple[int, int]] = set()
     for mod in modifications:
-        if isinstance(mod, DuplicateAndRedirect):
-            blocks.add(int(mod.source_serial))
-            for pred, _target in mod.per_pred_targets:
-                edges.add((int(pred), int(mod.source_serial)))
+        if isinstance(mod, DuplicateBlock):
+            blocks.add(int(mod.source_block))
+            if mod.pred_serial is not None:
+                edges.add((int(mod.pred_serial), int(mod.source_block)))
         elif isinstance(mod, RedirectGoto):
             blocks.add(int(mod.from_serial))
             edges.add((int(mod.from_serial), int(mod.old_target)))
