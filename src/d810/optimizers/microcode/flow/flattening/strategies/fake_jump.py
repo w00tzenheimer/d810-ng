@@ -654,6 +654,11 @@ class FakeJumpStrategy:
     def plan(self, snapshot: AnalysisSnapshot) -> PlanFragment | None:
         fixes = extract_fake_jump_fixes(snapshot.flow_graph)
         payload_fixes = extract_payload_fake_jump_fixes(snapshot.flow_graph)
+        if fixes and payload_fixes:
+            plain_blocks = frozenset(int(fix.fake_block) for fix in fixes)
+            payload_fixes = tuple(
+                fix for fix in payload_fixes if int(fix.fake_block) not in plain_blocks
+            )
         if not fixes and not payload_fixes:
             return None
 
