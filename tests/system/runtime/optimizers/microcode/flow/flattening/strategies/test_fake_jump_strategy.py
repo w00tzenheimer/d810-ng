@@ -1,8 +1,22 @@
 """Runtime tests for the first engine-native FakeJump wrapper."""
 from __future__ import annotations
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
+from types import SimpleNamespace
+
+from d810.cfg.flowgraph import (
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
+from d810.cfg.graph_modification import (
+    CloneConditionalAsGoto,
+    ConvertToGoto,
+    RedirectBranch,
+    RedirectGoto,
+)
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
 )
@@ -11,10 +25,15 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
 )
 from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
     FAKE_JUMP_FIXES_METADATA_KEY,
+    PAYLOAD_FAKE_JUMP_FIXES_METADATA_KEY,
     FakeJumpPredFix,
     FakeJumpStrategy,
+    PayloadFakeJumpFix,
     build_fake_jump_modifications,
+    build_payload_fake_jump_modifications,
+    collect_payload_fake_jump_fixes,
     extract_fake_jump_fixes,
+    extract_payload_fake_jump_fixes,
     resolve_fake_jump_target,
     should_skip_fake_jump_predecessor,
 )
@@ -37,6 +56,116 @@ def _block(
         start_ea=serial if start_ea is None else start_ea,
         insn_snapshots=(),
     )
+
+
+def _rich_block(
+    serial: int,
+    succs: tuple[int, ...],
+    preds: tuple[int, ...],
+    *insns: InsnSnapshot,
+    block_type: int | None = None,
+) -> BlockSnapshot:
+    return BlockSnapshot(
+        serial=serial,
+        block_type=(
+            block_type
+            if block_type is not None
+            else 4 if len(succs) == 2 else 1 if len(succs) == 1 else 2
+        ),
+        succs=succs,
+        preds=preds,
+        flags=0,
+        start_ea=0x1000 + serial,
+        insn_snapshots=tuple(insns),
+    )
+
+
+def _reg(reg: int, size: int = 4) -> MopSnapshot:
+    return MopSnapshot(t=1, size=size, reg=reg, kind=OperandKind.REGISTER)
+
+
+def _num(value: int) -> MopSnapshot:
+    return MopSnapshot(t=2, size=4, value=value, kind=OperandKind.NUMBER)
+
+
+def _blk(serial: int) -> MopSnapshot:
+    return MopSnapshot(t=7, size=-1, block_ref=serial, kind=OperandKind.BLOCK)
+
+
+def _rich_blk(serial: int) -> SimpleNamespace:
+    return SimpleNamespace(block_num=serial)
+
+
+def _mov(src: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=4,
+        ea=0x1000,
+        operands=(),
+        operand_slots=(("l", src), ("d", dst)),
+        l=src,
+        d=dst,
+        kind=InsnKind.MOV,
+    )
+
+
+def _jnz(left: MopSnapshot, right: MopSnapshot, target: int) -> InsnSnapshot:
+    target_operand = _rich_blk(target)
+    return InsnSnapshot(
+        opcode=43,
+        ea=0x1000,
+        operands=(),
+        operand_slots=(("l", left), ("r", right), ("d", target_operand)),
+        l=left,
+        r=right,
+        d=_blk(target),
+        kind=InsnKind.COND_JUMP,
+    )
+
+
+def _jcnd(selector: MopSnapshot, target: int) -> InsnSnapshot:
+    target_operand = _rich_blk(target)
+    return InsnSnapshot(
+        opcode=42,
+        ea=0x1000,
+        operands=(),
+        operand_slots=(("l", selector), ("d", target_operand)),
+        l=selector,
+        d=_blk(target),
+        kind=InsnKind.COND_JUMP,
+    )
+
+
+def _payload_fake_jump_cfg() -> FlowGraph:
+    flag = _reg(20, 1)
+    selector = _reg(21)
+    default_value = _reg(22, 8)
+    selected_value = _reg(23, 8)
+    output = _reg(24, 8)
+    blocks = {
+        12: _rich_block(
+            12,
+            (13, 14),
+            (),
+            _mov(_num(0xBCF37D88), selector),
+            _jcnd(flag, 14),
+        ),
+        13: _rich_block(
+            13,
+            (14,),
+            (12,),
+            _mov(_num(0xCF87A00D), selector),
+        ),
+        14: _rich_block(
+            14,
+            (15, 16),
+            (12, 13),
+            _mov(default_value, output),
+            _jnz(selector, _num(0xCF87A00D), 16),
+        ),
+        15: _rich_block(15, (16,), (14,), _mov(selected_value, output)),
+        16: _rich_block(16, (), (14, 15), block_type=2),
+    }
+    return FlowGraph(blocks=blocks, entry_serial=12, func_ea=0x1000)
 
 
 def test_fake_jump_strategy_has_expected_identity() -> None:
@@ -117,6 +246,67 @@ def test_fake_jump_strategy_plans_per_predecessor_redirects() -> None:
     assert fragment.modifications == [
         RedirectGoto(from_serial=5, old_target=2, new_target=10),
         RedirectGoto(from_serial=6, old_target=2, new_target=20),
+    ]
+
+
+def test_payload_fake_jump_preserves_branch_body_with_clone_and_convert() -> None:
+    cfg = _payload_fake_jump_cfg()
+
+    assert collect_payload_fake_jump_fixes(cfg) == (
+        PayloadFakeJumpFix(
+            fake_block=14,
+            original_target=16,
+            clone_redirects=((13, 15),),
+        ),
+    )
+
+    assert extract_payload_fake_jump_fixes(cfg) == (
+        PayloadFakeJumpFix(
+            fake_block=14,
+            original_target=16,
+            clone_redirects=((13, 15),),
+        ),
+    )
+
+    assert build_payload_fake_jump_modifications(
+        extract_payload_fake_jump_fixes(cfg),
+        cfg,
+    ) == [
+        CloneConditionalAsGoto(
+            source_block=14,
+            pred_serial=13,
+            goto_target=15,
+            reason="payload_fake_jump_clone_as_goto",
+        ),
+        ConvertToGoto(block_serial=14, goto_target=16),
+    ]
+
+
+def test_fake_jump_strategy_plans_payload_preserving_fake_jump() -> None:
+    cfg = _payload_fake_jump_cfg()
+
+    fragment = FakeJumpStrategy().plan(
+        AnalysisSnapshot(mba=object(), flow_graph=cfg),
+    )
+
+    assert fragment is not None
+    assert fragment.metadata[PAYLOAD_FAKE_JUMP_FIXES_METADATA_KEY] == (
+        {
+            "fake_block": 14,
+            "original_target": 16,
+            "clone_redirects": ((13, 15),),
+        },
+    )
+    assert fragment.ownership.blocks == frozenset({14})
+    assert fragment.ownership.edges == frozenset({(13, 14)})
+    assert fragment.modifications == [
+        CloneConditionalAsGoto(
+            source_block=14,
+            pred_serial=13,
+            goto_target=15,
+            reason="payload_fake_jump_clone_as_goto",
+        ),
+        ConvertToGoto(block_serial=14, goto_target=16),
     ]
 
 
