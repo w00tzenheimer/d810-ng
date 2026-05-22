@@ -272,3 +272,68 @@ def test_extract_selector_shell_facts_rejects_stale_edges() -> None:
     cfg = replace(cfg, metadata={SELECTOR_SHELL_FACTS_METADATA_KEY: stale})
 
     assert extract_selector_shell_facts(cfg) == ()
+
+
+def test_extract_selector_shell_facts_rejects_stale_ordered_path() -> None:
+    cfg = _selector_shell_cfg()
+    facts = discover_selector_shell_facts(cfg)
+    stale = serialize_selector_shell_facts(facts)
+    stale = (
+        {
+            **stale[0],
+            "edge_proofs": (
+                {
+                    **stale[0]["edge_proofs"][0],
+                    "ordered_path": (4, 8),
+                },
+            ),
+        },
+    )
+    cfg = replace(cfg, metadata={SELECTOR_SHELL_FACTS_METADATA_KEY: stale})
+
+    assert extract_selector_shell_facts(cfg) == ()
+
+
+def test_extract_selector_shell_facts_rejects_stale_artifact_blocks() -> None:
+    cfg = _selector_shell_cfg()
+    facts = discover_selector_shell_facts(cfg)
+    stale = serialize_selector_shell_facts(facts)
+    stale = (
+        {
+            **stale[0],
+            "artifact_blocks": (4, 5),
+            "edge_proofs": (
+                {
+                    **stale[0]["edge_proofs"][0],
+                    "artifact_blocks": (4, 5),
+                },
+            ),
+        },
+    )
+    cfg = replace(cfg, metadata={SELECTOR_SHELL_FACTS_METADATA_KEY: stale})
+
+    assert extract_selector_shell_facts(cfg) == ()
+
+
+def test_extract_selector_shell_facts_reproves_predecessor_env() -> None:
+    cfg = _selector_shell_cfg()
+    facts = discover_selector_shell_facts(cfg)
+    metadata = serialize_selector_shell_facts(facts)
+    pred = cfg.blocks[2]
+    blocks = {
+        **cfg.blocks,
+        2: replace(
+            pred,
+            insn_snapshots=(
+                _payload(),
+                _mov(_num(SELECT), _reg(24)),
+            ),
+        ),
+    }
+    cfg = replace(
+        cfg,
+        blocks=blocks,
+        metadata={SELECTOR_SHELL_FACTS_METADATA_KEY: metadata},
+    )
+
+    assert extract_selector_shell_facts(cfg) == ()

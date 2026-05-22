@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import shutil
 import tempfile
 
@@ -278,6 +279,15 @@ class TestOllvmFlaBcfDimensionApi:
         ):
             assert selector_const not in rendered
         assert "invalid_parameter_noinfo_noreturn" in rendered
+        assert re.search(
+            r"sub_1815DF1C0\(\);\s+"
+            r"sub_1815DF2C0\(\);\s+"
+            r"sub_1815DF3F0\(\);\s+"
+            r"goto LABEL_x28D9;\s+"
+            r"}\s+"
+            r"j_j_j__free_base\(",
+            rendered,
+        ), "terminal arm must not consume the live continuation"
         assert "SimpleFlatteningCleanupUnflattener" in block_rules_fired
         assert "FoldReadonlyDataRule" in fired_rules
         assert "ConstantSubtreeFoldRule" in fired_rules
