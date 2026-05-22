@@ -290,7 +290,7 @@ def test_hodur_unflattener_does_not_own_runtime_policy_callbacks():
     assert unflattener._services.owner is unflattener._rule_services
 
 
-def test_hodur_rule_services_only_owns_hodur_specific_adapters():
+def test_hodur_rule_services_inherits_live_services_without_owning_them():
     live_service_methods = {
         "_tag_terminal_byte_mbl_keep",
         "_build_successor_map",
@@ -306,6 +306,9 @@ def test_hodur_rule_services_only_owns_hodur_specific_adapters():
         "_nop_unreachable_blocks_after_bst_cleanup",
         "_diagnostic_backward_scan",
     }
+    # These live-MBA hooks are available on the composed Hodur adapter through
+    # HodurLiveRuleServices, but they should not be class-owned by the thin
+    # HodurRuleServices adapter or the generic state-machine proxy base.
     assert not live_service_methods & set(vars(HodurRuleServices))
     assert not live_service_methods & set(vars(StateMachineRuleServices))
     assert live_service_methods <= set(dir(HodurLiveRuleServices))
