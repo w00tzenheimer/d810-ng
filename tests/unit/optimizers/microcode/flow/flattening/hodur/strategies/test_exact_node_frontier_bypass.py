@@ -14,6 +14,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.residual_handoff_backend im
     ResidualStateWriteEvidence,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.family import HodurStrategyFamily
+from d810.optimizers.microcode.flow.flattening.hodur.post_apply_runtime import (
+    collect_live_residual_dispatcher_preds,
+    collect_post_apply_bst_cleanup_blockers,
+)
 from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
     BenefitMetrics,
     OwnershipScope,
@@ -135,9 +139,15 @@ def test_collect_post_apply_bst_cleanup_blockers_uses_group_live_preds() -> None
         },
         modifications=[],
     )
-    blockers = HodurStrategyFamily.collect_post_apply_bst_cleanup_blockers(
+    blockers = collect_post_apply_bst_cleanup_blockers(
         [fragment],
-        [StageResult(strategy_name="exact_conditional_alias_lowering", success=True, edits_applied=1)],
+        [
+            StageResult(
+                strategy_name="exact_conditional_alias_lowering",
+                success=True,
+                edits_applied=1,
+            )
+        ],
         live_residual_dispatcher_preds_by_strategy={"group:exact_nodes": ()},
     )
     assert blockers == {}
@@ -159,10 +169,12 @@ def test_collect_live_residual_dispatcher_preds_falls_back_to_generic_collector(
         bst_dispatcher_serial=2,
     )
 
-    residual = family.collect_live_residual_dispatcher_preds(
+    residual = collect_live_residual_dispatcher_preds(
         SimpleNamespace(),
         snapshot,
+        strategies=family.strategies,
         strategy_name="semantic_exact_node_all_plannable_edges",
+        cfg_translator=family.cfg_translator,
     )
 
     assert residual == (50,)

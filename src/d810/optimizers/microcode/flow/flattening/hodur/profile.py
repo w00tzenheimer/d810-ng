@@ -50,12 +50,29 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class HodurUnflatteningProfile:
-    """Strategy ordering/configuration for the Hodur compatibility profile."""
+    """Runtime policy and strategy ordering for the Hodur profile."""
 
     strategy_classes: tuple[type, ...]
     entrypoint_strategy_classes: tuple[type, ...]
     experimental_strategy_classes: tuple[type, ...]
     legacy_strategy_classes: tuple[type, ...]
+    detector: str
+    evidence_adapters: tuple[str, ...]
+    audit_hooks: tuple[str, ...]
+    post_apply_hooks: tuple[str, ...]
+    executor_safeguard_profile: str = "hodur"
+
+    def uses_evidence_adapter(self, name: str) -> bool:
+        """Return whether this profile declares a named evidence adapter."""
+        return name in self.evidence_adapters
+
+    def enables_audit_hook(self, name: str) -> bool:
+        """Return whether this profile declares a named audit hook."""
+        return name in self.audit_hooks
+
+    def enables_post_apply_hook(self, name: str) -> bool:
+        """Return whether this profile declares a named post-apply hook."""
+        return name in self.post_apply_hooks
 
 
 def _env_name_set(name: str) -> set[str]:
@@ -143,6 +160,37 @@ def default_hodur_profile() -> HodurUnflatteningProfile:
         entrypoint_strategy_classes=entrypoint,
         experimental_strategy_classes=experimental,
         legacy_strategy_classes=legacy,
+        detector="hodur_state_machine",
+        evidence_adapters=(
+            "transition_report_store",
+            "return_frontier_audit_store",
+            "terminal_return_audit_store",
+            "induction_fact_view",
+        ),
+        audit_hooks=(
+            "return_frontier_pre_plan",
+            "return_frontier_post_plan",
+            "return_frontier_post_apply",
+            "return_frontier_post_pipeline",
+            "return_frontier_carrier_post_pipeline",
+            "terminal_return_persistence",
+        ),
+        post_apply_hooks=(
+            "bst_cleanup",
+            "pipeline_summary",
+            "post_pipeline_audit",
+            "reachability_snapshot",
+            "dispatcher_residue_cache",
+            "post_pipeline_diagnostic_snapshot",
+            "inline_add_stkvar_canonicalization",
+            "terminal_byte_mbl_keep",
+            "tag_all_mbl_keep",
+            "tail_shaping",
+            "may_only_probe",
+            "bst_cleanup_reiteration_suppression",
+            "may_only_probe_rerun",
+            "reachable_mbl_keep",
+        ),
     )
 
 

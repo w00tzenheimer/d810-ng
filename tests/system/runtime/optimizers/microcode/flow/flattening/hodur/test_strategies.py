@@ -130,6 +130,24 @@ def test_hodur_profile_owns_default_strategy_order():
     assert _before(strategy_names, "state_constant_return_fixup", "dead_state_variable_elimination")
     assert "spurious_backedge_redirect" in entrypoint_names
     assert "spurious_backedge_redirect" not in strategy_names
+    assert profile.detector == "hodur_state_machine"
+    assert profile.executor_safeguard_profile == "hodur"
+    assert profile.uses_evidence_adapter("transition_report_store")
+    assert profile.uses_evidence_adapter("return_frontier_audit_store")
+    assert profile.uses_evidence_adapter("terminal_return_audit_store")
+    assert profile.uses_evidence_adapter("induction_fact_view")
+    assert profile.enables_audit_hook("return_frontier_pre_plan")
+    assert profile.enables_audit_hook("return_frontier_post_plan")
+    assert profile.enables_audit_hook("return_frontier_post_apply")
+    assert profile.enables_audit_hook("return_frontier_post_pipeline")
+    assert profile.enables_audit_hook("terminal_return_persistence")
+    assert profile.enables_post_apply_hook("bst_cleanup")
+    assert profile.enables_post_apply_hook("pipeline_summary")
+    assert profile.enables_post_apply_hook("post_pipeline_audit")
+    assert profile.enables_post_apply_hook("post_pipeline_diagnostic_snapshot")
+    assert profile.enables_post_apply_hook("bst_cleanup_reiteration_suppression")
+    assert profile.enables_post_apply_hook("tag_all_mbl_keep")
+    assert profile.enables_post_apply_hook("tail_shaping")
 
 
 def test_semantic_structured_region_collapses_same_target_conditional_candidates():

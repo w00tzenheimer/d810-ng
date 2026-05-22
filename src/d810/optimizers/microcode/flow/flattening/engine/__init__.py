@@ -22,12 +22,29 @@ from .provenance import (
 )
 from .runtime import (
     ExecutedPipeline,
+    ExecutorPolicy,
+    FamilyAnalysis,
+    FamilyContext,
+    FamilyPassResult,
+    FamilyPostPipelineContext,
+    FamilyRunState,
+    FamilyRuntimePolicy,
     PlannedPipeline,
     apply_execution_results_to_provenance,
     execute_family_pipeline,
+    make_transactional_executor_factory,
     plan_family_pipeline,
+    run_configured_family_pass,
+    run_family_pass,
+    run_ordered_family_hooks,
 )
 from .snapshot import AnalysisSnapshot, ReachabilityInfo, StateModelSummary
+from .state_machine_snapshot_builder import StateMachineSnapshotBuilder
+from .state_machine_runtime import (
+    StateMachineFamilyPassResult,
+    StateMachineFamilyRuntimeServices,
+    run_state_machine_family_pass,
+)
 from .strategy import (
     FAMILY_CLEANUP,
     FAMILY_DIRECT,
@@ -51,6 +68,13 @@ __all__ = [
     "DecisionRecord",
     "DetectionResult",
     "ExecutedPipeline",
+    "ExecutorPolicy",
+    "FamilyAnalysis",
+    "FamilyContext",
+    "FamilyPassResult",
+    "FamilyPostPipelineContext",
+    "FamilyRunState",
+    "FamilyRuntimePolicy",
     "FAMILY_CLEANUP",
     "FAMILY_DIRECT",
     "FAMILY_FALLBACK",
@@ -68,12 +92,20 @@ __all__ = [
     "ReachabilityInfo",
     "StateModelSummary",
     "StageResult",
+    "StateMachineSnapshotBuilder",
+    "StateMachineFamilyPassResult",
+    "StateMachineFamilyRuntimeServices",
     "UnflatteningPlanner",
     "UnflatteningStrategy",
     "VerificationGate",
     "execute_family_pipeline",
     "handler_coverage",
+    "make_transactional_executor_factory",
     "plan_family_pipeline",
+    "run_configured_family_pass",
+    "run_family_pass",
+    "run_ordered_family_hooks",
+    "run_state_machine_family_pass",
     "structure_quality_score",
 ]
 
