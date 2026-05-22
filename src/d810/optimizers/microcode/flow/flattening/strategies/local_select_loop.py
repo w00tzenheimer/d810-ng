@@ -31,6 +31,9 @@ LOCAL_SELECT_LOOP_FIXES_METADATA_KEY = "local_select_loop_fixes"
 VarId = tuple[str, int]
 VarUseId = tuple[str, int, int]
 
+_CONDITIONAL_JUMP_OPCODES = frozenset({42, 43, 44, 45, 46, 48, 49, 52})
+_GOTO_OPCODE = 55
+
 
 @dataclass(frozen=True)
 class LocalSelectLoopFix:
@@ -184,6 +187,12 @@ def _is_forward_assign(insn: object | None) -> bool:
 
 
 def _is_conditional(insn: object | None) -> bool:
+    try:
+        opcode = int(getattr(insn, "raw_opcode", getattr(insn, "opcode", -1)))
+    except (TypeError, ValueError):
+        opcode = -1
+    if opcode in _CONDITIONAL_JUMP_OPCODES:
+        return True
     kind = getattr(insn, "kind", None)
     if kind in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}:
         return True
@@ -196,6 +205,12 @@ def _is_conditional(insn: object | None) -> bool:
 
 
 def _is_goto(insn: object | None) -> bool:
+    try:
+        opcode = int(getattr(insn, "raw_opcode", getattr(insn, "opcode", -1)))
+    except (TypeError, ValueError):
+        opcode = -1
+    if opcode == _GOTO_OPCODE:
+        return True
     kind = getattr(insn, "kind", None)
     if kind is InsnKind.GOTO:
         return True
@@ -917,7 +932,6 @@ def _find_closed_loop_external_exit(
 
 
 def _is_noreturn_call_terminal(block: BlockSnapshot) -> bool:
-    """Return whether a no-successor block is represented by one call."""
     return (
         block.nsucc == 0
         and len(block.insn_snapshots) == 1
@@ -925,32 +939,97 @@ def _is_noreturn_call_terminal(block: BlockSnapshot) -> bool:
     )
 
 
-def _find_nearest_noreturn_call_terminal(
+def _find_unique_terminal_frontier_from(
+    cfg: FlowGraph,
+    *,
+    start: int,
+    forbidden: frozenset[int],
+    max_depth: int = 24,
+) -> int | None:
+    queue: list[tuple[int, int]] = [(int(start), 0)]
+    seen: set[int] = set()
+    terminals: list[tuple[int, int]] = []
+    while queue:
+        serial, depth = queue.pop(0)
+        if serial in seen or serial in forbidden or depth > max_depth:
+            continue
+        seen.add(serial)
+        block = cfg.get_block(serial)
+        if block is None:
+            continue
+        if _is_noreturn_call_terminal(block):
+            terminals.append((depth, serial))
+            continue
+        if block.nsucc == 0 or depth >= max_depth:
+            continue
+        for succ in block.succs:
+            succ_int = int(succ)
+            if succ_int not in forbidden:
+                queue.append((succ_int, depth + 1))
+    if not terminals:
+        return None
+    min_depth = min(depth for depth, _serial in terminals)
+    frontier = [serial for depth, serial in terminals if depth == min_depth]
+    if len(frontier) != 1:
+        return None
+    return int(frontier[0])
+
+
+def _find_closed_loop_terminal_frontier_exit(
     cfg: FlowGraph,
     *,
     init_block: BlockSnapshot,
     header: int,
     region: frozenset[int],
-    max_serial_distance: int = 96,
+    max_guard_depth: int = 8,
 ) -> int | None:
-    """Find a nearby terminal call usable for a proven closed selector arm."""
-    forbidden = {int(header), int(init_block.serial), *region}
-    candidates: list[tuple[int, int, int]] = []
-    for serial, block in cfg.blocks.items():
-        serial_int = int(serial)
-        if serial_int in forbidden:
+    """Find a CFG-proven no-return frontier from the pre-loop guard sibling."""
+    forbidden = frozenset({int(header), int(init_block.serial), *region})
+    queue: list[tuple[int, int]] = [
+        (int(pred), 0)
+        for pred in init_block.preds
+        if int(pred) not in forbidden
+    ]
+    seen: set[int] = set()
+    candidates: list[tuple[int, int]] = []
+    while queue:
+        serial, depth = queue.pop(0)
+        if serial in seen or depth > max_guard_depth:
             continue
-        if not _is_noreturn_call_terminal(block):
+        seen.add(serial)
+        block = cfg.get_block(serial)
+        if block is None:
             continue
-        distance = abs(serial_int - int(init_block.serial))
-        if distance > max_serial_distance:
+        if block.nsucc == 2:
+            header_reaching: list[int] = []
+            sibling_arms: list[int] = []
+            for succ in block.succs:
+                succ_int = int(succ)
+                if _can_reach_block(cfg, succ_int, int(header)):
+                    header_reaching.append(succ_int)
+                elif succ_int not in forbidden:
+                    sibling_arms.append(succ_int)
+            if len(header_reaching) == 1 and len(sibling_arms) == 1:
+                terminal = _find_unique_terminal_frontier_from(
+                    cfg,
+                    start=sibling_arms[0],
+                    forbidden=forbidden,
+                )
+                if terminal is not None:
+                    candidates.append((depth, terminal))
+        if depth >= max_guard_depth:
             continue
-        is_backward = 1 if serial_int < int(init_block.serial) else 0
-        candidates.append((distance, is_backward, serial_int))
+        for pred in block.preds:
+            pred_int = int(pred)
+            if pred_int not in forbidden:
+                queue.append((pred_int, depth + 1))
     if not candidates:
         return None
-    candidates.sort()
-    return int(candidates[0][2])
+    min_depth = min(depth for depth, _terminal in candidates)
+    terminals = [terminal for depth, terminal in candidates if depth == min_depth]
+    if len(set(terminals)) != 1:
+        return None
+    return int(terminals[0])
 
 
 def _find_terminal_loop_for_header(
@@ -1004,7 +1083,7 @@ def _find_terminal_loop_for_header(
         region=region,
     )
     if external_exit is None:
-        external_exit = _find_nearest_noreturn_call_terminal(
+        external_exit = _find_closed_loop_terminal_frontier_exit(
             cfg,
             init_block=init_block,
             header=int(header.serial),
@@ -1618,21 +1697,6 @@ def build_local_select_loop_modifications(
                         new_target=int(fix.exit_target),
                     )
                 )
-                continue
-            modifications.append(
-                RedirectGoto(
-                    from_serial=int(fix.init_block),
-                    old_target=int(fix.init_old_target),
-                    new_target=int(fix.sink_block),
-                )
-            )
-            modifications.append(
-                RedirectGoto(
-                    from_serial=int(fix.sink_block),
-                    old_target=int(fix.sink_old_target),
-                    new_target=int(fix.sink_block),
-                )
-            )
             continue
         if isinstance(fix, LocalSelectDirectExitLoopFix):
             modifications.append(
