@@ -1026,9 +1026,9 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
     assert dict(metadata.strategy_scopes) == {
         "fake_jump": "engine_cleanup",
         "single_iteration": "engine_cleanup",
-        "guarded_state_machine": "transitional_optimizer_local",
-        "local_select_loop": "transitional_optimizer_local",
-        "side_effect_select_loop": "transitional_optimizer_local",
+        "guarded_state_machine": "normalized_recon_cfg_fact",
+        "local_select_loop": "normalized_recon_cfg_fact",
+        "side_effect_select_loop": "normalized_recon_cfg_fact",
         "selector_shell": "normalized_recon_cfg_fact",
         "bad_while_loop": "engine_cleanup",
         "fix_predecessor_branch_arm": "engine_cleanup",

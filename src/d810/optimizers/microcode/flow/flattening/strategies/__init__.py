@@ -35,33 +35,41 @@ from .fake_jump import (
     serialize_fake_jump_fixes,
     should_skip_fake_jump_predecessor,
 )
-from .guarded_state_machine import (
+from d810.cfg.guarded_state_machine_planning import (
+    build_guarded_state_machine_modifications,
+)
+from d810.cfg.local_select_loop_planning import build_local_select_loop_modifications
+from d810.cfg.side_effect_select_loop_planning import (
+    build_side_effect_select_loop_modifications,
+)
+from d810.recon.flow.guarded_state_machine import (
     GUARDED_STATE_MACHINE_FIXES_METADATA_KEY,
     GuardedStateMachineFix,
-    GuardedStateMachineStrategy,
-    build_guarded_state_machine_modifications,
     collect_guarded_state_machine_fixes,
     extract_guarded_state_machine_fixes,
     serialize_guarded_state_machine_fixes,
 )
-from .local_select_loop import (
+from d810.recon.flow.local_select_loop import (
     LOCAL_SELECT_LOOP_FIXES_METADATA_KEY,
+    LocalSelectConvergenceLoopFix,
+    LocalSelectDirectExitLoopFix,
+    LocalSelectLoopCandidate,
     LocalSelectLoopFix,
-    LocalSelectLoopStrategy,
-    build_local_select_loop_modifications,
+    LocalSelectTerminalLoopFix,
     collect_local_select_loop_fixes,
     extract_local_select_loop_fixes,
     serialize_local_select_loop_fixes,
 )
-from .side_effect_select_loop import (
+from d810.recon.flow.side_effect_select_loop import (
     SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY,
     SideEffectSelectLoopFix,
-    SideEffectSelectLoopStrategy,
-    build_side_effect_select_loop_modifications,
     collect_side_effect_select_loop_fixes,
     extract_side_effect_select_loop_fixes,
     serialize_side_effect_select_loop_fixes,
 )
+from .guarded_state_machine import GuardedStateMachineStrategy
+from .local_select_loop import LocalSelectLoopStrategy
+from .side_effect_select_loop import SideEffectSelectLoopStrategy
 from .emulated_dispatcher_strategy import (
     DispatcherLoopRecoveryStrategy,
     EMULATED_DISPATCHER_FALLBACK_MODIFICATIONS_KEY,
@@ -109,8 +117,12 @@ __all__ = [
     "SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY",
     "GuardedStateMachineFix",
     "GuardedStateMachineStrategy",
+    "LocalSelectConvergenceLoopFix",
+    "LocalSelectDirectExitLoopFix",
+    "LocalSelectLoopCandidate",
     "LocalSelectLoopFix",
     "LocalSelectLoopStrategy",
+    "LocalSelectTerminalLoopFix",
     "SideEffectSelectLoopFix",
     "SideEffectSelectLoopStrategy",
     "EMULATED_DISPATCHER_METADATA_KEY",

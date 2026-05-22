@@ -43,15 +43,15 @@ from d810.optimizers.microcode.flow.flattening.strategies.fix_predecessor_branch
     FixPredecessorBranchArmFix,
     collect_live_fix_predecessor_branch_arm_fixes,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.guarded_state_machine import (
+from d810.recon.flow.guarded_state_machine import (
     GuardedStateMachineFix,
     collect_guarded_state_machine_fixes,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.local_select_loop import (
+from d810.recon.flow.local_select_loop import (
     LocalSelectLoopCandidate,
     collect_local_select_loop_fixes,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.side_effect_select_loop import (
+from d810.recon.flow.side_effect_select_loop import (
     SideEffectSelectLoopFix,
     collect_side_effect_select_loop_fixes,
 )

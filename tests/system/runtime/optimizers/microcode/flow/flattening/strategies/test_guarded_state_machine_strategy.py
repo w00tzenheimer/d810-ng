@@ -19,10 +19,14 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_CLEANUP,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.guarded_state_machine import (
+    GuardedStateMachineStrategy,
+)
+from d810.cfg.guarded_state_machine_planning import (
+    build_guarded_state_machine_modifications,
+)
+from d810.recon.flow.guarded_state_machine import (
     GUARDED_STATE_MACHINE_FIXES_METADATA_KEY,
     GuardedStateMachineFix,
-    GuardedStateMachineStrategy,
-    build_guarded_state_machine_modifications,
     collect_guarded_state_machine_fixes,
     extract_guarded_state_machine_fixes,
     serialize_guarded_state_machine_fixes,
@@ -359,6 +363,32 @@ def test_guarded_state_machine_strategy_drops_invalid_metadata() -> None:
                     "inner_override_old_target": 72,
                     "invalid_target": 84,
                     "success_target": 86,
+                },
+            )
+        },
+    )
+
+    assert extract_guarded_state_machine_fixes(cfg) == ()
+    assert GuardedStateMachineStrategy().plan(
+        AnalysisSnapshot(mba=object(), flow_graph=cfg),
+    ) is None
+
+
+def test_guarded_state_machine_strategy_drops_stale_but_well_formed_metadata() -> None:
+    cfg = _guarded_cfg()
+    cfg = replace(
+        cfg,
+        metadata={
+            GUARDED_STATE_MACHINE_FIXES_METADATA_KEY: (
+                {
+                    "outer_guard_block": 68,
+                    "outer_guard_old_target": 69,
+                    "inner_guard_block": 70,
+                    "inner_guard_old_target": 72,
+                    "inner_override_block": 71,
+                    "inner_override_old_target": 72,
+                    "invalid_target": 84,
+                    "success_target": 87,
                 },
             )
         },
