@@ -310,6 +310,27 @@ def test_fake_jump_strategy_plans_payload_preserving_fake_jump() -> None:
     ]
 
 
+def test_fake_jump_strategy_prefers_plain_fixes_over_payload_derivation() -> None:
+    cfg = _payload_fake_jump_cfg()
+    cfg = FlowGraph(
+        blocks=cfg.blocks,
+        entry_serial=cfg.entry_serial,
+        func_ea=cfg.func_ea,
+        metadata={FAKE_JUMP_FIXES_METADATA_KEY: {14: {12: 16, 13: 15}}},
+    )
+
+    fragment = FakeJumpStrategy().plan(
+        AnalysisSnapshot(mba=object(), flow_graph=cfg),
+    )
+
+    assert fragment is not None
+    assert fragment.metadata[FAKE_JUMP_FIXES_METADATA_KEY] == {14: {13: 15}}
+    assert fragment.metadata[PAYLOAD_FAKE_JUMP_FIXES_METADATA_KEY] == ()
+    assert fragment.modifications == [
+        RedirectGoto(from_serial=13, old_target=14, new_target=15),
+    ]
+
+
 def test_fake_jump_strategy_redirects_branch_arm_predecessors() -> None:
     cfg = FlowGraph(
         blocks={
