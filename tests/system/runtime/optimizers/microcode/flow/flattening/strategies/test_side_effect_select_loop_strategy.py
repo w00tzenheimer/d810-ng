@@ -18,9 +18,11 @@ from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
 )
 from d810.optimizers.microcode.flow.flattening.engine.strategy import FAMILY_CLEANUP
 from d810.optimizers.microcode.flow.flattening.strategies.side_effect_select_loop import (
+    SideEffectSelectLoopStrategy,
+)
+from d810.recon.flow.side_effect_select_loop import (
     SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY,
     SideEffectSelectLoopFix,
-    SideEffectSelectLoopStrategy,
     collect_side_effect_select_loop_fixes,
     extract_side_effect_select_loop_fixes,
     serialize_side_effect_select_loop_fixes,
@@ -378,6 +380,25 @@ def test_extract_side_effect_select_loop_fixes_rejects_stale_metadata() -> None:
                     "header_block": 9,
                     "per_pred_targets": ((4, 8), (5, 12)),
                     "terminal_redirects": ((8, 99, 15), (14, 9, 15)),
+                },
+            )
+        },
+    )
+
+    assert extract_side_effect_select_loop_fixes(cfg) == ()
+
+
+def test_extract_side_effect_select_loop_fixes_rejects_wrong_pred_targets() -> None:
+    cfg = _selector_loop_cfg()
+    cfg = replace(
+        cfg,
+        metadata={
+            SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY: (
+                {
+                    "init_block": 6,
+                    "header_block": 9,
+                    "per_pred_targets": ((4, 12), (5, 8)),
+                    "terminal_redirects": ((8, 9, 15), (14, 9, 15)),
                 },
             )
         },

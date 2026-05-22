@@ -59,22 +59,13 @@ from d810.optimizers.microcode.flow.flattening.strategies.fix_predecessor_branch
     serialize_fix_predecessor_branch_arm_fixes,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.guarded_state_machine import (
-    GUARDED_STATE_MACHINE_FIXES_METADATA_KEY,
     GuardedStateMachineStrategy,
-    extract_guarded_state_machine_fixes,
-    serialize_guarded_state_machine_fixes,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.local_select_loop import (
-    LOCAL_SELECT_LOOP_FIXES_METADATA_KEY,
     LocalSelectLoopStrategy,
-    extract_local_select_loop_fixes,
-    serialize_local_select_loop_fixes,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.side_effect_select_loop import (
-    SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY,
     SideEffectSelectLoopStrategy,
-    extract_side_effect_select_loop_fixes,
-    serialize_side_effect_select_loop_fixes,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.selector_shell import (
     SelectorShellStrategy,
@@ -95,10 +86,25 @@ from d810.optimizers.microcode.flow.flattening.strategies.tail_goto_merge import
     serialize_tail_goto_merge_candidates,
 )
 from d810.recon.flow.graph_reachability import compute_reachable_blocks
+from d810.recon.flow.guarded_state_machine import (
+    GUARDED_STATE_MACHINE_FIXES_METADATA_KEY,
+    extract_guarded_state_machine_fixes,
+    serialize_guarded_state_machine_fixes,
+)
+from d810.recon.flow.local_select_loop import (
+    LOCAL_SELECT_LOOP_FIXES_METADATA_KEY,
+    extract_local_select_loop_fixes,
+    serialize_local_select_loop_fixes,
+)
 from d810.recon.flow.selector_shell import (
     SELECTOR_SHELL_FACTS_METADATA_KEY,
     extract_selector_shell_facts,
     serialize_selector_shell_facts,
+)
+from d810.recon.flow.side_effect_select_loop import (
+    SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY,
+    extract_side_effect_select_loop_fixes,
+    serialize_side_effect_select_loop_fixes,
 )
 
 family_logger = getLogger("D810.unflat.cleanup_family")
@@ -106,13 +112,12 @@ family_logger = getLogger("D810.unflat.cleanup_family")
 CLEANUP_FAMILY_METADATA_KEY = "simple_flattening_cleanup"
 
 NORMALIZED_RECON_CFG_SCOPE = "normalized_recon_cfg_fact"
-TRANSITIONAL_OPTIMIZER_LOCAL_SCOPE = "transitional_optimizer_local"
 ENGINE_CLEANUP_SCOPE = "engine_cleanup"
 
 _STRATEGY_SCOPES = {
-    "guarded_state_machine": TRANSITIONAL_OPTIMIZER_LOCAL_SCOPE,
-    "local_select_loop": TRANSITIONAL_OPTIMIZER_LOCAL_SCOPE,
-    "side_effect_select_loop": TRANSITIONAL_OPTIMIZER_LOCAL_SCOPE,
+    "guarded_state_machine": NORMALIZED_RECON_CFG_SCOPE,
+    "local_select_loop": NORMALIZED_RECON_CFG_SCOPE,
+    "side_effect_select_loop": NORMALIZED_RECON_CFG_SCOPE,
     "selector_shell": NORMALIZED_RECON_CFG_SCOPE,
 }
 

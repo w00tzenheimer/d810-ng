@@ -17,11 +17,13 @@ from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
 )
 from d810.optimizers.microcode.flow.flattening.engine.strategy import FAMILY_CLEANUP
 from d810.optimizers.microcode.flow.flattening.strategies.local_select_loop import (
+    LocalSelectLoopStrategy,
+)
+from d810.recon.flow.local_select_loop import (
     LOCAL_SELECT_LOOP_FIXES_METADATA_KEY,
     LocalSelectConvergenceLoopFix,
     LocalSelectDirectExitLoopFix,
     LocalSelectLoopFix,
-    LocalSelectLoopStrategy,
     LocalSelectTerminalLoopFix,
     collect_local_select_loop_fixes,
     extract_local_select_loop_fixes,
@@ -738,6 +740,28 @@ def test_extract_local_select_loop_fixes_rejects_stale_metadata() -> None:
                     "assignment_block": 19,
                     "assignment_old_target": 20,
                     "exit_target": 21,
+                },
+            )
+        },
+    )
+
+    assert extract_local_select_loop_fixes(cfg) == ()
+
+
+def test_extract_local_select_loop_fixes_rejects_well_formed_wrong_exit() -> None:
+    cfg = _select_loop_cfg()
+    cfg = replace(
+        cfg,
+        metadata={
+            LOCAL_SELECT_LOOP_FIXES_METADATA_KEY: (
+                {
+                    "init_block": 17,
+                    "init_old_target": 20,
+                    "test_block": 18,
+                    "test_old_target": 20,
+                    "assignment_block": 19,
+                    "assignment_old_target": 20,
+                    "exit_target": 18,
                 },
             )
         },
