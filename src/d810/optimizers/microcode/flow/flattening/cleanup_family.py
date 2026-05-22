@@ -105,6 +105,17 @@ family_logger = getLogger("D810.unflat.cleanup_family")
 
 CLEANUP_FAMILY_METADATA_KEY = "simple_flattening_cleanup"
 
+NORMALIZED_RECON_CFG_SCOPE = "normalized_recon_cfg_fact"
+TRANSITIONAL_OPTIMIZER_LOCAL_SCOPE = "transitional_optimizer_local"
+ENGINE_CLEANUP_SCOPE = "engine_cleanup"
+
+_STRATEGY_SCOPES = {
+    "guarded_state_machine": TRANSITIONAL_OPTIMIZER_LOCAL_SCOPE,
+    "local_select_loop": TRANSITIONAL_OPTIMIZER_LOCAL_SCOPE,
+    "side_effect_select_loop": TRANSITIONAL_OPTIMIZER_LOCAL_SCOPE,
+    "selector_shell": NORMALIZED_RECON_CFG_SCOPE,
+}
+
 __all__ = [
     "CLEANUP_FAMILY_METADATA_KEY",
     "LiveSimpleFlatteningCleanupBackend",
@@ -121,6 +132,7 @@ class SimpleFlatteningCleanupMetadata:
 
     family_name: str
     strategy_names: tuple[str, ...]
+    strategy_scopes: tuple[tuple[str, str], ...]
     maturity: int
     func_ea: int
     collected_fake_jump_fixes: int
@@ -194,6 +206,15 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
 
     def strategies_for_maturity(self, maturity: int | None = None) -> list:
         return list(self._strategies)
+
+    def _strategy_scopes(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (
+                strategy.name,
+                _STRATEGY_SCOPES.get(strategy.name, ENGINE_CLEANUP_SCOPE),
+            )
+            for strategy in self._strategies
+        )
 
     def detect(self, mba: object) -> SimpleFlatteningCleanupDetection:
         detection = self._backend.collect(mba, logger=self._logger)
@@ -448,6 +469,7 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         metadata[CLEANUP_FAMILY_METADATA_KEY] = SimpleFlatteningCleanupMetadata(
             family_name=self.name,
             strategy_names=tuple(strategy.name for strategy in self._strategies),
+            strategy_scopes=self._strategy_scopes(),
             maturity=detection.maturity,
             func_ea=detection.func_ea,
             collected_fake_jump_fixes=len(detection.fake_jump_fixes),

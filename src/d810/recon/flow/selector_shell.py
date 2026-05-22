@@ -358,6 +358,7 @@ def _is_valid_fact(cfg: FlowGraph, fact: SelectorShellFact) -> bool:
     semantic = cfg.get_block(int(fact.semantic_target))
     if header is None or semantic is None or _is_pure_shell_block(semantic):
         return False
+    proven_artifacts: set[int] = set()
     for proof in fact.edge_proofs:
         pred = cfg.get_block(int(proof.from_serial))
         if pred is None:
@@ -368,6 +369,31 @@ def _is_valid_fact(cfg: FlowGraph, fact: SelectorShellFact) -> bool:
             return False
         if int(proof.old_target) != int(fact.header_block):
             return False
+        result = _simulate_selector_path(
+            cfg,
+            start=int(fact.header_block),
+            semantic_target=int(fact.semantic_target),
+            env=_exec_simple_assignments(pred, {}),
+        )
+        if result is None:
+            return False
+        target, ordered_path, artifact_blocks = result
+        if int(target) != int(fact.semantic_target):
+            return False
+        if tuple(int(serial) for serial in proof.ordered_path) != ordered_path:
+            return False
+        if (
+            frozenset(int(serial) for serial in proof.artifact_blocks)
+            != artifact_blocks
+        ):
+            return False
+        if not artifact_blocks:
+            return False
+        proven_artifacts.update(artifact_blocks)
+    if frozenset(proven_artifacts) != frozenset(
+        int(serial) for serial in fact.artifact_blocks
+    ):
+        return False
     return True
 
 
