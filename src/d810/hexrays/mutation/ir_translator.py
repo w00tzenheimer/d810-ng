@@ -28,6 +28,7 @@ from d810.cfg.graph_modification import (
     NopInstructions,
 )
 from d810.cfg.flowgraph import (
+    BranchPredicate,
     BlockKind,
     BlockSnapshot,
     FlowGraph,
@@ -106,6 +107,32 @@ def _block_kind_from_hexrays(block_type: int) -> BlockKind:
     return BlockKind.UNKNOWN
 
 
+def _is_hexrays_opcode(opcode: int, name: str) -> bool:
+    value = getattr(ida_hexrays, name, None)
+    return value is not None and int(opcode) == int(value)
+
+
+def _branch_predicate_from_hexrays(opcode: int) -> BranchPredicate | None:
+    opcode = int(opcode)
+    mapping = (
+        ("m_jcnd", BranchPredicate.TRUTHY),
+        ("m_jnz", BranchPredicate.NOT_EQUAL),
+        ("m_jz", BranchPredicate.EQUAL),
+        ("m_jae", BranchPredicate.UNSIGNED_GE),
+        ("m_ja", BranchPredicate.UNSIGNED_GT),
+        ("m_jbe", BranchPredicate.UNSIGNED_LE),
+        ("m_jb", BranchPredicate.UNSIGNED_LT),
+        ("m_jge", BranchPredicate.SIGNED_GE),
+        ("m_jg", BranchPredicate.SIGNED_GT),
+        ("m_jle", BranchPredicate.SIGNED_LE),
+        ("m_jl", BranchPredicate.SIGNED_LT),
+    )
+    for name, predicate in mapping:
+        if _is_hexrays_opcode(opcode, name):
+            return predicate
+    return None
+
+
 def _insn_kind_from_hexrays(opcode: int) -> InsnKind:
     opcode = int(opcode)
     if opcode == int(ida_hexrays.m_nop):
@@ -122,10 +149,11 @@ def _insn_kind_from_hexrays(opcode: int) -> InsnKind:
         return InsnKind.AND
     if opcode == int(ida_hexrays.m_goto):
         return InsnKind.GOTO
+    if _is_hexrays_opcode(opcode, "m_call") or _is_hexrays_opcode(opcode, "m_icall"):
+        return InsnKind.CALL
     if opcode in (int(ida_hexrays.m_jnz), int(ida_hexrays.m_jz)):
         return InsnKind.EQUALITY_JUMP
-    is_jcond = getattr(ida_hexrays, "is_mcode_jcond", None)
-    if callable(is_jcond) and is_jcond(opcode):
+    if _branch_predicate_from_hexrays(opcode) is not None:
         return InsnKind.COND_JUMP
     return InsnKind.UNKNOWN
 
@@ -211,6 +239,8 @@ def capture_insn_snapshot(insn: "ida_hexrays.minsn_t") -> InsnSnapshot:
         if mop.t != ida_hexrays.mop_z  # type: ignore[attr-defined]
     )
     operands = tuple(operand for _, operand in operand_slots)
+    branch_predicate = _branch_predicate_from_hexrays(opcode)
+    insn_kind = _insn_kind_from_hexrays(opcode)
 
     return InsnSnapshot(
         opcode=opcode,
@@ -220,8 +250,12 @@ def capture_insn_snapshot(insn: "ida_hexrays.minsn_t") -> InsnSnapshot:
         l=capture_mop_snapshot(insn.l),
         r=capture_mop_snapshot(insn.r),
         d=capture_mop_snapshot(insn.d),
-        kind=_insn_kind_from_hexrays(opcode),
+        kind=insn_kind,
         raw_opcode=int(opcode),
+        branch_predicate=branch_predicate,
+        is_conditional_jump=branch_predicate is not None,
+        is_unconditional_jump=insn_kind is InsnKind.GOTO,
+        is_call=insn_kind is InsnKind.CALL,
     )
 
 

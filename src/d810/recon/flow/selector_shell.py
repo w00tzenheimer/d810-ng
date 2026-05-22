@@ -11,15 +11,19 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnKind, OperandKind
+from d810.recon.flow.instruction_semantics import (
+    branch_predicate,
+    evaluate_branch_predicate,
+    is_branch,
+    is_goto,
+    is_kind as _is_kind,
+)
 
 
 SELECTOR_SHELL_FACTS_METADATA_KEY = "selector_shell_facts"
 
 VarId = tuple[str, int]
 Env = dict[VarId, int]
-
-_CONDITIONAL_JUMP_OPCODES = frozenset({42, 43, 44, 45, 46, 48, 49, 52})
-_GOTO_OPCODE = 55
 
 
 @dataclass(frozen=True)
@@ -108,23 +112,6 @@ def _var_id(mop: object | None) -> VarId | None:
     return None
 
 
-def _is_kind(insn: object | None, kind: InsnKind, *names: str) -> bool:
-    if insn is None:
-        return False
-    actual = getattr(insn, "kind", None)
-    if actual is kind:
-        return True
-    actual_name = actual.value if isinstance(actual, InsnKind) else str(actual)
-    return actual_name in names or actual_name == f"InsnKind.{kind.name}"
-
-
-def _raw_opcode(insn: object | None) -> int:
-    try:
-        return int(getattr(insn, "raw_opcode", getattr(insn, "opcode", -1)))
-    except (TypeError, ValueError):
-        return -1
-
-
 def _is_simple_assign(insn: object | None) -> bool:
     if not (
         _is_kind(insn, InsnKind.MOV, "mov") or _is_kind(insn, InsnKind.XDU, "xdu")
@@ -137,19 +124,11 @@ def _is_simple_assign(insn: object | None) -> bool:
 
 
 def _is_branch(insn: object | None) -> bool:
-    return (
-        _raw_opcode(insn) in _CONDITIONAL_JUMP_OPCODES
-        or _is_kind(insn, InsnKind.COND_JUMP, "cond_jump")
-        or _is_kind(
-            insn,
-            InsnKind.EQUALITY_JUMP,
-            "equality_jump",
-        )
-    )
+    return is_branch(insn)
 
 
 def _is_goto(insn: object | None) -> bool:
-    return _is_kind(insn, InsnKind.GOTO, "goto") or _raw_opcode(insn) == _GOTO_OPCODE
+    return is_goto(insn)
 
 
 def _last_insn(block: BlockSnapshot) -> object | None:
@@ -199,11 +178,6 @@ def _exec_simple_assignments(block: BlockSnapshot, env: Env) -> Env:
     return result
 
 
-def _signed32(value: int) -> int:
-    value &= 0xFFFFFFFF
-    return value - 0x100000000 if value & 0x80000000 else value
-
-
 def _eval_branch(block: BlockSnapshot, env: Env) -> bool | None:
     tail = _last_insn(block)
     if tail is None or not _is_branch(tail):
@@ -218,32 +192,11 @@ def _eval_branch(block: BlockSnapshot, env: Env) -> bool | None:
     if right_value is None:
         right_id = _var_id(right)
         right_value = env.get(right_id) if right_id is not None else None
-    opcode = int(getattr(tail, "opcode", -1) or -1)
-    if opcode == 42:
-        return bool(left_value)
-    if left_value is None or right_value is None:
-        return None
-    if opcode == 43:
-        return int(left_value) != int(right_value)
-    if opcode == 44:
-        return int(left_value) == int(right_value)
-    if opcode == 45:
-        return (int(left_value) & 0xFFFFFFFFFFFFFFFF) >= (
-            int(right_value) & 0xFFFFFFFFFFFFFFFF
-        )
-    if opcode == 46:
-        return (int(left_value) & 0xFFFFFFFFFFFFFFFF) < (
-            int(right_value) & 0xFFFFFFFFFFFFFFFF
-        )
-    if opcode == 48:
-        return (int(left_value) & 0xFFFFFFFFFFFFFFFF) <= (
-            int(right_value) & 0xFFFFFFFFFFFFFFFF
-        )
-    if opcode == 49:
-        return _signed32(int(left_value)) > _signed32(int(right_value))
-    if opcode == 52:
-        return _signed32(int(left_value)) <= _signed32(int(right_value))
-    return None
+    return evaluate_branch_predicate(
+        branch_predicate(tail),
+        left_value,
+        right_value,
+    )
 
 
 def _branch_targets(block: BlockSnapshot) -> tuple[int, int] | None:

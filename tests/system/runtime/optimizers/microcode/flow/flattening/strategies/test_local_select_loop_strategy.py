@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from d810.cfg.flowgraph import (
+    BranchPredicate,
     BlockSnapshot,
     FlowGraph,
     InsnKind,
@@ -86,6 +87,7 @@ def _jz(left: MopSnapshot, right: MopSnapshot, target: int) -> InsnSnapshot:
         r=right,
         d=_blk(target),
         kind=InsnKind.EQUALITY_JUMP,
+        branch_predicate=BranchPredicate.EQUAL,
     )
 
 
@@ -99,6 +101,7 @@ def _jnz(left: MopSnapshot, right: MopSnapshot, target: int) -> InsnSnapshot:
         r=right,
         d=_blk(target),
         kind=InsnKind.COND_JUMP,
+        branch_predicate=BranchPredicate.NOT_EQUAL,
     )
 
 
@@ -112,6 +115,7 @@ def _jg(left: MopSnapshot, right: MopSnapshot, target: int) -> InsnSnapshot:
         r=right,
         d=_blk(target),
         kind=InsnKind.COND_JUMP,
+        branch_predicate=BranchPredicate.SIGNED_GT,
     )
 
 
@@ -120,7 +124,8 @@ def _call() -> InsnSnapshot:
         opcode=56,
         ea=0x1000,
         operands=(),
-        kind=InsnKind.UNKNOWN,
+        kind=InsnKind.CALL,
+        is_call=True,
     )
 
 

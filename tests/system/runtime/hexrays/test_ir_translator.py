@@ -17,6 +17,7 @@ import pytest
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
 from d810.cfg.flowgraph import (
+    BranchPredicate,
     BlockKind,
     BlockSnapshot,
     FlowGraph,
@@ -51,6 +52,7 @@ from d810.cfg.plan import (
 from d810.cfg.materialization_payload import CapturedBlockBody, CapturedBlockBodySummary
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.mutation.ir_translator import (
+    _branch_predicate_from_hexrays,
     _block_kind_from_hexrays,
     _insn_kind_from_hexrays,
     _operand_kind_from_hexrays,
@@ -113,6 +115,25 @@ def test_hexrays_enum_values_map_to_cfg_semantic_kinds():
     assert _operand_kind_from_hexrays(ida_hexrays.mop_b) == OperandKind.BLOCK
     assert _operand_kind_from_hexrays(ida_hexrays.mop_n) == OperandKind.NUMBER
     assert _operand_kind_from_hexrays(ida_hexrays.mop_S) == OperandKind.STACK
+
+
+def test_hexrays_branch_opcodes_map_to_backend_neutral_predicates():
+    assert _branch_predicate_from_hexrays(ida_hexrays.m_jnz) is (
+        BranchPredicate.NOT_EQUAL
+    )
+    assert _branch_predicate_from_hexrays(ida_hexrays.m_jz) is BranchPredicate.EQUAL
+    assert _branch_predicate_from_hexrays(ida_hexrays.m_jae) is (
+        BranchPredicate.UNSIGNED_GE
+    )
+    assert _branch_predicate_from_hexrays(ida_hexrays.m_jb) is (
+        BranchPredicate.UNSIGNED_LT
+    )
+    assert _branch_predicate_from_hexrays(ida_hexrays.m_jg) is (
+        BranchPredicate.SIGNED_GT
+    )
+    assert _branch_predicate_from_hexrays(ida_hexrays.m_jle) is (
+        BranchPredicate.SIGNED_LE
+    )
 
 
 def _conditional_duplicate_cfg() -> FlowGraph:

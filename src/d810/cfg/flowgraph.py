@@ -37,6 +37,23 @@ class InsnKind(Enum):
     GOTO = "goto"
     COND_JUMP = "cond_jump"
     EQUALITY_JUMP = "equality_jump"
+    CALL = "call"
+
+
+class BranchPredicate(Enum):
+    """Backend-neutral conditional branch predicate semantics."""
+
+    TRUTHY = "truthy"
+    EQUAL = "eq"
+    NOT_EQUAL = "ne"
+    UNSIGNED_GE = "uge"
+    UNSIGNED_GT = "ugt"
+    UNSIGNED_LE = "ule"
+    UNSIGNED_LT = "ult"
+    SIGNED_GE = "sge"
+    SIGNED_GT = "sgt"
+    SIGNED_LE = "sle"
+    SIGNED_LT = "slt"
 
 
 class OperandKind(Enum):
@@ -102,12 +119,22 @@ class InsnSnapshot:
     d: MopSnapshot | None = None   # dest operand
     kind: InsnKind = InsnKind.UNKNOWN
     raw_opcode: int | None = None
+    branch_predicate: BranchPredicate | None = None
+    is_conditional_jump: bool = False
+    is_unconditional_jump: bool = False
+    is_call: bool = False
 
     def __post_init__(self) -> None:
         if self.raw_opcode is None and self.opcode >= 0:
             object.__setattr__(self, "raw_opcode", int(self.opcode))
         if self.opcode < 0 and self.raw_opcode is not None:
             object.__setattr__(self, "opcode", int(self.raw_opcode))
+        if self.branch_predicate is not None and not self.is_conditional_jump:
+            object.__setattr__(self, "is_conditional_jump", True)
+        if self.kind is InsnKind.GOTO and not self.is_unconditional_jump:
+            object.__setattr__(self, "is_unconditional_jump", True)
+        if self.kind is InsnKind.CALL and not self.is_call:
+            object.__setattr__(self, "is_call", True)
         if self.opcode < 0 and self.kind is InsnKind.UNKNOWN:
             raise ValueError(f"InsnSnapshot: opcode must be non-negative, got {self.opcode}")
         if self.ea < 0:
@@ -273,6 +300,7 @@ class FlowGraph:
 
 
 __all__ = [
+    "BranchPredicate",
     "BlockKind",
     "InsnKind",
     "OperandKind",
