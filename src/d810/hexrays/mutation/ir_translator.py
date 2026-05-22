@@ -133,6 +133,18 @@ def _branch_predicate_from_hexrays(opcode: int) -> BranchPredicate | None:
     return None
 
 
+def _compare_width_from_operands(*operands: object) -> int | None:
+    widths: list[int] = []
+    for operand in operands:
+        try:
+            width = int(getattr(operand, "size", 0) or 0)
+        except (TypeError, ValueError):
+            width = 0
+        if width > 0:
+            widths.append(width)
+    return max(widths) if widths else None
+
+
 def _insn_kind_from_hexrays(opcode: int) -> InsnKind:
     opcode = int(opcode)
     if opcode == int(ida_hexrays.m_nop):
@@ -241,18 +253,22 @@ def capture_insn_snapshot(insn: "ida_hexrays.minsn_t") -> InsnSnapshot:
     operands = tuple(operand for _, operand in operand_slots)
     branch_predicate = _branch_predicate_from_hexrays(opcode)
     insn_kind = _insn_kind_from_hexrays(opcode)
+    left = capture_mop_snapshot(insn.l)
+    right = capture_mop_snapshot(insn.r)
+    dest = capture_mop_snapshot(insn.d)
 
     return InsnSnapshot(
         opcode=opcode,
         ea=ea,
         operands=operands,
         operand_slots=operand_slots,
-        l=capture_mop_snapshot(insn.l),
-        r=capture_mop_snapshot(insn.r),
-        d=capture_mop_snapshot(insn.d),
+        l=left,
+        r=right,
+        d=dest,
         kind=insn_kind,
         raw_opcode=int(opcode),
         branch_predicate=branch_predicate,
+        compare_width=_compare_width_from_operands(left, right),
         is_conditional_jump=branch_predicate is not None,
         is_unconditional_jump=insn_kind is InsnKind.GOTO,
         is_call=insn_kind is InsnKind.CALL,

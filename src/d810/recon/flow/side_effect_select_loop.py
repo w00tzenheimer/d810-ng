@@ -8,6 +8,7 @@ from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnKind, OperandKind
 from d810.core import logging
 from d810.recon.flow.instruction_semantics import (
     branch_predicate,
+    comparison_width,
     evaluate_branch_predicate,
     is_branch,
     is_goto,
@@ -164,6 +165,7 @@ def _eval_branch(block: BlockSnapshot, env: Env) -> bool | None:
         branch_predicate(tail),
         left_value,
         right_value,
+        comparison_width(tail),
     )
 
 
