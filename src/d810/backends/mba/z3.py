@@ -345,6 +345,25 @@ class Z3VerificationVisitor:
             case "sar":
                 return left >> right  # Arithmetic shift right
 
+            # Part extraction operations
+            case "low":
+                target_width = expr.value or self.bit_width
+                high_bit = min(int(target_width) - 1, left.size() - 1)
+                extracted = typing.cast(z3.BitVecRef, z3.Extract(high_bit, 0, left))
+                if extracted.size() < self.bit_width:
+                    return z3.ZeroExt(self.bit_width - extracted.size(), extracted)
+                return extracted
+
+            case "high":
+                target_width = expr.value or self.bit_width
+                source_width = left.size()
+                low_bit = max(source_width - int(target_width), 0)
+                high_bit = source_width - 1
+                extracted = typing.cast(z3.BitVecRef, z3.Extract(high_bit, low_bit, left))
+                if extracted.size() < self.bit_width:
+                    return z3.ZeroExt(self.bit_width - extracted.size(), extracted)
+                return extracted
+
             # Extension operations
             case "zext":
                 # Zero-extend to target width

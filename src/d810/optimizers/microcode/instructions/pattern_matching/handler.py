@@ -538,6 +538,7 @@ class PatternOptimizer(InstructionOptimizer):
         # but mathematically equivalent input structures.
 
         new_ins = self._try_matches(
+            blk,
             ins,
             tmp,
             allowed_rule_names=allowed_rule_names,
@@ -551,6 +552,7 @@ class PatternOptimizer(InstructionOptimizer):
         resolved_ast = self._resolve_ast_with_tracker(blk, ins, tmp)
         if resolved_ast is not None and resolved_ast is not tmp:
             new_ins = self._try_matches(
+                blk,
                 ins,
                 resolved_ast,
                 allowed_rule_names=allowed_rule_names,
@@ -619,6 +621,7 @@ class PatternOptimizer(InstructionOptimizer):
 
     def _try_matches(
         self,
+        blk: ida_hexrays.mblock_t,
         ins: ida_hexrays.minsn_t,
         test_ast: AstBase,
         *,
@@ -645,6 +648,19 @@ class PatternOptimizer(InstructionOptimizer):
                     rule_pattern_info,
                 )
             try:
+                bind_match_context = getattr(
+                    rule_pattern_info.rule,
+                    "bind_match_context",
+                    None,
+                )
+                clear_match_context = getattr(
+                    rule_pattern_info.rule,
+                    "clear_match_context",
+                    None,
+                )
+                if bind_match_context is not None:
+                    bind_match_context(blk, ins)
+
                 # PR4: Non-mutating match path (when enabled and using indexed storage)
                 if self._use_nomut_matching and not self._use_legacy_storage:
                     # Non-mutating match: pattern stays frozen, bindings go to separate object
@@ -691,6 +707,9 @@ class PatternOptimizer(InstructionOptimizer):
                     e,
                     exc_info=True,
                 )
+            finally:
+                if clear_match_context is not None:
+                    clear_match_context()
         return None
 
 

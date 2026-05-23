@@ -885,6 +885,11 @@
       "config": {}
     },
     {
+      "name": "UnsignedMagicModulo3Rule",
+      "is_activated": true,
+      "config": {}
+    },
+    {
       "name": "Z3lnotRuleGeneric",
       "is_activated": true,
       "config": {}

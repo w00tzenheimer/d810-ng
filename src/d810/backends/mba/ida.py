@@ -211,12 +211,18 @@ class IDANodeVisitor:
         "add": "m_add",
         "sub": "m_sub",
         "mul": "m_mul",
+        "udiv": "m_udiv",
+        "sdiv": "m_sdiv",
+        "umod": "m_umod",
+        "smod": "m_smod",
         "and": "m_and",
         "or": "m_or",
         "xor": "m_xor",
         "shl": "m_shl",
         "shr": "m_shr",
         "sar": "m_sar",
+        "low": "m_low",
+        "high": "m_high",
         "bnot": "m_bnot",
         "neg": "m_neg",
         "lnot": "m_lnot",
@@ -490,8 +496,12 @@ class IDAPatternAdapter:
                 self._pattern_candidates_cache = []
                 return self._pattern_candidates_cache
 
-            # Generate all commutative permutations
-            permutations = _generate_commutative_permutations(pattern)
+            # Generate all commutative permutations unless the rule is
+            # width-sensitive and explicitly requests its canonical shape.
+            if getattr(self.rule, "GENERATE_COMMUTATIVE_PERMUTATIONS", True):
+                permutations = _generate_commutative_permutations(pattern)
+            else:
+                permutations = [pattern]
             logger.debug(
                 "Rule %s: Generated %d commutative permutations",
                 self.name, len(permutations)
@@ -688,11 +698,54 @@ class IDAPatternAdapter:
         Returns:
             A new minsn_t if the rule matched, None otherwise.
         """
-        valid_candidates = self.get_valid_candidates(instruction, stop_early=True)
-        if len(valid_candidates) == 0:
+        setattr(self.rule, "_current_blk", blk)
+        setattr(self.rule, "_current_ins", instruction)
+        try:
+            valid_candidates = self.get_valid_candidates(instruction, stop_early=True)
+            if len(valid_candidates) == 0:
+                return None
+            new_instruction = self.get_replacement(valid_candidates[0])
+            return new_instruction
+        finally:
+            setattr(self.rule, "_current_blk", None)
+            setattr(self.rule, "_current_ins", None)
+
+    def bind_match_context(self, blk, instruction) -> None:
+        """Expose the current live match site to runtime-checked MBA rules.
+
+        PatternOptimizer normally invokes rules through the pattern-storage
+        path, which only passes ASTs into ``check_pattern_and_replace``.  Some
+        backend-adapted MBA rules need the original instruction site for
+        conservative local constant evaluation.  Keep that context on the
+        adapter boundary so the pure rule model remains backend-agnostic.
+        """
+        setattr(self.rule, "_current_blk", blk)
+        setattr(self.rule, "_current_ins", instruction)
+        setattr(
+            self.rule,
+            "_runtime_constant_evaluator",
+            lambda mop, *, bits: self._eval_runtime_constant(mop, bits, blk, instruction),
+        )
+
+    def clear_match_context(self) -> None:
+        """Clear live match-site state after a pattern-storage rule attempt."""
+        setattr(self.rule, "_current_blk", None)
+        setattr(self.rule, "_current_ins", None)
+        setattr(self.rule, "_runtime_constant_evaluator", None)
+
+    @staticmethod
+    def _eval_runtime_constant(mop, bits: int, blk, instruction) -> int | None:
+        if hasattr(mop, "to_mop"):
+            try:
+                mop = mop.to_mop()
+            except Exception:
+                return None
+        try:
+            from d810.evaluator.hexrays_microcode.constant_eval import eval_mop
+
+            return eval_mop(mop, bits, blk=blk, ins=instruction)
+        except Exception:
             return None
-        new_instruction = self.get_replacement(valid_candidates[0])
-        return new_instruction
 
     def check_pattern_and_replace(self, candidate_pattern, test_ast) -> Optional[Any]:
         """Check if this rule matches a pattern and return a replacement.
