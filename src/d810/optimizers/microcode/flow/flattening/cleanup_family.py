@@ -58,10 +58,25 @@ from d810.optimizers.microcode.flow.flattening.strategies.fix_predecessor_branch
     extract_fix_predecessor_branch_arm_fixes,
     serialize_fix_predecessor_branch_arm_fixes,
 )
+from d810.optimizers.microcode.flow.flattening.strategies.guarded_state_machine import (
+    GuardedStateMachineStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.strategies.local_select_loop import (
+    LocalSelectLoopStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.strategies.side_effect_select_loop import (
+    SideEffectSelectLoopStrategy,
+)
+from d810.optimizers.microcode.flow.flattening.strategies.selector_shell import (
+    SelectorShellStrategy,
+)
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
+    SINGLE_ITERATION_CONVERTS_METADATA_KEY,
     SINGLE_ITERATION_FIXES_METADATA_KEY,
     SingleIterationStrategy,
+    extract_single_iteration_converts,
     extract_single_iteration_fixes,
+    serialize_single_iteration_converts,
     serialize_single_iteration_fixes,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.tail_goto_merge import (
@@ -71,10 +86,40 @@ from d810.optimizers.microcode.flow.flattening.strategies.tail_goto_merge import
     serialize_tail_goto_merge_candidates,
 )
 from d810.recon.flow.graph_reachability import compute_reachable_blocks
+from d810.recon.flow.guarded_state_machine import (
+    GUARDED_STATE_MACHINE_FIXES_METADATA_KEY,
+    extract_guarded_state_machine_fixes,
+    serialize_guarded_state_machine_fixes,
+)
+from d810.recon.flow.local_select_loop import (
+    LOCAL_SELECT_LOOP_FIXES_METADATA_KEY,
+    extract_local_select_loop_fixes,
+    serialize_local_select_loop_fixes,
+)
+from d810.recon.flow.selector_shell import (
+    SELECTOR_SHELL_FACTS_METADATA_KEY,
+    extract_selector_shell_facts,
+    serialize_selector_shell_facts,
+)
+from d810.recon.flow.side_effect_select_loop import (
+    SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY,
+    extract_side_effect_select_loop_fixes,
+    serialize_side_effect_select_loop_fixes,
+)
 
 family_logger = getLogger("D810.unflat.cleanup_family")
 
 CLEANUP_FAMILY_METADATA_KEY = "simple_flattening_cleanup"
+
+NORMALIZED_RECON_CFG_SCOPE = "normalized_recon_cfg_fact"
+ENGINE_CLEANUP_SCOPE = "engine_cleanup"
+
+_STRATEGY_SCOPES = {
+    "guarded_state_machine": NORMALIZED_RECON_CFG_SCOPE,
+    "local_select_loop": NORMALIZED_RECON_CFG_SCOPE,
+    "side_effect_select_loop": NORMALIZED_RECON_CFG_SCOPE,
+    "selector_shell": NORMALIZED_RECON_CFG_SCOPE,
+}
 
 __all__ = [
     "CLEANUP_FAMILY_METADATA_KEY",
@@ -92,6 +137,7 @@ class SimpleFlatteningCleanupMetadata:
 
     family_name: str
     strategy_names: tuple[str, ...]
+    strategy_scopes: tuple[tuple[str, str], ...]
     maturity: int
     func_ea: int
     collected_fake_jump_fixes: int
@@ -100,6 +146,8 @@ class SimpleFlatteningCleanupMetadata:
     selected_single_iteration_fixes: int
     planning_ready: bool
     collection_errors: tuple[str, ...] = ()
+    collected_single_iteration_converts: int = 0
+    selected_single_iteration_converts: int = 0
     collected_bad_while_loop_edits: int = 0
     selected_bad_while_loop_edits: int = 0
     deferred_bad_while_loop_edits: int = 0
@@ -118,6 +166,14 @@ class SimpleFlatteningCleanupMetadata:
     selected_fix_predecessor_branch_arm_fixes: int = 0
     collected_tail_goto_merges: int = 0
     selected_tail_goto_merges: int = 0
+    collected_guarded_state_machine_fixes: int = 0
+    selected_guarded_state_machine_fixes: int = 0
+    collected_local_select_loop_fixes: int = 0
+    selected_local_select_loop_fixes: int = 0
+    collected_side_effect_select_loop_fixes: int = 0
+    selected_side_effect_select_loop_fixes: int = 0
+    collected_selector_shell_facts: int = 0
+    selected_selector_shell_facts: int = 0
 
 
 class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
@@ -136,6 +192,10 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         self._strategies = [
             FakeJumpStrategy(),
             SingleIterationStrategy(),
+            GuardedStateMachineStrategy(),
+            LocalSelectLoopStrategy(),
+            SideEffectSelectLoopStrategy(),
+            SelectorShellStrategy(),
             BadWhileLoopStrategy(),
             FixPredecessorBranchArmStrategy(),
             TailGotoMergeStrategy(),
@@ -151,6 +211,15 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
 
     def strategies_for_maturity(self, maturity: int | None = None) -> list:
         return list(self._strategies)
+
+    def _strategy_scopes(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (
+                strategy.name,
+                _STRATEGY_SCOPES.get(strategy.name, ENGINE_CLEANUP_SCOPE),
+            )
+            for strategy in self._strategies
+        )
 
     def detect(self, mba: object) -> SimpleFlatteningCleanupDetection:
         detection = self._backend.collect(mba, logger=self._logger)
@@ -189,6 +258,10 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         if detection.single_iteration_fixes:
             metadata[SINGLE_ITERATION_FIXES_METADATA_KEY] = (
                 serialize_single_iteration_fixes(detection.single_iteration_fixes)
+            )
+        if detection.single_iteration_converts:
+            metadata[SINGLE_ITERATION_CONVERTS_METADATA_KEY] = (
+                serialize_single_iteration_converts(detection.single_iteration_converts)
             )
         if detection.bad_while_loop_edits:
             metadata[BAD_WHILE_LOOP_EDITS_METADATA_KEY] = (
@@ -232,6 +305,26 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             metadata[TAIL_GOTO_MERGE_METADATA_KEY] = (
                 serialize_tail_goto_merge_candidates(detection.tail_goto_merges)
             )
+        if detection.guarded_state_machine_fixes:
+            metadata[GUARDED_STATE_MACHINE_FIXES_METADATA_KEY] = (
+                serialize_guarded_state_machine_fixes(
+                    detection.guarded_state_machine_fixes
+                )
+            )
+        if detection.local_select_loop_fixes:
+            metadata[LOCAL_SELECT_LOOP_FIXES_METADATA_KEY] = (
+                serialize_local_select_loop_fixes(detection.local_select_loop_fixes)
+            )
+        if detection.side_effect_select_loop_fixes:
+            metadata[SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY] = (
+                serialize_side_effect_select_loop_fixes(
+                    detection.side_effect_select_loop_fixes
+                )
+            )
+        if detection.selector_shell_facts:
+            metadata[SELECTOR_SHELL_FACTS_METADATA_KEY] = (
+                serialize_selector_shell_facts(detection.selector_shell_facts)
+            )
 
         graph_with_candidates = FlowGraph(
             blocks=flow_graph.blocks,
@@ -241,6 +334,9 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         )
         selected_fake_jump_fixes = extract_fake_jump_fixes(graph_with_candidates)
         selected_single_iteration_fixes = extract_single_iteration_fixes(
+            graph_with_candidates
+        )
+        selected_single_iteration_converts = extract_single_iteration_converts(
             graph_with_candidates
         )
         selected_bad_while_loop_edits = extract_bad_while_loop_edits(
@@ -301,12 +397,27 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         selected_tail_goto_merges = extract_tail_goto_merge_candidates(
             graph_with_candidates
         )
+        selected_guarded_state_machine_fixes = (
+            extract_guarded_state_machine_fixes(graph_with_candidates)
+        )
+        selected_local_select_loop_fixes = extract_local_select_loop_fixes(
+            graph_with_candidates
+        )
+        selected_side_effect_select_loop_fixes = (
+            extract_side_effect_select_loop_fixes(graph_with_candidates)
+        )
+        selected_selector_shell_facts = extract_selector_shell_facts(
+            graph_with_candidates
+        )
 
         metadata[FAKE_JUMP_FIXES_METADATA_KEY] = serialize_fake_jump_fixes(
             selected_fake_jump_fixes
         )
         metadata[SINGLE_ITERATION_FIXES_METADATA_KEY] = (
             serialize_single_iteration_fixes(selected_single_iteration_fixes)
+        )
+        metadata[SINGLE_ITERATION_CONVERTS_METADATA_KEY] = (
+            serialize_single_iteration_converts(selected_single_iteration_converts)
         )
         metadata[BAD_WHILE_LOOP_EDITS_METADATA_KEY] = (
             serialize_bad_while_loop_edits(selected_bad_while_loop_edits)
@@ -344,24 +455,52 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         metadata[TAIL_GOTO_MERGE_METADATA_KEY] = (
             serialize_tail_goto_merge_candidates(selected_tail_goto_merges)
         )
+        metadata[GUARDED_STATE_MACHINE_FIXES_METADATA_KEY] = (
+            serialize_guarded_state_machine_fixes(
+                selected_guarded_state_machine_fixes
+            )
+        )
+        metadata[LOCAL_SELECT_LOOP_FIXES_METADATA_KEY] = (
+            serialize_local_select_loop_fixes(selected_local_select_loop_fixes)
+        )
+        metadata[SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY] = (
+            serialize_side_effect_select_loop_fixes(
+                selected_side_effect_select_loop_fixes
+            )
+        )
+        metadata[SELECTOR_SHELL_FACTS_METADATA_KEY] = (
+            serialize_selector_shell_facts(selected_selector_shell_facts)
+        )
         metadata[CLEANUP_FAMILY_METADATA_KEY] = SimpleFlatteningCleanupMetadata(
             family_name=self.name,
             strategy_names=tuple(strategy.name for strategy in self._strategies),
+            strategy_scopes=self._strategy_scopes(),
             maturity=detection.maturity,
             func_ea=detection.func_ea,
             collected_fake_jump_fixes=len(detection.fake_jump_fixes),
             selected_fake_jump_fixes=len(selected_fake_jump_fixes),
             collected_single_iteration_fixes=len(detection.single_iteration_fixes),
             selected_single_iteration_fixes=len(selected_single_iteration_fixes),
+            collected_single_iteration_converts=len(
+                detection.single_iteration_converts
+            ),
+            selected_single_iteration_converts=len(
+                selected_single_iteration_converts
+            ),
             planning_ready=bool(
                 selected_fake_jump_fixes
                 or selected_single_iteration_fixes
+                or selected_single_iteration_converts
                 or selected_bad_while_loop_edits
                 or selected_bad_while_loop_replay_candidates
                 or selected_bad_while_loop_duplicate_replay_candidates
                 or selected_bad_while_loop_trampoline_isolation_candidates
                 or selected_branch_arm_modifications
                 or selected_tail_goto_merges
+                or selected_guarded_state_machine_fixes
+                or selected_local_select_loop_fixes
+                or selected_side_effect_select_loop_fixes
+                or selected_selector_shell_facts
             ),
             collection_errors=detection.collection_errors,
             collected_bad_while_loop_edits=(
@@ -411,6 +550,24 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             ),
             collected_tail_goto_merges=len(detection.tail_goto_merges),
             selected_tail_goto_merges=len(selected_tail_goto_merges),
+            collected_guarded_state_machine_fixes=len(
+                detection.guarded_state_machine_fixes
+            ),
+            selected_guarded_state_machine_fixes=len(
+                selected_guarded_state_machine_fixes
+            ),
+            collected_local_select_loop_fixes=len(
+                detection.local_select_loop_fixes
+            ),
+            selected_local_select_loop_fixes=len(selected_local_select_loop_fixes),
+            collected_side_effect_select_loop_fixes=len(
+                detection.side_effect_select_loop_fixes
+            ),
+            selected_side_effect_select_loop_fixes=len(
+                selected_side_effect_select_loop_fixes
+            ),
+            collected_selector_shell_facts=len(detection.selector_shell_facts),
+            selected_selector_shell_facts=len(selected_selector_shell_facts),
         )
         return FlowGraph(
             blocks=flow_graph.blocks,

@@ -43,7 +43,24 @@ from d810.optimizers.microcode.flow.flattening.strategies.fix_predecessor_branch
     FixPredecessorBranchArmFix,
     collect_live_fix_predecessor_branch_arm_fixes,
 )
+from d810.recon.flow.guarded_state_machine import (
+    GuardedStateMachineFix,
+    collect_guarded_state_machine_fixes,
+)
+from d810.recon.flow.local_select_loop import (
+    LocalSelectLoopCandidate,
+    collect_local_select_loop_fixes,
+)
+from d810.recon.flow.side_effect_select_loop import (
+    SideEffectSelectLoopFix,
+    collect_side_effect_select_loop_fixes,
+)
+from d810.recon.flow.selector_shell import (
+    SelectorShellFact,
+    discover_selector_shell_facts,
+)
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
+    SingleIterationConvertFix,
     SingleIterationPredFix,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.tail_goto_merge import (
@@ -56,6 +73,7 @@ from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
 from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
     collect_live_fake_jump_block_fixes,
     collect_live_fake_jump_fixes,
+    collect_live_single_iteration_convert_fixes,
     collect_live_single_iteration_block_fixes,
     collect_live_single_iteration_fixes,
 )
@@ -71,6 +89,7 @@ __all__ = [
     "collect_live_fake_jump_block_fixes",
     "collect_live_fake_jump_fixes",
     "collect_live_single_iteration_block_fixes",
+    "collect_live_single_iteration_convert_fixes",
     "collect_live_single_iteration_fixes",
 ]
 
@@ -262,6 +281,7 @@ class SimpleFlatteningCleanupDetection:
 
     fake_jump_fixes: tuple[FakeJumpPredFix, ...] = ()
     single_iteration_fixes: tuple[SingleIterationPredFix, ...] = ()
+    single_iteration_converts: tuple[SingleIterationConvertFix, ...] = ()
     bad_while_loop_edits: tuple[BadWhileLoopEdit, ...] = ()
     bad_while_loop_replay_candidates: tuple[CleanupSideEffectReplayCandidate, ...] = ()
     bad_while_loop_duplicate_replay_candidates: tuple[
@@ -280,6 +300,10 @@ class SimpleFlatteningCleanupDetection:
     ] = ()
     fix_predecessor_branch_arm_fixes: tuple[FixPredecessorBranchArmFix, ...] = ()
     tail_goto_merges: tuple[TailGotoMergeCandidate, ...] = ()
+    guarded_state_machine_fixes: tuple[GuardedStateMachineFix, ...] = ()
+    local_select_loop_fixes: tuple[LocalSelectLoopCandidate, ...] = ()
+    side_effect_select_loop_fixes: tuple[SideEffectSelectLoopFix, ...] = ()
+    selector_shell_facts: tuple[SelectorShellFact, ...] = ()
     collection_errors: tuple[str, ...] = ()
     maturity: int = 0
     func_ea: int = 0
@@ -289,12 +313,17 @@ class SimpleFlatteningCleanupDetection:
         return bool(
             self.fake_jump_fixes
             or self.single_iteration_fixes
+            or self.single_iteration_converts
             or self.bad_while_loop_edits
             or self.bad_while_loop_replay_candidates
             or self.bad_while_loop_duplicate_replay_candidates
             or self.bad_while_loop_trampoline_isolation_candidates
             or self.fix_predecessor_branch_arm_fixes
             or self.tail_goto_merges
+            or self.guarded_state_machine_fixes
+            or self.local_select_loop_fixes
+            or self.side_effect_select_loop_fixes
+            or self.selector_shell_facts
         )
 
     @property
@@ -327,6 +356,7 @@ class SimpleFlatteningCleanupDetection:
             "simple cleanup candidates detected: "
             f"fake_jump={len(self.fake_jump_fixes)} "
             f"single_iteration={len(self.single_iteration_fixes)} "
+            f"single_iteration_convert={len(self.single_iteration_converts)} "
             f"bad_while_loop={len(self.bad_while_loop_edits)} "
             f"bad_while_loop_replay={len(self.bad_while_loop_replay_candidates)}"
             f" bad_while_loop_duplicate_replay="
@@ -338,6 +368,10 @@ class SimpleFlatteningCleanupDetection:
             f" fix_predecessor_branch_arm="
             f"{len(self.fix_predecessor_branch_arm_fixes)}"
             f" tail_goto_merge={len(self.tail_goto_merges)}"
+            f" guarded_state_machine={len(self.guarded_state_machine_fixes)}"
+            f" local_select_loop={len(self.local_select_loop_fixes)}"
+            f" side_effect_select_loop={len(self.side_effect_select_loop_fixes)}"
+            f" selector_shell={len(self.selector_shell_facts)}"
         )
 
 
@@ -361,11 +395,25 @@ class LiveSimpleFlatteningCleanupBackend:
         *,
         fake_jump_max_nb_block: int = 100,
         fake_jump_max_path: int = 100,
+        fake_jump_allowed_maturities: tuple[int, ...] = (
+            ida_hexrays.MMAT_GLBOPT1,
+            ida_hexrays.MMAT_GLBOPT2,
+        ),
         allowed_maturities: tuple[int, ...] = (ida_hexrays.MMAT_GLBOPT1,),
+        guarded_state_machine_maturities: tuple[int, ...] = (
+            ida_hexrays.MMAT_GLBOPT1,
+            ida_hexrays.MMAT_GLBOPT2,
+        ),
     ) -> None:
         self.fake_jump_max_nb_block = int(fake_jump_max_nb_block)
         self.fake_jump_max_path = int(fake_jump_max_path)
+        self.fake_jump_allowed_maturities = tuple(
+            int(maturity) for maturity in fake_jump_allowed_maturities
+        )
         self.allowed_maturities = tuple(int(maturity) for maturity in allowed_maturities)
+        self.guarded_state_machine_maturities = tuple(
+            int(maturity) for maturity in guarded_state_machine_maturities
+        )
 
     def collect(
         self,
@@ -384,7 +432,7 @@ class LiveSimpleFlatteningCleanupBackend:
                 logger=logger,
                 max_nb_block=self.fake_jump_max_nb_block,
                 max_path=self.fake_jump_max_path,
-                allowed_maturities=self.allowed_maturities,
+                allowed_maturities=self.fake_jump_allowed_maturities,
             )
         except Exception as exc:
             errors.append(f"fake_jump:{type(exc).__name__}")
@@ -395,10 +443,18 @@ class LiveSimpleFlatteningCleanupBackend:
                 )
 
         single_iteration_fixes: tuple[SingleIterationPredFix, ...] = ()
+        single_iteration_converts: tuple[SingleIterationConvertFix, ...] = ()
         try:
             single_iteration_fixes = collect_live_single_iteration_fixes(
                 mba,
                 logger=logger,
+                allowed_maturities=self.allowed_maturities,
+            )
+            single_iteration_converts = collect_live_single_iteration_convert_fixes(
+                mba,
+                logger=logger,
+                max_nb_block=self.fake_jump_max_nb_block,
+                max_path=self.fake_jump_max_path,
                 allowed_maturities=self.allowed_maturities,
             )
         except Exception as exc:
@@ -640,9 +696,76 @@ class LiveSimpleFlatteningCleanupBackend:
                     exc_info=True,
                 )
 
+        guarded_state_machine_fixes: tuple[GuardedStateMachineFix, ...] = ()
+        local_select_loop_fixes: tuple[LocalSelectLoopCandidate, ...] = ()
+        side_effect_select_loop_fixes: tuple[SideEffectSelectLoopFix, ...] = ()
+        selector_shell_facts: tuple[SelectorShellFact, ...] = ()
+        if maturity in self.guarded_state_machine_maturities:
+            cleanup_graph: FlowGraph | None = None
+            try:
+                cleanup_graph = IDAIRTranslator().lift(mba)
+            except Exception as exc:
+                errors.append(f"normalized_cleanup_graph:{type(exc).__name__}")
+                if logger is not None:
+                    logger.debug(
+                        "Failed to lift normalized cleanup FlowGraph",
+                        exc_info=True,
+                    )
+
+            if cleanup_graph is not None:
+                try:
+                    guarded_state_machine_fixes = (
+                        collect_guarded_state_machine_fixes(cleanup_graph)
+                    )
+                except Exception as exc:
+                    errors.append(f"guarded_state_machine:{type(exc).__name__}")
+                    if logger is not None:
+                        logger.debug(
+                            "Failed to collect guarded state-machine cleanup candidates",
+                            exc_info=True,
+                        )
+
+            if cleanup_graph is not None:
+                try:
+                    local_select_loop_fixes = collect_local_select_loop_fixes(
+                        cleanup_graph
+                    )
+                except Exception as exc:
+                    errors.append(f"local_select_loop:{type(exc).__name__}")
+                    if logger is not None:
+                        logger.debug(
+                            "Failed to collect local select-loop cleanup candidates",
+                            exc_info=True,
+                        )
+
+            if cleanup_graph is not None:
+                try:
+                    side_effect_select_loop_fixes = (
+                        collect_side_effect_select_loop_fixes(cleanup_graph)
+                    )
+                except Exception as exc:
+                    errors.append(f"side_effect_select_loop:{type(exc).__name__}")
+                    if logger is not None:
+                        logger.debug(
+                            "Failed to collect side-effect select-loop cleanup candidates",
+                            exc_info=True,
+                        )
+
+            if cleanup_graph is not None:
+                try:
+                    selector_shell_facts = discover_selector_shell_facts(cleanup_graph)
+                except Exception as exc:
+                    errors.append(f"selector_shell:{type(exc).__name__}")
+                    if logger is not None:
+                        logger.debug(
+                            "Failed to collect selector-shell cleanup candidates",
+                            exc_info=True,
+                        )
+
         return SimpleFlatteningCleanupDetection(
             fake_jump_fixes=tuple(fake_jump_fixes),
             single_iteration_fixes=tuple(single_iteration_fixes),
+            single_iteration_converts=tuple(single_iteration_converts),
             bad_while_loop_edits=tuple(bad_while_loop_edits),
             bad_while_loop_replay_candidates=tuple(
                 bad_while_loop_replay_candidates
@@ -665,6 +788,10 @@ class LiveSimpleFlatteningCleanupBackend:
                 fix_predecessor_branch_arm_fixes
             ),
             tail_goto_merges=tuple(tail_goto_merges),
+            guarded_state_machine_fixes=tuple(guarded_state_machine_fixes),
+            local_select_loop_fixes=tuple(local_select_loop_fixes),
+            side_effect_select_loop_fixes=tuple(side_effect_select_loop_fixes),
+            selector_shell_facts=tuple(selector_shell_facts),
             collection_errors=tuple(errors),
             maturity=maturity,
             func_ea=func_ea,

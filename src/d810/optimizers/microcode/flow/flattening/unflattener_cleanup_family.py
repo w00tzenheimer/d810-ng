@@ -42,7 +42,10 @@ class SimpleFlatteningCleanupUnflattener(ComposedUnflatteningRule):
         "Shared engine adapter for non-Hodur simple flattening cleanup"
     )
     HAS_OWN_DISPATCHER_COLLECTOR = True
-    DEFAULT_UNFLATTENING_MATURITIES = [ida_hexrays.MMAT_GLBOPT1]
+    DEFAULT_UNFLATTENING_MATURITIES = [
+        ida_hexrays.MMAT_GLBOPT1,
+        ida_hexrays.MMAT_GLBOPT2,
+    ]
     DEFAULT_MAX_PASSES = 3
     HARD_MAX_PASSES = 10
 

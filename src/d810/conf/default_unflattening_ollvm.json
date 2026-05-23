@@ -2,6 +2,16 @@
   "description": "Unflattening O-LLVM with control flow flattening",
   "ins_rules": [
     {
+      "name": "FoldReadonlyDataRule",
+      "is_activated": true,
+      "config": {}
+    },
+    {
+      "name": "ConstantSubtreeFoldRule",
+      "is_activated": true,
+      "config": {}
+    },
+    {
       "name": "AddXor_Rule_1",
       "is_activated": true,
       "config": {}
@@ -897,6 +907,11 @@
   ],
   "blk_rules": [
     {
+      "name": "IndirectCallResolver",
+      "is_activated": true,
+      "config": {}
+    },
+    {
       "name": "MbaStatePreconditioner",
       "is_activated": true,
       "config": {
@@ -943,6 +958,11 @@
           "JnzRule6",
           "JnzRule7",
           "JnzRule8",
+          "JnzRuleModIdentity",
+          "JnzRuleSmodSubIdentity",
+          "JnzRuleUmodAddIdentity",
+          "JnzRuleUmodSubIdentity",
+          "JmpRuleReachingConst",
           "JmpRuleZ3Const"
         ]
       }

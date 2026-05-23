@@ -311,6 +311,10 @@ def test_simple_cleanup_family_registers_cleanup_strategies() -> None:
     assert [strategy.name for strategy in family.strategies] == [
         "fake_jump",
         "single_iteration",
+        "guarded_state_machine",
+        "local_select_loop",
+        "side_effect_select_loop",
+        "selector_shell",
         "bad_while_loop",
         "fix_predecessor_branch_arm",
         "tail_goto_merge",
@@ -439,8 +443,90 @@ def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
     assert calls["fake_jump"][0] is mba
     assert calls["fake_jump"][1]["max_nb_block"] == 100
     assert calls["fake_jump"][1]["max_path"] == 100
+    assert calls["fake_jump"][1]["allowed_maturities"] == (
+        ida_hexrays.MMAT_GLBOPT1,
+        ida_hexrays.MMAT_GLBOPT2,
+    )
     assert calls["single_iteration"][0] is mba
+    assert calls["single_iteration"][1]["allowed_maturities"] == (
+        ida_hexrays.MMAT_GLBOPT1,
+    )
     assert calls["bad_while_loop"][0] is mba
+
+
+def test_live_cleanup_backend_isolates_normalized_collector_errors(
+    monkeypatch,
+) -> None:
+    local_marker = object()
+    side_effect_marker = object()
+    selector_marker = object()
+
+    def _collect_empty(*_args, **_kwargs):
+        return ()
+
+    def _raise_guarded(_cfg):
+        raise RuntimeError("guarded collector failure")
+
+    monkeypatch.setattr(backend_module, "collect_live_fake_jump_fixes", _collect_empty)
+    monkeypatch.setattr(
+        backend_module,
+        "collect_live_single_iteration_fixes",
+        _collect_empty,
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "collect_live_single_iteration_convert_fixes",
+        _collect_empty,
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "collect_live_bad_while_loop_analysis",
+        lambda *_args, **_kwargs: BadWhileLoopAnalysis(edits=(), follow_up=()),
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "collect_live_fix_predecessor_branch_arm_fixes",
+        _collect_empty,
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "collect_tail_goto_merge_candidates",
+        lambda _cfg: (),
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "IDAIRTranslator",
+        lambda: _FakeTranslator(_cleanup_flow_graph()),
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "collect_guarded_state_machine_fixes",
+        _raise_guarded,
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "collect_local_select_loop_fixes",
+        lambda _cfg: (local_marker,),
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "collect_side_effect_select_loop_fixes",
+        lambda _cfg: (side_effect_marker,),
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "discover_selector_shell_facts",
+        lambda _cfg: (selector_marker,),
+    )
+
+    detection = LiveSimpleFlatteningCleanupBackend().collect(_fake_mba(), logger=None)
+
+    assert detection.guarded_state_machine_fixes == ()
+    assert detection.local_select_loop_fixes == (local_marker,)
+    assert detection.side_effect_select_loop_fixes == (side_effect_marker,)
+    assert detection.selector_shell_facts == (selector_marker,)
+    assert detection.collection_errors == ("guarded_state_machine:RuntimeError",)
+
 
 def test_live_cleanup_backend_promotes_safe_conditional_cleanup_edits(
     monkeypatch,
@@ -1004,10 +1090,25 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
     assert metadata.strategy_names == (
         "fake_jump",
         "single_iteration",
+        "guarded_state_machine",
+        "local_select_loop",
+        "side_effect_select_loop",
+        "selector_shell",
         "bad_while_loop",
         "fix_predecessor_branch_arm",
         "tail_goto_merge",
     )
+    assert dict(metadata.strategy_scopes) == {
+        "fake_jump": "engine_cleanup",
+        "single_iteration": "engine_cleanup",
+        "guarded_state_machine": "normalized_recon_cfg_fact",
+        "local_select_loop": "normalized_recon_cfg_fact",
+        "side_effect_select_loop": "normalized_recon_cfg_fact",
+        "selector_shell": "normalized_recon_cfg_fact",
+        "bad_while_loop": "engine_cleanup",
+        "fix_predecessor_branch_arm": "engine_cleanup",
+        "tail_goto_merge": "engine_cleanup",
+    }
     assert metadata.collected_fake_jump_fixes == 1
     assert metadata.selected_fake_jump_fixes == 1
     assert metadata.collected_single_iteration_fixes == 2
@@ -1018,6 +1119,10 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
     assert metadata.bad_while_loop_follow_up == 1
     assert metadata.collected_tail_goto_merges == 1
     assert metadata.selected_tail_goto_merges == 1
+    assert metadata.collected_guarded_state_machine_fixes == 0
+    assert metadata.selected_guarded_state_machine_fixes == 0
+    assert metadata.collected_local_select_loop_fixes == 0
+    assert metadata.selected_local_select_loop_fixes == 0
     assert metadata.planning_ready is True
 
     fragment = BadWhileLoopStrategy().plan(snapshot)
@@ -1462,6 +1567,11 @@ def test_cleanup_unflattener_uses_shared_runtime(monkeypatch) -> None:
     metadata = SimpleFlatteningCleanupMetadata(
         family_name="simple_flattening_cleanup",
         strategy_names=("fake_jump", "single_iteration", "bad_while_loop"),
+        strategy_scopes=(
+            ("fake_jump", "engine_cleanup"),
+            ("single_iteration", "engine_cleanup"),
+            ("bad_while_loop", "engine_cleanup"),
+        ),
         maturity=ida_hexrays.MMAT_GLBOPT1,
         func_ea=0x401000,
         collected_fake_jump_fixes=1,
