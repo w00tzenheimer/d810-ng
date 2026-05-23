@@ -578,6 +578,8 @@ class MicroCodeInterpreter(object):
             return self._eval_call(ins, environment)
         elif ins.opcode == ida_hexrays.m_icall:
             return self._eval_call(ins, environment)
+        elif ins.opcode == ida_hexrays.m_nop:
+            return None
         res_mask = AND_TABLE[ins.d.size]
         if ins.opcode == ida_hexrays.m_ldx:
             return self._eval_load(ins, environment)
