@@ -891,6 +891,13 @@
       }
     },
     {
+      "name": "Bnot_FactorRule_5",
+      "is_activated": true,
+      "config": {
+        "dump_intermediate_microcode": false
+      }
+    },
+    {
       "name": "BnotXor_Rule_1",
       "is_activated": true,
       "config": {

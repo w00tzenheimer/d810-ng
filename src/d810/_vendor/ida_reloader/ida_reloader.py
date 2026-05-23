@@ -532,6 +532,7 @@ class Scanner:
         prefix: str,
         callback=None,
         skip_packages: bool = False,
+        skip_prefixes: Sequence[str] = (),
     ):
         if isinstance(package_path, pathlib.Path):
             package_path = str(package_path)
@@ -540,6 +541,9 @@ class Scanner:
             print(f"Warning: failed to import package {name}", file=sys.stderr)
 
         for mod_info in pkgutil.walk_packages(package_path, prefix=prefix, onerror=_on_walk_error):
+            if any(mod_info.name.startswith(skip_prefix) for skip_prefix in skip_prefixes):
+                continue
+
             if skip_packages and mod_info.ispkg:
                 continue
 
@@ -600,6 +604,7 @@ def _reload_package_with_graph(
         base_package + ".",
         callback=update_deps,
         skip_packages=False,
+        skip_prefixes=skip_prefixes,
     )
 
     # Get topological order, skipping specified prefixes
