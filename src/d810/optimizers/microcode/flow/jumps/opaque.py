@@ -101,6 +101,16 @@ def _constant_jump_taken(opcode: int, left_mop, right_mop) -> bool | None:
     size = max(getattr(left_mop, "size", 0), getattr(right_mop, "size", 0))
     if size <= 0:
         size = 8
+    return _constant_jump_taken_values(opcode, left_val, right_val, size)
+
+
+def _constant_jump_taken_values(
+    opcode: int,
+    left_val: int,
+    right_val: int,
+    size: int,
+) -> bool | None:
+    """Return jump-taken decision for already-resolved constant operands."""
     mask = (1 << (size * 8)) - 1
     left_u = left_val & mask
     right_u = right_val & mask
@@ -130,6 +140,195 @@ def _constant_jump_taken(opcode: int, left_mop, right_mop) -> bool | None:
         return left_s <= right_s
 
     return None
+
+
+def _mop_number_value(mop) -> int | None:
+    if mop is None or getattr(mop, "t", None) != ida_hexrays.mop_n:
+        return None
+    nnn = getattr(mop, "nnn", None)
+    value = getattr(nnn, "value", None) if nnn is not None else None
+    return None if value is None else int(value)
+
+
+def _mop_value_key(mop) -> tuple[str, int, int] | None:
+    if mop is None:
+        return None
+    size = int(getattr(mop, "size", 0) or 0)
+    t = getattr(mop, "t", None)
+    if t == ida_hexrays.mop_r:
+        value = getattr(mop, "r", None)
+        return None if value is None else ("r", int(value), size)
+    if t == ida_hexrays.mop_l:
+        lref = getattr(mop, "l", None)
+        idx = getattr(lref, "idx", None) if lref is not None else None
+        return None if idx is None else ("l", int(idx), size)
+    if t == ida_hexrays.mop_S:
+        sref = getattr(mop, "s", None)
+        off = (
+            getattr(sref, "off", None)
+            if sref is not None
+            else getattr(mop, "stkoff", None)
+        )
+        return None if off is None else ("S", int(off), size)
+    return None
+
+
+def _clear_value_key_aliases(
+    env: dict[tuple[str, int, int], int],
+    key: tuple[str, int, int],
+) -> None:
+    kind, value, _size = key
+    for candidate in tuple(env):
+        if candidate[0] == kind and candidate[1] == value:
+            env.pop(candidate, None)
+
+
+def _iter_pre_tail_insns(blk, stop_insn=None):
+    insn = getattr(blk, "head", None)
+    seen = 0
+    while insn is not None and seen < 512:
+        if stop_insn is not None and insn is stop_insn:
+            break
+        yield insn
+        seen += 1
+        insn = getattr(insn, "next", None)
+
+
+def _block_successors(blk) -> tuple[int, ...]:
+    try:
+        return tuple(int(blk.succ(idx)) for idx in range(int(blk.nsucc())))
+    except Exception:
+        return tuple(int(value) for value in getattr(blk, "succs", ()) or ())
+
+
+def _block_predecessors(blk) -> tuple[int, ...]:
+    try:
+        return tuple(int(blk.pred(idx)) for idx in range(int(blk.npred())))
+    except Exception:
+        return tuple(int(value) for value in getattr(blk, "preds", ()) or ())
+
+
+def _resolve_entry_constant(
+    blk,
+    key: tuple[str, int, int],
+    *,
+    depth: int,
+    max_depth: int,
+    seen: frozenset[int],
+) -> int | None:
+    if depth >= max_depth:
+        return None
+    preds = _block_predecessors(blk)
+    if len(preds) != 1:
+        return None
+    pred_serial = preds[0]
+    if pred_serial in seen:
+        return None
+    mba = getattr(blk, "mba", None)
+    if mba is None:
+        return None
+    pred_blk = mba.get_mblock(pred_serial)
+    if pred_blk is None:
+        return None
+    if int(getattr(blk, "serial", -1)) not in _block_successors(pred_blk):
+        return None
+    if len(_block_successors(pred_blk)) != 1:
+        return None
+    return _resolve_reaching_constant_for_key(
+        pred_blk,
+        key,
+        stop_insn=None,
+        depth=depth + 1,
+        max_depth=max_depth,
+        seen=seen | {int(getattr(blk, "serial", -1))},
+    )
+
+
+def _resolve_source_constant(
+    blk,
+    env: dict[tuple[str, int, int], int],
+    mop,
+    *,
+    depth: int,
+    max_depth: int,
+    seen: frozenset[int],
+) -> int | None:
+    number = _mop_number_value(mop)
+    if number is not None:
+        return number
+    key = _mop_value_key(mop)
+    if key is None:
+        return None
+    if key in env:
+        return env[key]
+    return _resolve_entry_constant(
+        blk,
+        key,
+        depth=depth,
+        max_depth=max_depth,
+        seen=seen,
+    )
+
+
+def _resolve_reaching_constant_for_key(
+    blk,
+    key: tuple[str, int, int],
+    *,
+    stop_insn=None,
+    depth: int = 0,
+    max_depth: int = 4,
+    seen: frozenset[int] = frozenset(),
+) -> int | None:
+    env: dict[tuple[str, int, int], int] = {}
+    for insn in _iter_pre_tail_insns(blk, stop_insn):
+        dest_key = _mop_value_key(getattr(insn, "d", None))
+        if dest_key is None:
+            continue
+        opcode = getattr(insn, "opcode", None)
+        if opcode not in (ida_hexrays.m_mov, ida_hexrays.m_xdu):
+            _clear_value_key_aliases(env, dest_key)
+            continue
+        value = _resolve_source_constant(
+            blk,
+            env,
+            getattr(insn, "l", None),
+            depth=depth,
+            max_depth=max_depth,
+            seen=seen,
+        )
+        if value is None:
+            _clear_value_key_aliases(env, dest_key)
+            continue
+        size = dest_key[2]
+        if size > 0:
+            value &= (1 << (size * 8)) - 1
+        _clear_value_key_aliases(env, dest_key)
+        env[dest_key] = int(value)
+
+    if key in env:
+        return env[key]
+    return _resolve_entry_constant(
+        blk,
+        key,
+        depth=depth,
+        max_depth=max_depth,
+        seen=seen,
+    )
+
+
+def _resolve_reaching_constant_for_mop(blk, mop, *, stop_insn=None) -> int | None:
+    number = _mop_number_value(mop)
+    if number is not None:
+        return number
+    key = _mop_value_key(mop)
+    if key is None:
+        return None
+    return _resolve_reaching_constant_for_key(
+        blk,
+        key,
+        stop_insn=stop_insn,
+        seen=frozenset({int(getattr(blk, "serial", -1))}),
+    )
 
 
 class JnzRule1(JumpOptimizationRule):
@@ -290,15 +489,31 @@ class JaeRule1(JumpOptimizationRule):
         return True
 
 
-class JnzRuleModIdentity(JumpOptimizationRule):
+class _JnzModuloEvenIdentityRule(JumpOptimizationRule):
+    """Base for adjacent-product modulo predicates that are always equal to 0."""
+
+    ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jnz, ida_hexrays.m_jz]
+    RIGHT_PATTERN = AstConstant("0", 0)
+    REPLACEMENT_OPCODE = ida_hexrays.m_goto
+
+    def check_candidate(self, opcode, left_candidate, right_candidate):
+        # x*(x+1) % 2 == 0 and x*(x-1) % 2 == 0 are always true because one
+        # adjacent factor is even. The matched condition is therefore equality
+        # against zero.
+        if opcode == ida_hexrays.m_jnz:
+            self.jump_replacement_block_serial = self.direct_block_serial
+        else:
+            self.jump_replacement_block_serial = self.jump_original_block_serial
+        return True
+
+
+class JnzRuleModIdentity(_JnzModuloEvenIdentityRule):
     """Opaque predicate for x*(x+1)%2 == 0 (always true).
 
     This mathematical identity holds because either x or (x+1) is even,
     so their product is always divisible by 2. The modulo 2 always yields 0.
-    Pattern currently matches the signed-mod variant (smod).
-    The umod form can be added as a sibling rule if it appears in samples.
+    This rule handles the signed-mod x+1 variant.
     """
-    ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jnz, ida_hexrays.m_jz]
     # Pattern: smod(mul(X, add(X, 1)), 2) == 0
     # AstChoice was removed from the AST API; this keeps the opaque identity
     # optimization active without relying on a non-existent node type.
@@ -311,19 +526,108 @@ class JnzRuleModIdentity(JumpOptimizationRule):
         ),
         AstConstant("2", 2)
     )
-    RIGHT_PATTERN = AstConstant("0", 0)
+
+
+class JnzRuleSmodSubIdentity(_JnzModuloEvenIdentityRule):
+    """Opaque predicate for x*(x-1)%2 == 0 using signed modulo."""
+
+    LEFT_PATTERN = AstNode(
+        ida_hexrays.m_smod,
+        AstNode(
+            ida_hexrays.m_mul,
+            AstLeaf("x_0"),
+            AstNode(ida_hexrays.m_sub, AstLeaf("x_0"), AstConstant("1", 1))
+        ),
+        AstConstant("2", 2)
+    )
+
+
+class JnzRuleUmodAddIdentity(_JnzModuloEvenIdentityRule):
+    """Opaque predicate for x*(x+1)%2 == 0 using unsigned modulo."""
+
+    LEFT_PATTERN = AstNode(
+        ida_hexrays.m_umod,
+        AstNode(
+            ida_hexrays.m_mul,
+            AstLeaf("x_0"),
+            AstNode(ida_hexrays.m_add, AstLeaf("x_0"), AstConstant("1", 1))
+        ),
+        AstConstant("2", 2)
+    )
+
+
+class JnzRuleUmodSubIdentity(_JnzModuloEvenIdentityRule):
+    """Opaque predicate for x*(x-1)%2 == 0 using unsigned modulo."""
+
+    LEFT_PATTERN = AstNode(
+        ida_hexrays.m_umod,
+        AstNode(
+            ida_hexrays.m_mul,
+            AstLeaf("x_0"),
+            AstNode(ida_hexrays.m_sub, AstLeaf("x_0"), AstConstant("1", 1))
+        ),
+        AstConstant("2", 2)
+    )
+
+
+class JmpRuleReachingConst(JumpOptimizationRule):
+    """Fold conditional jumps whose operands are constants on the incoming path."""
+
+    ORIGINAL_JUMP_OPCODES = list(
+        dict.fromkeys(op for pair in COND_JUMP_PAIR_ENUM for op in pair)
+    )
+    LEFT_PATTERN = AstLeaf("x_0")
+    RIGHT_PATTERN = AstLeaf("x_1")
     REPLACEMENT_OPCODE = ida_hexrays.m_goto
 
-    def check_candidate(self, opcode, left_candidate, right_candidate):
-        # x*(x+1) % 2 == 0 is ALWAYS true (left operand always equals right operand 0).
-        # Condition: left == right is TRUE
-        # - m_jnz (jump if NOT equal): condition FALSE -> jump NOT taken -> fallthrough (direct_block_serial)
-        # - m_jz (jump if equal): condition TRUE -> jump taken -> go to jump_original_block_serial
-        if opcode == ida_hexrays.m_jnz:
-            self.jump_replacement_block_serial = self.direct_block_serial
-        else:
-            self.jump_replacement_block_serial = self.jump_original_block_serial
-        return True
+    def _make_goto_ins(self, instruction, target_serial: int):
+        new_ins = ida_hexrays.minsn_t(instruction)
+        new_ins.opcode = ida_hexrays.m_goto
+        new_ins.l.erase()
+        new_ins.r.erase()
+        new_ins.d = ida_hexrays.mop_t()
+        new_ins.d.make_blkref(target_serial)
+        return new_ins
+
+    def check_pattern_and_replace(self, blk, instruction, left_ast, right_ast):
+        if instruction.opcode not in self.ORIGINAL_JUMP_OPCODES:
+            return None
+        if instruction.d is None or instruction.d.t != ida_hexrays.mop_b:
+            return None
+        if blk.nextb is None:
+            return None
+
+        left_val = _resolve_reaching_constant_for_mop(
+            blk,
+            instruction.l,
+            stop_insn=instruction,
+        )
+        if left_val is None:
+            return None
+        right_val = _resolve_reaching_constant_for_mop(
+            blk,
+            instruction.r,
+            stop_insn=instruction,
+        )
+        if right_val is None:
+            return None
+
+        size = max(
+            int(getattr(instruction.l, "size", 0) or 0),
+            int(getattr(instruction.r, "size", 0) or 0),
+            1,
+        )
+        jump_taken = _constant_jump_taken_values(
+            instruction.opcode,
+            left_val,
+            right_val,
+            size,
+        )
+        if jump_taken is None:
+            return None
+
+        target_serial = int(instruction.d.b) if jump_taken else int(blk.nextb.serial)
+        return self._make_goto_ins(instruction, target_serial)
 
 
 class JmpRuleZ3Const(JumpOptimizationRule):

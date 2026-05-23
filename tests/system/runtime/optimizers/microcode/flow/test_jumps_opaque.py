@@ -10,6 +10,74 @@ from d810.backends.ast.z3 import Z3MopProver
 from d810.optimizers.microcode.flow.jumps import opaque
 
 
+def _num(value: int, size: int = 4):
+    return SimpleNamespace(
+        t=ida_hexrays.mop_n,
+        nnn=SimpleNamespace(value=value),
+        size=size,
+    )
+
+
+def _reg(register: int, size: int = 4):
+    return SimpleNamespace(t=ida_hexrays.mop_r, r=register, size=size)
+
+
+def _blkref(serial: int):
+    return SimpleNamespace(t=ida_hexrays.mop_b, b=serial)
+
+
+def _insn(opcode: int, *, left=None, right=None, dest=None):
+    return SimpleNamespace(opcode=opcode, l=left, r=right, d=dest, next=None)
+
+
+class _FakeMba:
+    def __init__(self):
+        self._blocks = {}
+
+    def add(self, block):
+        self._blocks[int(block.serial)] = block
+        block.mba = self
+        return block
+
+    def get_mblock(self, serial: int):
+        return self._blocks.get(int(serial))
+
+
+class _FakeBlock:
+    def __init__(
+        self,
+        serial: int,
+        *,
+        head=None,
+        preds=(),
+        succs=(),
+        next_serial: int | None = None,
+    ):
+        self.serial = int(serial)
+        self.head = head
+        self.tail = head
+        self.preds = tuple(int(pred) for pred in preds)
+        self.succs = tuple(int(succ) for succ in succs)
+        self.nextb = (
+            None
+            if next_serial is None
+            else SimpleNamespace(serial=int(next_serial))
+        )
+        self.mba = None
+
+    def npred(self) -> int:
+        return len(self.preds)
+
+    def pred(self, idx: int) -> int:
+        return self.preds[idx]
+
+    def nsucc(self) -> int:
+        return len(self.succs)
+
+    def succ(self, idx: int) -> int:
+        return self.succs[idx]
+
+
 class _ConstAst:
     def __init__(self, value: int):
         self._value = value
@@ -150,3 +218,79 @@ def test_jmp_rule_z3_const_skips_jcnd_when_not_constant(monkeypatch):
         d=SimpleNamespace(t=ida_hexrays.mop_b, b=17),
     )
     assert rule.check_pattern_and_replace(blk, ins, None, None) is None
+
+
+def test_jmp_rule_reaching_const_folds_predecessor_mov_to_fallthrough(monkeypatch):
+    rule = opaque.JmpRuleReachingConst()
+    monkeypatch.setattr(rule, "_make_goto_ins", lambda _ins, target: ("goto", target))
+
+    pred_mov = _insn(ida_hexrays.m_mov, left=_num(0xBAD3ACF7), dest=_reg(8))
+    pred = _FakeBlock(19, head=pred_mov, succs=(20,))
+
+    copy = _insn(ida_hexrays.m_mov, left=_reg(8), dest=_reg(2))
+    tail = _insn(
+        ida_hexrays.m_jz,
+        left=_reg(2),
+        right=_num(0xE739ACEB),
+        dest=_blkref(20),
+    )
+    copy.next = tail
+    blk = _FakeBlock(20, head=copy, preds=(19,), succs=(21, 20), next_serial=21)
+
+    mba = _FakeMba()
+    mba.add(pred)
+    mba.add(blk)
+
+    assert rule.check_pattern_and_replace(blk, tail, None, None) == ("goto", 21)
+
+
+def test_jmp_rule_reaching_const_uses_signed_relation_for_jle(monkeypatch):
+    rule = opaque.JmpRuleReachingConst()
+    monkeypatch.setattr(rule, "_make_goto_ins", lambda _ins, target: ("goto", target))
+
+    pred_mov = _insn(ida_hexrays.m_mov, left=_num(0xE9FD9EC4), dest=_reg(1))
+    pred = _FakeBlock(19, head=pred_mov, succs=(20,))
+
+    tail = _insn(
+        ida_hexrays.m_jle,
+        left=_reg(1),
+        right=_num(0x0FCD789E),
+        dest=_blkref(18),
+    )
+    blk = _FakeBlock(20, head=tail, preds=(19,), succs=(18, 21), next_serial=21)
+
+    mba = _FakeMba()
+    mba.add(pred)
+    mba.add(blk)
+
+    assert rule.check_pattern_and_replace(blk, tail, None, None) == ("goto", 18)
+
+
+def test_jmp_rule_reaching_const_rejects_ambiguous_predecessors(monkeypatch):
+    rule = opaque.JmpRuleReachingConst()
+    monkeypatch.setattr(rule, "_make_goto_ins", lambda _ins, target: ("goto", target))
+
+    pred_a = _FakeBlock(
+        18,
+        head=_insn(ida_hexrays.m_mov, left=_num(1), dest=_reg(1)),
+        succs=(20,),
+    )
+    pred_b = _FakeBlock(
+        19,
+        head=_insn(ida_hexrays.m_mov, left=_num(2), dest=_reg(1)),
+        succs=(20,),
+    )
+    tail = _insn(
+        ida_hexrays.m_jz,
+        left=_reg(1),
+        right=_num(1),
+        dest=_blkref(30),
+    )
+    blk = _FakeBlock(20, head=tail, preds=(18, 19), succs=(30, 21), next_serial=21)
+
+    mba = _FakeMba()
+    mba.add(pred_a)
+    mba.add(pred_b)
+    mba.add(blk)
+
+    assert rule.check_pattern_and_replace(blk, tail, None, None) is None

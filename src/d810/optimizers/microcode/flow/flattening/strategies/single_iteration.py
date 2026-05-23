@@ -5,7 +5,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from d810.cfg.flowgraph import FlowGraph
-from d810.cfg.graph_modification import GraphModification, RedirectGoto
+from d810.cfg.graph_modification import ConvertToGoto, GraphModification, RedirectGoto
 from d810.core.typing import TYPE_CHECKING
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_CLEANUP,
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 
 SINGLE_ITERATION_FIXES_METADATA_KEY = "single_iteration_fixes"
+SINGLE_ITERATION_CONVERTS_METADATA_KEY = "single_iteration_converts"
 DEFAULT_MIN_MAGIC = 0x1000
 DEFAULT_MAX_MAGIC = 0xFFFFFFFF
 
@@ -31,6 +32,14 @@ class SingleIterationPredFix:
 
     loop_header: int
     pred_block: int
+    new_target: int
+
+
+@dataclass(frozen=True)
+class SingleIterationConvertFix:
+    """Validated conversion of a self-loop equality header to a goto."""
+
+    loop_header: int
     new_target: int
 
 
@@ -138,6 +147,56 @@ def serialize_single_iteration_fixes(
     return _serialize_single_iteration_fixes(fixes)
 
 
+def _coerce_single_iteration_converts(raw: object) -> dict[int, int]:
+    if not isinstance(raw, Mapping):
+        return {}
+
+    converts: dict[int, int] = {}
+    for loop_header, new_target in raw.items():
+        try:
+            converts[int(loop_header)] = int(new_target)
+        except (TypeError, ValueError):
+            continue
+    return converts
+
+
+def _is_valid_single_iteration_convert(
+    cfg: FlowGraph,
+    fix: SingleIterationConvertFix,
+) -> bool:
+    loop_header = cfg.blocks.get(fix.loop_header)
+    target_block = cfg.blocks.get(fix.new_target)
+
+    if loop_header is None or target_block is None:
+        return False
+    if loop_header.nsucc != 2:
+        return False
+    if fix.new_target == fix.loop_header:
+        return False
+    if fix.new_target not in loop_header.succs:
+        return False
+    return True
+
+
+def _serialize_single_iteration_converts(
+    fixes: Sequence[SingleIterationConvertFix],
+) -> dict[int, int]:
+    return {
+        int(fix.loop_header): int(fix.new_target)
+        for fix in sorted(
+            fixes,
+            key=lambda fix: (int(fix.loop_header), int(fix.new_target)),
+        )
+    }
+
+
+def serialize_single_iteration_converts(
+    fixes: Sequence[SingleIterationConvertFix],
+) -> dict[int, int]:
+    """Serialize single-iteration header conversions into metadata."""
+    return _serialize_single_iteration_converts(fixes)
+
+
 def extract_single_iteration_fixes(
     flow_graph: FlowGraph | None,
 ) -> tuple[SingleIterationPredFix, ...]:
@@ -150,11 +209,32 @@ def extract_single_iteration_fixes(
     )
 
 
+def extract_single_iteration_converts(
+    flow_graph: FlowGraph | None,
+) -> tuple[SingleIterationConvertFix, ...]:
+    """Read validated single-iteration header conversions from metadata."""
+    if flow_graph is None:
+        return ()
+
+    fixes = tuple(
+        SingleIterationConvertFix(loop_header=loop_header, new_target=new_target)
+        for loop_header, new_target in _coerce_single_iteration_converts(
+            flow_graph.metadata.get(SINGLE_ITERATION_CONVERTS_METADATA_KEY)
+        ).items()
+    )
+    return tuple(
+        fix
+        for fix in sorted(fixes, key=lambda fix: (fix.loop_header, fix.new_target))
+        if _is_valid_single_iteration_convert(flow_graph, fix)
+    )
+
+
 def build_single_iteration_modifications(
     fixes: Sequence[SingleIterationPredFix],
-) -> list[RedirectGoto]:
-    """Translate validated single-iteration redirects into RedirectGoto edits."""
-    return [
+    converts: Sequence[SingleIterationConvertFix] = (),
+) -> list[GraphModification]:
+    """Translate validated single-iteration evidence into graph edits."""
+    modifications: list[GraphModification] = [
         RedirectGoto(
             from_serial=fix.pred_block,
             old_target=fix.loop_header,
@@ -162,6 +242,14 @@ def build_single_iteration_modifications(
         )
         for fix in fixes
     ]
+    modifications.extend(
+        ConvertToGoto(
+            block_serial=fix.loop_header,
+            goto_target=fix.new_target,
+        )
+        for fix in converts
+    )
+    return modifications
 
 
 def _build_ownership(modifications: Sequence[GraphModification]) -> OwnershipScope:
@@ -172,6 +260,8 @@ def _build_ownership(modifications: Sequence[GraphModification]) -> OwnershipSco
         if isinstance(mod, RedirectGoto):
             blocks.add(mod.from_serial)
             edges.add((mod.from_serial, mod.old_target))
+        elif isinstance(mod, ConvertToGoto):
+            blocks.add(mod.block_serial)
 
     return OwnershipScope(
         blocks=frozenset(blocks),
@@ -187,14 +277,18 @@ class SingleIterationStrategy:
     family = FAMILY_CLEANUP
 
     def is_applicable(self, snapshot: AnalysisSnapshot) -> bool:
-        return bool(extract_single_iteration_fixes(snapshot.flow_graph))
+        return bool(
+            extract_single_iteration_fixes(snapshot.flow_graph)
+            or extract_single_iteration_converts(snapshot.flow_graph)
+        )
 
     def plan(self, snapshot: AnalysisSnapshot) -> PlanFragment | None:
         fixes = extract_single_iteration_fixes(snapshot.flow_graph)
-        if not fixes:
+        converts = extract_single_iteration_converts(snapshot.flow_graph)
+        if not fixes and not converts:
             return None
 
-        modifications = build_single_iteration_modifications(fixes)
+        modifications = build_single_iteration_modifications(fixes, converts)
         if not modifications:
             return None
 
@@ -214,6 +308,9 @@ class SingleIterationStrategy:
                 SINGLE_ITERATION_FIXES_METADATA_KEY: _serialize_single_iteration_fixes(
                     fixes
                 ),
+                SINGLE_ITERATION_CONVERTS_METADATA_KEY: (
+                    _serialize_single_iteration_converts(converts)
+                ),
                 "safeguard_min_required": 1,
             },
             modifications=list(modifications),
@@ -223,10 +320,14 @@ class SingleIterationStrategy:
 __all__ = [
     "DEFAULT_MAX_MAGIC",
     "DEFAULT_MIN_MAGIC",
+    "SINGLE_ITERATION_CONVERTS_METADATA_KEY",
     "SINGLE_ITERATION_FIXES_METADATA_KEY",
+    "SingleIterationConvertFix",
     "SingleIterationPredFix",
     "SingleIterationStrategy",
     "build_single_iteration_modifications",
+    "extract_single_iteration_converts",
     "extract_single_iteration_fixes",
+    "serialize_single_iteration_converts",
     "serialize_single_iteration_fixes",
 ]

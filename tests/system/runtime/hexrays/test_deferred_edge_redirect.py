@@ -17,6 +17,7 @@ from d810.hexrays.mutation.deferred_modifier import (
     DeferredGraphModifier,
     GraphModification,
     ModificationType,
+    _is_redirectable_conditional_tail,
 )
 
 
@@ -55,6 +56,17 @@ class TestQueueEdgeRedirectDelegation:
             via_pred=None, rule_priority=42,
         )
         assert m.modifications[0].rule_priority == 42
+
+
+class TestRedirectableConditionalTail:
+
+    def test_generic_jcnd_tail_is_redirectable(self):
+        """BLOCK_TARGET_CHANGE must accept Hex-Rays generic conditional tails."""
+
+        class Tail:
+            opcode = ida_hexrays.m_jcnd
+
+        assert _is_redirectable_conditional_tail(Tail())
 
 
 # ---------------------------------------------------------------------------
