@@ -506,7 +506,7 @@ This plugin is still in early stage of development, so issues ~~may~~ will happe
 
 ## Documentation
 
-Work in progress
+Headless/script-driven usage is documented in [HEADLESS.md](HEADLESS.md).
 
 Currently, you can read our [blog post](https://eshard.com/posts/) to get some information.
 

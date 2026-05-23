@@ -277,6 +277,12 @@ RULES: list[RuleInfo] = [
         comment=None,
     ),
     RuleInfo(
+        name="Bnot_FactorRule_5",
+        expr="(~(~(x_0) ^ x_1)) => (x_0 ^ x_1)",
+        known_incorrect=False,
+        comment=None,
+    ),
+    RuleInfo(
         name="BnotXor_Rule_1",
         expr="((x_0 & x_1) | (bnot_x_0 & bnot_x_1)) => ~((x_0 ^ x_1))",
         known_incorrect=False,

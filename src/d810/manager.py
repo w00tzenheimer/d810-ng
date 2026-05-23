@@ -1730,9 +1730,9 @@ class D810State(metaclass=SingletonMeta):
         # Return a fresh stats object if manager not yet initialized
         return OptimizationStatistics()
 
-    def reset(self) -> None:
+    def reset(self, d810_config: D810Configuration | None = None) -> None:
         self._initialized: bool = False
-        self.d810_config: D810Configuration = D810Configuration()
+        self.d810_config: D810Configuration = d810_config or D810Configuration()
         # manage projects via ProjectManager
         self.project_manager = ProjectManager(self.d810_config)
         self.current_project_index: int = 0
@@ -1858,8 +1858,12 @@ class D810State(metaclass=SingletonMeta):
         logger.info("Stopping D-810...")
         self.manager.stop()
 
-    def load(self, gui: bool = True):
-        self.reset()
+    def load(
+        self,
+        gui: bool = True,
+        d810_config: D810Configuration | None = None,
+    ):
+        self.reset(d810_config=d810_config)
         # Determine which project to auto-load. Fall back to first entry (0)
         # when the configuration value is missing or invalid, and clamp the
         # index to the available range to avoid IndexError when projects were

@@ -7,3 +7,10 @@ try:
 except Exception:
     # Keep package import robust even if environment setup is incomplete.
     pass
+
+
+def get_headless_api():
+    """Return the script-oriented headless API module."""
+    import importlib
+
+    return importlib.import_module("d810.headless")
