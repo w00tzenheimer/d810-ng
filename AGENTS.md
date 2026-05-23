@@ -27,3 +27,14 @@ PYTHONPATH=src lint-imports --config .importlinter
 `lint-imports` analyzes the current working directory's `src` tree and
 `.importlinter`. Running it from the root checkout does not validate a separate
 `.worktrees/<name>` checkout.
+
+## Unflattening Safety Lessons
+
+- Profile-specific guards must stay profile-scoped. Do not apply OLLVM
+  dispatcher-entry prefix/payload vetoes to Tigress indirect or other profiles
+  unless the profile explicitly opts in.
+- Hard safety vetoes for state-DAG rewrite batches are fragment-atomic. If an
+  actionable non-state use-def severance is found, reject the whole fragment;
+  do not drop one redirect and apply the remaining sibling redirects.
+- Dispatcher state-slot use-def changes are expected plumbing during state-DAG
+  lowering. Non-state severance is the safety boundary.

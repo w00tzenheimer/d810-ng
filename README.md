@@ -168,75 +168,78 @@ Omit `maturities` entirely to inherit the default (`MMAT_LOCOPT`, `MMAT_CALLS`, 
 
 ## Architecture
 
+### The 7-Stage Deobfuscation Pipeline
+
+D-810 ng implements a strictly isolated, uni-directional 7-stage architectural workflow for microcode transformations. Keeping these layers decoupled is critical for portability, safe live decompilation reasoners, and verifiable mutations:
+
+```mermaid
+graph LR
+    Recon["1. Recon (d810.recon)"]
+    Persist["2. Persist (d810.recon.store)"]
+    Analyze["3. Analyze (d810.cfg)"]
+    Plan["4. CFG Plan (d810.cfg.plan)"]
+    Project["5. Project & Validate"]
+    Lower["6. Lower (d810.cfg.lowering)"]
+    Mutate["7. Mutate (d810.hexrays.mutation)"]
+
+    Recon --> Persist
+    Persist --> Analyze
+    Analyze --> Plan
+    Plan --> Project
+    Project --> Lower
+    Lower --> Mutate
+```
+
+1. **Recon Facts (`d810.recon`)**:
+   A read-only, backend-agnostic pre-analysis layer. It extracts topological facts, conditional control flow shapes, entry/return frontiers, and value-flow evidence from the raw microcode using `Collector` classes. Live IDA/Hex-Rays decompilation dependencies are strictly isolated.
+2. **Persist Facts (`d810.recon.store`)**:
+   All collected facts, recommended inferences, and lifecycle metrics are written to an offline SQLite database. A dedicated background thread `ReconStoreWriter` performs the writes asynchronously to eliminate decompiler latency.
+3. **Analyze Facts (`d810.cfg.flow`)**:
+   Topological and state-machine discovery engines process the persisted facts in pure Python. They resolve BST lookup intervals, model state variable paths, and detect dispatcher boundaries.
+4. **CFG Flow Graph Planning (`d810.cfg.plan`)**:
+   Generates a backend-neutral graph modification strategy (`PatchPlan`, `GraphModification`). These plans represent control-flow changes (e.g. unflattening, conditional splits, predecessor branch repairs) purely in topological form.
+5. **Project Modifications & Validation (`d810.cfg.lowering_selector`)**:
+   The planning output is audited for structural validity, semantic reference consistency, and target-entry admission constraints prior to mutation.
+6. **Lower Projections (`d810.cfg.semantic_region_lowering`)**:
+   Translates validated abstract modifications into backend-specific lower-level instructions and edge routing instructions.
+7. **Lowering to Mutations (`d810.hexrays.mutation`)**:
+   The final materialization backend transforms Hex-Rays microcode. By architecture policy (enforced via `no-direct-hexrays-mutation-outside-deferred-modifier.yml`), mutators must queue rewrites via `DeferredGraphModifier` (e.g. NOP blocks, successor modifications). This layer owns invalidation, stale pointer tracking, `MBL_KEEP` preservation, and transactional safety/rollbacks.
+
+---
+
 ### Analysis and Mutation Boundaries
 
-D-810 has three distinct layers for microcode work. Keeping these boundaries sharp matters more than convenience because the same codebase needs:
-
-* portable, testable analysis
-* live Hex-Rays value-flow proof
-* verifier-safe CFG and instruction mutation
+D-810 enforces strict boundaries to keep code clean and testable:
 
 #### `d810.recon`
-
-`recon` is the **read-only pre-analysis** layer. Its job is to collect and summarize facts about the current function before optimizers mutate the microcode.
-
-Use `recon` for:
-
-* portable CFG/topology summaries (`FlowGraph`, block snapshots, frontier reports)
-* collector outputs that can be serialized or stored
-* backend-agnostic analysis in `recon/flow`
-
-Do **not** put live `mba_t` proof logic directly into portable `recon/flow` modules such as `terminal_return_audit.py`.
+* **Role**: **Read-only pre-analysis**.
+* **Allowed**: Collecting CFG shapes, return frontiers, and ctree structures.
+* **Forbidden**: Direct imports of `d810.hexrays` or live mutation code. Do not put live `mba_t` value tracking logic inside recon.
 
 #### `d810.evaluator.hexrays_microcode`
+* **Role**: **Live proof**.
+* **Allowed**: Inspecting active `mba_t`, `mblock_t`, `minsn_t` chains, use/def lists, and tracking registers.
+* **Forbidden**: Writing or pruning microcode instructions or modifying the CFG.
 
-`evaluator.hexrays_microcode` is the **live proof** layer. This is where code may depend on Hex-Rays runtime objects such as `mba_t`, `mblock_t`, `minsn_t`, chains, trackers, or emulators.
+#### `d810.hexrays.mutation`
+* **Role**: **Central Mutation Backend**.
+* **Allowed**: Materializing plans, rewriting instruction blocks, clearing lists, and executing deferred updates.
+* **Forbidden**: Direct inline mutations inside read-only analysis loops; all edits must route through the `DeferredGraphModifier`.
 
-Use evaluator for:
-
-* path-sensitive value reasoning
-* use/def and chain-backed proof
-* tracker/emulator-assisted proof of runtime value flow
-
-This is why `tracker.py` stays in evaluator and should **not** move to `recon`: it operates on live Hex-Rays state and is not a portable artifact layer. If part of a tracker becomes purely read-only and generally useful, extract that helper and let `recon` consume the summarized result rather than moving the whole module.
-
-#### Translator / Backend / Mutation
-
-Mutation belongs in the translator/backend layer (`cfg_mutations`, deferred modifier, PatchPlan lowering, transaction engine). This layer owns:
-
-* CFG rewrites
-* instruction insertion/removal/NOP transforms
-* chain invalidation and rebuild boundaries
-* verification and rollback behavior
-
-Analysis modules should not quietly cross into this layer.
+---
 
 ### Read-Only Hex-Rays Safety Policy
 
 Read-only proof modules may inspect live Hex-Rays state, but they must not mutate it.
 
-Allowed in evaluator or collector-style read-only proof:
-
-* `mba.build_graph()`
-* `mba.get_graph()`
-* `mblock_t.make_lists_ready()`
-* `mblock_t.build_use_list(...)`
-* `mblock_t.build_def_list(...)`
-* `get_ud()/get_du()`
-* dominator/postdominator queries
-* optional `mba.verify(True)` as a debug/assertion aid
-
-Not allowed in read-only proof layers:
-
-* `mblock_t.build_lists(kill_deads=True)` if it can prune or rewrite
-* `mba.mark_chains_dirty()`
-* CFG or instruction mutation of any kind
+* **Allowed in evaluator/read-only proof**: `mba.build_graph()`, `mba.get_graph()`, `mblock_t.make_lists_ready()`, `mblock_t.build_use_list()`, `mblock_t.build_def_list()`, dominator/postdominator queries.
+* **Not allowed in read-only proof**: `mblock_t.build_lists(kill_deads=True)`, `mba.mark_chains_dirty()`, block/instruction deletion or replacement.
 
 The practical rule is:
+1. If it must be portable/serializable, put it in `d810.recon`.
+2. If it requires live Hex-Rays value-flow reasoning, put it in `d810.evaluator`.
+3. If it modifies CFGs or instructions, put it in `d810.hexrays.mutation`.
 
-* if it must be portable or serializable, it belongs near `recon`
-* if it needs live Hex-Rays value proof, it belongs in `evaluator`
-* if it changes CFG or instructions, it belongs in mutation/backend code
 
 ## Installation
 
@@ -452,58 +455,87 @@ make clean
 
 **After**: !["After"](./resources/assets/test_xor_after.png "After Plugin")
 
+## Diagnostics & CLI Tools
+
+D-810 ng has a dedicated operator CLI tool, `tools/d810cli.py`, which is the official interface for deobfuscation dumps, diagnostic queries, and offline program analysis. This CLI completely wraps the Docker-based runner and local environment setup.
+
+### Official Workflow (Preferred)
+
+#### 1. Create a deobfuscation dump
+Use the `dump` command. It triggers decompilation of the target function, saves a text dump, and persists a diagnostic SQLite DB under `.worktrees/<worktree>/.tmp/`:
+
+```bash
+# Running a quick dump on the default function (sub_7FFD3338C040)
+PYTHONPATH=src python3 tools/d810cli.py dump --label quick
+```
+
+#### 2. Inspect pseudocode and statistics
+Inspect the latest generated dump's AFTER pseudocode and delta stats:
+
+```bash
+# View AFTER decompiled pseudocode with line numbers and optimization metrics
+PYTHONPATH=src python3 tools/d810cli.py after -n --stats
+```
+
+### Useful CLI Commands
+
+* **Show artifact paths**: `PYTHONPATH=src python3 tools/d810cli.py paths`
+* **Deobfuscation Stats**: `PYTHONPATH=src python3 tools/d810cli.py stats`
+* **Frontier Diagnostics**: `PYTHONPATH=src python3 tools/d810cli.py frontier-diagnostics`
+* **Terminal Byte Audit**: `PYTHONPATH=src python3 tools/d810cli.py byte-audit`
+* **Recompute Oracle**: `PYTHONPATH=src python3 tools/d810cli.py oracle`
+
+### Offline Diagnostic DB Queries
+
+You can run diagnostic and trace queries on the generated SQLite databases using your local environment without launching an IDA instance.
+
+```bash
+# Resolve the latest diagnostic DB path for a worktree
+# (substitute your worktree name; omit the .worktrees/${WORKTREE_NAME}/ prefix
+# for the root checkout)
+WORKTREE_NAME=<your-worktree-name>
+DB=$(ls -lhS .worktrees/${WORKTREE_NAME}/.tmp/logs/d810_logs/*.diag.sqlite3 | head -1 | awk '{print $NF}')
+
+# List all captured snapshots
+sqlite3 $DB "SELECT id, label FROM snapshots"
+
+# Trace specific microcode instructions or EAs across snapshots
+PYTHONPATH=src python3 -m d810.core.diag ea-trace --db $DB 0x1800134A5
+```
+
+---
+
 ## Running Tests
 
-D-810 ng has a comprehensive test suite that runs inside IDA Pro's headless mode (`idalib`). Tests are executed in Docker containers that bundle IDA Pro with the required Python environment.
+### Unit Tests
 
-**Prerequisites:**
-
-* Docker and Docker Compose
-* Access to the `ghcr.io/w00tzenheimer/idapro-linux` container images
-
-### Quick Start
+Unit tests are pure-Python and run rapidly without requiring an active IDA Pro database. Execute them from the repository root:
 
 ```bash
-# Run all IDA system tests (excludes profiling tests by default)
+PYTHONPATH=src:tests pyenv exec python -m pytest tests/unit/ -v --tb=short -x
+```
+
+### System & E2E Tests (Headless IDA)
+
+D-810 ng has a comprehensive integration/system test suite that runs inside headless IDA Pro (`idalib`). These tests run within local Docker containers containing pre-configured IDA instances.
+
+**Prerequisites**:
+* Docker and Docker Compose
+* Access to `ghcr.io/w00tzenheimer/idapro-linux` images
+
+#### Run all System/E2E Tests:
+```bash
 docker compose run --rm --entrypoint bash idapro-tests-9.2 -c \
   "pip install -e .[dev] -q && pytest tests/system/ -v --tb=short"
 ```
 
-### Test Categories
-
-| Marker | Description | Default |
-|--------|-------------|---------|
-| `pure_python` | Tests that run without IDA Pro (fast, no external dependencies) | Included |
-| `requires_ida` | Tests that require IDA Pro to run | Included |
-| `slow` | Slow tests (>10s) — typically Z3 verification or complex deobfuscation | Included |
-| `profile` | Performance profiling tests (decompiles functions repeatedly) | **Excluded** |
-
-### Running Specific Test Suites
-
+#### Run a specific E2E test file:
 ```bash
-# Run only unit tests (no IDA required)
-pytest tests/unit/ -v
-
-# Run IDA system tests
-docker compose run --rm --entrypoint bash idapro-tests-9.2 -c \
-  "pip install -e .[dev] -q && pytest tests/system/ -v --tb=short"
-
-# Run a specific test class
 docker compose run --rm --entrypoint bash idapro-tests-9.2 -c \
   "pip install -e .[dev] -q && pytest tests/system/e2e/test_libdeobfuscated_dsl.py::TestOLLVMPatterns -v --tb=short"
-
-# Run profiling tests (excluded by default, opt-in only)
-docker compose run --rm --entrypoint bash idapro-tests-9.2 -c \
-  "pip install -e .[dev] -q && pytest tests/system/e2e/test_profile_libobfuscated.py -m profile -v -s"
-
-# Override default marker filter to run everything
-docker compose run --rm --entrypoint bash idapro-tests-9.2 -c \
-  "pip install -e .[dev] -q && pytest tests/system/ -o 'addopts=' -v"
 ```
 
-See `tests/TEST_CLASSIFICATION.md` for strict test placement rules and lane definitions.
-
-### Docker Services
+#### Docker Services
 
 | Service | Image | Python | Description |
 |---------|-------|--------|-------------|

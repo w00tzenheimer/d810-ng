@@ -133,10 +133,164 @@ D810_UNSKIP_CASES=1 D810_UNSKIP_DANGEROUS=1 pytest tests/system/ -v -rs
   (rule `Xor_HackersDelightRule_3` fires twice). If it fails, it is usually
   an expected-code drift (type/cast formatting), not a rule-miss.
 
-## Dump Before/After Pseudocode For Specific Functions
+## D810 Testing & Diagnostics Instructions
 
-Use the manual dump harness when you need fast per-function debugging without
-editing test files:
+### Primary Rule
+
+Use `tools/d810cli.py` as the official interface for dumps, diagnostics, and analysis. Do not invoke `run_system_tests_docker.sh` directly unless you specifically need low-level control or unsupported flags.
+
+---
+
+### Environment Setup
+
+Always run commands from the repository root checkout.
+
+If you need Python CLI access to project modules, including environments that require `ida_hexrays` APIs, invoke Python using `pyenv` and pre-wire `PYTHONPATH` correctly:
+
+```bash
+WORKTREE_NAME=${YOUR_WORKTREE_DIR_NAME}
+PYTHONPATH=.worktrees/${WORKTREE_NAME}/src pyenv exec python
+```
+
+Do not assume imports fail because `ida_hexrays` is unavailable. The environment fully supports it when invoked correctly.
+
+---
+
+### Official Workflow (Preferred)
+
+#### 1. Create a deobfuscation dump
+Use the `d810cli.py dump` subcommand. This wraps `run_system_tests_docker.sh dump` and automatically creates the dump text output, produces the diagnostic SQLite DB, and stores all artifacts under `.worktrees/<worktree>/.tmp/`:
+
+```bash
+PYTHONPATH=src python3 tools/d810cli.py dump \
+  --worktree hodur-materialization-boundary \
+  -f sub_7FFD3338C040 \
+  -p hodur_flag2.json \
+  --label my-check
+```
+
+**Defaults**: If omitted, parameters default to:
+* `--worktree` — auto-detected from the script's location. When invoking
+  `tools/d810cli.py` directly from a root checkout, this is `None` (root). When
+  invoking `.worktrees/<name>/tools/d810cli.py`, the default is `<name>`. Pass
+  `-w <name>` only to override the checkout and target a different worktree.
+* `-f sub_7FFD3338C040`
+* `-p hodur_flag2.json`
+* `--capture-post-maturity 8` (MMAT_GLBOPT1)
+
+**Shortest dump workflow**:
+```bash
+PYTHONPATH=src python3 tools/d810cli.py dump --label quick
+```
+
+#### 2. Inspect pseudocode and results
+Inspect the latest generated dump's AFTER pseudocode and delta optimization metrics:
+
+```bash
+PYTHONPATH=src python3 tools/d810cli.py after -n --stats
+```
+
+Or inspect a specific dump path explicitly:
+```bash
+PYTHONPATH=src python3 tools/d810cli.py after \
+  --dump /absolute/path/to/dump.txt \
+  -n \
+  --stats
+```
+
+---
+
+### Useful d810cli.py Commands
+
+* **Show latest dump / DB paths**: `PYTHONPATH=src python3 tools/d810cli.py paths --worktree <worktree>`
+* **Delta Stats only**: `PYTHONPATH=src python3 tools/d810cli.py stats --worktree <worktree>`
+* **Recompute Oracle**: `PYTHONPATH=src python3 tools/d810cli.py oracle --worktree <worktree>`
+* **Frontier Diagnostics**: `PYTHONPATH=src python3 tools/d810cli.py frontier-diagnostics --worktree <worktree>`
+* **Terminal Byte Audit**: `PYTHONPATH=src python3 tools/d810cli.py byte-audit --worktree <worktree>`
+
+---
+
+### Offline Diagnostic DB Queries
+
+Locate the latest generated database and trace instruction EAs or list snapshots completely offline:
+
+```bash
+# Find latest DB in the worktree
+WORKTREE_NAME=${YOUR_WORKTREE_DIR_NAME}
+DB=$(ls -lhS .worktrees/${WORKTREE_NAME}/.tmp/logs/d810_logs/*.diag.sqlite3 | head -1 | awk '{print $NF}')
+
+# List captured snapshots
+sqlite3 $DB "SELECT id, label FROM snapshots"
+
+# Trace specific EAs across snapshots
+PYTHONPATH=.worktrees/${WORKTREE_NAME}/src python -m d810.core.diag ea-trace --db $DB 0x1800134A5 0x18001587E
+
+# See all core diagnostics options
+PYTHONPATH=.worktrees/${WORKTREE_NAME}/src python -m d810.core.diag --help
+```
+
+---
+
+### Low-Level / Manual Workflow (Advanced)
+
+Use only when `d810cli.py` does not expose the needed behavior. Review the available options first:
+```bash
+./tools/scripts/run_system_tests_docker.sh --help
+```
+
+#### Creating a worktree dump manually:
+```bash
+WORKTREE_NAME=${YOUR_WORKTREE_DIR_NAME}
+truncate -s 0 .worktrees/${WORKTREE_NAME}/.tmp/logs/d810_logs/d810.log && \
+D810_REPO_ROOT=/Users/mahmoud/src/idapro/d810 \
+./tools/scripts/run_system_tests_docker.sh dump \
+  -f sub_7FFD3338C040 \
+  -p hodur_flag2.json \
+  -w ${WORKTREE_NAME} \
+  -o "sub_7ffd_$(date +'%Y%m%d_%H%M%S').txt" \
+  -l \
+  --enable-debug-logging \
+  2>&1 | tail -3
+```
+*Manual artifacts appear under `.worktrees/${WORKTREE_NAME}/.tmp/`.*
+
+#### Passing Additional Dump Arguments:
+To forward extra arguments through the Docker runner, append `--` after `--enable-debug-logging`:
+
+```bash
+WORKTREE_NAME=${YOUR_WORKTREE_DIR_NAME}
+truncate -s 0 .worktrees/${WORKTREE_NAME}/.tmp/logs/d810_logs/d810.log && \
+D810_REPO_ROOT=/Users/mahmoud/src/idapro/d810 \
+./tools/scripts/run_system_tests_docker.sh dump \
+  -f sub_7FFD3338C040 \
+  -p hodur_flag2.json \
+  -o sub7FFD_diag_$(date +%Y%m%d-1).txt \
+  -l \
+  --enable-debug-logging -- \
+  --dump-microcode-maturity CALLS,GLBOPT1 \
+  --dump-microcode-d810 \
+  --dump-terminal-return-valranges \
+  --dump-bst-maturity GLBOPT1 \
+  2>&1 | tail -3
+```
+
+---
+
+### Key Guidance
+
+1. **Prefer `d810cli.py`** for all standard deobfuscation workflows.
+2. **Execute from the repository root**.
+3. **Do not assume `ida_hexrays` is unavailable**; use the correct `PYTHONPATH` + `pyenv` invocation.
+4. **Use low-level scripts only when necessary**.
+5. **Dumps and DB artifacts** live under `.worktrees/<worktree>/.tmp/`.
+
+---
+
+### Alternative: In-Process pytest Dump Harness
+
+`d810cli.py` wraps the Docker runner. For ad-hoc per-function dumps that load
+the current project config inside a local headless IDA via `idalib` (no Docker,
+no worktree), use `tests/system/e2e/test_dump_function_pseudocode.py`:
 
 ```bash
 # Single function (loads example_libobfuscated.json by default)
@@ -157,15 +311,19 @@ pytest -s tests/system/e2e/test_dump_function_pseudocode.py \
   --dump-function-pseudocode mixed_dispatcher_pattern \
   --dump-no-project
 
-# Override binary when needed
+# Override binary
 D810_TEST_BINARY=libobfuscated.dll pytest -s \
   tests/system/e2e/test_dump_function_pseudocode.py \
   --dump-function-pseudocode mixed_dispatcher_pattern
-
-# Research mode convenience: if no --dump-function-pseudocode is provided,
-# the dump harness defaults to test_xor
-pytest -s tests/system/e2e/test_dump_function_pseudocode.py --unskip-research
 ```
+
+This is the workflow referenced from `.claude/rules/CORE_INSTRUCTIONS.md` and
+project memory. Use `d810cli.py` when you need the Docker container + diag
+SQLite artifacts under `.worktrees/<worktree>/.tmp/`; use the pytest harness
+when you only need a quick before/after pseudocode snapshot from a local IDA.
+
+---
+
 
 ## Backend-Aware Guard Note
 
