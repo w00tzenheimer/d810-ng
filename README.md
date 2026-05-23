@@ -348,6 +348,19 @@ When you want to disable deobfuscation, just click on the `Stop` button or use t
 !["Disassembly context menu"](./resources/assets/disasmview_context_menu.png "Disassembly context menu")
 !["Pseudocode context menu"](./resources/assets/pseudocode_context_menu.png "Pseudocode context menu")
 
+### Per-function rule overrides
+
+When a rule produces worse output than the baseline on a specific function, you can disable it for that one function without editing project JSON or restarting the plugin:
+
+1. In the pseudocode view, right-click and open the **d810-ng** submenu.
+2. Click **Function rules...**.
+3. Untick the rules you want disabled for this function (or tick rules you want force-enabled). Add free-form `Function Tags` and `Notes` if you want.
+4. Click **Save** — the pseudocode re-decompiles immediately with the override applied.
+
+Overrides persist to the project database, so reopening the IDB or sharing the project file with a teammate carries them along. Per-function overrides always win over global rule activation in the project JSON.
+
+See [docs/features/function-rules.md](docs/features/function-rules.md) for the full walkthrough, precedence rules, and programmatic API.
+
 ## Adding New Obfuscation Examples
 
 In `samples/src`, there are various `C` programs compiled using the `samples/Makefile` into a shared library, without optimizations (`-O0`). On Windows, that shared library is a `.dll`; on macOS, it is a `.dylib`; on Linux, it is a `.so`. Included is an example compiled DLL, `libobfuscated.dll`, that can serve as a testing ground for seeing the plugin in action. Please make a pull request with more obfuscation `C` examples to build a repository of obfuscated sample code for further research.
