@@ -123,6 +123,39 @@ def test_oracle_accepts_current_style_after_with_fact_backing() -> None:
     assert not warning.blocker
 
 
+def test_oracle_accepts_counted_do_while_payload_loop() -> None:
+    do_while_after = CURRENT_STYLE_AFTER.replace(
+        "for (i = 0; i < 0x64; ++i)\n            v5 += *((char *)v8 + i) * LODWORD(v28[0]);",
+        "do\n        {\n            v5 += *((char *)v8 + i) * LODWORD(v28[0]);\n        }\n        while ( LODWORD(v28[0]) < 0x64 );",
+    )
+
+    result = evaluate_ollvm_fla_bcf_sub_oracle(
+        do_while_after,
+        conn=_diag_db_with_carrier_facts(),
+        func_ea_hex="0x000000018000e360",
+    )
+
+    assert result.passed
+
+
+def test_oracle_rejects_non_counted_dispatcher_while_loop() -> None:
+    residual_dispatcher_after = CURRENT_STYLE_AFTER.replace(
+        "for (i = 0; i < 0x64; ++i)",
+        "while ( selector != 0x62CE9A1C )",
+    )
+
+    result = evaluate_ollvm_fla_bcf_sub_oracle(
+        residual_dispatcher_after,
+        conn=_diag_db_with_carrier_facts(),
+        func_ea_hex="0x000000018000e360",
+    )
+
+    assert not result.passed
+    assert any(
+        blocker.name == "dispatcher_loop_removed" for blocker in result.blockers
+    )
+
+
 def test_oracle_accepts_self_feeding_loop_only_with_fact_backed_carrier_split() -> None:
     bad_code = CURRENT_STYLE_AFTER.replace(
         "for (i = 0; i < 0x64; ++i)",
