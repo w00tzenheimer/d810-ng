@@ -12,6 +12,7 @@
 .cursorrules
 .cursor/
 .claude/
+.codesight/
 
 # AI CLI Crap
 GEMINI.md
