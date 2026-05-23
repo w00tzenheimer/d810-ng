@@ -239,17 +239,30 @@ class SymbolicExpression:
             op_sym = {"neg": "-", "bnot": "~", "lnot": "!"}[self.operation]
             return f"({op_sym}{self.left})"
 
+        if self.operation in ("high", "low"):
+            width = "" if self.value is None else f"{self.value}, "
+            return f"{self.operation}({width}{self.left})"
+
+        if self.operation == "zext":
+            return f"zext({self.value}, {self.left})"
+
         # Binary operations
         op_sym = {
             "add": "+",
             "sub": "-",
             "mul": "*",
+            "udiv": "/u",
+            "sdiv": "/s",
+            "umod": "%u",
+            "smod": "%s",
             "and": "&",
             "or": "|",
             "xor": "^",
             "shl": "<<",
             "shr": ">>",
             "sar": ">>a",
+            "high": "high",
+            "low": "low",
         }.get(self.operation, f"?{self.operation}?")
 
         return f"({self.left} {op_sym} {self.right})"
@@ -323,6 +336,40 @@ def Zext(expr: SymbolicExpression, target_width: int) -> SymbolicExpression:
         >>> REPLACEMENT = ZERO  # Always false
     """
     return SymbolicExpression(operation="zext", left=expr, value=target_width)
+
+
+def Udiv(left: SymbolicExpression, right: SymbolicExpression) -> SymbolicExpression:
+    """Unsigned division."""
+    return SymbolicExpression(operation="udiv", left=left, right=right)
+
+
+def Sdiv(left: SymbolicExpression, right: SymbolicExpression) -> SymbolicExpression:
+    """Signed division."""
+    return SymbolicExpression(operation="sdiv", left=left, right=right)
+
+
+def Umod(left: SymbolicExpression, right: SymbolicExpression) -> SymbolicExpression:
+    """Unsigned modulo."""
+    return SymbolicExpression(operation="umod", left=left, right=right)
+
+
+def Smod(left: SymbolicExpression, right: SymbolicExpression) -> SymbolicExpression:
+    """Signed modulo."""
+    return SymbolicExpression(operation="smod", left=left, right=right)
+
+
+def High(expr: SymbolicExpression, target_width: int | None = None) -> SymbolicExpression:
+    """Extract the high half/part of an expression.
+
+    ``target_width`` is in bits.  If omitted, verification backends use their
+    current rule bit-width; IDA pattern emission relies on the destination size.
+    """
+    return SymbolicExpression(operation="high", left=expr, value=target_width)
+
+
+def Low(expr: SymbolicExpression, target_width: int | None = None) -> SymbolicExpression:
+    """Extract the low half/part of an expression."""
+    return SymbolicExpression(operation="low", left=expr, value=target_width)
 
 
 # Common symbolic constants for convenience
