@@ -229,14 +229,16 @@ class AstNodeZ3Visitor:
             case ida_hexrays.m_sar:
                 return left >> right
             case ida_hexrays.m_setnz:
+                compared = right if right is not None else z3.BitVecVal(0, 32)
                 return z3.If(
-                    left != z3.BitVecVal(0, 32),
+                    left != compared,
                     z3.BitVecVal(1, 32),
                     z3.BitVecVal(0, 32),
                 )
             case ida_hexrays.m_setz:
+                compared = right if right is not None else z3.BitVecVal(0, 32)
                 return z3.If(
-                    left == z3.BitVecVal(0, 32),
+                    left == compared,
                     z3.BitVecVal(1, 32),
                     z3.BitVecVal(0, 32),
                 )
