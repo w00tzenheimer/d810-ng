@@ -67,6 +67,36 @@ def test_signed_branch_predicate_respects_64_bit_compare_width() -> None:
     )
 
 
+def test_equality_predicates_respect_compare_width_mask() -> None:
+    assert (
+        evaluate_branch_predicate(
+            BranchPredicate.EQUAL,
+            0x1_0000_0000,
+            0,
+            compare_width=4,
+        )
+        is True
+    )
+    assert (
+        evaluate_branch_predicate(
+            BranchPredicate.NOT_EQUAL,
+            0x1_0000_0000,
+            0,
+            compare_width=4,
+        )
+        is False
+    )
+    assert (
+        evaluate_branch_predicate(
+            BranchPredicate.EQUAL,
+            0x1_0000_0000,
+            0,
+            compare_width=None,
+        )
+        is False
+    )
+
+
 def test_ordering_predicate_without_width_is_not_proven() -> None:
     assert (
         evaluate_branch_predicate(

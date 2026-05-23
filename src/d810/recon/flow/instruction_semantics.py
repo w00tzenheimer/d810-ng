@@ -107,11 +107,15 @@ def evaluate_branch_predicate(
         return None
     left = int(left_value)
     right = int(right_value)
+    mask = _mask_for_width(compare_width)
     if predicate is BranchPredicate.EQUAL:
+        if mask is not None:
+            return (left & mask) == (right & mask)
         return left == right
     if predicate is BranchPredicate.NOT_EQUAL:
+        if mask is not None:
+            return (left & mask) != (right & mask)
         return left != right
-    mask = _mask_for_width(compare_width)
     if mask is None:
         return None
     left_u = left & mask
