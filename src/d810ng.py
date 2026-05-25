@@ -3,21 +3,21 @@ import ida_kernwin
 import idaapi
 
 import d810
-import d810._vendor
-import d810._vendor.ida_reloader as reloadable
+from d810._vendor.ida_reloader import ReloadablePluginBase, reload_package
 from d810.core.typing import override
 
 D810_VERSION = d810.__version__
 
 
+ALL_DECOMPILERS = {
+    idaapi.PLFM_386: "hexx64",
+    idaapi.PLFM_ARM: "hexarm",
+    idaapi.PLFM_PPC: "hexppc",
+    idaapi.PLFM_MIPS: "hexmips",
+    idaapi.PLFM_RISCV: "hexrv",
+}
+
 def init_hexrays() -> bool:
-    ALL_DECOMPILERS = {
-        idaapi.PLFM_386: "hexx64",
-        idaapi.PLFM_ARM: "hexarm",
-        idaapi.PLFM_PPC: "hexppc",
-        idaapi.PLFM_MIPS: "hexmips",
-        idaapi.PLFM_RISCV: "hexrv",
-    }
     cpu = idaapi.ph.id
     decompiler = ALL_DECOMPILERS.get(cpu, None)
     if not decompiler:
@@ -37,7 +37,7 @@ class _UIHooks(idaapi.UI_Hooks):
 
 
 class D810Plugin(
-    reloadable.ReloadablePluginBase,
+    ReloadablePluginBase,
     idaapi.action_handler_t,
     idaapi.plugin_t,
 ):
@@ -141,7 +141,7 @@ class D810Plugin(
         """
 
         with self.plugin_setup_reload():
-            reloadable.reload_package(
+            reload_package(
                 d810,
                 skip=[
                     f"{self.base_package_name}.core.registry",
@@ -151,5 +151,6 @@ class D810Plugin(
             )
 
 
+# noinspection PyPep8Naming
 def PLUGIN_ENTRY():
     return D810Plugin()
