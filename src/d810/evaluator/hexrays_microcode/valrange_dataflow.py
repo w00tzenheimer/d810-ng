@@ -844,7 +844,23 @@ def validate_against_ida(mba, result=None) -> dict:
     """
 
     if result is None:
-        result = run_valrange_fixpoint(mba)
+        # Soundness gate: validate_against_ida is a non-engine consumer
+        # (not the worklist itself), so it must pass the same kwarg every
+        # other R1 consumer passes.  On non-convergence we return an
+        # all-zero stats dict so the caller can detect "validation could
+        # not run" and skip drawing conclusions; raising would force
+        # callers (mostly diagnostic) to wrap, and the zero-stats sentinel
+        # is the natural "no comparison performed" outcome here.
+        try:
+            result = run_valrange_fixpoint(mba, raise_on_nonconvergence=True)
+        except FixpointDidNotConverge as exc:
+            logger.warning(
+                "validate_against_ida: valrange fixpoint did not converge "
+                "in %d iterations (max=%d); skipping IDA comparison",
+                exc.iterations,
+                exc.max_iterations,
+            )
+            return {"matched": 0, "mismatched": 0, "ida_only": 0, "ours_only": 0}
 
     stats = {"matched": 0, "mismatched": 0, "ida_only": 0, "ours_only": 0}
 

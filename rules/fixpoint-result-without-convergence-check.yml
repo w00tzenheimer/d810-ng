@@ -41,10 +41,18 @@ severity: error
 files:
   - "src/d810/**/*.py"
 ignores:
-  # Engine implementations: these MUST be allowed to call themselves
-  # without the kwarg (the engine IS the kwarg's consumer).
+  # Engine implementation file with an internal fixpoint pass-through:
+  # `run_forward_fixpoint_on_mba(..., raise_on_nonconvergence=raise_on_nonconvergence)`
+  # passes the kwarg as a VARIABLE (forwarded from its own signature),
+  # not as the literal `True` the rule's regex looks for.  The wrapper
+  # is part of the engine surface so this is a lawful pass-through; the
+  # whole file is exempt to avoid a false-positive on that one line.
+  #
+  # NOTE: valrange_dataflow.py is intentionally NOT in this ignore list.
+  # It contains both the engine function (run_valrange_fixpoint) AND
+  # the non-engine validation helper (validate_against_ida) which is a
+  # real R1 consumer.  Both must satisfy the kwarg rule.
   - "src/d810/evaluator/hexrays_microcode/forward_dataflow.py"
-  - "src/d810/evaluator/hexrays_microcode/valrange_dataflow.py"
   # Future engine homes from the llvm-lisa-restructure plan
   - "src/d810/pre_analysis/data_flow/**/*.py"
   - "src/d810/analyses/data_flow/**/*.py"
