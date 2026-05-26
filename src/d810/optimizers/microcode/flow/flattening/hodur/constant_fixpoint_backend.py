@@ -21,6 +21,7 @@ from d810.capabilities.constant_fixpoint import (
     ConstantFixpointBackend,
     ConstantFixpointCapability,
 )
+from d810.ir.results import ConstantFixpointResult
 from d810.recon.flow.state_machine_analysis import run_snapshot_constant_fixpoint
 
 
@@ -31,7 +32,14 @@ class HodurConstantFixpointBackend:
         self,
         flow_graph: object,
         state_var_stkoff: int,
-    ) -> object:
+    ) -> ConstantFixpointResult:
+        # Return-position covariance: ConstantFixpointCapability.compute
+        # is `-> ConstantFixpointResult` (slice 9), so the concrete
+        # impl must return SAME-or-narrower.  `object` was wider and
+        # would have broken structural conformance.  Parameter
+        # `flow_graph: object` is fine because parameter positions are
+        # contravariant -- the Protocol accepts `Any` and the impl is
+        # free to declare it accepts `object`.
         return run_snapshot_constant_fixpoint(flow_graph, state_var_stkoff)
 
 
