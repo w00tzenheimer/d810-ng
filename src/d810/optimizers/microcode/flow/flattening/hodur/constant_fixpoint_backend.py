@@ -1,19 +1,17 @@
-"""Hodur constant-fixpoint backend boundary."""
+"""Hodur constant-fixpoint backend boundary.
+
+The ``ConstantFixpointBackend`` Protocol's canonical home is
+``d810.capabilities.constant_fixpoint`` (slice 3 of the
+llvm-lisa-restructure plan).  This module keeps the symbol importable
+from the old path for back-compat with the 7 existing import sites
+under ``hodur/`` and ``hodur/strategies/``.  New code should import
+from the canonical location.
+"""
 from __future__ import annotations
 
-from d810.core.typing import Protocol
+# Canonical home for ConstantFixpointBackend; re-exported below for back-compat.
+from d810.capabilities.constant_fixpoint import ConstantFixpointBackend
 from d810.recon.flow.state_machine_analysis import run_snapshot_constant_fixpoint
-
-
-class ConstantFixpointBackend(Protocol):
-    """Backend boundary for state-variable constant propagation evidence."""
-
-    def compute(
-        self,
-        flow_graph: object,
-        state_var_stkoff: int,
-    ) -> object:
-        """Compute constant propagation facts for a flow graph snapshot."""
 
 
 class HodurConstantFixpointBackend:
