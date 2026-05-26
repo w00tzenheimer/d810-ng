@@ -3,6 +3,24 @@
 This module defines the fundamental interfaces and data structures used throughout
 the d810 optimization framework. It promotes composition over inheritance by using
 Protocol-based interfaces instead of deep inheritance hierarchies.
+
+Slice 7 (llvm-lisa-restructure) note: this module previously imported
+``ida_hexrays`` solely to type-annotate ``OptimizationContext.mba`` as
+``ida_hexrays.mba_t`` and ``PatternMatchingRule.apply``'s ``ins``
+parameter as ``ida_hexrays.minsn_t``.  Audit found that
+``OptimizationContext`` is never instantiated anywhere in the codebase
+(zero ``OptimizationContext(...)`` call sites) and ``PatternMatchingRule``
+is abstract -- both annotations are purely Protocol-contract surface,
+not runtime-consumed types.  The annotations have been widened to
+``object`` / ``Any`` so this module is IDA-free at import time and the
+``OptimizationRule`` Protocol can be moved to a portable home (e.g.
+``d810.transforms/protocols.py``) in a sibling slice without dragging
+``import ida_hexrays`` into the portable layer.
+
+Concrete rule implementations (e.g. Hex-Rays microcode flow / instruction
+rules) continue to accept ``mba_t`` / ``minsn_t`` in their own
+narrower-typed methods; Protocol satisfaction is structural so the
+widening here does not constrain those implementations.
 """
 
 from __future__ import annotations
@@ -11,8 +29,6 @@ import abc
 from dataclasses import dataclass
 from d810.core.logging import D810Logger
 from d810.core.typing import Any, Dict, Protocol
-
-import ida_hexrays
 
 
 @dataclass(frozen=True)
@@ -24,13 +40,16 @@ class OptimizationContext:
     is explicitly provided.
 
     Attributes:
-        mba: The microcode array being optimized.
+        mba: The microcode array being optimized.  Annotated as ``object``
+            to keep the contract IDA-free; concrete callers pass an
+            ``ida_hexrays.mba_t`` in the Hex-Rays integration path and
+            an angr ``AILGraph`` / Ghidra graph in future backend paths.
         maturity: The current maturity level of the microcode.
         config: Configuration dictionary for optimization behavior.
         logger: Logger instance for the optimization pass.
         log_dir: Directory path for debug logs and artifacts.
     """
-    mba: ida_hexrays.mba_t
+    mba: object
     maturity: int
     config: Dict[str, Any]
     logger: D810Logger
@@ -124,7 +143,7 @@ class PatternMatchingRule(abc.ABC):
         """
         ...
 
-    def apply(self, context: OptimizationContext, ins: ida_hexrays.minsn_t) -> int:
+    def apply(self, context: OptimizationContext, ins: Any) -> int:
         """Applies the pattern matching rule to a single instruction.
 
         This method implements the common pattern matching and replacement logic
@@ -134,6 +153,9 @@ class PatternMatchingRule(abc.ABC):
         Args:
             context: The optimization context.
             ins: The microcode instruction to potentially optimize.
+                Annotated as ``Any`` to keep the contract IDA-free;
+                concrete Hex-Rays subclasses narrow this to
+                ``ida_hexrays.minsn_t`` in their own override signatures.
 
         Returns:
             1 if the instruction was modified, 0 otherwise.
