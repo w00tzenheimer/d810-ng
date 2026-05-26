@@ -14,25 +14,30 @@ This package must remain IDA-free at import time -- enforced by
 ``rules/no-live-ida-in-portable-core.yml`` and by import-linter's
 ``portable-core-no-ida`` contract.
 
-Scope discipline (slice 9):
+Scope discipline:
 
-* Only types that have a known consumer in this slice are landed here.
+* Slice 9: ``BlockHandle``, ``OperandHandle``, ``FlowGraphHandle``,
+  ``ConstantFixpointResult``.  Handles are opaque identity types (no
+  methods) so future capability moves have a portable counterpart
+  without forcing a premature graph/value/SSA representation.
   ``ConstantFixpointResult`` is lifted from the existing
   ``SnapshotConstantFixpointResult`` shape because
-  ``ConstantFixpointCapability.compute()`` needs to tighten its return
-  annotation off ``Any``.
-* Handles are landed as opaque identity types (no methods) so future
-  capability moves have a portable counterpart without forcing a
-  premature graph/value/SSA representation.
-* ``RedirectIntent`` and ``UseDefSafetyCapability`` redirect-arg
-  tightening are intentionally **deferred to slice 10** -- that work
-  touches multiple Hodur strategy call sites and the Hex-Rays
-  adjacency builder, so it does not belong in foundation scaffolding.
+  ``ConstantFixpointCapability.compute()`` needs to tighten its
+  return annotation off ``Any``.
+* Slice 10: ``RedirectGotoIntent``, ``RedirectBranchIntent``,
+  ``RedirectIntent`` union for tightening
+  ``UseDefSafetyCapability.redirect_use_def_violations`` off ``Any``.
+  The CFG-layer ``RedirectGoto`` / ``RedirectBranch`` types stay
+  where they are (they own construction-time diagnostics that don't
+  belong in IR); call sites convert via the
+  ``d810.cfg.graph_modification.to_redirect_intent`` helper at the
+  capability boundary.
 """
 
 from __future__ import annotations
 
 from .handles import BlockHandle, FlowGraphHandle, OperandHandle
+from .redirect import RedirectBranchIntent, RedirectGotoIntent, RedirectIntent
 from .results import ConstantFixpointResult
 
 __all__ = [
@@ -40,4 +45,7 @@ __all__ = [
     "ConstantFixpointResult",
     "FlowGraphHandle",
     "OperandHandle",
+    "RedirectBranchIntent",
+    "RedirectGotoIntent",
+    "RedirectIntent",
 ]

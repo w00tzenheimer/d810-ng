@@ -9,16 +9,24 @@ instruction stream, dominator tree over post-mod adjacency).  Future
 angr / Ghidra backends would implement this Protocol next to their
 own dominance + DU-chain analyses.
 
-``redirect_use_def_violations`` parameters are annotated as ``Any``
-to keep the ``d810.capabilities`` layer free of upward dependencies
-on ``d810.cfg`` (which is where ``FlowGraph`` / ``RedirectGoto`` /
-``RedirectBranch`` live today).  Concrete implementations may type
-themselves against the richer types: Protocol satisfaction is
-structural so the widened annotations here do not constrain
-consumers.
+``redirect_use_def_violations`` takes ``mod: RedirectIntent`` -- the
+portable IR-level intent type at ``d810.ir.redirect`` (slice 10 of
+the llvm-lisa-restructure plan).  Call sites convert their CFG-layer
+redirect (``RedirectGoto`` / ``RedirectBranch``) into the IR intent
+via ``d810.cfg.graph_modification.to_redirect_intent`` immediately
+before the capability call; the CFG types stay where they are
+because they own ``__post_init__`` construction diagnostics that do
+not belong in IR.
 
-The ``Any`` choice (vs ``object``) follows the same LSP-contravariance
-rationale documented in ``d810.capabilities.constant_fixpoint``.
+``live_function`` and ``pre_cfg`` stay ``Any`` -- ``d810.capabilities``
+must not import ``d810.cfg`` (where ``FlowGraph`` lives) or
+``ida_hexrays`` (where ``mba_t`` lives).  Protocol method parameter
+positions are contravariant, so a concrete impl typing them against
+``FlowGraph`` / ``mba_t`` structurally satisfies this contract.
+
+The ``Any`` choice (vs ``object``) on those two parameters follows
+the same LSP-contravariance rationale documented in
+``d810.capabilities.constant_fixpoint``.
 
 Slice 5 of the llvm-lisa-restructure plan; the canonical home for
 ``UseDefSafetyCapability``.  The old name ``UseDefSafetyBackend`` is
@@ -31,6 +39,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core.typing import Any, Protocol
+from d810.ir.redirect import RedirectIntent
 
 __all__ = ["SeveranceViolation", "UseDefSafetyCapability"]
 
@@ -76,24 +85,27 @@ class UseDefSafetyCapability(Protocol):
 
     def redirect_use_def_violations(
         self,
-        mod: Any,
+        mod: RedirectIntent,
         live_function: Any,
         pre_cfg: Any,
     ) -> tuple[SeveranceViolation, ...]:
         """Return use-def violations that the proposed redirect would cause.
 
         Args:
-            mod: The proposed CFG modification (e.g.
-                ``d810.cfg.graph_modification.RedirectGoto`` or
-                ``RedirectBranch``).  Annotated ``Any`` so the
-                capability layer does not import ``d810.cfg``.
+            mod: Portable redirect intent.  Construct via
+                ``d810.cfg.graph_modification.to_redirect_intent(mod)``
+                at the call site, where ``mod`` is the CFG-layer
+                ``RedirectGoto`` / ``RedirectBranch`` the caller will
+                also queue with ``DeferredGraphModifier`` if the
+                capability returns no violations.
             live_function: The live function representation the
                 backend uses to answer DU-chain queries
                 (``ida_hexrays.mba_t`` for the Hex-Rays backend;
                 an angr AIL function for a future angr backend).
+                ``Any`` for layer discipline.
             pre_cfg: Pre-modification CFG snapshot
-                (``d810.cfg.flowgraph.FlowGraph`` today).  Annotated
-                ``Any`` for the same layer-discipline reason as ``mod``.
+                (``d810.cfg.flowgraph.FlowGraph`` today).  ``Any`` for
+                the same layer-discipline reason as ``live_function``.
 
         Returns:
             A tuple of :class:`SeveranceViolation`s, empty if the

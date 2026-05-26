@@ -36,6 +36,7 @@ from d810.cfg.graph_modification import (
     RedirectBranch,
     RedirectGoto,
     ZeroStateWrite,
+    to_redirect_intent,
 )
 from d810.cfg.zero_state_write_emission import (
     ZsvSiteRequest,
@@ -365,7 +366,7 @@ def _filter_lfg_use_def_vetoes(
             continue
         try:
             violations = backend.redirect_use_def_violations(
-                modification,
+                to_redirect_intent(modification),
                 mba,
                 flow_graph,
             )
