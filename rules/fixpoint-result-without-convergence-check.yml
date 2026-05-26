@@ -15,23 +15,22 @@
 # That makes the rule a simple "call-must-contain-kwarg" pattern that
 # ast-grep handles cleanly via regex constraints on the call site.
 #
-# Lawful patterns:
-#     # Soundness-critical: pass raise_on_nonconvergence=True (preferred)
+# Lawful pattern (only one):
 #     result = run_forward_fixpoint(..., raise_on_nonconvergence=True)
 #     out = result.out_states[block]
 #
-#     # Diagnostic / best-effort: explicit converged check
-#     result = run_forward_fixpoint(...)
-#     if not result.converged:
-#         return SENTINEL
-#     out = result.out_states[block]
-#
-# The second form passes the rule because the regex check below ignores
-# calls that do NOT consume `.in_states` / `.out_states`.  This rule
-# does not enforce the explicit-check form; it enforces the much
-# simpler "if you don't pass the kwarg, you'd better not be reading
-# state from the result without checking converged".  Engineering
-# practice is to default to the kwarg.
+# This rule does NOT recognize the "explicit `result.converged` check"
+# form as lawful.  An earlier draft tried to implement that as an
+# alternative via ast-grep's relational matching (`inside.has` +
+# `not.inside.has` sharing metavariables), but that pattern does not
+# fire reliably under ast-grep 0.42.3, so we settled on the simpler
+# "kwarg-must-be-True" rule.  ALL non-engine callers of
+# `run_forward_fixpoint`, `run_forward_fixpoint_on_mba`, or
+# `run_valrange_fixpoint` must pass `raise_on_nonconvergence=True`
+# (and catch `FixpointDidNotConverge` to apply their fallback).
+# Diagnostic / best-effort callers should still pass the kwarg and
+# catch the exception with their existing degraded-result branch --
+# the explicit form is mandatory regardless of how the result is used.
 #
 # Tracking: docs/plans/2026-05-25-substrate-purity-static-rules.md (R1)
 
@@ -67,18 +66,26 @@ message: |
 
 rule:
   any:
-    # Bare-name call: `run_forward_fixpoint(...)` without the kwarg.
+    # Bare-name calls without the kwarg.
     - all:
         - pattern: run_forward_fixpoint($$$ARGS)
+        - not:
+            regex: "raise_on_nonconvergence\\s*=\\s*True"
+    - all:
+        - pattern: run_forward_fixpoint_on_mba($$$ARGS)
         - not:
             regex: "raise_on_nonconvergence\\s*=\\s*True"
     - all:
         - pattern: run_valrange_fixpoint($$$ARGS)
         - not:
             regex: "raise_on_nonconvergence\\s*=\\s*True"
-    # Module-qualified call: `mod.run_forward_fixpoint(...)` without the kwarg.
+    # Module-qualified calls without the kwarg.
     - all:
         - pattern: $MOD.run_forward_fixpoint($$$ARGS)
+        - not:
+            regex: "raise_on_nonconvergence\\s*=\\s*True"
+    - all:
+        - pattern: $MOD.run_forward_fixpoint_on_mba($$$ARGS)
         - not:
             regex: "raise_on_nonconvergence\\s*=\\s*True"
     - all:

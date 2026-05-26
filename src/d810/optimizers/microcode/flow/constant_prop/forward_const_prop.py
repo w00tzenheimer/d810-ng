@@ -19,6 +19,7 @@ import idaapi
 
 from d810.core import CythonMode, getLogger, typing
 from d810.evaluator.hexrays_microcode.forward_dataflow import (
+    FixpointDidNotConverge,
     build_constant_entry_state,
     run_forward_fixpoint_on_mba,
 )
@@ -540,13 +541,30 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             blk = mba.get_mblock(serial)
             return self._transfer_block(blk, in_state)
 
-        result = run_forward_fixpoint_on_mba(
-            mba,
-            entry_state=entry_state,
-            bottom={},
-            meet=self._meet_strategy.meet,
-            transfer=transfer,
-        )
+        # Soundness gate: pass raise_on_nonconvergence=True so a partial
+        # fixpoint surfaces as FixpointDidNotConverge rather than feeding
+        # partial constants into the constant-propagation rewriter.  The
+        # caller ``_slow_run_on_function`` already treats empty IN as "no
+        # work to do" via ``if not IN: return 0``, so returning empty
+        # dicts on non-convergence skips the optimization safely.
+        try:
+            result = run_forward_fixpoint_on_mba(
+                mba,
+                entry_state=entry_state,
+                bottom={},
+                meet=self._meet_strategy.meet,
+                transfer=transfer,
+                raise_on_nonconvergence=True,
+            )
+        except FixpointDidNotConverge as exc:
+            logger.warning(
+                "ForwardConstantPropagation: dataflow fixpoint did not "
+                "converge in %d iterations (max=%d); skipping rewrite "
+                "pass for this function",
+                exc.iterations,
+                exc.max_iterations,
+            )
+            return {}, {}
         return result.in_states, result.out_states
 
     def _get_sccp_overlay(self, mba: ida_hexrays.mba_t) -> typing.Optional[dict]:

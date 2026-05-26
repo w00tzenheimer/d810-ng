@@ -66,13 +66,14 @@ def test_severance_violation_is_frozen_dataclass_with_slots() -> None:
     )
     # Hashable + equal → safe to put in sets.
     assert {v1, v2} == {v1}
-    # Frozen → attribute assignment must fail.
-    try:
+    # Frozen → attribute assignment must fail with FrozenInstanceError
+    # (which is itself an AttributeError subclass).  Catch the specific
+    # type so unrelated exception classes can't mask a regression.
+    import dataclasses
+    import pytest
+
+    with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
         v1.src_block = 99  # type: ignore[misc]
-    except (AttributeError, Exception):
-        pass
-    else:
-        raise AssertionError("SeveranceViolation must be frozen")
 
 
 def test_duck_typed_stub_matches_capability_surface_statically() -> None:
