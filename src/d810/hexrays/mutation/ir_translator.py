@@ -193,6 +193,22 @@ def _operand_kind_from_hexrays(operand_type: int) -> OperandKind:
     return mapping.get(operand_type, OperandKind.UNKNOWN)
 
 
+def is_control_flow_opcode(opcode: int) -> bool:
+    """Return True if ``opcode`` is any Hex-Rays control-flow microcode op.
+
+    Covers gotos, conditional jumps (signed / unsigned / equality), indirect
+    jumps (``m_ijmp``), jump tables (``m_jtbl``), and direct / indirect calls
+    (``m_call`` / ``m_icall``).  Use this to ask "is this instruction control
+    flow?" without enumerating ``InsnKind`` cases at every call site.
+    """
+    if _branch_predicate_from_hexrays(opcode) is not None:
+        return True
+    for name in ("m_goto", "m_ijmp", "m_jtbl", "m_call", "m_icall"):
+        if _is_hexrays_opcode(opcode, name):
+            return True
+    return False
+
+
 def classify_live_insn_kind(insn: object) -> InsnKind | None:
     """Return backend-neutral instruction semantics for a live Hex-Rays insn."""
     try:
@@ -1262,6 +1278,7 @@ __all__ = [
     "IDAIRTranslator",
     "classify_live_insn_kind",
     "classify_live_operand_kind",
+    "is_control_flow_opcode",
     "capture_insn_snapshot",
     "capture_mop_snapshot",
     "lift",
