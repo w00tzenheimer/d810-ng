@@ -57,6 +57,14 @@ files:
   - "src/d810/cfg/flowgraph*.py"
   - "src/d810/cfg/lattice*.py"
   - "src/d810/cfg/snapshot*.py"
+  # Per-file additions (NOT whole-package; the parent package still has
+  # legitimate IDA-importing modules):
+  #   optimizers/core.py was de-coupled from IDA in slice 7
+  #   (Protocol scaffolding for OptimizationRule).  The rest of
+  #   d810.optimizers/ is intentionally NOT in this rule's scope --
+  #   concrete rules under microcode/, peephole/, etc. legitimately
+  #   import ida_hexrays.
+  - "src/d810/optimizers/core.py"
 ignores:
   - "src/d810/backends/**/*.py"
   - "src/d810/recon/_vendor/**/*.py"
