@@ -17,6 +17,5 @@ no stable portable home, and tightens once that home exists.
 from __future__ import annotations
 
 from .constant_fixpoint import ConstantFixpointBackend
-from .profile_gate import HodurProfileGateBackend
 
-__all__ = ["ConstantFixpointBackend", "HodurProfileGateBackend"]
+__all__ = ["ConstantFixpointBackend"]
