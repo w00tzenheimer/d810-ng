@@ -18,16 +18,23 @@ method parameters are contravariant, and a concrete
 ``compute(self, flow_graph: FlowGraph, ...)`` would NOT satisfy a
 Protocol method ``compute(self, flow_graph: object, ...)`` under a
 strict type-checker.  ``Any`` is the escape hatch.
+
+Naming note (slice 6): the canonical name is ``ConstantFixpointCapability``,
+matching the ``*Capability`` discipline established by slice 5's
+``UseDefSafetyCapability``.  The legacy name ``ConstantFixpointBackend``
+(the only capability shipped without the ``*Capability`` suffix, slice
+3) is preserved as a back-compat alias so the 7 prod consumers + 2
+test files don't need to update in this slice.
 """
 from __future__ import annotations
 
 from d810.core.typing import Any, Protocol
 
-__all__ = ["ConstantFixpointBackend"]
+__all__ = ["ConstantFixpointBackend", "ConstantFixpointCapability"]
 
 
-class ConstantFixpointBackend(Protocol):
-    """Backend boundary for state-variable constant propagation evidence."""
+class ConstantFixpointCapability(Protocol):
+    """Capability boundary for state-variable constant propagation evidence."""
 
     def compute(
         self,
@@ -56,3 +63,11 @@ class ConstantFixpointBackend(Protocol):
             location), this annotation tightens and consumers stop
             downcasting.
         """
+
+
+# Back-compat alias for the slice-3 name.  New code should import
+# ``ConstantFixpointCapability``.  This alias preserves the import path
+# used by the 7 Hodur strategy consumers, the substrate unit test, and
+# the system-runtime re-export test so they do not need to update in
+# this slice.
+ConstantFixpointBackend = ConstantFixpointCapability
