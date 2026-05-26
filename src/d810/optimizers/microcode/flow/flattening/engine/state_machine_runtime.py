@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.core.typing import Protocol
+from d810.families.state_machine_cff.protocols import (
+    StateMachineFamilyRuntimeServices,
+)
 
 from .runtime import (
     FamilyContext,
     FamilyPassResult,
-    FamilyRuntimePolicy,
     run_configured_family_pass,
 )
 
@@ -17,18 +18,6 @@ __all__ = [
     "StateMachineFamilyRuntimeServices",
     "run_state_machine_family_pass",
 ]
-
-
-class StateMachineFamilyRuntimeServices(Protocol):
-    """Services supplied by a concrete state-machine family profile."""
-
-    def runtime_policy(self, profile: object) -> FamilyRuntimePolicy: ...
-
-    def run_post_pipeline(
-        self,
-        profile: object,
-        family_result: FamilyPassResult,
-    ) -> int: ...
 
 
 @dataclass(frozen=True)

@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import abc
 
-from d810.core.typing import TYPE_CHECKING, Protocol, runtime_checkable
+from d810.core.typing import TYPE_CHECKING
+from d810.families.protocols import DetectionResult
 
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
@@ -14,21 +15,6 @@ if TYPE_CHECKING:
     )
 
 __all__ = ["CFFStrategyFamily", "DetectionResult"]
-
-
-@runtime_checkable
-class DetectionResult(Protocol):
-    """Result of a strategy family's detection phase."""
-
-    @property
-    def detected(self) -> bool:
-        """Whether the family's target obfuscation pattern was found."""
-        ...
-
-    @property
-    def description(self) -> str:
-        """Human-readable description of what was detected."""
-        ...
 
 
 class CFFStrategyFamily(abc.ABC):

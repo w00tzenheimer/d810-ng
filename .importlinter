@@ -36,6 +36,7 @@ layers =
     d810.ui
     d810.diagnostics
     d810.optimizers
+    d810.families
     d810.recon
     d810.backends
     d810.evaluator
@@ -130,3 +131,139 @@ forbidden_modules =
 # IoC registration use `importlib.import_module` to delegate to
 # d810.core.diag, so the static import graph has zero recognised
 # runtime -> core.diag edges.
+
+# ---------------------------------------------------------------------------
+# llvm-lisa-restructure migration contracts
+# ---------------------------------------------------------------------------
+# These contracts codify the target LLVM/LiSA package taxonomy
+# (docs/plans/recon-and-cfg-restructuring.md). They CURRENTLY FAIL
+# against cfg-recon-mainline because the target packages do not exist
+# yet AND because the current recon/ files import IDA. Each
+# restructure slice should shrink the failing-set; the migration is
+# complete when all four contracts are kept and the audit grep is
+# empty.
+#
+# ZERO ignore_imports entries are permitted on any of these contracts.
+# Layer violations are fixed by moving code, never by ignoring.
+
+[importlinter:contract:portable-core-no-ida]
+# Portable-core packages must not import live IDA / Hex-Rays
+# packages, even transitively, even at module-top, even lazily
+# inside a function. import-linter detects external-package imports
+# because `include_external_packages = True` is set above.
+#
+# source_modules lists ONLY packages that currently exist on
+# cfg-recon-mainline. As the restructure introduces new portable-core
+# packages (d810.analyses, d810.transforms, d810.passes, d810.ir,
+# d810.capabilities, d810.support, d810.pre_analysis), add them here
+# in the same slice that creates them. Adding a not-yet-existing
+# module to source_modules aborts import-linter entirely
+# ("Module 'd810.X' does not exist"), so the discipline is:
+# CREATE THE PACKAGE FIRST, then add it to this list.
+#
+# This contract intentionally OVERLAPS with the existing
+# `recon-core-no-hexrays` contract while the migration is in flight.
+# After the restructure, `recon-core-no-hexrays` retires.
+name = Portable-core packages must not import live IDA / Hex-Rays
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    d810.families
+    # source_modules lists ONLY packages that are currently clean.
+    # d810.recon is NOT here yet because it still legitimately imports
+    # IDA today; the migration meter for recon-side cleanup lives in
+    # the audit grep recipe and the `no-live-ida-in-portable-core`
+    # ast-grep rule (severity=warning).  As recon's analysis logic
+    # moves out into d810.analyses / d810.transforms / etc., those
+    # cleaned packages get appended here in the same slice that
+    # creates them.  Append `d810.recon` ITSELF only in the final
+    # cleanup slice once the audit grep returns zero for that package.
+    #
+    # When created and clean, append:
+    #     d810.pre_analysis
+    #     d810.analyses
+    #     d810.transforms
+    #     d810.passes
+    #     d810.ir
+    #     d810.support
+    #     d810.recon          # last; promotes the audit-grep meter
+forbidden_modules =
+    idaapi
+    ida_hexrays
+    idc
+    idautils
+    ida_kernwin
+    ida_loader
+    ida_funcs
+    ida_lines
+    ida_bytes
+    ida_name
+    idapro
+# No ignore_imports. Fix layer violations by moving code or by
+# lifting through d810.backends.<vendor>, never by ignoring.
+
+[importlinter:contract:portable-core-no-vendor-mutation]
+# Portable-core packages must not import the mutation half of any
+# vendor backend. They may import abstract capability Protocols and
+# lifted IR types; they may not call vendor-specific mutation
+# entry points.
+#
+# source_modules lists ONLY packages that are currently clean.  Legacy
+# violators (d810.recon.microcode_dump -> d810.hexrays.mutation) are
+# tracked via the audit grep recipe during migration; their cleanup
+# slice will append the cleaned package here.
+name = Portable-core packages must not import vendor mutation surfaces
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    d810.families
+    # When created and clean, append:
+    #     d810.pre_analysis
+    #     d810.analyses
+    #     d810.transforms
+    #     d810.passes
+    #     d810.ir
+    #     d810.recon          # last; promotes the audit-grep meter
+    #     d810.support
+forbidden_modules =
+    d810.hexrays.mutation
+    # When created, append:
+    #     d810.backends.hexrays.mutation
+
+[importlinter:contract:backends-only-vendor-coupling]
+# Non-vendor packages must not import third-party disassembler /
+# analysis backends (angr, pyvex, claripy, ailment, ghidra). IDA
+# packages (idaapi, ida_hexrays, ...) are covered by the layer-
+# specific contracts above plus `actions-no-direct-ida-imports`.
+#
+# This contract locks the discipline before alternative backends
+# materialize: a stray `import angr` anywhere in the existing tree
+# fails the contract. After `d810.backends.angr` is created, IT must
+# be excluded from source_modules and its angr usage allowed.
+name = Only d810.backends.<vendor> may import third-party backends
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    d810.families
+    d810.optimizers
+    d810.evaluator
+    d810.mba
+    d810.cfg
+    d810.recon
+    # When created, append:
+    #     d810.analyses
+    #     d810.transforms
+    #     d810.passes
+forbidden_modules =
+    angr
+    pyvex
+    claripy
+    ailment
+    ghidra
+# Notes:
+# - d810.hexrays is intentionally NOT in source_modules: it is the
+#   IDA-coupled HIGH layer and may freely use ida_*. (It does not
+#   today import angr/Ghidra, and shouldn't start.)
+# - d810.backends is intentionally NOT in source_modules: vendor
+#   subpackages there (e.g. a future d810.backends.angr) MUST be
+#   able to import their vendor module.

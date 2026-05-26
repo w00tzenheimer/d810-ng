@@ -522,6 +522,18 @@ class Scanner:
                 )
                 return
 
+        # Bind the module as an attribute of its parent package. Python's
+        # normal import machinery does this inside _find_and_load_unlocked(),
+        # but loader.exec_module() does not.
+        parent_name, _, child_name = module.__name__.rpartition(".")
+        if parent_name and child_name:
+            parent = sys.modules.get(parent_name)
+            if parent is not None:
+                try:
+                    setattr(parent, child_name, module)
+                except (AttributeError, TypeError):
+                    pass
+
         if callback is not None:
             callback(module)
 

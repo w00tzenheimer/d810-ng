@@ -1,10 +1,17 @@
 """Tests for the CFF strategy family abstraction."""
 from __future__ import annotations
 
+from d810.families.protocols import DetectionResult
+from d810.families.state_machine_cff.protocols import (
+    StateMachineFamilyRuntimeServices,
+)
 from d810.optimizers.microcode.flow.flattening import engine
 from d810.optimizers.microcode.flow.flattening.engine.family import (
     CFFStrategyFamily,
-    DetectionResult,
+    DetectionResult as EngineDetectionResult,
+)
+from d810.optimizers.microcode.flow.flattening.engine.state_machine_runtime import (
+    StateMachineFamilyRuntimeServices as EngineStateMachineFamilyRuntimeServices,
 )
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
@@ -79,6 +86,15 @@ class StubFamily(CFFStrategyFamily):
 def test_engine_package_re_exports_family_types() -> None:
     assert engine.CFFStrategyFamily is CFFStrategyFamily
     assert engine.DetectionResult is DetectionResult
+    assert EngineDetectionResult is DetectionResult
+    assert (
+        engine.StateMachineFamilyRuntimeServices
+        is StateMachineFamilyRuntimeServices
+    )
+    assert (
+        EngineStateMachineFamilyRuntimeServices
+        is StateMachineFamilyRuntimeServices
+    )
 
 
 def test_detection_result_protocol_shape() -> None:
