@@ -25,12 +25,20 @@ language: python
 # warning count.  When the count reaches zero, promote severity to ERROR
 # in the migration's final cleanup slice.
 #
-# Until promoted, ALL violations are ALSO covered by the
-# `portable-core-no-ida` import-linter contract, which is a separate
-# gate and continues to be BROKEN at the same sites.  The two-gate
-# overlap is intentional: import-linter is the load-bearing meter;
-# ast-grep is the noise channel during migration and the strict gate
-# after.
+# This rule IS the load-bearing migration meter during the cleanup
+# window.  The companion `portable-core-no-ida` import-linter contract
+# is currently KEPT because its `source_modules` lists ONLY packages
+# that are already clean (d810.families, d810.capabilities); legacy
+# violators (d810.recon, etc.) are intentionally OUT of that contract's
+# scope until they get cleaned, at which point the slice that cleans
+# them appends them to the contract's `source_modules` and from that
+# point on the contract gates the newly-clean code.
+#
+# Secondary check: the audit `rg` recipe in
+# `docs/plans/recon-and-cfg-restructuring.md` (`## Validation Gate
+# Per Slice`) catches lazy in-function and aliased IDA imports that
+# this rule's `import` patterns may miss.  The two channels (ast-grep
+# warnings + audit grep) should converge to zero together.
 severity: warning
 
 files:
