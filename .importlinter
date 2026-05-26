@@ -43,6 +43,7 @@ layers =
     d810.hexrays
     d810.mba
     d810.cfg
+    d810.capabilities
     d810.core
     d810.errors
 
@@ -168,6 +169,7 @@ name = Portable-core packages must not import live IDA / Hex-Rays
 type = forbidden
 allow_indirect_imports = True
 source_modules =
+    d810.capabilities
     d810.families
     # source_modules lists ONLY packages that are currently clean.
     # d810.recon is NOT here yet because it still legitimately imports
@@ -216,6 +218,7 @@ name = Portable-core packages must not import vendor mutation surfaces
 type = forbidden
 allow_indirect_imports = True
 source_modules =
+    d810.capabilities
     d810.families
     # When created and clean, append:
     #     d810.pre_analysis
@@ -244,6 +247,7 @@ name = Only d810.backends.<vendor> may import third-party backends
 type = forbidden
 allow_indirect_imports = True
 source_modules =
+    d810.capabilities
     d810.families
     d810.optimizers
     d810.evaluator
