@@ -9,6 +9,21 @@ reconstruction now also uses it as a safety gate before applying redirects that
 would bypass semantic payload blocks.  Callers decide whether a reported
 violation is fatal for their strategy.
 
+Slice 5 of the llvm-lisa-restructure plan: the abstract capability Protocol
+``UseDefSafetyCapability`` and the portable result type
+``SeveranceViolation`` were moved to ``d810.capabilities.use_def_safety``.
+This module keeps:
+
+  * the Hex-Rays concrete implementation (``HexRaysUseDefSafetyBackend``)
+  * the live ``ida_hexrays`` algorithm helpers
+    (``_collect_stkvar_defs_in_block``, ``_build_post_mod_adjacency``,
+    ``check_redirect_severs_use_def``)
+  * back-compat re-exports of ``SeveranceViolation`` and the legacy
+    name ``UseDefSafetyBackend`` (alias of ``UseDefSafetyCapability``)
+    so the two existing Hodur consumers
+    (``hodur/strategies/handler_chain_composer.py``,
+    ``hodur/strategies/linearized_flow_graph.py``) do not need to update.
+
 Algorithm
 ---------
 
@@ -30,15 +45,18 @@ Returns an empty tuple when no violations exist.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import ida_hexrays
 
+# Canonical home for the abstract capability + portable result type;
+# re-exported below for back-compat with the existing Hodur consumers.
+from d810.capabilities.use_def_safety import (
+    SeveranceViolation,
+    UseDefSafetyCapability,
+)
 from d810.cfg.dominator import compute_dom_tree
 from d810.cfg.flowgraph import FlowGraph
 from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
 from d810.core.logging import getLogger
-from d810.core.typing import Protocol
 from d810.evaluator.hexrays_microcode.chains import (
     UseSite,
     find_all_uses_of_stkvar,
@@ -47,46 +65,23 @@ from d810.evaluator.hexrays_microcode.chains import (
 logger = getLogger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
-class SeveranceViolation:
-    """A single use-def dominance severance.
-
-    A violation indicates that after applying the proposed redirect,
-    a definition in :attr:`src_block` would no longer dominate a use
-    at :attr:`use_block` for the stack variable identified by
-    ``(var_stkoff, var_size)``.
-
-    Attributes:
-        src_block: Block serial that defines the stack variable.
-        new_target: New successor target after the redirect.
-        var_stkoff: Stack offset of the affected variable.
-        var_size: Operand size in bytes.
-        use_block: Block serial of the orphaned use.
-        use_ea: Effective address of the orphaned use instruction.
-    """
-
-    src_block: int
-    new_target: int
-    var_stkoff: int
-    var_size: int
-    use_block: int
-    use_ea: int
-
-
-class UseDefSafetyBackend(Protocol):
-    """Backend boundary for live use-def redirect safety checks."""
-
-    def redirect_use_def_violations(
-        self,
-        mod: RedirectGoto | RedirectBranch,
-        live_function: object,
-        pre_cfg: FlowGraph,
-    ) -> tuple[SeveranceViolation, ...]:
-        """Return live use-def violations that would be caused by ``mod``."""
+# Back-compat alias for the pre-slice-5 name.  New code should import
+# ``UseDefSafetyCapability`` from ``d810.capabilities.use_def_safety``
+# directly.  This alias preserves the import path used by Hodur
+# strategies (``hodur/strategies/handler_chain_composer.py`` etc.) so
+# they do not need to be updated in the same slice.
+UseDefSafetyBackend = UseDefSafetyCapability
 
 
 class HexRaysUseDefSafetyBackend:
-    """Use Hex-Rays live microcode to answer redirect use-def safety queries."""
+    """Use Hex-Rays live microcode to answer redirect use-def safety queries.
+
+    Concrete implementation of :class:`UseDefSafetyCapability` for the
+    Hex-Rays backend.  Stays in ``evaluator/hexrays_microcode/``
+    because the algorithm requires live ``ida_hexrays`` access (DU
+    chains via ``find_all_uses_of_stkvar``, live ``minsn_t`` stream,
+    dominator tree over the post-modification adjacency).
+    """
 
     def redirect_use_def_violations(
         self,
@@ -205,6 +200,7 @@ def check_redirect_severs_use_def(
 __all__ = [
     "HexRaysUseDefSafetyBackend",
     "SeveranceViolation",
-    "UseDefSafetyBackend",
+    "UseDefSafetyBackend",  # back-compat alias of UseDefSafetyCapability
+    "UseDefSafetyCapability",  # re-export of canonical capability
     "check_redirect_severs_use_def",
 ]
