@@ -1,0 +1,59 @@
+# Locks the architectural decision from the recon-to-analysis P3 fix:
+# `register_live_lifter()` (and any other `register_live_*` side-effect
+# registration that installs a vendor-coupled adapter onto a portable
+# collector) must be called only from files under `src/d810/backends/`.
+#
+# Why: the lifter pattern (portable hook + backend-side registration)
+# only works when the registration side-effect comes from a layer
+# allowed to import the vendor module. Calling it from anywhere else
+# hides the coupling and breaks the backend-swappability that the
+# llvm-lisa-restructure architecture is designed for.
+#
+# This rule CURRENTLY PASSES on cfg-recon-mainline because no
+# register_live_lifter call exists yet — the portable hook lives on
+# the recon-to-analysis branch. The rule lands here as a gate for the
+# moment that hook gets ported back as part of the restructure.
+#
+# Tracking: docs/plans/2026-05-25-substrate-purity-static-rules.md (R4)
+#           docs/plans/recon-and-cfg-restructuring.md (pre-flight #4)
+
+id: register-live-lifter-only-in-backends
+language: python
+severity: error
+
+# Inverted scope: scan everywhere EXCEPT backends/. Legitimate calls
+# live under backends/<vendor>/; any call outside that subtree is a
+# layering violation.
+files:
+  - "src/d810/**/*.py"
+ignores:
+  - "src/d810/backends/**/*.py"
+  - "tests/**"
+
+message: |
+  register_live_lifter() / register_live_* installs a vendor-specific
+  adapter on a portable collector. By convention, those adapters
+  live exactly under `d810/backends/<domain>/<vendor>.py` (e.g.
+  `backends/hexrays/lifter.py`, `backends/angr/lifter.py`,
+  `backends/ghidra/lifter.py`).
+
+  Calling register_live_* from any other location hides vendor
+  coupling in the wrong layer and prevents alternative backends
+  from coexisting cleanly.
+
+rule:
+  any:
+    - pattern: register_live_lifter($$$)
+    - pattern: $MOD.register_live_lifter($$$)
+    - pattern: register_live_capability($$$)
+    - pattern: $MOD.register_live_capability($$$)
+    - pattern: register_live_backend($$$)
+    - pattern: $MOD.register_live_backend($$$)
+
+note: |
+  See `docs/plans/2026-05-25-substrate-purity-static-rules.md` rule R4.
+
+  The recon-to-analysis P3 review caught the first lifter at the
+  wrong path (`analysis/facts/collectors/induction_carrier_live_lifter.py`);
+  it now lives at `d810/backends/facts/ida.py`. This rule prevents
+  the same mistake on the next backend (angr / Ghidra).

@@ -1,0 +1,78 @@
+# Catches the soundness gap the recon-to-analysis review surfaced:
+# a `FixpointResult` is bound to a variable and its `.out_states` /
+# `.in_states` are read without an intervening `.converged` check.
+# A partial-iteration fixpoint can drive return-carrier, DSVE, or
+# constant-fold decisions and corrupt downstream analyses.
+#
+# This rule CURRENTLY FAILS on cfg-recon-mainline at:
+#   src/d810/evaluator/hexrays_microcode/terminal_return_proof.py:~404
+#   src/d810/evaluator/hexrays_microcode/dead_state_variable_backend.py:~155
+#
+# Migration target: the rule reports zero hits.
+#
+# Lawful patterns:
+#     result = run_forward_fixpoint(...)
+#     if not result.converged:
+#         return ...
+#     out = result.out_states[block]
+#
+#     # or
+#     result = run_forward_fixpoint(..., raise_on_nonconvergence=True)
+#     out = result.out_states[block]
+#
+# Tracking: docs/plans/2026-05-25-substrate-purity-static-rules.md (R1)
+
+id: fixpoint-result-without-convergence-check
+language: python
+severity: error
+
+files:
+  - "src/d810/**/*.py"
+ignores:
+  - "src/d810/pre_analysis/data_flow/**/*.py"   # engine implementation
+  - "src/d810/analyses/data_flow/**/*.py"        # future engine implementation
+  - "tests/**"
+
+message: |
+  FixpointResult.out_states / in_states reads soundness-critical data.
+  The fixpoint may have hit max_iterations and not converged; consuming
+  the state without checking `result.converged` propagates partial
+  facts and can corrupt return-carrier, DSVE, or constant-fold
+  decisions.
+
+  Pass `raise_on_nonconvergence=True` to the fixpoint call, OR check
+  `result.converged` and fail closed (return existing no-result
+  sentinel, log + degrade, or raise) before reading state.
+
+rule:
+  any:
+    - pattern: $RESULT.out_states[$KEY]
+    - pattern: $RESULT.out_states.get($$$)
+    - pattern: $RESULT.in_states[$KEY]
+    - pattern: $RESULT.in_states.get($$$)
+  inside:
+    kind: function_definition
+    has:
+      stopBy: end
+      any:
+        - pattern: $RESULT = run_forward_fixpoint($$$)
+        - pattern: $RESULT = run_valrange_fixpoint($$$)
+        - pattern: $RESULT = $MOD.run_forward_fixpoint($$$)
+        - pattern: $RESULT = $MOD.run_valrange_fixpoint($$$)
+  not:
+    inside:
+      kind: function_definition
+      has:
+        stopBy: end
+        pattern: $RESULT.converged
+
+note: |
+  See `docs/plans/2026-05-25-substrate-purity-static-rules.md` rule R1.
+
+  The recon-to-analysis review caught two consumers that ignored the
+  flag and shipped:
+    terminal_return_proof.py:_resolve_carrier_via_reaching_defs
+    dead_state_variable_backend._run_valrange_fixpoint
+  Both have been fixed on the `recon-to-analysis` branch but not on
+  `cfg-recon-mainline` (this rule is the gate for that fix landing
+  again in the llvm-lisa-restructure work).

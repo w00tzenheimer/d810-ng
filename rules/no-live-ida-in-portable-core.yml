@@ -1,0 +1,119 @@
+# Forbids live IDA / Hex-Rays imports in the portable-core layers of
+# the target llvm-lisa-restructure layout.
+#
+# Successor to `no-live-hexrays-in-pure-cfg.yml` (which scopes only
+# `src/d810/cfg/**`) and the staged
+# `no-live-ida-in-pre-analysis-staged.yml` that landed on the
+# recon-to-analysis branch. This rule scopes to BOTH the current
+# pre-restructure layout (recon/, parts of cfg/) AND the target
+# layout (analyses/, transforms/, passes/, ir/, capabilities/,
+# support/) so it fires the same way before and after each slice.
+#
+# This rule CURRENTLY FAILS on cfg-recon-mainline. The failing-file
+# count is the migration progress meter for the
+# llvm-lisa-restructure work. Target: zero hits.
+#
+# Tracking: docs/plans/recon-and-cfg-restructuring.md (Risk Register,
+#           Validation Gate Per Slice, Suggested Landing Sequence)
+
+id: no-live-ida-in-portable-core
+language: python
+# Severity is WARNING during the llvm-lisa-restructure migration so the
+# pre-commit hook doesn't block slice commits while violations exist in
+# legacy packages (d810.recon, parts of d810.cfg) by design.  Each slice
+# moves analysis logic out of those legacy packages and reduces the
+# warning count.  When the count reaches zero, promote severity to ERROR
+# in the migration's final cleanup slice.
+#
+# Until promoted, ALL violations are ALSO covered by the
+# `portable-core-no-ida` import-linter contract, which is a separate
+# gate and continues to be BROKEN at the same sites.  The two-gate
+# overlap is intentional: import-linter is the load-bearing meter;
+# ast-grep is the noise channel during migration and the strict gate
+# after.
+severity: warning
+
+files:
+  # Both target portable-core packages (LLVM/LiSA taxonomy from the
+  # plan) AND current pre-restructure portable-core candidate packages.
+  # The legacy entries (recon, pre_analysis, cfg/flowgraph) drive the
+  # warning count down as the migration progresses.
+  - "src/d810/support/**/*.py"
+  - "src/d810/ir/**/*.py"
+  - "src/d810/capabilities/**/*.py"
+  - "src/d810/analyses/**/*.py"
+  - "src/d810/transforms/**/*.py"
+  - "src/d810/passes/**/*.py"
+  - "src/d810/recon/**/*.py"
+  - "src/d810/pre_analysis/**/*.py"
+  - "src/d810/cfg/flowgraph*.py"
+  - "src/d810/cfg/lattice*.py"
+  - "src/d810/cfg/snapshot*.py"
+ignores:
+  - "src/d810/backends/**/*.py"
+  - "src/d810/recon/_vendor/**/*.py"
+  - "tests/**"
+
+message: |
+  Portable-core layers (support, ir, capabilities, analyses,
+  transforms, passes; plus current portable-core candidate files under
+  recon/ and cfg/) must NOT import live IDA / Hex-Rays APIs
+  (idaapi, ida_hexrays, idc, idautils, ida_*).
+
+  Portable layers consume the semantic IR from `d810.ir`
+  (FlowGraph / BlockSnapshot / InsnSnapshot / MopSnapshot) plus
+  the OperandKind / InsnKind / BranchPredicate enums, AND
+  dependency-injected capability protocols from `d810.capabilities`.
+
+  Vendor lifts and capability implementations live in
+  `d810/backends/<vendor>/lifter.py` and
+  `d810/backends/<vendor>/capabilities.py`.
+
+rule:
+  any:
+    # Module-level imports
+    - pattern: import idaapi
+    - pattern: import ida_hexrays
+    - pattern: import idc
+    - pattern: import idautils
+    - pattern: import ida_$MOD
+    - pattern: from idaapi import $$$
+    - pattern: from ida_hexrays import $$$
+    - pattern: from idc import $$$
+    - pattern: from idautils import $$$
+    - pattern: from ida_$MOD import $$$
+    # Aliased forms
+    - pattern: import idaapi as $ALIAS
+    - pattern: import ida_hexrays as $ALIAS
+    - pattern: import idc as $ALIAS
+    - pattern: import ida_$MOD as $ALIAS
+
+note: |
+  Three lawful fixes (decision tree from the Audit Rubric):
+
+  (a) Already covered by the snapshot IR
+      Rewrite to consume BlockSnapshot / InstructionSnapshot fields
+      and the OperandKind / InsnKind / BranchPredicate enums.
+
+  (b) Snapshot is missing semantic information
+      Extend BlockSnapshot / InsnSnapshot / MopSnapshot with the
+      needed field; backend lifters populate it. One-time IR
+      investment.
+
+  (c) Needs a capability protocol
+      Add a semantic Protocol to `d810/capabilities/` (e.g.
+      ValRangeCapability, DefUseCapability); implement in
+      `backends/<vendor>/capabilities.py`; inject via composition
+      root.
+
+  (d) Genuinely vendor-irreducible
+      The file is not portable-core. Relocate to a HIGH module
+      or `backends/<vendor>/mutation.py`.
+
+  HONEST AUDIT (catches lazy in-function imports this rule's `files:`
+  glob does not see at definition time):
+
+      rg -nP '(?:^|\s+)(import|from)\s+(idaapi|ida_\w+|idc|idautils)\b' \
+         src/d810/{support,ir,capabilities,analyses,transforms,passes,recon,pre_analysis}/
+
+  The rule and the audit grep must converge to empty together.

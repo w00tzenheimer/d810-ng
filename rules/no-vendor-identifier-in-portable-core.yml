@@ -1,0 +1,77 @@
+# Catches IDA vendor identifier references (ihr.m_add, ihr.mop_S,
+# MMAT_*, MBL_*, BLT_*, IPROP_*) inside the portable-core layers —
+# even when they appear via TYPE_CHECKING-imported or aliased modules,
+# which the import-statement rule (no-live-ida-in-portable-core) won't
+# catch.
+#
+# This is the residue case: a portable-core file removes the runtime
+# `import ida_hexrays` but keeps a TYPE_CHECKING alias and continues
+# to reference `ihr.m_add` inside the function body. The architectural
+# coupling stays even though the static-import check passes.
+#
+# This rule CURRENTLY FAILS on cfg-recon-mainline. Migration target:
+# zero hits across portable-core packages.
+#
+# Tracking: docs/plans/2026-05-25-substrate-purity-static-rules.md (R3)
+#           docs/plans/recon-and-cfg-restructuring.md (pre-flight #1)
+
+id: no-vendor-identifier-in-portable-core
+language: python
+severity: warning   # promote to error after false-positive triage
+
+files:
+  # Current portable-core candidate packages on cfg-recon-mainline
+  - "src/d810/recon/**/*.py"
+  - "src/d810/cfg/flowgraph*.py"
+  # Future portable-core packages from the recon-and-cfg-restructuring plan
+  - "src/d810/analyses/**/*.py"
+  - "src/d810/transforms/**/*.py"
+  - "src/d810/passes/**/*.py"
+  - "src/d810/ir/**/*.py"
+  - "src/d810/capabilities/**/*.py"
+  - "src/d810/support/**/*.py"
+  - "src/d810/pre_analysis/**/*.py"
+ignores:
+  # The vendor backend lifter is the legitimate location for these refs.
+  - "src/d810/backends/**/*.py"
+  - "tests/**"
+
+message: |
+  Portable-core files must not reference IDA vendor identifiers
+  (m_*, mop_*, MMAT_*, MBL_*, BLT_*, IPROP_*) even via
+  TYPE_CHECKING-imported or aliased modules. The vendor name in the
+  source tree is itself the architectural coupling that prevents
+  swapping IDA for angr / Ghidra / MLIR.
+
+  Lift vendor constants in `d810/backends/<vendor>/lifter.py` and
+  consume the normalized snapshot fields downstream:
+      insn.opcode_name == "m_add"        # not ihr.m_add
+      mop.kind == "mop_S"                # not ihr.mop_S
+      maturity == "MMAT_GLBOPT1"         # not ihr.MMAT_GLBOPT1
+
+rule:
+  any:
+    # Direct ida_hexrays / idaapi module attribute access
+    - pattern: ida_hexrays.$CONST
+    - pattern: idaapi.$CONST
+    # Aliased module attribute access — constrained to known IDA
+    # alias names to avoid false positives on unrelated identifiers.
+    - all:
+        - any:
+            - pattern: $ALIAS.m_$OP        # m_add, m_sub, m_jz, m_mov, m_goto, m_stx, m_xdu, ...
+            - pattern: $ALIAS.mop_$T       # mop_S, mop_n, mop_d, mop_r, mop_b, mop_l, ...
+            - pattern: $ALIAS.MMAT_$M      # MMAT_GENERATED, MMAT_GLBOPT1, MMAT_LVARS, ...
+            - pattern: $ALIAS.MBL_$F       # MBL_KEEP, MBL_DEAD, ...
+            - pattern: $ALIAS.BLT_$K       # BLT_STOP, BLT_1WAY, BLT_NWAY, ...
+            - pattern: $ALIAS.IPROP_$P     # IPROP_PERSIST, IPROP_VOLATILE, ...
+        - has:
+            kind: identifier
+            regex: "^(ihr|_ihr|ida|_ida|_idaapi|ida_hexrays|idaapi|hx|_hx)$"
+
+note: |
+  See `docs/plans/2026-05-25-substrate-purity-static-rules.md` rule R3.
+
+  The current rule severity is `warning` to allow false-positive
+  triage during the first slices of the llvm-lisa-restructure
+  migration. Promote to `error` once the portable-core packages are
+  populated and the false-positive set is empty.
