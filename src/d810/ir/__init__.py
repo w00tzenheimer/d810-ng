@@ -32,6 +32,16 @@ Scope discipline:
   belong in IR); call sites convert via the
   ``d810.cfg.graph_modification.to_redirect_intent`` helper at the
   capability boundary.
+* Axis-C B2 prep: ``PredicateKind`` + ``ControlTransferKind`` -- the
+  first slice of the backend-neutral semantic-operation vocabulary.
+  Recon-side files normalize their ``ida_hexrays.m_jbe`` / ``m_jtbl``
+  / ``m_goto`` etc. comparisons through the adapter functions in
+  ``d810.hexrays.mutation.ir_translator`` (``classify_branch_predicate``,
+  ``classify_control_transfer``) so they only see portable enum values.
+  Other semantic families (``ValueOpKind``, ``MemoryOpKind``,
+  ``FlagComputationKind``, ``ConversionKind``, ``CallKind``, etc.) are
+  named in the ``d810.ir.semantics`` docstring but NOT implemented yet
+  -- add them incrementally when consumers need them.
 """
 
 from __future__ import annotations
@@ -39,12 +49,15 @@ from __future__ import annotations
 from .handles import BlockHandle, FlowGraphHandle, OperandHandle
 from .redirect import RedirectBranchIntent, RedirectGotoIntent, RedirectIntent
 from .results import ConstantFixpointResult
+from .semantics import ControlTransferKind, PredicateKind
 
 __all__ = [
     "BlockHandle",
     "ConstantFixpointResult",
+    "ControlTransferKind",
     "FlowGraphHandle",
     "OperandHandle",
+    "PredicateKind",
     "RedirectBranchIntent",
     "RedirectGotoIntent",
     "RedirectIntent",

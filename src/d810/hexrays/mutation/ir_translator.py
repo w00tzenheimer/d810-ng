@@ -37,6 +37,7 @@ from d810.cfg.flowgraph import (
     OperandKind,
 )
 from d810.cfg.flowgraph import MopSnapshot as CfgMopSnapshot
+from d810.ir.semantics import ControlTransferKind, PredicateKind
 from d810.cfg.plan import (
     ExecutionPolicy,
     LegacyBlockOperation,
@@ -221,6 +222,126 @@ def classify_live_operand_kind(mop: object) -> OperandKind | None:
     """Return backend-neutral operand semantics for a live Hex-Rays operand."""
     try:
         return _operand_kind_from_hexrays(int(getattr(mop, "t")))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Portable semantic-IR adapter (Hex-Rays mcode_t -> d810.ir.semantics enums)
+# ---------------------------------------------------------------------------
+#
+# These functions are the Hex-Rays side of the backend-neutral semantic
+# vocabulary defined in `d810.ir.semantics`.  They take a live Hex-Rays
+# instruction and return a portable kind enum -- so consumers in
+# `d810.recon` and elsewhere can branch on `PredicateKind.ULT` /
+# `ControlTransferKind.GOTO` without learning `m_jb` / `m_goto` / the
+# numeric mcode_t opcode values.  The mapping below is the ONLY place
+# the project ties Hex-Rays opcode names to portable semantics.
+#
+# Implementation scope: minimum-viable for current axis-C consumers.
+# Add new family enums + adapter functions in lockstep with the
+# consumers that need them; do NOT preload all of mcode_t.
+#
+# All lookups go through `is_hexrays_opcode(opcode, "m_X")` so the
+# vendor names live as STRING LITERALS (the
+# `no-vendor-identifier-in-portable-core` ast-grep rule targets
+# attribute access on aliased ida_hexrays / idaapi modules, not
+# string contents).
+
+
+def _predicate_kind_from_hexrays(opcode: int) -> PredicateKind | None:
+    """Map a Hex-Rays jump-or-set opcode int to its portable predicate.
+
+    Covers BOTH conditional branches (``m_jX``) and byte-materialized
+    predicates (``m_setX``) -- they share the predicate semantic;
+    the call site separately decides "branch taken" vs "byte
+    materialized".  ``m_jcnd`` (boolean-test branch on a value) maps
+    to ``PredicateKind.TRUTHY``.
+
+    Returns ``None`` for non-predicate opcodes.
+    """
+    opcode = int(opcode)
+    mapping = (
+        # Equality
+        ("m_jz", PredicateKind.EQ),
+        ("m_setz", PredicateKind.EQ),
+        ("m_jnz", PredicateKind.NE),
+        ("m_setnz", PredicateKind.NE),
+        # Unsigned
+        ("m_jae", PredicateKind.UGE),
+        ("m_setae", PredicateKind.UGE),
+        ("m_ja", PredicateKind.UGT),
+        ("m_seta", PredicateKind.UGT),
+        ("m_jbe", PredicateKind.ULE),
+        ("m_setbe", PredicateKind.ULE),
+        ("m_jb", PredicateKind.ULT),
+        ("m_setb", PredicateKind.ULT),
+        # Signed
+        ("m_jge", PredicateKind.SGE),
+        ("m_setge", PredicateKind.SGE),
+        ("m_jg", PredicateKind.SGT),
+        ("m_setg", PredicateKind.SGT),
+        ("m_jle", PredicateKind.SLE),
+        ("m_setle", PredicateKind.SLE),
+        ("m_jl", PredicateKind.SLT),
+        ("m_setl", PredicateKind.SLT),
+        # Truthiness
+        ("m_jcnd", PredicateKind.TRUTHY),
+    )
+    for name, kind in mapping:
+        if is_hexrays_opcode(opcode, name):
+            return kind
+    return None
+
+
+def _control_transfer_from_hexrays(opcode: int) -> ControlTransferKind | None:
+    """Map a Hex-Rays control-flow opcode int to its transfer kind.
+
+    Covers gotos, conditional branches, jump tables, indirect jumps,
+    and returns.  Calls (``m_call`` / ``m_icall``) are explicitly NOT
+    included -- they'll get their own ``CallKind`` family when a
+    consumer needs them.
+
+    Returns ``None`` for non-transfer opcodes.
+    """
+    opcode = int(opcode)
+    if is_hexrays_opcode(opcode, "m_goto"):
+        return ControlTransferKind.GOTO
+    if is_hexrays_opcode(opcode, "m_jtbl"):
+        return ControlTransferKind.TABLE_BRANCH
+    if is_hexrays_opcode(opcode, "m_ijmp"):
+        return ControlTransferKind.INDIRECT_BRANCH
+    if is_hexrays_opcode(opcode, "m_ret"):
+        return ControlTransferKind.RETURN
+    if _predicate_kind_from_hexrays(opcode) is not None:
+        return ControlTransferKind.CONDITIONAL_BRANCH
+    return None
+
+
+def classify_branch_predicate(insn: object) -> PredicateKind | None:
+    """Return the portable predicate carried by a live conditional
+    branch / set instruction, or ``None`` for non-predicate opcodes.
+
+    Use this at the recon-side seam where a file previously did
+    ``if insn.opcode == ida_hexrays.m_jbe`` -- now ask
+    ``if classify_branch_predicate(insn) is PredicateKind.ULE``.
+    """
+    try:
+        return _predicate_kind_from_hexrays(int(getattr(insn, "opcode")))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def classify_control_transfer(insn: object) -> ControlTransferKind | None:
+    """Return the portable transfer kind for a live control-flow
+    instruction, or ``None`` for non-transfer opcodes.
+
+    Pair with ``classify_branch_predicate(insn)`` when the consumer
+    needs both "is this a conditional branch?" and "what predicate
+    does it test?".
+    """
+    try:
+        return _control_transfer_from_hexrays(int(getattr(insn, "opcode")))
     except (AttributeError, TypeError, ValueError):
         return None
 
@@ -1276,6 +1397,8 @@ class IDAIRTranslator:
 
 __all__ = [
     "IDAIRTranslator",
+    "classify_branch_predicate",
+    "classify_control_transfer",
     "classify_live_insn_kind",
     "classify_live_operand_kind",
     "is_control_flow_opcode",
