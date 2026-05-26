@@ -4,6 +4,7 @@ from __future__ import annotations
 from d810.families.protocols import DetectionResult
 from d810.families.state_machine_cff.protocols import (
     StateMachineFamilyRuntimeServices,
+    UnflatteningStrategy as CanonicalUnflatteningStrategy,
 )
 from d810.optimizers.microcode.flow.flattening import engine
 from d810.optimizers.microcode.flow.flattening.engine.family import (
@@ -95,6 +96,12 @@ def test_engine_package_re_exports_family_types() -> None:
         EngineStateMachineFamilyRuntimeServices
         is StateMachineFamilyRuntimeServices
     )
+    # Slice 2: UnflatteningStrategy canonical home is
+    # d810.families.state_machine_cff.protocols.  Both the engine
+    # package re-export AND the engine.strategy shim must yield the
+    # same Protocol object.
+    assert UnflatteningStrategy is CanonicalUnflatteningStrategy
+    assert engine.UnflatteningStrategy is CanonicalUnflatteningStrategy
 
 
 def test_detection_result_protocol_shape() -> None:
