@@ -45,6 +45,7 @@ layers =
     d810.mba
     d810.cfg
     d810.capabilities
+    d810.ir
     d810.core
     d810.errors
 
@@ -210,6 +211,7 @@ allow_indirect_imports = True
 source_modules =
     d810.capabilities
     d810.families
+    d810.ir
     d810.transforms
     # source_modules lists ONLY packages that are currently clean.
     # d810.recon is NOT here yet because it still legitimately imports
@@ -225,7 +227,6 @@ source_modules =
     #     d810.pre_analysis
     #     d810.analyses
     #     d810.passes
-    #     d810.ir
     #     d810.support
     #     d810.recon          # last; promotes the audit-grep meter
 forbidden_modules =
@@ -259,12 +260,12 @@ allow_indirect_imports = True
 source_modules =
     d810.capabilities
     d810.families
+    d810.ir
     d810.transforms
     # When created and clean, append:
     #     d810.pre_analysis
     #     d810.analyses
     #     d810.passes
-    #     d810.ir
     #     d810.recon          # last; promotes the audit-grep meter
     #     d810.support
 forbidden_modules =
@@ -293,6 +294,7 @@ source_modules =
     d810.mba
     d810.cfg
     d810.recon
+    d810.ir
     d810.transforms
     # When created, append:
     #     d810.analyses

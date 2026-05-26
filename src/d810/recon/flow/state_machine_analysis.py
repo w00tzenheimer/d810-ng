@@ -11,6 +11,7 @@ import ida_hexrays
 from d810.cfg.flowgraph import FlowGraph, InsnSnapshot
 from d810.core import logging
 from d810.core.typing import Optional
+from d810.ir.results import ConstantFixpointResult
 from d810.recon.flow.bst_analysis import _forward_eval_insn
 
 logger = logging.getLogger(__name__)
@@ -368,15 +369,17 @@ class StateWriteSite:
     unsafe_trailing_reasons: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
-class SnapshotConstantFixpointResult:
-    """Conservative exact-constant facts at block boundaries for snapshots."""
-
-    in_stk_maps: dict[int, dict[int, int]]
-    in_reg_maps: dict[int, dict[int, int]]
-    out_stk_maps: dict[int, dict[int, int]]
-    out_reg_maps: dict[int, dict[int, int]]
-    iterations: int
+# Back-compat alias preserving the legacy name at its original
+# location.  The canonical definition lives at
+# ``d810.ir.results.ConstantFixpointResult`` (slice 9, see
+# docs/plans/recon-and-cfg-restructuring-phase0-inventory.md); the
+# alias keeps the 5 prod + 1 test consumer files
+# (``round_discovery_context.py``, ``path_horizon.py``,
+# ``reconstruction_discovery.py``, ``reconstruction_candidate_builder.py``,
+# this module, ``tests/unit/recon/flow/test_reconstruction_candidate_builder.py``)
+# working without migration.  New code should import
+# ``ConstantFixpointResult`` from ``d810.ir.results`` directly.
+SnapshotConstantFixpointResult = ConstantFixpointResult
 
 
 def _kill_constant_dest_snapshot(
