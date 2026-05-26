@@ -10,10 +10,15 @@ from dataclasses import dataclass, field
 from d810.core.typing import (
     TYPE_CHECKING,
     NotRequired,
-    Protocol,
     TypedDict,
-    runtime_checkable,
 )
+# Canonical home for ``UnflatteningStrategy`` is
+# ``d810.families.state_machine_cff.protocols`` per the
+# llvm-lisa-restructure plan.  This module re-exports it for
+# back-compat with the dozen existing import sites under
+# ``optimizers.microcode.flow.flattening.engine`` and ``hodur/``.
+# New code should import from the canonical location.
+from d810.families.state_machine_cff.protocols import UnflatteningStrategy
 from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
     PlannerContextContribution,
 )
@@ -21,9 +26,6 @@ from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
 if TYPE_CHECKING:
     from d810.cfg.flowgraph import FlowGraph
     from d810.cfg.graph_modification import GraphModification
-    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
-        AnalysisSnapshot,
-    )
 
 __all__ = [
     "FAMILY_CLEANUP",
@@ -152,29 +154,11 @@ class PlanFragment:
         return len(self.modifications) == 0
 
 
-@runtime_checkable
-class UnflatteningStrategy(Protocol):
-    """Interface that every concrete unflattening strategy must satisfy."""
-
-    @property
-    def name(self) -> str:
-        """Short, unique identifier for this strategy."""
-        ...
-
-    @property
-    def family(self) -> str:
-        """Strategy family label."""
-        ...
-
-    def is_applicable(self, snapshot: AnalysisSnapshot) -> bool:
-        """Return True when this strategy can produce a non-empty plan."""
-        ...
-
-    def plan(
-        self, snapshot: AnalysisSnapshot,
-    ) -> PlanFragment | list[PlanFragment] | None:
-        """Produce one or more :class:`PlanFragment` instances."""
-        ...
+# ``UnflatteningStrategy`` is re-exported from
+# ``d810.families.state_machine_cff.protocols`` at the module top.
+# Slice 2 of the llvm-lisa-restructure migration moved the canonical
+# home; this module keeps the symbol importable from the old path for
+# back-compat.
 
 
 @dataclass
