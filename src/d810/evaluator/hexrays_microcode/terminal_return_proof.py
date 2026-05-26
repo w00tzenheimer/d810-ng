@@ -335,6 +335,7 @@ def _reaching_def_proof(
     from d810.cfg.lattice import BOTTOM
     from d810.evaluator.hexrays_microcode.forward_dataflow import (
         DefSite as RDDefSite,
+        FixpointDidNotConverge,
         ReachingDefEnv,
         VarKey,
         reaching_defs_meet,
@@ -387,17 +388,35 @@ def _reaching_def_proof(
             return dict(in_state)
         return reaching_defs_transfer_block(blk, in_state)
 
-    result = run_forward_fixpoint(
-        nodes=subgraph_nodes,
-        entry_node=handler_entry_serial,
-        entry_state={},
-        bottom={},
-        predecessors_of=lambda n: pred_map.get(n, []),
-        successors_of=lambda n: succ_map.get(n, []),
-        meet=reaching_defs_meet,
-        transfer=transfer_fn,
-        max_iterations=500,
-    )
+    # Soundness gate: pass raise_on_nonconvergence=True so a partial
+    # fixpoint (max_iterations exhausted with worklist still non-empty)
+    # can never reach the OUT-read below.  Without this, reading
+    # ``out_states[return_block]`` from a partial fixpoint can mis-resolve
+    # the carrier and propagate unsound facts downstream.
+    try:
+        result = run_forward_fixpoint(
+            nodes=subgraph_nodes,
+            entry_node=handler_entry_serial,
+            entry_state={},
+            bottom={},
+            predecessors_of=lambda n: pred_map.get(n, []),
+            successors_of=lambda n: succ_map.get(n, []),
+            meet=reaching_defs_meet,
+            transfer=transfer_fn,
+            max_iterations=500,
+            raise_on_nonconvergence=True,
+        )
+    except FixpointDidNotConverge as exc:
+        logger.warning(
+            "terminal_return_proof: reaching-defs fixpoint did not converge "
+            "for handler=blk[%d] -> return=blk[%d] (iterations=%d, "
+            "subgraph_size=%d); refusing to resolve carrier",
+            handler_entry_serial,
+            return_block_serial,
+            exc.iterations,
+            len(subgraph_nodes),
+        )
+        return (), False
 
     # Check OUT[return_block] for the carrier VarKey.
     carrier_key = VarKey(kind="reg", identifier=carrier_mreg, size=carrier_size)

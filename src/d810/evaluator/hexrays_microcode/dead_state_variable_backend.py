@@ -14,7 +14,10 @@ from d810.evaluator.hexrays_microcode.chains import (
     find_all_uses_of_stkvar,
     find_reaching_defs_for_stkvar,
 )
-from d810.evaluator.hexrays_microcode.forward_dataflow import FixpointResult
+from d810.evaluator.hexrays_microcode.forward_dataflow import (
+    FixpointDidNotConverge,
+    FixpointResult,
+)
 from d810.evaluator.hexrays_microcode.valrange_dataflow import (
     ValrangeKey,
     run_valrange_fixpoint,
@@ -151,16 +154,33 @@ class HexRaysDeadStateVariableEvidenceBackend:
 
 
 def _run_valrange_fixpoint(mba: object) -> FixpointResult | None:
+    """Run the valrange fixpoint with the soundness gate enabled.
+
+    DSVE's NOP decisions read ``out_states[block]`` to decide whether a
+    state-var read is dead.  A partial (max-iter-cap) fixpoint can mark
+    live reads as dead and corrupt the function, so we pass
+    ``raise_on_nonconvergence=True`` and fall back to ad-hoc checks on
+    either non-convergence OR any other exception in the fixpoint engine.
+    """
     try:
-        result = run_valrange_fixpoint(mba)
-        logger.info(
-            "DSVE: valrange fixpoint converged in %d iterations",
-            result.iterations,
+        result = run_valrange_fixpoint(mba, raise_on_nonconvergence=True)
+    except FixpointDidNotConverge as exc:
+        logger.warning(
+            "DSVE: valrange fixpoint hit iteration cap (iterations=%d, "
+            "max_iterations=%d); falling back to ad-hoc checks",
+            exc.iterations,
+            exc.max_iterations,
         )
-        return result
+        return None
     except Exception:
         logger.info("DSVE: valrange fixpoint failed; falling back to ad-hoc checks")
         return None
+
+    logger.info(
+        "DSVE: valrange fixpoint converged in %d iterations",
+        result.iterations,
+    )
+    return result
 
 
 def _classify_dead_state_use(

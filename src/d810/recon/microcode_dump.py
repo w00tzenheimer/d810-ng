@@ -888,8 +888,14 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
     32.12 18001340D  goto   @2     ; 18001340D u=                         ; Successors: 2
     """
     # Pre-compute value ranges for all blocks via forward dataflow.
+    # ``raise_on_nonconvergence=True`` makes a partial fixpoint surface as
+    # ``FixpointDidNotConverge`` rather than silently feeding stale state
+    # into the dump.  The existing ``except Exception`` handler catches it
+    # alongside other engine failures and falls back to an empty valrange
+    # map (the dump still renders, just without per-block valrange
+    # annotations).
     try:
-        vr_result = run_valrange_fixpoint(mba)
+        vr_result = run_valrange_fixpoint(mba, raise_on_nonconvergence=True)
         vr_in_states = vr_result.in_states
     except Exception:
         logger.warning("run_valrange_fixpoint failed", exc_info=True)

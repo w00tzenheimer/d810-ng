@@ -54,13 +54,55 @@ class TransferFunction(Protocol[StateT]):
     def __call__(self, node_id: int, in_state: StateT) -> StateT: ...
 
 
+class FixpointDidNotConverge(Exception):
+    """Raised by ``run_forward_fixpoint`` / ``run_valrange_fixpoint`` when
+    ``raise_on_nonconvergence=True`` is set and the worklist does not drain
+    before ``max_iterations`` is exhausted.
+
+    Soundness-critical callers (return-carrier resolution, DSVE, dead-branch
+    elimination, etc.) should pass ``raise_on_nonconvergence=True`` and let
+    this exception propagate; consuming ``in_states`` / ``out_states`` from a
+    partial fixpoint can corrupt the analysis.  Best-effort / diagnostic
+    callers may omit the kwarg and inspect ``FixpointResult.converged``
+    instead.
+    """
+
+    def __init__(self, iterations: int, max_iterations: int, message: str | None = None) -> None:
+        self.iterations = iterations
+        self.max_iterations = max_iterations
+        super().__init__(
+            message
+            or (
+                f"forward fixpoint did not converge in {iterations} iterations "
+                f"(max_iterations={max_iterations})"
+            )
+        )
+
+
 @dataclass(frozen=True)
 class FixpointResult(Generic[StateT]):
-    """Result of a forward fixpoint computation."""
+    """Result of a forward fixpoint computation.
+
+    ``converged`` is ``True`` iff the worklist drained before
+    ``max_iterations`` was reached.  Callers that use ``out_states`` /
+    ``in_states`` to drive soundness-critical decisions MUST either:
+
+    1. pass ``raise_on_nonconvergence=True`` to the fixpoint call (preferred,
+       enforced by the ``fixpoint-result-without-convergence-check`` ast-grep
+       rule), OR
+    2. check ``result.converged`` and fail closed before reading state.
+
+    The ``converged`` field has a default of ``True`` for back-compat: when
+    no explicit value is passed (legacy construction sites that build a
+    ``FixpointResult`` outside the engine), the field assumes the caller's
+    own loop converged.  Engine-managed constructions always pass an explicit
+    value.
+    """
 
     in_states: dict[int, StateT]
     out_states: dict[int, StateT]
     iterations: int
+    converged: bool = True
 
 
 def run_forward_fixpoint(
@@ -74,6 +116,7 @@ def run_forward_fixpoint(
     meet: MeetFunction[StateT],
     transfer: TransferFunction[StateT],
     max_iterations: int = 1000,
+    raise_on_nonconvergence: bool = False,
 ) -> FixpointResult[StateT]:
     """Run forward dataflow to fixpoint.
 
@@ -91,9 +134,21 @@ def run_forward_fixpoint(
         meet: Merges multiple predecessor output states into one.
         transfer: Computes output state from input state for a node.
         max_iterations: Safety bound to prevent infinite loops.
+        raise_on_nonconvergence: When ``True`` (RECOMMENDED for soundness-
+            critical callers), raises :class:`FixpointDidNotConverge` if the
+            worklist is non-empty when ``max_iterations`` is reached.  When
+            ``False`` (default, for back-compat), returns a
+            :class:`FixpointResult` with ``converged=False`` and partial
+            ``in_states`` / ``out_states`` -- callers MUST check
+            ``result.converged`` before reading those states.
 
     Returns:
-        FixpointResult with IN/OUT states for every node and iteration count.
+        :class:`FixpointResult` with IN/OUT states for every node, iteration
+        count, and ``converged`` flag.
+
+    Raises:
+        FixpointDidNotConverge: When ``raise_on_nonconvergence=True`` and the
+            worklist did not drain within ``max_iterations``.
     """
     in_states: dict[int, StateT] = {n: bottom for n in nodes}
     out_states: dict[int, StateT] = {n: bottom for n in nodes}
@@ -107,7 +162,17 @@ def run_forward_fixpoint(
         iterations += 1
 
         preds = list(predecessors_of(node))
-        if preds:
+        if node == entry_node:
+            # The entry node's boundary condition is ``entry_state``.  If a
+            # backedge makes ``preds`` non-empty (loop header == entry), the
+            # boundary must still participate in the meet -- otherwise the
+            # second visit to the entry node overwrites ``entry_state`` with
+            # ``meet(pred_outs)`` and the analysis loses its initial fact.
+            if preds:
+                in_new = meet([entry_state] + [out_states[p] for p in preds])
+            else:
+                in_new = entry_state
+        elif preds:
             in_new = meet([out_states[p] for p in preds])
         else:
             in_new = in_states[node]
@@ -123,10 +188,17 @@ def run_forward_fixpoint(
                 if succ not in worklist:
                     worklist.append(succ)
 
+    converged = not worklist  # drained -> True; hit iteration cap -> False
+    if not converged and raise_on_nonconvergence:
+        raise FixpointDidNotConverge(
+            iterations=iterations, max_iterations=max_iterations
+        )
+
     return FixpointResult(
         in_states=in_states,
         out_states=out_states,
         iterations=iterations,
+        converged=converged,
     )
 
 
@@ -139,6 +211,7 @@ def run_forward_fixpoint_on_mba(
     meet: MeetFunction[StateT],
     transfer: TransferFunction[StateT],
     max_iterations: int = 1000,
+    raise_on_nonconvergence: bool = False,
 ) -> FixpointResult[StateT]:
     """Convenience wrapper that extracts graph topology from an IDA mba_t.
 
@@ -151,6 +224,7 @@ def run_forward_fixpoint_on_mba(
         meet: Meet function for the domain.
         transfer: Transfer function for the domain.
         max_iterations: Safety bound.
+        raise_on_nonconvergence: Forwarded to :func:`run_forward_fixpoint`.
 
     Returns:
         FixpointResult with IN/OUT states for every block serial.
@@ -173,6 +247,7 @@ def run_forward_fixpoint_on_mba(
         meet=meet,
         transfer=transfer,
         max_iterations=max_iterations,
+        raise_on_nonconvergence=raise_on_nonconvergence,
     )
 
 
@@ -657,6 +732,7 @@ def constant_transfer_block(
 
 __all__ = [
     # Fixpoint engine
+    "FixpointDidNotConverge",
     "FixpointResult",
     "MeetFunction",
     "TransferFunction",
