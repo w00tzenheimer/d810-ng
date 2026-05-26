@@ -77,24 +77,75 @@ def test_pattern_matching_rule_apply_ins_is_portable() -> None:
     )
 
 
-def test_optimizers_core_importable_with_ida_hexrays_blocked(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Force-import ``optimizers.core`` after evicting ``ida_hexrays`` from
-    ``sys.modules`` and blocking re-import.  If ``optimizers.core`` has
-    any transitive ``import ida_hexrays``, this raises ``ModuleNotFoundError``
-    / ``ImportError``."""
-    # Block any attempt to import ida_hexrays during the test.
-    monkeypatch.setitem(sys.modules, "ida_hexrays", None)
-    # Force a fresh import of optimizers.core so any transitive
-    # ida_hexrays import would fail loudly.
-    for mod_name in list(sys.modules):
-        if mod_name == "d810.optimizers.core" or mod_name.startswith(
-            "d810.optimizers.core."
-        ):
-            monkeypatch.delitem(sys.modules, mod_name, raising=False)
+def test_optimizers_core_importable_in_clean_subprocess() -> None:
+    """Import ``optimizers.core`` in a fresh subprocess with no project
+    modules cached and ``ida_hexrays`` blocked.
 
-    # If the import succeeds with ida_hexrays blocked, the module is
-    # genuinely IDA-free.  If it fails with ModuleNotFoundError or
-    # ImportError citing ida_hexrays, slice 7's invariant has regressed.
-    importlib.import_module("d810.optimizers.core")
+    Running in a subprocess avoids the cached-state hole an
+    in-process monkeypatch has: if an earlier test in this process
+    has already imported a transitive dependency that pulled in
+    ``ida_hexrays``, evicting only the ``d810.optimizers.core``
+    subtree from ``sys.modules`` would NOT re-exercise that
+    dependency under the blocked condition, and the assertion would
+    pass even after a regression.  A clean subprocess re-runs every
+    transitive import from scratch.
+    """
+    import os
+    import subprocess
+
+    repo_src = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..",
+        "..",
+        "..",
+        "src",
+    )
+    repo_src = os.path.normpath(repo_src)
+
+    script = (
+        "import sys\n"
+        # Block any attempt to import ida_hexrays (or its parent if
+        # imported indirectly).  Setting sys.modules[name] = None
+        # makes any subsequent `import ida_hexrays` raise
+        # ModuleNotFoundError.
+        "sys.modules['ida_hexrays'] = None\n"
+        "sys.modules['idaapi'] = None\n"
+        "import importlib\n"
+        "core = importlib.import_module('d810.optimizers.core')\n"
+        # Sanity check: the module must define the symbols this slice
+        # cares about.
+        "assert hasattr(core, 'OptimizationContext')\n"
+        "assert hasattr(core, 'OptimizationRule')\n"
+        "assert hasattr(core, 'PatternMatchingRule')\n"
+        # And no ida_hexrays leakage in the module namespace.
+        "assert not hasattr(core, 'ida_hexrays')\n"
+        "print('OK')\n"
+    )
+
+    env = os.environ.copy()
+    # Prepend the project src/ to PYTHONPATH so `import d810...` resolves.
+    existing_pp = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = (
+        repo_src if not existing_pp else f"{repo_src}{os.pathsep}{existing_pp}"
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert completed.returncode == 0, (
+        f"clean-subprocess import of d810.optimizers.core failed "
+        f"(returncode={completed.returncode}). Indicates a transitive "
+        f"ida_hexrays import was re-introduced.\n"
+        f"stdout: {completed.stdout!r}\n"
+        f"stderr: {completed.stderr!r}"
+    )
+    assert "OK" in completed.stdout, (
+        f"subprocess did not reach the OK marker.\n"
+        f"stdout: {completed.stdout!r}\n"
+        f"stderr: {completed.stderr!r}"
+    )

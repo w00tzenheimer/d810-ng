@@ -1,17 +1,51 @@
-# MBA Backends
+# d810 Backends
 
-This package contains different backend implementations for working with MBA expressions.
+This package hosts vendor-specific backend implementations for d810,
+organized by **domain** then **vendor / engine** per the llvm-lisa-restructure
+plan's ``d810.backends/<domain>/<vendor>.py`` convention.
 
 ## Architecture
 
+Current layout:
+
 ```
-d810/mba/backends/
-├── __init__.py         # Package exports
-├── z3.py               # Z3 SMT solver backend (for verification)
-├── ida.py              # IDA Pro integration
-├── egglog_backend.py   # E-graph pattern matching (optional, requires egglog)
-└── README.md           # This file
+src/d810/backends/
+├── __init__.py
+├── README.md           # This file
+├── ast/                # AST + SMT backends for the AstNode IR
+│   ├── __init__.py
+│   ├── pattern_matching.py
+│   └── z3.py           # Z3 prover over IDA AstNode / mop_t
+├── emulation/          # Concrete evaluator backends
+│   ├── __init__.py
+│   ├── common.py
+│   ├── oracle.py
+│   └── triton.py       # Triton-based concrete execution
+├── facts/              # Vendor lifters for substrate fact collectors
+│   ├── __init__.py
+│   └── ida.py          # IDA mba_t → InductionVariableFactCollector lifter
+└── mba/                # MBA-expression backends (the original "MBA Backends")
+    ├── __init__.py
+    ├── egglog_backend.py
+    ├── egraph.py
+    ├── ida.py          # IDA pattern-matching adapter
+    └── z3.py           # Z3 prover over pure SymbolicExpression
 ```
+
+Planned (per ``docs/plans/recon-and-cfg-restructuring.md``):
+
+- ``backends/hexrays/{lifter,capabilities,mutation,evidence}.py`` --
+  the central Hex-Rays integration; ``lifter.py`` produces portable
+  ``FlowGraph`` snapshots, ``capabilities.py`` implements abstract
+  capability Protocols (e.g. ``ConstantFixpointCapability``),
+  ``mutation.py`` owns the deferred-modifier mutation surface,
+  ``evidence/`` hosts live-mba evidence adapters that don't yet have
+  abstract cross-backend contracts (e.g. dead-state-var evidence).
+- ``backends/angr/{lifter,capabilities}.py`` -- future angr backend.
+- ``backends/ghidra/{lifter,capabilities}.py`` -- future Ghidra backend.
+
+## MBA backends (this section retained for compat; the rest of the
+## README describes the per-backend module APIs)
 
 ## Available Backends
 
@@ -137,17 +171,23 @@ from d810.backends.mba.z3 import z3_prove_equivalence
 
 ## Adding a New Backend
 
-To add a new backend:
+To add a new backend, place it under the right ``<domain>`` per the
+layout above:
 
-1. Create `d810/mba/backends/<name>.py`
-2. Implement backend-specific logic
-3. Export public API in `__init__.py`
-4. Add documentation here
-5. Add tests in `tests/unit/mba/backends/`
+1. Create ``src/d810/backends/<domain>/<vendor>.py``
+   (e.g. ``src/d810/backends/mba/mybackend.py`` for an MBA-domain
+   backend; ``src/d810/backends/hexrays/lifter.py`` for the Hex-Rays
+   IR lifter).
+2. Implement backend-specific logic.
+3. Export public API in the domain's ``__init__.py``.
+4. Add documentation here (or under
+   ``src/d810/backends/<domain>/README.md`` for domain-local detail).
+5. Add tests in ``tests/unit/<domain>/<vendor>/`` (or under
+   ``tests/system/runtime/...`` if the backend requires live IDA).
 
-Example structure:
+Example structure (MBA-domain backend):
 ```python
-# d810/mba/backends/mybackend.py
+# src/d810/backends/mba/mybackend.py
 """My custom backend for MBA expressions."""
 
 # Check optional dependency
