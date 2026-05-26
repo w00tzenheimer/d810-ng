@@ -3,14 +3,19 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass
 
-import ida_hexrays
 from d810.cfg.flow.terminal_frontier import (
     TerminalCfgSuffixFrontier,
     TerminalLoweringAction,
     classify_cfg_suffix_action,
     compute_terminal_cfg_suffix_frontier,
 )
+from d810.cfg.flowgraph import InsnKind, OperandKind
 from d810.core.typing import AbstractSet, Mapping, Protocol, Sequence
+from d810.hexrays.mutation.ir_translator import (
+    classify_live_insn_kind,
+    classify_live_operand_kind,
+    is_control_flow_opcode,
+)
 from d810.recon.flow.state_machine_analysis import (
     CarrierResolutionResult,
     ResolutionMethod,
@@ -168,7 +173,7 @@ def resolve_state_var_stkoff(snapshot: _TerminalCorridorSnapshot) -> int | None:
     ):
         sv = snapshot.state_machine.state_var
         try:
-            if sv.t == ida_hexrays.mop_S:
+            if classify_live_operand_kind(sv) is OperandKind.STACK:
                 state_var_stkoff = int(sv.s.off)
         except Exception:
             pass
@@ -195,8 +200,7 @@ def _resolve_pre_header_serial(
 def _extract_const_from_snapshot_mop(mop_snap: object) -> int | None:
     if mop_snap is None:
         return None
-    src_t = getattr(mop_snap, "t", None)
-    if src_t != ida_hexrays.mop_n:
+    if classify_live_operand_kind(mop_snap) is not OperandKind.NUMBER:
         return None
     nnn = getattr(mop_snap, "nnn", None)
     if nnn is not None:
@@ -234,16 +238,16 @@ def _resolve_indirect_state_write_via_mba(
 
     cur_ins = live_blk.tail
     while cur_ins is not None:
-        if cur_ins.opcode == ida_hexrays.m_mov and cur_ins.d is not None:
+        if classify_live_insn_kind(cur_ins) is InsnKind.MOV and cur_ins.d is not None:
             if (
-                cur_ins.d.t == ida_hexrays.mop_S
+                classify_live_operand_kind(cur_ins.d) is OperandKind.STACK
                 and cur_ins.d.s is not None
                 and cur_ins.d.s.off == state_var_stkoff
             ):
                 source_mop = cur_ins.l
                 if source_mop is None:
                     break
-                if source_mop.t == ida_hexrays.mop_n:
+                if classify_live_operand_kind(source_mop) is OperandKind.NUMBER:
                     nnn = source_mop.nnn
                     if nnn is not None:
                         return CarrierResolutionResult(
@@ -255,7 +259,7 @@ def _resolve_indirect_state_write_via_mba(
                             source_mop_type=int(source_mop.t),
                         )
                     break
-                if source_mop.t not in (ida_hexrays.mop_r, ida_hexrays.mop_S):
+                if classify_live_operand_kind(source_mop) not in (OperandKind.REGISTER, OperandKind.STACK):
                     break
                 def_ins = find_def_in_block(source_mop, live_blk, cur_ins)
                 if def_ins is None:
@@ -274,17 +278,17 @@ def _resolve_indirect_state_write_via_mba(
                         scan = pred_blk.tail
                         while scan is not None:
                             if (
-                                scan.opcode == ida_hexrays.m_mov
+                                classify_live_insn_kind(scan) is InsnKind.MOV
                                 and scan.d is not None
                                 and scan.d.t == source_mop.t
                             ):
                                 dest_matches = False
-                                if source_mop.t == ida_hexrays.mop_S:
+                                if classify_live_operand_kind(source_mop) is OperandKind.STACK:
                                     try:
                                         dest_matches = scan.d.s.off == source_mop.s.off
                                     except Exception:
                                         pass
-                                elif source_mop.t == ida_hexrays.mop_r:
+                                elif classify_live_operand_kind(source_mop) is OperandKind.REGISTER:
                                     try:
                                         dest_matches = scan.d.r == source_mop.r
                                     except Exception:
@@ -292,7 +296,7 @@ def _resolve_indirect_state_write_via_mba(
                                 if (
                                     dest_matches
                                     and scan.l is not None
-                                    and scan.l.t == ida_hexrays.mop_n
+                                    and classify_live_operand_kind(scan.l) is OperandKind.NUMBER
                                 ):
                                     def_ins = scan
                                     live_blk = pred_blk
@@ -303,20 +307,20 @@ def _resolve_indirect_state_write_via_mba(
                 if def_ins is None:
                     break
                 if (
-                    def_ins.opcode == ida_hexrays.m_mov
+                    classify_live_insn_kind(def_ins) is InsnKind.MOV
                     and def_ins.l is not None
-                    and def_ins.l.t == ida_hexrays.mop_n
+                    and classify_live_operand_kind(def_ins.l) is OperandKind.NUMBER
                 ):
                     nnn = def_ins.l.nnn
                     if nnn is not None:
                         src_stkoff: int | None = None
                         src_mreg: int | None = None
-                        if source_mop.t == ida_hexrays.mop_S:
+                        if classify_live_operand_kind(source_mop) is OperandKind.STACK:
                             try:
                                 src_stkoff = source_mop.s.off
                             except Exception:
                                 pass
-                        elif source_mop.t == ida_hexrays.mop_r:
+                        elif classify_live_operand_kind(source_mop) is OperandKind.REGISTER:
                             try:
                                 src_mreg = int(source_mop.r)
                             except Exception:
@@ -360,9 +364,9 @@ def _resolve_state_const_via_valranges(
     cur_ins = live_blk.tail
     state_write_ins = None
     while cur_ins is not None:
-        if cur_ins.opcode == ida_hexrays.m_mov and cur_ins.d is not None:
+        if classify_live_insn_kind(cur_ins) is InsnKind.MOV and cur_ins.d is not None:
             if (
-                cur_ins.d.t == ida_hexrays.mop_S
+                classify_live_operand_kind(cur_ins.d) is OperandKind.STACK
                 and cur_ins.d.s is not None
                 and cur_ins.d.s.off == state_var_stkoff
             ):
@@ -373,10 +377,11 @@ def _resolve_state_const_via_valranges(
         return None
 
     source_mop = state_write_ins.l
-    if source_mop is None or source_mop.t not in (ida_hexrays.mop_r, ida_hexrays.mop_S):
+    source_kind = classify_live_operand_kind(source_mop)
+    if source_mop is None or source_kind not in (OperandKind.REGISTER, OperandKind.STACK):
         return None
 
-    if source_mop.t == ida_hexrays.mop_r:
+    if source_kind is OperandKind.REGISTER:
         location = ValrangeLocation(
             kind=ValrangeLocationKind.REGISTER,
             identifier=int(source_mop.r),
@@ -445,7 +450,7 @@ def classify_carrier_source_rich(
     mba_resolution: CarrierResolutionResult | None = None
 
     for insn in blk_snap.iter_insns():
-        if insn.opcode == ida_hexrays.m_mov and insn.d is not None:
+        if classify_live_insn_kind(insn) is InsnKind.MOV and insn.d is not None:
             if _mop_matches_stkoff_snapshot(insn.d, state_var_stkoff):
                 has_state_write = True
                 const_val = _extract_const_from_snapshot_mop(insn.l)
@@ -455,12 +460,12 @@ def classify_carrier_source_rich(
                     state_write_source_indirect = True
                 continue
             if insn.l is not None:
-                src_t = getattr(insn.l, "t", None)
-                if src_t == ida_hexrays.mop_n:
+                src_kind = classify_live_operand_kind(insn.l)
+                if src_kind is OperandKind.NUMBER:
                     has_const_write = True
-                elif src_t == ida_hexrays.mop_a:
+                elif src_kind is OperandKind.ADDRESS:
                     has_ptr_write = True
-                elif src_t is not None:
+                elif src_kind is not None:
                     has_expr_write = True
 
     if (
@@ -603,21 +608,13 @@ def discover_shared_corridor(
         if entry_snap is not None:
             entry_fan_in = len([pred for pred in entry_snap.preds if pred not in corridor_set])
 
-    control_flow_opcodes = frozenset(
-        {
-            ida_hexrays.m_goto,
-            ida_hexrays.m_jnz,
-            ida_hexrays.m_ijmp,
-            ida_hexrays.m_jtbl,
-        }
-    )
     carrier_in_corridor = False
     for blk_serial in corridor_tuple:
         blk_snap = flow_graph.get_block(blk_serial)
         if blk_snap is None:
             continue
         for insn in blk_snap.iter_insns():
-            if insn.opcode not in control_flow_opcodes:
+            if not is_control_flow_opcode(insn.opcode):
                 carrier_in_corridor = True
                 break
         if carrier_in_corridor:
