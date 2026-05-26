@@ -1,9 +1,20 @@
-"""Hodur profile admission gates for live strategy entrypoints."""
+"""Hodur profile admission gates for live strategy entrypoints.
+
+The ``HodurProfileGateBackend`` Protocol's canonical home is
+``d810.capabilities.profile_gate`` (slice 4b of the
+llvm-lisa-restructure plan).  This module keeps the symbol importable
+from the old path for back-compat with the in-file
+``DEFAULT_HODUR_PROFILE_GATE`` annotation and the
+``accepts_exact_sub7ffd_glbopt1`` parameter default.  New code should
+import from the canonical location.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from d810.core.typing import Mapping, Protocol
+# Canonical home for HodurProfileGateBackend; re-exported below for back-compat.
+from d810.capabilities.profile_gate import HodurProfileGateBackend
+from d810.core.typing import Mapping
 
 
 def _default_maturity_name_to_int() -> dict[str, int]:
@@ -19,19 +30,6 @@ def _default_maturity_name_to_int() -> dict[str, int]:
         "MMAT_GLBOPT1": glbopt1,
         "GLBOPT1": glbopt1,
     }
-
-
-class HodurProfileGateBackend(Protocol):
-    """Backend/profile gate for live Hodur strategy admission."""
-
-    def accepts_function(
-        self,
-        live_function: object | None,
-        *,
-        expected_entry_ea: int,
-        required_maturity: str,
-    ) -> bool:
-        """Return True when ``live_function`` matches the profile gate."""
 
 
 @dataclass(frozen=True, slots=True)
