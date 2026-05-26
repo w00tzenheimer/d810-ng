@@ -6,6 +6,7 @@ import pytest
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.cfg.graph_modification import ConvertToGoto, RedirectBranch, RedirectGoto, ZeroStateWrite
+from d810.ir.redirect import RedirectGotoIntent
 from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     linearized_flow_graph as lfg_module,
 )
@@ -859,9 +860,17 @@ def test_collect_trivial_redirect_tail_zero_state_write_modifications_skips_nont
 
 
 def test_filter_lfg_use_def_vetoes_uses_backend_and_drops_real_violations():
+    # `_filter_lfg_use_def_vetoes` converts each CFG-layer `RedirectGoto`
+    # into a portable `RedirectGotoIntent` at the capability boundary
+    # (slice 10), so the fake backend matches by field equality, not by
+    # identity, and the expected-calls record carries the IR intent the
+    # capability actually received.  The original `RedirectGoto`
+    # instances still flow through the filtered result unchanged.
     first = RedirectGoto(from_serial=16, old_target=2, new_target=66)
     second = RedirectGoto(from_serial=17, old_target=2, new_target=202)
     cleanup = ZeroStateWrite(block_serial=17, insn_ea=0x180012EEC)
+    first_intent = RedirectGotoIntent(from_serial=16, old_target=2, new_target=66)
+    second_intent = RedirectGotoIntent(from_serial=17, old_target=2, new_target=202)
 
     class FakeUseDefBackend:
         def __init__(self):
@@ -869,9 +878,9 @@ def test_filter_lfg_use_def_vetoes_uses_backend_and_drops_real_violations():
 
         def redirect_use_def_violations(self, modification, live_function, pre_cfg):
             self.calls.append((modification, live_function, pre_cfg))
-            if modification is first:
+            if modification == first_intent:
                 return (SimpleNamespace(var_stkoff=0x40, use_block=81),)
-            if modification is second:
+            if modification == second_intent:
                 return (SimpleNamespace(var_stkoff=0x7BC, use_block=82),)
             return ()
 
@@ -890,8 +899,8 @@ def test_filter_lfg_use_def_vetoes_uses_backend_and_drops_real_violations():
 
     assert filtered == (second, cleanup)
     assert backend.calls == [
-        (first, mba, flow_graph),
-        (second, mba, flow_graph),
+        (first_intent, mba, flow_graph),
+        (second_intent, mba, flow_graph),
     ]
 
 

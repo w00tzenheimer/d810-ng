@@ -99,6 +99,7 @@ from d810.cfg.graph_modification import (
     InsertBlock,
     RedirectBranch,
     RedirectGoto,
+    to_redirect_intent,
 )
 from d810.cfg.materialization_payload import CapturedBlockBody
 from d810.cfg.mod_claims import collect_mod_claims
@@ -2893,7 +2894,7 @@ class HandlerChainComposerStrategy:
 
             try:
                 violations = _USE_DEF_SAFETY_BACKEND.redirect_use_def_violations(
-                    mod,
+                    to_redirect_intent(mod),
                     mba,
                     candidate_flow_graph,
                 )
@@ -2987,7 +2988,7 @@ class HandlerChainComposerStrategy:
                 return None
             try:
                 violations = _USE_DEF_SAFETY_BACKEND.redirect_use_def_violations(
-                    modification,
+                    to_redirect_intent(modification),
                     mba,
                     flow_graph,
                 )
@@ -3524,7 +3525,7 @@ class HandlerChainComposerStrategy:
             ):
                 try:
                     violations = _USE_DEF_SAFETY_BACKEND.redirect_use_def_violations(
-                        mod,
+                        to_redirect_intent(mod),
                         mba,
                         flow_graph,
                     )
@@ -4834,7 +4835,7 @@ class HandlerChainComposerStrategy:
                 )
                 try:
                     severed_uses = _USE_DEF_SAFETY_BACKEND.redirect_use_def_violations(
-                        outbound_probe,
+                        to_redirect_intent(outbound_probe),
                         mba,
                         flow_graph,
                     )

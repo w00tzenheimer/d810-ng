@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from d810.core.typing import Union
 
 from d810.core import logging
+from d810.ir.redirect import RedirectBranchIntent, RedirectGotoIntent, RedirectIntent
 
 # Import InsnSnapshot from Phase 3 (FlowGraph layer)
 from d810.cfg.flowgraph import InsnSnapshot
@@ -711,6 +712,57 @@ GraphModification = Union[
 ]
 
 
+def to_redirect_intent(mod: RedirectGoto | RedirectBranch) -> RedirectIntent:
+    """Convert a CFG-layer redirect modification to its IR-intent shadow.
+
+    The CFG types (``RedirectGoto`` / ``RedirectBranch``) carry
+    construction-time diagnostics under ``__post_init__`` and stay where
+    they are; the IR intent types (``RedirectGotoIntent`` /
+    ``RedirectBranchIntent`` at ``d810.ir.redirect``) are pure data and
+    let ``UseDefSafetyCapability.redirect_use_def_violations`` tighten
+    its ``mod`` parameter off ``Any`` without dragging ``d810.cfg`` into
+    ``d810.capabilities``.
+
+    Use this helper at every capability-call site -- both for locally
+    constructed mods and for mods drawn from a collection -- so the
+    conversion happens in exactly one place and never as inline
+    ``isinstance`` ladders across multiple call sites.
+
+    Args:
+        mod: Either ``RedirectGoto`` or ``RedirectBranch``; the caller
+            already knows which subtype it has (constructed locally or
+            filtered via a pre-existing ``isinstance`` gate).  No other
+            ``GraphModification`` subtypes are accepted -- the use-def
+            safety capability only consumes the two redirect shapes.
+
+    Returns:
+        ``RedirectGotoIntent`` for ``RedirectGoto`` input,
+        ``RedirectBranchIntent`` for ``RedirectBranch`` input.  Field
+        values are copied straight through (``from_serial``,
+        ``old_target``, ``new_target``).
+
+    Raises:
+        TypeError: if ``mod`` is neither ``RedirectGoto`` nor
+            ``RedirectBranch``.  Callers should narrow before calling.
+    """
+    if isinstance(mod, RedirectGoto):
+        return RedirectGotoIntent(
+            from_serial=mod.from_serial,
+            old_target=mod.old_target,
+            new_target=mod.new_target,
+        )
+    if isinstance(mod, RedirectBranch):
+        return RedirectBranchIntent(
+            from_serial=mod.from_serial,
+            old_target=mod.old_target,
+            new_target=mod.new_target,
+        )
+    raise TypeError(
+        f"to_redirect_intent expects RedirectGoto or RedirectBranch; got "
+        f"{type(mod).__name__}"
+    )
+
+
 __all__ = [
     "RedirectGoto",
     "RedirectBranch",
@@ -740,4 +792,5 @@ __all__ = [
     "DirectTerminalLoweringGroup",
     "ReorderBlocks",
     "GraphModification",
+    "to_redirect_intent",
 ]

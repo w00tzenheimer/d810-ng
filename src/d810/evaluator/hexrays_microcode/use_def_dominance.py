@@ -1,6 +1,8 @@
 """Use-def dominance severance detector for CFG redirect safety.
 
-This module detects when a proposed ``RedirectGoto`` or ``RedirectBranch``
+This module detects when a proposed redirect intent (CFG-layer
+``RedirectGoto`` / ``RedirectBranch`` lifted to the portable
+``d810.ir.redirect.RedirectIntent`` shape at the capability boundary)
 would sever a use-def dominance chain, i.e., move a definition of a stack
 variable out of a position where it dominated its uses.
 
@@ -55,12 +57,12 @@ from d810.capabilities.use_def_safety import (
 )
 from d810.cfg.dominator import compute_dom_tree
 from d810.cfg.flowgraph import FlowGraph
-from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
 from d810.core.logging import getLogger
 from d810.evaluator.hexrays_microcode.chains import (
     UseSite,
     find_all_uses_of_stkvar,
 )
+from d810.ir.redirect import RedirectIntent
 
 logger = getLogger(__name__)
 
@@ -85,7 +87,7 @@ class HexRaysUseDefSafetyBackend:
 
     def redirect_use_def_violations(
         self,
-        mod: RedirectGoto | RedirectBranch,
+        mod: RedirectIntent,
         live_function: object,
         pre_cfg: FlowGraph,
     ) -> tuple[SeveranceViolation, ...]:
@@ -125,7 +127,7 @@ def _collect_stkvar_defs_in_block(
 
 
 def _build_post_mod_adjacency(
-    pre_cfg: FlowGraph, mod: RedirectGoto | RedirectBranch
+    pre_cfg: FlowGraph, mod: RedirectIntent
 ) -> dict[int, list[int]]:
     """Return adjacency dict reflecting *mod* applied to *pre_cfg*.
 
@@ -148,14 +150,15 @@ def _build_post_mod_adjacency(
 
 
 def check_redirect_severs_use_def(
-    mod: RedirectGoto | RedirectBranch,
+    mod: RedirectIntent,
     mba: object,
     pre_cfg: FlowGraph,
 ) -> tuple[SeveranceViolation, ...]:
     """Detect use-def chains that would be severed by *mod*.
 
     Args:
-        mod: The proposed :class:`RedirectGoto` modification.
+        mod: The proposed redirect intent (``RedirectGotoIntent`` or
+            ``RedirectBranchIntent`` from ``d810.ir.redirect``).
         mba: An ``ida_hexrays.mba_t`` instance used to query DU chains
             and walk the source block's live instruction stream.
         pre_cfg: The pre-modification CFG snapshot.
