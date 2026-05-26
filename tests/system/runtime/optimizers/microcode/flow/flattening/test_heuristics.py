@@ -10,7 +10,7 @@ All tests use real IDA microcode from libobfuscated binary.
 
 import pytest
 
-from d810.recon.flow.heuristics import (
+from d810.hexrays.utils.heuristics import (
     BlockHeuristics,
     DefUseCache,
     DispatcherHeuristics,
