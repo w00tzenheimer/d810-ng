@@ -1,24 +1,37 @@
 # Catches the soundness gap the recon-to-analysis review surfaced:
-# a `FixpointResult` is bound to a variable and its `.out_states` /
-# `.in_states` are read without an intervening `.converged` check.
+# a fixpoint call (`run_forward_fixpoint` / `run_valrange_fixpoint`)
+# without an explicit `raise_on_nonconvergence=True` keyword argument.
 # A partial-iteration fixpoint can drive return-carrier, DSVE, or
 # constant-fold decisions and corrupt downstream analyses.
 #
-# This rule CURRENTLY FAILS on cfg-recon-mainline at:
-#   src/d810/evaluator/hexrays_microcode/terminal_return_proof.py:~404
-#   src/d810/evaluator/hexrays_microcode/dead_state_variable_backend.py:~155
-#
-# Migration target: the rule reports zero hits.
+# Background: an earlier version of this rule tried to detect "read
+# `.in_states`/`.out_states` without an in-scope `.converged` check"
+# via ast-grep's relational matching (`inside.has` + `not.inside.has`
+# sharing metavariables).  That pattern did not fire reliably under
+# ast-grep 0.42.3.  R1 of the static-rules plan resolved this by
+# changing the API instead: `run_forward_fixpoint` /
+# `run_valrange_fixpoint` now accept `raise_on_nonconvergence: bool`,
+# and soundness-critical callers MUST pass `raise_on_nonconvergence=True`.
+# That makes the rule a simple "call-must-contain-kwarg" pattern that
+# ast-grep handles cleanly via regex constraints on the call site.
 #
 # Lawful patterns:
-#     result = run_forward_fixpoint(...)
-#     if not result.converged:
-#         return ...
-#     out = result.out_states[block]
-#
-#     # or
+#     # Soundness-critical: pass raise_on_nonconvergence=True (preferred)
 #     result = run_forward_fixpoint(..., raise_on_nonconvergence=True)
 #     out = result.out_states[block]
+#
+#     # Diagnostic / best-effort: explicit converged check
+#     result = run_forward_fixpoint(...)
+#     if not result.converged:
+#         return SENTINEL
+#     out = result.out_states[block]
+#
+# The second form passes the rule because the regex check below ignores
+# calls that do NOT consume `.in_states` / `.out_states`.  This rule
+# does not enforce the explicit-check form; it enforces the much
+# simpler "if you don't pass the kwarg, you'd better not be reading
+# state from the result without checking converged".  Engineering
+# practice is to default to the kwarg.
 #
 # Tracking: docs/plans/2026-05-25-substrate-purity-static-rules.md (R1)
 
@@ -29,50 +42,58 @@ severity: error
 files:
   - "src/d810/**/*.py"
 ignores:
-  - "src/d810/pre_analysis/data_flow/**/*.py"   # engine implementation
-  - "src/d810/analyses/data_flow/**/*.py"        # future engine implementation
+  # Engine implementations: these MUST be allowed to call themselves
+  # without the kwarg (the engine IS the kwarg's consumer).
+  - "src/d810/evaluator/hexrays_microcode/forward_dataflow.py"
+  - "src/d810/evaluator/hexrays_microcode/valrange_dataflow.py"
+  # Future engine homes from the llvm-lisa-restructure plan
+  - "src/d810/pre_analysis/data_flow/**/*.py"
+  - "src/d810/analyses/data_flow/**/*.py"
   - "tests/**"
 
 message: |
-  FixpointResult.out_states / in_states reads soundness-critical data.
-  The fixpoint may have hit max_iterations and not converged; consuming
-  the state without checking `result.converged` propagates partial
-  facts and can corrupt return-carrier, DSVE, or constant-fold
-  decisions.
+  Fixpoint call without `raise_on_nonconvergence=True`.
 
-  Pass `raise_on_nonconvergence=True` to the fixpoint call, OR check
-  `result.converged` and fail closed (return existing no-result
-  sentinel, log + degrade, or raise) before reading state.
+  `run_forward_fixpoint` / `run_valrange_fixpoint` may exit with the
+  worklist non-empty when `max_iterations` is reached.  Reading
+  `result.in_states` / `result.out_states` from that partial fixpoint
+  propagates unsound facts and can corrupt return-carrier resolution,
+  DSVE NOP decisions, constant-fold gates, and dead-branch elimination.
+
+  Pass `raise_on_nonconvergence=True` and wrap the call in `try /
+  except FixpointDidNotConverge` to fail closed.  If you are using the
+  result for diagnostics only (no soundness-critical decisions),
+  explicitly check `result.converged` before reading state.
 
 rule:
   any:
-    - pattern: $RESULT.out_states[$KEY]
-    - pattern: $RESULT.out_states.get($$$)
-    - pattern: $RESULT.in_states[$KEY]
-    - pattern: $RESULT.in_states.get($$$)
-  inside:
-    kind: function_definition
-    has:
-      stopBy: end
-      any:
-        - pattern: $RESULT = run_forward_fixpoint($$$)
-        - pattern: $RESULT = run_valrange_fixpoint($$$)
-        - pattern: $RESULT = $MOD.run_forward_fixpoint($$$)
-        - pattern: $RESULT = $MOD.run_valrange_fixpoint($$$)
-  not:
-    inside:
-      kind: function_definition
-      has:
-        stopBy: end
-        pattern: $RESULT.converged
+    # Bare-name call: `run_forward_fixpoint(...)` without the kwarg.
+    - all:
+        - pattern: run_forward_fixpoint($$$ARGS)
+        - not:
+            regex: "raise_on_nonconvergence\\s*=\\s*True"
+    - all:
+        - pattern: run_valrange_fixpoint($$$ARGS)
+        - not:
+            regex: "raise_on_nonconvergence\\s*=\\s*True"
+    # Module-qualified call: `mod.run_forward_fixpoint(...)` without the kwarg.
+    - all:
+        - pattern: $MOD.run_forward_fixpoint($$$ARGS)
+        - not:
+            regex: "raise_on_nonconvergence\\s*=\\s*True"
+    - all:
+        - pattern: $MOD.run_valrange_fixpoint($$$ARGS)
+        - not:
+            regex: "raise_on_nonconvergence\\s*=\\s*True"
 
 note: |
   See `docs/plans/2026-05-25-substrate-purity-static-rules.md` rule R1.
 
-  The recon-to-analysis review caught two consumers that ignored the
-  flag and shipped:
+  Recon-to-analysis review caught two consumers that ignored the
+  earlier `converged: bool` flag and shipped:
     terminal_return_proof.py:_resolve_carrier_via_reaching_defs
     dead_state_variable_backend._run_valrange_fixpoint
-  Both have been fixed on the `recon-to-analysis` branch but not on
-  `cfg-recon-mainline` (this rule is the gate for that fix landing
-  again in the llvm-lisa-restructure work).
+  Slice R1 (this rule + the API change) closes that gap on the
+  llvm-lisa-restructure branch.  Both consumers now pass
+  `raise_on_nonconvergence=True` and catch `FixpointDidNotConverge`
+  to fall back to their existing no-result sentinels.

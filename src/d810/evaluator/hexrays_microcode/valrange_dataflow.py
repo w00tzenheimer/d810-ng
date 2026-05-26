@@ -79,7 +79,10 @@ import idaapi
 from d810.cfg.lattice import BOTTOM, TOP, LatticeMeet
 from d810.core.logging import getLogger
 from d810.core.typing import Any, Optional
-from d810.evaluator.hexrays_microcode.forward_dataflow import FixpointResult
+from d810.evaluator.hexrays_microcode.forward_dataflow import (
+    FixpointDidNotConverge,
+    FixpointResult,
+)
 
 logger = getLogger(__name__)
 
@@ -725,6 +728,7 @@ def run_valrange_fixpoint(
     mba,
     *,
     max_iterations: int = 1000,
+    raise_on_nonconvergence: bool = False,
 ):
     """Run forward value-range dataflow analysis on *mba*.
 
@@ -735,11 +739,21 @@ def run_valrange_fixpoint(
     Args:
         mba: An ``ida_hexrays.mba_t`` instance.
         max_iterations: Safety bound.
+        raise_on_nonconvergence: When ``True``, raises
+            :class:`FixpointDidNotConverge` if the worklist is non-empty
+            when ``max_iterations`` is reached.  When ``False`` (default),
+            returns a :class:`FixpointResult` with ``converged=False`` and
+            partial states -- soundness-critical callers MUST check
+            ``result.converged`` before consuming those states.
 
     Returns:
         ``FixpointResult`` with ``in_states`` and ``out_states`` for every
         block serial.  ``in_states[serial]`` is the reconstructed
         ``valranges_t::known`` map for that block.
+
+    Raises:
+        FixpointDidNotConverge: When ``raise_on_nonconvergence=True`` and
+            the worklist did not drain within ``max_iterations``.
     """
 
     nodes = list(range(mba.qty))
@@ -787,18 +801,26 @@ def run_valrange_fixpoint(
                 if succ not in worklist:
                     worklist.append(succ)
 
+    converged = not worklist  # drained -> True; hit iteration cap -> False
     if logger.debug_on:
         logger.debug(
-            "valrange fixpoint: %d iterations, %d nodes, %d worklist remaining",
+            "valrange fixpoint: %d iterations, %d nodes, %d worklist remaining, converged=%s",
             iterations,
             len(nodes),
             len(worklist),
+            converged,
+        )
+
+    if not converged and raise_on_nonconvergence:
+        raise FixpointDidNotConverge(
+            iterations=iterations, max_iterations=max_iterations
         )
 
     return FixpointResult(
         in_states=in_states,
         out_states=out_states,
         iterations=iterations,
+        converged=converged,
     )
 
 

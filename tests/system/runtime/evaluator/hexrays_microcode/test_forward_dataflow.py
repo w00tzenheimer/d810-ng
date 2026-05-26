@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 
 from d810.evaluator.hexrays_microcode.forward_dataflow import (
+    FixpointDidNotConverge,
     FixpointResult,
     run_forward_fixpoint,
 )
@@ -246,3 +247,170 @@ class TestMaxIterationsStopsDivergence:
             max_iterations=10,
         )
         assert result.iterations == 10
+        # Default raise_on_nonconvergence=False -> partial result returned
+        # with converged=False so callers can fail closed.
+        assert result.converged is False
+
+
+class TestConvergedFlagAndExceptionGate:
+    """``FixpointResult.converged`` + the ``raise_on_nonconvergence``
+    soundness gate distinguish "true fixpoint reached" from "partial state
+    after iteration cap" so callers can choose policy (raise vs degrade).
+    """
+
+    def test_converged_true_when_worklist_drains(self) -> None:
+        result = run_forward_fixpoint(
+            nodes=[0],
+            entry_node=0,
+            entry_state={"x": 5},
+            bottom=BOTTOM,
+            predecessors_of=lambda _: [],
+            successors_of=lambda _: [],
+            meet=_simple_meet,
+            transfer=_identity_transfer,
+        )
+        assert result.converged is True
+
+    def test_converged_false_when_max_iterations_hit(self) -> None:
+        edges = [(0, 1), (1, 0)]
+        nodes, pred_map, succ_map = _build_graph(edges)
+
+        def divergent_transfer(
+            node_id: int, in_state: dict[str, int]
+        ) -> dict[str, int]:
+            return {"x": in_state.get("x", 0) * 2 + 1}
+
+        result = run_forward_fixpoint(
+            nodes=nodes,
+            entry_node=0,
+            entry_state={"x": 0},
+            bottom=BOTTOM,
+            predecessors_of=lambda n: pred_map[n],
+            successors_of=lambda n: succ_map[n],
+            meet=_union_meet,
+            transfer=divergent_transfer,
+            max_iterations=5,
+        )
+        assert result.converged is False
+        assert result.iterations == 5
+
+    def test_raise_on_nonconvergence_true_raises_typed_exception(self) -> None:
+        """Soundness-critical callers pass ``raise_on_nonconvergence=True`` so
+        a partial fixpoint can never reach the OUT-state-read site.
+        """
+        edges = [(0, 1), (1, 0)]
+        nodes, pred_map, succ_map = _build_graph(edges)
+
+        def divergent_transfer(
+            node_id: int, in_state: dict[str, int]
+        ) -> dict[str, int]:
+            return {"x": in_state.get("x", 0) * 2 + 1}
+
+        with pytest.raises(FixpointDidNotConverge) as excinfo:
+            run_forward_fixpoint(
+                nodes=nodes,
+                entry_node=0,
+                entry_state={"x": 0},
+                bottom=BOTTOM,
+                predecessors_of=lambda n: pred_map[n],
+                successors_of=lambda n: succ_map[n],
+                meet=_union_meet,
+                transfer=divergent_transfer,
+                max_iterations=5,
+                raise_on_nonconvergence=True,
+            )
+        assert excinfo.value.iterations == 5
+        assert excinfo.value.max_iterations == 5
+
+    def test_raise_on_nonconvergence_true_does_not_raise_when_converged(self) -> None:
+        """When the worklist drains within ``max_iterations``, the kwarg is a no-op."""
+        result = run_forward_fixpoint(
+            nodes=[0],
+            entry_node=0,
+            entry_state={"x": 5},
+            bottom=BOTTOM,
+            predecessors_of=lambda _: [],
+            successors_of=lambda _: [],
+            meet=_simple_meet,
+            transfer=_identity_transfer,
+            raise_on_nonconvergence=True,
+        )
+        assert result.converged is True
+
+    def test_default_kwarg_is_false_for_backcompat(self) -> None:
+        """Legacy callers that don't pass the kwarg get the partial-result path."""
+        edges = [(0, 1), (1, 0)]
+        nodes, pred_map, succ_map = _build_graph(edges)
+
+        def divergent_transfer(
+            node_id: int, in_state: dict[str, int]
+        ) -> dict[str, int]:
+            return {"x": in_state.get("x", 0) * 2 + 1}
+
+        # No raise_on_nonconvergence kwarg = default False = no exception.
+        result = run_forward_fixpoint(
+            nodes=nodes,
+            entry_node=0,
+            entry_state={"x": 0},
+            bottom=BOTTOM,
+            predecessors_of=lambda n: pred_map[n],
+            successors_of=lambda n: succ_map[n],
+            meet=_union_meet,
+            transfer=divergent_transfer,
+            max_iterations=3,
+        )
+        assert isinstance(result, FixpointResult)
+        assert result.converged is False
+
+
+class TestEntryBoundarySurvivesBackedge:
+    """Loop header == entry node: ``entry_state`` must survive the meet.
+
+    Regression test for the bug where ``run_forward_fixpoint`` overwrote
+    ``in_states[entry_node]`` with ``meet(pred_outs)`` on the second visit,
+    silently dropping the boundary condition for any analysis whose
+    transfer function does not regenerate the entry fact on every visit.
+    """
+
+    def test_self_loop_on_entry_preserves_entry_state(self) -> None:
+        edges = [(0, 0)]
+        nodes, pred_map, succ_map = _build_graph(edges)
+
+        def drop_marker_transfer(
+            node_id: int, in_state: dict[str, int]
+        ) -> dict[str, int]:
+            # Erases the boundary marker; only the entry meet keeps it alive.
+            return {}
+
+        result = run_forward_fixpoint(
+            nodes=nodes,
+            entry_node=0,
+            entry_state={"boundary": 1},
+            bottom=BOTTOM,
+            predecessors_of=lambda n: pred_map[n],
+            successors_of=lambda n: succ_map[n],
+            meet=_union_meet,
+            transfer=drop_marker_transfer,
+        )
+        assert result.in_states[0] == {"boundary": 1}
+
+    def test_loop_header_is_entry_with_external_pred(self) -> None:
+        edges = [(0, 1), (1, 0)]
+        nodes, pred_map, succ_map = _build_graph(edges)
+
+        def drop_marker_transfer(
+            node_id: int, in_state: dict[str, int]
+        ) -> dict[str, int]:
+            return {}
+
+        result = run_forward_fixpoint(
+            nodes=nodes,
+            entry_node=0,
+            entry_state={"boundary": 1},
+            bottom=BOTTOM,
+            predecessors_of=lambda n: pred_map[n],
+            successors_of=lambda n: succ_map[n],
+            meet=_union_meet,
+            transfer=drop_marker_transfer,
+        )
+        assert result.in_states[0] == {"boundary": 1}
