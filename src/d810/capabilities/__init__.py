@@ -16,11 +16,12 @@ no stable portable home, and tightens once that home exists.
 """
 from __future__ import annotations
 
-from .constant_fixpoint import ConstantFixpointBackend
+from .constant_fixpoint import ConstantFixpointBackend, ConstantFixpointCapability
 from .use_def_safety import SeveranceViolation, UseDefSafetyCapability
 
 __all__ = [
-    "ConstantFixpointBackend",
+    "ConstantFixpointBackend",  # back-compat alias of ConstantFixpointCapability
+    "ConstantFixpointCapability",
     "SeveranceViolation",
     "UseDefSafetyCapability",
 ]
