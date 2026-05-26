@@ -41,6 +41,7 @@ layers =
     d810.backends
     d810.evaluator
     d810.hexrays
+    d810.transforms
     d810.mba
     d810.cfg
     d810.capabilities
@@ -147,6 +148,44 @@ forbidden_modules =
 # ZERO ignore_imports entries are permitted on any of these contracts.
 # Layer violations are fixed by moving code, never by ignoring.
 
+[importlinter:contract:optimizers-core-no-ida]
+# `d810.optimizers.core` is the portable abstraction half of the
+# optimizer surface (the `OptimizationContext` dataclass and the
+# `PatternMatchingRule` abstract base).  Slice 7 of the
+# llvm-lisa-restructure migration removed the live `ida_hexrays`
+# import from this single module so the `OptimizationRule` Protocol
+# could be moved out to `d810.transforms.protocols` without dragging
+# IDA into the portable layer (slice 8 completed that move).
+#
+# `d810.optimizers` as a whole still legitimately imports IDA
+# (concrete microcode rules under `optimizers/microcode/` etc.), so
+# it CANNOT be in `portable-core-no-ida` `source_modules` -- but the
+# specific `d810.optimizers.core` MODULE is IDA-free and must stay
+# that way.  This file-scoped contract is the hard gate the
+# ast-grep `no-live-ida-in-portable-core` rule complements (the
+# ast-grep rule is severity=warning during migration; this contract
+# is the error-level companion for the one already-clean file in
+# `d810.optimizers/`).
+#
+# ZERO ignore_imports entries permitted.
+name = d810.optimizers.core stays IDA-free
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    d810.optimizers.core
+forbidden_modules =
+    idaapi
+    ida_hexrays
+    idc
+    idautils
+    ida_kernwin
+    ida_loader
+    ida_funcs
+    ida_lines
+    ida_bytes
+    ida_name
+    idapro
+
 [importlinter:contract:portable-core-no-ida]
 # Portable-core packages must not import live IDA / Hex-Rays
 # packages, even transitively, even at module-top, even lazily
@@ -171,6 +210,7 @@ allow_indirect_imports = True
 source_modules =
     d810.capabilities
     d810.families
+    d810.transforms
     # source_modules lists ONLY packages that are currently clean.
     # d810.recon is NOT here yet because it still legitimately imports
     # IDA today; the migration meter for recon-side cleanup lives in
@@ -184,7 +224,6 @@ source_modules =
     # When created and clean, append:
     #     d810.pre_analysis
     #     d810.analyses
-    #     d810.transforms
     #     d810.passes
     #     d810.ir
     #     d810.support
@@ -220,10 +259,10 @@ allow_indirect_imports = True
 source_modules =
     d810.capabilities
     d810.families
+    d810.transforms
     # When created and clean, append:
     #     d810.pre_analysis
     #     d810.analyses
-    #     d810.transforms
     #     d810.passes
     #     d810.ir
     #     d810.recon          # last; promotes the audit-grep meter
@@ -254,9 +293,9 @@ source_modules =
     d810.mba
     d810.cfg
     d810.recon
+    d810.transforms
     # When created, append:
     #     d810.analyses
-    #     d810.transforms
     #     d810.passes
 forbidden_modules =
     angr

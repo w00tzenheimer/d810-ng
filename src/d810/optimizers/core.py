@@ -1,25 +1,27 @@
-"""Core abstractions for d810 optimization rules.
+"""Hex-Rays integration context and pattern-matching base.
 
-This module defines the fundamental interfaces and data structures used throughout
-the d810 optimization framework. It promotes composition over inheritance by using
-Protocol-based interfaces instead of deep inheritance hierarchies.
+This module defines the ``OptimizationContext`` dataclass (passed to
+optimization rules during the Hex-Rays integration pass) and the
+``PatternMatchingRule`` abstract base used by AST-pattern rules.
 
-Slice 7 (llvm-lisa-restructure) note: this module previously imported
-``ida_hexrays`` solely to type-annotate ``OptimizationContext.mba`` as
-``ida_hexrays.mba_t`` and ``PatternMatchingRule.apply``'s ``ins``
-parameter as ``ida_hexrays.minsn_t``.  Audit found that
-``OptimizationContext`` is never instantiated anywhere in the codebase
-(zero ``OptimizationContext(...)`` call sites) and ``PatternMatchingRule``
-is abstract -- both annotations are purely Protocol-contract surface,
-not runtime-consumed types.  The annotations have been widened to
-``object`` / ``Any`` so this module is IDA-free at import time and the
-``OptimizationRule`` Protocol can be moved to a portable home (e.g.
-``d810.transforms/protocols.py``) in a sibling slice without dragging
-``import ida_hexrays`` into the portable layer.
+Slice history (llvm-lisa-restructure):
 
-Concrete rule implementations (e.g. Hex-Rays microcode flow / instruction
-rules) continue to accept ``mba_t`` / ``minsn_t`` in their own
-narrower-typed methods; Protocol satisfaction is structural so the
+* Slice 7 widened ``OptimizationContext.mba`` from
+  ``ida_hexrays.mba_t`` to ``object`` and removed the
+  ``import ida_hexrays`` so this module is IDA-free at import time.
+* The ``OptimizationRule`` Protocol that used to live here has been
+  moved to its canonical portable home,
+  ``d810.transforms.protocols.OptimizationRule``.  **No back-compat
+  re-export is provided** -- the canonical import path is::
+
+      from d810.transforms.protocols import OptimizationRule
+
+  Update any consumer that still imports ``OptimizationRule`` from
+  this module.
+
+Concrete rule implementations (e.g. Hex-Rays microcode flow /
+instruction rules) continue to accept ``mba_t`` / ``minsn_t`` in their
+own narrower-typed methods; Protocol satisfaction is structural so the
 widening here does not constrain those implementations.
 """
 
@@ -28,7 +30,7 @@ from __future__ import annotations
 import abc
 from dataclasses import dataclass
 from d810.core.logging import D810Logger
-from d810.core.typing import Any, Dict, Protocol
+from d810.core.typing import Any, Dict
 
 
 @dataclass(frozen=True)
@@ -54,46 +56,6 @@ class OptimizationContext:
     config: Dict[str, Any]
     logger: D810Logger
     log_dir: str
-
-
-class OptimizationRule(Protocol):
-    """A protocol defining the contract for any optimization rule.
-
-    This protocol-based interface decouples rules from their execution engine,
-    making it easy to test rules in isolation and compose different optimization
-    strategies.
-
-    Any class implementing this protocol can be used as an optimization rule,
-    regardless of its inheritance hierarchy.
-    """
-
-    @property
-    def name(self) -> str:
-        """A unique identifier for this rule.
-
-        Returns:
-            A string uniquely identifying this optimization rule.
-        """
-        ...
-
-    def apply(self, context: OptimizationContext, element: Any) -> int:
-        """Applies the optimization to a program element.
-
-        This method is the main entry point for rule execution. It receives
-        an immutable context and a program element to optimize.
-
-        Args:
-            context: The current optimization context containing mba, maturity, etc.
-            element: The program element to optimize. This could be:
-                - mblock_t for flow-level optimizations
-                - minsn_t for instruction-level optimizations
-                - Any other program element the rule operates on
-
-        Returns:
-            The number of changes made by this rule. Return 0 if no changes were made.
-            This allows the optimizer to track progress and decide when to stop iterating.
-        """
-        ...
 
 
 class PatternMatchingRule(abc.ABC):
