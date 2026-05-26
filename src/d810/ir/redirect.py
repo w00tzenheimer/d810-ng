@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.core.typing import TypeAlias
+from d810.core.typing import TypeAlias, Union
 
 __all__ = ["RedirectBranchIntent", "RedirectGotoIntent", "RedirectIntent"]
 
@@ -71,10 +71,20 @@ class RedirectBranchIntent:
     new_target: int
 
 
-RedirectIntent: TypeAlias = "RedirectGotoIntent | RedirectBranchIntent"
+RedirectIntent: TypeAlias = Union[RedirectGotoIntent, RedirectBranchIntent]
 """Union of the two redirect-intent shapes.
 
 Used by ``UseDefSafetyCapability.redirect_use_def_violations`` as the
 narrowest type that covers all five active call sites.  Concrete
 backend impls accept this union and dispatch on the runtime type.
+
+Notes:
+    The alias is bound to a ``Union[...]`` value -- NOT to a string
+    forward reference -- so ``typing.get_type_hints`` can resolve
+    Protocol-method annotations that reference ``RedirectIntent``.  A
+    string-quoted ``TypeAlias = "RedirectGotoIntent | RedirectBranchIntent"``
+    would store the literal ``str`` at module level; downstream
+    ``get_type_hints`` evaluation would then fail with
+    ``NameError: RedirectGotoIntent is not defined`` because the eval
+    happens in the *consumer* module's globals, not in this module's.
 """
