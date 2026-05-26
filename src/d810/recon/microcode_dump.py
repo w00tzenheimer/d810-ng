@@ -235,7 +235,7 @@ def _format_insn_str(insn_str: str) -> str:
 
 
 def _print_list_pair(
-    label: str, must: idaapi.mlist_t, may: Optional[idaapi.mlist_t] = None
+    label: str, must: object, may: object | None = None
 ) -> Optional[str]:
     """Mimic C++ print_list(vec, label, must, may)."""
     must_s = must.dstr()
@@ -257,7 +257,7 @@ def _print_list_pair(
     return rval
 
 
-def _print_use_def_dnu(line: List[str], blk: idaapi.mblock_t) -> None:
+def _print_use_def_dnu(line: List[str], blk: object) -> None:
     """Append USE/DEF/DNU lines to *line*, matching C++ print_list calls."""
     s = _print_list_pair("USE", blk.mustbuse, blk.maybuse)
     if s:
@@ -271,7 +271,7 @@ def _print_use_def_dnu(line: List[str], blk: idaapi.mblock_t) -> None:
         line.append(f"; DNU: {dnu_s}")
 
 
-def _print_stack_frame_overview(hdr: List[str], mba: idaapi.mba_t) -> None:
+def _print_stack_frame_overview(hdr: List[str], mba: object) -> None:
     """Append stack frame overview lines to *hdr*."""
     hdr.append(
         f"; STKD={mba.tmpstk_size:X}"
@@ -296,7 +296,7 @@ def _print_stack_frame_overview(hdr: List[str], mba: idaapi.mba_t) -> None:
 
 
 def _print_block_header(
-    i: int, blk: idaapi.mblock_t, mba: idaapi.mba_t, valrange_env=None
+    i: int, blk: object, mba: object, valrange_env=None
 ) -> tuple[list[str], list[str]]:
     """Append block header lines to *line*, matching C++ print_block_header calls."""
     serial = blk.serial
@@ -361,17 +361,17 @@ def _print_block_header(
     return hdr, succs_sorted
 
 
-def _collect_block_instructions(blk: idaapi.mblock_t) -> List[idaapi.minsn_t]:
+def _collect_block_instructions(blk: object) -> List[object]:
     """Collect all instructions in a block."""
     insns = []
-    ins: idaapi.minsn_t = blk.head
+    ins = blk.head
     while ins is not None:
         insns.append(ins)
         ins = ins.next
     return insns
 
 
-def _print_use_list(blk: idaapi.mblock_t, ins: idaapi.minsn_t, frsize: int) -> str:
+def _print_use_list(blk: object, ins: object, frsize: int) -> str:
     """Build the '; EA u=... d=...' suffix for one instruction, matching C++ print_insn_usedef."""
     # ---- USE ----
     may_use = blk.build_use_list(ins, UseDefFlags.MAY_ACCESS)
@@ -397,7 +397,7 @@ def _print_use_list(blk: idaapi.mblock_t, ins: idaapi.minsn_t, frsize: int) -> s
     return use_str
 
 
-def _print_def_list(blk: idaapi.mblock_t, ins: idaapi.minsn_t, frsize: int) -> str:
+def _print_def_list(blk: object, ins: object, frsize: int) -> str:
     # ---- DEF ----
     may_def = blk.build_def_list(ins, UseDefFlags.MAY_ACCESS)
     if may_def.empty():
@@ -441,7 +441,7 @@ def _print_def_list(blk: idaapi.mblock_t, ins: idaapi.minsn_t, frsize: int) -> s
     return def_str
 
 
-def _print_insn_usedef(blk: idaapi.mblock_t, ins: idaapi.minsn_t, frsize: int) -> str:
+def _print_insn_usedef(blk: object, ins: object, frsize: int) -> str:
     """Build the '; EA u=... d=...' suffix for one instruction, matching C++ print_insn_usedef."""
 
     use_str = _print_use_list(blk, ins, frsize)
@@ -449,7 +449,7 @@ def _print_insn_usedef(blk: idaapi.mblock_t, ins: idaapi.minsn_t, frsize: int) -
     return f"{use_str}{def_str}"
 
 
-def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
+def mba_to_human_readable(mba: object) -> List[str]:
     """Convert an mbl_array_t to a list of strings in IDA's native human-readable microcode format.
 
     Produces output similar to IDA's own microcode listing, including:
@@ -525,7 +525,7 @@ def mba_to_human_readable(mba: idaapi.mbl_array_t) -> List[str]:
 
     as_str = [f"; Maturity: {maturity_name}"]
     for i in range(num_blocks):
-        blk: idaapi.mblock_t = mba.get_mblock(i)
+        blk = mba.get_mblock(i)
         if blk is None:
             continue
         serial = blk.serial
