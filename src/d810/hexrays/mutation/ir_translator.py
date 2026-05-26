@@ -107,7 +107,7 @@ def _block_kind_from_hexrays(block_type: int) -> BlockKind:
     return BlockKind.UNKNOWN
 
 
-def _is_hexrays_opcode(opcode: int, name: str) -> bool:
+def is_hexrays_opcode(opcode: int, name: str) -> bool:
     value = getattr(ida_hexrays, name, None)
     return value is not None and int(opcode) == int(value)
 
@@ -128,7 +128,7 @@ def _branch_predicate_from_hexrays(opcode: int) -> BranchPredicate | None:
         ("m_jl", BranchPredicate.SIGNED_LT),
     )
     for name, predicate in mapping:
-        if _is_hexrays_opcode(opcode, name):
+        if is_hexrays_opcode(opcode, name):
             return predicate
     return None
 
@@ -161,7 +161,7 @@ def _insn_kind_from_hexrays(opcode: int) -> InsnKind:
         return InsnKind.AND
     if opcode == int(ida_hexrays.m_goto):
         return InsnKind.GOTO
-    if _is_hexrays_opcode(opcode, "m_call") or _is_hexrays_opcode(opcode, "m_icall"):
+    if is_hexrays_opcode(opcode, "m_call") or is_hexrays_opcode(opcode, "m_icall"):
         return InsnKind.CALL
     if opcode in (int(ida_hexrays.m_jnz), int(ida_hexrays.m_jz)):
         return InsnKind.EQUALITY_JUMP
@@ -204,7 +204,7 @@ def is_control_flow_opcode(opcode: int) -> bool:
     if _branch_predicate_from_hexrays(opcode) is not None:
         return True
     for name in ("m_goto", "m_ijmp", "m_jtbl", "m_call", "m_icall"):
-        if _is_hexrays_opcode(opcode, name):
+        if is_hexrays_opcode(opcode, name):
             return True
     return False
 
@@ -1279,6 +1279,7 @@ __all__ = [
     "classify_live_insn_kind",
     "classify_live_operand_kind",
     "is_control_flow_opcode",
+    "is_hexrays_opcode",
     "capture_insn_snapshot",
     "capture_mop_snapshot",
     "lift",

@@ -14,7 +14,7 @@ from d810.core.typing import AbstractSet, Mapping, Protocol, Sequence
 from d810.hexrays.mutation.ir_translator import (
     classify_live_insn_kind,
     classify_live_operand_kind,
-    is_control_flow_opcode,
+    is_hexrays_opcode,
 )
 from d810.recon.flow.state_machine_analysis import (
     CarrierResolutionResult,
@@ -608,13 +608,30 @@ def discover_shared_corridor(
         if entry_snap is not None:
             entry_fan_in = len([pred for pred in entry_snap.preds if pred not in corridor_set])
 
+    def _is_corridor_control_flow_opcode(opcode: int) -> bool:
+        """Match the original local set: {m_goto, m_jnz, m_ijmp, m_jtbl}.
+
+        Strict parity with the pre-slice behaviour -- the broader
+        ``ir_translator.is_control_flow_opcode`` ALSO matches the
+        remaining conditional jumps (m_jz / m_jbe / m_ja / ...) and
+        direct / indirect calls, which is NOT what this site wants.
+        SharedCorridorInfo.carrier_in_corridor counts anything outside
+        these four opcodes as a "carrier" (semantic) instruction.
+        """
+        return (
+            is_hexrays_opcode(opcode, "m_goto")
+            or is_hexrays_opcode(opcode, "m_jnz")
+            or is_hexrays_opcode(opcode, "m_ijmp")
+            or is_hexrays_opcode(opcode, "m_jtbl")
+        )
+
     carrier_in_corridor = False
     for blk_serial in corridor_tuple:
         blk_snap = flow_graph.get_block(blk_serial)
         if blk_snap is None:
             continue
         for insn in blk_snap.iter_insns():
-            if not is_control_flow_opcode(insn.opcode):
+            if not _is_corridor_control_flow_opcode(insn.opcode):
                 carrier_in_corridor = True
                 break
         if carrier_in_corridor:
