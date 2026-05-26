@@ -13,6 +13,7 @@
 .cursor/
 .claude/
 .codesight/
+reviews/
 
 # AI CLI Crap
 GEMINI.md
