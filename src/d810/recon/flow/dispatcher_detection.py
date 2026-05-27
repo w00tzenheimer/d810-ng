@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import weakref
 from dataclasses import dataclass, field
-from enum import Enum, IntFlag
+from enum import IntFlag
 
 import ida_hexrays
 
@@ -91,12 +91,15 @@ class DispatcherStrategy(IntFlag):
 
 # Pure-data `DispatcherType` lives in `d810.recon.flow.dispatcher_kind`
 # (axis-C slice B1c).  The re-export below keeps any prod consumer
-# that finds the enum via `dispatcher_detection` working; the two
-# direct unit-test importers (test_predecessor_dispatcher_target,
-# test_dispatcher_discovery_facts) import from the canonical
-# `dispatcher_kind` location directly so they no longer transit this
-# vendor-coupled module.  Dependency direction is one-way:
-# dispatcher_detection -> dispatcher_kind, never the reverse.
+# that finds the enum via `dispatcher_detection` working; the three
+# direct unit-test importers
+# (`tests/unit/cfg/flow/test_dispatcher_handler_map.py`,
+# `tests/unit/recon/flow/test_indirect_jump_table_analysis.py`,
+# `tests/unit/recon/flow/test_state_transition_resolution.py`) now
+# import from the canonical `dispatcher_kind` location directly so
+# they no longer transit this vendor-coupled module.  Dependency
+# direction is one-way: `dispatcher_detection -> dispatcher_kind`,
+# never the reverse.
 from d810.recon.flow.dispatcher_kind import DispatcherType  # noqa: F401
 
 
