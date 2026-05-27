@@ -453,6 +453,10 @@ def capture_insn_snapshot(insn: "ida_hexrays.minsn_t") -> InsnSnapshot:
     """
     opcode = insn.opcode
     ea = insn.ea
+    try:
+        display_text = str(insn.dstr())
+    except Exception:
+        display_text = ""
 
     operand_slots = tuple(
         (slot_name, MopSnapshot.from_mop(mop))
@@ -475,6 +479,7 @@ def capture_insn_snapshot(insn: "ida_hexrays.minsn_t") -> InsnSnapshot:
         ea=ea,
         operands=operands,
         operand_slots=operand_slots,
+        display_text=display_text,
         l=left,
         r=right,
         d=dest,

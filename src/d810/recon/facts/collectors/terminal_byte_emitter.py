@@ -6,6 +6,7 @@ terminal byte step survives, remaps, or disappears across microcode maturities.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import re
 
@@ -25,7 +26,7 @@ _TARGET_MATURITIES = frozenset({
     _MATURITY_VALUES["MMAT_GLBOPT1"],
 })
 
-_STX_OPCODES = frozenset({"m_stx", "op_1"})
+_STX_OPCODES = frozenset({"m_stx", "op_1", "store"})
 _STORE_TEXT_RE = re.compile(r"^\s*stx\s+(.+?),\s*ds\.\d+,\s*(.+)$", re.IGNORECASE)
 _DS_ADDRESS_RE = re.compile(r"\[ds\.[^\]]+\]")
 _VAR_TOKEN_RE = re.compile(r"%var_([0-9a-fA-F]+)\.\d+(?:\{[^}]*\})?")
@@ -204,7 +205,7 @@ def _block_metadata(target: Any) -> dict[int, tuple[int | None, tuple[int, ...],
         return metadata
 
     blocks = getattr(target, "blocks", target)
-    block_iter = blocks.values() if isinstance(blocks, dict) else blocks
+    block_iter = blocks.values() if isinstance(blocks, Mapping) else blocks
     for blk in block_iter:
         serial = int(getattr(blk, "serial"))
         start_ea = getattr(blk, "start_ea", None)

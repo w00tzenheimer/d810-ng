@@ -13,6 +13,7 @@ but the post-HCC loop back-edges reach the predicate without traversing a
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from collections import Counter
 from dataclasses import dataclass
 import re
@@ -39,7 +40,7 @@ _TARGET_MATURITIES = frozenset({
     _MATURITY_VALUES["MMAT_GLBOPT1"],
 })
 
-_CONDITIONAL_OPCODES = frozenset({"m_jnz", "m_jz"})
+_CONDITIONAL_OPCODES = frozenset({"m_jnz", "m_jz", "equality_jump", "cond_jump"})
 _VAR_TOKEN_RE = re.compile(r"%var_([0-9A-Fa-f]+)\.\d+(?:\{[^}]*\})?")
 
 
@@ -90,7 +91,7 @@ def _all_block_serials(target: Any) -> tuple[int, ...]:
             return ()
 
     blocks = getattr(target, "blocks", target)
-    block_iter = blocks.values() if isinstance(blocks, dict) else blocks
+    block_iter = blocks.values() if isinstance(blocks, Mapping) else blocks
     serials: list[int] = []
     for blk in block_iter:
         try:

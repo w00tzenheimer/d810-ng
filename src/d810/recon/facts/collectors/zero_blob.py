@@ -33,7 +33,7 @@ _COPY_SIZE_RE = re.compile(r"#(?P<size>0x[0-9a-fA-F]+|\d+)(?:\.\d+)?")
 
 def _is_store(insn: _InstructionView) -> bool:
     text = insn.dstr.lower().lstrip()
-    return insn.opcode_name in {"m_stx", "op_1"} or text.startswith("stx ")
+    return insn.opcode_name in {"m_stx", "op_1", "store"} or text.startswith("stx ")
 
 
 def _zero_blob_kind(insn: _InstructionView) -> str | None:
