@@ -68,7 +68,7 @@ class TestDispatcherDetectionWithRealMicrocode:
         """
         import ida_hexrays
         import idaapi
-        from d810.recon.flow.dispatcher_detection import (
+        from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import (
             DispatcherCache,
             DispatcherType,
         )
@@ -151,7 +151,7 @@ class TestDispatcherDetectionWithRealMicrocode:
         """
         import ida_hexrays
         import idaapi
-        from d810.recon.flow.dispatcher_detection import (
+        from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import (
             DispatcherCache,
             DispatcherType,
         )
@@ -195,7 +195,7 @@ class TestDispatcherDetectionWithRealMicrocode:
         """
         import ida_hexrays
         import idaapi
-        from d810.recon.flow.dispatcher_detection import (
+        from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import (
             DispatcherCache,
             DispatcherType,
         )
@@ -232,7 +232,7 @@ class TestDispatcherDetectionWithRealMicrocode:
         """
         import ida_hexrays
         import idaapi
-        from d810.recon.flow.dispatcher_detection import (
+        from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import (
             DispatcherCache,
             should_skip_dispatcher,
         )

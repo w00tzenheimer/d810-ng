@@ -50,7 +50,7 @@ from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
     collect_live_fake_jump_fixes,
     collect_live_single_iteration_fixes,
 )
-from d810.recon.flow.dispatcher_detection import DispatcherCache
+from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import DispatcherCache
 from d810.recon.flow.round_discovery_context import (
     build_round_discovery_context,
 )

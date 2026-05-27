@@ -11,20 +11,16 @@ from d810.recon.flow.analysis_stats import (
     FlowProfileStats,
     compute_flow_profile_stats,
 )
-from d810.recon.flow.dispatcher_detection import (
-    DispatcherCache,
-    DispatcherType,
-)
+from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import DispatcherCache
+from d810.recon.flow.dispatcher_kind import DispatcherType
 from d810.core.gate_modes import GateOperationMode
 from d810.recon.flow_hints import FlowContextHintSummary
 from d810.recon.function_priors import FunctionAnalysisPriors
 
 if TYPE_CHECKING:
     from d810.recon.facts.model import FactConsumerRecord, ValidatedFactView
-    from d810.recon.flow.dispatcher_detection import (
-        BlockAnalysis,
-        DispatcherAnalysis,
-    )
+    from d810.recon.flow.dispatcher_analysis import DispatcherAnalysis
+    from d810.recon.flow.dispatcher_facts import BlockAnalysis
     from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
 

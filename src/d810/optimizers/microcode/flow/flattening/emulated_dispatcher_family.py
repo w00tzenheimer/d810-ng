@@ -97,7 +97,7 @@ from d810.recon.flow.branch_ownership import (
     branch_ownership_proof_from_any,
     collect_branch_ownership_proofs,
 )
-from d810.recon.flow.dispatcher_detection import DispatcherCache
+from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import DispatcherCache
 from d810.recon.flow.dispatcher_map import StateDispatcherMap, StateDispatcherRow
 from d810.recon.flow.dispatcher_discovery_facts import (
     collect_state_dispatcher_discovery_fact_observations,

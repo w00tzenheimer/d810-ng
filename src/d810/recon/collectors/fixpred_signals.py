@@ -229,6 +229,16 @@ def _portable_signals(
     return metrics, candidates
 
 
+# E3-rewire A: ``_live_signals`` was the live-``mba_t`` fallback
+# path for this collector.  After E4a, the manager-side recon
+# subscriber always invokes ``collect(target=flow_graph, ...)``,
+# so the live path is dead code in production.  Re-routing it to
+# ``d810.optimizers.microcode.flow.dispatcher.dispatcher_cache.DispatcherCache`` would
+# silently put a Hex-Rays import inside ``d810.recon.collectors``
+# -- breaking ``recon-core-no-hexrays`` for any future test or
+# adapter that pulls collectors from the recon package.  The path
+# is therefore removed entirely; ``collect()`` now requires a
+# ``FlowGraph``-shaped ``target``.
 def _live_signals(
     target: object,
 ) -> tuple[dict[str, object], tuple[CandidateFlag, ...]]:
@@ -237,140 +247,14 @@ def _live_signals(
     Uses ``DispatcherCache`` from the recon dispatcher detection module
     when available; falls back to direct block iteration.
     """
-    from d810.recon.flow.dispatcher_detection import DispatcherCache
-
-    cache = DispatcherCache.get_or_create(target)
-    analysis = cache.analyze()
-
-    dispatchers = sorted(
-        int(s) for s in getattr(analysis, "dispatchers", set())
+    raise NotImplementedError(  # pragma: no cover - architectural pin
+        "FixPredSignalsCollector._live_signals was removed in E3-rewire A. "
+        "After E4a the collector always receives a FlowGraph snapshot from "
+        "the FLOWGRAPH_READY subscriber on D810.  Reaching this code path "
+        "indicates a caller passed a live mba_t instead of a FlowGraph -- "
+        "wire the call through the subscriber pattern, or pass "
+        "``lift(mba)`` explicitly."
     )
-    dispatcher_type = _canonical_dispatcher_type(
-        getattr(
-            getattr(analysis, "dispatcher_type", None),
-            "name",
-            "UNKNOWN",
-        )
-    )
-    _state_variable = getattr(analysis, "state_variable", None)
-
-    predecessor_sample_count = 0
-    predecessor_1way_count = 0
-    predecessor_2way_count = 0
-    predecessor_nway_count = 0
-
-    max_dispatcher_predecessors = 0
-    predecessor_total = 0
-    ambiguous_dispatcher_count = 0
-    strong_dispatcher_count = 0
-
-    state_constant_values: set[int] = set()
-
-    block_info = getattr(analysis, "block_info", {})
-
-    for serial in dispatchers:
-        blk = target.get_mblock(int(serial))
-        if blk is None:
-            continue
-
-        info = block_info.get(int(serial))
-        if info is not None:
-            state_constant_values.update(
-                int(value) for value in getattr(info, "state_constants", set())
-            )
-            if bool(getattr(info, "is_strong_dispatcher", False)):
-                strong_dispatcher_count += 1
-
-        preds = tuple(int(p) for p in getattr(blk, "predset", ()))
-        succs = tuple(int(s) for s in getattr(blk, "succset", ()))
-        pred_count = len(preds)
-
-        predecessor_total += pred_count
-        if pred_count > max_dispatcher_predecessors:
-            max_dispatcher_predecessors = pred_count
-
-        if dispatcher_type == "CONDITIONAL_CHAIN":
-            if len(succs) != 2:
-                ambiguous_dispatcher_count += 1
-        elif dispatcher_type == "SWITCH_TABLE":
-            if len(succs) <= 1:
-                ambiguous_dispatcher_count += 1
-        else:
-            if len(succs) == 0:
-                ambiguous_dispatcher_count += 1
-
-        for pred_serial in sorted(preds):
-            pred_blk = target.get_mblock(int(pred_serial))
-            if pred_blk is None:
-                continue
-            predecessor_sample_count += 1
-            pred_type = int(
-                getattr(pred_blk, "type", getattr(pred_blk, "block_type", 0))
-            )
-            if pred_type == _BLT_1WAY:
-                predecessor_1way_count += 1
-            elif pred_type == _BLT_2WAY:
-                predecessor_2way_count += 1
-            elif pred_type == _BLT_NWAY:
-                predecessor_nway_count += 1
-
-    dispatcher_count = len(dispatchers)
-    conditional_dispatcher_count = (
-        dispatcher_count if dispatcher_type == "CONDITIONAL_CHAIN" else 0
-    )
-    switch_dispatcher_count = (
-        dispatcher_count if dispatcher_type == "SWITCH_TABLE" else 0
-    )
-    unknown_dispatcher_count = max(
-        0,
-        dispatcher_count - conditional_dispatcher_count - switch_dispatcher_count,
-    )
-
-    mean_dispatcher_predecessors = _ratio(predecessor_total, dispatcher_count)
-    ambiguous_dispatcher_ratio = _ratio(ambiguous_dispatcher_count, dispatcher_count)
-
-    metrics: dict[str, object] = {
-        "dispatcher_count": dispatcher_count,
-        "strong_dispatcher_count": strong_dispatcher_count,
-        "conditional_dispatcher_count": conditional_dispatcher_count,
-        "switch_dispatcher_count": switch_dispatcher_count,
-        "unknown_dispatcher_count": unknown_dispatcher_count,
-        "max_dispatcher_predecessors": max_dispatcher_predecessors,
-        "mean_dispatcher_predecessors": round(mean_dispatcher_predecessors, 4),
-        "ambiguous_dispatcher_count": ambiguous_dispatcher_count,
-        "ambiguous_dispatcher_ratio": round(ambiguous_dispatcher_ratio, 4),
-        "predecessor_sample_count": predecessor_sample_count,
-        "predecessor_1way_ratio": round(
-            _ratio(predecessor_1way_count, predecessor_sample_count),
-            4,
-        ),
-        "predecessor_2way_ratio": round(
-            _ratio(predecessor_2way_count, predecessor_sample_count),
-            4,
-        ),
-        "predecessor_nway_ratio": round(
-            _ratio(predecessor_nway_count, predecessor_sample_count),
-            4,
-        ),
-        "state_variable_present": int(_state_variable is not None),
-        "dispatcher_state_constant_total": len(state_constant_values),
-        "dispatcher_type": dispatcher_type,
-    }
-
-    candidates = tuple(
-        CandidateFlag(
-            kind="fixpred_high_fanin_dispatcher",
-            block_serial=int(serial),
-            confidence=min(1.0, 0.4 + 0.1 * max_dispatcher_predecessors),
-            detail=(
-                "dispatcher predecessor fan-in="
-                f"{max_dispatcher_predecessors}"
-            ),
-        )
-        for serial in dispatchers
-        if max_dispatcher_predecessors >= 3
-    )
-    return metrics, candidates
 
 
 class FixPredSignalsCollector:
@@ -387,9 +271,13 @@ class FixPredSignalsCollector:
     level: str = "microcode"
 
     def collect(self, target: object, func_ea: int, maturity: int) -> ReconResult:
-        """Collect fixpred safety signals.
+        """Collect fixpred safety signals from a portable ``FlowGraph``.
 
-        :param target: Portable snapshot or live ``mba_t``.
+        :param target: Portable ``FlowGraph`` snapshot (after E4a, the
+            ``FLOWGRAPH_READY`` subscriber on ``D810`` is the only
+            invoker, and it always passes a ``FlowGraph``).  Passing a
+            live ``mba_t`` will raise via the architectural-pin
+            ``_live_signals`` stub.
         :param func_ea: Function effective address.
         :param maturity: Current maturity level.
         :return: Frozen ``ReconResult`` with fixpred metrics.
