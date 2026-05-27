@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 import ida_hexrays
 
 from d810.cfg.dominator import compute_dom_tree
+from d810.cfg.mop_identity import mop_snapshot_key
 from d810.core import logging
 from d810.core.bits import unsigned_to_signed
 from d810.evaluator.evaluators import evaluate_concrete
@@ -114,6 +115,37 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
+def _live_mop_matches_snapshot_key(
+    mop: "ida_hexrays.mop_t", key: str | None
+) -> bool:
+    """Return ``True`` if ``mop`` produces the given snapshot key.
+
+    Mirrors ``d810.cfg.mop_identity.mop_snapshot_key`` on the live
+    side so the dispatcher-cache's portable state-variable identity
+    (held as a ``MopSnapshot``) can be matched against the live
+    operands in hodur's local ``state_check_blocks`` without holding
+    a live ``mop_t`` reference inside ``StateVariableCandidate``.
+
+    Inlined rather than imported from a shared helper because the
+    only equivalent on the live side lives in
+    ``recon/flow/dispatcher_detection._build_state_var_snapshot``
+    (private) and the matching logic itself is one ``if``/``elif``
+    cascade -- not worth a cross-module dependency.
+    """
+    if key is None or mop is None:
+        return False
+    t = mop.t
+    if t == ida_hexrays.mop_r:
+        return key == f"r{mop.r}"
+    if t == ida_hexrays.mop_S:
+        return key == f"S{mop.s.off}"
+    if t == ida_hexrays.mop_v:
+        return key == f"v{mop.g}"
+    if t == ida_hexrays.mop_l:
+        return key == f"l{mop.l.off}"
+    return False
+
+
 class HodurStateMachineDetector:
     """Detects Hodur-style while-loop state machines in microcode."""
 
@@ -187,32 +219,56 @@ class HodurStateMachineDetector:
 
         # Step 2: Find the state variable (the operand being compared).
         #
-        # E3-schema (dispatcher_facts) note: ``DispatcherCache``'s
+        # E3-schema (dispatcher_facts): ``DispatcherCache``'s
         # ``analysis.state_variable.mop`` is now a portable
-        # ``MopSnapshot``, not a live ``ida_hexrays.mop_t`` -- pulling
-        # it out as ``state_var`` and passing it to ``format_mop_t``
-        # / downstream live-mop operations is no longer correct.
+        # ``MopSnapshot``, not a live ``ida_hexrays.mop_t``.  We can't
+        # just pull ``.mop`` out and pass it to live-mop operations
+        # (``format_mop_t``, downstream walking).
         #
-        # The old cache-shortcut here was a performance optimization
-        # (skip re-identification when the dispatcher cache already
-        # found a candidate).  The fallback path below
-        # (``_identify_state_variable``) IS the original code path,
-        # so dropping the shortcut is functionally equivalent.
-        # Diagnostic info from the cache (comparison count) is still
-        # accessible via ``self._cache.analyze().state_variable``
-        # for callers that need it.
-        if self._cache is not None and unflat_logger.debug_on:
+        # BUT: the cache's selection logic ("operand with the most
+        # state comparisons across the whole function") IS more
+        # discriminating than ``_identify_state_variable``'s
+        # "non-constant operand of the first check block".  For
+        # functions with mixed/decoy early comparisons these can
+        # diverge, so we MUST preserve the cache-driven selection.
+        #
+        # We bridge the cache's portable identity to a live operand
+        # by matching the snapshot key against the live operands in
+        # our own ``state_check_blocks``: find the check whose
+        # non-constant operand has the same ``mop_snapshot_key`` as
+        # the cache's candidate, and use that block's live mop.
+        # This preserves the cache's "most comparisons" wisdom while
+        # keeping ``StateVariableCandidate.mop`` schema-pure.
+        state_var = None
+        if self._cache is not None:
             cached = self._cache.analyze().state_variable
             if cached is not None:
-                unflat_logger.debug(
-                    "Dispatcher cache reports state variable with "
-                    "%d comparisons (kind=%s); re-identifying via "
-                    "live walk for hodur",
-                    cached.comparison_count,
-                    cached.mop.kind.name,
-                )
+                cached_key = mop_snapshot_key(cached.mop)
+                if cached_key is not None:
+                    for blk_serial, _, _ in state_check_blocks:
+                        blk = self.mba.get_mblock(blk_serial)
+                        if blk.tail is None:
+                            continue
+                        _, candidate = extract_num_mop(blk.tail)
+                        if candidate is None:
+                            continue
+                        if _live_mop_matches_snapshot_key(
+                            candidate, cached_key
+                        ):
+                            state_var = ida_hexrays.mop_t(candidate)
+                            if unflat_logger.debug_on:
+                                unflat_logger.debug(
+                                    "Using dispatcher-cache state-variable "
+                                    "(kind=%s, comparisons=%d) located in "
+                                    "block %d",
+                                    cached.mop.kind.name,
+                                    cached.comparison_count,
+                                    blk_serial,
+                                )
+                            break
 
-        state_var = self._identify_state_variable(state_check_blocks)
+        if state_var is None:
+            state_var = self._identify_state_variable(state_check_blocks)
 
         if state_var is None:
             unflat_logger.debug("Could not identify state variable")
