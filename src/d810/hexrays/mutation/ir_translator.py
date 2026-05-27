@@ -87,6 +87,9 @@ logger = getLogger(__name__)
 import os
 
 import ida_hexrays
+import idaapi
+
+from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
 
 def _block_kind_from_hexrays(block_type: int) -> BlockKind:
@@ -509,11 +512,41 @@ def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
         blk = mba.get_mblock(i)
         blocks[blk.serial] = lift_block(blk)
 
+    # E2b: pin a small, portable metadata contract on every lifted
+    # ``FlowGraph`` so recon consumers never have to reach back into
+    # the live ``mba_t`` for these values:
+    #
+    # * ``maturity``        -- int, raw ``mba.maturity`` (already present)
+    # * ``maturity_name``   -- str, ``MMAT_*`` name (or ``Unknown maturity: N``)
+    # * ``cpu_arch_name``   -- str, IDA processor module name
+    #                          (``metapc``, ``ARM``, ``PPC``, ...)
+    #
+    # ``cpu_arch_name`` lookup is wrapped because ``inf_get_procname``
+    # can return bytes on some IDA builds and we want a clean ``str``.
+    # A lookup failure here MUST NOT gate decompilation -- fall back
+    # to ``"unknown"`` (deterministic non-empty sentinel so consumers
+    # can do string compares without special-casing ``""``).
+    try:
+        raw_proc = idaapi.inf_get_procname()
+    except Exception:
+        raw_proc = None
+    if isinstance(raw_proc, bytes):
+        try:
+            cpu_arch_name = raw_proc.decode("ascii", "replace") or "unknown"
+        except Exception:
+            cpu_arch_name = "unknown"
+    else:
+        cpu_arch_name = str(raw_proc) if raw_proc else "unknown"
+
     return FlowGraph(
         blocks=blocks,
         entry_serial=0,
         func_ea=mba.entry_ea,
-        metadata={"maturity": mba.maturity},
+        metadata={
+            "maturity": int(mba.maturity),
+            "maturity_name": maturity_to_string(int(mba.maturity)),
+            "cpu_arch_name": cpu_arch_name,
+        },
     )
 
 

@@ -163,9 +163,11 @@ class TestProducerHelper:
     """
 
     def _stub_mba(self, *, entry_ea: int = 0x140002000, maturity: int = 14):
-        """Minimal ``mba_t``-shaped stub: just the two attributes
-        the helper reads (``entry_ea`` for the payload, ``maturity``
-        is passed in by the caller already)."""
+        """Minimal ``mba_t``-shaped stub: just ``entry_ea`` and
+        ``maturity`` -- the helper reads ``entry_ea`` for the payload
+        and (after the E2b refactor) sources maturity entirely from
+        the lifter's ``FlowGraph.metadata``.  The stub's ``maturity``
+        is read by the lift-failure fallback path."""
         class _StubMba:
             pass
 
@@ -174,10 +176,38 @@ class TestProducerHelper:
         m.maturity = maturity
         return m
 
+    def _fake_flow_graph(
+        self,
+        *,
+        func_ea: int = 0x140002000,
+        maturity: int = 14,
+        maturity_name: str = "MMAT_GLBOPT1",
+        cpu_arch_name: str = "metapc",
+    ):
+        """Produce a real ``FlowGraph`` (not ``object()``) so the
+        helper can index ``.metadata`` like in production.  After the
+        E2b refactor, the helper sources ``maturity`` and
+        ``maturity_name`` from ``flow_graph.metadata`` -- the event
+        mirrors the lifter contract, not an alternate convention."""
+        from d810.cfg.flowgraph import FlowGraph
+
+        return FlowGraph(
+            blocks={},
+            entry_serial=0,
+            func_ea=func_ea,
+            metadata={
+                "maturity": maturity,
+                "maturity_name": maturity_name,
+                "cpu_arch_name": cpu_arch_name,
+            },
+        )
+
     def test_helper_emits_canonical_payload(self, monkeypatch) -> None:
-        """Real helper, monkeypatched lift, stub mba.  Asserts the
-        emitted kwargs match the canonical contract (four kwargs,
-        no ``mba``)."""
+        """Real helper, monkeypatched lift returning a real
+        ``FlowGraph`` with metadata.  Asserts the emitted kwargs match
+        the canonical four-kwarg contract and that ``maturity`` /
+        ``maturity_name`` come from ``flow_graph.metadata`` (not from
+        an alternate convention)."""
         from d810.core.events import EventEmitter
         from d810.hexrays.hooks import hexrays_hooks
         from d810.hexrays.hooks.hexrays_hooks import (
@@ -185,15 +215,16 @@ class TestProducerHelper:
             _emit_flowgraph_ready_event,
         )
 
-        # Sentinel FlowGraph so we can verify identity in the payload
-        # without constructing a real one.
-        sentinel_flow_graph = object()
-
-        def fake_lift(mba):
-            return sentinel_flow_graph
+        sentinel_flow_graph = self._fake_flow_graph(
+            func_ea=0x140002000,
+            maturity=14,
+            maturity_name="MMAT_GLBOPT1",
+        )
 
         monkeypatch.setattr(
-            hexrays_hooks, "lift_mba_to_flowgraph", fake_lift
+            hexrays_hooks,
+            "lift_mba_to_flowgraph",
+            lambda mba: sentinel_flow_graph,
         )
 
         emitter: EventEmitter[DecompilationEvent] = EventEmitter()
@@ -204,7 +235,7 @@ class TestProducerHelper:
         )
 
         stub = self._stub_mba(entry_ea=0x140002000, maturity=14)
-        _emit_flowgraph_ready_event(emitter, stub, 14)
+        _emit_flowgraph_ready_event(emitter, stub)
 
         assert len(received) == 1
         payload = received[0]
@@ -218,12 +249,66 @@ class TestProducerHelper:
         assert payload["flow_graph"] is sentinel_flow_graph
         assert payload["func_ea"] == 0x140002000
         assert payload["maturity"] == 14
-        # maturity_name comes from ``maturity_to_string``; for an
-        # unknown maturity int the helper falls back to a stable
-        # ``MMAT_<n>`` form -- exact name isn't asserted here
-        # (varies by SDK), only that it's a non-empty string.
-        assert isinstance(payload["maturity_name"], str)
-        assert payload["maturity_name"]
+        assert payload["maturity_name"] == "MMAT_GLBOPT1"
+
+    def test_helper_payload_mirrors_flow_graph_metadata(
+        self, monkeypatch
+    ) -> None:
+        """E2b convention pin: ``maturity`` and ``maturity_name`` in
+        the event payload come from ``flow_graph.metadata`` -- the
+        lifter is the single source of truth, the event is NOT an
+        alternate convention.
+
+        Verified by giving the fake lifter a metadata dict with
+        non-default values and asserting the event payload mirrors it
+        exactly.  If a future edit re-introduces ``new_maturity`` as
+        a separate parameter and forgets to plumb the lifter
+        metadata through, this test catches the drift."""
+        from d810.core.events import EventEmitter
+        from d810.hexrays.hooks import hexrays_hooks
+        from d810.hexrays.hooks.hexrays_hooks import (
+            DecompilationEvent,
+            _emit_flowgraph_ready_event,
+        )
+
+        # Deliberately uncommon maturity name and arch so we can
+        # detect any code that hard-codes ``maturity_to_string(...)``
+        # instead of reading metadata.
+        fake_flow_graph = self._fake_flow_graph(
+            func_ea=0x140002000,
+            maturity=999,
+            maturity_name="MMAT_FAKE_FOR_TEST",
+            cpu_arch_name="ARM",
+        )
+        monkeypatch.setattr(
+            hexrays_hooks,
+            "lift_mba_to_flowgraph",
+            lambda mba: fake_flow_graph,
+        )
+
+        emitter: EventEmitter[DecompilationEvent] = EventEmitter()
+        received: list[dict[str, object]] = []
+        emitter.on(
+            DecompilationEvent.FLOWGRAPH_READY,
+            lambda **kwargs: received.append(kwargs),
+        )
+
+        stub = self._stub_mba(entry_ea=0x140002000, maturity=14)
+        _emit_flowgraph_ready_event(emitter, stub)
+
+        assert len(received) == 1
+        payload = received[0]
+        # Strict mirror -- if the helper ever forks the convention,
+        # one of these assertions fails.
+        assert payload["maturity"] == fake_flow_graph.metadata["maturity"]
+        assert (
+            payload["maturity_name"]
+            == fake_flow_graph.metadata["maturity_name"]
+        )
+        # Sanity: the stub's ``maturity`` (14) is intentionally
+        # *different* from the metadata's ``maturity`` (999).  The
+        # payload tracks the metadata, NOT the stub's attribute.
+        assert payload["maturity"] != stub.maturity
 
     def test_helper_with_none_emitter_is_noop(self, monkeypatch) -> None:
         """A manager without ``event_emitter`` wired up still calls
@@ -237,7 +322,7 @@ class TestProducerHelper:
 
         def fake_lift(mba):
             called[0] = True
-            return object()
+            return self._fake_flow_graph()
 
         monkeypatch.setattr(
             hexrays_hooks, "lift_mba_to_flowgraph", fake_lift
@@ -245,7 +330,7 @@ class TestProducerHelper:
 
         stub = self._stub_mba()
         # Should not raise, should not even invoke the lift.
-        _emit_flowgraph_ready_event(None, stub, 14)
+        _emit_flowgraph_ready_event(None, stub)
         assert called[0] is False, (
             "Lift should not run when event_emitter is None -- "
             "the helper short-circuits before lift to avoid wasted "
@@ -279,7 +364,7 @@ class TestProducerHelper:
 
         stub = self._stub_mba()
         # Should not raise.
-        _emit_flowgraph_ready_event(emitter, stub, 14)
+        _emit_flowgraph_ready_event(emitter, stub)
 
         # Event suppressed for the failed transition; no subscribers
         # invoked.
