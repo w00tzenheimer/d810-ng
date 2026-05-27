@@ -67,12 +67,30 @@ class TestInstructionOptimizerManagerHasReconPhase:
             "InstructionOptimizerManager.configure() must accept recon_phase kwarg"
         )
 
-    def test_log_info_calls_run_microcode_collectors(self):
+    def test_log_info_emits_flowgraph_ready(self):
+        """E4a contract: microcode recon collection is driven by the
+        ``FLOWGRAPH_READY`` subscriber on ``D810``.  Each manager
+        maturity gate must invoke ``_emit_flowgraph_ready_event``;
+        the direct ``run_microcode_collectors(mba, ...)`` call is
+        gone.
+
+        Architectural pin: catches drift that either removes the
+        emit (recon stops firing for this manager) or re-introduces
+        a direct ``run_microcode_collectors`` call (double-collect)."""
         filepath = _HEXRAYS_HOOKS
         cls_src = _get_class_source(filepath, "InstructionOptimizerManager")
-        assert "run_microcode_collectors" in cls_src, (
+        assert "_emit_flowgraph_ready_event(" in cls_src, (
             "InstructionOptimizerManager.log_info_on_input() must call "
-            "_recon_phase.run_microcode_collectors()"
+            "_emit_flowgraph_ready_event(); the FLOWGRAPH_READY "
+            "subscriber on D810 is the sole microcode-collection "
+            "trigger after E4a."
+        )
+        # Direct call shape must be absent.
+        assert "self._recon_phase.run_microcode_collectors(" not in cls_src, (
+            "InstructionOptimizerManager must not call "
+            "_recon_phase.run_microcode_collectors() directly -- "
+            "E4a routes that through the FLOWGRAPH_READY subscriber "
+            "on D810.  A direct call here would double-collect."
         )
 
 
@@ -93,12 +111,24 @@ class TestBlockOptimizerManagerHasReconPhase:
             "BlockOptimizerManager.configure() must accept recon_phase kwarg"
         )
 
-    def test_log_info_calls_run_microcode_collectors(self):
+    def test_log_info_emits_flowgraph_ready(self):
+        """E4a contract: see ``InstructionOptimizerManager`` sibling.
+        Both manager maturity gates emit; ``ReconPhase`` dedupes the
+        two emits per ``(func_ea, maturity)``."""
         filepath = _HEXRAYS_HOOKS
         cls_src = _get_class_source(filepath, "BlockOptimizerManager")
-        assert "run_microcode_collectors" in cls_src, (
+        assert "_emit_flowgraph_ready_event(" in cls_src, (
             "BlockOptimizerManager.log_info_on_input() must call "
-            "_recon_phase.run_microcode_collectors()"
+            "_emit_flowgraph_ready_event(); the FLOWGRAPH_READY "
+            "subscriber on D810 is the sole microcode-collection "
+            "trigger after E4a."
+        )
+        # Direct call shape must be absent.
+        assert "self._recon_phase.run_microcode_collectors(" not in cls_src, (
+            "BlockOptimizerManager must not call "
+            "_recon_phase.run_microcode_collectors() directly -- "
+            "E4a routes that through the FLOWGRAPH_READY subscriber "
+            "on D810.  A direct call here would double-collect."
         )
 
 
