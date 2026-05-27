@@ -18,12 +18,15 @@ with ``mop`` typed as the portable ``d810.cfg.flowgraph.MopSnapshot``
 instead of the live ``ida_hexrays.mop_t``.  ``get_native_stack_offset``
 keys off ``OperandKind.STACK`` instead of ``ida_hexrays.mop_S``.
 
-Still intentionally NOT in this slice (will move in E3-pure):
+Still intentionally NOT in this slice:
 
 * ``DispatcherCache``                -- analysis machinery,
   vendor-coupled by design; stays in ``dispatcher_detection``.
-* ``DispatcherAnalysis``             -- holds the
-  ``StateVariableCandidate``; moves with the pure analyzer.
+
+E3-pure adds ``d810.recon.flow.dispatcher_analysis.DispatcherAnalysis``
+beside the pure analyzer.  The legacy live module keeps its existing
+``DispatcherAnalysis`` until E3-rewire swaps consumers over; this avoids
+editing the live adapter during the additive pure-function slice.
 
 Dependency direction is one-way:
 ``dispatcher_detection -> dispatcher_facts``, never the reverse.
