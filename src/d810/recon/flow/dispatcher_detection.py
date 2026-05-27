@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import weakref
 from dataclasses import dataclass, field
-from enum import IntFlag
 
 import ida_hexrays
 
@@ -74,19 +73,15 @@ def _maturity_text(maturity: int) -> str:
     return f"MMAT_{int(maturity)}"
 
 
-class DispatcherStrategy(IntFlag):
-    """Flags indicating which strategies detected a block as a dispatcher."""
-
-    NONE = 0
-    HIGH_FAN_IN = 1 << 0  # >=N predecessors
-    STATE_COMPARISON = 1 << 1  # Compares against large constants
-    LOOP_HEADER = 1 << 2  # Natural loop header
-    PREDECESSOR_UNIFORM = 1 << 3  # Most preds are unconditional jumps
-    CONSTANT_FREQUENCY = 1 << 4  # Many unique constants compared
-    BACK_EDGE = 1 << 5  # Has incoming back-edges
-    NESTED_LOOP = 1 << 6  # Part of nested loop structure
-    SMALL_BLOCK = 1 << 7  # Few instructions (dispatchers are typically tight)
-    SWITCH_JUMP = 1 << 8  # Contains jtbl or computed goto
+# Pure-data ``DispatcherStrategy`` (IntFlag) + ``BlockAnalysis``
+# (dataclass) live in ``d810.recon.flow.dispatcher_facts`` (axis-C
+# slice B1a step 1).  The re-export below keeps prod consumers that
+# find them via ``dispatcher_detection`` working; future caller-side
+# refactors target the pure module directly.
+from d810.recon.flow.dispatcher_facts import (  # noqa: F401
+    BlockAnalysis,
+    DispatcherStrategy,
+)
 
 
 # Pure-data `DispatcherType` lives in `d810.recon.flow.dispatcher_kind`
@@ -103,32 +98,8 @@ class DispatcherStrategy(IntFlag):
 from d810.recon.flow.dispatcher_kind import DispatcherType  # noqa: F401
 
 
-@dataclass
-class BlockAnalysis:
-    """Analysis results for a single block."""
-
-    serial: int
-    strategies: DispatcherStrategy = DispatcherStrategy.NONE
-    score: float = 0.0
-
-    # Strategy-specific data
-    predecessor_count: int = 0
-    unconditional_pred_count: int = 0
-    state_constants: set[int] = field(default_factory=set)
-    back_edge_sources: list[int] = field(default_factory=list)
-    loop_depth: int = 0
-
-    @property
-    def is_dispatcher(self) -> bool:
-        """True if any strategy flagged this block as a dispatcher."""
-        return self.strategies != DispatcherStrategy.NONE
-
-    @property
-    def is_strong_dispatcher(self) -> bool:
-        """True if multiple strategies agree this is a dispatcher."""
-        # Count set bits
-        count = bin(self.strategies).count("1")
-        return count >= 2
+# ``BlockAnalysis`` body now lives in ``d810.recon.flow.dispatcher_facts``
+# (see the re-export above).
 
 
 @dataclass
