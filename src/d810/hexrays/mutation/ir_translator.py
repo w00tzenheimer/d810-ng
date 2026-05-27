@@ -249,43 +249,29 @@ def classify_live_operand_kind(mop: object) -> OperandKind | None:
 # string contents).
 
 
-def _predicate_kind_from_hexrays(opcode: int) -> PredicateKind | None:
-    """Map a Hex-Rays jump-or-set opcode int to its portable predicate.
+def _branch_predicate_only_from_hexrays(opcode: int) -> PredicateKind | None:
+    """Branch-only predicate mapping: ``m_jX`` opcodes ONLY.
 
-    Covers BOTH conditional branches (``m_jX``) and byte-materialized
-    predicates (``m_setX``) -- they share the predicate semantic;
-    the call site separately decides "branch taken" vs "byte
-    materialized".  ``m_jcnd`` (boolean-test branch on a value) maps
-    to ``PredicateKind.TRUTHY``.
+    Excludes ``m_set*`` byte materializations -- those carry a
+    predicate but are NOT control transfers.  Use this when the
+    caller is specifically deciding "is this a conditional branch?".
+    ``classify_predicate`` (below) is the broader entry-point that
+    also recognises ``m_set*``.
 
-    Returns ``None`` for non-predicate opcodes.
+    Returns ``None`` for non-branch opcodes.
     """
     opcode = int(opcode)
     mapping = (
-        # Equality
         ("m_jz", PredicateKind.EQ),
-        ("m_setz", PredicateKind.EQ),
         ("m_jnz", PredicateKind.NE),
-        ("m_setnz", PredicateKind.NE),
-        # Unsigned
         ("m_jae", PredicateKind.UGE),
-        ("m_setae", PredicateKind.UGE),
         ("m_ja", PredicateKind.UGT),
-        ("m_seta", PredicateKind.UGT),
         ("m_jbe", PredicateKind.ULE),
-        ("m_setbe", PredicateKind.ULE),
         ("m_jb", PredicateKind.ULT),
-        ("m_setb", PredicateKind.ULT),
-        # Signed
         ("m_jge", PredicateKind.SGE),
-        ("m_setge", PredicateKind.SGE),
         ("m_jg", PredicateKind.SGT),
-        ("m_setg", PredicateKind.SGT),
         ("m_jle", PredicateKind.SLE),
-        ("m_setle", PredicateKind.SLE),
         ("m_jl", PredicateKind.SLT),
-        ("m_setl", PredicateKind.SLT),
-        # Truthiness
         ("m_jcnd", PredicateKind.TRUTHY),
     )
     for name, kind in mapping:
@@ -294,13 +280,63 @@ def _predicate_kind_from_hexrays(opcode: int) -> PredicateKind | None:
     return None
 
 
+def _set_predicate_only_from_hexrays(opcode: int) -> PredicateKind | None:
+    """Set-only predicate mapping: ``m_setX`` byte materializations.
+
+    Conceptually mirrors ``_branch_predicate_only_from_hexrays`` but
+    on the materialization side: each ``m_set*`` opcode produces a
+    byte carrying the predicate result rather than transferring
+    control.  Kept separate so the ``ControlTransferKind`` dispatch
+    in ``_control_transfer_from_hexrays`` cannot misclassify a
+    materialization as a conditional branch.
+
+    Returns ``None`` for non-set opcodes.
+    """
+    opcode = int(opcode)
+    mapping = (
+        ("m_setz", PredicateKind.EQ),
+        ("m_setnz", PredicateKind.NE),
+        ("m_setae", PredicateKind.UGE),
+        ("m_seta", PredicateKind.UGT),
+        ("m_setbe", PredicateKind.ULE),
+        ("m_setb", PredicateKind.ULT),
+        ("m_setge", PredicateKind.SGE),
+        ("m_setg", PredicateKind.SGT),
+        ("m_setle", PredicateKind.SLE),
+        ("m_setl", PredicateKind.SLT),
+    )
+    for name, kind in mapping:
+        if is_hexrays_opcode(opcode, name):
+            return kind
+    return None
+
+
+def _predicate_kind_from_hexrays(opcode: int) -> PredicateKind | None:
+    """Map any predicate-carrying opcode (branch OR set) to its
+    portable ``PredicateKind``.
+
+    Composes the two narrow mappers so callers that want "what
+    comparison is this instruction asking?" don't need to know
+    whether the result is consumed as branch direction or as a
+    materialized byte.
+    """
+    kind = _branch_predicate_only_from_hexrays(opcode)
+    if kind is not None:
+        return kind
+    return _set_predicate_only_from_hexrays(opcode)
+
+
 def _control_transfer_from_hexrays(opcode: int) -> ControlTransferKind | None:
     """Map a Hex-Rays control-flow opcode int to its transfer kind.
 
     Covers gotos, conditional branches, jump tables, indirect jumps,
     and returns.  Calls (``m_call`` / ``m_icall``) are explicitly NOT
     included -- they'll get their own ``CallKind`` family when a
-    consumer needs them.
+    consumer needs them.  ``m_set*`` byte materializations are
+    explicitly NOT control transfers -- the dispatch uses
+    ``_branch_predicate_only_from_hexrays`` (NOT the broader
+    ``_predicate_kind_from_hexrays``) so a materialization can never
+    be misclassified as ``CONDITIONAL_BRANCH``.
 
     Returns ``None`` for non-transfer opcodes.
     """
@@ -313,7 +349,7 @@ def _control_transfer_from_hexrays(opcode: int) -> ControlTransferKind | None:
         return ControlTransferKind.INDIRECT_BRANCH
     if is_hexrays_opcode(opcode, "m_ret"):
         return ControlTransferKind.RETURN
-    if _predicate_kind_from_hexrays(opcode) is not None:
+    if _branch_predicate_only_from_hexrays(opcode) is not None:
         return ControlTransferKind.CONDITIONAL_BRANCH
     return None
 
@@ -321,6 +357,13 @@ def _control_transfer_from_hexrays(opcode: int) -> ControlTransferKind | None:
 def classify_branch_predicate(insn: object) -> PredicateKind | None:
     """Return the portable predicate carried by a live conditional
     branch / set instruction, or ``None`` for non-predicate opcodes.
+
+    Note that this covers BOTH conditional branches (``m_jX``) and
+    byte-materialized predicates (``m_setX``); they share the
+    predicate semantic and the call site decides whether the
+    result is consumed as branch direction (pair with
+    ``classify_control_transfer``) or as a materialized byte (no
+    associated transfer kind).
 
     Use this at the recon-side seam where a file previously did
     ``if insn.opcode == ida_hexrays.m_jbe`` -- now ask
@@ -335,6 +378,10 @@ def classify_branch_predicate(insn: object) -> PredicateKind | None:
 def classify_control_transfer(insn: object) -> ControlTransferKind | None:
     """Return the portable transfer kind for a live control-flow
     instruction, or ``None`` for non-transfer opcodes.
+
+    ``m_set*`` byte materializations return ``None`` -- they carry
+    a predicate but no transfer; ``classify_branch_predicate``
+    is the function that recognises them.
 
     Pair with ``classify_branch_predicate(insn)`` when the consumer
     needs both "is this a conditional branch?" and "what predicate
