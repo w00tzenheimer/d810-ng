@@ -350,33 +350,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 self.event_emitter.emit(
                     DecompilationEvent.MATURITY_CHANGED, new_maturity
                 )
-                # Axis-C end-state event (E1): lift live mba to portable
-                # FlowGraph and publish FLOWGRAPH_READY for future recon
-                # subscribers.  Fires once per maturity transition (the
-                # ``mba.maturity != self.current_maturity`` gate above
-                # makes this whole branch run at most ~5-6 times per
-                # decompilation -- once per maturity).  Recon does not
-                # subscribe to this event yet; E4 wires consumers and
-                # removes the legacy live-mba path through
-                # ``run_microcode_collectors(mba, ...)`` below to avoid
-                # double-collection.
-                try:
-                    flow_graph = lift_mba_to_flowgraph(mba)
-                except Exception:
-                    optimizer_logger.exception(
-                        "FlowGraph lift failed at maturity %s (func=0x%x); "
-                        "FLOWGRAPH_READY suppressed for this transition",
-                        maturity_to_string(new_maturity),
-                        int(getattr(mba, "entry_ea", 0) or 0),
-                    )
-                else:
-                    self.event_emitter.emit(
-                        DecompilationEvent.FLOWGRAPH_READY,
-                        flow_graph=flow_graph,
-                        func_ea=int(mba.entry_ea),
-                        maturity=int(new_maturity),
-                        maturity_name=maturity_to_string(new_maturity),
-                    )
+                _emit_flowgraph_ready_event(
+                    self.event_emitter, mba, new_maturity
+                )
             if main_logger.debug_on:
                 main_logger.debug(
                     "Instruction optimization function called at maturity: %s",
@@ -968,6 +944,17 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             self.reset_pass_counter()
             self._invalidate_flow_context("maturity changed")
 
+            # Axis-C end-state event (E1): mirror the
+            # ``InstructionOptimizerManager`` site -- emit
+            # ``FLOWGRAPH_READY`` so the cross-layer event lands at
+            # every existing recon-collection lifecycle point.  When
+            # E4 swaps the live-mba ``run_microcode_collectors(...)``
+            # path for ``FLOWGRAPH_READY`` subscribers, neither
+            # manager silently drops out of the chain.
+            _emit_flowgraph_ready_event(
+                self.event_emitter, mba, mba.maturity
+            )
+
             # --- Diagnostic: pre_d810 snapshot for the NEW maturity ---
             _pre_snap_ref = None
             try:
@@ -1530,6 +1517,52 @@ class DecompilationEvent(enum.Enum):
     # with a portable ``FlowGraph`` snapshot.  Recon-side subscribers
     # land in E4 -- E1 only publishes the event; no consumers yet.
     FLOWGRAPH_READY = "decompilation.flowgraph.ready"
+
+
+def _emit_flowgraph_ready_event(
+    event_emitter,
+    mba,
+    new_maturity,
+) -> None:
+    """Lift ``mba`` and emit ``FLOWGRAPH_READY`` (no-op when emitter is None).
+
+    Shared helper invoked at every maturity-transition gate that
+    currently triggers recon collection -- both
+    ``InstructionOptimizerManager.log_info_on_input`` and
+    ``BlockOptimizerManager.log_info_on_input``.  Keeping both
+    producers routing through one helper guarantees the cross-layer
+    event fires anywhere ``run_microcode_collectors(mba, ...)`` does
+    today; when E4 wires recon to consume ``FLOWGRAPH_READY`` (and
+    removes the legacy live-mba path), no producer site silently
+    drops out.
+
+    Lift failures log via ``optimizer_logger.exception`` and return
+    cleanly -- the legacy live path through
+    ``_recon_phase.run_microcode_collectors`` still runs unchanged,
+    so a lift bug never gates decompilation.
+
+    Payload: ``flow_graph`` + ``func_ea`` + ``maturity`` +
+    ``maturity_name``.  No ``mba_t`` crosses the boundary.
+    """
+    if event_emitter is None:
+        return
+    try:
+        flow_graph = lift_mba_to_flowgraph(mba)
+    except Exception:
+        optimizer_logger.exception(
+            "FlowGraph lift failed at maturity %s (func=0x%x); "
+            "FLOWGRAPH_READY suppressed for this transition",
+            maturity_to_string(new_maturity),
+            int(getattr(mba, "entry_ea", 0) or 0),
+        )
+        return
+    event_emitter.emit(
+        DecompilationEvent.FLOWGRAPH_READY,
+        flow_graph=flow_graph,
+        func_ea=int(mba.entry_ea),
+        maturity=int(new_maturity),
+        maturity_name=maturity_to_string(new_maturity),
+    )
 
 
 class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
