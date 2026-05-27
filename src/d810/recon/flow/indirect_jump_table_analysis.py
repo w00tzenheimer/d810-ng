@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from d810.core.logging import getLogger
-from d810.recon.flow.dispatcher_detection import DispatcherType
+from d810.recon.flow.dispatcher_kind import DispatcherType
 from d810.recon.flow.dispatcher_map import (
     StateDispatcherMap,
     StateDispatcherRow,

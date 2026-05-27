@@ -1,4 +1,4 @@
-from d810.recon.flow.dispatcher_detection import DispatcherType
+from d810.recon.flow.dispatcher_kind import DispatcherType
 from d810.recon.flow.dispatcher_discovery_facts import (
     DISPATCHER_ARTIFACT_STATE_FACT_TYPE,
     DISPATCHER_DISCOVERY_GAP_FACT_TYPE,

@@ -13,16 +13,17 @@ future caller-side refactors (the planned step 2 -- threading a pure
 constructing ``DispatcherCache`` inside the collector) a clean type
 target to consume.
 
-Intentionally NOT in this slice:
+E3-schema (now): ``StateVariableCandidate`` joins this pure module
+with ``mop`` typed as the portable ``d810.cfg.flowgraph.MopSnapshot``
+instead of the live ``ida_hexrays.mop_t``.  ``get_native_stack_offset``
+keys off ``OperandKind.STACK`` instead of ``ida_hexrays.mop_S``.
+
+Still intentionally NOT in this slice (will move in E3-pure):
 
 * ``DispatcherCache``                -- analysis machinery,
   vendor-coupled by design; stays in ``dispatcher_detection``.
-* ``StateVariableCandidate``         -- carries ``ida_hexrays.mop_t``
-  in its field annotation AND uses ``idaapi.mop_S`` in
-  ``get_native_stack_offset``; needs lifter-based normalization
-  before it can move (future slice).
-* ``DispatcherAnalysis``             -- references
-  ``StateVariableCandidate``; moves with it.
+* ``DispatcherAnalysis``             -- holds the
+  ``StateVariableCandidate``; moves with the pure analyzer.
 
 Dependency direction is one-way:
 ``dispatcher_detection -> dispatcher_facts``, never the reverse.
@@ -33,7 +34,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import IntFlag
 
-__all__ = ["BlockAnalysis", "DispatcherStrategy"]
+from d810.cfg.flowgraph import MopSnapshot, OperandKind
+
+__all__ = ["BlockAnalysis", "DispatcherStrategy", "StateVariableCandidate"]
 
 
 class DispatcherStrategy(IntFlag):
@@ -77,3 +80,61 @@ class BlockAnalysis:
         # Count set bits
         count = bin(self.strategies).count("1")
         return count >= 2
+
+
+@dataclass
+class StateVariableCandidate:
+    """A candidate for the state variable (portable -- E3-schema).
+
+    The operand identity is held as a portable
+    ``d810.cfg.flowgraph.MopSnapshot``, NOT a live ``ida_hexrays.mop_t``.
+    Construction sites that have a live operand build the snapshot via
+    ``d810.hexrays.mutation.ir_translator.capture_mop_snapshot``.
+
+    Field names ``mop_type`` / ``mop_offset`` / ``mop_size`` are kept
+    for backward compatibility with existing consumers; their values
+    mirror what the live-IDA helpers used to compute and can also be
+    derived from ``mop`` directly via ``mop.kind`` /
+    ``d810.cfg.mop_identity.mop_snapshot_offset(mop)`` / ``mop.size``.
+    """
+
+    mop: MopSnapshot
+    mop_type: int = 0  # Mirror of mop.t (raw backend operand type; diagnostic)
+    mop_offset: int = 0  # For STACK: stack offset; for REGISTER: register number
+    mop_size: int = 4  # Operand size in bytes (mirrors mop.size)
+    init_value: int | None = None
+    comparison_count: int = 0
+    assignment_count: int = 0
+    unique_constants: set[int] = field(default_factory=set)
+    comparison_blocks: list[int] = field(default_factory=list)
+    assignment_blocks: list[int] = field(default_factory=list)
+    score: float = 0.0
+
+    def get_native_stack_offset(self, frame_size: int) -> int | None:
+        """Convert microcode stack offset to native stack offset.
+
+        Microcode stores stack offsets counting UP from the bottom of
+        the frame, while native code uses offsets DOWN from RBP/RSP.
+        Returns ``None`` if the candidate isn't a stack-resident
+        variable.
+
+        Args:
+            frame_size: Total frame size from the live ``mba_t``.
+                (Frame size is not part of the portable contract; the
+                caller is responsible for sourcing it -- e.g., the
+                emulation hook in ``dispatcher_detection.py`` reads
+                ``mba.frsize``.)
+
+        Returns:
+            Native stack offset (negative, relative to frame base),
+            or ``None`` if ``mop`` is not a stack operand or has no
+            stack-offset bit captured.
+        """
+        if self.mop.kind is not OperandKind.STACK:
+            return None
+        if self.mop.stkoff is None:
+            return None
+        # display_offset counts down from frame top; native offset
+        # is the negation relative to RBP.
+        display_offset = frame_size - int(self.mop.stkoff)
+        return -display_offset

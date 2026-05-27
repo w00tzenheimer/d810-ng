@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.recon.flow.branch_ownership import BranchOwnershipProofKind
-from d810.recon.flow.dispatcher_detection import DispatcherType
+from d810.recon.flow.dispatcher_kind import DispatcherType
 from d810.recon.flow.dispatcher_map import StateDispatcherMap, StateDispatcherRow
 from d810.recon.flow.switch_case_transition_analysis import (
     SwitchCaseBody,
