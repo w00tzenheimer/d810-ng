@@ -161,8 +161,12 @@ def _insn_kind_from_hexrays(opcode: int) -> InsnKind:
         return InsnKind.XDU
     if opcode == int(ida_hexrays.m_add):
         return InsnKind.ADD
+    if opcode == int(ida_hexrays.m_sub):
+        return InsnKind.SUB
     if opcode == int(ida_hexrays.m_and):
         return InsnKind.AND
+    if opcode == int(ida_hexrays.m_stx):
+        return InsnKind.STORE
     if opcode == int(ida_hexrays.m_goto):
         return InsnKind.GOTO
     if is_hexrays_opcode(opcode, "m_call") or is_hexrays_opcode(opcode, "m_icall"):

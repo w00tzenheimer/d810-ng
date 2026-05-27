@@ -110,6 +110,8 @@ def test_hexrays_enum_values_map_to_cfg_semantic_kinds():
     assert _block_kind_from_hexrays(ida_hexrays.BLT_2WAY) == BlockKind.TWO_WAY
     assert _block_kind_from_hexrays(ida_hexrays.BLT_1WAY) == BlockKind.ONE_WAY
     assert _insn_kind_from_hexrays(ida_hexrays.m_goto) == InsnKind.GOTO
+    assert _insn_kind_from_hexrays(ida_hexrays.m_sub) == InsnKind.SUB
+    assert _insn_kind_from_hexrays(ida_hexrays.m_stx) == InsnKind.STORE
     assert _insn_kind_from_hexrays(ida_hexrays.m_jnz) == InsnKind.EQUALITY_JUMP
     assert _insn_kind_from_hexrays(ida_hexrays.m_jcnd) == InsnKind.COND_JUMP
     # E3-prep: ``m_jtbl`` lands in portable ``TABLE_JUMP`` so
