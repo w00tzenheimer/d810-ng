@@ -7,15 +7,17 @@ substrate is proven end-to-end.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import re
 
+from d810.cfg.flowgraph import InsnKind, OperandKind
 from d810.core.typing import Any, Iterable
 from d810.recon.facts.model import FactObservation
 
-_ADD_OPCODES = frozenset({"m_add", "op_12"})
-_SUB_OPCODES = frozenset({"m_sub", "op_13"})
-_STX_OPCODES = frozenset({"m_stx", "op_1"})
+_ADD_OPCODES = frozenset({"m_add", "op_12", InsnKind.ADD.value})
+_SUB_OPCODES = frozenset({"m_sub", "op_13", InsnKind.SUB.value})
+_STX_OPCODES = frozenset({"m_stx", "op_1", InsnKind.STORE.value})
 
 _DEREF_BASE_RE = re.compile(r"\[ds\.\d+:%var_([0-9a-fA-F]+)\.\d+\]")
 _STX_BASE_RE = re.compile(r"^\s*stx\s+%var_[0-9a-fA-F]+\.\d+,\s*ds\.\d+,\s*%var_([0-9a-fA-F]+)\.\d+")
@@ -165,14 +167,86 @@ def _const_value_from_mop(mop: Any) -> int | None:
     return None
 
 
+def _opcode_name_from_cfg_insn(insn: Any) -> str:
+    kind = getattr(insn, "kind", InsnKind.UNKNOWN)
+    if isinstance(kind, InsnKind):
+        return kind.value
+    return str(kind or "")
+
+
+def _mop_type_name_from_snapshot(mop: Any) -> str | None:
+    kind = getattr(mop, "kind", OperandKind.UNKNOWN)
+    if kind is OperandKind.STACK:
+        return "mop_S"
+    if kind is OperandKind.NUMBER:
+        return "mop_n"
+    if kind is OperandKind.SUBINSN:
+        return "mop_d"
+    if kind is OperandKind.REGISTER:
+        return "mop_r"
+    if kind is OperandKind.BLOCK:
+        return "mop_b"
+    if kind is OperandKind.GLOBAL:
+        return "mop_v"
+    if kind is OperandKind.LVAR:
+        return "mop_l"
+    if kind is OperandKind.ADDRESS:
+        return "mop_a"
+    return None
+
+
+def _stack_offset_from_snapshot(mop: Any) -> int | None:
+    if getattr(mop, "kind", None) is OperandKind.STACK:
+        stkoff = getattr(mop, "stkoff", None)
+        return int(stkoff) if stkoff is not None else None
+    return None
+
+
+def _const_value_from_snapshot(mop: Any) -> int | None:
+    if getattr(mop, "kind", None) is OperandKind.NUMBER:
+        value = getattr(mop, "value", None)
+        return int(value) if value is not None else None
+    return None
+
+
+def _display_text_from_cfg_insn(insn: Any) -> str:
+    text = getattr(insn, "display_text", "")
+    if text:
+        return str(text)
+    return str(getattr(insn, "dstr", "") or "")
+
+
 def _iter_portable_instructions(target: Any) -> Iterable[_InstructionView]:
     blocks = getattr(target, "blocks", target)
-    if isinstance(blocks, dict):
+    if isinstance(blocks, Mapping):
         block_iter = blocks.values()
     else:
         block_iter = blocks
     for blk in block_iter:
         block_serial = int(getattr(blk, "serial"))
+        cfg_instructions = getattr(blk, "insn_snapshots", None)
+        if cfg_instructions is not None:
+            for index, insn in enumerate(cfg_instructions):
+                left = getattr(insn, "l", None)
+                right = getattr(insn, "r", None)
+                dest = getattr(insn, "d", None)
+                yield _InstructionView(
+                    block_serial=block_serial,
+                    insn_index=index,
+                    ea=getattr(insn, "ea", None),
+                    opcode_name=_opcode_name_from_cfg_insn(insn),
+                    dest_type=_mop_type_name_from_snapshot(dest),
+                    dest_stkoff=_stack_offset_from_snapshot(dest),
+                    dest_size=getattr(dest, "size", None),
+                    src_l_type=_mop_type_name_from_snapshot(left),
+                    src_l_stkoff=_stack_offset_from_snapshot(left),
+                    src_l_value=_const_value_from_snapshot(left),
+                    src_r_type=_mop_type_name_from_snapshot(right),
+                    src_r_stkoff=_stack_offset_from_snapshot(right),
+                    src_r_value=_const_value_from_snapshot(right),
+                    dstr=_display_text_from_cfg_insn(insn),
+                )
+            continue
         for index, insn in enumerate(getattr(blk, "instructions", ())):
             dest_stkoff = (
                 int(getattr(insn, "dest_stkoff"))
@@ -340,7 +414,7 @@ def _iter_memory_induction_updates(
 
 
 def _stack_mov_tokens(insn: _InstructionView) -> tuple[str, str] | None:
-    if insn.opcode_name not in {"m_mov", "op_4"}:
+    if insn.opcode_name not in {"m_mov", "op_4", InsnKind.MOV.value}:
         return None
     if insn.dest_stkoff is None or insn.src_l_stkoff is None:
         return None

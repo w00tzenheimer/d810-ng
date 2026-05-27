@@ -278,7 +278,7 @@ def _iter_carrier_hits(instructions: tuple[_InstructionView, ...]) -> Iterable[_
                     details=details,
                 )
 
-        if insn.opcode_name in {"m_stx", "op_1"}:
+        if insn.opcode_name in {"m_stx", "op_1", "store"}:
             target = _store_target_token(dstr)
             if target is None:
                 continue

@@ -31,6 +31,7 @@ emits :data:`FactStatus.STATE_CONST_REWRITTEN` mappings when the same
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 import re
 from dataclasses import dataclass
 
@@ -47,7 +48,7 @@ from d810.recon.facts.model import FactObservation
 # State-write opcodes: plain ``m_mov`` (``op_4``) is the canonical OLLVM
 # state writer (``mov #0xXXXX, %var_3C.4``).  ``m_xdu`` / ``m_xds`` show up
 # when the dispatch state is widened/narrowed between maturity passes.
-_MOV_OPCODES = frozenset({"m_mov", "op_4"})
+_MOV_OPCODES = frozenset({"m_mov", "op_4", "mov"})
 
 _TARGET_MATURITIES = frozenset({
     _MATURITY_VALUES["MMAT_PREOPTIMIZED"],
@@ -103,7 +104,7 @@ def _block_succs(target: Any, block_serial: int) -> tuple[int, ...]:
             return ()
 
     blocks = getattr(target, "blocks", target)
-    block_iter = blocks.values() if isinstance(blocks, dict) else blocks
+    block_iter = blocks.values() if isinstance(blocks, Mapping) else blocks
     for blk in block_iter:
         try:
             if int(getattr(blk, "serial")) == int(block_serial):
@@ -194,7 +195,7 @@ def _block_start_ea_lookup(target: Any) -> dict[int, int | None]:
         return lookup
 
     blocks = getattr(target, "blocks", target)
-    block_iter = blocks.values() if isinstance(blocks, dict) else blocks
+    block_iter = blocks.values() if isinstance(blocks, Mapping) else blocks
     for blk in block_iter:
         try:
             serial = int(getattr(blk, "serial"))

@@ -126,6 +126,10 @@ class InsnSnapshot:
     ea: int
     operands: tuple[object, ...]
     operand_slots: tuple[tuple[str, object], ...] = ()
+    # Human-readable backend rendering captured at lift time.  This is
+    # transitional evidence for fact collectors that still parse rendered
+    # microcode text while their structural operands are being ported.
+    display_text: str = ""
     # Rich typed operand fields (populated by capture_insn_snapshot).
     l: MopSnapshot | None = None   # left operand
     r: MopSnapshot | None = None   # right operand

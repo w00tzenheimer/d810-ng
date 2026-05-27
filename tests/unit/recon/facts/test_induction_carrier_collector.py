@@ -3,6 +3,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from d810.cfg.flowgraph import (
+    BlockSnapshot as CfgBlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
 from d810.recon.facts.collectors import InductionVariableFactCollector
 from d810.recon.facts.collectors.induction_carrier import _MATURITY_VALUES
@@ -84,6 +92,53 @@ def _two_block_target(
     )
 
 
+def _cfg_stack(stkoff: int, *, size: int = 8) -> MopSnapshot:
+    return MopSnapshot(t=5, size=size, stkoff=stkoff, kind=OperandKind.STACK)
+
+
+def _cfg_number(value: int, *, size: int = 8) -> MopSnapshot:
+    return MopSnapshot(t=2, size=size, value=value, kind=OperandKind.NUMBER)
+
+
+def _cfg_insn(
+    *,
+    index: int = 0,
+    kind: InsnKind = InsnKind.ADD,
+    d: MopSnapshot | None = None,
+    l: MopSnapshot | None = None,
+    r: MopSnapshot | None = None,
+    display_text: str = "",
+) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=index,
+        ea=0x180020000 + index,
+        operands=(),
+        kind=kind,
+        d=d,
+        l=l,
+        r=r,
+        display_text=display_text,
+    )
+
+
+def _cfg_target(*instructions: InsnSnapshot) -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            10: CfgBlockSnapshot(
+                serial=10,
+                block_type=0,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=0x180020000,
+                insn_snapshots=tuple(instructions),
+            )
+        },
+        entry_serial=10,
+        func_ea=0x401000,
+    )
+
+
 def test_collects_direct_add_induction_fact() -> None:
     collector = InductionVariableFactCollector()
 
@@ -127,6 +182,53 @@ def test_collects_sub_as_negative_step() -> None:
     assert facts[0].semantic_key == "induction:stkoff=0x680:size=8:step=-1"
     assert facts[0].payload["step"] == -1
     assert facts[0].maturity == "MMAT_CALLS"
+
+
+def test_collects_direct_add_from_flowgraph_instruction_snapshot() -> None:
+    collector = InductionVariableFactCollector()
+
+    facts = collector.collect(
+        _cfg_target(
+            _cfg_insn(
+                kind=InsnKind.ADD,
+                d=_cfg_stack(0x680),
+                l=_cfg_stack(0x680),
+                r=_cfg_number(0x80),
+                display_text="add %var_178.8, #0x80.8, %var_178.8",
+            )
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    assert facts[0].semantic_key == "induction:stkoff=0x680:size=8:step=128"
+    assert facts[0].payload["opcode"] == "add"
+    assert facts[0].evidence == ("add %var_178.8, #0x80.8, %var_178.8",)
+
+
+def test_collects_sub_from_flowgraph_instruction_snapshot() -> None:
+    collector = InductionVariableFactCollector()
+
+    facts = collector.collect(
+        _cfg_target(
+            _cfg_insn(
+                kind=InsnKind.SUB,
+                d=_cfg_stack(0x680),
+                l=_cfg_stack(0x680),
+                r=_cfg_number(1),
+                display_text="sub %var_178.8, #1.8, %var_178.8",
+            )
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_CALLS"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    assert facts[0].semantic_key == "induction:stkoff=0x680:size=8:step=-1"
+    assert facts[0].payload["opcode"] == "sub"
 
 
 def test_collects_commuted_add() -> None:
@@ -208,6 +310,40 @@ def test_collects_memory_store_update_carrier() -> None:
         "add    [ds.2:%var_178.8].8, #1.8, %var_170.8",
         "stx    %var_170.8, ds.2, %var_178.8",
     )
+
+
+def test_collects_memory_store_update_from_flowgraph_instruction_snapshots() -> None:
+    collector = InductionVariableFactCollector()
+
+    facts = collector.collect(
+        _cfg_target(
+            _cfg_insn(
+                index=2,
+                kind=InsnKind.ADD,
+                d=_cfg_stack(0x688),
+                l=None,
+                r=_cfg_number(1),
+                display_text="add    [ds.2:%var_178.8].8, #1.8, %var_170.8",
+            ),
+            _cfg_insn(
+                index=5,
+                kind=InsnKind.STORE,
+                d=_cfg_stack(0x680),
+                l=_cfg_stack(0x688),
+                r=None,
+                display_text="stx    %var_170.8, ds.2, %var_178.8",
+            ),
+        ),
+        func_ea=0x401000,
+        maturity=2,
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact.semantic_key == "induction:memory_base_stkoff=0x680:size=8:step=1"
+    assert fact.payload["define_opcode"] == "add"
+    assert fact.payload["store_opcode"] == "store"
 
 
 def test_memory_store_update_does_not_pair_temp_across_blocks() -> None:

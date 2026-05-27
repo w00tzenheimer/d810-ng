@@ -26,7 +26,7 @@ _TARGET_MATURITIES = frozenset({
     _MATURITY_VALUES["MMAT_GLBOPT1"],
 })
 
-_CALL_OPCODES = frozenset({"m_call", "m_icall", "op_56", "op_57"})
+_CALL_OPCODES = frozenset({"m_call", "m_icall", "op_56", "op_57", "call"})
 _CALL_TARGET_RE = re.compile(r"\bcall\s+([^<,\s]+)")
 
 
