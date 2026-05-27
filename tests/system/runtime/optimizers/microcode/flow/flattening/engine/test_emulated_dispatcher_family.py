@@ -71,7 +71,7 @@ from d810.optimizers.microcode.flow.flattening.strategies.emulated_dispatcher_st
 from d810.optimizers.microcode.flow.flattening.unflattener_emulated_dispatcher_engine import (
     EmulatedDispatcherUnflattener,
 )
-from d810.recon.flow.dispatcher_detection import DispatcherType
+from d810.recon.flow.dispatcher_kind import DispatcherType
 from d810.recon.flow.dispatcher_discovery_facts import (
     DISPATCHER_INITIAL_STATE_FACT_TYPE,
     STATE_DISPATCHER_TOPOLOGY_FACT_TYPE,
@@ -7562,7 +7562,7 @@ class TestEmulatedDispatcherManagedContext:
             FAKE_JUMP_FIXES_METADATA_KEY,
             serialize_fake_jump_fixes,
         )
-        from d810.recon.flow.dispatcher_detection import DispatcherCache
+        from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import DispatcherCache
 
         original_attach_fake_jump = HodurStrategyFamily.attach_fake_jump_fixes_to_flow_graph
 

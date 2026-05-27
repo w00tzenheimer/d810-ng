@@ -25,7 +25,7 @@ from d810.optimizers.microcode.flow.flattening.strategies.single_iteration impor
     SINGLE_ITERATION_FIXES_METADATA_KEY,
     serialize_single_iteration_fixes,
 )
-from d810.recon.flow.dispatcher_detection import DispatcherCache
+from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import DispatcherCache
 from d810.recon.function_priors import FunctionAnalysisPriors
 
 __all__ = ["HodurSnapshotPolicy"]

@@ -49,7 +49,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     DispatcherStateMachine,
 )
 from d810.recon.flow.bst_model import BSTAnalysisResult
-from d810.recon.flow.dispatcher_detection import DispatcherCache
+from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import DispatcherCache
 from d810.recon.flow.transition_builder import (
     StateHandler,
     StateTransition,

@@ -1093,7 +1093,7 @@ def test_hodur_strategy_family_uses_constant_fixpoint_backend_for_discovery(
         _fake_build_round_discovery_context,
     )
     family._constant_fixpoint_backend = _FakeConstantFixpointBackend()
-    from d810.recon.flow.dispatcher_detection import DispatcherType
+    from d810.recon.flow.dispatcher_kind import DispatcherType
     from d810.recon.flow.dispatcher_map import (
         StateDispatcherMap,
         StateDispatcherRow,
