@@ -14,7 +14,7 @@ import pytest
 
 import ida_hexrays
 
-from tests.system.runtime.bench_utils import BenchResult, timed_run
+from .bench_utils import BenchResult, timed_run
 
 # Import both implementations directly for comparison
 try:
