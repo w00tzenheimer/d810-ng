@@ -314,6 +314,33 @@ class JnzRuleModIdentity(JumpOptimizationRule):
         return True
 
 
+def _parse_opaque_ea_whitelist() -> set[int]:
+    """Read D810_Z3_OPAQUE_EAS env var (comma-separated hex EAs) into a set.
+
+    When set and non-empty, JmpRuleZ3Const only runs Z3 against jumps whose
+    instruction EA is in this set. Cuts Z3 cost from ~200 jcnd-per-function
+    to the handful of known opaque predicates. Without this, Z3 fans out
+    over every conditional jump and dies on bitvector solves.
+    """
+    import os as _os
+    raw = _os.environ.get("D810_Z3_OPAQUE_EAS", "").strip()
+    if not raw:
+        return set()
+    out: set[int] = set()
+    for tok in raw.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            out.add(int(tok, 16) if tok.lower().startswith("0x") else int(tok, 16))
+        except Exception:
+            continue
+    return out
+
+
+_OPAQUE_EA_WHITELIST: set[int] = _parse_opaque_ea_whitelist()
+
+
 class JmpRuleZ3Const(JumpOptimizationRule):
     ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jcnd] + list(
         dict.fromkeys(op for pair in COND_JUMP_PAIR_ENUM for op in pair)
@@ -332,6 +359,12 @@ class JmpRuleZ3Const(JumpOptimizationRule):
         return new_ins
 
     def check_pattern_and_replace(self, blk, instruction, left_ast, right_ast):
+        # PATCH 2026-05-26: per-EA whitelist (D810_Z3_OPAQUE_EAS).
+        # When set, skip this rule for any jcnd whose EA isn't in the list.
+        # Lets the user run Z3 only on known opaque predicates instead of
+        # every conditional jump in the function.
+        if _OPAQUE_EA_WHITELIST and instruction.ea not in _OPAQUE_EA_WHITELIST:
+            return None
         # m_jcnd has a single condition operand; bypass binary pattern matching
         # and fold when the condition is a constant-only expression.
         if instruction.opcode == ida_hexrays.m_jcnd:
@@ -376,3 +409,177 @@ class JmpRuleZ3Const(JumpOptimizationRule):
             )
             return True
         return False
+
+
+# ---------------------------------------------------------------------------
+# Affine opaque predicate (fast, Z3-free).
+#
+# Pattern shape: both sides of jz/jnz/jcnd reduce to the SAME affine combination
+# of opaque terms but DIFFERENT additive constants. The comparison is then a
+# compile-time constant. Examples in the wild (iOS arm64 OLLVM/RASP output):
+#   604LL * a2 == 604LL * a2 - 768                  -> 0 == -768  (false)
+#   630LL * a4 + 630 == 630LL * a4 - 218            -> 630 == -218 (false)
+#   -674LL * vars0 == -512 - 674LL * vars0          -> 0 == -512  (false)
+#   -524LL * ~vars0 == 524LL * vars0 + 524          -> equal (true)
+# The last one uses ~x = -x - 1 (two's complement), which we normalise.
+# ---------------------------------------------------------------------------
+
+_AFFINE_RECURSION_LIMIT = 24
+
+# Hex-Rays' dstr() embeds SSA version tags like `x22.8{3992}` and
+# `(... ){4002}` into the rendered text. The SAME semantic operand can carry
+# different SSA tags on each side of a comparison (e.g. `c*x22` materialised
+# from two distinct microcode definitions), which would make our term-map
+# keys diverge. Strip every `{<digits>}` to canonicalise on the SSA-free shape.
+import re as _re
+_SSA_TAG_RE = _re.compile(r"\{\d+\}")
+
+
+def _serialize_mop_key(mop) -> str:
+    """Stable canonical key for an opaque mop sub-expression.
+
+    Uses Hex-Rays' own pretty-printer when available with SSA tags stripped.
+    """
+    try:
+        s = mop.dstr()
+    except Exception:
+        s = None
+    if s:
+        return _SSA_TAG_RE.sub("", s)
+    return f"@{id(mop):x}"
+
+
+def _affine_extract(mop, size: int, depth: int = 0):
+    """Decompose mop into (term_map, const) over Z / 2^(size*8).
+
+    term_map: {opaque_key: coefficient}, coefficient stored unsigned mod 2^N.
+    Pure constants give ({}, value). Returns None if shape exceeds the
+    recursion limit, but never None for ordinary leaves (those become an
+    opaque term with coefficient 1).
+    """
+    if mop is None or depth > _AFFINE_RECURSION_LIMIT:
+        return None
+    mask = (1 << (size * 8)) - 1
+    if mop.t == ida_hexrays.mop_n:
+        try:
+            return ({}, mop.nnn.value & mask)
+        except Exception:
+            return None
+    if mop.t != ida_hexrays.mop_d or mop.d is None:
+        return ({_serialize_mop_key(mop): 1}, 0)
+
+    insn = mop.d
+    op = insn.opcode
+
+    def _combine(a, b, sign):
+        out_map = dict(a[0])
+        for k, v in b[0].items():
+            nv = (out_map.get(k, 0) + sign * v) & mask
+            if nv == 0:
+                out_map.pop(k, None)
+            else:
+                out_map[k] = nv
+        out_const = (a[1] + sign * b[1]) & mask
+        return (out_map, out_const)
+
+    def _scale(a, factor):
+        factor &= mask
+        if factor == 0:
+            return ({}, 0)
+        out_map = {}
+        for k, v in a[0].items():
+            nv = (v * factor) & mask
+            if nv != 0:
+                out_map[k] = nv
+        return (out_map, (a[1] * factor) & mask)
+
+    if op in (ida_hexrays.m_add,):
+        l = _affine_extract(insn.l, size, depth + 1)
+        r = _affine_extract(insn.r, size, depth + 1)
+        if l is None or r is None:
+            return None
+        return _combine(l, r, 1)
+    if op in (ida_hexrays.m_sub,):
+        l = _affine_extract(insn.l, size, depth + 1)
+        r = _affine_extract(insn.r, size, depth + 1)
+        if l is None or r is None:
+            return None
+        return _combine(l, r, -1)
+    if op in (ida_hexrays.m_neg,):
+        l = _affine_extract(insn.l, size, depth + 1)
+        if l is None:
+            return None
+        return _scale(l, -1)
+    if op in (ida_hexrays.m_bnot,):
+        # ~x = -x - 1
+        l = _affine_extract(insn.l, size, depth + 1)
+        if l is None:
+            return None
+        neg_l = _scale(l, -1)
+        return (neg_l[0], (neg_l[1] - 1) & mask)
+    if op in (ida_hexrays.m_mul,):
+        l = _affine_extract(insn.l, size, depth + 1)
+        r = _affine_extract(insn.r, size, depth + 1)
+        if l is None or r is None:
+            return None
+        if not l[0]:
+            return _scale(r, l[1])
+        if not r[0]:
+            return _scale(l, r[1])
+        # Non-linear product: treat whole node as an opaque term.
+        return ({_serialize_mop_key(mop): 1}, 0)
+    # m_xdu / m_xds / m_low / m_high / arbitrary unary or other ops:
+    # treat the whole expression as a single opaque term so we still match
+    # `OP(x) + K1 == OP(x) + K2`.
+    return ({_serialize_mop_key(mop): 1}, 0)
+
+
+def _affine_decide_equality(opcode: int, lhs_mop, rhs_mop) -> bool | None:
+    """For jz/jnz return jump-taken decision when both sides have the same
+    affine term map but possibly different constants. Returns None when the
+    rule does not apply (different terms or extraction failure).
+    """
+    size = max(getattr(lhs_mop, "size", 0), getattr(rhs_mop, "size", 0))
+    if size <= 0:
+        size = 8
+    lhs = _affine_extract(lhs_mop, size)
+    rhs = _affine_extract(rhs_mop, size)
+    if lhs is None or rhs is None:
+        return None
+    if lhs[0] != rhs[0]:
+        return None
+    mask = (1 << (size * 8)) - 1
+    is_equal = (lhs[1] & mask) == (rhs[1] & mask)
+    if opcode == ida_hexrays.m_jz:
+        return is_equal
+    if opcode == ida_hexrays.m_jnz:
+        return not is_equal
+    return None
+
+
+class JmpRuleAffineEq(JumpOptimizationRule):
+    """Fold opaque jz/jnz where both sides reduce to identical affine form.
+
+    Examples covered:
+      ``c*x + K1 == c*x + K2``       -> equal iff K1 == K2 (mod 2^N)
+      ``c*~x  ==  -c*x - c``         -> always equal (~x = -x - 1)
+      ``-674*x == -512 - 674*x``     -> never equal (constants differ)
+
+    Strictly faster than Z3 and runs without a whitelist. Catches the
+    "affine fan-out" opaque predicates commonly emitted by OLLVM around
+    RASP probe sites in iOS arm64 binaries.
+    """
+
+    ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jnz, ida_hexrays.m_jz]
+    LEFT_PATTERN = AstLeaf("x_0")
+    RIGHT_PATTERN = AstLeaf("x_1")
+    REPLACEMENT_OPCODE = ida_hexrays.m_goto
+
+    def check_candidate(self, opcode, left_candidate, right_candidate):
+        taken = _affine_decide_equality(opcode, left_candidate.mop, right_candidate.mop)
+        if taken is None:
+            return False
+        self.jump_replacement_block_serial = (
+            self.jump_original_block_serial if taken else self.direct_block_serial
+        )
+        return True
