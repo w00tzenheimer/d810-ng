@@ -1101,7 +1101,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             # direct ``run_microcode_collectors(mba, ...)`` call was
             # placed AFTER the reset for the same reason; the
             # subscriber must inherit that placement.
-            _emit_flowgraph_ready_event(self.event_emitter, mba)
+            _emit_flowgraph_ready_event(
+                self.event_emitter,
+                mba,
+                snapshot=_pre_snap_ref,
+            )
             # ``run_microcode_collectors(mba, ...)`` is now invoked by
             # the ``FLOWGRAPH_READY`` subscriber on ``D810`` (see
             # ``manager._collect_recon_on_flowgraph_ready``).  The
@@ -1109,26 +1113,12 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             # by ``(func_ea, maturity)``, so a direct call here would
             # double-collect.
             #
-            # ``capture_maturity_facts(mba, ...)`` STAYS -- it is a
-            # live-MBA fact-capture path (pre_d810), not the
-            # microcode-collector path.
+            # ``capture_maturity_facts`` is also routed through the
+            # ``FLOWGRAPH_READY`` subscriber when this block-manager
+            # event carries ``_pre_snap_ref``.  Keep it there so
+            # pre-D810 facts observe the portable ``FlowGraph`` and
+            # stay in lockstep with the recon collection event.
             if self._recon_phase is not None:
-                provider_phase = ProviderPhaseSnapshot(
-                    provider_name=HEXRAYS_MICROCODE_PROVIDER,
-                    provider_level=int(mba.maturity),
-                    friendly_provider_level=maturity_to_string(mba.maturity),
-                )
-                if self._recon_runtime is not None:
-                    try:
-                        self._recon_runtime.capture_maturity_facts(
-                            mba,
-                            func_ea=mba_ea,
-                            provider_phase=provider_phase,
-                            phase="pre_d810",
-                            snapshot=_pre_snap_ref,
-                        )
-                    except Exception:
-                        optimizer_logger.exception("FactLifecycleRuntime (block) failed")
                 if self._recon_runtime is not None:
                     try:
                         hints = self._recon_runtime.analyze_and_persist(mba_ea)
@@ -1542,6 +1532,8 @@ class DecompilationEvent(enum.Enum):
 def _emit_flowgraph_ready_event(
     event_emitter,
     mba,
+    *,
+    snapshot=None,
 ) -> None:
     """Lift ``mba`` and emit ``FLOWGRAPH_READY`` (no-op when emitter is None).
 
@@ -1568,6 +1560,12 @@ def _emit_flowgraph_ready_event(
     mirrors the lifter's metadata contract (E2b) -- the lifter is the
     single source of truth, the event is NOT an alternate convention.
     No ``mba_t`` crosses the boundary.
+
+    The block-manager producer may also include the pre-D810
+    diagnostic ``snapshot`` so the subscriber can capture facts on
+    the same portable payload.  The instruction-manager producer has
+    no such snapshot, and therefore emits only the canonical four
+    payload keys.
     """
     if event_emitter is None:
         return
@@ -1582,13 +1580,15 @@ def _emit_flowgraph_ready_event(
         )
         return
     metadata = flow_graph.metadata
-    event_emitter.emit(
-        DecompilationEvent.FLOWGRAPH_READY,
-        flow_graph=flow_graph,
-        func_ea=int(mba.entry_ea),
-        maturity=metadata["maturity"],
-        maturity_name=metadata["maturity_name"],
-    )
+    payload = {
+        "flow_graph": flow_graph,
+        "func_ea": int(mba.entry_ea),
+        "maturity": metadata["maturity"],
+        "maturity_name": metadata["maturity_name"],
+    }
+    if snapshot is not None:
+        payload["snapshot"] = snapshot
+    event_emitter.emit(DecompilationEvent.FLOWGRAPH_READY, **payload)
 
 
 class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):

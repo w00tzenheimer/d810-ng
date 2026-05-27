@@ -831,9 +831,9 @@ class D810Manager:
         func_ea: int,
         maturity: int,
         maturity_name: str,
+        snapshot: typing.Any = None,
     ) -> None:
-        """``FLOWGRAPH_READY`` handler that runs the recon collectors
-        over the portable ``FlowGraph`` payload.
+        """``FLOWGRAPH_READY`` handler for portable microcode analysis.
 
         E4a: replaces the two legacy ``run_microcode_collectors(mba, ...)``
         calls that used to live inline at the
@@ -852,27 +852,53 @@ class D810Manager:
         is identical to the prior live-mba behavior (live path also
         required that metadata).  Producing real handler-transition
         metadata is a separate slice.
+
+        E4b: when the block-manager producer includes the pre-D810
+        diagnostic ``snapshot``, this same subscriber also captures
+        maturity facts from the portable ``FlowGraph``.  Instruction
+        manager events intentionally carry no snapshot, so they run
+        recon collectors only; this avoids letting the first
+        no-snapshot event consume the fact runtime's
+        ``(func_ea, maturity, phase)`` dedup key before the block
+        event can attach observations to the diagnostic snapshot.
         """
-        if self._recon_phase is None:
+        if self._recon_phase is None and self._recon_runtime is None:
             return
         provider_phase = ProviderPhaseSnapshot(
             provider_name=HEXRAYS_MICROCODE_PROVIDER,
             provider_level=int(maturity),
             friendly_provider_level=str(maturity_name),
         )
-        try:
-            self._recon_phase.run_microcode_collectors(
-                flow_graph,
-                func_ea=int(func_ea),
-                provider_phase=provider_phase,
-            )
-        except Exception:
-            logger.exception(
-                "ReconPhase FLOWGRAPH_READY collection failed at "
-                "func=0x%x maturity=%s",
-                int(func_ea),
-                maturity_name,
-            )
+        if self._recon_phase is not None:
+            try:
+                self._recon_phase.run_microcode_collectors(
+                    flow_graph,
+                    func_ea=int(func_ea),
+                    provider_phase=provider_phase,
+                )
+            except Exception:
+                logger.exception(
+                    "ReconPhase FLOWGRAPH_READY collection failed at "
+                    "func=0x%x maturity=%s",
+                    int(func_ea),
+                    maturity_name,
+                )
+        if self._recon_runtime is not None and snapshot is not None:
+            try:
+                self._recon_runtime.capture_maturity_facts(
+                    flow_graph,
+                    func_ea=int(func_ea),
+                    provider_phase=provider_phase,
+                    phase="pre_d810",
+                    snapshot=snapshot,
+                )
+            except Exception:
+                logger.exception(
+                    "FactLifecycleRuntime FLOWGRAPH_READY capture failed at "
+                    "func=0x%x maturity=%s",
+                    int(func_ea),
+                    maturity_name,
+                )
 
     def _resolve_post_d810_linearization_context(
         self,
@@ -1545,13 +1571,14 @@ class D810Manager:
                 self._recon_runtime.mark_decompilation_finished,
             )
 
-        # E4a: single shared FLOWGRAPH_READY subscriber for the
-        # microcode recon collection path.  Both manager maturity
+        # E4a/E4b: single shared FLOWGRAPH_READY subscriber for the
+        # portable microcode analysis path.  Both manager maturity
         # gates emit this event for the same ``(func_ea, maturity)``;
         # ``ReconPhase.run_microcode_collectors`` dedupes by
-        # ``(func_ea, maturity)`` internally, so two events arriving
-        # back-to-back result in exactly one collection pass.
-        if self._recon_phase is not None:
+        # ``(func_ea, maturity)`` internally, while pre-D810 fact
+        # capture only runs on the block-manager event carrying a
+        # diagnostic snapshot.
+        if self._recon_phase is not None or self._recon_runtime is not None:
             self.event_emitter.on(
                 DecompilationEvent.FLOWGRAPH_READY,
                 self._collect_recon_on_flowgraph_ready,

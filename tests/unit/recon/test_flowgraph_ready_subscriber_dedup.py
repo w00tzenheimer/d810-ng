@@ -97,6 +97,32 @@ class _NoopWriter:
         pass
 
 
+class _CapturingFactRuntime:
+    """``FactLifecycleRuntime``-shaped stub for pre-D810 fact capture."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def capture_maturity_facts(
+        self,
+        target,
+        *,
+        func_ea: int,
+        provider_phase: ProviderPhaseSnapshot,
+        phase: str,
+        snapshot,
+    ) -> None:
+        self.calls.append(
+            {
+                "target": target,
+                "func_ea": func_ea,
+                "provider_phase": provider_phase,
+                "phase": phase,
+                "snapshot": snapshot,
+            }
+        )
+
+
 class TestFlowGraphReadySubscriberDedup:
     """Subscriber pattern: ``FLOWGRAPH_READY`` fires from two manager
     maturity gates per maturity transition.  ``ReconPhase`` dedupes by
@@ -129,22 +155,43 @@ class TestFlowGraphReadySubscriberDedup:
             },
         )
 
-    def _subscriber(self, phase: ReconPhase):
+    def _subscriber(
+        self,
+        phase: ReconPhase | None = None,
+        *,
+        fact_runtime: _CapturingFactRuntime | None = None,
+    ):
         """E4a subscriber shape (mirrors
         ``manager._collect_recon_on_flowgraph_ready`` without
         importing ``manager.py`` -- which would pull IDA into the
         unit graph)."""
-        def handler(*, flow_graph, func_ea, maturity, maturity_name):
+        def handler(
+            *,
+            flow_graph,
+            func_ea,
+            maturity,
+            maturity_name,
+            snapshot=None,
+        ):
             provider_phase = ProviderPhaseSnapshot(
                 provider_name="hexrays_microcode",
                 provider_level=int(maturity),
                 friendly_provider_level=str(maturity_name),
             )
-            phase.run_microcode_collectors(
-                flow_graph,
-                func_ea=int(func_ea),
-                provider_phase=provider_phase,
-            )
+            if phase is not None:
+                phase.run_microcode_collectors(
+                    flow_graph,
+                    func_ea=int(func_ea),
+                    provider_phase=provider_phase,
+                )
+            if fact_runtime is not None and snapshot is not None:
+                fact_runtime.capture_maturity_facts(
+                    flow_graph,
+                    func_ea=int(func_ea),
+                    provider_phase=provider_phase,
+                    phase="pre_d810",
+                    snapshot=snapshot,
+                )
 
         return handler
 
@@ -251,6 +298,51 @@ class TestFlowGraphReadySubscriberDedup:
             0x140003000,
         }
 
+    def test_fact_capture_waits_for_snapshot_event(self) -> None:
+        """Pre-D810 fact capture uses the block-manager event because
+        only that producer carries the diagnostic snapshot.  A
+        preceding instruction-manager event for the same maturity has
+        no snapshot and must not consume the fact-capture path."""
+        fact_runtime = _CapturingFactRuntime()
+        emitter: EventEmitter[_Event] = EventEmitter()
+        emitter.on(
+            _Event.FLOWGRAPH_READY,
+            self._subscriber(fact_runtime=fact_runtime),
+        )
+
+        fg = self._empty_flow_graph(func_ea=0x140002000, maturity=14)
+        snapshot = object()
+
+        emitter.emit(
+            _Event.FLOWGRAPH_READY,
+            flow_graph=fg,
+            func_ea=0x140002000,
+            maturity=14,
+            maturity_name="MMAT_GLBOPT1",
+        )
+        assert fact_runtime.calls == []
+
+        emitter.emit(
+            _Event.FLOWGRAPH_READY,
+            flow_graph=fg,
+            func_ea=0x140002000,
+            maturity=14,
+            maturity_name="MMAT_GLBOPT1",
+            snapshot=snapshot,
+        )
+
+        assert len(fact_runtime.calls) == 1
+        call = fact_runtime.calls[0]
+        assert call["target"] is fg
+        assert call["func_ea"] == 0x140002000
+        assert call["phase"] == "pre_d810"
+        assert call["snapshot"] is snapshot
+        provider_phase = call["provider_phase"]
+        assert isinstance(provider_phase, ProviderPhaseSnapshot)
+        assert provider_phase.provider_name == "hexrays_microcode"
+        assert provider_phase.provider_level == 14
+        assert provider_phase.friendly_provider_level == "MMAT_GLBOPT1"
+
 
 class TestNoDirectReconCallsInManagerGates:
     """Architectural pin: ``hexrays_hooks.py`` must not contain any
@@ -298,3 +390,32 @@ class TestNoDirectReconCallsInManagerGates:
                 "A direct call here would double-collect because the "
                 "subscriber already fires per maturity transition."
             )
+
+    def test_no_direct_pre_d810_fact_capture_call_in_hexrays_hooks(
+        self,
+    ) -> None:
+        """E4b contract: the block-manager gate must not call
+        ``capture_maturity_facts(mba, ...)`` directly.  Pre-D810
+        facts now route through the same ``FLOWGRAPH_READY`` payload
+        as recon collection."""
+        hexrays_hooks_path = (
+            Path(__file__).resolve().parents[3]
+            / "src"
+            / "d810"
+            / "hexrays"
+            / "hooks"
+            / "hexrays_hooks.py"
+        )
+        assert hexrays_hooks_path.exists(), (
+            f"Resolved hexrays_hooks.py path {hexrays_hooks_path} does not "
+            "exist -- check parents[N] offset"
+        )
+
+        src = hexrays_hooks_path.read_text()
+        assert "self._recon_runtime.capture_maturity_facts(" not in src, (
+            "hexrays_hooks.py must not call "
+            "self._recon_runtime.capture_maturity_facts(...) directly. "
+            "Pre-D810 fact capture is owned by "
+            "manager._collect_recon_on_flowgraph_ready so the target is the "
+            "portable FlowGraph, not the live mba_t."
+        )
