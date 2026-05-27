@@ -97,6 +97,12 @@ class MopSnapshot:
     stkoff: int | None = None     # mop_S/mop_str: s.off
     reg: int | None = None        # mop_r: r
     block_ref: int | None = None  # mop_b: b
+    # E2a portable identity for dispatcher state-variable analysis.
+    # Field names intentionally match the rich
+    # ``d810.hexrays.ir.mop_snapshot.MopSnapshot`` variant so the
+    # structural-superset claim in the docstring above stays true.
+    gaddr: int | None = None      # mop_v: g (global address)
+    lvar_off: int | None = None   # mop_l: l.off (lvar offset)
     kind: OperandKind = OperandKind.UNKNOWN
     raw_operand_type: int | None = None
 

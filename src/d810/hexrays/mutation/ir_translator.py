@@ -413,6 +413,22 @@ def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
         return CfgMopSnapshot(t=t, size=size, reg=mop.r, kind=kind)
     if t == ida_hexrays.mop_b:
         return CfgMopSnapshot(t=t, size=size, block_ref=mop.b, kind=kind)
+    if t == ida_hexrays.mop_v:
+        # E2a: carry the global address across the snapshot boundary so
+        # portable dispatcher-state analyses can key by ``gaddr`` instead
+        # of reaching back into the live ``mop_t``.
+        return CfgMopSnapshot(t=t, size=size, gaddr=int(mop.g), kind=kind)
+    if t == ida_hexrays.mop_l:
+        # E2a: carry the lvar offset across the snapshot boundary so
+        # portable dispatcher-state analyses can key by ``lvar_off``
+        # instead of reaching back into the live ``mop_t``.
+        lref = mop.l
+        return CfgMopSnapshot(
+            t=t,
+            size=size,
+            lvar_off=int(lref.off) if lref is not None else None,
+            kind=kind,
+        )
     return CfgMopSnapshot(t=t, size=size, kind=kind)
 
 
