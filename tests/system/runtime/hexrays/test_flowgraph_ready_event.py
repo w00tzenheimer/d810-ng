@@ -251,6 +251,51 @@ class TestProducerHelper:
         assert payload["maturity"] == 14
         assert payload["maturity_name"] == "MMAT_GLBOPT1"
 
+    def test_helper_forwards_optional_snapshot(self, monkeypatch) -> None:
+        """Block-manager producers can attach the pre-D810 diagnostic
+        snapshot to the portable event.  The snapshot is optional so
+        the instruction-manager producer still emits the canonical
+        four-key payload."""
+        from d810.core.events import EventEmitter
+        from d810.hexrays.hooks import hexrays_hooks
+        from d810.hexrays.hooks.hexrays_hooks import (
+            DecompilationEvent,
+            _emit_flowgraph_ready_event,
+        )
+
+        sentinel_flow_graph = self._fake_flow_graph()
+        monkeypatch.setattr(
+            hexrays_hooks,
+            "lift_mba_to_flowgraph",
+            lambda mba: sentinel_flow_graph,
+        )
+
+        emitter: EventEmitter[DecompilationEvent] = EventEmitter()
+        received: list[dict[str, object]] = []
+        emitter.on(
+            DecompilationEvent.FLOWGRAPH_READY,
+            lambda **kwargs: received.append(kwargs),
+        )
+
+        snapshot = object()
+        _emit_flowgraph_ready_event(
+            emitter,
+            self._stub_mba(entry_ea=0x140002000, maturity=14),
+            snapshot=snapshot,
+        )
+
+        assert len(received) == 1
+        payload = received[0]
+        assert set(payload.keys()) == {
+            "flow_graph",
+            "func_ea",
+            "maturity",
+            "maturity_name",
+            "snapshot",
+        }
+        assert payload["flow_graph"] is sentinel_flow_graph
+        assert payload["snapshot"] is snapshot
+
     def test_helper_payload_mirrors_flow_graph_metadata(
         self, monkeypatch
     ) -> None:

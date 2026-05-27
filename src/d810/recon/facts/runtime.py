@@ -6,6 +6,7 @@ changing behavior; later collectors plug into the same API.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from d810.core.logging import getLogger
@@ -604,6 +605,22 @@ class FactLifecycleRuntime:
     @staticmethod
     def _find_block_for_ea(target: Any, ea: int | None) -> int | None:
         if ea is None:
+            return None
+        blocks = getattr(target, "blocks", None)
+        if blocks is not None:
+            block_iter = blocks.values() if isinstance(blocks, Mapping) else blocks
+            for block in block_iter:
+                serial = getattr(block, "serial", None)
+                try:
+                    block_serial = int(serial)
+                except (TypeError, ValueError):
+                    continue
+                for insn in tuple(getattr(block, "insn_snapshots", ()) or ()):
+                    try:
+                        if int(getattr(insn, "ea", -1)) == int(ea):
+                            return block_serial
+                    except (TypeError, ValueError):
+                        continue
             return None
         try:
             wanted = int(ea)

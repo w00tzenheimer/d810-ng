@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import d810.recon.facts.runtime as facts_runtime_module
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 from d810.core import ProviderPhaseSnapshot
 from d810.core.observability import SnapshotRef
 from d810.core.settings import configure_settings, reset_settings
@@ -24,6 +25,36 @@ def _phase(level: int, friendly: str | None = None) -> ProviderPhaseSnapshot:
         provider_name="hexrays_microcode",
         provider_level=int(level),
         friendly_provider_level=friendly or f"MMAT_{int(level)}",
+    )
+
+
+def _flow_graph_with_insn_ea(*, block_serial: int, insn_ea: int) -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            block_serial: BlockSnapshot(
+                serial=block_serial,
+                block_type=0,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=insn_ea,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=1,
+                        ea=insn_ea,
+                        operands=(),
+                        kind=InsnKind.MOV,
+                    ),
+                ),
+            )
+        },
+        entry_serial=block_serial,
+        func_ea=0x401000,
+        metadata={
+            "maturity": _MATURITY_GLBOPT1,
+            "maturity_name": "MMAT_GLBOPT1",
+            "cpu_arch_name": "metapc",
+        },
     )
 
 _TEST_REF = SnapshotRef(
@@ -124,6 +155,13 @@ def test_capture_persists_collector_mappings() -> None:
     assert summary.mapping_count == 1
     # signature: (snapshot, func_ea, observations, mappings, conflicts)
     assert calls[0][3][0].source_fact_id == "induction:blk10"
+
+
+def test_find_block_for_ea_supports_flow_graph_snapshots() -> None:
+    flow_graph = _flow_graph_with_insn_ea(block_serial=42, insn_ea=0x401234)
+
+    assert FactLifecycleRuntime._find_block_for_ea(flow_graph, 0x401234) == 42
+    assert FactLifecycleRuntime._find_block_for_ea(flow_graph, 0xDEADBEEF) is None
 
 
 def test_capture_summary_log_uses_maturity_name(monkeypatch) -> None:
