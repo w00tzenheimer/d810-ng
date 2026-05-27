@@ -1,7 +1,7 @@
 """Unit tests for switch-table analysis pure-logic helpers."""
 from __future__ import annotations
 
-from d810.recon.flow.dispatcher_detection import DispatcherType
+from d810.recon.flow.dispatcher_kind import DispatcherType
 from d810.recon.flow.switch_table_analysis import (
     build_state_dispatcher_map_from_cases,
     find_switch_loop_guard_blocks,

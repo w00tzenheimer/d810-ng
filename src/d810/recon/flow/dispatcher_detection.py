@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 
 import ida_hexrays
 
+from d810.cfg.flowgraph import MopSnapshot, OperandKind
 from d810.core import getLogger, logging
 from d810.core.typing import TYPE_CHECKING
 from d810.recon.flow.analysis_stats import summarize_dispatcher_detection
@@ -81,6 +82,7 @@ def _maturity_text(maturity: int) -> str:
 from d810.recon.flow.dispatcher_facts import (  # noqa: F401
     BlockAnalysis,
     DispatcherStrategy,
+    StateVariableCandidate,
 )
 
 
@@ -102,41 +104,11 @@ from d810.recon.flow.dispatcher_kind import DispatcherType  # noqa: F401
 # (see the re-export above).
 
 
-@dataclass
-class StateVariableCandidate:
-    """A candidate for the state variable."""
-
-    mop: ida_hexrays.mop_t
-    mop_type: int = 0  # ida_hexrays.mop_t type (mop_S, mop_r, etc.)
-    mop_offset: int = 0  # For mop_S: stack offset; for mop_r: register number
-    mop_size: int = 4  # Operand size in bytes
-    init_value: int | None = None
-    comparison_count: int = 0
-    assignment_count: int = 0
-    unique_constants: set[int] = field(default_factory=set)
-    comparison_blocks: list[int] = field(default_factory=list)
-    assignment_blocks: list[int] = field(default_factory=list)
-    score: float = 0.0
-
-    def get_native_stack_offset(self, frame_size: int) -> int | None:
-        """
-        Convert microcode stack offset to native stack offset.
-
-        Microcode stores stack offsets counting UP from the bottom of the frame,
-        while native code uses offsets DOWN from RBP/RSP. This converts appropriately.
-
-        Args:
-            frame_size: Total frame size from mba_t
-
-        Returns:
-            Native stack offset (negative, relative to frame base), or None if not a stack var
-        """
-        if self.mop_type != ida_hexrays.mop_S:
-            return None
-        # Convert: display_offset = frame_size - mop.s.off
-        # Native offset is typically -(display_offset) from RBP
-        display_offset = frame_size - self.mop_offset
-        return -display_offset
+# ``StateVariableCandidate`` lives in ``d810.recon.flow.dispatcher_facts``
+# (E3-schema): ``mop`` is now a portable
+# ``d810.cfg.flowgraph.MopSnapshot``, not a live ``ida_hexrays.mop_t``.
+# Re-exported below alongside the existing pure facts so import paths
+# remain stable for downstream consumers.
 
 
 @dataclass
@@ -179,6 +151,48 @@ MIN_UNIQUE_CONSTANTS = 3
 MIN_PREDECESSOR_UNIFORMITY_RATIO = 0.8
 MIN_BACK_EDGE_RATIO = 0.3
 MAX_DISPATCHER_BLOCK_SIZE = 20  # Max instructions in a dispatcher block
+
+
+def _build_state_var_snapshot(mop: ida_hexrays.mop_t) -> MopSnapshot:
+    """Minimal live -> portable ``MopSnapshot`` capture for state-variable
+    operands.
+
+    Inlined (rather than imported from
+    ``d810.hexrays.mutation.ir_translator.capture_mop_snapshot``) so
+    ``dispatcher_detection`` does NOT transitively pull
+    ``d810.hexrays.*`` into the import graph of every consumer,
+    which would break the ``unit-tests-no-hexrays`` contract for
+    ``tests/unit/recon/test_fixpred_signals_collector.py`` and
+    several sibling tests.
+
+    Covers the four operand kinds that
+    ``StateVariableCandidate.mop`` can hold (mirrors
+    ``_get_mop_key`` / ``_get_mop_offset`` which already restrict
+    to these four).  ``capture_mop_snapshot`` handles a richer set
+    -- this helper is intentionally narrower.
+    """
+    t = mop.t
+    size = mop.size
+    if t == ida_hexrays.mop_S:
+        return MopSnapshot(
+            t=t, size=size, stkoff=int(mop.s.off), kind=OperandKind.STACK
+        )
+    if t == ida_hexrays.mop_r:
+        return MopSnapshot(
+            t=t, size=size, reg=int(mop.r), kind=OperandKind.REGISTER
+        )
+    if t == ida_hexrays.mop_v:
+        return MopSnapshot(
+            t=t, size=size, gaddr=int(mop.g), kind=OperandKind.GLOBAL
+        )
+    if t == ida_hexrays.mop_l:
+        return MopSnapshot(
+            t=t, size=size, lvar_off=int(mop.l.off), kind=OperandKind.LVAR
+        )
+    # Fallback for the unusual case where a non-state operand
+    # somehow reaches construction -- ``_get_mop_key`` already
+    # gates this in the caller.
+    return MopSnapshot(t=t, size=size, kind=OperandKind.UNKNOWN)
 
 
 class DispatcherCache:
@@ -409,10 +423,13 @@ class DispatcherCache:
                 logger.debug("Could not read function bytes")
                 return None
 
-            # Determine state variable location for Unicorn
+            # Determine state variable location for Unicorn.
+            # E3-schema: read ``state_var.mop.kind`` (portable
+            # ``OperandKind``) instead of comparing
+            # ``state_var.mop_type`` to vendor opcode constants.
             state_var = analysis.state_variable
 
-            if state_var.mop_type == ida_hexrays.mop_S:
+            if state_var.mop.kind is OperandKind.STACK:
                 # Stack variable - calculate native offset
                 frame_size = self._get_frame_size()
                 native_offset = state_var.get_native_stack_offset(frame_size)
@@ -450,7 +467,7 @@ class DispatcherCache:
 
                 return transitions if transitions else None
 
-            elif state_var.mop_type == ida_hexrays.mop_r:
+            elif state_var.mop.kind is OperandKind.REGISTER:
                 # Register variable - need different approach
                 logger.debug(
                     "State variable in register %d - register tracing not yet implemented",
@@ -459,7 +476,9 @@ class DispatcherCache:
                 return None
 
             else:
-                logger.debug("Unsupported state variable type: %d", state_var.mop_type)
+                logger.debug(
+                    "Unsupported state variable kind: %s", state_var.mop.kind
+                )
                 return None
 
         except ImportError as e:
@@ -587,9 +606,22 @@ class DispatcherCache:
             unique_constants = {c[1] for c in best_comparisons}
             comparison_blocks = [c[0] for c in best_comparisons]
 
-            # Create the state variable candidate
+            # E3-schema: ``StateVariableCandidate.mop`` is now a portable
+            # ``MopSnapshot``.  Build it inline from the live operand
+            # rather than calling ``capture_mop_snapshot`` -- importing
+            # from ``d810.hexrays.mutation.ir_translator`` would
+            # transitively pull ``d810.hexrays.*`` into every consumer
+            # of ``dispatcher_detection``, breaking the
+            # ``unit-tests-no-hexrays`` contract.  The four kinds below
+            # are the only ones the dispatcher state-variable
+            # identification ever emits (``_get_mop_key`` already
+            # rejects everything else).  ``mop_type``/``mop_offset``/
+            # ``mop_size`` carry the same numeric values they did
+            # under the live-mop schema for backward compatibility
+            # with ``validate_with_emulation``.
+            mop_snapshot = _build_state_var_snapshot(best_mop)
             analysis.state_variable = StateVariableCandidate(
-                mop=best_mop,
+                mop=mop_snapshot,
                 mop_type=best_mop.t,
                 mop_offset=self._get_mop_offset(best_mop),
                 mop_size=best_mop.size,

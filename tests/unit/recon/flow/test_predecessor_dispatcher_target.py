@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from d810.recon.flow.bst_model import BSTAnalysisResult
-from d810.recon.flow.dispatcher_detection import DispatcherType
+from d810.recon.flow.dispatcher_kind import DispatcherType
 from d810.recon.flow.dispatcher_map import StateDispatcherMap, StateDispatcherRow
 from d810.recon.flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.recon.flow.predecessor_dispatcher_target import (

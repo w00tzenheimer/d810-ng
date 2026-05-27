@@ -185,21 +185,34 @@ class HodurStateMachineDetector:
             )
             return None
 
-        # Step 2: Find the state variable (the operand being compared)
-        state_var = None
-        if self._cache:
-            analysis = self._cache.analyze()
-            if analysis.state_variable is not None:
-                state_var = analysis.state_variable.mop
+        # Step 2: Find the state variable (the operand being compared).
+        #
+        # E3-schema (dispatcher_facts) note: ``DispatcherCache``'s
+        # ``analysis.state_variable.mop`` is now a portable
+        # ``MopSnapshot``, not a live ``ida_hexrays.mop_t`` -- pulling
+        # it out as ``state_var`` and passing it to ``format_mop_t``
+        # / downstream live-mop operations is no longer correct.
+        #
+        # The old cache-shortcut here was a performance optimization
+        # (skip re-identification when the dispatcher cache already
+        # found a candidate).  The fallback path below
+        # (``_identify_state_variable``) IS the original code path,
+        # so dropping the shortcut is functionally equivalent.
+        # Diagnostic info from the cache (comparison count) is still
+        # accessible via ``self._cache.analyze().state_variable``
+        # for callers that need it.
+        if self._cache is not None and unflat_logger.debug_on:
+            cached = self._cache.analyze().state_variable
+            if cached is not None:
                 unflat_logger.debug(
-                    "Using cached state variable: %s (type=%d, comparisons=%d)",
-                    format_mop_t(state_var),
-                    analysis.state_variable.mop_type,
-                    analysis.state_variable.comparison_count,
+                    "Dispatcher cache reports state variable with "
+                    "%d comparisons (kind=%s); re-identifying via "
+                    "live walk for hodur",
+                    cached.comparison_count,
+                    cached.mop.kind.name,
                 )
 
-        if state_var is None:
-            state_var = self._identify_state_variable(state_check_blocks)
+        state_var = self._identify_state_variable(state_check_blocks)
 
         if state_var is None:
             unflat_logger.debug("Could not identify state variable")
