@@ -37,6 +37,11 @@ class InsnKind(Enum):
     GOTO = "goto"
     COND_JUMP = "cond_jump"
     EQUALITY_JUMP = "equality_jump"
+    # E3-prep: portable kind for multi-target jump-table tails
+    # (Hex-Rays ``m_jtbl``).  Dispatcher analyses key off this to
+    # detect switch-table-style dispatchers without reaching for
+    # vendor opcode constants.
+    TABLE_JUMP = "table_jump"
     CALL = "call"
 
 

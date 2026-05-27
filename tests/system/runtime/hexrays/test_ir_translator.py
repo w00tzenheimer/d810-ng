@@ -112,9 +112,27 @@ def test_hexrays_enum_values_map_to_cfg_semantic_kinds():
     assert _insn_kind_from_hexrays(ida_hexrays.m_goto) == InsnKind.GOTO
     assert _insn_kind_from_hexrays(ida_hexrays.m_jnz) == InsnKind.EQUALITY_JUMP
     assert _insn_kind_from_hexrays(ida_hexrays.m_jcnd) == InsnKind.COND_JUMP
+    # E3-prep: ``m_jtbl`` lands in portable ``TABLE_JUMP`` so
+    # dispatcher analyses can detect switch-table-style tails
+    # without reaching for vendor opcode constants.
+    assert _insn_kind_from_hexrays(ida_hexrays.m_jtbl) == InsnKind.TABLE_JUMP
     assert _operand_kind_from_hexrays(ida_hexrays.mop_b) == OperandKind.BLOCK
     assert _operand_kind_from_hexrays(ida_hexrays.mop_n) == OperandKind.NUMBER
     assert _operand_kind_from_hexrays(ida_hexrays.mop_S) == OperandKind.STACK
+
+
+def test_table_jump_kind_distinct_from_other_jump_kinds():
+    """E3-prep regression cover: ``m_jtbl`` MUST NOT collapse into
+    ``GOTO`` / ``COND_JUMP`` / ``EQUALITY_JUMP``.  If a future edit
+    to ``_insn_kind_from_hexrays`` accidentally sweeps ``m_jtbl``
+    into one of those branches (e.g. by expanding the predicate
+    helper), this test catches it."""
+    table_jump = _insn_kind_from_hexrays(ida_hexrays.m_jtbl)
+    assert table_jump is InsnKind.TABLE_JUMP
+    assert table_jump is not InsnKind.GOTO
+    assert table_jump is not InsnKind.COND_JUMP
+    assert table_jump is not InsnKind.EQUALITY_JUMP
+    assert table_jump is not InsnKind.UNKNOWN
 
 
 def test_hexrays_branch_opcodes_map_to_backend_neutral_predicates():
