@@ -1,8 +1,9 @@
 """Unit tests for portable ``MopSnapshot`` identity helpers (E2a).
 
-Pure-Python tests -- no IDA imports.  Covers parity with the live-IDA
-``DispatcherCache._get_mop_key`` / ``DispatcherCache._get_mop_offset``
-helpers in ``d810.recon.flow.dispatcher_detection``.
+Pure-Python tests -- no IDA imports.  These helpers are the
+canonical operand-identity functions for dispatcher-state analyses
+since E3-rewire; the legacy live-IDA ``_get_mop_key`` /
+``_get_mop_offset`` methods they replaced are gone.
 """
 
 from __future__ import annotations

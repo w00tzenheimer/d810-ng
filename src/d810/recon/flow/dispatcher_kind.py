@@ -1,28 +1,9 @@
 """Pure-data dispatcher type taxonomy.
 
-Companion to ``d810.recon.flow.dispatcher_detection`` that holds the
-``DispatcherType`` enum alone -- a small, pure-data carrier with no
-``ida_hexrays`` dependency at module import time.
-
-Axis-C slice B1c (the architectural split that *prepares* the future
-B2 normalization of ``dispatcher_detection.py``): pulling the
-``DispatcherType`` enum out of the larger live-IDA file gives the
-two direct unit-test importers
-(``test_predecessor_dispatcher_target``,
-``test_dispatcher_discovery_facts``) a path that does not transit
-``dispatcher_detection.py``.  The ``DispatcherCache`` chain through
-``manager`` / ``fixpred_signals`` / ``snapshot_builder`` / ``family``
-is intentionally NOT addressed by this slice -- moving
-``DispatcherCache`` would conflate split-file work with the
-normalization slice (B2) and bulk-move ~700 lines of analysis
-machinery.  Those chains stay open until a separate B1a (caller-side
-refactor) decides how the analysis orchestration should be owned.
-
-Compatibility: ``DispatcherType`` is re-exported from
-``dispatcher_detection`` so existing import paths keep working.  The
-dependency direction is one-way:
-``dispatcher_detection -> dispatcher_kind`` (downward), never the
-reverse.
+Holds the ``DispatcherType`` enum alone -- a small, pure-data
+carrier with no ``ida_hexrays`` dependency at module import time.
+The canonical home for this enum; recon and optimizer code imports
+from here directly (no re-export shim).
 """
 
 from __future__ import annotations

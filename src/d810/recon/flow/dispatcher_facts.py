@@ -1,35 +1,23 @@
 """Pure-data dispatcher analysis facts.
 
-Companion to ``d810.recon.flow.dispatcher_detection`` that holds the
-fully-pure data classes used by dispatcher analysis -- no
+Holds the pure data classes used by dispatcher analysis -- no
 ``ida_hexrays`` types in any field annotation, no live IDA calls in
-any method body.
+any method body.  Consumed by the pure analyzer at
+``d810.recon.flow.dispatcher_analysis`` and the live adapter at
+``d810.optimizers.microcode.flow.dispatcher.dispatcher_cache``.
 
-Axis-C slice B1a step 1 (per the
-``docs/plans/axis-c2-split-queue.md`` plan): pulling the genuinely
-pure analysis-result types out of the larger live-IDA file gives
-future caller-side refactors (the planned step 2 -- threading a pure
-``DispatcherAnalysis`` result through ``fixpred_signals`` instead of
-constructing ``DispatcherCache`` inside the collector) a clean type
-target to consume.
+Companion modules:
 
-E3-schema (now): ``StateVariableCandidate`` joins this pure module
-with ``mop`` typed as the portable ``d810.cfg.flowgraph.MopSnapshot``
-instead of the live ``ida_hexrays.mop_t``.  ``get_native_stack_offset``
-keys off ``OperandKind.STACK`` instead of ``ida_hexrays.mop_S``.
+* ``d810.recon.flow.dispatcher_kind`` -- ``DispatcherType`` enum.
+* ``d810.recon.flow.dispatcher_analysis`` -- pure
+  ``analyze_dispatcher(flow_graph)`` + ``DispatcherAnalysis`` result.
+* ``d810.optimizers.microcode.flow.dispatcher.dispatcher_cache`` --
+  live adapter (mba lift + cross-maturity state + Unicorn
+  validation).
 
-Still intentionally NOT in this slice:
-
-* ``DispatcherCache``                -- analysis machinery,
-  vendor-coupled by design; stays in ``dispatcher_detection``.
-
-E3-pure adds ``d810.recon.flow.dispatcher_analysis.DispatcherAnalysis``
-beside the pure analyzer.  The legacy live module keeps its existing
-``DispatcherAnalysis`` until E3-rewire swaps consumers over; this avoids
-editing the live adapter during the additive pure-function slice.
-
-Dependency direction is one-way:
-``dispatcher_detection -> dispatcher_facts``, never the reverse.
+This module imports only ``d810.cfg.flowgraph``; all dependencies
+flow upward (recon-flow facts -> recon-flow analyzer -> optimizers
+live adapter), never the reverse.
 """
 
 from __future__ import annotations
@@ -91,17 +79,12 @@ class StateVariableCandidate:
 
     The operand identity is held as a portable
     ``d810.cfg.flowgraph.MopSnapshot``, NOT a live ``ida_hexrays.mop_t``.
-    Construction sites with a live operand build the snapshot via a
-    minimal *inlined* capture helper -- typically
-    ``recon.flow.dispatcher_detection._build_state_var_snapshot`` --
-    NOT through
-    ``d810.hexrays.mutation.ir_translator.capture_mop_snapshot``.
-    The inline form is deliberate: routing through ``capture_mop_snapshot``
-    would import ``d810.hexrays.*`` into the construction site's
-    transitive graph, which breaks ``unit-tests-no-hexrays`` for
-    unit tests that reach the construction module through
-    ``fixpred_signals`` / ``dispatcher_handler_map`` / etc.  See the
-    commit message on ``6321ae76a`` for the original failure shape.
+    The live adapter at
+    ``d810.optimizers.microcode.flow.dispatcher.dispatcher_cache`` is
+    the only construction site -- it lifts the mba via
+    ``d810.hexrays.mutation.ir_translator.lift`` and then the pure
+    ``analyze_dispatcher(flow_graph, ...)`` populates this candidate
+    from the resulting snapshot.
 
     Field names ``mop_type`` / ``mop_offset`` / ``mop_size`` are kept
     for backward compatibility with existing consumers; their values
@@ -134,8 +117,9 @@ class StateVariableCandidate:
             frame_size: Total frame size from the live ``mba_t``.
                 (Frame size is not part of the portable contract; the
                 caller is responsible for sourcing it -- e.g., the
-                emulation hook in ``dispatcher_detection.py`` reads
-                ``mba.frsize``.)
+                emulation hook in the live adapter at
+                ``d810.optimizers.microcode.flow.dispatcher.dispatcher_cache``
+                reads ``mba.frsize``.)
 
         Returns:
             Native stack offset (negative, relative to frame base),

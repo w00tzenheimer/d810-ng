@@ -1,25 +1,24 @@
 """Portable identity helpers for ``MopSnapshot``.
 
-These helpers replace the live-IDA ``_get_mop_key`` / ``_get_mop_offset``
-methods on ``d810.recon.flow.dispatcher_detection.DispatcherCache`` with
-pure-snapshot equivalents so that dispatcher-state analyses no longer
-need a live ``ida_hexrays.mop_t`` to key operands.
+These helpers are the canonical operand-identity functions for
+dispatcher-state analyses -- they replaced the live-IDA
+``_get_mop_key`` / ``_get_mop_offset`` methods that used to live on
+the original ``DispatcherCache`` (deleted in E3-rewire B).  Portable
+analyses no longer need a live ``ida_hexrays.mop_t`` to key operands.
 
 E2a slice of ``docs/plans/recon-portability-end-state.md``: snapshot
-gap closure for the dispatcher state-variable port.  Does NOT rewire
-any recon consumer; pure additive layer that future slices can adopt
-incrementally.
+gap closure for the dispatcher state-variable port.  E3-rewire
+landed the pure ``analyze_dispatcher(flow_graph)`` consumer; these
+helpers are part of its identity surface.
 
-Semantics parity with the live-IDA originals (in
-``dispatcher_detection.py:609,867``):
+Key schema:
 
 * ``mop_snapshot_key`` returns ``"r{reg}" | "S{stkoff}" |
   "v{gaddr}" | "l{lvar_off}" | None`` -- the prefix encodes the
   operand kind so distinct kinds with the same numeric value
   (e.g. ``r3`` vs ``S3``) cannot collide.
-* ``mop_snapshot_offset`` returns the per-kind numeric identifier with
-  a ``0`` fallback (matches the legacy ``return 0`` arm in
-  ``_get_mop_offset``).
+* ``mop_snapshot_offset`` returns the per-kind numeric identifier
+  with a ``0`` fallback for unsupported kinds.
 
 Acceptance rule for the E3 dispatcher port (pinned here because this
 module is what portable consumers will import):
@@ -72,12 +71,12 @@ def cfg_operand_slots(
 def mop_snapshot_key(mop: MopSnapshot | None) -> str | None:
     """Return a stable per-operand key string, or ``None`` for kinds
     that don't carry a portable identity (numbers, blocks, helpers,
-    etc.).  Parity with the live-IDA ``_get_mop_key`` in
-    ``dispatcher_detection.py``.
+    etc.).  The four keyed kinds (``REGISTER`` / ``STACK`` /
+    ``GLOBAL`` / ``LVAR``) match the operand identities that
+    dispatcher state-variable comparisons can take.
 
     Returns ``None`` if the operand is ``None``, has unknown kind, or
-    is a kind that the legacy helper also didn't key (number, block
-    ref, etc.).
+    is a kind that has no stable identity (number, block ref, etc.).
     """
     if mop is None:
         return None
@@ -96,8 +95,7 @@ def mop_snapshot_key(mop: MopSnapshot | None) -> str | None:
 def mop_snapshot_offset(mop: MopSnapshot | None) -> int:
     """Return the per-kind numeric identifier (register number, stack
     offset, global address, lvar offset) with a ``0`` fallback for
-    kinds that don't carry a portable identifier.  Parity with the
-    live-IDA ``_get_mop_offset`` in ``dispatcher_detection.py``.
+    kinds that don't carry a portable identifier.
     """
     if mop is None:
         return 0
