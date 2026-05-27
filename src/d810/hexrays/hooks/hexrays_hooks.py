@@ -350,9 +350,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 self.event_emitter.emit(
                     DecompilationEvent.MATURITY_CHANGED, new_maturity
                 )
-                _emit_flowgraph_ready_event(
-                    self.event_emitter, mba, new_maturity
-                )
+                _emit_flowgraph_ready_event(self.event_emitter, mba)
             if main_logger.debug_on:
                 main_logger.debug(
                     "Instruction optimization function called at maturity: %s",
@@ -959,9 +957,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             # E4 swaps the live-mba ``run_microcode_collectors(...)``
             # path for ``FLOWGRAPH_READY`` subscribers, neither
             # manager silently drops out of the chain.
-            _emit_flowgraph_ready_event(
-                self.event_emitter, mba, mba.maturity
-            )
+            _emit_flowgraph_ready_event(self.event_emitter, mba)
 
             # --- Diagnostic: pre_d810 snapshot for the NEW maturity ---
             _pre_snap_ref = None
@@ -1538,7 +1534,6 @@ class DecompilationEvent(enum.Enum):
 def _emit_flowgraph_ready_event(
     event_emitter,
     mba,
-    new_maturity,
 ) -> None:
     """Lift ``mba`` and emit ``FLOWGRAPH_READY`` (no-op when emitter is None).
 
@@ -1558,7 +1553,11 @@ def _emit_flowgraph_ready_event(
     so a lift bug never gates decompilation.
 
     Payload: ``flow_graph`` + ``func_ea`` + ``maturity`` +
-    ``maturity_name``.  No ``mba_t`` crosses the boundary.
+    ``maturity_name``.  ``maturity`` and ``maturity_name`` are sourced
+    directly from ``flow_graph.metadata`` so the event payload
+    mirrors the lifter's metadata contract (E2b) -- the lifter is the
+    single source of truth, the event is NOT an alternate convention.
+    No ``mba_t`` crosses the boundary.
     """
     if event_emitter is None:
         return
@@ -1568,16 +1567,17 @@ def _emit_flowgraph_ready_event(
         optimizer_logger.exception(
             "FlowGraph lift failed at maturity %s (func=0x%x); "
             "FLOWGRAPH_READY suppressed for this transition",
-            maturity_to_string(new_maturity),
+            maturity_to_string(int(getattr(mba, "maturity", 0) or 0)),
             int(getattr(mba, "entry_ea", 0) or 0),
         )
         return
+    metadata = flow_graph.metadata
     event_emitter.emit(
         DecompilationEvent.FLOWGRAPH_READY,
         flow_graph=flow_graph,
         func_ea=int(mba.entry_ea),
-        maturity=int(new_maturity),
-        maturity_name=maturity_to_string(new_maturity),
+        maturity=metadata["maturity"],
+        maturity_name=metadata["maturity_name"],
     )
 
 
