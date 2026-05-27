@@ -388,6 +388,14 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                             mba_ea,
                         )
             if self._recon_phase is not None:
+                # E4 migration note: when recon subscribes to
+                # FLOWGRAPH_READY, delete this direct live-mba
+                # collection path in the same commit.  Do not run
+                # both paths -- that double-collects for each
+                # ``(func_ea, maturity)`` because FLOWGRAPH_READY
+                # already fires *before* this block at the maturity
+                # gate above.  See ``docs/plans/recon-portability-end-state.md``
+                # slice E4 acceptance criterion.
                 provider_phase = ProviderPhaseSnapshot(
                     provider_name=HEXRAYS_MICROCODE_PROVIDER,
                     provider_level=int(new_maturity),
@@ -1087,6 +1095,14 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             mba_ea,
                         )
             if self._recon_phase is not None:
+                # E4 migration note: when recon subscribes to
+                # FLOWGRAPH_READY, delete this direct live-mba
+                # collection path in the same commit.  Do not run
+                # both paths -- that double-collects for each
+                # ``(func_ea, maturity)`` because FLOWGRAPH_READY
+                # already fires *before* this block at the maturity
+                # gate above.  See ``docs/plans/recon-portability-end-state.md``
+                # slice E4 acceptance criterion.
                 provider_phase = ProviderPhaseSnapshot(
                     provider_name=HEXRAYS_MICROCODE_PROVIDER,
                     provider_level=int(mba.maturity),
