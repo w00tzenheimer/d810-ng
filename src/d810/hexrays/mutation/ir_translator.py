@@ -167,6 +167,12 @@ def _insn_kind_from_hexrays(opcode: int) -> InsnKind:
         return InsnKind.GOTO
     if is_hexrays_opcode(opcode, "m_call") or is_hexrays_opcode(opcode, "m_icall"):
         return InsnKind.CALL
+    # E3-prep: ``m_jtbl`` is a multi-target jump-table tail.  Map
+    # BEFORE the binary-conditional fallback so it lands in the
+    # portable ``TABLE_JUMP`` kind rather than being swept into
+    # ``COND_JUMP`` if the predicate helper grows to cover it.
+    if is_hexrays_opcode(opcode, "m_jtbl"):
+        return InsnKind.TABLE_JUMP
     if opcode in (int(ida_hexrays.m_jnz), int(ida_hexrays.m_jz)):
         return InsnKind.EQUALITY_JUMP
     if _branch_predicate_from_hexrays(opcode) is not None:
