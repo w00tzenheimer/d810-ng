@@ -350,7 +350,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 self.event_emitter.emit(
                     DecompilationEvent.MATURITY_CHANGED, new_maturity
                 )
-                _emit_flowgraph_ready_event(self.event_emitter, mba)
+                # ``FLOWGRAPH_READY`` is emitted AFTER ``reset_for_func``
+                # below.  See the comment block at the emit site for
+                # the ordering rationale.
             if main_logger.debug_on:
                 main_logger.debug(
                     "Instruction optimization function called at maturity: %s",
@@ -385,13 +387,24 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                             "RuleScopeService clear_hint_state failed for func=0x%x",
                             mba_ea,
                         )
-            # E4a: ``run_microcode_collectors(mba, ...)`` is now
-            # invoked by the ``FLOWGRAPH_READY`` subscriber on
-            # ``D810`` (see ``manager._collect_recon_on_flowgraph_ready``).
-            # The event fires earlier in this same maturity gate via
-            # ``_emit_flowgraph_ready_event`` (a few lines above),
-            # and ``ReconPhase`` dedupes by ``(func_ea, maturity)``,
-            # so adding back a direct call here would double-collect.
+            # E4a: emit ``FLOWGRAPH_READY`` AFTER ``reset_for_func``.
+            # Critical ordering: ``reset_for_func`` clears the
+            # ``ReconPhase`` maturity guard and calls ``store.clear_func``;
+            # if we emitted BEFORE the reset, the subscriber would
+            # collect into a store that the reset immediately wipes,
+            # AND a stale ``_fired`` guard from a prior decompilation
+            # could even suppress the collection entirely.  The old
+            # direct ``run_microcode_collectors(mba, ...)`` call was
+            # placed AFTER the reset for the same reason; the
+            # subscriber must inherit that placement.
+            if self.event_emitter is not None:
+                _emit_flowgraph_ready_event(self.event_emitter, mba)
+            # ``run_microcode_collectors(mba, ...)`` is now invoked by
+            # the ``FLOWGRAPH_READY`` subscriber on ``D810`` (see
+            # ``manager._collect_recon_on_flowgraph_ready``).  The
+            # event fires immediately above and ``ReconPhase`` dedupes
+            # by ``(func_ea, maturity)``, so adding back a direct
+            # call here would double-collect.
             if self._recon_phase is not None:
                 if self._recon_runtime is not None:
                     try:
@@ -942,7 +955,10 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             # E4 swaps the live-mba ``run_microcode_collectors(...)``
             # path for ``FLOWGRAPH_READY`` subscribers, neither
             # manager silently drops out of the chain.
-            _emit_flowgraph_ready_event(self.event_emitter, mba)
+            #
+            # NOTE (E4a): the emit moved AFTER ``reset_for_func``
+            # below.  See the comment block at the emit site for
+            # the ordering rationale.
 
             # --- Diagnostic: pre_d810 snapshot for the NEW maturity ---
             _pre_snap_ref = None
@@ -1075,13 +1091,23 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             "RuleScopeService clear_hint_state failed for func=0x%x",
                             mba_ea,
                         )
-            # E4a: ``run_microcode_collectors(mba, ...)`` is now
-            # invoked by the ``FLOWGRAPH_READY`` subscriber on
-            # ``D810`` (see ``manager._collect_recon_on_flowgraph_ready``).
-            # The event fires earlier in this same maturity gate via
-            # ``_emit_flowgraph_ready_event`` (a few lines above),
-            # and ``ReconPhase`` dedupes by ``(func_ea, maturity)``,
-            # so a direct call here would double-collect.
+            # E4a: emit ``FLOWGRAPH_READY`` AFTER ``reset_for_func``.
+            # Critical ordering: ``reset_for_func`` clears the
+            # ``ReconPhase`` maturity guard and calls ``store.clear_func``;
+            # if we emitted BEFORE the reset, the subscriber would
+            # collect into a store that the reset immediately wipes,
+            # AND a stale ``_fired`` guard from a prior decompilation
+            # could even suppress the collection entirely.  The old
+            # direct ``run_microcode_collectors(mba, ...)`` call was
+            # placed AFTER the reset for the same reason; the
+            # subscriber must inherit that placement.
+            _emit_flowgraph_ready_event(self.event_emitter, mba)
+            # ``run_microcode_collectors(mba, ...)`` is now invoked by
+            # the ``FLOWGRAPH_READY`` subscriber on ``D810`` (see
+            # ``manager._collect_recon_on_flowgraph_ready``).  The
+            # event fires immediately above and ``ReconPhase`` dedupes
+            # by ``(func_ea, maturity)``, so a direct call here would
+            # double-collect.
             #
             # ``capture_maturity_facts(mba, ...)`` STAYS -- it is a
             # live-MBA fact-capture path (pre_d810), not the
