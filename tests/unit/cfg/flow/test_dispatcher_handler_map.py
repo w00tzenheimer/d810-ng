@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from d810.recon.flow.dispatcher_handler_map import DispatcherHandlerMap
-from d810.recon.flow.dispatcher_detection import DispatcherType
+from d810.recon.flow.dispatcher_kind import DispatcherType
 
 
 class TestDispatcherHandlerMap:

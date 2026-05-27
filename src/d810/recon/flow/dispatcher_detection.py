@@ -89,36 +89,15 @@ class DispatcherStrategy(IntFlag):
     SWITCH_JUMP = 1 << 8  # Contains jtbl or computed goto
 
 
-class DispatcherType(Enum):
-    """
-    Classification of control-flow flattening dispatcher mechanisms.
-
-    Different obfuscators use different dispatcher patterns. Identifying the type
-    helps select the appropriate unflattening strategy and avoid techniques that
-    cause cascading unreachability issues.
-    """
-
-    # Unknown or unclassified dispatcher pattern
-    UNKNOWN = 0
-
-    # Switch/jump table based dispatcher (jtbl instruction)
-    # Used by: O-LLVM, Tigress (switch mode), commercial obfuscators
-    # Pattern: Central switch statement dispatches to handler blocks
-    # Characteristics: m_jtbl opcode, computed goto, single dispatcher block
-    SWITCH_TABLE = 1
-
-    # Conditional chain dispatcher (nested jnz/jz comparisons)
-    # Used by: Hodur malware, various C2 frameworks, info stealers
-    # Pattern: Nested while(1) loops with sequential state comparisons
-    # Characteristics: No jtbl, many jnz/jz blocks, nested loop structure
-    # Note: Requires special handling to avoid cascading unreachability
-    CONDITIONAL_CHAIN = 2
-
-    # Indirect jump dispatcher (computed address)
-    # Used by: Tigress (indirect mode), some VM protectors
-    # Pattern: Jump target computed from state variable
-    # Characteristics: m_goto with mop_d destination, address arithmetic
-    INDIRECT_JUMP = 3
+# Pure-data `DispatcherType` lives in `d810.recon.flow.dispatcher_kind`
+# (axis-C slice B1c).  The re-export below keeps any prod consumer
+# that finds the enum via `dispatcher_detection` working; the two
+# direct unit-test importers (test_predecessor_dispatcher_target,
+# test_dispatcher_discovery_facts) import from the canonical
+# `dispatcher_kind` location directly so they no longer transit this
+# vendor-coupled module.  Dependency direction is one-way:
+# dispatcher_detection -> dispatcher_kind, never the reverse.
+from d810.recon.flow.dispatcher_kind import DispatcherType  # noqa: F401
 
 
 @dataclass

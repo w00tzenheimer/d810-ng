@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from d810.recon.flow.dispatcher_detection import DispatcherType
+from d810.recon.flow.dispatcher_kind import DispatcherType
 from d810.recon.flow.indirect_jump_table_analysis import (
     IndirectJumpTableEntry,
     _find_dispatcher_serial_by_ea,
