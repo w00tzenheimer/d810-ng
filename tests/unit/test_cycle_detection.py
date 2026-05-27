@@ -249,3 +249,129 @@ class TestCycleDetectionLogic:
 
         # Rewrite 3: A -> B (cycle!)
         assert hash_b in seen[ins_ea]
+
+
+# =============================================================================
+# Tests for STATE-REVISIT cycle detection.
+#
+# Semantics: cycle = pre-state revisited at an EA AFTER having been at
+# at least one OTHER pre-state in between. Re-presentation of the same
+# pre-state repeatedly (Hex-Rays handing us an unchanged ins across passes)
+# is NOT a cycle.
+#
+# Regression scope: Raiffeisen myraif AppDelegate -- Sub_OllvmConstSplit_1
+# applies the same fold across multiple Hex-Rays passes within one maturity,
+# state stays at one pre-form between passes. Old keying treated repeats as
+# cycles and undid the fold; new logic treats them as benign re-presentations.
+# =============================================================================
+
+
+def _check_cycle(seen_states: set, pre_hash: int) -> bool:
+    """Model of the production cycle predicate -- True when fold should be
+    refused as a cycle, False when fold should proceed.
+
+    Matches hexrays_hooks.py InstructionOptimizerManager.optimize logic.
+    """
+    return pre_hash in seen_states and len(seen_states) > 1
+
+
+class TestCycleDetectionStateRevisit:
+    """State-revisit semantics: only flag revisits AFTER state has actually
+    diverged at this EA."""
+
+    def test_same_state_repeated_is_not_cycle(self):
+        """Re-presentation of same pre-state across passes: not a cycle."""
+        seen = defaultdict(set)
+        ea = 0x1028C0378
+        pre = hash("(2*x29 | 0x10) - (x29 ^ 8)")
+
+        # Pass 1: first time at this state -- allow, record.
+        assert not _check_cycle(seen[ea], pre)
+        seen[ea].add(pre)
+
+        # Pass 2: Hex-Rays gives us the same input again. seen has it but
+        # only one distinct state -- safe.
+        assert not _check_cycle(seen[ea], pre)
+        seen[ea].add(pre)  # idempotent set add
+
+        # Pass 3, 4, ... still safe.
+        for _ in range(5):
+            assert not _check_cycle(seen[ea], pre)
+            seen[ea].add(pre)
+
+    def test_two_step_cycle_caught(self):
+        """X -> Y -> X at one EA is a cycle."""
+        seen = defaultdict(set)
+        ea = 0x401000
+        hx = hash("X")
+        hy = hash("Y")
+
+        # Step 1: Rule A on X -> Y. State sequence: X seen.
+        assert not _check_cycle(seen[ea], hx)
+        seen[ea].add(hx)
+
+        # Step 2: Rule B on Y -> X (different rule, different pre).
+        assert not _check_cycle(seen[ea], hy)
+        seen[ea].add(hy)
+
+        # Step 3: Rule A again on X. We've been at X before AND at Y in
+        # between -- cycle.
+        assert _check_cycle(seen[ea], hx)
+
+    def test_three_step_cycle_caught(self):
+        """X -> Y -> Z -> X is a cycle."""
+        seen = defaultdict(set)
+        ea = 0x401000
+        for h in (hash("X"), hash("Y"), hash("Z")):
+            assert not _check_cycle(seen[ea], h)
+            seen[ea].add(h)
+        # Now we revisit X.
+        assert _check_cycle(seen[ea], hash("X"))
+
+    def test_distinct_eas_independent(self):
+        """State history is per-EA."""
+        seen = defaultdict(set)
+        h = hash("X")
+        seen[0x401000].add(h)
+        seen[0x401000].add(hash("Y"))
+        # Different EA must not inherit the change-history.
+        assert not _check_cycle(seen[0x402000], h)
+
+    def test_three_distinct_stores_same_ea_idempotent_fold(self):
+        """Regression: three structurally different micro-insns sharing
+        one source asm EA each fold to a common simplified form. Each is
+        a re-presentation of its OWN pre-state, never revisits another's
+        state, so all three folds proceed."""
+        # In production, ea is the source asm EA; pre/post per-insn differ.
+        # Here we model each insn's optimizer visit as a separate call.
+        seen = defaultdict(set)
+        ea = 0x1028C0370
+        pre_a = hash("(&v ^ 8) + 2*(&v & 8)")
+        pre_b = hash("(2*&v | 0x10) - (&v ^ 8)")
+        pre_c = hash("(2*&v | 2) - (&v ^ 1)")
+
+        # First insn: new state, allow.
+        assert not _check_cycle(seen[ea], pre_a)
+        seen[ea].add(pre_a)
+
+        # Second insn: new state too (different pre_hash), allow. State
+        # history now has two entries but the second insn's pre is new --
+        # not a revisit.
+        assert not _check_cycle(seen[ea], pre_b)
+        seen[ea].add(pre_b)
+
+        # Third insn: also new pre. Note: history has 2 prior states but
+        # pre_c is not among them, so not a revisit.
+        assert not _check_cycle(seen[ea], pre_c)
+        seen[ea].add(pre_c)
+
+    def test_first_visit_to_state_always_allowed_even_with_history(self):
+        """Even if EA has accumulated multiple prior states, a NEW pre-state
+        (never seen) is not a revisit."""
+        seen = defaultdict(set)
+        ea = 0x401000
+        for h in (1, 2, 3, 4, 5):
+            assert not _check_cycle(seen[ea], h)
+            seen[ea].add(h)
+        # Now visit a fresh state at the same EA.
+        assert not _check_cycle(seen[ea], 999)
