@@ -17,6 +17,7 @@ from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.rule_scope import PIPELINE_FLOW, PIPELINE_INSTRUCTION
 from d810.errors import D810Exception
 from d810.hexrays.mutation.cfg_verify import safe_verify
+from d810.hexrays.mutation.ir_translator import lift as lift_mba_to_flowgraph
 from d810.hexrays.utils.hexrays_formatters import (
     count_minsn_nodes,
     dump_microcode_for_debug,
@@ -349,6 +350,33 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 self.event_emitter.emit(
                     DecompilationEvent.MATURITY_CHANGED, new_maturity
                 )
+                # Axis-C end-state event (E1): lift live mba to portable
+                # FlowGraph and publish FLOWGRAPH_READY for future recon
+                # subscribers.  Fires once per maturity transition (the
+                # ``mba.maturity != self.current_maturity`` gate above
+                # makes this whole branch run at most ~5-6 times per
+                # decompilation -- once per maturity).  Recon does not
+                # subscribe to this event yet; E4 wires consumers and
+                # removes the legacy live-mba path through
+                # ``run_microcode_collectors(mba, ...)`` below to avoid
+                # double-collection.
+                try:
+                    flow_graph = lift_mba_to_flowgraph(mba)
+                except Exception:
+                    optimizer_logger.exception(
+                        "FlowGraph lift failed at maturity %s (func=0x%x); "
+                        "FLOWGRAPH_READY suppressed for this transition",
+                        maturity_to_string(new_maturity),
+                        int(getattr(mba, "entry_ea", 0) or 0),
+                    )
+                else:
+                    self.event_emitter.emit(
+                        DecompilationEvent.FLOWGRAPH_READY,
+                        flow_graph=flow_graph,
+                        func_ea=int(mba.entry_ea),
+                        maturity=int(new_maturity),
+                        maturity_name=maturity_to_string(new_maturity),
+                    )
             if main_logger.debug_on:
                 main_logger.debug(
                     "Instruction optimization function called at maturity: %s",
@@ -1491,10 +1519,17 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
 
 
 class DecompilationEvent(enum.Enum):
-    STARTED = "decompilation_started"
-    FINISHED = "decompilation_finished"
-    MATURITY_CHANGED = "maturity_changed"
-    POST_D810_CAPTURE = "post_d810_capture"
+    # Dotted hierarchical event values: domain.object.action.
+    # Filter by prefix (e.g. ``decompilation.``) in subscribers / logs.
+    # Underscores within a segment are OK (`post_d810`); the SEPARATOR is `.`.
+    STARTED = "decompilation.started"
+    FINISHED = "decompilation.finished"
+    MATURITY_CHANGED = "decompilation.maturity.changed"
+    POST_D810_CAPTURE = "decompilation.post_d810.capture"
+    # Axis-C end-state event (E1): emitted once per maturity transition
+    # with a portable ``FlowGraph`` snapshot.  Recon-side subscribers
+    # land in E4 -- E1 only publishes the event; no consumers yet.
+    FLOWGRAPH_READY = "decompilation.flowgraph.ready"
 
 
 class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
