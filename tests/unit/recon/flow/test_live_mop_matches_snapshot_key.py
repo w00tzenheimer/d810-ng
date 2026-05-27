@@ -71,12 +71,7 @@ class TestHodurMatcherSourceContainsMirrorFormulas:
     -- a behavior-level test would require a live ``mop_t``.
     """
 
-    def test_hodur_matcher_contains_register_formula(self) -> None:
-        import inspect
-
-        # Import the module file by reading its source (not by
-        # importing the module -- that would pull in ida_hexrays
-        # and fail under unit-tests-no-hexrays).
+    def _hodur_analysis_src(self) -> str:
         from pathlib import Path
 
         hodur_analysis_path = (
@@ -90,7 +85,10 @@ class TestHodurMatcherSourceContainsMirrorFormulas:
             / "hodur"
             / "analysis.py"
         )
-        src = hodur_analysis_path.read_text()
+        return hodur_analysis_path.read_text()
+
+    def test_hodur_matcher_contains_register_formula(self) -> None:
+        src = self._hodur_analysis_src()
         assert 'f"r{mop.r}"' in src, (
             "hodur _live_mop_matches_snapshot_key must produce r{reg} "
             "to match mop_snapshot_key's REGISTER formula"
@@ -104,3 +102,59 @@ class TestHodurMatcherSourceContainsMirrorFormulas:
         assert 'f"l{mop.l.off}"' in src, (
             "hodur _live_mop_matches_snapshot_key must produce l{lvar_off}"
         )
+
+    def test_cache_driven_selection_iterates_hodur_state_check_blocks(
+        self,
+    ) -> None:
+        """Scope invariant pin: the P2 cache-driven selection loop
+        in ``HodurStateMachineDetector._find_state_machine`` MUST
+        iterate ``state_check_blocks`` (hodur's filtered list),
+        NOT ``cached.comparison_blocks`` (dispatcher cache's full
+        set across the whole function).
+
+        If the iteration drifts to the cache's list, hodur could
+        select a live operand from a block hodur already rejected
+        as a non-state-check, violating hodur's filtering
+        invariant.  This test asserts the loop targets the right
+        collection via source-string inspection (the runtime
+        behavior is exercised via Docker since constructing live
+        ``mba_t`` / ``state_check_blocks`` in unit isn't feasible).
+        """
+        src = self._hodur_analysis_src()
+        # The cache-driven selection block exists between these
+        # canonical markers.
+        marker_open = "BUT: the cache's selection logic"
+        marker_close = "if state_var is None:"
+        assert marker_open in src
+        assert marker_close in src
+        # Extract the selection block.
+        open_idx = src.index(marker_open)
+        close_idx = src.index(marker_close, open_idx)
+        selection_block = src[open_idx:close_idx]
+
+        # The loop MUST iterate ``state_check_blocks``...
+        assert "for blk_serial, _, _ in state_check_blocks:" in selection_block, (
+            "Cache-driven selection must iterate hodur's "
+            "``state_check_blocks``, not the cache's "
+            "``comparison_blocks``.  If you changed the iteration "
+            "target, verify the scope invariant in the comment "
+            "above the loop still holds."
+        )
+        # ...and MUST NOT iterate ``cached.comparison_blocks``
+        # as a code statement.  (The substring may appear in
+        # comments that explain the scope invariant; the test
+        # asserts no iteration form.)
+        forbidden_iterations = (
+            "for blk_serial in cached.comparison_blocks",
+            "for blk_serial, _ in cached.comparison_blocks",
+            "for blk_serial, _, _ in cached.comparison_blocks",
+            "in cached.comparison_blocks:",
+        )
+        for forbidden in forbidden_iterations:
+            assert forbidden not in selection_block, (
+                "Scope violation: cache-driven selection iterates "
+                f"{forbidden!r}, but it MUST iterate hodur's local "
+                "``state_check_blocks`` instead.  Iterating the "
+                "cache's full comparison set would let hodur select "
+                "a live operand from a block hodur already rejected."
+            )

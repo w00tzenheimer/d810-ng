@@ -239,6 +239,16 @@ class HodurStateMachineDetector:
         # the cache's candidate, and use that block's live mop.
         # This preserves the cache's "most comparisons" wisdom while
         # keeping ``StateVariableCandidate.mop`` schema-pure.
+        #
+        # SCOPE INVARIANT: we iterate ``state_check_blocks`` --
+        # hodur's already-filtered candidate set -- NOT
+        # ``cached.comparison_blocks`` (the dispatcher cache's
+        # full set across the whole function).  If we iterated the
+        # cache's list, we might select a live operand from a block
+        # that hodur already rejected as a non-state-check, which
+        # would violate hodur's filtering invariant.  The cache's
+        # role here is purely to PICK the right operand among
+        # hodur's set, not to expand the set.
         state_var = None
         if self._cache is not None:
             cached = self._cache.analyze().state_variable
