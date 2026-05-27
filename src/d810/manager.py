@@ -41,6 +41,7 @@ from d810.core.typing import TYPE_CHECKING
 from d810.backends.ast.z3 import Z3MopProver
 from d810.hexrays.hooks.ctree_hooks import CtreeOptimizationRule, CtreeOptimizerManager
 from d810.hexrays.hooks.hexrays_hooks import (
+    HEXRAYS_MICROCODE_PROVIDER,
     BlockOptimizerManager,
     DecompilationEvent,
     HexraysDecompilationHook,
@@ -823,6 +824,56 @@ class D810Manager:
         except Exception:
             logger.exception("FactLifecycleRuntime post-D810 capture failed")
 
+    def _collect_recon_on_flowgraph_ready(
+        self,
+        *,
+        flow_graph,
+        func_ea: int,
+        maturity: int,
+        maturity_name: str,
+    ) -> None:
+        """``FLOWGRAPH_READY`` handler that runs the recon collectors
+        over the portable ``FlowGraph`` payload.
+
+        E4a: replaces the two legacy ``run_microcode_collectors(mba, ...)``
+        calls that used to live inline at the
+        ``InstructionOptimizerManager`` / ``BlockOptimizerManager``
+        maturity gates.  Both gates emit ``FLOWGRAPH_READY`` for the
+        same ``(func_ea, maturity)`` -- the per-``(func_ea, maturity)``
+        guard inside ``ReconPhase.run_microcode_collectors`` already
+        dedupes collector saves, so two events fire but only one
+        collection pass executes.
+
+        Collectors that need a live ``mba_t`` are gone -- 7 of 8
+        microcode collectors already had dual-path support
+        (``FlowGraph`` duck-typed branch); ``handler_transitions``'s
+        graph path activates when its metadata blob carries
+        ``transition_result`` + ``dispatcher_entry_serial``, which
+        is identical to the prior live-mba behavior (live path also
+        required that metadata).  Producing real handler-transition
+        metadata is a separate slice.
+        """
+        if self._recon_phase is None:
+            return
+        provider_phase = ProviderPhaseSnapshot(
+            provider_name=HEXRAYS_MICROCODE_PROVIDER,
+            provider_level=int(maturity),
+            friendly_provider_level=str(maturity_name),
+        )
+        try:
+            self._recon_phase.run_microcode_collectors(
+                flow_graph,
+                func_ea=int(func_ea),
+                provider_phase=provider_phase,
+            )
+        except Exception:
+            logger.exception(
+                "ReconPhase FLOWGRAPH_READY collection failed at "
+                "func=0x%x maturity=%s",
+                int(func_ea),
+                maturity_name,
+            )
+
     def _resolve_post_d810_linearization_context(
         self,
         mba: typing.Any,
@@ -1492,6 +1543,18 @@ class D810Manager:
             self.event_emitter.on(
                 DecompilationEvent.FINISHED,
                 self._recon_runtime.mark_decompilation_finished,
+            )
+
+        # E4a: single shared FLOWGRAPH_READY subscriber for the
+        # microcode recon collection path.  Both manager maturity
+        # gates emit this event for the same ``(func_ea, maturity)``;
+        # ``ReconPhase.run_microcode_collectors`` dedupes by
+        # ``(func_ea, maturity)`` internally, so two events arriving
+        # back-to-back result in exactly one collection pass.
+        if self._recon_phase is not None:
+            self.event_emitter.on(
+                DecompilationEvent.FLOWGRAPH_READY,
+                self._collect_recon_on_flowgraph_ready,
             )
 
         self.event_emitter.on(

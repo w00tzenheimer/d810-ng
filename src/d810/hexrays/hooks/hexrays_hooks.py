@@ -385,29 +385,14 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                             "RuleScopeService clear_hint_state failed for func=0x%x",
                             mba_ea,
                         )
+            # E4a: ``run_microcode_collectors(mba, ...)`` is now
+            # invoked by the ``FLOWGRAPH_READY`` subscriber on
+            # ``D810`` (see ``manager._collect_recon_on_flowgraph_ready``).
+            # The event fires earlier in this same maturity gate via
+            # ``_emit_flowgraph_ready_event`` (a few lines above),
+            # and ``ReconPhase`` dedupes by ``(func_ea, maturity)``,
+            # so adding back a direct call here would double-collect.
             if self._recon_phase is not None:
-                # E4 migration note: when recon subscribes to
-                # FLOWGRAPH_READY, delete this direct live-mba
-                # collection path in the same commit.  Do not run
-                # both paths -- that double-collects for each
-                # ``(func_ea, maturity)`` because FLOWGRAPH_READY
-                # already fires *before* this block at the maturity
-                # gate above.  See ``docs/plans/recon-portability-end-state.md``
-                # slice E4 acceptance criterion.
-                provider_phase = ProviderPhaseSnapshot(
-                    provider_name=HEXRAYS_MICROCODE_PROVIDER,
-                    provider_level=int(new_maturity),
-                    friendly_provider_level=maturity_to_string(new_maturity),
-                )
-                try:
-                    self._recon_phase.run_microcode_collectors(
-                        mba, func_ea=mba_ea, provider_phase=provider_phase
-                    )
-                except Exception:
-                    optimizer_logger.exception(
-                        "ReconPhase failed at maturity %s",
-                        provider_phase.friendly_provider_level,
-                    )
                 if self._recon_runtime is not None:
                     try:
                         hints = self._recon_runtime.analyze_and_persist(mba_ea)
@@ -1090,26 +1075,23 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             "RuleScopeService clear_hint_state failed for func=0x%x",
                             mba_ea,
                         )
+            # E4a: ``run_microcode_collectors(mba, ...)`` is now
+            # invoked by the ``FLOWGRAPH_READY`` subscriber on
+            # ``D810`` (see ``manager._collect_recon_on_flowgraph_ready``).
+            # The event fires earlier in this same maturity gate via
+            # ``_emit_flowgraph_ready_event`` (a few lines above),
+            # and ``ReconPhase`` dedupes by ``(func_ea, maturity)``,
+            # so a direct call here would double-collect.
+            #
+            # ``capture_maturity_facts(mba, ...)`` STAYS -- it is a
+            # live-MBA fact-capture path (pre_d810), not the
+            # microcode-collector path.
             if self._recon_phase is not None:
-                # E4 migration note: when recon subscribes to
-                # FLOWGRAPH_READY, delete this direct live-mba
-                # collection path in the same commit.  Do not run
-                # both paths -- that double-collects for each
-                # ``(func_ea, maturity)`` because FLOWGRAPH_READY
-                # already fires *before* this block at the maturity
-                # gate above.  See ``docs/plans/recon-portability-end-state.md``
-                # slice E4 acceptance criterion.
                 provider_phase = ProviderPhaseSnapshot(
                     provider_name=HEXRAYS_MICROCODE_PROVIDER,
                     provider_level=int(mba.maturity),
                     friendly_provider_level=maturity_to_string(mba.maturity),
                 )
-                try:
-                    self._recon_phase.run_microcode_collectors(
-                        mba, func_ea=mba_ea, provider_phase=provider_phase
-                    )
-                except Exception:
-                    optimizer_logger.exception("ReconPhase (block) failed")
                 if self._recon_runtime is not None:
                     try:
                         self._recon_runtime.capture_maturity_facts(
@@ -1537,20 +1519,22 @@ def _emit_flowgraph_ready_event(
 ) -> None:
     """Lift ``mba`` and emit ``FLOWGRAPH_READY`` (no-op when emitter is None).
 
-    Shared helper invoked at every maturity-transition gate that
-    currently triggers recon collection -- both
+    Shared helper invoked at every maturity-transition gate --
     ``InstructionOptimizerManager.log_info_on_input`` and
-    ``BlockOptimizerManager.log_info_on_input``.  Keeping both
-    producers routing through one helper guarantees the cross-layer
-    event fires anywhere ``run_microcode_collectors(mba, ...)`` does
-    today; when E4 wires recon to consume ``FLOWGRAPH_READY`` (and
-    removes the legacy live-mba path), no producer site silently
-    drops out.
+    ``BlockOptimizerManager.log_info_on_input``.  Both producers
+    route through one helper so the cross-layer event fires at
+    every recon-collection lifecycle point.
+
+    E4a (now): the ``FLOWGRAPH_READY`` subscriber on ``D810`` (see
+    ``manager._collect_recon_on_flowgraph_ready``) is the sole
+    invoker of ``ReconPhase.run_microcode_collectors`` for the
+    microcode path.  The legacy live-mba direct calls that used to
+    live in this same module are gone.
 
     Lift failures log via ``optimizer_logger.exception`` and return
-    cleanly -- the legacy live path through
-    ``_recon_phase.run_microcode_collectors`` still runs unchanged,
-    so a lift bug never gates decompilation.
+    cleanly -- the subscriber never runs for the failed transition,
+    so recon misses one maturity but decompilation is never gated
+    by a lift bug.
 
     Payload: ``flow_graph`` + ``func_ea`` + ``maturity`` +
     ``maturity_name``.  ``maturity`` and ``maturity_name`` are sourced
