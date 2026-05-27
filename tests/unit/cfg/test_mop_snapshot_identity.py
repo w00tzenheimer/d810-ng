@@ -7,8 +7,12 @@ helpers in ``d810.recon.flow.dispatcher_detection``.
 
 from __future__ import annotations
 
-from d810.cfg.flowgraph import MopSnapshot, OperandKind
-from d810.cfg.mop_identity import mop_snapshot_key, mop_snapshot_offset
+from d810.cfg.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
+from d810.cfg.mop_identity import (
+    cfg_operand_slots,
+    mop_snapshot_key,
+    mop_snapshot_offset,
+)
 
 
 class TestMopSnapshotKey:
@@ -126,3 +130,88 @@ class TestMopSnapshotFieldsBackwardsCompatible:
         )
         assert m.gaddr == 0x140002000
         assert m.lvar_off is None
+
+
+class TestCfgOperandSlots:
+    """``cfg_operand_slots`` is the portable replacement for reading
+    ``InsnSnapshot.operand_slots``.  It returns ``(slot, MopSnapshot)``
+    pairs sourced from the portable ``l/r/d`` fields and skips
+    ``None`` operands.
+
+    Acceptance-rule cover (see ``d810/cfg/mop_identity.py`` docstring):
+    portable analyses must read operands via this helper or via
+    ``insn.l/r/d`` directly -- never via ``insn.operand_slots`` /
+    ``insn.operands`` which today carry the rich Hex-Rays variant.
+    """
+
+    def _insn(
+        self,
+        *,
+        l: MopSnapshot | None = None,
+        r: MopSnapshot | None = None,
+        d: MopSnapshot | None = None,
+    ) -> InsnSnapshot:
+        """Minimal ``InsnSnapshot`` with only the slot fields set --
+        all other required fields get harmless defaults so we can
+        exercise the helper without a full lifter run."""
+        return InsnSnapshot(
+            opcode=1,
+            ea=0x140002000,
+            operands=(),
+            l=l,
+            r=r,
+            d=d,
+            kind=InsnKind.MOV,
+        )
+
+    def test_returns_all_three_slots_when_populated(self) -> None:
+        left = MopSnapshot(t=2, size=4, reg=3, kind=OperandKind.REGISTER)
+        right = MopSnapshot(t=1, size=4, value=42, kind=OperandKind.NUMBER)
+        dest = MopSnapshot(t=4, size=4, stkoff=0x40, kind=OperandKind.STACK)
+        insn = self._insn(l=left, r=right, d=dest)
+
+        slots = cfg_operand_slots(insn)
+
+        assert slots == (("l", left), ("r", right), ("d", dest))
+
+    def test_skips_none_operands(self) -> None:
+        left = MopSnapshot(t=2, size=4, reg=3, kind=OperandKind.REGISTER)
+        dest = MopSnapshot(t=4, size=4, stkoff=0x40, kind=OperandKind.STACK)
+        insn = self._insn(l=left, d=dest)  # r is None
+
+        slots = cfg_operand_slots(insn)
+
+        assert [name for name, _ in slots] == ["l", "d"]
+
+    def test_all_none_returns_empty_tuple(self) -> None:
+        insn = self._insn()
+        assert cfg_operand_slots(insn) == ()
+
+    def test_slot_order_is_l_r_d(self) -> None:
+        """Slot ordering is canonical: left, right, dest.  Callers
+        that rely on positional unpacking (e.g. tail.l then tail.r)
+        get the same ordering whether they use this helper or the
+        raw ``l/r/d`` fields."""
+        left = MopSnapshot(t=2, size=4, reg=1, kind=OperandKind.REGISTER)
+        right = MopSnapshot(t=2, size=4, reg=2, kind=OperandKind.REGISTER)
+        dest = MopSnapshot(t=2, size=4, reg=3, kind=OperandKind.REGISTER)
+        insn = self._insn(l=left, r=right, d=dest)
+
+        slots = cfg_operand_slots(insn)
+
+        assert tuple(name for name, _ in slots) == ("l", "r", "d")
+
+    def test_return_type_is_portable_mopsnapshot(self) -> None:
+        """The whole point of this helper: callers see a portable
+        ``MopSnapshot``, not the rich Hex-Rays variant that
+        ``insn.operand_slots`` could carry."""
+        left = MopSnapshot(t=2, size=4, reg=3, kind=OperandKind.REGISTER)
+        insn = self._insn(l=left)
+
+        ((_, operand),) = cfg_operand_slots(insn)
+
+        assert isinstance(operand, MopSnapshot)
+        # Operand is suitable for direct ID-helper consumption -- this
+        # is the architectural contract: portable in, portable out.
+        assert mop_snapshot_key(operand) == "r3"
+        assert mop_snapshot_offset(operand) == 3

@@ -607,7 +607,15 @@ class DispatcherCache:
                     block_info.strategies |= DispatcherStrategy.CONSTANT_FREQUENCY
 
     def _get_mop_offset(self, mop: ida_hexrays.mop_t) -> int:
-        """Get the offset/identifier from an mop_t."""
+        """Get the offset/identifier from an mop_t.
+
+        E3 migration note: the portable equivalent is
+        ``d810.cfg.mop_identity.mop_snapshot_offset(MopSnapshot)``.
+        When the dispatcher port lands, delete this method and switch
+        the call site to take a portable ``MopSnapshot``.  See
+        ``docs/plans/recon-portability-end-state.md`` slice E3 plus
+        the acceptance rule in ``d810/cfg/mop_identity.py``.
+        """
         if mop.t == ida_hexrays.mop_r:
             return mop.r
         elif mop.t == ida_hexrays.mop_S:
@@ -865,7 +873,15 @@ class DispatcherCache:
             analysis.initial_state = self._persisted_initial_state
 
     def _get_mop_key(self, mop: ida_hexrays.mop_t) -> str | None:
-        """Get a unique key for an mop_t for comparison."""
+        """Get a unique key for an mop_t for comparison.
+
+        E3 migration note: the portable equivalent is
+        ``d810.cfg.mop_identity.mop_snapshot_key(MopSnapshot)``.  When
+        the dispatcher port lands, delete this method and switch the
+        call site to take a portable ``MopSnapshot``.  See
+        ``docs/plans/recon-portability-end-state.md`` slice E3 plus
+        the acceptance rule in ``d810/cfg/mop_identity.py``.
+        """
         if mop.t == ida_hexrays.mop_r:
             return f"r{mop.r}"
         elif mop.t == ida_hexrays.mop_S:
