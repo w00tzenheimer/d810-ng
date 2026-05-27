@@ -88,8 +88,17 @@ class StateVariableCandidate:
 
     The operand identity is held as a portable
     ``d810.cfg.flowgraph.MopSnapshot``, NOT a live ``ida_hexrays.mop_t``.
-    Construction sites that have a live operand build the snapshot via
+    Construction sites with a live operand build the snapshot via a
+    minimal *inlined* capture helper -- typically
+    ``recon.flow.dispatcher_detection._build_state_var_snapshot`` --
+    NOT through
     ``d810.hexrays.mutation.ir_translator.capture_mop_snapshot``.
+    The inline form is deliberate: routing through ``capture_mop_snapshot``
+    would import ``d810.hexrays.*`` into the construction site's
+    transitive graph, which breaks ``unit-tests-no-hexrays`` for
+    unit tests that reach the construction module through
+    ``fixpred_signals`` / ``dispatcher_handler_map`` / etc.  See the
+    commit message on ``6321ae76a`` for the original failure shape.
 
     Field names ``mop_type`` / ``mop_offset`` / ``mop_size`` are kept
     for backward compatibility with existing consumers; their values
