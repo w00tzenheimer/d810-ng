@@ -138,3 +138,181 @@ class TestFlowGraphReadyPayloadShape:
         canonical_kwargs = {"flow_graph", "func_ea", "maturity", "maturity_name"}
         assert "mba" not in canonical_kwargs
         assert "mbl_array_t" not in canonical_kwargs
+
+
+class TestProducerHelper:
+    """Producer-level coverage of the actual emit code path.
+
+    Tests the real ``_emit_flowgraph_ready_event`` helper from
+    ``hexrays_hooks`` with a monkeypatched lift function and a
+    stub mba.  Validates that:
+
+    * the helper actually emits ``FLOWGRAPH_READY`` with the
+      canonical four-kwargs payload (catches accidental kwarg
+      drift -- ``mba=mba``, missing fields, etc.);
+    * lift failures are caught and suppressed (the legacy live
+      path through ``run_microcode_collectors`` stays intact);
+    * a ``None`` emitter is a no-op (the helper is safe to call
+      from a manager that wasn't wired up).
+
+    This is the P2 fix on top of the
+    ``TestFlowGraphReadyPayloadShape`` cases above, which only
+    exercised the emit/subscribe contract against an arbitrary
+    fake payload.  Together the two suites pin both the
+    end-to-end pathway AND the actual producer kwargs.
+    """
+
+    def _stub_mba(self, *, entry_ea: int = 0x140002000, maturity: int = 14):
+        """Minimal ``mba_t``-shaped stub: just the two attributes
+        the helper reads (``entry_ea`` for the payload, ``maturity``
+        is passed in by the caller already)."""
+        class _StubMba:
+            pass
+
+        m = _StubMba()
+        m.entry_ea = entry_ea
+        m.maturity = maturity
+        return m
+
+    def test_helper_emits_canonical_payload(self, monkeypatch) -> None:
+        """Real helper, monkeypatched lift, stub mba.  Asserts the
+        emitted kwargs match the canonical contract (four kwargs,
+        no ``mba``)."""
+        from d810.core.events import EventEmitter
+        from d810.hexrays.hooks import hexrays_hooks
+        from d810.hexrays.hooks.hexrays_hooks import (
+            DecompilationEvent,
+            _emit_flowgraph_ready_event,
+        )
+
+        # Sentinel FlowGraph so we can verify identity in the payload
+        # without constructing a real one.
+        sentinel_flow_graph = object()
+
+        def fake_lift(mba):
+            return sentinel_flow_graph
+
+        monkeypatch.setattr(
+            hexrays_hooks, "lift_mba_to_flowgraph", fake_lift
+        )
+
+        emitter: EventEmitter[DecompilationEvent] = EventEmitter()
+        received: list[dict[str, object]] = []
+        emitter.on(
+            DecompilationEvent.FLOWGRAPH_READY,
+            lambda **kwargs: received.append(kwargs),
+        )
+
+        stub = self._stub_mba(entry_ea=0x140002000, maturity=14)
+        _emit_flowgraph_ready_event(emitter, stub, 14)
+
+        assert len(received) == 1
+        payload = received[0]
+        # Producer contract: exactly these four kwargs, no live mba.
+        assert set(payload.keys()) == {
+            "flow_graph",
+            "func_ea",
+            "maturity",
+            "maturity_name",
+        }
+        assert payload["flow_graph"] is sentinel_flow_graph
+        assert payload["func_ea"] == 0x140002000
+        assert payload["maturity"] == 14
+        # maturity_name comes from ``maturity_to_string``; for an
+        # unknown maturity int the helper falls back to a stable
+        # ``MMAT_<n>`` form -- exact name isn't asserted here
+        # (varies by SDK), only that it's a non-empty string.
+        assert isinstance(payload["maturity_name"], str)
+        assert payload["maturity_name"]
+
+    def test_helper_with_none_emitter_is_noop(self, monkeypatch) -> None:
+        """A manager without ``event_emitter`` wired up still calls
+        the helper; the helper short-circuits cleanly."""
+        from d810.hexrays.hooks import hexrays_hooks
+        from d810.hexrays.hooks.hexrays_hooks import (
+            _emit_flowgraph_ready_event,
+        )
+
+        called = [False]
+
+        def fake_lift(mba):
+            called[0] = True
+            return object()
+
+        monkeypatch.setattr(
+            hexrays_hooks, "lift_mba_to_flowgraph", fake_lift
+        )
+
+        stub = self._stub_mba()
+        # Should not raise, should not even invoke the lift.
+        _emit_flowgraph_ready_event(None, stub, 14)
+        assert called[0] is False, (
+            "Lift should not run when event_emitter is None -- "
+            "the helper short-circuits before lift to avoid wasted "
+            "work on managers that aren't wired up."
+        )
+
+    def test_helper_suppresses_lift_failures(self, monkeypatch) -> None:
+        """Lift failures must NOT propagate -- they would gate
+        decompilation.  The helper logs and returns cleanly; the
+        event is suppressed for that one transition."""
+        from d810.core.events import EventEmitter
+        from d810.hexrays.hooks import hexrays_hooks
+        from d810.hexrays.hooks.hexrays_hooks import (
+            DecompilationEvent,
+            _emit_flowgraph_ready_event,
+        )
+
+        def failing_lift(mba):
+            raise RuntimeError("simulated lift failure")
+
+        monkeypatch.setattr(
+            hexrays_hooks, "lift_mba_to_flowgraph", failing_lift
+        )
+
+        emitter: EventEmitter[DecompilationEvent] = EventEmitter()
+        received: list[dict[str, object]] = []
+        emitter.on(
+            DecompilationEvent.FLOWGRAPH_READY,
+            lambda **kwargs: received.append(kwargs),
+        )
+
+        stub = self._stub_mba()
+        # Should not raise.
+        _emit_flowgraph_ready_event(emitter, stub, 14)
+
+        # Event suppressed for the failed transition; no subscribers
+        # invoked.
+        assert received == []
+
+    def test_both_managers_invoke_helper(self, monkeypatch) -> None:
+        """Architectural regression cover for the P1 review finding:
+        BOTH ``InstructionOptimizerManager`` and
+        ``BlockOptimizerManager`` must invoke
+        ``_emit_flowgraph_ready_event`` at their maturity gates.
+        If a future edit silently removes the call from one manager,
+        ``FLOWGRAPH_READY`` would only fire from the other and E4's
+        consumer rewire would lose a recon collection point."""
+        import inspect
+
+        from d810.hexrays.hooks import hexrays_hooks
+
+        instr_src = inspect.getsource(
+            hexrays_hooks.InstructionOptimizerManager.log_info_on_input
+        )
+        block_src = inspect.getsource(
+            hexrays_hooks.BlockOptimizerManager.log_info_on_input
+        )
+
+        assert "_emit_flowgraph_ready_event" in instr_src, (
+            "InstructionOptimizerManager.log_info_on_input no longer "
+            "calls _emit_flowgraph_ready_event; FLOWGRAPH_READY will "
+            "not fire from this manager.  Reinstate the call inside "
+            "the maturity-transition gate."
+        )
+        assert "_emit_flowgraph_ready_event" in block_src, (
+            "BlockOptimizerManager.log_info_on_input no longer calls "
+            "_emit_flowgraph_ready_event; FLOWGRAPH_READY will not "
+            "fire from this manager.  Both managers MUST emit -- "
+            "see the P1 review finding on commit 6fa286df5."
+        )
