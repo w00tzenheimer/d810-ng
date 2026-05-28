@@ -4,8 +4,26 @@ from __future__ import annotations
 from d810.recon.facts.value_flow import project_value_flow_facts
 
 
+def _collector_target(target: object) -> object | None:
+    if target is None:
+        return None
+    if hasattr(target, "blocks") and not (
+        hasattr(target, "qty") and hasattr(target, "get_mblock")
+    ):
+        return target
+    try:
+        from d810.hexrays.fact_target import mba_to_fact_target
+
+        return mba_to_fact_target(target)
+    except Exception:
+        return None
+
+
 def collect_ollvm_raw_semantic_carrier_facts(mba: object) -> tuple[object, ...]:
     if mba is None:
+        return ()
+    target = _collector_target(mba)
+    if target is None:
         return ()
     try:
         from d810.recon.facts.collectors import OllvmValueFlowEvidenceCollector
@@ -14,7 +32,7 @@ def collect_ollvm_raw_semantic_carrier_facts(mba: object) -> tuple[object, ...]:
     try:
         return tuple(
             OllvmValueFlowEvidenceCollector().collect(
-                mba,
+                target,
                 func_ea=int(getattr(mba, "entry_ea", 0) or 0),
                 maturity=int(getattr(mba, "maturity", 0) or 0),
                 phase="pre_d810",

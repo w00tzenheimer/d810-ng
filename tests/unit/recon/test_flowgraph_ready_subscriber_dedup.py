@@ -419,3 +419,26 @@ class TestNoDirectReconCallsInManagerGates:
             "manager._collect_recon_on_flowgraph_ready so the target is the "
             "portable FlowGraph, not the live mba_t."
         )
+
+    def test_post_d810_fact_capture_does_not_fallback_to_live_mba(
+        self,
+    ) -> None:
+        """E4b contract: post-D810 facts must use the Hex-Rays adapter,
+        not send live ``mba_t`` into the fact runtime on adapter failure."""
+        manager_path = (
+            Path(__file__).resolve().parents[3]
+            / "src"
+            / "d810"
+            / "manager.py"
+        )
+        assert manager_path.exists(), (
+            f"Resolved manager.py path {manager_path} does not exist -- "
+            "check parents[N] offset"
+        )
+
+        src = manager_path.read_text()
+        assert "falling back to live mba" not in src
+        assert "target = mba\n" not in src
+        assert "target = mba_to_fact_target(mba)" in src
+        assert "skipping fact capture" in src
+        assert "return\n            self._recon_runtime.capture_maturity_facts(" in src

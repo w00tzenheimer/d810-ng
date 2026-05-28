@@ -3,7 +3,7 @@
 The first vertical collector is deliberately conservative: it records direct
 stack-variable self updates, such as ``x = x + 0x80`` or ``x = x - 1``.  More
 complex recurrence recovery belongs in later collectors once the lifecycle
-substrate is proven end-to-end.
+pipeline is proven end-to-end.
 """
 from __future__ import annotations
 
@@ -27,24 +27,15 @@ _STACK_MOV_RE = re.compile(
 _DS_ADDRESS_RE = re.compile(r"\[ds\.[^\]]+\]")
 
 
-def _maturity_constant(name: str, fallback: int) -> int:
-    try:
-        import ida_hexrays  # type: ignore
-
-        return int(getattr(ida_hexrays, name))
-    except Exception:
-        return fallback
-
-
 _MATURITY_VALUES = {
-    "MMAT_GENERATED": _maturity_constant("MMAT_GENERATED", 0),
-    "MMAT_PREOPTIMIZED": _maturity_constant("MMAT_PREOPTIMIZED", 1),
-    "MMAT_LOCOPT": _maturity_constant("MMAT_LOCOPT", 2),
-    "MMAT_CALLS": _maturity_constant("MMAT_CALLS", 3),
-    "MMAT_GLBOPT1": _maturity_constant("MMAT_GLBOPT1", 4),
-    "MMAT_GLBOPT2": _maturity_constant("MMAT_GLBOPT2", 5),
-    "MMAT_GLBOPT3": _maturity_constant("MMAT_GLBOPT3", 6),
-    "MMAT_LVARS": _maturity_constant("MMAT_LVARS", 7),
+    "MMAT_GENERATED": 1,
+    "MMAT_PREOPTIMIZED": 2,
+    "MMAT_LOCOPT": 3,
+    "MMAT_CALLS": 4,
+    "MMAT_GLBOPT1": 5,
+    "MMAT_GLBOPT2": 6,
+    "MMAT_GLBOPT3": 7,
+    "MMAT_LVARS": 8,
 }
 
 _MATURITY_NAMES = {value: name for name, value in _MATURITY_VALUES.items()}
@@ -108,63 +99,6 @@ def _signed_step(value: int) -> int:
     if value > 0x7FFFFFFFFFFFFFFF:
         return value - (1 << 64)
     return value
-
-
-def _opcode_name_from_live(opcode: int) -> str:
-    try:
-        import ida_hexrays  # type: ignore
-
-        if opcode == ida_hexrays.m_add:
-            return "m_add"
-        if opcode == ida_hexrays.m_sub:
-            return "m_sub"
-        if opcode == ida_hexrays.m_stx:
-            return "m_stx"
-    except Exception:
-        pass
-    return f"op_{int(opcode)}"
-
-
-def _stack_offset_from_mop(mop: Any) -> int | None:
-    try:
-        import ida_hexrays  # type: ignore
-
-        if getattr(mop, "t", None) == ida_hexrays.mop_S:
-            return int(mop.s.off)
-    except Exception:
-        pass
-    return None
-
-
-def _mop_type_name(mop: Any) -> str | None:
-    try:
-        import ida_hexrays  # type: ignore
-
-        t = getattr(mop, "t", None)
-        if t == ida_hexrays.mop_S:
-            return "mop_S"
-        if t == ida_hexrays.mop_n:
-            return "mop_n"
-        if t == ida_hexrays.mop_d:
-            return "mop_d"
-        if t == ida_hexrays.mop_r:
-            return "mop_r"
-        if t == ida_hexrays.mop_b:
-            return "mop_b"
-    except Exception:
-        pass
-    return None
-
-
-def _const_value_from_mop(mop: Any) -> int | None:
-    try:
-        import ida_hexrays  # type: ignore
-
-        if getattr(mop, "t", None) == ida_hexrays.mop_n:
-            return int(mop.nnn.value)
-    except Exception:
-        pass
-    return None
 
 
 def _opcode_name_from_cfg_insn(insn: Any) -> str:
@@ -291,43 +225,7 @@ def _iter_portable_instructions(target: Any) -> Iterable[_InstructionView]:
             )
 
 
-def _iter_live_instructions(mba: Any) -> Iterable[_InstructionView]:
-    qty = int(getattr(mba, "qty", 0) or 0)
-    for block_index in range(qty):
-        blk = mba.get_mblock(block_index)
-        if blk is None:
-            continue
-        block_serial = int(getattr(blk, "serial", block_index))
-        insn = getattr(blk, "head", None)
-        insn_index = 0
-        while insn is not None:
-            try:
-                dstr = insn.dstr()
-            except Exception:
-                dstr = ""
-            yield _InstructionView(
-                block_serial=block_serial,
-                insn_index=insn_index,
-                ea=int(getattr(insn, "ea", 0) or 0),
-                opcode_name=_opcode_name_from_live(int(getattr(insn, "opcode", -1))),
-                dest_type=_mop_type_name(getattr(insn, "d", None)),
-                dest_stkoff=_stack_offset_from_mop(getattr(insn, "d", None)),
-                dest_size=getattr(getattr(insn, "d", None), "size", None),
-                src_l_type=_mop_type_name(getattr(insn, "l", None)),
-                src_l_stkoff=_stack_offset_from_mop(getattr(insn, "l", None)),
-                src_l_value=_const_value_from_mop(getattr(insn, "l", None)),
-                src_r_type=_mop_type_name(getattr(insn, "r", None)),
-                src_r_stkoff=_stack_offset_from_mop(getattr(insn, "r", None)),
-                src_r_value=_const_value_from_mop(getattr(insn, "r", None)),
-                dstr=str(dstr),
-            )
-            insn = getattr(insn, "next", None)
-            insn_index += 1
-
-
 def _iter_instruction_views(target: Any) -> Iterable[_InstructionView]:
-    if hasattr(target, "qty") and hasattr(target, "get_mblock"):
-        return _iter_live_instructions(target)
     return _iter_portable_instructions(target)
 
 
