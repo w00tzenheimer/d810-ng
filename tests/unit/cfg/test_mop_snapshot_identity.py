@@ -136,6 +136,7 @@ class TestMopSnapshotFieldsBackwardsCompatible:
         m = MopSnapshot(t=2, size=4, reg=3, kind=OperandKind.REGISTER)
 
         assert m.switch_cases == ()
+        assert m.stack_refs == ()
 
     def test_switch_cases_preserve_values_and_default_target(self) -> None:
         m = MopSnapshot(
@@ -149,6 +150,16 @@ class TestMopSnapshotFieldsBackwardsCompatible:
         )
 
         assert m.switch_cases == (((0, 1), 10), ((), 99))
+
+    def test_stack_refs_preserve_nested_expression_evidence(self) -> None:
+        m = MopSnapshot(
+            t=4,
+            size=4,
+            kind=OperandKind.SUBINSN,
+            stack_refs=(0x20, 0x38),
+        )
+
+        assert m.stack_refs == (0x20, 0x38)
 
 
 class TestCfgOperandSlots:
