@@ -1,16 +1,25 @@
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 
+from d810.cfg.flowgraph import BranchPredicate, InsnKind, OperandKind
 from d810.recon.flow import state_machine_analysis as sma
 
 
+def test_state_machine_analysis_does_not_import_live_hexrays():
+    source = inspect.getsource(sma)
+
+    assert "import ida_hexrays" not in source
+    assert "ida_hexrays." not in source
+
+
 def _mop_s(off: int):
-    return SimpleNamespace(t=3, size=4, stkoff=off)
+    return SimpleNamespace(t="mop_S", kind=OperandKind.STACK, size=4, stkoff=off)
 
 
 def _mop_n(value: int):
-    return SimpleNamespace(t=2, size=4, nnn_value=value)
+    return SimpleNamespace(t="mop_n", kind=OperandKind.NUMBER, size=4, nnn_value=value)
 
 
 class _SnapshotBlock:
@@ -20,6 +29,8 @@ class _SnapshotBlock:
         succs: tuple[int, ...],
         *,
         opcode: int | None = None,
+        kind: InsnKind = InsnKind.UNKNOWN,
+        branch_predicate: BranchPredicate | None = None,
         cmp_value: int | None = None,
         insn_count: int = 1,
     ):
@@ -32,6 +43,8 @@ class _SnapshotBlock:
         else:
             insn = SimpleNamespace(
                 opcode=opcode,
+                kind=kind,
+                branch_predicate=branch_predicate,
                 l=_mop_s(0x364),
                 r=_mop_n(cmp_value or 0),
             )
@@ -251,20 +264,25 @@ def test_resolve_exit_via_bst_default_snapshot_skips_trivial_connectors():
             6: _SnapshotBlock(
                 6,
                 (7, 20),
-                opcode=sma.ida_hexrays.m_jnz,
+                opcode="m_jnz",
+                kind=InsnKind.EQUALITY_JUMP,
+                branch_predicate=BranchPredicate.NOT_EQUAL,
                 cmp_value=0x1000,
             ),
             20: _SnapshotBlock(20, (22,)),
             22: _SnapshotBlock(
                 22,
                 (122, 23),
-                opcode=sma.ida_hexrays.m_jnz,
+                opcode="m_jnz",
+                kind=InsnKind.EQUALITY_JUMP,
+                branch_predicate=BranchPredicate.NOT_EQUAL,
                 cmp_value=0x790A1FEB,
             ),
             122: _SnapshotBlock(
                 122,
                 (2,),
-                opcode=sma.ida_hexrays.m_mov,
+                opcode="m_mov",
+                kind=InsnKind.MOV,
                 cmp_value=0xE581B47B,
                 insn_count=2,
             ),
@@ -287,7 +305,9 @@ def test_resolve_exit_via_bst_default_snapshot_keeps_empty_handler_anchor():
             6: _SnapshotBlock(
                 6,
                 (20, 122),
-                opcode=sma.ida_hexrays.m_jnz,
+                opcode="m_jnz",
+                kind=InsnKind.EQUALITY_JUMP,
+                branch_predicate=BranchPredicate.NOT_EQUAL,
                 cmp_value=0x1000,
             ),
             20: _SnapshotBlock(20, (8,)),
@@ -295,7 +315,8 @@ def test_resolve_exit_via_bst_default_snapshot_keeps_empty_handler_anchor():
             122: _SnapshotBlock(
                 122,
                 (2,),
-                opcode=sma.ida_hexrays.m_mov,
+                opcode="m_mov",
+                kind=InsnKind.MOV,
                 cmp_value=0xE581B47B,
                 insn_count=2,
             ),

@@ -6,15 +6,283 @@ import enum
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
-import ida_hexrays
-
-from d810.cfg.flowgraph import FlowGraph, InsnSnapshot
+from d810.cfg.flowgraph import (
+    BlockKind,
+    BranchPredicate,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    OperandKind,
+)
 from d810.core import logging
 from d810.core.typing import Optional
 from d810.ir.results import ConstantFixpointResult
 from d810.recon.flow.bst_analysis import _forward_eval_insn
 
 logger = logging.getLogger(__name__)
+
+_BST_BRANCH_PREDICATES = frozenset(
+    {
+        BranchPredicate.NOT_EQUAL,
+        BranchPredicate.EQUAL,
+        BranchPredicate.UNSIGNED_LE,
+        BranchPredicate.UNSIGNED_GT,
+        BranchPredicate.UNSIGNED_LT,
+        BranchPredicate.UNSIGNED_GE,
+    }
+)
+_LEGACY_BLT_STOP = 1
+_LEGACY_BST_STACK_OPERAND = 3
+_LEGACY_INSN_KIND_OPCODES = {
+    InsnKind.NOP: frozenset({0x00}),
+    InsnKind.STORE: frozenset({0x01}),
+    InsnKind.MOV: frozenset({0x04}),
+    InsnKind.GOTO: frozenset({0x37}),
+    InsnKind.CALL: frozenset({0x38, 0x39}),
+    InsnKind.RET: frozenset({0x3A}),
+}
+_LEGACY_BRANCH_PREDICATE_OPCODES = {
+    0x2B: BranchPredicate.NOT_EQUAL,
+    0x2C: BranchPredicate.EQUAL,
+    0x2D: BranchPredicate.UNSIGNED_GE,
+    0x2E: BranchPredicate.UNSIGNED_LT,
+    0x2F: BranchPredicate.UNSIGNED_GT,
+    0x30: BranchPredicate.UNSIGNED_LE,
+}
+
+
+def _semantic_value(value: object) -> object:
+    return getattr(value, "value", value)
+
+
+def _kind_matches(value: object, expected: object, *legacy_names: str) -> bool:
+    actual = _semantic_value(value)
+    target = _semantic_value(expected)
+    if actual == target or value is expected:
+        return True
+    if isinstance(actual, str) and actual in legacy_names:
+        return True
+    return False
+
+
+def _operand_kind_matches(
+    operand: object | None,
+    expected: OperandKind,
+    *legacy_names: str,
+) -> bool:
+    if operand is None:
+        return False
+    if _kind_matches(getattr(operand, "kind", None), expected, *legacy_names):
+        return True
+    operand_type = getattr(operand, "t", None)
+    if isinstance(operand_type, str) and operand_type in legacy_names:
+        return True
+    if expected is OperandKind.STACK:
+        return (
+            getattr(operand, "stkoff", None) is not None
+            or getattr(operand, "s", None) is not None
+        )
+    if expected is OperandKind.REGISTER:
+        return (
+            getattr(operand, "reg", None) is not None
+            or getattr(operand, "r", None) is not None
+        )
+    if expected is OperandKind.NUMBER:
+        return (
+            getattr(operand, "value", None) is not None
+            or getattr(operand, "nnn_value", None) is not None
+        )
+    if expected is OperandKind.LVAR:
+        return (
+            getattr(operand, "l", None) is not None
+            or getattr(operand, "lvar_off", None) is not None
+            or getattr(operand, "lvar_idx", None) is not None
+        )
+    return False
+
+
+def _is_stack_operand(operand: object | None) -> bool:
+    return _operand_kind_matches(operand, OperandKind.STACK, "mop_S")
+
+
+def _is_lvar_operand(operand: object | None) -> bool:
+    return _operand_kind_matches(operand, OperandKind.LVAR, "mop_l")
+
+
+def _is_register_operand(operand: object | None) -> bool:
+    return _operand_kind_matches(operand, OperandKind.REGISTER, "mop_r")
+
+
+def _is_number_operand(operand: object | None) -> bool:
+    return _operand_kind_matches(operand, OperandKind.NUMBER, "mop_n")
+
+
+def _insn_kind_matches(
+    insn: object | None,
+    expected: InsnKind,
+    *legacy_names: str,
+) -> bool:
+    if insn is None:
+        return False
+    if _kind_matches(getattr(insn, "kind", None), expected, *legacy_names):
+        return True
+    opcode_name = getattr(insn, "opcode_name", None)
+    if isinstance(opcode_name, str) and opcode_name in legacy_names:
+        return True
+    opcode = getattr(insn, "opcode", None)
+    if isinstance(opcode, str) and opcode in legacy_names:
+        return True
+    try:
+        return int(opcode) in _LEGACY_INSN_KIND_OPCODES.get(expected, frozenset())
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_call_insn(insn: object | None) -> bool:
+    return bool(getattr(insn, "is_call", False)) or _insn_kind_matches(
+        insn,
+        InsnKind.CALL,
+        "m_call",
+        "m_icall",
+    )
+
+
+def _is_store_insn(insn: object | None) -> bool:
+    return _insn_kind_matches(insn, InsnKind.STORE, "m_stx")
+
+
+def _is_goto_insn(insn: object | None) -> bool:
+    return bool(getattr(insn, "is_unconditional_jump", False)) or _insn_kind_matches(
+        insn,
+        InsnKind.GOTO,
+        "m_goto",
+    )
+
+
+def _is_nop_insn(insn: object | None) -> bool:
+    return _insn_kind_matches(insn, InsnKind.NOP, "m_nop")
+
+
+def _is_ret_insn(insn: object | None) -> bool:
+    return _insn_kind_matches(insn, InsnKind.RET, "m_ret")
+
+
+def _block_has_ret_tail(block: object | None) -> bool:
+    if block is None:
+        return False
+    if _is_ret_insn(_tail_insn(block)):
+        return True
+    if _kind_matches(getattr(block, "tail_kind", None), InsnKind.RET, "m_ret"):
+        return True
+    tail_opcode = getattr(block, "tail_opcode", None)
+    return _insn_kind_matches(SimpleNamespace(opcode=tail_opcode), InsnKind.RET, "m_ret")
+
+
+def _is_stop_block(block: object | None) -> bool:
+    if block is None:
+        return False
+    if _kind_matches(getattr(block, "kind", None), BlockKind.STOP, "BLT_STOP"):
+        return True
+    block_type = getattr(block, "block_type", None)
+    if isinstance(block_type, str):
+        return block_type == "BLT_STOP"
+    try:
+        return int(block_type) == _LEGACY_BLT_STOP
+    except (TypeError, ValueError):
+        return False
+
+
+def _tail_insn(block: object | None) -> object | None:
+    if block is None:
+        return None
+    tail = getattr(block, "tail", None)
+    if tail is not None:
+        return tail
+    insns = tuple(getattr(block, "insn_snapshots", ()) or ())
+    return insns[-1] if insns else None
+
+
+def _branch_predicate_for_tail(tail: object | None) -> BranchPredicate | object | None:
+    if tail is None:
+        return None
+    predicate = getattr(tail, "branch_predicate", None)
+    if predicate is not None:
+        return predicate
+    opcode_name = getattr(tail, "opcode_name", None)
+    if not isinstance(opcode_name, str):
+        opcode = getattr(tail, "opcode", None)
+        opcode_name = opcode if isinstance(opcode, str) else None
+        try:
+            return _LEGACY_BRANCH_PREDICATE_OPCODES.get(int(opcode))
+        except (TypeError, ValueError):
+            return None
+    return {
+        "m_jnz": BranchPredicate.NOT_EQUAL,
+        "m_jz": BranchPredicate.EQUAL,
+        "m_jbe": BranchPredicate.UNSIGNED_LE,
+        "m_ja": BranchPredicate.UNSIGNED_GT,
+        "m_jb": BranchPredicate.UNSIGNED_LT,
+        "m_jae": BranchPredicate.UNSIGNED_GE,
+    }.get(opcode_name)
+
+
+def _bst_condition_key_for_tail(tail: object | None) -> object | None:
+    if tail is None:
+        return None
+    raw_opcode = getattr(tail, "opcode", None)
+    if raw_opcode in _BST_CMP_OPCODES:
+        return raw_opcode
+    return _branch_predicate_for_tail(tail)
+
+
+def _constant_operand_value(operand: object | None) -> int | None:
+    if operand is None:
+        return None
+    value = getattr(operand, "nnn_value", None)
+    if value is None:
+        value = getattr(operand, "value", None)
+    if value is None:
+        return None
+    return int(value)
+
+
+def _stack_offset(operand: object | None) -> int | None:
+    if operand is None:
+        return None
+    stkoff = getattr(operand, "stkoff", None)
+    if stkoff is None:
+        stack_ref = getattr(operand, "s", None)
+        stkoff = getattr(stack_ref, "off", None) if stack_ref is not None else None
+    return int(stkoff) if stkoff is not None else None
+
+
+def _register_id(operand: object | None) -> int | None:
+    if operand is None:
+        return None
+    reg = getattr(operand, "r", None)
+    if reg is None:
+        reg = getattr(operand, "reg", None)
+    return int(reg) if reg is not None else None
+
+
+def _state_var_ref(operand: object) -> tuple[object, int | None]:
+    raw_type = getattr(operand, "t", None)
+    if raw_type is not None:
+        return (raw_type, getattr(operand, "size", None))
+    kind = getattr(operand, "kind", None)
+    return (_semantic_value(kind), getattr(operand, "size", None))
+
+
+def _tracks_bst_stack_offset(operand: object | None) -> bool:
+    raw_type = getattr(operand, "t", None)
+    if raw_type is None:
+        return _is_stack_operand(operand)
+    if raw_type == "mop_S":
+        return True
+    try:
+        return int(raw_type) == _LEGACY_BST_STACK_OPERAND
+    except (TypeError, ValueError):
+        return False
 
 __all__ = [
     "CarrierResolutionResult",
@@ -41,7 +309,18 @@ __all__ = [
 
 
 class _InsnView:
-    __slots__ = ("opcode", "ea", "l", "r", "d", "next")
+    __slots__ = (
+        "opcode",
+        "ea",
+        "l",
+        "r",
+        "d",
+        "kind",
+        "branch_predicate",
+        "is_call",
+        "is_unconditional_jump",
+        "next",
+    )
 
     def __init__(self, insn: InsnSnapshot):
         self.opcode = insn.opcode
@@ -49,6 +328,10 @@ class _InsnView:
         self.l = insn.l
         self.r = insn.r
         self.d = insn.d
+        self.kind = insn.kind
+        self.branch_predicate = insn.branch_predicate
+        self.is_call = insn.is_call
+        self.is_unconditional_jump = insn.is_unconditional_jump
         self.next: _InsnView | None = None
 
 
@@ -145,7 +428,7 @@ def classify_exit_state(
     gets consumed internally and never reaches the dispatcher.
 
     Args:
-        mba: ``ida_hexrays.mba_t`` for instruction walking.
+        mba: backend MBA-like object for instruction walking.
         final_state: The state value at handler exit (None for terminal paths).
         incoming_state: The state value at handler entry.
         successor_serial: The handler-entry block that caused DFS termination.
@@ -161,15 +444,6 @@ def classify_exit_state(
     # Self-loop: handler wrote its own incoming state back.
     if incoming_state is not None and masked == (incoming_state & 0xFFFFFFFF):
         return ExitStateKind.SELF_LOOP
-
-    # --- Path-local lookahead through the successor corridor ---
-    m_call = getattr(ida_hexrays, "m_call", None)
-    m_icall = getattr(ida_hexrays, "m_icall", None)
-    m_stx = getattr(ida_hexrays, "m_stx", None)
-    mop_S = getattr(ida_hexrays, "mop_S", None)
-    mop_l = getattr(ida_hexrays, "mop_l", None)
-
-    side_effect_ops = {op for op in (m_call, m_icall, m_stx) if op is not None}
 
     serial = successor_serial
     visited: set[int] = set()
@@ -190,25 +464,19 @@ def classify_exit_state(
 
         insn = blk.head
         while insn is not None:
-            op = getattr(insn, "opcode", None)
             # Side effect before state overwrite → stable handoff.
-            if op in side_effect_ops:
+            if _is_call_insn(insn) or _is_store_insn(insn):
                 return ExitStateKind.STABLE_HANDOFF
 
             # Check if this instruction writes to the state variable.
             dest = getattr(insn, "d", None)
             if dest is not None:
-                dest_t = getattr(dest, "t", None)
                 wrote_state = False
-                if mop_S is not None and dest_t == mop_S:
-                    off = getattr(dest, "s", None)
-                    if off is not None:
-                        off = getattr(off, "off", None)
-                    if off is None:
-                        off = getattr(dest, "stkoff", None)
+                if _is_stack_operand(dest):
+                    off = _stack_offset(dest)
                     if off is not None and int(off) == int(state_var_stkoff):
                         wrote_state = True
-                elif mop_l is not None and dest_t == mop_l:
+                elif _is_lvar_operand(dest):
                     lvar_ref = getattr(dest, "l", None)
                     idx = getattr(lvar_ref, "idx", None) if lvar_ref else None
                     if idx is not None:
@@ -225,12 +493,8 @@ def classify_exit_state(
                     return ExitStateKind.TRANSIENT_CORRIDOR
 
                 # Non-state stack write: real computation, not corridor.
-                if mop_S is not None and dest_t == mop_S:
-                    off = getattr(dest, "s", None)
-                    if off is not None:
-                        off = getattr(off, "off", None)
-                    if off is None:
-                        off = getattr(dest, "stkoff", None)
+                if _is_stack_operand(dest):
+                    off = _stack_offset(dest)
                     if off is not None and int(off) != int(state_var_stkoff):
                         return ExitStateKind.STABLE_HANDOFF
 
@@ -392,20 +656,14 @@ def _kill_constant_dest_snapshot(
     if dest is None:
         return
 
-    mop_type = getattr(dest, "t", None)
-    if mop_type == getattr(ida_hexrays, "mop_S", None):
-        stkoff = getattr(dest, "stkoff", None)
-        if stkoff is None:
-            stack_ref = getattr(dest, "s", None)
-            stkoff = getattr(stack_ref, "off", None) if stack_ref is not None else None
+    if _is_stack_operand(dest):
+        stkoff = _stack_offset(dest)
         if stkoff is not None:
             stk_map.pop(int(stkoff), None)
         return
 
-    if mop_type == getattr(ida_hexrays, "mop_r", None):
-        reg = getattr(dest, "r", None)
-        if reg is None:
-            reg = getattr(dest, "reg", None)
+    if _is_register_operand(dest):
+        reg = _register_id(dest)
         if reg is not None:
             reg_map.pop(int(reg), None)
 
@@ -415,20 +673,14 @@ def _constant_dest_locator_snapshot(dest: object | None) -> tuple[str, int] | No
 
     if dest is None:
         return None
-    mop_type = getattr(dest, "t", None)
-    if mop_type == getattr(ida_hexrays, "mop_S", None):
-        stkoff = getattr(dest, "stkoff", None)
-        if stkoff is None:
-            stack_ref = getattr(dest, "s", None)
-            stkoff = getattr(stack_ref, "off", None) if stack_ref is not None else None
+    if _is_stack_operand(dest):
+        stkoff = _stack_offset(dest)
         if stkoff is not None:
             return ("stk", int(stkoff))
         return None
 
-    if mop_type == getattr(ida_hexrays, "mop_r", None):
-        reg = getattr(dest, "r", None)
-        if reg is None:
-            reg = getattr(dest, "reg", None)
+    if _is_register_operand(dest):
+        reg = _register_id(dest)
         if reg is not None:
             return ("reg", int(reg))
     return None
@@ -467,19 +719,10 @@ def _classify_truncation_side_effect_snapshot(
 ) -> str | None:
     """Classify why truncating *insn* after a state write would be unsafe."""
 
-    opcode = getattr(insn, "opcode", None)
-    safe_opcodes = {
-        getattr(ida_hexrays, "m_goto", None),
-        getattr(ida_hexrays, "m_nop", None),
-    }
-    if opcode in safe_opcodes:
+    if _is_goto_insn(insn) or _is_nop_insn(insn):
         return None
 
-    call_opcodes = {
-        getattr(ida_hexrays, "m_call", None),
-        getattr(ida_hexrays, "m_icall", None),
-    }
-    if opcode in call_opcodes:
+    if _is_call_insn(insn):
         return "call"
 
     eval_insn = _eval_insn_view_snapshot(insn)
@@ -487,17 +730,13 @@ def _classify_truncation_side_effect_snapshot(
     if dest is None:
         return "control_flow"
 
-    mop_type = getattr(dest, "t", None)
-    if mop_type == getattr(ida_hexrays, "mop_S", None):
-        stkoff = getattr(dest, "stkoff", None)
-        if stkoff is None:
-            stack_ref = getattr(dest, "s", None)
-            stkoff = getattr(stack_ref, "off", None) if stack_ref is not None else None
+    if _is_stack_operand(dest):
+        stkoff = _stack_offset(dest)
         if stkoff is not None and int(stkoff) == int(state_var_stkoff):
             return "state_var_write"
         return "memory_write"
 
-    if mop_type == getattr(ida_hexrays, "mop_r", None):
+    if _is_register_operand(dest):
         return "register_write"
 
     return "unknown_side_effect"
@@ -633,16 +872,12 @@ def run_snapshot_constant_fixpoint(
     )
 
 
-_BLT_STOP = ida_hexrays.BLT_STOP
-
-
 def can_reach_return_snapshot(
     flow_graph: FlowGraph,
     start_serial: int,
 ) -> bool:
     """BFS to check if *start_serial* can reach a return/stop block via snapshots."""
 
-    m_ret = ida_hexrays.m_ret
     visited: set[int] = set()
     to_visit = [start_serial]
     while to_visit:
@@ -653,9 +888,9 @@ def can_reach_return_snapshot(
         blk = flow_graph.get_block(blk_serial)
         if blk is None:
             continue
-        if blk.block_type == _BLT_STOP:
+        if _is_stop_block(blk):
             return True
-        if blk.tail_opcode is not None and blk.tail_opcode == m_ret:
+        if _block_has_ret_tail(blk):
             return True
         for succ in blk.succs:
             if succ not in visited:
@@ -822,8 +1057,6 @@ def find_terminal_exit_target_snapshot(
 ) -> int | None:
     """Find the first block outside the state machine that can reach a return."""
 
-    m_ret = ida_hexrays.m_ret
-
     first_check = flow_graph.get_block(first_check_block)
     if first_check is None:
         return None
@@ -836,9 +1069,7 @@ def find_terminal_exit_target_snapshot(
             return succ
 
     for serial, blk in flow_graph.blocks.items():
-        if blk.tail_opcode is None:
-            continue
-        if blk.tail_opcode == m_ret and (
+        if _block_has_ret_tail(blk) and (
             blk.npred > 0 or can_reach_return_snapshot(flow_graph, blk.serial)
         ):
             return blk.serial
@@ -853,34 +1084,38 @@ def find_terminal_exit_target_snapshot(
 
 
 def init_bst_cmp_opcodes() -> frozenset:
-    """Build the set of comparison opcodes for BST walking."""
+    """Build the set of comparison opcodes for BST walking.
 
-    return frozenset(
-        {
-            ida_hexrays.m_jnz,
-            ida_hexrays.m_jz,
-            ida_hexrays.m_jbe,
-            ida_hexrays.m_ja,
-            ida_hexrays.m_jb,
-            ida_hexrays.m_jae,
-        }
-    )
+    The legacy name is kept for compatibility with tests and callers that
+    monkeypatch ``_BST_CMP_OPCODES`` with synthetic opcode integers. The
+    default remains the legacy numeric opcode set; portable
+    ``BranchPredicate`` values are accepted in the walkers as an additive
+    snapshot path.
+    """
+
+    return frozenset(_LEGACY_BRANCH_PREDICATE_OPCODES)
 
 
-def eval_bst_condition(opcode: int, state: int, cmp_val: int) -> bool:
+def eval_bst_condition(opcode: object, state: int, cmp_val: int) -> bool:
     """Evaluate a BST comparison: does the condition cause a jump?"""
 
-    if opcode == ida_hexrays.m_jnz:
+    if not isinstance(opcode, str):
+        try:
+            opcode = _LEGACY_BRANCH_PREDICATE_OPCODES.get(int(opcode), opcode)
+        except (TypeError, ValueError):
+            pass
+
+    if _kind_matches(opcode, BranchPredicate.NOT_EQUAL, "m_jnz"):
         return state != cmp_val
-    if opcode == ida_hexrays.m_jz:
+    if _kind_matches(opcode, BranchPredicate.EQUAL, "m_jz"):
         return state == cmp_val
-    if opcode == ida_hexrays.m_jbe:
+    if _kind_matches(opcode, BranchPredicate.UNSIGNED_LE, "m_jbe"):
         return state <= cmp_val
-    if opcode == ida_hexrays.m_ja:
+    if _kind_matches(opcode, BranchPredicate.UNSIGNED_GT, "m_ja"):
         return state > cmp_val
-    if opcode == ida_hexrays.m_jb:
+    if _kind_matches(opcode, BranchPredicate.UNSIGNED_LT, "m_jb"):
         return state < cmp_val
-    if opcode == ida_hexrays.m_jae:
+    if _kind_matches(opcode, BranchPredicate.UNSIGNED_GE, "m_jae"):
         return state >= cmp_val
     return False
 
@@ -891,33 +1126,35 @@ _BST_CMP_OPCODES: frozenset = frozenset()
 def _is_bst_comparison_snapshot(
     block: object | None,
     *,
-    state_var_ref: tuple[int, int] | None = None,
+    state_var_ref: tuple[object, int | None] | None = None,
     state_var_stkoff: int | None = None,
 ) -> bool:
     """Return whether *block* continues the current BST comparison walk."""
 
     if block is None or getattr(block, "nsucc", 0) != 2:
         return False
-    tail = getattr(block, "tail", None)
-    opcode = getattr(tail, "opcode", getattr(block, "tail_opcode", None))
-    if opcode not in _BST_CMP_OPCODES:
+    tail = _tail_insn(block)
+    condition_key = _bst_condition_key_for_tail(tail)
+    if condition_key is None:
+        condition_key = getattr(tail, "opcode", getattr(block, "tail_opcode", None))
+    if (
+        condition_key not in _BST_CMP_OPCODES
+        and condition_key not in _BST_BRANCH_PREDICATES
+    ):
         return False
     l_mop = getattr(tail, "l", None)
     r_mop = getattr(tail, "r", None)
     if l_mop is None or r_mop is None:
         return False
-    if getattr(r_mop, "t", None) != 2:
+    if not _is_number_operand(r_mop):
         return False
     if state_var_ref is not None:
-        if (
-            getattr(l_mop, "t", None),
-            getattr(l_mop, "size", None),
-        ) != state_var_ref:
+        if _state_var_ref(l_mop) != state_var_ref:
             return False
         if (
-            getattr(l_mop, "t", None) == 3
+            _tracks_bst_stack_offset(l_mop)
             and state_var_stkoff is not None
-            and getattr(l_mop, "stkoff", None) != state_var_stkoff
+            and _stack_offset(l_mop) != state_var_stkoff
         ):
             return False
     return True
@@ -927,7 +1164,7 @@ def _is_trivial_bst_connector_snapshot(
     block: object,
     flow_graph: FlowGraph,
     *,
-    state_var_ref: tuple[int, int] | None = None,
+    state_var_ref: tuple[object, int | None] | None = None,
     state_var_stkoff: int | None = None,
 ) -> bool:
     """Return whether *block* is only connector glue inside a dispatcher walk."""
@@ -938,9 +1175,8 @@ def _is_trivial_bst_connector_snapshot(
     if not insns:
         pass
     elif len(insns) == 1:
-        tail = getattr(block, "tail", None)
-        opcode = getattr(tail, "opcode", getattr(block, "tail_opcode", None))
-        if opcode != getattr(ida_hexrays, "m_goto", None):
+        tail = _tail_insn(block)
+        if not _is_goto_insn(tail):
             return False
     else:
         return False
@@ -965,12 +1201,9 @@ def resolve_exit_via_bst_default_snapshot(
     if not _BST_CMP_OPCODES:
         _BST_CMP_OPCODES = init_bst_cmp_opcodes()
 
-    MOP_N = 2
-    MOP_S = 3
-
     current_serial = bst_default_serial
     visited: set[int] = set()
-    state_var_ref: tuple[int, int] | None = None
+    state_var_ref: tuple[object, int | None] | None = None
     state_var_stkoff_local: int | None = None
 
     while current_serial not in visited:
@@ -992,12 +1225,18 @@ def resolve_exit_via_bst_default_snapshot(
         if blk_snap is None or blk_snap.nsucc != 2:
             return current_serial if current_serial != bst_default_serial else None
 
-        tail = blk_snap.tail
-        if tail is None or tail.opcode not in _BST_CMP_OPCODES:
+        tail = _tail_insn(blk_snap)
+        condition_key = _bst_condition_key_for_tail(tail)
+        if condition_key is None:
+            condition_key = getattr(tail, "opcode", None)
+        if tail is None or (
+            condition_key not in _BST_CMP_OPCODES
+            and condition_key not in _BST_BRANCH_PREDICATES
+        ):
             return current_serial if current_serial != bst_default_serial else None
 
         r_mop = tail.r
-        if r_mop is None or r_mop.t != MOP_N:
+        if r_mop is None or not _is_number_operand(r_mop):
             return current_serial if current_serial != bst_default_serial else None
 
         l_mop = tail.l
@@ -1005,11 +1244,11 @@ def resolve_exit_via_bst_default_snapshot(
             return current_serial if current_serial != bst_default_serial else None
 
         if state_var_ref is None:
-            state_var_ref = (l_mop.t, l_mop.size)
-            if l_mop.t == MOP_S:
-                state_var_stkoff_local = l_mop.stkoff
+            state_var_ref = _state_var_ref(l_mop)
+            if _tracks_bst_stack_offset(l_mop):
+                state_var_stkoff_local = _stack_offset(l_mop)
         else:
-            if (l_mop.t, l_mop.size) != state_var_ref:
+            if _state_var_ref(l_mop) != state_var_ref:
                 logger.info(
                     "  exit %#x: blk[%d] compares non-state-var (mop_t=%d), stopping",
                     exit_state,
@@ -1017,7 +1256,10 @@ def resolve_exit_via_bst_default_snapshot(
                     l_mop.t,
                 )
                 return current_serial if current_serial != bst_default_serial else None
-            if l_mop.t == MOP_S and state_var_stkoff_local != l_mop.stkoff:
+            if (
+                _tracks_bst_stack_offset(l_mop)
+                and state_var_stkoff_local != _stack_offset(l_mop)
+            ):
                 logger.info(
                     "  exit %#x: blk[%d] compares different stkoff=%s, stopping",
                     exit_state,
@@ -1026,8 +1268,10 @@ def resolve_exit_via_bst_default_snapshot(
                 )
                 return current_serial if current_serial != bst_default_serial else None
 
-        cmp_val = getattr(r_mop, "nnn_value", None) or getattr(r_mop, "value", None)
-        cond_taken = eval_bst_condition(tail.opcode, exit_state, cmp_val)
+        cmp_val = _constant_operand_value(r_mop)
+        if cmp_val is None:
+            return current_serial if current_serial != bst_default_serial else None
+        cond_taken = eval_bst_condition(condition_key, exit_state, cmp_val)
 
         if cond_taken:
             next_serial = blk_snap.succs[1]
@@ -1186,7 +1430,7 @@ def _restricted_reach_stop_with_side_effects(
             continue
         if serial in side_effect_blocks:
             found_side_effect = True
-        if blk.block_type == _BLT_STOP:
+        if _is_stop_block(blk):
             found_stop = True
             break
         for succ in blk.succs:
@@ -1212,7 +1456,7 @@ def _restricted_reach_stop(
         blk = flow_graph.get_block(serial)
         if blk is None:
             continue
-        if blk.block_type == _BLT_STOP:
+        if _is_stop_block(blk):
             return True
         for s in blk.succs:
             if s not in visited and s not in forbidden:

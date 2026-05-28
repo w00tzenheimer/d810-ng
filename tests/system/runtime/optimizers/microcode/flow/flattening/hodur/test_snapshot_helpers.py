@@ -15,7 +15,7 @@ try:
 except ImportError:
     IDA_AVAILABLE = False
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 
 pytestmark = pytest.mark.skipif(not IDA_AVAILABLE, reason="IDA not available")
 
@@ -40,7 +40,12 @@ def _make_linear_cfg_with_ret() -> FlowGraph:
     Block 1: body (state machine), succs=(2,)
     Block 2: has m_ret tail, succs=()
     """
-    ret_insn = InsnSnapshot(opcode=_m_ret(), ea=0x3000, operands=())
+    ret_insn = InsnSnapshot(
+        opcode=_m_ret(),
+        ea=0x3000,
+        operands=(),
+        kind=InsnKind.RET,
+    )
     blk0 = BlockSnapshot(
         serial=0, block_type=1, succs=(1,), preds=(),
         flags=0, start_ea=0x1000, insn_snapshots=(),
@@ -69,7 +74,12 @@ def _make_diamond_cfg_with_ret() -> FlowGraph:
     Block 3: handler body (state machine), succs=(0,)  -- back-edge
     Block 4: has m_ret tail, succs=()
     """
-    ret_insn = InsnSnapshot(opcode=_m_ret(), ea=0x5000, operands=())
+    ret_insn = InsnSnapshot(
+        opcode=_m_ret(),
+        ea=0x5000,
+        operands=(),
+        kind=InsnKind.RET,
+    )
     blk0 = BlockSnapshot(
         serial=0, block_type=1, succs=(1, 2), preds=(3,),
         flags=0, start_ea=0x1000, insn_snapshots=(),
@@ -282,7 +292,12 @@ class TestIsDegenerateLoopBlockSnapshot:
         from d810.optimizers.microcode.flow.flattening.hodur.strategies.terminal_loop_cleanup import (
             TerminalLoopCleanupStrategy,
         )
-        ret_insn = InsnSnapshot(opcode=_m_ret(), ea=0x1000, operands=())
+        ret_insn = InsnSnapshot(
+            opcode=_m_ret(),
+            ea=0x1000,
+            operands=(),
+            kind=InsnKind.RET,
+        )
         blk = BlockSnapshot(
             serial=0, block_type=1, succs=(), preds=(1,),
             flags=0, start_ea=0x1000, insn_snapshots=(ret_insn,),
