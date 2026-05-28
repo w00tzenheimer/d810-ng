@@ -7,30 +7,24 @@ records (and the matching JSON serialization wrappers).  It is a
 direct port: same function bodies, same dict schema, same operand /
 opcode / maturity name lookups.
 
-Axis-C slice 1 (first half of the ``microcode_dump`` split):
+History of the ``microcode_dump`` split (now complete):
 
-* The previous home ``d810.recon.microcode_dump`` was a layer-misfit
-  per the LLVM/LiSA taxonomy: a live-IDA diagnostic placed in a
-  layer that aspires to be portable-core.  Per the
-  ``no-live-runtime-in-diagnostics`` rule's lawful-fix list, live
-  capture belongs in an evaluator / backend / Hex-Rays adapter; per
-  the layered-architecture contract, anything that imports recon /
-  evaluator cannot live below them.
-* This module hosts only the live-capture half -- the functions
-  whose import surface is ``idaapi`` plus the central
+* The original home ``d810.recon.microcode_dump`` was a layer-misfit
+  per the LLVM/LiSA taxonomy: a live-IDA diagnostic placed in a layer
+  that must be portable-core.  Live capture belongs in a Hex-Rays
+  adapter; anything that imports recon / evaluator cannot live below
+  them.
+* This module hosts the live-capture half -- the functions whose
+  import surface is ``idaapi`` plus the central
   ``d810.hexrays.utils.hexrays_helpers`` opcode / mop / maturity
   tables.  No recon, no evaluator, no optimizer imports.
-* The legacy ``d810.recon.microcode_dump`` re-exports the symbols
-  below as a compatibility facade for the existing seven import
-  sites; the dependency direction is one-way:
-  ``d810.recon.microcode_dump -> d810.hexrays.diagnostics.microcode_capture``,
-  NOT the reverse.  Do not change that.
-
-The render half (``mba_to_human_readable`` + ``_print_*`` helpers)
-and the analysis-overlay half (dispatcher / DAG / state-machine
-dumpers) remain in ``d810.recon.microcode_dump`` for a follow-up
-slice -- they need recon / evaluator imports which this module
-deliberately does not.
+* The render half (``mba_to_human_readable`` + ``_print_*`` helpers)
+  and the analysis-overlay half (dispatcher / DAG / state-machine
+  dumpers) now live in ``d810.optimizers.microcode.microcode_dump``
+  (they need recon / evaluator imports, legal from the optimizer
+  layer).  The legacy ``d810.recon.microcode_dump`` module no longer
+  exists -- recon is now Hex-Rays-free, enforced by the
+  ``portable-core-no-ida`` import contract.
 """
 
 from __future__ import annotations
