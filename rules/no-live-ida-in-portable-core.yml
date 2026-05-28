@@ -9,21 +9,20 @@
 # layout (analyses/, transforms/, passes/, ir/, capabilities/,
 # support/) so it fires the same way before and after each slice.
 #
-# This rule CURRENTLY FAILS on cfg-recon-mainline. The failing-file
-# count is the migration progress meter for the
-# llvm-lisa-restructure work. Target: zero hits.
+# This rule is the hard gate for direct live IDA / Hex-Rays imports in
+# portable-core candidate files. It was the llvm-lisa-restructure
+# migration meter while the count was nonzero; after the cleanup slices,
+# the target is to keep it at zero.
 #
 # Tracking: docs/plans/recon-and-cfg-restructuring.md (Risk Register,
 #           Validation Gate Per Slice, Suggested Landing Sequence)
 
 id: no-live-ida-in-portable-core
 language: python
-# Severity is WARNING during the llvm-lisa-restructure migration so the
-# pre-commit hook doesn't block slice commits while violations exist in
-# legacy packages (d810.recon, parts of d810.cfg) by design.  Each slice
-# moves analysis logic out of those legacy packages and reduces the
-# warning count.  When the count reaches zero, promote severity to ERROR
-# in the migration's final cleanup slice.
+# Severity is ERROR now that the direct live-IDA import count is zero.
+# Future slices that need live vendor APIs must move them behind a backend,
+# adapter, or capability boundary rather than reintroducing them into
+# portable-core candidates.
 #
 # This rule IS the load-bearing migration meter during the cleanup
 # window.  The companion `portable-core-no-ida` import-linter contract
@@ -39,7 +38,7 @@ language: python
 # Per Slice`) catches lazy in-function and aliased IDA imports that
 # this rule's `import` patterns may miss.  The two channels (ast-grep
 # warnings + audit grep) should converge to zero together.
-severity: warning
+severity: error
 
 files:
   # Both target portable-core packages (LLVM/LiSA taxonomy from the

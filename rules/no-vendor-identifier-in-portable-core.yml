@@ -9,15 +9,15 @@
 # to reference `ihr.m_add` inside the function body. The architectural
 # coupling stays even though the static-import check passes.
 #
-# This rule CURRENTLY FAILS on cfg-recon-mainline. Migration target:
-# zero hits across portable-core packages.
+# This rule is the hard gate for direct IDA vendor identifier references
+# across portable-core packages. Migration target: keep zero hits.
 #
 # Tracking: docs/plans/2026-05-25-substrate-purity-static-rules.md (R3)
 #           docs/plans/recon-and-cfg-restructuring.md (pre-flight #1)
 
 id: no-vendor-identifier-in-portable-core
 language: python
-severity: warning   # promote to error after false-positive triage
+severity: error
 
 files:
   # Current portable-core candidate packages on cfg-recon-mainline
@@ -71,7 +71,6 @@ rule:
 note: |
   See `docs/plans/2026-05-25-substrate-purity-static-rules.md` rule R3.
 
-  The current rule severity is `warning` to allow false-positive
-  triage during the first slices of the llvm-lisa-restructure
-  migration. Promote to `error` once the portable-core packages are
-  populated and the false-positive set is empty.
+  This rule is error-level now that the direct vendor identifier set is
+  empty. Keep new vendor constants in backend lifters/adapters and consume
+  normalized snapshot fields downstream.
