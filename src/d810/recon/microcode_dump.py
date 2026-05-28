@@ -30,8 +30,6 @@ from __future__ import annotations
 
 import re
 
-import idaapi
-
 from d810.core.logging import getLogger
 from d810.core.typing import Any, Dict, List, Optional, Tuple, cast
 from d810.evaluator.hexrays_microcode.valrange_dataflow import (
@@ -57,6 +55,8 @@ from d810.hexrays.diagnostics.microcode_capture import (
     dump_function_microcode,
     dump_mba_json,
     dump_microcode_json,
+    format_may_only_mlist,
+    format_saved_register_slot,
     instruction_to_dict,
     mba_to_dict,
     mop_to_dict,
@@ -244,10 +244,7 @@ def _print_list_pair(
 
     may_s = ""
     if may is not None and not may.empty() and may != must:
-        may_only = idaapi.mlist_t()
-        may_only.add(may)
-        may_only.sub(must)  # may -= must  (leaves the "may-only" part)
-        may_s = may_only.dstr()
+        may_s = format_may_only_mlist(may, must)
 
     rval = f"; {label}: {must_s}"
     if may_s:
@@ -286,10 +283,9 @@ def _print_stack_frame_overview(hdr: List[str], mba: object) -> None:
         if sregs and len(sregs) > 0:
             parts = []
             slotsize = getattr(mba, "slotsize", None)
-            for idx, sr in enumerate(sregs):
+            for sr in sregs:
                 if slotsize is not None:
-                    rl = idaapi.rlist_t(sr, slotsize())
-                    parts.append(rl.dstr())
+                    parts.append(format_saved_register_slot(sr, slotsize()))
                 else:
                     parts.append(str(sr))
             hdr.append(f"; SAVEDREGS: {','.join(parts)}")

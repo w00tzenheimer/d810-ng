@@ -71,10 +71,27 @@ __all__ = [
     "dump_function_microcode",
     "dump_mba_json",
     "dump_microcode_json",
+    "format_may_only_mlist",
+    "format_saved_register_slot",
     "instruction_to_dict",
     "mba_to_dict",
     "mop_to_dict",
 ]
+
+
+def format_may_only_mlist(may: object, must: object) -> str:
+    """Return the may-only memory/register list string for live Hex-Rays lists."""
+
+    may_only = idaapi.mlist_t()
+    may_only.add(may)
+    may_only.sub(must)
+    return may_only.dstr()
+
+
+def format_saved_register_slot(saved_register: object, slot_size: int) -> str:
+    """Return the live Hex-Rays saved-register slot rendering."""
+
+    return idaapi.rlist_t(saved_register, slot_size).dstr()
 
 
 # -----------------------------------------------------------------------------
