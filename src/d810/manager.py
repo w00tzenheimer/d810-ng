@@ -814,8 +814,19 @@ class D810Manager:
                 provider_level=int(maturity),
                 friendly_provider_level=_maturity_name(int(maturity)),
             )
+            try:
+                from d810.hexrays.fact_target import mba_to_fact_target
+
+                target = mba_to_fact_target(mba)
+            except Exception:
+                logger.exception(
+                    "Post-D810 fact target adaptation failed for func=0x%x; "
+                    "skipping fact capture",
+                    func_ea,
+                )
+                return
             self._recon_runtime.capture_maturity_facts(
-                mba,
+                target,
                 func_ea=func_ea,
                 provider_phase=provider_phase,
                 phase="post_d810",
