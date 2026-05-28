@@ -10,6 +10,7 @@ import ida_hexrays
 import pytest
 
 import d810.hexrays.observability as hexrays_observability
+import d810.optimizers.microcode.flow.dispatcher.switch_case_transitions as switch_case_transition_adapter
 import d810.recon.flow.switch_case_transition_analysis as switch_case_transition_analysis
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
 from d810.cfg.graph_modification import (
@@ -3046,7 +3047,7 @@ def test_tigress_switch_profile_collects_live_transition_facts(monkeypatch) -> N
         return ("fact",)
 
     monkeypatch.setattr(
-        switch_case_transition_analysis,
+        switch_case_transition_adapter,
         "collect_switch_case_transition_facts_from_mba",
         _collect,
     )
