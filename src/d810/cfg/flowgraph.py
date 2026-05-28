@@ -110,6 +110,9 @@ class MopSnapshot:
     # structural-superset claim in the docstring above stays true.
     gaddr: int | None = None      # mop_v: g (global address)
     lvar_off: int | None = None   # mop_l: l.off (lvar offset)
+    # Switch-table case rows. Each row is ``(case_values, target_block)``;
+    # an empty ``case_values`` tuple represents the default target.
+    switch_cases: tuple[tuple[tuple[int, ...], int], ...] = ()
     kind: OperandKind = OperandKind.UNKNOWN
     raw_operand_type: int | None = None
 

@@ -442,6 +442,23 @@ def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
             lvar_off=int(lref.off) if lref is not None else None,
             kind=kind,
         )
+    if t == ida_hexrays.mop_c:
+        cases = getattr(mop, "c", None)
+        case_rows: list[tuple[tuple[int, ...], int]] = []
+        if cases is not None:
+            for values, target in zip(cases.values, cases.targets):
+                case_rows.append(
+                    (
+                        tuple(int(value) for value in values),
+                        int(target),
+                    )
+                )
+        return CfgMopSnapshot(
+            t=t,
+            size=size,
+            switch_cases=tuple(case_rows),
+            kind=kind,
+        )
     return CfgMopSnapshot(t=t, size=size, kind=kind)
 
 
