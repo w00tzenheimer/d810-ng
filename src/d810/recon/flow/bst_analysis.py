@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.backends.hexrays import bst_runtime as _hexrays_bst_runtime
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.core.logging import getLogger
 from d810.core.typing import (
@@ -36,19 +37,12 @@ from d810.recon.flow.interval_map import Node, NodeKind, emit_dispatch_intervals
 
 logger = getLogger(__name__)
 
-# Defer IDA imports until needed — allows module to be imported for CLI --help
-idaapi = None
-
 
 def _ensure_ida_imports() -> None:
-    """Lazy import IDA modules when actually needed."""
-    global idaapi
-    if idaapi is not None:
-        return
+    """Keep the legacy lazy-availability boundary for live-only callers."""
 
-    import idaapi as _idaapi
+    _hexrays_bst_runtime.is_available()
 
-    idaapi = _idaapi
 
 # -----------------------------------------------------------------------------
 # Constants (lazily initialized)
@@ -83,27 +77,8 @@ def _init_constants() -> None:
     if _maps_initialized:
         return
 
-    _ensure_ida_imports()
-
-    # Build opcode map
-    for name in dir(idaapi):
-        if name.startswith("m_"):
-            try:
-                val = getattr(idaapi, name)
-                if isinstance(val, int):
-                    OPCODE_MAP[val] = name
-            except Exception:
-                pass
-
-    # Build mop type map
-    for name in dir(idaapi):
-        if name.startswith("mop_"):
-            try:
-                val = getattr(idaapi, name)
-                if isinstance(val, int):
-                    MOP_TYPE_MAP[val] = name
-            except Exception:
-                pass
+    OPCODE_MAP = _hexrays_bst_runtime.build_opcode_map()
+    MOP_TYPE_MAP = _hexrays_bst_runtime.build_mop_type_map()
 
     _maps_initialized = True
 
@@ -144,6 +119,14 @@ def _mop_type_name(mop_type: object) -> str | None:
 
 def _mop_type_is(mop_type: object, expected_name: str) -> bool:
     return _mop_type_name(mop_type) == expected_name
+
+
+def _opcode_value(name: str, default: int | None = None) -> int | None:
+    return _hexrays_bst_runtime.opcode_value(name, default)
+
+
+def _mop_type_value(name: str, default: int | None = None) -> int | None:
+    return _hexrays_bst_runtime.mop_type_value(name, default)
 
 
 def find_bst_default_block(
@@ -860,9 +843,9 @@ def _mop_matches_stkoff(
     if mop is None:
         return False
     mop_type = getattr(mop, "t", None)
-    mop_S_type = getattr(idaapi, "mop_S", None)
-    mop_a_type = getattr(idaapi, "mop_a", None)
-    mop_l_type = getattr(idaapi, "mop_l", None)
+    mop_S_type = _mop_type_value("mop_S", None)
+    mop_a_type = _mop_type_value("mop_a", None)
+    mop_l_type = _mop_type_value("mop_l", None)
 
     if diag_lines is not None:
         mop_type_name = MOP_TYPE_MAP.get(mop_type, f"unknown_{mop_type}") if mop_type is not None else "None"
@@ -963,17 +946,17 @@ def _resolve_mop_value_in_block(
 
     mop_type = getattr(mop, "t", None)
     # Only handle register (mop_r=1) and local-var (mop_l=9) sources.
-    mop_r_type = getattr(idaapi, "mop_r", 1)
-    mop_l_type = getattr(idaapi, "mop_l", 9)
+    mop_r_type = _mop_type_value("mop_r", 1)
+    mop_l_type = _mop_type_value("mop_l", 9)
     if mop_type not in (mop_r_type, mop_l_type):
         return None
 
     # Opcodes for binary arithmetic/logic ops.
-    m_add = getattr(idaapi, "m_add", 28)
-    m_sub = getattr(idaapi, "m_sub", 29)
-    m_and = getattr(idaapi, "m_and", 21)
-    m_or = getattr(idaapi, "m_or", 22)
-    m_xor = getattr(idaapi, "m_xor", 31)
+    m_add = _opcode_value("m_add", 28)
+    m_sub = _opcode_value("m_sub", 29)
+    m_and = _opcode_value("m_and", 21)
+    m_or = _opcode_value("m_or", 22)
+    m_xor = _opcode_value("m_xor", 31)
     binary_ops = {m_add, m_sub, m_and, m_or, m_xor}
 
     def _mops_match(a: "idaapi.mop_t", b: "idaapi.mop_t") -> bool:
@@ -1029,44 +1012,15 @@ def _resolve_mop_value_in_block(
 
 def _fetch_idb_value(address: int, size: int) -> int | None:
     """Read a scalar IDB value without depending on higher hexrays helpers."""
-    readers = {
-        1: getattr(idaapi, "get_byte", None),
-        2: getattr(idaapi, "get_word", None),
-        4: getattr(idaapi, "get_dword", None),
-        8: getattr(idaapi, "get_qword", None),
-    }
-    reader = readers.get(size)
-    if reader is None:
-        return None
-    return int(reader(address))
+    return _hexrays_bst_runtime.fetch_idb_value(address, size)
 
 
 def _segment_is_read_only(addr: int) -> bool:
-    getseg = getattr(idaapi, "getseg", None)
-    if getseg is None:
-        return False
-    seg = getseg(addr)
-    if seg is None:
-        return False
-    read_perm = getattr(idaapi, "SEGPERM_READ", 1)
-    write_perm = getattr(idaapi, "SEGPERM_WRITE", 2)
-    perm = int(getattr(seg, "perm", 0) or 0)
-    return (perm & read_perm) != 0 and (perm & write_perm) == 0
+    return _hexrays_bst_runtime.segment_is_read_only(addr)
 
 
 def _is_never_written_var(address: int) -> bool:
-    xrefblk_t = getattr(idaapi, "xrefblk_t", None)
-    if xrefblk_t is None:
-        return False
-    ref_finder = xrefblk_t()
-    xref_data = getattr(idaapi, "XREF_DATA", 1)
-    dr_w = getattr(idaapi, "dr_W", None)
-    is_ok = ref_finder.first_to(address, xref_data)
-    while is_ok:
-        if dr_w is not None and ref_finder.type == dr_w:
-            return False
-        is_ok = ref_finder.next_to()
-    return True
+    return _hexrays_bst_runtime.is_never_written_var(address)
 
 
 def _fetch_stable_global_value(addr: int, size: int) -> int | None:
@@ -1175,14 +1129,14 @@ def _resolve_mop_from_maps(
             else:
                 rv = None
             if lv is not None:
-                m_add = getattr(idaapi, "m_add", 28)
-                m_sub = getattr(idaapi, "m_sub", 29)
-                m_and = getattr(idaapi, "m_and", 21)
-                m_or = getattr(idaapi, "m_or", 22)
-                m_xor = getattr(idaapi, "m_xor", 31)
-                m_mul = getattr(idaapi, "m_mul", 30)
-                m_xdu = getattr(idaapi, "m_xdu", None)
-                m_xds = getattr(idaapi, "m_xds", None)
+                m_add = _opcode_value("m_add", 28)
+                m_sub = _opcode_value("m_sub", 29)
+                m_and = _opcode_value("m_and", 21)
+                m_or = _opcode_value("m_or", 22)
+                m_xor = _opcode_value("m_xor", 31)
+                m_mul = _opcode_value("m_mul", 30)
+                m_xdu = _opcode_value("m_xdu", None)
+                m_xds = _opcode_value("m_xds", None)
                 if rv is not None:
                     if op == m_xor:
                         result = (lv ^ rv) & 0xFFFFFFFF
@@ -1253,20 +1207,20 @@ def _forward_eval_insn(
     if op is None:
         return None
 
-    m_mov_op = getattr(idaapi, "m_mov", None)
-    m_add = getattr(idaapi, "m_add", 28)
-    m_sub = getattr(idaapi, "m_sub", 29)
-    m_and = getattr(idaapi, "m_and", 21)
-    m_or = getattr(idaapi, "m_or", 22)
-    m_xor = getattr(idaapi, "m_xor", 31)
-    m_mul = getattr(idaapi, "m_mul", 30)
+    m_mov_op = _opcode_value("m_mov", None)
+    m_add = _opcode_value("m_add", 28)
+    m_sub = _opcode_value("m_sub", 29)
+    m_and = _opcode_value("m_and", 21)
+    m_or = _opcode_value("m_or", 22)
+    m_xor = _opcode_value("m_xor", 31)
+    m_mul = _opcode_value("m_mul", 30)
     binary_ops = {m_add, m_sub, m_and, m_or, m_xor, m_mul}
-    m_xdu_op = getattr(idaapi, "m_xdu", None)
-    m_xds_op = getattr(idaapi, "m_xds", None)
+    m_xdu_op = _opcode_value("m_xdu", None)
+    m_xds_op = _opcode_value("m_xds", None)
 
-    mop_S_type = getattr(idaapi, "mop_S", None)
-    mop_r_type = getattr(idaapi, "mop_r", 1)
-    mop_l_type = getattr(idaapi, "mop_l", 9)
+    mop_S_type = _mop_type_value("mop_S", None)
+    mop_r_type = _mop_type_value("mop_r", 1)
+    mop_l_type = _mop_type_value("mop_l", 9)
 
     def _store_to_dest(dest: "idaapi.mop_t", val: int) -> bool:
         """Store val into the appropriate map based on dest type. Returns True if state var."""
@@ -1397,8 +1351,8 @@ def _extract_state_from_block(
     Returns the constant value written, or None if not found.
     """
     _init_constants()
-    m_mov_opcode = getattr(idaapi, "m_mov", None)
-    m_stx_opcode = getattr(idaapi, "m_stx", None)
+    m_mov_opcode = _opcode_value("m_mov", None)
+    m_stx_opcode = _opcode_value("m_stx", None)
 
     if m_mov_opcode is None:
         return None
@@ -1800,11 +1754,11 @@ def _detect_state_var_stkoff(
             return result, diag_lines
         return result
 
-    mop_S_type = getattr(idaapi, "mop_S", None)
-    mop_r_type = getattr(idaapi, "mop_r", None)
-    mop_l_type = getattr(idaapi, "mop_l", None)
-    mop_b_type = getattr(idaapi, "mop_b", None)
-    mop_n_type = getattr(idaapi, "mop_n", None)
+    mop_S_type = _mop_type_value("mop_S", None)
+    mop_r_type = _mop_type_value("mop_r", None)
+    mop_l_type = _mop_type_value("mop_l", None)
+    mop_b_type = _mop_type_value("mop_b", None)
+    mop_n_type = _mop_type_value("mop_n", None)
 
     def _block_ref(mop) -> Optional[int]:
         for attr in ("block_ref", "block_num", "b"):
