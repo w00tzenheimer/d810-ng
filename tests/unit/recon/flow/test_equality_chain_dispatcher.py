@@ -15,7 +15,7 @@ def _mop_n(value: int):
 
 
 def _mop_n_snapshot(value: int):
-    return SimpleNamespace(t=2, nnn_value=value, size=4)
+    return SimpleNamespace(t="mop_n", nnn_value=value, size=4)
 
 
 def _mop_s(off: int):
@@ -142,7 +142,7 @@ def test_extracts_snapshot_constants_from_nnn_value() -> None:
     assert dispatch_map.state_to_handler() == {0x44: 7}
 
 
-def test_extracts_backend_mapped_numeric_hexrays_constants_without_importing_hexrays() -> None:
+def test_backend_specific_numeric_names_belong_in_adapter_not_recon() -> None:
     mba = _Mba(
         {
             2: _block(
@@ -158,16 +158,35 @@ def test_extracts_backend_mapped_numeric_hexrays_constants_without_importing_hex
     mba.blocks[2].type = 4
     mba.blocks[2].tail.r = SimpleNamespace(t=22, nnn_value=0x55, size=4)
 
-    dispatch_map = extract_state_dispatcher_map_from_mba(
-        mba,
-        dispatcher_entry_block=2,
-        opcode_names={444: "m_jz"},
-        mop_type_names={22: "mop_n", 55: "mop_S"},
+    signature = inspect.signature(extract_state_dispatcher_map_from_mba)
+
+    assert "opcode_names" not in signature.parameters
+    assert "mop_type_names" not in signature.parameters
+    assert (
+        extract_state_dispatcher_map_from_mba(mba, dispatcher_entry_block=2)
+        is None
     )
 
-    assert dispatch_map is not None
-    assert dispatch_map.state_to_handler() == {0x55: 7}
-    assert dispatch_map.state_var_stkoff == 0x3C
+
+def test_hexrays_numeric_constants_require_adapter_normalization() -> None:
+    mba = _Mba(
+        {
+            2: _block(
+                2,
+                opcode=44,
+                state_mop=SimpleNamespace(t=5, s=SimpleNamespace(off=0x3C), size=4),
+                const=0,
+                jump_target=7,
+                succs=(3, 7),
+            ),
+        }
+    )
+    mba.blocks[2].tail.r = SimpleNamespace(t=2, nnn_value=0x55, size=4)
+
+    assert (
+        extract_state_dispatcher_map_from_mba(mba, dispatcher_entry_block=2)
+        is None
+    )
 
 
 def test_equality_chain_dispatcher_does_not_import_live_hexrays() -> None:
