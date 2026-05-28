@@ -259,7 +259,11 @@ if not _CYTHON_AVAILABLE:
                         "to_mop: Cannot reconstruct mop_S without mba_t, returning empty mop"
                     )
             elif self.t == ida_hexrays.mop_v and self.gaddr is not None:
-                m.make_global(self.gaddr, self.size)
+                # mop_t exposes ``make_gvar(addr)``, not ``make_global``;
+                # the old name was a typo. Size must be assigned separately.
+                # See issue #44.
+                m.make_gvar(int(self.gaddr))
+                m.size = int(self.size) if self.size is not None else 0
             elif self.t == ida_hexrays.mop_l and self.lvar_idx is not None:
                 # Local variable: requires lvar_t, which we can't fully reconstruct
                 # without the parent mba_t. Log warning and return empty mop.
