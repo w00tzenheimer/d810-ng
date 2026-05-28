@@ -56,6 +56,7 @@ from d810.hexrays.mutation.ir_translator import (
     _block_kind_from_hexrays,
     _insn_kind_from_hexrays,
     _operand_kind_from_hexrays,
+    capture_mop_snapshot,
 )
 
 
@@ -135,6 +136,28 @@ def test_table_jump_kind_distinct_from_other_jump_kinds():
     assert table_jump is not InsnKind.COND_JUMP
     assert table_jump is not InsnKind.EQUALITY_JUMP
     assert table_jump is not InsnKind.UNKNOWN
+
+
+def test_capture_mop_snapshot_preserves_switch_case_rows():
+    """Switch-table prep: carry mcases values/targets into portable cfg."""
+    mop = SimpleNamespace(
+        t=ida_hexrays.mop_c,
+        size=0,
+        c=SimpleNamespace(
+            values=((0, 1), (), (0xFFFFFFFFFFFFFFFF,)),
+            targets=(10, 99, 12),
+        ),
+    )
+
+    snapshot = capture_mop_snapshot(mop)
+
+    assert snapshot is not None
+    assert snapshot.kind is OperandKind.CASE_LIST
+    assert snapshot.switch_cases == (
+        ((0, 1), 10),
+        ((), 99),
+        ((0xFFFFFFFFFFFFFFFF,), 12),
+    )
 
 
 def test_hexrays_branch_opcodes_map_to_backend_neutral_predicates():

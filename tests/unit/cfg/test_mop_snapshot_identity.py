@@ -132,6 +132,24 @@ class TestMopSnapshotFieldsBackwardsCompatible:
         assert m.gaddr == 0x140002000
         assert m.lvar_off is None
 
+    def test_switch_cases_default_empty(self) -> None:
+        m = MopSnapshot(t=2, size=4, reg=3, kind=OperandKind.REGISTER)
+
+        assert m.switch_cases == ()
+
+    def test_switch_cases_preserve_values_and_default_target(self) -> None:
+        m = MopSnapshot(
+            t=12,
+            size=0,
+            kind=OperandKind.CASE_LIST,
+            switch_cases=(
+                ((0, 1), 10),
+                ((), 99),
+            ),
+        )
+
+        assert m.switch_cases == (((0, 1), 10), ((), 99))
+
 
 class TestCfgOperandSlots:
     """``cfg_operand_slots`` is the portable replacement for reading
