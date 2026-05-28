@@ -1374,14 +1374,15 @@ def _make_tigress_indirect_state_dispatcher_maps(
         if not isinstance(goto_table_info, dict):
             return ()
         try:
-            from d810.recon.flow.indirect_jump_table_analysis import (
-                analyze_tigress_indirect_dispatcher_from_config,
+            from d810.optimizers.microcode.flow.dispatcher import (
+                indirect_jump_table_analysis,
             )
 
-            result = analyze_tigress_indirect_dispatcher_from_config(
-                mba,
-                goto_table_info,
+            analyze_indirect = (
+                indirect_jump_table_analysis
+                .analyze_tigress_indirect_dispatcher_from_config
             )
+            result = analyze_indirect(mba, goto_table_info)
         except Exception:
             family_logger.debug(
                 "indirect jump-table state dispatcher profile collection failed",
