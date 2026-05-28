@@ -135,10 +135,16 @@ def _extract_cases_from_switch_operand(
 
 
 def _maturity_label(flow_graph: FlowGraph) -> str:
-    value = flow_graph.metadata.get("maturity_name")
+    # Prefer the provider-neutral stage fields (E2d); fall back to the
+    # E2b maturity aliases for hand-built fixtures that only set those.
+    value = flow_graph.metadata.get("producer_stage_name") or flow_graph.metadata.get(
+        "maturity_name"
+    )
     if value:
         return str(value)
-    value = flow_graph.metadata.get("maturity")
+    value = flow_graph.metadata.get("producer_stage_id")
+    if value is None:
+        value = flow_graph.metadata.get("maturity")
     return "unknown" if value is None else str(value)
 
 

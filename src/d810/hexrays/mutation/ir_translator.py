@@ -35,6 +35,7 @@ from d810.cfg.flowgraph import (
     InsnKind,
     InsnSnapshot,
     OperandKind,
+    SnapshotStage,
 )
 from d810.cfg.flowgraph import MopSnapshot as CfgMopSnapshot
 from d810.ir.semantics import ControlTransferKind, PredicateKind
@@ -609,6 +610,26 @@ def lift_block(blk: "ida_hexrays.mblock_t") -> BlockSnapshot:
     )
 
 
+# Maps Hex-Rays maturity names to the portable, coarse ``SnapshotStage``
+# family.  Keeping the mapping name-keyed avoids importing raw ``MMAT_*``
+# constants here and mirrors maturity_to_string()'s vocabulary.
+_MATURITY_NAME_TO_SNAPSHOT_STAGE = {
+    "MMAT_ZERO": SnapshotStage.RAW_IR,
+    "MMAT_GENERATED": SnapshotStage.RAW_IR,
+    "MMAT_PREOPTIMIZED": SnapshotStage.NORMALIZED_IR,
+    "MMAT_LOCOPT": SnapshotStage.NORMALIZED_IR,
+    "MMAT_CALLS": SnapshotStage.OPTIMIZED_IR,
+    "MMAT_GLBOPT1": SnapshotStage.OPTIMIZED_IR,
+    "MMAT_GLBOPT2": SnapshotStage.OPTIMIZED_IR,
+    "MMAT_GLBOPT3": SnapshotStage.OPTIMIZED_IR,
+    "MMAT_LVARS": SnapshotStage.LVAR_RECOVERED,
+}
+
+
+def _snapshot_stage_for_maturity_name(maturity_name: str) -> SnapshotStage:
+    return _MATURITY_NAME_TO_SNAPSHOT_STAGE.get(maturity_name, SnapshotStage.UNKNOWN)
+
+
 def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
     blocks = {}
     for i in range(mba.qty):
@@ -641,14 +662,24 @@ def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
     else:
         cpu_arch_name = str(raw_proc) if raw_proc else "unknown"
 
+    maturity_int = int(mba.maturity)
+    maturity_name = maturity_to_string(maturity_int)
     return FlowGraph(
         blocks=blocks,
         entry_serial=0,
         func_ea=mba.entry_ea,
         metadata={
-            "maturity": int(mba.maturity),
-            "maturity_name": maturity_to_string(int(mba.maturity)),
+            # Provider-neutral stage metadata (canonical; E2d). Portable
+            # analyses read these, never the MMAT_* aliases below.
+            "producer": "hexrays",
+            "producer_stage_id": maturity_int,
+            "producer_stage_name": maturity_name,
+            "snapshot_stage": _snapshot_stage_for_maturity_name(maturity_name),
             "cpu_arch_name": cpu_arch_name,
+            # E2b transition aliases (retained for legacy callers; proven
+            # equal to the neutral fields by the lifter parity test).
+            "maturity": maturity_int,
+            "maturity_name": maturity_name,
         },
     )
 

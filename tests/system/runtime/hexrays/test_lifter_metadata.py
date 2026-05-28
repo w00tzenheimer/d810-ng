@@ -167,6 +167,69 @@ class TestLifterMetadataContract:
         assert flow_graph.func_ea == 0x140002000
 
 
+class TestProviderNeutralStageMetadata:
+    """E2d: the lifter exposes provider-neutral stage metadata
+    (``producer`` / ``producer_stage_id`` / ``producer_stage_name`` /
+    ``snapshot_stage``) as the canonical contract.  The E2b
+    ``maturity`` / ``maturity_name`` keys remain as aliases and MUST be
+    provably equal to the neutral fields so legacy callers keep working
+    while new code migrates to the neutral names."""
+
+    def _lift(self, monkeypatch, maturity: int = 14):
+        from d810.hexrays.mutation import ir_translator
+
+        monkeypatch.setattr(
+            ir_translator.idaapi, "inf_get_procname", lambda: "metapc"
+        )
+        return ir_translator.lift(_StubMba(maturity=maturity))
+
+    def test_neutral_fields_present(self, monkeypatch) -> None:
+        meta = self._lift(monkeypatch).metadata
+        for key in (
+            "producer",
+            "producer_stage_id",
+            "producer_stage_name",
+            "snapshot_stage",
+        ):
+            assert key in meta, key
+
+    def test_producer_is_hexrays(self, monkeypatch) -> None:
+        assert self._lift(monkeypatch).metadata["producer"] == "hexrays"
+
+    def test_neutral_aliases_have_parity(self, monkeypatch) -> None:
+        """The E2b aliases equal the neutral fields exactly, so callers
+        on either name observe the same value (the merge-gate contract)."""
+        meta = self._lift(monkeypatch).metadata
+        assert meta["producer_stage_id"] == meta["maturity"]
+        assert meta["producer_stage_name"] == meta["maturity_name"]
+
+    def test_snapshot_stage_is_portable_family(self, monkeypatch) -> None:
+        from d810.cfg.flowgraph import SnapshotStage
+        from d810.hexrays.mutation import ir_translator
+
+        meta = self._lift(monkeypatch).metadata
+        stage = meta["snapshot_stage"]
+        assert isinstance(stage, SnapshotStage)
+        # Derived from the producer stage name via the lifter's mapping.
+        assert stage is ir_translator._snapshot_stage_for_maturity_name(
+            meta["producer_stage_name"]
+        )
+
+    def test_snapshot_stage_mapping_is_coarse_and_neutral(self, monkeypatch) -> None:
+        """Spot-check the coarse mapping: GLBOPT* are optimized IR,
+        LVARS is lvar-recovered -- no MMAT string leaks into the
+        portable family value."""
+        from d810.cfg.flowgraph import SnapshotStage
+        from d810.hexrays.mutation import ir_translator
+
+        m = ir_translator._snapshot_stage_for_maturity_name
+        assert m("MMAT_GLBOPT1") is SnapshotStage.OPTIMIZED_IR
+        assert m("MMAT_GLBOPT2") is SnapshotStage.OPTIMIZED_IR
+        assert m("MMAT_LVARS") is SnapshotStage.LVAR_RECOVERED
+        assert m("MMAT_PREOPTIMIZED") is SnapshotStage.NORMALIZED_IR
+        assert m("bogus") is SnapshotStage.UNKNOWN
+
+
 class TestLifterMetadataImmutability:
     """Metadata is exposed through a ``MappingProxyType`` so consumers
     can't mutate it; the contract is read-only."""
