@@ -10,7 +10,9 @@ from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     StateTransition,
 )
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import AnalysisSnapshot
-from d810.recon.flow import conditional_chain_resolution as resolution
+from d810.optimizers.microcode.flow.flattening.hodur.recon import (
+    conditional_chain_resolution as resolution,
+)
 
 
 class _DummyFlowGraph:
