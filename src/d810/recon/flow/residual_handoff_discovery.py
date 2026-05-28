@@ -8,8 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import ida_hexrays
-
+from d810.cfg.flowgraph import InsnKind, OperandKind
 from d810.recon.flow.bst_analysis import _forward_eval_insn
 from d810.recon.flow.dag_index import build_dag_node_maps
 from d810.recon.flow.linearized_state_dag import (
@@ -19,6 +18,10 @@ from d810.recon.flow.linearized_state_dag import (
     StateDagNode,
     StateNodeKind,
 )
+
+_MOVE_OPCODE = 4
+_NUMBER_OPERAND = 2
+_STACK_OPERAND = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -1130,11 +1133,70 @@ def mop_const_value(mop: object | None) -> int | None:
     return None
 
 
+def _kind_matches(
+    value: object,
+    legacy_name: str,
+    numeric_value: int,
+    portable_kind: object,
+) -> bool:
+    if value == portable_kind:
+        return True
+    portable_value = getattr(portable_kind, "value", portable_kind)
+    if isinstance(portable_value, str) and value == portable_value:
+        return True
+    if value == legacy_name or str(value) == legacy_name:
+        return True
+    try:
+        return int(value) == int(numeric_value)
+    except Exception:
+        return False
+
+
+def _is_move_insn(insn: object) -> bool:
+    kind = getattr(insn, "kind", None)
+    if _kind_matches(kind, "m_mov", _MOVE_OPCODE, InsnKind.MOV):
+        return True
+    return _kind_matches(
+        getattr(insn, "opcode", None),
+        "m_mov",
+        _MOVE_OPCODE,
+        InsnKind.MOV,
+    )
+
+
+def _is_stack_operand(mop: object | None) -> bool:
+    if mop is None:
+        return False
+    kind = getattr(mop, "kind", None)
+    if _kind_matches(kind, "mop_S", _STACK_OPERAND, OperandKind.STACK):
+        return True
+    return _kind_matches(
+        getattr(mop, "t", None),
+        "mop_S",
+        _STACK_OPERAND,
+        OperandKind.STACK,
+    )
+
+
+def _is_number_operand(mop: object | None) -> bool:
+    if mop is None:
+        return False
+    kind = getattr(mop, "kind", None)
+    if _kind_matches(kind, "mop_n", _NUMBER_OPERAND, OperandKind.NUMBER):
+        return True
+    return _kind_matches(
+        getattr(mop, "t", None),
+        "mop_n",
+        _NUMBER_OPERAND,
+        OperandKind.NUMBER,
+    )
+
+
 def is_state_var_dest(dest: object | None, state_var_stkoff: int) -> bool:
     """Return whether ``dest`` writes the tracked state stack slot."""
     if dest is None:
         return False
-    if getattr(dest, "t", None) != ida_hexrays.mop_S:
+    if not _is_stack_operand(dest):
         return False
     return mop_stkoff(dest) == state_var_stkoff
 
@@ -1165,7 +1227,7 @@ def resolve_singleton_state_write_value(
         state_dest = is_state_var_dest(dest, state_var_stkoff)
         if state_dest:
             state_write_seen = True
-            if insn.opcode == ida_hexrays.m_mov:
+            if _is_move_insn(insn):
                 source = getattr(insn, "l", None)
                 value = mop_const_value(source)
                 if value is not None:
@@ -1291,15 +1353,15 @@ def resolve_immediate_handoff_target(
 
     written_states: set[int] = set()
     for insn in iter_live_block_insns(block):
-        if insn.opcode == ida_hexrays.m_mov:
+        if _is_move_insn(insn):
             d = insn.d
             l = insn.l
             if (
                 d is not None
-                and d.t == ida_hexrays.mop_S
+                and _is_stack_operand(d)
                 and mop_stkoff(d) == state_var_stkoff
                 and l is not None
-                and l.t == ida_hexrays.mop_n
+                and _is_number_operand(l)
             ):
                 value = mop_const_value(l)
                 if value is not None:
@@ -1378,7 +1440,7 @@ def resolve_projected_snapshot_handoff_target(
 
     written_states: set[int] = set()
     for insn in tuple(getattr(block, "insn_snapshots", ())):
-        if getattr(insn, "opcode", None) != ida_hexrays.m_mov:
+        if not _is_move_insn(insn):
             continue
         dest = getattr(insn, "d", None)
         src = getattr(insn, "l", None)
@@ -1429,10 +1491,10 @@ def resolve_assignment_map_handoff_target(
 
     state_value: int | None = None
     for insn in insns:
-        if getattr(insn, "opcode", None) != ida_hexrays.m_mov:
+        if not _is_move_insn(insn):
             continue
         src = getattr(insn, "l", None)
-        if src is None or getattr(src, "t", None) != ida_hexrays.mop_n:
+        if not _is_number_operand(src):
             continue
         try:
             value = int(src.nnn.value) & 0xFFFFFFFF
