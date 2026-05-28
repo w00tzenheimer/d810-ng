@@ -142,13 +142,13 @@ def test_extracts_snapshot_constants_from_nnn_value() -> None:
     assert dispatch_map.state_to_handler() == {0x44: 7}
 
 
-def test_extracts_live_numeric_hexrays_constants_without_importing_hexrays() -> None:
+def test_extracts_backend_mapped_numeric_hexrays_constants_without_importing_hexrays() -> None:
     mba = _Mba(
         {
             2: _block(
                 2,
-                opcode=24,
-                state_mop=SimpleNamespace(t=5, s=SimpleNamespace(off=0x3C), size=4),
+                opcode=444,
+                state_mop=SimpleNamespace(t=55, s=SimpleNamespace(off=0x3C), size=4),
                 const=0,
                 jump_target=7,
                 succs=(3, 7),
@@ -156,11 +156,13 @@ def test_extracts_live_numeric_hexrays_constants_without_importing_hexrays() -> 
         }
     )
     mba.blocks[2].type = 4
-    mba.blocks[2].tail.r = _mop_n_snapshot(0x55)
+    mba.blocks[2].tail.r = SimpleNamespace(t=22, nnn_value=0x55, size=4)
 
     dispatch_map = extract_state_dispatcher_map_from_mba(
         mba,
         dispatcher_entry_block=2,
+        opcode_names={444: "m_jz"},
+        mop_type_names={22: "mop_n", 55: "mop_S"},
     )
 
     assert dispatch_map is not None
