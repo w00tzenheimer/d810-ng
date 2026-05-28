@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import inspect
 from dataclasses import replace
 from types import SimpleNamespace
 
+import d810.recon.flow.branch_ownership_oracle as oracle_mod
 from d810.recon.facts.model import FactObservation
 from d810.recon.flow.branch_ownership import (
     BranchOwnershipProof,
@@ -15,6 +17,7 @@ from d810.recon.flow.branch_ownership_oracle import (
     PredicateOwnershipKind,
     PredicateOwnershipResult,
     Z3BranchOwnershipOracle,
+    _opcode_name,
 )
 
 
@@ -139,6 +142,21 @@ def _chain(*insns: object) -> object | None:
     for current, nxt in zip(insns, insns[1:]):
         current.next = nxt
     return insns[0] if insns else None
+
+
+def test_opcode_name_uses_injected_resolver_for_numeric_opcode():
+    assert _opcode_name(
+        SimpleNamespace(opcode=object()),
+        lambda _insn: "m_jz",
+    ) == "m_jz"
+
+
+def test_opcode_name_normalizes_known_conditional_opcode_without_live_ida():
+    assert _opcode_name(SimpleNamespace(opcode=44)) == "m_jz"
+
+
+def test_branch_ownership_oracle_does_not_import_live_hexrays():
+    assert "import ida_hexrays" not in inspect.getsource(oracle_mod)
 
 
 def _carrier_fact(
