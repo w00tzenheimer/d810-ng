@@ -38,7 +38,7 @@ from d810.recon.flow.linearized_state_dag import (
     ProgramRenderStrategy,
     RenderOrderStrategy,
 )
-from d810.recon.microcode_dump import (
+from d810.optimizers.microcode.microcode_dump import (
     build_live_linearized_program,
     dump_dispatcher_tree,
     dump_function_microcode,
@@ -738,7 +738,7 @@ class TestDumpFunctionPseudocode:
 
         if dump_d810:
             # d810-active mode: decompile with d810 running, dump cfunc.mba
-            from d810.recon.microcode_dump import mba_to_dict
+            from d810.optimizers.microcode.microcode_dump import mba_to_dict
 
             use_project = not request.config.getoption("--dump-no-project")
             project_name = request.config.getoption("--dump-project")

@@ -213,22 +213,18 @@ source_modules =
     d810.families
     d810.ir
     d810.transforms
-    # source_modules lists ONLY packages that are currently clean.
-    # d810.recon is NOT here yet because it still legitimately imports
-    # IDA today; the migration meter for recon-side cleanup lives in
-    # the audit grep recipe and the `no-live-ida-in-portable-core`
-    # ast-grep rule (severity=warning).  As recon's analysis logic
-    # moves out into d810.analyses / d810.transforms / etc., those
-    # cleaned packages get appended here in the same slice that
-    # creates them.  Append `d810.recon` ITSELF only in the final
-    # cleanup slice once the audit grep returns zero for that package.
-    #
+    # d810.recon is now clean: the three live-IDA holdouts
+    # (microcode_dump, residual_handoff_resolution,
+    # dynamic_state_transition_recovery) were relocated to the optimizer
+    # layer, so the audit grep returns zero for d810.recon and it is
+    # promoted into this contract.  This is the static companion to the
+    # `no-live-ida-in-portable-core` ast-grep rule (already severity=error).
+    d810.recon
     # When created and clean, append:
     #     d810.pre_analysis
     #     d810.analyses
     #     d810.passes
     #     d810.support
-    #     d810.recon          # last; promotes the audit-grep meter
 forbidden_modules =
     idaapi
     ida_hexrays
@@ -250,10 +246,10 @@ forbidden_modules =
 # lifted IR types; they may not call vendor-specific mutation
 # entry points.
 #
-# source_modules lists ONLY packages that are currently clean.  Legacy
-# violators (d810.recon.microcode_dump -> d810.hexrays.mutation) are
-# tracked via the audit grep recipe during migration; their cleanup
-# slice will append the cleaned package here.
+# source_modules lists ONLY packages that are currently clean.  The
+# legacy violator (d810.recon.microcode_dump -> d810.hexrays.mutation)
+# was relocated to the optimizer layer, so d810.recon is now promoted
+# into this contract.
 name = Portable-core packages must not import vendor mutation surfaces
 type = forbidden
 allow_indirect_imports = True
@@ -262,11 +258,11 @@ source_modules =
     d810.families
     d810.ir
     d810.transforms
+    d810.recon
     # When created and clean, append:
     #     d810.pre_analysis
     #     d810.analyses
     #     d810.passes
-    #     d810.recon          # last; promotes the audit-grep meter
     #     d810.support
 forbidden_modules =
     d810.hexrays.mutation

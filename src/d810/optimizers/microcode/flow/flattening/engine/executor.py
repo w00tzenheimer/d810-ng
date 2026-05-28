@@ -100,7 +100,7 @@ from d810.optimizers.microcode.flow.flattening.safeguards import (
     should_apply_bulk_cfg_modifications,
 )
 from d810.recon.flow.terminal_return_audit import build_terminal_return_audit
-from d810.recon.microcode_dump import mba_to_human_readable  # compatibility seam for legacy diagnostics/tests
+from d810.optimizers.microcode.microcode_dump import mba_to_human_readable  # compatibility seam for legacy diagnostics/tests
 
 executor_logger = logging.getLogger("D810.unflat.hodur.executor")
 
