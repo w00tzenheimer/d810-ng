@@ -133,7 +133,8 @@ def test_discover_terminal_corridor_group_collects_shared_frontier():
         },
     )
     snapshot = SimpleNamespace(
-        mba=None,
+        carrier_resolver=None,
+        state_var_stkoff=0x10,
         state_machine=state_machine,
         detector=None,
         dispatcher_blocks=frozenset(),
@@ -177,7 +178,8 @@ def test_discover_terminal_corridor_group_rejects_missing_dispatcher_evidence():
         },
     )
     snapshot = SimpleNamespace(
-        mba=None,
+        carrier_resolver=None,
+        state_var_stkoff=0x10,
         state_machine=state_machine,
         detector=None,
         dispatcher_blocks=frozenset(),
@@ -216,7 +218,8 @@ def test_discover_terminal_corridor_group_excludes_dispatcher_block_set():
         },
     )
     snapshot = SimpleNamespace(
-        mba=None,
+        carrier_resolver=None,
+        state_var_stkoff=0x10,
         state_machine=state_machine,
         detector=None,
         dispatcher_blocks=frozenset({2, 9}),
