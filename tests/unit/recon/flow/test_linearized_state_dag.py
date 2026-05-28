@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
+import d810.recon.flow.linearized_state_dag as linearized_state_dag
 from d810.cfg.flowgraph import (
     BlockSnapshot,
     FlowGraph,
@@ -76,6 +79,26 @@ from d810.recon.flow.transition_report import (
     TransitionSummary,
     build_dispatcher_transition_report_from_graph,
 )
+
+
+def test_linearized_state_dag_does_not_import_live_hexrays() -> None:
+    assert "import ida_hexrays" not in inspect.getsource(linearized_state_dag)
+
+
+def test_side_effect_detection_uses_portable_instruction_kind() -> None:
+    block = BlockSnapshot(
+        serial=1,
+        block_type=0,
+        succs=(),
+        preds=(),
+        flags=0,
+        start_ea=0,
+        insn_snapshots=(
+            InsnSnapshot(opcode=0, ea=0x401000, operands=(), kind=InsnKind.STORE),
+        ),
+    )
+
+    assert linearized_state_dag._block_has_side_effect_opcode(block)
 
 
 def render_linearized_state_program(
