@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import ida_hexrays
-
+import inspect
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import d810.recon.flow.residual_handoff_discovery as residual_handoff_discovery
 from d810.recon.flow.linearized_state_dag import (
     RedirectSourceKind,
     SemanticEdgeKind,
@@ -29,6 +29,10 @@ from d810.recon.flow.residual_handoff_discovery import (
     resolve_redirect_safe_entry_from_node,
     resolve_redirect_safe_target_entry,
 )
+
+_MOVE_OPCODE = 4
+_NUMBER_OPERAND = 2
+_STACK_OPERAND = 5
 
 
 def _node(
@@ -102,6 +106,11 @@ class _DummyMba:
 
 
 class TestDispatcherExactRows:
+    def test_residual_handoff_discovery_does_not_import_live_hexrays(self) -> None:
+        assert "import ida_hexrays" not in inspect.getsource(
+            residual_handoff_discovery
+        )
+
     def test_detects_exact_row(self) -> None:
         dispatcher = SimpleNamespace(
             _rows=(
@@ -313,9 +322,9 @@ class TestResidualTargetDiscovery:
             assignment_map={
                 10: (
                     SimpleNamespace(
-                        opcode=ida_hexrays.m_mov,
+                        opcode=_MOVE_OPCODE,
                         l=SimpleNamespace(
-                            t=ida_hexrays.mop_n,
+                            t=_NUMBER_OPERAND,
                             nnn=SimpleNamespace(value=0x33),
                         ),
                     ),
@@ -434,10 +443,10 @@ class TestResidualTargetDiscovery:
             _rows=(SimpleNamespace(lo=0x33, hi=0x34, target=2),),
         )
         insn = SimpleNamespace(
-            opcode=ida_hexrays.m_mov,
-            d=SimpleNamespace(t=ida_hexrays.mop_S, stkoff=0x88),
+            opcode=_MOVE_OPCODE,
+            d=SimpleNamespace(t=_STACK_OPERAND, stkoff=0x88),
             l=SimpleNamespace(
-                t=ida_hexrays.mop_n,
+                t=_NUMBER_OPERAND,
                 nnn=SimpleNamespace(value=0x33),
             ),
             next=None,
