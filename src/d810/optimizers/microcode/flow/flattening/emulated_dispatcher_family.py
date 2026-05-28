@@ -97,7 +97,9 @@ from d810.recon.flow.branch_ownership import (
     branch_ownership_proof_from_any,
     collect_branch_ownership_proofs,
 )
-from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import DispatcherCache
+from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+    analyze_dispatcher_live,
+)
 from d810.recon.flow.dispatcher_map import StateDispatcherMap, StateDispatcherRow
 from d810.recon.flow.dispatcher_discovery_facts import (
     collect_state_dispatcher_discovery_fact_observations,
@@ -4885,8 +4887,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         )
 
     def detect(self, mba: object) -> EmulatedDispatcherDetection:
-        cache = DispatcherCache.get_or_create(mba)
-        analysis = cache.analyze()
+        analysis = analyze_dispatcher_live(mba)
 
         collector = self._profile.collector_factory()
         if not isinstance(collector, _NoopDispatcherCollector):
@@ -8667,7 +8668,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         )
         return AnalysisSnapshot(
             mba=mba,
-            dispatcher_cache=DispatcherCache.get_or_create(mba),
+            dispatcher_analysis=analyze_dispatcher_live(mba),
             reachability=self.compute_reachability_info(mba),
             maturity=mba.maturity,
             flow_graph=flow_graph,

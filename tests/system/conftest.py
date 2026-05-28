@@ -653,14 +653,14 @@ def clear_all_caches():
     by ensuring all caches that may hold references to IDA objects are cleared.
     """
     from d810.evaluator.hexrays_microcode.tracker import MopTracker
-    from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import (
-        DispatcherCache,
+    from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+        DEFAULT_DISPATCHER_HISTORY_STORE,
     )
 
     # Clear all caches before test class
     CORE_MOP_CONSTANT_CACHE.clear()
     CORE_MOP_TO_AST_CACHE.clear()
-    DispatcherCache.clear_cache()
+    DEFAULT_DISPATCHER_HISTORY_STORE.clear()
     MopTracker.reset()
 
     yield
@@ -668,7 +668,7 @@ def clear_all_caches():
     # Clear again after test class to prevent cross-class contamination
     CORE_MOP_CONSTANT_CACHE.clear()
     CORE_MOP_TO_AST_CACHE.clear()
-    DispatcherCache.clear_cache()
+    DEFAULT_DISPATCHER_HISTORY_STORE.clear()
     MopTracker.reset()
 
 
@@ -949,13 +949,13 @@ def _d810_state_cm(*, all_rules=False):
     # Clear caches to prevent stale microcode pointer issues between tests
     # Import and clear from both locations to ensure complete cleanup
     from d810.evaluator.hexrays_microcode.tracker import MopTracker
-    from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import (
-        DispatcherCache,
+    from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+        DEFAULT_DISPATCHER_HISTORY_STORE,
     )
 
     CORE_MOP_CONSTANT_CACHE.clear()
     CORE_MOP_TO_AST_CACHE.clear()
-    DispatcherCache.clear_cache()
+    DEFAULT_DISPATCHER_HISTORY_STORE.clear()
     MopTracker.reset()
     state.stats.reset()
 

@@ -102,7 +102,7 @@ class AnalysisSnapshot:
     mba: object  # ida_hexrays.mba_t — opaque object because the concrete type is caller-specific
     state_machine: object | None = None
     detector: object | None = None
-    dispatcher_cache: object | None = None  # opaque object; family-specific concrete type
+    dispatcher_analysis: object | None = None  # opaque; family-specific DispatcherAnalysis
     bst_result: object | None = None
     bst_dispatcher_serial: int = -1
     dispatcher_blocks: frozenset[int] = field(default_factory=frozenset)

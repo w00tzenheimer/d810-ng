@@ -50,7 +50,10 @@ from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
     collect_live_fake_jump_fixes,
     collect_live_single_iteration_fixes,
 )
-from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import DispatcherCache
+from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+    DispatcherAnalysis,
+    analyze_dispatcher_live,
+)
 from d810.recon.flow.round_discovery_context import (
     build_round_discovery_context,
 )
@@ -246,11 +249,10 @@ class HodurStrategyFamily(CFFStrategyFamily):
         self._detector = detector
 
         if state_machine is None:
-            cache = DispatcherCache.get_or_create(mba)
-            analysis = cache.analyze()
+            analysis = analyze_dispatcher_live(mba)
             if analysis.is_conditional_chain:
                 state_machine = self.build_state_machine_from_cache(analysis)
-                detection_source = "dispatcher_cache"
+                detection_source = "dispatcher_analysis"
 
         if state_machine is None:
             state_machine = self.try_switch_table_detection(mba)
@@ -282,9 +284,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
             detection,
             run_state=self._run_state,
             flow_graph_adapter=self._adapt_snapshot_flow_graph,
-            dispatcher_cache_factory=lambda mba_arg: DispatcherCache.get_or_create(
-                mba_arg
-            ),
+            dispatcher_analysis_factory=analyze_dispatcher_live,
             reachability_builder=self.compute_reachability_info,
             fact_view_resolver=self._resolve_fact_view,
             function_priors_resolver=self._function_analysis_priors_for_mba,
@@ -326,7 +326,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
         *,
         detection: HodurDetection,
         flow_graph: FlowGraph,
-        dispatcher_cache: DispatcherCache,
+        dispatcher_analysis: DispatcherAnalysis,
         reachability: ReachabilityInfo,
         fact_view: object | None,
     ) -> AnalysisSnapshot:
@@ -335,7 +335,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
             mba,
             detection=detection,
             flow_graph=flow_graph,
-            dispatcher_cache=dispatcher_cache,
+            dispatcher_analysis=dispatcher_analysis,
             reachability=reachability,
             fact_view=fact_view,
             run_state=self._run_state,
@@ -478,7 +478,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
             mba,
             flow_graph,
             state_machine=self._state_machine,
-            dispatcher_cache_factory=DispatcherCache.get_or_create,
+            dispatcher_analysis_factory=analyze_dispatcher_live,
             collector=collect_live_fake_jump_fixes,
         )
 

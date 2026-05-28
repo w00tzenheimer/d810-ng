@@ -2833,8 +2833,8 @@ def test_implicit_profile_uses_state_map_evidence(
         return dispatch_map
 
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
-        SimpleNamespace(get_or_create=lambda _mba: cache),
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.analyze_dispatcher_live",
+        lambda _mba: cache.analyze(),
     )
     monkeypatch.setattr(
         emulated_family_module,
@@ -2873,8 +2873,8 @@ def test_implicit_profile_prefers_switch_map_evidence(
         raise AssertionError("switch-table map should be preferred")
 
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
-        SimpleNamespace(get_or_create=lambda _mba: cache),
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.analyze_dispatcher_live",
+        lambda _mba: cache.analyze(),
     )
     monkeypatch.setattr(
         emulated_family_module,
@@ -2924,8 +2924,8 @@ def test_emulated_dispatcher_family_detect_uses_injected_dispatcher_profile(
             return [SimpleNamespace(entry_block=SimpleNamespace(serial=11))]
 
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
-        SimpleNamespace(get_or_create=lambda _mba: cache),
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.analyze_dispatcher_live",
+        lambda _mba: cache.analyze(),
     )
 
     family = EmulatedDispatcherStrategyFamily(
@@ -2971,8 +2971,8 @@ def test_emulated_dispatcher_family_detect_uses_profile_state_dispatcher_map(
     cache = SimpleNamespace(analyze=lambda: analysis)
 
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
-        SimpleNamespace(get_or_create=lambda _mba: cache),
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.analyze_dispatcher_live",
+        lambda _mba: cache.analyze(),
     )
 
     family = EmulatedDispatcherStrategyFamily(
@@ -3736,6 +3736,10 @@ def test_switch_transition_partial_lowering_keeps_safety_blockers_hard() -> None
 
 
 def test_switch_transition_partial_lowering_records_partial_rewrite_reasons(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.analyze_dispatcher_live",
+        lambda _mba: SimpleNamespace(dispatchers=(), is_conditional_chain=False, blocks={}),
+    )
     dispatch_map = replace(
         _state_dispatcher_map(dispatcher_entry=3),
         initial_state=None,
@@ -3829,6 +3833,10 @@ def test_switch_transition_partial_lowering_records_partial_rewrite_reasons(monk
 
 
 def test_loop_recovery_override_clears_switch_partial_rewrite_reasons(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.analyze_dispatcher_live",
+        lambda _mba: SimpleNamespace(dispatchers=(), is_conditional_chain=False, blocks={}),
+    )
     dispatch_map = replace(
         _state_dispatcher_map(dispatcher_entry=3),
         initial_state=None,
@@ -4951,6 +4959,10 @@ def test_state_map_loop_recovery_requires_dispatcher_edge_for_write_site() -> No
 def test_state_map_loop_recovery_records_mixed_ambiguous_edges_as_partial(
     monkeypatch,
 ) -> None:
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.analyze_dispatcher_live",
+        lambda _mba: SimpleNamespace(dispatchers=(), is_conditional_chain=False, blocks={}),
+    )
     def _snapshot(serial, succs, preds):
         return BlockSnapshot(
             serial=serial,
@@ -5068,6 +5080,10 @@ def test_state_map_loop_recovery_records_mixed_ambiguous_edges_as_partial(
 
 
 def test_state_map_loop_recovery_defers_locopt_from_dag_edges(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.analyze_dispatcher_live",
+        lambda _mba: SimpleNamespace(dispatchers=(), is_conditional_chain=False, blocks={}),
+    )
     flow_graph = _flow_graph_with_edge()
     artifact = EmulatedDispatcherPhaseArtifact(
         dispatcher_entry_serial=3,
@@ -5444,8 +5460,8 @@ def test_emulated_dispatcher_family_build_snapshot_attaches_observation_metadata
     mba = _fake_mba()
     cache = object()
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
-        SimpleNamespace(get_or_create=lambda _mba: cache),
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.analyze_dispatcher_live",
+        lambda _mba: cache,
     )
 
     family = EmulatedDispatcherStrategyFamily(
@@ -5465,7 +5481,7 @@ def test_emulated_dispatcher_family_build_snapshot_attaches_observation_metadata
     snapshot = family.build_snapshot(mba, detection)
     observation = extract_emulated_dispatcher_metadata(snapshot.flow_graph)
 
-    assert snapshot.dispatcher_cache is cache
+    assert snapshot.dispatcher_analysis is cache
     assert snapshot.state_summary == StateModelSummary(
         state_constants=frozenset({0xF6A1E, 0xF6A1F}),
         handler_count=2,
@@ -5495,8 +5511,8 @@ def test_emulated_dispatcher_family_build_snapshot_attaches_lowering_candidates(
     mba = _fake_mba()
     cache = object()
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
-        SimpleNamespace(get_or_create=lambda _mba: cache),
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.analyze_dispatcher_live",
+        lambda _mba: cache,
     )
 
     family = EmulatedDispatcherStrategyFamily(
@@ -5553,8 +5569,8 @@ def test_emulated_dispatcher_family_build_snapshot_keeps_safe_conditional_target
     mba = _fake_mba()
     cache = object()
     monkeypatch.setattr(
-        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.DispatcherCache",
-        SimpleNamespace(get_or_create=lambda _mba: cache),
+        "d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family.analyze_dispatcher_live",
+        lambda _mba: cache,
     )
 
     family = EmulatedDispatcherStrategyFamily(
@@ -7565,7 +7581,10 @@ class TestEmulatedDispatcherManagedContext:
             FAKE_JUMP_FIXES_METADATA_KEY,
             serialize_fake_jump_fixes,
         )
-        from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import DispatcherCache
+        from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+            analyze_dispatcher_live,
+            is_dispatcher_block,
+        )
 
         original_attach_fake_jump = HodurStrategyFamily.attach_fake_jump_fixes_to_flow_graph
 
@@ -7586,20 +7605,17 @@ class TestEmulatedDispatcherManagedContext:
             if not fixes:
                 return updated
             try:
-                dispatcher_cache = DispatcherCache.get_or_create(mba)
-                dispatcher_analysis = dispatcher_cache.analyze()
+                dispatcher_analysis = analyze_dispatcher_live(mba)
             except Exception:
-                dispatcher_cache = None
                 dispatcher_analysis = None
             if (
-                dispatcher_cache is not None
-                and dispatcher_analysis is not None
+                dispatcher_analysis is not None
                 and dispatcher_analysis.is_conditional_chain
             ):
                 fixes = tuple(
                     fix
                     for fix in fixes
-                    if not dispatcher_cache.is_dispatcher(fix.fake_block)
+                    if not is_dispatcher_block(dispatcher_analysis, fix.fake_block)
                 )
             if not fixes:
                 return updated

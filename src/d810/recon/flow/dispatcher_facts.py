@@ -4,16 +4,16 @@ Holds the pure data classes used by dispatcher analysis -- no
 ``ida_hexrays`` types in any field annotation, no live IDA calls in
 any method body.  Consumed by the pure analyzer at
 ``d810.recon.flow.dispatcher_analysis`` and the live adapter at
-``d810.optimizers.microcode.flow.dispatcher.dispatcher_cache``.
+``d810.optimizers.microcode.flow.dispatcher.dispatcher_history``.
 
 Companion modules:
 
 * ``d810.recon.flow.dispatcher_kind`` -- ``DispatcherType`` enum.
 * ``d810.recon.flow.dispatcher_analysis`` -- pure
   ``analyze_dispatcher(flow_graph)`` + ``DispatcherAnalysis`` result.
-* ``d810.optimizers.microcode.flow.dispatcher.dispatcher_cache`` --
-  live adapter (mba lift + cross-maturity state + Unicorn
-  validation).
+* ``d810.optimizers.microcode.flow.dispatcher.dispatcher_history`` --
+  live adapter (``analyze_dispatcher_live``: mba lift + explicit
+  cross-maturity history store).
 
 This module imports only ``d810.cfg.flowgraph``; all dependencies
 flow upward (recon-flow facts -> recon-flow analyzer -> optimizers
@@ -80,8 +80,8 @@ class StateVariableCandidate:
     The operand identity is held as a portable
     ``d810.cfg.flowgraph.MopSnapshot``, NOT a live ``ida_hexrays.mop_t``.
     The live adapter at
-    ``d810.optimizers.microcode.flow.dispatcher.dispatcher_cache`` is
-    the only construction site -- it lifts the mba via
+    ``d810.optimizers.microcode.flow.dispatcher.dispatcher_history`` is
+    the only construction site -- ``analyze_dispatcher_live`` lifts the mba via
     ``d810.hexrays.mutation.ir_translator.lift`` and then the pure
     ``analyze_dispatcher(flow_graph, ...)`` populates this candidate
     from the resulting snapshot.
@@ -116,10 +116,8 @@ class StateVariableCandidate:
         Args:
             frame_size: Total frame size from the live ``mba_t``.
                 (Frame size is not part of the portable contract; the
-                caller is responsible for sourcing it -- e.g., the
-                emulation hook in the live adapter at
-                ``d810.optimizers.microcode.flow.dispatcher.dispatcher_cache``
-                reads ``mba.frsize``.)
+                caller is responsible for sourcing it -- a live
+                optimizer-layer caller reads ``mba.frsize``.)
 
         Returns:
             Native stack offset (negative, relative to frame base),
