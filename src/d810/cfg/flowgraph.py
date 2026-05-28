@@ -45,6 +45,10 @@ class InsnKind(Enum):
     # detect switch-table-style dispatchers without reaching for
     # vendor opcode constants.
     TABLE_JUMP = "table_jump"
+    # Single-target indirect jump (Hex-Rays ``m_ijmp``).  Distinct from
+    # ``TABLE_JUMP`` (multi-target) and the conditional-jump kinds:
+    # corridor analyses treat it as pure control flow, not a carrier.
+    INDIRECT_JUMP = "indirect_jump"
     CALL = "call"
     RET = "ret"
 

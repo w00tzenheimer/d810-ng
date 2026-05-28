@@ -181,6 +181,11 @@ def _insn_kind_from_hexrays(opcode: int) -> InsnKind:
     # ``COND_JUMP`` if the predicate helper grows to cover it.
     if is_hexrays_opcode(opcode, "m_jtbl"):
         return InsnKind.TABLE_JUMP
+    # ``m_ijmp`` is a single-target indirect jump (no branch predicate).
+    # Map BEFORE the conditional fallback so it lands in the portable
+    # ``INDIRECT_JUMP`` kind instead of ``UNKNOWN``.
+    if is_hexrays_opcode(opcode, "m_ijmp"):
+        return InsnKind.INDIRECT_JUMP
     if opcode in (int(ida_hexrays.m_jnz), int(ida_hexrays.m_jz)):
         return InsnKind.EQUALITY_JUMP
     if _branch_predicate_from_hexrays(opcode) is not None:

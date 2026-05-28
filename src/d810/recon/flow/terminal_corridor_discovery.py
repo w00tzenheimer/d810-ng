@@ -9,13 +9,9 @@ from d810.cfg.flow.terminal_frontier import (
     classify_cfg_suffix_action,
     compute_terminal_cfg_suffix_frontier,
 )
-from d810.cfg.flowgraph import InsnKind, OperandKind
+from d810.cfg.flowgraph import BranchPredicate, InsnKind, OperandKind
 from d810.core.typing import AbstractSet, Mapping, Protocol, Sequence
-from d810.hexrays.mutation.ir_translator import (
-    classify_live_insn_kind,
-    classify_live_operand_kind,
-    is_hexrays_opcode,
-)
+from d810.recon.flow.carrier_resolution import CarrierResolver
 from d810.recon.flow.state_machine_analysis import (
     CarrierResolutionResult,
     ResolutionMethod,
@@ -142,7 +138,8 @@ class _TerminalCorridorSnapshot(Protocol):
     dispatcher_serial: int
     detector: object | None
     dispatcher_blocks: AbstractSet[int]
-    mba: object | None
+    carrier_resolver: CarrierResolver | None
+    state_var_stkoff: int | None
     state_constants: AbstractSet[int]
 
 
@@ -166,17 +163,23 @@ def resolve_state_var_stkoff(snapshot: _TerminalCorridorSnapshot) -> int | None:
             state_var_stkoff = _get_state_var_stkoff(detector)
         except Exception:
             pass
+    # Explicit evidence carried by the snapshot producer (preferred):
+    # the state-var offset is input, not a live dataflow query.
+    if state_var_stkoff is None:
+        explicit = getattr(snapshot, "state_var_stkoff", None)
+        if explicit is not None:
+            state_var_stkoff = int(explicit)
+    # Portable state-variable representation, if the producer attached one.
     if (
         state_var_stkoff is None
         and snapshot.state_machine is not None
         and snapshot.state_machine.state_var is not None
     ):
         sv = snapshot.state_machine.state_var
-        try:
-            if classify_live_operand_kind(sv) is OperandKind.STACK:
-                state_var_stkoff = int(sv.s.off)
-        except Exception:
-            pass
+        if getattr(sv, "kind", None) is OperandKind.STACK:
+            off = getattr(sv, "stkoff", None)
+            if off is not None:
+                state_var_stkoff = int(off)
     return state_var_stkoff
 
 
@@ -200,13 +203,8 @@ def _resolve_pre_header_serial(
 def _extract_const_from_snapshot_mop(mop_snap: object) -> int | None:
     if mop_snap is None:
         return None
-    if classify_live_operand_kind(mop_snap) is not OperandKind.NUMBER:
+    if getattr(mop_snap, "kind", None) is not OperandKind.NUMBER:
         return None
-    nnn = getattr(mop_snap, "nnn", None)
-    if nnn is not None:
-        val = getattr(nnn, "value", None)
-        if val is not None:
-            return int(val)
     val = getattr(mop_snap, "value", None)
     if val is not None:
         return int(val)
@@ -219,213 +217,25 @@ def _mop_matches_stkoff_snapshot(mop_snap: object | None, stkoff: int) -> bool:
     return getattr(mop_snap, "stkoff", None) == stkoff
 
 
-def _resolve_indirect_state_write_via_mba(
-    mba: object,
-    candidate_serial: int,
-    state_var_stkoff: int,
-) -> CarrierResolutionResult | None:
-    try:
-        from d810.evaluator.hexrays_microcode.def_search import find_def_in_block
-    except ImportError:
-        return None
+def _is_corridor_control_flow_insn(insn: object) -> bool:
+    """Match the original local set {m_goto, m_jnz, m_ijmp, m_jtbl}.
 
-    try:
-        live_blk = mba.get_mblock(candidate_serial)
-    except Exception:
-        return None
-    if live_blk is None:
-        return None
-
-    cur_ins = live_blk.tail
-    while cur_ins is not None:
-        if classify_live_insn_kind(cur_ins) is InsnKind.MOV and cur_ins.d is not None:
-            if (
-                classify_live_operand_kind(cur_ins.d) is OperandKind.STACK
-                and cur_ins.d.s is not None
-                and cur_ins.d.s.off == state_var_stkoff
-            ):
-                source_mop = cur_ins.l
-                if source_mop is None:
-                    break
-                if classify_live_operand_kind(source_mop) is OperandKind.NUMBER:
-                    nnn = source_mop.nnn
-                    if nnn is not None:
-                        return CarrierResolutionResult(
-                            kind=CarrierSourceKind.STATE_CONST.value,
-                            const_value=int(nnn.value),
-                            method=ResolutionMethod.MBA_DEF_SEARCH,
-                            def_blk_serial=None,
-                            def_insn_ea=None,
-                            source_mop_type=int(source_mop.t),
-                        )
-                    break
-                if classify_live_operand_kind(source_mop) not in (OperandKind.REGISTER, OperandKind.STACK):
-                    break
-                def_ins = find_def_in_block(source_mop, live_blk, cur_ins)
-                if def_ins is None:
-                    pred_blk = live_blk
-                    for _depth in range(3):
-                        npred = pred_blk.npred()
-                        if npred != 1:
-                            break
-                        pred_serial = pred_blk.pred(0)
-                        try:
-                            pred_blk = mba.get_mblock(pred_serial)
-                        except Exception:
-                            break
-                        if pred_blk is None:
-                            break
-                        scan = pred_blk.tail
-                        while scan is not None:
-                            if (
-                                classify_live_insn_kind(scan) is InsnKind.MOV
-                                and scan.d is not None
-                                and scan.d.t == source_mop.t
-                            ):
-                                dest_matches = False
-                                if classify_live_operand_kind(source_mop) is OperandKind.STACK:
-                                    try:
-                                        dest_matches = scan.d.s.off == source_mop.s.off
-                                    except Exception:
-                                        pass
-                                elif classify_live_operand_kind(source_mop) is OperandKind.REGISTER:
-                                    try:
-                                        dest_matches = scan.d.r == source_mop.r
-                                    except Exception:
-                                        pass
-                                if (
-                                    dest_matches
-                                    and scan.l is not None
-                                    and classify_live_operand_kind(scan.l) is OperandKind.NUMBER
-                                ):
-                                    def_ins = scan
-                                    live_blk = pred_blk
-                                    break
-                            scan = scan.prev
-                        if def_ins is not None:
-                            break
-                if def_ins is None:
-                    break
-                if (
-                    classify_live_insn_kind(def_ins) is InsnKind.MOV
-                    and def_ins.l is not None
-                    and classify_live_operand_kind(def_ins.l) is OperandKind.NUMBER
-                ):
-                    nnn = def_ins.l.nnn
-                    if nnn is not None:
-                        src_stkoff: int | None = None
-                        src_mreg: int | None = None
-                        if classify_live_operand_kind(source_mop) is OperandKind.STACK:
-                            try:
-                                src_stkoff = source_mop.s.off
-                            except Exception:
-                                pass
-                        elif classify_live_operand_kind(source_mop) is OperandKind.REGISTER:
-                            try:
-                                src_mreg = int(source_mop.r)
-                            except Exception:
-                                pass
-                        return CarrierResolutionResult(
-                            kind=CarrierSourceKind.STATE_CONST.value,
-                            const_value=int(nnn.value),
-                            method=ResolutionMethod.MBA_DEF_SEARCH,
-                            def_blk_serial=live_blk.serial,
-                            def_insn_ea=def_ins.ea,
-                            source_mop_type=int(source_mop.t),
-                            source_stkoff=src_stkoff,
-                            source_mreg=src_mreg,
-                        )
-                break
-        cur_ins = cur_ins.prev
-    return None
-
-
-def _resolve_state_const_via_valranges(
-    mba: object,
-    candidate_serial: int,
-    state_var_stkoff: int,
-) -> CarrierResolutionResult | None:
-    try:
-        from d810.evaluator.hexrays_microcode.valranges import (
-            ValrangeLocation,
-            ValrangeLocationKind,
-            collect_instruction_valrange_record_for_location,
+    Exact parity via portable kinds: corridor control flow is ``GOTO``,
+    ``m_jnz`` (``EQUALITY_JUMP`` with a ``NOT_EQUAL`` predicate -- NOT
+    ``m_jz``), ``INDIRECT_JUMP`` (``m_ijmp``), or ``TABLE_JUMP``
+    (``m_jtbl``).  Anything else in a corridor block counts as a carrier
+    (semantic) instruction.
+    """
+    kind = insn.kind
+    return (
+        kind is InsnKind.GOTO
+        or (
+            kind is InsnKind.EQUALITY_JUMP
+            and insn.branch_predicate is BranchPredicate.NOT_EQUAL
         )
-    except ImportError:
-        return None
-
-    try:
-        live_blk = mba.get_mblock(candidate_serial)
-    except Exception:
-        return None
-    if live_blk is None:
-        return None
-
-    cur_ins = live_blk.tail
-    state_write_ins = None
-    while cur_ins is not None:
-        if classify_live_insn_kind(cur_ins) is InsnKind.MOV and cur_ins.d is not None:
-            if (
-                classify_live_operand_kind(cur_ins.d) is OperandKind.STACK
-                and cur_ins.d.s is not None
-                and cur_ins.d.s.off == state_var_stkoff
-            ):
-                state_write_ins = cur_ins
-                break
-        cur_ins = cur_ins.prev
-    if state_write_ins is None:
-        return None
-
-    source_mop = state_write_ins.l
-    source_kind = classify_live_operand_kind(source_mop)
-    if source_mop is None or source_kind not in (OperandKind.REGISTER, OperandKind.STACK):
-        return None
-
-    if source_kind is OperandKind.REGISTER:
-        location = ValrangeLocation(
-            kind=ValrangeLocationKind.REGISTER,
-            identifier=int(source_mop.r),
-            width=int(source_mop.size),
-        )
-    else:
-        try:
-            stkoff = source_mop.s.off
-        except Exception:
-            return None
-        location = ValrangeLocation(
-            kind=ValrangeLocationKind.STACK,
-            identifier=int(stkoff),
-            width=int(source_mop.size),
-        )
-
-    try:
-        record = collect_instruction_valrange_record_for_location(
-            live_blk,
-            state_write_ins,
-            location,
-        )
-    except Exception:
-        return None
-    if record is None:
-        return None
-
-    range_text = record.range_text.strip()
-    if range_text.startswith("{") and range_text.endswith("}"):
-        inner = range_text[1:-1].strip()
-        if "," not in inner and ".." not in inner:
-            try:
-                val = int(inner, 0)
-            except ValueError:
-                return None
-            return CarrierResolutionResult(
-                kind=CarrierSourceKind.STATE_CONST.value,
-                const_value=val,
-                method=ResolutionMethod.VALRANGES,
-                def_blk_serial=None,
-                def_insn_ea=None,
-                source_mop_type=int(source_mop.t),
-            )
-    return None
+        or kind is InsnKind.INDIRECT_JUMP
+        or kind is InsnKind.TABLE_JUMP
+    )
 
 
 def classify_carrier_source_rich(
@@ -434,7 +244,7 @@ def classify_carrier_source_rich(
     state_var_stkoff: int,
     infra_blocks: frozenset[int],
     *,
-    mba: object | None = None,
+    resolver: CarrierResolver | None = None,
 ) -> CarrierResolutionResult:
     del infra_blocks
     blk_snap = flow_graph.get_block(candidate_serial)
@@ -447,10 +257,10 @@ def classify_carrier_source_rich(
     has_expr_write = False
     state_const_written: int | None = None
     state_write_source_indirect = False
-    mba_resolution: CarrierResolutionResult | None = None
+    resolution: CarrierResolutionResult | None = None
 
     for insn in blk_snap.iter_insns():
-        if classify_live_insn_kind(insn) is InsnKind.MOV and insn.d is not None:
+        if insn.kind is InsnKind.MOV and insn.d is not None:
             if _mop_matches_stkoff_snapshot(insn.d, state_var_stkoff):
                 has_state_write = True
                 const_val = _extract_const_from_snapshot_mop(insn.l)
@@ -460,7 +270,7 @@ def classify_carrier_source_rich(
                     state_write_source_indirect = True
                 continue
             if insn.l is not None:
-                src_kind = classify_live_operand_kind(insn.l)
+                src_kind = insn.l.kind
                 if src_kind is OperandKind.NUMBER:
                     has_const_write = True
                 elif src_kind is OperandKind.ADDRESS:
@@ -472,31 +282,17 @@ def classify_carrier_source_rich(
         has_state_write
         and state_const_written is None
         and state_write_source_indirect
-        and mba is not None
+        and resolver is not None
     ):
         try:
-            mba_resolution = _resolve_indirect_state_write_via_mba(
-                mba,
+            resolution = resolver.resolve_indirect_state_write(
                 candidate_serial,
                 state_var_stkoff,
             )
-            if mba_resolution is not None:
-                state_const_written = mba_resolution.const_value
+            if resolution is not None:
+                state_const_written = resolution.const_value
         except Exception:
             pass
-
-        if state_const_written is None:
-            try:
-                vr_resolution = _resolve_state_const_via_valranges(
-                    mba,
-                    candidate_serial,
-                    state_var_stkoff,
-                )
-                if vr_resolution is not None:
-                    state_const_written = vr_resolution.const_value
-                    mba_resolution = vr_resolution
-            except Exception:
-                pass
 
     if has_state_write and not (has_const_write or has_ptr_write or has_expr_write):
         kind = CarrierSourceKind.STATE_CONST
@@ -509,16 +305,16 @@ def classify_carrier_source_rich(
     else:
         kind = CarrierSourceKind.UNKNOWN
 
-    if mba_resolution is not None:
+    if resolution is not None:
         return CarrierResolutionResult(
             kind=kind.value,
             const_value=state_const_written,
-            method=mba_resolution.method,
-            def_blk_serial=mba_resolution.def_blk_serial,
-            def_insn_ea=mba_resolution.def_insn_ea,
-            source_mop_type=mba_resolution.source_mop_type,
-            source_stkoff=mba_resolution.source_stkoff,
-            source_mreg=mba_resolution.source_mreg,
+            method=resolution.method,
+            def_blk_serial=resolution.def_blk_serial,
+            def_insn_ea=resolution.def_insn_ea,
+            source_mop_type=resolution.source_mop_type,
+            source_stkoff=resolution.source_stkoff,
+            source_mreg=resolution.source_mreg,
         )
     return CarrierResolutionResult(
         kind=kind.value,
@@ -533,14 +329,14 @@ def classify_carrier_source(
     state_var_stkoff: int,
     infra_blocks: frozenset[int],
     *,
-    mba: object | None = None,
+    resolver: CarrierResolver | None = None,
 ) -> tuple[CarrierSourceKind, int | None]:
     result = classify_carrier_source_rich(
         flow_graph,
         candidate_serial,
         state_var_stkoff,
         infra_blocks,
-        mba=mba,
+        resolver=resolver,
     )
     return CarrierSourceKind(result.kind), result.const_value
 
@@ -608,30 +404,13 @@ def discover_shared_corridor(
         if entry_snap is not None:
             entry_fan_in = len([pred for pred in entry_snap.preds if pred not in corridor_set])
 
-    def _is_corridor_control_flow_opcode(opcode: int) -> bool:
-        """Match the original local set: {m_goto, m_jnz, m_ijmp, m_jtbl}.
-
-        Strict parity with the pre-slice behaviour -- the broader
-        ``ir_translator.is_control_flow_opcode`` ALSO matches the
-        remaining conditional jumps (m_jz / m_jbe / m_ja / ...) and
-        direct / indirect calls, which is NOT what this site wants.
-        SharedCorridorInfo.carrier_in_corridor counts anything outside
-        these four opcodes as a "carrier" (semantic) instruction.
-        """
-        return (
-            is_hexrays_opcode(opcode, "m_goto")
-            or is_hexrays_opcode(opcode, "m_jnz")
-            or is_hexrays_opcode(opcode, "m_ijmp")
-            or is_hexrays_opcode(opcode, "m_jtbl")
-        )
-
     carrier_in_corridor = False
     for blk_serial in corridor_tuple:
         blk_snap = flow_graph.get_block(blk_serial)
         if blk_snap is None:
             continue
         for insn in blk_snap.iter_insns():
-            if not _is_corridor_control_flow_opcode(insn.opcode):
+            if not _is_corridor_control_flow_insn(insn):
                 carrier_in_corridor = True
                 break
         if carrier_in_corridor:
@@ -770,7 +549,7 @@ def discover_terminal_corridor_group(
             anchor_serial,
             state_var_stkoff,
             full_infra,
-            mba=snapshot.mba,
+            resolver=snapshot.carrier_resolver,
         )
         requires_dtl = (
             carrier_const is not None and carrier_const in known_state_constants
