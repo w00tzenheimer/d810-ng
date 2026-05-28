@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from enum import Enum, auto
 import re
 
-from d810.cfg.flowgraph import FlowGraph
+from d810.cfg.flowgraph import FlowGraph, InsnKind
 from d810.core import logging
 from d810.core.typing import Callable, Mapping
 from d810.recon.flow.interval_map import IntervalDispatcher
@@ -78,6 +78,12 @@ _SIMPLE_CONST_ASSIGN_RE = re.compile(r"^\s*.+?=\s*(0x[0-9A-F]+)\s*$")
 _PRESERVE_EXACT_SIDE_EFFECT_CORRIDORS_ENV = (
     "D810_RECON_PRESERVE_EXACT_SIDE_EFFECT_CORRIDORS"
 )
+_SIDE_EFFECT_INSN_KINDS = frozenset({InsnKind.STORE, InsnKind.CALL})
+_SIDE_EFFECT_KIND_VALUES = frozenset(kind.value for kind in _SIDE_EFFECT_INSN_KINDS)
+_SIDE_EFFECT_OPCODE_NAMES = frozenset(
+    {"m_stx", "m_call", "m_icall", "stx", "call", "icall"}
+)
+_SIDE_EFFECT_OPCODES = frozenset({0x01, 0x38, 0x39})
 
 
 def _preserve_exact_side_effect_corridors_gate() -> bool:
@@ -118,16 +124,7 @@ def _classify_exact_handler_side_effect_corridor(
     """
     if flow_graph is None or handler_serial is None:
         return False, (), ()
-    try:
-        import ida_hexrays  # local import — recon-flow is allowed to use it
-    except ImportError:
-        return False, (), ()
-    m_stx = getattr(ida_hexrays, "m_stx", -1)
-    m_call = getattr(ida_hexrays, "m_call", -1)
-    m_icall = getattr(ida_hexrays, "m_icall", -1)
-    side_effect_ops = {op for op in (m_stx, m_call, m_icall) if op >= 0}
-    if not side_effect_ops:
-        return False, (), ()
+    side_effect_ops = _SIDE_EFFECT_OPCODES
 
     visited: set[int] = set()
     queue: deque[tuple[int, int]] = deque([(int(handler_serial), 0)])
@@ -147,16 +144,13 @@ def _classify_exact_handler_side_effect_corridor(
             continue
 
         for insn in getattr(blk, "insn_snapshots", ()):
-            try:
-                opcode = int(getattr(insn, "opcode", -1))
-            except (TypeError, ValueError):
-                continue
-            if opcode in side_effect_ops:
+            if _insn_has_side_effect(insn, side_effect_ops):
                 found = True
                 if len(signature) < 8:
                     ea = int(getattr(insn, "ea", 0))
+                    marker = _insn_side_effect_marker(insn)
                     signature.append(
-                        f"blk[{serial}]@0x{ea:x}:op={opcode}"
+                        f"blk[{serial}]@0x{ea:x}:op={marker}"
                     )
 
         for succ in getattr(blk, "succs", ()):
@@ -202,16 +196,51 @@ def _classify_exact_handler_side_effect_corridor(
 # rewrites that would shred them.
 
 
-def _block_has_side_effect_opcode(blk: object, side_effect_ops: set[int]) -> bool:
+def _insn_has_side_effect(
+    insn: object,
+    side_effect_ops: frozenset[int] | set[int] = _SIDE_EFFECT_OPCODES,
+) -> bool:
+    kind = getattr(insn, "kind", None)
+    if kind in _SIDE_EFFECT_INSN_KINDS:
+        return True
+    kind_value = getattr(kind, "value", kind)
+    if isinstance(kind_value, str) and kind_value in _SIDE_EFFECT_KIND_VALUES:
+        return True
+    opcode_name = getattr(insn, "opcode_name", None)
+    if isinstance(opcode_name, str) and opcode_name in _SIDE_EFFECT_OPCODE_NAMES:
+        return True
+    opcode = getattr(insn, "opcode", None)
+    if isinstance(opcode, str):
+        return opcode in _SIDE_EFFECT_OPCODE_NAMES
+    try:
+        return int(opcode) in side_effect_ops
+    except (TypeError, ValueError):
+        return False
+
+
+def _insn_side_effect_marker(insn: object) -> str:
+    opcode = getattr(insn, "opcode", None)
+    try:
+        return str(int(opcode))
+    except (TypeError, ValueError):
+        pass
+    opcode_name = getattr(insn, "opcode_name", None)
+    if isinstance(opcode_name, str) and opcode_name:
+        return opcode_name
+    kind = getattr(insn, "kind", None)
+    kind_value = getattr(kind, "value", kind)
+    return str(kind_value)
+
+
+def _block_has_side_effect_opcode(
+    blk: object,
+    side_effect_ops: frozenset[int] | set[int] = _SIDE_EFFECT_OPCODES,
+) -> bool:
     """Check whether ``blk`` contains any ``m_stx``/``m_call``/``m_icall``."""
     if blk is None:
         return False
     for insn in getattr(blk, "insn_snapshots", ()):
-        try:
-            opcode = int(getattr(insn, "opcode", -1))
-        except (TypeError, ValueError):
-            continue
-        if opcode in side_effect_ops:
+        if _insn_has_side_effect(insn, side_effect_ops):
             return True
     return False
 
@@ -249,16 +278,7 @@ def detect_side_effect_corridors(
     """
     if flow_graph is None:
         return ()
-    try:
-        import ida_hexrays
-    except ImportError:
-        return ()
-    m_stx = getattr(ida_hexrays, "m_stx", -1)
-    m_call = getattr(ida_hexrays, "m_call", -1)
-    m_icall = getattr(ida_hexrays, "m_icall", -1)
-    side_effect_ops = {op for op in (m_stx, m_call, m_icall) if op >= 0}
-    if not side_effect_ops:
-        return ()
+    side_effect_ops = _SIDE_EFFECT_OPCODES
 
     bst_set: set[int] = (
         set(int(s) for s in (bst_block_set or ())) if bst_block_set else set()
@@ -383,16 +403,7 @@ def detect_intra_node_terminal_byte_corridors(
     """
     if dag is None or flow_graph is None:
         return ()
-    try:
-        import ida_hexrays
-    except ImportError:
-        return ()
-    m_stx = getattr(ida_hexrays, "m_stx", -1)
-    m_call = getattr(ida_hexrays, "m_call", -1)
-    m_icall = getattr(ida_hexrays, "m_icall", -1)
-    side_effect_ops = {op for op in (m_stx, m_call, m_icall) if op >= 0}
-    if not side_effect_ops:
-        return ()
+    side_effect_ops = _SIDE_EFFECT_OPCODES
 
     # Local-edge kinds that participate in the sequential cascade.
     # SHARED_SUFFIX is critical: the byte-emit terminal cascade is a
@@ -711,16 +722,7 @@ def detect_hybrid_terminal_byte_corridors(
     """
     if dag is None or flow_graph is None:
         return ()
-    try:
-        import ida_hexrays
-    except ImportError:
-        return ()
-    m_stx = getattr(ida_hexrays, "m_stx", -1)
-    m_call = getattr(ida_hexrays, "m_call", -1)
-    m_icall = getattr(ida_hexrays, "m_icall", -1)
-    side_effect_ops = {op for op in (m_stx, m_call, m_icall) if op >= 0}
-    if not side_effect_ops:
-        return ()
+    side_effect_ops = _SIDE_EFFECT_OPCODES
 
     # 1. Extract one fragment per state node.
     fragments: dict[int, SideEffectFragment] = {}
@@ -1104,16 +1106,7 @@ def detect_state_dag_terminal_byte_corridors(
     """
     if dag is None or flow_graph is None:
         return ()
-    try:
-        import ida_hexrays
-    except ImportError:
-        return ()
-    m_stx = getattr(ida_hexrays, "m_stx", -1)
-    m_call = getattr(ida_hexrays, "m_call", -1)
-    m_icall = getattr(ida_hexrays, "m_icall", -1)
-    side_effect_ops = {op for op in (m_stx, m_call, m_icall) if op >= 0}
-    if not side_effect_ops:
-        return ()
+    side_effect_ops = _SIDE_EFFECT_OPCODES
 
     # Index nodes by handler_serial; classify each as side-effect or
     # transit by inspecting its owned_blocks.
