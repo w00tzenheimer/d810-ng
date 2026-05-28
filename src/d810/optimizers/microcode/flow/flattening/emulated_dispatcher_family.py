@@ -1322,7 +1322,7 @@ def _tigress_switch_state_dispatcher_maps(
     _collector_dispatchers: tuple[object, ...],
 ) -> tuple[StateDispatcherMap, ...]:
     try:
-        from d810.recon.flow.switch_table_analysis import (
+        from d810.optimizers.microcode.flow.dispatcher.switch_table import (
             analyze_switch_table_dispatcher,
         )
 

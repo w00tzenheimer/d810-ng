@@ -1,14 +1,14 @@
 """Switch-table dispatcher analysis.
 
-Extracts exact state-dispatcher rows from ``m_jtbl`` switch tables. The
-IDA-dependent ``analyze_switch_table_dispatcher()`` walks the MBA; the
-pure-logic ``build_state_dispatcher_map_from_cases()`` constructs the shared
-shape-neutral state-machine IR.
+Extracts exact state-dispatcher rows from portable ``FlowGraph`` switch-table
+snapshots. Live Hex-Rays adapters live above recon and call
+``analyze_switch_table_flow_graph()`` after lifting an MBA.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnKind, MopSnapshot
 from d810.core.logging import getLogger
 from d810.recon.flow.dispatcher_kind import DispatcherType
 from d810.recon.flow.dispatcher_map import (
@@ -23,12 +23,12 @@ logger = getLogger("D810.recon.switch_table")
 class SwitchTableResult:
     """Bundled result from switch-table dispatcher analysis.
 
-    Couples the exact dispatcher map with the live state variable mop so that
-    consumers don't need a second MBA scan.
+    Couples the exact dispatcher map with the portable operand snapshot for
+    the state variable used by the table jump.
     """
 
     state_dispatcher_map: StateDispatcherMap
-    state_var_mop: object  # ida_hexrays.mop_t
+    state_var_operand: MopSnapshot
 
 
 def build_state_dispatcher_map_from_cases(
@@ -98,155 +98,48 @@ def build_state_dispatcher_map_from_cases(
     )
 
 
-def _extract_stkoff_from_mop(mop: object) -> int | None:
-    """Recursively extract stack offset from an mop_t."""
-    import ida_hexrays
-
-    if mop.t == ida_hexrays.mop_S:
-        return mop.s.off
-
-    if mop.t == ida_hexrays.mop_d:
-        inner = mop.d
-        _DISPATCH_EXPR_OPCODES = frozenset({
-            ida_hexrays.m_and,
-            ida_hexrays.m_or,
-            ida_hexrays.m_xor,
-            ida_hexrays.m_sub,
-        })
-        if inner.opcode in _DISPATCH_EXPR_OPCODES:
-            result = _extract_stkoff_from_mop(inner.l)
-            if result is not None:
-                return result
-            return _extract_stkoff_from_mop(inner.r)
-        _COPY_OPCODES = frozenset({
-            ida_hexrays.m_mov,
-            ida_hexrays.m_xdu,
-            ida_hexrays.m_xds,
-        })
-        if inner.opcode in _COPY_OPCODES:
-            return _extract_stkoff_from_mop(inner.l)
-
+def _find_state_var_stkoff(
+    operand: MopSnapshot | None,
+) -> int | None:
+    """Return the stack offset referenced by a table-jump state operand."""
+    if operand is None:
+        return None
+    if operand.stack_refs:
+        return int(operand.stack_refs[0])
+    if operand.stkoff is not None:
+        return int(operand.stkoff)
     return None
 
 
-def _find_state_var_stkoff(jtbl_insn: object) -> int | None:
-    """Trace m_jtbl left operand backward to find state variable stack offset.
-
-    Handles direct stack refs (``mop_S``), compound dispatch expressions like
-    ``v3 & 0xF`` (``mop_d`` wrapping ``m_and``), and copy chains.
-    """
-    return _extract_stkoff_from_mop(jtbl_insn.l)
-
-
-def _extract_state_var_mop(mop: object) -> object | None:
-    """Recursively find the root mop_S operand."""
-    import ida_hexrays
-
-    if mop.t == ida_hexrays.mop_S:
-        return mop
-
-    if mop.t == ida_hexrays.mop_d:
-        inner = mop.d
-        _DISPATCH_EXPR_OPCODES = frozenset({
-            ida_hexrays.m_and,
-            ida_hexrays.m_or,
-            ida_hexrays.m_xor,
-            ida_hexrays.m_sub,
-        })
-        if inner.opcode in _DISPATCH_EXPR_OPCODES:
-            result = _extract_state_var_mop(inner.l)
-            if result is not None:
-                return result
-            return _extract_state_var_mop(inner.r)
-        _COPY_OPCODES = frozenset({
-            ida_hexrays.m_mov,
-            ida_hexrays.m_xdu,
-            ida_hexrays.m_xds,
-        })
-        if inner.opcode in _COPY_OPCODES:
-            return _extract_state_var_mop(inner.l)
-
-    return None
-
-
-def _find_state_var_mop(jtbl_insn: object) -> object | None:
-    """Return the live ``mop_t`` for the state variable used by m_jtbl."""
-    return _extract_state_var_mop(jtbl_insn.l)
-
-
-def _extract_cases_from_mcases(
-    mcases_mop: object,
+def _extract_cases_from_switch_operand(
+    switch_operand: MopSnapshot | None,
     dispatcher_serial: int,
 ) -> list[tuple[int | None, int]]:
-    """Extract (case_value, target_serial) pairs from an mcases_t operand.
+    """Extract ``(case_value, target_serial)`` pairs from switch cases.
 
-    Default cases are represented as ``(None, target_serial)``.
+    Default cases are represented as ``(None, target_serial)``. The
+    ``dispatcher_serial`` parameter keeps the helper signature aligned with
+    the previous live-MBA version and makes call sites self-documenting.
     """
     cases: list[tuple[int | None, int]] = []
-    mcases = mcases_mop.c
-    for values, target in zip(mcases.values, mcases.targets):
+    _ = dispatcher_serial
+    if switch_operand is None:
+        return cases
+    for values, target in switch_operand.switch_cases:
         if len(values) == 0:
-            cases.append((None, target))
+            cases.append((None, int(target)))
             continue
         for value in values:
-            cases.append((value, target))
+            cases.append((int(value), int(target)))
     return cases
 
 
-def _maturity_label(mba: object) -> str:
-    value = getattr(mba, "maturity", None)
-    if value is None:
-        return "unknown"
-    try:
-        import ida_hexrays  # type: ignore[import-untyped]
-
-        for name in dir(ida_hexrays):
-            if (
-                name.startswith("MMAT_")
-                and int(getattr(ida_hexrays, name)) == int(value)
-            ):
-                return name
-    except Exception:
-        pass
-    return str(value)
-
-
-def _block_successors(block: object) -> tuple[int, ...]:
-    try:
-        return tuple(int(block.succ(index)) for index in range(int(block.nsucc())))
-    except Exception:
-        return ()
-
-
-def _block_predecessors(block: object) -> tuple[int, ...]:
-    try:
-        return tuple(int(block.pred(index)) for index in range(int(block.npred())))
-    except Exception:
-        return ()
-
-
-def _conditional_jump_opcodes() -> frozenset[int]:
-    try:
-        import ida_hexrays  # type: ignore[import-untyped]
-
-        return frozenset(
-            int(getattr(ida_hexrays, name))
-            for name in (
-                "m_jnz",
-                "m_jz",
-                "m_ja",
-                "m_jae",
-                "m_jb",
-                "m_jbe",
-                "m_jg",
-                "m_jge",
-                "m_jl",
-                "m_jle",
-            )
-            if getattr(ida_hexrays, name, None) is not None
-        )
-    except Exception:
-        return frozenset(range(43, 53))
+def _maturity_label(flow_graph: FlowGraph) -> str:
+    value = flow_graph.metadata.get("maturity_name")
+    if value:
+        return str(value)
+    value = flow_graph.metadata.get("maturity")
+    return "unknown" if value is None else str(value)
 
 
 def _mop_const_value(mop: object | None) -> int | None:
@@ -264,66 +157,34 @@ def _mop_const_value(mop: object | None) -> int | None:
 
 
 def _mop_contains_stkoff(
-    mop: object | None,
+    mop: MopSnapshot | None,
     state_var_stkoff: int,
-    mba: object,
-    *,
-    visited: set[int] | None = None,
 ) -> bool:
     if mop is None:
         return False
-    if visited is None:
-        visited = set()
-    identity = id(mop)
-    if identity in visited:
-        return False
-    visited.add(identity)
-
-    stack_ref = getattr(mop, "s", None)
-    if stack_ref is not None and getattr(stack_ref, "off", None) == state_var_stkoff:
+    if int(state_var_stkoff) in {int(ref) for ref in mop.stack_refs}:
         return True
-    if getattr(mop, "stkoff", None) == state_var_stkoff:
+    if mop.stkoff is not None and int(mop.stkoff) == int(state_var_stkoff):
         return True
-
-    lvar_ref = getattr(mop, "l", None)
-    lvar_idx = getattr(lvar_ref, "idx", None) if lvar_ref is not None else None
-    if lvar_idx is not None:
-        try:
-            if mba.vars[int(lvar_idx)].location.stkoff() == state_var_stkoff:
-                return True
-        except Exception:
-            pass
-
-    for attr in ("a", "d", "l", "r"):
-        child = getattr(mop, attr, None)
-        if child is not None and _mop_contains_stkoff(
-            child,
-            state_var_stkoff,
-            mba,
-            visited=visited,
-        ):
-            return True
     return False
 
 
 def _guard_compares_state_to_terminal(
-    mba: object,
-    block: object,
+    block: BlockSnapshot,
     *,
     state_var_stkoff: int,
     case_values: frozenset[int],
 ) -> bool:
-    tail = getattr(block, "tail", None)
+    tail = block.tail
     if tail is None:
         return False
-    opcode = getattr(tail, "opcode", None)
-    if opcode not in _conditional_jump_opcodes():
+    if not tail.is_conditional_jump:
         return False
 
-    left = getattr(tail, "l", None)
-    right = getattr(tail, "r", None)
-    left_is_state = _mop_contains_stkoff(left, state_var_stkoff, mba)
-    right_is_state = _mop_contains_stkoff(right, state_var_stkoff, mba)
+    left = tail.l
+    right = tail.r
+    left_is_state = _mop_contains_stkoff(left, state_var_stkoff)
+    right_is_state = _mop_contains_stkoff(right, state_var_stkoff)
     if left_is_state == right_is_state:
         return False
     const_mop = right if left_is_state else left
@@ -334,7 +195,7 @@ def _guard_compares_state_to_terminal(
 
 
 def find_switch_loop_guard_blocks(
-    mba: object,
+    flow_graph: FlowGraph,
     dispatcher_serial: int,
     *,
     state_var_stkoff: int,
@@ -348,28 +209,21 @@ def find_switch_loop_guard_blocks(
     variable against a terminal value outside the exact switch rows.
     """
 
-    try:
-        dispatcher = mba.get_mblock(int(dispatcher_serial))
-    except Exception:
-        return frozenset()
+    dispatcher = flow_graph.get_block(int(dispatcher_serial))
     if dispatcher is None:
         return frozenset()
 
     guards: set[int] = set()
-    for pred_serial in _block_predecessors(dispatcher):
-        try:
-            pred_block = mba.get_mblock(int(pred_serial))
-        except Exception:
-            pred_block = None
+    for pred_serial in dispatcher.preds:
+        pred_block = flow_graph.get_block(int(pred_serial))
         if pred_block is None:
             continue
-        succs = _block_successors(pred_block)
+        succs = pred_block.succs
         if (
             len(succs) == 2
             and int(dispatcher_serial) in succs
-            and len(_block_predecessors(pred_block)) >= 2
+            and len(pred_block.preds) >= 2
             and _guard_compares_state_to_terminal(
-                mba,
                 pred_block,
                 state_var_stkoff=state_var_stkoff,
                 case_values=case_values,
@@ -380,15 +234,15 @@ def find_switch_loop_guard_blocks(
 
 
 def _observe_state_dispatcher_map(
-    mba: object,
+    flow_graph: FlowGraph,
     dispatch_map: StateDispatcherMap,
 ) -> None:
     try:
         from d810.recon.observability import observe_state_dispatcher_rows
 
         observe_state_dispatcher_rows(
-            func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-            maturity=_maturity_label(mba),
+            func_ea=int(flow_graph.func_ea),
+            maturity=_maturity_label(flow_graph),
             dispatcher_entry_block=dispatch_map.dispatcher_entry_block,
             dispatcher_kind=dispatch_map.source.name,
             rows=dispatch_map.rows,
@@ -400,46 +254,37 @@ def _observe_state_dispatcher_map(
         )
 
 
-def analyze_switch_table_dispatcher(mba: object) -> SwitchTableResult | None:
-    """Walk MBA looking for m_jtbl dispatchers and extract exact rows.
+def analyze_switch_table_flow_graph(
+    flow_graph: FlowGraph,
+) -> SwitchTableResult | None:
+    """Walk a portable CFG snapshot and extract exact switch dispatcher rows.
 
-    Scans all blocks for ``m_jtbl`` tail instructions. For the first
+    Scans all blocks for table-jump tail instructions. For the first
     qualifying switch (>= 2 cases after filtering), extracts the case-target
-    mapping, identifies the state variable, and returns both the exact
-    state-dispatcher map and the live ``mop_t`` in a single
-    ``SwitchTableResult``.
+    mapping, identifies the state variable, and returns the exact
+    state-dispatcher map with the portable state-variable operand snapshot.
 
     Returns:
         ``SwitchTableResult`` if a switch-table dispatcher was found,
         None otherwise.
     """
-    import ida_hexrays
-
-    for serial in range(mba.qty):
-        blk = mba.get_mblock(serial)
-        if blk.tail is None or blk.tail.opcode != ida_hexrays.m_jtbl:
+    for serial, blk in sorted(flow_graph.blocks.items()):
+        if blk.tail is None or blk.tail_kind is not InsnKind.TABLE_JUMP:
             continue
 
-        stkoff = _find_state_var_stkoff(blk.tail)
+        state_var_operand = blk.tail.l
+        stkoff = _find_state_var_stkoff(state_var_operand)
         if stkoff is None:
             logger.debug(
-                "m_jtbl at blk[%d]: could not identify state variable stkoff",
+                "table jump at blk[%d]: could not identify state variable stkoff",
                 serial,
             )
             continue
 
-        state_var_mop = _find_state_var_mop(blk.tail)
-        if state_var_mop is None:
-            logger.debug(
-                "m_jtbl at blk[%d]: could not find state variable mop",
-                serial,
-            )
-            continue
-
-        cases = _extract_cases_from_mcases(blk.tail.r, serial)
+        cases = _extract_cases_from_switch_operand(blk.tail.r, serial)
         if len(cases) < 2:
             logger.debug(
-                "m_jtbl at blk[%d]: too few cases (%d), skipping",
+                "table jump at blk[%d]: too few cases (%d), skipping",
                 serial,
                 len(cases),
             )
@@ -453,7 +298,7 @@ def analyze_switch_table_dispatcher(mba: object) -> SwitchTableResult | None:
         dispatcher_blocks = frozenset({
             serial,
             *find_switch_loop_guard_blocks(
-                mba,
+                flow_graph,
                 serial,
                 state_var_stkoff=stkoff,
                 case_values=case_values,
@@ -465,7 +310,7 @@ def analyze_switch_table_dispatcher(mba: object) -> SwitchTableResult | None:
             dispatcher_blocks=dispatcher_blocks,
             state_var_stkoff=stkoff,
         )
-        _observe_state_dispatcher_map(mba, state_dispatcher_map)
+        _observe_state_dispatcher_map(flow_graph, state_dispatcher_map)
         handler_map = state_dispatcher_map.to_dispatcher_handler_map()
 
         logger.info(
@@ -476,7 +321,7 @@ def analyze_switch_table_dispatcher(mba: object) -> SwitchTableResult | None:
         )
         return SwitchTableResult(
             state_dispatcher_map=state_dispatcher_map,
-            state_var_mop=state_var_mop,
+            state_var_operand=state_var_operand,
         )
 
     return None
