@@ -11,7 +11,9 @@ from d810.recon.flow.analysis_stats import (
     FlowProfileStats,
     compute_flow_profile_stats,
 )
-from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import DispatcherCache
+from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+    analyze_dispatcher_live,
+)
 from d810.recon.flow.dispatcher_kind import DispatcherType
 from d810.core.gate_modes import GateOperationMode
 from d810.recon.flow_hints import FlowContextHintSummary
@@ -252,8 +254,7 @@ class FlowMaturityContext:
         if self._dispatcher_analysis_error is not None:
             return None
         try:
-            cache = DispatcherCache.get_or_create(self.mba)
-            self._dispatcher_analysis = cache.analyze()
+            self._dispatcher_analysis = analyze_dispatcher_live(self.mba)
             return self._dispatcher_analysis
         except Exception as exc:  # pragma: no cover - defensive; IDA runtime edge
             self._dispatcher_analysis_error = exc

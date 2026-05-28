@@ -963,7 +963,7 @@ def test_hodur_strategy_family_builds_cleanup_only_snapshot_without_state_machin
     family = HodurStrategyFamily()
     mba = SimpleNamespace(maturity=ida_hexrays.MMAT_GLBOPT1)
     reachability = SimpleNamespace(coverage=1.0)
-    dispatcher_cache = object()
+    dispatcher_analysis = object()
     base_flow_graph = FlowGraph(
         blocks={
             0: BlockSnapshot(0, 1, (1,), (), 0, 0, ()),
@@ -980,8 +980,8 @@ def test_hodur_strategy_family_builds_cleanup_only_snapshot_without_state_machin
     )
     monkeypatch.setattr(
         hodur_family_module,
-        "DispatcherCache",
-        SimpleNamespace(get_or_create=lambda _mba: dispatcher_cache),
+        "analyze_dispatcher_live",
+        lambda _mba: dispatcher_analysis,
     )
     monkeypatch.setattr(
         family,
@@ -1016,7 +1016,7 @@ def test_hodur_strategy_family_builds_cleanup_only_snapshot_without_state_machin
     assert snapshot.state_machine is None
     assert snapshot.flow_graph is not None
     assert snapshot.flow_graph.metadata[FAKE_JUMP_FIXES_METADATA_KEY] == {1: {0: 1}}
-    assert snapshot.dispatcher_cache is dispatcher_cache
+    assert snapshot.dispatcher_analysis is dispatcher_analysis
     assert snapshot.reachability is reachability
     assert snapshot.maturity == ida_hexrays.MMAT_GLBOPT1
     assert snapshot.pass_number == 0
@@ -1030,7 +1030,7 @@ def test_hodur_strategy_family_uses_constant_fixpoint_backend_for_discovery(
     discovery = object()
     transition_result = object()
     dispatcher = object()
-    dispatcher_cache = object()
+    dispatcher_analysis = object()
     reachability = SimpleNamespace(entry_serial=0)
     base_flow_graph = FlowGraph(
         blocks={
@@ -1054,8 +1054,8 @@ def test_hodur_strategy_family_uses_constant_fixpoint_backend_for_discovery(
     )
     monkeypatch.setattr(
         hodur_family_module,
-        "DispatcherCache",
-        SimpleNamespace(get_or_create=lambda _mba: dispatcher_cache),
+        "analyze_dispatcher_live",
+        lambda _mba: dispatcher_analysis,
     )
     monkeypatch.setattr(
         family,
@@ -1444,12 +1444,10 @@ def test_attach_fake_jump_fixes_skips_conditional_chain_dispatchers(monkeypatch)
     )
     monkeypatch.setattr(
         hodur_family_module,
-        "DispatcherCache",
-        SimpleNamespace(
-            get_or_create=lambda _mba: SimpleNamespace(
-                analyze=lambda: SimpleNamespace(is_conditional_chain=True),
-                is_dispatcher=lambda serial: serial == 2,
-            ),
+        "analyze_dispatcher_live",
+        lambda _mba: SimpleNamespace(
+            is_conditional_chain=True,
+            blocks={2: SimpleNamespace(is_dispatcher=True)},
         ),
     )
 
@@ -1487,15 +1485,11 @@ def test_attach_fake_jump_fixes_skips_cleanup_only_emulated_dispatcher_candidate
     )
     monkeypatch.setattr(
         hodur_family_module,
-        "DispatcherCache",
-        SimpleNamespace(
-            get_or_create=lambda _mba: SimpleNamespace(
-                analyze=lambda: SimpleNamespace(
-                    is_conditional_chain=False,
-                    dispatchers=(2,),
-                ),
-                is_dispatcher=lambda _serial: False,
-            ),
+        "analyze_dispatcher_live",
+        lambda _mba: SimpleNamespace(
+            is_conditional_chain=False,
+            dispatchers=(2,),
+            blocks={},
         ),
     )
 

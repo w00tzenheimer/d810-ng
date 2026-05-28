@@ -25,7 +25,10 @@ from d810.optimizers.microcode.flow.flattening.strategies.single_iteration impor
     SINGLE_ITERATION_FIXES_METADATA_KEY,
     serialize_single_iteration_fixes,
 )
-from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import DispatcherCache
+from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+    analyze_dispatcher_live,
+    is_dispatcher_block,
+)
 from d810.recon.function_priors import FunctionAnalysisPriors
 
 __all__ = ["HodurSnapshotPolicy"]
@@ -209,7 +212,7 @@ class HodurSnapshotPolicy:
         flow_graph: FlowGraph,
         *,
         state_machine: DispatcherStateMachine | None,
-        dispatcher_cache_factory=DispatcherCache.get_or_create,
+        dispatcher_analysis_factory=analyze_dispatcher_live,
         collector=collect_live_fake_jump_fixes,
     ) -> FlowGraph:
         if mba.maturity not in (ida_hexrays.MMAT_GLBOPT1,):
@@ -234,22 +237,19 @@ class HodurSnapshotPolicy:
             return flow_graph
 
         try:
-            dispatcher_cache = dispatcher_cache_factory(mba)
-            dispatcher_analysis = dispatcher_cache.analyze()
+            dispatcher_analysis = dispatcher_analysis_factory(mba)
         except Exception:
-            dispatcher_cache = None
             dispatcher_analysis = None
 
         if (
-            dispatcher_cache is not None
-            and dispatcher_analysis is not None
+            dispatcher_analysis is not None
             and dispatcher_analysis.is_conditional_chain
         ):
             original_count = len(fixes)
             fixes = tuple(
                 fix
                 for fix in fixes
-                if not dispatcher_cache.is_dispatcher(fix.fake_block)
+                if not is_dispatcher_block(dispatcher_analysis, fix.fake_block)
             )
             dropped = original_count - len(fixes)
             if dropped > 0:

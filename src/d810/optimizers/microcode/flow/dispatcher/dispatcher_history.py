@@ -12,7 +12,7 @@ access dispatcher analysis through the stateless
     analyze_dispatcher(flow_graph, previous_dispatcher_type=..., persisted_initial_state=...)
 
 The promotion rule is identical to the legacy ``DispatcherCache``
-(pinned by ``tests/.../test_dispatcher_cache_cross_maturity.py`` and
+(pinned by ``tests/.../test_dispatcher_history_store.py`` and
 mirrored by this module's own test): on each new maturity the prior
 analysis' ``dispatcher_type`` and -- only when not ``None`` --
 ``initial_state`` are carried forward.
@@ -35,11 +35,15 @@ from d810.recon.flow.dispatcher_kind import DispatcherType
 logger = getLogger("D810.dispatcher")
 
 __all__ = [
+    # Re-export so consumers import analysis + access in one place.
+    "DispatcherAnalysis",
+    "DispatcherType",
     "DispatcherHistory",
     "DispatcherHistoryStore",
     "DEFAULT_DISPATCHER_HISTORY_STORE",
     "analyze_dispatcher_live",
     "is_dispatcher_block",
+    "should_skip_dispatcher",
 ]
 
 
@@ -156,3 +160,18 @@ def is_dispatcher_block(analysis: DispatcherAnalysis, serial: int) -> bool:
     """Whether ``serial`` is flagged a dispatcher in ``analysis``."""
     block = analysis.blocks.get(serial)
     return bool(block.is_dispatcher) if block is not None else False
+
+
+def should_skip_dispatcher(mba: "object", blk: "object") -> bool:
+    """Skip a block for switch-table-style patching when it belongs to a
+    conditional-chain dispatcher.
+
+    Thin live helper over ``analyze_dispatcher_live`` (replaces the legacy
+    ``DispatcherCache``-based free function).  Only conditional-chain
+    dispatchers are skipped; switch-table style requires modifying
+    dispatcher blocks.
+    """
+    analysis = analyze_dispatcher_live(mba)
+    if not analysis.is_conditional_chain:
+        return False
+    return is_dispatcher_block(analysis, blk.serial)

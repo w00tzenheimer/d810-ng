@@ -233,7 +233,7 @@ def _portable_signals(
 # path for this collector.  After E4a, the manager-side recon
 # subscriber always invokes ``collect(target=flow_graph, ...)``,
 # so the live path is dead code in production.  Re-routing it to
-# ``d810.optimizers.microcode.flow.dispatcher.dispatcher_cache.DispatcherCache`` would
+# ``d810.optimizers.microcode.flow.dispatcher.dispatcher_history.analyze_dispatcher_live`` would
 # silently put a Hex-Rays import inside ``d810.recon.collectors``
 # -- breaking ``recon-core-no-hexrays`` for any future test or
 # adapter that pulls collectors from the recon package.  The path
@@ -244,8 +244,8 @@ def _live_signals(
 ) -> tuple[dict[str, object], tuple[CandidateFlag, ...]]:
     """Extract fixpred signals from a live ``mba_t`` at IDA runtime.
 
-    Uses ``DispatcherCache`` from the recon dispatcher detection module
-    when available; falls back to direct block iteration.
+    Uses ``analyze_dispatcher_live`` from the optimizer-layer dispatcher
+    module when available; falls back to direct block iteration.
     """
     raise NotImplementedError(  # pragma: no cover - architectural pin
         "FixPredSignalsCollector._live_signals was removed in E3-rewire A. "

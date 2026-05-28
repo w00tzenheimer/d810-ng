@@ -49,7 +49,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     DispatcherStateMachine,
 )
 from d810.recon.flow.bst_model import BSTAnalysisResult
-from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import DispatcherCache
+from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+    DispatcherAnalysis,
+    analyze_dispatcher_live,
+)
 from d810.recon.flow.transition_builder import (
     StateHandler,
     StateTransition,
@@ -160,7 +163,7 @@ class HodurStateMachineDetector:
         self.mba = mba
         self.state_machine: DispatcherStateMachine | None = None
         self.use_cache = use_cache
-        self._cache: DispatcherCache | None = None
+        self._dispatcher_analysis: DispatcherAnalysis | None = None
         self.bst_result: BSTAnalysisResult | None = None
         self.min_state_constant = min_state_constant
         self.min_state_constants = min_state_constants
@@ -176,8 +179,8 @@ class HodurStateMachineDetector:
         """
         # Use cached dispatcher detection if available
         if self.use_cache:
-            self._cache = DispatcherCache.get_or_create(self.mba)
-            analysis = self._cache.analyze()
+            self._dispatcher_analysis = analyze_dispatcher_live(self.mba)
+            analysis = self._dispatcher_analysis
 
             # Quick check: is this Hodur-style?
             if not analysis.is_conditional_chain:
@@ -250,8 +253,8 @@ class HodurStateMachineDetector:
         # role here is purely to PICK the right operand among
         # hodur's set, not to expand the set.
         state_var = None
-        if self._cache is not None:
-            cached = self._cache.analyze().state_variable
+        if self._dispatcher_analysis is not None:
+            cached = self._dispatcher_analysis.state_variable
             if cached is not None:
                 cached_key = mop_snapshot_key(cached.mop)
                 if cached_key is not None:
@@ -286,8 +289,8 @@ class HodurStateMachineDetector:
 
         # Step 3: Find all state constants
         state_constants = set()
-        if self._cache:
-            analysis = self._cache.analyze()
+        if self._dispatcher_analysis:
+            analysis = self._dispatcher_analysis
             if analysis.state_constants:
                 state_constants = set(analysis.state_constants)
                 unflat_logger.debug(
@@ -304,8 +307,8 @@ class HodurStateMachineDetector:
 
         # Step 5: Find initial state
         initial_state = None
-        if self._cache and self._cache.analyze().initial_state:
-            initial_state = self._cache.analyze().initial_state
+        if self._dispatcher_analysis and self._dispatcher_analysis.initial_state:
+            initial_state = self._dispatcher_analysis.initial_state
         else:
             initial_state = self._find_initial_state(state_constants)
 

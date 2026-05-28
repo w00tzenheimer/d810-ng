@@ -30,7 +30,7 @@ class StateMachineSnapshotBuilder:
         *,
         run_state: FamilyRunState,
         flow_graph_adapter,
-        dispatcher_cache_factory,
+        dispatcher_analysis_factory,
         reachability_builder=None,
         fact_view_resolver=None,
         function_priors_resolver=None,
@@ -45,7 +45,7 @@ class StateMachineSnapshotBuilder:
             self.cfg_translator.lift(mba),
             state_machine,
         )
-        dispatcher_cache = dispatcher_cache_factory(mba)
+        dispatcher_analysis = dispatcher_analysis_factory(mba)
         reachability = (
             self.compute_reachability_info(flow_graph)
             if reachability_builder is None
@@ -58,7 +58,7 @@ class StateMachineSnapshotBuilder:
                 mba,
                 detection=detection,
                 flow_graph=flow_graph,
-                dispatcher_cache=dispatcher_cache,
+                dispatcher_analysis=dispatcher_analysis,
                 reachability=reachability,
                 fact_view=fact_view,
                 run_state=run_state,
@@ -95,7 +95,7 @@ class StateMachineSnapshotBuilder:
             mba=mba,
             state_machine=state_machine,
             detector=getattr(detection, "detector", None),
-            dispatcher_cache=dispatcher_cache,
+            dispatcher_analysis=dispatcher_analysis,
             bst_result=bst_result,
             bst_dispatcher_serial=bst_dispatcher_serial,
             dispatcher_blocks=frozenset(
@@ -120,7 +120,7 @@ class StateMachineSnapshotBuilder:
         *,
         detection: object,
         flow_graph: FlowGraph,
-        dispatcher_cache: object,
+        dispatcher_analysis: object,
         reachability: ReachabilityInfo,
         fact_view: object | None,
         run_state: FamilyRunState,
@@ -128,7 +128,7 @@ class StateMachineSnapshotBuilder:
         return AnalysisSnapshot(
             mba=mba,
             detector=getattr(detection, "detector", None),
-            dispatcher_cache=dispatcher_cache,
+            dispatcher_analysis=dispatcher_analysis,
             reachability=reachability,
             maturity=mba.maturity,
             pass_number=run_state.pass_number,

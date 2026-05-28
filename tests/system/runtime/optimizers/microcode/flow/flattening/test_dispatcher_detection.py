@@ -68,9 +68,10 @@ class TestDispatcherDetectionWithRealMicrocode:
         """
         import ida_hexrays
         import idaapi
-        from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import (
-            DispatcherCache,
+        from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+            DEFAULT_DISPATCHER_HISTORY_STORE,
             DispatcherType,
+            analyze_dispatcher_live,
         )
 
         # Function name -> expected dispatcher type
@@ -101,9 +102,8 @@ class TestDispatcherDetectionWithRealMicrocode:
                     continue
 
                 # Clear cache and analyze
-                DispatcherCache.clear_cache()
-                cache = DispatcherCache.get_or_create(mba)
-                analysis = cache.analyze()
+                DEFAULT_DISPATCHER_HISTORY_STORE.clear()
+                analysis = analyze_dispatcher_live(mba)
 
                 print(f"    Maturity {maturity}: type={analysis.dispatcher_type}, "
                       f"dispatchers={len(analysis.dispatchers)}, "
@@ -151,9 +151,10 @@ class TestDispatcherDetectionWithRealMicrocode:
         """
         import ida_hexrays
         import idaapi
-        from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import (
-            DispatcherCache,
+        from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+            DEFAULT_DISPATCHER_HISTORY_STORE,
             DispatcherType,
+            analyze_dispatcher_live,
         )
 
         test_functions = [
@@ -171,9 +172,8 @@ class TestDispatcherDetectionWithRealMicrocode:
             if mba is None:
                 pytest.skip(f"Failed to generate microcode for {func_name}")
 
-            DispatcherCache.clear_cache()
-            cache = DispatcherCache.get_or_create(mba)
-            analysis = cache.analyze()
+            DEFAULT_DISPATCHER_HISTORY_STORE.clear()
+            analysis = analyze_dispatcher_live(mba)
 
             # Verify CONDITIONAL_CHAIN detection
             assert analysis.is_conditional_chain, \
@@ -195,9 +195,10 @@ class TestDispatcherDetectionWithRealMicrocode:
         """
         import ida_hexrays
         import idaapi
-        from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import (
-            DispatcherCache,
+        from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+            DEFAULT_DISPATCHER_HISTORY_STORE,
             DispatcherType,
+            analyze_dispatcher_live,
         )
 
         func_name = "switch_case_ollvm_pattern"  # Correct name (not "simple_switch_dispatcher")
@@ -211,9 +212,8 @@ class TestDispatcherDetectionWithRealMicrocode:
         if mba is None:
             pytest.skip(f"Failed to generate microcode for {func_name}")
 
-        DispatcherCache.clear_cache()
-        cache = DispatcherCache.get_or_create(mba)
-        analysis = cache.analyze()
+        DEFAULT_DISPATCHER_HISTORY_STORE.clear()
+        analysis = analyze_dispatcher_live(mba)
 
         # Verify SWITCH_TABLE detection (has jtbl, not conditional chain)
         assert not analysis.is_conditional_chain, \
@@ -232,8 +232,9 @@ class TestDispatcherDetectionWithRealMicrocode:
         """
         import ida_hexrays
         import idaapi
-        from d810.optimizers.microcode.flow.dispatcher.dispatcher_cache import (
-            DispatcherCache,
+        from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+            DEFAULT_DISPATCHER_HISTORY_STORE,
+            analyze_dispatcher_live,
             should_skip_dispatcher,
         )
 
@@ -253,9 +254,8 @@ class TestDispatcherDetectionWithRealMicrocode:
             if mba is None:
                 pytest.skip(f"Failed to generate microcode for {func_name}")
 
-            DispatcherCache.clear_cache()
-            cache = DispatcherCache.get_or_create(mba)
-            analysis = cache.analyze()
+            DEFAULT_DISPATCHER_HISTORY_STORE.clear()
+            analysis = analyze_dispatcher_live(mba)
 
             # Find a dispatcher block to test
             if len(analysis.dispatchers) == 0:
