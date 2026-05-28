@@ -104,7 +104,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend 
     HodurProjectedTopologyBackend,
     ProjectedTopologyBackend,
 )
-from d810.recon.flow.residual_handoff_resolution import (
+from d810.optimizers.microcode.flow.flattening.residual_handoff_resolution import (
     has_live_exact_residual_handoff_with_valranges,
     is_semantic_handoff_redirect,
     resolve_singleton_state_write_value,

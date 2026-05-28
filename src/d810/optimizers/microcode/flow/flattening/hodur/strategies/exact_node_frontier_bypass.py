@@ -145,7 +145,7 @@ def _collect_trivial_frontier_zero_state_write_modification(
     tags=("exact-node", "frontier-bypass", "dispatcher", "bst", "entry-bypass"),
     related_paths=(
         "src/d810/optimizers/microcode/flow/flattening/hodur/strategies/exact_node_frontier_bypass.py",
-        "src/d810/recon/flow/residual_handoff_resolution.py",
+        "src/d810/optimizers/microcode/flow/flattening/residual_handoff_resolution.py",
         "src/d810/recon/flow/graph_reachability.py",
     ),
 )

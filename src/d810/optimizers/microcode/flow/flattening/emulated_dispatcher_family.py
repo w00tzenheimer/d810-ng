@@ -152,7 +152,7 @@ from d810.recon.facts.value_flow import (
 from d810.recon.flow.residual_alias_discovery import (
     discover_residual_alias_overrides,
 )
-from d810.recon.flow.residual_handoff_resolution import (
+from d810.optimizers.microcode.flow.flattening.residual_handoff_resolution import (
     resolve_effective_target_entry,
 )
 from d810.recon.flow.return_corridor_discovery import (
