@@ -247,13 +247,6 @@ def _get_block(mba: object, serial: int):
 
 
 def _is_two_way_block(blk: object) -> bool:
-    try:
-        import ida_hexrays  # type: ignore[import-untyped]
-
-        if int(getattr(blk, "type", -1)) == int(ida_hexrays.BLT_2WAY):
-            return True
-    except Exception:
-        pass
     block_type = getattr(blk, "block_type", getattr(blk, "type", None))
     type_name = str(getattr(blk, "type_name", ""))
     nsucc = getattr(blk, "nsucc", None)
@@ -491,15 +484,9 @@ def _is_mop(mop: object, name: str, fallback_values: set[int]) -> bool:
     if t == name or str(t) == name:
         return True
     try:
-        import ida_hexrays  # type: ignore[import-untyped]
-
-        expected = getattr(ida_hexrays, name)
-        return int(t) == int(expected)
+        return int(t) in fallback_values
     except Exception:
-        try:
-            return int(t) in fallback_values
-        except Exception:
-            return False
+        return False
 
 
 def _is_jz(opcode: object) -> bool:
@@ -523,15 +510,9 @@ def _is_opcode(
     if opcode == name or str(opcode) == name:
         return True
     try:
-        import ida_hexrays  # type: ignore[import-untyped]
-
-        expected = getattr(ida_hexrays, name)
-        return int(opcode) == int(expected)
+        return int(opcode) in fallback_values
     except Exception:
-        try:
-            return int(opcode) in fallback_values
-        except Exception:
-            return False
+        return False
 
 
 __all__ = ["extract_state_dispatcher_map_from_mba"]
