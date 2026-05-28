@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import ida_hexrays
+from d810.cfg.flowgraph import OperandKind
 
 
 def find_conditional_predecessor(
@@ -51,13 +51,13 @@ def extract_check_constant_from_snapshot(
     r_mop = getattr(insn_snap, "r", None)
     opcode = getattr(insn_snap, "opcode", None)
 
-    if l_mop is not None and getattr(l_mop, "t", None) == ida_hexrays.mop_n:
+    if l_mop is not None and getattr(l_mop, "kind", None) == OperandKind.NUMBER:
         num_val = getattr(l_mop, "value", None)
         num_size = getattr(l_mop, "size", None)
         if not callable(normalize_reversed_jump_opcode):
             return None
         normalized = normalize_reversed_jump_opcode(opcode)
-    elif r_mop is not None and getattr(r_mop, "t", None) == ida_hexrays.mop_n:
+    elif r_mop is not None and getattr(r_mop, "kind", None) == OperandKind.NUMBER:
         num_val = getattr(r_mop, "value", None)
         num_size = getattr(r_mop, "size", None)
         normalized = opcode
@@ -77,7 +77,7 @@ def get_jump_and_fallthrough_from_snapshot(
     if tail is None:
         return None, None
     d_mop = getattr(tail, "d", None)
-    if d_mop is None or getattr(d_mop, "t", None) != ida_hexrays.mop_b:
+    if d_mop is None or getattr(d_mop, "kind", None) != OperandKind.BLOCK:
         return None, None
 
     jump_target = getattr(d_mop, "block_ref", None)

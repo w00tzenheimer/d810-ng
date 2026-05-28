@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import ida_hexrays
-
+from d810.cfg.flowgraph import MopSnapshot, OperandKind
 from d810.recon.flow.conditional_chain_discovery import (
     extract_check_constant_from_snapshot,
     find_conditional_predecessor,
@@ -46,8 +45,8 @@ def _numeric_check_tail(*, opcode: int, check_value: int, jump_target: int):
     return SimpleNamespace(
         opcode=opcode,
         l=SimpleNamespace(t=0),
-        r=SimpleNamespace(t=ida_hexrays.mop_n, value=check_value, size=4),
-        d=SimpleNamespace(t=ida_hexrays.mop_b, block_ref=jump_target),
+        r=MopSnapshot(kind=OperandKind.NUMBER, value=check_value, size=4),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=jump_target),
     )
 
 
