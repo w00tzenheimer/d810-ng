@@ -1554,17 +1554,19 @@ def _emit_flowgraph_ready_event(
     so recon misses one maturity but decompilation is never gated
     by a lift bug.
 
-    Payload: ``flow_graph`` + ``func_ea`` + ``maturity`` +
-    ``maturity_name``.  ``maturity`` and ``maturity_name`` are sourced
-    directly from ``flow_graph.metadata`` so the event payload
-    mirrors the lifter's metadata contract (E2b) -- the lifter is the
-    single source of truth, the event is NOT an alternate convention.
-    No ``mba_t`` crosses the boundary.
+    Payload: ``flow_graph`` + ``func_ea`` + the provider-neutral stage
+    fields (``producer`` / ``producer_stage_id`` / ``producer_stage_name``
+    / ``snapshot_stage``, E2d) + the retained ``maturity`` /
+    ``maturity_name`` aliases (E2b).  Every field is sourced directly
+    from ``flow_graph.metadata`` so the event mirrors the lifter's
+    metadata contract -- the lifter is the single source of truth, the
+    event is NOT an alternate convention.  No ``mba_t`` crosses the
+    boundary.
 
     The block-manager producer may also include the pre-D810
     diagnostic ``snapshot`` so the subscriber can capture facts on
     the same portable payload.  The instruction-manager producer has
-    no such snapshot, and therefore emits only the canonical four
+    no such snapshot, and therefore emits only the canonical stage
     payload keys.
     """
     if event_emitter is None:
@@ -1583,6 +1585,13 @@ def _emit_flowgraph_ready_event(
     payload = {
         "flow_graph": flow_graph,
         "func_ea": int(mba.entry_ea),
+        # Provider-neutral stage fields (E2d), sourced from the lifter's
+        # metadata so the event mirrors the single source of truth.
+        "producer": metadata["producer"],
+        "producer_stage_id": metadata["producer_stage_id"],
+        "producer_stage_name": metadata["producer_stage_name"],
+        "snapshot_stage": metadata["snapshot_stage"],
+        # E2b transition aliases (retained for legacy subscribers).
         "maturity": metadata["maturity"],
         "maturity_name": metadata["maturity_name"],
     }

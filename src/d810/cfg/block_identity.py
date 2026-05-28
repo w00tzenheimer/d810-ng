@@ -75,7 +75,13 @@ def flow_graph_context_label(flow_graph: FlowGraph | None) -> str:
     """Return snapshot/maturity context carried by a FlowGraph."""
     if flow_graph is None:
         return "maturity=? snapshot=?"
-    parts = [maturity_label(flow_graph.metadata.get("maturity"))]
+    parts = [
+        maturity_label(
+            flow_graph.metadata.get(
+                "producer_stage_id", flow_graph.metadata.get("maturity")
+            )
+        )
+    ]
     snapshot_id = flow_graph.metadata.get("snapshot_id")
     if snapshot_id is not None:
         parts.append(f"snapshot={snapshot_id}")

@@ -69,6 +69,28 @@ class BranchPredicate(Enum):
     SIGNED_LT = "slt"
 
 
+class SnapshotStage(str, Enum):
+    """Coarse, backend-neutral pipeline stage of a ``FlowGraph`` snapshot.
+
+    Providers expose a fine-grained, provider-local stage id/name
+    (``producer_stage_id`` / ``producer_stage_name`` -- for Hex-Rays the
+    ``MMAT_*`` maturity).  ``SnapshotStage`` is the portable family that
+    LLVM/angr/LiSA adapters can all map onto, so portable analyses can ask
+    "is this optimized IR?" without learning ``MMAT_GLBOPT1``.
+
+    ``str`` mixin keeps it JSON-serializable when stored in
+    ``FlowGraph.metadata`` and comparable to plain strings.
+    """
+
+    UNKNOWN = "unknown"
+    RAW_IR = "raw_ir"
+    NORMALIZED_IR = "normalized_ir"
+    OPTIMIZED_IR = "optimized_ir"
+    SSA_LIKE = "ssa_like"
+    LVAR_RECOVERED = "lvar_recovered"
+    FINAL_PRE_RENDER = "final_pre_render"
+
+
 class OperandKind(Enum):
     """Backend-neutral operand semantics used by CFG planning."""
 

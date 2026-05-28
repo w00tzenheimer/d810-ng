@@ -842,6 +842,10 @@ class D810Manager:
         func_ea: int,
         maturity: int,
         maturity_name: str,
+        producer: str | None = None,
+        producer_stage_id: int | None = None,
+        producer_stage_name: str | None = None,
+        snapshot_stage: typing.Any = None,
         snapshot: typing.Any = None,
     ) -> None:
         """``FLOWGRAPH_READY`` handler for portable microcode analysis.

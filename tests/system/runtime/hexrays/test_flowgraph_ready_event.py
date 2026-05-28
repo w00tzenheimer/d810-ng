@@ -91,8 +91,10 @@ class TestFlowGraphReadyPayloadShape:
     """
 
     def test_subscriber_receives_portable_payload(self) -> None:
-        """Subscribers receive the four canonical kwargs and never
-        an ``mba_t``."""
+        """Subscribers receive the canonical stage kwargs (neutral
+        fields + E2b aliases) and never an ``mba_t``."""
+        from d810.cfg.flowgraph import SnapshotStage
+
         emitter: EventEmitter[DecompilationEvent] = EventEmitter()
         received: list[dict[str, object]] = []
 
@@ -105,6 +107,10 @@ class TestFlowGraphReadyPayloadShape:
             DecompilationEvent.FLOWGRAPH_READY,
             flow_graph=fake_flow_graph,
             func_ea=0x140001000,
+            producer="hexrays",
+            producer_stage_id=14,
+            producer_stage_name="MMAT_GLBOPT1",
+            snapshot_stage=SnapshotStage.OPTIMIZED_IR,
             maturity=14,
             maturity_name="MMAT_GLBOPT1",
         )
@@ -114,13 +120,17 @@ class TestFlowGraphReadyPayloadShape:
         assert set(payload.keys()) == {
             "flow_graph",
             "func_ea",
+            "producer",
+            "producer_stage_id",
+            "producer_stage_name",
+            "snapshot_stage",
             "maturity",
             "maturity_name",
         }
         assert payload["flow_graph"] is fake_flow_graph
         assert payload["func_ea"] == 0x140001000
-        assert payload["maturity"] == 14
-        assert payload["maturity_name"] == "MMAT_GLBOPT1"
+        assert payload["producer_stage_id"] == 14
+        assert payload["producer_stage_name"] == "MMAT_GLBOPT1"
 
     def test_payload_does_not_carry_mba(self) -> None:
         """``mba_t`` MUST NOT cross the cross-layer event boundary.
@@ -135,7 +145,16 @@ class TestFlowGraphReadyPayloadShape:
         # this test catches it by failing the keyword-set assertion
         # above.  This test is the architectural pin; not a behaviour
         # assertion.
-        canonical_kwargs = {"flow_graph", "func_ea", "maturity", "maturity_name"}
+        canonical_kwargs = {
+            "flow_graph",
+            "func_ea",
+            "producer",
+            "producer_stage_id",
+            "producer_stage_name",
+            "snapshot_stage",
+            "maturity",
+            "maturity_name",
+        }
         assert "mba" not in canonical_kwargs
         assert "mbl_array_t" not in canonical_kwargs
 
@@ -185,20 +204,25 @@ class TestProducerHelper:
         cpu_arch_name: str = "metapc",
     ):
         """Produce a real ``FlowGraph`` (not ``object()``) so the
-        helper can index ``.metadata`` like in production.  After the
-        E2b refactor, the helper sources ``maturity`` and
-        ``maturity_name`` from ``flow_graph.metadata`` -- the event
-        mirrors the lifter contract, not an alternate convention."""
-        from d810.cfg.flowgraph import FlowGraph
+        helper can index ``.metadata`` like in production.  Mirrors the
+        lifter's metadata contract: the provider-neutral stage fields
+        (E2d) plus the retained ``maturity`` / ``maturity_name`` aliases
+        (E2b).  The helper sources every payload field from this
+        metadata, so the fixture MUST carry the neutral fields too."""
+        from d810.cfg.flowgraph import FlowGraph, SnapshotStage
 
         return FlowGraph(
             blocks={},
             entry_serial=0,
             func_ea=func_ea,
             metadata={
+                "producer": "hexrays",
+                "producer_stage_id": maturity,
+                "producer_stage_name": maturity_name,
+                "snapshot_stage": SnapshotStage.OPTIMIZED_IR,
+                "cpu_arch_name": cpu_arch_name,
                 "maturity": maturity,
                 "maturity_name": maturity_name,
-                "cpu_arch_name": cpu_arch_name,
             },
         )
 
@@ -239,17 +263,26 @@ class TestProducerHelper:
 
         assert len(received) == 1
         payload = received[0]
-        # Producer contract: exactly these four kwargs, no live mba.
+        # Producer contract: the neutral stage fields (E2d) + retained
+        # E2b aliases, no live mba.
         assert set(payload.keys()) == {
             "flow_graph",
             "func_ea",
+            "producer",
+            "producer_stage_id",
+            "producer_stage_name",
+            "snapshot_stage",
             "maturity",
             "maturity_name",
         }
         assert payload["flow_graph"] is sentinel_flow_graph
         assert payload["func_ea"] == 0x140002000
-        assert payload["maturity"] == 14
-        assert payload["maturity_name"] == "MMAT_GLBOPT1"
+        assert payload["producer"] == "hexrays"
+        assert payload["producer_stage_id"] == 14
+        assert payload["producer_stage_name"] == "MMAT_GLBOPT1"
+        # Aliases mirror the neutral fields.
+        assert payload["maturity"] == payload["producer_stage_id"]
+        assert payload["maturity_name"] == payload["producer_stage_name"]
 
     def test_helper_forwards_optional_snapshot(self, monkeypatch) -> None:
         """Block-manager producers can attach the pre-D810 diagnostic
@@ -289,6 +322,10 @@ class TestProducerHelper:
         assert set(payload.keys()) == {
             "flow_graph",
             "func_ea",
+            "producer",
+            "producer_stage_id",
+            "producer_stage_name",
+            "snapshot_stage",
             "maturity",
             "maturity_name",
             "snapshot",
