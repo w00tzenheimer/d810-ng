@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from d810.core.typing import Dict, List, Optional, Protocol, TYPE_CHECKING
+from d810.core.typing import Dict, List, Optional, Protocol
 
 from d810.recon.flow.bst_model import BSTAnalysisResult
-
-if TYPE_CHECKING:
-    import ida_hexrays
 
 
 @dataclass
@@ -30,7 +27,7 @@ class StateUpdateSite:
     """Represents an instruction that writes the dispatcher state variable."""
 
     block_serial: int
-    instruction: "ida_hexrays.minsn_t"
+    instruction: object
 
 
 @dataclass
@@ -92,14 +89,15 @@ class TransitionBuilderStrategy(Protocol):
 
 def _get_state_var_stkoff(detector) -> Optional[int]:
     """Extract stack offset from detector state variable when available."""
-    import ida_hexrays as _ida
-
     sm = getattr(detector, "state_machine", None)
     if sm is None or sm.state_var is None:
         return None
-    if sm.state_var.t == _ida.mop_S:
-        return sm.state_var.s.off
-    return None
+    stkoff = getattr(sm.state_var, "stkoff", None)
+    if stkoff is not None:
+        return int(stkoff)
+    stack_ref = getattr(sm.state_var, "s", None)
+    stack_off = getattr(stack_ref, "off", None)
+    return int(stack_off) if stack_off is not None else None
 
 
 def _convert_bst_to_result(bst: BSTAnalysisResult) -> TransitionResult:
