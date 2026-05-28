@@ -18,7 +18,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.recon.flow.conditional_chain_resolution import (
+from d810.optimizers.microcode.flow.flattening.hodur.recon.conditional_chain_resolution import (
     collect_conditional_fork_resolution_candidates,
 )
 if TYPE_CHECKING:
@@ -46,7 +46,7 @@ __all__ = ["ConditionalForkFallbackStrategy"]
     tags=("hodur", "conditional", "fallback", "redirect", "state-machine"),
     related_paths=(
         "src/d810/optimizers/microcode/flow/flattening/hodur/strategies/conditional_fork_fallback.py",
-        "src/d810/recon/flow/conditional_chain_resolution.py",
+        "src/d810/optimizers/microcode/flow/flattening/hodur/recon/conditional_chain_resolution.py",
     ),
 )
 class ConditionalForkFallbackStrategy:

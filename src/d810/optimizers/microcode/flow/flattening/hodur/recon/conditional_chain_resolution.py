@@ -175,7 +175,7 @@ def _emulate_chain_exit(
     ),
     tags=("conditional", "fork", "emulation", "dispatcher", "reconstruction"),
     related_paths=(
-        "src/d810/recon/flow/conditional_chain_resolution.py",
+        "src/d810/optimizers/microcode/flow/flattening/hodur/recon/conditional_chain_resolution.py",
         "src/d810/optimizers/microcode/flow/flattening/hodur/strategies/conditional_fork_fallback.py",
     ),
 )
