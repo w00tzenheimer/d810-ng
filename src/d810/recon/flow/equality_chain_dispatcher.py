@@ -1,7 +1,6 @@
 """Recover exact dispatcher rows from equality/inequality chains."""
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 
 from d810.core import logging
@@ -21,44 +20,13 @@ class _StateVarIdentity:
     size: int
 
 
-@dataclass(frozen=True, slots=True)
-class _BackendNameMap:
-    opcode_names: Mapping[int, str]
-    mop_type_names: Mapping[int, str]
-
-    def opcode_is(self, opcode: object, name: str, fallback_values: set[int]) -> bool:
-        if opcode == name or str(opcode) == name:
-            return True
-        try:
-            opcode_int = int(opcode)
-        except Exception:
-            return False
-        return self.opcode_names.get(opcode_int) == name or opcode_int in fallback_values
-
-    def mop_is(self, mop: object, name: str, fallback_values: set[int]) -> bool:
-        t = getattr(mop, "t", None)
-        if t == name or str(t) == name:
-            return True
-        try:
-            mop_type = int(t)
-        except Exception:
-            return False
-        return self.mop_type_names.get(mop_type) == name or mop_type in fallback_values
-
-
 def extract_state_dispatcher_map_from_mba(
     mba: object,
     *,
     dispatcher_entry_block: int | None = None,
     max_depth: int | None = None,
-    opcode_names: Mapping[int, str] | None = None,
-    mop_type_names: Mapping[int, str] | None = None,
 ) -> StateDispatcherMap | None:
-    """Extract exact ``state_const -> handler`` rows from a live-like mba."""
-    name_map = _BackendNameMap(
-        opcode_names=opcode_names or {},
-        mop_type_names=mop_type_names or {},
-    )
+    """Extract exact ``state_const -> handler`` rows from a normalized mba view."""
     qty = int(getattr(mba, "qty", 0) or 0)
     if qty <= 0:
         return None
@@ -77,7 +45,7 @@ def extract_state_dispatcher_map_from_mba(
         opcode = getattr(tail, "opcode", getattr(blk, "tail_opcode", None))
         left = getattr(tail, "l", None)
         right = getattr(tail, "r", None)
-        extracted = _extract_compare(blk, name_map)
+        extracted = _extract_compare(blk)
         jump_and_fallthrough = _jump_and_fallthrough(blk)
         if len(sample_two_way) < 8:
             sample_two_way.append(
@@ -86,7 +54,7 @@ def extract_state_dispatcher_map_from_mba(
                     opcode,
                     getattr(left, "t", None),
                     getattr(right, "t", None),
-                    _const_value(right, name_map),
+                    _const_value(right),
                     jump_and_fallthrough,
                 )
             )
@@ -112,7 +80,7 @@ def extract_state_dispatcher_map_from_mba(
         ordered_blocks = sorted(compare_blocks)
     else:
         entry = int(dispatcher_entry_block)
-        ordered_blocks = _walk_chain(mba, entry, compare_blocks, max_depth, name_map)
+        ordered_blocks = _walk_chain(mba, entry, compare_blocks, max_depth)
         if not ordered_blocks:
             logger.debug(
                 "No equality-chain dispatcher walk from entry blk[%d]; compare_blocks=%s",
@@ -124,7 +92,7 @@ def extract_state_dispatcher_map_from_mba(
     rows: list[StateDispatcherRow] = []
     seen: dict[int, int] = {}
     state_var: _StateVarIdentity | None = None
-    state_aliases = _state_var_aliases(mba, ordered_blocks, name_map)
+    state_aliases = _state_var_aliases(mba, ordered_blocks)
     dispatcher_blocks: set[int] = set()
     ordered_dispatcher_blocks = set(int(block) for block in ordered_blocks)
     logger.debug(
@@ -138,7 +106,7 @@ def extract_state_dispatcher_map_from_mba(
         blk = _get_block(mba, serial)
         if blk is None:
             continue
-        extracted = _extract_compare(blk, name_map)
+        extracted = _extract_compare(blk)
         if extracted is None:
             continue
         var, const, opcode = extracted
@@ -161,10 +129,10 @@ def extract_state_dispatcher_map_from_mba(
         jump_target, fallthrough = _jump_and_fallthrough(blk)
         if jump_target is None or fallthrough is None:
             continue
-        if _is_jz(opcode, name_map):
+        if _is_jz(opcode):
             target = jump_target
             branch_kind = "jz_taken"
-        elif _is_jnz(opcode, name_map):
+        elif _is_jnz(opcode):
             target = fallthrough
             branch_kind = "jnz_fallthrough"
         else:
@@ -325,7 +293,6 @@ def _walk_chain(
     entry: int,
     compare_blocks: set[int],
     max_depth: int,
-    name_map: _BackendNameMap,
 ) -> list[int]:
     current = int(entry)
     visited: set[int] = set()
@@ -338,14 +305,14 @@ def _walk_chain(
         blk = _get_block(mba, current)
         if blk is None:
             break
-        extracted = _extract_compare(blk, name_map)
+        extracted = _extract_compare(blk)
         jump_target, fallthrough = _jump_and_fallthrough(blk)
         if extracted is None or jump_target is None or fallthrough is None:
             break
         _var, _const, opcode = extracted
-        if _is_jz(opcode, name_map):
+        if _is_jz(opcode):
             next_serial = fallthrough
-        elif _is_jnz(opcode, name_map):
+        elif _is_jnz(opcode):
             next_serial = jump_target
         else:
             break
@@ -358,7 +325,6 @@ def _walk_chain(
 def _state_var_aliases(
     mba: object,
     ordered_blocks: list[int],
-    name_map: _BackendNameMap,
 ) -> dict[_StateVarIdentity, _StateVarIdentity]:
     aliases: dict[_StateVarIdentity, _StateVarIdentity] = {}
     for serial in ordered_blocks:
@@ -366,10 +332,10 @@ def _state_var_aliases(
         if blk is None:
             continue
         for insn in _iter_block_insns(blk):
-            if not _is_mov(getattr(insn, "opcode", None), name_map):
+            if not _is_mov(getattr(insn, "opcode", None)):
                 continue
-            dst = _state_var_identity(getattr(insn, "d", None), name_map)
-            src = _state_var_identity(getattr(insn, "l", None), name_map)
+            dst = _state_var_identity(getattr(insn, "d", None))
+            src = _state_var_identity(getattr(insn, "l", None))
             if dst is None or src is None or dst == src:
                 continue
             aliases[dst] = src
@@ -413,20 +379,19 @@ def _iter_block_insns(blk: object):
 
 def _extract_compare(
     blk: object,
-    name_map: _BackendNameMap,
 ) -> tuple[_StateVarIdentity, int, object] | None:
     tail = getattr(blk, "tail", None)
     if tail is None:
         return None
     opcode = getattr(tail, "opcode", getattr(blk, "tail_opcode", None))
-    if not (_is_jz(opcode, name_map) or _is_jnz(opcode, name_map)):
+    if not (_is_jz(opcode) or _is_jnz(opcode)):
         return None
     left = getattr(tail, "l", None)
     right = getattr(tail, "r", None)
-    left_const = _const_value(left, name_map)
-    right_const = _const_value(right, name_map)
-    left_var = _state_var_identity(left, name_map)
-    right_var = _state_var_identity(right, name_map)
+    left_const = _const_value(left)
+    right_const = _const_value(right)
+    left_var = _state_var_identity(left)
+    right_var = _state_var_identity(right)
     if left_var is not None and right_const is not None:
         return left_var, int(right_const), opcode
     if right_var is not None and left_const is not None:
@@ -466,8 +431,8 @@ def _block_ref(mop: object | None) -> int | None:
     return None
 
 
-def _const_value(mop: object | None, name_map: _BackendNameMap) -> int | None:
-    if mop is None or not _is_mop(mop, "mop_n", {2}, name_map):
+def _const_value(mop: object | None) -> int | None:
+    if mop is None or not _is_mop(mop, "mop_n"):
         return None
     nnn = getattr(mop, "nnn", None)
     candidates = (
@@ -492,18 +457,17 @@ def _const_value(mop: object | None, name_map: _BackendNameMap) -> int | None:
 
 def _state_var_identity(
     mop: object | None,
-    name_map: _BackendNameMap,
 ) -> _StateVarIdentity | None:
     if mop is None:
         return None
     size = int(getattr(mop, "size", 0) or 0)
-    if _is_mop(mop, "mop_S", {3, 5}, name_map):
+    if _is_mop(mop, "mop_S"):
         s = getattr(mop, "s", None)
         off = getattr(s, "off", getattr(mop, "stkoff", None))
         if off is None:
             return None
         return _StateVarIdentity("stack", int(off), size)
-    if _is_mop(mop, "mop_l", {9, 10}, name_map):
+    if _is_mop(mop, "mop_l"):
         lv = getattr(mop, "l", None)
         idx = getattr(lv, "idx", getattr(mop, "idx", None))
         if idx is None:
@@ -520,32 +484,28 @@ def _state_var_identity(
 def _is_mop(
     mop: object,
     name: str,
-    fallback_values: set[int],
-    name_map: _BackendNameMap,
 ) -> bool:
-    return name_map.mop_is(mop, name, fallback_values)
+    t = getattr(mop, "t", None)
+    return t == name or str(t) == name
 
 
-def _is_jz(opcode: object, name_map: _BackendNameMap) -> bool:
-    return _is_opcode(opcode, "m_jz", fallback_values={44}, name_map=name_map)
+def _is_jz(opcode: object) -> bool:
+    return _is_opcode(opcode, "m_jz")
 
 
-def _is_jnz(opcode: object, name_map: _BackendNameMap) -> bool:
-    return _is_opcode(opcode, "m_jnz", fallback_values={43}, name_map=name_map)
+def _is_jnz(opcode: object) -> bool:
+    return _is_opcode(opcode, "m_jnz")
 
 
-def _is_mov(opcode: object, name_map: _BackendNameMap) -> bool:
-    return _is_opcode(opcode, "m_mov", fallback_values={4}, name_map=name_map)
+def _is_mov(opcode: object) -> bool:
+    return _is_opcode(opcode, "m_mov")
 
 
 def _is_opcode(
     opcode: object,
     name: str,
-    *,
-    fallback_values: set[int],
-    name_map: _BackendNameMap,
 ) -> bool:
-    return name_map.opcode_is(opcode, name, fallback_values)
+    return opcode == name or str(opcode) == name
 
 
 __all__ = ["extract_state_dispatcher_map_from_mba"]
