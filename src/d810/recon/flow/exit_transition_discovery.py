@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import ida_hexrays
-
 from d810.recon.flow.bst_analysis import resolve_via_bst_walk
 from d810.recon.flow.bst_model import resolve_target_via_bst
 from d810.recon.flow.state_machine_analysis import evaluate_handler_paths
 from d810.recon.flow.transition_builder import _get_state_var_stkoff
+
+_MOVE_OPCODE = 4
+_NUMBER_OPERAND = 2
+_STACK_OPERAND = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +69,7 @@ def resolve_state_var_stkoff(
             pass
     if stkoff is None and state_var is not None:
         try:
-            if state_var.t == ida_hexrays.mop_S:
+            if _is_stack_operand(state_var):
                 stkoff = state_var.s.off
         except Exception:
             pass
@@ -195,15 +197,15 @@ def collect_exit_transition_candidates(
 
             insn = blk.head
             while insn is not None:
-                if insn.opcode == ida_hexrays.m_mov:
+                if _is_move_opcode(getattr(insn, "opcode", None)):
                     d = insn.d
                     if (
                         d is not None
-                        and d.t == ida_hexrays.mop_S
+                        and _is_stack_operand(d)
                         and d.s is not None
                         and d.s.off == stkoff
                         and insn.l is not None
-                        and insn.l.t == ida_hexrays.mop_n
+                        and _is_number_operand(insn.l)
                     ):
                         found_writes.append((int(blk_serial), int(insn.l.nnn.value)))
                 insn = insn.next
@@ -233,6 +235,27 @@ def collect_exit_transition_candidates(
             )
 
     return tuple(candidates)
+
+
+def _kind_matches(value: object, legacy_name: str, numeric_value: int) -> bool:
+    if value == legacy_name or str(value) == legacy_name:
+        return True
+    try:
+        return int(value) == int(numeric_value)
+    except Exception:
+        return False
+
+
+def _is_move_opcode(opcode: object) -> bool:
+    return _kind_matches(opcode, "m_mov", _MOVE_OPCODE)
+
+
+def _is_number_operand(mop: object) -> bool:
+    return _kind_matches(getattr(mop, "t", None), "mop_n", _NUMBER_OPERAND)
+
+
+def _is_stack_operand(mop: object) -> bool:
+    return _kind_matches(getattr(mop, "t", None), "mop_S", _STACK_OPERAND)
 
 
 def collect_bst_default_transition_candidates(

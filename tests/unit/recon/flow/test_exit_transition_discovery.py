@@ -1,21 +1,25 @@
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 
-import ida_hexrays
-
+import d810.recon.flow.exit_transition_discovery as exit_transition_discovery
 from d810.recon.flow.exit_transition_discovery import (
     collect_bst_default_transition_candidates,
     collect_exit_transition_candidates,
     collect_valrange_exit_transition_candidates,
 )
 
+_MOVE_OPCODE = 4
+_NUMBER_OPERAND = 2
+_STACK_OPERAND = 5
+
 
 class _DummyInsn:
     def __init__(self, *, value: int, ea: int = 0x1000):
-        self.opcode = ida_hexrays.m_mov
-        self.d = SimpleNamespace(t=ida_hexrays.mop_S, s=SimpleNamespace(off=0x30))
-        self.l = SimpleNamespace(t=ida_hexrays.mop_n, nnn=SimpleNamespace(value=value))
+        self.opcode = _MOVE_OPCODE
+        self.d = SimpleNamespace(t=_STACK_OPERAND, s=SimpleNamespace(off=0x30))
+        self.l = SimpleNamespace(t=_NUMBER_OPERAND, nnn=SimpleNamespace(value=value))
         self.ea = ea
         self.next = None
 
@@ -48,7 +52,7 @@ class TestCollectExitTransitionCandidates:
             bst_dispatcher_serial=6,
         )
         sm = SimpleNamespace(
-            state_var=SimpleNamespace(t=ida_hexrays.mop_S, s=SimpleNamespace(off=0x30)),
+            state_var=SimpleNamespace(t=_STACK_OPERAND, s=SimpleNamespace(off=0x30)),
             transitions=(),
             handlers={
                 0x11: SimpleNamespace(handler_blocks=(24,), check_block=24),
@@ -82,7 +86,7 @@ class TestCollectExitTransitionCandidates:
             bst_dispatcher_serial=6,
         )
         sm = SimpleNamespace(
-            state_var=SimpleNamespace(t=ida_hexrays.mop_S, s=SimpleNamespace(off=0x30)),
+            state_var=SimpleNamespace(t=_STACK_OPERAND, s=SimpleNamespace(off=0x30)),
             transitions=(),
             handlers={
                 0x11: SimpleNamespace(handler_blocks=(24,), check_block=24),
@@ -122,7 +126,7 @@ class TestCollectBstDefaultTransitionCandidates:
             detector=None,
         )
         sm = SimpleNamespace(
-            state_var=SimpleNamespace(t=ida_hexrays.mop_S, s=SimpleNamespace(off=0x30)),
+            state_var=SimpleNamespace(t=_STACK_OPERAND, s=SimpleNamespace(off=0x30)),
         )
         bst_result = SimpleNamespace()
 
@@ -175,6 +179,11 @@ class TestCollectBstDefaultTransitionCandidates:
         assert candidates[0].from_block == 24
         assert candidates[0].target_entry == 88
         assert candidates[0].final_state == 0x22
+
+    def test_exit_transition_discovery_does_not_import_live_hexrays(self) -> None:
+        assert "import ida_hexrays" not in inspect.getsource(
+            exit_transition_discovery
+        )
 
 
 class _DummyTailBlock:
