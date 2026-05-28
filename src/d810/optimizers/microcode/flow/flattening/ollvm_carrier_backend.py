@@ -56,6 +56,33 @@ def collect_ollvm_profile_fact_observations(mba: object) -> tuple[object, ...]:
     return (*raw_facts, *projected_facts)
 
 
+def _hexrays_opcode_name(insn_or_opcode: object) -> str | None:
+    opcode = getattr(insn_or_opcode, "opcode", insn_or_opcode)
+    try:
+        import ida_hexrays
+    except Exception:
+        return None
+    for name in (
+        "m_jz",
+        "m_jnz",
+        "m_jge",
+        "m_jg",
+        "m_jle",
+        "m_jl",
+        "m_jae",
+        "m_ja",
+        "m_jbe",
+        "m_jb",
+        "m_jcnd",
+        "m_stx",
+        "m_call",
+        "m_icall",
+    ):
+        if opcode == getattr(ida_hexrays, name, None):
+            return name
+    return None
+
+
 def collect_ollvm_branch_ownership_refiners(
     mba: object,
     logger: object,
@@ -72,8 +99,14 @@ def collect_ollvm_branch_ownership_refiners(
                 mba=mba,
                 carrier_facts=collect_ollvm_post_execute_carrier_facts(mba),
             ).refine,
-            Z3BranchOwnershipOracle(mba=mba).refine,
-            MopTrackerBranchOwnershipOracle(mba=mba).refine,
+            Z3BranchOwnershipOracle(
+                mba=mba,
+                opcode_name_resolver=_hexrays_opcode_name,
+            ).refine,
+            MopTrackerBranchOwnershipOracle(
+                mba=mba,
+                opcode_name_resolver=_hexrays_opcode_name,
+            ).refine,
         )
     except Exception:
         log_debug = getattr(logger, "debug", None)
