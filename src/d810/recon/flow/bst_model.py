@@ -2,16 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
-from d810.core.typing import TYPE_CHECKING
 from d810.core.typing import Dict
 from d810.core.typing import Iterator
 from d810.core.typing import Optional
 from d810.core.typing import Set
 from d810.core.typing import Tuple
 from d810.recon.flow.interval_map import IntervalDispatcher
-
-if TYPE_CHECKING:
-    import ida_hexrays
 
 
 @dataclass(frozen=True)
@@ -251,7 +247,7 @@ def resolve_redirectable_handler_target(
     bst_result: BSTAnalysisResult,
     state_value: int,
     augmented_exits: Set[int] | None = None,
-    mba: "ida_hexrays.mbl_array_t | None" = None,
+    mba: object | None = None,
     dispatcher_serial: int = -1,
 ) -> Optional[int]:
     """Resolve a state value to a redirectable handler target.
@@ -307,7 +303,7 @@ def resolve_redirectable_handler_target(
 
 
 def is_terminal_handler(
-    mba: "ida_hexrays.mbl_array_t",
+    mba: object,
     entry_serial: int,
     dispatcher_serial: int,
     bst_blocks: set[int],
@@ -315,12 +311,10 @@ def is_terminal_handler(
 ) -> bool:
     """Forward BFS proof that a handler inevitably reaches return/epilogue.
 
-    Returns True if ALL paths from entry_serial lead to BLT_STOP or
-    nsucc==0 blocks without going through the dispatcher or BST.
+    Returns True if ALL paths from entry_serial lead to no-successor
+    blocks without going through the dispatcher or BST.
     """
     from collections import deque
-
-    BLT_STOP = ida_hexrays.BLT_STOP
 
     queue: deque[int] = deque([entry_serial])
     visited: set[int] = {entry_serial}
@@ -334,7 +328,7 @@ def is_terminal_handler(
         blk = mba.get_mblock(s)
         if blk is None:
             continue
-        if blk.nsucc() == 0 or blk.type == BLT_STOP:
+        if blk.nsucc() == 0:
             continue  # terminal leaf — OK
         for i in range(blk.nsucc()):
             succ = blk.succ(i)
