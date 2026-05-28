@@ -159,6 +159,8 @@ def _insn_kind_from_hexrays(opcode: int) -> InsnKind:
         return InsnKind.LOAD
     if opcode == int(ida_hexrays.m_xdu):
         return InsnKind.XDU
+    if opcode == int(ida_hexrays.m_xds):
+        return InsnKind.XDS
     if opcode == int(ida_hexrays.m_add):
         return InsnKind.ADD
     if opcode == int(ida_hexrays.m_sub):
@@ -171,6 +173,8 @@ def _insn_kind_from_hexrays(opcode: int) -> InsnKind:
         return InsnKind.GOTO
     if is_hexrays_opcode(opcode, "m_call") or is_hexrays_opcode(opcode, "m_icall"):
         return InsnKind.CALL
+    if is_hexrays_opcode(opcode, "m_ret"):
+        return InsnKind.RET
     # E3-prep: ``m_jtbl`` is a multi-target jump-table tail.  Map
     # BEFORE the binary-conditional fallback so it lands in the
     # portable ``TABLE_JUMP`` kind rather than being swept into

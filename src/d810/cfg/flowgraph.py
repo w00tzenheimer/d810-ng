@@ -32,6 +32,7 @@ class InsnKind(Enum):
     MOV = "mov"
     LOAD = "load"
     XDU = "xdu"
+    XDS = "xds"
     ADD = "add"
     SUB = "sub"
     AND = "and"
@@ -45,6 +46,7 @@ class InsnKind(Enum):
     # vendor opcode constants.
     TABLE_JUMP = "table_jump"
     CALL = "call"
+    RET = "ret"
 
 
 class BranchPredicate(Enum):

@@ -1,7 +1,7 @@
 """Return-frontier carrier-fact detector (FlowGraph-snapshot, pre-mutation).
 
-For each block whose tail is ``m_ret`` (or whose ``block_type`` is
-``BLT_STOP``), walk *backwards* over the immutable :class:`FlowGraph`
+For each block whose tail is a return (or whose block kind is stop),
+walk *backwards* over the immutable :class:`FlowGraph`
 snapshot to find the FIRST block that writes the return slot
 (rax-typed register or the return-slot stkvar) and record the carrier
 identity of that writer's source operand.
@@ -22,8 +22,8 @@ a block on the carrier-def path or rewrite an edge inside it.
 This module follows the same idioms as
 :func:`d810.recon.flow.linearized_state_dag.detect_side_effect_corridors`:
 - It runs against the FlowGraph snapshot (no live mba access).
-- It introspects ``InsnSnapshot.opcode`` and the rich ``l``/``r``/``d``
-  ``MopSnapshot`` fields (``t``, ``stkoff``, ``reg``).
+- It introspects ``BlockSnapshot.kind`` / ``InsnSnapshot.kind`` and the
+  rich ``l``/``r``/``d`` ``MopSnapshot`` fields (``t``, ``stkoff``, ``reg``).
 - It is conservative: when the carrier cannot be cleanly captured (no
   ``mop_l`` / ``mop_S`` source on the writer), no fact is emitted.
 
@@ -38,7 +38,9 @@ from dataclasses import dataclass
 
 from d810.cfg.flowgraph import (
     BlockSnapshot,
+    BlockKind,
     FlowGraph,
+    InsnKind,
     InsnSnapshot,
     MopSnapshot,
     OperandKind,
@@ -75,38 +77,18 @@ _MOP_L = 9   # mop_l: lvar reference
 _LEGACY_MOP_S = 3
 _LEGACY_MOP_L = 7
 
-# Opcodes (subset).  We rely on ida_hexrays at runtime for the canonical
-# values; this dict is the fallback used when the import fails (offline
-# unit tests).
-_FALLBACK_OPCODES = {
-    "m_ret": 0x59,
-    "m_mov": 0x0F,
-    "m_stx": 0x0D,
-    "m_add": 0x10,
-    "m_xdu": 0x1B,
-    "m_xds": 0x1C,
-    "m_low": 0x1D,
-    "m_high": 0x1E,
-}
-
-# BLT_STOP from mblock_t::type enum.
-_BLT_STOP = 1
-
 _DEFAULT_MAX_DEPTH = 8
 _DEFAULT_MAX_VISITED = 64
 
-
-def _resolve_opcodes() -> dict[str, int]:
-    """Try to import ida_hexrays for canonical opcode values; fall back
-    to the constants at the top if unavailable (offline tests)."""
-    try:
-        import ida_hexrays  # type: ignore[import-not-found]
-    except ImportError:
-        return dict(_FALLBACK_OPCODES)
-    out: dict[str, int] = {}
-    for name in _FALLBACK_OPCODES:
-        out[name] = int(getattr(ida_hexrays, name, _FALLBACK_OPCODES[name]))
-    return out
+_RETURN_WRITER_KINDS = frozenset(
+    {
+        InsnKind.MOV,
+        InsnKind.STORE,
+        InsnKind.ADD,
+        InsnKind.XDU,
+        InsnKind.XDS,
+    }
+)
 
 
 def _mop_type(mop: MopSnapshot | None) -> int | None:
@@ -149,7 +131,7 @@ class ReturnFrontierCarrierFact:
     """Immutable record of a return-frontier writer's carrier identity.
 
     Attributes:
-        ret_block: Serial of the block containing m_ret/BLT_STOP.
+        ret_block: Serial of the return/stop block.
         writer_block: Serial of the block writing the return slot.
         walk_path: Block serials from writer_block ... ret_block (inclusive
             on both ends).  Length >= 1 (at minimum the writer is also the
@@ -185,14 +167,14 @@ class ReturnFrontierCarrierFact:
 # ---------------------------------------------------------------------------
 
 
-def _is_return_block(blk: BlockSnapshot, m_ret: int) -> bool:
-    """True iff this block is BLT_STOP or its tail is m_ret."""
-    if int(blk.block_type) == _BLT_STOP:
+def _is_return_block(blk: BlockSnapshot) -> bool:
+    """True iff this block is a stop block or its tail is a return."""
+    if blk.kind is BlockKind.STOP:
         return True
-    if blk.tail_opcode is not None and int(blk.tail_opcode) == m_ret:
+    if blk.tail_kind is InsnKind.RET:
         return True
     tail = blk.tail
-    if tail is not None and int(tail.opcode) == m_ret:
+    if tail is not None and tail.kind is InsnKind.RET:
         return True
     return False
 
@@ -224,13 +206,12 @@ def _dest_is_return_slot(
 def _is_trivial_copy(
     insn: InsnSnapshot,
     *,
-    m_mov: int,
     return_stkoff: int,
 ) -> bool:
     """True iff the insn is a pure trampoline copy (stkvar->reg or
     reg->stkvar of the return slot).  Walker treats these as transparent
     so it can find the upstream computation."""
-    if int(insn.opcode) != m_mov:
+    if insn.kind is not InsnKind.MOV:
         return False
     src = insn.l
     dst = insn.d
@@ -248,11 +229,6 @@ def _is_trivial_copy(
 def _find_writer_in_block(
     blk: BlockSnapshot,
     *,
-    m_mov: int,
-    m_stx: int,
-    m_add: int,
-    m_xdu: int,
-    m_xds: int,
     return_stkoff: int,
     skip_trivial_copy: bool = True,
 ) -> InsnSnapshot | None:
@@ -260,13 +236,12 @@ def _find_writer_in_block(
     slot, ignoring trivial trampoline copies.  None if none found."""
     last: InsnSnapshot | None = None
     for insn in blk.insn_snapshots:
-        op = int(insn.opcode)
-        if op not in (m_mov, m_stx, m_add, m_xdu, m_xds):
+        if insn.kind not in _RETURN_WRITER_KINDS:
             continue
         if not _dest_is_return_slot(insn, return_stkoff=return_stkoff):
             continue
         if skip_trivial_copy and _is_trivial_copy(
-            insn, m_mov=m_mov, return_stkoff=return_stkoff
+            insn, return_stkoff=return_stkoff
         ):
             continue
         last = insn
@@ -449,11 +424,6 @@ def _detect_protected_non_carrier_return_writer_facts_for_return(
     flow_graph: FlowGraph,
     *,
     ret_serial: int,
-    m_mov: int,
-    m_stx: int,
-    m_add: int,
-    m_xdu: int,
-    m_xds: int,
     return_stkoff: int,
     state_var_stkoff: int | None,
     artifact_priors: ReturnFrontierArtifactPriors,
@@ -495,11 +465,6 @@ def _detect_protected_non_carrier_return_writer_facts_for_return(
             new_path = path + (pserial,)
             writer = _find_writer_in_block(
                 pblk,
-                m_mov=m_mov,
-                m_stx=m_stx,
-                m_add=m_add,
-                m_xdu=m_xdu,
-                m_xds=m_xds,
                 return_stkoff=return_stkoff,
             )
             if writer is not None:
@@ -551,7 +516,7 @@ def detect_return_frontier_carrier_facts(
 ) -> tuple[ReturnFrontierCarrierFact, ...]:
     """Detect carrier-def facts at every return-frontier block.
 
-    For each block whose tail is m_ret (or BLT_STOP-typed), perform a
+    For each block whose tail is a return (or whose block kind is stop), perform a
     bounded backward BFS along the FlowGraph predecessor edges to find
     the first block writing the return slot.  Capture the source
     operand's carrier identity (mop_l idx or mop_S stkoff).  Compute
@@ -565,19 +530,12 @@ def detect_return_frontier_carrier_facts(
     if flow_graph is None:
         return ()
     effective_artifact_priors = artifact_priors or ReturnFrontierArtifactPriors()
-    opcodes = _resolve_opcodes()
-    m_ret = opcodes["m_ret"]
-    m_mov = opcodes["m_mov"]
-    m_stx = opcodes["m_stx"]
-    m_add = opcodes["m_add"]
-    m_xdu = opcodes["m_xdu"]
-    m_xds = opcodes["m_xds"]
 
     facts: list[ReturnFrontierCarrierFact] = []
 
     for ret_serial in sorted(flow_graph.blocks.keys()):
         ret_blk = flow_graph.blocks[ret_serial]
-        if not _is_return_block(ret_blk, m_ret):
+        if not _is_return_block(ret_blk):
             continue
 
         # Determine the return slot from a return-block stack-to-register
@@ -588,7 +546,7 @@ def detect_return_frontier_carrier_facts(
             else None
         )
         for ins in ret_blk.insn_snapshots:
-            if int(ins.opcode) != m_mov:
+            if ins.kind is not InsnKind.MOV:
                 continue
             s, d = ins.l, ins.d
             if s is None or d is None:
@@ -603,11 +561,6 @@ def detect_return_frontier_carrier_facts(
         artifact_facts = _detect_protected_non_carrier_return_writer_facts_for_return(
             flow_graph,
             ret_serial=ret_serial,
-            m_mov=m_mov,
-            m_stx=m_stx,
-            m_add=m_add,
-            m_xdu=m_xdu,
-            m_xds=m_xds,
             return_stkoff=return_stkoff,
             state_var_stkoff=state_var_stkoff,
             artifact_priors=effective_artifact_priors,
@@ -627,11 +580,6 @@ def detect_return_frontier_carrier_facts(
 
         local_writer = _find_writer_in_block(
             ret_blk,
-            m_mov=m_mov,
-            m_stx=m_stx,
-            m_add=m_add,
-            m_xdu=m_xdu,
-            m_xds=m_xds,
             return_stkoff=return_stkoff,
         )
         if local_writer is not None:
@@ -663,11 +611,6 @@ def detect_return_frontier_carrier_facts(
                         continue
                     pwriter = _find_writer_in_block(
                         pblk,
-                        m_mov=m_mov,
-                        m_stx=m_stx,
-                        m_add=m_add,
-                        m_xdu=m_xdu,
-                        m_xds=m_xds,
                         return_stkoff=return_stkoff,
                     )
                     new_path = path + (pserial,)
