@@ -11,7 +11,7 @@ from d810.core.typing import Protocol
 from d810.recon.flow.residual_handoff_discovery import (
     supplemental_selected_entry_for_state,
 )
-from d810.recon.flow.residual_handoff_resolution import (
+from d810.optimizers.microcode.flow.flattening.residual_handoff_resolution import (
     resolve_effective_target_entry as resolve_live_effective_target_entry,
     resolve_singleton_state_write_value,
 )

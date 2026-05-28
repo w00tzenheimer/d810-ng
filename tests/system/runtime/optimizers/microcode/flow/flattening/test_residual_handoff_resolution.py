@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-from d810.recon.flow import residual_handoff_resolution as resolution
+from d810.optimizers.microcode.flow.flattening import residual_handoff_resolution as resolution
 from d810.recon.flow.linearized_state_dag import (
     RedirectSourceKind,
     SemanticEdgeKind,
