@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
+from d810.backends.hexrays import bst_runtime as _hexrays_bst_runtime
 from d810.core.typing import Protocol
 from d810.cfg.dominator import compute_dom_tree
 from d810.cfg.dispatcher_rewrite_planning import (
@@ -106,7 +107,7 @@ from d810.recon.flow.dynamic_state_transition_recovery import (
     recover_dynamic_state_write_transitions,
 )
 from d810.recon.flow.equality_chain_dispatcher import (
-    extract_state_dispatcher_map_from_mba,
+    extract_state_dispatcher_map_from_mba as _extract_state_dispatcher_map_from_mba,
 )
 from d810.recon.flow.entry_island_rescue_discovery import (
     collect_entry_island_rescue_seeds,
@@ -1260,6 +1261,23 @@ def _switch_dispatcher_reentry_targets(
     if len(candidate_guards) == 1:
         targets.update(candidate_guards)
     return frozenset(targets)
+
+
+def extract_state_dispatcher_map_from_mba(
+    mba: object,
+    *,
+    dispatcher_entry_block: int | None = None,
+    max_depth: int | None = None,
+) -> StateDispatcherMap | None:
+    """Live Hex-Rays adapter for the pure equality-chain extractor."""
+
+    return _extract_state_dispatcher_map_from_mba(
+        mba,
+        dispatcher_entry_block=dispatcher_entry_block,
+        max_depth=max_depth,
+        opcode_names=_hexrays_bst_runtime.build_opcode_map(),
+        mop_type_names=_hexrays_bst_runtime.build_mop_type_map(),
+    )
 
 
 def _ollvm_state_dispatcher_maps(
