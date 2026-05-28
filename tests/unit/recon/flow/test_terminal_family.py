@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from d810.cfg.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
 from d810.recon.flow.terminal_family import (
     TerminalFamilyCandidate,
     TerminalFamilySeed,
@@ -11,6 +12,9 @@ from d810.recon.flow.terminal_family import (
     probe_terminal_family_seed,
     resolve_terminal_source_arm_entry,
     seed_terminal_family_probes,
+    terminal_locator_key,
+    terminal_source_signature,
+    terminal_write_signature,
 )
 
 
@@ -182,3 +186,41 @@ class TestBuildTerminalFamilyCandidates:
         assert len(candidates) == 1
         assert candidates[0].family_entry == 90
         assert candidates[0].path == (90, 94)
+
+
+class TestTerminalValueSignatures:
+    def test_terminal_locator_key_uses_portable_operand_kind(self):
+        stack_mop = MopSnapshot(kind=OperandKind.STACK, stkoff=0x20, size=4)
+        reg_mop = MopSnapshot(kind=OperandKind.REGISTER, reg=7, size=8)
+
+        assert terminal_locator_key(stack_mop) == ("stk", 0x20, 4)
+        assert terminal_locator_key(reg_mop) == ("reg", 7, 8)
+
+    def test_terminal_source_signature_uses_portable_operand_kind(self):
+        assert terminal_source_signature(
+            MopSnapshot(kind=OperandKind.NUMBER, value=0x42, size=4)
+        ) == ("const", 0x42)
+        assert terminal_source_signature(
+            MopSnapshot(kind=OperandKind.BLOCK, block_ref=17)
+        ) == ("block", 17)
+
+    def test_terminal_write_signature_uses_portable_instruction_kind(self):
+        insn = InsnSnapshot(
+            opcode=0,
+            ea=0,
+            operands=(),
+            kind=InsnKind.MOV,
+            d=MopSnapshot(kind=OperandKind.STACK, stkoff=0x10, size=4),
+            l=MopSnapshot(kind=OperandKind.NUMBER, value=3, size=4),
+        )
+
+        assert terminal_write_signature(insn) == (
+            "op",
+            "mov",
+            "dst",
+            ("stk", 0x10, 4),
+            "src_l",
+            ("const", 3),
+            "src_r",
+            ("none",),
+        )
