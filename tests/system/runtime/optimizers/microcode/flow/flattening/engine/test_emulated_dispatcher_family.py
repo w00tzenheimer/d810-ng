@@ -3017,7 +3017,9 @@ def test_tigress_indirect_profile_collects_configured_table(monkeypatch) -> None
         calls.append((mba_arg, goto_table_info))
         return SimpleNamespace(state_dispatcher_map=dispatch_map)
 
-    import d810.recon.flow.indirect_jump_table_analysis as indirect_analysis
+    from d810.optimizers.microcode.flow.dispatcher import (
+        indirect_jump_table_analysis as indirect_analysis,
+    )
 
     monkeypatch.setattr(
         indirect_analysis,
