@@ -406,6 +406,54 @@ def classify_control_transfer(insn: object) -> ControlTransferKind | None:
         return None
 
 
+def _stack_refs_from_mop(
+    mop: object | None,
+    *,
+    visited_mops: set[int] | None = None,
+    visited_insns: set[int] | None = None,
+) -> tuple[int, ...]:
+    if mop is None:
+        return ()
+    if visited_mops is None:
+        visited_mops = set()
+    if visited_insns is None:
+        visited_insns = set()
+    mop_identity = id(mop)
+    if mop_identity in visited_mops:
+        return ()
+    visited_mops.add(mop_identity)
+
+    if getattr(mop, "t", None) == ida_hexrays.mop_S:
+        stack_ref = getattr(mop, "s", None)
+        offset = getattr(stack_ref, "off", None)
+        return () if offset is None else (int(offset),)
+    if getattr(mop, "t", None) != ida_hexrays.mop_d:
+        return ()
+
+    inner = getattr(mop, "d", None)
+    if inner is None:
+        return ()
+    insn_identity = id(inner)
+    if insn_identity in visited_insns:
+        return ()
+    visited_insns.add(insn_identity)
+
+    refs: list[int] = []
+    for child in (
+        getattr(inner, "l", None),
+        getattr(inner, "r", None),
+        getattr(inner, "d", None),
+    ):
+        refs.extend(
+            _stack_refs_from_mop(
+                child,
+                visited_mops=visited_mops,
+                visited_insns=visited_insns,
+            )
+        )
+    return tuple(dict.fromkeys(refs))
+
+
 def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
     """Capture a lightweight ``CfgMopSnapshot`` from a live ``mop_t``.
 
@@ -421,7 +469,21 @@ def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
         return CfgMopSnapshot(t=t, size=size, value=int(nnn.value) if nnn is not None else 0, kind=kind)
     if t == ida_hexrays.mop_S:
         s = mop.s
-        return CfgMopSnapshot(t=t, size=size, stkoff=s.off if s is not None else None, kind=kind)
+        stkoff = s.off if s is not None else None
+        return CfgMopSnapshot(
+            t=t,
+            size=size,
+            stkoff=stkoff,
+            stack_refs=() if stkoff is None else (int(stkoff),),
+            kind=kind,
+        )
+    if t == ida_hexrays.mop_d:
+        return CfgMopSnapshot(
+            t=t,
+            size=size,
+            stack_refs=_stack_refs_from_mop(mop),
+            kind=kind,
+        )
     if t == ida_hexrays.mop_r:
         return CfgMopSnapshot(t=t, size=size, reg=mop.r, kind=kind)
     if t == ida_hexrays.mop_b:

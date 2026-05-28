@@ -160,6 +160,34 @@ def test_capture_mop_snapshot_preserves_switch_case_rows():
     )
 
 
+def test_capture_mop_snapshot_preserves_nested_stack_refs():
+    """Switch-table prep: nested dispatch expressions expose state refs."""
+    stack_mop = SimpleNamespace(
+        t=ida_hexrays.mop_S,
+        size=4,
+        s=SimpleNamespace(off=0x38),
+    )
+    const_mop = SimpleNamespace(
+        t=ida_hexrays.mop_n,
+        size=4,
+        nnn=SimpleNamespace(value=0xF),
+    )
+    nested_expr = SimpleNamespace(
+        t=ida_hexrays.mop_d,
+        size=4,
+        d=SimpleNamespace(l=stack_mop, r=const_mop, d=stack_mop),
+    )
+
+    direct_snapshot = capture_mop_snapshot(stack_mop)
+    nested_snapshot = capture_mop_snapshot(nested_expr)
+
+    assert direct_snapshot is not None
+    assert direct_snapshot.stack_refs == (0x38,)
+    assert nested_snapshot is not None
+    assert nested_snapshot.kind is OperandKind.SUBINSN
+    assert nested_snapshot.stack_refs == (0x38,)
+
+
 def test_hexrays_branch_opcodes_map_to_backend_neutral_predicates():
     assert _branch_predicate_from_hexrays(ida_hexrays.m_jnz) is (
         BranchPredicate.NOT_EQUAL
