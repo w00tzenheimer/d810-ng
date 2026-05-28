@@ -1,8 +1,10 @@
 """Tests for equality-chain dispatcher row extraction."""
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 
+import d810.recon.flow.equality_chain_dispatcher as equality_chain_dispatcher
 from d810.recon.flow.equality_chain_dispatcher import (
     extract_state_dispatcher_map_from_mba,
 )
@@ -138,6 +140,36 @@ def test_extracts_snapshot_constants_from_nnn_value() -> None:
 
     assert dispatch_map is not None
     assert dispatch_map.state_to_handler() == {0x44: 7}
+
+
+def test_extracts_live_numeric_hexrays_constants_without_importing_hexrays() -> None:
+    mba = _Mba(
+        {
+            2: _block(
+                2,
+                opcode=24,
+                state_mop=SimpleNamespace(t=5, s=SimpleNamespace(off=0x3C), size=4),
+                const=0,
+                jump_target=7,
+                succs=(3, 7),
+            ),
+        }
+    )
+    mba.blocks[2].type = 4
+    mba.blocks[2].tail.r = _mop_n_snapshot(0x55)
+
+    dispatch_map = extract_state_dispatcher_map_from_mba(
+        mba,
+        dispatcher_entry_block=2,
+    )
+
+    assert dispatch_map is not None
+    assert dispatch_map.state_to_handler() == {0x55: 7}
+    assert dispatch_map.state_var_stkoff == 0x3C
+
+
+def test_equality_chain_dispatcher_does_not_import_live_hexrays() -> None:
+    assert "import ida_hexrays" not in inspect.getsource(equality_chain_dispatcher)
 
 
 def test_extracts_jnz_exact_row_from_fallthrough() -> None:
