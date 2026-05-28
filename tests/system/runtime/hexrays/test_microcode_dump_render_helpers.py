@@ -9,7 +9,7 @@ import pytest
 
 pytest.importorskip("idaapi")
 
-from d810.recon import microcode_dump
+from d810.optimizers.microcode import microcode_dump
 
 
 class _FakeMList:

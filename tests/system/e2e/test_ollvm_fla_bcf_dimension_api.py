@@ -141,7 +141,7 @@ def _print_selected_microcode_blocks(cfunc, block_serials: tuple[int, ...]) -> N
     if not block_serials:
         return
     try:
-        from d810.recon.microcode_dump import mba_to_dict
+        from d810.optimizers.microcode.microcode_dump import mba_to_dict
     except Exception as exc:
         print(f"[ollvm_fla_bcf] microcode dump unavailable: {exc}", flush=True)
         return

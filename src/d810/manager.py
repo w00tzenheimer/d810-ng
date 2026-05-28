@@ -88,7 +88,7 @@ from d810.recon.facts.collectors import (
     TerminalByteEmitterFactCollector,
     ZeroBlobFactCollector,
 )
-from d810.recon.microcode_dump import mba_to_dict
+from d810.optimizers.microcode.microcode_dump import mba_to_dict
 from d810.recon.analysis import AnalysisPhase
 from d810.recon.inferences import unflattening_inference
 from d810.recon.phase import ReconPhase
@@ -998,7 +998,7 @@ class D810Manager:
                 ProgramRenderStrategy,
                 RenderOrderStrategy,
             )
-            from d810.recon.microcode_dump import (
+            from d810.optimizers.microcode.microcode_dump import (
                 build_live_linearized_program,
                 resolve_dispatcher_context_for_linearized_program,
             )
