@@ -57,6 +57,24 @@ def _ensure_ida_imports() -> None:
 OPCODE_MAP: Dict[int, str] = {}
 MOP_TYPE_MAP: Dict[int, str] = {}
 _maps_initialized = False
+_BST_OPCODE_NAMES = frozenset(
+    {
+        "m_jbe",
+        "m_ja",
+        "m_jb",
+        "m_jae",
+        "m_jnz",
+        "m_jz",
+    }
+)
+_BST_OPCODE_NAME_TO_KIND = {
+    "m_jbe": NodeKind.JBE,
+    "m_ja": NodeKind.JA,
+    "m_jb": NodeKind.JB,
+    "m_jae": NodeKind.JAE,
+    "m_jnz": NodeKind.JNZ,
+    "m_jz": NodeKind.JZ,
+}
 
 
 def _init_constants() -> None:
@@ -88,6 +106,44 @@ def _init_constants() -> None:
                 pass
 
     _maps_initialized = True
+
+
+def _opcode_name(opcode: object) -> str | None:
+    """Return the lifted backend opcode name for a live opcode value."""
+
+    if isinstance(opcode, str):
+        return opcode
+    _init_constants()
+    try:
+        return OPCODE_MAP.get(int(opcode))
+    except (TypeError, ValueError):
+        return None
+
+
+def _opcode_kind(opcode: object) -> NodeKind | None:
+    name = _opcode_name(opcode)
+    return _BST_OPCODE_NAME_TO_KIND.get(name or "")
+
+
+def _is_bst_opcode(opcode: object) -> bool:
+    name = _opcode_name(opcode)
+    return name in _BST_OPCODE_NAMES
+
+
+def _mop_type_name(mop_type: object) -> str | None:
+    """Return the lifted backend operand-type name for a live mop type."""
+
+    if isinstance(mop_type, str):
+        return mop_type
+    _init_constants()
+    try:
+        return MOP_TYPE_MAP.get(int(mop_type))
+    except (TypeError, ValueError):
+        return None
+
+
+def _mop_type_is(mop_type: object, expected_name: str) -> bool:
+    return _mop_type_name(mop_type) == expected_name
 
 
 def find_bst_default_block(
@@ -218,22 +274,23 @@ def resolve_via_bst_walk(
         # Condition TRUE  → branch_target (taken)
         # Condition FALSE → fall_through
         take_branch: bool
-        if opcode == idaapi.m_jbe:
+        opcode_kind = _opcode_kind(opcode)
+        if opcode_kind is NodeKind.JBE:
             # jump if state_var <= cmp_val
             take_branch = state_value <= cmp_val
-        elif opcode == idaapi.m_ja:
+        elif opcode_kind is NodeKind.JA:
             # jump if state_var > cmp_val
             take_branch = state_value > cmp_val
-        elif opcode == idaapi.m_jb:
+        elif opcode_kind is NodeKind.JB:
             # jump if state_var < cmp_val
             take_branch = state_value < cmp_val
-        elif opcode == idaapi.m_jae:
+        elif opcode_kind is NodeKind.JAE:
             # jump if state_var >= cmp_val
             take_branch = state_value >= cmp_val
-        elif opcode == idaapi.m_jnz:
+        elif opcode_kind is NodeKind.JNZ:
             # jump if state_var != cmp_val
             take_branch = state_value != cmp_val
-        elif opcode == idaapi.m_jz:
+        elif opcode_kind is NodeKind.JZ:
             # jump if state_var == cmp_val
             take_branch = state_value == cmp_val
         else:
@@ -257,7 +314,7 @@ def _get_mop_const_value(mop: "idaapi.mop_t") -> Optional[int]:
     if mop is None:
         return None
     mop_type = getattr(mop, "t", None)
-    if mop_type == idaapi.mop_n:
+    if _mop_type_is(mop_type, "mop_n"):
         nnn = getattr(mop, "nnn", None)
         if nnn is not None:
             return getattr(nnn, "value", None)
@@ -338,12 +395,13 @@ def _dump_dispatcher_node(
 
     prefix = "  " * indent
 
-    is_jbe = opcode is not None and hasattr(idaapi, "m_jbe") and opcode == idaapi.m_jbe
-    is_ja = opcode is not None and hasattr(idaapi, "m_ja") and opcode == idaapi.m_ja
-    is_jb = opcode is not None and hasattr(idaapi, "m_jb") and opcode == idaapi.m_jb
-    is_jae = opcode is not None and hasattr(idaapi, "m_jae") and opcode == idaapi.m_jae
-    is_jnz = opcode is not None and hasattr(idaapi, "m_jnz") and opcode == idaapi.m_jnz
-    is_jz = opcode is not None and hasattr(idaapi, "m_jz") and opcode == idaapi.m_jz
+    opcode_kind = _opcode_kind(opcode)
+    is_jbe = opcode_kind is NodeKind.JBE
+    is_ja = opcode_kind is NodeKind.JA
+    is_jb = opcode_kind is NodeKind.JB
+    is_jae = opcode_kind is NodeKind.JAE
+    is_jnz = opcode_kind is NodeKind.JNZ
+    is_jz = opcode_kind is NodeKind.JZ
 
     if is_jbe or is_ja or is_jb or is_jae:
         if bst_node_blocks is not None:
@@ -467,14 +525,6 @@ def _dump_dispatcher_node(
             f" jump blk[{jump_blk}] ({jump_state_str})"
         )
 
-        # Helper: determine if a block serial is a BST comparison node
-        # (has a conditional tail opcode and exactly 2 successors).
-        _bst_opcodes = set()
-        for _attr in ("m_jbe", "m_ja", "m_jb", "m_jae", "m_jnz", "m_jz"):
-            _v = getattr(idaapi, _attr, None)
-            if _v is not None:
-                _bst_opcodes.add(_v)
-
         # Extract the state variable size from the root BST node once so that
         # _is_bst_node / _is_bst_node_chain can reject comparisons that test a
         # differently-sized operand (e.g. an 8-byte pointer vs NULL).
@@ -495,7 +545,7 @@ def _dump_dispatcher_node(
             _tail = _b.tail
             if _tail is None:
                 return False
-            if getattr(_tail, "opcode", None) not in _bst_opcodes:
+            if not _is_bst_opcode(getattr(_tail, "opcode", None)):
                 return False
             if _root_state_var_size is not None:
                 _l_t = getattr(_tail.l, "t", None)
@@ -551,7 +601,7 @@ def _dump_dispatcher_node(
             _tail = _b.tail
             if _tail is None:
                 return False
-            if getattr(_tail, "opcode", None) not in _bst_opcodes:
+            if not _is_bst_opcode(getattr(_tail, "opcode", None)):
                 return False
             if _root_state_var_size is not None:
                 _l_t = getattr(_tail.l, "t", None)
@@ -1059,18 +1109,13 @@ def _resolve_mop_from_maps(
         return None
 
     mop_type = mop.t
-    mop_n_type = idaapi.mop_n
-    mop_S_type = idaapi.mop_S
-    mop_r_type = idaapi.mop_r
-    mop_l_type = idaapi.mop_l
-    mop_d_type = idaapi.mop_d
-    mop_v_type = idaapi.mop_v
+    mop_type_name = _mop_type_name(mop_type)
 
     result: Optional[int] = None
 
-    if mop_type == mop_n_type:
+    if mop_type_name == "mop_n":
         result = _get_mop_const_value(mop)
-    elif mop_S_type is not None and mop_type == mop_S_type:
+    elif mop_type_name == "mop_S":
         off = getattr(mop, "s", None)
         if off is not None:
             off = getattr(off, "off", None)
@@ -1078,13 +1123,13 @@ def _resolve_mop_from_maps(
             off = getattr(mop, "stkoff", None)
         if off is not None:
             result = stk_map.get(off)
-    elif mop_type == mop_r_type:
+    elif mop_type_name == "mop_r":
         reg = getattr(mop, "r", None)
         if reg is None:
             reg = getattr(mop, "reg", None)
         if reg is not None:
             result = reg_map.get(reg)
-    elif mop_l_type is not None and mop_type == mop_l_type:
+    elif mop_type_name == "mop_l":
         lvar_ref = getattr(mop, "l", None)
         idx = getattr(lvar_ref, "idx", None) if lvar_ref is not None else None
         if idx is not None and state_var_lvar_idx is not None and idx == state_var_lvar_idx:
@@ -1097,14 +1142,14 @@ def _resolve_mop_from_maps(
                 result = stk_map.get(off)
             except Exception:
                 pass
-    elif mop_type == mop_v_type:
+    elif mop_type_name == "mop_v":
         try:
             addr = int(getattr(mop, "g", 0) or 0)
             size = int(getattr(mop, "size", 0) or 0)
             result = _fetch_stable_global_value(addr, size)
         except Exception:
             result = None
-    elif mop_type == mop_d_type:
+    elif mop_type_name == "mop_d":
         nested = getattr(mop, "d", None)
         if nested is not None:
             op = getattr(nested, "opcode", None)
@@ -2189,16 +2234,11 @@ _MCODE_TO_KIND: dict[int, NodeKind] | None = None
 def _get_mcode_to_kind() -> dict[int, NodeKind]:
     global _MCODE_TO_KIND
     if _MCODE_TO_KIND is None:
-        _ensure_ida_imports()
-        import ida_hexrays as ihr
-
+        _init_constants()
         _MCODE_TO_KIND = {
-            ihr.m_jbe: NodeKind.JBE,
-            ihr.m_ja: NodeKind.JA,
-            ihr.m_jb: NodeKind.JB,
-            ihr.m_jae: NodeKind.JAE,
-            ihr.m_jnz: NodeKind.JNZ,
-            ihr.m_jz: NodeKind.JZ,
+            opcode: _BST_OPCODE_NAME_TO_KIND[name]
+            for opcode, name in OPCODE_MAP.items()
+            if name in _BST_OPCODE_NAME_TO_KIND
         }
     return _MCODE_TO_KIND
 
