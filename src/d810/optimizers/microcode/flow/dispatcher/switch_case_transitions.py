@@ -183,7 +183,9 @@ def _return_value_from_frontier_writer(
         return None
 
     from d810.recon.flow.bst_analysis import _get_mop_const_value
-    from d810.recon.flow.return_frontier_carrier_audit import _walk_to_return_writer
+    from d810.optimizers.microcode.flow.dispatcher.return_frontier_carrier_audit import (
+        _walk_to_return_writer,
+    )
 
     path_blocks = {int(serial) for serial in ordered_path}
     for serial in _candidate_return_frontiers(mba, ordered_path, BLT_STOP):

@@ -16,8 +16,8 @@ instead of ``return v49``.
 
 Scope (per user directive)
 --------------------------
-* Writer blocks classified POINTER_IDENTITY_PROPAGATED by
-  :mod:`d810.recon.flow.return_frontier_carrier_audit`.
+* Writer blocks classified POINTER_IDENTITY_PROPAGATED by the live
+  return-frontier carrier audit in the optimizer dispatcher layer.
 * The strategy fires at MMAT_GLBOPT1 (before IDA's copy-prop
   finalize) and operates on the live mba.
 
@@ -45,7 +45,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.recon.flow.return_frontier_carrier_audit import (
+from d810.optimizers.microcode.flow.dispatcher.return_frontier_carrier_audit import (
     audit_return_frontier_carriers,
 )
 

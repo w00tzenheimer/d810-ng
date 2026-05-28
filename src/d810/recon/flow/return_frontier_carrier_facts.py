@@ -6,9 +6,9 @@ snapshot to find the FIRST block that writes the return slot
 (rax-typed register or the return-slot stkvar) and record the carrier
 identity of that writer's source operand.
 
-Unlike :mod:`d810.recon.flow.return_frontier_carrier_audit` (which
-runs against the live ``mba_t`` *post*-pipeline), this detector runs
-at FlowGraph-build time against the pre-mutation snapshot.  The
+Unlike the live return-frontier carrier audit in the optimizer layer,
+which runs against the live ``mba_t`` *post*-pipeline, this detector
+runs at FlowGraph-build time against the pre-mutation snapshot.  The
 intent is to provide HCC's plan-emission stage with a stable,
 immutable record of the carrier's def-chain blocks BEFORE any
 ``RedirectGoto`` / typed clone / ``InsertBlock`` mod can
