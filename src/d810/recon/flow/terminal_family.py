@@ -3,8 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, replace
 
-import ida_hexrays
-
+from d810.cfg.flowgraph import InsnKind, OperandKind
 from d810.recon.flow.linearized_state_dag import SemanticEdgeKind, StateDagEdge
 
 
@@ -55,8 +54,8 @@ class TerminalFamilySeedProbe:
 def terminal_locator_key(mop: object | None) -> tuple[object, ...] | None:
     if mop is None:
         return None
-    mop_type = getattr(mop, "t", None)
-    if mop_type == getattr(ida_hexrays, "mop_S", None):
+    mop_kind = getattr(mop, "kind", OperandKind.UNKNOWN)
+    if mop_kind == OperandKind.STACK:
         stkoff = getattr(mop, "stkoff", None)
         if stkoff is None:
             stack_ref = getattr(mop, "s", None)
@@ -64,7 +63,7 @@ def terminal_locator_key(mop: object | None) -> tuple[object, ...] | None:
         if stkoff is not None:
             return ("stk", int(stkoff), int(getattr(mop, "size", 0) or 0))
         return None
-    if mop_type == getattr(ida_hexrays, "mop_r", None):
+    if mop_kind == OperandKind.REGISTER:
         reg = getattr(mop, "reg", None)
         if reg is None:
             reg = getattr(mop, "r", None)
@@ -82,8 +81,8 @@ def terminal_source_signature(mop: object | None) -> tuple[object, ...]:
     if locator is not None:
         return locator
 
-    mop_type = getattr(mop, "t", None)
-    if mop_type == getattr(ida_hexrays, "mop_n", None):
+    mop_kind = getattr(mop, "kind", OperandKind.UNKNOWN)
+    if mop_kind == OperandKind.NUMBER:
         value = getattr(mop, "value", None)
         if value is None:
             nnn = getattr(mop, "nnn", None)
@@ -92,16 +91,17 @@ def terminal_source_signature(mop: object | None) -> tuple[object, ...]:
             return ("const", int(value))
         return ("const", None)
 
-    if mop_type == getattr(ida_hexrays, "mop_a", None):
+    if mop_kind == OperandKind.ADDRESS:
         return ("ptr", int(getattr(mop, "size", 0) or 0))
-    if mop_type == getattr(ida_hexrays, "mop_b", None):
+    if mop_kind == OperandKind.BLOCK:
         block_ref = getattr(mop, "block_ref", None)
         if block_ref is None:
             block_ref = getattr(mop, "b", None)
         return ("block", int(block_ref) if block_ref is not None else None)
+    raw_operand_type = getattr(mop, "raw_operand_type", getattr(mop, "t", None))
     return (
         "mop",
-        int(mop_type) if mop_type is not None else None,
+        int(raw_operand_type) if raw_operand_type is not None else None,
         int(getattr(mop, "size", 0) or 0),
     )
 
@@ -109,7 +109,7 @@ def terminal_source_signature(mop: object | None) -> tuple[object, ...]:
 def terminal_write_signature(insn: object) -> tuple[object, ...]:
     return (
         "op",
-        int(getattr(insn, "opcode", 0)),
+        getattr(getattr(insn, "kind", InsnKind.UNKNOWN), "value", "unknown"),
         "dst",
         terminal_locator_key(getattr(insn, "d", None))
         or terminal_source_signature(getattr(insn, "d", None)),
@@ -121,11 +121,7 @@ def terminal_write_signature(insn: object) -> tuple[object, ...]:
 
 
 def insn_is_copy_like(insn: object) -> bool:
-    opcode = getattr(insn, "opcode", None)
-    return opcode in (
-        int(ida_hexrays.m_mov),
-        int(ida_hexrays.m_xdu),
-    )
+    return getattr(insn, "kind", InsnKind.UNKNOWN) in {InsnKind.MOV, InsnKind.XDU}
 
 
 def is_state_var_dest(insn: object, state_var_stkoff: int | None) -> bool:
@@ -134,7 +130,7 @@ def is_state_var_dest(insn: object, state_var_stkoff: int | None) -> bool:
     dest = getattr(insn, "d", None)
     if dest is None:
         return False
-    if getattr(dest, "t", None) != getattr(ida_hexrays, "mop_S", None):
+    if getattr(dest, "kind", OperandKind.UNKNOWN) != OperandKind.STACK:
         return False
     stkoff = getattr(dest, "stkoff", None)
     if stkoff is None:
@@ -439,7 +435,7 @@ def find_last_terminal_write(
             continue
         for insn_index in range(len(block.insn_snapshots) - 1, -1, -1):
             insn = block.insn_snapshots[insn_index]
-            if getattr(insn, "opcode", None) == int(ida_hexrays.m_goto):
+            if getattr(insn, "kind", InsnKind.UNKNOWN) == InsnKind.GOTO:
                 continue
             if getattr(insn, "d", None) is None:
                 continue
@@ -473,7 +469,7 @@ def find_prev_terminal_write_to_locator(
             start_index = int(before_insn_index) - 1
         for insn_index in range(start_index, -1, -1):
             insn = block.insn_snapshots[insn_index]
-            if getattr(insn, "opcode", None) == int(ida_hexrays.m_goto):
+            if getattr(insn, "kind", InsnKind.UNKNOWN) == InsnKind.GOTO:
                 continue
             if getattr(insn, "d", None) is None:
                 continue
