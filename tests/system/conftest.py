@@ -1351,7 +1351,7 @@ def pytest_addoption(parser):
         default=False,
         help=(
             "Also print IDA-style human-readable microcode via "
-            "d810.optimizers.microcode.microcode_dump.print_mba_human_readable(). "
+            "d810.optimizers.microcode.microcode_dump.mba_to_human_readable(). "
             "Use with --dump-microcode-maturity or --dump-microcode-d810 to "
             "exercise block-level VALRANGES and instruction-level vr={...} output."
         ),

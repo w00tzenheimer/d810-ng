@@ -396,7 +396,7 @@ def cmd_dump(args: argparse.Namespace) -> None:
     from d810.optimizers.microcode.flow.flattening.hodur.diagnostics import (
         build_terminal_return_valrange_report_from_store,
     )
-    from d810.recon.microcode_dump import print_mba_human_readable
+    from d810.optimizers.microcode.microcode_dump import mba_to_human_readable
 
     binary_path = _resolve_binary_path(args.binary)
     _apply_no_cython_flag(args.no_cython)
@@ -543,7 +543,7 @@ def cmd_dump(args: argparse.Namespace) -> None:
                             print(
                                 f"\n--- HUMAN MICROCODE ({args.human_microcode_maturity}) ---"
                             )
-                            print_mba_human_readable(mba, func_name=func_name)
+                            print("\n".join(mba_to_human_readable(mba)))
                         if args.terminal_return_valranges:
                             print("\n--- TERMINAL RETURN VALRANGES ---")
                             report = build_terminal_return_valrange_report_from_store(
@@ -937,7 +937,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help=(
             "Also dump IDA-style human-readable microcode for each function. "
-            "Uses print_mba_human_readable() and exercises VALRANGES / vr={...} output."
+            "Uses mba_to_human_readable() and exercises VALRANGES / vr={...} output."
         ),
     )
     p_dump.add_argument(
