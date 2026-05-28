@@ -5,7 +5,14 @@ from types import SimpleNamespace
 import ida_hexrays
 import pytest
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
+from d810.cfg.flowgraph import (
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
 from d810.cfg.graph_modification import (
     EdgeRedirectViaPredSplit,
     NopInstructions,
@@ -7527,8 +7534,19 @@ class TestClassifyArtifactReturnBlocks:
                             opcode=m_xdu,
                             ea=0x4100,
                             operands=(),
-                            l=MopSnapshot(t=mop_S, size=4, stkoff=state_stkoff),
-                            d=MopSnapshot(t=mop_S, size=8, stkoff=return_stkoff),
+                            l=MopSnapshot(
+                                t=mop_S,
+                                size=4,
+                                stkoff=state_stkoff,
+                                kind=OperandKind.STACK,
+                            ),
+                            d=MopSnapshot(
+                                t=mop_S,
+                                size=8,
+                                stkoff=return_stkoff,
+                                kind=OperandKind.STACK,
+                            ),
+                            kind=InsnKind.XDU,
                         ),
                     ),
                 ),
@@ -7568,8 +7586,19 @@ class TestClassifyArtifactReturnBlocks:
                             opcode=m_mov,
                             ea=0x1B00,
                             operands=(),
-                            l=MopSnapshot(t=mop_n, size=4, value=state_const),
-                            d=MopSnapshot(t=mop_S, size=8, stkoff=return_stkoff),
+                            l=MopSnapshot(
+                                t=mop_n,
+                                size=4,
+                                value=state_const,
+                                kind=OperandKind.NUMBER,
+                            ),
+                            d=MopSnapshot(
+                                t=mop_S,
+                                size=8,
+                                stkoff=return_stkoff,
+                                kind=OperandKind.STACK,
+                            ),
+                            kind=InsnKind.MOV,
                         ),
                     ),
                 ),
@@ -7606,8 +7635,19 @@ class TestClassifyArtifactReturnBlocks:
                             opcode=m_mov,
                             ea=0x5E00,
                             operands=(),
-                            l=MopSnapshot(t=mop_n, size=4, value=0x00000042),
-                            d=MopSnapshot(t=mop_S, size=8, stkoff=return_stkoff),
+                            l=MopSnapshot(
+                                t=mop_n,
+                                size=4,
+                                value=0x00000042,
+                                kind=OperandKind.NUMBER,
+                            ),
+                            d=MopSnapshot(
+                                t=mop_S,
+                                size=8,
+                                stkoff=return_stkoff,
+                                kind=OperandKind.STACK,
+                            ),
+                            kind=InsnKind.MOV,
                         ),
                     ),
                 ),
@@ -7642,8 +7682,19 @@ class TestClassifyArtifactReturnBlocks:
                             opcode=m_xdu,
                             ea=0x3200,
                             operands=(),
-                            l=MopSnapshot(t=mop_S, size=4, stkoff=state_stkoff),
-                            d=MopSnapshot(t=mop_S, size=8, stkoff=state_stkoff),
+                            l=MopSnapshot(
+                                t=mop_S,
+                                size=4,
+                                stkoff=state_stkoff,
+                                kind=OperandKind.STACK,
+                            ),
+                            d=MopSnapshot(
+                                t=mop_S,
+                                size=8,
+                                stkoff=state_stkoff,
+                                kind=OperandKind.STACK,
+                            ),
+                            kind=InsnKind.XDU,
                         ),
                     ),
                 ),

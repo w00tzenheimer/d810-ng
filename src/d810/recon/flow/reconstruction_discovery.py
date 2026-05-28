@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.cfg.flowgraph import InsnKind, OperandKind
 from d810.core import logging
-import ida_hexrays
 
 from d810.recon.flow.exit_transition_discovery import resolve_state_var_stkoff
 from d810.recon.flow.linearized_state_dag import (
@@ -89,22 +89,17 @@ def classify_artifact_return_blocks(
     state_constants: set[int],
 ) -> set[int]:
     """Identify return-artifact blocks that forward dead state values."""
-    MOP_N = int(ida_hexrays.mop_n)
-    MOP_S = int(ida_hexrays.mop_S)
-    m_xdu = int(ida_hexrays.m_xdu)
-    m_mov = int(ida_hexrays.m_mov)
-
     artifact_blocks: set[int] = set()
     for serial, blk in flow_graph.blocks.items():
         for insn in blk.insn_snapshots:
-            if insn.opcode == m_xdu:
+            if insn.kind is InsnKind.XDU:
                 l_op = insn.l
                 d_op = insn.d
                 if (
                     l_op is not None
                     and d_op is not None
-                    and getattr(l_op, "t", None) == MOP_S
-                    and getattr(d_op, "t", None) == MOP_S
+                    and l_op.kind is OperandKind.STACK
+                    and d_op.kind is OperandKind.STACK
                     and getattr(l_op, "stkoff", None) is not None
                     and getattr(d_op, "stkoff", None) is not None
                     and int(l_op.stkoff) == state_var_stkoff
@@ -112,14 +107,14 @@ def classify_artifact_return_blocks(
                 ):
                     artifact_blocks.add(serial)
                     break
-            if insn.opcode == m_mov:
+            if insn.kind is InsnKind.MOV:
                 l_op = insn.l
                 d_op = insn.d
                 if (
                     l_op is not None
                     and d_op is not None
-                    and getattr(l_op, "t", None) == MOP_N
-                    and getattr(d_op, "t", None) == MOP_S
+                    and l_op.kind is OperandKind.NUMBER
+                    and d_op.kind is OperandKind.STACK
                     and getattr(l_op, "value", None) is not None
                     and getattr(d_op, "stkoff", None) is not None
                     and int(d_op.stkoff) != state_var_stkoff

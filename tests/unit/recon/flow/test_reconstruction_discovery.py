@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import ida_hexrays
-
+from d810.cfg.flowgraph import InsnKind, OperandKind
 from d810.recon.flow.linearized_state_dag import SemanticEdgeKind
 from d810.recon.flow.reconstruction_discovery import (
     classify_artifact_return_blocks,
@@ -14,8 +13,8 @@ from d810.recon.flow.state_machine_analysis import StateWriteSite
 
 
 class _Insn:
-    def __init__(self, *, opcode, l=None, d=None):
-        self.opcode = opcode
+    def __init__(self, *, kind, l=None, d=None):
+        self.kind = kind
         self.l = l
         self.d = d
 
@@ -49,27 +48,33 @@ class TestClassifyArtifactReturnBlocks:
                 41: _Block(
                     [
                         _Insn(
-                            opcode=ida_hexrays.m_xdu,
-                            l=SimpleNamespace(t=ida_hexrays.mop_S, stkoff=0x30),
-                            d=SimpleNamespace(t=ida_hexrays.mop_S, stkoff=0x680),
+                            kind=InsnKind.XDU,
+                            l=SimpleNamespace(kind=OperandKind.STACK, stkoff=0x30),
+                            d=SimpleNamespace(kind=OperandKind.STACK, stkoff=0x680),
                         )
                     ]
                 ),
                 47: _Block(
                     [
                         _Insn(
-                            opcode=ida_hexrays.m_mov,
-                            l=SimpleNamespace(t=ida_hexrays.mop_n, value=0x12345678),
-                            d=SimpleNamespace(t=ida_hexrays.mop_S, stkoff=0x680),
+                            kind=InsnKind.MOV,
+                            l=SimpleNamespace(
+                                kind=OperandKind.NUMBER,
+                                value=0x12345678,
+                            ),
+                            d=SimpleNamespace(kind=OperandKind.STACK, stkoff=0x680),
                         )
                     ]
                 ),
                 71: _Block(
                     [
                         _Insn(
-                            opcode=ida_hexrays.m_mov,
-                            l=SimpleNamespace(t=ida_hexrays.mop_n, value=0x99999999),
-                            d=SimpleNamespace(t=ida_hexrays.mop_S, stkoff=0x30),
+                            kind=InsnKind.MOV,
+                            l=SimpleNamespace(
+                                kind=OperandKind.NUMBER,
+                                value=0x99999999,
+                            ),
+                            d=SimpleNamespace(kind=OperandKind.STACK, stkoff=0x30),
                         )
                     ]
                 ),
