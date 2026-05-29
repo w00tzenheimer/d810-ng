@@ -44,6 +44,7 @@ layers =
     d810.transforms
     d810.mba
     d810.cfg
+    d810.analyses
     d810.capabilities
     d810.ir
     d810.core
@@ -220,9 +221,9 @@ source_modules =
     # promoted into this contract.  This is the static companion to the
     # `no-live-ida-in-portable-core` ast-grep rule (already severity=error).
     d810.recon
+    d810.analyses
     # When created and clean, append:
     #     d810.pre_analysis
-    #     d810.analyses
     #     d810.passes
     #     d810.support
 forbidden_modules =
@@ -259,9 +260,9 @@ source_modules =
     d810.ir
     d810.transforms
     d810.recon
+    d810.analyses
     # When created and clean, append:
     #     d810.pre_analysis
-    #     d810.analyses
     #     d810.passes
     #     d810.support
 forbidden_modules =
@@ -292,8 +293,8 @@ source_modules =
     d810.recon
     d810.ir
     d810.transforms
+    d810.analyses
     # When created, append:
-    #     d810.analyses
     #     d810.passes
 forbidden_modules =
     angr
