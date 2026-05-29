@@ -1,7 +1,7 @@
 """OLLVM carrier fact backend for the shared emulated-dispatcher profile."""
 from __future__ import annotations
 
-from d810.recon.facts.value_flow import project_value_flow_facts
+from d810.analyses.value_flow import project_value_flow_facts
 
 
 def _collector_target(target: object) -> object | None:

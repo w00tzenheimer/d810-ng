@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from d810.recon.facts import value_flow as vf
-from d810.recon.facts.value_flow.alias_registry import (
+from d810.analyses import value_flow as vf
+from d810.analyses.value_flow.alias_registry import (
     FACT_TYPE_ALIAS_REGISTRY,
     FactTypeAlias,
 )

@@ -378,7 +378,7 @@ def test_ollvm_local_alias_mem2reg_uses_transactional_verified_apply(monkeypatch
     from d810.optimizers.microcode.flow.flattening import (
         emulated_dispatcher_family as edf,
     )
-    from d810.recon.facts.value_flow import (
+    from d810.analyses.value_flow import (
         LIFECYCLE_PRODUCTION_PROVEN,
         SCALAR_REPLACEMENT_FACT_TYPE,
     )

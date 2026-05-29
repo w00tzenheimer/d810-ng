@@ -26,7 +26,7 @@ from d810.recon.facts.collectors.induction_carrier import (
     _iter_instruction_views,
     _maturity_name,
 )
-from d810.recon.facts.value_flow import (
+from d810.analyses.value_flow import (
     RETURN_VALUE_FACT_TYPE,
     project_value_flow_facts,
 )

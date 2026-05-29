@@ -21,7 +21,7 @@ from d810.recon.flow.conditional_jump_eval import (
     conditional_jump_taken,
     conditional_operand_size,
 )
-from d810.recon.facts.value_flow import (
+from d810.analyses.value_flow import (
     CALL_RETURN_VALUE_FACT_TYPE,
     LOOP_PREDICATE_VALUE_FACT_TYPE,
     VALUE_FLOW_FACT_TYPES,

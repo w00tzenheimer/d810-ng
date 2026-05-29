@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.recon.facts.value_flow import (
+from d810.analyses.value_flow import (
     CALL_RETURN_VALUE_FACT_TYPE,
     SCALAR_PROMOTION_FACT_TYPE,
     SYMBOLIC_EXPRESSION_FACT_TYPE,
