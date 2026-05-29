@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.capabilities.providers import get_bst_walkers
 from d810.cfg.flowgraph import InsnKind, OperandKind
-from d810.backends.hexrays.evidence.bst_analysis import _forward_eval_insn
 from d810.recon.flow.dag_index import build_dag_node_maps
 from d810.recon.flow.linearized_state_dag import (
     LinearizedStateDag,
@@ -18,6 +18,13 @@ from d810.recon.flow.linearized_state_dag import (
     StateDagNode,
     StateNodeKind,
 )
+
+
+# Registry-backed seam (``d810.capabilities.providers``, ticket d81-1w16): kept
+# as a module-level name so call sites are unchanged.
+def _forward_eval_insn(*args, **kwargs):
+    return get_bst_walkers().forward_eval_insn(*args, **kwargs)
+
 
 _MOVE_OPCODE = 4
 _NUMBER_OPERAND = 2

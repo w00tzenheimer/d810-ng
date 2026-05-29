@@ -40,7 +40,7 @@ from d810.core.stats import OptimizationStatistics
 from d810.core.typing import TYPE_CHECKING
 from d810.backends.ast.z3 import Z3MopProver
 from d810.backends.hexrays.evidence import bst_analysis as _bst_evidence
-from d810.capabilities.providers import BstWalkerProvider, register_bst_walkers
+from d810.capabilities.providers import register_bst_walkers
 from d810.hexrays.hooks.ctree_hooks import CtreeOptimizationRule, CtreeOptimizerManager
 from d810.hexrays.hooks.hexrays_hooks import (
     HEXRAYS_MICROCODE_PROVIDER,
@@ -1974,16 +1974,7 @@ class D810State(metaclass=SingletonMeta):
         Re-registered on every start so a plugin reload that clears the registry
         module globals is repopulated before any recon analysis runs.
         """
-        register_bst_walkers(
-            BstWalkerProvider(
-                detect_state_var_stkoff=_bst_evidence._detect_state_var_stkoff,
-                dump_dispatcher_node=_bst_evidence._dump_dispatcher_node,
-                find_pre_header_state=_bst_evidence._find_pre_header_state,
-                walk_handler_chain=_bst_evidence._walk_handler_chain,
-                forward_eval_insn=_bst_evidence._forward_eval_insn,
-                resolve_via_bst_walk=_bst_evidence.resolve_via_bst_walk,
-            )
-        )
+        register_bst_walkers(_bst_evidence.build_bst_walker_provider())
 
     def start_d810(self):
         self._register_backend_analysis_providers()

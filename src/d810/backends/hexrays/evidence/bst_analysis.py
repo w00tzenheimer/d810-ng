@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 from d810.analyses.value_flow import state_write
 from d810.backends.hexrays import bst_runtime as _hexrays_bst_runtime
+from d810.capabilities.providers import BstWalkerProvider
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.core.logging import getLogger
 from d810.core.typing import (
@@ -2103,6 +2104,28 @@ def build_dispatch_tree(
 
     root = _build(root_serial, 0)
     return root, bst_serials
+
+
+# -----------------------------------------------------------------------------
+# Provider factory (composition-root wiring)
+# -----------------------------------------------------------------------------
+def build_bst_walker_provider() -> BstWalkerProvider:
+    """Bundle this backend's BST evidence seams for the provider registry.
+
+    Single source of truth for which Hex-Rays evidence callables satisfy each
+    portable seam.  Called by the composition root (``D810State.start_d810``)
+    and by unit-test fixtures, so production and tests inject identical walkers
+    into ``d810.capabilities.providers`` (recon reads them via
+    ``get_bst_walkers()`` without importing this backend; ticket d81-1w16).
+    """
+    return BstWalkerProvider(
+        detect_state_var_stkoff=_detect_state_var_stkoff,
+        dump_dispatcher_node=_dump_dispatcher_node,
+        find_pre_header_state=_find_pre_header_state,
+        walk_handler_chain=_walk_handler_chain,
+        forward_eval_insn=_forward_eval_insn,
+        resolve_via_bst_walk=resolve_via_bst_walk,
+    )
 
 
 # -----------------------------------------------------------------------------
