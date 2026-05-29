@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.analyses.value_flow import state_write
 from d810.backends.hexrays import bst_runtime as _hexrays_bst_runtime
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.core.logging import getLogger
@@ -115,10 +116,6 @@ def _mop_type_name(mop_type: object) -> str | None:
         return MOP_TYPE_MAP.get(int(mop_type))
     except (TypeError, ValueError):
         return None
-
-
-def _mop_type_is(mop_type: object, expected_name: str) -> bool:
-    return _mop_type_name(mop_type) == expected_name
 
 
 def _opcode_value(name: str, default: int | None = None) -> int | None:
@@ -292,19 +289,14 @@ def resolve_via_bst_walk(
 
 
 def _get_mop_const_value(mop: object) -> Optional[int]:
-    """Extract a constant integer value from a microcode operand if it is a number operand."""
+    """Extract a constant integer value from a microcode operand if it is a number operand.
+
+    Thin wrapper over the portable core in
+    ``d810.analyses.value_flow.state_write`` (LS6 S5); supplies the live
+    operand-type name resolver.
+    """
     _init_constants()
-    if mop is None:
-        return None
-    mop_type = getattr(mop, "t", None)
-    if _mop_type_is(mop_type, "mop_n"):
-        nnn = getattr(mop, "nnn", None)
-        if nnn is not None:
-            return getattr(nnn, "value", None)
-        value = getattr(mop, "value", None)
-        if value is not None:
-            return int(value)
-    return None
+    return state_write.get_mop_const_value(mop, mop_type_name=_mop_type_name)
 
 
 def _dump_dispatcher_node(
@@ -1034,6 +1026,16 @@ def _fetch_stable_global_value(addr: int, size: int) -> int | None:
     return int(value) & ((1 << (size * 8)) - 1)
 
 
+_EVAL_SEAMS = state_write.MicrocodeEvalSeams(
+    mop_type_name=_mop_type_name,
+    mop_type_value=_mop_type_value,
+    opcode_value=_opcode_value,
+    opcode_name=_opcode_name,
+    fetch_stable_global_value=_fetch_stable_global_value,
+    lvar_stkoff=lambda mba, idx: mba.vars[idx].location.stkoff(),
+)
+
+
 def _resolve_mop_from_maps(
     mop: object,
     stk_map: Dict[int, int],
@@ -1044,133 +1046,19 @@ def _resolve_mop_from_maps(
 ) -> Optional[int]:
     """Resolve a microcode operand to a concrete value using accumulated forward-eval maps.
 
-    Handles: mop_n (literal), mop_S (stk_map via .s.off), mop_r (reg_map),
-    mop_l (stk_map via lvar stkoff), mop_d (recursive binop eval).
-
-    Args:
-        mop: The operand to resolve.
-        stk_map: Accumulated stack-offset -> value map.
-        reg_map: Accumulated register -> value map.
-        mba: Optional microcode block array for mop_l lvar stkoff lookup.
-        state_var_lvar_idx: If not None, the lvar index of the state variable.
-        diag_lines: Optional list to collect diagnostic strings.
-
-    Returns:
-        The resolved integer value, or None if resolution failed.
+    Thin wrapper over the portable core in
+    ``d810.analyses.value_flow.state_write`` (LS6 S5).
     """
     _init_constants()
-    if mop is None:
-        return None
-
-    mop_type = mop.t
-    mop_type_name = _mop_type_name(mop_type)
-
-    result: Optional[int] = None
-
-    if mop_type_name == "mop_n":
-        result = _get_mop_const_value(mop)
-    elif mop_type_name == "mop_S":
-        off = getattr(mop, "s", None)
-        if off is not None:
-            off = getattr(off, "off", None)
-        if off is None:
-            off = getattr(mop, "stkoff", None)
-        if off is not None:
-            result = stk_map.get(off)
-    elif mop_type_name == "mop_r":
-        reg = getattr(mop, "r", None)
-        if reg is None:
-            reg = getattr(mop, "reg", None)
-        if reg is not None:
-            result = reg_map.get(reg)
-    elif mop_type_name == "mop_l":
-        lvar_ref = getattr(mop, "l", None)
-        idx = getattr(lvar_ref, "idx", None) if lvar_ref is not None else None
-        if idx is not None and state_var_lvar_idx is not None and idx == state_var_lvar_idx:
-            # State var itself — look up by its own state in stk_map if available
-            pass
-        if idx is not None and mba is not None:
-            try:
-                lvar = mba.vars[idx]
-                off = lvar.location.stkoff()
-                result = stk_map.get(off)
-            except Exception:
-                pass
-    elif mop_type_name == "mop_v":
-        try:
-            addr = int(getattr(mop, "g", 0) or 0)
-            size = int(getattr(mop, "size", 0) or 0)
-            result = _fetch_stable_global_value(addr, size)
-        except Exception:
-            result = None
-    elif mop_type_name == "mop_d":
-        nested = getattr(mop, "d", None)
-        if nested is not None:
-            op = getattr(nested, "opcode", None)
-            l_mop = getattr(nested, "l", None)
-            r_mop = getattr(nested, "r", None)
-            lv = _resolve_mop_from_maps(
-                l_mop,
-                stk_map,
-                reg_map,
-                mba,
-                state_var_lvar_idx,
-                diag_lines,
-            )
-            if r_mop is not None and getattr(r_mop, "t", None) != 0:
-                rv = _resolve_mop_from_maps(
-                    r_mop,
-                    stk_map,
-                    reg_map,
-                    mba,
-                    state_var_lvar_idx,
-                    diag_lines,
-                )
-            else:
-                rv = None
-            if lv is not None:
-                m_add = _opcode_value("m_add", 28)
-                m_sub = _opcode_value("m_sub", 29)
-                m_and = _opcode_value("m_and", 21)
-                m_or = _opcode_value("m_or", 22)
-                m_xor = _opcode_value("m_xor", 31)
-                m_mul = _opcode_value("m_mul", 30)
-                m_xdu = _opcode_value("m_xdu", None)
-                m_xds = _opcode_value("m_xds", None)
-                if rv is not None:
-                    if op == m_xor:
-                        result = (lv ^ rv) & 0xFFFFFFFF
-                    elif op == m_sub:
-                        result = (lv - rv) & 0xFFFFFFFF
-                    elif op == m_add:
-                        result = (lv + rv) & 0xFFFFFFFF
-                    elif op == m_and:
-                        result = (lv & rv) & 0xFFFFFFFF
-                    elif op == m_or:
-                        result = (lv | rv) & 0xFFFFFFFF
-                    elif op == m_mul:
-                        result = (lv * rv) & 0xFFFFFFFF
-                elif m_xdu is not None and op == m_xdu:
-                    out_size = int(getattr(mop, "size", 0) or getattr(nested, "size", 0) or 4)
-                    result = int(lv) & ((1 << (out_size * 8)) - 1)
-                elif m_xds is not None and op == m_xds:
-                    in_size = int(getattr(l_mop, "size", 0) or 4)
-                    out_size = int(getattr(mop, "size", 0) or getattr(nested, "size", 0) or in_size)
-                    sign_bit = 1 << (in_size * 8 - 1)
-                    if int(lv) & sign_bit:
-                        result = int(lv) | (
-                            ((1 << (out_size * 8)) - 1)
-                            ^ ((1 << (in_size * 8)) - 1)
-                        )
-                    else:
-                        result = int(lv)
-                    result &= (1 << (out_size * 8)) - 1
-
-    if diag_lines is not None:
-        diag_lines.append(
-            f"  fwd_resolve: mop_t={mop_type} -> {hex(result) if result is not None else 'None'}"
-        )
-    return result
+    return state_write.resolve_mop_from_maps(
+        mop,
+        stk_map,
+        reg_map,
+        seams=_EVAL_SEAMS,
+        mba=mba,
+        state_var_lvar_idx=state_var_lvar_idx,
+        diag_lines=diag_lines,
+    )
 
 
 def _forward_eval_insn(
@@ -1184,146 +1072,22 @@ def _forward_eval_insn(
 ) -> Optional[int]:
     """Evaluate one instruction, updating stk_map/reg_map in-place.
 
-    Returns the resolved constant if this instruction writes the state
-    variable; otherwise returns None and updates the maps.
-
-    Args:
-        insn: The microcode instruction to evaluate.
-        stk_map: Accumulated stack-offset -> value map (mutated in-place).
-        reg_map: Accumulated register -> value map (mutated in-place).
-        state_var_stkoff: Stack offset of the state variable.
-        mba: Optional microcode block array for lvar stkoff resolution.
-        state_var_lvar_idx: If not None, the lvar index of the state variable.
-        diag_lines: Optional list to collect diagnostic strings.
-
-    Returns:
-        The state-variable value if this instruction writes it, else None.
+    Thin wrapper over the portable core in
+    ``d810.analyses.value_flow.state_write`` (LS6 S5).  Returns the resolved
+    constant if this instruction writes the state variable; otherwise returns
+    None and updates the maps.
     """
     _init_constants()
-    if insn is None:
-        return None
-
-    op = getattr(insn, "opcode", None)
-    if op is None:
-        return None
-
-    m_mov_op = _opcode_value("m_mov", None)
-    m_add = _opcode_value("m_add", 28)
-    m_sub = _opcode_value("m_sub", 29)
-    m_and = _opcode_value("m_and", 21)
-    m_or = _opcode_value("m_or", 22)
-    m_xor = _opcode_value("m_xor", 31)
-    m_mul = _opcode_value("m_mul", 30)
-    binary_ops = {m_add, m_sub, m_and, m_or, m_xor, m_mul}
-    m_xdu_op = _opcode_value("m_xdu", None)
-    m_xds_op = _opcode_value("m_xds", None)
-
-    mop_S_type = _mop_type_value("mop_S", None)
-    mop_r_type = _mop_type_value("mop_r", 1)
-    mop_l_type = _mop_type_value("mop_l", 9)
-
-    def _store_to_dest(dest: object, val: int) -> bool:
-        """Store val into the appropriate map based on dest type. Returns True if state var."""
-        dest_t = getattr(dest, "t", None)
-        is_state = False
-        if mop_S_type is not None and dest_t == mop_S_type:
-            off = getattr(dest, "s", None)
-            if off is not None:
-                off = getattr(off, "off", None)
-            if off is None:
-                off = getattr(dest, "stkoff", None)
-            if off is not None:
-                stk_map[off] = val
-                if off == state_var_stkoff:
-                    is_state = True
-        elif dest_t == mop_r_type:
-            reg = getattr(dest, "r", None)
-            if reg is None:
-                reg = getattr(dest, "reg", None)
-            if reg is not None:
-                reg_map[reg] = val
-        elif mop_l_type is not None and dest_t == mop_l_type:
-            lvar_ref = getattr(dest, "l", None)
-            idx = getattr(lvar_ref, "idx", None) if lvar_ref is not None else None
-            if idx is not None and mba is not None:
-                try:
-                    lvar = mba.vars[idx]
-                    off = lvar.location.stkoff()
-                    stk_map[off] = val
-                    if off == state_var_stkoff:
-                        is_state = True
-                except Exception:
-                    pass
-            if idx is not None and state_var_lvar_idx is not None and idx == state_var_lvar_idx:
-                is_state = True
-        return is_state
-
-    dest = getattr(insn, "d", None)
-    if dest is None:
-        return None
-
-    val: Optional[int] = None
-
-    if op == m_mov_op:
-        src = getattr(insn, "l", None)
-        val = _resolve_mop_from_maps(
-            src, stk_map, reg_map, mba, state_var_lvar_idx, diag_lines
-        )
-    elif m_xdu_op is not None and op == m_xdu_op:
-        # Zero-extend: value stays the same, just widens the register
-        src = getattr(insn, "l", None)
-        val = _resolve_mop_from_maps(
-            src, stk_map, reg_map, mba, state_var_lvar_idx, diag_lines
-        )
-    elif m_xds_op is not None and op == m_xds_op:
-        # Sign-extend: check high bit of source width, extend if set
-        src = getattr(insn, "l", None)
-        src_val = _resolve_mop_from_maps(
-            src, stk_map, reg_map, mba, state_var_lvar_idx, diag_lines
-        )
-        if src_val is not None:
-            src_size = getattr(src, "size", 4)  # source operand size in bytes
-            dst_size = getattr(dest, "size", 8)  # dest operand size in bytes
-            sign_bit = 1 << (src_size * 8 - 1)
-            if src_val & sign_bit:
-                # Negative: fill upper bits with 1s
-                mask = (1 << (dst_size * 8)) - (1 << (src_size * 8))
-                src_val = src_val | mask
-            val = src_val
-    elif op in binary_ops:
-        l_mop = getattr(insn, "l", None)
-        r_mop = getattr(insn, "r", None)
-        lv = _resolve_mop_from_maps(l_mop, stk_map, reg_map, mba, state_var_lvar_idx)
-        rv = _resolve_mop_from_maps(r_mop, stk_map, reg_map, mba, state_var_lvar_idx)
-        if lv is not None and rv is not None:
-            if op == m_xor:
-                val = (lv ^ rv) & 0xFFFFFFFF
-            elif op == m_sub:
-                val = (lv - rv) & 0xFFFFFFFF
-            elif op == m_add:
-                val = (lv + rv) & 0xFFFFFFFF
-            elif op == m_and:
-                val = (lv & rv) & 0xFFFFFFFF
-            elif op == m_or:
-                val = (lv | rv) & 0xFFFFFFFF
-            elif op == m_mul:
-                val = (lv * rv) & 0xFFFFFFFF
-    else:
-        return None
-
-    if val is None:
-        return None
-
-    val = val & 0xFFFFFFFF
-    is_state = _store_to_dest(dest, val)
-    if is_state:
-        if diag_lines is not None:
-            opcode_name = OPCODE_MAP.get(op, f"opcode_{op}")
-            diag_lines.append(
-                f"  fwd_eval_insn: {opcode_name} -> state_var write 0x{val:x}"
-            )
-        return val
-    return None
+    return state_write.forward_eval_insn(
+        insn,
+        stk_map,
+        reg_map,
+        state_var_stkoff,
+        seams=_EVAL_SEAMS,
+        mba=mba,
+        state_var_lvar_idx=state_var_lvar_idx,
+        diag_lines=diag_lines,
+    )
 
 
 def _extract_state_from_block(
