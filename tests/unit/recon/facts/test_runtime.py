@@ -137,6 +137,111 @@ def test_capture_persists_collector_observations_when_snapshot_is_available() ->
     assert calls[0][4] == ()
 
 
+def test_capture_runs_in_production_without_diagnostic_snapshot() -> None:
+    """Regression guard for 217716af2: pre-D810 fact capture is a PRODUCTION
+    path that feeds return-leak suppression.  It MUST run (collectors fire,
+    in-memory store populated) even when ``snapshot is None`` -- the normal
+    non-diagnostic case.  Gating capture on the diagnostic snapshot silently
+    disabled it in production and un-suppressed leaked terminal constants
+    (sub_7FFD ``return 0xC5FB34A1D9A6E315``); full diagnostics masked the
+    failure because the snapshot only ever existed under --full-diagnostics.
+    """
+    configure_settings(fact_lifecycle=True)
+    calls: list = []
+    runtime = FactLifecycleRuntime(
+        persistence_callback=lambda *args: calls.append(args)
+    )
+    runtime.register(_Collector())
+
+    summary = runtime.capture(
+        object(),
+        func_ea=0x401000,
+        provider_phase=_phase(1),
+        phase="pre_d810",
+        snapshot=None,
+    )
+
+    # Capture ran: collector fired and the in-memory store is populated.
+    assert summary.invoked is True
+    assert summary.observation_count == 1
+    view = runtime.validated_view(0x401000, 1)
+    assert {obs.fact_id for obs in view.observations} == {"induction:blk10"}
+    # No diagnostic snapshot -> nothing persisted to the diag DB, but the
+    # facts are NOT dropped (they live in the in-memory store above).
+    assert calls == []
+
+
+def test_diag_attaches_when_snapshot_arrives_after_no_snapshot_event() -> None:
+    """Dedup split: the no-snapshot InstructionOptimizerManager event can win
+    the (func_ea, maturity, phase) capture race ahead of the snapshot-bearing
+    BlockOptimizerManager event.  Capture fires once (first event); the later
+    snapshot-bearing duplicate event must still attach the retained facts to
+    the diagnostic snapshot exactly once.
+    """
+    configure_settings(fact_lifecycle=True)
+    calls: list = []
+    runtime = FactLifecycleRuntime(
+        persistence_callback=lambda *args: calls.append(args)
+    )
+    runtime.register(_Collector())
+
+    # Event 1: no snapshot (production capture) -- collector runs, nothing
+    # persisted yet.
+    first = runtime.capture(
+        object(),
+        func_ea=0x401000,
+        provider_phase=_phase(1),
+        phase="pre_d810",
+        snapshot=None,
+    )
+    assert first.invoked is True
+    assert calls == []
+
+    # Event 2: SAME key, now carrying the diagnostic snapshot -- capture is
+    # already fired (collector does NOT re-run) but the retained payload is
+    # flushed to the snapshot.
+    second = runtime.capture(
+        object(),
+        func_ea=0x401000,
+        provider_phase=_phase(1),
+        phase="pre_d810",
+        snapshot=_TEST_REF,
+    )
+    assert second.invoked is False
+    assert second.reason == "already-fired"
+    assert len(calls) == 1
+    assert calls[0][0] is _TEST_REF
+    assert {obs.fact_id for obs in calls[0][2]} == {"induction:blk10"}
+
+
+def test_diag_attachment_is_not_double_persisted() -> None:
+    """A snapshot-bearing event followed by a duplicate snapshot-bearing event
+    for the same key persists exactly once (idempotent via ``_persisted``)."""
+    configure_settings(fact_lifecycle=True)
+    calls: list = []
+    runtime = FactLifecycleRuntime(
+        persistence_callback=lambda *args: calls.append(args)
+    )
+    runtime.register(_Collector())
+
+    runtime.capture(
+        object(),
+        func_ea=0x401000,
+        provider_phase=_phase(1),
+        phase="pre_d810",
+        snapshot=_TEST_REF,
+    )
+    runtime.capture(
+        object(),
+        func_ea=0x401000,
+        provider_phase=_phase(1),
+        phase="pre_d810",
+        snapshot=_TEST_REF,
+    )
+
+    assert len(calls) == 1
+
+
 def test_capture_persists_collector_mappings() -> None:
     configure_settings(fact_lifecycle=True)
     calls = []

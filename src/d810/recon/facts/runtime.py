@@ -102,6 +102,25 @@ class FactLifecycleRuntime:
         self._observations_by_func: dict[int, list[FactObservation]] = {}
         self._mappings_by_func: dict[int, list[FactMapping]] = {}
         self._last_observations_by_func: dict[int, dict[str, FactObservation]] = {}
+        # Diagnostic-attachment dedup, decoupled from the capture dedup
+        # (``_fired``).  Fact capture (in-memory store that feeds production
+        # return-leak suppression) runs on the FIRST ``FLOWGRAPH_READY`` event
+        # for a key regardless of whether a diagnostic snapshot is present.
+        # Diag attachment runs once a snapshot-bearing event arrives -- which
+        # may be a LATER duplicate event for the same key, because the
+        # no-snapshot ``InstructionOptimizerManager`` emit can win the dedup
+        # race ahead of the snapshot-bearing ``BlockOptimizerManager`` emit.
+        # ``_captured_payload`` retains each key's facts so that later event
+        # can still persist them to the diag DB exactly once.
+        self._persisted: set[tuple[int, int, str]] = set()
+        self._captured_payload: dict[
+            tuple[int, int, str],
+            tuple[
+                tuple[FactObservation, ...],
+                tuple[FactMapping, ...],
+                tuple[FactConflict, ...],
+            ],
+        ] = {}
 
     @property
     def collector_count(self) -> int:
@@ -109,6 +128,12 @@ class FactLifecycleRuntime:
 
     def reset_for_func(self, func_ea: int) -> None:
         self._fired = {key for key in self._fired if key[0] != func_ea}
+        self._persisted = {key for key in self._persisted if key[0] != func_ea}
+        self._captured_payload = {
+            key: payload
+            for key, payload in self._captured_payload.items()
+            if key[0] != func_ea
+        }
         self._observations_by_func.pop(func_ea, None)
         self._mappings_by_func.pop(func_ea, None)
         self._last_observations_by_func.pop(func_ea, None)
@@ -1252,6 +1277,39 @@ class FactLifecycleRuntime:
                 latest[observation.fact_id] = observation
         self._last_observations_by_func[func_ea] = latest
 
+    def _attach_to_snapshot(
+        self,
+        dedupe_key: tuple[int, int, str],
+        func_ea: int,
+        snapshot: Any,
+    ) -> None:
+        """Persist a captured key's facts to a diagnostic snapshot, once.
+
+        Decoupled from the capture dedup (``_fired``): fact capture fires on
+        the first ``FLOWGRAPH_READY`` event for a key regardless of snapshot;
+        diagnostic attachment fires when a snapshot-bearing event arrives,
+        even if that is a later duplicate event for the same key.  Idempotent
+        via ``_persisted`` so a snapshot is never written twice.
+        """
+        if snapshot is None or self._persistence_callback is None:
+            return
+        if dedupe_key in self._persisted:
+            return
+        payload = self._captured_payload.get(dedupe_key)
+        if payload is None:
+            return
+        observations, mappings, conflicts = payload
+        if not (observations or mappings or conflicts):
+            return
+        self._persisted.add(dedupe_key)
+        self._persistence_callback(
+            snapshot,
+            func_ea,
+            observations,
+            mappings,
+            conflicts,
+        )
+
     def capture(
         self,
         target: Any,
@@ -1276,6 +1334,12 @@ class FactLifecycleRuntime:
 
         dedupe_key = (func_ea, maturity, phase)
         if dedupe_key in self._fired:
+            # Capture already ran for this (func, maturity, phase); the
+            # in-memory facts are retained.  If THIS event finally carries a
+            # diagnostic snapshot (the no-snapshot InstructionOptimizerManager
+            # event commonly wins the dedup race ahead of the snapshot-bearing
+            # BlockOptimizerManager event), flush the retained payload to it.
+            self._attach_to_snapshot(dedupe_key, func_ea, snapshot)
             return FactCaptureSummary(
                 func_ea=func_ea,
                 maturity=maturity,
@@ -1385,30 +1449,17 @@ class FactLifecycleRuntime:
             self._observations_by_func.setdefault(func_ea, []).extend(observations)
             self._mappings_by_func.setdefault(func_ea, []).extend(mappings)
             self._update_latest_observations(func_ea, tuple(observations))
-            if (
-                self._persistence_callback is not None
-                and snapshot is not None
-            ):
-                self._persistence_callback(
-                    snapshot,
-                    func_ea,
-                    tuple(observations),
-                    tuple(mappings),
-                    tuple(conflicts),
-                )
-            else:
-                logger.warning(
-                    "FACT_LIFECYCLE_DROPPED func=0x%x maturity=%s phase=%s "
-                    "observations=%d mappings=%d conflicts=%d snapshot=%s callback=%s",
-                    func_ea,
-                    maturity_text,
-                    phase,
-                    len(observations),
-                    len(mappings),
-                    len(conflicts),
-                    snapshot,
-                    self._persistence_callback is not None,
-                )
+            # Retain this key's payload so a later snapshot-bearing event can
+            # still persist it to the diag DB.  Diag attachment is decoupled
+            # from capture: the in-memory store above (which feeds production
+            # suppression) is populated regardless of whether ``snapshot`` is
+            # present, so a no-snapshot production run no longer drops facts.
+            self._captured_payload[dedupe_key] = (
+                tuple(observations),
+                tuple(mappings),
+                tuple(conflicts),
+            )
+            self._attach_to_snapshot(dedupe_key, func_ea, snapshot)
 
         view = self.validated_view(func_ea, maturity_text)
         logger.info(
