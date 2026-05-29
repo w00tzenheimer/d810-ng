@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from d810.recon.facts import collectors
-from d810.recon.facts.value_flow import RETURN_VALUE_FACT_TYPE
+from d810.analyses.value_flow import RETURN_VALUE_FACT_TYPE
 
 
 def test_induction_variable_collector_is_canonical_export() -> None:

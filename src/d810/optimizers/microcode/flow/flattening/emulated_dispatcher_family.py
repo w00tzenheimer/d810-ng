@@ -144,7 +144,7 @@ from d810.recon.flow.reconstruction_candidate_builder import (
 from d810.recon.flow.reconstruction_discovery_indexes import (
     build_reconstruction_discovery_indexes,
 )
-from d810.recon.facts.value_flow import (
+from d810.analyses.value_flow import (
     MUST_ALIAS_FACT_TYPE,
     OBSERVABLE_MEMORY_DEF_FACT_TYPE,
     SCALAR_PROMOTION_FACT_TYPE,

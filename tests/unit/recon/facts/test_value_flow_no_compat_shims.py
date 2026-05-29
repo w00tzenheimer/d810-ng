@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib.util
 
 from d810.recon.facts import collectors
-from d810.recon.facts import value_flow as vf
+from d810.analyses import value_flow as vf
 from d810.recon.facts.model import FactObservation
 
 
@@ -59,8 +59,8 @@ def test_projection_is_idempotent_for_canonical_value_flow_facts() -> None:
 
 
 def test_per_family_submodule_imports_resolve_to_canonical_values() -> None:
-    from d810.recon.facts.value_flow.may_alias import MAY_ALIAS_FACT_TYPE
-    from d810.recon.facts.value_flow.observable_output import (
+    from d810.analyses.value_flow.may_alias import MAY_ALIAS_FACT_TYPE
+    from d810.analyses.value_flow.observable_output import (
         OBSERVABLE_OUTPUT_FACT_TYPE,
     )
 
