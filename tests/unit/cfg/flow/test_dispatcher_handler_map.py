@@ -99,7 +99,7 @@ class TestFromBstResult:
     """Bridge from BSTAnalysisResult."""
 
     def test_round_trip_fields(self):
-        from d810.recon.flow.bst_model import BSTAnalysisResult, BSTNodeMap
+        from d810.analyses.control_flow.bst_model import BSTAnalysisResult, BSTNodeMap
 
         node_map = BSTNodeMap()
         node_map.add(5)
@@ -126,7 +126,7 @@ class TestToBstResult:
     """Synthesize BSTAnalysisResult for downstream consumers."""
 
     def test_synthetic_bst_has_handler_state_map(self):
-        from d810.recon.flow.bst_model import BSTAnalysisResult
+        from d810.analyses.control_flow.bst_model import BSTAnalysisResult
 
         m = DispatcherHandlerMap(
             handler_state_map={10: 0, 11: 1, 12: 2},

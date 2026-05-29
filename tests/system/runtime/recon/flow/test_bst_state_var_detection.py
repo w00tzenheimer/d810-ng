@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import idaapi
 
-from d810.recon.flow import bst_analysis
+from d810.backends.hexrays.evidence import bst_analysis
 
 
 def _mop_b(serial: int):
