@@ -122,8 +122,12 @@ class TestHodurMatcherSourceContainsMirrorFormulas:
         """
         src = self._hodur_analysis_src()
         # The cache-driven selection block exists between these
-        # canonical markers.
-        marker_open = "BUT: the cache's selection logic"
+        # canonical markers.  ``marker_open`` pins the SCOPE INVARIANT
+        # comment that documents the iteration target; the E5
+        # DispatcherCache cleanup (67f6c9edb) reworded the older
+        # "the cache's selection logic" marker, so anchor on the
+        # invariant comment that must survive any future rewording.
+        marker_open = "SCOPE INVARIANT: we iterate"
         marker_close = "if state_var is None:"
         assert marker_open in src
         assert marker_close in src
