@@ -3,7 +3,7 @@
 This module provides functions for analyzing binary search tree (BST) style
 dispatchers found in control-flow-flattened code.  It extracts state machine
 information — handler blocks, state constants, and handler-to-handler
-transitions — from the microcode block array (mba_t).
+transitions — from the microcode block array.
 
 Typical usage::
 
@@ -130,7 +130,7 @@ def _mop_type_value(name: str, default: int | None = None) -> int | None:
 
 
 def find_bst_default_block(
-    mba: "idaapi.mbl_array_t",
+    mba: object,
     bst_root_serial: int,
     bst_node_blocks: set,
     handler_block_serials: set,
@@ -183,7 +183,7 @@ from d810.recon.flow.bst_snapshot import find_bst_default_block_snapshot
 
 
 def resolve_via_bst_walk(
-    mba: "idaapi.mbl_array_t",
+    mba: object,
     bst_root_serial: int,
     state_value: int,
     bst_node_blocks: set[int],
@@ -291,8 +291,8 @@ def resolve_via_bst_walk(
 # -----------------------------------------------------------------------------
 
 
-def _get_mop_const_value(mop: "idaapi.mop_t") -> Optional[int]:
-    """Extract a constant integer value from a mop_t if it is a number operand."""
+def _get_mop_const_value(mop: object) -> Optional[int]:
+    """Extract a constant integer value from a microcode operand if it is a number operand."""
     _init_constants()
     if mop is None:
         return None
@@ -308,7 +308,7 @@ def _get_mop_const_value(mop: "idaapi.mop_t") -> Optional[int]:
 
 
 def _dump_dispatcher_node(
-    mba: "idaapi.mbl_array_t",
+    mba: object,
     serial: int,
     indent: int,
     visited: set,
@@ -759,7 +759,7 @@ def _dump_dispatcher_node(
 
 
 def _find_pre_header(
-    mba: "idaapi.mbl_array_t",
+    mba: object,
     dispatcher_entry_serial: int,
     diag_lines: Optional[List[str]] = None,
 ) -> Optional[int]:
@@ -820,11 +820,11 @@ def _find_pre_header(
 
 
 def _mop_matches_stkoff(
-    mop: "idaapi.mop_t",
+    mop: object,
     state_var_stkoff: int,
     diag_lines: Optional[List[str]] = None,
     state_var_lvar_idx: Optional[int] = None,
-    mba: Optional["idaapi.mbl_array_t"] = None,
+    mba: Optional[object] = None,
 ) -> bool:
     """Return True if mop is a stack variable operand at the given stack offset.
 
@@ -914,9 +914,9 @@ def _mop_matches_stkoff(
 
 
 def _resolve_mop_value_in_block(
-    mop: "idaapi.mop_t",
-    blk: "idaapi.mblock_t",
-    insn_before: "idaapi.minsn_t",
+    mop: object,
+    blk: object,
+    insn_before: object,
     max_depth: int = 2,
 ) -> Optional[int]:
     """Backward-scan *blk* for the instruction that defines *mop* and fold it.
@@ -959,7 +959,7 @@ def _resolve_mop_value_in_block(
     m_xor = _opcode_value("m_xor", 31)
     binary_ops = {m_add, m_sub, m_and, m_or, m_xor}
 
-    def _mops_match(a: "idaapi.mop_t", b: "idaapi.mop_t") -> bool:
+    def _mops_match(a: object, b: object) -> bool:
         """Return True when two mops refer to the same register or lvar."""
         at = getattr(a, "t", None)
         bt = getattr(b, "t", None)
@@ -972,7 +972,7 @@ def _resolve_mop_value_in_block(
         return False
 
     # Collect instructions before insn_before, in order.
-    insns_before: List["idaapi.minsn_t"] = []
+    insns_before: List[object] = []
     cur = blk.head
     while cur is not None and cur is not insn_before:
         insns_before.append(cur)
@@ -1035,14 +1035,14 @@ def _fetch_stable_global_value(addr: int, size: int) -> int | None:
 
 
 def _resolve_mop_from_maps(
-    mop: "idaapi.mop_t",
+    mop: object,
     stk_map: Dict[int, int],
     reg_map: Dict[int, int],
-    mba: Optional["idaapi.mbl_array_t"] = None,
+    mba: Optional[object] = None,
     state_var_lvar_idx: Optional[int] = None,
     diag_lines: Optional[List[str]] = None,
 ) -> Optional[int]:
-    """Resolve a mop_t to a concrete value using accumulated forward-eval maps.
+    """Resolve a microcode operand to a concrete value using accumulated forward-eval maps.
 
     Handles: mop_n (literal), mop_S (stk_map via .s.off), mop_r (reg_map),
     mop_l (stk_map via lvar stkoff), mop_d (recursive binop eval).
@@ -1051,7 +1051,7 @@ def _resolve_mop_from_maps(
         mop: The operand to resolve.
         stk_map: Accumulated stack-offset -> value map.
         reg_map: Accumulated register -> value map.
-        mba: Optional mbl_array_t for mop_l lvar stkoff lookup.
+        mba: Optional microcode block array for mop_l lvar stkoff lookup.
         state_var_lvar_idx: If not None, the lvar index of the state variable.
         diag_lines: Optional list to collect diagnostic strings.
 
@@ -1174,11 +1174,11 @@ def _resolve_mop_from_maps(
 
 
 def _forward_eval_insn(
-    insn: "idaapi.minsn_t",
+    insn: object,
     stk_map: Dict[int, int],
     reg_map: Dict[int, int],
     state_var_stkoff: int,
-    mba: Optional["idaapi.mbl_array_t"] = None,
+    mba: Optional[object] = None,
     state_var_lvar_idx: Optional[int] = None,
     diag_lines: Optional[List[str]] = None,
 ) -> Optional[int]:
@@ -1192,7 +1192,7 @@ def _forward_eval_insn(
         stk_map: Accumulated stack-offset -> value map (mutated in-place).
         reg_map: Accumulated register -> value map (mutated in-place).
         state_var_stkoff: Stack offset of the state variable.
-        mba: Optional mbl_array_t for lvar stkoff resolution.
+        mba: Optional microcode block array for lvar stkoff resolution.
         state_var_lvar_idx: If not None, the lvar index of the state variable.
         diag_lines: Optional list to collect diagnostic strings.
 
@@ -1222,7 +1222,7 @@ def _forward_eval_insn(
     mop_r_type = _mop_type_value("mop_r", 1)
     mop_l_type = _mop_type_value("mop_l", 9)
 
-    def _store_to_dest(dest: "idaapi.mop_t", val: int) -> bool:
+    def _store_to_dest(dest: object, val: int) -> bool:
         """Store val into the appropriate map based on dest type. Returns True if state var."""
         dest_t = getattr(dest, "t", None)
         is_state = False
@@ -1327,11 +1327,11 @@ def _forward_eval_insn(
 
 
 def _extract_state_from_block(
-    blk: "idaapi.mblock_t",
+    blk: object,
     state_var_stkoff: int,
     diag_lines: Optional[List[str]] = None,
     state_var_lvar_idx: Optional[int] = None,
-    mba: Optional["idaapi.mbl_array_t"] = None,
+    mba: Optional[object] = None,
 ) -> Optional[int]:
     """Scan a block's instructions for a write to state_var_stkoff.
 
@@ -1431,7 +1431,7 @@ def _extract_state_from_block(
 
 
 def _walk_handler_chain(
-    mba: "idaapi.mbl_array_t",
+    mba: object,
     handler_start_serial: int,
     dispatcher_entry_serial: int,
     state_var_stkoff: int,
@@ -1691,7 +1691,7 @@ def _walk_handler_chain(
 
 
 def _find_pre_header_state(
-    mba: "idaapi.mbl_array_t",
+    mba: object,
     dispatcher_entry_serial: int,
     state_var_stkoff: Optional[int],
     diag_lines: Optional[List[str]] = None,
@@ -1723,7 +1723,7 @@ def _find_pre_header_state(
 
 
 def _detect_state_var_stkoff(
-    mba: "idaapi.mbl_array_t",
+    mba: object,
     dispatcher_entry_serial: int,
     diag: bool = False,
 ):
@@ -1934,7 +1934,7 @@ def _detect_state_var_stkoff(
     ),
 )
 def analyze_bst_dispatcher(
-    mba: "idaapi.mbl_array_t",
+    mba: object,
     dispatcher_entry_serial: int,
     state_var_stkoff: Optional[int] = None,
     state_var_lvar_idx: Optional[int] = None,
@@ -1953,7 +1953,7 @@ def analyze_bst_dispatcher(
     variable) and whether the handler loops back to the dispatcher or exits.
 
     Args:
-        mba: The microcode block array (mbl_array_t).
+        mba: The microcode block array.
         dispatcher_entry_serial: Block serial number of the BST root block.
         state_var_stkoff: Stack offset of the state variable.  When None, it
             is auto-detected from the BST root's comparison instruction.
@@ -2174,7 +2174,7 @@ def analyze_bst_dispatcher(
 
 @dataclass(frozen=True)
 class DecodedCond:
-    """Decoded BST comparison from an mblock_t tail instruction."""
+    """Decoded BST comparison from a block tail instruction."""
 
     kind: NodeKind
     imm: int
