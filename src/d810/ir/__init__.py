@@ -46,19 +46,55 @@ Scope discipline:
 
 from __future__ import annotations
 
-from .handles import BlockHandle, FlowGraphHandle, OperandHandle
+from .confidence import FactConfidence
+from .expressions import Add, Const, ExprRef, Load, Move, Store, Sub, ValueOpKind
+from .handles import BlockHandle, FlowGraphHandle, InsnHandle, OperandHandle
+from .locations import (
+    AggregateLocation,
+    MemoryCell,
+    RegisterLocation,
+    StackSlot,
+    StorageLocation,
+)
 from .redirect import RedirectBranchIntent, RedirectGotoIntent, RedirectIntent
 from .results import ConstantFixpointResult
 from .semantics import ControlTransferKind, PredicateKind
+from .value_refs import (
+    DefinitionRef,
+    InstructionResultRef,
+    SSAValueRef,
+    TemporaryRef,
+    ValueRef,
+)
 
 __all__ = [
+    "Add",
+    "AggregateLocation",
     "BlockHandle",
+    "Const",
     "ConstantFixpointResult",
     "ControlTransferKind",
+    "DefinitionRef",
+    "ExprRef",
+    "FactConfidence",
     "FlowGraphHandle",
+    "InsnHandle",
+    "InstructionResultRef",
+    "Load",
+    "MemoryCell",
+    "Move",
     "OperandHandle",
     "PredicateKind",
     "RedirectBranchIntent",
     "RedirectGotoIntent",
     "RedirectIntent",
+    "RegisterLocation",
+    "SSAValueRef",
+    "StackSlot",
+    "Store",
+    "StorageLocation",
+    "Sub",
+    "TemporaryRef",
+    "ValueOpKind",
+    "ValueRef",
 ]
