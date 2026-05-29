@@ -13,7 +13,7 @@ import hashlib
 import re
 
 from d810.core.typing import Any, Iterable
-from d810.recon.facts.model import FactObservation, JsonMapping, canonical_json
+from d810.analyses.value_flow.observation import FactObservation, JsonMapping, canonical_json
 
 LIFECYCLE_PRODUCTION_PROVEN = "production_proven"
 

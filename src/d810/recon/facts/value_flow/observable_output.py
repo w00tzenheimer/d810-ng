@@ -1,13 +1,4 @@
-"""Observable output fact.
-
-An externally-visible output event. This is narrower than an observable memory
-definition: it identifies writes that materialize recovered semantics at an
-ABI-visible or caller-visible sink such as an output buffer.
-
-This is the canonical serialized ``FactObservation.kind`` value.
-"""
+"""Backward-compatibility shim -> :mod:`d810.analyses.value_flow.observable_output` (LS7, Commit 1)."""
 from __future__ import annotations
 
-OBSERVABLE_OUTPUT_FACT_TYPE = "ObservableOutputFact"
-
-__all__ = ["OBSERVABLE_OUTPUT_FACT_TYPE"]
+from d810.analyses.value_flow.observable_output import *  # noqa: F401,F403
