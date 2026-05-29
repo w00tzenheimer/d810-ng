@@ -116,36 +116,56 @@ class InductionVariableAnalysis:
 
     def collect_block(
         self, insns: Iterable[InstructionView]
-    ) -> dict[int, InductionVariableFact]:
-        """Induction facts for one block, keyed by ``dest_stkoff``."""
-        facts: dict[int, InductionVariableFact] = {}
+    ) -> dict[int, tuple[InductionVariableFact, ...]]:
+        """Induction candidates for one block, keyed by ``dest_stkoff``.
+
+        Repeated updates with the SAME step dedup to one fact; DISTINCT steps for
+        the same destination are ALL kept so a conflict is surfaced (see
+        :meth:`is_ambiguous`), never silently collapsed to first-wins.
+        """
+        by_offset: dict[int, dict[int, InductionVariableFact]] = {}
         for insn in insns:
             fact = self.classify_update(insn)
             if fact is not None:
-                facts[fact.dest_stkoff] = fact
-        return facts
+                by_offset.setdefault(fact.dest_stkoff, {}).setdefault(
+                    fact.step, fact
+                )
+        return {off: tuple(by_step.values()) for off, by_step in by_offset.items()}
 
     def merge(
-        self, states: Iterable[Mapping[int, InductionVariableFact]]
-    ) -> dict[int, InductionVariableFact]:
-        """Optimistic UNION meet over per-block induction facts.
+        self,
+        states: Iterable[Mapping[int, tuple[InductionVariableFact, ...]]],
+    ) -> dict[int, tuple[InductionVariableFact, ...]]:
+        """Optimistic UNION meet over per-block induction candidate sets.
 
         A candidate found on ANY incoming edge survives.  This is deliberately
         NOT a bottom-absorbing intersection: intersecting at a loop head would
         wipe a candidate that the loop's entry edge does not carry (the LS6
-        ``state_write`` kill-on-unresolved class of bug)."""
-        merged: dict[int, InductionVariableFact] = {}
+        ``state_write`` kill-on-unresolved class of bug).  Candidates with the
+        SAME step dedup; DISTINCT steps for one offset are all preserved so a
+        ``{+1, +2}`` conflict stays visible rather than collapsing to first-wins.
+        """
+        merged: dict[int, dict[int, InductionVariableFact]] = {}
         for state in states:
-            for offset, fact in state.items():
-                merged.setdefault(offset, fact)
-        return merged
+            for offset, candidates in state.items():
+                by_step = merged.setdefault(offset, {})
+                for fact in candidates:
+                    by_step.setdefault(fact.step, fact)
+        return {off: tuple(by_step.values()) for off, by_step in merged.items()}
 
     def analyze_loop(
         self, blocks: Mapping[int, Iterable[InstructionView]]
-    ) -> dict[int, InductionVariableFact]:
-        """All induction facts across a loop's blocks (union of per-block facts).
+    ) -> dict[int, tuple[InductionVariableFact, ...]]:
+        """All induction candidates across a loop's blocks (union of per-block
+        candidate sets, keyed by ``dest_stkoff``).
 
         ``blocks`` maps block serial -> that block's instruction views; the loop
-        head having no update does not erase a body block's induction fact.
+        head having no update does not erase a body block's candidate, and
+        conflicting steps for one offset are preserved as multiple candidates.
         """
         return self.merge(self.collect_block(insns) for insns in blocks.values())
+
+    @staticmethod
+    def is_ambiguous(candidates: tuple[InductionVariableFact, ...]) -> bool:
+        """True iff ``candidates`` for one ``dest_stkoff`` disagree on step."""
+        return len({c.step for c in candidates}) > 1
