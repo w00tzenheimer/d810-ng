@@ -5475,7 +5475,7 @@ def test_emulated_dispatcher_family_build_snapshot_attaches_observation_metadata
         provenance_hints=(),
         state_constants=(0xF6A1E, 0xF6A1F),
         collector_dispatcher_entries=(),
-        planning_blocker="dispatcher_cache_detected_but_collector_found_none",
+        planning_blocker="dispatcher_analysis_detected_but_collector_found_none",
     )
 
     snapshot = family.build_snapshot(mba, detection)
@@ -5655,7 +5655,7 @@ def test_emulated_dispatcher_unflattener_records_no_plan_provenance(
         state_transport="state_dispatcher_map",
         lowering_mode="generic_graph_modifications",
         provenance_hints=(),
-        planning_blocker="dispatcher_cache_detected_but_collector_found_none",
+        planning_blocker="dispatcher_analysis_detected_but_collector_found_none",
     )
     snapshot = AnalysisSnapshot(
         mba=mba,
@@ -5673,7 +5673,7 @@ def test_emulated_dispatcher_unflattener_records_no_plan_provenance(
                     analysis_dispatchers=(7,),
                     collector_dispatchers=(),
                     planning_ready=False,
-                    planning_blocker="dispatcher_cache_detected_but_collector_found_none",
+                    planning_blocker="dispatcher_analysis_detected_but_collector_found_none",
                     candidate_count=0,
                     rejected_fathers=0,
                     candidate_kinds=(),
@@ -5716,7 +5716,7 @@ def test_emulated_dispatcher_unflattener_records_no_plan_provenance(
             "state_constants": (),
         "collector_dispatchers": (),
         "planning_ready": False,
-        "planning_blocker": "dispatcher_cache_detected_but_collector_found_none",
+        "planning_blocker": "dispatcher_analysis_detected_but_collector_found_none",
         "candidate_count": 0,
         "rejected_fathers": 0,
         "candidate_kinds": (),
@@ -6208,7 +6208,7 @@ def test_emulated_dispatcher_unflattener_builds_snapshot_from_detection(
                     analysis_dispatchers=(2, 3),
                     collector_dispatchers=(2,),
                     planning_ready=False,
-                    planning_blocker="dispatcher_cache_detected_but_collector_found_none",
+                    planning_blocker="dispatcher_analysis_detected_but_collector_found_none",
                     candidate_count=0,
                     rejected_fathers=0,
                     candidate_kinds=(),

@@ -1,9 +1,9 @@
 """Behavior-equivalence cover for the E5 history owner (step 2).
 
-Mirrors ``test_dispatcher_cache_cross_maturity`` but against the new
-explicit owner (``DispatcherHistoryStore`` + ``analyze_dispatcher_live``),
-proving the replacement reproduces the legacy ``DispatcherCache``
-cross-maturity promotion BEFORE any consumer is rewired (E5 step 3).
+Covers cross-maturity promotion through the explicit owner
+(``DispatcherHistoryStore`` + ``analyze_dispatcher_live``), proving the
+history path preserves dispatcher type and initial state across maturity
+transitions.
 
 System/runtime because ``dispatcher_history`` imports ``lift`` (hence
 ``ida_hexrays``) at module top; ``lift`` / ``analyze_dispatcher`` are

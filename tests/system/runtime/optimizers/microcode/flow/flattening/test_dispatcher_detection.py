@@ -1,4 +1,4 @@
-"""Tests for dispatcher detection cache and strategies.
+"""Tests for dispatcher analysis and strategies.
 
 These tests validate the unified dispatcher detection system that aggregates
 multiple detection strategies for identifying state machine dispatcher blocks.
@@ -16,8 +16,9 @@ import pytest
 class TestDispatcherDetectionWithRealMicrocode:
     """Integration tests for dispatcher detection using real IDA microcode.
 
-    These tests verify DispatcherCache.analyze() against actual decompiled functions
-    from libobfuscated binary (dispatcher_patterns.c and related sources).
+    These tests verify analyze_dispatcher_live() against actual decompiled
+    functions from libobfuscated binary (dispatcher_patterns.c and related
+    sources).
     """
 
     binary_name = "libobfuscated.dylib"  # macOS default (CI uses libobfuscated.dll)
@@ -56,7 +57,7 @@ class TestDispatcherDetectionWithRealMicrocode:
         return mba
 
     def test_analyze_detects_dispatcher_in_real_function(self, ida_setup):
-        """Test DispatcherCache.analyze() detects dispatchers in real functions.
+        """Test analyze_dispatcher_live() detects dispatchers in real functions.
 
         Tests multiple dispatcher patterns from dispatcher_patterns.c:
         - nested_while_hodur_pattern: CONDITIONAL_CHAIN with nested while(1) loops

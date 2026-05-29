@@ -1,7 +1,8 @@
 """Explicit cross-maturity dispatcher-analysis history (E5 step 2).
 
-Replaces the hidden cross-maturity state that ``DispatcherCache`` kept
-inside a per-function god-object.  The two load-bearing facts --
+Replaces the hidden cross-maturity state that the retired live
+dispatcher-analysis owner kept inside a per-function object.  The two
+load-bearing facts --
 ``previous_type`` and ``persisted_initial_state`` -- become an explicit,
 immutable :class:`DispatcherHistory` value owned by a small
 :class:`DispatcherHistoryStore` keyed by ``func_ea``.  Consumers then
@@ -11,7 +12,7 @@ access dispatcher analysis through the stateless
     lift(mba) -> FlowGraph
     analyze_dispatcher(flow_graph, previous_dispatcher_type=..., persisted_initial_state=...)
 
-The promotion rule is identical to the legacy ``DispatcherCache``
+The promotion rule is identical to the retired live dispatcher history
 (pinned by ``tests/.../test_dispatcher_history_store.py`` and
 mirrored by this module's own test): on each new maturity the prior
 analysis' ``dispatcher_type`` and -- only when not ``None`` --
@@ -59,7 +60,7 @@ class DispatcherHistory:
     persisted_initial_state: int | None = None
 
     def advanced_with(self, analysis: DispatcherAnalysis) -> "DispatcherHistory":
-        """Promotion rule (identical to legacy DispatcherCache):
+        """Promotion rule used by dispatcher-history promotion:
 
         * ``previous_type`` <- this analysis' ``dispatcher_type``.
         * ``persisted_initial_state`` <- this analysis' ``initial_state``
@@ -82,7 +83,7 @@ _EMPTY_HISTORY = DispatcherHistory()
 class DispatcherHistoryStore:
     """Per-``func_ea`` cross-maturity history + same-maturity analysis memo.
 
-    Owns exactly the state the legacy ``DispatcherCache`` hid: the
+    Owns exactly the state the live dispatcher analysis used to hide: the
     carried-forward :class:`DispatcherHistory` and a one-slot memo of the
     last analysis (so repeated queries at the same maturity do not
     re-lift / re-analyze).
@@ -134,7 +135,7 @@ def analyze_dispatcher_live(
 ) -> DispatcherAnalysis:
     """Lift ``mba`` and run the pure analyzer with cross-maturity history.
 
-    Stateless replacement for ``DispatcherCache.get_or_create(mba).analyze()``:
+    Live entry point for dispatcher analysis over a Hex-Rays ``mba``:
     reads the carried history for the function, returns the same-maturity
     memo when present, otherwise lifts + analyzes and records the result.
     """
@@ -166,10 +167,9 @@ def should_skip_dispatcher(mba: "object", blk: "object") -> bool:
     """Skip a block for switch-table-style patching when it belongs to a
     conditional-chain dispatcher.
 
-    Thin live helper over ``analyze_dispatcher_live`` (replaces the legacy
-    ``DispatcherCache``-based free function).  Only conditional-chain
-    dispatchers are skipped; switch-table style requires modifying
-    dispatcher blocks.
+    Thin live helper over ``analyze_dispatcher_live``. Only
+    conditional-chain dispatchers are skipped; switch-table style requires
+    modifying dispatcher blocks.
     """
     analysis = analyze_dispatcher_live(mba)
     if not analysis.is_conditional_chain:

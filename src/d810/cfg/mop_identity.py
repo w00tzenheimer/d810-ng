@@ -1,10 +1,9 @@
 """Portable identity helpers for ``MopSnapshot``.
 
 These helpers are the canonical operand-identity functions for
-dispatcher-state analyses -- they replaced the live-IDA
-``_get_mop_key`` / ``_get_mop_offset`` methods that used to live on
-the original ``DispatcherCache`` (deleted in E3-rewire B).  Portable
-analyses no longer need a live ``ida_hexrays.mop_t`` to key operands.
+dispatcher-state analyses -- they replaced the live-IDA operand-keying
+methods from the retired dispatcher-analysis owner. Portable analyses no
+longer need a live ``ida_hexrays.mop_t`` to key operands.
 
 E2a slice of ``docs/plans/recon-portability-end-state.md``: snapshot
 gap closure for the dispatcher state-variable port.  E3-rewire

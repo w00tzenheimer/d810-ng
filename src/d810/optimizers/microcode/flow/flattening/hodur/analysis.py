@@ -222,20 +222,20 @@ class HodurStateMachineDetector:
 
         # Step 2: Find the state variable (the operand being compared).
         #
-        # E3-schema (dispatcher_facts): ``DispatcherCache``'s
-        # ``analysis.state_variable.mop`` is now a portable
-        # ``MopSnapshot``, not a live ``ida_hexrays.mop_t``.  We can't
+        # E3-schema (dispatcher_facts): ``analysis.state_variable.mop``
+        # is now a portable ``MopSnapshot``, not a live
+        # ``ida_hexrays.mop_t``.  We can't
         # just pull ``.mop`` out and pass it to live-mop operations
         # (``format_mop_t``, downstream walking).
         #
-        # BUT: the cache's selection logic ("operand with the most
+        # BUT: dispatcher analysis' selection logic ("operand with the most
         # state comparisons across the whole function") IS more
         # discriminating than ``_identify_state_variable``'s
         # "non-constant operand of the first check block".  For
         # functions with mixed/decoy early comparisons these can
         # diverge, so we MUST preserve the cache-driven selection.
         #
-        # We bridge the cache's portable identity to a live operand
+        # We bridge dispatcher analysis' portable identity to a live operand
         # by matching the snapshot key against the live operands in
         # our own ``state_check_blocks``: find the check whose
         # non-constant operand has the same ``mop_snapshot_key`` as

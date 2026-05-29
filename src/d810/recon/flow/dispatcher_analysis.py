@@ -1,10 +1,9 @@
 """Pure dispatcher analysis over portable CFG snapshots.
 
-This module is the E3-pure counterpart to the live
-``dispatcher_detection.DispatcherCache`` analysis machinery.  It does
-not import Hex-Rays APIs and does not lift live microcode.  Callers pass
-a ``FlowGraph`` snapshot plus the two history values that the legacy
-cache preserved across maturity transitions.
+This module is the pure dispatcher-analysis counterpart to the live
+Hex-Rays adapter. It does not import Hex-Rays APIs and does not lift live
+microcode. Callers pass a ``FlowGraph`` snapshot plus the two history
+values preserved across maturity transitions.
 """
 
 from __future__ import annotations
@@ -77,9 +76,9 @@ def analyze_dispatcher(
     """Analyze dispatcher structure from a portable ``FlowGraph`` snapshot.
 
     ``previous_dispatcher_type`` and ``persisted_initial_state`` are the
-    explicit history facts previously carried inside ``DispatcherCache``.
-    Keeping them as parameters avoids introducing a generic maturity
-    history store before a concrete consumer needs one.
+    explicit dispatcher-history facts. Keeping them as parameters avoids
+    introducing a generic maturity history store before a concrete
+    consumer needs one.
     """
     analysis = DispatcherAnalysis(
         func_ea=int(flow_graph.func_ea),

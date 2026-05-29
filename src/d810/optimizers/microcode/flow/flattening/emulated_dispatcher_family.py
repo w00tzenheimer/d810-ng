@@ -4929,7 +4929,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
 
         planning_blocker = None
         if analysis_dispatchers and not collector_entries and not state_dispatcher_entries:
-            planning_blocker = "dispatcher_cache_detected_but_collector_found_none"
+            planning_blocker = "dispatcher_analysis_detected_but_collector_found_none"
 
         detection = EmulatedDispatcherDetection(
             dispatcher_analysis=analysis,
