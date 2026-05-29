@@ -19,15 +19,37 @@ def test_induction_only_is_counted() -> None:
     assert "induction" in result.evidence
 
 
-def test_induction_plus_strided_is_memory_copy() -> None:
+def test_strided_store_is_memory_copy() -> None:
     result = LoopSemanticsClassifier().classify(
-        has_induction=True, has_strided_access=True
+        has_strided_access=True, has_store=True
     )
     assert result.kind is LoopSemanticsKind.MEMORY_COPY
 
 
-def test_strided_only_is_memory_fill() -> None:
+def test_strided_constant_store_is_memory_fill() -> None:
+    result = LoopSemanticsClassifier().classify(
+        has_strided_access=True, has_constant_store=True
+    )
+    assert result.kind is LoopSemanticsKind.MEMORY_FILL
+
+
+def test_strided_access_alone_does_not_overclaim_memory_fill() -> None:
+    # P3: strided access with no store must NOT be classified MEMORY_FILL.
     result = LoopSemanticsClassifier().classify(has_strided_access=True)
+    assert result.kind is LoopSemanticsKind.UNKNOWN
+
+
+def test_induction_plus_strided_without_store_is_counted() -> None:
+    result = LoopSemanticsClassifier().classify(
+        has_induction=True, has_strided_access=True
+    )
+    assert result.kind is LoopSemanticsKind.COUNTED
+
+
+def test_constant_store_beats_plain_store() -> None:
+    result = LoopSemanticsClassifier().classify(
+        has_strided_access=True, has_store=True, has_constant_store=True
+    )
     assert result.kind is LoopSemanticsKind.MEMORY_FILL
 
 

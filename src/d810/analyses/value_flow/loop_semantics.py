@@ -54,20 +54,28 @@ class LoopSemanticsClassifier:
         *,
         has_induction: bool = False,
         has_strided_access: bool = False,
+        has_store: bool = False,
+        has_constant_store: bool = False,
         has_reduction: bool = False,
     ) -> LoopSemanticsClassification:
         if has_reduction:
             return LoopSemanticsClassification(
                 LoopSemanticsKind.REDUCTION, evidence=("reduction",)
             )
-        if has_induction and has_strided_access:
+        # A memory-shaping classification requires an actual STORE, not just a
+        # strided access stream (which may be a read/load). MEMORY_FILL further
+        # requires the stored value be invariant (constant_store); a strided
+        # store of a varying/loaded value is a MEMORY_COPY. Strided access with
+        # no store is intentionally NOT a fill -- it stays COUNTED / UNKNOWN.
+        if has_strided_access and has_constant_store:
+            return LoopSemanticsClassification(
+                LoopSemanticsKind.MEMORY_FILL,
+                evidence=("strided_access", "constant_store"),
+            )
+        if has_strided_access and has_store:
             return LoopSemanticsClassification(
                 LoopSemanticsKind.MEMORY_COPY,
-                evidence=("induction", "strided_access"),
-            )
-        if has_strided_access:
-            return LoopSemanticsClassification(
-                LoopSemanticsKind.MEMORY_FILL, evidence=("strided_access",)
+                evidence=("strided_access", "store"),
             )
         if has_induction:
             return LoopSemanticsClassification(

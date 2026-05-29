@@ -79,11 +79,12 @@ def test_collect_block_keys_by_dest_stkoff() -> None:
         ]
     )
     assert set(facts) == {0x20, 0x40}
+    assert facts[0x20][0].step == 1 and facts[0x40][0].step == -2
 
 
 def test_loop_head_merge_keeps_body_candidate() -> None:
     # header (serial 0): no induction update; body (serial 1): x = x + 1.
-    # Optimistic union must keep the body fact at the (empty) loop head.
+    # Optimistic union must keep the body candidate at the (empty) loop head.
     a = InductionVariableAnalysis()
     result = a.analyze_loop(
         {
@@ -92,7 +93,8 @@ def test_loop_head_merge_keeps_body_candidate() -> None:
         }
     )
     assert 0x20 in result  # NOT wiped by the empty header
-    assert result[0x20].step == 1 and result[0x20].block_serial == 1
+    assert len(result[0x20]) == 1
+    assert result[0x20][0].step == 1 and result[0x20][0].block_serial == 1
 
 
 def test_merge_is_union_not_intersection() -> None:
@@ -100,4 +102,30 @@ def test_merge_is_union_not_intersection() -> None:
     fact = InductionVariableFact(0x20, 1, "right", 1)
     # An intersection meet would yield {} (candidate absent from the first state);
     # union keeps it.
-    assert a.merge([{}, {0x20: fact}]) == {0x20: fact}
+    assert a.merge([{}, {0x20: (fact,)}]) == {0x20: (fact,)}
+
+
+def test_conflicting_steps_are_preserved_not_collapsed() -> None:
+    # Two loop blocks report dest 0x20 with DIFFERENT steps (+1 and +2):
+    # the conflict must surface as two candidates, not silent first-wins.
+    a = InductionVariableAnalysis()
+    result = a.analyze_loop(
+        {
+            1: [_view(op="m_add", dest=0x20, l_off=0x20, r_val=1, block=1)],
+            2: [_view(op="m_add", dest=0x20, l_off=0x20, r_val=2, block=2)],
+        }
+    )
+    assert {c.step for c in result[0x20]} == {1, 2}
+    assert InductionVariableAnalysis.is_ambiguous(result[0x20]) is True
+
+
+def test_same_step_across_blocks_dedups_and_is_unambiguous() -> None:
+    a = InductionVariableAnalysis()
+    result = a.analyze_loop(
+        {
+            1: [_view(op="m_add", dest=0x20, l_off=0x20, r_val=1, block=1)],
+            2: [_view(op="m_add", dest=0x20, l_off=0x20, r_val=1, block=2)],
+        }
+    )
+    assert len(result[0x20]) == 1
+    assert InductionVariableAnalysis.is_ambiguous(result[0x20]) is False
