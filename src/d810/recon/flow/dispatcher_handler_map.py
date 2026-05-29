@@ -104,7 +104,7 @@ class DispatcherHandlerMap:
         accesses ``handler_state_map``, ``bst_node_blocks``, and ``initial_state``.
         Transition-related fields are left empty (Hodur forward eval rebuilds them).
         """
-        from d810.recon.flow.bst_model import BSTAnalysisResult, BSTNodeMap
+        from d810.analyses.control_flow.bst_model import BSTAnalysisResult, BSTNodeMap
 
         node_map = BSTNodeMap()
         for serial in self.dispatcher_blocks:

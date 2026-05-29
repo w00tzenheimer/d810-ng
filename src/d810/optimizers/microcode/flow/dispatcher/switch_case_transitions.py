@@ -144,7 +144,7 @@ def _return_value_for_path(mba: object, ordered_path: tuple[int, ...]) -> int | 
         m_ret = ida_hexrays.m_ret
     except Exception:
         m_ret = None
-    from d810.recon.flow.bst_analysis import _get_mop_const_value
+    from d810.backends.hexrays.evidence.bst_analysis import _get_mop_const_value
 
     for serial in reversed(tuple(int(value) for value in ordered_path)):
         blk = _get_block(mba, serial)
@@ -182,7 +182,7 @@ def _return_value_from_frontier_writer(
     except Exception:
         return None
 
-    from d810.recon.flow.bst_analysis import _get_mop_const_value
+    from d810.backends.hexrays.evidence.bst_analysis import _get_mop_const_value
     from d810.optimizers.microcode.flow.dispatcher.return_frontier_carrier_audit import (
         _walk_to_return_writer,
     )

@@ -23,7 +23,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.recon.flow.bst_model import resolve_target_via_bst
+from d810.analyses.control_flow.bst_model import resolve_target_via_bst
 if TYPE_CHECKING:
     from d810.cfg.graph_modification import ReorderBlocks
     from d810.optimizers.microcode.flow.flattening.engine.snapshot import (

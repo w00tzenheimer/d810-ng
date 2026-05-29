@@ -169,7 +169,7 @@ def find_bst_default_block(
 
 
 # Compat re-export.  The canonical home for the snapshot-only BST
-# default-block discovery is `d810.recon.flow.bst_snapshot` (axis-C
+# default-block discovery is `d810.analyses.control_flow.bst_snapshot` (axis-C
 # slice 5a).  Keeping the name re-exported here so any prod consumer
 # that finds it through `bst_analysis` keeps working; tests import
 # from the canonical location directly.

@@ -73,7 +73,7 @@ from d810.hexrays.utils.hexrays_helpers import (
     ShowInstructionsFlags,
     UseDefFlags,
 )
-from d810.recon.flow.bst_analysis import (
+from d810.backends.hexrays.evidence.bst_analysis import (
     _detect_state_var_stkoff,
     _dump_dispatcher_node,
     _find_pre_header_state,
@@ -567,7 +567,7 @@ def mba_to_human_readable(mba: object) -> List[str]:
 
 # -----------------------------------------------------------------------------
 # Dispatcher Tree Visualization
-# (BST analysis helpers imported from d810.recon.flow.bst_analysis)
+# (BST analysis helpers imported from d810.backends.hexrays.evidence.bst_analysis)
 # -----------------------------------------------------------------------------
 
 

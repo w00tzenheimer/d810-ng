@@ -1038,7 +1038,7 @@ class StateWriteResolutionServices:
         from d810.evaluator.hexrays_microcode.valranges import (
             resolve_state_via_valranges,
         )
-        from d810.recon.flow.bst_model import resolve_target_via_bst
+        from d810.analyses.control_flow.bst_model import resolve_target_via_bst
 
         mba = self.mba
         disp_blk = mba.get_mblock(dispatcher_serial)
@@ -1509,7 +1509,7 @@ class StateWriteResolutionServices:
         from d810.evaluator.hexrays_microcode.valranges import (
             resolve_state_via_valranges,
         )
-        from d810.recon.flow.bst_model import resolve_target_via_bst
+        from d810.analyses.control_flow.bst_model import resolve_target_via_bst
 
         mba = self.mba
         disp_blk = mba.get_mblock(dispatcher_serial)

@@ -84,7 +84,7 @@ from d810.optimizers.microcode.flow.flattening.strategies.emulated_dispatcher_st
     EmulatedDispatcherMetadata,
     EmulatedDispatcherStrategy,
 )
-from d810.recon.flow.bst_analysis import (
+from d810.backends.hexrays.evidence.bst_analysis import (
     _detect_state_var_stkoff,
     _extract_state_from_block,
     _find_pre_header_state,

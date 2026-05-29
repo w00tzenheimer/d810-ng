@@ -48,7 +48,7 @@ from d810.hexrays.utils.hexrays_helpers import (
 from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     DispatcherStateMachine,
 )
-from d810.recon.flow.bst_model import BSTAnalysisResult
+from d810.analyses.control_flow.bst_model import BSTAnalysisResult
 from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
     DispatcherAnalysis,
     analyze_dispatcher_live,
@@ -2431,7 +2431,7 @@ class HodurStateMachineDetector:
                 if sv.t == ida_hexrays.mop_S:
                     stkoff_for_bst = sv.s.off
             try:
-                from d810.recon.flow.bst_analysis import analyze_bst_dispatcher
+                from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
 
                 raw_bst = analyze_bst_dispatcher(
                     self.mba,

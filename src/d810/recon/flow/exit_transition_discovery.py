@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.recon.flow.bst_analysis import resolve_via_bst_walk
-from d810.recon.flow.bst_model import resolve_target_via_bst
+from d810.backends.hexrays.evidence.bst_analysis import resolve_via_bst_walk
+from d810.analyses.control_flow.bst_model import resolve_target_via_bst
 from d810.recon.flow.state_machine_analysis import evaluate_handler_paths
 from d810.recon.flow.transition_builder import _get_state_var_stkoff
 
