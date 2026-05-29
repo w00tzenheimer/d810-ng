@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.recon.flow.bst_model import is_terminal_handler
+from d810.analyses.control_flow.bst_model import is_terminal_handler
 
 
 @dataclass

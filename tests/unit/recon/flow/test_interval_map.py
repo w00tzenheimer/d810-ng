@@ -1,10 +1,10 @@
-"""Unit tests for d810.recon.flow.interval_map."""
+"""Unit tests for d810.analyses.control_flow.interval_map."""
 
 from __future__ import annotations
 
 import pytest
 
-from d810.recon.flow.interval_map import (
+from d810.analyses.control_flow.interval_map import (
     Interval,
     IntervalDispatcher,
     IntervalRow,

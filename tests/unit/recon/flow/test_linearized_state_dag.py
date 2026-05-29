@@ -13,7 +13,7 @@ from d810.cfg.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.recon.flow.interval_map import IntervalDispatcher, IntervalRow
+from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.recon.flow.linearized_state_dag import (
     BoundaryInlineMode,
     LabelRenderMode,

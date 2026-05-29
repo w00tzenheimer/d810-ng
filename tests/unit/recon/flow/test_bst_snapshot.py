@@ -6,7 +6,7 @@ live-mba find_bst_default_block for pure-topology BST default lookups.
 from __future__ import annotations
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.recon.flow.bst_snapshot import find_bst_default_block_snapshot
+from d810.analyses.control_flow.bst_snapshot import find_bst_default_block_snapshot
 
 
 def _make_bst_cfg() -> FlowGraph:
