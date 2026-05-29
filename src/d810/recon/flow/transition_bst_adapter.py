@@ -7,17 +7,32 @@ from __future__ import annotations
 
 from d810.core.typing import Any, Optional
 
-from d810.backends.hexrays.evidence.bst_analysis import (
-    _detect_state_var_stkoff,
-    _dump_dispatcher_node,
-    _find_pre_header_state,
-    _walk_handler_chain,
-)
 from d810.analyses.control_flow.bst_model import BSTNodeMap
+from d810.capabilities.providers import get_bst_walkers
 from d810.recon.flow.transition_analysis import (
     DispatcherTransitionAnalysis,
     HandlerTransitionObservation,
 )
+
+
+# Registry-backed seams: the Hex-Rays BST walkers are supplied by the
+# composition root via ``d810.capabilities.providers`` so recon stays
+# backend-free (ticket d81-1w16).  Kept as module-level names so call sites are
+# unchanged and tests can monkeypatch them in place.
+def _detect_state_var_stkoff(*args, **kwargs):
+    return get_bst_walkers().detect_state_var_stkoff(*args, **kwargs)
+
+
+def _dump_dispatcher_node(*args, **kwargs):
+    return get_bst_walkers().dump_dispatcher_node(*args, **kwargs)
+
+
+def _find_pre_header_state(*args, **kwargs):
+    return get_bst_walkers().find_pre_header_state(*args, **kwargs)
+
+
+def _walk_handler_chain(*args, **kwargs):
+    return get_bst_walkers().walk_handler_chain(*args, **kwargs)
 
 
 def analyze_bst_dispatcher(

@@ -16,10 +16,18 @@ from d810.cfg.flowgraph import (
 )
 from d810.core import logging
 from d810.core.typing import Optional
+from d810.capabilities.providers import get_bst_walkers
 from d810.ir.results import ConstantFixpointResult
-from d810.backends.hexrays.evidence.bst_analysis import _forward_eval_insn
 
 logger = logging.getLogger(__name__)
+
+
+# Registry-backed seam: the Hex-Rays constant-folding evaluator is supplied by
+# the composition root via ``d810.capabilities.providers`` so recon stays
+# backend-free (ticket d81-1w16).  Kept as a module-level name so call sites are
+# unchanged.
+def _forward_eval_insn(*args, **kwargs):
+    return get_bst_walkers().forward_eval_insn(*args, **kwargs)
 
 _BST_BRANCH_PREDICATES = frozenset(
     {

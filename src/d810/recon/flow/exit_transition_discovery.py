@@ -4,10 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.backends.hexrays.evidence.bst_analysis import resolve_via_bst_walk
 from d810.analyses.control_flow.bst_model import resolve_target_via_bst
+from d810.capabilities.providers import get_bst_walkers
 from d810.recon.flow.state_machine_analysis import evaluate_handler_paths
 from d810.recon.flow.transition_builder import _get_state_var_stkoff
+
+
+# Registry-backed seam (see ``d810.capabilities.providers``, ticket d81-1w16):
+# kept as a module-level name so call sites are unchanged and tests can
+# monkeypatch ``resolve_via_bst_walk`` in place.
+def resolve_via_bst_walk(*args, **kwargs):
+    return get_bst_walkers().resolve_via_bst_walk(*args, **kwargs)
 
 _MOVE_OPCODE = 4
 _NUMBER_OPERAND = 2
