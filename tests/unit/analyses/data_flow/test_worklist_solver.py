@@ -236,3 +236,34 @@ def test_backward_direction_propagates_from_exit() -> None:
     assert res.out_states[2] == 1
     assert res.out_states[1] == 2
     assert res.out_states[0] == 3
+
+
+def test_entry_state_boundary_propagates() -> None:
+    # A non-bottom entry boundary fact must reach downstream nodes
+    # (reaching-defs is a may/union analysis; nothing kills "arg").
+    nodes, succ, pred = _topology({0: [1], 1: [2]})
+    res = run_fixpoint(
+        ReachingDefinitionsDomain({}),  # no per-node defs; only the boundary
+        nodes=nodes,
+        entry_nodes={0},
+        entry_state=frozenset({"arg@entry"}),
+        successors_of=succ,
+        predecessors_of=pred,
+        raise_on_nonconvergence=True,
+    )
+    assert res.converged is True
+    assert res.in_states[0] == {"arg@entry"}  # boundary, not bottom (empty)
+    assert res.out_states[2] == {"arg@entry"}  # propagated to the exit
+
+
+def test_default_entry_boundary_is_bottom() -> None:
+    # Without entry_state the entry boundary defaults to domain.bottom().
+    nodes, succ, pred = _topology({0: [1]})
+    res = run_fixpoint(
+        ReachingDefinitionsDomain({}),
+        nodes=nodes,
+        entry_nodes={0},
+        successors_of=succ,
+        predecessors_of=pred,
+    )
+    assert res.in_states[0] == frozenset()

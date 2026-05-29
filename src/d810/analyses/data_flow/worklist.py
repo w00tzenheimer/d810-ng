@@ -14,7 +14,7 @@ carries a real fixpoint computation.
 from __future__ import annotations
 
 from d810.core.logging import getLogger
-from d810.core.typing import Callable, Collection, Iterable
+from d810.core.typing import Callable, Collection, Iterable, Optional
 
 from d810.analyses.data_flow.analyzed_cfg import FixpointResult
 from d810.analyses.data_flow.configuration import Direction, FixpointConfiguration
@@ -30,6 +30,7 @@ def run_fixpoint(
     *,
     nodes: Collection[NodeId],
     entry_nodes: Collection[NodeId],
+    entry_state: Optional[StateT] = None,
     successors_of: Callable[[NodeId], Iterable[NodeId]],
     predecessors_of: Callable[[NodeId], Iterable[NodeId]],
     config: FixpointConfiguration = FixpointConfiguration(),
@@ -43,10 +44,11 @@ def run_fixpoint(
     (meet successor outputs, propagate to predecessors) -- backward is the
     forward algorithm on the reversed edge relation.
 
-    The boundary state of every ``entry_nodes`` member is ``domain.bottom()``
-    and always participates in that node's meet, so a loop header that is
-    also an entry does not lose its initial fact across the back-edge
-    (mirrors ``run_forward_fixpoint``'s entry handling).
+    The boundary state of every ``entry_nodes`` member is ``entry_state``
+    (or ``domain.bottom()`` when not supplied) and always participates in
+    that node's meet, so a loop header that is also an entry keeps its
+    initial fact across the back-edge (mirrors ``run_forward_fixpoint``'s
+    ``entry_state`` handling).
 
     Widening (``FlowDomain.widen``) is applied to a node's incoming state
     once it has been re-evaluated more than ``config.widening_threshold``
@@ -59,6 +61,9 @@ def run_fixpoint(
         nodes: Every node id in the graph (seeds the state maps).
         entry_nodes: Boundary nodes enqueued first (function entry for a
             forward run, exits for a backward run).
+        entry_state: Initial boundary IN-state for ``entry_nodes`` (the fact
+            at the function entry / exit boundary).  Defaults to
+            ``domain.bottom()`` when not supplied.
         successors_of: Maps a node to its successor ids.
         predecessors_of: Maps a node to its predecessor ids.
         config: Iteration cap, widening threshold, and direction.
@@ -79,6 +84,7 @@ def run_fixpoint(
     flow_succs = successors_of if forward else predecessors_of
 
     bottom = domain.bottom()
+    boundary = bottom if entry_state is None else entry_state
     in_states: dict[NodeId, StateT] = {node: bottom for node in nodes}
     out_states: dict[NodeId, StateT] = {node: bottom for node in nodes}
     visits: dict[NodeId, int] = {}
@@ -96,7 +102,7 @@ def run_fixpoint(
         incoming = [out_states[p] for p in flow_preds(node)]
         if node in entry_set:
             # Boundary condition participates in the meet (see docstring).
-            incoming = [bottom, *incoming]
+            incoming = [boundary, *incoming]
 
         if incoming:
             in_candidate = incoming[0]
