@@ -30,6 +30,7 @@ from d810.analyses.data_flow.configuration import Direction, FixpointConfigurati
 from d810.analyses.data_flow.domain import FlowDomain, NodeId, StateT
 from d810.analyses.data_flow.exceptions import FixpointDidNotConverge
 from d810.analyses.data_flow.working_set import WorkingSet
+from d810.analyses.data_flow.worklist import run_fixpoint
 
 __all__ = [
     "AnalyzedCFG",
@@ -41,4 +42,5 @@ __all__ = [
     "NodeId",
     "StateT",
     "WorkingSet",
+    "run_fixpoint",
 ]
