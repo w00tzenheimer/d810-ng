@@ -17,11 +17,14 @@ no stable portable home, and tightens once that home exists.
 from __future__ import annotations
 
 from .constant_fixpoint import ConstantFixpointBackend, ConstantFixpointCapability
+from .recurrence import ExternalRecurrenceCapability, RecurrenceAnalysis
 from .use_def_safety import SeveranceViolation, UseDefSafetyCapability
 
 __all__ = [
     "ConstantFixpointBackend",  # back-compat alias of ConstantFixpointCapability
     "ConstantFixpointCapability",
+    "ExternalRecurrenceCapability",
+    "RecurrenceAnalysis",
     "SeveranceViolation",
     "UseDefSafetyCapability",
 ]
