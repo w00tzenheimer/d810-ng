@@ -91,7 +91,6 @@ source_modules =
     d810.recon.flow.analysis_stats
     d810.recon.flow.dispatch_region
     d810.recon.flow.profile_classifier
-    d810.recon.flow.bst_model
 forbidden_modules =
     d810.hexrays
 
