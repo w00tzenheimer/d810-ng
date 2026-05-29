@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from d810.core.typing import NewType
 
-__all__ = ["BlockHandle", "FlowGraphHandle", "OperandHandle"]
+__all__ = ["BlockHandle", "FlowGraphHandle", "InsnHandle", "OperandHandle"]
 
 
 BlockHandle = NewType("BlockHandle", int)
@@ -58,6 +58,15 @@ OperandHandle = NewType("OperandHandle", int)
 Concrete backends interpret the wrapped ``int`` (an ``id(mop_t)``
 or operand-table index in Hex-Rays; an SSA value-id in angr/Ghidra).
 Portable code does not inspect the underlying value.
+"""
+
+
+InsnHandle = NewType("InsnHandle", int)
+"""Opaque identity for a single instruction.
+
+Concrete backends interpret the wrapped ``int`` (an instruction address or
+``minsn_t`` index in Hex-Rays; a statement id in angr/Ghidra).  Portable code
+does not inspect the underlying value.
 """
 
 
