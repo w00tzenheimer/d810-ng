@@ -26,7 +26,6 @@ from d810.core.typing import (
     TYPE_CHECKING,
     Callable,
     Collection,
-    Generic,
     Iterable,
     Optional,
     Protocol,
@@ -34,6 +33,11 @@ from d810.core.typing import (
     Union,
     runtime_checkable,
 )
+
+# Canonical home is the portable analysis layer (Landing Sequence step 3);
+# re-exported here so existing callers keep importing from forward_dataflow.
+from d810.analyses.data_flow.analyzed_cfg import FixpointResult
+from d810.analyses.data_flow.exceptions import FixpointDidNotConverge
 
 logger = getLogger(__name__)
 
@@ -52,57 +56,6 @@ class TransferFunction(Protocol[StateT]):
     """Transform input state through a single node, producing output state."""
 
     def __call__(self, node_id: int, in_state: StateT) -> StateT: ...
-
-
-class FixpointDidNotConverge(Exception):
-    """Raised by ``run_forward_fixpoint`` / ``run_valrange_fixpoint`` when
-    ``raise_on_nonconvergence=True`` is set and the worklist does not drain
-    before ``max_iterations`` is exhausted.
-
-    Soundness-critical callers (return-carrier resolution, DSVE, dead-branch
-    elimination, etc.) should pass ``raise_on_nonconvergence=True`` and let
-    this exception propagate; consuming ``in_states`` / ``out_states`` from a
-    partial fixpoint can corrupt the analysis.  Best-effort / diagnostic
-    callers may omit the kwarg and inspect ``FixpointResult.converged``
-    instead.
-    """
-
-    def __init__(self, iterations: int, max_iterations: int, message: str | None = None) -> None:
-        self.iterations = iterations
-        self.max_iterations = max_iterations
-        super().__init__(
-            message
-            or (
-                f"forward fixpoint did not converge in {iterations} iterations "
-                f"(max_iterations={max_iterations})"
-            )
-        )
-
-
-@dataclass(frozen=True)
-class FixpointResult(Generic[StateT]):
-    """Result of a forward fixpoint computation.
-
-    ``converged`` is ``True`` iff the worklist drained before
-    ``max_iterations`` was reached.  Callers that use ``out_states`` /
-    ``in_states`` to drive soundness-critical decisions MUST either:
-
-    1. pass ``raise_on_nonconvergence=True`` to the fixpoint call (preferred,
-       enforced by the ``fixpoint-result-without-convergence-check`` ast-grep
-       rule), OR
-    2. check ``result.converged`` and fail closed before reading state.
-
-    The ``converged`` field has a default of ``True`` for back-compat: when
-    no explicit value is passed (legacy construction sites that build a
-    ``FixpointResult`` outside the engine), the field assumes the caller's
-    own loop converged.  Engine-managed constructions always pass an explicit
-    value.
-    """
-
-    in_states: dict[int, StateT]
-    out_states: dict[int, StateT]
-    iterations: int
-    converged: bool = True
 
 
 def run_forward_fixpoint(
