@@ -868,14 +868,23 @@ class D810Manager:
         required that metadata).  Producing real handler-transition
         metadata is a separate slice.
 
-        E4b: when the block-manager producer includes the pre-D810
-        diagnostic ``snapshot``, this same subscriber also captures
-        maturity facts from the portable ``FlowGraph``.  Instruction
-        manager events intentionally carry no snapshot, so they run
-        recon collectors only; this avoids letting the first
-        no-snapshot event consume the fact runtime's
-        ``(func_ea, maturity, phase)`` dedup key before the block
-        event can attach observations to the diagnostic snapshot.
+        E4b: this same subscriber also captures pre-D810 maturity
+        facts from the portable ``FlowGraph``.  Capture runs on every
+        event whether or not it carries the diagnostic ``snapshot`` --
+        it is a production path (the captured ReturnCarrierFacts feed
+        return-leak suppression).  The block-manager producer adds the
+        ``snapshot`` for diagnostic DB attachment; the instruction
+        manager carries none.  ``capture_maturity_facts`` decouples the
+        two dedup keys ("fact capture fired" vs "diag attachment
+        fired"), so the no-snapshot event capturing first does NOT
+        prevent the snapshot-bearing event from later attaching
+        observations to the diagnostic snapshot.
+
+        (Regression note: gating capture on ``snapshot is not None``
+        -- 217716af2 -- silently disabled fact capture in every
+        non-diagnostic run, un-suppressing leaked terminal state
+        constants.  Full diagnostics masked it because the snapshot
+        was only ever present under ``--full-diagnostics``.)
         """
         if self._recon_phase is None and self._recon_runtime is None:
             return
@@ -898,7 +907,16 @@ class D810Manager:
                     int(func_ea),
                     maturity_name,
                 )
-        if self._recon_runtime is not None and snapshot is not None:
+        if self._recon_runtime is not None:
+            # Pre-D810 fact capture is a PRODUCTION path: the captured
+            # ReturnCarrierFacts feed return-leak suppression via
+            # ``analyze_and_persist``.  It must run on every event regardless
+            # of whether a diagnostic ``snapshot`` is present -- gating it on
+            # ``snapshot is not None`` (217716af2) silently disabled capture in
+            # non-diagnostic runs, which un-suppressed leaked terminal state
+            # constants (e.g. sub_7FFD ``return 0xC5FB34A1D9A6E315``).  The
+            # snapshot is forwarded only for diagnostic DB attachment, which
+            # ``capture_maturity_facts`` decouples from capture itself.
             try:
                 self._recon_runtime.capture_maturity_facts(
                     flow_graph,
