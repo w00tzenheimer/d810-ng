@@ -6449,7 +6449,7 @@ class HandlerChainComposerStrategy:
             and state_var_stkoff is not None
         ):
             try:
-                from d810.recon.flow.bst_model import (
+                from d810.analyses.control_flow.bst_model import (
                     resolve_target_via_bst as _resolve_bst,
                 )
             except Exception:

@@ -11,7 +11,7 @@ import re
 from d810.cfg.flowgraph import FlowGraph, InsnKind
 from d810.core import logging
 from d810.core.typing import Callable, Mapping
-from d810.recon.flow.interval_map import IntervalDispatcher
+from d810.analyses.control_flow.interval_map import IntervalDispatcher
 from d810.recon.flow.dispatch_region import DispatchRegionDetector
 from d810.recon.flow.scc_analysis import (
     LoopRegion,

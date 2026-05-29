@@ -7,13 +7,13 @@ from __future__ import annotations
 
 from d810.core.typing import Any, Optional
 
-from d810.recon.flow.bst_analysis import (
+from d810.backends.hexrays.evidence.bst_analysis import (
     _detect_state_var_stkoff,
     _dump_dispatcher_node,
     _find_pre_header_state,
     _walk_handler_chain,
 )
-from d810.recon.flow.bst_model import BSTNodeMap
+from d810.analyses.control_flow.bst_model import BSTNodeMap
 from d810.recon.flow.transition_analysis import (
     DispatcherTransitionAnalysis,
     HandlerTransitionObservation,

@@ -81,7 +81,7 @@ class HodurSnapshotPolicy:
             entry_serial = list(state_machine.handlers.values())[0].check_block
             bst_stkoff = state_var_stkoff_resolver(state_machine)
             try:
-                from d810.recon.flow.bst_analysis import analyze_bst_dispatcher
+                from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
 
                 raw_bst = analyze_bst_dispatcher(
                     mba,

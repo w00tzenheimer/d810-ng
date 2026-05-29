@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.cfg.flowgraph import InsnKind, OperandKind
-from d810.recon.flow.bst_analysis import _forward_eval_insn
+from d810.backends.hexrays.evidence.bst_analysis import _forward_eval_insn
 from d810.recon.flow.dag_index import build_dag_node_maps
 from d810.recon.flow.linearized_state_dag import (
     LinearizedStateDag,

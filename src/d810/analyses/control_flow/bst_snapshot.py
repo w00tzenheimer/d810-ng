@@ -1,6 +1,6 @@
 """Pure-snapshot BST default-block discovery.
 
-Companion to ``d810.recon.flow.bst_analysis`` that holds the
+Companion to ``d810.backends.hexrays.evidence.bst_analysis`` that holds the
 snapshot-only half of the BST dispatcher analysis surface.  This
 module is intentionally IDA-free at module-import time so it can be
 exercised from ``tests/unit/`` without dragging the live ``ida_hexrays``
@@ -13,7 +13,7 @@ snapshot-based function the unit suite consumes
 lets ``bst_analysis.py`` add ``d810.hexrays.mutation.ir_translator``
 imports without tripping the ``unit-tests-no-hexrays`` import-linter
 contract via the previous transitive path
-``tests.unit.recon.flow.test_bst_snapshot -> d810.recon.flow.bst_analysis -> d810.hexrays.*``.
+``tests.unit.recon.flow.test_bst_snapshot -> d810.backends.hexrays.evidence.bst_analysis -> d810.hexrays.*``.
 """
 
 from __future__ import annotations

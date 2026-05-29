@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from d810.core.typing import Dict, List, Optional, Protocol
 
-from d810.recon.flow.bst_model import BSTAnalysisResult
+from d810.analyses.control_flow.bst_model import BSTAnalysisResult
 
 
 @dataclass

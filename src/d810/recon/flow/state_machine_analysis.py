@@ -17,7 +17,7 @@ from d810.cfg.flowgraph import (
 from d810.core import logging
 from d810.core.typing import Optional
 from d810.ir.results import ConstantFixpointResult
-from d810.recon.flow.bst_analysis import _forward_eval_insn
+from d810.backends.hexrays.evidence.bst_analysis import _forward_eval_insn
 
 logger = logging.getLogger(__name__)
 

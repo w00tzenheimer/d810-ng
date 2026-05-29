@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.recon.flow.bst_model import BSTAnalysisResult
+from d810.analyses.control_flow.bst_model import BSTAnalysisResult
 from d810.recon.flow.dispatcher_map import StateDispatcherMap
 
 
