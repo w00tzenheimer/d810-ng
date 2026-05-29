@@ -1693,7 +1693,7 @@ def _detect_state_var_stkoff(
     ),
     tags=("bst", "dispatcher", "intervals", "state-machine", "analysis"),
     related_paths=(
-        "src/d810/recon/flow/bst_analysis.py",
+        "src/d810/backends/hexrays/evidence/bst_analysis.py",
         "src/d810/cfg/flow/compare_chain.py",
     ),
 )

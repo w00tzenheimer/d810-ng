@@ -175,7 +175,7 @@ class DispatchTable:
     tags=("compare-chain", "dispatcher", "state-machine", "intervals"),
     related_paths=(
         "src/d810/cfg/flow/compare_chain.py",
-        "src/d810/recon/flow/bst_analysis.py",
+        "src/d810/backends/hexrays/evidence/bst_analysis.py",
     ),
 )
 class CompareChainResolver:
