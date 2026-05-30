@@ -139,12 +139,51 @@ ROLE_RULES: tuple[RoleRule, ...] = (
 )
 
 
+# Per-module OVERRIDES (precedence over role rules + source-default).  These are
+# the grounded corrections from the dissolution-grounding workflow (llr-lyly):
+# role-default mis-homes that the import-graph walk corrected, plus the two
+# destination-collision renames.
+OVERRIDES: dict[str, str] = {
+    # I/T: plan is the execution-plan IR -- it CONSTRUCTS GraphModification +
+    # CapturedBlockBody, so it belongs with transforms, not ir.
+    "d810.cfg.plan": "d810.transforms.plan",
+    # A: dag_frontier_closure emits modifications + compile_patch_plan -> transforms
+    "d810.cfg.dag_frontier_closure": "d810.transforms.dag_frontier_closure",
+    # A/R: cfg.flow.return_frontier is a pure read-only frontier algorithm -> analyses
+    "d810.cfg.flow.return_frontier": "d810.analyses.control_flow.return_frontier",
+    # R1: shared_corridor is a pure predicate module (0 d810 imports) -> analyses
+    "d810.cfg.shared_corridor": "d810.analyses.control_flow.shared_corridor",
+    # R1: reconstruction_diagnostics simulates a patch + reports -> diagnostics
+    "d810.recon.flow.reconstruction_diagnostics": "d810.diagnostics.reconstruction_diagnostics",
+    # R4: recon root coordination interprets results -> passes, not analyses
+    "d810.recon.analysis": "d810.passes.analysis",
+    "d810.recon.artifacts": "d810.passes.artifacts",
+    # P: cfg.contracts.report is a passes contract module (role-rule gap)
+    "d810.cfg.contracts.report": "d810.passes.report",
+    # R2/P COLLISION: fact runtime vs recon.runtime both -> passes.runtime; distinct leaf
+    "d810.recon.facts.runtime": "d810.passes.fact_runtime",
+    # R2: model non-observation symbols -> value_flow.model (FactObservation etc.
+    # already cut over to value_flow.observation in Phase 0a)
+    "d810.recon.facts.model": "d810.analyses.value_flow.model",
+    # R3 COLLISION: collector vs cfg algorithm share leaf -> rename the collector
+    "d810.recon.collectors.compare_chain": "d810.analyses.control_flow.compare_chain_collector",
+    # COLLISIONS surfaced by the dest-collision detector (distinct modules, same
+    # leaf -> rename the recon/collector side; the cfg algorithm keeps the leaf):
+    "d810.recon.flow.dag_index": "d810.analyses.control_flow.recon_dag_index",
+    "d810.recon.collectors.profile_classifier": "d810.analyses.control_flow.profile_classifier_collector",
+    "d810.recon.collectors.return_frontier": "d810.analyses.control_flow.return_frontier_collector",
+    "d810.recon.observability": "d810.diagnostics.recon_observability",
+}
+
+
 def home_for(old_dotted: str) -> str | None:
     """Resolve a recon/cfg module's destination dotted path by role-suffix.
 
     Returns the new dotted module path (dest package + original leaf), or None
     when no rule matches (those need a manual home decision -- preflight lists
     them as UNMAPPED)."""
+    if old_dotted in OVERRIDES:
+        return OVERRIDES[old_dotted]
     leaf = old_dotted.rsplit(".", 1)[-1]
     for rule in ROLE_RULES:
         if (
@@ -210,6 +249,12 @@ def run_preflight(move_map: dict[str, str], unmapped: list[str]) -> int:
     graph = grimp.build_graph("d810")
     modset = set(graph.modules)
 
+    # destination collisions: two distinct sources -> one dest = run_move aborts
+    _rev: dict[str, list[str]] = defaultdict(list)
+    for _o, _n in move_map.items():
+        _rev[_n].append(_o)
+    collisions = {n: sorted(o) for n, o in _rev.items() if len(o) > 1}
+
     # destination -> list of upward edges (importer_leaf -> target, layers)
     by_dest: dict[str, list[str]] = defaultdict(list)
     clean_dest: dict[str, int] = defaultdict(int)
@@ -259,8 +304,14 @@ def run_preflight(move_map: dict[str, str], unmapped: list[str]) -> int:
         print(f"\n--- UNMAPPED ({len(unmapped)}: no role rule matched -> decide a home) ---")
         for m in unmapped[:80]:
             print(f"      {m}")
+    if collisions:
+        print(f"\n--- DEST COLLISIONS ({len(collisions)}: distinct sources -> one home; "
+              "rename one leaf before move) ---")
+        for new, olds in sorted(collisions.items()):
+            print(f"      {new}  <==  {', '.join(olds)}")
     print(f"\nSUMMARY: {total_up} upward edge(s) across "
-          f"{len(by_dest)} destination cluster(s); {len(unmapped)} unmapped module(s).")
+          f"{len(by_dest)} destination cluster(s); {len(unmapped)} unmapped; "
+          f"{len(collisions)} dest-collision(s).")
     return 0
 
 
