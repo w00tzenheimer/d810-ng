@@ -1,0 +1,104 @@
+# Forbids live Hex-Rays OBJECT ACCESS (data-model duck-typing) in the
+# portable-core layers of the llvm-lisa-restructure layout.
+#
+# Sibling to `no-live-ida-in-portable-core.yml`: that rule gates live
+# *imports* (idaapi / ida_hexrays / ...).  This rule gates the next layer
+# of the same problem -- portable code that imports nothing vendor-specific
+# but still DUCK-TYPES a live ``mba_t`` / ``mblock_t`` instead of consuming
+# the portable ``d810.ir`` FlowGraph / BlockSnapshot.  Import-shape
+# portability was achieved by the recon/cfg dissolution; data-model
+# portability (ticket ``llr-zeyu``) is what this rule drives to zero.
+#
+# WHY THESE PATTERNS ARE UNAMBIGUOUS (vs the portable snapshot):
+#   live ``mblock_t``         portable ``d810.ir.BlockSnapshot``
+#   ------------------------  ----------------------------------
+#   blk.nsucc()  (method)     blk.nsucc   (int field)
+#   blk.npred()  (method)     blk.npred   (int field)
+#   blk.succ(i)  (method)     blk.succs   (tuple[int] field)
+#   blk.pred(i)  (method)     blk.preds   (tuple[int] field)
+#   blk.succset  (attr)       blk.succs   (tuple[int] field)
+#   blk.predset  (attr)       blk.preds   (tuple[int] field)
+#   mba.get_mblock(i)         flow_graph.blocks[i]
+#
+# The method-call form (``.nsucc()``) and ``.succset``/``.predset`` exist
+# ONLY on a live Hex-Rays object; the snapshot exposes them as plain int /
+# tuple fields.  This rule therefore matches the live forms and does NOT
+# match ``getattr(snap, "nsucc")`` (which legitimately reads the portable
+# BlockSnapshot field) -- ~21 such getattr reads in portable-core are NOT
+# violations and must stay green.
+#
+# Tracking: ticket llr-zeyu; docs/plans/2026-05-30-finalization-plan-F0-F7.md
+#           (F0 inventory guardrail -> F2 strict flip).
+
+id: no-live-object-access-in-portable-core
+language: python
+# Severity is WARNING during the migration (the live-access count is
+# nonzero -- 157 sites across 38 files at the F0 baseline).  The
+# finalization plan flips this to ERROR at F2, once the portable-core
+# burn-down reaches zero (see the F-plan commit table).
+severity: warning
+
+files:
+  - "src/d810/support/**/*.py"
+  - "src/d810/ir/**/*.py"
+  - "src/d810/capabilities/**/*.py"
+  - "src/d810/analyses/**/*.py"
+  - "src/d810/transforms/**/*.py"
+  - "src/d810/passes/**/*.py"
+  - "src/d810/families/**/*.py"
+  # core/ hosts a few duck-typed live readers surfaced by the llr-zeyu
+  # inventory (observability_labels, logging maturity, diag event handlers).
+  - "src/d810/core/**/*.py"
+ignores:
+  - "src/d810/backends/**/*.py"
+  - "tests/**"
+
+message: |
+  Portable-core layers (support, ir, capabilities, analyses, transforms,
+  passes, families, core) must NOT duck-type a live Hex-Rays ``mba_t`` /
+  ``mblock_t``.  Consume the portable ``d810.ir`` FlowGraph / BlockSnapshot
+  instead:
+
+    live mblock_t            portable BlockSnapshot
+    blk.nsucc()          ->  blk.nsucc        (int field)
+    blk.npred()          ->  blk.npred        (int field)
+    blk.succ(i)/pred(i)  ->  blk.succs/preds  (tuple[int] fields)
+    blk.succset/predset  ->  blk.succs/preds
+    mba.get_mblock(i)    ->  flow_graph.blocks[i]
+
+  The HIGH layer lifts the live ``mba`` to a FlowGraph once
+  (``hexrays.mutation.ir_translator.lift``) and hands portable code the
+  snapshot via the FLOWGRAPH_READY event (composition root).
+
+rule:
+  any:
+    # Live mba_t block access by index.
+    - pattern: $X.get_mblock($$$)
+    # Live mblock_t topology methods (snapshot exposes int/tuple fields).
+    - pattern: $X.nsucc()
+    - pattern: $X.npred()
+    - pattern: $X.succ($$$)
+    - pattern: $X.pred($$$)
+    # Live mblock_t successor/predecessor sets (snapshot uses .succs/.preds).
+    - pattern: $X.succset
+    - pattern: $X.predset
+
+note: |
+  Lawful fixes (FlowGraph-first; see the llr-zeyu seam decision):
+
+  (a) The collector/analysis already receives a FlowGraph in production
+      (E4a FLOWGRAPH_READY).  Delete the dead ``else: live mba`` branch and
+      iterate ``flow_graph.blocks`` / ``BlockSnapshot`` fields only.
+
+  (b) Snapshot is missing a field the live walk needed -> extend
+      BlockSnapshot / InsnSnapshot; the backend lifter populates it.
+
+  (c) Genuinely needs a vendor query that is not topology -> add a
+      capability Protocol in ``d810/capabilities`` and inject it.
+
+  (d) Genuinely vendor-irreducible mutation/probe -> the module is not
+      portable-core; relocate it to a HIGH module or backends/<vendor>/.
+
+  NB: ``getattr(snap, "nsucc")`` / ``getattr(snap, "succset", ())`` that
+  read a portable BlockSnapshot are NOT violations and are intentionally
+  not matched.  Only the live method-call / live-attr forms are flagged.
