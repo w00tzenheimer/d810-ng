@@ -12,6 +12,7 @@ from d810.core.typing import (
     NotRequired,
     TypedDict,
 )
+from d810.transforms.lowering import LoweringMode
 # Canonical home for ``UnflatteningStrategy`` is
 # ``d810.families.state_machine_cff.protocols`` per the
 # llvm-lisa-restructure plan.  This module re-exports it for
@@ -60,6 +61,11 @@ class PlanFragmentMetadata(TypedDict, total=False):
     """
 
     planner_ctx: NotRequired[PlannerContextContribution]
+    #: LS12: target CFG-shape provenance, stamped by the planner from the
+    #: producing strategy's ``lowering_mode``.  PROVENANCE-ONLY -- never read by
+    #: planner scoring / fragment arbitration / executor (which key on
+    #: ``fragment.family``); recorded only for diagnostics and future slices.
+    lowering_mode: NotRequired[LoweringMode]
 
 
 FAMILY_DIRECT: str = "direct"
