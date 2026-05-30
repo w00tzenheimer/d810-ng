@@ -100,7 +100,7 @@ from d810.optimizers.microcode.microcode_dump import mba_to_dict
 from d810.passes.analysis import AnalysisPhase
 from d810.passes.inferences import unflattening_inference
 from d810.passes.phase import ReconPhase
-from d810.recon.runtime import ReconAnalysisRuntime
+from d810.passes.runtime import ReconAnalysisRuntime
 from d810.passes.store import ReconStore, shutdown_all_writers
 
 try:
