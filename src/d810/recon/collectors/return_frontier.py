@@ -22,7 +22,6 @@ from d810.cfg.flow.return_frontier import (
     ReturnSiteStatus,
 )
 from d810.recon.models import CandidateFlag, ReconResult
-from d810.recon.phase import ALL_MATURITIES
 
 logger = getLogger(__name__)
 
@@ -41,7 +40,10 @@ class ReturnFrontierCollector:
     """
 
     name: str = "return_frontier"
-    maturities: frozenset[int] | None = ALL_MATURITIES
+    # ``None`` == "fire at all maturities" (the ReconPhase ALL_MATURITIES
+    # sentinel is itself ``None``). The phase id/maturity reaches collect()
+    # as an int arg, so this collector no longer imports the orchestrator.
+    maturities: frozenset[int] | None = None
     level: str = "microcode"
 
     def __init__(self) -> None:
