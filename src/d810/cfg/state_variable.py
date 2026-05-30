@@ -1,15 +1,10 @@
-"""Backend-neutral dispatcher state-variable identity."""
-from __future__ import annotations
+"""Migration shim: ``d810.cfg.state_variable`` -> ``d810.ir.state_variable`` (dissolution, llr-lyly).
 
-from dataclasses import dataclass
+sys.modules alias preserving the old import path; re-exports public AND
+private symbols.  Deleted in Phase Z once consumers repoint.
+"""
+import sys
 
+from d810.ir import state_variable as _canonical
 
-@dataclass(frozen=True, slots=True)
-class StateVariableRef:
-    """Stable identity for a state variable without backend operand objects."""
-
-    stkoff: int
-    width: int = 4
-
-
-__all__ = ["StateVariableRef"]
+sys.modules[__name__] = _canonical
