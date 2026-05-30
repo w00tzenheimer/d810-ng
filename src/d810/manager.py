@@ -77,18 +77,22 @@ from d810.recon.flow.terminal_tail_priors import (
     TerminalTailEqualityFrontierPriors,
     TerminalTailRowTargetOverride,
 )
-from d810.recon.facts.collectors import (
-    ByteEmitCorridorFactCollector,
-    CallAnchorFactCollector,
-    InductionVariableFactCollector,
-    LoopPredicateValueFactCollector,
+from d810.analyses.value_flow.byte_emit_corridor import ByteEmitCorridorFactCollector
+from d810.analyses.value_flow.call_anchor import CallAnchorFactCollector
+from d810.analyses.value_flow.induction_carrier import InductionVariableFactCollector
+from d810.analyses.value_flow.loop_carrier import LoopPredicateValueFactCollector
+from d810.analyses.value_flow.ollvm_semantic_carrier import (
     OllvmValueFlowEvidenceCollector,
-    ReturnSlotFactCollector,
-    ReturnFrontierFactCollector,
-    StateTransitionAnchorFactCollector,
-    StateWriteAnchorFactCollector,
+)
+from d810.analyses.value_flow.return_carrier import ReturnSlotFactCollector
+from d810.analyses.value_flow.return_frontier import ReturnFrontierFactCollector
+from d810.analyses.value_flow.state_write_anchor import StateWriteAnchorFactCollector
+from d810.analyses.value_flow.terminal_byte_emitter import (
     TerminalByteEmitterFactCollector,
-    ZeroBlobFactCollector,
+)
+from d810.analyses.value_flow.zero_blob import ZeroBlobFactCollector
+from d810.recon.facts.collectors.state_transition_anchor import (
+    StateTransitionAnchorFactCollector,
 )
 from d810.optimizers.microcode.microcode_dump import mba_to_dict
 from d810.recon.analysis import AnalysisPhase
