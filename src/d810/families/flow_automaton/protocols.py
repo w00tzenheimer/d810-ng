@@ -8,8 +8,8 @@ lowering.  These are the backend-neutral contracts for that work; concrete
 recognizers (deferred C4) satisfy them structurally.
 
 Graph / recognition / result types are ``Any`` so this family-layer module
-stays free of cfg / ir / vendor types (families is not ast-grep-globbed;
-import-linter + the portable-core audit grep are the purity gates).
+stays free of cfg / ir / vendor types (``families`` is ast-grep-globbed as of
+LS14, on top of import-linter + the portable-core audit grep).
 """
 from __future__ import annotations
 
