@@ -37,6 +37,7 @@ layers =
     d810.diagnostics
     d810.optimizers
     d810.families
+    d810.passes
     d810.recon
     d810.backends
     d810.evaluator
@@ -47,6 +48,7 @@ layers =
     d810.analyses
     d810.capabilities
     d810.ir
+    d810.support
     d810.core
     d810.errors
 
@@ -226,10 +228,8 @@ source_modules =
     # `no-live-ida-in-portable-core` ast-grep rule (already severity=error).
     d810.recon
     d810.analyses
-    # When created and clean, append:
-    #     d810.pre_analysis
-    #     d810.passes
-    #     d810.support
+    d810.passes
+    d810.support
 forbidden_modules =
     idaapi
     ida_hexrays
@@ -265,10 +265,8 @@ source_modules =
     d810.transforms
     d810.recon
     d810.analyses
-    # When created and clean, append:
-    #     d810.pre_analysis
-    #     d810.passes
-    #     d810.support
+    d810.passes
+    d810.support
 forbidden_modules =
     d810.hexrays.mutation
     # When created, append:
@@ -298,8 +296,8 @@ source_modules =
     d810.ir
     d810.transforms
     d810.analyses
-    # When created, append:
-    #     d810.passes
+    d810.passes
+    d810.support
 forbidden_modules =
     angr
     pyvex
