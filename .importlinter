@@ -206,7 +206,7 @@ forbidden_modules =
 # source_modules lists ONLY packages that currently exist on
 # cfg-recon-mainline. As the restructure introduces new portable-core
 # packages (d810.analyses, d810.transforms, d810.passes, d810.ir,
-# d810.capabilities, d810.support, d810.pre_analysis), add them here
+# d810.capabilities, d810.support), add them here
 # in the same slice that creates them. Adding a not-yet-existing
 # module to source_modules aborts import-linter entirely
 # ("Module 'd810.X' does not exist"), so the discipline is:

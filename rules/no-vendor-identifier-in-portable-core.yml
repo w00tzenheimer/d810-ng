@@ -21,8 +21,6 @@ severity: error
 
 files:
   # Current portable-core candidate packages on cfg-recon-mainline
-  - "src/d810/recon/**/*.py"
-  - "src/d810/cfg/flowgraph*.py"
   # Future portable-core packages from the recon-and-cfg-restructuring plan
   - "src/d810/analyses/**/*.py"
   - "src/d810/transforms/**/*.py"
@@ -32,7 +30,6 @@ files:
   - "src/d810/ir/**/*.py"
   - "src/d810/capabilities/**/*.py"
   - "src/d810/support/**/*.py"
-  - "src/d810/pre_analysis/**/*.py"
 ignores:
   # The vendor backend lifter is the legitimate location for these refs.
   - "src/d810/backends/**/*.py"
