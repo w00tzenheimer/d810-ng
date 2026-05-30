@@ -2,6 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# The mode-enum + planning request/result dataclasses are portable (no transforms
+# deps) and live in the analyses layer so the read-only reconstruction candidate
+# builder can reference them without an upward import (dissolution, llr-lyly).
+from d810.analyses.control_flow.reconstruction_planning_context import (
+    ReconstructionEmissionMode,
+    ReconstructionPlanningContext,
+    ReconstructionPlanningDecision,
+)
 from d810.cfg.reconstruction_emission_planning import plan_reconstruction_emission
 from d810.cfg.reconstruction_lowering import (
     ConditionalArmEmissionPlan,
@@ -16,14 +24,6 @@ from d810.cfg.reconstruction_lowering import (
 )
 
 
-class ReconstructionEmissionMode:
-    """Labels for reconstruction emission decisions."""
-
-    DIRECT = "direct"
-    CONDITIONAL_ARM = "conditional_arm"
-    PRED_SPLIT = "pred_split"
-
-
 class ReconstructionLoweringKind:
     """Labels for reconstruction lowering requests."""
 
@@ -31,33 +31,6 @@ class ReconstructionLoweringKind:
     CONDITIONAL_ARM = "conditional_arm"
     SHARED_GROUP = "shared_group"
     PASSTHROUGH = "passthrough"
-
-
-@dataclass(frozen=True, slots=True)
-class ReconstructionPlanningContext:
-    """Structured request from Hodur into CFG reconstruction planning."""
-
-    ordered_path: tuple[int, ...]
-    horizon_block: int
-    target_entry: int
-    source_anchor_block: int
-    source_branch_arm: int | None
-    is_conditional_transition: bool
-    shared_suffix_blocks: frozenset[int]
-    dispatcher_region: frozenset[int]
-    has_unsafe_trailing_insns: bool
-
-
-@dataclass(frozen=True, slots=True)
-class ReconstructionPlanningDecision:
-    """Planner result for a reconstructed semantic corridor candidate."""
-
-    accepted: bool
-    target_entry: int | None = None
-    emission_mode: str | None = None
-    first_shared_block: int | None = None
-    via_pred: int | None = None
-    rejection_reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)

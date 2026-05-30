@@ -138,8 +138,18 @@ from d810.analyses.control_flow.predecessor_dispatcher_target import (
 from d810.recon.flow.reconstruction_discovery import (
     classify_artifact_return_blocks,
 )
+from functools import partial as _partial
+
+from d810.cfg.reconstruction_planning import plan_reconstruction_candidate
 from d810.recon.flow.reconstruction_candidate_builder import (
-    build_reconstruction_candidate,
+    build_reconstruction_candidate as _build_reconstruction_candidate,
+)
+
+# Wire the real (transforms-bound) planner into the read-only candidate builder
+# at this live caller (dissolution, llr-lyly).
+build_reconstruction_candidate = _partial(
+    _build_reconstruction_candidate,
+    plan_reconstruction_candidate=plan_reconstruction_candidate,
 )
 from d810.recon.flow.reconstruction_discovery_indexes import (
     build_reconstruction_discovery_indexes,

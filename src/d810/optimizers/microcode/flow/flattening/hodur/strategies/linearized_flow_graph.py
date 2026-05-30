@@ -174,9 +174,19 @@ def _round_ctx_probe_wrap(snapshot, inner):
     return _wrapped
 
 
+from functools import partial as _partial
+
+from d810.cfg.reconstruction_planning import plan_reconstruction_candidate
 from d810.recon.flow.reconstruction_candidate_builder import (
     ReconstructionCandidate,
-    build_reconstruction_candidate,
+    build_reconstruction_candidate as _build_reconstruction_candidate,
+)
+
+# Wire the real (transforms-bound) planner into the read-only candidate builder
+# at this live caller (dissolution, llr-lyly).
+build_reconstruction_candidate = _partial(
+    _build_reconstruction_candidate,
+    plan_reconstruction_candidate=plan_reconstruction_candidate,
 )
 from d810.recon.flow.reconstruction_discovery import (
     collect_shared_suffix_blocks,

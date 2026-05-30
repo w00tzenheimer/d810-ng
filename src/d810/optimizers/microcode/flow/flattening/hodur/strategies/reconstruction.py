@@ -113,9 +113,19 @@ from d810.recon.flow.return_corridor_discovery import (
 from d810.recon.flow.terminal_family_collection import (
     collect_terminal_family_report,
 )
+from functools import partial as _partial
+
+from d810.cfg.reconstruction_planning import plan_reconstruction_candidate
 from d810.recon.flow.reconstruction_candidate_builder import (
     ReconstructionCandidate,
-    build_reconstruction_candidate,
+    build_reconstruction_candidate as _build_reconstruction_candidate,
+)
+
+# Wire the real (transforms-bound) planner into the read-only candidate builder
+# at this live caller (dissolution, llr-lyly).
+build_reconstruction_candidate = _partial(
+    _build_reconstruction_candidate,
+    plan_reconstruction_candidate=plan_reconstruction_candidate,
 )
 from d810.recon.flow.residual_alias_discovery import (
     discover_residual_alias_overrides,

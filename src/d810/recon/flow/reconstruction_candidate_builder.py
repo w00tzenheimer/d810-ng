@@ -3,12 +3,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core import logging
-from d810.cfg.reconstruction_planning import (
+from d810.core.typing import Callable
+from d810.analyses.control_flow.reconstruction_planning_context import (
     ReconstructionEmissionMode,
     ReconstructionPlanningContext,
-    plan_reconstruction_candidate,
+    ReconstructionPlanningDecision,
 )
 from d810.cfg.shared_corridor import is_backward_same_corridor_target
+
+# The concrete planner lives in the transforms layer and CONSTRUCTS modification
+# objects; a read-only analyses module must not import it.  It is injected at
+# call time via the ``plan_reconstruction_candidate`` keyword arg (live callers
+# wire the real planner).  This module-level name is kept ONLY as the legacy
+# monkeypatch seam used by unit tests; it defaults to ``None`` and is never the
+# transforms planner (dissolution, llr-lyly).
+plan_reconstruction_candidate: (
+    Callable[..., ReconstructionPlanningDecision] | None
+) = None
 from d810.recon.flow.edge_metadata import make_edge_metadata
 from d810.recon.flow.linearized_state_dag import (
     SemanticEdgeKind,
@@ -102,7 +113,12 @@ def build_reconstruction_candidate(
     constant_result: SnapshotConstantFixpointResult,
     shared_suffix_blocks: set[int],
     dispatcher_region: set[int],
+    plan_reconstruction_candidate: Callable[..., ReconstructionPlanningDecision]
+    | None = None,
 ) -> tuple[ReconstructionCandidate | None, dict[str, int | str | None] | None]:
+    # The transforms-bound planner is injected by the live caller; tests still
+    # monkeypatch the module-level ``plan_reconstruction_candidate`` seam.
+    planner = plan_reconstruction_candidate or globals()["plan_reconstruction_candidate"]
     if edge.kind not in (
         SemanticEdgeKind.TRANSITION,
         SemanticEdgeKind.CONDITIONAL_TRANSITION,
@@ -252,7 +268,7 @@ def build_reconstruction_candidate(
             rejection_reason="horizon_not_on_path",
         )
 
-    planning_decision = plan_reconstruction_candidate(
+    planning_decision = planner(
         flow_graph,
         ReconstructionPlanningContext(
             ordered_path=ordered_path,
