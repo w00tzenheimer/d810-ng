@@ -17,7 +17,7 @@ from d810.transforms.lowering import LoweringMode
 from d810.core.typing import TYPE_CHECKING
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
-from d810.cfg.reorder_blocks_planning import compute_reorder_blocks as plan_reorder_blocks
+from d810.transforms.reorder_blocks_planning import compute_reorder_blocks as plan_reorder_blocks
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_DIRECT,
     BenefitMetrics,
@@ -26,7 +26,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
 )
 from d810.analyses.control_flow.bst_model import resolve_target_via_bst
 if TYPE_CHECKING:
-    from d810.cfg.graph_modification import ReorderBlocks
+    from d810.transforms.graph_modification import ReorderBlocks
     from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
@@ -106,7 +106,7 @@ class TopologicalSortStrategy:
     def compute_reorder_blocks(
         snapshot: AnalysisSnapshot,
     ) -> ReorderBlocks | None:
-        """Compatibility wrapper over :mod:`d810.cfg.reorder_blocks_planning`."""
+        """Compatibility wrapper over :mod:`d810.transforms.reorder_blocks_planning`."""
         bst_result = snapshot.bst_result
         if bst_result is None:
             return None

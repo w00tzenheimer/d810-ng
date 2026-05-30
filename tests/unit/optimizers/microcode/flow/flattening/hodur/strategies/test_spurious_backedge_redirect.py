@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.graph_modification import ConvertToGoto
+from d810.transforms.graph_modification import ConvertToGoto
 from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     spurious_backedge_redirect,
 )

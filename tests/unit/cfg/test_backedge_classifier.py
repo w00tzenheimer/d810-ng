@@ -1,7 +1,7 @@
 """Tests for back-edge classification."""
 from __future__ import annotations
 
-from d810.cfg.backedge_classifier import (
+from d810.analyses.control_flow.backedge_classifier import (
     BackedgeClass,
     BackedgeClassification,
     classify_backedge,

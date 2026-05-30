@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from d810.cfg.flow.return_frontier import ReturnSite
+from d810.analyses.control_flow.return_frontier import ReturnSite
 from d810.core.typing import Any
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import AnalysisSnapshot
 from d810.optimizers.microcode.flow.flattening.engine.strategy import StageResult

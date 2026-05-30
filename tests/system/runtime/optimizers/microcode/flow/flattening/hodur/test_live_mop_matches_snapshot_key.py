@@ -25,7 +25,7 @@ ida_hexrays = pytest.importorskip("ida_hexrays")
 from types import SimpleNamespace
 
 from d810.cfg.flowgraph import MopSnapshot, OperandKind
-from d810.cfg.mop_identity import mop_snapshot_key
+from d810.ir.mop_identity import mop_snapshot_key
 from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
     _live_mop_matches_snapshot_key,
 )

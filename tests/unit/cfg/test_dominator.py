@@ -1,8 +1,8 @@
 """Tests for graph-map dominator tree computation."""
 from __future__ import annotations
 
-from d810.cfg.dominator import compute_dom_tree
-from d810.cfg.postdominator import compute_postdom_tree
+from d810.analyses.control_flow.dominator import compute_dom_tree
+from d810.analyses.control_flow.postdominator import compute_postdom_tree
 
 
 class TestDominatorTree:

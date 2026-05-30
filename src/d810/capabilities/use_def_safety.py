@@ -13,7 +13,7 @@ own dominance + DU-chain analyses.
 portable IR-level intent type at ``d810.ir.redirect`` (slice 10 of
 the llvm-lisa-restructure plan).  Call sites convert their CFG-layer
 redirect (``RedirectGoto`` / ``RedirectBranch``) into the IR intent
-via ``d810.cfg.graph_modification.to_redirect_intent`` immediately
+via ``d810.transforms.graph_modification.to_redirect_intent`` immediately
 before the capability call; the CFG types stay where they are
 because they own ``__post_init__`` construction diagnostics that do
 not belong in IR.
@@ -93,7 +93,7 @@ class UseDefSafetyCapability(Protocol):
 
         Args:
             mod: Portable redirect intent.  Construct via
-                ``d810.cfg.graph_modification.to_redirect_intent(mod)``
+                ``d810.transforms.graph_modification.to_redirect_intent(mod)``
                 at the call site, where ``mod`` is the CFG-layer
                 ``RedirectGoto`` / ``RedirectBranch`` the caller will
                 also queue with ``DeferredGraphModifier`` if the

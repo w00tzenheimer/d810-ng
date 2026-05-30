@@ -1,7 +1,7 @@
 """Hex-Rays adapter implementations for byte_emit_tail_isolation.
 
 This module owns the live ``mba_t``/``mblock_t`` materialization mechanics for
-the backend-neutral planners in :mod:`d810.cfg.transform.byte_emit_tail_isolation`.
+the backend-neutral planners in :mod:`d810.transforms.byte_emit_tail_isolation`.
 The cfg layer describes what byte-tail CFG shape is wanted; this adapter says
 how Hex-Rays performs the live block copies, rewrites, dirtying, and verifier
 interaction.
@@ -16,7 +16,7 @@ import os
 from d810.core import logging
 from d810.core.typing import Any, Iterable
 
-from d810.cfg.transform.byte_emit_live_use_anchor import (
+from d810.transforms.byte_emit_live_use_anchor import (
     execute_byte_store_replica_anchor,
     execute_live_host_anchor,
     execute_multi_byte_live_host_anchor,
@@ -32,7 +32,7 @@ from d810.cfg.transform.byte_emit_live_use_anchor import (
     parse_reconnect_env,
     parse_single_xor_env,
 )
-from d810.cfg.transform.byte_emit_tail_isolation import (
+from d810.transforms.byte_emit_tail_isolation import (
     BlockView,
     FactRow,
     duplicate_convergence_for_byte_path,
@@ -43,7 +43,7 @@ from d810.cfg.transform.byte_emit_tail_isolation import (
     parse_tail_distinct_byte_env,
     parse_tail_duplicate_convergence_byte_env,
 )
-from d810.cfg.scc import CfgSCC, compute_live_cfg_sccs
+from d810.analyses.control_flow.scc import CfgSCC, compute_live_cfg_sccs
 from d810.hexrays.mutation.byte_tail_runtime_evidence import (
     ByteTailRuntimeEvidenceProvider,
     normalize_byte_tail_runtime_evidence,
@@ -1840,7 +1840,7 @@ def _json_int_tuple(value) -> tuple[int, ...]:
 
 def _load_planner_blocks_from_mba(mba):
     """Build planner block views directly from the live MBA."""
-    from d810.cfg.terminal_tail_cascade_egress_planner import TerminalTailBlock
+    from d810.transforms.terminal_tail_cascade_egress_planner import TerminalTailBlock
 
     blocks = {}
     try:
@@ -1944,7 +1944,7 @@ def _resolve_live_site_block_from_payload(
 
 def _load_planner_sites_from_fact_view(fact_view, *, adapter=None):
     """Build planner sites from a ValidatedFactView-like object."""
-    from d810.cfg.terminal_tail_cascade_egress_planner import (
+    from d810.transforms.terminal_tail_cascade_egress_planner import (
         terminal_byte_emit_site_from_payload,
     )
 
@@ -3528,7 +3528,7 @@ def _select_terminal_tail_entry_live(
     adapter,
     first_byte_index: int,
 ) -> tuple[int | None, str]:
-    from d810.cfg.terminal_tail_cascade_egress_planner import (
+    from d810.transforms.terminal_tail_cascade_egress_planner import (
         select_effective_terminal_tail_entry_block,
     )
 
@@ -3947,7 +3947,7 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
     adapter = LiveMbaAdapter(mba)
 
     try:
-        from d810.cfg.terminal_tail_cascade_egress_planner import (
+        from d810.transforms.terminal_tail_cascade_egress_planner import (
             TerminalTailCascadeEgressPlanner,
         )
 
@@ -4275,7 +4275,7 @@ def maybe_run_tail_state_cascade(
         planner_evidence = evidence.terminal_tail_planner
 
     try:
-        from d810.cfg.terminal_tail_cascade_egress_planner import (
+        from d810.transforms.terminal_tail_cascade_egress_planner import (
             TerminalTailCascadeEgressPlanner,
         )
 
@@ -4337,7 +4337,7 @@ def maybe_run_tail_state_cascade(
         logger.info(
             "tail_state_cascade: EA-bridge rejected: %s", bridge_reason,
         )
-        from d810.cfg.transform.byte_emit_tail_isolation import StateCascadeReport
+        from d810.transforms.byte_emit_tail_isolation import StateCascadeReport
         report = StateCascadeReport(
             applied=False, pair="5:6", reason=bridge_reason,
         )

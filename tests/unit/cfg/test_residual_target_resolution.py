@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.residual_target_resolution import (
+from d810.transforms.residual_target_resolution import (
     BstConditionalTail,
     BstGotoTail,
     collect_owned_exact_sources,

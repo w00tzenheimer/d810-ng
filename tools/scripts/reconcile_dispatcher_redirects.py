@@ -13,7 +13,7 @@ with the same argument shape. To use the new command directly:
 The full implementation now lives in
 ``src/d810/diagnostics/redirect_reconcile.py`` with unit tests under
 ``tests/unit/diagnostics/test_redirect_reconcile.py``. The cfg-layer
-classification logic in ``d810.cfg.redirect_reconciliation`` is unchanged.
+classification logic in ``d810.analyses.control_flow.redirect_reconciliation`` is unchanged.
 """
 from __future__ import annotations
 

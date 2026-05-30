@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.cfg.flow.return_frontier import ReturnSite
+from d810.analyses.control_flow.return_frontier import ReturnSite
 from d810.passes.artifacts import (
     load_return_sites_from_store,
     load_transition_report_from_store,

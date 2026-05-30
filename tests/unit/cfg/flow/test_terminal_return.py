@@ -1,7 +1,7 @@
 """Unit tests for terminal return CFG frontier helpers."""
 from __future__ import annotations
 
-from d810.cfg.flow.terminal_frontier import (
+from d810.analyses.control_flow.terminal_frontier import (
     TerminalLoweringAction,
     TerminalSemanticLoweringFrontier,
     compute_terminal_cfg_suffix_frontier,

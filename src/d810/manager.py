@@ -1696,8 +1696,8 @@ class D810Manager:
         Returns:
             PassPipeline instance with IDAIRTranslator and the 2 safe cleanup transform.
         """
-        from d810.cfg.pipeline import FlowGraphTransformPipeline
-        from d810.cfg.transform.simplify_identical_branch import (
+        from d810.passes.pipeline import FlowGraphTransformPipeline
+        from d810.transforms.simplify_identical_branch import (
             SimplifyIdenticalBranchPass,
         )
         from d810.hexrays.mutation.ir_translator import IDAIRTranslator
@@ -1715,7 +1715,7 @@ class D810Manager:
                 ]
             )
         if enable_loop_carrier_backedge_refresh:
-            from d810.cfg.transform.loop_carrier_backedge_refresh import (
+            from d810.transforms.loop_carrier_backedge_refresh import (
                 LoopCarrierBackedgeRefreshPass,
             )
 

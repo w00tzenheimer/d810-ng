@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.cfg.reconstruction_planning import (
+from d810.transforms.reconstruction_planning import (
     ReconstructionEmissionMode,
     ReconstructionLoweringContext,
     ReconstructionLoweringKind,
@@ -8,7 +8,7 @@ from d810.cfg.reconstruction_planning import (
     plan_reconstruction_candidate,
     plan_reconstruction_lowering,
 )
-from d810.cfg.reconstruction_lowering import RedirectSpec, SharedGroupEmissionCandidate
+from d810.transforms.reconstruction_lowering import RedirectSpec, SharedGroupEmissionCandidate
 
 
 class _DummyBlock:

@@ -126,7 +126,7 @@ class TestDetectLoopBoundWriterRedirect:
         ])
 
     def test_matches_bound_writer_block(self):
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             detect_loop_bound_writer_redirect,
         )
 
@@ -140,7 +140,7 @@ class TestDetectLoopBoundWriterRedirect:
         assert diag.counter_stkoff == self.COUNTER_STKOFF
 
     def test_does_not_match_unrelated_block(self):
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             detect_loop_bound_writer_redirect,
         )
 
@@ -155,7 +155,7 @@ class TestDetectLoopBoundWriterRedirect:
     def test_rejects_when_writer_uniqueness_violated(self):
         """If another block also writes the same stkvar B, the detector
         must reject -- the writer is no longer unique."""
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             detect_loop_bound_writer_redirect,
         )
 
@@ -181,7 +181,7 @@ class TestDetectLoopBoundWriterRedirect:
 
     def test_rejects_when_mask_not_in_set(self):
         """Mask 0x55 is not a recognized loop-bound mask -- reject."""
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             detect_loop_bound_writer_redirect,
         )
 
@@ -206,7 +206,7 @@ class TestDetectLoopBoundWriterRedirect:
 
     def test_rejects_when_counter_delta_not_small(self):
         """Delta 16 isn't in the recognized counter-advance set -- reject."""
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             detect_loop_bound_writer_redirect,
         )
 
@@ -225,7 +225,7 @@ class TestDetectLoopBoundWriterRedirect:
         assert detect_loop_bound_writer_redirect(mba, source_block_serial=0) is None
 
     def test_returns_none_when_mba_is_none(self):
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             detect_loop_bound_writer_redirect,
         )
 
@@ -288,7 +288,7 @@ class TestDetectLoopCounterWritebackTail:
         ])
 
     def test_matches_writeback_tail_block(self):
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             detect_loop_counter_writeback_tail,
         )
 
@@ -303,7 +303,7 @@ class TestDetectLoopCounterWritebackTail:
         assert diag.advance_ea == self.ADVANCE_EA
 
     def test_does_not_match_non_writeback_blocks(self):
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             detect_loop_counter_writeback_tail,
         )
 
@@ -318,7 +318,7 @@ class TestDetectLoopCounterWritebackTail:
     def test_rejects_when_writeback_source_is_constant(self):
         """``mov #0, %counter`` is a counter RESET, not a loop-carried
         writeback -- the detector must reject."""
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             detect_loop_counter_writeback_tail,
         )
 
@@ -344,7 +344,7 @@ class TestDetectLoopCounterWritebackTail:
     def test_rejects_when_no_loop_test_present(self):
         """Without a ``counter+small_const`` loop test, the writeback is
         not loop-carried."""
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             detect_loop_counter_writeback_tail,
         )
 
@@ -365,7 +365,7 @@ class TestDetectLoopCounterWritebackTail:
     def test_rejects_when_no_advance_compute(self):
         """Without an ``m_add counter+small_const`` somewhere in the
         function, the writeback isn't connected to a counter advance."""
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             detect_loop_counter_writeback_tail,
         )
 
@@ -385,7 +385,7 @@ class TestDetectLoopCounterWritebackTail:
         assert detect_loop_counter_writeback_tail(mba, tail_block_serial=2) is None
 
     def test_returns_none_when_mba_is_none(self):
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             detect_loop_counter_writeback_tail,
         )
 
@@ -418,7 +418,7 @@ class TestCollectConstVarRefsInBlock:
         return _Mblock(_chain(*insns))
 
     def test_returns_var_refs_for_const_writes(self):
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             collect_const_var_refs_in_block,
         )
 
@@ -437,7 +437,7 @@ class TestCollectConstVarRefsInBlock:
         assert refs == frozenset({"228", "650", "658", "660"})
 
     def test_accepts_semantic_kind_classifiers_for_live_shaped_objects(self):
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             collect_const_var_refs_in_block,
         )
 
@@ -478,7 +478,7 @@ class TestCollectConstVarRefsInBlock:
         assert refs == frozenset({"228"})
 
     def test_falls_back_to_instruction_text_for_const_write_dest(self):
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             collect_const_var_refs_in_block,
         )
 
@@ -493,7 +493,7 @@ class TestCollectConstVarRefsInBlock:
         })
 
     def test_returns_empty_when_block_has_no_const_writes(self):
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             collect_const_var_refs_in_block,
         )
 
@@ -507,7 +507,7 @@ class TestCollectConstVarRefsInBlock:
         assert collect_const_var_refs_in_block(mba, block_serial=0) == frozenset()
 
     def test_returns_empty_when_block_serial_out_of_range(self):
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             collect_const_var_refs_in_block,
         )
 
@@ -518,14 +518,14 @@ class TestCollectConstVarRefsInBlock:
         assert collect_const_var_refs_in_block(mba, block_serial=5) == frozenset()
 
     def test_returns_empty_when_mba_is_none(self):
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             collect_const_var_refs_in_block,
         )
 
         assert collect_const_var_refs_in_block(None, block_serial=0) == frozenset()
 
     def test_skips_non_constant_movs(self):
-        from d810.cfg.loop_bound_writer_guard import (
+        from d810.transforms.loop_bound_writer_guard import (
             collect_const_var_refs_in_block,
         )
 

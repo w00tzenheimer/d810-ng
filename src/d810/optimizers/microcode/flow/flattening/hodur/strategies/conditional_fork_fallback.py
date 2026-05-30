@@ -5,7 +5,7 @@ from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.cfg.modification_builder import (
+from d810.transforms.modification_builder import (
     ModificationBuilder,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.analysis import (

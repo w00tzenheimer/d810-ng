@@ -2,7 +2,7 @@
 
 Reads ``TerminalByteEmitterFact`` rows from a captured diag SQLite + a
 target CFG snapshot (usually ``post_bundle_stabilize`` / snap17) and asks
-the planner in :mod:`d810.cfg.terminal_tail_cascade_egress_planner`
+the planner in :mod:`d810.transforms.terminal_tail_cascade_egress_planner`
 whether each byte tail can be redirected into a REF-like acyclic cascade.
 
 Pure-Python orchestrator with no d810 runtime imports beyond the cfg-layer
@@ -14,7 +14,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from d810.cfg.terminal_tail_cascade_egress_planner import (
+from d810.transforms.terminal_tail_cascade_egress_planner import (
     TerminalByteEmitSite,
     TerminalTailBlock,
     TerminalTailCascadeEgressPlanner,

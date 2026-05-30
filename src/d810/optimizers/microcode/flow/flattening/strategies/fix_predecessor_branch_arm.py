@@ -25,12 +25,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from d810.cfg.fix_predecessor_planning import (
+from d810.transforms.fix_predecessor_planning import (
     FixPredecessorOutcome,
     plan_fix_predecessor_clone_from_branch_arm,
 )
 from d810.cfg.flowgraph import FlowGraph
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     CloneConditionalAsGotoFromBranchArm,
     GraphModification,
 )

@@ -7,7 +7,7 @@ from upper layers (:mod:`d810.recon`, :mod:`d810.cfg`,
 contract forbids.
 
 Domain observability modules (:mod:`d810.core.observability_recon`,
-:mod:`d810.cfg.observability`, :mod:`d810.hexrays.observability`)
+:mod:`d810.core.observability_cfg`, :mod:`d810.hexrays.observability`)
 re-export the events relevant to their domain and own the
 ``observe_*`` emit helpers. Subscribers consume the dataclasses
 directly from this module.
@@ -283,7 +283,7 @@ class BlockLineageDrainRequested:
     Emitted by :func:`d810.core.diag.snapshot.snapshot_mba` immediately
     after the snapshots row is created. ``conn`` and ``snapshot_id``
     are the live SQLite handle and row id; subscribers (currently
-    :mod:`d810.cfg.block_lineage`) drain their pending buffer and
+    :mod:`d810.transforms.block_lineage`) drain their pending buffer and
     write rows directly. ``snapshot`` is the optional SnapshotRef
     (``None`` when called from a direct ``snapshot_mba`` invocation
     outside the event API).

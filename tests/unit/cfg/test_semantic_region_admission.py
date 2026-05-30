@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.cfg.semantic_region_admission import (
+from d810.transforms.semantic_region_admission import (
     RawRegionInfo,
     classify_source_covered_by_other_region,
     classify_yes_handlers_subclass,
     find_cover_regions,
 )
-from d810.cfg.semantic_region_entry import (
+from d810.transforms.semantic_region_entry import (
     EntryEligibility,
     SemanticEntryCandidate,
 )

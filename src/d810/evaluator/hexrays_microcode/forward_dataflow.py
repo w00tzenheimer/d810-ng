@@ -248,7 +248,7 @@ def transfer_block_insnwise(
 # Meet semantics: **union** of def sets from all predecessors.
 # Transfer: KILL old defs for the written variable, GEN a new DefSite.
 
-from d810.cfg.lattice import BOTTOM, TOP, _Sentinel
+from d810.ir.lattice import BOTTOM, TOP, _Sentinel
 
 # Maximum number of DefSites per VarKey before collapsing to TOP.
 _MAX_DEF_SET_SIZE: int = 32
@@ -476,7 +476,7 @@ def build_reaching_defs_entry_state(universe: set[VarKey]) -> ReachingDefEnv:
 # Every public function operates on plain ``LatticeEnv``
 # (``dict[str, LatticeValue]``) dicts and IDA microcode objects.
 
-from d810.cfg.lattice import Const, LatticeEnv
+from d810.ir.lattice import Const, LatticeEnv
 
 ConstMap = LatticeEnv  # backward-compat alias
 

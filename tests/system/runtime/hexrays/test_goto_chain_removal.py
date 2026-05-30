@@ -18,9 +18,9 @@ from __future__ import annotations
 import ida_hexrays
 import pytest
 
-from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
+from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
-from d810.cfg.pipeline import FlowGraphTransformPipeline
+from d810.passes.pipeline import FlowGraphTransformPipeline
 from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 from d810.hexrays.mutation.transform.goto_chain_removal import GotoChainRemovalPass
 

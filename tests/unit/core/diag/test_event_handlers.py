@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from d810.cfg.observability import (
+from d810.core.observability_cfg import (
     observe_cfg_provenance,
     observe_cfg_provenance_latest,
     observe_watch_block_transition,

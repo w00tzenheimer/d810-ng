@@ -8,8 +8,8 @@ importing the Hex-Rays-shaped helpers directly.
 from __future__ import annotations
 
 from d810.core.typing import Protocol
-from d810.cfg.flow.edit_simulator import project_post_state
-from d810.cfg.plan import compile_patch_plan
+from d810.transforms.edit_simulator import project_post_state
+from d810.transforms.plan import compile_patch_plan
 from d810.analyses.control_flow.linearized_state_dag import (
     build_live_linearized_state_dag_from_graph,
 )

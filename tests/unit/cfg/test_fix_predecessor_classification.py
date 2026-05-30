@@ -6,14 +6,14 @@ assignment for each shape called out by the next-slice plan.
 """
 from __future__ import annotations
 
-from d810.cfg.fix_predecessor_classification import (
+from d810.transforms.fix_predecessor_classification import (
     FixPredecessorBucket,
     PredecessorTopology,
     classify_predecessor_modification,
     format_classification_report,
     summarize_classifications,
 )
-from d810.cfg.fix_predecessor_planning import (
+from d810.transforms.fix_predecessor_planning import (
     FixPredecessorOutcome,
     FixPredecessorRejectReason,
 )

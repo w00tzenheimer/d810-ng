@@ -10,8 +10,8 @@ from d810.cfg.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
-from d810.cfg.transform.loop_carrier_backedge_refresh import (
+from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
+from d810.transforms.loop_carrier_backedge_refresh import (
     LoopCarrierBackedgeRefreshPass,
 )
 

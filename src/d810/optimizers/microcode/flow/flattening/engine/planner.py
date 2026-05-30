@@ -424,7 +424,7 @@ def _log_planner_ctx_conflicts(
         return
     # Import locally — graph_modification lives in cfg and would be a
     # heavy top-level dependency for a diagnostic helper.
-    from d810.cfg.graph_modification import RedirectGoto
+    from d810.transforms.graph_modification import RedirectGoto
     conflicts: list[str] = []
     for mod in fragment.modifications:
         if not isinstance(mod, RedirectGoto):

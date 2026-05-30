@@ -6,13 +6,13 @@ from dataclasses import dataclass
 from enum import Enum
 
 from d810.cfg.flowgraph import FlowGraph
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     DuplicateReplayAndRedirect,
     DuplicateReplayEntry,
     GraphModification,
     InsertBlock,
 )
-from d810.cfg.materialization_payload import CapturedBlockBody
+from d810.transforms.materialization_payload import CapturedBlockBody
 
 BAD_WHILE_LOOP_SOURCE_RULE = "bad_while_loop"
 CLEANUP_CONDITIONAL_REDIRECT_PROOF_METADATA_KEY = (

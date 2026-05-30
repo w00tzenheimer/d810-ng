@@ -1,7 +1,7 @@
 """Unit tests for shared engine planner exports and pure-Python behavior."""
 from __future__ import annotations
 
-from d810.cfg.graph_modification import RedirectGoto
+from d810.transforms.graph_modification import RedirectGoto
 from d810.optimizers.microcode.flow.flattening import engine
 from d810.optimizers.microcode.flow.flattening.engine.planner import (
     PipelinePolicy,

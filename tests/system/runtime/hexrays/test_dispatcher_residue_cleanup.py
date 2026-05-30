@@ -6,7 +6,7 @@ import pytest
 
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
-from d810.cfg.dispatcher_residue_cleanup_planning import (
+from d810.transforms.dispatcher_residue_cleanup_planning import (
     DispatcherResidueCleanupPlan,
     DispatcherResidueTwoWayConversion,
     UnreachableRegionBlockPlan,

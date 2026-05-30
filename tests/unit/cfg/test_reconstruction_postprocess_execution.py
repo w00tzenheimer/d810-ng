@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import d810.cfg.reconstruction_postprocess_emission as postprocess_exec
-import d810.cfg.residual_alias_emission as residual_alias_emission
-from d810.cfg.reconstruction_postprocess_emission import (
+import d810.transforms.reconstruction_postprocess_emission as postprocess_exec
+import d810.transforms.residual_alias_emission as residual_alias_emission
+from d810.transforms.reconstruction_postprocess_emission import (
     emit_residual_alias_overrides,
     execute_reconstruction_postprocess,
 )

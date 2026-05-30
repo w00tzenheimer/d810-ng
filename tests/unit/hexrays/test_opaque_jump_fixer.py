@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.transform.opaque_jump_fixer import OpaqueJumpFixerPass
-from d810.cfg.graph_modification import ConvertToGoto
+from d810.transforms.opaque_jump_fixer import OpaqueJumpFixerPass
+from d810.transforms.graph_modification import ConvertToGoto
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.pipeline import FlowGraphTransformPipeline
+from d810.passes.pipeline import FlowGraphTransformPipeline
 
 from tests.unit.hexrays.conftest import InMemoryBackend
 

@@ -62,7 +62,7 @@ def drain_lineage_into_snapshot(
 
 # Inversion-of-control hook for cfg-layer CFG-provenance drain (Phase 6
 # of the diag observability boundary plan). The producer-facing
-# ``log_cfg_provenance`` API lives in ``d810.cfg.provenance``; this hook
+# ``log_cfg_provenance`` API lives in ``d810.ir.provenance``; this hook
 # lets ``snapshot_mba`` ask the cfg producer for its buffered entries
 # without core.diag importing from d810.cfg (forbidden by layers).
 _provenance_drainer: Callable[[], list] | None = None
@@ -87,7 +87,7 @@ def drain_pending_provenance() -> list:
     """Return pending CFG-provenance entries from the registered drainer.
 
     Returns an empty list when no drainer is registered (i.e. nothing in
-    the runtime has imported ``d810.cfg.provenance`` yet).
+    the runtime has imported ``d810.ir.provenance`` yet).
     """
     drainer = _provenance_drainer
     if drainer is None:

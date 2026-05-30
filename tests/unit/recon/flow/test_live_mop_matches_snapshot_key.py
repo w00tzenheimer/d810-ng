@@ -19,7 +19,7 @@ existing system suite via Docker.
 from __future__ import annotations
 
 from d810.cfg.flowgraph import MopSnapshot, OperandKind
-from d810.cfg.mop_identity import mop_snapshot_key
+from d810.ir.mop_identity import mop_snapshot_key
 
 
 class TestLiveMopMatcherProtocol:

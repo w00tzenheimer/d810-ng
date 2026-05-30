@@ -46,7 +46,7 @@ from d810.optimizers.microcode.handler import ConfigParam
 
 logger = getLogger(__name__)
 
-from d810.cfg.lattice import (
+from d810.ir.lattice import (
     BOTTOM,
     TOP,
     Const,

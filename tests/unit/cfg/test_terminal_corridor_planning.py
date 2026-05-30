@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.flow.terminal_frontier import TerminalLoweringAction
-from d810.cfg.terminal_corridor_planning import (
+from d810.analyses.control_flow.terminal_frontier import TerminalLoweringAction
+from d810.transforms.terminal_corridor_planning import (
     CarrierBucket,
     compute_suffix_group_decision,
     select_direct_terminal_lowering_anchors,

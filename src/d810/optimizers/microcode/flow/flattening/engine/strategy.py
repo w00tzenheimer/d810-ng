@@ -26,7 +26,7 @@ from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
 
 if TYPE_CHECKING:
     from d810.cfg.flowgraph import FlowGraph
-    from d810.cfg.graph_modification import GraphModification
+    from d810.transforms.graph_modification import GraphModification
 
 __all__ = [
     "FAMILY_CLEANUP",
@@ -243,7 +243,7 @@ class VerificationGate:
 def __getattr__(name: str):
     if name == "SemanticGate":
         try:
-            from d810.cfg.flow.graph_checks import SemanticGate
+            from d810.analyses.control_flow.graph_checks import SemanticGate
         except ModuleNotFoundError as exc:
             if exc.name and exc.name.startswith("ida_"):
                 raise AttributeError(

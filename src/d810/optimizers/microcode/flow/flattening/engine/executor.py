@@ -23,30 +23,30 @@ from collections import Counter
 
 import ida_hexrays
 
-from d810.cfg.contracts.transaction_engine import CfgTransactionEngine
+from d810.passes.transaction_engine import CfgTransactionEngine
 from d810.hexrays.contracts import IDACfgContract
-from d810.cfg.block_identity import (
+from d810.ir.block_identity import (
     block_fingerprint,
     block_label,
     flow_graph_context_label,
 )
-from d810.cfg.flow.edit_simulator import (
+from d810.transforms.edit_simulator import (
     SimulatedEdit,
     graph_modifications_to_simulated_edits,
     patch_plan_to_simulated_edits,
     simulate_edits,
 )
-from d810.cfg.flow.graph_checks import (
+from d810.analyses.control_flow.graph_checks import (
     SemanticGate,
     check_edge_split_structural_legality,
     detect_terminal_cycles,
     prove_terminal_sink,
 )
 from d810.cfg.flowgraph import FlowGraph
-from d810.cfg.loop_bound_writer_guard import (
+from d810.transforms.loop_bound_writer_guard import (
     detect_loop_counter_writeback_tail,
 )
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     CloneConditionalAsGoto,
     CloneConditionalAsGotoFromBranchArm,
     ConvertToGoto,
@@ -58,7 +58,7 @@ from d810.cfg.graph_modification import (
     RedirectBranch,
     RedirectGoto,
 )
-from d810.cfg.plan import (
+from d810.transforms.plan import (
     ExecutionPolicy,
     PatchConvertToGoto,
     PatchEdgeSplitTrampoline,
@@ -114,7 +114,7 @@ from d810.hexrays.observability import mba_to_block_snapshots as _mba_to_block_s
 
 def _preflight_priority(mod: GraphModification) -> int:
     """Mirror DeferredGraphModifier apply priority for topology simulation."""
-    from d810.cfg.graph_modification import (
+    from d810.transforms.graph_modification import (
         CloneConditionalAsGoto,
         CloneConditionalAsGotoFromBranchArm,
         ConvertToGoto,
@@ -782,7 +782,7 @@ class TransactionalExecutor:
         if not patch_plan.new_blocks:
             return
         try:
-            from d810.cfg.block_lineage import buffer_patch_plan_block_lineage
+            from d810.transforms.block_lineage import buffer_patch_plan_block_lineage
             buffer_patch_plan_block_lineage(patch_plan, pre_cfg, post_cfg)
         except Exception:
             executor_logger.debug(
@@ -790,7 +790,7 @@ class TransactionalExecutor:
                 exc_info=True,
             )
         try:
-            from d810.cfg.observability import observe_cfg_provenance as log_cfg_provenance
+            from d810.core.observability_cfg import observe_cfg_provenance as log_cfg_provenance
         except Exception:
             log_cfg_provenance = None
 

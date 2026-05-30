@@ -12,7 +12,7 @@ rewrite that still removes the dispatcher handoff:
 """
 from __future__ import annotations
 
-from d810.cfg.state_edge_pair import state_edge_pair
+from d810.ir.state_edge_pair import state_edge_pair
 
 from collections import Counter, defaultdict
 from dataclasses import replace
@@ -22,19 +22,19 @@ import ida_hexrays
 
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.cfg.reconstruction_emission import (
+from d810.transforms.reconstruction_emission import (
     apply_shared_group_reachability_fallback,
     execute_primary_reconstruction_modifications,
     execute_shared_group_reconstruction,
 )
-from d810.cfg.reconstruction_postprocess_emission import (
+from d810.transforms.reconstruction_postprocess_emission import (
     execute_reconstruction_postprocess,
 )
-from d810.cfg.reconstruction_modification_planning import (
+from d810.transforms.reconstruction_modification_planning import (
     plan_direct_reconstruction_modifications,
     plan_passthrough_reconstruction_modifications,
 )
-from d810.cfg.reconstruction_recording import RoundAcceptLedger
+from d810.transforms.reconstruction_recording import RoundAcceptLedger
 from d810.hexrays.mutation.ir_translator import (
     classify_live_insn_kind,
     classify_live_operand_kind,
@@ -52,12 +52,12 @@ from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend i
     ConstantFixpointBackend,
     DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
 )
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
 )
-from d810.cfg.mod_claims import collect_mod_claims
-from d810.cfg.modification_builder import (
+from d810.transforms.mod_claims import collect_mod_claims
+from d810.transforms.modification_builder import (
     ModificationBuilder,
 )
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
@@ -115,7 +115,7 @@ from d810.analyses.control_flow.terminal_family_collection import (
 )
 from functools import partial as _partial
 
-from d810.cfg.reconstruction_planning import plan_reconstruction_candidate
+from d810.transforms.reconstruction_planning import plan_reconstruction_candidate
 from d810.analyses.control_flow.reconstruction_candidate_builder import (
     ReconstructionCandidate,
     build_reconstruction_candidate as _build_reconstruction_candidate,
@@ -146,17 +146,17 @@ from d810.analyses.control_flow.narrow_branch_local_discovery import (
 from d810.analyses.control_flow.frontier_override_discovery import (
     discover_frontier_overrides,
 )
-from d810.cfg.frontier_override_emission import emit_frontier_overrides
+from d810.transforms.frontier_override_emission import emit_frontier_overrides
 from d810.analyses.control_flow.missing_via_pred_discovery import (
     discover_missing_via_pred_direct_overrides,
 )
-from d810.cfg.reconstruction_missing_via_pred_emission import (
+from d810.transforms.reconstruction_missing_via_pred_emission import (
     emit_missing_via_pred_direct_overrides,
 )
 from d810.analyses.control_flow.force_edge_override_discovery import (
     discover_force_edge_overrides,
 )
-from d810.cfg.reconstruction_force_edge_override_emission import (
+from d810.transforms.reconstruction_force_edge_override_emission import (
     execute_force_edge_override,
 )
 from d810.analyses.control_flow.structured_region_fidelity_report import (

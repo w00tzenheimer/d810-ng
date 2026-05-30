@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.cfg.semantic_region_entry import (
+from d810.transforms.semantic_region_entry import (
     EntryEligibility,
     resolve_semantic_entry_candidate,
 )

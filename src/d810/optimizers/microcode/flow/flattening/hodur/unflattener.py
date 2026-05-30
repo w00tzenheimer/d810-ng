@@ -72,7 +72,7 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
 from d810.optimizers.microcode.flow.flattening.engine.state_machine_runtime import (
     run_state_machine_family_pass,
 )
-from d810.cfg.flow.graph_checks import SemanticGate
+from d810.analyses.control_flow.graph_checks import SemanticGate
 from d810.optimizers.microcode.flow.flattening.hodur.return_sites import (
     HodurReturnSiteProvider,
 )

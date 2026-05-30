@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.fix_predecessor_planning import (
+from d810.transforms.fix_predecessor_planning import (
     FixPredecessorOutcome,
     FixPredecessorRejectReason,
     plan_fix_predecessor_clone_as_goto,
 )
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
-from d810.cfg.graph_modification import CloneConditionalAsGoto
+from d810.transforms.graph_modification import CloneConditionalAsGoto
 
 
 class _BlockRef:

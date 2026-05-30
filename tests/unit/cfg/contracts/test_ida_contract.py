@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.flow import edit_simulator
+from d810.transforms import edit_simulator
 from d810.cfg.contracts.contract import (
     CfgContract,
     CfgContractViolationError,
 )
 from d810.cfg.contracts.report import InvariantViolation
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.plan import PatchPlan
+from d810.transforms.plan import PatchPlan
 
 
 def test_verify_returns_empty_tuple_when_no_violations(monkeypatch: pytest.MonkeyPatch):

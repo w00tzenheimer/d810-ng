@@ -1,7 +1,7 @@
 """Tests for read-only terminal-tail cascade egress planning."""
 from __future__ import annotations
 
-from d810.cfg.terminal_tail_cascade_egress_planner import (
+from d810.transforms.terminal_tail_cascade_egress_planner import (
     AMBIGUOUS_STATE_UPDATE,
     NEEDS_STATE_WRITE,
     SAFE_STATE_ALREADY_SET,

@@ -1,7 +1,7 @@
 """Tests for the dispatcher-aware back-edge classifier."""
 from __future__ import annotations
 
-from d810.cfg.dispatcher_aware_classifier import (
+from d810.analyses.control_flow.dispatcher_aware_classifier import (
     DispatcherAwareClassification,
     DispatcherAwareEdgeClass,
     DispatcherAwareSummary,

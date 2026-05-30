@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.cfg.residual_dispatcher_attempt_building import (
+from d810.transforms.residual_dispatcher_attempt_building import (
     ResidualGotoAttemptBuildContext,
     ResidualPredSplitAttemptBuildContext,
     ResidualPrefixAttemptBuildContext,

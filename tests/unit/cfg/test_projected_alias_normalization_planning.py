@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.graph_modification import RedirectGoto
-from d810.cfg.projected_alias_normalization_planning import (
+from d810.transforms.graph_modification import RedirectGoto
+from d810.transforms.projected_alias_normalization_planning import (
     ProjectedAliasNormalizationAction,
     apply_projected_alias_normalization_actions,
     collect_projected_alias_normalization_actions,

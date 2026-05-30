@@ -7,7 +7,7 @@ import pytest
 
 from d810.core.typing import Any
 
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     ConvertToGoto,
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
@@ -16,7 +16,7 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
 )
 from d810.cfg.flowgraph import InsnSnapshot
-from d810.cfg.materialization_payload import (
+from d810.transforms.materialization_payload import (
     CapturedBlockBody,
     CapturedBlockBodySummary,
 )

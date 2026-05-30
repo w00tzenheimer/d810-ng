@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from d810.cfg.graph_modification import GraphModification, RedirectBranch, RedirectGoto
-from d810.cfg.selector_shell_planning import plan_selector_shell_cleanup
+from d810.transforms.graph_modification import GraphModification, RedirectBranch, RedirectGoto
+from d810.transforms.selector_shell_planning import plan_selector_shell_cleanup
 from d810.core.typing import TYPE_CHECKING
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_CLEANUP,

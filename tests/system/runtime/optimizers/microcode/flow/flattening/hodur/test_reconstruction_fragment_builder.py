@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     ConvertToGoto,
     RedirectGoto,
     ZeroStateWrite,

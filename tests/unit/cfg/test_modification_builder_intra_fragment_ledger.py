@@ -20,16 +20,16 @@ import re
 
 import pytest
 
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     ConvertToGoto,
     EdgeRedirectViaPredSplit,
     RedirectBranch,
     RedirectGoto,
 )
-from d810.cfg.modification_builder import ModificationBuilder
+from d810.transforms.modification_builder import ModificationBuilder
 
 
-MODULE_LOGGER_NAME = "d810.cfg.modification_builder"
+MODULE_LOGGER_NAME = "d810.transforms.modification_builder"
 
 
 def _make_builder(

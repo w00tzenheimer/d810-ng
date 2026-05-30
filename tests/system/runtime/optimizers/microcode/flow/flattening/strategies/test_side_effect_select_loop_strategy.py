@@ -13,7 +13,7 @@ from d810.cfg.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.cfg.graph_modification import DuplicateBlock, RedirectGoto
+from d810.transforms.graph_modification import DuplicateBlock, RedirectGoto
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
 )

@@ -26,7 +26,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from enum import Enum
 
-from d810.cfg.scc import compute_live_cfg_sccs, nontrivial_sccs
+from d810.analyses.control_flow.scc import compute_live_cfg_sccs, nontrivial_sccs
 from d810.core.logging import getLogger
 from d810.core.typing import Iterable, Mapping
 

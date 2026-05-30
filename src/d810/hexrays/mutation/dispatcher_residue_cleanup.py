@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import ida_hexrays
 
-from d810.cfg.dispatcher_residue_cleanup_planning import (
+from d810.transforms.dispatcher_residue_cleanup_planning import (
     DispatcherResidueCleanupPlan,
     UnreachableRegionCleanupPlan,
 )
@@ -40,7 +40,7 @@ def _observe_cfg(
     extra: dict | None = None,
 ) -> None:
     try:
-        from d810.cfg.observability import observe_cfg_provenance
+        from d810.core.observability_cfg import observe_cfg_provenance
 
         observe_cfg_provenance(
             pass_name=pass_name,

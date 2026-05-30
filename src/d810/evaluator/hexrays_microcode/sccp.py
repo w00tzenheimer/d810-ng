@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 
-from d810.cfg.lattice import BOTTOM, TOP, Const, LatticeValue, lattice_meet
+from d810.ir.lattice import BOTTOM, TOP, Const, LatticeValue, lattice_meet
 from d810.core.logging import getLogger
 from d810.core.typing import Any
 

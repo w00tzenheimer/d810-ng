@@ -12,12 +12,12 @@ import pytest
 
 from d810.core.typing import Any
 
-from d810.cfg.transform.byte_emit_live_use_anchor import (
+from d810.transforms.byte_emit_live_use_anchor import (
     ByteEmitAnchorReport,
     execute_split_xor_anchor,
     parse_byte_anchor_env,
 )
-from d810.cfg.transform.byte_emit_tail_isolation import BlockView
+from d810.transforms.byte_emit_tail_isolation import BlockView
 
 
 class _AnchorInsertFailure(RuntimeError):

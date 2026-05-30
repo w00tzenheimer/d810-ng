@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.state_var_cleanup import (
+from d810.transforms.state_var_cleanup import (
     collect_state_constants,
     is_known_state_constant,
 )

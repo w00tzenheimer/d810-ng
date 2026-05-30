@@ -217,7 +217,7 @@ def change_1way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial:
     previous_blk_successor_serial = blk.succset[0]
     previous_blk_successor = mba.get_mblock(previous_blk_successor_serial)
     try:
-        from d810.cfg.observability import observe_cfg_provenance
+        from d810.core.observability_cfg import observe_cfg_provenance
         observe_cfg_provenance(
             pass_name="cfg_mutations",
             action="REDIRECT_EDGE",
@@ -348,7 +348,7 @@ def change_2way_block_conditional_successor(
             blk.serial, old_target, previous_blk_conditional_successor_serial,
         )
     try:
-        from d810.cfg.observability import observe_cfg_provenance
+        from d810.core.observability_cfg import observe_cfg_provenance
         observe_cfg_provenance(
             pass_name="cfg_mutations",
             action="REDIRECT_EDGE",
@@ -427,7 +427,7 @@ def make_2way_block_goto(blk: ida_hexrays.mblock_t, blk_successor_serial: int, v
     mba = blk.mba
     previous_blk_successor_serials = [x for x in blk.succset]
     try:
-        from d810.cfg.observability import observe_cfg_provenance
+        from d810.core.observability_cfg import observe_cfg_provenance
         observe_cfg_provenance(
             pass_name="cfg_mutations",
             action="REDIRECT_EDGE",
@@ -554,7 +554,7 @@ def create_standalone_block(
     # ``optimize_global``'s structural sweep doesn't cull it.
     new_blk = copy_block_keep(mba, ref_blk, mba.qty - 1)
     try:
-        from d810.cfg.observability import observe_cfg_provenance
+        from d810.core.observability_cfg import observe_cfg_provenance
         observe_cfg_provenance(
             pass_name="cfg_mutations",
             action="CREATE",
@@ -1035,7 +1035,7 @@ def insert_nop_blk(blk: ida_hexrays.mblock_t) -> ida_hexrays.mblock_t:
         # block) to avoid serial shifts for generic rewrites.
         nop_block = copy_block_keep(mba, blk, mba.qty - 1)
     try:
-        from d810.cfg.observability import observe_cfg_provenance
+        from d810.core.observability_cfg import observe_cfg_provenance
         observe_cfg_provenance(
             pass_name="cfg_mutations",
             action="CREATE",
@@ -1393,7 +1393,7 @@ def mba_remove_simple_goto_blocks(mba: ida_hexrays.mbl_array_t, verify: bool = T
                     father_blk, goto_blk_serial, goto_blk_dst_serial, verify=verify
                 )
                 try:
-                    from d810.cfg.observability import observe_cfg_provenance
+                    from d810.core.observability_cfg import observe_cfg_provenance
                     observe_cfg_provenance(
                         pass_name="remove_simple_goto",
                         action="REDIRECT_EDGE",
@@ -1440,7 +1440,7 @@ def mba_deep_cleaning(mba: ida_hexrays.mba_t, call_mba_combine_block=True) -> in
     # qty delta, plus emit per-serial DELETE rows for any pre-serials that
     # are now out-of-range (qty shrunk).
     try:
-        from d810.cfg.observability import observe_cfg_provenance
+        from d810.core.observability_cfg import observe_cfg_provenance
         observe_cfg_provenance(
             pass_name="mba_deep_cleaning",
             action="BULK_DEEP_CLEAN",

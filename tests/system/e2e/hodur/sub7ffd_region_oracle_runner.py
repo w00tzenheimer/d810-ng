@@ -17,8 +17,8 @@ from tests.system.e2e.hodur.sub7ffd_region_oracle import (
     ref_features,
     spec_for,
 )
-from d810.cfg.scc import compute_live_cfg_sccs, nontrivial_sccs
-from d810.cfg.terminal_tail_dce_diagnosis import (
+from d810.analyses.control_flow.scc import compute_live_cfg_sccs, nontrivial_sccs
+from d810.transforms.terminal_tail_dce_diagnosis import (
     ByteEmitSnapshotEvidence,
     classify_all,
     format_dce_table,

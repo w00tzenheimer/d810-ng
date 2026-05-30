@@ -4,12 +4,12 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
-from d810.cfg.flow.conditional_alias import (
+from d810.analyses.control_flow.conditional_alias import (
     analyze_duplicate_alias_conditional_sites,
 )
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
-from d810.cfg.graph_modification import NopInstructions
-from d810.cfg.modification_builder import ModificationBuilder
+from d810.transforms.graph_modification import NopInstructions
+from d810.transforms.modification_builder import ModificationBuilder
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_alias import (
     ExactConditionalAliasNodeLoweringStrategy,
 )

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.postdominator import (
+from d810.analyses.control_flow.postdominator import (
     PostdomTree,
     compute_postdom_tree,
     is_postdominated_by_any_exit,

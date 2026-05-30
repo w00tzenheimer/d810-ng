@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.graph_modification import ZeroStateWrite
-from d810.cfg.reconstruction_emission import _collect_zero_state_write_modifications
-from d810.cfg.reconstruction_emission_planning import plan_reconstruction_emission
+from d810.transforms.graph_modification import ZeroStateWrite
+from d810.transforms.reconstruction_emission import _collect_zero_state_write_modifications
+from d810.transforms.reconstruction_emission_planning import plan_reconstruction_emission
 
 
 class _DummyBlock:

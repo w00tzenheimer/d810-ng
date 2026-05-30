@@ -3,8 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.graph_modification import EdgeRedirectViaPredSplit, RedirectGoto
-from d810.cfg.modification_builder import ModificationBuilder
+from d810.transforms.graph_modification import EdgeRedirectViaPredSplit, RedirectGoto
+from d810.transforms.modification_builder import ModificationBuilder
 from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     semantic_exact_node as semantic_module,
 )

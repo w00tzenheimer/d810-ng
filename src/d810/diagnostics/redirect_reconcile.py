@@ -13,9 +13,9 @@ script):
 * ``STRATEGY_ONLY_STATE_NOT_IN_BST``
 * ``BOTH_NONE``
 
-The actual classification logic lives in :mod:`d810.cfg.redirect_reconciliation`
-+ :mod:`d810.cfg.dispatcher_aware_classifier` +
-:mod:`d810.cfg.forward_target_resolver`. This module is the thin SQL +
+The actual classification logic lives in :mod:`d810.analyses.control_flow.redirect_reconciliation`
++ :mod:`d810.analyses.control_flow.dispatcher_aware_classifier` +
+:mod:`d810.analyses.control_flow.forward_target_resolver`. This module is the thin SQL +
 log-parsing layer that feeds those helpers.
 """
 from __future__ import annotations
@@ -25,18 +25,18 @@ import sqlite3
 from dataclasses import replace as _dc_replace
 from pathlib import Path
 
-from d810.cfg.dispatcher_aware_classifier import (
+from d810.analyses.control_flow.dispatcher_aware_classifier import (
     DispatcherContext,
     classify_backedges_dispatcher_aware,
 )
-from d810.cfg.forward_target_resolver import resolve_forward_target
-from d810.cfg.redirect_reconciliation import (
+from d810.analyses.control_flow.forward_target_resolver import resolve_forward_target
+from d810.analyses.control_flow.redirect_reconciliation import (
     format_summary,
     parse_log_signals,
     parse_logged_intent,
     reconcile_edges,
 )
-from d810.cfg.scc import compute_live_cfg_sccs, nontrivial_sccs
+from d810.analyses.control_flow.scc import compute_live_cfg_sccs, nontrivial_sccs
 
 
 # ---------------------------------------------------------------------------

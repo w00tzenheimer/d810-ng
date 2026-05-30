@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.lowering_scope import (
+from d810.transforms.lowering_scope import (
     LoweringScope,
     derive_edge_predecessor,
     requires_pred_scoped_lowering,

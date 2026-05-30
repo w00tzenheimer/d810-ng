@@ -26,7 +26,7 @@ from d810.hexrays.contracts.invariants import (
     pred_succ_symmetry,
     successor_set_matches_tail_semantics,
 )
-from d810.cfg.plan import PatchPlan
+from d810.transforms.plan import PatchPlan
 from d810.cfg.contracts.report import InvariantViolation
 
 ContractScope = Literal["focused", "full"]
@@ -190,7 +190,7 @@ class IDACfgContract:
         when any invariant is violated.
 
         Projected-state construction is delegated to
-        :func:`d810.cfg.flow.edit_simulator.project_post_state` (called
+        :func:`d810.transforms.edit_simulator.project_post_state` (called
         internally by :meth:`check_projected`).
         """
         violations = tuple(self.check_projected(pre_cfg, plan, scope=scope))

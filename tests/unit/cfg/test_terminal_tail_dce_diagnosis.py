@@ -1,7 +1,7 @@
 """Tests for terminal-tail DCE cause diagnosis."""
 from __future__ import annotations
 
-from d810.cfg.terminal_tail_dce_diagnosis import (
+from d810.transforms.terminal_tail_dce_diagnosis import (
     ByteEmitDceClassification,
     ByteEmitSnapshotEvidence,
     DceCause,

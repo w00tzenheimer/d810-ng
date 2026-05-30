@@ -4,7 +4,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     DirectTerminalLoweringGroup,
     DirectTerminalLoweringKind,
     DirectTerminalLoweringSite,

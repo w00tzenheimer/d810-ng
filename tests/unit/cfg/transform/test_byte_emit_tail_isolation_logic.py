@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from d810.cfg.transform.byte_emit_tail_isolation import (
+from d810.transforms.byte_emit_tail_isolation import (
     BlockView,
     FactRow,
     FactView,
@@ -238,7 +238,7 @@ def test_isolate_malformed_ea_returns_no_op():
 
 
 def test_parse_tail_distinct_byte_env_unset_returns_none():
-    from d810.cfg.transform.byte_emit_tail_isolation import (
+    from d810.transforms.byte_emit_tail_isolation import (
         parse_tail_distinct_byte_env,
     )
     assert parse_tail_distinct_byte_env(None) is None
@@ -246,7 +246,7 @@ def test_parse_tail_distinct_byte_env_unset_returns_none():
 
 
 def test_parse_tail_distinct_byte_env_non_integer_returns_none():
-    from d810.cfg.transform.byte_emit_tail_isolation import (
+    from d810.transforms.byte_emit_tail_isolation import (
         parse_tail_distinct_byte_env,
     )
     assert parse_tail_distinct_byte_env("xyz") is None
@@ -254,7 +254,7 @@ def test_parse_tail_distinct_byte_env_non_integer_returns_none():
 
 
 def test_parse_tail_distinct_byte_env_out_of_range_returns_none():
-    from d810.cfg.transform.byte_emit_tail_isolation import (
+    from d810.transforms.byte_emit_tail_isolation import (
         parse_tail_distinct_byte_env,
     )
     assert parse_tail_distinct_byte_env("-1") is None
@@ -263,7 +263,7 @@ def test_parse_tail_distinct_byte_env_out_of_range_returns_none():
 
 
 def test_parse_tail_distinct_byte_env_valid_returns_int():
-    from d810.cfg.transform.byte_emit_tail_isolation import (
+    from d810.transforms.byte_emit_tail_isolation import (
         parse_tail_distinct_byte_env,
     )
     for k in range(7):
@@ -271,7 +271,7 @@ def test_parse_tail_distinct_byte_env_valid_returns_int():
 
 
 def test_parse_tail_distinct_byte_env_strips_whitespace():
-    from d810.cfg.transform.byte_emit_tail_isolation import (
+    from d810.transforms.byte_emit_tail_isolation import (
         parse_tail_distinct_byte_env,
     )
     assert parse_tail_distinct_byte_env("  2  ") == 2
@@ -280,7 +280,7 @@ def test_parse_tail_distinct_byte_env_strips_whitespace():
 # ----- duplicate_convergence_for_byte_path orchestrator -----
 
 
-from d810.cfg.transform.byte_emit_tail_isolation import (
+from d810.transforms.byte_emit_tail_isolation import (
     duplicate_convergence_for_byte_path,
 )
 
@@ -404,7 +404,7 @@ def test_duplicate_convergence_rejects_no_return_reachable():
 
 
 def test_parse_tail_duplicate_convergence_byte_env_only_accepts_6():
-    from d810.cfg.transform.byte_emit_tail_isolation import (
+    from d810.transforms.byte_emit_tail_isolation import (
         parse_tail_duplicate_convergence_byte_env,
     )
     assert parse_tail_duplicate_convergence_byte_env("6") == 6
@@ -418,7 +418,7 @@ def test_parse_tail_duplicate_convergence_byte_env_only_accepts_6():
 # ----- parse_state_cascade_pair_env -----
 
 
-from d810.cfg.transform.byte_emit_tail_isolation import (
+from d810.transforms.byte_emit_tail_isolation import (
     StateCascadeReport,
     execute_state_cascade,
     execute_terminal_tail_cascade_egress_lowering,

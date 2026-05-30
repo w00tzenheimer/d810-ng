@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.dispatcher_residue_cleanup_planning import (
+from d810.transforms.dispatcher_residue_cleanup_planning import (
     plan_dispatcher_residue_cleanup,
     plan_unreachable_region_cleanup,
 )

@@ -9,7 +9,7 @@ since E3-rewire; the legacy live-IDA ``_get_mop_key`` /
 from __future__ import annotations
 
 from d810.cfg.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
-from d810.cfg.mop_identity import (
+from d810.ir.mop_identity import (
     cfg_operand_slots,
     mop_snapshot_key,
     mop_snapshot_offset,

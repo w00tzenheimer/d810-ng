@@ -3,14 +3,14 @@ from __future__ import annotations
 
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.cfg.residual_target_resolution import (
+from d810.transforms.residual_target_resolution import (
     collect_owned_exact_sources,
     collect_supported_exact_entries,
     is_structured_conditional_path_feeder,
     is_supplemental_feeder_bypass,
     resolve_frontier_target_entry,
 )
-from d810.cfg.semantic_conditional_lowering import (
+from d810.transforms.semantic_conditional_lowering import (
     collect_exact_conditional_alias_sites,
     is_straight_line_handoff,
 )

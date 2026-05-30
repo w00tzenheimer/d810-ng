@@ -9,15 +9,15 @@ from __future__ import annotations
 from d810.core import logging
 from d810.transforms.lowering import LoweringMode
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.cfg.flow.sese_hammock import (
+from d810.analyses.control_flow.sese_hammock import (
     ExactConditionalNodeShape,
     conditional_distance_to_return as _conditional_distance_to_return,
     compute_postdominator_tree as _compute_postdominator_tree,
 )
-from d810.cfg.reconstruction_modification_planning import (
+from d810.transforms.reconstruction_modification_planning import (
     plan_direct_reconstruction_modifications,
 )
-from d810.cfg.semantic_conditional_lowering import (
+from d810.transforms.semantic_conditional_lowering import (
     ConditionalExactNodeSite,
     ExactConditionalSiteInventory,
     analyze_exact_conditional_sites,

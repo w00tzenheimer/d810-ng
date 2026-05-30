@@ -3647,7 +3647,7 @@ class DeferredGraphModifier:
             if not watch_blocks:
                 return
             try:
-                from d810.cfg.observability import observe_watch_block_transition
+                from d810.core.observability_cfg import observe_watch_block_transition
                 prev_type = prev[0] if prev is not None else None
                 prev_succs = prev[1] if prev is not None else None
                 prev_preds = prev[2] if prev is not None else None
@@ -8617,7 +8617,7 @@ class DeferredGraphModifier:
         5. Redirect anchors
         6. (skipped — no STOP relocation needed)
         """
-        from d810.cfg.graph_modification import (
+        from d810.transforms.graph_modification import (
             DirectTerminalLoweringKind,
             DirectTerminalLoweringSite,
         )

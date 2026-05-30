@@ -8,9 +8,9 @@ TODO:
 """
 from __future__ import annotations
 
-from d810.cfg.graph_modification import GraphModification
+from d810.transforms.graph_modification import GraphModification
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.plan import LoweringInput, PatchPlan, ensure_patch_plan
+from d810.transforms.plan import LoweringInput, PatchPlan, ensure_patch_plan
 
 
 class InMemoryBackend:

@@ -4,11 +4,11 @@ from __future__ import annotations
 import ida_hexrays
 
 from d810.core import logging
-from d810.cfg.dispatcher_residue_cleanup_planning import (
+from d810.transforms.dispatcher_residue_cleanup_planning import (
     plan_dispatcher_residue_cleanup,
     plan_unreachable_region_cleanup,
 )
-from d810.cfg.mbl_keep_selection import (
+from d810.transforms.mbl_keep_selection import (
     TerminalByteKeepTarget,
     select_terminal_byte_keep_targets,
 )

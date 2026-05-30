@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.mod_claims import collect_mod_claims
+from d810.transforms.mod_claims import collect_mod_claims
 
 
 class TestCollectModClaims:

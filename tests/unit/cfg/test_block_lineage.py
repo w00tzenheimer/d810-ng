@@ -4,13 +4,13 @@ from __future__ import annotations
 import json
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     CreateConditionalRedirect,
     EdgeRedirectViaPredSplit,
     InsertBlock,
 )
-from d810.cfg.plan import compile_patch_plan
-from d810.cfg.block_lineage import (
+from d810.transforms.plan import compile_patch_plan
+from d810.transforms.block_lineage import (
     build_patch_plan_block_lineage,
     buffer_patch_plan_block_lineage,
     drain_pending_block_lineage,

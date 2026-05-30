@@ -1,8 +1,8 @@
-from d810.cfg.dispatcher_rewrite_planning import (
+from d810.transforms.dispatcher_rewrite_planning import (
     DispatcherPredecessorRewriteInput,
     plan_dispatcher_predecessor_rewrite,
 )
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
     InsertBlock,

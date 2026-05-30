@@ -6,19 +6,19 @@ from dataclasses import dataclass
 import ida_hexrays
 
 from d810.cfg.flowgraph import InsnSnapshot
-from d810.cfg.materialization_payload import (
+from d810.transforms.materialization_payload import (
     CapturedBlockBody,
     CapturedBlockBodySummary,
 )
-from d810.cfg.semantic_region_materialization import (
+from d810.transforms.semantic_region_materialization import (
     InstructionCaptureFacts,
     decide_instruction_capture,
 )
-from d810.cfg.state_write_cleanup import (
+from d810.transforms.state_write_cleanup import (
     StateWriteCleanupAction,
     StateWriteCleanupRequest,
 )
-from d810.cfg.state_write_evidence import StateConstantWriteEvidence
+from d810.analyses.control_flow.state_write_evidence import StateConstantWriteEvidence
 from d810.core.logging import getLogger
 from d810.core.typing import Protocol
 from d810.evaluator.hexrays_microcode.chains import find_reaching_defs_for_stkvar

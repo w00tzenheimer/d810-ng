@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.cfg.shared_corridor import (
+from d810.analyses.control_flow.shared_corridor import (
     first_boundary_index,
     first_shared_block_index,
     is_backward_same_corridor_target,

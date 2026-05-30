@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.contracts.transaction_policy import (
+from d810.passes.transaction_policy import (
     TRANSACTION_PHASES,
     FailureClassification,
     classify_failure,

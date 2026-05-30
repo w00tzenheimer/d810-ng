@@ -2,7 +2,7 @@
 
 These tests cover the pure-Python pieces of the severance detector
 (post-mod adjacency construction and the dominance check it relies on
-via :func:`d810.cfg.dominator.compute_dom_tree`).  Full integration of
+via :func:`d810.analyses.control_flow.dominator.compute_dom_tree`).  Full integration of
 :func:`check_redirect_severs_use_def` requires an IDA ``mba_t`` and is
 covered in system/runtime tests.
 """
@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.dominator import compute_dom_tree
+from d810.analyses.control_flow.dominator import compute_dom_tree
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
+from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
 
 
 def _make_cfg(

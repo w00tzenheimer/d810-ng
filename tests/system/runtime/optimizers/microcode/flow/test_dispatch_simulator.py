@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.flow.compare_chain import (
+from d810.analyses.control_flow.compare_chain import (
     CompareEntry,
     DispatchTable,
 )
-from d810.cfg.flow.dispatch_simulator import (
+from d810.transforms.dispatch_simulator import (
     CaseTransition,
     DispatchSimulator,
     TransitionGraph,

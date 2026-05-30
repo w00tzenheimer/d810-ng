@@ -1,7 +1,7 @@
 """Tests for terminal-tail loss localizer."""
 from __future__ import annotations
 
-from d810.cfg.terminal_tail_loss_localizer import (
+from d810.transforms.terminal_tail_loss_localizer import (
     ByteEmitInitialState,
     ByteEmitSurvival,
     LossLocalizationReport,

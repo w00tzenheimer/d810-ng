@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
-from d810.cfg.reconstruction_return_planning import (
+from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
+from d810.transforms.reconstruction_return_planning import (
     plan_reconstruction_return_modifications,
 )
 

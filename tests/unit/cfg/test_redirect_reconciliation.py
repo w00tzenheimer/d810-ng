@@ -1,7 +1,7 @@
 """Tests for the redirect reconciliation algorithm."""
 from __future__ import annotations
 
-from d810.cfg.redirect_reconciliation import (
+from d810.analyses.control_flow.redirect_reconciliation import (
     EdgeReconciliation,
     ReconciliationBucket,
     StrategyLogSignals,

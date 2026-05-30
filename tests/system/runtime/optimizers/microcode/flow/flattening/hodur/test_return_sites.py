@@ -11,7 +11,7 @@ from d810.core.typing import Optional, Tuple
 
 import pytest
 
-from d810.cfg.flow.return_frontier import ReturnSite
+from d810.analyses.control_flow.return_frontier import ReturnSite
 from d810.optimizers.microcode.flow.flattening.hodur.return_sites import (
     HodurReturnSiteProvider,
 )

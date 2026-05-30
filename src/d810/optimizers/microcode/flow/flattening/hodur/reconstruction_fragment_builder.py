@@ -53,13 +53,13 @@ once the criterion is met.
 from __future__ import annotations
 
 from d810.core import logging
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     ConvertToGoto,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
     RedirectGoto,
 )
-from d810.cfg.plan import is_block_creating_modification
+from d810.transforms.plan import is_block_creating_modification
 from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
     PLANNER_CTX_METADATA_KEY,
     CumulativePlannerView,
