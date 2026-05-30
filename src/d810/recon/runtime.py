@@ -18,9 +18,15 @@ import json
 from dataclasses import dataclass
 
 from d810.core.logging import getLogger
+from d810.core.observability import emit as _emit
+from d810.core.observability_events import (
+    FactConflictsObserved,
+    FactMappingsObserved,
+    FactObservationsObserved,
+)
 from d810.core.provider_phase import ProviderPhase
 from d810.recon.store import get_recon_writer
-from d810.core.typing import TYPE_CHECKING, Any
+from d810.core.typing import TYPE_CHECKING, Any, Protocol
 
 from d810.recon.analysis import AnalysisPhase
 from d810.recon.models import DeobfuscationHints
@@ -53,6 +59,70 @@ if TYPE_CHECKING:
     from d810.recon.flow_hints import FlowContextHintSummary
 
 logger = getLogger("D810.recon.runtime")
+
+
+class FactObservationSink(Protocol):
+    """Diagnostic sink for maturity-fact observations.
+
+    The runtime coordinator emits collected facts through this seam instead
+    of importing a diagnostics-layer wrapper directly. The default
+    implementation (:class:`_CoreObservabilitySink`) publishes the events on
+    the core observability bus (a DOWN dependency); a backend subscriber
+    listens. Injecting the sink keeps the coordinator (a passes-layer module)
+    free of any upward dependency on the diagnostics layer.
+    """
+
+    def observe_fact_observation(
+        self, snapshot: "SnapshotRef", func_ea: int, observations: tuple
+    ) -> None: ...
+
+    def observe_fact_mapping(
+        self, snapshot: "SnapshotRef", func_ea: int, mappings: tuple
+    ) -> None: ...
+
+    def observe_fact_conflict(
+        self, snapshot: "SnapshotRef", func_ea: int, conflicts: tuple
+    ) -> None: ...
+
+
+class _CoreObservabilitySink:
+    """Default :class:`FactObservationSink` bound to the core event bus.
+
+    Behaviour-identical to the former ``d810.recon.observability``
+    ``observe_fact_*`` wrappers: each method publishes the corresponding
+    ``Fact*Observed`` event from :mod:`d810.core.observability_events` on the
+    :func:`d810.core.observability.emit` bus. Pure DOWN (passes -> core).
+    """
+
+    @staticmethod
+    def observe_fact_observation(
+        snapshot: "SnapshotRef", func_ea: int, observations: tuple
+    ) -> None:
+        _emit(FactObservationsObserved(
+            snapshot=snapshot,
+            func_ea=int(func_ea),
+            observations=tuple(observations),
+        ))
+
+    @staticmethod
+    def observe_fact_mapping(
+        snapshot: "SnapshotRef", func_ea: int, mappings: tuple
+    ) -> None:
+        _emit(FactMappingsObserved(
+            snapshot=snapshot,
+            func_ea=int(func_ea),
+            mappings=tuple(mappings),
+        ))
+
+    @staticmethod
+    def observe_fact_conflict(
+        snapshot: "SnapshotRef", func_ea: int, conflicts: tuple
+    ) -> None:
+        _emit(FactConflictsObserved(
+            snapshot=snapshot,
+            func_ea=int(func_ea),
+            conflicts=tuple(conflicts),
+        ))
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,10 +168,14 @@ class ReconAnalysisRuntime:
         phase: ReconPhase,
         analysis: AnalysisPhase,
         store: ReconStore,
+        fact_sink: FactObservationSink | None = None,
     ) -> None:
         self._phase = phase
         self._analysis = analysis
         self._store = store
+        # Injected diagnostic seam: defaults to the core observability bus so
+        # the coordinator never imports a diagnostics-layer wrapper.
+        self._fact_sink: FactObservationSink = fact_sink or _CoreObservabilitySink()
         self._current_func_ea: int = -1
         self._outcome_log: ReconOutcomeLog = ReconOutcomeLog()
         self._outcome_seen: set[tuple] = set()
@@ -375,18 +449,19 @@ class ReconAnalysisRuntime:
             )
             return 0
 
-    @staticmethod
     def _persist_maturity_facts(
+        self,
         snapshot: "SnapshotRef | None",
         func_ea: int,
         observations: tuple[FactObservation, ...],
         mappings: tuple[FactMapping, ...],
         conflicts: tuple[FactConflict, ...] = (),
     ) -> None:
-        """Persist collected maturity facts via the observability event bus.
+        """Persist collected maturity facts via the injected fact sink.
 
-        Emits typed observation events bound to ``snapshot``; the diag
-        subscriber (if installed) writes them under the corresponding
+        Emits typed observation events bound to ``snapshot`` through
+        :attr:`_fact_sink` (defaulting to the core observability bus); the
+        diag subscriber (if installed) writes them under the corresponding
         SQLite ``snapshot_id``. When ``snapshot`` is ``None`` (no
         capture in flight or diagnostics disabled), the facts go
         nowhere -- behaviour-identical to the legacy "diag_conn is
@@ -394,18 +469,13 @@ class ReconAnalysisRuntime:
         """
         if snapshot is None:
             return
-        from d810.recon.observability import (
-            observe_fact_conflict,
-            observe_fact_mapping,
-            observe_fact_observation,
-        )
 
         if observations:
-            observe_fact_observation(snapshot, func_ea, observations)
+            self._fact_sink.observe_fact_observation(snapshot, func_ea, observations)
         if mappings:
-            observe_fact_mapping(snapshot, func_ea, mappings)
+            self._fact_sink.observe_fact_mapping(snapshot, func_ea, mappings)
         if conflicts:
-            observe_fact_conflict(snapshot, func_ea, conflicts)
+            self._fact_sink.observe_fact_conflict(snapshot, func_ea, conflicts)
 
     def analyze_and_persist(self, func_ea: int) -> DeobfuscationHints | None:
         """Run analysis on current store contents and persist hints.
