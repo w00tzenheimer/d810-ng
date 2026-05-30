@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-from d810.cfg.flowgraph import MopSnapshot, OperandKind
+from d810.ir.flowgraph import MopSnapshot, OperandKind
 from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     DispatcherStateMachine,
     StateHandler,

@@ -250,7 +250,7 @@ from d810.hexrays.mutation.cfg_mutations import (
     remove_block_edge)
 from d810.hexrays.mutation.cfg_mutations import (
     _rewire_edge)
-from d810.cfg.flowgraph import FlowGraph, InsnSnapshot
+from d810.ir.flowgraph import FlowGraph, InsnSnapshot
 from d810.hexrays.mutation.insn_snapshot_materializer import (
     materialize_insn_snapshots,
 )

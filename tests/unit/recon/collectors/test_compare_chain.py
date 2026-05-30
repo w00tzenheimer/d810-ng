@@ -7,7 +7,7 @@ import pytest
 
 from d810.analyses.control_flow.compare_chain import BlockComparison
 from d810.analyses.control_flow.state_var_alias import VarRef
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.analyses.control_flow.compare_chain_collector import (
     CompareChainCollector,
     _count_conflicting,

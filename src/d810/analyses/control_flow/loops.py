@@ -7,7 +7,7 @@ Sequence LS8).
 
 The Tarjan SCC routine is COPIED VERBATIM from
 ``d810.analyses.value_flow.loop_carrier`` rather than imported: that module
-transitively pulls ``d810.cfg.flowgraph`` (an upward ``analyses -> cfg`` import),
+transitively pulls ``d810.ir.flowgraph`` (an upward ``analyses -> cfg`` import),
 so importing it here would be layer-fatal.  ``Region`` / ``LoopRef`` /
 ``LoopInfo`` are net-new containers; richer natural-loop construction (header /
 back-edge derivation) is added when a consumer needs it.

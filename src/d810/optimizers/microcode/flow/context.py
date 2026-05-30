@@ -38,7 +38,7 @@ def _flowgraph_from_live_mba(
     contains serials of blocks with at least one instruction that has
     side effects (calls, stores — via ``minsn_t.has_side_effects()``).
     """
-    from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
+    from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
 
     blocks: dict[int, BlockSnapshot] = {}
     side_effect_blocks: set[int] = set()
@@ -284,7 +284,7 @@ class FlowMaturityContext:
         if analysis is None or analysis.dispatcher_type != DispatcherType.CONDITIONAL_CHAIN:
             return self._terminal_boundary_blocks
 
-        from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
+        from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
         from d810.analyses.control_flow.state_machine_analysis import (
             detect_terminal_state_families_snapshot,
         )

@@ -93,7 +93,7 @@ class TestFlowGraphReadyPayloadShape:
     def test_subscriber_receives_portable_payload(self) -> None:
         """Subscribers receive the canonical stage kwargs (neutral
         fields + E2b aliases) and never an ``mba_t``."""
-        from d810.cfg.flowgraph import SnapshotStage
+        from d810.ir.flowgraph import SnapshotStage
 
         emitter: EventEmitter[DecompilationEvent] = EventEmitter()
         received: list[dict[str, object]] = []
@@ -209,7 +209,7 @@ class TestProducerHelper:
         (E2d) plus the retained ``maturity`` / ``maturity_name`` aliases
         (E2b).  The helper sources every payload field from this
         metadata, so the fixture MUST carry the neutral fields too."""
-        from d810.cfg.flowgraph import FlowGraph, SnapshotStage
+        from d810.ir.flowgraph import FlowGraph, SnapshotStage
 
         return FlowGraph(
             blocks={},

@@ -42,7 +42,7 @@ from d810.analyses.control_flow.graph_checks import (
     detect_terminal_cycles,
     prove_terminal_sink,
 )
-from d810.cfg.flowgraph import FlowGraph
+from d810.ir.flowgraph import FlowGraph
 from d810.transforms.loop_bound_writer_guard import (
     detect_loop_counter_writeback_tail,
 )

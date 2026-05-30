@@ -6,7 +6,7 @@ by multiple test modules without duplication.
 from __future__ import annotations
 
 from d810.transforms.graph_modification import GraphModification
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.transforms.plan import LoweringInput, PatchPlan, ensure_patch_plan
 
 

@@ -27,7 +27,7 @@ import ida_hexrays
 
 from d810.transforms._base import FlowGraphTransform
 from d810.transforms.graph_modification import GraphModification, NopInstructions
-from d810.cfg.flowgraph import FlowGraph
+from d810.ir.flowgraph import FlowGraph
 
 _BLT_1WAY = ida_hexrays.BLT_1WAY
 _M_GOTO_OPCODE = ida_hexrays.m_goto
@@ -55,7 +55,7 @@ class BlockMergeTransform(FlowGraphTransform):
         tags: Frozen set containing "cleanup" and "topology" tags.
 
     Example:
-        >>> from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
+        >>> from d810.ir.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
         >>> from d810.hexrays.ir.mop_snapshot import MopSnapshot
         >>> # Create mergeable pair: block 0 -> block 1 (1:1 relationship)
         >>> dest_mop = MopSnapshot(t=7, size=4, block_num=1)  # mop_b -> block 1

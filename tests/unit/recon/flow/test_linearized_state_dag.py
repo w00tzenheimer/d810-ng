@@ -5,7 +5,7 @@ import inspect
 import pytest
 
 import d810.analyses.control_flow.linearized_state_dag as linearized_state_dag
-from d810.cfg.flowgraph import (
+from d810.ir.flowgraph import (
     BlockSnapshot,
     FlowGraph,
     InsnKind,

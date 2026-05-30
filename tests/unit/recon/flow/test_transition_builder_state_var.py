@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.flowgraph import MopSnapshot, OperandKind
+from d810.ir.flowgraph import MopSnapshot, OperandKind
 from d810.analyses.control_flow.transition_builder import _get_state_var_stkoff
 
 

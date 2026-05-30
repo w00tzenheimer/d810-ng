@@ -17,7 +17,7 @@ import ida_hexrays
 
 from d810.transforms._base import FlowGraphTransform
 from d810.transforms.graph_modification import GraphModification, RedirectBranch, RedirectGoto
-from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 
 _BLT_1WAY = ida_hexrays.BLT_1WAY
 _BLT_2WAY = ida_hexrays.BLT_2WAY
@@ -112,7 +112,7 @@ class GotoChainRemovalPass(FlowGraphTransform):
         tags: Frozen set containing "cleanup" and "topology" tags.
 
     Example:
-        >>> from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
+        >>> from d810.ir.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
         >>> from d810.hexrays.ir.mop_snapshot import MopSnapshot
         >>> dest_mop = MopSnapshot(t=7, size=4, block_num=20)
         >>> goto_insn = InsnSnapshot(opcode=55, ea=0x1100, operands=(dest_mop,))
@@ -165,7 +165,7 @@ class GotoChainRemovalPass(FlowGraphTransform):
 
         Example:
             >>> # No goto-only blocks: no modifications
-            >>> from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+            >>> from d810.ir.flowgraph import BlockSnapshot, FlowGraph
             >>> blk0 = BlockSnapshot(
             ...     serial=0, block_type=3, succs=(1,), preds=(),
             ...     flags=0, start_ea=0x1000, insn_snapshots=()

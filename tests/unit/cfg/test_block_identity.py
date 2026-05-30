@@ -4,7 +4,7 @@ from d810.ir.block_identity import (
     edge_label,
     flow_graph_context_label,
 )
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 
 
 def _graph() -> FlowGraph:

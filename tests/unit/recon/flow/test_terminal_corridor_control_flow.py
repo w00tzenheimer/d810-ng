@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.flowgraph import BranchPredicate, InsnKind, InsnSnapshot
+from d810.ir.flowgraph import BranchPredicate, InsnKind, InsnSnapshot
 from d810.analyses.control_flow.terminal_corridor_discovery import (
     _is_corridor_control_flow_insn,
 )

@@ -27,7 +27,7 @@ from d810.transforms.graph_modification import (
     RemoveEdge,
     NopInstructions,
 )
-from d810.cfg.flowgraph import (
+from d810.ir.flowgraph import (
     BranchPredicate,
     BlockKind,
     BlockSnapshot,
@@ -37,7 +37,7 @@ from d810.cfg.flowgraph import (
     OperandKind,
     SnapshotStage,
 )
-from d810.cfg.flowgraph import MopSnapshot as CfgMopSnapshot
+from d810.ir.flowgraph import MopSnapshot as CfgMopSnapshot
 from d810.ir.semantics import ControlTransferKind, PredicateKind
 from d810.transforms.plan import (
     ExecutionPolicy,

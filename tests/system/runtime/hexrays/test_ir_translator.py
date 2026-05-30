@@ -16,7 +16,7 @@ import pytest
 
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
-from d810.cfg.flowgraph import (
+from d810.ir.flowgraph import (
     BranchPredicate,
     BlockKind,
     BlockSnapshot,

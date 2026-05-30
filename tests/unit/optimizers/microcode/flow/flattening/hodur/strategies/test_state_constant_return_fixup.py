@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.flowgraph import FlowGraph
+from d810.ir.flowgraph import FlowGraph
 from d810.transforms.graph_modification import NopInstructions
 from d810.evaluator.hexrays_microcode.return_cleanup_backend import (
     ReturnCleanupEvidence,

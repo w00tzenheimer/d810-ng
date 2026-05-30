@@ -34,7 +34,7 @@ except ImportError:
 pytestmark = pytest.mark.skipif(not IDA_AVAILABLE, reason="IDA not available")
 
 if IDA_AVAILABLE:
-    from d810.cfg.flowgraph import InsnSnapshot
+    from d810.ir.flowgraph import InsnSnapshot
     from d810.transforms.graph_modification import (
         EdgeRedirectViaPredSplit,
         InsertBlock,

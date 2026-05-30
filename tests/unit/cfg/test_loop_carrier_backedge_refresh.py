@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.cfg.flowgraph import (
+from d810.ir.flowgraph import (
     BlockSnapshot,
     FlowGraph,
     InsnKind,

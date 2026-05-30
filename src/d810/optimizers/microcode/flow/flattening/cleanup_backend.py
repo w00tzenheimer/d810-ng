@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 
 import ida_hexrays
 
-from d810.cfg.flowgraph import FlowGraph
+from d810.ir.flowgraph import FlowGraph
 from d810.transforms.materialization_payload import (
     CapturedBlockBody,
     CapturedBlockBodySummary,

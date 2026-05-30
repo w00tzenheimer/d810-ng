@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import ida_hexrays
 import pytest
 
-from d810.cfg.flowgraph import (
+from d810.ir.flowgraph import (
     BlockSnapshot,
     FlowGraph,
     InsnKind,

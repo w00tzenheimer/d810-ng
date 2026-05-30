@@ -15,7 +15,7 @@ import pytest
 from d810.transforms._base import FlowGraphTransform
 from d810.transforms.graph_modification import ConvertToGoto, GraphModification, RedirectGoto
 from d810.passes.pipeline import FlowGraphTransformPipeline
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.transforms.plan import LoweringInput
 from tests.unit.hexrays.conftest import InMemoryBackend
 

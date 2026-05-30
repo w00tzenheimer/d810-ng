@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.analyses.control_flow.handler_transitions import HandlerTransitionsCollector
 from d810.analyses.control_flow.transition_builder import (
     StateHandler,

@@ -25,7 +25,7 @@ from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
 )
 
 if TYPE_CHECKING:
-    from d810.cfg.flowgraph import FlowGraph
+    from d810.ir.flowgraph import FlowGraph
     from d810.transforms.graph_modification import GraphModification
 
 __all__ = [

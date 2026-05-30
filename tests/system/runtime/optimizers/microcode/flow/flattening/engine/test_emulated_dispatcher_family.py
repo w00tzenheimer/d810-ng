@@ -12,7 +12,7 @@ import pytest
 import d810.hexrays.observability as hexrays_observability
 import d810.optimizers.microcode.flow.dispatcher.switch_case_transitions as switch_case_transition_adapter
 import d810.analyses.control_flow.switch_case_transition_analysis as switch_case_transition_analysis
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
 from d810.transforms.graph_modification import (
     CreateConditionalRedirect,
     EdgeRedirectViaPredSplit,
@@ -7570,7 +7570,7 @@ class TestEmulatedDispatcherManagedContext:
         if func_ea == idaapi.BADADDR:
             pytest.skip("Function 'approov_multistate' not found")
 
-        from d810.cfg.flowgraph import FlowGraph
+        from d810.ir.flowgraph import FlowGraph
         from d810.optimizers.microcode.flow.flattening.hodur.family import (
             HodurStrategyFamily,
         )

@@ -5,7 +5,7 @@ import importlib.util
 
 import pytest
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.transforms.graph_modification import RedirectGoto
 from d810.optimizers.microcode.flow.flattening import engine
 from d810.optimizers.microcode.flow.flattening.engine import strategy as engine_strategy

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.flowgraph import (
+from d810.ir.flowgraph import (
     BranchPredicate,
     InsnKind,
     InsnSnapshot,

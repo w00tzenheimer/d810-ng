@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.transforms.mod_claims import collect_mod_claims
-from d810.cfg.flowgraph import FlowGraph
+from d810.ir.flowgraph import FlowGraph
 from d810.transforms.graph_modification import (
     CreateConditionalRedirect,
     ConvertToGoto,

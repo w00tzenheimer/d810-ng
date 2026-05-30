@@ -1,7 +1,7 @@
 """Runtime tests for the shared single-iteration engine strategy."""
 from __future__ import annotations
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.transforms.graph_modification import ConvertToGoto, RedirectGoto
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,

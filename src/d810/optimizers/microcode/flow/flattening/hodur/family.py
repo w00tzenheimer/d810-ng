@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import ida_hexrays
 
-from d810.cfg.flowgraph import FlowGraph
+from d810.ir.flowgraph import FlowGraph
 from d810.core import logging
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string

@@ -13,7 +13,7 @@ import pytest
 from d810.transforms.protocol import IRTranslator
 from d810.transforms._base import FlowGraphTransform
 from d810.transforms.graph_modification import ConvertToGoto, GraphModification
-from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 from tests.unit.hexrays.conftest import InMemoryBackend
 
 

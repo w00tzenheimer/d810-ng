@@ -8,7 +8,7 @@ from d810.transforms.dag_frontier_closure import (
     _choices_for_observed_edge,
     plan_dag_authoritative_frontier_closure,
 )
-from d810.cfg.flowgraph import (
+from d810.ir.flowgraph import (
     BlockSnapshot,
     FlowGraph,
     InsnKind,

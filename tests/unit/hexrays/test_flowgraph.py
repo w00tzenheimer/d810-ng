@@ -9,7 +9,7 @@ import logging
 import pytest
 
 from d810.core.typing import TYPE_CHECKING
-from d810.cfg.flowgraph import InsnSnapshot, BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import InsnSnapshot, BlockSnapshot, FlowGraph
 
 if TYPE_CHECKING:
     from d810.hexrays.ir.mop_snapshot import MopSnapshot

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import d810.passes.fact_runtime as facts_runtime_module
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 from d810.core import ProviderPhaseSnapshot
 from d810.core.observability import SnapshotRef
 from d810.core.settings import configure_settings, reset_settings

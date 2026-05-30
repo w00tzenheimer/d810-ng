@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.transforms.graph_modification import (
     CreateConditionalRedirect,
     EdgeRedirectViaPredSplit,

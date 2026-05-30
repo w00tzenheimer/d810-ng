@@ -11,7 +11,7 @@ These tests don't import ``d810.hexrays.*`` -- the
 
 from __future__ import annotations
 
-from d810.cfg.flowgraph import MopSnapshot, OperandKind
+from d810.ir.flowgraph import MopSnapshot, OperandKind
 from d810.analyses.control_flow.dispatcher_facts import StateVariableCandidate
 
 
@@ -124,5 +124,5 @@ class TestPureModuleBoundary:
         # is a migration shim onto it).
         assert (
             "from d810.ir.flowgraph import" in src
-            or "from d810.cfg.flowgraph import" in src
+            or "from d810.ir.flowgraph import" in src
         )

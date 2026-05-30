@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.cfg.flowgraph import (
+from d810.ir.flowgraph import (
     BranchPredicate,
     BlockSnapshot,
     FlowGraph,

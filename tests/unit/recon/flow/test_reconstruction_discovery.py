@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.flowgraph import InsnKind, OperandKind
+from d810.ir.flowgraph import InsnKind, OperandKind
 from d810.analyses.control_flow.linearized_state_dag import SemanticEdgeKind
 from d810.analyses.control_flow.reconstruction_discovery import (
     classify_artifact_return_blocks,

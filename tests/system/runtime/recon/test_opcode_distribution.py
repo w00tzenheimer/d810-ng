@@ -1,7 +1,7 @@
 """Unit tests for OpcodeDistributionCollector using FlowGraph + InsnSnapshot."""
 from __future__ import annotations
 import pytest
-from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 from d810.analyses.control_flow.opcode_distribution import OpcodeDistributionCollector
 
 

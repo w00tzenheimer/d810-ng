@@ -12,7 +12,7 @@ unchanged.
 """
 from __future__ import annotations
 
-from d810.cfg.flowgraph import InsnKind, OperandKind
+from d810.ir.flowgraph import InsnKind, OperandKind
 from d810.evaluator.hexrays_microcode.def_search import find_def_in_block
 from d810.evaluator.hexrays_microcode.valranges import (
     ValrangeLocation,

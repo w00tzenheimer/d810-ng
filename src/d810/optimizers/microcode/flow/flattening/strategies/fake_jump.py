@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from d810.cfg.flowgraph import FlowGraph, InsnKind, OperandKind
+from d810.ir.flowgraph import FlowGraph, InsnKind, OperandKind
 from d810.transforms.graph_modification import (
     CloneConditionalAsGoto,
     CloneConditionalAsGotoFromBranchArm,

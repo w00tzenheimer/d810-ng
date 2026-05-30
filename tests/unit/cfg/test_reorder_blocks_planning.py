@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.flowgraph import BlockKind, BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph
 from d810.transforms.reorder_blocks_planning import compute_reorder_blocks
 
 
