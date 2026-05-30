@@ -18,13 +18,23 @@ from __future__ import annotations
 
 from .constant_fixpoint import ConstantFixpointBackend, ConstantFixpointCapability
 from .recurrence import ExternalRecurrenceCapability, RecurrenceAnalysis
+from .source_lifter import (
+    LiveLifter,
+    SourceLifter,
+    register_live_lifter,
+    select_lifter,
+)
 from .use_def_safety import SeveranceViolation, UseDefSafetyCapability
 
 __all__ = [
     "ConstantFixpointBackend",  # back-compat alias of ConstantFixpointCapability
     "ConstantFixpointCapability",
     "ExternalRecurrenceCapability",
+    "LiveLifter",
     "RecurrenceAnalysis",
     "SeveranceViolation",
+    "SourceLifter",
     "UseDefSafetyCapability",
+    "register_live_lifter",
+    "select_lifter",
 ]
