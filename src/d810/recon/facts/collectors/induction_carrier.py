@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import re
 
+from d810.capabilities.source_lifter import select_lifter
 from d810.cfg.flowgraph import InsnKind, OperandKind
 from d810.core.typing import Any, Iterable
 from d810.recon.facts.model import FactObservation
@@ -226,6 +227,13 @@ def _iter_portable_instructions(target: Any) -> Iterable[_InstructionView]:
 
 
 def _iter_instruction_views(target: Any) -> Iterable[_InstructionView]:
+    # LS10: if a backend has registered a live SourceLifter that handles this
+    # source, lift it to a portable flow graph first; otherwise fall back to the
+    # default snapshot/instruction iteration below -- behavior-identical to
+    # pre-LS10 when no lifter is registered.
+    lifter = select_lifter(target)
+    if lifter is not None:
+        target = lifter.lift(target)
     return _iter_portable_instructions(target)
 
 
