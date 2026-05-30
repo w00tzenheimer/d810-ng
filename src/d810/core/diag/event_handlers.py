@@ -1,7 +1,7 @@
 """SQLite event handlers that persist diagnostic observations.
 
 Subscribes to the observation events declared in
-:mod:`d810.recon.observability`, :mod:`d810.cfg.observability`, and
+:mod:`d810.core.observability_recon`, :mod:`d810.cfg.observability`, and
 :mod:`d810.hexrays.observability`. When the manager boots a diag
 session, :func:`install_diag_event_handlers` registers these handlers
 on the :mod:`d810.core.observability` bus; runtime producers then

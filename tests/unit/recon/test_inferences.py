@@ -1,8 +1,8 @@
 """Tests for built-in inference factories."""
 from __future__ import annotations
 
-from d810.recon.inferences import unflattening_inference
-from d810.recon.models import DeobfuscationHints
+from d810.passes.inferences import unflattening_inference
+from d810.analyses.control_flow.models import DeobfuscationHints
 
 
 class TestUnflatteningInference:

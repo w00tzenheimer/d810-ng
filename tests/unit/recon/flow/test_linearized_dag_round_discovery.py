@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.recon.flow import linearized_dag_round_discovery as discovery
-from d810.recon.flow.linearized_state_dag import SemanticEdgeKind
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow import linearized_dag_round_discovery as discovery
+from d810.analyses.control_flow.linearized_state_dag import SemanticEdgeKind
+from d810.analyses.control_flow.linearized_state_dag import (
     RenderedProgramLine,
     RenderedProgramNode,
 )

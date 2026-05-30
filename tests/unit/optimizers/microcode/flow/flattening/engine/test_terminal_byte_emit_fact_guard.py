@@ -19,10 +19,10 @@ from d810.optimizers.microcode.flow.flattening.engine.terminal_byte_emit_fact_gu
     append_protected_non_carrier_return_writer_direct_lowerings,
     filter_terminal_byte_emit_fact_redirects,
 )
-from d810.recon.flow.return_frontier_artifacts import (
+from d810.analyses.control_flow.return_frontier_artifacts import (
     ReturnFrontierCarrierClassification,
 )
-from d810.recon.facts import FactObservation, ValidatedFactView
+from d810.analyses.value_flow.facts import FactObservation, ValidatedFactView
 
 
 def _terminal_byte_emit_fact(

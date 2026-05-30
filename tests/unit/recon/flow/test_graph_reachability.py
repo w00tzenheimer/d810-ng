@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.recon.flow.graph_reachability import (
+from d810.analyses.control_flow.graph_reachability import (
     collect_dispatcher_predecessors,
     collect_residual_dispatcher_predecessors,
     compute_reachable_blocks,

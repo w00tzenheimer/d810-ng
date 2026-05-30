@@ -9,8 +9,8 @@ resolution.
 
 The consumer-specific summary consumed here is :class:`PlannerInputs`
 (defined in ``provenance.py``), analogous to
-:class:`~d810.recon.models.DeobfuscationHints` for the rule-scope
-consumer and :class:`~d810.recon.flow_hints.FlowContextHintSummary`
+:class:`~d810.analyses.control_flow.models.DeobfuscationHints` for the rule-scope
+consumer and :class:`~d810.passes.flow_hints.FlowContextHintSummary`
 for the flow-context consumer.
 
 # PLANNER_AUTHORITY: The UnflatteningPlanner is the sole authority for

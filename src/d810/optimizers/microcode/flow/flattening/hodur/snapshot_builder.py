@@ -29,7 +29,7 @@ from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
     analyze_dispatcher_live,
     is_dispatcher_block,
 )
-from d810.recon.function_priors import FunctionAnalysisPriors
+from d810.passes.function_priors import FunctionAnalysisPriors
 
 __all__ = ["HodurSnapshotPolicy"]
 
@@ -146,11 +146,11 @@ class HodurSnapshotPolicy:
         discovery_builder,
     ) -> object | None:
         if transition_builder is None:
-            from d810.recon.flow.transition_builder import (
+            from d810.analyses.control_flow.transition_builder import (
                 build_transition_result_from_state_machine as transition_builder,
             )
         if discovery_builder is None:
-            from d810.recon.flow.round_discovery_context import (
+            from d810.analyses.control_flow.round_discovery_context import (
                 build_round_discovery_context as discovery_builder,
             )
 

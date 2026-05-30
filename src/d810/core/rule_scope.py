@@ -447,7 +447,7 @@ class RuleScopeService:
         Bridges ``DeobfuscationHints`` -> overlay/inference activation.
         Accepts any object with ``func_ea``, ``recommended_inferences``,
         and ``suppress_rules`` attributes (duck-typed to avoid a hard
-        import of ``d810.recon.models``).
+        import of ``d810.analyses.control_flow.models``).
 
         Args:
             hints: Analysed hints from AnalysisPhase.

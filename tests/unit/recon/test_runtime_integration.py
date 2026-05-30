@@ -9,11 +9,11 @@ import pytest
 
 from d810.core import ProviderPhaseSnapshot
 from d810.core.rule_scope import ApplyHintsResult, RuleScopeService
-from d810.recon.analysis import AnalysisPhase
-from d810.recon.models import DeobfuscationHints, ReconResult
-from d810.recon.phase import ReconPhase
-from d810.recon.runtime import ReconAnalysisRuntime, ReconOutcome
-from d810.recon.store import ReconStore
+from d810.passes.analysis import AnalysisPhase
+from d810.analyses.control_flow.models import DeobfuscationHints, ReconResult
+from d810.passes.phase import ReconPhase
+from d810.passes.runtime import ReconAnalysisRuntime, ReconOutcome
+from d810.passes.store import ReconStore
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -116,8 +116,8 @@ def _make_runtime() -> tuple[
     mock_store.db_path = Path("/tmp/test_recon.db")
 
     writer = _make_sync_writer(mock_store)
-    p1 = patch("d810.recon.runtime.get_recon_writer", return_value=writer)
-    p2 = patch("d810.recon.phase.get_recon_writer", return_value=writer)
+    p1 = patch("d810.passes.runtime.get_recon_writer", return_value=writer)
+    p2 = patch("d810.passes.phase.get_recon_writer", return_value=writer)
     p1.start()
     p2.start()
     _active_patchers.extend([p1, p2])

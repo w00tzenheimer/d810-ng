@@ -5,7 +5,7 @@ import importlib.util
 
 from d810.recon.facts import collectors
 from d810.analyses import value_flow as vf
-from d810.recon.facts.model import FactObservation
+from d810.analyses.value_flow.model import FactObservation
 
 
 def test_carrier_import_shim_is_removed() -> None:

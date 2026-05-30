@@ -88,7 +88,7 @@ class FactObservationSink(Protocol):
 class _CoreObservabilitySink:
     """Default :class:`FactObservationSink` bound to the core event bus.
 
-    Behaviour-identical to the legacy ``d810.recon.observability``
+    Behaviour-identical to the legacy ``d810.core.observability_recon``
     ``observe_fact_*`` wrappers: each method publishes the corresponding
     ``Fact*Observed`` event from :mod:`d810.core.observability_events` on the
     :func:`d810.core.observability.emit` bus. Pure DOWN (passes -> core).

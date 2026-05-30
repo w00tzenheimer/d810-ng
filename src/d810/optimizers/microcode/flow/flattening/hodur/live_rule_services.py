@@ -26,7 +26,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
 from d810.optimizers.microcode.flow.flattening.state_machine_rule_services import (
     StateMachineRuleServices,
 )
-from d810.recon.flow.dispatcher_residue_cleanup_discovery import (
+from d810.analyses.control_flow.dispatcher_residue_cleanup_discovery import (
     discover_dispatcher_residue_cleanup_facts,
     discover_unreachable_region_cleanup_facts,
 )

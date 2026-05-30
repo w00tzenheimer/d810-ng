@@ -568,7 +568,7 @@ class TestApplyHints:
 
     def test_with_real_deobfuscation_hints(self) -> None:
         """Verify apply_hints works with the actual DeobfuscationHints type."""
-        from d810.recon.models import DeobfuscationHints
+        from d810.analyses.control_flow.models import DeobfuscationHints
 
         svc = _make_service_with_rules(
             _DummyRule(name="R1", maturities=[1]),
@@ -686,7 +686,7 @@ class TestGetHintStateSummary:
 
     def test_summary_includes_hint_owned_suppressions(self) -> None:
         """Hint-driven suppressions must appear in the summary."""
-        from d810.recon.models import DeobfuscationHints
+        from d810.analyses.control_flow.models import DeobfuscationHints
 
         svc = RuleScopeService()
         hints = DeobfuscationHints(

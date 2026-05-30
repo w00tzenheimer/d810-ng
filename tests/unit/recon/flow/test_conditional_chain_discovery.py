@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.cfg.flowgraph import MopSnapshot, OperandKind
-from d810.recon.flow.conditional_chain_discovery import (
+from d810.analyses.control_flow.conditional_chain_discovery import (
     extract_check_constant_from_snapshot,
     find_conditional_predecessor,
     get_successor_into_dispatcher,

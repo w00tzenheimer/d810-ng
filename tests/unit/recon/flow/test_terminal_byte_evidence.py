@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.recon.flow.terminal_byte_evidence import (
+from d810.analyses.control_flow.terminal_byte_evidence import (
     collect_terminal_tail_byte_source_eas,
 )
 

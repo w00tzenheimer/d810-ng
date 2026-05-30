@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.recon.flow.handler_state_map_discovery import (
+from d810.analyses.control_flow.handler_state_map_discovery import (
     collect_unique_interval_handler_backfills,
 )
 

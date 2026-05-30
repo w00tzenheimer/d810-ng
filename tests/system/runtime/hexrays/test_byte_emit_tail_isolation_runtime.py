@@ -195,7 +195,7 @@ def test_load_planner_sites_from_fact_view_uses_observation_source_block():
     from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
         _load_planner_sites_from_fact_view,
     )
-    from d810.recon.facts.model import FactObservation, ValidatedFactView
+    from d810.analyses.value_flow.model import FactObservation, ValidatedFactView
 
     obs = FactObservation(
         fact_id="terminal-byte-2",
@@ -228,7 +228,7 @@ def test_load_planner_sites_remaps_stale_source_block_by_live_instruction_ea():
     from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
         _load_planner_sites_from_fact_view,
     )
-    from d810.recon.facts.model import FactObservation, ValidatedFactView
+    from d810.analyses.value_flow.model import FactObservation, ValidatedFactView
 
     obs = FactObservation(
         fact_id="terminal-byte-3",
@@ -324,7 +324,7 @@ def test_tail_distinct_missing_provider_skips_without_diag(monkeypatch):
 
 def test_tail_distinct_accepts_validated_fact_view(monkeypatch):
     import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
-    from d810.recon.facts import FactObservation, ValidatedFactView
+    from d810.analyses.value_flow.facts import FactObservation, ValidatedFactView
 
     view = ValidatedFactView(
         maturity="MMAT_GLBOPT1",
@@ -425,7 +425,7 @@ def test_terminal_tail_uses_provider_planner_evidence_without_fact_view(monkeypa
         ByteTailRuntimeEvidence,
         TerminalTailPlannerEvidence,
     )
-    from d810.recon.flow.terminal_tail_priors import (
+    from d810.analyses.control_flow.terminal_tail_priors import (
         TerminalTailCascadeEgressPriors,
     )
 
@@ -1268,7 +1268,7 @@ def test_impossible_return_artifact_edges_route_to_sibling_continuation(
     monkeypatch,
 ):
     import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
-    from d810.recon.flow.return_frontier_artifacts import (
+    from d810.analyses.control_flow.return_frontier_artifacts import (
         ReturnFrontierArtifactEdgeProof,
     )
 
@@ -1319,7 +1319,7 @@ def test_impossible_return_artifact_edges_route_to_sibling_continuation(
 
 def test_impossible_return_artifact_requires_exact_old_target(monkeypatch):
     import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
-    from d810.recon.flow.return_frontier_artifacts import (
+    from d810.analyses.control_flow.return_frontier_artifacts import (
         ReturnFrontierArtifactEdgeProof,
     )
 
@@ -1373,7 +1373,7 @@ def test_impossible_return_artifact_rewrite_uses_provider_evidence(monkeypatch):
     from d810.hexrays.mutation.byte_tail_runtime_evidence import (
         ByteTailRuntimeEvidence,
     )
-    from d810.recon.flow.return_frontier_artifacts import (
+    from d810.analyses.control_flow.return_frontier_artifacts import (
         ReturnFrontierArtifactEdgeProof,
     )
 

@@ -47,18 +47,18 @@ from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend i
     ConstantFixpointBackend,
     DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
 )
-from d810.recon.flow.path_horizon import resolve_transition_path_horizon
-from d810.recon.flow.residual_handoff_discovery import (
+from d810.analyses.control_flow.path_horizon import resolve_transition_path_horizon
+from d810.analyses.control_flow.residual_handoff_discovery import (
     resolve_normalized_alias_entry_for_state,
     resolve_redirect_safe_entry_from_node,
     resolve_redirect_safe_target_entry,
     supplemental_selected_entry_for_state,
 )
-from d810.recon.flow.target_entry_resolution import (
+from d810.analyses.control_flow.target_entry_resolution import (
     resolve_exact_dag_entry_for_state,
     resolve_semantic_reference_entry_for_state,
 )
-from d810.recon.flow.graph_reachability import collect_residual_dispatcher_predecessors
+from d810.analyses.control_flow.graph_reachability import collect_residual_dispatcher_predecessors
 from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
     HexRaysInstructionCaptureBackend,
     StateWriteCleanupEvidenceBackend,

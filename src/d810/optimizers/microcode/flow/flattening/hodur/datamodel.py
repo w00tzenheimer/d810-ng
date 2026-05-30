@@ -13,12 +13,12 @@ from d810.core.typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import ida_hexrays
 
-from d810.recon.flow.transition_builder import (
+from d810.analyses.control_flow.transition_builder import (
     StateHandler,
     StateTransition,
     StateUpdateSite,
 )
-from d810.recon.flow.state_machine_analysis import (
+from d810.analyses.control_flow.state_machine_analysis import (
     CarrierResolutionResult,
     ConditionalTransition,
     HandlerPathResult,

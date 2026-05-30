@@ -4,7 +4,7 @@ import inspect
 
 import pytest
 
-import d810.recon.flow.linearized_state_dag as linearized_state_dag
+import d810.analyses.control_flow.linearized_state_dag as linearized_state_dag
 from d810.cfg.flowgraph import (
     BlockSnapshot,
     FlowGraph,
@@ -14,7 +14,7 @@ from d810.cfg.flowgraph import (
     OperandKind,
 )
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     BoundaryInlineMode,
     LabelRenderMode,
     LinearizedStateDag,
@@ -59,19 +59,19 @@ from d810.recon.flow.linearized_state_dag import (
     render_linearized_state_dag,
     render_linearized_state_dag_dot,
 )
-from d810.recon.flow.state_machine_analysis import (
+from d810.analyses.control_flow.state_machine_analysis import (
     ConditionalTransition,
     HandlerPathResult,
 )
-from d810.recon.flow.transition_builder import (
+from d810.analyses.control_flow.transition_builder import (
     StateHandler,
     StateTransition,
     TransitionResult,
 )
-from d810.recon.flow.transition_trust import (
+from d810.analyses.control_flow.transition_trust import (
     classify_transition_trust_for_explicit_conditional_bridge,
 )
-from d810.recon.flow.transition_report import (
+from d810.analyses.control_flow.transition_report import (
     DispatcherTransitionReport,
     TransitionKind,
     TransitionPath,
@@ -4054,7 +4054,7 @@ def test_render_strategies_distinguish_catalog_from_semantic_order() -> None:
 
 
 def test_suppresses_dispatcher_root_alias_edge_when_concrete_prefix_exists() -> None:
-    from d810.recon.flow import linearized_state_dag as dag_mod
+    from d810.analyses.control_flow import linearized_state_dag as dag_mod
 
     source_key = StateDagNodeKey(handler_serial=118, state_const=0x029EEE50)
     concrete_target = StateDagNodeKey(handler_serial=56, state_const=0x7D9C16EC)
@@ -4898,7 +4898,7 @@ def test_alias_states_can_share_handler_anchor_and_inherit_edges() -> None:
 def test_live_builder_iterates_supplemental_fallback_aliases(
     monkeypatch,
 ) -> None:
-    from d810.recon.flow import linearized_state_dag as dag_mod
+    from d810.analyses.control_flow import linearized_state_dag as dag_mod
 
     flow_graph = FlowGraph(
         blocks={
@@ -5266,7 +5266,7 @@ def test_live_builder_iterates_supplemental_fallback_aliases(
 def test_live_builder_prefers_exact_cover_fallback_anchor_over_bridge_row(
     monkeypatch,
 ) -> None:
-    from d810.recon.flow import linearized_state_dag as dag_mod
+    from d810.analyses.control_flow import linearized_state_dag as dag_mod
 
     flow_graph = FlowGraph(
         blocks={
@@ -5555,7 +5555,7 @@ def test_live_builder_prefers_exact_cover_fallback_anchor_over_bridge_row(
 def test_live_builder_prefers_dispatcher_body_anchor_over_bst_range_root(
     monkeypatch,
 ) -> None:
-    from d810.recon.flow import linearized_state_dag as dag_mod
+    from d810.analyses.control_flow import linearized_state_dag as dag_mod
 
     class FakeDispatcherRow:
         def __init__(self, target: int) -> None:
@@ -5757,7 +5757,7 @@ def test_live_builder_prefers_dispatcher_body_anchor_over_bst_range_root(
 def test_live_builder_skips_terminal_bst_supplemental_alias(
     monkeypatch,
 ) -> None:
-    from d810.recon.flow import linearized_state_dag as dag_mod
+    from d810.analyses.control_flow import linearized_state_dag as dag_mod
 
     class FakeDispatcherRow:
         def __init__(self, target: int) -> None:
@@ -5965,7 +5965,7 @@ def test_live_builder_skips_terminal_bst_supplemental_alias(
 def test_terminal_bst_alias_requires_existing_terminal_edge_exit(
     monkeypatch,
 ) -> None:
-    from d810.recon.flow import linearized_state_dag as dag_mod
+    from d810.analyses.control_flow import linearized_state_dag as dag_mod
 
     flow_graph = FlowGraph(
         blocks={
@@ -6284,7 +6284,7 @@ def test_stable_handoff_anchor_allows_exact_dispatcher_binding() -> None:
 def test_live_builder_rejects_self_handoff_candidate_anchor(
     monkeypatch,
 ) -> None:
-    from d810.recon.flow import linearized_state_dag as dag_mod
+    from d810.analyses.control_flow import linearized_state_dag as dag_mod
 
     flow_graph = FlowGraph(
         blocks={
@@ -7280,7 +7280,7 @@ def test_render_linearized_state_dag_dot_expanded() -> None:
 def test_live_builder_prefers_exact_dispatcher_boundary_anchor_for_supplemental_state(
     monkeypatch,
 ) -> None:
-    from d810.recon.flow import linearized_state_dag as dag_mod
+    from d810.analyses.control_flow import linearized_state_dag as dag_mod
 
     flow_graph = FlowGraph(
         blocks={

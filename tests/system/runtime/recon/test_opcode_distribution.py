@@ -2,7 +2,7 @@
 from __future__ import annotations
 import pytest
 from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
-from d810.recon.collectors.opcode_distribution import OpcodeDistributionCollector
+from d810.analyses.control_flow.opcode_distribution import OpcodeDistributionCollector
 
 
 def _insn(opcode: int) -> InsnSnapshot:

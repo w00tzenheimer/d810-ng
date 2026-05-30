@@ -9,8 +9,8 @@ from d810.cfg.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.recon.flow import return_frontier_carrier_facts as facts_mod
-from d810.recon.flow.return_frontier_artifacts import (
+from d810.analyses.control_flow import return_frontier_carrier_facts as facts_mod
+from d810.analyses.control_flow.return_frontier_artifacts import (
     ReturnFrontierArtifactKind,
     ReturnFrontierArtifactPriors,
     ReturnFrontierCarrierClassification,

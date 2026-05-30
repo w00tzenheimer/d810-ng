@@ -26,7 +26,7 @@ def collect_ollvm_raw_semantic_carrier_facts(mba: object) -> tuple[object, ...]:
     if target is None:
         return ()
     try:
-        from d810.recon.facts.collectors import OllvmValueFlowEvidenceCollector
+        from d810.analyses.value_flow.ollvm_semantic_carrier import OllvmValueFlowEvidenceCollector
     except Exception:
         return ()
     try:
@@ -88,7 +88,7 @@ def collect_ollvm_branch_ownership_refiners(
     logger: object,
 ) -> tuple[object, ...]:
     try:
-        from d810.recon.flow.branch_ownership_oracle import (
+        from d810.analyses.control_flow.branch_ownership_oracle import (
             MopTrackerBranchOwnershipOracle,
             OllvmCarrierBranchOwnershipOracle,
             Z3BranchOwnershipOracle,

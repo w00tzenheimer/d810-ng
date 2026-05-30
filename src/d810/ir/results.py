@@ -24,7 +24,7 @@ __all__ = ["ConstantFixpointResult"]
 class ConstantFixpointResult:
     """Conservative exact-constant facts at block boundaries.
 
-    Lifted from ``d810.recon.flow.state_machine_analysis.SnapshotConstantFixpointResult``
+    Lifted from ``d810.analyses.control_flow.state_machine_analysis.SnapshotConstantFixpointResult``
     so ``ConstantFixpointCapability.compute()`` can tighten its return
     annotation off ``Any``.  Field shapes are unchanged.  The legacy
     name ``SnapshotConstantFixpointResult`` is preserved at its

@@ -85,23 +85,23 @@ from d810.optimizers.microcode.flow.flattening.strategies.tail_goto_merge import
     extract_tail_goto_merge_candidates,
     serialize_tail_goto_merge_candidates,
 )
-from d810.recon.flow.graph_reachability import compute_reachable_blocks
-from d810.recon.flow.guarded_state_machine import (
+from d810.analyses.control_flow.graph_reachability import compute_reachable_blocks
+from d810.analyses.control_flow.guarded_state_machine import (
     GUARDED_STATE_MACHINE_FIXES_METADATA_KEY,
     extract_guarded_state_machine_fixes,
     serialize_guarded_state_machine_fixes,
 )
-from d810.recon.flow.local_select_loop import (
+from d810.analyses.control_flow.local_select_loop import (
     LOCAL_SELECT_LOOP_FIXES_METADATA_KEY,
     extract_local_select_loop_fixes,
     serialize_local_select_loop_fixes,
 )
-from d810.recon.flow.selector_shell import (
+from d810.analyses.control_flow.selector_shell import (
     SELECTOR_SHELL_FACTS_METADATA_KEY,
     extract_selector_shell_facts,
     serialize_selector_shell_facts,
 )
-from d810.recon.flow.side_effect_select_loop import (
+from d810.analyses.control_flow.side_effect_select_loop import (
     SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY,
     extract_side_effect_select_loop_fixes,
     serialize_side_effect_select_loop_fixes,

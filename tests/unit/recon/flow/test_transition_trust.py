@@ -6,7 +6,7 @@ from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipProof,
     BranchOwnershipProofKind,
 )
-from d810.recon.flow.transition_trust import (
+from d810.analyses.control_flow.transition_trust import (
     TransitionTrustKind,
     TransitionTrustResult,
     classify_transition_trust_for_explicit_conditional_bridge,

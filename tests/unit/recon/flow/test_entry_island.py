@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.recon.flow.entry_island import lift_target_entry_to_island_entry
+from d810.analyses.control_flow.entry_island import lift_target_entry_to_island_entry
 
 
 def _edge(source_block: int):

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from d810.recon.flow.dag_region_detection import detect_linear_transition_regions
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.dag_region_detection import detect_linear_transition_regions
+from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
     RedirectSourceKind,
     SemanticEdgeKind,

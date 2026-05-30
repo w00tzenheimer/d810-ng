@@ -4,8 +4,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
-from d810.recon.facts.collectors import StateTransitionAnchorFactCollector
-from d810.recon.facts.collectors.induction_carrier import _MATURITY_VALUES
+from d810.analyses.control_flow.state_transition_anchor import StateTransitionAnchorFactCollector
+from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
 
 def _state_insn(
@@ -284,7 +284,7 @@ def test_canonical_stkoff_picked_by_frequency() -> None:
 def test_view_accessor_returns_per_source_block() -> None:
     """``ValidatedFactView.state_transitions_for_source_block`` filters
     correctly by source block."""
-    from d810.recon.facts.model import (
+    from d810.analyses.value_flow.model import (
         FactObservation,
         ValidatedFactView,
     )

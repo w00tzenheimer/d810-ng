@@ -60,7 +60,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.profile import (
     default_hodur_profile,
 )
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import AnalysisSnapshot
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
     LocalSegmentKind,
     SemanticEdgeKind,
@@ -73,9 +73,9 @@ from d810.recon.flow.linearized_state_dag import (
     StateRedirectAnchor,
     RedirectSourceKind,
 )
-from d810.recon.flow.reconstruction_candidate_builder import ReconstructionCandidate
-from d810.recon.flow.state_machine_analysis import build_mba_view_from_flow_graph
-from d810.recon.flow.state_machine_analysis import (
+from d810.analyses.control_flow.reconstruction_candidate_builder import ReconstructionCandidate
+from d810.analyses.control_flow.state_machine_analysis import build_mba_view_from_flow_graph
+from d810.analyses.control_flow.state_machine_analysis import (
     find_last_state_write_site_on_path_snapshot,
     find_last_state_write_site_snapshot,
     run_snapshot_constant_fixpoint,

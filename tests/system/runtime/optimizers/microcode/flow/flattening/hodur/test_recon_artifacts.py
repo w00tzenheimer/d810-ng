@@ -117,8 +117,8 @@ from d810.optimizers.microcode.flow.flattening.strategies.single_iteration impor
     SingleIterationPredFix,
     SingleIterationStrategy,
 )
-from d810.recon.flow.transition_builder import StateHandler, TransitionResult
-from d810.recon.flow.transition_report import build_dispatcher_transition_report_from_graph
+from d810.analyses.control_flow.transition_builder import StateHandler, TransitionResult
+from d810.analyses.control_flow.transition_report import build_dispatcher_transition_report_from_graph
 import ida_hexrays
 
 
@@ -194,7 +194,7 @@ def test_audit_pre_plan_prefers_recon_store_transition_report(monkeypatch, tmp_p
         raise AssertionError("direct transition report build should not run")
 
     monkeypatch.setattr(
-        "d810.recon.flow.transition_report.build_dispatcher_transition_report",
+        "d810.analyses.control_flow.transition_report.build_dispatcher_transition_report",
         fail_if_built,
     )
 
@@ -225,7 +225,7 @@ def test_audit_pre_plan_persists_fallback_report_to_store(monkeypatch, tmp_path)
     snapshot = SimpleNamespace(bst_dispatcher_serial=5, state_machine=None, mba=object())
 
     monkeypatch.setattr(
-        "d810.recon.flow.transition_report.build_dispatcher_transition_report",
+        "d810.analyses.control_flow.transition_report.build_dispatcher_transition_report",
         lambda *_args, **_kwargs: report,
     )
 

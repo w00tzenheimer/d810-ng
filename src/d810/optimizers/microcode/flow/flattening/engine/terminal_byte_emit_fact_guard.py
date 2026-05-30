@@ -49,7 +49,7 @@ from d810.cfg.loop_bound_writer_guard import (
 )
 from d810.core import logging
 from d810.core.typing import Any
-from d810.recon.flow.return_frontier_artifacts import (
+from d810.analyses.control_flow.return_frontier_artifacts import (
     is_protected_non_carrier_return_writer,
 )
 

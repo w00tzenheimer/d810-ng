@@ -21,8 +21,8 @@ from d810.optimizers.microcode.flow.flattening.strategies.single_iteration impor
     SingleIterationConvertFix,
     SingleIterationPredFix,
 )
-from d810.recon.flow.conditional_jump_eval import conditional_operand_size
-from d810.recon.flow.loop_prover import prove_single_iteration
+from d810.analyses.control_flow.conditional_jump_eval import conditional_operand_size
+from d810.analyses.control_flow.loop_prover import prove_single_iteration
 
 FAKE_JUMP_CONDITIONAL_OPCODES = frozenset(
     {

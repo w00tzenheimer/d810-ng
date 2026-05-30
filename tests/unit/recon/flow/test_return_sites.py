@@ -5,12 +5,12 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from d810.recon.flow.return_sites import (
+from d810.analyses.control_flow.return_sites import (
     compute_legacy_return_site_guard_hash,
     legacy_handler_path_return_sites,
     transition_report_return_sites,
 )
-from d810.recon.flow.transition_report import (
+from d810.analyses.control_flow.transition_report import (
     DispatcherTransitionReport,
     TransitionKind,
     TransitionPath,

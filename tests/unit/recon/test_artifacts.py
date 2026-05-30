@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from d810.cfg.flow.return_frontier import ReturnSite
-from d810.recon.artifacts import (
+from d810.passes.artifacts import (
     load_return_sites_from_store,
     load_transition_report_from_store,
     save_transition_report_to_store,
 )
-from d810.recon.flow.transition_report import (
+from d810.analyses.control_flow.transition_report import (
     DispatcherTransitionReport,
     TransitionKind,
     TransitionPath,

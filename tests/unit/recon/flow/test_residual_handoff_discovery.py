@@ -4,8 +4,8 @@ import inspect
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import d810.recon.flow.residual_handoff_discovery as residual_handoff_discovery
-from d810.recon.flow.linearized_state_dag import (
+import d810.analyses.control_flow.residual_handoff_discovery as residual_handoff_discovery
+from d810.analyses.control_flow.linearized_state_dag import (
     RedirectSourceKind,
     SemanticEdgeKind,
     StateDagEdge,
@@ -14,7 +14,7 @@ from d810.recon.flow.linearized_state_dag import (
     StateNodeKind,
     StateRedirectAnchor,
 )
-from d810.recon.flow.residual_handoff_discovery import (
+from d810.analyses.control_flow.residual_handoff_discovery import (
     collect_residual_source_handoff_facts,
     dispatcher_exact_state_target,
     dispatcher_has_exact_state_row,
@@ -132,7 +132,7 @@ class TestDispatcherExactRows:
             )
         )
         with patch(
-            "d810.recon.flow.residual_handoff_discovery.resolve_singleton_state_write_value",
+            "d810.analyses.control_flow.residual_handoff_discovery.resolve_singleton_state_write_value",
             side_effect=[None, 0x10],
         ):
             assert has_live_exact_residual_handoff(
@@ -147,7 +147,7 @@ class TestDispatcherExactRows:
             _rows=(SimpleNamespace(lo=0x10, hi=0x11, target=8),)
         )
         with patch(
-            "d810.recon.flow.residual_handoff_discovery.resolve_singleton_state_write_value",
+            "d810.analyses.control_flow.residual_handoff_discovery.resolve_singleton_state_write_value",
             return_value=0x10,
         ):
             assert not has_live_exact_residual_handoff(
@@ -363,19 +363,19 @@ class TestResidualTargetDiscovery:
 
         with (
             patch(
-                "d810.recon.flow.residual_handoff_discovery.resolve_redirect_safe_target_entry",
+                "d810.analyses.control_flow.residual_handoff_discovery.resolve_redirect_safe_target_entry",
                 return_value=30,
             ),
             patch(
-                "d810.recon.flow.residual_handoff_discovery.resolve_nonexact_dispatch_target",
+                "d810.analyses.control_flow.residual_handoff_discovery.resolve_nonexact_dispatch_target",
                 return_value=40,
             ),
             patch(
-                "d810.recon.flow.residual_handoff_discovery.resolve_immediate_handoff_target",
+                "d810.analyses.control_flow.residual_handoff_discovery.resolve_immediate_handoff_target",
                 return_value=(0x55, 8),
             ),
             patch(
-                "d810.recon.flow.residual_handoff_discovery.resolve_cover_fallback_entry_for_state",
+                "d810.analyses.control_flow.residual_handoff_discovery.resolve_cover_fallback_entry_for_state",
                 return_value=None,
             ),
         ):
@@ -408,19 +408,19 @@ class TestResidualTargetDiscovery:
 
         with (
             patch(
-                "d810.recon.flow.residual_handoff_discovery.resolve_redirect_safe_target_entry",
+                "d810.analyses.control_flow.residual_handoff_discovery.resolve_redirect_safe_target_entry",
                 return_value=30,
             ),
             patch(
-                "d810.recon.flow.residual_handoff_discovery.resolve_nonexact_dispatch_target",
+                "d810.analyses.control_flow.residual_handoff_discovery.resolve_nonexact_dispatch_target",
                 return_value=None,
             ),
             patch(
-                "d810.recon.flow.residual_handoff_discovery.resolve_immediate_handoff_target",
+                "d810.analyses.control_flow.residual_handoff_discovery.resolve_immediate_handoff_target",
                 return_value=(0x33, 40),
             ),
             patch(
-                "d810.recon.flow.residual_handoff_discovery.resolve_dag_entry_for_state",
+                "d810.analyses.control_flow.residual_handoff_discovery.resolve_dag_entry_for_state",
                 return_value=31,
             ),
         ):
@@ -484,29 +484,29 @@ class TestResidualTargetDiscovery:
         dag = _dag((), ())
 
         monkeypatch.setattr(
-            "d810.recon.flow.residual_handoff_discovery.block_has_state_var_write",
+            "d810.analyses.control_flow.residual_handoff_discovery.block_has_state_var_write",
             lambda mba, block_serial, **kwargs: mba == "analysis",
         )
         monkeypatch.setattr(
-            "d810.recon.flow.residual_handoff_discovery.resolve_assignment_map_handoff_target",
+            "d810.analyses.control_flow.residual_handoff_discovery.resolve_assignment_map_handoff_target",
             lambda *args, **kwargs: (0x11, 24),
         )
         monkeypatch.setattr(
-            "d810.recon.flow.residual_handoff_discovery.resolve_projected_snapshot_handoff_target",
+            "d810.analyses.control_flow.residual_handoff_discovery.resolve_projected_snapshot_handoff_target",
             lambda *args, **kwargs: (0x22, 25),
         )
         monkeypatch.setattr(
-            "d810.recon.flow.residual_handoff_discovery.resolve_immediate_handoff_target",
+            "d810.analyses.control_flow.residual_handoff_discovery.resolve_immediate_handoff_target",
             lambda dag, mba, source_block, **kwargs: (
                 (0x33, 26) if mba == "analysis" else (0x44, 27)
             ),
         )
         monkeypatch.setattr(
-            "d810.recon.flow.residual_handoff_discovery.resolve_synthesized_handoff_target",
+            "d810.analyses.control_flow.residual_handoff_discovery.resolve_synthesized_handoff_target",
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
-            "d810.recon.flow.residual_handoff_discovery.resolve_projected_path_tail_target",
+            "d810.analyses.control_flow.residual_handoff_discovery.resolve_projected_path_tail_target",
             lambda *args, **kwargs: (0x55, 28),
         )
 
@@ -562,27 +562,27 @@ class TestResidualTargetDiscovery:
         )
 
         monkeypatch.setattr(
-            "d810.recon.flow.residual_handoff_discovery.block_has_state_var_write",
+            "d810.analyses.control_flow.residual_handoff_discovery.block_has_state_var_write",
             lambda *args, **kwargs: True,
         )
         monkeypatch.setattr(
-            "d810.recon.flow.residual_handoff_discovery.resolve_assignment_map_handoff_target",
+            "d810.analyses.control_flow.residual_handoff_discovery.resolve_assignment_map_handoff_target",
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
-            "d810.recon.flow.residual_handoff_discovery.resolve_projected_snapshot_handoff_target",
+            "d810.analyses.control_flow.residual_handoff_discovery.resolve_projected_snapshot_handoff_target",
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
-            "d810.recon.flow.residual_handoff_discovery.resolve_immediate_handoff_target",
+            "d810.analyses.control_flow.residual_handoff_discovery.resolve_immediate_handoff_target",
             lambda *args, **kwargs: (0x11, 66),
         )
         monkeypatch.setattr(
-            "d810.recon.flow.residual_handoff_discovery.resolve_synthesized_handoff_target",
+            "d810.analyses.control_flow.residual_handoff_discovery.resolve_synthesized_handoff_target",
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
-            "d810.recon.flow.residual_handoff_discovery.resolve_projected_path_tail_target",
+            "d810.analyses.control_flow.residual_handoff_discovery.resolve_projected_path_tail_target",
             lambda *args, **kwargs: (0x11, 14),
         )
 
@@ -617,19 +617,19 @@ class TestResidualTargetDiscovery:
         )
 
         monkeypatch.setattr(
-            "d810.recon.flow.residual_handoff_discovery.block_has_state_var_write",
+            "d810.analyses.control_flow.residual_handoff_discovery.block_has_state_var_write",
             lambda *args, **kwargs: False,
         )
         monkeypatch.setattr(
-            "d810.recon.flow.residual_handoff_discovery.resolve_assignment_map_handoff_target",
+            "d810.analyses.control_flow.residual_handoff_discovery.resolve_assignment_map_handoff_target",
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
-            "d810.recon.flow.residual_handoff_discovery.resolve_projected_snapshot_handoff_target",
+            "d810.analyses.control_flow.residual_handoff_discovery.resolve_projected_snapshot_handoff_target",
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
-            "d810.recon.flow.residual_handoff_discovery.resolve_immediate_handoff_target",
+            "d810.analyses.control_flow.residual_handoff_discovery.resolve_immediate_handoff_target",
             lambda dag, mba_value, source_block, **kwargs: (
                 (0x41FB8FBB, 86)
                 if mba_value is mba and int(source_block) == 195
@@ -637,11 +637,11 @@ class TestResidualTargetDiscovery:
             ),
         )
         monkeypatch.setattr(
-            "d810.recon.flow.residual_handoff_discovery.resolve_synthesized_handoff_target",
+            "d810.analyses.control_flow.residual_handoff_discovery.resolve_synthesized_handoff_target",
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
-            "d810.recon.flow.residual_handoff_discovery.resolve_projected_path_tail_target",
+            "d810.analyses.control_flow.residual_handoff_discovery.resolve_projected_path_tail_target",
             lambda *args, **kwargs: None,
         )
 

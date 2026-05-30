@@ -27,7 +27,7 @@ from d810.analyses.value_flow import (
     production_value_flow_fact,
     project_value_flow_facts,
 )
-from d810.recon.facts.model import FactObservation
+from d810.analyses.value_flow.model import FactObservation
 
 
 def _fact(

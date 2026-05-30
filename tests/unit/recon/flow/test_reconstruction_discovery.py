@@ -3,13 +3,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.cfg.flowgraph import InsnKind, OperandKind
-from d810.recon.flow.linearized_state_dag import SemanticEdgeKind
-from d810.recon.flow.reconstruction_discovery import (
+from d810.analyses.control_flow.linearized_state_dag import SemanticEdgeKind
+from d810.analyses.control_flow.reconstruction_discovery import (
     classify_artifact_return_blocks,
     collect_shared_suffix_blocks,
     discover_reconstruction_candidate_seed,
 )
-from d810.recon.flow.state_machine_analysis import StateWriteSite
+from d810.analyses.control_flow.state_machine_analysis import StateWriteSite
 
 
 class _Insn:
@@ -106,11 +106,11 @@ class TestDiscoverReconstructionCandidateSeed:
         )
 
         monkeypatch.setattr(
-            "d810.recon.flow.reconstruction_discovery.resolve_transition_path_horizon",
+            "d810.analyses.control_flow.reconstruction_discovery.resolve_transition_path_horizon",
             lambda edge, **kwargs: (11, site),
         )
         monkeypatch.setattr(
-            "d810.recon.flow.reconstruction_discovery.resolve_edge_target_entry",
+            "d810.analyses.control_flow.reconstruction_discovery.resolve_edge_target_entry",
             lambda edge, **kwargs: SimpleNamespace(
                 target_entry=88,
                 rejection_reason=None,

@@ -29,7 +29,7 @@ def snapshot_reconstruction_dag(
     strategy_name: str,
 ) -> SnapshotReconstructionResult:
     try:
-        from d810.recon.flow.runtime_evidence import (
+        from d810.analyses.control_flow.runtime_evidence import (
             record_latest_reconstruction_dag,
         )
 
@@ -44,7 +44,7 @@ def snapshot_reconstruction_dag(
         )
     try:
         from d810.hexrays.observability import request_capture_mba_snapshot
-        from d810.recon.observability import (
+        from d810.core.observability_recon import (
             DagEdge,
             DagNode,
             dag_node_diagnostic_state,
@@ -113,7 +113,7 @@ def snapshot_reconstruction_post_apply(
 ) -> None:
     try:
         from d810.hexrays.observability import request_capture_mba_snapshot
-        from d810.recon.observability import (
+        from d810.core.observability_recon import (
             DagEdge,
             DagNode,
             Modification,

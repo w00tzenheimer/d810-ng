@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.recon.flow.entry_island_rescue_discovery import (
+from d810.analyses.control_flow.entry_island_rescue_discovery import (
     EntryIslandRescueSeed,
     LateEntryIslandDiagnostic,
     LateEntryIslandRescueSeed,
@@ -39,19 +39,19 @@ class TestCollectEntryIslandRescueSeeds:
         )
 
         monkeypatch.setattr(
-            "d810.recon.flow.entry_island_rescue_discovery.semantic_entry_anchors",
+            "d810.analyses.control_flow.entry_island_rescue_discovery.semantic_entry_anchors",
             lambda dag: {60, 90},
         )
         monkeypatch.setattr(
-            "d810.recon.flow.entry_island_rescue_discovery.incoming_edges_by_target_entry",
+            "d810.analyses.control_flow.entry_island_rescue_discovery.incoming_edges_by_target_entry",
             lambda dag: {60: ()},
         )
         monkeypatch.setattr(
-            "d810.recon.flow.entry_island_rescue_discovery.lift_target_entry_to_island_entry",
+            "d810.analyses.control_flow.entry_island_rescue_discovery.lift_target_entry_to_island_entry",
             lambda target_entry, **kwargs: 90,
         )
         monkeypatch.setattr(
-            "d810.recon.flow.entry_island_rescue_discovery.edge_reachable_frontier",
+            "d810.analyses.control_flow.entry_island_rescue_discovery.edge_reachable_frontier",
             lambda **kwargs: 12,
         )
 
@@ -74,19 +74,19 @@ class TestCollectEntryIslandRescueSeeds:
         )
 
         monkeypatch.setattr(
-            "d810.recon.flow.entry_island_rescue_discovery.semantic_entry_anchors",
+            "d810.analyses.control_flow.entry_island_rescue_discovery.semantic_entry_anchors",
             lambda dag: {60},
         )
         monkeypatch.setattr(
-            "d810.recon.flow.entry_island_rescue_discovery.incoming_edges_by_target_entry",
+            "d810.analyses.control_flow.entry_island_rescue_discovery.incoming_edges_by_target_entry",
             lambda dag: {60: ()},
         )
         monkeypatch.setattr(
-            "d810.recon.flow.entry_island_rescue_discovery.lift_target_entry_to_island_entry",
+            "d810.analyses.control_flow.entry_island_rescue_discovery.lift_target_entry_to_island_entry",
             lambda target_entry, **kwargs: 80,
         )
         monkeypatch.setattr(
-            "d810.recon.flow.entry_island_rescue_discovery.edge_reachable_frontier",
+            "d810.analyses.control_flow.entry_island_rescue_discovery.edge_reachable_frontier",
             lambda **kwargs: 12,
         )
 
@@ -118,7 +118,7 @@ class TestCollectLateEntryIslandRescueSeeds:
         flow_graph = _FlowGraph({40: _Block(succs=(41, 42, 7))})
 
         monkeypatch.setattr(
-            "d810.recon.flow.entry_island_rescue_discovery.edge_reachable_frontier",
+            "d810.analyses.control_flow.entry_island_rescue_discovery.edge_reachable_frontier",
             lambda **kwargs: 33,
         )
 
@@ -149,7 +149,7 @@ class TestCollectLateEntryIslandRescueSeeds:
         flow_graph = _FlowGraph({40: _Block(succs=(41,))})
 
         monkeypatch.setattr(
-            "d810.recon.flow.entry_island_rescue_discovery.edge_reachable_frontier",
+            "d810.analyses.control_flow.entry_island_rescue_discovery.edge_reachable_frontier",
             lambda **kwargs: None,
         )
 

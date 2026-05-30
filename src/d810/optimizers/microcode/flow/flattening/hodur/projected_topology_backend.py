@@ -10,10 +10,10 @@ from __future__ import annotations
 from d810.core.typing import Protocol
 from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.plan import compile_patch_plan
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     build_live_linearized_state_dag_from_graph,
 )
-from d810.recon.flow.state_machine_analysis import build_mba_view_from_flow_graph
+from d810.analyses.control_flow.state_machine_analysis import build_mba_view_from_flow_graph
 
 
 class ProjectedTopologyBackend(Protocol):

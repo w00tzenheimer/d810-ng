@@ -3,8 +3,8 @@ import time
 from types import MappingProxyType
 import pytest
 from d810.core import ProviderPhaseSnapshot
-from d810.recon.models import ReconResult
-from d810.recon.phase import ALL_MATURITIES, ReconPhase
+from d810.analyses.control_flow.models import ReconResult
+from d810.passes.phase import ALL_MATURITIES, ReconPhase
 
 
 def _phase(level: int, friendly: str | None = None) -> ProviderPhaseSnapshot:
@@ -44,7 +44,7 @@ class AllMaturityCollector(FakeCollector):
 
 @pytest.fixture
 def store(tmp_path):
-    from d810.recon.store import ReconStore
+    from d810.passes.store import ReconStore
     s = ReconStore(tmp_path / "phase_test.db")
     yield s
     s.close()

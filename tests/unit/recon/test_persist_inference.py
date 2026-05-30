@@ -9,7 +9,7 @@ import pytest
 
 from d810.core import logging
 from d810.core.rule_scope import RuleDelta
-from d810.recon.persist_inference import logger, persist_inference
+from d810.passes.persist_inference import logger, persist_inference
 
 
 def _make_config(tmp_path: Path) -> Path:

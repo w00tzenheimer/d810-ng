@@ -45,7 +45,7 @@ from d810.diagnostics.hcc_byte_cascade_trace import (
 
 
 # Mirrors SemanticEdgeKind.{TRANSITION, CONDITIONAL_TRANSITION}.name in
-# d810.recon.flow.linearized_state_dag. Keep this in sync if the enum
+# d810.analyses.control_flow.linearized_state_dag. Keep this in sync if the enum
 # names change.
 ALLOWED_EDGE_KINDS: frozenset[str] = frozenset({
     "TRANSITION",
@@ -55,7 +55,7 @@ ALLOWED_EDGE_KINDS: frozenset[str] = frozenset({
 # Hardcoded attribution to the rejection check in the codebase. If the
 # check ever moves, update both this string and the module docstring.
 REJECTION_CHECK_LABEL = (
-    "d810.recon.flow.reconstruction_candidate_builder."
+    "d810.analyses.control_flow.reconstruction_candidate_builder."
     "build_reconstruction_candidate (edge_kind gate)"
 )
 

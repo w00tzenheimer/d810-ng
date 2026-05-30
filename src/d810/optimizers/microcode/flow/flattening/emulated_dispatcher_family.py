@@ -110,16 +110,16 @@ from d810.optimizers.microcode.flow.flattening.dynamic_state_transition_recovery
 from d810.optimizers.microcode.flow.dispatcher.equality_chain import (
     extract_state_dispatcher_map_from_hexrays_mba as extract_state_dispatcher_map_from_mba,
 )
-from d810.recon.flow.entry_island_rescue_discovery import (
+from d810.analyses.control_flow.entry_island_rescue_discovery import (
     collect_entry_island_rescue_seeds,
     collect_late_entry_island_diagnostics,
     collect_late_entry_island_rescue_seeds,
 )
-from d810.recon.flow.graph_reachability import (
+from d810.analyses.control_flow.graph_reachability import (
     collect_residual_dispatcher_predecessors,
     compute_reachable_blocks,
 )
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     BoundaryInlineMode,
     LabelRenderMode,
     ProgramCommentMode,
@@ -135,13 +135,13 @@ from d810.analyses.control_flow.predecessor_dispatcher_target import (
     PredecessorDispatcherTargetFact,
     collect_predecessor_dispatcher_target_facts,
 )
-from d810.recon.flow.reconstruction_discovery import (
+from d810.analyses.control_flow.reconstruction_discovery import (
     classify_artifact_return_blocks,
 )
 from functools import partial as _partial
 
 from d810.cfg.reconstruction_planning import plan_reconstruction_candidate
-from d810.recon.flow.reconstruction_candidate_builder import (
+from d810.analyses.control_flow.reconstruction_candidate_builder import (
     build_reconstruction_candidate as _build_reconstruction_candidate,
 )
 
@@ -151,7 +151,7 @@ build_reconstruction_candidate = _partial(
     _build_reconstruction_candidate,
     plan_reconstruction_candidate=plan_reconstruction_candidate,
 )
-from d810.recon.flow.reconstruction_discovery_indexes import (
+from d810.analyses.control_flow.reconstruction_discovery_indexes import (
     build_reconstruction_discovery_indexes,
 )
 from d810.analyses.value_flow import (
@@ -161,26 +161,26 @@ from d810.analyses.value_flow import (
     SCALAR_REPLACEMENT_FACT_TYPE,
     production_value_flow_fact,
 )
-from d810.recon.flow.residual_alias_discovery import (
+from d810.analyses.control_flow.residual_alias_discovery import (
     discover_residual_alias_overrides,
 )
 from d810.optimizers.microcode.flow.flattening.residual_handoff_resolution import (
     resolve_effective_target_entry,
 )
-from d810.recon.flow.return_corridor_discovery import (
+from d810.analyses.control_flow.return_corridor_discovery import (
     collect_common_return_corridor,
 )
-from d810.recon.flow.state_machine_analysis import (
+from d810.analyses.control_flow.state_machine_analysis import (
     build_mba_view_from_flow_graph,
     find_last_state_write_site_on_path_snapshot,
     run_snapshot_constant_fixpoint,
 )
-from d810.recon.flow.state_dag_index import DagParentEdge, StateDagIndex
-from d810.recon.flow.terminal_family_collection import (
+from d810.analyses.control_flow.state_dag_index import DagParentEdge, StateDagIndex
+from d810.analyses.control_flow.terminal_family_collection import (
     collect_terminal_family_report,
 )
-from d810.recon.flow.transition_builder import _convert_bst_to_result
-from d810.recon.flow.transition_report import build_dispatcher_transition_report_from_graph
+from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
+from d810.analyses.control_flow.transition_report import build_dispatcher_transition_report_from_graph
 
 family_logger = logging.getLogger(
     "D810.unflat.emulated_dispatcher.family", logging.DEBUG
@@ -8717,7 +8717,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
 
         try:
             from d810.hexrays.observability import request_capture_mba_snapshot
-            from d810.recon.observability import (
+            from d810.core.observability_recon import (
                 DagEdge,
                 DagNode,
                 dag_node_diagnostic_state,
@@ -8913,7 +8913,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
                 facts_from_validated_view,
                 resolve_state_transitions_with_dispatcher_map,
             )
-            from d810.recon.observability import (
+            from d810.core.observability_recon import (
                 observe_state_transition_dispatch_resolutions,
             )
 

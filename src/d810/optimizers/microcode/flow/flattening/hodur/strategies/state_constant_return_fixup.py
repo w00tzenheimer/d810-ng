@@ -29,7 +29,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.recon.flow.exit_transition_discovery import (
+from d810.analyses.control_flow.exit_transition_discovery import (
     resolve_state_var_stkoff,
 )
 

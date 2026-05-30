@@ -1,7 +1,7 @@
 """Backward-compatible Hodur helper re-exports.
 
 The reusable state-machine path helpers now live under
-``d810.recon.flow.state_machine_analysis``. This module keeps the old import
+``d810.analyses.control_flow.state_machine_analysis``. This module keeps the old import
 surface for Hodur strategies while the implementation remains centralized.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from d810.core import logging
 from d810.hexrays.utils.hexrays_formatters import blk_label
-from d810.recon.flow.state_machine_analysis import (
+from d810.analyses.control_flow.state_machine_analysis import (
     ConditionalTransition,
     HandlerPathResult,
     can_reach_return_snapshot,

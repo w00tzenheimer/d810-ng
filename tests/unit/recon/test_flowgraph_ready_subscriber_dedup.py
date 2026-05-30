@@ -41,8 +41,8 @@ from types import MappingProxyType
 from d810.cfg.flowgraph import FlowGraph
 from d810.core.events import EventEmitter
 from d810.core.provider_phase import ProviderPhaseSnapshot
-from d810.recon.models import ReconResult
-from d810.recon.phase import ReconPhase
+from d810.analyses.control_flow.models import ReconResult
+from d810.passes.phase import ReconPhase
 
 
 class _Event(enum.Enum):
@@ -132,10 +132,10 @@ class TestFlowGraphReadySubscriberDedup:
     def _build_phase(self, monkeypatch, collector: _CountingCollector) -> ReconPhase:
         """Build a ``ReconPhase`` with the writer stubbed so saves
         don't try to hit SQLite."""
-        import d810.recon.phase
+        import d810.passes.phase
 
         monkeypatch.setattr(
-            d810.recon.phase, "get_recon_writer", lambda _: _NoopWriter()
+            d810.passes.phase, "get_recon_writer", lambda _: _NoopWriter()
         )
 
         phase = ReconPhase(store=_StubStore())  # type: ignore[arg-type]

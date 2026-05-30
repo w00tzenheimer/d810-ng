@@ -55,7 +55,7 @@ def prepare_return_frontier_audit(
     """Build return-frontier sites if needed and record the pre-plan stage."""
     return_sites = tuple(current_return_sites)
     if not return_sites:
-        from d810.recon.flow.transition_report import (
+        from d810.analyses.control_flow.transition_report import (
             build_dispatcher_transition_report,
         )
 

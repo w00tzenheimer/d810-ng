@@ -53,7 +53,7 @@ from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
     DispatcherAnalysis,
     analyze_dispatcher_live,
 )
-from d810.recon.flow.transition_builder import (
+from d810.analyses.control_flow.transition_builder import (
     StateHandler,
     StateTransition,
     StateUpdateSite,

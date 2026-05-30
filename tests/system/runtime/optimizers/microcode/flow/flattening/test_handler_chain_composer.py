@@ -54,7 +54,7 @@ if IDA_AVAILABLE:
     from d810.optimizers.microcode.flow.flattening.hodur import (
         handler_chain_topology_walk_backend as hcc_topology_walk_backend_module,
     )
-    from d810.recon.flow.linearized_state_dag import (
+    from d810.analyses.control_flow.linearized_state_dag import (
         LinearizedStateDag,
         SemanticEdgeKind,
         StateDagEdge,

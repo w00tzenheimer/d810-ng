@@ -10,7 +10,7 @@ from d810.cfg.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.recon.flow.instruction_semantics import (
+from d810.analyses.control_flow.instruction_semantics import (
     comparison_width,
     evaluate_branch_predicate,
     is_branch,

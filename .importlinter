@@ -81,22 +81,27 @@ forbidden_modules =
     idapro
 
 [importlinter:contract:recon-core-no-hexrays]
+# The former recon-core modules were relocated to their canonical homes
+# (d810.passes.* / d810.analyses.control_flow.*) by the recon/cfg
+# dissolution; this contract follows them and keeps the recon analysis
+# core hexrays-agnostic at its new addresses. d810.recon.collectors is the
+# surviving package facade re-exporting from analyses.control_flow.
 name = Recon core modules must stay hexrays-agnostic
 type = forbidden
 allow_indirect_imports = True
 source_modules =
-    d810.recon.analysis
-    d810.recon.models
-    d810.recon.phase
-    d810.recon.store
+    d810.passes.analysis
+    d810.passes.phase
+    d810.passes.store
+    d810.analyses.control_flow.models
     d810.recon.collectors
-    d810.recon.flow.analysis_stats
-    d810.recon.flow.dispatch_region
-    d810.recon.flow.profile_classifier
-    d810.recon.flow.transition_bst_adapter
-    d810.recon.flow.exit_transition_discovery
-    d810.recon.flow.residual_handoff_discovery
-    d810.recon.flow.state_machine_analysis
+    d810.analyses.control_flow.analysis_stats
+    d810.analyses.control_flow.dispatch_region
+    d810.analyses.control_flow.profile_classifier
+    d810.analyses.control_flow.transition_bst_adapter
+    d810.analyses.control_flow.exit_transition_discovery
+    d810.analyses.control_flow.residual_handoff_discovery
+    d810.analyses.control_flow.state_machine_analysis
 forbidden_modules =
     d810.hexrays
     d810.backends.hexrays

@@ -306,7 +306,7 @@ class DispatcherTrampolineSkipStrategy:
         detector = getattr(snapshot, "detector", None)
         if detector is not None:
             try:
-                from d810.recon.flow.transition_builder import (
+                from d810.analyses.control_flow.transition_builder import (
                     _get_state_var_stkoff,
                 )
 

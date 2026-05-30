@@ -8,11 +8,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from d810.recon.collectors.profile_classifier import (
+from d810.analyses.control_flow.profile_classifier_collector import (
     FlowProfileClassifierCollector,
     _portable_components,
 )
-from d810.recon.models import ReconResult
+from d810.analyses.control_flow.models import ReconResult
 
 
 # ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.recon.flow.guarded_state_machine import (
+from d810.analyses.control_flow.guarded_state_machine import (
     GUARDED_STATE_MACHINE_FIXES_METADATA_KEY,
     GuardedStateMachineFix,
     collect_guarded_state_machine_fixes,

@@ -36,22 +36,22 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditiona
 from d810.optimizers.microcode.flow.flattening.hodur.prototypes import (
     collect_exact_conditional_bridge_sites,
 )
-from d810.recon.flow.graph_reachability import (
+from d810.analyses.control_flow.graph_reachability import (
     collect_residual_dispatcher_predecessors,
 )
-from d810.recon.flow.residual_handoff_discovery import (
+from d810.analyses.control_flow.residual_handoff_discovery import (
     dispatcher_exact_state_target,
     resolve_dag_entry_for_state,
     resolve_normalized_alias_entry_for_state,
     state_has_semantic_support,
     supplemental_selected_entry_for_state,
 )
-from d810.recon.flow.target_entry_resolution import (
+from d810.analyses.control_flow.target_entry_resolution import (
     resolve_exact_dag_entry_for_state,
     resolve_semantic_reference_entry_for_state,
 )
-from d810.recon.flow.state_machine_analysis import can_reach_return_snapshot
-from d810.recon.flow.state_machine_analysis import find_last_state_write_site_snapshot
+from d810.analyses.control_flow.state_machine_analysis import can_reach_return_snapshot
+from d810.analyses.control_flow.state_machine_analysis import find_last_state_write_site_snapshot
 from d810.optimizers.microcode.flow.flattening.hodur.residual_handoff_backend import (
     HexRaysResidualFrontierEvidenceBackend,
     ResidualFrontierEvidenceBackend,

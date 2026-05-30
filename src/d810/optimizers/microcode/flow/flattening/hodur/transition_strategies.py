@@ -5,7 +5,7 @@ from __future__ import annotations
 from d810.core.typing import TYPE_CHECKING, Optional
 
 from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
-from d810.recon.flow.transition_builder import (
+from d810.analyses.control_flow.transition_builder import (
     TransitionBuilderStrategy,
     TransitionResult,
     _convert_bst_to_result,

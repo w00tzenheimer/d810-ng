@@ -12,8 +12,8 @@ from d810.cfg.flowgraph import (
     OperandKind,
 )
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
-from d810.recon.facts.collectors import InductionVariableFactCollector
-from d810.recon.facts.collectors.induction_carrier import _MATURITY_VALUES
+from d810.analyses.value_flow.induction_carrier import InductionVariableFactCollector
+from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
 
 def _insn(

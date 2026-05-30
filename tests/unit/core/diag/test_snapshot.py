@@ -37,7 +37,7 @@ from d810.core.diag.snapshot import (
     snapshot_state_transition_dispatch_resolutions,
     snapshot_switch_case_transition_facts,
 )
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     BoundaryInlineMode,
     LabelRenderMode,
     LinearizedStateDag,
@@ -55,13 +55,7 @@ from d810.recon.flow.linearized_state_dag import (
     StateLocalSegment,
     StateNodeKind,
 )
-from d810.recon.facts import (
-    FactConflict,
-    FactConsumerRecord,
-    FactMapping,
-    FactObservation,
-    FactStatus,
-)
+from d810.analyses.value_flow.facts import FactConflict, FactConsumerRecord, FactMapping, FactObservation, FactStatus
 
 
 def _make_insn(

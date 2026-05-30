@@ -73,17 +73,17 @@ from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend 
     DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND,
     ProjectedTopologyBackend,
 )
-from d810.recon.flow.dag_redirect_discovery import (
+from d810.analyses.control_flow.dag_redirect_discovery import (
     find_foreign_exact_entry_owner,
     select_plannable_dag_edges,
 )
-from d810.recon.flow.linearized_dag_round_discovery import (
+from d810.analyses.control_flow.linearized_dag_round_discovery import (
     build_linearized_dag_round_summary,
 )
-from d810.recon.flow.graph_reachability import (
+from d810.analyses.control_flow.graph_reachability import (
     collect_residual_dispatcher_predecessors,
 )
-from d810.recon.flow.residual_handoff_discovery import (
+from d810.analyses.control_flow.residual_handoff_discovery import (
     dispatcher_exact_state_target,
     is_transient_corridor_entry,
     resolve_dag_entry_for_state,
@@ -94,9 +94,9 @@ from d810.optimizers.microcode.flow.flattening.residual_handoff_resolution impor
     is_semantic_handoff_redirect,
     resolve_singleton_state_write_value,
 )
-from d810.recon.flow.state_machine_analysis import can_reach_return_snapshot
-from d810.recon.flow.transition_builder import TransitionResult
-from d810.recon.flow.transition_report import (
+from d810.analyses.control_flow.state_machine_analysis import can_reach_return_snapshot
+from d810.analyses.control_flow.transition_builder import TransitionResult
+from d810.analyses.control_flow.transition_report import (
     build_dispatcher_transition_report_from_graph,
 )
 

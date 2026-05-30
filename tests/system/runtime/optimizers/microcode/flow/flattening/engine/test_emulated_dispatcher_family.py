@@ -83,12 +83,12 @@ from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipProofKind,
 )
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap, StateDispatcherRow
-from d810.recon.flow.reconstruction_candidate_builder import ReconstructionCandidate
-from d810.recon.flow.linearized_state_dag import SemanticEdgeKind
+from d810.analyses.control_flow.reconstruction_candidate_builder import ReconstructionCandidate
+from d810.analyses.control_flow.linearized_state_dag import SemanticEdgeKind
 from d810.analyses.control_flow.predecessor_dispatcher_target import (
     PredecessorDispatcherTargetFact,
 )
-from d810.recon.flow.state_dag_index import StateDagIndex
+from d810.analyses.control_flow.state_dag_index import StateDagIndex
 from d810.testing.runner import _resolve_test_project_index, get_func_ea
 
 
@@ -4175,27 +4175,27 @@ def test_emulated_dispatcher_phase_diagnostics_emit_profile_switch_facts(
         lambda **_kwargs: "snap",
     )
     monkeypatch.setattr(
-        "d810.recon.observability.observe_dag",
+        "d810.core.observability_recon.observe_dag",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "d810.recon.observability.observe_dag_local_facts",
+        "d810.core.observability_recon.observe_dag_local_facts",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "d810.recon.observability.observe_rendered_program",
+        "d810.core.observability_recon.observe_rendered_program",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "d810.recon.observability.observe_state_transition_dispatch_resolutions",
+        "d810.core.observability_recon.observe_state_transition_dispatch_resolutions",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "d810.recon.observability.observe_switch_case_transition_facts",
+        "d810.core.observability_recon.observe_switch_case_transition_facts",
         lambda snap, facts: observed.append((snap, tuple(facts))),
     )
     monkeypatch.setattr(
-        "d810.recon.observability.observe_fact_observation",
+        "d810.core.observability_recon.observe_fact_observation",
         lambda snap, func_ea, observations: observed_fact_rows.append(
             (snap, func_ea, tuple(observations))
         ),
@@ -4279,23 +4279,23 @@ def test_emulated_dispatcher_phase_diagnostics_reuse_materialized_dag_edges(
         lambda **_kwargs: "snap",
     )
     monkeypatch.setattr(
-        "d810.recon.observability.observe_dag",
+        "d810.core.observability_recon.observe_dag",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "d810.recon.observability.observe_dag_local_facts",
+        "d810.core.observability_recon.observe_dag_local_facts",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "d810.recon.observability.observe_rendered_program",
+        "d810.core.observability_recon.observe_rendered_program",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "d810.recon.observability.observe_state_transition_dispatch_resolutions",
+        "d810.core.observability_recon.observe_state_transition_dispatch_resolutions",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "d810.recon.observability.observe_branch_ownership_proofs",
+        "d810.core.observability_recon.observe_branch_ownership_proofs",
         lambda snap, proofs: observed.append((snap, tuple(proofs))),
     )
 

@@ -17,11 +17,11 @@ from d810.cfg.linearized_flow_graph_fragment_planning import (
     execute_linearized_flow_graph_planning,
     prepare_linearized_flow_graph_plan_setup,
 )
-from d810.recon.flow.linearized_dag_round_discovery import (
+from d810.analyses.control_flow.linearized_dag_round_discovery import (
     ResolvedDagStructuredRegion,
     discover_structured_dag_regions,
 )
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
     RenderedProgramLine,
     RenderedProgramNode,

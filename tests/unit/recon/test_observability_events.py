@@ -9,7 +9,7 @@ from d810.core.observability import (
     subscribe,
 )
 from d810.core.observability_models import DagEdge, DagNode, Modification
-from d810.recon.observability import (
+from d810.core.observability_recon import (
     BranchOwnershipProofsObserved,
     DagLocalFactsObserved,
     DagObserved,

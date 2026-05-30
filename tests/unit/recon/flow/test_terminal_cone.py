@@ -87,7 +87,7 @@ class TestDetectTerminalStateFamilies:
         dispatchers: set[int],
         side_effect_blocks: set[int] | None = None,
     ) -> set[int]:
-        from d810.recon.flow.state_machine_analysis import (
+        from d810.analyses.control_flow.state_machine_analysis import (
             detect_terminal_state_families_snapshot,
         )
         return detect_terminal_state_families_snapshot(
@@ -264,7 +264,7 @@ class TestRestrictedReachStop:
 
     @staticmethod
     def _reach(fg: FlowGraph, start: int, forbidden: set[int]) -> bool:
-        from d810.recon.flow.state_machine_analysis import _restricted_reach_stop
+        from d810.analyses.control_flow.state_machine_analysis import _restricted_reach_stop
         return _restricted_reach_stop(fg, start, forbidden)
 
     def test_direct_stop(self) -> None:

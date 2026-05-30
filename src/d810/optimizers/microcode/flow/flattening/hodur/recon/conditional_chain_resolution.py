@@ -21,7 +21,7 @@ from d810.hexrays.utils.hexrays_helpers import (
     equal_mops_ignore_size,
     get_mop_index,
 )
-from d810.recon.flow.conditional_chain_discovery import (
+from d810.analyses.control_flow.conditional_chain_discovery import (
     extract_check_constant_from_snapshot,
     find_conditional_predecessor,
     get_successor_into_dispatcher,

@@ -18,7 +18,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.recon.flow.side_effect_select_loop import (
+from d810.analyses.control_flow.side_effect_select_loop import (
     SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY,
     SideEffectSelectLoopFix,
     collect_side_effect_select_loop_fixes,

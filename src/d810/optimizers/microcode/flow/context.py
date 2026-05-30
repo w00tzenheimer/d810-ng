@@ -7,7 +7,7 @@ import ida_hexrays
 
 from d810.core import getLogger
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
-from d810.recon.flow.analysis_stats import (
+from d810.analyses.control_flow.analysis_stats import (
     FlowProfileStats,
     compute_flow_profile_stats,
 )
@@ -16,13 +16,13 @@ from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
 )
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.core.gate_modes import GateOperationMode
-from d810.recon.flow_hints import FlowContextHintSummary
-from d810.recon.function_priors import FunctionAnalysisPriors
+from d810.passes.flow_hints import FlowContextHintSummary
+from d810.passes.function_priors import FunctionAnalysisPriors
 
 if TYPE_CHECKING:
     from d810.analyses.value_flow.model import FactConsumerRecord, ValidatedFactView
-    from d810.recon.flow.dispatcher_analysis import DispatcherAnalysis
-    from d810.recon.flow.dispatcher_facts import BlockAnalysis
+    from d810.analyses.control_flow.dispatcher_analysis import DispatcherAnalysis
+    from d810.analyses.control_flow.dispatcher_facts import BlockAnalysis
     from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
 
@@ -285,7 +285,7 @@ class FlowMaturityContext:
             return self._terminal_boundary_blocks
 
         from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
-        from d810.recon.flow.state_machine_analysis import (
+        from d810.analyses.control_flow.state_machine_analysis import (
             detect_terminal_state_families_snapshot,
         )
 

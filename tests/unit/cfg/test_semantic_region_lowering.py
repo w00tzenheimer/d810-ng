@@ -18,7 +18,7 @@ from d810.cfg.semantic_reference import (
     collect_semantic_entry_by_label,
     collect_semantic_successors_by_state,
 )
-from d810.recon.flow.linearized_state_dag import StateNodeKind
+from d810.analyses.control_flow.linearized_state_dag import StateNodeKind
 
 
 @dataclass(frozen=True)

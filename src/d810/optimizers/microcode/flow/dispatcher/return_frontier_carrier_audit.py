@@ -28,7 +28,7 @@ from dataclasses import dataclass
 # Use the d810 logger pattern -- NOT stdlib logging.  See
 # .claude/rules/CORE_INSTRUCTIONS.md.
 from d810.core.logging import getLogger
-from d810.recon.flow.return_frontier_artifacts import (
+from d810.analyses.control_flow.return_frontier_artifacts import (
     ReturnFrontierArtifactPriors,
     ReturnFrontierCarrierClassification,
 )

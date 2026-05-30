@@ -4,14 +4,14 @@ import inspect
 from dataclasses import replace
 from types import SimpleNamespace
 
-import d810.recon.flow.branch_ownership_oracle as oracle_mod
-from d810.recon.facts.model import FactObservation
+import d810.analyses.control_flow.branch_ownership_oracle as oracle_mod
+from d810.analyses.value_flow.model import FactObservation
 from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipProof,
     BranchOwnershipProofKind,
     collect_branch_ownership_proofs,
 )
-from d810.recon.flow.branch_ownership_oracle import (
+from d810.analyses.control_flow.branch_ownership_oracle import (
     MopTrackerBranchOwnershipOracle,
     OllvmCarrierBranchOwnershipOracle,
     PredicateOwnershipKind,

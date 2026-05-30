@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.recon.flow.terminal_family_collection import (
+from d810.analyses.control_flow.terminal_family_collection import (
     TerminalSourceUnreachableDiagnostic,
     collect_terminal_source_unreachable_diagnostic,
 )

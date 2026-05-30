@@ -4,7 +4,7 @@ import inspect
 from types import SimpleNamespace
 
 from d810.cfg.flowgraph import BranchPredicate, InsnKind, OperandKind
-from d810.recon.flow import state_machine_analysis as sma
+from d810.analyses.control_flow import state_machine_analysis as sma
 
 
 def test_state_machine_analysis_does_not_import_live_hexrays():

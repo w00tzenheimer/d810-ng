@@ -1,7 +1,7 @@
 """Live-IDA dispatcher analysis adapters for microcode optimizers.
 
 Modules in this subpackage are the live boundary around the pure
-recon analyzer at ``d810.recon.flow.dispatcher_analysis``.  They
+recon analyzer at ``d810.analyses.control_flow.dispatcher_analysis``.  They
 own:
 
 * The mba-lift call (``d810.hexrays.mutation.ir_translator.lift``).

@@ -1,7 +1,7 @@
 """Residual handoff resolution with optional evaluator-backed state recovery.
 
 This module is the narrow enriched layer above
-``d810.recon.flow.residual_handoff_discovery``. Discovery stays pure; this
+``d810.analyses.control_flow.residual_handoff_discovery``. Discovery stays pure; this
 module only injects ``resolve_state_via_valranges`` when available.
 """
 
@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from d810.evaluator.hexrays_microcode.tracker import MopTracker, get_all_possibles_values
 from d810.evaluator.hexrays_microcode.valranges import resolve_state_via_valranges
-from d810.recon.flow.linearized_state_dag import LinearizedStateDag, StateDagEdge
-from d810.recon.flow.residual_handoff_discovery import (
+from d810.analyses.control_flow.linearized_state_dag import LinearizedStateDag, StateDagEdge
+from d810.analyses.control_flow.residual_handoff_discovery import (
     has_live_exact_residual_handoff as discover_has_live_exact_residual_handoff,
     resolve_effective_target_entry as discover_effective_target_entry,
     resolve_immediate_handoff_target,

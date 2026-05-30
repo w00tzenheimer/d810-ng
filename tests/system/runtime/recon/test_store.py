@@ -2,8 +2,8 @@ from __future__ import annotations
 import time
 from types import MappingProxyType
 import pytest
-from d810.recon.models import CandidateFlag, ReconResult, DeobfuscationHints
-from d810.recon.store import ReconStore
+from d810.analyses.control_flow.models import CandidateFlag, ReconResult, DeobfuscationHints
+from d810.passes.store import ReconStore
 
 
 @pytest.fixture

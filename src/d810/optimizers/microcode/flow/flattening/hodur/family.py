@@ -54,11 +54,11 @@ from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
     DispatcherAnalysis,
     analyze_dispatcher_live,
 )
-from d810.recon.flow.round_discovery_context import (
+from d810.analyses.control_flow.round_discovery_context import (
     build_round_discovery_context,
 )
-from d810.recon.function_priors import FunctionAnalysisPriors
-from d810.recon.flow.transition_builder import (
+from d810.passes.function_priors import FunctionAnalysisPriors
+from d810.analyses.control_flow.transition_builder import (
     build_transition_result_from_state_machine,
 )
 
@@ -121,7 +121,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
         """Initialize the Hodur family adapter.
 
         ``fact_runtime`` is the optional recon fact lifecycle runtime
-        (concretely a ``d810.recon.facts.runtime.FactLifecycleRuntime`` or any
+        (concretely a ``d810.passes.fact_runtime.FactLifecycleRuntime`` or any
         object exposing ``validated_fact_view(func_ea, maturity)``).  When
         provided, ``build_snapshot`` will populate
         ``AnalysisSnapshot.diagnostic_fact_view`` so fact-rooted strategy
@@ -499,7 +499,7 @@ class HodurStrategyFamily(CFFStrategyFamily):
     ) -> int | None:
         if self._detector is not None:
             try:
-                from d810.recon.flow.transition_builder import (
+                from d810.analyses.control_flow.transition_builder import (
                     _get_state_var_stkoff,
                 )
 

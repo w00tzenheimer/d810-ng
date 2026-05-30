@@ -7,7 +7,7 @@ genuinely-live question it delegates: "what constant did this indirect
 state-variable write resolve to?"
 
 The two ``_resolve_*`` helpers were moved here verbatim from
-``d810.recon.flow.terminal_corridor_discovery``; their logic is
+``d810.analyses.control_flow.terminal_corridor_discovery``; their logic is
 unchanged.
 """
 from __future__ import annotations
@@ -23,12 +23,12 @@ from d810.hexrays.mutation.ir_translator import (
     classify_live_insn_kind,
     classify_live_operand_kind,
 )
-from d810.recon.flow.carrier_resolution import CarrierResolver
-from d810.recon.flow.state_machine_analysis import (
+from d810.analyses.control_flow.carrier_resolution import CarrierResolver
+from d810.analyses.control_flow.state_machine_analysis import (
     CarrierResolutionResult,
     ResolutionMethod,
 )
-from d810.recon.flow.terminal_corridor_discovery import CarrierSourceKind
+from d810.analyses.control_flow.terminal_corridor_discovery import CarrierSourceKind
 
 
 def _resolve_indirect_state_write_via_mba(

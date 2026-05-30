@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from d810.recon.outcome import (
+from d810.passes.outcome import (
     ConsumerOutcomeReport,
     FlowGateOutcomeAdapter,
     PlannerOutcomeAdapter,
