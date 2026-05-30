@@ -1,18 +1,11 @@
 # Forbids live IDA / Hex-Rays imports in the portable-core layers of
 # the target llvm-lisa-restructure layout.
 #
-# Successor to `no-live-hexrays-in-pure-cfg.yml` (which scopes only
-# `src/d810/cfg/**`) and the staged
-# `no-live-ida-in-pre-analysis-staged.yml` that landed on the
-# recon-to-analysis branch. This rule scopes to BOTH the current
-# pre-restructure layout (recon/, parts of cfg/) AND the target
-# layout (analyses/, transforms/, passes/, ir/, capabilities/,
-# support/) so it fires the same way before and after each slice.
-#
 # This rule is the hard gate for direct live IDA / Hex-Rays imports in
-# portable-core candidate files. It was the llvm-lisa-restructure
-# migration meter while the count was nonzero; after the cleanup slices,
-# the target is to keep it at zero.
+# the portable-core layers (analyses/, transforms/, passes/, ir/,
+# capabilities/, support/, families/). The recon/cfg dissolution is
+# complete, so it scopes only the target LLVM/LiSA layout; the import
+# count is zero and must stay there.
 #
 # Tracking: docs/plans/recon-and-cfg-restructuring.md (Risk Register,
 #           Validation Gate Per Slice, Suggested Landing Sequence)
@@ -24,14 +17,9 @@ language: python
 # adapter, or capability boundary rather than reintroducing them into
 # portable-core candidates.
 #
-# This rule IS the load-bearing migration meter during the cleanup
-# window.  The companion `portable-core-no-ida` import-linter contract
-# is currently KEPT because its `source_modules` lists ONLY packages
-# that are already clean (d810.families, d810.capabilities); legacy
-# violators (d810.recon, etc.) are intentionally OUT of that contract's
-# scope until they get cleaned, at which point the slice that cleans
-# them appends them to the contract's `source_modules` and from that
-# point on the contract gates the newly-clean code.
+# The companion `portable-core-no-ida` import-linter contract gates the
+# same portable-core packages; the recon/cfg dissolution is complete, so
+# all portable-core homes are enrolled in its `source_modules`.
 #
 # Secondary check: the audit `rg` recipe in
 # `docs/plans/recon-and-cfg-restructuring.md` (`## Validation Gate
@@ -41,10 +29,8 @@ language: python
 severity: error
 
 files:
-  # Both target portable-core packages (LLVM/LiSA taxonomy from the
-  # plan) AND current pre-restructure portable-core candidate packages.
-  # The legacy entries (recon, pre_analysis, cfg/flowgraph) drive the
-  # warning count down as the migration progresses.
+  # Portable-core packages (LLVM/LiSA taxonomy). recon/cfg were dissolved
+  # into these homes; the migration is complete (no recon/pre_analysis/cfg).
   - "src/d810/support/**/*.py"
   - "src/d810/ir/**/*.py"
   - "src/d810/capabilities/**/*.py"
@@ -67,8 +53,7 @@ ignores:
 
 message: |
   Portable-core layers (support, ir, capabilities, analyses,
-  transforms, passes; plus current portable-core candidate files under
-  recon/ and cfg/) must NOT import live IDA / Hex-Rays APIs
+  transforms, passes, families) must NOT import live IDA / Hex-Rays APIs
   (idaapi, ida_hexrays, idc, idautils, ida_*).
 
   Portable layers consume the semantic IR from `d810.ir`
@@ -125,6 +110,6 @@ note: |
   glob does not see at definition time):
 
       rg -nP '(?:^|\s+)(import|from)\s+(idaapi|ida_\w+|idc|idautils)\b' \
-         src/d810/{support,ir,capabilities,analyses,transforms,passes,families,recon,pre_analysis}/
+         src/d810/{support,ir,capabilities,analyses,transforms,passes,families}/
 
   The rule and the audit grep must converge to empty together.

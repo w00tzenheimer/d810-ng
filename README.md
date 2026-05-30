@@ -174,12 +174,12 @@ D-810 ng implements a strictly isolated, uni-directional 7-stage architectural w
 
 ```mermaid
 graph LR
-    Recon["1. Recon (d810.recon)"]
-    Persist["2. Persist (d810.recon.store)"]
-    Analyze["3. Analyze (d810.cfg)"]
-    Plan["4. CFG Plan (d810.cfg.plan)"]
-    Project["5. Project & Validate"]
-    Lower["6. Lower (d810.cfg.lowering)"]
+    Recon["1. Recon (d810.analyses + d810.passes)"]
+    Persist["2. Persist (d810.passes.store)"]
+    Analyze["3. Analyze (d810.analyses.control_flow)"]
+    Plan["4. CFG Plan (d810.transforms.plan)"]
+    Project["5. Project & Validate (d810.transforms.contract)"]
+    Lower["6. Lower (d810.transforms)"]
     Mutate["7. Mutate (d810.hexrays.mutation)"]
 
     Recon --> Persist
@@ -190,17 +190,19 @@ graph LR
     Lower --> Mutate
 ```
 
-1. **Recon Facts (`d810.recon`)**:
-   A read-only, backend-agnostic pre-analysis layer. It extracts topological facts, conditional control flow shapes, entry/return frontiers, and value-flow evidence from the raw microcode using `Collector` classes. Live IDA/Hex-Rays decompilation dependencies are strictly isolated.
-2. **Persist Facts (`d810.recon.store`)**:
-   All collected facts, recommended inferences, and lifecycle metrics are written to an offline SQLite database. A dedicated background thread `ReconStoreWriter` performs the writes asynchronously to eliminate decompiler latency.
-3. **Analyze Facts (`d810.cfg.flow`)**:
+> Package note: the read-only/planning/lowering layers below were restructured into the LLVM/LiSA-style portable taxonomy (`recon`/`cfg` were dissolved into `analyses`/`transforms`/`passes`/`ir`); the 7-stage *flow* is unchanged, only the package homes moved.
+
+1. **Recon Facts (`d810.analyses` collectors + `d810.passes` orchestration)**:
+   A read-only, backend-agnostic pre-analysis layer. It extracts topological facts, conditional control flow shapes, entry/return frontiers, and value-flow evidence from the raw microcode using `Collector` classes (`d810.analyses.value_flow` / `d810.analyses.control_flow`), orchestrated by `d810.passes`. Live IDA/Hex-Rays decompilation dependencies are strictly isolated.
+2. **Persist Facts (`d810.passes.store`)**:
+   All collected facts, recommended inferences, and lifecycle metrics are written to an offline SQLite database. A dedicated background thread performs the writes asynchronously to eliminate decompiler latency.
+3. **Analyze Facts (`d810.analyses.control_flow`)**:
    Topological and state-machine discovery engines process the persisted facts in pure Python. They resolve BST lookup intervals, model state variable paths, and detect dispatcher boundaries.
-4. **CFG Flow Graph Planning (`d810.cfg.plan`)**:
+4. **CFG Flow Graph Planning (`d810.transforms.plan`)**:
    Generates a backend-neutral graph modification strategy (`PatchPlan`, `GraphModification`). These plans represent control-flow changes (e.g. unflattening, conditional splits, predecessor branch repairs) purely in topological form.
-5. **Project Modifications & Validation (`d810.cfg.lowering_selector`)**:
+5. **Project Modifications & Validation (`d810.transforms.contract` + `d810.hexrays.contracts`)**:
    The planning output is audited for structural validity, semantic reference consistency, and target-entry admission constraints prior to mutation.
-6. **Lower Projections (`d810.cfg.semantic_region_lowering`)**:
+6. **Lower Projections (`d810.transforms`)**:
    Translates validated abstract modifications into backend-specific lower-level instructions and edge routing instructions.
 7. **Lowering to Mutations (`d810.hexrays.mutation`)**:
    The final materialization backend transforms Hex-Rays microcode. By architecture policy (enforced via `no-direct-hexrays-mutation-outside-deferred-modifier.yml`), mutators must queue rewrites via `DeferredGraphModifier` (e.g. NOP blocks, successor modifications). This layer owns invalidation, stale pointer tracking, `MBL_KEEP` preservation, and transactional safety/rollbacks.
@@ -211,10 +213,10 @@ graph LR
 
 D-810 enforces strict boundaries to keep code clean and testable:
 
-#### `d810.recon`
-* **Role**: **Read-only pre-analysis**.
-* **Allowed**: Collecting CFG shapes, return frontiers, and ctree structures.
-* **Forbidden**: Direct imports of `d810.hexrays` or live mutation code. Do not put live `mba_t` value tracking logic inside recon.
+#### `d810.analyses`
+* **Role**: **Read-only pre-analysis** (the dissolved `d810.recon` discovery/fact layer now lives here as `d810.analyses.control_flow` / `d810.analyses.value_flow`).
+* **Allowed**: Collecting CFG shapes, return frontiers, and value-flow evidence.
+* **Forbidden**: Direct imports of `d810.hexrays` or live mutation code. Do not put live `mba_t` value tracking logic inside the portable analyses layer.
 
 #### `d810.evaluator.hexrays_microcode`
 * **Role**: **Live proof**.
@@ -236,7 +238,7 @@ Read-only proof modules may inspect live Hex-Rays state, but they must not mutat
 * **Not allowed in read-only proof**: `mblock_t.build_lists(kill_deads=True)`, `mba.mark_chains_dirty()`, block/instruction deletion or replacement.
 
 The practical rule is:
-1. If it must be portable/serializable, put it in `d810.recon`.
+1. If it must be portable/serializable, put it in the portable core (`d810.analyses` / `d810.transforms` / `d810.ir`).
 2. If it requires live Hex-Rays value-flow reasoning, put it in `d810.evaluator`.
 3. If it modifies CFGs or instructions, put it in `d810.hexrays.mutation`.
 
