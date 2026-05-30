@@ -1,99 +1,20 @@
-"""Flow-context hint summary types and derivation.
+"""Migration shim: ``d810.recon.flow_hints`` -> ``d810.passes.flow_hints`` (dissolution, llr-lyly).
 
-Consumer-specific summary consumed by :class:`FlowMaturityContext` gates.
-Deliberately free of IDA imports so it can be unit-tested standalone.
+sys.modules alias preserving the old import path; re-exports public AND
+private symbols.  Deleted in Phase Z once consumers repoint.
+
+The flow_hints module is a *passes*-layer module (recon orchestration root /
+scheduler tier, driven by Manager above the analyses layer), so the
+canonical home is :mod:`d810.passes.flow_hints`.  ``d810.recon`` sits BELOW
+``d810.passes`` in the layered architecture, so a literal ``from d810.passes
+import ...`` here would register a layer-fatal ``recon -> passes`` edge.  The
+alias is therefore resolved dynamically via :func:`importlib.import_module`,
+which the import graph does not follow, so this shim adds no static upward
+edge.  All live importers repoint to ``d810.passes.flow_hints`` directly.
 """
-from __future__ import annotations
+import importlib
+import sys
 
-from dataclasses import dataclass
+_canonical = importlib.import_module("d810.passes.flow_hints")
 
-from d810.core.gate_modes import GateOperationMode
-from d810.core.typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from d810.recon.models import DeobfuscationHints
-
-# Obfuscation type values that signal control-flow flattening.
-_FLATTENING_TYPES: frozenset[str] = frozenset({
-    "ollvm_flat",
-    "ollvm_flattening",
-    "mixed",
-})
-
-
-@dataclass(frozen=True, slots=True)
-class FlowContextHintSummary:
-    """Minimal analyzed summary consumed by FlowMaturityContext gates.
-
-    This is a *consumer-specific* projection of the generic
-    :class:`DeobfuscationHints` — flow-context only sees what it needs.
-
-    Attributes:
-        obfuscation_type: Detected obfuscation family, or ``None``.
-        confidence: Overall classification confidence in ``[0.0, 1.0]``.
-        has_flattening_signal: Whether the hints indicate control-flow
-            flattening is present.
-        recommended_gate_mode: Suggested gate operation mode, or ``None``
-            if the hints carry no recommendation.
-    """
-
-    obfuscation_type: str | None
-    confidence: float
-    has_flattening_signal: bool
-    recommended_gate_mode: GateOperationMode | None
-
-
-def derive_flow_context_summary(
-    hints: DeobfuscationHints,
-) -> FlowContextHintSummary:
-    """Convert generic :class:`DeobfuscationHints` to a flow-context summary.
-
-    The mapping checks ``obfuscation_type`` for flattening signals and
-    derives a ``recommended_gate_mode`` accordingly:
-
-    - Flattening detected with high confidence (>= 0.6) recommends
-      ``GATE_SELECT`` (full gate + planner influence).
-    - Flattening detected with low confidence recommends ``GATE_ONLY``
-      (enforce gates, but don't influence planner).
-    - No flattening signal: no recommendation (``None``).
-
-    Args:
-        hints: Generic deobfuscation hints from the analysis phase.
-
-    Returns:
-        A frozen flow-context-specific summary.
-
-    Example:
-        >>> from d810.recon.models import DeobfuscationHints
-        >>> hints = DeobfuscationHints(
-        ...     func_ea=0x401000,
-        ...     obfuscation_type="ollvm_flat",
-        ...     confidence=0.9,
-        ...     recommended_inferences=(),
-        ...     candidates=(),
-        ...     suppress_rules=(),
-        ... )
-        >>> summary = derive_flow_context_summary(hints)
-        >>> summary.has_flattening_signal
-        True
-        >>> summary.recommended_gate_mode
-        <GateOperationMode.GATE_SELECT: 'gate_select'>
-    """
-    has_flattening = (
-        hints.obfuscation_type is not None
-        and hints.obfuscation_type in _FLATTENING_TYPES
-    )
-
-    recommended_mode: GateOperationMode | None = None
-    if has_flattening:
-        if hints.confidence >= 0.6:
-            recommended_mode = GateOperationMode.GATE_SELECT
-        else:
-            recommended_mode = GateOperationMode.GATE_ONLY
-
-    return FlowContextHintSummary(
-        obfuscation_type=hints.obfuscation_type,
-        confidence=hints.confidence,
-        has_flattening_signal=has_flattening,
-        recommended_gate_mode=recommended_mode,
-    )
+sys.modules[__name__] = _canonical

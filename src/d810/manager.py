@@ -67,7 +67,7 @@ from d810.analyses.control_flow.profile_classifier_collector import (
     FlowProfileClassifierCollector,
 )
 from d810.analyses.control_flow.return_frontier_collector import ReturnFrontierCollector
-from d810.recon.function_priors import FunctionAnalysisPriors
+from d810.passes.function_priors import FunctionAnalysisPriors
 from d810.recon.flow.return_frontier_artifacts import (
     ReturnFrontierArtifactEdgeProof,
     ReturnFrontierArtifactPriors,
@@ -98,10 +98,10 @@ from d810.analyses.control_flow.state_transition_anchor import (
 )
 from d810.optimizers.microcode.microcode_dump import mba_to_dict
 from d810.recon.analysis import AnalysisPhase
-from d810.recon.inferences import unflattening_inference
-from d810.recon.phase import ReconPhase
+from d810.passes.inferences import unflattening_inference
+from d810.passes.phase import ReconPhase
 from d810.recon.runtime import ReconAnalysisRuntime
-from d810.recon.store import ReconStore, shutdown_all_writers
+from d810.passes.store import ReconStore, shutdown_all_writers
 
 try:
     import pyinstrument  # type: ignore
