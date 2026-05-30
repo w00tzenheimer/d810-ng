@@ -42,14 +42,14 @@ from d810.cfg.local_select_loop_planning import build_local_select_loop_modifica
 from d810.cfg.side_effect_select_loop_planning import (
     build_side_effect_select_loop_modifications,
 )
-from d810.recon.flow.guarded_state_machine import (
+from d810.analyses.control_flow.guarded_state_machine import (
     GUARDED_STATE_MACHINE_FIXES_METADATA_KEY,
     GuardedStateMachineFix,
     collect_guarded_state_machine_fixes,
     extract_guarded_state_machine_fixes,
     serialize_guarded_state_machine_fixes,
 )
-from d810.recon.flow.local_select_loop import (
+from d810.analyses.control_flow.local_select_loop import (
     LOCAL_SELECT_LOOP_FIXES_METADATA_KEY,
     LocalSelectConvergenceLoopFix,
     LocalSelectDirectExitLoopFix,
@@ -60,7 +60,7 @@ from d810.recon.flow.local_select_loop import (
     extract_local_select_loop_fixes,
     serialize_local_select_loop_fixes,
 )
-from d810.recon.flow.side_effect_select_loop import (
+from d810.analyses.control_flow.side_effect_select_loop import (
     SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY,
     SideEffectSelectLoopFix,
     collect_side_effect_select_loop_fixes,

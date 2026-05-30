@@ -26,18 +26,18 @@ import pytest
 import idaapi
 import idc
 
-from d810.recon.flow.return_frontier_artifacts import (
+from d810.analyses.control_flow.return_frontier_artifacts import (
     ReturnFrontierArtifactEdgeProof,
     ReturnFrontierArtifactPriors,
 )
-from d810.recon.flow.terminal_tail_priors import (
+from d810.analyses.control_flow.terminal_tail_priors import (
     TerminalTailCascadeEgressPriors,
     TerminalTailContinuationBridgePrior,
     TerminalTailEntryFrontierPriors,
     TerminalTailEqualityFrontierPriors,
     TerminalTailRowTargetOverride,
 )
-from d810.recon.function_priors import FunctionAnalysisPriors
+from d810.passes.function_priors import FunctionAnalysisPriors
 
 
 def _get_func_ea(name: str) -> int:

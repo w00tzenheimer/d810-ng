@@ -73,10 +73,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend 
     HodurProjectedTopologyBackend,
     ProjectedTopologyBackend,
 )
-from d810.recon.flow.linearized_dag_round_discovery import (
+from d810.analyses.control_flow.linearized_dag_round_discovery import (
     discover_structured_dag_regions,
 )
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     BoundaryInlineMode,
     LabelRenderMode,
     ProgramCommentMode,
@@ -85,38 +85,38 @@ from d810.recon.flow.linearized_state_dag import (
     build_live_linearized_state_dag_from_graph,
     build_linearized_state_program,
 )
-from d810.recon.flow.dag_index import build_dag_node_maps
-from d810.recon.flow.edge_metadata import make_edge_metadata
-from d810.recon.flow.edge_metadata import edge_kind_name
-from d810.recon.flow.full_coverage_chain_probe import log_chain_coverage
-from d810.recon.flow.reconstruction_discovery import (
+from d810.analyses.control_flow.recon_dag_index import build_dag_node_maps
+from d810.analyses.control_flow.edge_metadata import make_edge_metadata
+from d810.analyses.control_flow.edge_metadata import edge_kind_name
+from d810.analyses.control_flow.full_coverage_chain_probe import log_chain_coverage
+from d810.analyses.control_flow.reconstruction_discovery import (
     classify_artifact_return_blocks,
     collect_boundary_protected_shared_blocks,
     collect_shared_suffix_blocks,
     resolve_state_var_stkoff,
 )
-from d810.recon.flow.reconstruction_discovery_indexes import (
+from d810.analyses.control_flow.reconstruction_discovery_indexes import (
     build_reconstruction_discovery_indexes,
 )
-from d810.recon.flow.entry_island_rescue_discovery import (
+from d810.analyses.control_flow.entry_island_rescue_discovery import (
     collect_entry_island_rescue_seeds,
     collect_late_entry_island_diagnostics,
     collect_late_entry_island_rescue_seeds,
 )
-from d810.recon.flow.graph_reachability import (
+from d810.analyses.control_flow.graph_reachability import (
     collect_residual_dispatcher_predecessors,
     compute_reachable_blocks,
 )
-from d810.recon.flow.return_corridor_discovery import (
+from d810.analyses.control_flow.return_corridor_discovery import (
     collect_common_return_corridor,
 )
-from d810.recon.flow.terminal_family_collection import (
+from d810.analyses.control_flow.terminal_family_collection import (
     collect_terminal_family_report,
 )
 from functools import partial as _partial
 
 from d810.cfg.reconstruction_planning import plan_reconstruction_candidate
-from d810.recon.flow.reconstruction_candidate_builder import (
+from d810.analyses.control_flow.reconstruction_candidate_builder import (
     ReconstructionCandidate,
     build_reconstruction_candidate as _build_reconstruction_candidate,
 )
@@ -127,39 +127,39 @@ build_reconstruction_candidate = _partial(
     _build_reconstruction_candidate,
     plan_reconstruction_candidate=plan_reconstruction_candidate,
 )
-from d810.recon.flow.residual_alias_discovery import (
+from d810.analyses.control_flow.residual_alias_discovery import (
     discover_residual_alias_overrides,
 )
-from d810.recon.flow.transition_builder import (
+from d810.analyses.control_flow.transition_builder import (
     TransitionResult,
     build_transition_result_from_state_machine,
 )
-from d810.recon.flow.conditional_arm_canonicalization import (
+from d810.analyses.control_flow.conditional_arm_canonicalization import (
     canonicalize_same_target_conditional_candidates,
 )
-from d810.recon.flow.shared_group_bucketing import (
+from d810.analyses.control_flow.shared_group_bucketing import (
     group_candidates_by_shared_block,
 )
-from d810.recon.flow.narrow_branch_local_discovery import (
+from d810.analyses.control_flow.narrow_branch_local_discovery import (
     discover_narrow_branch_local_reconstruction_candidates,
 )
-from d810.recon.flow.frontier_override_discovery import (
+from d810.analyses.control_flow.frontier_override_discovery import (
     discover_frontier_overrides,
 )
 from d810.cfg.frontier_override_emission import emit_frontier_overrides
-from d810.recon.flow.missing_via_pred_discovery import (
+from d810.analyses.control_flow.missing_via_pred_discovery import (
     discover_missing_via_pred_direct_overrides,
 )
 from d810.cfg.reconstruction_missing_via_pred_emission import (
     emit_missing_via_pred_direct_overrides,
 )
-from d810.recon.flow.force_edge_override_discovery import (
+from d810.analyses.control_flow.force_edge_override_discovery import (
     discover_force_edge_overrides,
 )
 from d810.cfg.reconstruction_force_edge_override_emission import (
     execute_force_edge_override,
 )
-from d810.recon.flow.structured_region_fidelity_report import (
+from d810.analyses.control_flow.structured_region_fidelity_report import (
     build_structured_region_fidelity_report,
     collect_sub7ffd_may_only_probe_blocks,
 )
@@ -658,7 +658,7 @@ class StateWriteReconstructionStrategy:
             mba=mba,
             strategy_name=self.name,
         )
-        from d810.recon.flow.selected_alternate_edge_override import (
+        from d810.analyses.control_flow.selected_alternate_edge_override import (
             apply_selected_alternate_edge_overrides,
             derive_selected_alternate_edge_override_map,
         )

@@ -1,7 +1,7 @@
 from __future__ import annotations
 import pytest
 from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
-from d810.recon.collectors.dispatch_pattern import DispatchPatternCollector
+from d810.analyses.control_flow.dispatch_pattern import DispatchPatternCollector
 
 
 def _make_switch_cfg(func_ea: int = 0x401000) -> FlowGraph:

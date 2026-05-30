@@ -10,7 +10,7 @@ from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
 
 from d810.cfg.flow.return_frontier import ReturnSite
-from d810.recon.flow.return_sites import (
+from d810.analyses.control_flow.return_sites import (
     compute_legacy_return_site_guard_hash,
     compute_transition_row_guard_hash,
     legacy_handler_path_return_sites,
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
         HandlerPathResult,
     )
     from d810.optimizers.microcode.flow.flattening.engine.snapshot import AnalysisSnapshot
-    from d810.recon.flow.transition_report import (
+    from d810.analyses.control_flow.transition_report import (
         DispatcherTransitionReport,
         TransitionRow,
     )

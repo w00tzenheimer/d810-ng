@@ -17,7 +17,7 @@ from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
     DagAuthority,
     DagDecision,
 )
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
     RedirectSourceKind,
     SemanticEdgeKind,

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from d810.core import getLogger
 from d810.core.settings import get_settings
-from d810.recon.flow.selected_alternate_edge_override import (
+from d810.analyses.control_flow.selected_alternate_edge_override import (
     apply_selected_alternate_edge_overrides,
 )
 

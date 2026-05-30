@@ -191,41 +191,41 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
 from d810.optimizers.microcode.flow.flattening.engine.terminal_byte_emit_fact_guard import (
     append_protected_non_carrier_return_writer_direct_lowerings,
 )
-from d810.recon.flow.conditional_arm_canonicalization import (
+from d810.analyses.control_flow.conditional_arm_canonicalization import (
     canonicalize_same_target_conditional_candidates,
 )
-from d810.recon.flow.dag_region_detection import detect_linear_transition_regions
-from d810.recon.flow.edge_metadata import edge_kind_name, make_edge_metadata
-from d810.recon.flow.entry_island_rescue_discovery import (
+from d810.analyses.control_flow.dag_region_detection import detect_linear_transition_regions
+from d810.analyses.control_flow.edge_metadata import edge_kind_name, make_edge_metadata
+from d810.analyses.control_flow.entry_island_rescue_discovery import (
     collect_entry_island_rescue_seeds,
     collect_late_entry_island_diagnostics,
     collect_late_entry_island_rescue_seeds,
 )
-from d810.recon.flow.frontier_override_discovery import (
+from d810.analyses.control_flow.frontier_override_discovery import (
     discover_frontier_overrides,
 )
-from d810.recon.flow.full_coverage_chain_probe import log_chain_coverage
-from d810.recon.flow.graph_reachability import (
+from d810.analyses.control_flow.full_coverage_chain_probe import log_chain_coverage
+from d810.analyses.control_flow.graph_reachability import (
     collect_residual_dispatcher_predecessors,
     compute_reachable_blocks,
 )
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
     SemanticEdgeKind,
     StateDagNode,
     detect_side_effect_corridors,
 )
-from d810.recon.flow.narrow_branch_local_discovery import (
+from d810.analyses.control_flow.narrow_branch_local_discovery import (
     discover_narrow_branch_local_reconstruction_candidates,
 )
-from d810.recon.flow.return_frontier_carrier_facts import (
+from d810.analyses.control_flow.return_frontier_carrier_facts import (
     ReturnFrontierCarrierFact,
     detect_return_frontier_carrier_facts,
 )
 from functools import partial as _partial
 
 from d810.cfg.reconstruction_planning import plan_reconstruction_candidate
-from d810.recon.flow.reconstruction_candidate_builder import (
+from d810.analyses.control_flow.reconstruction_candidate_builder import (
     ReconstructionCandidate,
     build_reconstruction_candidate as _build_reconstruction_candidate,
 )
@@ -240,33 +240,33 @@ from d810.transforms.reconstruction_diagnostics import (
     log_reconstruction_candidate_probe,
     log_reconstruction_phase_probe,
 )
-from d810.recon.flow.reconstruction_discovery import (
+from d810.analyses.control_flow.reconstruction_discovery import (
     classify_artifact_return_blocks,
     resolve_state_var_stkoff,
 )
-from d810.recon.flow.reconstruction_discovery_indexes import (
+from d810.analyses.control_flow.reconstruction_discovery_indexes import (
     build_reconstruction_discovery_indexes,
 )
-from d810.recon.flow.residual_alias_discovery import (
+from d810.analyses.control_flow.residual_alias_discovery import (
     discover_residual_alias_overrides,
 )
-from d810.recon.flow.round_discovery_context import (
+from d810.analyses.control_flow.round_discovery_context import (
     DagLocalFacts,
     _build_dag_local_facts,
 )
-from d810.recon.flow.return_corridor_discovery import (
+from d810.analyses.control_flow.return_corridor_discovery import (
     collect_common_return_corridor,
 )
-from d810.recon.flow.shared_group_bucketing import (
+from d810.analyses.control_flow.shared_group_bucketing import (
     group_candidates_by_shared_block,
 )
-from d810.recon.flow.terminal_family_collection import (
+from d810.analyses.control_flow.terminal_family_collection import (
     collect_terminal_family_report,
 )
-from d810.recon.flow.terminal_byte_evidence import (
+from d810.analyses.control_flow.terminal_byte_evidence import (
     collect_terminal_tail_byte_source_eas,
 )
-from d810.recon.flow.transition_builder import (
+from d810.analyses.control_flow.transition_builder import (
     build_transition_result_from_state_machine,
 )
 
@@ -1624,7 +1624,7 @@ def _resolve_state_var_stkoff_loose(snapshot: "AnalysisSnapshot") -> int | None:
     detector = getattr(snapshot, "detector", None)
     if detector is not None:
         try:
-            from d810.recon.flow.transition_builder import _get_state_var_stkoff
+            from d810.analyses.control_flow.transition_builder import _get_state_var_stkoff
 
             stkoff = _get_state_var_stkoff(detector)
             if stkoff is not None:
@@ -2743,7 +2743,7 @@ class HandlerChainComposerStrategy:
             mba=mba,
             strategy_name=self.name,
         )
-        from d810.recon.flow.selected_alternate_edge_override import (
+        from d810.analyses.control_flow.selected_alternate_edge_override import (
             apply_selected_alternate_edge_overrides,
             derive_selected_alternate_edge_override_map,
         )

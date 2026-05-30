@@ -3,18 +3,18 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.recon.collectors.handler_transitions import HandlerTransitionsCollector
-from d810.recon.flow.transition_builder import (
+from d810.analyses.control_flow.handler_transitions import HandlerTransitionsCollector
+from d810.analyses.control_flow.transition_builder import (
     StateHandler,
     StateTransition,
     TransitionResult,
 )
-from d810.recon.flow.transition_report import (
+from d810.analyses.control_flow.transition_report import (
     TransitionKind,
     build_dispatcher_transition_report_from_graph,
     transition_report_to_dict,
 )
-from d810.recon.phase import ALL_MATURITIES
+from d810.passes.phase import ALL_MATURITIES
 
 
 def _make_flow_graph() -> FlowGraph:

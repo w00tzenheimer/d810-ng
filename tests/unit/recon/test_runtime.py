@@ -14,12 +14,12 @@ from d810.core import ProviderPhaseSnapshot
 from d810.core import logging
 from d810.core.diag.schema import create_tables
 from d810.core.settings import configure_settings, reset_settings
-from d810.recon.analysis import AnalysisPhase
-from d810.recon.facts import FactConsumerRecord, FactObservation
-from d810.recon.models import DeobfuscationHints, ReconResult
-from d810.recon.phase import ReconPhase
-from d810.recon.runtime import ReconAnalysisRuntime, logger
-from d810.recon.store import ReconStore
+from d810.passes.analysis import AnalysisPhase
+from d810.analyses.value_flow.facts import FactConsumerRecord, FactObservation
+from d810.analyses.control_flow.models import DeobfuscationHints, ReconResult
+from d810.passes.phase import ReconPhase
+from d810.passes.runtime import ReconAnalysisRuntime, logger
+from d810.passes.store import ReconStore
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -80,8 +80,8 @@ def _make_runtime() -> tuple[ReconAnalysisRuntime, MagicMock, MagicMock, MagicMo
     mock_store.db_path = Path("/tmp/test_recon.db")
 
     writer = _make_sync_writer(mock_store)
-    p1 = patch("d810.recon.runtime.get_recon_writer", return_value=writer)
-    p2 = patch("d810.recon.phase.get_recon_writer", return_value=writer)
+    p1 = patch("d810.passes.runtime.get_recon_writer", return_value=writer)
+    p2 = patch("d810.passes.phase.get_recon_writer", return_value=writer)
     p1.start()
     p2.start()
     _active_patchers.extend([p1, p2])
@@ -682,8 +682,8 @@ def test_runtime_record_outcome() -> None:
     """record_outcome delegates to outcome log."""
     rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
 
-    from d810.recon.outcome import RuleScopeOutcomeAdapter
-    from d810.recon.runtime import ReconOutcome
+    from d810.passes.outcome import RuleScopeOutcomeAdapter
+    from d810.passes.runtime import ReconOutcome
 
     outcome = ReconOutcome(
         func_ea=_FUNC_EA,
@@ -704,8 +704,8 @@ def test_reset_clears_outcome_log() -> None:
     """reset_for_func clears outcome entries for the function."""
     rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
 
-    from d810.recon.outcome import RuleScopeOutcomeAdapter
-    from d810.recon.runtime import ReconOutcome
+    from d810.passes.outcome import RuleScopeOutcomeAdapter
+    from d810.passes.runtime import ReconOutcome
 
     outcome = ReconOutcome(
         func_ea=_FUNC_EA,

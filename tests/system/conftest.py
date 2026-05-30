@@ -1047,7 +1047,7 @@ def recon_store_session(recon_store_path):
     if recon_store_path is None:
         yield None
         return
-    from d810.recon.store import ReconStore
+    from d810.passes.store import ReconStore
 
     store = ReconStore(recon_store_path)
     yield store

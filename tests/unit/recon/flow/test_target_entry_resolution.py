@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     RedirectSourceKind,
     SemanticEdgeKind,
     StateDagEdge,
@@ -9,7 +9,7 @@ from d810.recon.flow.linearized_state_dag import (
     StateNodeKind,
     StateRedirectAnchor,
 )
-from d810.recon.flow.target_entry_resolution import (
+from d810.analyses.control_flow.target_entry_resolution import (
     resolve_edge_target_entry,
     resolve_exact_dag_entry_for_state,
     resolve_semantic_reference_entry_for_state,

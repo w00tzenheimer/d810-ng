@@ -20,7 +20,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.recon.flow.conditional_jump_eval import (
+from d810.analyses.control_flow.conditional_jump_eval import (
     conditional_jump_outcome_for_values,
 )
 

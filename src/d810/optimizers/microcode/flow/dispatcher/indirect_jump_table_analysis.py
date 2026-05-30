@@ -94,7 +94,7 @@ def _observe_state_dispatcher_map(
     dispatch_map: StateDispatcherMap,
 ) -> None:
     try:
-        from d810.recon.observability import observe_state_dispatcher_rows
+        from d810.core.observability_recon import observe_state_dispatcher_rows
 
         observe_state_dispatcher_rows(
             func_ea=int(getattr(mba, "entry_ea", 0) or 0),

@@ -68,11 +68,11 @@ from d810.analyses.control_flow.profile_classifier_collector import (
 )
 from d810.analyses.control_flow.return_frontier_collector import ReturnFrontierCollector
 from d810.passes.function_priors import FunctionAnalysisPriors
-from d810.recon.flow.return_frontier_artifacts import (
+from d810.analyses.control_flow.return_frontier_artifacts import (
     ReturnFrontierArtifactEdgeProof,
     ReturnFrontierArtifactPriors,
 )
-from d810.recon.flow.terminal_tail_priors import (
+from d810.analyses.control_flow.terminal_tail_priors import (
     TerminalTailCascadeEgressPriors,
     TerminalTailContinuationBridgePrior,
     TerminalTailEntryFrontierPriors,
@@ -1022,7 +1022,7 @@ class D810Manager:
             return
 
         try:
-            from d810.recon.flow.linearized_state_dag import (
+            from d810.analyses.control_flow.linearized_state_dag import (
                 BoundaryInlineMode,
                 ProgramCommentMode,
                 ProgramRenderStrategy,
@@ -1032,7 +1032,7 @@ class D810Manager:
                 build_live_linearized_program,
                 resolve_dispatcher_context_for_linearized_program,
             )
-            from d810.recon.observability import observe_rendered_program
+            from d810.core.observability_recon import observe_rendered_program
 
             dispatcher_serial, state_var_stkoff = self._resolve_post_d810_linearization_context(
                 mba,

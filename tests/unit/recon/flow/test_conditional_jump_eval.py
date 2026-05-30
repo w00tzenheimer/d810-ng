@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.recon.flow.conditional_jump_eval import (
+from d810.analyses.control_flow.conditional_jump_eval import (
     conditional_jump_opcode_name,
     conditional_jump_outcome_for_values,
     conditional_jump_taken,

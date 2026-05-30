@@ -9,7 +9,7 @@ from d810.flow.terminal_return import (
     TerminalReturnSiteAudit,
     TerminalReturnSourceKind,
 )
-from d810.recon.flow.terminal_return_audit import (
+from d810.analyses.control_flow.terminal_return_audit import (
     build_terminal_return_audit,
     from_dict,
     to_dict,

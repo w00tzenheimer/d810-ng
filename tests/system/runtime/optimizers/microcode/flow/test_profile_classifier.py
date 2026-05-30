@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.recon.flow.profile_classifier import (
+from d810.analyses.control_flow.profile_classifier import (
     ClassificationResult,
     DispatchPattern,
     FlowProfile,

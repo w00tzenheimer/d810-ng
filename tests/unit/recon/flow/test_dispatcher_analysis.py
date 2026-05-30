@@ -9,8 +9,8 @@ from d810.cfg.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.recon.flow.dispatcher_analysis import analyze_dispatcher
-from d810.recon.flow.dispatcher_facts import DispatcherStrategy
+from d810.analyses.control_flow.dispatcher_analysis import analyze_dispatcher
+from d810.analyses.control_flow.dispatcher_facts import DispatcherStrategy
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 
 

@@ -78,7 +78,7 @@ def _make_bst_walk_cfg(state_var_stkoff: int = 0x10) -> FlowGraph:
 @pytest.fixture(autouse=True)
 def _patch_bst_opcodes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Inject test opcode set into state_machine_analysis._BST_CMP_OPCODES."""
-    import d810.recon.flow.state_machine_analysis as sma_mod
+    import d810.analyses.control_flow.state_machine_analysis as sma_mod
 
     monkeypatch.setattr(
         sma_mod, "_BST_CMP_OPCODES",

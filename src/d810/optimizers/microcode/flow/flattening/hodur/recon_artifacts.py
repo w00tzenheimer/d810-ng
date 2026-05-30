@@ -7,7 +7,7 @@ from d810.cfg.flow.return_frontier import ReturnSite
 from d810.optimizers.microcode.flow.flattening.hodur.return_sites import (
     HodurReturnSiteProvider,
 )
-from d810.recon.artifacts import (
+from d810.passes.artifacts import (
     load_return_frontier_audit_from_store,
     load_return_sites_from_store as _load_return_sites_from_store,
     load_terminal_return_audit_from_store,

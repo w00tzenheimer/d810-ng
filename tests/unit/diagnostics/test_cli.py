@@ -21,13 +21,7 @@ from d810.core.diag.snapshot import (
     snapshot_fact_observations,
     snapshot_state_dispatcher_rows,
 )
-from d810.recon.facts import (
-    FactConflict,
-    FactConsumerRecord,
-    FactMapping,
-    FactObservation,
-    FactStatus,
-)
+from d810.analyses.value_flow.facts import FactConflict, FactConsumerRecord, FactMapping, FactObservation, FactStatus
 from tests.unit.core.diag.fixtures import create_sub_7ffd_scenario
 
 

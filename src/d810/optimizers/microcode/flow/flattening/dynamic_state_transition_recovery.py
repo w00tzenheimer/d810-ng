@@ -15,7 +15,7 @@ from d810.evaluator.hexrays_microcode.dynamic_state_write_backend import (
     recognize_global_or_state_write_transition,
 )
 from d810.backends.hexrays.evidence.bst_analysis import _detect_state_var_stkoff
-from d810.recon.flow.transition_builder import (
+from d810.analyses.control_flow.transition_builder import (
     StateHandler,
     StateTransition,
     TransitionResult,

@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 from d810.core import getLogger
 from d810.hexrays.mutation.ir_translator import lift
-from d810.recon.flow.dispatcher_analysis import (
+from d810.analyses.control_flow.dispatcher_analysis import (
     DispatcherAnalysis,
     analyze_dispatcher,
 )

@@ -18,7 +18,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.recon.flow.local_select_loop import (
+from d810.analyses.control_flow.local_select_loop import (
     LOCAL_SELECT_LOOP_FIXES_METADATA_KEY,
     LocalSelectConvergenceLoopFix,
     LocalSelectDirectExitLoopFix,

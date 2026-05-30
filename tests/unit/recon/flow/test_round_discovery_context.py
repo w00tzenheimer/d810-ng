@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from d810.cfg.state_dag_key import StateDagNodeKey
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
     LocalEdgeKind,
     LocalSegmentKind,
@@ -10,7 +10,7 @@ from d810.recon.flow.linearized_state_dag import (
     StateLocalSegment,
     StateNodeKind,
 )
-from d810.recon.flow.round_discovery_context import _build_dag_local_facts
+from d810.analyses.control_flow.round_discovery_context import _build_dag_local_facts
 
 
 def test_build_dag_local_facts_indexes_node_local_cfg() -> None:

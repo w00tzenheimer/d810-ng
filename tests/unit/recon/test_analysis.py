@@ -4,7 +4,7 @@ from __future__ import annotations
 import tempfile
 from types import MappingProxyType
 
-from d810.recon.analysis import (
+from d810.passes.analysis import (
     AnalysisPhase,
     _COMPARE_CHAIN_MIN_CONSTANTS,
     _COMPARE_CHAIN_MIN_LENGTH,
@@ -13,8 +13,8 @@ from d810.recon.analysis import (
     _FLOW_PROFILE_MIN_CONFIDENCE,
     _SUPPRESS_CONFIDENCE_THRESHOLD,
 )
-from d810.recon.models import CandidateFlag, DeobfuscationHints, ReconResult
-from d810.recon.store import ReconStore
+from d810.analyses.control_flow.models import CandidateFlag, DeobfuscationHints, ReconResult
+from d810.passes.store import ReconStore
 
 
 # ---------------------------------------------------------------------------

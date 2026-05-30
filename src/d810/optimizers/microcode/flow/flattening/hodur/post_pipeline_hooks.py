@@ -33,7 +33,7 @@ from d810.optimizers.microcode.flow.dispatcher.return_frontier_carrier_audit imp
     audit_return_frontier_carriers,
     is_audit_enabled as is_return_carrier_audit_enabled,
 )
-from d810.recon.function_priors import FunctionAnalysisPriors
+from d810.passes.function_priors import FunctionAnalysisPriors
 
 unflat_logger = logging.getLogger("D810.unflat.hodur", logging.DEBUG)
 MBL_KEEP = getattr(ida_hexrays, "MBL_KEEP", 0x10000)
@@ -320,7 +320,7 @@ class HodurPostPipelineHooks:
             from d810.hexrays.observability import (
                 request_capture_mba_snapshot,
             )
-            from d810.recon.observability import observe_reachability
+            from d810.core.observability_recon import observe_reachability
 
             diag_visited: set[int] = set()
             diag_queue: list[int] = [0]
@@ -575,7 +575,7 @@ class HodurPostPipelineHooks:
             )
             if str(runtime_fact_raw).lower() in {"1", "true", "yes", "on"}:
                 try:
-                    from d810.recon.flow.runtime_evidence import (
+                    from d810.analyses.control_flow.runtime_evidence import (
                         ensure_terminal_byte_fact_view,
                     )
 
@@ -595,7 +595,7 @@ class HodurPostPipelineHooks:
                     )
             latest_dag = None
             try:
-                from d810.recon.flow.runtime_evidence import (
+                from d810.analyses.control_flow.runtime_evidence import (
                     get_latest_reconstruction_dag,
                 )
 

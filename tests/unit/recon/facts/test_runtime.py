@@ -1,19 +1,14 @@
 """Tests for the maturity fact runtime."""
 from __future__ import annotations
 
-import d810.recon.facts.runtime as facts_runtime_module
+import d810.passes.fact_runtime as facts_runtime_module
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 from d810.core import ProviderPhaseSnapshot
 from d810.core.observability import SnapshotRef
 from d810.core.settings import configure_settings, reset_settings
-from d810.recon.facts import (
-    FactCollectionResult,
-    FactLifecycleRuntime,
-    FactMapping,
-    FactObservation,
-    FactStatus,
-)
-from d810.recon.facts.collectors.induction_carrier import _MATURITY_VALUES
+from d810.passes.fact_runtime import FactCollectionResult, FactLifecycleRuntime
+from d810.analyses.value_flow.facts import FactMapping, FactObservation, FactStatus
+from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
 _MATURITY_LOCOPT = _MATURITY_VALUES["MMAT_LOCOPT"]
 _MATURITY_CALLS = _MATURITY_VALUES["MMAT_CALLS"]

@@ -2,8 +2,8 @@ from __future__ import annotations
 import time
 from types import MappingProxyType
 import pytest
-from d810.recon.models import CandidateFlag, DeobfuscationHints, ReconResult
-from d810.recon.analysis import AnalysisPhase
+from d810.analyses.control_flow.models import CandidateFlag, DeobfuscationHints, ReconResult
+from d810.passes.analysis import AnalysisPhase
 
 
 def _make_result(collector: str, func_ea: int, maturity: int, metrics: dict,
@@ -90,7 +90,7 @@ class TestAnalysisPhaseOllvmFlat:
 
 class TestAnalysisPhaseInterpretFromStore:
     def test_interpret_from_store(self, tmp_path):
-        from d810.recon.store import ReconStore
+        from d810.passes.store import ReconStore
         store = ReconStore(tmp_path / "analysis_test.db")
         r1 = _make_result("CFGShapeCollector", 0x401000, 5, {
             "block_count": 30, "edge_count": 45,

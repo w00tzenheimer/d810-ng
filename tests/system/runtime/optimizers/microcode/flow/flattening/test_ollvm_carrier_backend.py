@@ -4,7 +4,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.optimizers.microcode.flow.flattening import ollvm_carrier_backend
-from d810.recon.facts.collectors.induction_carrier import _MATURITY_VALUES
+from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
 
 def test_raw_semantic_carrier_facts_collect_from_adapted_target(monkeypatch) -> None:

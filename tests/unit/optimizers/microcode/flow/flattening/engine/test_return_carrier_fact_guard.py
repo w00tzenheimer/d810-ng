@@ -7,7 +7,7 @@ from d810.optimizers.microcode.flow.flattening.engine import return_carrier_fact
 from d810.optimizers.microcode.flow.flattening.engine.return_carrier_fact_guard import (
     filter_return_carrier_fact_redirects,
 )
-from d810.recon.facts import FactMapping, FactObservation, FactStatus, ValidatedFactView
+from d810.analyses.value_flow.facts import FactMapping, FactObservation, FactStatus, ValidatedFactView
 
 
 def _flow_graph(succs_by_block: dict[int, tuple[int, ...]]) -> FlowGraph:

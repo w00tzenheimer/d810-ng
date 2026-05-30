@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from d810.recon.facts.model import (
+from d810.analyses.value_flow.model import (
     FactMapping,
     FactObservation,
     FactStatus,
     ValidatedFactView,
 )
-from d810.recon.flow.runtime_evidence import (
+from d810.analyses.control_flow.runtime_evidence import (
     ensure_terminal_byte_fact_view,
     summarize_fact_view,
 )
@@ -89,7 +89,7 @@ def test_ensure_terminal_byte_fact_view_collects_when_view_is_empty(monkeypatch)
             assert phase == "post_bundle_stabilize"
             return (collected,)
 
-    import d810.recon.facts.collectors.terminal_byte_emitter as collector_module
+    import d810.analyses.value_flow.terminal_byte_emitter as collector_module
 
     monkeypatch.setattr(
         collector_module,

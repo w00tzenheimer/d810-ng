@@ -7,7 +7,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     PlanFragment,
     StageResult,
 )
-from d810.recon.flow.graph_reachability import (
+from d810.analyses.control_flow.graph_reachability import (
     collect_residual_dispatcher_predecessors,
 )
 

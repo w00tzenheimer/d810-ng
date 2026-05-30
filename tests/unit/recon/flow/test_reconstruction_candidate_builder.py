@@ -1,23 +1,23 @@
 from __future__ import annotations
 
-import d810.recon.flow.reconstruction_candidate_builder as builder_module
+import d810.analyses.control_flow.reconstruction_candidate_builder as builder_module
 
 from d810.cfg.reconstruction_planning import (
     ReconstructionEmissionMode,
     ReconstructionPlanningDecision,
 )
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     RedirectSourceKind,
     SemanticEdgeKind,
     StateDagEdge,
     StateDagNodeKey,
     StateRedirectAnchor,
 )
-from d810.recon.flow.reconstruction_candidate_builder import (
+from d810.analyses.control_flow.reconstruction_candidate_builder import (
     build_reconstruction_candidate,
 )
-from d810.recon.flow.reconstruction_discovery import ReconstructionCandidateSeed
-from d810.recon.flow.state_machine_analysis import (
+from d810.analyses.control_flow.reconstruction_discovery import ReconstructionCandidateSeed
+from d810.analyses.control_flow.state_machine_analysis import (
     SnapshotConstantFixpointResult,
     StateWriteSite,
 )

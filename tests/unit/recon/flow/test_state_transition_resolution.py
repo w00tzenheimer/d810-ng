@@ -9,7 +9,7 @@ from d810.analyses.control_flow.semantic_transition import (
     facts_from_validated_view,
     resolve_state_transitions_with_dispatcher_map,
 )
-from d810.recon.facts.model import FactObservation, ValidatedFactView
+from d810.analyses.value_flow.model import FactObservation, ValidatedFactView
 
 
 def _dispatch_map() -> StateDispatcherMap:

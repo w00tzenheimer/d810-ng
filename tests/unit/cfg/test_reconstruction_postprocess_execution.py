@@ -8,7 +8,7 @@ from d810.cfg.reconstruction_postprocess_emission import (
     emit_residual_alias_overrides,
     execute_reconstruction_postprocess,
 )
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     RedirectSourceKind,
     SemanticEdgeKind,
     StateDagEdge,
@@ -369,7 +369,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_normalizes_to_semantic
 
     # Use the real discovery function to drive normalization, but monkeypatch
     # the emission helper to capture raw_candidates and append our redirect.
-    from d810.recon.flow.residual_alias_discovery import discover_residual_alias_overrides
+    from d810.analyses.control_flow.residual_alias_discovery import discover_residual_alias_overrides
 
     def _fake_execute(**kwargs):
         captured["raw_candidates"] = kwargs["raw_candidates"]
@@ -452,7 +452,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_uses_post_source_exit_
             None,
         )
 
-    from d810.recon.flow.residual_alias_discovery import discover_residual_alias_overrides
+    from d810.analyses.control_flow.residual_alias_discovery import discover_residual_alias_overrides
 
     def _fake_execute(**kwargs):
         captured["raw_candidates"] = kwargs["raw_candidates"]
@@ -535,7 +535,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_keeps_prenormalized_ra
             None,
         )
 
-    from d810.recon.flow.residual_alias_discovery import discover_residual_alias_overrides
+    from d810.analyses.control_flow.residual_alias_discovery import discover_residual_alias_overrides
 
     def _fake_execute(**kwargs):
         captured["raw_candidates"] = kwargs["raw_candidates"]
@@ -611,7 +611,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_uses_existing_target_e
         None,
     )
 
-    from d810.recon.flow.residual_alias_discovery import discover_residual_alias_overrides
+    from d810.analyses.control_flow.residual_alias_discovery import discover_residual_alias_overrides
 
     def _fake_execute(**kwargs):
         kwargs["modifications"].append(("redirect", kwargs["raw_candidates"][0].target_entry))

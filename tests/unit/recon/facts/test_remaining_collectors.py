@@ -4,13 +4,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
-from d810.recon.facts.collectors import (
-    ByteEmitCorridorFactCollector,
-    CallAnchorFactCollector,
-    ReturnFrontierFactCollector,
-    ZeroBlobFactCollector,
-)
-from d810.recon.facts.collectors.induction_carrier import _MATURITY_VALUES
+from d810.analyses.value_flow.byte_emit_corridor import ByteEmitCorridorFactCollector
+from d810.analyses.value_flow.call_anchor import CallAnchorFactCollector
+from d810.analyses.value_flow.return_frontier import ReturnFrontierFactCollector
+from d810.analyses.value_flow.zero_blob import ZeroBlobFactCollector
+from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
 
 def _insn(

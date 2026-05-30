@@ -8,11 +8,11 @@ from __future__ import annotations
 import pytest
 
 from d810.core.gate_modes import GateOperationMode
-from d810.recon.flow_hints import (
+from d810.passes.flow_hints import (
     FlowContextHintSummary,
     derive_flow_context_summary,
 )
-from d810.recon.models import DeobfuscationHints
+from d810.analyses.control_flow.models import DeobfuscationHints
 
 
 def _make_hints(

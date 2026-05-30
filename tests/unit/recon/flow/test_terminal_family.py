@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.cfg.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
-from d810.recon.flow.terminal_family import (
+from d810.analyses.control_flow.terminal_family import (
     TerminalFamilyCandidate,
     TerminalFamilySeed,
     TerminalFamilySeedProbe,
@@ -135,7 +135,7 @@ class TestSeedTerminalFamilyProbes:
             kind=1,  # replaced below after import-time constant check
             source_anchor=SimpleNamespace(block_serial=40, branch_arm=1),
         )
-        from d810.recon.flow.linearized_state_dag import SemanticEdgeKind
+        from d810.analyses.control_flow.linearized_state_dag import SemanticEdgeKind
 
         edge.kind = SemanticEdgeKind.CONDITIONAL_RETURN
 

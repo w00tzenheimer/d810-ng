@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import d810.recon.flow.path_horizon as path_horizon
-from d810.recon.flow.linearized_state_dag import (
+import d810.analyses.control_flow.path_horizon as path_horizon
+from d810.analyses.control_flow.linearized_state_dag import (
     RedirectSourceKind,
     SemanticEdgeKind,
     StateDagEdge,
     StateDagNodeKey,
     StateRedirectAnchor,
 )
-from d810.recon.flow.state_machine_analysis import StateWriteSite
+from d810.analyses.control_flow.state_machine_analysis import StateWriteSite
 
 
 class _DummyFlowGraph:

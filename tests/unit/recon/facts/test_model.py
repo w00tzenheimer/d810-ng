@@ -5,13 +5,7 @@ import json
 
 import pytest
 
-from d810.recon.facts import (
-    FactMapping,
-    FactObservation,
-    FactStatus,
-    ValidatedFactView,
-    canonical_json,
-)
+from d810.analyses.value_flow.facts import FactMapping, FactObservation, FactStatus, ValidatedFactView, canonical_json
 
 
 def test_observation_serializes_deterministically() -> None:

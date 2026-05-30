@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from d810.core.typing import Any
 import pytest
-from d810.recon.collectors.ctree_structure import CtreeStructureCollector
+from d810.analyses.control_flow.ctree_structure import CtreeStructureCollector
 
 
 # ---------------------------------------------------------------------------

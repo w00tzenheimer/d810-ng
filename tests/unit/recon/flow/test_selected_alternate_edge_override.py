@@ -14,13 +14,13 @@ from d810.cfg.state_dag_key import StateDagNodeKey
 from d810.core.diag.schema import create_tables
 from d810.core.observability import SnapshotRef
 from d810.core.settings import reset_settings
-from d810.recon.facts.model import (
+from d810.analyses.value_flow.model import (
     FactMapping,
     FactObservation,
     FactStatus,
     ValidatedFactView,
 )
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
     RedirectSourceKind,
     SemanticEdgeKind,
@@ -29,7 +29,7 @@ from d810.recon.flow.linearized_state_dag import (
     StateNodeKind,
     StateRedirectAnchor,
 )
-from d810.recon.flow.selected_alternate_edge_override import (
+from d810.analyses.control_flow.selected_alternate_edge_override import (
     apply_selected_alternate_edge_overrides,
 )
 from d810.diagnostics.selected_alternate_edge_override import (

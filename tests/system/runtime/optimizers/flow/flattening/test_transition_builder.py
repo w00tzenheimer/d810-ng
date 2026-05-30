@@ -13,7 +13,7 @@ from d810.core.typing import Optional
 import pytest
 
 from d810.analyses.control_flow.bst_model import BSTAnalysisResult
-from d810.recon.flow.transition_builder import (
+from d810.analyses.control_flow.transition_builder import (
     TransitionBuilder,
     TransitionResult,
     _convert_bst_to_result,

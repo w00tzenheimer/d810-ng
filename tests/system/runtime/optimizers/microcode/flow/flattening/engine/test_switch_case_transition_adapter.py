@@ -79,7 +79,7 @@ def test_collects_live_mba_case_writes_and_return_frontiers(monkeypatch) -> None
         return (SimpleNamespace(final_state=4, exit_block=113, ordered_path=(113,)),)
 
     monkeypatch.setattr(
-        "d810.recon.flow.state_machine_analysis.evaluate_handler_paths",
+        "d810.analyses.control_flow.state_machine_analysis.evaluate_handler_paths",
         _evaluate,
     )
 

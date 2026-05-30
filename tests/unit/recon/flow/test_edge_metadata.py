@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-from d810.recon.flow.edge_metadata import (
+from d810.analyses.control_flow.edge_metadata import (
     edge_kind_name,
     make_edge_metadata,
     source_kind_name,
 )
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     RedirectSourceKind,
     SemanticEdgeKind,
     StateDagEdge,
     StateDagNodeKey,
     StateRedirectAnchor,
 )
-from d810.recon.flow.state_machine_analysis import StateWriteSite
+from d810.analyses.control_flow.state_machine_analysis import StateWriteSite
 
 
 def _edge() -> StateDagEdge:

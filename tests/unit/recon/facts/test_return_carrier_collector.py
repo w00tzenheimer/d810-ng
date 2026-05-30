@@ -4,8 +4,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
-from d810.recon.facts.collectors import ReturnSlotFactCollector
-from d810.recon.facts.collectors.induction_carrier import _MATURITY_VALUES
+from d810.analyses.value_flow.return_carrier import ReturnSlotFactCollector
+from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
 
 def _insn(

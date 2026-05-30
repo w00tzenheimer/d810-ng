@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.recon.flow.linearized_state_dag import SemanticEdgeKind
-from d810.recon.flow.return_corridor_discovery import collect_common_return_corridor
+from d810.analyses.control_flow.linearized_state_dag import SemanticEdgeKind
+from d810.analyses.control_flow.return_corridor_discovery import collect_common_return_corridor
 
 
 class _DummyFlowGraph:

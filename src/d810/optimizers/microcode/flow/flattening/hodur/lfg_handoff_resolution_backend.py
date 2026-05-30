@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core.typing import AbstractSet, Protocol
-from d810.recon.flow.residual_handoff_discovery import (
+from d810.analyses.control_flow.residual_handoff_discovery import (
     resolve_assignment_map_handoff_target,
     resolve_immediate_handoff_target,
     resolve_projected_path_tail_target,

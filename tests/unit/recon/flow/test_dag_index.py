@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from d810.recon.flow.dag_index import (
+from d810.analyses.control_flow.recon_dag_index import (
     build_dag_node_maps,
     incoming_edges_by_target_entry,
     resolve_target_node,
     semantic_entry_anchors,
 )
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
     RedirectSourceKind,
     SemanticEdgeKind,

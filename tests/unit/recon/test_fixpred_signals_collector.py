@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from d810.recon.collectors.fixpred_signals import (
+from d810.analyses.control_flow.fixpred_signals import (
     FixPredSignalsCollector,
     _canonical_dispatcher_type,
     _ratio,

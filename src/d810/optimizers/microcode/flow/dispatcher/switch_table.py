@@ -1,6 +1,6 @@
 """Live switch-table dispatcher adapter.
 
-The portable analyzer lives in ``d810.recon.flow.switch_table_analysis`` and
+The portable analyzer lives in ``d810.analyses.control_flow.switch_table_analysis`` and
 operates on ``FlowGraph`` snapshots. This module owns the live Hex-Rays
 boundary needed by existing optimizer consumers that still require a live
 ``mop_t`` state variable.
@@ -14,8 +14,8 @@ import ida_hexrays
 from d810.core.logging import getLogger
 from d810.hexrays.mutation.ir_translator import lift
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
-from d810.recon.flow.switch_table_analysis import analyze_switch_table_flow_graph
-from d810.recon.observability import observe_state_dispatcher_rows
+from d810.analyses.control_flow.switch_table_analysis import analyze_switch_table_flow_graph
+from d810.core.observability_recon import observe_state_dispatcher_rows
 
 logger = getLogger("D810.switch_table_adapter")
 

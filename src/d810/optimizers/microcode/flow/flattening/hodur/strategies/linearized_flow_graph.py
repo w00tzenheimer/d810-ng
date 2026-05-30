@@ -110,19 +110,19 @@ from d810.optimizers.microcode.flow.flattening.residual_handoff_resolution impor
     is_semantic_handoff_redirect,
     resolve_singleton_state_write_value,
 )
-from d810.recon.flow.graph_reachability import (
+from d810.analyses.control_flow.graph_reachability import (
     collect_dispatcher_predecessors,
     collect_residual_dispatcher_predecessors,
     compute_reachable_blocks,
 )
-from d810.recon.flow.dag_redirect_discovery import (
+from d810.analyses.control_flow.dag_redirect_discovery import (
     find_foreign_exact_entry_owner,
     select_plannable_dag_edges,
 )
-from d810.recon.flow.linearized_dag_round_discovery import (
+from d810.analyses.control_flow.linearized_dag_round_discovery import (
     build_linearized_dag_round_summary,
 )
-from d810.recon.flow.round_discovery_context_probe import (
+from d810.analyses.control_flow.round_discovery_context_probe import (
     compare_round_context_to_rebuild,
     probe_enabled as _round_ctx_probe_enabled,
 )
@@ -177,7 +177,7 @@ def _round_ctx_probe_wrap(snapshot, inner):
 from functools import partial as _partial
 
 from d810.cfg.reconstruction_planning import plan_reconstruction_candidate
-from d810.recon.flow.reconstruction_candidate_builder import (
+from d810.analyses.control_flow.reconstruction_candidate_builder import (
     ReconstructionCandidate,
     build_reconstruction_candidate as _build_reconstruction_candidate,
 )
@@ -188,13 +188,13 @@ build_reconstruction_candidate = _partial(
     _build_reconstruction_candidate,
     plan_reconstruction_candidate=plan_reconstruction_candidate,
 )
-from d810.recon.flow.reconstruction_discovery import (
+from d810.analyses.control_flow.reconstruction_discovery import (
     collect_shared_suffix_blocks,
 )
-from d810.recon.flow.residual_alias_discovery import (
+from d810.analyses.control_flow.residual_alias_discovery import (
     discover_residual_alias_overrides,
 )
-from d810.recon.flow.residual_handoff_discovery import (
+from d810.analyses.control_flow.residual_handoff_discovery import (
     collect_residual_source_handoff_facts,
     iter_residual_prefix_handoffs,
     resolve_contextual_dag_entry_for_state,
@@ -204,10 +204,10 @@ from d810.recon.flow.residual_handoff_discovery import (
     resolve_redirect_safe_entry_from_node,
     resolve_redirect_safe_target_entry,
 )
-from d810.recon.flow.exit_transition_discovery import (
+from d810.analyses.control_flow.exit_transition_discovery import (
     resolve_state_var_stkoff as discover_state_var_stkoff,
 )
-from d810.recon.flow.shared_suffix_discovery import (
+from d810.analyses.control_flow.shared_suffix_discovery import (
     can_rewrite_shared_suffix_family_fallback,
     has_prior_branch_cut_for_state,
     is_shared_suffix_conditional_tail,
@@ -233,13 +233,13 @@ from d810.optimizers.microcode.flow.flattening.hodur._linearized_flow_graph_repo
     log_path_tail_redirect_outcome,
     log_residual_dispatcher_handoff_outcomes,
 )
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
     StateDagEdge,
     build_live_linearized_state_dag_from_graph,
 )
-from d810.recon.flow.dag_index import build_dag_node_maps
-from d810.recon.flow.state_machine_analysis import (
+from d810.analyses.control_flow.recon_dag_index import build_dag_node_maps
+from d810.analyses.control_flow.state_machine_analysis import (
     build_mba_view_from_flow_graph,
     find_last_state_write_site_snapshot,
     find_last_state_write_site_on_path_snapshot,
@@ -250,26 +250,26 @@ from d810.cfg.reconstruction_emission import (
 from d810.cfg.reconstruction_postprocess_emission import (
     execute_reconstruction_postprocess,
 )
-from d810.recon.flow.transition_report import (
+from d810.analyses.control_flow.transition_report import (
     TransitionKind,
     build_dispatcher_transition_report_from_graph,
 )
-from d810.recon.flow.transition_builder import TransitionResult
-from d810.recon.flow.conditional_arm_canonicalization import (
+from d810.analyses.control_flow.transition_builder import TransitionResult
+from d810.analyses.control_flow.conditional_arm_canonicalization import (
     canonicalize_same_target_conditional_candidates,
 )
-from d810.recon.flow.entry_island_rescue_discovery import (
+from d810.analyses.control_flow.entry_island_rescue_discovery import (
     collect_entry_island_rescue_seeds,
     collect_late_entry_island_diagnostics,
     collect_late_entry_island_rescue_seeds,
 )
-from d810.recon.flow.reconstruction_discovery import (
+from d810.analyses.control_flow.reconstruction_discovery import (
     classify_artifact_return_blocks,
 )
-from d810.recon.flow.return_corridor_discovery import (
+from d810.analyses.control_flow.return_corridor_discovery import (
     collect_common_return_corridor,
 )
-from d810.recon.flow.terminal_family_collection import (
+from d810.analyses.control_flow.terminal_family_collection import (
     collect_terminal_family_report,
 )
 

@@ -30,7 +30,7 @@ from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
 
 if TYPE_CHECKING:
     from d810.cfg.flowgraph import FlowGraph
-    from d810.recon.flow.round_discovery_context import (
+    from d810.analyses.control_flow.round_discovery_context import (
         ReconRoundDiscoveryContext,
     )
 

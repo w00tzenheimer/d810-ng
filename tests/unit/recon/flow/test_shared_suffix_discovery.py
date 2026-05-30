@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     RedirectSourceKind,
     SemanticEdgeKind,
     StateDagEdge,
@@ -11,7 +11,7 @@ from d810.recon.flow.linearized_state_dag import (
     StateNodeKind,
     StateRedirectAnchor,
 )
-from d810.recon.flow.shared_suffix_discovery import (
+from d810.analyses.control_flow.shared_suffix_discovery import (
     can_rewrite_shared_suffix_family_fallback,
     has_prior_branch_cut_for_state,
     is_shared_suffix_conditional_tail,

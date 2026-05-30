@@ -6,7 +6,7 @@ from d810.analyses.value_flow import RETURN_VALUE_FACT_TYPE
 
 
 def test_induction_variable_collector_is_canonical_export() -> None:
-    from d810.recon.facts.collectors.induction_carrier import (
+    from d810.analyses.value_flow.induction_carrier import (
         InductionVariableFactCollector,
     )
 
@@ -16,7 +16,7 @@ def test_induction_variable_collector_is_canonical_export() -> None:
 
 
 def test_loop_predicate_value_collector_is_canonical_export() -> None:
-    from d810.recon.facts.collectors.loop_carrier import (
+    from d810.analyses.value_flow.loop_carrier import (
         LoopPredicateValueFactCollector,
     )
 
@@ -26,7 +26,7 @@ def test_loop_predicate_value_collector_is_canonical_export() -> None:
 
 
 def test_return_slot_and_return_value_collectors_are_canonical_exports() -> None:
-    from d810.recon.facts.collectors.return_carrier import (
+    from d810.analyses.value_flow.return_carrier import (
         ReturnSlotFactCollector,
         ReturnValueFactCollector,
     )
@@ -41,7 +41,7 @@ def test_return_slot_and_return_value_collectors_are_canonical_exports() -> None
 
 
 def test_ollvm_value_flow_evidence_collector_is_canonical_export() -> None:
-    from d810.recon.facts.collectors.ollvm_semantic_carrier import (
+    from d810.analyses.value_flow.ollvm_semantic_carrier import (
         OllvmValueFlowEvidenceCollector,
     )
 
@@ -54,11 +54,7 @@ def test_ollvm_value_flow_evidence_collector_is_canonical_export() -> None:
 
 
 def test_collector_module_all_exposes_only_canonical_names() -> None:
-    from d810.recon.facts.collectors import (
-        loop_carrier,
-        ollvm_semantic_carrier,
-        return_carrier,
-    )
+    from d810.analyses.value_flow import loop_carrier, ollvm_semantic_carrier, return_carrier
 
     assert loop_carrier.__all__ == ["LoopPredicateValueFactCollector"]
     assert ollvm_semantic_carrier.__all__ == ["OllvmValueFlowEvidenceCollector"]

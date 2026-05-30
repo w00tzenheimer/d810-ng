@@ -21,7 +21,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import FAMILY_CLE
 from d810.optimizers.microcode.flow.flattening.strategies.selector_shell import (
     SelectorShellStrategy,
 )
-from d810.recon.flow.selector_shell import (
+from d810.analyses.control_flow.selector_shell import (
     SELECTOR_SHELL_FACTS_METADATA_KEY,
     SelectorShellEdgeProof,
     SelectorShellFact,

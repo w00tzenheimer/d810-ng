@@ -79,7 +79,7 @@ from d810.backends.hexrays.evidence.bst_analysis import (
     _find_pre_header_state,
     analyze_bst_dispatcher,
 )
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     BoundaryInlineMode,
     LabelRenderMode,
     LinearizedStateDag,
@@ -99,9 +99,9 @@ from d810.recon.flow.linearized_state_dag import (
 from d810.optimizers.microcode.flow.flattening.dynamic_state_transition_recovery import (
     recover_dynamic_state_write_transitions,
 )
-from d810.recon.flow.persisted_recon_dag import get_persisted_recon_dag
-from d810.recon.flow.transition_builder import _convert_bst_to_result
-from d810.recon.flow.transition_report import (
+from d810.analyses.control_flow.persisted_recon_dag import get_persisted_recon_dag
+from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
+from d810.analyses.control_flow.transition_report import (
     TransitionKind,
     build_dispatcher_transition_report,
     build_dispatcher_transition_report_from_graph,
@@ -1021,7 +1021,7 @@ def snapshot_linearized_program(
     try:
         from d810.hexrays.mba_serializer import mba_to_block_snapshots
         from d810.hexrays.observability import request_capture_mba_snapshot
-        from d810.recon.observability import observe_rendered_program
+        from d810.core.observability_recon import observe_rendered_program
 
         snap = request_capture_mba_snapshot(
             blocks=mba_to_block_snapshots(mba),

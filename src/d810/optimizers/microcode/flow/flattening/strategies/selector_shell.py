@@ -12,7 +12,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.recon.flow.selector_shell import (
+from d810.analyses.control_flow.selector_shell import (
     SELECTOR_SHELL_FACTS_METADATA_KEY,
     extract_selector_shell_facts,
     serialize_selector_shell_facts,

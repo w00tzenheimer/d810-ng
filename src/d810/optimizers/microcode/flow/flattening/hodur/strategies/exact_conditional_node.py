@@ -39,10 +39,10 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_n
 from d810.optimizers.microcode.flow.flattening.hodur.profile_gate import (
     accepts_exact_sub7ffd_glbopt1,
 )
-from d810.recon.flow.graph_reachability import (
+from d810.analyses.control_flow.graph_reachability import (
     collect_residual_dispatcher_predecessors,
 )
-from d810.recon.flow.shared_suffix_discovery import (
+from d810.analyses.control_flow.shared_suffix_discovery import (
     pred_split_target_reaches_via_pred,
 )
 

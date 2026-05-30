@@ -18,7 +18,7 @@ from d810.cfg.flow.return_frontier import ReturnSite, ReturnFrontierAudit
 from d810.optimizers.microcode.flow.flattening.hodur.return_sites import (
     HodurReturnSiteProvider,
 )
-from d810.recon.collectors.return_frontier import ReturnFrontierCollector
+from d810.analyses.control_flow.return_frontier_collector import ReturnFrontierCollector
 
 
 # ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@ from d810.capabilities.constant_fixpoint import (
     ConstantFixpointCapability,
 )
 from d810.ir.results import ConstantFixpointResult
-from d810.recon.flow.state_machine_analysis import run_snapshot_constant_fixpoint
+from d810.analyses.control_flow.state_machine_analysis import run_snapshot_constant_fixpoint
 
 
 class HodurConstantFixpointBackend:

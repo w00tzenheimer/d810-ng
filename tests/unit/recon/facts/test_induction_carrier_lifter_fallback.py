@@ -12,7 +12,7 @@ from d810.capabilities.source_lifter import (
     register_live_lifter,
     reset_live_lifters_for_tests,
 )
-from d810.recon.facts.collectors import induction_carrier
+from d810.analyses.value_flow import induction_carrier
 
 
 def _portable_target():

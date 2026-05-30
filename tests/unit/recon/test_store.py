@@ -5,8 +5,8 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-from d810.recon.models import DeobfuscationHints
-from d810.recon.store import ReconStore
+from d810.analyses.control_flow.models import DeobfuscationHints
+from d810.passes.store import ReconStore
 
 
 def _make_store() -> ReconStore:

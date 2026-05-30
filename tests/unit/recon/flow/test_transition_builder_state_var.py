@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.cfg.flowgraph import MopSnapshot, OperandKind
-from d810.recon.flow.transition_builder import _get_state_var_stkoff
+from d810.analyses.control_flow.transition_builder import _get_state_var_stkoff
 
 
 def _detector_with_state_var(state_var: object | None) -> SimpleNamespace:

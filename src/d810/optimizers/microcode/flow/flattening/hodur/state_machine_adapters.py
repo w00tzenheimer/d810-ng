@@ -10,8 +10,8 @@ from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
 from d810.optimizers.microcode.flow.dispatcher.switch_table import (
     analyze_switch_table_dispatcher,
 )
-from d810.recon.flow.state_machine_analysis import evaluate_handler_paths
-from d810.recon.flow.transition_builder import StateHandler, StateTransition
+from d810.analyses.control_flow.state_machine_analysis import evaluate_handler_paths
+from d810.analyses.control_flow.transition_builder import StateHandler, StateTransition
 
 
 @dataclass(frozen=True)

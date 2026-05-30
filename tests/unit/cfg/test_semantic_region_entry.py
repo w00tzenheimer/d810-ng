@@ -6,7 +6,7 @@ from d810.cfg.semantic_region_entry import (
     EntryEligibility,
     resolve_semantic_entry_candidate,
 )
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
     RedirectSourceKind,
     SemanticEdgeKind,

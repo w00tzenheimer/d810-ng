@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from d810.cfg.flow.return_frontier import ReturnSite
-from d810.recon.collectors.return_frontier import ReturnFrontierCollector
+from d810.analyses.control_flow.return_frontier_collector import ReturnFrontierCollector
 
 
 # ---------------------------------------------------------------------------

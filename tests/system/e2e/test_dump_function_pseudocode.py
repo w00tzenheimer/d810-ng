@@ -31,7 +31,7 @@ import idc
 from d810.optimizers.microcode.flow.flattening.hodur.diagnostics import (
     build_terminal_return_valrange_report_from_store,
 )
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     BoundaryInlineMode,
     LabelRenderMode,
     ProgramCommentMode,

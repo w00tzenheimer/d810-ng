@@ -3,8 +3,8 @@ from __future__ import annotations
 import inspect
 from types import SimpleNamespace
 
-import d810.recon.flow.exit_transition_discovery as exit_transition_discovery
-from d810.recon.flow.exit_transition_discovery import (
+import d810.analyses.control_flow.exit_transition_discovery as exit_transition_discovery
+from d810.analyses.control_flow.exit_transition_discovery import (
     collect_bst_default_transition_candidates,
     collect_exit_transition_candidates,
     collect_valrange_exit_transition_candidates,
@@ -100,7 +100,7 @@ class TestCollectExitTransitionCandidates:
         )
 
         monkeypatch.setattr(
-            "d810.recon.flow.exit_transition_discovery.resolve_via_bst_walk",
+            "d810.analyses.control_flow.exit_transition_discovery.resolve_via_bst_walk",
             lambda mba, dispatcher_serial, state_val, bst_nodes: 88,
         )
 
@@ -156,11 +156,11 @@ class TestCollectBstDefaultTransitionCandidates:
             ]
 
         monkeypatch.setattr(
-            "d810.recon.flow.exit_transition_discovery.evaluate_handler_paths",
+            "d810.analyses.control_flow.exit_transition_discovery.evaluate_handler_paths",
             fake_evaluate_handler_paths,
         )
         monkeypatch.setattr(
-            "d810.recon.flow.exit_transition_discovery.resolve_target_via_bst",
+            "d810.analyses.control_flow.exit_transition_discovery.resolve_target_via_bst",
             lambda bst, state: 88 if state == 0x22 else None,
         )
 
@@ -206,7 +206,7 @@ class TestCollectValrangeExitTransitionCandidates:
         bst_result = SimpleNamespace()
 
         monkeypatch.setattr(
-            "d810.recon.flow.exit_transition_discovery.resolve_target_via_bst",
+            "d810.analyses.control_flow.exit_transition_discovery.resolve_target_via_bst",
             lambda bst, state: 88 if state == 0x33 else None,
         )
 

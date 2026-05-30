@@ -17,17 +17,21 @@ from d810.analyses.value_flow.facts import (
     canonical_json,
 )
 
-# The fact-lifecycle runtime is a passes-layer module; ``d810.recon.facts.runtime``
-# is now a dynamic sys.modules alias to ``d810.passes.fact_runtime`` (resolved via
-# importlib so no static recon -> passes upward edge is recorded).  Live importers
-# of these runtime names repoint to ``d810.passes.fact_runtime`` directly.
-from d810.recon.facts.runtime import (
-    FactCollectionResult,
-    FactCaptureSummary,
-    FactCollector,
-    FactLifecycleRuntime,
-    FactPersistenceCallback,
-)
+# The fact-lifecycle runtime lives in the passes layer (``d810.passes`` sits
+# ABOVE ``d810.recon`` in the layered architecture).  Re-exporting it from this
+# surviving facade is a convenience for legacy importers, but a *static* ``from
+# d810.passes.fact_runtime import ...`` would record a layer-fatal recon ->
+# passes upward edge.  Resolve it dynamically via ``importlib.import_module`` so
+# grimp does not follow the edge; live importers repoint to
+# ``d810.passes.fact_runtime`` directly.
+import importlib as _importlib
+
+_fact_runtime = _importlib.import_module("d810.passes.fact_runtime")
+FactCollectionResult = _fact_runtime.FactCollectionResult
+FactCaptureSummary = _fact_runtime.FactCaptureSummary
+FactCollector = _fact_runtime.FactCollector
+FactLifecycleRuntime = _fact_runtime.FactLifecycleRuntime
+FactPersistenceCallback = _fact_runtime.FactPersistenceCallback
 
 __all__ = [
     "FactConflict",

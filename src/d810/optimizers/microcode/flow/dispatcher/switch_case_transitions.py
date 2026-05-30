@@ -28,7 +28,7 @@ def collect_switch_case_transition_facts_from_mba(
             for row in dispatch_map.rows
         )
 
-    from d810.recon.flow.state_machine_analysis import evaluate_handler_paths
+    from d810.analyses.control_flow.state_machine_analysis import evaluate_handler_paths
 
     handler_rows = tuple(row for row in dispatch_map.rows if row.is_handler_row)
     handler_entry_blocks = {int(row.target_block) for row in handler_rows}

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.recon.flow.transition_analysis import build_transition_analysis_from_graph
-from d810.recon.flow.transition_builder import (
+from d810.analyses.control_flow.transition_analysis import build_transition_analysis_from_graph
+from d810.analyses.control_flow.transition_builder import (
     StateHandler,
     StateTransition,
     TransitionResult,
 )
-from d810.recon.flow.transition_report import (
+from d810.analyses.control_flow.transition_report import (
     TransitionKind,
     build_dispatcher_transition_report,
     build_dispatcher_transition_report_from_graph,
@@ -138,7 +138,7 @@ def test_bst_backed_and_graph_backed_reports_render_the_same_rows(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "d810.recon.flow.transition_report.analyze_bst_dispatcher",
+        "d810.analyses.control_flow.transition_report.analyze_bst_dispatcher",
         fake_analyze,
     )
 

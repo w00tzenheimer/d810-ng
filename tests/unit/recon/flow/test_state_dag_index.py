@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.cfg.state_dag_key import StateDagNodeKey
-from d810.recon.flow.state_dag_index import StateDagIndex
+from d810.analyses.control_flow.state_dag_index import StateDagIndex
 
 
 def _edge(

@@ -22,7 +22,7 @@ The return type is now tightened to
 closes the slice-3 follow-up that left ``compute()`` returning
 ``Any``.  Concrete impls already produce this shape under the legacy
 alias ``SnapshotConstantFixpointResult`` (see
-``d810.recon.flow.state_machine_analysis``).  Return-type covariance
+``d810.analyses.control_flow.state_machine_analysis``).  Return-type covariance
 permits backend impls to declare narrower types as long as they
 return an instance of ``ConstantFixpointResult``.
 

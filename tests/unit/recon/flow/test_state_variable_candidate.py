@@ -1,7 +1,7 @@
 """Unit cover for ``StateVariableCandidate`` (E3-schema).
 
 Pure-Python tests -- ``StateVariableCandidate`` now lives in
-``d810.recon.flow.dispatcher_facts`` with portable ``MopSnapshot``
+``d810.analyses.control_flow.dispatcher_facts`` with portable ``MopSnapshot``
 instead of live ``ida_hexrays.mop_t``.
 
 These tests don't import ``d810.hexrays.*`` -- the
@@ -12,7 +12,7 @@ These tests don't import ``d810.hexrays.*`` -- the
 from __future__ import annotations
 
 from d810.cfg.flowgraph import MopSnapshot, OperandKind
-from d810.recon.flow.dispatcher_facts import StateVariableCandidate
+from d810.analyses.control_flow.dispatcher_facts import StateVariableCandidate
 
 
 class TestStateVariableCandidateConstruction:
@@ -108,7 +108,7 @@ class TestPureModuleBoundary:
         imports.  String search is sufficient because the contract
         is "the module text mentions no hexrays imports", not "no
         symbol resolution"."""
-        import d810.recon.flow.dispatcher_facts as facts_mod
+        import d810.analyses.control_flow.dispatcher_facts as facts_mod
         import inspect
 
         src = inspect.getsource(facts_mod)

@@ -64,7 +64,7 @@ def test_allowed_edge_kinds_match_check_in_recon_builder():
     """Allowed kinds must match SemanticEdgeKind.{TRANSITION,CONDITIONAL_TRANSITION}.
 
     Update this test together with the rejection check in
-    `d810.recon.flow.reconstruction_candidate_builder.build_reconstruction_candidate`
+    `d810.analyses.control_flow.reconstruction_candidate_builder.build_reconstruction_candidate`
     if the gate ever changes -- this assertion is the contract.
     """
     assert ALLOWED_EDGE_KINDS == {"TRANSITION", "CONDITIONAL_TRANSITION"}

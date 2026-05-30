@@ -6,7 +6,7 @@ from upper layers (:mod:`d810.recon`, :mod:`d810.cfg`,
 :mod:`d810.hexrays`) -- which the layered-architecture import-linter
 contract forbids.
 
-Domain observability modules (:mod:`d810.recon.observability`,
+Domain observability modules (:mod:`d810.core.observability_recon`,
 :mod:`d810.cfg.observability`, :mod:`d810.hexrays.observability`)
 re-export the events relevant to their domain and own the
 ``observe_*`` emit helpers. Subscribers consume the dataclasses

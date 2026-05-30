@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.recon.flow.dag_redirect_discovery import (
+from d810.analyses.control_flow.dag_redirect_discovery import (
     find_foreign_exact_entry_owner,
     select_plannable_dag_edges,
 )
-from d810.recon.flow.linearized_state_dag import (
+from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
     RedirectSourceKind,
     SemanticEdgeKind,

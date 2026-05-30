@@ -15,7 +15,7 @@ from d810.cfg.flow.return_frontier import ReturnSite
 from d810.optimizers.microcode.flow.flattening.hodur.return_sites import (
     HodurReturnSiteProvider,
 )
-from d810.recon.flow.transition_report import (
+from d810.analyses.control_flow.transition_report import (
     DispatcherTransitionReport,
     TransitionKind,
     TransitionPath,
