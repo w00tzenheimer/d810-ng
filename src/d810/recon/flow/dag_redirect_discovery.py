@@ -1,72 +1,10 @@
-"""Pure discovery helpers for DAG redirect selection."""
+"""Migration shim: ``d810.recon.flow.dag_redirect_discovery`` -> ``d810.analyses.control_flow.dag_redirect_discovery`` (dissolution, llr-lyly).
 
-from __future__ import annotations
+sys.modules alias preserving the old import path; re-exports public AND
+private symbols.  Deleted in Phase Z once consumers repoint.
+"""
+import sys
 
-from d810.recon.flow.linearized_state_dag import (
-    LinearizedStateDag,
-    RedirectSourceKind,
-    SemanticEdgeKind,
-    StateDagEdge,
-    StateDagNode,
-    StateDagNodeKey,
-    StateNodeKind,
-)
+from d810.analyses.control_flow import dag_redirect_discovery as _canonical
 
-
-def _edge_priority(edge: StateDagEdge) -> int:
-    if edge.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH:
-        return 0
-    if edge.source_anchor.kind == RedirectSourceKind.EXIT_BLOCK:
-        return 1
-    return 2
-
-
-def select_plannable_dag_edges(
-    dag: LinearizedStateDag,
-) -> tuple[StateDagEdge, ...]:
-    return tuple(
-        sorted(
-            (
-                edge
-                for edge in dag.edges
-                if edge.kind
-                in (
-                    SemanticEdgeKind.TRANSITION,
-                    SemanticEdgeKind.CONDITIONAL_TRANSITION,
-                )
-                and edge.target_entry_anchor is not None
-            ),
-            key=lambda edge: (
-                0 if edge.kind == SemanticEdgeKind.TRANSITION else 1,
-                -(len(edge.ordered_path)),
-                edge.source_anchor.block_serial,
-                -1 if edge.source_anchor.branch_arm is None else edge.source_anchor.branch_arm,
-                edge.kind.value,
-                edge.target_entry_anchor if edge.target_entry_anchor is not None else -1,
-                _edge_priority(edge),
-            ),
-        )
-    )
-
-
-def find_foreign_exact_entry_owner(
-    dag: LinearizedStateDag,
-    *,
-    source_key: StateDagNodeKey,
-    source_block: int,
-) -> StateDagNode | None:
-    for node in dag.nodes:
-        if node.kind is not StateNodeKind.EXACT:
-            continue
-        if node.entry_anchor != source_block:
-            continue
-        if node.key == source_key:
-            return None
-        return node
-    return None
-
-
-__all__ = [
-    "find_foreign_exact_entry_owner",
-    "select_plannable_dag_edges",
-]
+sys.modules[__name__] = _canonical

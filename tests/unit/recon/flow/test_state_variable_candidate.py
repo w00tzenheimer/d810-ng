@@ -119,5 +119,10 @@ class TestPureModuleBoundary:
         )
         assert "import idaapi" not in src
         assert "from d810.hexrays" not in src
-        # Allowed: cfg/pure symbols only.
-        assert "from d810.cfg.flowgraph import" in src
+        # Allowed: pure flowgraph snapshot symbols only. Post-dissolution the
+        # canonical pure home is ``d810.ir.flowgraph`` (the cfg.flowgraph path
+        # is a migration shim onto it).
+        assert (
+            "from d810.ir.flowgraph import" in src
+            or "from d810.cfg.flowgraph import" in src
+        )
