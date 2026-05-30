@@ -4,8 +4,8 @@ from __future__ import annotations
 import inspect
 from types import SimpleNamespace
 
-import d810.recon.flow.equality_chain_dispatcher as equality_chain_dispatcher
-from d810.recon.flow.equality_chain_dispatcher import (
+import d810.analyses.control_flow.equality_chain_dispatcher as equality_chain_dispatcher
+from d810.analyses.control_flow.equality_chain_dispatcher import (
     extract_state_dispatcher_map_from_mba,
 )
 

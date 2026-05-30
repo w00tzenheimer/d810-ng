@@ -4,8 +4,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from d810.core.logging import getLogger
-from d810.recon.flow.dispatcher_map import StateDispatcherMap
-from d810.recon.flow.indirect_jump_table_analysis import (
+from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
+from d810.analyses.control_flow.indirect_jump_table_analysis import (
     IndirectJumpTableEntry,
     IndirectJumpTableResult,
     _find_dispatcher_serial_by_ea,

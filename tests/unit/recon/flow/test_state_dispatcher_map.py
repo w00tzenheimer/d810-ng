@@ -1,8 +1,8 @@
 """Tests for exact state dispatcher rows."""
 from __future__ import annotations
 
-from d810.recon.flow.dispatcher_kind import DispatcherType
-from d810.recon.flow.dispatcher_map import (
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
     StateDispatcherRow,
 )

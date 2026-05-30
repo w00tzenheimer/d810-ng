@@ -12,7 +12,7 @@ from enum import Enum
 import re
 
 from d810.core.typing import Callable
-from d810.recon.flow.branch_ownership import (
+from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipProof,
     BranchOwnershipProofKind,
 )

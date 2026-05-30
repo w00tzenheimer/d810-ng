@@ -1,5 +1,5 @@
-from d810.recon.flow.dispatcher_kind import DispatcherType
-from d810.recon.flow.dispatcher_discovery_facts import (
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.analyses.control_flow.dispatcher_discovery_facts import (
     DISPATCHER_ARTIFACT_STATE_FACT_TYPE,
     DISPATCHER_DISCOVERY_GAP_FACT_TYPE,
     DISPATCHER_INITIAL_STATE_FACT_TYPE,
@@ -8,8 +8,8 @@ from d810.recon.flow.dispatcher_discovery_facts import (
     STATE_VARIABLE_IDENTITY_FACT_TYPE,
     collect_state_dispatcher_discovery_fact_observations,
 )
-from d810.recon.flow.dispatcher_map import StateDispatcherMap, StateDispatcherRow
-from d810.recon.flow.predecessor_dispatcher_target import (
+from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap, StateDispatcherRow
+from d810.analyses.control_flow.predecessor_dispatcher_target import (
     resolve_predecessor_dispatcher_target,
 )
 

@@ -92,7 +92,7 @@ from d810.backends.hexrays.evidence.bst_analysis import (
     analyze_bst_dispatcher,
     resolve_via_bst_walk,
 )
-from d810.recon.flow.branch_ownership import (
+from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipProof,
     branch_ownership_proof_from_any,
     collect_branch_ownership_proofs,
@@ -100,8 +100,8 @@ from d810.recon.flow.branch_ownership import (
 from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
     analyze_dispatcher_live,
 )
-from d810.recon.flow.dispatcher_map import StateDispatcherMap, StateDispatcherRow
-from d810.recon.flow.dispatcher_discovery_facts import (
+from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap, StateDispatcherRow
+from d810.analyses.control_flow.dispatcher_discovery_facts import (
     collect_state_dispatcher_discovery_fact_observations,
 )
 from d810.optimizers.microcode.flow.flattening.dynamic_state_transition_recovery import (
@@ -131,7 +131,7 @@ from d810.recon.flow.linearized_state_dag import (
     build_linearized_state_program,
     render_linearized_state_program,
 )
-from d810.recon.flow.predecessor_dispatcher_target import (
+from d810.analyses.control_flow.predecessor_dispatcher_target import (
     PredecessorDispatcherTargetFact,
     collect_predecessor_dispatcher_target_facts,
 )
@@ -8899,7 +8899,7 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         if state_dispatcher_map is None or fact_view is None:
             return
         try:
-            from d810.recon.flow.state_transition_resolution import (
+            from d810.analyses.control_flow.semantic_transition import (
                 facts_from_validated_view,
                 resolve_state_transitions_with_dispatcher_map,
             )

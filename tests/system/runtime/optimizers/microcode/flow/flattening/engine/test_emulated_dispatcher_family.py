@@ -11,7 +11,7 @@ import pytest
 
 import d810.hexrays.observability as hexrays_observability
 import d810.optimizers.microcode.flow.dispatcher.switch_case_transitions as switch_case_transition_adapter
-import d810.recon.flow.switch_case_transition_analysis as switch_case_transition_analysis
+import d810.analyses.control_flow.switch_case_transition_analysis as switch_case_transition_analysis
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
 from d810.cfg.graph_modification import (
     CreateConditionalRedirect,
@@ -72,20 +72,20 @@ from d810.optimizers.microcode.flow.flattening.strategies.emulated_dispatcher_st
 from d810.optimizers.microcode.flow.flattening.unflattener_emulated_dispatcher_engine import (
     EmulatedDispatcherUnflattener,
 )
-from d810.recon.flow.dispatcher_kind import DispatcherType
-from d810.recon.flow.dispatcher_discovery_facts import (
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.analyses.control_flow.dispatcher_discovery_facts import (
     DISPATCHER_INITIAL_STATE_FACT_TYPE,
     STATE_DISPATCHER_TOPOLOGY_FACT_TYPE,
     STATE_VARIABLE_IDENTITY_FACT_TYPE,
 )
-from d810.recon.flow.branch_ownership import (
+from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipProof,
     BranchOwnershipProofKind,
 )
-from d810.recon.flow.dispatcher_map import StateDispatcherMap, StateDispatcherRow
+from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap, StateDispatcherRow
 from d810.recon.flow.reconstruction_candidate_builder import ReconstructionCandidate
 from d810.recon.flow.linearized_state_dag import SemanticEdgeKind
-from d810.recon.flow.predecessor_dispatcher_target import (
+from d810.analyses.control_flow.predecessor_dispatcher_target import (
     PredecessorDispatcherTargetFact,
 )
 from d810.recon.flow.state_dag_index import StateDagIndex

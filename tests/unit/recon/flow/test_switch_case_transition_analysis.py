@@ -1,10 +1,10 @@
 """Tests for read-only Tigress switch case transition facts."""
 from __future__ import annotations
 
-from d810.recon.flow.branch_ownership import BranchOwnershipProofKind
-from d810.recon.flow.dispatcher_kind import DispatcherType
-from d810.recon.flow.dispatcher_map import StateDispatcherMap, StateDispatcherRow
-from d810.recon.flow.switch_case_transition_analysis import (
+from d810.analyses.control_flow.branch_ownership import BranchOwnershipProofKind
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap, StateDispatcherRow
+from d810.analyses.control_flow.switch_case_transition_analysis import (
     SwitchCaseBody,
     SwitchCaseTransitionKind,
     collect_switch_case_transition_facts,

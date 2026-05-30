@@ -25,7 +25,7 @@ from d810.recon.flow.dispatcher_facts import (
     DispatcherStrategy,
     StateVariableCandidate,
 )
-from d810.recon.flow.dispatcher_kind import DispatcherType
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 
 __all__ = [
     "DispatcherAnalysis",
