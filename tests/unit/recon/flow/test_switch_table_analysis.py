@@ -9,7 +9,7 @@ from d810.cfg.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.recon.flow.dispatcher_kind import DispatcherType
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.recon.flow.switch_table_analysis import (
     analyze_switch_table_flow_graph,
     build_state_dispatcher_map_from_cases,

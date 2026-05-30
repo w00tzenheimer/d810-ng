@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from d810.recon.flow.branch_ownership import (
+from d810.analyses.control_flow.branch_ownership import (
     branch_ownership_proof_from_any,
 )
 

@@ -1,8 +1,8 @@
 """Live switch-case transition adapter for switch-table dispatchers."""
 from __future__ import annotations
 
-from d810.recon.flow.dispatcher_map import StateDispatcherMap
-from d810.recon.flow.switch_case_transition_analysis import (
+from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
+from d810.analyses.control_flow.switch_case_transition_analysis import (
     SwitchCaseBody,
     SwitchCaseTransitionFact,
     collect_switch_case_transition_facts,
@@ -109,7 +109,7 @@ def _unresolved_fact(
     reason: str,
     profile_name: str,
 ) -> SwitchCaseTransitionFact:
-    from d810.recon.flow.switch_case_transition_analysis import _unresolved_fact as _pure
+    from d810.analyses.control_flow.switch_case_transition_analysis import _unresolved_fact as _pure
 
     return _pure(
         dispatch_map=dispatch_map,

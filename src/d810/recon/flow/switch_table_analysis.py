@@ -10,8 +10,8 @@ from dataclasses import dataclass
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnKind, MopSnapshot
 from d810.core.logging import getLogger
-from d810.recon.flow.dispatcher_kind import DispatcherType
-from d810.recon.flow.dispatcher_map import (
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
     StateDispatcherRow,
 )

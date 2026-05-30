@@ -1,9 +1,9 @@
 """Tests for in-memory state-dispatcher transition resolution."""
 from __future__ import annotations
 
-from d810.recon.flow.dispatcher_kind import DispatcherType
-from d810.recon.flow.dispatcher_map import StateDispatcherMap, StateDispatcherRow
-from d810.recon.flow.state_transition_resolution import (
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap, StateDispatcherRow
+from d810.analyses.control_flow.semantic_transition import (
     StateTransitionFact,
     StateWriteAnchor,
     facts_from_validated_view,

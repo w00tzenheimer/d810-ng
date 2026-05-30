@@ -14,7 +14,7 @@ from d810.recon.flow.analysis_stats import (
 from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
     analyze_dispatcher_live,
 )
-from d810.recon.flow.dispatcher_kind import DispatcherType
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.core.gate_modes import GateOperationMode
 from d810.recon.flow_hints import FlowContextHintSummary
 from d810.recon.function_priors import FunctionAnalysisPriors

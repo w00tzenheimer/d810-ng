@@ -13,7 +13,7 @@ import ida_hexrays
 
 from d810.core.logging import getLogger
 from d810.hexrays.mutation.ir_translator import lift
-from d810.recon.flow.dispatcher_map import StateDispatcherMap
+from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
 from d810.recon.flow.switch_table_analysis import analyze_switch_table_flow_graph
 
 logger = getLogger("D810.switch_table_adapter")

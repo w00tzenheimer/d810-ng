@@ -8,10 +8,10 @@ import ida_hexrays
 from d810.optimizers.microcode.flow.dispatcher.switch_case_transitions import (
     collect_switch_case_transition_facts_from_mba,
 )
-from d810.recon.flow.branch_ownership import BranchOwnershipProofKind
-from d810.recon.flow.dispatcher_kind import DispatcherType
-from d810.recon.flow.dispatcher_map import StateDispatcherMap, StateDispatcherRow
-from d810.recon.flow.switch_case_transition_analysis import SwitchCaseTransitionKind
+from d810.analyses.control_flow.branch_ownership import BranchOwnershipProofKind
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap, StateDispatcherRow
+from d810.analyses.control_flow.switch_case_transition_analysis import SwitchCaseTransitionKind
 
 
 def _dispatch_map(states: tuple[int, ...]) -> StateDispatcherMap:

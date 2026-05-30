@@ -31,7 +31,7 @@ from d810.recon.flow.dispatcher_analysis import (
     DispatcherAnalysis,
     analyze_dispatcher,
 )
-from d810.recon.flow.dispatcher_kind import DispatcherType
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 
 logger = getLogger("D810.dispatcher")
 

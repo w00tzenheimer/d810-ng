@@ -5,8 +5,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from d810.backends.hexrays import bst_runtime as _hexrays_bst_runtime
-from d810.recon.flow.dispatcher_map import StateDispatcherMap
-from d810.recon.flow.equality_chain_dispatcher import (
+from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
+from d810.analyses.control_flow.equality_chain_dispatcher import (
     extract_state_dispatcher_map_from_mba,
 )
 

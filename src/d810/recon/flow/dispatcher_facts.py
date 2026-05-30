@@ -8,7 +8,7 @@ any method body.  Consumed by the pure analyzer at
 
 Companion modules:
 
-* ``d810.recon.flow.dispatcher_kind`` -- ``DispatcherType`` enum.
+* ``d810.analyses.control_flow.dispatcher_kind`` -- ``DispatcherType`` enum.
 * ``d810.recon.flow.dispatcher_analysis`` -- pure
   ``analyze_dispatcher(flow_graph)`` + ``DispatcherAnalysis`` result.
 * ``d810.optimizers.microcode.flow.dispatcher.dispatcher_history`` --

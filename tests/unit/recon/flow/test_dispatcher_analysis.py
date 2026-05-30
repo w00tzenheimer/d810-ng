@@ -11,7 +11,7 @@ from d810.cfg.flowgraph import (
 )
 from d810.recon.flow.dispatcher_analysis import analyze_dispatcher
 from d810.recon.flow.dispatcher_facts import DispatcherStrategy
-from d810.recon.flow.dispatcher_kind import DispatcherType
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 
 
 def _mop(

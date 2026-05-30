@@ -22,7 +22,7 @@ from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
     analyze_dispatcher_live,
     is_dispatcher_block,
 )
-from d810.recon.flow.dispatcher_kind import DispatcherType
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 
 MMAT_CALLS = 4
 MMAT_GLBOPT1 = 8
