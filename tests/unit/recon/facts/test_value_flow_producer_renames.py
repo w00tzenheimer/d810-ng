@@ -1,7 +1,7 @@
 """Acceptance tests for producer-class renames."""
 from __future__ import annotations
 
-from d810.recon.facts import collectors
+from d810.analyses.value_flow import collectors
 from d810.analyses.value_flow import RETURN_VALUE_FACT_TYPE
 
 
