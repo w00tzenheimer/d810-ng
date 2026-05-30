@@ -26,7 +26,7 @@ Architecture
 ------------
 
 The producer side (this module) lives in ``d810.ir``. Runtime
-callers reach the API through ``d810.diagnostics.observability``
+callers reach the API through ``d810.core.observability_cfg``
 (``observe_cfg_provenance``), which constructs a
 ``CfgProvenanceObserved`` event and publishes it on the
 :mod:`d810.core.observability` event bus. A diag backend subscribes
@@ -148,7 +148,7 @@ def reset_pending_provenance() -> None:
 
 
 # All call sites use ``observe_cfg_provenance`` from
-# ``d810.diagnostics.observability``; the diag subscriber buffers
+# ``d810.core.observability_cfg``; the diag subscriber buffers
 # ``CfgProvenanceObserved`` events and flushes them under the next
 # captured snapshot. ``log_cfg_provenance`` is the concrete producer;
 # ``observe_cfg_provenance`` constructs the event payload and emits.
