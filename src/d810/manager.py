@@ -97,7 +97,7 @@ from d810.analyses.control_flow.state_transition_anchor import (
     StateTransitionAnchorFactCollector,
 )
 from d810.optimizers.microcode.microcode_dump import mba_to_dict
-from d810.recon.analysis import AnalysisPhase
+from d810.passes.analysis import AnalysisPhase
 from d810.passes.inferences import unflattening_inference
 from d810.passes.phase import ReconPhase
 from d810.recon.runtime import ReconAnalysisRuntime
