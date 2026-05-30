@@ -92,7 +92,7 @@ from d810.ir.block_identity import (
 from d810.transforms.dag_frontier_closure import (
     plan_dag_authoritative_frontier_closure,
 )
-from d810.cfg.flowgraph import InsnSnapshot
+from d810.ir.flowgraph import InsnSnapshot
 from d810.transforms.frontier_override_emission import emit_frontier_overrides
 from d810.transforms.graph_modification import (
     ConvertToGoto,

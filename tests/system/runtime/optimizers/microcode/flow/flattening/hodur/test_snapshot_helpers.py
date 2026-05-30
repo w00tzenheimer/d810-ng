@@ -15,7 +15,7 @@ try:
 except ImportError:
     IDA_AVAILABLE = False
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 
 pytestmark = pytest.mark.skipif(not IDA_AVAILABLE, reason="IDA not available")
 

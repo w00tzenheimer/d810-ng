@@ -36,7 +36,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
 )
 
 if TYPE_CHECKING:
-    from d810.cfg.flowgraph import FlowGraph
+    from d810.ir.flowgraph import FlowGraph
     from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )

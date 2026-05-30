@@ -14,7 +14,7 @@ from d810.hexrays.contracts.cfg_contract import CfgContractViolationError
 from d810.transforms.report import InvariantViolation
 from d810.transforms.graph_modification import CreateConditionalRedirect, InsertBlock
 from d810.transforms.plan import compile_patch_plan
-from d810.cfg.flowgraph import InsnSnapshot
+from d810.ir.flowgraph import InsnSnapshot
 from d810.hexrays.mutation import deferred_modifier as dm
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import (

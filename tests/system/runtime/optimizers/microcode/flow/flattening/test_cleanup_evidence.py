@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
 from d810.transforms.graph_modification import (
     DuplicateReplayAndRedirect,
     DuplicateReplayEntry,

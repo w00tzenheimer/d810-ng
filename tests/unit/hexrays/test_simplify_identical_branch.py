@@ -12,7 +12,7 @@ import pytest
 
 from d810.transforms.graph_modification import ConvertToGoto
 from d810.passes.pipeline import FlowGraphTransformPipeline
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.transforms.simplify_identical_branch import SimplifyIdenticalBranchPass
 
 from tests.unit.hexrays.conftest import InMemoryBackend

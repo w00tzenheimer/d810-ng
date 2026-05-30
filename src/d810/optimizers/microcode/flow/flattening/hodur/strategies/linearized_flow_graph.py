@@ -26,7 +26,7 @@ from d810.transforms.plan import compile_patch_plan
 from d810.transforms.dag_redirect_emission import (
     emit_dag_redirect,
 )
-from d810.cfg.flowgraph import FlowGraph
+from d810.ir.flowgraph import FlowGraph
 from d810.transforms.dispatcher_backedge_disconnect_emission import (
     disconnect_bst_comparison_nodes,
 )

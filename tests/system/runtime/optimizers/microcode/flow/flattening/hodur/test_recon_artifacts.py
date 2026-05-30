@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.analyses.control_flow.return_frontier import ReturnSite
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.optimizers.microcode.flow.flattening.hodur.recon_artifacts import (
     load_return_frontier_audit_from_store,
     load_transition_report_from_store,

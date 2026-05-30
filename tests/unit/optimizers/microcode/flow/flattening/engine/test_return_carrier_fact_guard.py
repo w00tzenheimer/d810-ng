@@ -1,7 +1,7 @@
 """Tests for the executor return-carrier fact guard."""
 from __future__ import annotations
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.transforms.graph_modification import RedirectGoto
 from d810.optimizers.microcode.flow.flattening.engine import return_carrier_fact_guard
 from d810.optimizers.microcode.flow.flattening.engine.return_carrier_fact_guard import (

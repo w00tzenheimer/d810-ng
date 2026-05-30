@@ -1,7 +1,7 @@
 """Unit tests for CFGShapeCollector using FlowGraph (no IDA dependency)."""
 from __future__ import annotations
 import pytest
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.analyses.control_flow.cfg_shape import CFGShapeCollector
 
 

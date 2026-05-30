@@ -38,7 +38,7 @@ import time
 from pathlib import Path
 from types import MappingProxyType
 
-from d810.cfg.flowgraph import FlowGraph
+from d810.ir.flowgraph import FlowGraph
 from d810.core.events import EventEmitter
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.analyses.control_flow.models import ReconResult

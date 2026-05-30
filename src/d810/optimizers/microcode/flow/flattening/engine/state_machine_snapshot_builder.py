@@ -1,7 +1,7 @@
 """Reusable snapshot assembly for state-machine unflattening families."""
 from __future__ import annotations
 
-from d810.cfg.flowgraph import FlowGraph
+from d810.ir.flowgraph import FlowGraph
 from d810.optimizers.microcode.flow.flattening.engine.runtime import FamilyRunState
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,

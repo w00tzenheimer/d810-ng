@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.cfg.flowgraph import FlowGraph
+from d810.ir.flowgraph import FlowGraph
 from d810.core import getLogger
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.optimizers.microcode.flow.flattening.cleanup_backend import (

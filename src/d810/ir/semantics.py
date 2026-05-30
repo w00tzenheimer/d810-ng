@@ -62,7 +62,7 @@ class PredicateKind(Enum):
     and ``m_set*`` materializations.
 
     Naming follows LLVM ICMP conventions (shorter than
-    ``BranchPredicate`` in ``d810.cfg.flowgraph``, which is the older
+    ``BranchPredicate`` in ``d810.ir.flowgraph``, which is the older
     equivalent kept in place for back-compat with the slice-9 / slice-10
     ``RedirectIntent`` work).  Conditional branches and ``set*`` byte
     materializations both consume this -- they share the predicate

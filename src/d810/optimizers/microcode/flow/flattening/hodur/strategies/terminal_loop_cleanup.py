@@ -11,7 +11,7 @@ import ida_hexrays
 from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
-from d810.cfg.flowgraph import BlockSnapshot
+from d810.ir.flowgraph import BlockSnapshot
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     collect_state_machine_blocks,
     find_terminal_exit_target_snapshot,

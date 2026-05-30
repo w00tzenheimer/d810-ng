@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.flow.terminal_return import (
     TerminalReturnAuditReport,
     TerminalReturnSiteAudit,

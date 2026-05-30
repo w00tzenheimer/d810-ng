@@ -4,7 +4,7 @@ Ports the additive induction classifier (``x = x +/- c``) from
 ``recon.facts.collectors.induction_carrier._classify_induction_update`` /
 ``_signed_step`` (lines 232-330) to the analyses layer, cfg-free: opcodes are
 matched by string forms plus the portable ``ir.expressions.ValueOpKind`` names,
-never ``from d810.cfg.flowgraph import InsnKind`` (an upward analyses->cfg edge).
+never ``from d810.ir.flowgraph import InsnKind`` (an upward analyses->cfg edge).
 
 The recon collector classified ONE instruction at a time.  ``analyze_loop`` adds
 the loop dimension with an OPTIMISTIC (union) meet across a loop's blocks: a

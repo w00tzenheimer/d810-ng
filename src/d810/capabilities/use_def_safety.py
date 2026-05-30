@@ -104,7 +104,7 @@ class UseDefSafetyCapability(Protocol):
                 an angr AIL function for a future angr backend).
                 ``Any`` for layer discipline.
             pre_cfg: Pre-modification CFG snapshot
-                (``d810.cfg.flowgraph.FlowGraph`` today).  ``Any`` for
+                (``d810.ir.flowgraph.FlowGraph`` today).  ``Any`` for
                 the same layer-discipline reason as ``live_function``.
 
         Returns:

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import ida_hexrays
 
-from d810.cfg.flowgraph import InsnSnapshot
+from d810.ir.flowgraph import InsnSnapshot
 from d810.transforms.materialization_payload import (
     CapturedBlockBody,
     CapturedBlockBodySummary,

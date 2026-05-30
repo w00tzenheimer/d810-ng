@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     resolve_exit_via_bst_default_snapshot,
 )

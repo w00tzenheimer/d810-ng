@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.analyses.control_flow.transition_analysis import build_transition_analysis_from_graph
 from d810.analyses.control_flow.transition_builder import (
     StateHandler,

@@ -1,6 +1,6 @@
 """Unit cover for ``InsnKind.TABLE_JUMP`` (E3-prep).
 
-Pure-Python -- the ``InsnKind`` enum lives in ``d810.cfg.flowgraph``
+Pure-Python -- the ``InsnKind`` enum lives in ``d810.ir.flowgraph``
 and has no IDA imports.  The lifter mapping
 (``m_jtbl`` -> ``InsnKind.TABLE_JUMP``) is covered separately in
 ``tests/system/runtime/hexrays/test_ir_translator.py`` because the
@@ -9,7 +9,7 @@ lifter imports ``ida_hexrays``.
 
 from __future__ import annotations
 
-from d810.cfg.flowgraph import InsnKind
+from d810.ir.flowgraph import InsnKind
 
 
 class TestTableJumpKind:

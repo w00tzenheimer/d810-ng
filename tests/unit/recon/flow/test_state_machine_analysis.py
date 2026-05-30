@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 from types import SimpleNamespace
 
-from d810.cfg.flowgraph import BranchPredicate, InsnKind, OperandKind
+from d810.ir.flowgraph import BranchPredicate, InsnKind, OperandKind
 from d810.analyses.control_flow import state_machine_analysis as sma
 
 

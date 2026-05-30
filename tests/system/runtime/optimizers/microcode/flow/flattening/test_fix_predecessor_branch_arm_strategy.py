@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from d810.transforms.fix_predecessor_planning import FixPredecessorOutcome
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.transforms.graph_modification import CloneConditionalAsGotoFromBranchArm
 from d810.optimizers.microcode.flow.flattening.strategies.fix_predecessor_branch_arm import (
     FIX_PREDECESSOR_BRANCH_ARM_FIXES_METADATA_KEY,

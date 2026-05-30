@@ -9,7 +9,7 @@ if "ida_hexrays" not in sys.modules:
     ida_hexrays_stub.mop_z = 0
     sys.modules["ida_hexrays"] = ida_hexrays_stub
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.transforms.graph_modification import RedirectGoto
 from d810.transforms.plan import PatchPlan
 from d810.optimizers.microcode.flow.flattening.engine import executor as _executor_mod

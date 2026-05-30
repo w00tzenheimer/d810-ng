@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.cfg.flowgraph import InsnSnapshot
+from d810.ir.flowgraph import InsnSnapshot
 from d810.transforms.materialization_payload import CapturedBlockBody
 from d810.core.typing import Protocol
 from d810.evaluator.hexrays_microcode.instruction_capture_backend import (

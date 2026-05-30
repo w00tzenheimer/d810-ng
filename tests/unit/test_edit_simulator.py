@@ -13,7 +13,7 @@ from d810.transforms.edit_simulator import (
     simulate_edits,
 )
 from d810.analyses.control_flow.graph_checks import prove_terminal_sink
-from d810.cfg.flowgraph import (
+from d810.ir.flowgraph import (
     BlockKind,
     BlockSnapshot,
     FlowGraph,

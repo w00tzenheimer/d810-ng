@@ -8,7 +8,7 @@ from d810.transforms.contract import (
     CfgContractViolationError,
 )
 from d810.transforms.report import InvariantViolation
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.transforms.plan import PatchPlan
 
 

@@ -15,7 +15,7 @@ from d810.transforms.fix_predecessor_planning import (
     FixPredecessorRejectReason,
     plan_fix_predecessor_clone_from_branch_arm,
 )
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.transforms.graph_modification import CloneConditionalAsGotoFromBranchArm
 
 

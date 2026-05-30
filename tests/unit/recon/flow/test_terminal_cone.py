@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 
 # Block type constants (mirrors ida_hexrays BLT_* enum).
 BLT_STOP = 1

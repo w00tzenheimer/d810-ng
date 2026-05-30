@@ -6,7 +6,7 @@ from d810.analyses.control_flow.sese_hammock import (
     compute_postdominator_tree,
     flow_graph_exit_blocks,
 )
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 
 
 def _graph(blocks: dict[int, tuple[tuple[int, ...], tuple[int, ...]]], entry: int) -> FlowGraph:

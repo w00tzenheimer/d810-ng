@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.transforms.graph_modification import RedirectGoto, ZeroStateWrite
 from d810.transforms.modification_builder import ModificationBuilder
 from d810.transforms.residual_target_resolution import is_structured_conditional_path_feeder

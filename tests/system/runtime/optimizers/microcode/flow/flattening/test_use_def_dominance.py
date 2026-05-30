@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from d810.analyses.control_flow.dominator import compute_dom_tree
-from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
 
 

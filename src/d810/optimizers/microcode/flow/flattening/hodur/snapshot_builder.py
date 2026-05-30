@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import ida_hexrays
 
-from d810.cfg.flowgraph import FlowGraph
+from d810.ir.flowgraph import FlowGraph
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
     collect_live_fake_jump_fixes,

@@ -17,7 +17,7 @@ from d810.transforms.dispatcher_rewrite_planning import (
     DispatcherPredecessorRewriteInput,
     plan_dispatcher_predecessor_rewrite,
 )
-from d810.cfg.flowgraph import FlowGraph, InsnSnapshot
+from d810.ir.flowgraph import FlowGraph, InsnSnapshot
 from d810.transforms.graph_modification import (
     CreateConditionalRedirect,
     ConvertToGoto,

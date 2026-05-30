@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.flowgraph import FlowGraph
+from d810.ir.flowgraph import FlowGraph
 
 
 class _StubMba:
@@ -204,7 +204,7 @@ class TestProviderNeutralStageMetadata:
         assert meta["producer_stage_name"] == meta["maturity_name"]
 
     def test_snapshot_stage_is_portable_family(self, monkeypatch) -> None:
-        from d810.cfg.flowgraph import SnapshotStage
+        from d810.ir.flowgraph import SnapshotStage
         from d810.hexrays.mutation import ir_translator
 
         meta = self._lift(monkeypatch).metadata
@@ -219,7 +219,7 @@ class TestProviderNeutralStageMetadata:
         """Spot-check the coarse mapping: GLBOPT* are optimized IR,
         LVARS is lvar-recovered -- no MMAT string leaks into the
         portable family value."""
-        from d810.cfg.flowgraph import SnapshotStage
+        from d810.ir.flowgraph import SnapshotStage
         from d810.hexrays.mutation import ir_translator
 
         m = ir_translator._snapshot_stage_for_maturity_name

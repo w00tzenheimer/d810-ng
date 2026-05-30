@@ -56,7 +56,7 @@ from d810.capabilities.use_def_safety import (
     UseDefSafetyCapability,
 )
 from d810.analyses.control_flow.dominator import compute_dom_tree
-from d810.cfg.flowgraph import FlowGraph
+from d810.ir.flowgraph import FlowGraph
 from d810.core.logging import getLogger
 from d810.evaluator.hexrays_microcode.chains import (
     UseSite,

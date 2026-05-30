@@ -1,7 +1,7 @@
 """Unit tests for switch-table analysis pure-logic helpers."""
 from __future__ import annotations
 
-from d810.cfg.flowgraph import (
+from d810.ir.flowgraph import (
     BlockSnapshot,
     FlowGraph,
     InsnKind,
