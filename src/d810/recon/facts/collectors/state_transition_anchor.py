@@ -26,20 +26,20 @@ from collections import Counter
 from dataclasses import dataclass
 
 from d810.core.typing import Any
-from d810.recon.facts.collectors.induction_carrier import (
+from d810.analyses.value_flow.induction_carrier import (
     _MATURITY_VALUES,
     _InstructionView,
     _iter_instruction_views,
     _maturity_name,
 )
-from d810.recon.facts.collectors.state_write_anchor import (
+from d810.analyses.value_flow.state_write_anchor import (
     _block_start_ea_lookup,
     _block_succs,
     _dest_var_signature,
     _instruction_anchor_ea,
     _is_state_const_write,
 )
-from d810.recon.facts.model import FactObservation
+from d810.analyses.value_flow.model import FactObservation
 
 
 _TARGET_MATURITIES = frozenset({
