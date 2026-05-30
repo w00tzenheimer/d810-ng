@@ -78,6 +78,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 
 from d810.core.typing import TYPE_CHECKING
+from d810.transforms.lowering import LoweringMode
 
 import ida_hexrays
 
@@ -1719,6 +1720,7 @@ class HandlerChainComposerStrategy:
     regression isolation.
     """
 
+    lowering_mode = LoweringMode.REGION_COMPOSITION
     # CLASS-LEVEL GATE: HCC is the default live Hodur reconstruction path.
     # Feature flags remain accepted so older reproducer commands keep working,
     # while explicit disable flags give us an escape hatch for bisects.

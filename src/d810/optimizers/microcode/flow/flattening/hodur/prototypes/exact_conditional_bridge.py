@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.core import logging
+from d810.transforms.lowering import LoweringMode
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.cfg.reconstruction_bridge_planning import (
     plan_reconstruction_bridge_modifications,
@@ -245,6 +246,7 @@ def collect_exact_conditional_bridge_sites(round_summary, flow_graph) -> tuple[M
 class ExactConditionalBridgeNodeLoweringStrategy:
     """Prototype strategy for mixed-shape exact conditional bridge sites."""
 
+    lowering_mode = LoweringMode.DIRECT_GRAPH
     prerequisites: list[str] = []
 
     @property

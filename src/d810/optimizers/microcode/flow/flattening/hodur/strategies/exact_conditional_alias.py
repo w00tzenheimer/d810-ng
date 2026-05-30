@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from d810.core import logging
+from d810.transforms.lowering import LoweringMode
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.cfg.semantic_conditional_lowering import (
     ExactConditionalAliasInventory,
@@ -61,6 +62,7 @@ __all__ = [
     ),
 )
 class ExactConditionalAliasNodeLoweringStrategy:
+    lowering_mode = LoweringMode.DIRECT_GRAPH
     prerequisites: list[str] = []
 
     @property

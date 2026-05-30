@@ -7,6 +7,7 @@ untaken terminal arm.  The first live target is `0x298372CC -> 0x09EB3382`.
 from __future__ import annotations
 
 from d810.core import logging
+from d810.transforms.lowering import LoweringMode
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.cfg.flow.sese_hammock import (
     ExactConditionalNodeShape,
@@ -81,6 +82,7 @@ __all__ = [
 class ExactConditionalNodeLoweringStrategy:
     """Lower exact conditional sites by owning both exits together."""
 
+    lowering_mode = LoweringMode.DIRECT_GRAPH
     prerequisites: list[str] = []
 
     @property

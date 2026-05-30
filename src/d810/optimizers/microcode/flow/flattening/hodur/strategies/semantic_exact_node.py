@@ -38,6 +38,7 @@ import os
 import ida_hexrays
 
 from d810.core import logging
+from d810.transforms.lowering import LoweringMode
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.cfg.dag_redirect_emission import emit_dag_redirect
 from d810.cfg.graph_modification import EdgeRedirectViaPredSplit, RedirectGoto
@@ -626,6 +627,7 @@ def build_semantic_exact_round_summary(snapshot):
 class _SemanticExactNodeExperimentStrategy:
     """Emit DAG redirects for selected semantic edges."""
 
+    lowering_mode = LoweringMode.DIRECT_GRAPH
     prerequisites: list[str] = []
     STRATEGY_NAME = "semantic_exact_node_experiment"
     FOCUS_EDGE_PAIRS: tuple[tuple[int, int], ...] = ()

@@ -16,6 +16,7 @@ import os
 import ida_hexrays
 
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
+from d810.transforms.lowering import LoweringMode
 from d810.cfg.flow.edit_simulator import project_post_state
 from d810.cfg.flow.edit_simulator import (
     graph_modifications_to_simulated_edits,
@@ -1262,6 +1263,7 @@ def _build_linearized_flow_graph_plan_fragment(
 class LinearizedFlowGraphStrategy:
     """Emit DAG-selected redirect edits for branch-anchored handler exits."""
 
+    lowering_mode = LoweringMode.DIRECT_GRAPH
     _MAX_PROJECTED_PLANNING_ROUNDS = 4
 
     @property
@@ -2391,6 +2393,8 @@ class LinearizedFlowGraphStrategy:
 )
 class SemanticStructuredRegionStrategy(LinearizedFlowGraphStrategy):
     """Region-first variant of LFG that disables raw plannable-edge lowering."""
+
+    lowering_mode = LoweringMode.STRUCTURED_REGION
 
     @property
     def name(self) -> str:
