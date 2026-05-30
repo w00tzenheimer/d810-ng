@@ -22,7 +22,6 @@ from d810.recon.flow.transition_report import (
     transition_report_to_dict,
 )
 from d810.recon.models import CandidateFlag, ReconResult
-from d810.recon.phase import ALL_MATURITIES
 
 logger = getLogger(__name__)
 
@@ -31,7 +30,10 @@ class HandlerTransitionsCollector:
     """Recon collector for handler transition coverage and quality."""
 
     name: str = "handler_transitions"
-    maturities: frozenset[int] | None = ALL_MATURITIES
+    # ``None`` == "fire at all maturities" (the ReconPhase ALL_MATURITIES
+    # sentinel is itself ``None``). The phase id/maturity reaches collect()
+    # as an int arg, so this collector no longer imports the orchestrator.
+    maturities: frozenset[int] | None = None
     level: str = "microcode"
 
     @staticmethod
