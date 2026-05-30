@@ -364,14 +364,30 @@ def rewrite_text(text: str, move_map: dict[str, str], patterns) -> str:
 
 
 def _alias_shim(old_dotted: str, new_dotted: str) -> str:
-    new_pkg, new_leaf = new_dotted.rsplit(".", 1)
-    return (
+    head = (
         f'"""Migration shim: ``{old_dotted}`` -> ``{new_dotted}`` (dissolution, llr-lyly).\n\n'
         "sys.modules alias preserving the old import path; re-exports public AND\n"
         'private symbols.  Deleted in Phase Z once consumers repoint.\n"""\n'
-        "import sys\n\n"
-        f"from {new_pkg} import {new_leaf} as _canonical\n\n"
-        "sys.modules[__name__] = _canonical\n"
+    )
+    # If the destination sits at a HIGHER layer than the old path (e.g.
+    # cfg -> transforms/passes, recon -> passes), a STATIC `from <new> import`
+    # in the shim is an upward-fatal layer edge (the shim file still lives at the
+    # old, lower-layer path). Use a DYNAMIC importlib alias the import graph does
+    # not follow. Downward moves (recon/cfg -> analyses/ir) keep the static form.
+    ol, nl = layer_index(old_dotted), layer_index(new_dotted)
+    upward = ol is not None and nl is not None and nl < ol
+    if upward:
+        return (
+            head
+            + "import importlib\nimport sys\n\n"
+            + f'sys.modules[__name__] = importlib.import_module("{new_dotted}")\n'
+        )
+    new_pkg, new_leaf = new_dotted.rsplit(".", 1)
+    return (
+        head
+        + "import sys\n\n"
+        + f"from {new_pkg} import {new_leaf} as _canonical\n\n"
+        + "sys.modules[__name__] = _canonical\n"
     )
 
 
