@@ -12,8 +12,8 @@ from d810.cfg.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.cfg.graph_modification import RedirectGoto
-from d810.cfg.selector_shell_planning import plan_selector_shell_cleanup
+from d810.transforms.graph_modification import RedirectGoto
+from d810.transforms.selector_shell_planning import plan_selector_shell_cleanup
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
 )

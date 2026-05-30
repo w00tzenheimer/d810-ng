@@ -5,7 +5,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from d810.cfg.flowgraph import FlowGraph
-from d810.cfg.graph_modification import ConvertToGoto, GraphModification, RedirectGoto
+from d810.transforms.graph_modification import ConvertToGoto, GraphModification, RedirectGoto
 from d810.core.typing import TYPE_CHECKING
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_CLEANUP,

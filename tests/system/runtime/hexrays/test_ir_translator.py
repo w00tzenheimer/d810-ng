@@ -25,7 +25,7 @@ from d810.cfg.flowgraph import (
     InsnSnapshot,
     OperandKind,
 )
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     CloneConditionalAsGoto,
     CreateConditionalRedirect,
     DuplicateReplayAndRedirect,
@@ -36,7 +36,7 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
     RemoveEdge,
 )
-from d810.cfg.plan import (
+from d810.transforms.plan import (
     ExecutionPolicy,
     PatchDuplicateBlock,
     PatchDuplicateReplayEntry,
@@ -49,7 +49,7 @@ from d810.cfg.plan import (
     VirtualBlockId,
     compile_patch_plan,
 )
-from d810.cfg.materialization_payload import CapturedBlockBody, CapturedBlockBodySummary
+from d810.transforms.materialization_payload import CapturedBlockBody, CapturedBlockBodySummary
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.mutation.ir_translator import (
     _branch_predicate_from_hexrays,
@@ -383,7 +383,7 @@ class TestIDAIRTranslatorBasics:
 
     def test_backend_implements_protocol(self):
         """Test that IDAIRTranslator conforms to CFGBackend protocol."""
-        from d810.cfg.protocol import IRTranslator
+        from d810.transforms.protocol import IRTranslator
 
         backend = IDAIRTranslator()
         assert isinstance(backend, IRTranslator)

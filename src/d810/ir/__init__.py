@@ -30,7 +30,7 @@ Scope discipline:
   The CFG-layer ``RedirectGoto`` / ``RedirectBranch`` types stay
   where they are (they own construction-time diagnostics that don't
   belong in IR); call sites convert via the
-  ``d810.cfg.graph_modification.to_redirect_intent`` helper at the
+  ``d810.transforms.graph_modification.to_redirect_intent`` helper at the
   capability boundary.
 * Axis-C B2 prep: ``PredicateKind`` + ``ControlTransferKind`` -- the
   first slice of the backend-neutral semantic-operation vocabulary.

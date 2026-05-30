@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.cfg.backedge_classifier import parse_var_tokens
+from d810.analyses.control_flow.backedge_classifier import parse_var_tokens
 
 
 @dataclass(frozen=True, slots=True)

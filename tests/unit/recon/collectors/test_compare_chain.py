@@ -5,8 +5,8 @@ from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
-from d810.cfg.flow.compare_chain import BlockComparison
-from d810.cfg.flow.state_var_alias import VarRef
+from d810.analyses.control_flow.compare_chain import BlockComparison
+from d810.analyses.control_flow.state_var_alias import VarRef
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.analyses.control_flow.compare_chain_collector import (
     CompareChainCollector,

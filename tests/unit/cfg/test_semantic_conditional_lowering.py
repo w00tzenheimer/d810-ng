@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import d810.cfg.semantic_conditional_lowering as semantic_conditional_lowering
+import d810.transforms.semantic_conditional_lowering as semantic_conditional_lowering
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.semantic_conditional_lowering import (
+from d810.transforms.semantic_conditional_lowering import (
     ConditionalForkExactNodeArm,
     analyze_exact_conditional_alias_sites,
     analyze_exact_conditional_sites,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.state_write_evidence import StateConstantWriteEvidence
+from d810.analyses.control_flow.state_write_evidence import StateConstantWriteEvidence
 
 
 def test_state_constant_write_evidence_masks_state_value() -> None:

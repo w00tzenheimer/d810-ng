@@ -8,7 +8,7 @@ import pytest
 
 from d810.core.diag.formatting import format_block_id
 from d810.core.diag.schema import create_tables
-from d810.cfg.block_lineage import (
+from d810.transforms.block_lineage import (
     BlockLineageEntry,
     buffer_block_lineage,
     reset_pending_block_lineage,

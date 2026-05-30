@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.cfg.semantic_region_materialization import (
+from d810.transforms.semantic_region_materialization import (
     InstructionCaptureDecision,
     InstructionCaptureFacts,
     decide_instruction_capture,

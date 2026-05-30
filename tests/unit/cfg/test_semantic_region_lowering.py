@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from d810.cfg.semantic_region_lowering import (
+from d810.transforms.semantic_region_lowering import (
     _merge_region_contract_semantic_successors_by_state,
     _synthesize_missing_conditional_exit_sites,
     build_region_contract_fallback_lowering,
@@ -14,7 +14,7 @@ from d810.cfg.semantic_region_lowering import (
     collect_admissible_region_lowering_sites,
     override_exit_sites_with_child_region_entries,
 )
-from d810.cfg.semantic_reference import (
+from d810.ir.semantic_reference import (
     collect_semantic_entry_by_label,
     collect_semantic_successors_by_state,
 )

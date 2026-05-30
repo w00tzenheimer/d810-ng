@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.observability import (
+from d810.core.observability_cfg import (
     BlockLineageDrainRequested,
     CfgProvenanceObserved,
     WatchBlockTransitionObserved,

@@ -84,17 +84,17 @@ import ida_hexrays
 
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.cfg.block_identity import (
+from d810.ir.block_identity import (
     block_label as flow_block_label,
     edge_label as flow_edge_label,
     flow_graph_context_label,
 )
-from d810.cfg.dag_frontier_closure import (
+from d810.transforms.dag_frontier_closure import (
     plan_dag_authoritative_frontier_closure,
 )
 from d810.cfg.flowgraph import InsnSnapshot
-from d810.cfg.frontier_override_emission import emit_frontier_overrides
-from d810.cfg.graph_modification import (
+from d810.transforms.frontier_override_emission import emit_frontier_overrides
+from d810.transforms.graph_modification import (
     ConvertToGoto,
     EdgeRedirectViaPredSplit,
     InsertBlock,
@@ -102,29 +102,29 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
     to_redirect_intent,
 )
-from d810.cfg.materialization_payload import CapturedBlockBody
-from d810.cfg.mod_claims import collect_mod_claims
-from d810.cfg.modification_builder import ModificationBuilder
-from d810.cfg.reconstruction_emission import (
+from d810.transforms.materialization_payload import CapturedBlockBody
+from d810.transforms.mod_claims import collect_mod_claims
+from d810.transforms.modification_builder import ModificationBuilder
+from d810.transforms.reconstruction_emission import (
     apply_shared_group_reachability_fallback,
     execute_primary_reconstruction_modifications,
 )
-from d810.cfg.reconstruction_postprocess_emission import (
+from d810.transforms.reconstruction_postprocess_emission import (
     execute_reconstruction_postprocess,
 )
-from d810.cfg.reconstruction_recording import RoundAcceptLedger
-from d810.cfg.semantic_region_entry import (
+from d810.transforms.reconstruction_recording import RoundAcceptLedger
+from d810.transforms.semantic_region_entry import (
     EntryEligibility,
     SemanticEntryCandidate,
     resolve_semantic_entry_candidate as _resolve_semantic_entry_candidate,
 )
-from d810.cfg.semantic_region_admission import (
+from d810.transforms.semantic_region_admission import (
     RawRegionInfo as _RawRegionInfo,
     classify_source_covered_by_other_region as _classify_source_covered_by_other_region,
     classify_yes_handlers_subclass as _classify_yes_handlers_subclass,
     find_cover_regions as _find_cover_regions,
 )
-from d810.cfg.state_edge_pair import state_edge_pair
+from d810.ir.state_edge_pair import state_edge_pair
 from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
     HexRaysInstructionCaptureBackend,
     InsertBlockCallAuditBackend,
@@ -224,7 +224,7 @@ from d810.analyses.control_flow.return_frontier_carrier_facts import (
 )
 from functools import partial as _partial
 
-from d810.cfg.reconstruction_planning import plan_reconstruction_candidate
+from d810.transforms.reconstruction_planning import plan_reconstruction_candidate
 from d810.analyses.control_flow.reconstruction_candidate_builder import (
     ReconstructionCandidate,
     build_reconstruction_candidate as _build_reconstruction_candidate,

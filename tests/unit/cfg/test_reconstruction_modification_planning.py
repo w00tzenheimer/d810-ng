@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     ConvertToGoto,
     EdgeRedirectViaPredSplit,
     RedirectBranch,
     RedirectGoto,
 )
-from d810.cfg.reconstruction_lowering import SharedGroupEmissionCandidate
-from d810.cfg.reconstruction_modification_planning import (
+from d810.transforms.reconstruction_lowering import SharedGroupEmissionCandidate
+from d810.transforms.reconstruction_modification_planning import (
     plan_conditional_arm_reconstruction_modifications,
     plan_direct_reconstruction_modifications,
     plan_passthrough_reconstruction_modifications,

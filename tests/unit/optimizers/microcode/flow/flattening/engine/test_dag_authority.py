@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     ConvertToGoto,
     RedirectGoto,
     ZeroStateWrite,
 )
-from d810.cfg.state_dag_key import StateDagNodeKey
+from d810.ir.state_dag_key import StateDagNodeKey
 from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
     DagAuthority,
     DagDecision,
@@ -464,7 +464,7 @@ class TestIndexHelpers:
 # ----------------------------------------------------------------------------
 
 
-from d810.cfg.graph_modification import EdgeRedirectViaPredSplit
+from d810.transforms.graph_modification import EdgeRedirectViaPredSplit
 from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
     CorridorSpliceData,
 )

@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 
 import ida_hexrays
 
-from d810.cfg.dominator import compute_dom_tree
-from d810.cfg.mop_identity import mop_snapshot_key
+from d810.analyses.control_flow.dominator import compute_dom_tree
+from d810.ir.mop_identity import mop_snapshot_key
 from d810.core import logging
 from d810.core.bits import unsigned_to_signed
 from d810.evaluator.evaluators import evaluate_concrete
@@ -123,7 +123,7 @@ def _live_mop_matches_snapshot_key(
 ) -> bool:
     """Return ``True`` if ``mop`` produces the given snapshot key.
 
-    Mirrors ``d810.cfg.mop_identity.mop_snapshot_key`` on the live
+    Mirrors ``d810.ir.mop_identity.mop_snapshot_key`` on the live
     side so the dispatcher-cache's portable state-variable identity
     (held as a ``MopSnapshot``) can be matched against the live
     operands in hodur's local ``state_check_blocks`` without holding

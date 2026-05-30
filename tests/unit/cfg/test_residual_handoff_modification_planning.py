@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     EdgeRedirectViaPredSplit,
     RedirectBranch,
     RedirectGoto,
 )
-from d810.cfg.residual_handoff_modification_planning import (
+from d810.transforms.residual_handoff_modification_planning import (
     apply_residual_branch_anchor_emission_plan,
     plan_residual_goto_emission,
     plan_residual_pred_split_emissions,

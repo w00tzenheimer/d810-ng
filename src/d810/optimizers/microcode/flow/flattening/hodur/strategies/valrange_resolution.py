@@ -18,7 +18,7 @@ from d810.evaluator.hexrays_microcode.valranges import resolve_state_via_valrang
 from d810.analyses.control_flow.exit_transition_discovery import (
     collect_valrange_exit_transition_candidates,
 )
-from d810.cfg.modification_builder import (
+from d810.transforms.modification_builder import (
     ModificationBuilder,
 )
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (

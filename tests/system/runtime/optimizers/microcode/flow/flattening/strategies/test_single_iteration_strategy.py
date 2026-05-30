@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.graph_modification import ConvertToGoto, RedirectGoto
+from d810.transforms.graph_modification import ConvertToGoto, RedirectGoto
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
 )

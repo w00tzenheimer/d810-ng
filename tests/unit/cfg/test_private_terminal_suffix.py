@@ -4,14 +4,14 @@ from __future__ import annotations
 import pytest
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
-from d810.cfg.graph_modification import PrivateTerminalSuffix
-from d810.cfg.plan import (
+from d810.transforms.graph_modification import PrivateTerminalSuffix
+from d810.transforms.plan import (
     PatchPlan,
     PatchPrivateTerminalSuffix,
     VirtualBlockId,
     compile_patch_plan,
 )
-from d810.cfg.flow.edit_simulator import (
+from d810.transforms.edit_simulator import (
     SimulatedEdit,
     patch_plan_to_simulated_edits,
     simulate_edits,

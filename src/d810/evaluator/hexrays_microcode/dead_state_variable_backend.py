@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import ida_hexrays
 
-from d810.cfg.state_variable import StateVariableRef
+from d810.ir.state_variable import StateVariableRef
 from d810.core.logging import getLogger
 from d810.core.typing import Protocol
 from d810.evaluator.hexrays_microcode.chains import (

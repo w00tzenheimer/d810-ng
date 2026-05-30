@@ -6,9 +6,9 @@ from d810.core.algorithm_metadata import (
     get_algorithm_metadata,
     get_algorithm_metadata_for_object,
 )
-from d810.cfg.modification_builder import ModificationBuilder
-from d810.cfg.plan import compile_patch_plan
-from d810.cfg.flow.compare_chain import CompareChainResolver
+from d810.transforms.modification_builder import ModificationBuilder
+from d810.transforms.plan import compile_patch_plan
+from d810.analyses.control_flow.compare_chain import CompareChainResolver
 
 
 @algorithm_metadata(

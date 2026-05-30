@@ -13,7 +13,7 @@ from d810.cfg.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
     DuplicateBlock,
@@ -22,11 +22,11 @@ from d810.cfg.graph_modification import (
     NopInstructions,
     RedirectGoto,
 )
-from d810.cfg.materialization_payload import (
+from d810.transforms.materialization_payload import (
     CapturedBlockBody,
     CapturedBlockBodySummary,
 )
-from d810.cfg.plan import (
+from d810.transforms.plan import (
     ExecutionPolicy,
     LegacyBlockOperation,
     PatchConditionalRedirect,

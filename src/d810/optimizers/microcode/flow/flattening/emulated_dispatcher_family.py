@@ -12,13 +12,13 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.core.typing import Protocol
-from d810.cfg.dominator import compute_dom_tree
-from d810.cfg.dispatcher_rewrite_planning import (
+from d810.analyses.control_flow.dominator import compute_dom_tree
+from d810.transforms.dispatcher_rewrite_planning import (
     DispatcherPredecessorRewriteInput,
     plan_dispatcher_predecessor_rewrite,
 )
 from d810.cfg.flowgraph import FlowGraph, InsnSnapshot
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     CreateConditionalRedirect,
     ConvertToGoto,
     EdgeRedirectViaPredSplit,
@@ -30,13 +30,13 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
     ZeroStateWrite,
 )
-from d810.cfg.modification_builder import ModificationBuilder
-from d810.cfg.plan import (
+from d810.transforms.modification_builder import ModificationBuilder
+from d810.transforms.plan import (
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
     compile_patch_plan,
 )
-from d810.cfg.reconstruction_postprocess_emission import (
+from d810.transforms.reconstruction_postprocess_emission import (
     execute_reconstruction_postprocess,
 )
 from d810.core import logging
@@ -53,7 +53,7 @@ from d810.hexrays.mutation.ir_translator import (
     classify_live_operand_kind,
 )
 from d810.hexrays.utils.hexrays_helpers import CONTROL_FLOW_OPCODES
-from d810.cfg.reconstruction_emission import (
+from d810.transforms.reconstruction_emission import (
     execute_primary_reconstruction_modifications,
 )
 from d810.optimizers.microcode.flow.flattening.engine.family import (
@@ -140,7 +140,7 @@ from d810.analyses.control_flow.reconstruction_discovery import (
 )
 from functools import partial as _partial
 
-from d810.cfg.reconstruction_planning import plan_reconstruction_candidate
+from d810.transforms.reconstruction_planning import plan_reconstruction_candidate
 from d810.analyses.control_flow.reconstruction_candidate_builder import (
     build_reconstruction_candidate as _build_reconstruction_candidate,
 )
@@ -4410,7 +4410,7 @@ def _emit_use_def_veto_provenance(
     """
 
     try:
-        from d810.cfg.observability import observe_cfg_provenance_latest
+        from d810.core.observability_cfg import observe_cfg_provenance_latest
 
         sample_limit = 16
         func_ea = int(getattr(mba, "entry_ea", 0) or 0)

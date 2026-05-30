@@ -6,16 +6,16 @@ from types import SimpleNamespace
 import pytest
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     DuplicateReplayAndRedirect,
     DuplicateReplayEntry,
     InsertBlock,
 )
-from d810.cfg.materialization_payload import (
+from d810.transforms.materialization_payload import (
     CapturedBlockBody,
     CapturedBlockBodySummary,
 )
-from d810.cfg.plan import (
+from d810.transforms.plan import (
     PatchDuplicateReplayAndRedirect,
     PatchInsertBlock,
     compile_patch_plan,

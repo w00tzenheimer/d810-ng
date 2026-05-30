@@ -1,4 +1,4 @@
-from d810.cfg.block_identity import (
+from d810.ir.block_identity import (
     block_fingerprint,
     block_label,
     edge_label,

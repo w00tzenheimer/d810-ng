@@ -35,11 +35,11 @@ from .fake_jump import (
     serialize_fake_jump_fixes,
     should_skip_fake_jump_predecessor,
 )
-from d810.cfg.guarded_state_machine_planning import (
+from d810.transforms.guarded_state_machine_planning import (
     build_guarded_state_machine_modifications,
 )
-from d810.cfg.local_select_loop_planning import build_local_select_loop_modifications
-from d810.cfg.side_effect_select_loop_planning import (
+from d810.transforms.local_select_loop_planning import build_local_select_loop_modifications
+from d810.transforms.side_effect_select_loop_planning import (
     build_side_effect_select_loop_modifications,
 )
 from d810.analyses.control_flow.guarded_state_machine import (

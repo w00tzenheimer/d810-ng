@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.cfg.state_dag_key import StateDagNodeKey
+from d810.ir.state_dag_key import StateDagNodeKey
 from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
     LocalEdgeKind,

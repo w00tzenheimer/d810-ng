@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.cfg.entry_island_rescue import (
+from d810.transforms.entry_island_rescue import (
     EntryIslandRescueOption,
     build_entry_island_rescue_modification,
     build_entry_island_rescue_options,

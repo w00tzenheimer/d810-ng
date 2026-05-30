@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from d810.cfg.graph_modification import InsertBlock, NopInstructions
-from d810.cfg.materialization_backend import (
+from d810.transforms.graph_modification import InsertBlock, NopInstructions
+from d810.transforms.materialization_backend import (
     BackendInstructionRef,
     CapturedBlockBody,
     CapturedBlockBodySummary,
     MaterializationBackend,
 )
-from d810.cfg.state_write_cleanup import (
+from d810.transforms.state_write_cleanup import (
     StateWriteCleanupAction,
     StateWriteCleanupRequest,
 )

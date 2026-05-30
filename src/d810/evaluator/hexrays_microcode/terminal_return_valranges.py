@@ -12,7 +12,7 @@ from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 
-from d810.cfg.flow.terminal_frontier import (
+from d810.analyses.control_flow.terminal_frontier import (
     TerminalCfgSuffixFrontier,
     TerminalLoweringAction,
     TerminalSemanticLoweringFrontier,

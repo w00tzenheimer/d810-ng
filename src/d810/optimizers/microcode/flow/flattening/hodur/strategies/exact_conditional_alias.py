@@ -4,7 +4,7 @@ from __future__ import annotations
 from d810.core import logging
 from d810.transforms.lowering import LoweringMode
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.cfg.semantic_conditional_lowering import (
+from d810.transforms.semantic_conditional_lowering import (
     ExactConditionalAliasInventory,
     analyze_exact_conditional_alias_sites,
     collect_exact_conditional_alias_sites,

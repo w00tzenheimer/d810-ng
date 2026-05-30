@@ -12,7 +12,7 @@ from d810.core.typing import TYPE_CHECKING, Callable
 
 from d810.hexrays.contracts import CfgContractViolationError, IDACfgContract
 
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     CloneConditionalAsGoto,
     CloneConditionalAsGotoFromBranchArm,
     GraphModification,
@@ -39,7 +39,7 @@ from d810.cfg.flowgraph import (
 )
 from d810.cfg.flowgraph import MopSnapshot as CfgMopSnapshot
 from d810.ir.semantics import ControlTransferKind, PredicateKind
-from d810.cfg.plan import (
+from d810.transforms.plan import (
     ExecutionPolicy,
     LegacyBlockOperation,
     PatchBypassDispatcherTrampoline,

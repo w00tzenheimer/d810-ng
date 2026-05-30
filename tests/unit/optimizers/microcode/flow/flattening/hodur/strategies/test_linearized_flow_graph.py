@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.graph_modification import ConvertToGoto, RedirectBranch, RedirectGoto, ZeroStateWrite
+from d810.transforms.graph_modification import ConvertToGoto, RedirectBranch, RedirectGoto, ZeroStateWrite
 from d810.ir.redirect import RedirectGotoIntent
 from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     linearized_flow_graph as lfg_module,

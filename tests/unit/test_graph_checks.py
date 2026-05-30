@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from d810.cfg.flow.edit_simulator import SimulatedEdit, simulate_edits
-from d810.cfg.flow.graph_checks import (
+from d810.transforms.edit_simulator import SimulatedEdit, simulate_edits
+from d810.analyses.control_flow.graph_checks import (
     TerminalCycle,
     TerminalSinkResult,
     detect_terminal_cycles,

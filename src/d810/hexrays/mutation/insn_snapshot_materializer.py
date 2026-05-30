@@ -6,7 +6,7 @@ from collections.abc import Sequence
 import ida_hexrays
 
 from d810.cfg.flowgraph import InsnSnapshot
-from d810.cfg.materialization_payload import CapturedBlockBody
+from d810.transforms.materialization_payload import CapturedBlockBody
 from d810.core.logging import getLogger
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays.utils.hexrays_formatters import sanitize_ea

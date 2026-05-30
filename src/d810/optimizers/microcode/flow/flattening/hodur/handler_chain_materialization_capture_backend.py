@@ -4,12 +4,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.cfg.flowgraph import InsnSnapshot
-from d810.cfg.materialization_payload import CapturedBlockBody
+from d810.transforms.materialization_payload import CapturedBlockBody
 from d810.core.typing import Protocol
 from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
     HexRaysInstructionCaptureBackend,
 )
-from d810.cfg.state_write_evidence import StateConstantWriteEvidence
+from d810.analyses.control_flow.state_write_evidence import StateConstantWriteEvidence
 
 
 @dataclass(frozen=True, slots=True)

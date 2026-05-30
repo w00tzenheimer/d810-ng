@@ -17,20 +17,20 @@ import ida_hexrays
 
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.transforms.lowering import LoweringMode
-from d810.cfg.flow.edit_simulator import project_post_state
-from d810.cfg.flow.edit_simulator import (
+from d810.transforms.edit_simulator import project_post_state
+from d810.transforms.edit_simulator import (
     graph_modifications_to_simulated_edits,
     simulate_edits,
 )
-from d810.cfg.plan import compile_patch_plan
-from d810.cfg.dag_redirect_emission import (
+from d810.transforms.plan import compile_patch_plan
+from d810.transforms.dag_redirect_emission import (
     emit_dag_redirect,
 )
 from d810.cfg.flowgraph import FlowGraph
-from d810.cfg.dispatcher_backedge_disconnect_emission import (
+from d810.transforms.dispatcher_backedge_disconnect_emission import (
     disconnect_bst_comparison_nodes,
 )
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     ConvertToGoto,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
@@ -39,12 +39,12 @@ from d810.cfg.graph_modification import (
     ZeroStateWrite,
     to_redirect_intent,
 )
-from d810.cfg.zero_state_write_emission import (
+from d810.transforms.zero_state_write_emission import (
     ZsvSiteRequest,
     ZsvSource,
     collect_zero_state_writes,
 )
-from d810.cfg.linearized_flow_graph_fragment_planning import (
+from d810.transforms.linearized_flow_graph_fragment_planning import (
     LinearizedDagStructuredRegion,
     LinearizedFlowGraphPlanSetup,
     LinearizedFlowGraphStructuredRegionResult,
@@ -54,30 +54,30 @@ from d810.cfg.linearized_flow_graph_fragment_planning import (
     build_linearized_flow_graph_planning_context,
     execute_linearized_flow_graph_planning,
 )
-from d810.cfg.semantic_region_lowering import (
+from d810.transforms.semantic_region_lowering import (
     build_region_contract_fallback_lowering,
     build_region_preferred_direct_lowering,
     build_region_preferred_conditional_lowering,
     collect_admissible_region_lowering_sites,
     override_exit_sites_with_child_region_entries,
 )
-from d810.cfg.path_tail_redirect_emission import (
+from d810.transforms.path_tail_redirect_emission import (
     emit_path_tail_redirect,
 )
-from d810.cfg.projected_alias_normalization_planning import (
+from d810.transforms.projected_alias_normalization_planning import (
     normalize_projected_alias_handoffs,
 )
-from d810.cfg.residual_branch_anchor_emission import (
+from d810.transforms.residual_branch_anchor_emission import (
     emit_residual_branch_anchor_handoff,
 )
-from d810.cfg.residual_dispatcher_handoff_emission import (
+from d810.transforms.residual_dispatcher_handoff_emission import (
     emit_residual_dispatcher_handoffs,
 )
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.core.typing import TYPE_CHECKING, AbstractSet
 
-from d810.cfg.modification_builder import (
+from d810.transforms.modification_builder import (
     ModificationBuilder,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
@@ -176,7 +176,7 @@ def _round_ctx_probe_wrap(snapshot, inner):
 
 from functools import partial as _partial
 
-from d810.cfg.reconstruction_planning import plan_reconstruction_candidate
+from d810.transforms.reconstruction_planning import plan_reconstruction_candidate
 from d810.analyses.control_flow.reconstruction_candidate_builder import (
     ReconstructionCandidate,
     build_reconstruction_candidate as _build_reconstruction_candidate,
@@ -244,10 +244,10 @@ from d810.analyses.control_flow.state_machine_analysis import (
     find_last_state_write_site_snapshot,
     find_last_state_write_site_on_path_snapshot,
 )
-from d810.cfg.reconstruction_emission import (
+from d810.transforms.reconstruction_emission import (
     execute_primary_reconstruction_modifications,
 )
-from d810.cfg.reconstruction_postprocess_emission import (
+from d810.transforms.reconstruction_postprocess_emission import (
     execute_reconstruction_postprocess,
 )
 from d810.analyses.control_flow.transition_report import (

@@ -11,7 +11,7 @@ from d810.cfg.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
+from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
 )
@@ -21,7 +21,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
 from d810.optimizers.microcode.flow.flattening.strategies.guarded_state_machine import (
     GuardedStateMachineStrategy,
 )
-from d810.cfg.guarded_state_machine_planning import (
+from d810.transforms.guarded_state_machine_planning import (
     build_guarded_state_machine_modifications,
 )
 from d810.analyses.control_flow.guarded_state_machine import (

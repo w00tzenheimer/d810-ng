@@ -8,7 +8,7 @@ from d810.flow.terminal_return import (
     TerminalReturnSiteAudit,
     TerminalReturnSourceKind,
 )
-from d810.cfg.graph_modification import RedirectGoto
+from d810.transforms.graph_modification import RedirectGoto
 from d810.optimizers.microcode.flow.flattening.engine.planner import (
     HintAdjustment,
     PipelinePolicy,

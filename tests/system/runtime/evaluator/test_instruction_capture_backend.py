@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, MopSnapshot
-from d810.cfg.state_write_cleanup import StateWriteCleanupAction
+from d810.transforms.state_write_cleanup import StateWriteCleanupAction
 from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
     HexRaysInstructionCaptureBackend,
 )

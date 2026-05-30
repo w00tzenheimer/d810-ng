@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.cfg.lowering_selector import (
+from d810.transforms.lowering_selector import (
     PredecessorPeelContext,
     ResidualBranchAnchorContext,
     ResidualGotoHandoffContext,

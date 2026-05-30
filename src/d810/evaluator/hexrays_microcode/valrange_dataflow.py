@@ -76,7 +76,7 @@ from dataclasses import dataclass
 import ida_hexrays
 import idaapi
 
-from d810.cfg.lattice import BOTTOM, TOP, LatticeMeet
+from d810.ir.lattice import BOTTOM, TOP, LatticeMeet
 from d810.core.logging import getLogger
 from d810.core.typing import Any, Optional
 from d810.evaluator.hexrays_microcode.forward_dataflow import (
@@ -295,7 +295,7 @@ _valrange_meet_strategy = LatticeMeet(
 def valrange_meet(pred_outs: list[ValrangeEnv]) -> ValrangeEnv:
     """Merge predecessor output states via union of ranges.
 
-    Delegates to :class:`~d810.cfg.lattice.LatticeMeet` with union semantics.
+    Delegates to :class:`~d810.ir.lattice.LatticeMeet` with union semantics.
     Entries that widen to TOP (all values) are pruned from the result since
     they carry no useful constraint.
     """

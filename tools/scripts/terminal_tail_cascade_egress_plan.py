@@ -12,7 +12,7 @@ with the same argument shape. To use the new command directly:
 The full implementation now lives in
 ``src/d810/diagnostics/cascade_egress_plan.py`` with unit tests under
 ``tests/unit/diagnostics/test_cascade_egress_plan.py``. The cfg-layer
-planner in ``d810.cfg.terminal_tail_cascade_egress_planner`` is unchanged.
+planner in ``d810.transforms.terminal_tail_cascade_egress_planner`` is unchanged.
 """
 from __future__ import annotations
 

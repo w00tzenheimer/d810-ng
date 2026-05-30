@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import d810.analyses.control_flow.reconstruction_candidate_builder as builder_module
 
-from d810.cfg.reconstruction_planning import (
+from d810.transforms.reconstruction_planning import (
     ReconstructionEmissionMode,
     ReconstructionPlanningDecision,
 )

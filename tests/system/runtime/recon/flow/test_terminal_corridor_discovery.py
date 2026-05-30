@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
-from d810.cfg.flow.terminal_frontier import TerminalLoweringAction
+from d810.analyses.control_flow.terminal_frontier import TerminalLoweringAction
 from d810.analyses.control_flow.terminal_corridor_discovery import (
     CarrierSourceKind,
     CorridorRecommendation,

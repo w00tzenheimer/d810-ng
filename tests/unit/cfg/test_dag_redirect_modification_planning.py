@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from d810.cfg.dag_redirect_modification_planning import (
+from d810.transforms.dag_redirect_modification_planning import (
     DagRedirectFallbackContext,
     apply_dag_redirect_emission_plan,
     plan_dag_redirect_fallback,
     plan_dag_redirect_fallback_emission,
 )
-from d810.cfg.graph_modification import RedirectBranch, RedirectGoto
+from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
 
 
 class TestPlanDagRedirectFallbackEmission:

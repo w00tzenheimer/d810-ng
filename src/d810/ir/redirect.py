@@ -1,6 +1,6 @@
 """Portable redirect-intent value types.
 
-These are the IR-layer counterparts of ``d810.cfg.graph_modification.RedirectGoto``
+These are the IR-layer counterparts of ``d810.transforms.graph_modification.RedirectGoto``
 and ``RedirectBranch``: pure data, three integer fields per type, no
 construction diagnostics, no CFG-mutation machinery.  They exist so
 ``UseDefSafetyCapability.redirect_use_def_violations`` can accept a
@@ -12,11 +12,11 @@ Discipline:
 
 * The CFG-layer redirect types KEEP their construction tracing
   (``__post_init__`` diagnostics under
-  ``d810.cfg.graph_modification``).  Those are CFG-layer diagnostics
+  ``d810.transforms.graph_modification``).  Those are CFG-layer diagnostics
   and must not bleed into ``d810.ir``.
 * Call sites build the CFG redirect first (so the construction trace
   fires), then convert to the IR intent only at the capability
-  boundary via ``d810.cfg.graph_modification.to_redirect_intent``.
+  boundary via ``d810.transforms.graph_modification.to_redirect_intent``.
 * The IR types are intentionally NOT constructible from CFG objects
   here -- the converter lives next to the CFG types so ``d810.ir``
   carries no upward edge into ``d810.cfg``.
@@ -39,7 +39,7 @@ __all__ = ["RedirectBranchIntent", "RedirectGotoIntent", "RedirectIntent"]
 class RedirectGotoIntent:
     """Intent: redirect the unconditional successor of a 1-way block.
 
-    Portable counterpart of ``d810.cfg.graph_modification.RedirectGoto``.
+    Portable counterpart of ``d810.transforms.graph_modification.RedirectGoto``.
     Capability consumers see this; the CFG-layer ``RedirectGoto`` is
     what actually gets queued into ``DeferredGraphModifier``.
 
@@ -58,7 +58,7 @@ class RedirectGotoIntent:
 class RedirectBranchIntent:
     """Intent: redirect one branch edge of a 2-way block.
 
-    Portable counterpart of ``d810.cfg.graph_modification.RedirectBranch``.
+    Portable counterpart of ``d810.transforms.graph_modification.RedirectBranch``.
 
     Attributes:
         from_serial: Source block serial number (must be a 2-way block).

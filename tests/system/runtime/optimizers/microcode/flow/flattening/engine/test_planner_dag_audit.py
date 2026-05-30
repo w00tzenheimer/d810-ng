@@ -14,7 +14,7 @@ Validates that:
 """
 from __future__ import annotations
 
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     ConvertToGoto,
     RedirectGoto,
 )

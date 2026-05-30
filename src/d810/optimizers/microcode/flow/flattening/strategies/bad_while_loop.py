@@ -5,7 +5,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from d810.cfg.flowgraph import FlowGraph
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
     DuplicateBlock,
@@ -46,7 +46,7 @@ from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop_depende
 )
 
 if TYPE_CHECKING:
-    from d810.cfg.materialization_payload import CapturedBlockBody
+    from d810.transforms.materialization_payload import CapturedBlockBody
     from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )

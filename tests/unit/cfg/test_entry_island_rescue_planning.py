@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import d810.cfg.entry_island_rescue_planning as rescue_mod
-from d810.cfg.entry_island_rescue import EntryIslandRescueOption
-from d810.cfg.entry_island_rescue_planning import (
+import d810.transforms.entry_island_rescue_planning as rescue_mod
+from d810.transforms.entry_island_rescue import EntryIslandRescueOption
+from d810.transforms.entry_island_rescue_planning import (
     EntryIslandRescuePlanningSeed,
     plan_entry_island_rescues,
     score_entry_island_rescue_option,

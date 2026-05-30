@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.cfg.dispatcher_backedge_disconnect_planning import (
+from d810.transforms.dispatcher_backedge_disconnect_planning import (
     DispatcherBackedgeDisconnectPlan,
     plan_dispatcher_backedge_disconnects,
 )

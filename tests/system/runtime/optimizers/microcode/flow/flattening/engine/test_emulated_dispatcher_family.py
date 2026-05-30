@@ -13,7 +13,7 @@ import d810.hexrays.observability as hexrays_observability
 import d810.optimizers.microcode.flow.dispatcher.switch_case_transitions as switch_case_transition_adapter
 import d810.analyses.control_flow.switch_case_transition_analysis as switch_case_transition_analysis
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     CreateConditionalRedirect,
     EdgeRedirectViaPredSplit,
     InsertBlock,
@@ -24,7 +24,7 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
     ZeroStateWrite,
 )
-from d810.cfg.plan import PatchEdgeSplitTrampoline, PatchInsertBlock, compile_patch_plan
+from d810.transforms.plan import PatchEdgeSplitTrampoline, PatchInsertBlock, compile_patch_plan
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.ir_translator import lift as lift_mba
 from d810.optimizers.microcode.flow.flattening import (

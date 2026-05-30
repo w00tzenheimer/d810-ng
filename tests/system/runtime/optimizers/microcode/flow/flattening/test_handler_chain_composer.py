@@ -35,13 +35,13 @@ pytestmark = pytest.mark.skipif(not IDA_AVAILABLE, reason="IDA not available")
 
 if IDA_AVAILABLE:
     from d810.cfg.flowgraph import InsnSnapshot
-    from d810.cfg.graph_modification import (
+    from d810.transforms.graph_modification import (
         EdgeRedirectViaPredSplit,
         InsertBlock,
         RedirectBranch,
         RedirectGoto,
     )
-    from d810.cfg.state_dag_key import StateDagNodeKey
+    from d810.ir.state_dag_key import StateDagNodeKey
     from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
         handler_chain_composer as hcc_module,
     )

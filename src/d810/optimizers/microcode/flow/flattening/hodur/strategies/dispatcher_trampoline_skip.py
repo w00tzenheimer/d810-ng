@@ -32,9 +32,9 @@ import ida_hexrays
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
 from d810.cfg.flowgraph import InsnKind, OperandKind
-from d810.cfg.loop_bound_writer_guard import collect_const_var_refs_in_block
-from d810.cfg.modification_builder import ModificationBuilder
-from d810.cfg.residual_target_resolution import (
+from d810.transforms.loop_bound_writer_guard import collect_const_var_refs_in_block
+from d810.transforms.modification_builder import ModificationBuilder
+from d810.transforms.residual_target_resolution import (
     BstConditionalTail,
     BstGotoTail,
     resolve_dispatcher_trampoline_skip_candidate,

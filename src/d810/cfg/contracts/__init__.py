@@ -27,7 +27,7 @@ def __getattr__(name: str):
         "predecessor_uniqueness",
         "successor_set_matches_tail_semantics",
     }:
-        module = import_module("d810.cfg.contracts.invariants")
+        module = import_module("d810.passes.invariants")
         return getattr(module, name)
     if name in {
         "TRANSACTION_PHASES",
@@ -35,13 +35,13 @@ def __getattr__(name: str):
         "FailureClassification",
         "classify_failure",
     }:
-        module = import_module("d810.cfg.contracts.transaction_policy")
+        module = import_module("d810.passes.transaction_policy")
         return getattr(module, name)
     if name in {
         "CfgTransactionEngine",
         "TransactionResult",
     }:
-        module = import_module("d810.cfg.contracts.transaction_engine")
+        module = import_module("d810.passes.transaction_engine")
         return getattr(module, name)
     raise AttributeError(name)
 

@@ -11,7 +11,7 @@ from d810.cfg.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     CloneConditionalAsGoto,
     ConvertToGoto,
     RedirectBranch,

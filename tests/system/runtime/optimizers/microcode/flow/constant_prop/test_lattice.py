@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.lattice import (
+from d810.ir.lattice import (
     BOTTOM,
     TOP,
     Const,

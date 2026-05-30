@@ -1,5 +1,5 @@
 """Tests for RedirectGoto/RedirectBranch/ZeroStateWrite
-construction tracing in d810.cfg.graph_modification.
+construction tracing in d810.transforms.graph_modification.
 
 The tracer is opt-in via ``D810_TRACE_MOD_CONSTRUCTION=1`` (or the legacy
 ``D810_TRACE_REDIRECT_GOTO_CONSTRUCTION=1`` alias). When set, every
@@ -20,7 +20,7 @@ import logging as stdlib_logging
 
 import pytest
 
-import d810.cfg.graph_modification as gm_module
+import d810.transforms.graph_modification as gm_module
 
 
 @pytest.fixture()

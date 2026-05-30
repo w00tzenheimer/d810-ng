@@ -48,13 +48,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     ConvertToGoto,
     EdgeRedirectViaPredSplit,
     RedirectGoto,
     ZeroStateWrite,
 )
-from d810.cfg.state_dag_key import StateDagNodeKey
+from d810.ir.state_dag_key import StateDagNodeKey
 from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
     RedirectSourceKind,
@@ -409,7 +409,7 @@ class DagAuthority:
 
         Phase 4 (uee-rjo8) consolidated the three legacy ZSW
         collectors into a single emitter at
-        :func:`d810.cfg.zero_state_write_emission.collect_zero_state_writes`.
+        :func:`d810.transforms.zero_state_write_emission.collect_zero_state_writes`.
         The single-emitter invariant — every ``(block_serial, insn_ea)``
         ZSW decision has exactly one author per pipeline run — is the
         proof of legality this arbiter relied on the missing

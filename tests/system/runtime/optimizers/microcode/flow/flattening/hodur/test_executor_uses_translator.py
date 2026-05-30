@@ -11,14 +11,14 @@ if "ida_hexrays" not in sys.modules:
     sys.modules["ida_hexrays"] = ida_hexrays_stub
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     InsertBlock,
     NopInstructions,
     RedirectGoto,
 )
-from d810.cfg.plan import PatchPlan, compile_patch_plan
+from d810.transforms.plan import PatchPlan, compile_patch_plan
 from d810.optimizers.microcode.flow.flattening.engine import executor as _executor_mod
 from d810.optimizers.microcode.flow.flattening.engine.executor import TransactionalExecutor
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
@@ -514,7 +514,7 @@ def test_executor_routes_through_transaction_engine(monkeypatch: pytest.MonkeyPa
         lambda *args, **kwargs: True,
     )
 
-    from d810.cfg.contracts.transaction_engine import CfgTransactionEngine, TransactionResult
+    from d810.passes.transaction_engine import CfgTransactionEngine, TransactionResult
 
     cfg = FlowGraph(
         blocks={
@@ -562,7 +562,7 @@ def test_executor_premutation_failure_no_rollback(monkeypatch: pytest.MonkeyPatc
         lambda *args, **kwargs: True,
     )
 
-    from d810.cfg.contracts.transaction_engine import CfgTransactionEngine, TransactionResult
+    from d810.passes.transaction_engine import CfgTransactionEngine, TransactionResult
 
     cfg = FlowGraph(
         blocks={

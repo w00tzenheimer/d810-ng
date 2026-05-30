@@ -12,7 +12,7 @@ import logging
 
 import pytest
 
-from d810.cfg.flow.compare_chain import (
+from d810.analyses.control_flow.compare_chain import (
     BlockComparison,
     CompareChainResolver,
     CompareEntry,

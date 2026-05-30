@@ -1,21 +1,21 @@
 from __future__ import annotations
 
-from d810.cfg.graph_modification import EdgeRedirectViaPredSplit, RedirectBranch, RedirectGoto
-from d810.cfg.lowering_selector import (
+from d810.transforms.graph_modification import EdgeRedirectViaPredSplit, RedirectBranch, RedirectGoto
+from d810.transforms.lowering_selector import (
     PredecessorPeelContext,
     ResidualBranchAnchorContext,
     ResidualGotoHandoffContext,
     ResidualPredSplitContext,
     ResidualPrefixPeelContext,
 )
-from d810.cfg.residual_dispatcher_source_planning import (
+from d810.transforms.residual_dispatcher_source_planning import (
     ResidualDispatcherSourceContext,
     apply_residual_dispatcher_source_plan,
     ResidualDispatcherSourcePlan,
     ResidualDispatcherSourcePlanKind,
     plan_residual_dispatcher_source,
 )
-from d810.cfg.residual_handoff_planning import (
+from d810.transforms.residual_handoff_planning import (
     ResidualGotoAttempt,
     ResidualPrefixAttempt,
     ResidualPredSplitAttempt,

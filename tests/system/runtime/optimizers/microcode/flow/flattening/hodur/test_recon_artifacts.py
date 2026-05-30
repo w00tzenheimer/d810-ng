@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.flow.return_frontier import ReturnSite
+from d810.analyses.control_flow.return_frontier import ReturnSite
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.optimizers.microcode.flow.flattening.hodur.recon_artifacts import (
     load_return_frontier_audit_from_store,
@@ -71,7 +71,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.snapshot_builder import (
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_node import (
     SemanticExactNodeAllPlannableEdgesStrategy,
 )
-from d810.cfg.semantic_exact_selection import (
+from d810.transforms.semantic_exact_selection import (
     parse_focus_edge_pairs,
     resolve_edge_window,
 )

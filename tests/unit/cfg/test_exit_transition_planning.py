@@ -1,4 +1,4 @@
-from d810.cfg.exit_transition_planning import (
+from d810.transforms.exit_transition_planning import (
     ExitRedirectAttempt,
     plan_exit_redirects,
 )

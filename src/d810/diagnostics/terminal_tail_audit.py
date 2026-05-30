@@ -2,8 +2,8 @@
 
 Reads ``TerminalByteEmitterFact`` rows from a captured diag SQLite and
 produces the byte_emit[k] timeline + first-loss report from
-:mod:`d810.cfg.terminal_tail_region_matcher` and
-:mod:`d810.cfg.terminal_tail_loss_localizer`.
+:mod:`d810.transforms.terminal_tail_region_matcher` and
+:mod:`d810.transforms.terminal_tail_loss_localizer`.
 
 This module is the **post-hoc** side of the byte-cascade observability
 stack: the recon collector writes ``TerminalByteEmitterFact`` rows during
@@ -18,12 +18,12 @@ import json
 import sqlite3
 from pathlib import Path
 
-from d810.cfg.terminal_tail_loss_localizer import (
+from d810.transforms.terminal_tail_loss_localizer import (
     ByteEmitInitialState,
     format_localization_report,
     localize_byte_emit_loss,
 )
-from d810.cfg.terminal_tail_region_matcher import (
+from d810.transforms.terminal_tail_region_matcher import (
     ByteEmitObservation,
     _classify_source_form,
     aggregate_byte_emit_timeline,

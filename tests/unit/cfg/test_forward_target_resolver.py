@@ -1,11 +1,11 @@
 """Tests for the forward-target resolver."""
 from __future__ import annotations
 
-from d810.cfg.dispatcher_aware_classifier import (
+from d810.analyses.control_flow.dispatcher_aware_classifier import (
     DispatcherAwareClassification,
     DispatcherAwareEdgeClass,
 )
-from d810.cfg.forward_target_resolver import (
+from d810.analyses.control_flow.forward_target_resolver import (
     PredicateInfo,
     ResolvedTarget,
     resolve_forward_target,

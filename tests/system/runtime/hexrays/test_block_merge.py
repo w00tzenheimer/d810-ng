@@ -8,7 +8,7 @@ from __future__ import annotations
 import ida_hexrays
 import pytest
 
-from d810.cfg.graph_modification import NopInstructions
+from d810.transforms.graph_modification import NopInstructions
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays.mutation.transform.block_merge import BlockMergeTransform
 from d810.cfg.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph

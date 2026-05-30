@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.semantic_exact_selection import (
+from d810.transforms.semantic_exact_selection import (
     parse_focus_edge_pairs,
     resolve_edge_window,
     select_focused_semantic_exact_edges,

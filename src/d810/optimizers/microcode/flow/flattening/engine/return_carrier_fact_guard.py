@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.cfg.graph_modification import GraphModification, RedirectGoto
-from d810.cfg.loop_bound_writer_guard import (
+from d810.transforms.graph_modification import GraphModification, RedirectGoto
+from d810.transforms.loop_bound_writer_guard import (
     InsnKindClassifier,
     OperandKindClassifier,
     collect_const_var_refs_in_block,

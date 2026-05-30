@@ -3,7 +3,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from d810.cfg import graph_modification as gm
+from d810.transforms import graph_modification as gm
 
 
 def test_new_graph_modification_types_exported():

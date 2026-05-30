@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import d810.cfg.terminal_family_split as split_mod
-from d810.cfg.graph_modification import (
+import d810.transforms.terminal_family_split as split_mod
+from d810.transforms.graph_modification import (
     DirectTerminalLoweringGroup,
     DirectTerminalLoweringKind,
 )
-from d810.cfg.terminal_family_split import (
+from d810.transforms.terminal_family_split import (
     TerminalFamilySplitCandidate,
     build_terminal_family_direct_const_lowering_modification,
     build_terminal_family_split_candidates,

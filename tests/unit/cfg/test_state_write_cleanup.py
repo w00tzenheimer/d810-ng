@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.graph_modification import NopInstructions, ZeroStateWrite
-from d810.cfg.modification_builder import ModificationBuilder
-from d810.cfg.state_write_cleanup import (
+from d810.transforms.graph_modification import NopInstructions, ZeroStateWrite
+from d810.transforms.modification_builder import ModificationBuilder
+from d810.transforms.state_write_cleanup import (
     StateWriteCleanupAction,
     StateWriteCleanupRequest,
     state_write_cleanup_to_graph_modification,

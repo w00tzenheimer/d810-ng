@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
-from d810.cfg.state_variable import StateVariableRef
+from d810.ir.state_variable import StateVariableRef
 from d810.core.typing import Protocol
 from d810.analyses.control_flow.residual_handoff_discovery import (
     supplemental_selected_entry_for_state,

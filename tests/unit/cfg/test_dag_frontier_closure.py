@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import d810.cfg.dag_frontier_closure as dag_frontier_closure
-from d810.cfg.dag_frontier_closure import (
+import d810.transforms.dag_frontier_closure as dag_frontier_closure
+from d810.transforms.dag_frontier_closure import (
     _build_indexes,
     _choices_for_observed_edge,
     plan_dag_authoritative_frontier_closure,
@@ -16,14 +16,14 @@ from d810.cfg.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     CreateConditionalRedirect,
     DuplicateBlock,
     InsertBlock,
     RedirectBranch,
     RedirectGoto,
 )
-from d810.cfg.state_dag_key import StateDagNodeKey
+from d810.ir.state_dag_key import StateDagNodeKey
 
 
 def _block(serial: int, succs: tuple[int, ...]) -> BlockSnapshot:

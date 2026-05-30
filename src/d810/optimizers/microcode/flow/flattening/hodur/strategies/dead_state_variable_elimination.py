@@ -20,10 +20,10 @@ from __future__ import annotations
 
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
-from d810.cfg.modification_builder import (
+from d810.transforms.modification_builder import (
     ModificationBuilder,
 )
-from d810.cfg.state_var_cleanup import collect_state_constants
+from d810.transforms.state_var_cleanup import collect_state_constants
 from d810.evaluator.hexrays_microcode.dead_state_variable_backend import (
     HexRaysDeadStateVariableEvidenceBackend,
     StateVariableRef,

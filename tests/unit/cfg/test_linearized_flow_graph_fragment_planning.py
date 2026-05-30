@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-from d810.cfg.graph_modification import RedirectBranch
-from d810.cfg.linearized_flow_graph_fragment_planning import (
+from d810.transforms.graph_modification import RedirectBranch
+from d810.transforms.linearized_flow_graph_fragment_planning import (
     LinearizedDagPlannableEdge,
     LinearizedDagRoundSummary,
     LinearizedFlowGraphPlanningCallbacks,

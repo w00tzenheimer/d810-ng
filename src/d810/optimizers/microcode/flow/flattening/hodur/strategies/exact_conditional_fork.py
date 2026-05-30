@@ -7,16 +7,16 @@ import re
 from d810.core import logging
 from d810.transforms.lowering import LoweringMode
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.cfg.flow.conditional_alias import (
+from d810.analyses.control_flow.conditional_alias import (
     analyze_duplicate_alias_conditional_sites,
 )
-from d810.cfg.graph_modification import GraphModification, ZeroStateWrite
-from d810.cfg.semantic_reference import (
+from d810.transforms.graph_modification import GraphModification, ZeroStateWrite
+from d810.ir.semantic_reference import (
     collect_semantic_entry_by_label,
     collect_semantic_successors_by_state,
 )
-from d810.cfg.state_variable import StateVariableRef
-from d810.cfg.semantic_conditional_lowering import (
+from d810.ir.state_variable import StateVariableRef
+from d810.transforms.semantic_conditional_lowering import (
     ConditionalForkExactNodeArm,
     ConditionalForkExactNodeSite,
     ExactConditionalForkInventory,

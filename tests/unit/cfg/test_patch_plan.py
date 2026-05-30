@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
-from d810.cfg.flow.edit_simulator import project_post_state
-from d810.cfg.graph_modification import (
+from d810.transforms.edit_simulator import project_post_state
+from d810.transforms.graph_modification import (
     BypassDispatcherTrampoline,
     CanonicalizeJumpTableCaseOverlap,
     CloneConditionalAsGoto,
@@ -31,11 +31,11 @@ from d810.cfg.graph_modification import (
     RemoveEdge,
     ScalarizeLocalAliasAccess,
 )
-from d810.cfg.materialization_payload import (
+from d810.transforms.materialization_payload import (
     CapturedBlockBody,
     CapturedBlockBodySummary,
 )
-from d810.cfg.plan import (
+from d810.transforms.plan import (
     LegacyBlockOperation,
     PatchBlockSpec,
     PatchCloneConditionalAsGoto,
@@ -917,7 +917,7 @@ def test_modification_builder_has_no_remove_edge_method():
         Path(__file__).resolve().parents[3]
         / "src"
         / "d810"
-        / "cfg"
+        / "transforms"
         / "modification_builder.py"
     )
     assert bridge_path.exists(), f"ModificationBuilder source not found at {bridge_path}"

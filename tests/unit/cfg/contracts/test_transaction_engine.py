@@ -7,7 +7,7 @@ import pytest
 
 from d810.cfg.contracts.contract import CfgContractViolationError
 from d810.cfg.contracts.report import InvariantViolation
-from d810.cfg.contracts.transaction_engine import (
+from d810.passes.transaction_engine import (
     CfgTransactionEngine,
     TransactionResult,
 )

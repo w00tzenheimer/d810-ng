@@ -21,9 +21,9 @@ from __future__ import annotations
 
 import os
 
-from d810.cfg.modification_builder import ModificationBuilder
-from d810.cfg.scc import compute_live_cfg_sccs, nontrivial_sccs
-from d810.cfg.spurious_backedge_redirect import (
+from d810.transforms.modification_builder import ModificationBuilder
+from d810.analyses.control_flow.scc import compute_live_cfg_sccs, nontrivial_sccs
+from d810.analyses.control_flow.spurious_backedge_redirect import (
     plan_spurious_backedge_redirects,
 )
 from d810.core import logging

@@ -1,7 +1,7 @@
 """Tests for the terminal-tail region matcher."""
 from __future__ import annotations
 
-from d810.cfg.terminal_tail_region_matcher import (
+from d810.transforms.terminal_tail_region_matcher import (
     ByteEmitObservation,
     ByteEmitSourceForm,
     FirstLossEntry,

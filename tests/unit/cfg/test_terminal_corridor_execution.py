@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from d810.cfg.graph_modification import ConvertToGoto, PrivateTerminalSuffixGroup
-from d810.cfg.modification_builder import ModificationBuilder
-from d810.cfg.terminal_corridor_emission import (
+from d810.transforms.graph_modification import ConvertToGoto, PrivateTerminalSuffixGroup
+from d810.transforms.modification_builder import ModificationBuilder
+from d810.transforms.terminal_corridor_emission import (
     plan_direct_terminal_lowering_execution,
     plan_private_terminal_suffix_execution,
 )

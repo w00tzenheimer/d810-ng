@@ -14,13 +14,13 @@ from __future__ import annotations
 
 import pytest
 
-from d810.cfg.pipeline import FlowGraphTransformPipeline
-from d810.cfg.transform.simplify_identical_branch import SimplifyIdenticalBranchPass
-from d810.cfg.transform.dead_block_elimination import DeadBlockEliminationPass
+from d810.passes.pipeline import FlowGraphTransformPipeline
+from d810.transforms.simplify_identical_branch import SimplifyIdenticalBranchPass
+from d810.transforms.dead_block_elimination import DeadBlockEliminationPass
 from d810.hexrays.mutation.transform.goto_chain_removal import GotoChainRemovalPass
 from d810.hexrays.mutation.transform.block_merge import BlockMergeTransform
-from d810.cfg.transform.opaque_jump_fixer import OpaqueJumpFixerPass
-from d810.cfg.transform.fake_jump_fixer import FakeJumpFixerPass
+from d810.transforms.opaque_jump_fixer import OpaqueJumpFixerPass
+from d810.transforms.fake_jump_fixer import FakeJumpFixerPass
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 
 

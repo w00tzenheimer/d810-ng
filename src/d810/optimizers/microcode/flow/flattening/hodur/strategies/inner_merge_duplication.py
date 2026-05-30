@@ -25,7 +25,7 @@ from d810.core.algorithm_metadata import algorithm_metadata
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     collect_state_machine_blocks,
 )
-from d810.cfg.modification_builder import (
+from d810.transforms.modification_builder import (
     ModificationBuilder,
 )
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
@@ -193,7 +193,7 @@ class InnerMergeDuplicationStrategy:
 
     Runs after direct linearization (FAMILY_CLEANUP).  For each non-loop
     block with >= 2 predecessors that is small enough, emits
-    :class:`~d810.cfg.graph_modification.DuplicateBlock` modifications so
+    :class:`~d810.transforms.graph_modification.DuplicateBlock` modifications so
     that each predecessor except the lowest-serial one gets a private copy.
     """
 

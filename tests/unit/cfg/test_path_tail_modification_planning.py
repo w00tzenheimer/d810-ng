@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     EdgeRedirectViaPredSplit,
     RedirectGoto,
 )
-from d810.cfg.path_tail_modification_planning import (
+from d810.transforms.path_tail_modification_planning import (
     LoopBoundWriterDiagnostic,
     PathTailEmissionKind,
     PathTailRedirectContext,

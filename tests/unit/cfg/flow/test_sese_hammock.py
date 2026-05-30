@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.cfg.flow.sese_hammock import (
+from d810.analyses.control_flow.sese_hammock import (
     classify_exact_conditional_shape,
     conditional_distance_to_return,
     compute_postdominator_tree,

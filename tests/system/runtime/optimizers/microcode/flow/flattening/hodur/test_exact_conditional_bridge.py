@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
-from d810.cfg.graph_modification import RedirectGoto
-from d810.cfg.modification_builder import ModificationBuilder
+from d810.transforms.graph_modification import RedirectGoto
+from d810.transforms.modification_builder import ModificationBuilder
 import d810.optimizers.microcode.flow.flattening.hodur.prototypes.exact_conditional_bridge as bridge_module
 from d810.optimizers.microcode.flow.flattening.hodur.prototypes.exact_conditional_bridge import (
     ExactConditionalBridgeNodeLoweringStrategy,

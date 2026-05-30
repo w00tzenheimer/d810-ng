@@ -3,7 +3,7 @@
 import pytest
 
 from d810.cfg.contracts.contract import CfgContract
-from d810.cfg.flow.edit_simulator import (
+from d810.transforms.edit_simulator import (
     SimulatedEdit,
     SimulationResult,
     graph_modifications_to_simulated_edits,
@@ -12,7 +12,7 @@ from d810.cfg.flow.edit_simulator import (
     project_post_state,
     simulate_edits,
 )
-from d810.cfg.flow.graph_checks import prove_terminal_sink
+from d810.analyses.control_flow.graph_checks import prove_terminal_sink
 from d810.cfg.flowgraph import (
     BlockKind,
     BlockSnapshot,
@@ -20,7 +20,7 @@ from d810.cfg.flowgraph import (
     InsnKind,
     InsnSnapshot,
 )
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
     DirectTerminalLoweringGroup,
@@ -33,7 +33,7 @@ from d810.cfg.graph_modification import (
     RedirectGoto,
     RemoveEdge,
 )
-from d810.cfg.plan import compile_patch_plan
+from d810.transforms.plan import compile_patch_plan
 
 
 def _block(
@@ -189,7 +189,7 @@ class TestSimulateEdits:
         # Clone -> 1 (handler), creating cycle
         assert sim.adj[clone] == [1]
         # detect_terminal_cycles should find this
-        from d810.cfg.flow.graph_checks import detect_terminal_cycles
+        from d810.analyses.control_flow.graph_checks import detect_terminal_cycles
 
         cycle_result = detect_terminal_cycles(
             sim.adj, terminal_exits={clone}, handler_entries={1}, dispatcher=0
@@ -234,7 +234,7 @@ class TestSimulateEdits:
         assert sim_result.adj[clone] == [180]
 
         # Without clone as seed: MISS
-        from d810.cfg.flow.graph_checks import detect_terminal_cycles
+        from d810.analyses.control_flow.graph_checks import detect_terminal_cycles
 
         miss = detect_terminal_cycles(sim_result.adj, {219}, {180}, dispatcher=0)
         assert miss.passed  # wrongly passes - 219 has no succs

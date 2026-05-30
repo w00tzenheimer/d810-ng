@@ -40,19 +40,19 @@ import ida_hexrays
 from d810.core import logging
 from d810.transforms.lowering import LoweringMode
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.cfg.dag_redirect_emission import emit_dag_redirect
-from d810.cfg.graph_modification import EdgeRedirectViaPredSplit, RedirectGoto
-from d810.cfg.mod_claims import collect_mod_claims
-from d810.cfg.reconstruction_lowering import SharedGroupEmissionCandidate
-from d810.cfg.reconstruction_modification_planning import (
+from d810.transforms.dag_redirect_emission import emit_dag_redirect
+from d810.transforms.graph_modification import EdgeRedirectViaPredSplit, RedirectGoto
+from d810.transforms.mod_claims import collect_mod_claims
+from d810.transforms.reconstruction_lowering import SharedGroupEmissionCandidate
+from d810.transforms.reconstruction_modification_planning import (
     plan_shared_group_reconstruction_modifications,
 )
-from d810.cfg.linearized_flow_graph_fragment_planning import (
+from d810.transforms.linearized_flow_graph_fragment_planning import (
     LinearizedFlowGraphPlanningState,
     adapt_linearized_dag_round_summary,
 )
-from d810.cfg.modification_builder import ModificationBuilder
-from d810.cfg.semantic_exact_selection import (
+from d810.transforms.modification_builder import ModificationBuilder
+from d810.transforms.semantic_exact_selection import (
     parse_focus_edge_pairs,
     resolve_edge_window,
     select_focused_semantic_exact_edges,

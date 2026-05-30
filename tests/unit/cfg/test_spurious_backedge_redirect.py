@@ -1,7 +1,7 @@
 """Tests for the spurious back-edge redirect planner."""
 from __future__ import annotations
 
-from d810.cfg.spurious_backedge_redirect import (
+from d810.analyses.control_flow.spurious_backedge_redirect import (
     SpuriousRedirectPlan,
     plan_spurious_backedge_redirects,
 )

@@ -13,7 +13,7 @@ from d810.cfg.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.cfg.graph_modification import (
+from d810.transforms.graph_modification import (
     EdgeRedirectViaPredSplit,
     NopInstructions,
     PrivateTerminalSuffix,
@@ -21,7 +21,7 @@ from d810.cfg.graph_modification import (
     RedirectBranch,
     RedirectGoto,
 )
-from d810.cfg.linearized_flow_graph_fragment_planning import (
+from d810.transforms.linearized_flow_graph_fragment_planning import (
     is_original_pre_header_candidate,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
@@ -29,7 +29,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     StateHandler,
     StateTransition,
 )
-from d810.cfg.modification_builder import (
+from d810.transforms.modification_builder import (
     ModificationBuilder,
 )
 import d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_graph as lfg_module

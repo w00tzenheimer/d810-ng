@@ -15,11 +15,11 @@ import ida_hexrays
 from d810.core import logging
 from d810.transforms.lowering import LoweringMode
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.cfg.reconstruction_bridge_planning import (
+from d810.transforms.reconstruction_bridge_planning import (
     plan_reconstruction_bridge_modifications,
 )
-from d810.cfg.reconstruction_lowering import SharedGroupEmissionCandidate
-from d810.cfg.reconstruction_modification_planning import (
+from d810.transforms.reconstruction_lowering import SharedGroupEmissionCandidate
+from d810.transforms.reconstruction_modification_planning import (
     plan_direct_reconstruction_modifications,
     plan_shared_group_reconstruction_modifications,
 )

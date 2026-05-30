@@ -1,7 +1,7 @@
 """Tests for live-CFG SCC analysis."""
 from __future__ import annotations
 
-from d810.cfg.scc import (
+from d810.analyses.control_flow.scc import (
     CfgSCC,
     compute_live_cfg_sccs,
     nontrivial_sccs,

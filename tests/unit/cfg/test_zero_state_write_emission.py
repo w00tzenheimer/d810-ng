@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.cfg.graph_modification import ZeroStateWrite
-from d810.cfg.zero_state_write_emission import (
+from d810.transforms.graph_modification import ZeroStateWrite
+from d810.transforms.zero_state_write_emission import (
     ZsvSiteRequest,
     ZsvSource,
     candidate_to_site_request,
