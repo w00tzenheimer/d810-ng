@@ -1254,6 +1254,17 @@ class D810Manager:
                 AnalysisPhase(),
                 self._recon_phase._store,
             )
+            # LS10: register the Hex-Rays live SourceLifter (import-time side
+            # effect) before the induction collector runs, so a raw mba handed
+            # directly to a collector can be lifted to a portable fact target.
+            # Lazy import -- backends.facts.ida pulls ida_hexrays via
+            # d810.hexrays.fact_target, so a module-top import would break
+            # unit-test collectability of d810.manager. Dormant for the portable
+            # targets the live pipeline passes today (FlowGraph / fact target).
+            try:
+                import d810.backends.facts.ida  # noqa: F401  # registers on import
+            except Exception:
+                logger.exception("Hex-Rays live SourceLifter registration failed")
             self._recon_runtime.register_fact_collector(InductionVariableFactCollector())
             self._recon_runtime.register_fact_collector(LoopPredicateValueFactCollector())
             self._recon_runtime.register_fact_collector(OllvmValueFlowEvidenceCollector())
