@@ -131,6 +131,6 @@ note: |
   glob does not see at definition time):
 
       rg -nP '(?:^|\s+)(import|from)\s+(idaapi|ida_\w+|idc|idautils)\b' \
-         src/d810/{support,ir,capabilities,analyses,transforms,passes,recon,pre_analysis}/
+         src/d810/{support,ir,capabilities,analyses,transforms,passes,families,recon,pre_analysis}/
 
   The rule and the audit grep must converge to empty together.

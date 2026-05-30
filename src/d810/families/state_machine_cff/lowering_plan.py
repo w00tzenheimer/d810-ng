@@ -11,8 +11,8 @@ Lowering Graph"), a recovered automaton pairs two distinct views:
 the lowering-plan half.  Both are net-new and unwired in LS12.
 
 Fields are ``Any``-typed so this family-layer module stays free of cfg / ir /
-vendor types; families is not ast-grep-globbed, so import-linter + the
-portable-core audit grep are the purity gates.
+vendor types; ``families`` is ast-grep-globbed (as of LS14) by both portable-core
+rules, on top of import-linter + the portable-core audit grep.
 """
 from __future__ import annotations
 
