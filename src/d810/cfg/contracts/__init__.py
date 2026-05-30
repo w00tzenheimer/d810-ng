@@ -18,7 +18,7 @@ def __getattr__(name: str):
         "CfgContract",
         "CfgContractViolationError",
     }:
-        module = import_module("d810.cfg.contracts.contract")
+        module = import_module("d810.transforms.contract")
         return getattr(module, name)
     if name in {
         "block_list_consistency",
@@ -27,7 +27,7 @@ def __getattr__(name: str):
         "predecessor_uniqueness",
         "successor_set_matches_tail_semantics",
     }:
-        module = import_module("d810.passes.invariants")
+        module = import_module("d810.transforms.cfg_invariants")
         return getattr(module, name)
     if name in {
         "TRANSACTION_PHASES",

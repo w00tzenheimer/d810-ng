@@ -2,7 +2,7 @@
 
 import pytest
 
-from d810.cfg.contracts.contract import CfgContract
+from d810.transforms.contract import CfgContract
 from d810.transforms.edit_simulator import (
     SimulatedEdit,
     SimulationResult,

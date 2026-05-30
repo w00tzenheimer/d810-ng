@@ -13,7 +13,7 @@ if NATIVE_ORACLE_AVAILABLE:
     logger.info("Native CFG oracle available - full parity mode")
 else:
     logger.info("Native CFG oracle unavailable - Python-only parity mode")
-from d810.cfg.contracts.contract import CfgContract, CfgContractViolationError
+from d810.transforms.contract import CfgContract, CfgContractViolationError
 from d810.hexrays.contracts.insn_invariants import check_all_insn_invariants
 from d810.hexrays.contracts.invariants import (
     block_address_range,
@@ -27,7 +27,7 @@ from d810.hexrays.contracts.invariants import (
     successor_set_matches_tail_semantics,
 )
 from d810.transforms.plan import PatchPlan
-from d810.cfg.contracts.report import InvariantViolation
+from d810.transforms.report import InvariantViolation
 
 ContractScope = Literal["focused", "full"]
 ContractPhase = Literal["pre", "post", "rollback", "projected"]

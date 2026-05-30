@@ -19,7 +19,7 @@ from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from d810.passes.contract import CfgContract
+    from d810.transforms.contract import CfgContract
     from d810.passes.transaction_policy import FailureClassification
     from d810.ir.flowgraph import FlowGraph
     from d810.transforms.plan import PatchPlan
@@ -110,7 +110,7 @@ class CfgTransactionEngine:
             The translator handles post-apply contract checks and native verify
             internally via its own hook wiring.
         """
-        from d810.passes.contract import CfgContractViolationError
+        from d810.transforms.contract import CfgContractViolationError
 
         # Phase: projected_contract -- reject before any live mutation
         if self._contract is not None:

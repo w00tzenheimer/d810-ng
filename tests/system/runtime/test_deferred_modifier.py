@@ -11,7 +11,7 @@ import ida_hexrays
 import pytest
 
 from d810.hexrays.contracts.cfg_contract import CfgContractViolationError
-from d810.cfg.contracts.report import InvariantViolation
+from d810.transforms.report import InvariantViolation
 from d810.transforms.graph_modification import CreateConditionalRedirect, InsertBlock
 from d810.transforms.plan import compile_patch_plan
 from d810.cfg.flowgraph import InsnSnapshot
