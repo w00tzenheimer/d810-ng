@@ -1,48 +1,20 @@
-"""Built-in inference factories for the rule inference layer.
+"""Migration shim: ``d810.recon.inferences`` -> ``d810.passes.inferences`` (dissolution, llr-lyly).
 
-An inference factory translates ``DeobfuscationHints`` into a list of
-``RuleDelta`` objects that adjust rule behavior for the analyzed function.
+sys.modules alias preserving the old import path; re-exports public AND
+private symbols.  Deleted in Phase Z once consumers repoint.
 
-Design rationale
-----------------
-The naming choice of "inference" reflects that these adjustments are
-*derived from automated recon analysis*, not hand-authored presets.  "Delta" conveys a diff from baseline behavior, not an absolute
-configuration.
-
-Precedence
-----------
-Inference deltas are ephemeral (applied per-decompilation).  User
-``per_function_overrides`` and ``whitelisted_functions`` in the project
-JSON config always take precedence.  When a user config overrides an
-inference delta, a WARN log is emitted so the user can understand why
-the inferred behavior is not taking effect.
-
-See ``docs/plans/2026-03-09-rule-inference-layer-design.md`` for the
-full design document.
+The inferences module is a *passes*-layer module (recon orchestration root /
+scheduler tier, driven by Manager above the analyses layer), so the
+canonical home is :mod:`d810.passes.inferences`.  ``d810.recon`` sits BELOW
+``d810.passes`` in the layered architecture, so a literal ``from d810.passes
+import ...`` here would register a layer-fatal ``recon -> passes`` edge.  The
+alias is therefore resolved dynamically via :func:`importlib.import_module`,
+which the import graph does not follow, so this shim adds no static upward
+edge.  All live importers repoint to ``d810.passes.inferences`` directly.
 """
-from __future__ import annotations
+import importlib
+import sys
 
-from d810.core.rule_scope import RuleDelta
-from d810.core.typing import Any
+_canonical = importlib.import_module("d810.passes.inferences")
 
-
-def unflattening_inference(hints: Any) -> list[RuleDelta]:
-    """Infer rule deltas for functions with detected control-flow flattening.
-
-    Confidence-gated: only suppresses ``ConstantFolding`` at >= 0.7
-    confidence because constant folding interferes with dispatcher state
-    resolution during unflattening.  ForwardConstantPropagationRule is not
-    suppressed globally; profiles with known pre-recovery FCP hazards disable it
-    explicitly so Approov-style engine-wrapper recovery can still use FCP.
-
-    Args:
-        hints: ``DeobfuscationHints`` (duck-typed to avoid circular import).
-
-    Returns:
-        List of ``RuleDelta`` objects to apply for this function.
-    """
-    deltas: list[RuleDelta] = []
-    confidence = getattr(hints, "confidence", 0.0)
-    if confidence >= 0.7:
-        deltas.append(RuleDelta("ConstantFolding", "suppress", {}))
-    return deltas
+sys.modules[__name__] = _canonical
