@@ -17,7 +17,7 @@ from d810.analyses.value_flow.return_carrier import (
     ReturnValueFactCollector,
 )
 from d810.analyses.value_flow.return_frontier import ReturnFrontierFactCollector
-from d810.recon.facts.collectors.state_transition_anchor import (
+from d810.analyses.control_flow.state_transition_anchor import (
     StateTransitionAnchorFactCollector,
 )
 from d810.analyses.value_flow.state_write_anchor import (

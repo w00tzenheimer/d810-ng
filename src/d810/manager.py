@@ -91,7 +91,7 @@ from d810.analyses.value_flow.terminal_byte_emitter import (
     TerminalByteEmitterFactCollector,
 )
 from d810.analyses.value_flow.zero_blob import ZeroBlobFactCollector
-from d810.recon.facts.collectors.state_transition_anchor import (
+from d810.analyses.control_flow.state_transition_anchor import (
     StateTransitionAnchorFactCollector,
 )
 from d810.optimizers.microcode.microcode_dump import mba_to_dict
