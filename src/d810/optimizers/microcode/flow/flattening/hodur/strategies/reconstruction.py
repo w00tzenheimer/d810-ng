@@ -163,7 +163,7 @@ from d810.recon.flow.structured_region_fidelity_report import (
     build_structured_region_fidelity_report,
     collect_sub7ffd_may_only_probe_blocks,
 )
-from d810.recon.flow.reconstruction_diagnostics import (
+from d810.transforms.reconstruction_diagnostics import (
     log_reconstruction_candidate_probe,
     log_reconstruction_phase_probe,
 )

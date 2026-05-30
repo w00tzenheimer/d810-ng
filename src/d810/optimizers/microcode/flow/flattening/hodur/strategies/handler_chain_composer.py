@@ -236,7 +236,7 @@ build_reconstruction_candidate = _partial(
     _build_reconstruction_candidate,
     plan_reconstruction_candidate=plan_reconstruction_candidate,
 )
-from d810.recon.flow.reconstruction_diagnostics import (
+from d810.transforms.reconstruction_diagnostics import (
     log_reconstruction_candidate_probe,
     log_reconstruction_phase_probe,
 )
