@@ -1,23 +1,10 @@
-"""Backend-neutral evidence for state-variable writes."""
-from __future__ import annotations
+"""Migration shim: ``d810.cfg.state_write_evidence`` -> ``d810.analyses.control_flow.state_write_evidence`` (dissolution, llr-lyly).
 
-from dataclasses import dataclass
+sys.modules alias preserving the old import path; re-exports public AND
+private symbols.  Deleted in Phase Z once consumers repoint.
+"""
+import sys
 
+from d810.analyses.control_flow import state_write_evidence as _canonical
 
-@dataclass(frozen=True, slots=True)
-class StateConstantWriteEvidence:
-    """A backend-observed constant write to the dispatcher state variable."""
-
-    block_serial: int
-    insn_ea: int
-    state_value: int
-
-    def __post_init__(self) -> None:
-        if self.block_serial < 0:
-            raise ValueError("StateConstantWriteEvidence.block_serial must be non-negative")
-        if self.insn_ea < 0:
-            raise ValueError("StateConstantWriteEvidence.insn_ea must be non-negative")
-        object.__setattr__(self, "state_value", int(self.state_value) & 0xFFFFFFFF)
-
-
-__all__ = ["StateConstantWriteEvidence"]
+sys.modules[__name__] = _canonical
