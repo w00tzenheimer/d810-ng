@@ -13,6 +13,7 @@ The copy-to-end + serial remapping approach leaves the originals as dead code
 from __future__ import annotations
 
 from d810.core import logging
+from d810.transforms.lowering import LoweringMode
 from d810.core.typing import TYPE_CHECKING
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
@@ -44,6 +45,7 @@ class TopologicalSortStrategy:
     Must run AFTER LinearizedFlowGraphStrategy (prerequisites guard).
     """
 
+    lowering_mode = LoweringMode.DAG_LINEARIZATION
     prerequisites: list[str] = ["linearized_flow_graph"]
     _applied: set[tuple[int, int]] = set()  # (func_ea, maturity) already processed
 

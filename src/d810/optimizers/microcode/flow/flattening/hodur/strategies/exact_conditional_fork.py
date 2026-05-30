@@ -5,6 +5,7 @@ import os
 import re
 
 from d810.core import logging
+from d810.transforms.lowering import LoweringMode
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.cfg.flow.conditional_alias import (
     analyze_duplicate_alias_conditional_sites,
@@ -766,6 +767,7 @@ def collect_exact_conditional_fork_sites(round_summary, flow_graph) -> tuple[Con
     ),
 )
 class ExactConditionalForkNodeLoweringStrategy:
+    lowering_mode = LoweringMode.DIRECT_GRAPH
     prerequisites: list[str] = []
     _constant_fixpoint_backend: ConstantFixpointBackend = (
         _CONSTANT_FIXPOINT_BACKEND
