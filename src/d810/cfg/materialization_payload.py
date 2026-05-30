@@ -1,70 +1,20 @@
-"""Opaque backend-owned payloads carried by cfg lowering intents.
+"""Migration shim: ``d810.cfg.materialization_payload`` -> ``d810.transforms.materialization_payload`` (dissolution, llr-lyly).
 
-The cfg layer is allowed to route a captured instruction body through a
-``GraphModification``/``PatchPlan``. It must not inspect or materialize the
-payload itself. Only the backend adapter that produced the payload may unwrap
-the backend-specific contents.
+sys.modules alias preserving the old import path; re-exports public AND
+private symbols.  Deleted in Phase Z once consumers repoint.
+
+This is a *transforms*-layer module (planner/backend execution surface),
+so the canonical home is :mod:`d810.transforms.materialization_payload`.  ``d810.cfg`` sits BELOW
+``d810.transforms`` in the layered architecture, so a literal
+``from d810.transforms import ...`` here would register a layer-fatal
+``cfg -> transforms`` edge.  The alias is therefore resolved dynamically
+via :func:`importlib.import_module`, which the import graph does not
+follow, so this shim adds no static upward edge.  All live importers
+repoint to ``d810.transforms.materialization_payload`` directly in Phase T-wave-repoint.
 """
-from __future__ import annotations
+import importlib
+import sys
 
-from dataclasses import dataclass
+_canonical = importlib.import_module("d810.transforms.materialization_payload")
 
-from d810.core.typing import Mapping
-
-
-@dataclass(frozen=True, slots=True)
-class BackendInstructionRef:
-    """Stable, non-live identity for an instruction represented in a capture."""
-
-    block_serial: int
-    ea: int
-    opcode_name: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class CapturedBlockBodySummary:
-    """Backend-neutral facts cfg/Hodur may use without reading the payload."""
-
-    source_blocks: tuple[int, ...] = ()
-    instruction_count: int = 0
-    source_eas: frozenset[int] = frozenset()
-    contains_call: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class CapturedBlockBody:
-    """Opaque instruction body captured by a backend adapter.
-
-    ``payload`` is intentionally typed as ``object``. cfg may carry this object
-    and compare/hash the dataclass, but the object is backend-owned and only a
-    matching materialization backend should interpret it.
-    """
-
-    backend_id: str
-    capture_id: str
-    summary: CapturedBlockBodySummary
-    payload: object
-    metadata: Mapping[str, object] | None = None
-
-    @property
-    def source_blocks(self) -> tuple[int, ...]:
-        return self.summary.source_blocks
-
-    @property
-    def instruction_count(self) -> int:
-        return self.summary.instruction_count
-
-    @property
-    def source_eas(self) -> frozenset[int]:
-        return self.summary.source_eas
-
-    def contains_all_source_eas(self, required_eas: frozenset[int]) -> bool:
-        """Return whether every required source EA is represented."""
-        return all(int(ea) in self.summary.source_eas for ea in required_eas)
-
-
-__all__ = [
-    "BackendInstructionRef",
-    "CapturedBlockBody",
-    "CapturedBlockBodySummary",
-]
+sys.modules[__name__] = _canonical

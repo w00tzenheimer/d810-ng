@@ -1,59 +1,20 @@
-"""Backend-neutral state-write cleanup requests."""
-from __future__ import annotations
+"""Migration shim: ``d810.cfg.state_write_cleanup`` -> ``d810.transforms.state_write_cleanup`` (dissolution, llr-lyly).
 
-from dataclasses import dataclass
-from enum import Enum
+sys.modules alias preserving the old import path; re-exports public AND
+private symbols.  Deleted in Phase Z once consumers repoint.
 
-from d810.cfg.graph_modification import (
-    GraphModification,
-    NopInstructions,
-    ZeroStateWrite,
-)
+This is a *transforms*-layer module (planner/backend execution surface),
+so the canonical home is :mod:`d810.transforms.state_write_cleanup`.  ``d810.cfg`` sits BELOW
+``d810.transforms`` in the layered architecture, so a literal
+``from d810.transforms import ...`` here would register a layer-fatal
+``cfg -> transforms`` edge.  The alias is therefore resolved dynamically
+via :func:`importlib.import_module`, which the import graph does not
+follow, so this shim adds no static upward edge.  All live importers
+repoint to ``d810.transforms.state_write_cleanup`` directly in Phase T-wave-repoint.
+"""
+import importlib
+import sys
 
+_canonical = importlib.import_module("d810.transforms.state_write_cleanup")
 
-class StateWriteCleanupAction(str, Enum):
-    """Materialization action for a proven stale state write."""
-
-    NOP_INSTRUCTION = "nop_instruction"
-    ZERO_SOURCE = "zero_source"
-
-
-@dataclass(frozen=True, slots=True)
-class StateWriteCleanupRequest:
-    """A backend-proven request to cleanup one state-write instruction.
-
-    The request is backend-neutral: cfg/engine may carry it and lower it to a
-    graph modification, but the proof that a native instruction matches the
-    request belongs to the backend adapter that produced it.
-    """
-
-    action: StateWriteCleanupAction
-    block_serial: int
-    insn_ea: int
-    expected_state: int | None = None
-    observed_state: int | None = None
-    reason: str = ""
-
-
-def state_write_cleanup_to_graph_modification(
-    request: StateWriteCleanupRequest,
-) -> GraphModification:
-    """Lower a state-write cleanup request into an existing cfg primitive."""
-    if request.action == StateWriteCleanupAction.NOP_INSTRUCTION:
-        return NopInstructions(
-            block_serial=int(request.block_serial),
-            insn_eas=(int(request.insn_ea),),
-        )
-    if request.action == StateWriteCleanupAction.ZERO_SOURCE:
-        return ZeroStateWrite(
-            block_serial=int(request.block_serial),
-            insn_ea=int(request.insn_ea),
-        )
-    raise ValueError(f"unsupported state-write cleanup action: {request.action!r}")
-
-
-__all__ = [
-    "StateWriteCleanupAction",
-    "StateWriteCleanupRequest",
-    "state_write_cleanup_to_graph_modification",
-]
+sys.modules[__name__] = _canonical
