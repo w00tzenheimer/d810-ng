@@ -192,41 +192,7 @@ def extract_state_dispatcher_map_from_mba(
         ),
         source=DispatcherType.CONDITIONAL_CHAIN,
     )
-    _observe_state_dispatcher_map(mba, dispatch_map)
     return dispatch_map
-
-
-def _observe_state_dispatcher_map(
-    mba: object,
-    dispatch_map: StateDispatcherMap,
-) -> None:
-    """Publish equality-chain rows for the diag DB when observability is on."""
-    try:
-        from d810.recon.observability import observe_state_dispatcher_rows
-
-        observe_state_dispatcher_rows(
-            func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-            maturity=_maturity_name(int(getattr(mba, "maturity", -1) or -1)),
-            dispatcher_entry_block=int(dispatch_map.dispatcher_entry_block),
-            dispatcher_kind=dispatch_map.source.name,
-            rows=dispatch_map.rows,
-        )
-    except Exception:
-        return
-
-
-def _maturity_name(maturity: int) -> str:
-    names = {
-        0: "MMAT_GENERATED",
-        1: "MMAT_PREOPTIMIZED",
-        2: "MMAT_LOCOPT",
-        3: "MMAT_CALLS",
-        4: "MMAT_GLBOPT1",
-        5: "MMAT_GLBOPT2",
-        6: "MMAT_GLBOPT3",
-        7: "MMAT_LVARS",
-    }
-    return names.get(int(maturity), f"MMAT_{int(maturity)}")
 
 
 def _iter_blocks(mba: object, qty: int):
