@@ -38,13 +38,11 @@ layers =
     d810.optimizers
     d810.families
     d810.passes
-    d810.recon
     d810.backends
     d810.evaluator
     d810.hexrays
     d810.transforms
     d810.mba
-    d810.cfg
     d810.analyses
     d810.capabilities
     d810.ir
@@ -84,8 +82,9 @@ forbidden_modules =
 # The former recon-core modules were relocated to their canonical homes
 # (d810.passes.* / d810.analyses.control_flow.*) by the recon/cfg
 # dissolution; this contract follows them and keeps the recon analysis
-# core hexrays-agnostic at its new addresses. d810.recon.collectors is the
-# surviving package facade re-exporting from analyses.control_flow.
+# core hexrays-agnostic at its new addresses. recon/ is now fully dissolved;
+# the former recon.collectors facade's re-exports are checked at their
+# canonical analyses.control_flow homes below.
 name = Recon core modules must stay hexrays-agnostic
 type = forbidden
 allow_indirect_imports = True
@@ -94,7 +93,8 @@ source_modules =
     d810.passes.phase
     d810.passes.store
     d810.analyses.control_flow.models
-    d810.recon.collectors
+    d810.analyses.control_flow.fixpred_signals
+    d810.analyses.control_flow.handler_transitions
     d810.analyses.control_flow.analysis_stats
     d810.analyses.control_flow.dispatch_region
     d810.analyses.control_flow.profile_classifier
@@ -137,8 +137,6 @@ allow_indirect_imports = True
 source_modules =
     d810.manager
     d810.optimizers
-    d810.recon
-    d810.cfg
     d810.hexrays
 forbidden_modules =
     d810.core.diag
@@ -225,13 +223,6 @@ source_modules =
     d810.families
     d810.ir
     d810.transforms
-    # d810.recon is now clean: the three live-IDA holdouts
-    # (microcode_dump, residual_handoff_resolution,
-    # dynamic_state_transition_recovery) were relocated to the optimizer
-    # layer, so the audit grep returns zero for d810.recon and it is
-    # promoted into this contract.  This is the static companion to the
-    # `no-live-ida-in-portable-core` ast-grep rule (already severity=error).
-    d810.recon
     d810.analyses
     d810.passes
     d810.support
@@ -268,7 +259,6 @@ source_modules =
     d810.families
     d810.ir
     d810.transforms
-    d810.recon
     d810.analyses
     d810.passes
     d810.support
@@ -296,8 +286,6 @@ source_modules =
     d810.optimizers
     d810.evaluator
     d810.mba
-    d810.cfg
-    d810.recon
     d810.ir
     d810.transforms
     d810.analyses
