@@ -160,8 +160,12 @@ OVERRIDES: dict[str, str] = {
     "d810.cfg.flow.return_frontier": "d810.analyses.control_flow.return_frontier",
     # R1: shared_corridor is a pure predicate module (0 d810 imports) -> analyses
     "d810.cfg.shared_corridor": "d810.analyses.control_flow.shared_corridor",
-    # R1: reconstruction_diagnostics simulates a patch + reports -> diagnostics
-    "d810.recon.flow.reconstruction_diagnostics": "d810.diagnostics.reconstruction_diagnostics",
+    # R1: reconstruction_diagnostics is a RUNTIME probe consumed by optimizers
+    # (hodur strategies) and imports transforms.edit_simulator/.plan, so it must
+    # sit BELOW optimizers and at/above transforms. d810.diagnostics (post-hoc
+    # query layer) is ABOVE optimizers -> homing there makes the 2 consumers
+    # import upward (layer-fatal). Home at transforms (cohesive + downward-legal).
+    "d810.recon.flow.reconstruction_diagnostics": "d810.transforms.reconstruction_diagnostics",
     # R4: recon root coordination interprets results -> passes, not analyses
     "d810.recon.analysis": "d810.passes.analysis",
     "d810.recon.artifacts": "d810.passes.artifacts",
@@ -450,9 +454,19 @@ def run_move(move_map: dict[str, str], only: str | None, *, apply: bool,
     return 0
 
 
-def run_cutover(move_map: dict[str, str], roots, *, apply: bool) -> int:
-    patterns = tuple((_dotted_pattern(o), n) for o, n in move_map.items())
-    shim_paths = {_path_of(o).as_posix() for o in move_map}
+def run_cutover(move_map: dict[str, str], roots, *, apply: bool,
+                only: str | None = None,
+                only_exact: set[str] | None = None) -> int:
+    # Honor --only / --only-exact so a cutover can be scoped to one cluster
+    # (e.g. the isolated flowgraph repoint). Without this filter the cutover
+    # rewrites EVERY move_map entry across all roots, which breaks per-cluster
+    # commit isolation.
+    targets = dict(_iter_targets(move_map, only, only_exact))
+    if not targets:
+        print(f"cutover: no modules match only={only!r} only_exact={only_exact!r}")
+        return 0
+    patterns = tuple((_dotted_pattern(o), n) for o, n in targets.items())
+    shim_paths = {_path_of(o).as_posix() for o in targets}
     changed = 0
     for root in roots:
         base = Path(root)
@@ -462,7 +476,7 @@ def run_cutover(move_map: dict[str, str], roots, *, apply: bool) -> int:
             if path.as_posix() in shim_paths or path.name.startswith("codemod_"):
                 continue
             src = path.read_text(encoding="utf-8")
-            out = rewrite_text(src, move_map, patterns)
+            out = rewrite_text(src, targets, patterns)
             if out != src:
                 changed += 1
                 print(f"  {'rewrote' if apply else 'would rewrite'} {path}")
@@ -545,7 +559,12 @@ def main() -> int:
         )
         return run_move(move_map, args.only, apply=args.apply, only_exact=only_exact)
     if args.stage == "cutover":
-        return run_cutover(move_map, tuple(args.roots), apply=args.apply)
+        only_exact = (
+            {m.strip() for m in args.only_exact.split(",") if m.strip()}
+            if args.only_exact else None
+        )
+        return run_cutover(move_map, tuple(args.roots), apply=args.apply,
+                           only=args.only, only_exact=only_exact)
     return 2
 
 
