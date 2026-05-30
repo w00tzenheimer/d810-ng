@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 
-from d810.recon.facts import collectors
+from d810.analyses.value_flow import collectors
 from d810.analyses import value_flow as vf
 from d810.analyses.value_flow.model import FactObservation
 
