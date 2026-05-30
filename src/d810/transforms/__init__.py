@@ -13,3 +13,8 @@ satisfy the Protocols here structurally.
 This package must remain IDA-free at import time -- enforced by
 ``rules/no-live-ida-in-portable-core.yml``.
 """
+from __future__ import annotations
+
+from d810.transforms.lowering import LoweringMode, LoweringStrategy
+
+__all__ = ["LoweringMode", "LoweringStrategy"]
