@@ -170,7 +170,7 @@ OVERRIDES: dict[str, str] = {
     "d810.recon.analysis": "d810.passes.analysis",
     "d810.recon.artifacts": "d810.passes.artifacts",
     # P: cfg.contracts.report is a passes contract module (role-rule gap)
-    "d810.cfg.contracts.report": "d810.passes.report",
+    "d810.cfg.contracts.report": "d810.transforms.report",
     # R2/P COLLISION: fact runtime vs recon.runtime both -> passes.runtime; distinct leaf
     "d810.recon.facts.runtime": "d810.passes.fact_runtime",
     # R2: model non-observation symbols -> value_flow.model (FactObservation etc.

@@ -3,11 +3,11 @@ from __future__ import annotations
 import pytest
 
 from d810.transforms import edit_simulator
-from d810.cfg.contracts.contract import (
+from d810.transforms.contract import (
     CfgContract,
     CfgContractViolationError,
 )
-from d810.cfg.contracts.report import InvariantViolation
+from d810.transforms.report import InvariantViolation
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph
 from d810.transforms.plan import PatchPlan
 

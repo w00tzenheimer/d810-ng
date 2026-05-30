@@ -1,10 +1,25 @@
-"""Pure CFG contract orchestration."""
+"""Portable CFG contract orchestration.
+
+The contract TYPES and orchestration here are backend-agnostic (portable
+``transforms`` layer): :class:`CfgContract`, the structural ``FlowGraph``
+invariants, and the violation records. Backend-SPECIFIC validation is injected
+through the :class:`BackendContractOracle` Protocol below -- the Hex-Rays
+implementation (``native_oracle`` + the verifier-parity invariant set) lives
+under ``d810.hexrays.contracts``; a miasm/angr backend would supply its own
+oracle with no change here.
+
+This portability is enforced: unit tests and other portable consumers import
+these types, so they must NOT sit in the ``hexrays`` namespace (the
+"unit tests must not import hexrays" contract). Future: once the
+``transforms.plan`` coupling is inverted, the Protocol + orchestration +
+records can lift further down to ``d810.capabilities`` (policy/protocol layer).
+"""
 
 from __future__ import annotations
 
 from d810.core.typing import Iterable, Protocol
 
-from d810.passes.invariants import (
+from d810.transforms.cfg_invariants import (
     block_address_range,
     block_closing_opcode_at_tail,
     block_list_consistency,
@@ -15,7 +30,7 @@ from d810.passes.invariants import (
     pred_succ_symmetry,
     successor_set_matches_tail_semantics,
 )
-from d810.passes.report import InvariantViolation
+from d810.transforms.report import InvariantViolation
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.plan import PatchPlan
 

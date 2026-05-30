@@ -107,7 +107,7 @@ except ImportError:  # pragma: no cover - exercised in unit tests without IDA.
 
     ida_hexrays = _FallbackHexRays()  # type: ignore[assignment]
 
-from d810.cfg.contracts.report import InvariantViolation
+from d810.transforms.report import InvariantViolation
 
 # ---------------------------------------------------------------------------
 # MINSN_* constants (instruction-level, distinct from CFG_* block-level)

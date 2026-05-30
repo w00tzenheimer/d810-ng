@@ -12,7 +12,7 @@ logger = getLogger(__name__)
 
 import ida_hexrays
 
-from d810.cfg.contracts.report import InvariantViolation
+from d810.transforms.report import InvariantViolation
 
 _COND_OPCODE_NAMES = (
     "m_jcnd",
