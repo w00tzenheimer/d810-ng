@@ -69,8 +69,11 @@ TARGET_LAYER_ORDER: tuple[str, ...] = (
     "d810.transforms",
     "d810.mba",
     "d810.cfg",             # dissolving
+    "d810.pre_analysis",    # NEW: read-only collectors; placed ABOVE analyses
+                            # because they consume analyses algorithms
+                            # (e.g. postdominator) -- preflight confirmed the
+                            # dependency direction is collectors -> analyses.
     "d810.analyses",
-    "d810.pre_analysis",    # NEW: read-only collectors, just below analyses
     "d810.capabilities",
     "d810.ir",
     "d810.support",         # NEW: shared utils, below ir
@@ -159,6 +162,21 @@ def home_for(old_dotted: str) -> str | None:
             or any(c in leaf for c in rule.contains)
         ):
             return f"{rule.dest}.{leaf}"
+    # Source-package default (the three-tier bias: recon = read-only discovery
+    # -> analyses; cfg = planning/emission -> transforms). Strong role rules
+    # above override this for the cross-source patterns (ir dataclasses, passes
+    # orchestration, pre_analysis profiling). This resolves dual-leaf conflicts
+    # (e.g. target_entry_resolution exists in BOTH recon and cfg -> analyses vs
+    # transforms by source). Genuinely-ambiguous leaves (protocol/models/etc.)
+    # land on the source default and are reviewed at slice time.
+    if old_dotted.startswith("d810.recon.facts"):
+        return f"d810.analyses.value_flow.{leaf}"
+    if old_dotted.startswith("d810.recon.collectors"):
+        return f"d810.pre_analysis.{leaf}"
+    if old_dotted.startswith("d810.recon"):
+        return f"d810.analyses.control_flow.{leaf}"
+    if old_dotted.startswith("d810.cfg"):
+        return f"d810.transforms.{leaf}"
     return None
 
 
@@ -179,9 +197,9 @@ def build_move_map() -> tuple[dict[str, str], list[str]]:
         if not base.exists():
             continue
         for path in sorted(base.rglob("*.py")):
+            if path.name == "__init__.py" or "__pycache__" in path.as_posix():
+                continue  # packages are emptied/deleted in Phase Z, not moved
             dotted = _module_dotted(path)
-            if dotted.endswith("__init__") or "__pycache__" in dotted:
-                continue
             home = home_for(dotted)
             if home is None:
                 unmapped.append(dotted)
