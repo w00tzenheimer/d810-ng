@@ -731,6 +731,14 @@ class UnflatteningPlanner:
                 setattr(snapshot_for_strategy, "cumulative_planner_view", cumulative_view)
             try:
                 fragment = strategy.plan(snapshot_for_strategy)
+                if fragment is not None:
+                    # LS12 C4: stamp target CFG-shape provenance from the
+                    # producing strategy. PROVENANCE-ONLY -- never read by
+                    # scoring / arbitration / executor (which key on
+                    # ``fragment.family``). setdefault() can't raise.
+                    _lowering_mode = getattr(strategy, "lowering_mode", None)
+                    if _lowering_mode is not None:
+                        fragment.metadata.setdefault("lowering_mode", _lowering_mode)
             except Exception as e:
                 logger.warning(
                     "Strategy %s crashed: %s", strategy.name, e,
