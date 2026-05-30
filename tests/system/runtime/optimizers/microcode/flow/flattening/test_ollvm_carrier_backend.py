@@ -46,7 +46,7 @@ def test_raw_semantic_carrier_facts_collect_from_adapted_target(monkeypatch) -> 
             return ("raw_fact",)
 
     monkeypatch.setattr(
-        "d810.analyses.value_flow.collectors.OllvmValueFlowEvidenceCollector",
+        "d810.analyses.value_flow.ollvm_semantic_carrier.OllvmValueFlowEvidenceCollector",
         FakeCollector,
     )
 
