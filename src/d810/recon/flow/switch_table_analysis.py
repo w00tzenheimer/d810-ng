@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from d810.cfg.flowgraph import BlockSnapshot, FlowGraph, InsnKind, MopSnapshot
 from d810.core.logging import getLogger
+from d810.core.typing import Callable
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
@@ -17,6 +18,12 @@ from d810.analyses.control_flow.dispatcher_resolution import (
 )
 
 logger = getLogger("D810.recon.switch_table")
+
+# Diag sink for observed dispatcher rows. A pure analyses module must not import
+# the diagnostics-layer observability wrapper; the live caller injects the real
+# ``observe_state_dispatcher_rows`` sink and tests/fixtures default to no-op
+# (dissolution, llr-lyly).
+ObserveDispatcherRows = Callable[..., None]
 
 
 @dataclass(frozen=True)
@@ -242,11 +249,12 @@ def find_switch_loop_guard_blocks(
 def _observe_state_dispatcher_map(
     flow_graph: FlowGraph,
     dispatch_map: StateDispatcherMap,
+    observe_dispatcher_rows: ObserveDispatcherRows | None,
 ) -> None:
+    if observe_dispatcher_rows is None:
+        return
     try:
-        from d810.recon.observability import observe_state_dispatcher_rows
-
-        observe_state_dispatcher_rows(
+        observe_dispatcher_rows(
             func_ea=int(flow_graph.func_ea),
             maturity=_maturity_label(flow_graph),
             dispatcher_entry_block=dispatch_map.dispatcher_entry_block,
@@ -262,6 +270,8 @@ def _observe_state_dispatcher_map(
 
 def analyze_switch_table_flow_graph(
     flow_graph: FlowGraph,
+    *,
+    observe_dispatcher_rows: ObserveDispatcherRows | None = None,
 ) -> SwitchTableResult | None:
     """Walk a portable CFG snapshot and extract exact switch dispatcher rows.
 
@@ -316,7 +326,9 @@ def analyze_switch_table_flow_graph(
             dispatcher_blocks=dispatcher_blocks,
             state_var_stkoff=stkoff,
         )
-        _observe_state_dispatcher_map(flow_graph, state_dispatcher_map)
+        _observe_state_dispatcher_map(
+            flow_graph, state_dispatcher_map, observe_dispatcher_rows
+        )
         handler_map = state_dispatcher_map.to_dispatcher_handler_map()
 
         logger.info(
