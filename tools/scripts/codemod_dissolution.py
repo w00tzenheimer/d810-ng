@@ -149,6 +149,9 @@ OVERRIDES: dict[str, str] = {
     "d810.cfg.plan": "d810.transforms.plan",
     # A: dag_frontier_closure emits modifications + compile_patch_plan -> transforms
     "d810.cfg.dag_frontier_closure": "d810.transforms.dag_frontier_closure",
+    # T: block_lineage CONSTRUCTS PatchPlan/LegacyBlockOperation (imports cfg.plan ->
+    # transforms.plan); now-unblocked re-home -> transforms (deps in transforms post-T0).
+    "d810.cfg.block_lineage": "d810.transforms.block_lineage",
     # A/R: cfg.flow.return_frontier is a pure read-only frontier algorithm -> analyses
     "d810.cfg.flow.return_frontier": "d810.analyses.control_flow.return_frontier",
     # R1: shared_corridor is a pure predicate module (0 d810 imports) -> analyses
@@ -391,24 +394,40 @@ def _alias_shim(old_dotted: str, new_dotted: str) -> str:
     )
 
 
-def _iter_targets(move_map: dict[str, str], only: str | None):
+def _iter_targets(move_map: dict[str, str], only: str | None,
+                  only_exact: set[str] | None = None):
     for old, new in sorted(move_map.items()):
+        if only_exact is not None and old not in only_exact:
+            continue
         if only and only not in old and only not in new:
             continue
         yield old, new
+
+
+def _is_shim(path: Path) -> bool:
+    """True if the source file is already a sys.modules alias shim (a prior
+    slice/T0 already relocated it). Such sources must NOT be re-moved -- their
+    canonical dest already exists, which would otherwise FATAL on dest-exists."""
+    try:
+        return "sys.modules[__name__]" in path.read_text(encoding="utf-8")
+    except OSError:
+        return False
 
 
 def _path_of(dotted: str) -> Path:
     return SRC / Path(*dotted.split(".")).with_suffix(".py")
 
 
-def run_move(move_map: dict[str, str], only: str | None, *, apply: bool) -> int:
+def run_move(move_map: dict[str, str], only: str | None, *, apply: bool,
+             only_exact: set[str] | None = None) -> int:
     patterns = tuple((_dotted_pattern(o), n) for o, n in move_map.items())
     n = 0
-    for old, new in _iter_targets(move_map, only):
+    for old, new in _iter_targets(move_map, only, only_exact):
         op, np_ = _path_of(old), _path_of(new)
         if not op.exists():
             continue
+        if _is_shim(op):
+            continue  # already relocated by a prior slice/T0; skip (dest exists)
         if np_.exists():
             print(f"  FATAL: dest exists {np_}")
             return 2
@@ -497,6 +516,9 @@ def main() -> int:
                    choices=["preflight", "move", "cutover", "scaffold", "selftest"])
     p.add_argument("--apply", action="store_true")
     p.add_argument("--only", help="restrict move/cutover to modules matching this substring")
+    p.add_argument("--only-exact", dest="only_exact",
+                   help="restrict move to this comma-separated list of EXACT old "
+                        "dotted module names (atomic per-slice moves)")
     p.add_argument("--roots", nargs="*", default=["src", "tests", "tools"])
     args = p.parse_args()
 
@@ -509,7 +531,11 @@ def main() -> int:
     if args.stage == "preflight":
         return run_preflight(move_map, unmapped)
     if args.stage == "move":
-        return run_move(move_map, args.only, apply=args.apply)
+        only_exact = (
+            {m.strip() for m in args.only_exact.split(",") if m.strip()}
+            if args.only_exact else None
+        )
+        return run_move(move_map, args.only, apply=args.apply, only_exact=only_exact)
     if args.stage == "cutover":
         return run_cutover(move_map, tuple(args.roots), apply=args.apply)
     return 2
