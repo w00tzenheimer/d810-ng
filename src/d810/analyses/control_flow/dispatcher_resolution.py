@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +95,41 @@ class StateDispatcherMap:
         return DispatcherHandlerMap.from_state_dispatcher_map(self)
 
 
+@dataclass(frozen=True, slots=True)
+class ResolverCandidate:
+    """Ranked dispatcher-resolver evidence (LS11 C6).
+
+    A candidate is NOT a bool ownership claim -- it is ranked evidence that a
+    resolver could resolve a dispatcher.  ``accepts()`` returns this, never a
+    bool, so the resolver chain can rank competing providers deterministically.
+    """
+
+    resolver_name: str
+    router_kind: RouterKind
+    confidence: float
+    specificity: int = 0
+    reasons: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DispatcherResolution:
+    """Provenance envelope around the selected ``StateDispatcherMap`` (LS11 C6).
+
+    ``resolve()`` may fail after ``accepts()`` succeeds; on success it returns
+    this envelope so strategies consume stable ``dispatcher_map`` evidence plus
+    the resolver/confidence/ranking provenance.
+    """
+
+    dispatcher_map: StateDispatcherMap
+    resolver_name: str
+    router_kind: RouterKind
+    confidence: float
+    ranking_reason: tuple[str, ...] = ()
+
+
 __all__ = [
+    "DispatcherResolution",
+    "ResolverCandidate",
     "StateDispatcherMap",
     "StateDispatcherRow",
 ]

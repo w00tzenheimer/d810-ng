@@ -1,9 +1,11 @@
 """In-memory transition resolution through exact state-dispatcher maps."""
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass
 
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
+from d810.ir import ValueRef
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,8 +221,66 @@ def _maybe_str(value: object | None) -> str | None:
     return str(value)
 
 
+class SemanticTransitionKind(str, enum.Enum):
+    """Normalized vocabulary for every state-transition source (LS11 C7)."""
+
+    HANDLER_WRITE = "handler_write"
+    CASE_WRITE = "case_write"
+    LOOP_UPDATE = "loop_update"
+    CARRIED_STATE = "carried_state"
+    CONDITIONAL_RETURN = "conditional_return"
+    EXIT_ROUTINE = "exit_routine"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticTransition:
+    """One normalized semantic state transition (LS11 C7).
+
+    ``subject`` carries portable value identity (LS11 C4) for the value whose
+    write drives the transition, typed as ``d810.ir.ValueRef`` (analyses -> ir
+    is downward-legal).  Net-new and unwired in LS11; future slices consume it
+    in place of the ad-hoc transition shapes scattered across the dispatcher
+    cluster.
+    """
+
+    source_block_serial: int
+    source_state_const: int
+    kind: SemanticTransitionKind
+    target_block_serial: int | None = None
+    target_state_const: int | None = None
+    subject: ValueRef | None = None
+    source_state_const_hex: str | None = None
+    evidence_fact_id: str | None = None
+
+
+def semantic_transition_from_fact(
+    fact: StateTransitionFact,
+) -> SemanticTransition:
+    """Project a legacy ``StateTransitionFact`` into the normalized vocabulary.
+
+    Conservative: an unrecognized ``successor_kind`` maps to ``UNKNOWN`` rather
+    than guessing a specific transition source.
+    """
+    kind = (
+        SemanticTransitionKind.HANDLER_WRITE
+        if fact.successor_kind == "branch"
+        else SemanticTransitionKind.UNKNOWN
+    )
+    return SemanticTransition(
+        source_block_serial=fact.source_block_serial,
+        source_state_const=fact.source_state_const,
+        kind=kind,
+        source_state_const_hex=fact.source_state_const_hex,
+        evidence_fact_id=fact.fact_id,
+    )
+
+
 __all__ = [
+    "SemanticTransition",
+    "SemanticTransitionKind",
     "facts_from_validated_view",
+    "semantic_transition_from_fact",
     "StateTransitionFact",
     "StateTransitionResolution",
     "StateWriteAnchor",
