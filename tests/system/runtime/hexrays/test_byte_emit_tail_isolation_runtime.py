@@ -419,7 +419,7 @@ def test_tail_duplicate_missing_provider_skips_without_diag(monkeypatch):
 
 
 def test_terminal_tail_uses_provider_planner_evidence_without_fact_view(monkeypatch):
-    import d810.cfg.terminal_tail_cascade_egress_planner as planner_module
+    import d810.transforms.terminal_tail_cascade_egress_planner as planner_module
     import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
     from d810.hexrays.mutation.byte_tail_runtime_evidence import (
         ByteTailRuntimeEvidence,
@@ -714,7 +714,7 @@ def test_bridge_plan_row_requires_state_write_when_bypassed():
 
 
 def test_select_terminal_tail_entry_live_uses_fact_backed_prep_block():
-    from d810.cfg.terminal_tail_cascade_egress_planner import (
+    from d810.transforms.terminal_tail_cascade_egress_planner import (
         TerminalByteEmitSite,
         TerminalTailBlock,
     )
@@ -788,7 +788,7 @@ def test_select_terminal_tail_entry_live_uses_fact_backed_prep_block():
 
 def test_close_terminal_tail_entry_frontier_applies_when_entry_is_reachable(monkeypatch):
     import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
-    from d810.cfg.terminal_tail_cascade_egress_planner import (
+    from d810.transforms.terminal_tail_cascade_egress_planner import (
         TerminalByteEmitSite,
         TerminalTailBlock,
     )
