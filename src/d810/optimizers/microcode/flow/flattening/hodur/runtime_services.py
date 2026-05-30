@@ -35,7 +35,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.recon_artifacts import (
     load_terminal_return_audit_from_store,
     load_transition_report_from_store,
 )
-from d810.recon.facts.model import FactConsumerRecord, FactStatus
+from d810.analyses.value_flow.model import FactConsumerRecord, FactStatus
 
 unflat_logger = logging.getLogger("D810.unflat.hodur", logging.DEBUG)
 

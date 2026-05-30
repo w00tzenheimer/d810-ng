@@ -20,7 +20,7 @@ from d810.recon.flow_hints import FlowContextHintSummary
 from d810.recon.function_priors import FunctionAnalysisPriors
 
 if TYPE_CHECKING:
-    from d810.recon.facts.model import FactConsumerRecord, ValidatedFactView
+    from d810.analyses.value_flow.model import FactConsumerRecord, ValidatedFactView
     from d810.recon.flow.dispatcher_analysis import DispatcherAnalysis
     from d810.recon.flow.dispatcher_facts import BlockAnalysis
     from d810.optimizers.microcode.flow.handler import FlowOptimizationRule

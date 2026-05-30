@@ -137,7 +137,7 @@ def ensure_terminal_byte_fact_view(
         from d810.recon.facts.collectors.terminal_byte_emitter import (
             TerminalByteEmitterFactCollector,
         )
-        from d810.recon.facts.model import ValidatedFactView
+        from d810.analyses.value_flow.model import ValidatedFactView
     except Exception:
         return fact_view
 

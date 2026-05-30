@@ -33,13 +33,13 @@ from d810.recon.outcome import (
 )
 from d810.recon.phase import ReconPhase
 from d810.recon.flow_hints import derive_flow_context_summary
-from d810.recon.facts.model import (
+from d810.analyses.value_flow.model import (
     FactConflict,
     FactConsumerRecord,
     FactMapping,
     FactObservation,
 )
-from d810.recon.facts.model import ValidatedFactView
+from d810.analyses.value_flow.model import ValidatedFactView
 from d810.recon.facts.runtime import (
     FactCaptureSummary,
     FactCollector,
