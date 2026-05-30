@@ -1,35 +1,10 @@
-from __future__ import annotations
+"""Migration shim: ``d810.recon.flow.entry_island`` -> ``d810.analyses.control_flow.entry_island`` (dissolution, llr-lyly).
 
-from d810.recon.flow.linearized_state_dag import StateDagEdge
+sys.modules alias preserving the old import path; re-exports public AND
+private symbols.  Deleted in Phase Z once consumers repoint.
+"""
+import sys
 
+from d810.analyses.control_flow import entry_island as _canonical
 
-def lift_target_entry_to_island_entry(
-    target_entry: int,
-    *,
-    incoming_by_target_entry: dict[int, tuple[StateDagEdge, ...]],
-    semantic_entry_anchors: set[int],
-    reachable_blocks: set[int],
-    dispatcher_region: set[int],
-) -> int:
-    current = int(target_entry)
-    visited: set[int] = set()
-
-    while current not in visited:
-        visited.add(current)
-        candidates = sorted(
-            {
-                int(edge.source_anchor.block_serial)
-                for edge in incoming_by_target_entry.get(current, ())
-                if int(edge.source_anchor.block_serial) in semantic_entry_anchors
-                and int(edge.source_anchor.block_serial) not in dispatcher_region
-                and int(edge.source_anchor.block_serial) not in reachable_blocks
-            }
-        )
-        if len(candidates) != 1:
-            break
-        current = candidates[0]
-
-    return current
-
-
-__all__ = ["lift_target_entry_to_island_entry"]
+sys.modules[__name__] = _canonical
