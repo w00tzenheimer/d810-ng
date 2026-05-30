@@ -15,6 +15,7 @@ from d810.core.logging import getLogger
 from d810.hexrays.mutation.ir_translator import lift
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
 from d810.recon.flow.switch_table_analysis import analyze_switch_table_flow_graph
+from d810.recon.observability import observe_state_dispatcher_rows
 
 logger = getLogger("D810.switch_table_adapter")
 
@@ -80,7 +81,10 @@ def analyze_switch_table_dispatcher(
 ) -> SwitchTableLiveResult | None:
     """Lift an MBA, run portable switch-table analysis, and recover live mop."""
     flow_graph = lift(mba)
-    result = analyze_switch_table_flow_graph(flow_graph)
+    result = analyze_switch_table_flow_graph(
+        flow_graph,
+        observe_dispatcher_rows=observe_state_dispatcher_rows,
+    )
     if result is None:
         return None
 
