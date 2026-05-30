@@ -51,6 +51,8 @@ files:
   - "src/d810/analyses/**/*.py"
   - "src/d810/transforms/**/*.py"
   - "src/d810/passes/**/*.py"
+  # families landed IDA-free through LS13; LS14 enrolls it in the scan.
+  - "src/d810/families/**/*.py"
   - "src/d810/recon/**/*.py"
   - "src/d810/pre_analysis/**/*.py"
   - "src/d810/cfg/flowgraph*.py"

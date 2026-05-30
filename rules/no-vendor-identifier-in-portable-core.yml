@@ -27,6 +27,8 @@ files:
   - "src/d810/analyses/**/*.py"
   - "src/d810/transforms/**/*.py"
   - "src/d810/passes/**/*.py"
+  # families landed IDA-free through LS13; LS14 enrolls it in the scan.
+  - "src/d810/families/**/*.py"
   - "src/d810/ir/**/*.py"
   - "src/d810/capabilities/**/*.py"
   - "src/d810/support/**/*.py"
