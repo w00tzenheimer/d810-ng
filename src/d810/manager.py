@@ -1262,7 +1262,12 @@ class D810Manager:
             # unit-test collectability of d810.manager. Dormant for the portable
             # targets the live pipeline passes today (FlowGraph / fact target).
             try:
-                import d810.backends.facts.ida  # noqa: F401  # registers on import
+                # Explicit idempotent ensure() (not a bare import): a
+                # sys.modules-cached module would make re-import a no-op and
+                # leave the registry empty after a reset_live_lifters_for_tests().
+                from d810.backends.facts.ida import ensure_hexrays_lifter_registered
+
+                ensure_hexrays_lifter_registered()
             except Exception:
                 logger.exception("Hex-Rays live SourceLifter registration failed")
             self._recon_runtime.register_fact_collector(InductionVariableFactCollector())

@@ -83,3 +83,23 @@ def test_reset_clears_registry() -> None:
     register_live_lifter(_Lifter(handles=object()))
     reset_live_lifters_for_tests()
     assert registered_lifters() == ()
+
+
+def test_singleton_reregisters_after_reset_idempotently() -> None:
+    """P2 reset-safety mechanism that ``ensure_hexrays_lifter_registered`` relies
+    on: a module-level singleton re-registered after a reset is restored, and
+    repeated registration stays a no-op (identity dedupe). A bare module re-import
+    cannot do this (sys.modules caches it), which is why the composition root
+    calls an explicit idempotent ensure() instead."""
+    singleton = _Lifter(handles=object())
+
+    def ensure() -> None:  # mirrors ensure_hexrays_lifter_registered()
+        register_live_lifter(singleton)
+
+    ensure()
+    assert registered_lifters() == (singleton,)
+    reset_live_lifters_for_tests()  # e.g. a test-isolation / reload reset
+    assert registered_lifters() == ()
+    ensure()  # explicit ensure() restores it after the reset...
+    ensure()  # ...idempotently (no duplicate)
+    assert registered_lifters() == (singleton,)
