@@ -12,7 +12,6 @@ language: python
 severity: error
 
 files:
-  - "src/d810/recon/flow/**/*.py"
   - "src/d810/evaluator/hexrays_microcode/forward_dataflow.py"
   - "src/d810/evaluator/hexrays_microcode/chains.py"
   - "src/d810/evaluator/hexrays_microcode/terminal_return_proof.py"

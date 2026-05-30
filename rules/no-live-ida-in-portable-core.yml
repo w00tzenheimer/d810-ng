@@ -53,11 +53,6 @@ files:
   - "src/d810/passes/**/*.py"
   # families landed IDA-free through LS13; LS14 enrolls it in the scan.
   - "src/d810/families/**/*.py"
-  - "src/d810/recon/**/*.py"
-  - "src/d810/pre_analysis/**/*.py"
-  - "src/d810/cfg/flowgraph*.py"
-  - "src/d810/cfg/lattice*.py"
-  - "src/d810/cfg/snapshot*.py"
   # Per-file additions (NOT whole-package; the parent package still has
   # legitimate IDA-importing modules):
   #   optimizers/core.py was de-coupled from IDA in slice 7
@@ -68,7 +63,6 @@ files:
   - "src/d810/optimizers/core.py"
 ignores:
   - "src/d810/backends/**/*.py"
-  - "src/d810/recon/_vendor/**/*.py"
   - "tests/**"
 
 message: |

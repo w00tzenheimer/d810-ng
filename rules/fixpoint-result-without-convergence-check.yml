@@ -54,7 +54,6 @@ ignores:
   # real R1 consumer.  Both must satisfy the kwarg rule.
   - "src/d810/evaluator/hexrays_microcode/forward_dataflow.py"
   # Future engine homes from the llvm-lisa-restructure plan
-  - "src/d810/pre_analysis/data_flow/**/*.py"
   - "src/d810/analyses/data_flow/**/*.py"
   - "tests/**"
 

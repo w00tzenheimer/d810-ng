@@ -9,8 +9,6 @@ language: python
 severity: error
 
 files:
-  - "src/d810/cfg/**/*.py"
-  - "src/d810/recon/flow/**/*.py"
   - "src/d810/evaluator/**/*.py"
   - "src/d810/optimizers/microcode/flow/flattening/**/*.py"
 
