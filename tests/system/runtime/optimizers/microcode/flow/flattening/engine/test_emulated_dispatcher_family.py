@@ -6322,7 +6322,7 @@ class TestEmulatedDispatcherManagedContext:
         d810_state,
         monkeypatch,
     ) -> None:
-        import d810.cfg.contracts.transaction_engine as tx_engine_mod
+        import d810.passes.transaction_engine as tx_engine_mod
         import d810.optimizers.microcode.flow.flattening.engine.executor as executor_mod
         import d810.optimizers.microcode.flow.flattening.unflattener_emulated_dispatcher_engine as engine_mod
         import d810.hexrays.mutation.ir_translator as ir_translator_mod
@@ -6422,7 +6422,7 @@ class TestEmulatedDispatcherManagedContext:
         d810_state,
         monkeypatch,
     ) -> None:
-        import d810.cfg.contracts.transaction_engine as tx_engine_mod
+        import d810.passes.transaction_engine as tx_engine_mod
         import d810.optimizers.microcode.flow.flattening.engine.executor as executor_mod
         import d810.optimizers.microcode.flow.flattening.unflattener_emulated_dispatcher_engine as engine_mod
 
@@ -6488,7 +6488,7 @@ class TestEmulatedDispatcherManagedContext:
         d810_state,
         monkeypatch,
     ) -> None:
-        import d810.cfg.contracts.transaction_engine as tx_engine_mod
+        import d810.passes.transaction_engine as tx_engine_mod
         import d810.optimizers.microcode.flow.flattening.engine.executor as executor_mod
         import d810.optimizers.microcode.flow.flattening.unflattener_emulated_dispatcher_engine as engine_mod
         import d810.hexrays.mutation.ir_translator as ir_translator_mod
