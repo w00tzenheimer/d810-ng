@@ -16,7 +16,7 @@ producing their dumps so they label what the engine actually saw.
 Pure observability. No effect on lowering, anchor selection, or strategy
 behavior.
 
-Layer note: this lives in ``d810.recon.flow`` so both recon-time builders
+Layer note: this lives in ``d810.analyses.control_flow`` so both recon-time builders
 and diagnostic dump utilities can import it without crossing layers.
 """
 from __future__ import annotations

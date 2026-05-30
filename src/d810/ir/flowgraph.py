@@ -117,7 +117,7 @@ class OperandKind(Enum):
 class MopSnapshot:
     """Frozen, backend-agnostic snapshot of an operand (pure model layer).
 
-    This is a lightweight value type that lives in ``d810.cfg`` and carries
+    This is a lightweight value type that lives in ``d810.ir`` and carries
     no IDA imports.  The richer ``d810.hexrays.ir.mop_snapshot.MopSnapshot``
     (which owns an IDA mop_t clone) is a *superset* and satisfies the same
     structural interface.

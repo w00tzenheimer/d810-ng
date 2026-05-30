@@ -9,9 +9,9 @@ snapshot/instruction iteration when none is registered (Landing Sequence LS10).
 
 Layering: ``d810.capabilities`` sits BELOW ``backends`` (which register lifters
 DOWN) and BELOW ``recon`` (which selects DOWN), so hosting the registry here
-inverts the dependency honestly.  ``FlowGraph`` lives in ``d810.cfg`` (ABOVE
-capabilities), so ``lift``'s return and ``matches``'s argument are typed ``Any``
--- a real import would be an upward-fatal edge.  Protocol parameters are
+inverts the dependency honestly.  ``FlowGraph`` lives in ``d810.ir`` (BELOW
+capabilities); ``lift``'s return and ``matches``'s argument are still typed ``Any``
+to keep this contract decoupled from any concrete graph type.  Protocol parameters are
 contravariant, so ``Any`` is what lets a concrete ``lift(self, mba: mba_t)``
 structurally satisfy the contract (mirrors ``capabilities/constant_fixpoint.py``).
 """

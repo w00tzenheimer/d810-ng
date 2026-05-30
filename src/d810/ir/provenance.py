@@ -25,7 +25,7 @@ Actions (canonical):
 Architecture
 ------------
 
-The producer side (this module) lives in ``d810.cfg``. Runtime
+The producer side (this module) lives in ``d810.ir``. Runtime
 callers reach the API through ``d810.diagnostics.observability``
 (``observe_cfg_provenance``), which constructs a
 ``CfgProvenanceObserved`` event and publishes it on the

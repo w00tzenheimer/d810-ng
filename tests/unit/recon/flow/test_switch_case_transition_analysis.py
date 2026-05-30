@@ -185,4 +185,3 @@ def test_alias_self_loop_and_default_rows_are_diagnostics() -> None:
         fact.proof is None or not fact.proof.authorizes_nonsemantic_branch_rewrite
         for fact in facts
     )
-

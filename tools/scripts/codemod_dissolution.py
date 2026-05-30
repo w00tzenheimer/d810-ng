@@ -134,8 +134,12 @@ ROLE_RULES: tuple[RoleRule, ...] = (
                  "state_var_alias", "terminal_frontier", "block_lineage",
                  "redirect_reconciliation", "backedge"),
        exact=("state_machine_analysis",)),
-    # observability -> diagnostics
-    RoleRule("d810.diagnostics", exact=("observability",)),
+    # observability -> core (lowest layer): keeps its optimizer/runtime
+    # importers DOWN-pointing.  d810.diagnostics sits ABOVE optimizers/passes,
+    # so homing observability there would flip those into upward-fatal edges.
+    # recon + cfg observability share leaf "observability"; both are pinned to
+    # distinct core leaves via OVERRIDES below to avoid a dest collision.
+    RoleRule("d810.core", exact=("observability",)),
 )
 
 
@@ -175,7 +179,11 @@ OVERRIDES: dict[str, str] = {
     "d810.recon.flow.dag_index": "d810.analyses.control_flow.recon_dag_index",
     "d810.recon.collectors.profile_classifier": "d810.analyses.control_flow.profile_classifier_collector",
     "d810.recon.collectors.return_frontier": "d810.analyses.control_flow.return_frontier_collector",
-    "d810.recon.observability": "d810.diagnostics.recon_observability",
+    "d810.recon.observability": "d810.core.observability_recon",
+    # cfg.observability -> core too (distinct leaf to avoid colliding with
+    # recon.observability); Phase Z Step 0 first severs its back-compat
+    # provenance re-export (cfg/observability.py) so the move is core-only.
+    "d810.cfg.observability": "d810.core.observability_cfg",
 }
 
 
