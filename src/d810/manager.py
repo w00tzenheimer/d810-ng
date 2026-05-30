@@ -57,13 +57,15 @@ from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizer,
 )
 from d810.analyses.control_flow.cfg_shape import CFGShapeCollector
-from d810.recon.collectors.compare_chain import CompareChainCollector
+from d810.analyses.control_flow.compare_chain_collector import CompareChainCollector
 from d810.analyses.control_flow.ctree_structure import CtreeStructureCollector
 from d810.analyses.control_flow.dispatch_pattern import DispatchPatternCollector
 from d810.analyses.control_flow.fixpred_signals import FixPredSignalsCollector
 from d810.analyses.control_flow.handler_transitions import HandlerTransitionsCollector
 from d810.analyses.control_flow.opcode_distribution import OpcodeDistributionCollector
-from d810.recon.collectors.profile_classifier import FlowProfileClassifierCollector
+from d810.analyses.control_flow.profile_classifier_collector import (
+    FlowProfileClassifierCollector,
+)
 from d810.analyses.control_flow.return_frontier_collector import ReturnFrontierCollector
 from d810.recon.function_priors import FunctionAnalysisPriors
 from d810.recon.flow.return_frontier_artifacts import (
