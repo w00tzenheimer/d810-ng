@@ -1328,10 +1328,10 @@ class BoundaryInlineMode(Enum):
     INLINE_SINGLE_LEVEL = auto()
 
 
-# StateDagNodeKey lives in d810.cfg (lower layer) so cfg-layer lowering code can
-# instantiate it without an upward `cfg -> recon` import. Re-exported here to
-# preserve the public import surface of this module.
-from d810.ir.state_dag_key import StateDagNodeKey  # noqa: E402  (kept near its recon peers)
+# StateDagNodeKey lives in d810.ir (lowest model layer) so any layer can
+# instantiate it without an upward import. Re-exported here to preserve the
+# public import surface of this module.
+from d810.ir.state_dag_key import StateDagNodeKey  # noqa: E402
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,6 +1,6 @@
 """Microcode-backed branch ownership proof production.
 
-This module stays in recon: it only classifies conditional state-machine branch
+This module is pure classification (``d810.analyses.control_flow``): it only classifies conditional state-machine branch
 arms and emits :class:`BranchOwnershipProof` rows.  It does not plan or apply
 CFG rewrites.
 """

@@ -9,7 +9,7 @@ mutates the context or the rebuild. Use during Phase B strategy opt-in to
 validate the canonical context matches the per-strategy setup recipes the
 rollout is replacing.
 
-Layer: ``d810.recon.flow`` (read-only classification). No ``ModificationBuilder``
+Layer: ``d810.analyses.control_flow`` (read-only classification). No ``ModificationBuilder``
 calls, no ``modifications`` lists.
 """
 from __future__ import annotations

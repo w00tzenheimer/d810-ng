@@ -65,4 +65,3 @@ def get_exit_successor(
     if succ_1 not in dispatcher_internal_serials and succ_0 in dispatcher_internal_serials:
         return succ_1
     return None
-

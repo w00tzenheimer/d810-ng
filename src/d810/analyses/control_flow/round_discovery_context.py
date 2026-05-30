@@ -9,7 +9,7 @@ and attached to ``AnalysisSnapshot`` as the canonical round-level classification
 view; the engine stays pure-Python because all recon types are imported under
 ``TYPE_CHECKING`` only.
 
-Layer: ``d810.recon.flow`` (recon — above cfg, below optimizers). It composes
+Layer: ``d810.analyses.control_flow`` (portable-core analyses). It composes
 existing recon helpers — it does **not** re-derive anything. In particular
 :func:`build_reconstruction_discovery_indexes` is wrapped verbatim; the
 dispatcher region, shared-suffix sets, node maps, and structured-region data
