@@ -149,12 +149,9 @@ forbidden_modules =
 # llvm-lisa-restructure migration contracts
 # ---------------------------------------------------------------------------
 # These contracts codify the target LLVM/LiSA package taxonomy
-# (docs/plans/recon-and-cfg-restructuring.md). They CURRENTLY FAIL
-# against cfg-recon-mainline because the target packages do not exist
-# yet AND because the current recon/ files import IDA. Each
-# restructure slice should shrink the failing-set; the migration is
-# complete when all four contracts are kept and the audit grep is
-# empty.
+# (docs/plans/recon-and-cfg-restructuring.md). The recon/cfg dissolution
+# is COMPLETE: recon/ and cfg/ are deleted, all contracts are kept, and
+# the audit grep is empty.
 #
 # ZERO ignore_imports entries are permitted on any of these contracts.
 # Layer violations are fixed by moving code, never by ignoring.
@@ -247,10 +244,8 @@ forbidden_modules =
 # lifted IR types; they may not call vendor-specific mutation
 # entry points.
 #
-# source_modules lists ONLY packages that are currently clean.  The
-# legacy violator (d810.recon.microcode_dump -> d810.hexrays.mutation)
-# was relocated to the optimizer layer, so d810.recon is now promoted
-# into this contract.
+# source_modules lists the portable-core packages (recon/cfg were
+# dissolved into these homes by the LLVM/LiSA restructure).
 name = Portable-core packages must not import vendor mutation surfaces
 type = forbidden
 allow_indirect_imports = True
