@@ -69,11 +69,8 @@ TARGET_LAYER_ORDER: tuple[str, ...] = (
     "d810.transforms",
     "d810.mba",
     "d810.cfg",             # dissolving
-    "d810.pre_analysis",    # NEW: read-only collectors; placed ABOVE analyses
-                            # because they consume analyses algorithms
-                            # (e.g. postdominator) -- preflight confirmed the
-                            # dependency direction is collectors -> analyses.
-    "d810.analyses",
+    "d810.analyses",        # read-only collectors land here too (NO pre_analysis
+                            # -- the design-doc end-state has no such package)
     "d810.capabilities",
     "d810.ir",
     "d810.support",         # NEW: shared utils, below ir
@@ -125,12 +122,6 @@ ROLE_RULES: tuple[RoleRule, ...] = (
         "contract", "phase", "runtime", "store", "inferences", "persist_inference",
         "outcome", "flow_hints", "function_priors",
     )),
-    # pre_analysis: recon collectors (read-only profiling)
-    RoleRule("d810.pre_analysis", exact=(
-        "cfg_shape", "dispatch_pattern", "profile_classifier", "ctree_structure",
-        "opcode_distribution", "handler_transitions", "fixpred_signals",
-        "return_frontier",
-    )),
     # analyses/value_flow: value-flow fact ontology
     RoleRule("d810.analyses.value_flow", contains=("value_flow",),
              suffixes=("_value_fact",)),
@@ -171,9 +162,7 @@ def home_for(old_dotted: str) -> str | None:
     # land on the source default and are reviewed at slice time.
     if old_dotted.startswith("d810.recon.facts"):
         return f"d810.analyses.value_flow.{leaf}"
-    if old_dotted.startswith("d810.recon.collectors"):
-        return f"d810.pre_analysis.{leaf}"
-    if old_dotted.startswith("d810.recon"):
+    if old_dotted.startswith("d810.recon"):  # incl. recon.collectors profiling
         return f"d810.analyses.control_flow.{leaf}"
     if old_dotted.startswith("d810.cfg"):
         return f"d810.transforms.{leaf}"
@@ -392,7 +381,6 @@ def run_cutover(move_map: dict[str, str], roots, *, apply: bool) -> int:
 SCAFFOLD = {
     "d810.passes": "Scheduled passes: wire analyses + transforms (dissolution, llr-lyly).",
     "d810.support": "Shared backend-neutral utilities (dissolution, llr-lyly).",
-    "d810.pre_analysis": "Read-only pre-analysis collectors (dissolution, llr-lyly).",
 }
 
 
