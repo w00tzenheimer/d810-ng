@@ -1,7 +1,9 @@
 """OpcodeDistributionCollector - instruction opcode frequency histogram.
 
-Fires at MMAT_PREOPTIMIZED (5). Accepts FlowGraph (unit tests) or
-live mba_t (IDA runtime).
+Fires at MMAT_PREOPTIMIZED (5). Consumes a portable ``d810.ir`` FlowGraph
+only -- the HIGH layer lifts the live ``mba`` once at the FLOWGRAPH_READY
+boundary (E4a) and hands collectors the snapshot, so this is data-model
+portable (no live ``mba_t`` / ``mblock_t`` duck-typing; ticket llr-zeyu).
 
 Metrics produced:
     - ``total_insns``: total instruction count across all blocks
@@ -33,24 +35,12 @@ class OpcodeDistributionCollector:
     level: str = "microcode"
 
     def collect(self, target, func_ea: int, maturity: int) -> ReconResult:
+        # ``target`` is a portable d810.ir FlowGraph; iterate its block
+        # snapshots only -- no live mba / mblock duck-typing (llr-zeyu).
         counter: Counter[int] = Counter()
-
-        if hasattr(target, "blocks") and hasattr(target, "entry_serial"):
-            # FlowGraph path
-            for blk in target.blocks.values():
-                for insn in getattr(blk, "insn_snapshots", ()):
-                    counter[int(insn.opcode)] += 1
-        else:
-            # Live mba_t path
-            qty = int(getattr(target, "qty", 0) or 0)
-            for i in range(qty):
-                blk = target.get_mblock(i)
-                if blk is None:
-                    continue
-                insn = getattr(blk, "head", None)
-                while insn is not None:
-                    counter[int(getattr(insn, "opcode", 0))] += 1
-                    insn = getattr(insn, "next", None)
+        for blk in target.blocks.values():
+            for insn in blk.insn_snapshots:
+                counter[int(insn.opcode)] += 1
 
         total = sum(counter.values())
         unique = len(counter)
