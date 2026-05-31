@@ -647,30 +647,6 @@ class FactLifecycleRuntime:
                     except (TypeError, ValueError):
                         continue
             return None
-        try:
-            wanted = int(ea)
-            qty = int(getattr(target, "qty", 0))
-        except (TypeError, ValueError):
-            return None
-        if qty <= 0:
-            return None
-        for serial in range(qty):
-            try:
-                blk = target.get_mblock(serial)
-            except Exception:
-                continue
-            if blk is None:
-                continue
-            insn = getattr(blk, "head", None)
-            seen = 0
-            while insn is not None and seen < 10000:
-                seen += 1
-                try:
-                    if int(getattr(insn, "ea", -1)) == wanted:
-                        return serial
-                except (TypeError, ValueError):
-                    pass
-                insn = getattr(insn, "next", None)
         return None
 
     @staticmethod
