@@ -1,12 +1,16 @@
 """Read-only dispatcher residue and unreachable-region cleanup discovery.
 
-This module classifies cleanup opportunities without mutating the live MBA.
-CFG planning and Hex-Rays
-materialization live in their own layers.
+This module classifies cleanup opportunities over a portable
+:class:`~d810.ir.flowgraph.FlowGraph` snapshot, without mutating anything.
+The HIGH layer lifts the live ``mba_t`` to a FlowGraph once
+(``hexrays.mutation.ir_translator.lift``) and hands this code the snapshot;
+CFG planning and Hex-Rays materialization live in their own layers.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 
 
 @dataclass(frozen=True)
@@ -53,20 +57,29 @@ class UnreachableRegionCleanupFacts:
     forward_redirects: tuple[UnreachableRegionForwardRedirectFact, ...]
 
 
-def _block_successors(blk: object) -> tuple[int, ...]:
-    nsucc = int(blk.nsucc())
-    return tuple(int(blk.succ(i)) for i in range(nsucc))
+def _qty(flow_graph: FlowGraph) -> int:
+    """Block-serial upper bound, mirroring live ``mba.qty``.
+
+    Block serials are dense ``0..qty-1`` for a lifted live ``mba``; this
+    returns ``max(serial) + 1`` so range/bound-check logic is identical to
+    the historical live-``mba`` walk for both dense and sparse graphs.
+    """
+    return (max(flow_graph.blocks) + 1) if flow_graph.blocks else 0
 
 
-def _reachable_from_entry(mba: object, qty: int) -> set[int]:
+def _block_successors(blk: BlockSnapshot) -> tuple[int, ...]:
+    return tuple(int(succ) for succ in blk.succs)
+
+
+def _reachable_from_entry(flow_graph: FlowGraph, qty: int) -> set[int]:
     visited: set[int] = set()
-    queue: list[int] = [0]
+    queue: list[int] = [flow_graph.entry_serial]
     while queue:
         serial = queue.pop(0)
         if serial in visited or serial < 0 or serial >= qty:
             continue
         visited.add(serial)
-        blk = mba.get_mblock(serial)
+        blk = flow_graph.blocks.get(serial)
         if blk is None:
             continue
         for succ in _block_successors(blk):
@@ -76,7 +89,7 @@ def _reachable_from_entry(mba: object, qty: int) -> set[int]:
 
 
 def _forward_reachable_within(
-    mba: object,
+    flow_graph: FlowGraph,
     *,
     seeds: set[int],
     universe: set[int],
@@ -89,7 +102,7 @@ def _forward_reachable_within(
         if serial in visited or serial < 0 or serial >= qty:
             continue
         visited.add(serial)
-        blk = mba.get_mblock(serial)
+        blk = flow_graph.blocks.get(serial)
         if blk is None:
             continue
         for succ in _block_successors(blk):
@@ -99,7 +112,7 @@ def _forward_reachable_within(
 
 
 def _dispatcher_component(
-    mba: object,
+    flow_graph: FlowGraph,
     *,
     dispatcher_serial: int,
     unreachable: set[int],
@@ -113,7 +126,7 @@ def _dispatcher_component(
         if serial in component or serial not in unreachable:
             continue
         component.add(serial)
-        blk = mba.get_mblock(serial)
+        blk = flow_graph.blocks.get(serial)
         if blk is None:
             continue
         for succ in _block_successors(blk):
@@ -125,11 +138,11 @@ def _dispatcher_component(
         serial = backward_queue.pop()
         if serial < 0 or serial >= qty:
             continue
-        blk = mba.get_mblock(serial)
+        blk = flow_graph.blocks.get(serial)
         if blk is None:
             continue
-        for i in range(int(blk.npred())):
-            pred = int(blk.pred(i))
+        for pred_serial in blk.preds:
+            pred = int(pred_serial)
             if pred in unreachable and pred not in component:
                 component.add(pred)
                 backward_queue.append(pred)
@@ -139,18 +152,18 @@ def _dispatcher_component(
 
 
 def discover_dispatcher_residue_cleanup_facts(
-    mba: object,
+    flow_graph: FlowGraph,
     *,
     dispatcher_region: object,
     dispatcher_serial: int,
 ) -> DispatcherResidueCleanupFacts:
-    """Classify dispatcher-residue cleanup edges without mutating MBA."""
+    """Classify dispatcher-residue cleanup edges over a portable FlowGraph."""
 
     dispatcher_serial = int(dispatcher_serial)
     dispatcher_serials = {int(serial) for serial in (dispatcher_region or ())}
     dispatcher_serials.add(dispatcher_serial)
 
-    disp_blk = mba.get_mblock(dispatcher_serial)
+    disp_blk = flow_graph.blocks.get(dispatcher_serial)
     if disp_blk is None:
         return DispatcherResidueCleanupFacts(
             dispatcher_serial=dispatcher_serial,
@@ -161,17 +174,15 @@ def discover_dispatcher_residue_cleanup_facts(
             dispatcher_outgoing_successors=(),
         )
 
-    dispatcher_predecessors = tuple(
-        int(disp_blk.pred(i)) for i in range(int(disp_blk.npred()))
-    )
+    dispatcher_predecessors = tuple(int(pred) for pred in disp_blk.preds)
     dispatcher_outgoing_successors = _block_successors(disp_blk)
 
     one_way: list[int] = []
     two_way: list[DispatcherResidueTwoWayPredecessorFact] = []
-    for serial in range(int(getattr(mba, "qty", 0) or 0)):
+    for serial in range(_qty(flow_graph)):
         if serial in dispatcher_serials:
             continue
-        blk = mba.get_mblock(serial)
+        blk = flow_graph.blocks.get(serial)
         if blk is None:
             continue
         succs = _block_successors(blk)
@@ -198,7 +209,7 @@ def discover_dispatcher_residue_cleanup_facts(
 
 
 def discover_unreachable_region_cleanup_facts(
-    mba: object,
+    flow_graph: FlowGraph | None,
     *,
     dispatcher_serial: int,
     dispatcher_region: set[int],
@@ -207,7 +218,7 @@ def discover_unreachable_region_cleanup_facts(
 ) -> UnreachableRegionCleanupFacts:
     """Classify unreachable blocks after dispatcher cleanup."""
 
-    qty = int(getattr(mba, "qty", 0) or 0) if mba is not None else 0
+    qty = _qty(flow_graph) if flow_graph is not None else 0
     dispatcher_serial = int(dispatcher_serial)
     stop_serial = int(stop_serial)
     if qty <= 1:
@@ -224,7 +235,7 @@ def discover_unreachable_region_cleanup_facts(
             forward_redirects=(),
         )
 
-    reachable = _reachable_from_entry(mba, qty)
+    reachable = _reachable_from_entry(flow_graph, qty)
     unreachable = {
         serial for serial in range(qty) if serial not in reachable and serial != stop_serial
     }
@@ -234,7 +245,7 @@ def discover_unreachable_region_cleanup_facts(
     if reconstruction_live:
         corridor_seeds = set(reconstruction_live) & unreachable
         protected = _forward_reachable_within(
-            mba,
+            flow_graph,
             seeds=corridor_seeds,
             universe=unreachable,
             qty=qty,
@@ -242,7 +253,7 @@ def discover_unreachable_region_cleanup_facts(
         unreachable -= protected
 
     dispatcher_component = _dispatcher_component(
-        mba,
+        flow_graph,
         dispatcher_serial=dispatcher_serial,
         unreachable=unreachable,
         dispatcher_region={int(serial) for serial in dispatcher_region},
@@ -254,7 +265,7 @@ def discover_unreachable_region_cleanup_facts(
 
     blocks: list[UnreachableRegionBlockFact] = []
     for serial in sorted(cleanup_candidates):
-        blk = mba.get_mblock(serial)
+        blk = flow_graph.blocks.get(serial)
         if blk is None:
             continue
         succs = _block_successors(blk)
