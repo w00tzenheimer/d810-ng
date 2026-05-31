@@ -179,31 +179,6 @@ def _guard_for_block(block: _BlockView) -> _GuardView | None:
 
 def _block_metadata(target: Any) -> dict[int, tuple[int | None, tuple[int, ...], tuple[int, ...]]]:
     metadata: dict[int, tuple[int | None, tuple[int, ...], tuple[int, ...]]] = {}
-    if hasattr(target, "qty") and hasattr(target, "get_mblock"):
-        qty = int(getattr(target, "qty", 0) or 0)
-        for block_index in range(qty):
-            blk = target.get_mblock(block_index)
-            if blk is None:
-                continue
-            serial = int(getattr(blk, "serial", block_index))
-            start_ea = getattr(blk, "start", None)
-            if start_ea is None:
-                start_ea = getattr(blk, "start_ea", None)
-            try:
-                succs = tuple(int(blk.succ(i)) for i in range(int(blk.nsucc())))
-            except Exception:
-                succs = ()
-            try:
-                preds = tuple(int(blk.pred(i)) for i in range(int(blk.npred())))
-            except Exception:
-                preds = ()
-            metadata[serial] = (
-                int(start_ea) if start_ea is not None else None,
-                succs,
-                preds,
-            )
-        return metadata
-
     blocks = getattr(target, "blocks", target)
     block_iter = blocks.values() if isinstance(blocks, Mapping) else blocks
     for blk in block_iter:
