@@ -35,6 +35,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from d810.capabilities.providers import get_bst_walkers
 from d810.ir.flowgraph import InsnKind, OperandKind
 
 # Loop-bound mask values seen on OLLVM-style flattened functions where the
@@ -311,7 +312,7 @@ def detect_loop_bound_writer_redirect(
         return None
 
     try:
-        source_blk = mba.get_mblock(int(source_block_serial))
+        source_blk = get_bst_walkers().get_block(mba, int(source_block_serial))
     except Exception:
         return None
     if source_blk is None:
@@ -343,7 +344,7 @@ def detect_loop_bound_writer_redirect(
         if i == src_serial_int:
             continue
         try:
-            blk = mba.get_mblock(i)
+            blk = get_bst_walkers().get_block(mba, i)
         except Exception:
             continue
         if blk is None:
@@ -357,7 +358,7 @@ def detect_loop_bound_writer_redirect(
     # other operand having ``counter + small_const`` shape.
     for i in range(qty):
         try:
-            blk = mba.get_mblock(i)
+            blk = get_bst_walkers().get_block(mba, i)
         except Exception:
             continue
         if blk is None:
@@ -533,7 +534,7 @@ def detect_loop_counter_writeback_tail(
         return None
 
     try:
-        tail_blk = mba.get_mblock(int(tail_block_serial))
+        tail_blk = get_bst_walkers().get_block(mba, int(tail_block_serial))
     except Exception:
         return None
     if tail_blk is None:
@@ -556,7 +557,7 @@ def detect_loop_counter_writeback_tail(
     bound_stkoff: int | None = None
     for i in range(qty):
         try:
-            blk = mba.get_mblock(i)
+            blk = get_bst_walkers().get_block(mba, i)
         except Exception:
             continue
         if blk is None:
@@ -603,7 +604,7 @@ def detect_loop_counter_writeback_tail(
     advance_ea: int | None = None
     for i in range(qty):
         try:
-            blk = mba.get_mblock(i)
+            blk = get_bst_walkers().get_block(mba, i)
         except Exception:
             continue
         if blk is None:
@@ -673,7 +674,7 @@ def collect_const_var_refs_in_block(
     if serial < 0 or serial >= qty:
         return frozenset()
     try:
-        blk = mba.get_mblock(serial)
+        blk = get_bst_walkers().get_block(mba, serial)
     except Exception:
         return frozenset()
     if blk is None:
