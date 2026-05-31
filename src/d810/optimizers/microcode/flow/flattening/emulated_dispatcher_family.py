@@ -107,7 +107,7 @@ from d810.analyses.control_flow.dispatcher_discovery_facts import (
 from d810.backends.hexrays.evidence.flattening.dynamic_state_transition_recovery import (
     recover_dynamic_state_write_transitions,
 )
-from d810.optimizers.microcode.flow.dispatcher.equality_chain import (
+from d810.backends.hexrays.evidence.dispatcher.equality_chain import (
     extract_state_dispatcher_map_from_hexrays_mba as extract_state_dispatcher_map_from_mba,
 )
 from d810.analyses.control_flow.entry_island_rescue_discovery import (
