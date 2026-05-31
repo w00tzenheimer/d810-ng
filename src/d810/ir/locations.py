@@ -22,6 +22,7 @@ __all__ = [
     "RegisterLocation",
     "StackSlot",
     "StorageLocation",
+    "WeakStackSlot",
 ]
 
 
@@ -54,11 +55,27 @@ class MemoryCell:
 
 
 @dataclass(frozen=True)
+class WeakStackSlot:
+    """A stack-relative location whose concrete offset could not be recovered.
+
+    The LiSA-style *weak identifier*: a may-write to *some* stack slot, used
+    when an analysis legitimately accepts a stkvar write on an unknown offset
+    (e.g. a trampoline copy of the return slot).  Kept distinct from
+    :class:`StackSlot` so ``StackSlot.offset`` stays a concrete ``int`` and the
+    imprecision is explicit at every reader, never a silent ``offset=None``.
+    """
+
+    size: int = 0
+
+
+@dataclass(frozen=True)
 class AggregateLocation:
     """A composite location spanning ordered member locations (struct / array)."""
 
     members: tuple["StorageLocation", ...] = ()
 
 
-StorageLocation = Union[StackSlot, RegisterLocation, MemoryCell, AggregateLocation]
+StorageLocation = Union[
+    StackSlot, RegisterLocation, MemoryCell, WeakStackSlot, AggregateLocation
+]
 """Closed union of the concrete storage-location families."""

@@ -45,6 +45,10 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
+from d810.ir.expressions import Move
+from d810.ir.insn_projection import project_assignment
+from d810.ir.locations import RegisterLocation, StackSlot, WeakStackSlot
+from d810.ir.value_refs import DefinitionRef
 from d810.core import logging
 from d810.analyses.control_flow.return_frontier_artifacts import (
     ReturnFrontierArtifactKind,
@@ -210,19 +214,37 @@ def _is_trivial_copy(
 ) -> bool:
     """True iff the insn is a pure trampoline copy (stkvar->reg or
     reg->stkvar of the return slot).  Walker treats these as transparent
-    so it can find the upstream computation."""
-    if insn.kind is not InsnKind.MOV:
+    so it can find the upstream computation.
+
+    Reads the portable projected assignment (llr-lxas): a MOV whose endpoints
+    are a register and a stack slot, where the stack slot is the return slot or
+    an unrecovered ``WeakStackSlot`` (the accept-on-unknown case is now explicit
+    in the location type instead of a vendor ``stkoff is None`` check).
+    """
+    assignment = project_assignment(insn)
+    if (
+        assignment is None
+        or assignment.target is None
+        or not isinstance(assignment.value, Move)
+    ):
         return False
-    src = insn.l
-    dst = insn.d
-    if src is None or dst is None:
+    source = assignment.value.source
+    if not isinstance(source, DefinitionRef):
         return False
-    if _is_stack_mop(src) and _is_register_mop(dst):
-        if src.stkoff is None or int(src.stkoff) == int(return_stkoff):
+    src_loc = source.location
+    dst_loc = assignment.target.location
+    # stkvar -> reg
+    if isinstance(dst_loc, RegisterLocation):
+        if isinstance(src_loc, WeakStackSlot):
             return True
-    if _is_register_mop(src) and _is_stack_mop(dst):
-        if dst.stkoff is None or int(dst.stkoff) == int(return_stkoff):
+        if isinstance(src_loc, StackSlot):
+            return src_loc.offset == int(return_stkoff)
+    # reg -> stkvar
+    if isinstance(src_loc, RegisterLocation):
+        if isinstance(dst_loc, WeakStackSlot):
             return True
+        if isinstance(dst_loc, StackSlot):
+            return dst_loc.offset == int(return_stkoff)
     return False
 
 
