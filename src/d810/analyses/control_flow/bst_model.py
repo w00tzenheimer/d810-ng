@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from dataclasses import field
 from d810.core.typing import Dict
@@ -8,6 +9,7 @@ from d810.core.typing import Optional
 from d810.core.typing import Set
 from d810.core.typing import Tuple
 from d810.analyses.control_flow.interval_map import IntervalDispatcher
+from d810.ir.flowgraph import FlowGraph
 
 
 @dataclass(frozen=True)
@@ -247,7 +249,7 @@ def resolve_redirectable_handler_target(
     bst_result: BSTAnalysisResult,
     state_value: int,
     augmented_exits: Set[int] | None = None,
-    mba: object | None = None,
+    flow_graph: FlowGraph | None = None,
     dispatcher_serial: int = -1,
 ) -> Optional[int]:
     """Resolve a state value to a redirectable handler target.
@@ -257,7 +259,7 @@ def resolve_redirectable_handler_target(
     a handler entry (safe to redirect to) vs an exit/return path
     (unsafe to redirect to).
 
-    When *mba* and *dispatcher_serial* are provided, a forward BFS
+    When *flow_graph* and *dispatcher_serial* are provided, a forward BFS
     terminal proof is applied: if the resolved target handler
     inevitably reaches return/epilogue without re-entering the
     dispatcher or BST, the state is classified as an exit and
@@ -268,10 +270,10 @@ def resolve_redirectable_handler_target(
         state_value: concrete state value to resolve
         augmented_exits: additional exit states discovered by
             fallback strategies (e.g., backward-pred, valrange)
-        mba: microcode block array for forward terminal proof
+        flow_graph: portable FlowGraph for the forward terminal proof
             (optional; skipped when ``None``)
         dispatcher_serial: serial of the dispatcher block
-            (required when *mba* is provided, ignored otherwise)
+            (required when *flow_graph* is provided, ignored otherwise)
 
     Returns:
         Handler serial if safe to redirect, None if exit/default/unknown
@@ -291,9 +293,9 @@ def resolve_redirectable_handler_target(
 
     # Forward terminal proof: if the resolved target handler
     # inevitably reaches return/epilogue, it's an exit — don't redirect
-    if mba is not None and dispatcher_serial >= 0:
+    if flow_graph is not None and dispatcher_serial >= 0:
         bst_blocks = set(bst_result.bst_node_blocks) if bst_result.bst_node_blocks else set()
-        if is_terminal_handler(mba, target, dispatcher_serial, bst_blocks):
+        if is_terminal_handler(flow_graph, target, dispatcher_serial, bst_blocks):
             # Augment exits with this discovery for future lookups
             if augmented_exits is not None:
                 augmented_exits.add(state_value)
@@ -303,7 +305,7 @@ def resolve_redirectable_handler_target(
 
 
 def is_terminal_handler(
-    mba: object,
+    flow_graph: FlowGraph,
     entry_serial: int,
     dispatcher_serial: int,
     bst_blocks: set[int],
@@ -314,24 +316,22 @@ def is_terminal_handler(
     Returns True if ALL paths from entry_serial lead to no-successor
     blocks without going through the dispatcher or BST.
     """
-    from collections import deque
-
     queue: deque[int] = deque([entry_serial])
     visited: set[int] = {entry_serial}
     depth = 0
+    qty = (max(flow_graph.blocks) + 1) if flow_graph.blocks else 0
 
     while queue and depth < max_depth:
         depth += 1
         s = queue.popleft()
-        if s >= mba.qty:
+        if s >= qty:
             continue
-        blk = mba.get_mblock(s)
+        blk = flow_graph.blocks.get(s)
         if blk is None:
             continue
-        if blk.nsucc() == 0:
+        if blk.nsucc == 0:
             continue  # terminal leaf — OK
-        for i in range(blk.nsucc()):
-            succ = blk.succ(i)
+        for succ in blk.succs:
             if succ == dispatcher_serial or succ in bst_blocks:
                 return False  # reaches dispatcher/BST — NOT terminal
             if succ not in visited:
