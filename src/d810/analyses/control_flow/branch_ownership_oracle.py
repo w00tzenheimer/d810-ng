@@ -12,6 +12,7 @@ from enum import Enum
 import re
 
 from d810.core.typing import Callable
+from d810.capabilities.providers import get_bst_walkers
 from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipProof,
     BranchOwnershipProofKind,
@@ -222,7 +223,7 @@ class MopTrackerBranchOwnershipOracle:
         if self._mba is None:
             return None
         try:
-            return self._mba.get_mblock(int(serial))
+            return get_bst_walkers().get_block(self._mba, int(serial))
         except Exception:
             return None
 
@@ -385,7 +386,7 @@ class OllvmCarrierBranchOwnershipOracle:
         if self._mba is None:
             return None
         try:
-            return self._mba.get_mblock(int(serial))
+            return get_bst_walkers().get_block(self._mba, int(serial))
         except Exception:
             return None
 
@@ -484,7 +485,7 @@ class Z3BranchOwnershipOracle:
         if self._mba is None:
             return None
         try:
-            return self._mba.get_mblock(int(serial))
+            return get_bst_walkers().get_block(self._mba, int(serial))
         except Exception:
             return None
 
@@ -850,7 +851,7 @@ def _iter_mba_instruction_texts(mba: object | None) -> tuple[str, ...]:
     texts: list[str] = []
     for serial in range(max(0, qty)):
         try:
-            block = mba.get_mblock(int(serial))
+            block = get_bst_walkers().get_block(mba, int(serial))
         except Exception:
             continue
         if block is None:
@@ -910,7 +911,7 @@ def _resolve_mop_value(
         serial = getattr(tail, "block_serial", None)
         if serial is not None:
             try:
-                block = mba.get_mblock(int(serial))
+                block = get_bst_walkers().get_block(mba, int(serial))
             except Exception:
                 block = None
     if block is None:
@@ -940,7 +941,7 @@ def _resolve_mop_value(
         must_use_pred = None
         if via_pred is not None and mba is not None:
             try:
-                must_use_pred = mba.get_mblock(int(via_pred))
+                must_use_pred = get_bst_walkers().get_block(mba, int(via_pred))
             except Exception:
                 must_use_pred = None
         histories = tracker.search_backward(
@@ -1198,7 +1199,7 @@ def _discarded_corridor_side_effect_reason(
             continue
         visited.add(serial)
         try:
-            block = mba.get_mblock(int(serial))
+            block = get_bst_walkers().get_block(mba, int(serial))
         except Exception:
             return "discarded_block_unavailable"
         if block is None:
@@ -1218,9 +1219,13 @@ def _discarded_corridor_side_effect_reason(
             return "discarded_successors_unknown"
         if nsucc > 2:
             return "discarded_successors_not_local_corridor"
+        try:
+            succs = get_bst_walkers().block_successors(block)
+        except Exception:
+            return "discarded_successor_unavailable"
         for idx in range(nsucc):
             try:
-                succ = int(block.succ(idx))
+                succ = int(succs[idx])
             except Exception:
                 return "discarded_successor_unavailable"
             if succ not in visited:
