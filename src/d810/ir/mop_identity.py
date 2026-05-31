@@ -5,6 +5,15 @@ dispatcher-state analyses -- they replaced the live-IDA operand-keying
 methods from the retired dispatcher-analysis owner. Portable analyses no
 longer need a live ``ida_hexrays.mop_t`` to key operands.
 
+This is the *Identifier* layer (LiSA-style abstract location id / LLVM
+Value-identity / VEX guest-offset): a size-AGNOSTIC, kind-prefixed key over
+register / stack / global / lvar operands.  It is deliberately distinct from
+the syntactic operand-expression layer (``d810.ir.statements`` /
+``d810.ir.expressions``): an audit (llr-lxas) confirmed that re-keying off a
+size-aware ``DefinitionRef(StackSlot(off, size))`` would split one state
+variable accessed at multiple widths and would drop lvar / nested operands.
+Keep identity and expression separate; both are already portable.
+
 E2a slice of ``docs/plans/recon-portability-end-state.md``: snapshot
 gap closure for the dispatcher state-variable port.  E3-rewire
 landed the pure ``analyze_dispatcher(flow_graph)`` consumer; these
