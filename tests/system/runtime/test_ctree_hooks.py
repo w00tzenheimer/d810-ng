@@ -39,7 +39,7 @@ class TestCtreeOptimizationRuleRegistration:
     def test_noop_counter_is_registered(self):
         """NoopCtreeCounter should auto-register when imported."""
         # Force import to trigger registration
-        from d810.optimizers.ctree.noop_counter import NoopCtreeCounter  # noqa: F401
+        from d810.backends.hexrays.evidence.noop_counter import NoopCtreeCounter  # noqa: F401
 
         # Registry uses normalize_key(keyof(cls)) which is cls.__name__.lower()
         key = CtreeOptimizationRule.normalize_key(
@@ -49,7 +49,7 @@ class TestCtreeOptimizationRuleRegistration:
         assert CtreeOptimizationRule.registry[key] is NoopCtreeCounter
 
     def test_noop_counter_returns_zero(self):
-        from d810.optimizers.ctree.noop_counter import NoopCtreeCounter
+        from d810.backends.hexrays.evidence.noop_counter import NoopCtreeCounter
 
         rule = NoopCtreeCounter()
         assert rule.name == "noop_ctree_counter"
