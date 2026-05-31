@@ -453,6 +453,11 @@ def classify_exit_state(
     if incoming_state is not None and masked == (incoming_state & 0xFFFFFFFF):
         return ExitStateKind.SELF_LOOP
 
+    # Block topology via the backend seam: ``mba`` is an opaque live ``mba_t``
+    # or a ``_FlowGraphMBAView`` projection; the seam makes the identical
+    # ``get_mblock``/``nsucc``/``succ`` calls from the backend layer so portable
+    # code holds no live-MBA method coupling (ticket llr-zeyu).
+    walkers = get_bst_walkers()
     serial = successor_serial
     visited: set[int] = set()
     try:
@@ -463,7 +468,7 @@ def classify_exit_state(
         if serial in visited or serial >= mba_qty:
             break
         visited.add(serial)
-        blk = mba.get_mblock(serial)
+        blk = walkers.get_block(mba, serial)
 
         # Note: no merge-point guard here.  OLLVM handler entries have
         # npred > 1 from BST routing + shared suffix flows.  The
@@ -509,7 +514,8 @@ def classify_exit_state(
             insn = insn.next
 
         # Check successor structure.
-        nsucc = blk.nsucc()
+        succs = walkers.block_successors(blk)
+        nsucc = len(succs)
         if nsucc == 0:
             # Terminal block.
             return ExitStateKind.TERMINAL
@@ -517,7 +523,7 @@ def classify_exit_state(
             # Branch → real handler body with conditionals.
             return ExitStateKind.STABLE_HANDOFF
 
-        next_serial = blk.succ(0)
+        next_serial = succs[0]
         if next_serial in bst_node_blocks:
             # Re-enters dispatcher → stable handoff (state will be consumed by BST).
             return ExitStateKind.BST_REENTRY
@@ -1620,6 +1626,11 @@ def evaluate_handler_paths(
         ),
     ]
 
+    # Block topology via the backend seam (see classify_exit_state); ``mba`` is
+    # a live ``mba_t`` or ``_FlowGraphMBAView`` -- behaviour is identical for
+    # both (ticket llr-zeyu).
+    walkers = get_bst_walkers()
+
     while queue:
         curr_serial, reg_map, stk_map, path_visited, state_writes, ordered_path = (
             queue.pop()
@@ -1632,7 +1643,7 @@ def evaluate_handler_paths(
         if curr_serial >= mba.qty:
             break
 
-        blk = mba.get_mblock(curr_serial)
+        blk = walkers.get_block(mba, curr_serial)
 
         cur_writes = list(state_writes)
         insn = blk.head
@@ -1650,7 +1661,7 @@ def evaluate_handler_paths(
                 cur_writes.append((curr_serial, insn.ea))
             insn = insn.next
 
-        succs = [blk.succ(i) for i in range(blk.nsucc())]
+        succs = list(walkers.block_successors(blk))
 
         snapshot_state_resolved = False
         snapshot_final_state: int | None = None
