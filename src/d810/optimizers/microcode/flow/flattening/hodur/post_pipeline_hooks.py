@@ -4,8 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import ida_hexrays
-
+from d810.capabilities.providers import get_microcode_evidence
 from d810.core.typing import Callable
 from d810.core import logging
 from d810.optimizers.microcode.flow.flattening.engine.provenance import (
@@ -36,7 +35,6 @@ from d810.backends.hexrays.evidence.dispatcher.return_frontier_carrier_audit imp
 from d810.passes.function_priors import FunctionAnalysisPriors
 
 unflat_logger = logging.getLogger("D810.unflat.hodur", logging.DEBUG)
-MBL_KEEP = getattr(ida_hexrays, "MBL_KEEP", 0x10000)
 
 
 class HodurPostPipelineHooks:
@@ -262,7 +260,7 @@ class HodurPostPipelineHooks:
         state_var = getattr(snapshot.state_machine, "state_var", None)
         if (
             state_var is not None
-            and state_var.t == ida_hexrays.mop_S
+            and state_var.t == get_microcode_evidence().microcode_constants(owner.mba).mop_S
             and snapshot.bst_result is not None
         ):
             owner._diagnostic_backward_scan(
@@ -322,20 +320,21 @@ class HodurPostPipelineHooks:
             )
             from d810.core.observability_recon import observe_reachability
 
+            evidence = get_microcode_evidence()
+            qty = evidence.get_block_count(owner.mba)
+            adjacency = evidence.block_adjacency(owner.mba, qty)
             diag_visited: set[int] = set()
             diag_queue: list[int] = [0]
             while diag_queue:
                 serial = diag_queue.pop(0)
-                if serial in diag_visited or serial < 0 or serial >= owner.mba.qty:
+                if serial in diag_visited or serial < 0 or serial >= qty:
                     continue
                 diag_visited.add(serial)
-                block = owner.mba.get_mblock(serial)
-                if block is not None:
-                    for index in range(block.nsucc()):
-                        diag_queue.append(block.succ(index))
+                for index in adjacency.get(serial, ()):
+                    diag_queue.append(index)
 
-            all_serials = set(range(owner.mba.qty))
-            gutted_serials = all_serials - diag_visited - {owner.mba.qty - 1}
+            all_serials = set(range(qty))
+            gutted_serials = all_serials - diag_visited - {qty - 1}
             claimed: set[int] = set()
             for result in results:
                 claimed_sources = result.metadata.get("claimed_sources")
@@ -345,7 +344,7 @@ class HodurPostPipelineHooks:
             snap = request_capture_mba_snapshot(
                 blocks=mba_to_block_snapshots(owner.mba),
                 label="post_gut_and_wire",
-                func_ea=owner.mba.entry_ea,
+                func_ea=evidence.get_function_entry_ea(owner.mba),
                 maturity="MMAT_GLBOPT1",
                 phase="post_gut_wire",
             )
@@ -376,18 +375,26 @@ class HodurPostPipelineHooks:
         if not self._post_apply_hook_enabled("dispatcher_residue_cache"):
             return
         if dead_cleanup_applied == 0:
+            evidence = get_microcode_evidence()
             owner._last_bst_serials = bst_serials
             owner._last_dispatcher_serial = snapshot.bst_dispatcher_serial
-            owner._last_func_ea = owner.mba.entry_ea
+            owner._last_func_ea = evidence.get_function_entry_ea(owner.mba)
             owner._last_bst_block_eas = set()
             for serial in bst_serials:
-                block = owner.mba.get_mblock(serial)
+                block = evidence.get_block_by_serial(owner.mba, serial)
                 if block is not None:
-                    owner._last_bst_block_eas.add(block.start)
+                    owner._last_bst_block_eas.add(evidence.get_block_start_ea(block))
             owner._last_dispatcher_ea = (
-                owner.mba.get_mblock(snapshot.bst_dispatcher_serial).start
+                evidence.get_block_start_ea(
+                    evidence.get_block_by_serial(
+                        owner.mba, snapshot.bst_dispatcher_serial
+                    )
+                )
                 if snapshot.bst_dispatcher_serial >= 0
-                and owner.mba.get_mblock(snapshot.bst_dispatcher_serial) is not None
+                and evidence.get_block_by_serial(
+                    owner.mba, snapshot.bst_dispatcher_serial
+                )
+                is not None
                 else 0
             )
         else:
@@ -438,7 +445,7 @@ class HodurPostPipelineHooks:
             try:
                 finalize_return_frontier_audit(
                     tuple(owner._audit_return_sites),
-                    func_ea=owner.mba.entry_ea,
+                    func_ea=get_microcode_evidence().get_function_entry_ea(owner.mba),
                     maturity=owner.cur_maturity,
                     log_dir=owner.log_dir,
                     artifact_dir=Path(f".tmp/recon/{owner.cur_maturity}"),
@@ -467,7 +474,7 @@ class HodurPostPipelineHooks:
                 function_priors = FunctionAnalysisPriors()
                 if owner.flow_context is not None:
                     function_priors = owner.flow_context.function_analysis_priors(
-                        owner.mba.entry_ea
+                        get_microcode_evidence().get_function_entry_ea(owner.mba)
                     )
                 audit_return_frontier_carriers(
                     mba=owner.mba,
@@ -518,14 +525,18 @@ class HodurPostPipelineHooks:
         if os.environ.get("D810_TAG_ALL_MBL_KEEP", "0") != "1":
             return
         try:
+            evidence = get_microcode_evidence()
+            mbl_keep = evidence.mbl_keep_flag(self.owner.mba)
             qty = int(getattr(self.owner.mba, "qty", 0) or 0)
             tagged = 0
             for serial in range(qty):
-                block = self.owner.mba.get_mblock(serial)
+                block = evidence.get_block_by_serial(self.owner.mba, serial)
                 if block is None:
                     continue
                 try:
-                    block.flags |= MBL_KEEP
+                    evidence.set_block_flags(
+                        block, evidence.get_block_flags(block) | mbl_keep
+                    )
                     tagged += 1
                 except Exception:
                     continue
@@ -610,7 +621,7 @@ class HodurPostPipelineHooks:
             function_priors = FunctionAnalysisPriors()
             if owner.flow_context is not None:
                 function_priors = owner.flow_context.function_analysis_priors(
-                    owner.mba.entry_ea
+                    get_microcode_evidence().get_function_entry_ea(owner.mba)
                 )
             impossible_return_artifact_edges = tuple(
                 function_priors
@@ -670,9 +681,10 @@ class HodurPostPipelineHooks:
         probe_blocks, probe_targets = owner._collect_post_apply_may_only_probe_blocks(
             pipeline, results
         )
+        entry_ea = get_microcode_evidence().get_function_entry_ea(owner.mba)
         sticky_entry_ea = getattr(owner, "_sticky_may_only_probe_entry_ea", None)
-        if sticky_entry_ea != owner.mba.entry_ea:
-            owner._sticky_may_only_probe_entry_ea = owner.mba.entry_ea
+        if sticky_entry_ea != entry_ea:
+            owner._sticky_may_only_probe_entry_ea = entry_ea
             owner._sticky_may_only_probe_blocks = set()
             owner._sticky_may_only_probe_targets = set()
         owner._sticky_may_only_probe_blocks.update(probe_blocks)
@@ -714,33 +726,38 @@ class HodurPostPipelineHooks:
     def _run_reachable_mbl_keep_hook(self) -> None:
         """Run the optional reachable-block MBL_KEEP experiment."""
         owner = self.owner
-        if not (owner.MBL_KEEP_ENABLED and owner.mba is not None and owner.mba.qty > 1):
+        evidence = get_microcode_evidence()
+        if not (
+            owner.MBL_KEEP_ENABLED
+            and owner.mba is not None
+            and evidence.get_block_count(owner.mba) > 1
+        ):
             return
+        mbl_keep = evidence.mbl_keep_flag(owner.mba)
+        qty = evidence.get_block_count(owner.mba)
+        adjacency = evidence.block_adjacency(owner.mba, qty)
         keep_visited: set[int] = set()
         keep_queue: list[int] = [0]
         while keep_queue:
             serial = keep_queue.pop()
-            if serial in keep_visited or serial < 0 or serial >= owner.mba.qty:
+            if serial in keep_visited or serial < 0 or serial >= qty:
                 continue
             keep_visited.add(serial)
-            block = owner.mba.get_mblock(serial)
-            if block is None:
-                continue
-            for index in range(block.nsucc()):
-                keep_queue.append(block.succ(index))
+            for index in adjacency.get(serial, ()):
+                keep_queue.append(index)
         kept_serials: list[int] = []
         for serial in sorted(keep_visited):
-            block = owner.mba.get_mblock(serial)
+            block = evidence.get_block_by_serial(owner.mba, serial)
             if block is None:
                 continue
-            pre_flags = int(block.flags)
-            block.flags |= ida_hexrays.MBL_KEEP
-            post_flags = int(block.flags)
+            pre_flags = evidence.get_block_flags(block)
+            evidence.set_block_flags(block, pre_flags | mbl_keep)
+            post_flags = evidence.get_block_flags(block)
             if pre_flags != post_flags:
                 kept_serials.append(serial)
                 unflat_logger.info(
                     "MBL_KEEP: blk[%d] flags 0x%05x -> 0x%05x (set MBL_KEEP=0x%05x)",
-                    serial, pre_flags, post_flags, ida_hexrays.MBL_KEEP,
+                    serial, pre_flags, post_flags, mbl_keep,
                 )
         unflat_logger.info(
             "MBL_KEEP: marked %d/%d reachable blocks (kept_serials=%s)",

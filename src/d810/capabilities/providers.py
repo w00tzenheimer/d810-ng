@@ -139,6 +139,20 @@ class MicrocodeEvidenceProvider:
     # block-then-instruction order, so the portable strategy only emits
     # ``promote_operand_to_scalar`` modifications.
     find_counter_hoist_candidates: Callable[..., Any]
+    # Single-block accessor + block-flag read/write seams.  ``get_block_by_serial``
+    # fetches one live block off the opaque object (byte-identical to
+    # ``mba.get_mblock(serial)``); ``get_block_flags`` / ``set_block_flags`` read
+    # and write its ``flags`` word (the ``int(blk.flags)`` read and
+    # ``blk.flags |= ...`` set the MBL_KEEP tagging hooks used inline), and
+    # ``get_block_start_ea`` returns ``blk.start``.  ``mbl_keep_flag`` returns the
+    # raw ``MBL_KEEP`` constant the hooks OR into the flags word.  The flag
+    # WRITE is the one mutating seam here; it is the byte-identical OR-in the
+    # post-pipeline MBL_KEEP hooks performed inline.
+    get_block_by_serial: Callable[..., Any]
+    get_block_flags: Callable[..., Any]
+    set_block_flags: Callable[..., Any]
+    get_block_start_ea: Callable[..., Any]
+    mbl_keep_flag: Callable[..., Any]
 
 
 _lock = threading.Lock()

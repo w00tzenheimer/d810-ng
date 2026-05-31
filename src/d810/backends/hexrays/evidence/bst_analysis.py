@@ -2357,6 +2357,35 @@ def _find_counter_hoist_candidates(
     return candidates
 
 
+def _get_block_by_serial(mba: Any, serial: int) -> object | None:
+    """Single live block off the opaque object. Byte-identical to ``mba.get_mblock(serial)``."""
+    return _get_block(mba, serial)
+
+
+def _get_block_flags(block: Any) -> int:
+    """Read the block flags word. Byte-identical to the inlined ``int(blk.flags)``."""
+    return int(block.flags)
+
+
+def _set_block_flags(block: Any, flags: int) -> None:
+    """Write the block flags word. Byte-identical to the inlined ``blk.flags = ...`` set."""
+    block.flags = flags
+
+
+def _get_block_start_ea(block: Any) -> int:
+    """Block start EA. Byte-identical to the inlined ``blk.start``."""
+    return block.start
+
+
+def _mbl_keep_flag(mba: Any = None) -> int:
+    """Return the raw ``MBL_KEEP`` constant the hooks OR into the flags word.
+
+    Byte-identical to the inlined ``getattr(ida_hexrays, "MBL_KEEP", 0x10000)``;
+    the ``mba`` argument is accepted for provider-call uniformity but unused.
+    """
+    return int(getattr(ida_hexrays, "MBL_KEEP", 0x10000))
+
+
 def build_microcode_evidence_provider() -> MicrocodeEvidenceProvider:
     """Bundle this backend's live microcode-evidence seams for the provider registry.
 
@@ -2376,6 +2405,11 @@ def build_microcode_evidence_provider() -> MicrocodeEvidenceProvider:
         mmat_zero=_mmat_zero,
         microcode_constants=_microcode_constants,
         find_counter_hoist_candidates=_find_counter_hoist_candidates,
+        get_block_by_serial=_get_block_by_serial,
+        get_block_flags=_get_block_flags,
+        set_block_flags=_set_block_flags,
+        get_block_start_ea=_get_block_start_ea,
+        mbl_keep_flag=_mbl_keep_flag,
     )
 
 
