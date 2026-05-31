@@ -7,9 +7,9 @@ and redirect to the nearest function exit or return block.
 """
 from __future__ import annotations
 
-import ida_hexrays
 from d810.core.typing import TYPE_CHECKING
 
+from d810.capabilities.providers import get_microcode_evidence
 from d810.core import logging
 from d810.ir.flowgraph import BlockSnapshot
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
@@ -105,6 +105,10 @@ class TerminalLoopCleanupStrategy:
         modifications: list = []
         owned_blocks: set[int] = set()
 
+        # Snapshot-only opcode / mop-type constants via the backend seam, so the
+        # helpers read tags off this bundle instead of importing ida_hexrays.
+        mc = get_microcode_evidence().microcode_constants(snapshot.mba)
+
         state_machine_blocks = collect_state_machine_blocks(sm)
         first_check_block = list(handlers.values())[0].check_block
 
@@ -114,7 +118,7 @@ class TerminalLoopCleanupStrategy:
             handlers=handlers,
             state_machine_blocks=state_machine_blocks,
             first_check_block=first_check_block,
-            ida_hexrays=ida_hexrays,
+            mc=mc,
             edits=modifications,
             owned_blocks=owned_blocks,
             builder=builder,
@@ -126,7 +130,7 @@ class TerminalLoopCleanupStrategy:
             sm=sm,
             state_machine_blocks=state_machine_blocks,
             first_check_block=first_check_block,
-            ida_hexrays=ida_hexrays,
+            mc=mc,
             edits=modifications,
             owned_blocks=owned_blocks,
             builder=builder,
@@ -137,7 +141,7 @@ class TerminalLoopCleanupStrategy:
         self._fix_degenerate_terminal_loops(
             handlers=handlers,
             state_machine_blocks=state_machine_blocks,
-            ida_hexrays=ida_hexrays,
+            mc=mc,
             edits=modifications,
             owned_blocks=owned_blocks,
             builder=builder,
@@ -176,7 +180,7 @@ class TerminalLoopCleanupStrategy:
         self,
         sm: object,
         flow_graph: object,
-        ida_hexrays: object,
+        mc: object,
     ) -> object | None:
         """Find the unique transition that loops back to the initial state.
 
@@ -208,18 +212,18 @@ class TerminalLoopCleanupStrategy:
         _sv_stkoff: int | None = None
         _sv_reg: int | None = None
         if _sv is not None:
-            if _sv_t == ida_hexrays.mop_S:
+            if _sv_t == mc.mop_S:
                 _s = getattr(_sv, "s", None)
                 _sv_stkoff = getattr(_s, "off", None) if _s is not None else None
-            elif _sv_t == ida_hexrays.mop_r:
+            elif _sv_t == mc.mop_r:
                 _sv_reg = getattr(_sv, "r", None)
 
         _state_check_opcodes: set[int] = {
-            ida_hexrays.m_jnz, ida_hexrays.m_jz,
-            ida_hexrays.m_jae, ida_hexrays.m_jb,
-            ida_hexrays.m_ja, ida_hexrays.m_jbe,
-            ida_hexrays.m_jg, ida_hexrays.m_jge,
-            ida_hexrays.m_jl, ida_hexrays.m_jle,
+            mc.m_jnz, mc.m_jz,
+            mc.m_jae, mc.m_jb,
+            mc.m_ja, mc.m_jbe,
+            mc.m_jg, mc.m_jge,
+            mc.m_jl, mc.m_jle,
         }
 
         if not self._is_lightweight_terminal_transition_snapshot(
@@ -228,13 +232,13 @@ class TerminalLoopCleanupStrategy:
             state_var_size=_sv_size,
             state_var_stkoff=_sv_stkoff,
             state_var_reg=_sv_reg,
-            m_mov=ida_hexrays.m_mov,
-            m_goto=ida_hexrays.m_goto,
-            m_nop=ida_hexrays.m_nop,
-            mop_z=ida_hexrays.mop_z,
-            mop_n=ida_hexrays.mop_n,
-            mop_S=ida_hexrays.mop_S,
-            mop_r=ida_hexrays.mop_r,
+            m_mov=mc.m_mov,
+            m_goto=mc.m_goto,
+            m_nop=mc.m_nop,
+            mop_z=mc.mop_z,
+            mop_n=mc.mop_n,
+            mop_S=mc.mop_S,
+            mop_r=mc.mop_r,
             state_check_opcodes=_state_check_opcodes,
         ):
             return None
@@ -367,7 +371,7 @@ class TerminalLoopCleanupStrategy:
         handlers: dict,
         state_machine_blocks: set[int],
         first_check_block: int,
-        ida_hexrays: object,
+        mc: object,
         edits: list,
         owned_blocks: set[int],
         builder: ModificationBuilder | None = None,
@@ -387,7 +391,7 @@ class TerminalLoopCleanupStrategy:
             sm=sm,
             state_machine_blocks=state_machine_blocks,
             first_check_block=first_check_block,
-            ida_hexrays=ida_hexrays,
+            mc=mc,
             edits=edits,
             owned_blocks=owned_blocks,
             builder=builder,
@@ -425,18 +429,18 @@ class TerminalLoopCleanupStrategy:
         _sv_stkoff: int | None = None
         _sv_reg: int | None = None
         if _sv is not None:
-            if _sv_t == ida_hexrays.mop_S:
+            if _sv_t == mc.mop_S:
                 _s = getattr(_sv, "s", None)
                 _sv_stkoff = getattr(_s, "off", None) if _s is not None else None
-            elif _sv_t == ida_hexrays.mop_r:
+            elif _sv_t == mc.mop_r:
                 _sv_reg = getattr(_sv, "r", None)
 
         _state_check_opcodes: set[int] = {
-            ida_hexrays.m_jnz, ida_hexrays.m_jz,
-            ida_hexrays.m_jae, ida_hexrays.m_jb,
-            ida_hexrays.m_ja, ida_hexrays.m_jbe,
-            ida_hexrays.m_jg, ida_hexrays.m_jge,
-            ida_hexrays.m_jl, ida_hexrays.m_jle,
+            mc.m_jnz, mc.m_jz,
+            mc.m_jae, mc.m_jb,
+            mc.m_ja, mc.m_jbe,
+            mc.m_jg, mc.m_jge,
+            mc.m_jl, mc.m_jle,
         }
 
         if not candidate_blocks:
@@ -452,13 +456,13 @@ class TerminalLoopCleanupStrategy:
                     state_var_size=_sv_size,
                     state_var_stkoff=_sv_stkoff,
                     state_var_reg=_sv_reg,
-                    m_mov=ida_hexrays.m_mov,
-                    m_goto=ida_hexrays.m_goto,
-                    m_nop=ida_hexrays.m_nop,
-                    mop_z=ida_hexrays.mop_z,
-                    mop_n=ida_hexrays.mop_n,
-                    mop_S=ida_hexrays.mop_S,
-                    mop_r=ida_hexrays.mop_r,
+                    m_mov=mc.m_mov,
+                    m_goto=mc.m_goto,
+                    m_nop=mc.m_nop,
+                    mop_z=mc.mop_z,
+                    mop_n=mc.mop_n,
+                    mop_S=mc.mop_S,
+                    mop_r=mc.mop_r,
                     state_check_opcodes=_state_check_opcodes,
                 ):
                     candidate_blocks.append(blk_serial)
@@ -502,7 +506,7 @@ class TerminalLoopCleanupStrategy:
         sm: object,
         state_machine_blocks: set[int],
         first_check_block: int,
-        ida_hexrays: object,
+        mc: object,
         edits: list,
         owned_blocks: set[int],
         builder: ModificationBuilder | None = None,
@@ -527,9 +531,9 @@ class TerminalLoopCleanupStrategy:
         jnz_target = None
         tail_insn = first_check_snap.tail
         if (
-            tail_insn.opcode == ida_hexrays.m_jnz
+            tail_insn.opcode == mc.m_jnz
             and tail_insn.d is not None
-            and tail_insn.d.t == ida_hexrays.mop_b
+            and tail_insn.d.t == mc.mop_b
         ):
             jnz_target = tail_insn.d.block_ref
 
@@ -554,10 +558,10 @@ class TerminalLoopCleanupStrategy:
                 continue
             if blk_serial <= first_check_block:
                 continue
-            if blk_snap.tail is None or blk_snap.tail.opcode != ida_hexrays.m_goto:
+            if blk_snap.tail is None or blk_snap.tail.opcode != mc.m_goto:
                 continue
             blk_tail_l = blk_snap.tail.l
-            if blk_tail_l is None or blk_tail_l.t != ida_hexrays.mop_b or blk_tail_l.block_ref != first_check_block:
+            if blk_tail_l is None or blk_tail_l.t != mc.mop_b or blk_tail_l.block_ref != first_check_block:
                 continue
 
             edits.append(
@@ -575,7 +579,7 @@ class TerminalLoopCleanupStrategy:
         self,
         handlers: dict,
         state_machine_blocks: set[int],
-        ida_hexrays: object,
+        mc: object,
         edits: list,
         owned_blocks: set[int],
         builder: ModificationBuilder | None = None,
@@ -600,8 +604,8 @@ class TerminalLoopCleanupStrategy:
             flow_graph, state_machine_blocks, depth=4,
         )
 
-        m_nop = ida_hexrays.m_nop
-        m_goto = ida_hexrays.m_goto
+        m_nop = mc.m_nop
+        m_goto = mc.m_goto
 
         for blk_serial in sorted(candidate_blocks):
             blk_snap = flow_graph.get_block(blk_serial)
