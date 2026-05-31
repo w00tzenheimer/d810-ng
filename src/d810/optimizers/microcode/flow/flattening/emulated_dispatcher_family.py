@@ -1356,7 +1356,7 @@ def _tigress_switch_case_transition_facts(
     profile_name: str,
 ) -> tuple[object, ...]:
     try:
-        from d810.optimizers.microcode.flow.dispatcher.switch_case_transitions import (
+        from d810.backends.hexrays.evidence.dispatcher.switch_case_transitions import (
             collect_switch_case_transition_facts_from_mba,
         )
 

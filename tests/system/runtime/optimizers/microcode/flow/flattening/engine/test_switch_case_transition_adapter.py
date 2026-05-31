@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
-from d810.optimizers.microcode.flow.dispatcher.switch_case_transitions import (
+from d810.backends.hexrays.evidence.dispatcher.switch_case_transitions import (
     collect_switch_case_transition_facts_from_mba,
 )
 from d810.analyses.control_flow.branch_ownership import BranchOwnershipProofKind
