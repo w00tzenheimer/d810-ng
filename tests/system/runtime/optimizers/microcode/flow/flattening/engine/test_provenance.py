@@ -13,7 +13,6 @@ from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     PipelineProvenance,
     PlannerInputs,
 )
-from d810.optimizers.microcode.flow.flattening.hodur import provenance as hodur_provenance
 
 
 class _Audit:
@@ -24,11 +23,6 @@ class _Audit:
 def test_engine_package_re_exports_provenance_types() -> None:
     assert engine.PipelineProvenance is PipelineProvenance
     assert engine.PlannerInputs is PlannerInputs
-
-
-def test_hodur_provenance_shim_points_to_engine_types() -> None:
-    assert hodur_provenance.PipelineProvenance is PipelineProvenance
-    assert hodur_provenance.DecisionRecord is DecisionRecord
 
 
 def test_planner_inputs_builds_input_summary() -> None:
