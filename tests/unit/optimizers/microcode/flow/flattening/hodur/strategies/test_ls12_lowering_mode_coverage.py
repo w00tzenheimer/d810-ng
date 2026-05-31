@@ -12,14 +12,6 @@ from __future__ import annotations
 
 import pytest
 
-# IDA-dependent collection guard: the strategy + ``prototypes`` bridge imports
-# below transitively ``import ida_hexrays`` (the bridge lives in the IDA-coupled
-# ``optimizers/microcode`` layer, where a top-level IDA import is correct and a
-# lazy import is disallowed). Skip cleanly when IDA is absent so this file does
-# not break the no-IDA ``pytest tests/unit/`` collection -- the cold-import
-# failure is ``ModuleNotFoundError: ida_hexrays``, NOT the cycle noted below.
-pytest.importorskip("ida_hexrays")
-
 # NOTE: import the ``strategies`` package modules BEFORE the ``prototypes`` bridge.
 # ``prototypes`` and ``strategies`` form a (pre-existing) bidirectional import
 # cycle that only errors when ``prototypes`` is the COLD entry point; loading a
