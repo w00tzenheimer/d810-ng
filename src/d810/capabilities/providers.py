@@ -88,9 +88,12 @@ class MicrocodeEvidenceProvider:
     # GLBOPT1 maturity gate seams.  ``is_glbopt1`` answers the ``mba.maturity ==
     # ida_hexrays.MMAT_GLBOPT1`` predicate; ``glbopt1_maturity`` returns the raw
     # ``MMAT_GLBOPT1`` constant for callers that pass it as an allowed-maturity
-    # value rather than testing it.
+    # value rather than testing it.  ``mmat_zero`` returns the raw ``MMAT_ZERO``
+    # constant used as the ``getattr(mba, "maturity", <default>)`` fallback when
+    # a caller must stay byte-identical for an opaque object missing ``maturity``.
     is_glbopt1: Callable[..., Any]
     glbopt1_maturity: Callable[..., Any]
+    mmat_zero: Callable[..., Any]
 
 
 _lock = threading.Lock()

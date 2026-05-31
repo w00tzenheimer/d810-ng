@@ -29,6 +29,7 @@ def test_register_and_get_roundtrip():
         block_adjacency=lambda mba, qty: {},
         is_glbopt1=lambda mba: int(mba.maturity) == 8,
         glbopt1_maturity=lambda mba: 8,
+        mmat_zero=lambda mba: 0,
     )
     P.register_microcode_evidence(prov)
     got = P.get_microcode_evidence()
@@ -42,6 +43,7 @@ def test_register_and_get_roundtrip():
     assert got.block_adjacency(fake, 3) == {}
     assert got.is_glbopt1(fake) is True
     assert got.glbopt1_maturity(fake) == 8
+    assert got.mmat_zero(fake) == 0
 
 
 def test_reset_clears_microcode_evidence():
@@ -53,6 +55,7 @@ def test_reset_clears_microcode_evidence():
             lambda m, q: {},
             lambda m: False,
             lambda m: 8,
+            lambda m: 0,
         )
     )
     P.reset_providers_for_tests()
