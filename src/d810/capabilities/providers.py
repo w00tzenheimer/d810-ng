@@ -65,6 +65,39 @@ class BstWalkerProvider:
 
 
 @dataclass(frozen=True)
+class MicrocodeConstants:
+    """Portable snapshot of the Hex-Rays opcode / mop-type integer constants.
+
+    Files that read ``ida_hexrays.m_*`` / ``ida_hexrays.mop_*`` purely as
+    integer tags (never calling a live-MBA method) take this bundle instead of
+    importing ``ida_hexrays``.  The backend constructs it from the live
+    enums, so each attribute is byte-identical to the constant it replaces.
+    The attribute names mirror the ``ida_hexrays`` spelling so the consumer
+    bodies stay structurally identical (``ida_hexrays.m_jnz`` ->
+    ``constants.m_jnz``).
+    """
+
+    m_mov: int
+    m_goto: int
+    m_nop: int
+    m_jnz: int
+    m_jz: int
+    m_jae: int
+    m_jb: int
+    m_ja: int
+    m_jbe: int
+    m_jg: int
+    m_jge: int
+    m_jl: int
+    m_jle: int
+    mop_z: int
+    mop_n: int
+    mop_S: int
+    mop_r: int
+    mop_b: int
+
+
+@dataclass(frozen=True)
 class MicrocodeEvidenceProvider:
     """Backend-supplied LIVE microcode evidence accessors.
 
@@ -94,6 +127,11 @@ class MicrocodeEvidenceProvider:
     is_glbopt1: Callable[..., Any]
     glbopt1_maturity: Callable[..., Any]
     mmat_zero: Callable[..., Any]
+    # Opcode / mop-type integer-constant bundle for snapshot-only consumers
+    # that read ``ida_hexrays.m_*`` / ``mop_*`` as tags without any live-MBA
+    # method call.  Returns a :class:`MicrocodeConstants` whose attributes are
+    # byte-identical to the inlined ``ida_hexrays`` constants they replace.
+    microcode_constants: Callable[..., Any]
 
 
 _lock = threading.Lock()

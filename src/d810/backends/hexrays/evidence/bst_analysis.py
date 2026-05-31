@@ -23,7 +23,11 @@ import ida_hexrays
 
 from d810.analyses.value_flow import state_write
 from d810.backends.hexrays import bst_runtime as _hexrays_bst_runtime
-from d810.capabilities.providers import BstWalkerProvider, MicrocodeEvidenceProvider
+from d810.capabilities.providers import (
+    BstWalkerProvider,
+    MicrocodeConstants,
+    MicrocodeEvidenceProvider,
+)
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.core.logging import getLogger
 from d810.core.typing import (
@@ -2204,6 +2208,35 @@ def _mmat_zero(mba: Any) -> int:
     return int(ida_hexrays.MMAT_ZERO)
 
 
+def _microcode_constants(mba: Any = None) -> MicrocodeConstants:
+    """Snapshot the live opcode / mop-type enums into a portable bundle.
+
+    Each field is byte-identical to the inlined ``ida_hexrays`` constant it
+    replaces; the ``mba`` argument is accepted for provider-call uniformity but
+    unused (the constants are object-independent).
+    """
+    return MicrocodeConstants(
+        m_mov=int(ida_hexrays.m_mov),
+        m_goto=int(ida_hexrays.m_goto),
+        m_nop=int(ida_hexrays.m_nop),
+        m_jnz=int(ida_hexrays.m_jnz),
+        m_jz=int(ida_hexrays.m_jz),
+        m_jae=int(ida_hexrays.m_jae),
+        m_jb=int(ida_hexrays.m_jb),
+        m_ja=int(ida_hexrays.m_ja),
+        m_jbe=int(ida_hexrays.m_jbe),
+        m_jg=int(ida_hexrays.m_jg),
+        m_jge=int(ida_hexrays.m_jge),
+        m_jl=int(ida_hexrays.m_jl),
+        m_jle=int(ida_hexrays.m_jle),
+        mop_z=int(ida_hexrays.mop_z),
+        mop_n=int(ida_hexrays.mop_n),
+        mop_S=int(ida_hexrays.mop_S),
+        mop_r=int(ida_hexrays.mop_r),
+        mop_b=int(ida_hexrays.mop_b),
+    )
+
+
 def build_microcode_evidence_provider() -> MicrocodeEvidenceProvider:
     """Bundle this backend's live microcode-evidence seams for the provider registry.
 
@@ -2221,6 +2254,7 @@ def build_microcode_evidence_provider() -> MicrocodeEvidenceProvider:
         is_glbopt1=_is_glbopt1,
         glbopt1_maturity=_glbopt1_maturity,
         mmat_zero=_mmat_zero,
+        microcode_constants=_microcode_constants,
     )
 
 
