@@ -187,6 +187,10 @@ def collect_exit_transition_candidates(
         queue: list[tuple[int, int]] = [(int(correct_entry), 0)]
         found_writes: list[tuple[int, int]] = []
 
+        # Block topology via the backend seam: ``mba`` is the live
+        # ``snapshot.mba``; the seam makes the identical get_mblock/nsucc/succ
+        # calls from the backend layer (ticket llr-zeyu).
+        walkers = get_bst_walkers()
         while queue:
             blk_serial, depth = queue.pop(0)
             if blk_serial in visited:
@@ -196,7 +200,7 @@ def collect_exit_transition_candidates(
                 continue
 
             try:
-                blk = mba.get_mblock(blk_serial)  # type: ignore[attr-defined]
+                blk = walkers.get_block(mba, blk_serial)
             except Exception:
                 blk = None
             if blk is None:
@@ -219,11 +223,9 @@ def collect_exit_transition_candidates(
 
             if depth < max_bfs_depth:
                 try:
-                    nsucc = blk.nsucc()
-                    for idx in range(nsucc):
-                        succ_serial = int(blk.succ(idx))
-                        if succ_serial not in visited:
-                            queue.append((succ_serial, depth + 1))
+                    for succ_serial in walkers.block_successors(blk):
+                        if int(succ_serial) not in visited:
+                            queue.append((int(succ_serial), depth + 1))
                 except Exception:
                     pass
 
@@ -340,6 +342,9 @@ def collect_valrange_exit_transition_candidates(
     candidates: list[ValrangeExitTransitionCandidate] = []
     total_unresolved = 0
 
+    # Block lookup via the backend seam (``mba`` is the live ``snapshot.mba``);
+    # behaviour is identical to the inlined ``get_mblock`` (ticket llr-zeyu).
+    walkers = get_bst_walkers()
     for handler in handlers.values():
         for transition in tuple(getattr(handler, "transitions", ())):
             key = (int(transition.from_state), int(transition.to_state))
@@ -349,7 +354,7 @@ def collect_valrange_exit_transition_candidates(
             total_unresolved += 1
             exit_serial = int(transition.from_block)
             try:
-                exit_blk = mba.get_mblock(exit_serial)
+                exit_blk = walkers.get_block(mba, exit_serial)
             except Exception:
                 exit_blk = None
             if exit_blk is None:
