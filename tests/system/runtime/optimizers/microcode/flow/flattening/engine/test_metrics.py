@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.optimizers.microcode.flow.flattening.engine.metrics import (
+from d810.passes.metrics import (
     handler_coverage,
     structure_quality_score,
 )
