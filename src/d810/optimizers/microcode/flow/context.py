@@ -14,6 +14,7 @@ from d810.analyses.control_flow.analysis_stats import (
 from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
     analyze_dispatcher_live,
 )
+from d810.hexrays.mutation.ir_translator import lift
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.core.gate_modes import GateOperationMode
 from d810.passes.flow_hints import FlowContextHintSummary
@@ -316,7 +317,7 @@ class FlowMaturityContext:
             return None
 
         try:
-            self._profile_stats = compute_flow_profile_stats(self.mba, analysis)
+            self._profile_stats = compute_flow_profile_stats(lift(self.mba), analysis)
             return self._profile_stats
         except Exception as exc:  # pragma: no cover - defensive; IDA runtime edge
             self._profile_stats_error = exc

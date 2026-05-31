@@ -9,24 +9,25 @@ from d810.analyses.control_flow.analysis_stats import (
     compute_flow_profile_stats,
     summarize_dispatcher_detection,
 )
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 
 
-class _FakeBlock:
-    def __init__(self, serial: int, succs: tuple[int, ...]):
-        self.serial = serial
-        self.succset = succs
-
-
-class _FakeMBA:
-    def __init__(self, edges: dict[int, tuple[int, ...]]):
-        self._blocks = {
-            serial: _FakeBlock(serial, succs)
-            for serial, succs in edges.items()
-        }
-        self.qty = (max(edges.keys()) + 1) if edges else 0
-
-    def get_mblock(self, serial: int):
-        return self._blocks.get(serial)
+def _fg(edges: dict[int, tuple[int, ...]]) -> FlowGraph:
+    """Build a topology-only FlowGraph from ``{serial: succs}`` specs."""
+    blocks = {
+        serial: BlockSnapshot(
+            serial=serial,
+            block_type=0,
+            succs=tuple(succs),
+            preds=(),
+            flags=0,
+            start_ea=0,
+            insn_snapshots=(),
+        )
+        for serial, succs in edges.items()
+    }
+    entry = min(edges) if edges else 0
+    return FlowGraph(blocks=blocks, entry_serial=entry, func_ea=0)
 
 
 class _Strat(IntFlag):
@@ -37,7 +38,7 @@ class _Strat(IntFlag):
 
 
 def test_compute_flow_profile_stats_reports_dispatcher_topology():
-    mba = _FakeMBA(
+    mba = _fg(
         {
             0: (1,),
             1: (2, 4),
@@ -69,7 +70,7 @@ def test_compute_flow_profile_stats_reports_dispatcher_topology():
 
 
 def test_compute_flow_profile_stats_handles_empty_mba():
-    mba = _FakeMBA({})
+    mba = _fg({})
     analysis = SimpleNamespace(dispatchers=[], blocks={}, nested_loop_depth=0)
 
     stats = compute_flow_profile_stats(mba, analysis)
