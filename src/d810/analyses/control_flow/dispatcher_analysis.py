@@ -20,7 +20,7 @@ from d810.ir.flowgraph import (
     OperandKind,
 )
 from d810.ir.expressions import Const
-from d810.ir.insn_projection import project_assignment
+from d810.ir.insn_projection import project_assignment, project_conditional_branch
 from d810.ir.mop_identity import mop_snapshot_key, mop_snapshot_offset
 from d810.analyses.control_flow.dispatcher_facts import (
     BlockAnalysis,
@@ -183,11 +183,10 @@ def _analyze_block_predecessors(
 
 
 def _is_state_comparison_tail(insn: InsnSnapshot | None) -> bool:
-    if insn is None:
-        return False
-    if not insn.is_conditional_jump:
-        return False
-    if insn.branch_predicate is PredicateKind.TRUTHY:
+    # Read the portable projected branch (llr-lxas): a conditional jump whose
+    # predicate is a real comparison, not the bare TRUTHY of m_jcnd.
+    branch = project_conditional_branch(insn)
+    if branch is None or branch.predicate is PredicateKind.TRUTHY:
         return False
     return insn.kind in {InsnKind.EQUALITY_JUMP, InsnKind.COND_JUMP}
 

@@ -24,10 +24,10 @@ from __future__ import annotations
 from d810.ir.expressions import Const, ExprRef, Move
 from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
 from d810.ir.locations import RegisterLocation, StackSlot, StorageLocation, WeakStackSlot
-from d810.ir.statements import Assignment
+from d810.ir.statements import Assignment, ConditionalBranch
 from d810.ir.value_refs import DefinitionRef
 
-__all__ = ["project_assignment"]
+__all__ = ["project_assignment", "project_conditional_branch"]
 
 
 def _location_of(mop: MopSnapshot | None) -> StorageLocation | None:
@@ -75,3 +75,28 @@ def project_assignment(insn: InsnSnapshot) -> Assignment | None:
     if value is None and target is None:
         return None
     return Assignment(target=target, value=value)
+
+
+def project_conditional_branch(
+    insn: InsnSnapshot,
+    *,
+    taken: int | None = None,
+    fallthrough: int | None = None,
+) -> ConditionalBranch | None:
+    """Project a conditional-jump ``InsnSnapshot`` to a portable branch.
+
+    Returns ``None`` for non-conditional-jump instructions.  ``predicate`` is the
+    already-portable :class:`~d810.ir.semantics.PredicateKind` carried on the
+    snapshot (may be ``None``); ``lhs``/``rhs`` are the compared operands as
+    value expressions.  ``taken``/``fallthrough`` are the two CFG-edge serials,
+    supplied by the caller (the snapshot itself does not carry block topology).
+    """
+    if not getattr(insn, "is_conditional_jump", False):
+        return None
+    return ConditionalBranch(
+        predicate=insn.branch_predicate,
+        lhs=_value_of(insn.l),
+        rhs=_value_of(insn.r),
+        taken=taken,
+        fallthrough=fallthrough,
+    )
