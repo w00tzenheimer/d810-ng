@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from d810.core.typing import Any
 from d810.core.typing import Iterable
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 
 
 @dataclass(frozen=True)
@@ -37,9 +38,8 @@ class FlowProfileStats:
         }
 
 
-def _block_successors(blk: Any) -> tuple[int, ...]:
-    succset = getattr(blk, "succset", ())
-    return tuple(int(s) for s in succset)
+def _block_successors(blk: BlockSnapshot) -> tuple[int, ...]:
+    return tuple(int(s) for s in blk.succs)
 
 
 def _get_entry_serial(nodes: set[int]) -> int | None:
@@ -50,17 +50,15 @@ def _get_entry_serial(nodes: set[int]) -> int | None:
     return min(nodes)
 
 
-def _collect_cfg_graph(mba: Any) -> tuple[set[int], dict[int, tuple[int, ...]], dict[int, set[int]]]:
+def _collect_cfg_graph(
+    flow_graph: FlowGraph,
+) -> tuple[set[int], dict[int, tuple[int, ...]], dict[int, set[int]]]:
     nodes: set[int] = set()
     succs: dict[int, tuple[int, ...]] = {}
     preds: dict[int, set[int]] = {}
-    qty = int(getattr(mba, "qty", 0) or 0)
 
-    for serial in range(qty):
-        blk = mba.get_mblock(serial)
-        if blk is None:
-            continue
-        cur = int(getattr(blk, "serial", serial))
+    for blk in flow_graph.blocks.values():
+        cur = int(blk.serial)
         nodes.add(cur)
         out = _block_successors(blk)
         succs[cur] = out
@@ -207,8 +205,8 @@ def _flattening_score(
     return float(best)
 
 
-def compute_flow_profile_stats(mba: Any, analysis: Any) -> FlowProfileStats:
-    nodes, succs, preds = _collect_cfg_graph(mba)
+def compute_flow_profile_stats(flow_graph: FlowGraph, analysis: Any) -> FlowProfileStats:
+    nodes, succs, preds = _collect_cfg_graph(flow_graph)
     entry = _get_entry_serial(nodes)
     total_blocks = len(nodes)
 
