@@ -4,56 +4,46 @@ from d810.analyses.control_flow.dispatcher_residue_cleanup_discovery import (
     discover_dispatcher_residue_cleanup_facts,
     discover_unreachable_region_cleanup_facts,
 )
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 
 
-class _Block:
-    def __init__(
-        self,
-        serial: int,
-        succs: tuple[int, ...] = (),
-        preds: tuple[int, ...] = (),
-    ) -> None:
-        self.serial = serial
-        self._succs = tuple(succs)
-        self._preds = tuple(preds)
+def _fg(blocks: dict[int, tuple[tuple[int, ...], tuple[int, ...]]]) -> FlowGraph:
+    """Build a portable FlowGraph from ``{serial: (succs, preds)}`` specs.
 
-    def nsucc(self) -> int:
-        return len(self._succs)
-
-    def succ(self, index: int) -> int:
-        return self._succs[index]
-
-    def npred(self) -> int:
-        return len(self._preds)
-
-    def pred(self, index: int) -> int:
-        return self._preds[index]
-
-
-class _Mba:
-    def __init__(self, blocks: dict[int, _Block]) -> None:
-        self._blocks = dict(blocks)
-        self.qty = max(blocks) + 1
-
-    def get_mblock(self, serial: int) -> _Block | None:
-        return self._blocks.get(serial)
+    Topology only (no instructions). Predecessors are taken verbatim — these
+    fixtures intentionally use preds that are not the inverse of succs to
+    exercise the dispatcher-component backward walk.
+    """
+    snapshots = {
+        serial: BlockSnapshot(
+            serial=serial,
+            block_type=0,
+            succs=tuple(succs),
+            preds=tuple(preds),
+            flags=0,
+            start_ea=0,
+            insn_snapshots=(),
+        )
+        for serial, (succs, preds) in blocks.items()
+    }
+    return FlowGraph(blocks=snapshots, entry_serial=0, func_ea=0)
 
 
 def test_dispatcher_residue_cleanup_discovery_classifies_dispatcher_edges() -> None:
-    mba = _Mba(
+    fg = _fg(
         {
-            0: _Block(0, (10,)),
-            2: _Block(2, (3, 4), (10, 11, 3)),
-            3: _Block(3, (2,)),
-            4: _Block(4),
-            10: _Block(10, (2,)),
-            11: _Block(11, (2, 20)),
-            20: _Block(20),
+            0: ((10,), ()),
+            2: ((3, 4), (10, 11, 3)),
+            3: ((2,), ()),
+            4: ((), ()),
+            10: ((2,), ()),
+            11: ((2, 20), ()),
+            20: ((), ()),
         }
     )
 
     facts = discover_dispatcher_residue_cleanup_facts(
-        mba,
+        fg,
         dispatcher_region={3},
         dispatcher_serial=2,
     )
@@ -67,21 +57,21 @@ def test_dispatcher_residue_cleanup_discovery_classifies_dispatcher_edges() -> N
 
 
 def test_unreachable_soft_kill_discovery_preserves_reconstruction_live() -> None:
-    mba = _Mba(
+    fg = _fg(
         {
-            0: _Block(0, (1,)),
-            1: _Block(1, (7,), (0,)),
-            2: _Block(2, (3,), (4,)),
-            3: _Block(3, (), (2,)),
-            4: _Block(4, (5,)),
-            5: _Block(5, (4,)),
-            6: _Block(6, (5,)),
-            7: _Block(7, (), (1,)),
+            0: ((1,), ()),
+            1: ((7,), (0,)),
+            2: ((3,), (4,)),
+            3: ((), (2,)),
+            4: ((5,), ()),
+            5: ((4,), ()),
+            6: ((5,), ()),
+            7: ((), (1,)),
         }
     )
 
     facts = discover_unreachable_region_cleanup_facts(
-        mba,
+        fg,
         dispatcher_serial=2,
         dispatcher_region={2, 3},
         stop_serial=7,
@@ -98,20 +88,20 @@ def test_unreachable_soft_kill_discovery_preserves_reconstruction_live() -> None
 
 
 def test_unreachable_soft_kill_discovery_emits_dead_zone_redirects() -> None:
-    mba = _Mba(
+    fg = _fg(
         {
-            0: _Block(0, (1,)),
-            1: _Block(1, (6,), (0,)),
-            2: _Block(2, (3,), (4,)),
-            3: _Block(3, (), (2,)),
-            4: _Block(4, (5,)),
-            5: _Block(5, (4,)),
-            6: _Block(6, (), (1,)),
+            0: ((1,), ()),
+            1: ((6,), (0,)),
+            2: ((3,), (4,)),
+            3: ((), (2,)),
+            4: ((5,), ()),
+            5: ((4,), ()),
+            6: ((), (1,)),
         }
     )
 
     facts = discover_unreachable_region_cleanup_facts(
-        mba,
+        fg,
         dispatcher_serial=2,
         dispatcher_region={2, 3},
         stop_serial=6,
@@ -129,20 +119,20 @@ def test_unreachable_soft_kill_discovery_emits_dead_zone_redirects() -> None:
 
 
 def test_unreachable_region_cleanup_uses_bound_stop_serial() -> None:
-    mba = _Mba(
+    fg = _fg(
         {
-            0: _Block(0, (1,)),
-            1: _Block(1, (4,), (0,)),
-            2: _Block(2, (3,), (5,)),
-            3: _Block(3, (), (2,)),
-            4: _Block(4, (), (1,)),
-            5: _Block(5, (2,)),
-            6: _Block(6, (3,)),
+            0: ((1,), ()),
+            1: ((4,), (0,)),
+            2: ((3,), (5,)),
+            3: ((), (2,)),
+            4: ((), (1,)),
+            5: ((2,), ()),
+            6: ((3,), ()),
         }
     )
 
     facts = discover_unreachable_region_cleanup_facts(
-        mba,
+        fg,
         dispatcher_serial=2,
         dispatcher_region={2, 3},
         stop_serial=4,

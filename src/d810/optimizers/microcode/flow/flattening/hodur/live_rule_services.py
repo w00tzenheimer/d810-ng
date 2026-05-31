@@ -16,6 +16,7 @@ from d810.hexrays.mutation.dispatcher_residue_cleanup import (
     apply_dispatcher_residue_cleanup_plan,
     apply_unreachable_region_cleanup_plan,
 )
+from d810.hexrays.mutation.ir_translator import lift
 from d810.hexrays.utils.hexrays_formatters import format_mop_t
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
@@ -550,8 +551,10 @@ class DispatcherRegionCleanupServices:
         Handler entries keep their BST predecessors for reachability.
         """
         mba = self.mba
+        # Lift the live mba to a portable FlowGraph at the HIGH boundary; the
+        # portable discovery pass consumes the snapshot (llr-zeyu upstream-lift).
         facts = discover_dispatcher_residue_cleanup_facts(
-            mba,
+            lift(mba),
             dispatcher_region=bst_node_blocks,
             dispatcher_serial=dispatcher_serial,
         )
@@ -735,8 +738,10 @@ class DispatcherRegionCleanupServices:
         if stop_serial is None:
             return 0
 
+        # Lift the live mba to a portable FlowGraph at the HIGH boundary; the
+        # portable discovery pass consumes the snapshot (llr-zeyu upstream-lift).
         facts = discover_unreachable_region_cleanup_facts(
-            mba,
+            lift(mba),
             dispatcher_serial=dispatcher_serial,
             dispatcher_region=bst_serials,
             stop_serial=stop_serial,
