@@ -19,7 +19,6 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     FAMILY_DIRECT,
     FAMILY_FALLBACK,
 )
-from d810.optimizers.microcode.flow.flattening.hodur import strategy as hodur_strategy
 
 
 def _empty_scope() -> OwnershipScope:
@@ -77,10 +76,6 @@ class TestEnginePackageApi:
         assert engine.PlanFragment is PlanFragment
         assert engine.VerificationGate is VerificationGate
 
-    def test_hodur_shim_points_to_engine_types(self) -> None:
-        assert hodur_strategy.PlanFragment is PlanFragment
-        assert hodur_strategy.StageResult is StageResult
-
     def test_engine_strategy_star_import_omits_semantic_gate(self) -> None:
         namespace: dict[str, object] = {}
         exec(
@@ -90,25 +85,13 @@ class TestEnginePackageApi:
         assert "PlanFragment" in namespace
         assert "SemanticGate" not in namespace
 
-    def test_hodur_strategy_star_import_omits_semantic_gate(self) -> None:
-        namespace: dict[str, object] = {}
-        exec(
-            "from d810.optimizers.microcode.flow.flattening.hodur.strategy import *",
-            namespace,
-        )
-        assert "PlanFragment" in namespace
-        assert "SemanticGate" not in namespace
-
     def test_semantic_gate_availability_matches_runtime(self) -> None:
         if self._ida_runtime_available():
-            assert engine_strategy.SemanticGate is hodur_strategy.SemanticGate
+            assert engine_strategy.SemanticGate is not None
             return
 
         with pytest.raises(AttributeError, match="unavailable without IDA"):
             _ = engine_strategy.SemanticGate
-
-        with pytest.raises(AttributeError, match="unavailable without IDA"):
-            _ = hodur_strategy.SemanticGate
 
     def test_transactional_executor_availability_matches_runtime(self) -> None:
         from d810.optimizers.microcode.flow.flattening.hodur import (
