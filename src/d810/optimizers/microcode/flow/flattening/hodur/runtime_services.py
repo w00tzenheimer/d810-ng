@@ -1,6 +1,7 @@
 """Hodur services for the generic state-machine family runtime."""
 from __future__ import annotations
 
+from d810.capabilities.providers import get_microcode_evidence
 from d810.core import logging
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.optimizers.microcode.flow.flattening.engine.provenance import (
@@ -127,17 +128,17 @@ class HodurRuntimeServices:
             terminal_return_audit = None
         else:
             transition_report = load_transition_report_from_store(
-                func_ea=context.mba.entry_ea,
+                func_ea=get_microcode_evidence().get_function_entry_ea(context.mba),
                 maturity=context.maturity,
                 log_dir=context.log_dir,
             )
             return_frontier_audit = load_return_frontier_audit_from_store(
-                func_ea=context.mba.entry_ea,
+                func_ea=get_microcode_evidence().get_function_entry_ea(context.mba),
                 maturity=context.maturity,
                 log_dir=context.log_dir,
             )
             terminal_return_audit = load_terminal_return_audit_from_store(
-                func_ea=context.mba.entry_ea,
+                func_ea=get_microcode_evidence().get_function_entry_ea(context.mba),
                 maturity=context.maturity,
                 log_dir=context.log_dir,
             )
@@ -179,7 +180,7 @@ class HodurRuntimeServices:
                     snapshot,
                     current_return_sites=tuple(owner._audit_return_sites),
                     return_site_provider=owner._return_site_provider,
-                    func_ea=context.mba.entry_ea,
+                    func_ea=get_microcode_evidence().get_function_entry_ea(context.mba),
                     maturity=context.maturity,
                     log_dir=context.log_dir,
                     successors=owner._build_successor_map(),
@@ -210,7 +211,7 @@ class HodurRuntimeServices:
                 record_return_frontier_stage(
                     return_sites=tuple(owner._audit_return_sites),
                     stage_name="post_plan",
-                    func_ea=context.mba.entry_ea,
+                    func_ea=get_microcode_evidence().get_function_entry_ea(context.mba),
                     maturity=context.maturity,
                     log_dir=context.log_dir,
                     successors=owner._build_successor_map(),
@@ -272,7 +273,7 @@ class HodurRuntimeServices:
         owner._family.record_execution_outcome(
             pipeline,
             results,
-            func_ea=context.mba.entry_ea,
+            func_ea=get_microcode_evidence().get_function_entry_ea(context.mba),
             maturity=context.maturity,
             nb_changes=nb_changes,
             residual_dispatcher_preds_by_strategy=(
@@ -283,7 +284,7 @@ class HodurRuntimeServices:
         if self.terminal_return_persistence_enabled():
             persist_terminal_return_audit(
                 results,
-                func_ea=context.mba.entry_ea,
+                func_ea=get_microcode_evidence().get_function_entry_ea(context.mba),
                 maturity=context.maturity,
                 log_dir=context.log_dir,
             )
@@ -297,7 +298,7 @@ class HodurRuntimeServices:
                 record_return_frontier_stage(
                     return_sites=tuple(owner._audit_return_sites),
                     stage_name="post_apply",
-                    func_ea=context.mba.entry_ea,
+                    func_ea=get_microcode_evidence().get_function_entry_ea(context.mba),
                     maturity=context.maturity,
                     log_dir=context.log_dir,
                     successors=owner._build_successor_map(),
