@@ -238,7 +238,7 @@ D-810 is the union of both — and adds a third property neither has: **the arti
 
 | surface | portable today | still Hex-Rays-shaped | convergence gap (`llr-lxas`) |
 |-|-|-|-|
-| **Lift** (`ir`, `hexrays.mutation.ir_translator`) | topology; `InsnKind`, single `PredicateKind`; anchors (ea/serial/handles); statement projection (`Assignment` / `ConditionalBranch` over `ir.{expressions,value_refs,locations}`) for the MOV + conditional-jump families via `ir.insn_projection` | `InsnSnapshot.{l,r,d}`, `opcode`, `display_text`; nested `mop_d` still flattened (lossy) | extend the projection family-by-family; retire `l/r/d`; lift nested `mop_d` → nested `ExprRef` |
+| **Lift** (`ir`, `hexrays.mutation.ir_translator`) | topology; `InsnKind`, single `PredicateKind`; anchors (ea/serial/handles); statement projection (`Assignment` / `ConditionalBranch` over `ir.{expressions,value_refs,locations}`) for the MOV + conditional-jump families via `ir.insn_projection`; nested `mop_d` lifted to nested `ExprRef` (`Add`/`Sub`/`And`) | `InsnSnapshot.{l,r,d}`, `opcode`, `display_text`; unmapped nested ops (`or`/`xor`/`shl`/…) still flattened | extend the projection + nested-op families on demand; retire `l/r/d` |
 | **Transform** (`analyses`, `transforms`) | declarative intents (`graph_modification.py`), mostly structural | a live handle still leaks via the seam/view | finish the anchored semantic lift so analyses stop needing the live shape |
 | **Lower** (`hexrays.mutation`) | `DeferredGraphModifier`, `cfg_verify`, anchor re-resolution, `MBL_KEEP` | lowering replays captured `mop_t` clones, not portable codegen | only needed if transforms must *synthesize* computation — defer |
 
