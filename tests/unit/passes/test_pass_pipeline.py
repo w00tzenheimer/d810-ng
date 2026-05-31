@@ -1,0 +1,68 @@
+"""Phase A pipeline-vocabulary conformance (pure-Python, no IDA)."""
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+from d810.passes import pass_pipeline as pp
+from d810.transforms.plan import PatchPlan
+
+
+def test_defaults():
+    assert pp.PassResult().rewrite_plan == PatchPlan()
+    assert pp.CapabilityPolicy().required == frozenset()
+    assert pp.SafetyPolicy().name == "default"
+    assert pp.SafetyPolicy().golden_required is False
+
+
+def test_rewriteplan_alias_is_patchplan():
+    assert pp.RewritePlan is PatchPlan
+
+
+def test_preserved_analyses():
+    assert pp.PassResult().preserved.preserves("anything") is True  # default all
+    assert pp.PreservedAnalyses.none().preserves("x") is False
+    keep = pp.PreservedAnalyses.preserving({"dominators"})
+    assert keep.preserves("dominators") is True
+    assert keep.preserves("scc") is False
+
+
+def test_pipeline_pass_conformance():
+    class _FakePass:
+        name = "fake"
+
+        def run(self, ctx):
+            return pp.PassResult()
+
+    assert isinstance(_FakePass(), pp.PipelinePass)
+
+
+def test_mutation_backend_conformance():
+    class _FakeBackend:
+        def apply(self, rewrite_plan, live_source, safety_policy):
+            return SimpleNamespace()  # stands in for a FlowGraph
+
+    assert isinstance(_FakeBackend(), pp.MutationBackend)
+
+
+def test_function_source_conformance():
+    src = SimpleNamespace(flow_graph=object(), func_ea=0x1000, live_source=object())
+    assert isinstance(src, pp.FunctionSource)
+
+
+def test_pass_spec_factory_builds_a_pass():
+    class _FakePass:
+        name = "fake"
+
+        def run(self, ctx):
+            return pp.PassResult()
+
+    spec = pp.PassSpec("fake", _FakePass, pp.no_caps, pp.default)
+    built = spec.pass_factory()
+    assert isinstance(built, pp.PipelinePass)
+    assert spec.requirements.required == frozenset()
+    assert spec.safety_policy.name == "default"
+
+
+def test_authoring_singletons():
+    assert pp.live_mba.required == frozenset({"live_mba"})
+    assert pp.golden.golden_required is True
