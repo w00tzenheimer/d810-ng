@@ -22,7 +22,7 @@ from d810.analyses.control_flow.transition_builder import (
 )
 
 logger = logging.getLogger(
-    "D810.optimizers.microcode.flow.flattening.dynamic_state_transition_recovery", logging.INFO
+    "D810.backends.hexrays.evidence.flattening.dynamic_state_transition_recovery", logging.INFO
 )
 
 
