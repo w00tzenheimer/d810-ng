@@ -18,8 +18,6 @@ from collections import Counter, defaultdict
 from dataclasses import replace
 import os
 
-import ida_hexrays
-
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.transforms.reconstruction_emission import (
