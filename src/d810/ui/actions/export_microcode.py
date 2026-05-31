@@ -196,7 +196,7 @@ class ExportMicrocode(D810ActionHandler):
 
         try:
             # Import microcode dump utility
-            from d810.optimizers.microcode.microcode_dump import dump_function_microcode
+            from d810.backends.hexrays.evidence.microcode_dump import dump_function_microcode
 
             # If pre-deobfuscation requested and d810ng is running, suppress hooks
             if pre_deobfuscation and hasattr(self._state, "manager") and self._state.manager.started:

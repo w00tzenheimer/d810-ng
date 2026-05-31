@@ -396,7 +396,7 @@ def cmd_dump(args: argparse.Namespace) -> None:
     from d810.optimizers.microcode.flow.flattening.hodur.diagnostics import (
         build_terminal_return_valrange_report_from_store,
     )
-    from d810.optimizers.microcode.microcode_dump import mba_to_human_readable
+    from d810.backends.hexrays.evidence.microcode_dump import mba_to_human_readable
 
     binary_path = _resolve_binary_path(args.binary)
     _apply_no_cython_flag(args.no_cython)

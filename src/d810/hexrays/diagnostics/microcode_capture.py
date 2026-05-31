@@ -20,7 +20,7 @@ History of the ``microcode_dump`` split (now complete):
   tables.  No recon, no evaluator, no optimizer imports.
 * The render half (``mba_to_human_readable`` + ``_print_*`` helpers)
   and the analysis-overlay half (dispatcher / DAG / state-machine
-  dumpers) now live in ``d810.optimizers.microcode.microcode_dump``
+  dumpers) now live in ``d810.backends.hexrays.evidence.microcode_dump``
   (they need recon / evaluator imports, legal from the optimizer
   layer).  The legacy ``d810.recon.microcode_dump`` module no longer
   exists -- recon is now Hex-Rays-free, enforced by the
