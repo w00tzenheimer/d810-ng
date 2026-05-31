@@ -10,10 +10,10 @@ loops.
 The Tarjan implementation mirrors ``DispatchRegionDetector.tarjan_scc``
 in the recon layer (the layered architecture forbids ``cfg`` from
 importing ``recon``). Doctests on ``_tarjan_scc`` match the canonical
-version exactly so any drift is caught. No IDA dependency at the
-algorithm level: ``compute_live_cfg_sccs`` takes a plain successor map
-and ``cfg_sccs_from_mba`` is a thin adapter that builds the map from a
-live ``mba_t``.
+version exactly so any drift is caught. No IDA dependency: every entry
+point takes a plain ``dict[int, tuple[int, ...]]`` successor map. The
+caller (Hex-Rays backend) is responsible for lifting a live ``mba_t``
+into that portable map before calling ``compute_live_cfg_sccs``.
 """
 from __future__ import annotations
 
@@ -187,26 +187,6 @@ def nontrivial_sccs(sccs: tuple[CfgSCC, ...]) -> tuple[CfgSCC, ...]:
     return tuple(s for s in sccs if s.is_cyclic)
 
 
-def block_succs_from_mba(mba) -> dict[int, tuple[int, ...]]:
-    """Build a successor map from a live ``mba_t``.
-
-    Pure adapter; kept separate so ``compute_live_cfg_sccs`` stays
-    IDA-agnostic and unit-testable.
-    """
-    succs: dict[int, tuple[int, ...]] = {}
-    qty = int(getattr(mba, "qty", 0))
-    for i in range(qty):
-        blk = mba.get_mblock(i)
-        nsucc = int(blk.nsucc())
-        succs[i] = tuple(int(blk.succ(j)) for j in range(nsucc))
-    return succs
-
-
-def cfg_sccs_from_mba(mba) -> tuple[CfgSCC, ...]:
-    """Convenience: compute SCCs directly over a live ``mba_t``."""
-    return compute_live_cfg_sccs(block_succs_from_mba(mba))
-
-
 def log_sccs(sccs: tuple[CfgSCC, ...]) -> None:
     """Emit one INFO line per cyclic SCC."""
     cyclic = nontrivial_sccs(sccs)
@@ -230,8 +210,6 @@ def log_sccs(sccs: tuple[CfgSCC, ...]) -> None:
 
 __all__ = [
     "CfgSCC",
-    "block_succs_from_mba",
-    "cfg_sccs_from_mba",
     "compute_live_cfg_sccs",
     "log_sccs",
     "nontrivial_sccs",
