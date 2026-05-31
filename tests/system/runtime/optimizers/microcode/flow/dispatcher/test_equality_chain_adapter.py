@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.optimizers.microcode.flow.dispatcher import equality_chain
+from d810.backends.hexrays.evidence.dispatcher import equality_chain
 
 
 class _LiveBlock:

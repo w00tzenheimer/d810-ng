@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from d810.optimizers.microcode.flow.dispatcher import dispatcher_history as dh_mod
+from d810.backends.hexrays.evidence.dispatcher import dispatcher_history as dh_mod
 from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
     DispatcherHistory,
     DispatcherHistoryStore,
