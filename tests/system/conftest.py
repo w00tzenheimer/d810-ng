@@ -653,7 +653,7 @@ def clear_all_caches():
     by ensuring all caches that may hold references to IDA objects are cleared.
     """
     from d810.evaluator.hexrays_microcode.tracker import MopTracker
-    from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+    from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
         DEFAULT_DISPATCHER_HISTORY_STORE,
     )
 
@@ -949,7 +949,7 @@ def _d810_state_cm(*, all_rules=False):
     # Clear caches to prevent stale microcode pointer issues between tests
     # Import and clear from both locations to ensure complete cleanup
     from d810.evaluator.hexrays_microcode.tracker import MopTracker
-    from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+    from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
         DEFAULT_DISPATCHER_HISTORY_STORE,
     )
 

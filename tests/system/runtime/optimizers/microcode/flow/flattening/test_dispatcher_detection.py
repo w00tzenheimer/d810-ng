@@ -69,7 +69,7 @@ class TestDispatcherDetectionWithRealMicrocode:
         """
         import ida_hexrays
         import idaapi
-        from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+        from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
             DEFAULT_DISPATCHER_HISTORY_STORE,
             DispatcherType,
             analyze_dispatcher_live,
@@ -152,7 +152,7 @@ class TestDispatcherDetectionWithRealMicrocode:
         """
         import ida_hexrays
         import idaapi
-        from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+        from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
             DEFAULT_DISPATCHER_HISTORY_STORE,
             DispatcherType,
             analyze_dispatcher_live,
@@ -196,7 +196,7 @@ class TestDispatcherDetectionWithRealMicrocode:
         """
         import ida_hexrays
         import idaapi
-        from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+        from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
             DEFAULT_DISPATCHER_HISTORY_STORE,
             DispatcherType,
             analyze_dispatcher_live,
@@ -233,7 +233,7 @@ class TestDispatcherDetectionWithRealMicrocode:
         """
         import ida_hexrays
         import idaapi
-        from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+        from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
             DEFAULT_DISPATCHER_HISTORY_STORE,
             analyze_dispatcher_live,
             should_skip_dispatcher,

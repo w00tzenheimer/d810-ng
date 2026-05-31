@@ -50,7 +50,7 @@ from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
     collect_live_fake_jump_fixes,
     collect_live_single_iteration_fixes,
 )
-from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
     DispatcherAnalysis,
     analyze_dispatcher_live,
 )

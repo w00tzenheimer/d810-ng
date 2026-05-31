@@ -11,7 +11,7 @@ from d810.analyses.control_flow.analysis_stats import (
     FlowProfileStats,
     compute_flow_profile_stats,
 )
-from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
     analyze_dispatcher_live,
 )
 from d810.hexrays.mutation.ir_translator import lift

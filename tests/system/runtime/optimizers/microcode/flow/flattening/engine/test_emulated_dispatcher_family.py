@@ -7581,7 +7581,7 @@ class TestEmulatedDispatcherManagedContext:
             FAKE_JUMP_FIXES_METADATA_KEY,
             serialize_fake_jump_fixes,
         )
-        from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+        from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
             analyze_dispatcher_live,
             is_dispatcher_block,
         )
