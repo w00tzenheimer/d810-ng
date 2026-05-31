@@ -177,7 +177,7 @@ from .tracker import (
 # MOP (Microcode OPerand) Caches
 # =============================================================================
 # These caches are defined here to avoid circular imports. They were previously
-# in d810.optimizers.caching, but that module has IDA-specific imports that
+# in d810.backends.hexrays.evidence.caching, but that module has IDA-specific imports that
 # create circular dependencies when d810.hexrays.expr.p_ast tries to import them.
 
 

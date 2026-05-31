@@ -38,7 +38,7 @@ HEXRAYS_MICROCODE_PROVIDER = "hexrays_microcode"
 # unavailable we fall back to hashing the printed representation of the
 # instruction, which is slower but always available.
 #
-# The OptimizationCache class (in d810.optimizers.caching) was considered for
+# The OptimizationCache class (in d810.backends.hexrays.evidence.caching) was considered for
 # seen-hash storage but rejected: it is SQLite-backed, function-level, and
 # designed for cross-session persistence -- far too heavy for per-instruction,
 # per-decompilation cycle detection.  A lightweight
