@@ -64,7 +64,7 @@ from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
     extract_side_effect_replay_candidates,
     extract_trampoline_isolation_candidates,
 )
-from d810.optimizers.microcode.flow.flattening.cleanup_family import (
+from d810.optimizers.microcode.flow.flattening.families.cleanup.cleanup_family import (
     CLEANUP_FAMILY_METADATA_KEY,
     SimpleFlatteningCleanupDetection,
     SimpleFlatteningCleanupFamily,
