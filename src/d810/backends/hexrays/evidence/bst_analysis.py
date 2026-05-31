@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import ida_hexrays
+
 from d810.analyses.value_flow import state_write
 from d810.backends.hexrays import bst_runtime as _hexrays_bst_runtime
 from d810.capabilities.providers import BstWalkerProvider, MicrocodeEvidenceProvider
@@ -2165,6 +2167,38 @@ def _get_mba_maturity(mba: Any) -> int:
     return int(mba.maturity)
 
 
+def _get_block_count(mba: Any) -> int:
+    """Block count off the opaque backend object. Byte-identical to ``mba.qty``."""
+    return mba.qty
+
+
+def _block_adjacency(mba: Any, qty: int) -> dict[int, tuple[int, ...]]:
+    """Portable ``{serial: (successor_serial, ...)}`` map over ``range(qty)``.
+
+    Byte-identical to the inlined ``mba.get_mblock(serial)`` +
+    ``[blk.succ(i) for i in range(blk.nsucc())]`` walk: reuses ``_get_block`` /
+    ``_block_successors`` so each lookup makes the identical live call.  Serials
+    whose block is ``None`` are omitted (the caller treats a missing key as no
+    successors, matching the original ``if blk is not None`` guard).
+    """
+    adjacency: dict[int, tuple[int, ...]] = {}
+    for serial in range(qty):
+        blk = _get_block(mba, serial)
+        if blk is not None:
+            adjacency[serial] = _block_successors(blk)
+    return adjacency
+
+
+def _is_glbopt1(mba: Any) -> bool:
+    """GLBOPT1 maturity gate. Byte-identical to ``mba.maturity == MMAT_GLBOPT1``."""
+    return int(mba.maturity) == ida_hexrays.MMAT_GLBOPT1
+
+
+def _glbopt1_maturity(mba: Any) -> int:
+    """Return the raw ``MMAT_GLBOPT1`` constant (for allowed-maturity tuples)."""
+    return int(ida_hexrays.MMAT_GLBOPT1)
+
+
 def build_microcode_evidence_provider() -> MicrocodeEvidenceProvider:
     """Bundle this backend's live microcode-evidence seams for the provider registry.
 
@@ -2177,6 +2211,10 @@ def build_microcode_evidence_provider() -> MicrocodeEvidenceProvider:
     return MicrocodeEvidenceProvider(
         get_function_entry_ea=_get_function_entry_ea,
         get_mba_maturity=_get_mba_maturity,
+        get_block_count=_get_block_count,
+        block_adjacency=_block_adjacency,
+        is_glbopt1=_is_glbopt1,
+        glbopt1_maturity=_glbopt1_maturity,
     )
 
 

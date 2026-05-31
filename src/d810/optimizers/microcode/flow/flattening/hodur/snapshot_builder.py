@@ -1,8 +1,7 @@
 """Hodur policy providers for generic state-machine snapshot assembly."""
 from __future__ import annotations
 
-import ida_hexrays
-
+from d810.capabilities.providers import get_microcode_evidence
 from d810.ir.flowgraph import FlowGraph
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
@@ -174,7 +173,7 @@ class HodurSnapshotPolicy:
             )
             return discovery_builder(
                 func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-                maturity=int(mba.maturity),
+                maturity=get_microcode_evidence().get_mba_maturity(mba),
                 pass_number=int(run_state.pass_number),
                 flow_graph=flow_graph,
                 transition_result=transition_result,
@@ -208,14 +207,15 @@ class HodurSnapshotPolicy:
 
     def attach_fake_jump_fixes_to_flow_graph(
         self,
-        mba: ida_hexrays.mba_t,
+        mba: object,
         flow_graph: FlowGraph,
         *,
         state_machine: DispatcherStateMachine | None,
         dispatcher_analysis_factory=analyze_dispatcher_live,
         collector=collect_live_fake_jump_fixes,
     ) -> FlowGraph:
-        if mba.maturity not in (ida_hexrays.MMAT_GLBOPT1,):
+        evidence = get_microcode_evidence()
+        if not evidence.is_glbopt1(mba):
             return flow_graph
 
         try:
@@ -224,7 +224,7 @@ class HodurSnapshotPolicy:
                 logger=self.logger,
                 max_nb_block=100,
                 max_path=100,
-                allowed_maturities=(ida_hexrays.MMAT_GLBOPT1,),
+                allowed_maturities=(evidence.glbopt1_maturity(mba),),
             )
         except Exception:
             self.logger.debug(
@@ -286,19 +286,20 @@ class HodurSnapshotPolicy:
 
     def attach_single_iteration_fixes_to_flow_graph(
         self,
-        mba: ida_hexrays.mba_t,
+        mba: object,
         flow_graph: FlowGraph,
         *,
         collector=collect_live_single_iteration_fixes,
     ) -> FlowGraph:
-        if mba.maturity not in (ida_hexrays.MMAT_GLBOPT1,):
+        evidence = get_microcode_evidence()
+        if not evidence.is_glbopt1(mba):
             return flow_graph
 
         try:
             fixes = collector(
                 mba,
                 logger=self.logger,
-                allowed_maturities=(ida_hexrays.MMAT_GLBOPT1,),
+                allowed_maturities=(evidence.glbopt1_maturity(mba),),
             )
         except Exception:
             self.logger.debug(
@@ -362,8 +363,10 @@ class HodurSnapshotPolicy:
             return priors
         return FunctionAnalysisPriors()
 
-    def compute_reachability_info(self, mba: ida_hexrays.mba_t) -> ReachabilityInfo:
-        qty = mba.qty
+    def compute_reachability_info(self, mba: object) -> ReachabilityInfo:
+        evidence = get_microcode_evidence()
+        qty = evidence.get_block_count(mba)
+        adjacency = evidence.block_adjacency(mba, qty)
         visited: set[int] = set()
         queue = [0]
         while queue:
@@ -371,10 +374,8 @@ class HodurSnapshotPolicy:
             if serial in visited or serial < 0 or serial >= qty:
                 continue
             visited.add(serial)
-            blk = mba.get_mblock(serial)
-            if blk is not None:
-                for i in range(blk.nsucc()):
-                    queue.append(blk.succ(i))
+            for succ in adjacency.get(serial, ()):
+                queue.append(succ)
         return ReachabilityInfo(
             entry_serial=0,
             reachable_blocks=frozenset(visited),
