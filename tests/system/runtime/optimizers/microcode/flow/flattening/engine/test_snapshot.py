@@ -7,7 +7,6 @@ from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     ReachabilityInfo,
     StateModelSummary,
 )
-from d810.optimizers.microcode.flow.flattening.hodur import snapshot as hodur_snapshot
 
 
 class _StateMachine:
@@ -20,11 +19,6 @@ def test_engine_package_re_exports_snapshot_types() -> None:
     assert engine.AnalysisSnapshot is AnalysisSnapshot
     assert engine.ReachabilityInfo is ReachabilityInfo
     assert engine.StateModelSummary is StateModelSummary
-
-
-def test_hodur_snapshot_shim_points_to_engine_types() -> None:
-    assert hodur_snapshot.AnalysisSnapshot is AnalysisSnapshot
-    assert hodur_snapshot.ReachabilityInfo is ReachabilityInfo
 
 
 def test_reachability_info_coverage() -> None:
