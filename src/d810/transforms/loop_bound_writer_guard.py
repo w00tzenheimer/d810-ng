@@ -311,8 +311,9 @@ def detect_loop_bound_writer_redirect(
     if qty <= 0:
         return None
 
+    walkers = get_bst_walkers()
     try:
-        source_blk = get_bst_walkers().get_block(mba, int(source_block_serial))
+        source_blk = walkers.get_block(mba, int(source_block_serial))
     except Exception:
         return None
     if source_blk is None:
@@ -344,7 +345,7 @@ def detect_loop_bound_writer_redirect(
         if i == src_serial_int:
             continue
         try:
-            blk = get_bst_walkers().get_block(mba, i)
+            blk = walkers.get_block(mba, i)
         except Exception:
             continue
         if blk is None:
@@ -358,7 +359,7 @@ def detect_loop_bound_writer_redirect(
     # other operand having ``counter + small_const`` shape.
     for i in range(qty):
         try:
-            blk = get_bst_walkers().get_block(mba, i)
+            blk = walkers.get_block(mba, i)
         except Exception:
             continue
         if blk is None:
@@ -533,8 +534,9 @@ def detect_loop_counter_writeback_tail(
     if qty <= 0:
         return None
 
+    walkers = get_bst_walkers()
     try:
-        tail_blk = get_bst_walkers().get_block(mba, int(tail_block_serial))
+        tail_blk = walkers.get_block(mba, int(tail_block_serial))
     except Exception:
         return None
     if tail_blk is None:
@@ -557,7 +559,7 @@ def detect_loop_counter_writeback_tail(
     bound_stkoff: int | None = None
     for i in range(qty):
         try:
-            blk = get_bst_walkers().get_block(mba, i)
+            blk = walkers.get_block(mba, i)
         except Exception:
             continue
         if blk is None:
@@ -604,7 +606,7 @@ def detect_loop_counter_writeback_tail(
     advance_ea: int | None = None
     for i in range(qty):
         try:
-            blk = get_bst_walkers().get_block(mba, i)
+            blk = walkers.get_block(mba, i)
         except Exception:
             continue
         if blk is None:
