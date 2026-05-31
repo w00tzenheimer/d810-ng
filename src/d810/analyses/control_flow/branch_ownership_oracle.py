@@ -848,10 +848,11 @@ def _iter_mba_instruction_texts(mba: object | None) -> tuple[str, ...]:
         qty = int(getattr(mba, "qty", 0) or 0)
     except (TypeError, ValueError):
         qty = 0
+    walkers = get_bst_walkers()
     texts: list[str] = []
     for serial in range(max(0, qty)):
         try:
-            block = get_bst_walkers().get_block(mba, int(serial))
+            block = walkers.get_block(mba, int(serial))
         except Exception:
             continue
         if block is None:
@@ -1189,6 +1190,7 @@ def _discarded_corridor_side_effect_reason(
     if qty and (start_serial < 0 or start_serial >= qty):
         return "discarded_target_out_of_range"
 
+    walkers = get_bst_walkers()
     visited: set[int] = set()
     queue: list[tuple[int, int]] = [(int(start_serial), 0)]
     while queue:
@@ -1199,7 +1201,7 @@ def _discarded_corridor_side_effect_reason(
             continue
         visited.add(serial)
         try:
-            block = get_bst_walkers().get_block(mba, int(serial))
+            block = walkers.get_block(mba, int(serial))
         except Exception:
             return "discarded_block_unavailable"
         if block is None:
@@ -1220,7 +1222,7 @@ def _discarded_corridor_side_effect_reason(
         if nsucc > 2:
             return "discarded_successors_not_local_corridor"
         try:
-            succs = get_bst_walkers().block_successors(block)
+            succs = walkers.block_successors(block)
         except Exception:
             return "discarded_successor_unavailable"
         for idx in range(nsucc):
