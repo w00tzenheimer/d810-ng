@@ -1386,7 +1386,7 @@ def _make_tigress_indirect_state_dispatcher_maps(
         if not isinstance(goto_table_info, dict):
             return ()
         try:
-            from d810.optimizers.microcode.flow.dispatcher import (
+            from d810.backends.hexrays.evidence.dispatcher import (
                 indirect_jump_table_analysis,
             )
 
