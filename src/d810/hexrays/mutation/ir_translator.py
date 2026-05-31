@@ -471,10 +471,22 @@ def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
             kind=kind,
         )
     if t == ida_hexrays.mop_d:
+        # Capture the nested sub-operation portably (ticket llr-lxas) so
+        # analyses can read the compared/computed expression structure, not
+        # just the flattened ``stack_refs``.  ``sub_l``/``sub_r`` recurse.
+        inner = getattr(mop, "d", None)
+        sub_kind = sub_l = sub_r = None
+        if inner is not None:
+            sub_kind = _insn_kind_from_hexrays(inner.opcode)
+            sub_l = capture_mop_snapshot(getattr(inner, "l", None))
+            sub_r = capture_mop_snapshot(getattr(inner, "r", None))
         return CfgMopSnapshot(
             t=t,
             size=size,
             stack_refs=_stack_refs_from_mop(mop),
+            sub_kind=sub_kind,
+            sub_l=sub_l,
+            sub_r=sub_r,
             kind=kind,
         )
     if t == ida_hexrays.mop_r:

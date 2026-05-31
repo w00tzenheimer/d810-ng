@@ -21,6 +21,7 @@ from d810.ir.value_refs import ValueRef
 
 __all__ = [
     "Add",
+    "And",
     "Const",
     "ExprRef",
     "Load",
@@ -38,6 +39,7 @@ class ValueOpKind(Enum):
     MOVE = auto()
     ADD = auto()
     SUB = auto()
+    AND = auto()
     LOAD = auto()
     STORE = auto()
 
@@ -73,6 +75,14 @@ class Sub:
 
 
 @dataclass(frozen=True)
+class And:
+    """Two-operand bitwise AND (the common MBA-mask shape)."""
+
+    left: "ExprRef"
+    right: "ExprRef"
+
+
+@dataclass(frozen=True)
 class Load:
     """A memory load from a computed address."""
 
@@ -87,5 +97,5 @@ class Store:
     value: "ExprRef"
 
 
-ExprRef = Union[Const, Move, Add, Sub, Load, Store]
+ExprRef = Union[Const, Move, Add, Sub, And, Load, Store]
 """Closed union of the concrete expression-node families."""

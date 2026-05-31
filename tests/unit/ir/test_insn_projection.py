@@ -7,7 +7,7 @@ true exactly when the live source operand was a number.
 """
 from __future__ import annotations
 
-from d810.ir.expressions import Const, Move
+from d810.ir.expressions import Add, And, Const, Move, Sub
 from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
 from d810.ir.insn_projection import project_assignment, project_conditional_branch
 from d810.ir.locations import RegisterLocation, StackSlot, WeakStackSlot
@@ -129,3 +129,37 @@ def test_conditional_branch_predicate_passthrough():
     cb = project_conditional_branch(_jcc(PredicateKind.TRUTHY, _stk(0x10), _num(0)))
     assert cb is not None and cb.predicate is PredicateKind.TRUTHY
     assert cb.taken is None and cb.fallthrough is None
+
+
+def _subinsn(sub_kind, sub_l: MopSnapshot, sub_r: MopSnapshot) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.SUBINSN, sub_kind=sub_kind, sub_l=sub_l, sub_r=sub_r)
+
+
+def test_nested_mop_d_and_lifts_to_And_expression():
+    # ``jz (var & 0x3F), #0`` -- the compared operand is a nested m_and.
+    nested = _subinsn(InsnKind.AND, _stk(0x3C), _num(0x3F))
+    cb = project_conditional_branch(_jcc(PredicateKind.EQ, nested, _num(0)))
+    assert cb.lhs == And(
+        left=Move(source=DefinitionRef(location=StackSlot(offset=0x3C, size=4))),
+        right=Const(value=0x3F),
+    )
+
+
+def test_nested_mop_d_recurses_two_levels():
+    # ``((var - 1) & 0x3F)``
+    outer = _subinsn(InsnKind.AND, _subinsn(InsnKind.SUB, _stk(0x10), _num(1)), _num(0x3F))
+    cb = project_conditional_branch(_jcc(PredicateKind.NE, outer, _num(0)))
+    assert cb.lhs == And(
+        left=Sub(
+            left=Move(source=DefinitionRef(location=StackSlot(offset=0x10, size=4))),
+            right=Const(value=1),
+        ),
+        right=Const(value=0x3F),
+    )
+
+
+def test_unmapped_nested_op_projects_none_not_wrong():
+    # An unmapped sub-op kind -> None (lossy), never a wrong expression.
+    nested = _subinsn(InsnKind.UNKNOWN, _stk(0x10), _num(1))
+    cb = project_conditional_branch(_jcc(PredicateKind.EQ, nested, _num(0)))
+    assert cb is not None and cb.lhs is None
