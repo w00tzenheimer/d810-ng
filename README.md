@@ -209,6 +209,43 @@ graph LR
 
 ---
 
+### Lift → Transform → Lower: the round-trip (and why it is not just LLVM / LiSA)
+
+The 7-stage pipeline above is uni-directional, but the *system* it lives inside is a **round-trip against a live, still-optimizing Hex-Rays**: D-810 lifts the live microcode into a portable snapshot IR, runs portable analyses/transforms that emit declarative modification *intents*, then lowers those intents back into the same `mba_t` — which Hex-Rays keeps optimizing afterwards. That round-trip is the hard, partially-novel part, and finishing the portable-IR convergence is the project's central open problem (ticket `llr-lxas`).
+
+It helps to see it as **two IRs sharing one substrate**:
+
+* The **analysis IR** (lift → run abstract domains) is LLVM / LiSA / VEX territory — lift to a typed, def-use-style representation and run fixpoints. Largely copyable.
+* The **rewrite IR** (transform → lower → write back) is **GTIRB / refactoring-CST** territory (libcst, Roslyn). The value is the *round-trip*: edit, then render back to a valid artifact, preserving everything you did not touch. LLVM never renders back to C; angr never writes VEX back to bytes.
+
+D-810 is the union of both — and adds a third property neither has: **the artifact you write back keeps getting optimized after you let go of it** (Hex-Rays runs `optimize_global`/DCE on your output).
+
+#### The four hard sub-problems
+
+1. **Semantic lift fidelity.** Topology is already portable (`FlowGraph`/`BlockSnapshot`). Operands are not: `InsnSnapshot` carries portable abstractions (`kind: InsnKind`, `branch_predicate`) but its operands are still `l`/`r`/`d` `MopSnapshot`s — Hex-Rays operand-position taxonomy with decoded values — and nested expression trees are flattened to `stack_refs` (lossy). A portable Operation/Value/Location substrate exists (`d810.ir.{expressions,value_refs,locations,semantics}`, LLVM/LiSA-style) but is **not yet wired into the lift**. The lift is allowed to be lossy — analysis only needs what it queries.
+2. **Inverse semantics — lowering must be *total and valid*.** You can drop detail going in; you cannot going out. D-810's escape hatch: it lowers by **replaying captured live bodies** (`hexrays.mutation.insn_snapshot_materializer` + `CapturedBlockBody` + a Hex-Rays `mop_t` clone), *not* by codegen from the portable IR — so it never needs a full microcode emitter. This is why the intent vocabulary in `transforms/graph_modification.py` is kept almost entirely **structural** (`RedirectGoto`, `RedirectBranch`, `ConvertToGoto`, `InsertBlock`, `RemoveEdge`, `NopInstructions`, `DuplicateBlock`, …); the handful that *synthesize* a value (`ZeroStateWrite`, `PromoteOperandToScalar`, `LowerConditionalStateTransition`) are exactly the fragile/dormant ones. Holding the structural-only line is the single biggest tractability lever.
+3. **Anchored provenance + transactional apply.** Intents reference *anchors* (block serials, instruction EAs, operand identity — `d810.ir.{handles,provenance,block_identity,mop_identity}`), never live pointers, because applying edit N invalidates the identities edit N+1 named. `DeferredGraphModifier` queues edits and re-resolves anchors at apply time; `cfg_verify` re-validates; stale-pointer tracking and rollback live here. Anchor stability under mutation is the irreducibly fiddly part.
+4. **Survival — the property no analysis IR has.** Edits lowered at maturity *M* must survive Hex-Rays's own later passes (`optimize_global`/DCE). They must be *sticky* (`MBL_KEEP`, `transforms/mbl_keep_selection.py`) and semantically robust enough not to be undone.
+
+#### The contract that holds it together
+
+* **Lift** = `hexrays.mutation.ir_translator.lift(mba) -> FlowGraph` (backend-owned): syntax + (partial) semantics + provenance, as an immutable snapshot.
+* **Transform** = pure `(portable IR) -> declarative intents` referencing anchors (`d810.analyses` + `d810.transforms`).
+* **Lower + Mutate** = backend resolves anchors → live mutations transactionally, owning *all* validity/survival concerns (`d810.hexrays.mutation`).
+* **Invariant**: the live `mba_t` enters portable-core *only* via lift and exits *only* via lower. Where this is currently violated — a live handle still threaded into portable analyses behind the `BstWalkerProvider` seam / `_FlowGraphMBAView` adapter — is the concrete `llr-zeyu`/`llr-lxas` debt.
+
+#### Where the convergence actually stands
+
+| surface | portable today | still Hex-Rays-shaped | convergence gap (`llr-lxas`) |
+|-|-|-|-|
+| **Lift** (`ir`, `hexrays.mutation.ir_translator`) | FlowGraph/BlockSnapshot topology; `InsnKind`, `BranchPredicate`; anchors (ea/serial/handles) | `InsnSnapshot.{l,r,d}`, `opcode`, `display_text`; nested exprs flattened (lossy) | wire `InsnSnapshot` onto `ir.{expressions,value_refs,locations}`; retire `l/r/d` |
+| **Transform** (`analyses`, `transforms`) | declarative intents (`graph_modification.py`), mostly structural | a live handle still leaks via the seam/view | finish the anchored semantic lift so analyses stop needing the live shape |
+| **Lower** (`hexrays.mutation`) | `DeferredGraphModifier`, `cfg_verify`, anchor re-resolution, `MBL_KEEP` | lowering replays captured `mop_t` clones, not portable codegen | only needed if transforms must *synthesize* computation — defer |
+
+Pragmatic sequencing: keep lowering structural-only, and retire `l/r/d` **incrementally, driven by what each analysis actually needs** — each analysis that stops needing the live operand shape is one fewer reason for the seam/view to exist. A green data-model gate means the live method-*calls* left portable-core text, **not** that the IR converged.
+
+---
+
 ### Analysis and Mutation Boundaries
 
 D-810 enforces strict boundaries to keep code clean and testable:
