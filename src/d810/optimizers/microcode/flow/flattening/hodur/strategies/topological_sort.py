@@ -15,6 +15,7 @@ from __future__ import annotations
 from d810.core import logging
 from d810.transforms.lowering import LoweringMode
 from d810.core.typing import TYPE_CHECKING
+from d810.capabilities.providers import get_microcode_evidence
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
 from d810.transforms.reorder_blocks_planning import compute_reorder_blocks as plan_reorder_blocks
@@ -75,8 +76,9 @@ class TopologicalSortStrategy:
         """
         mba = snapshot.mba
         if mba is not None:
-            func_ea = mba.entry_ea
-            maturity = mba.maturity
+            evidence = get_microcode_evidence()
+            func_ea = evidence.get_function_entry_ea(mba)
+            maturity = evidence.get_mba_maturity(mba)
             if (func_ea, maturity) in TopologicalSortStrategy._applied:
                 logger.debug(
                     "TopologicalSort: already applied for func_ea=0x%x maturity=%s, skipping",

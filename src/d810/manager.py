@@ -40,7 +40,10 @@ from d810.core.stats import OptimizationStatistics
 from d810.core.typing import TYPE_CHECKING
 from d810.backends.ast.z3 import Z3MopProver
 from d810.backends.hexrays.evidence import bst_analysis as _bst_evidence
-from d810.capabilities.providers import register_bst_walkers
+from d810.capabilities.providers import (
+    register_bst_walkers,
+    register_microcode_evidence,
+)
 from d810.hexrays.hooks.ctree_hooks import CtreeOptimizationRule, CtreeOptimizerManager
 from d810.hexrays.hooks.hexrays_hooks import (
     HEXRAYS_MICROCODE_PROVIDER,
@@ -1997,6 +2000,7 @@ class D810State(metaclass=SingletonMeta):
         module globals is repopulated before any recon analysis runs.
         """
         register_bst_walkers(_bst_evidence.build_bst_walker_provider())
+        register_microcode_evidence(_bst_evidence.build_microcode_evidence_provider())
 
     def start_d810(self):
         self._register_backend_analysis_providers()

@@ -64,8 +64,25 @@ class BstWalkerProvider:
     block_successors: Callable[..., Any]
 
 
+@dataclass(frozen=True)
+class MicrocodeEvidenceProvider:
+    """Backend-supplied LIVE microcode evidence accessors.
+
+    The portable seam for the optimizers-thinning work-backward extractions: portable
+    ``analyses`` / ``transforms`` hold an opaque backend object (a live ``mba_t`` OR a
+    ``d810.ir.FlowGraph`` projection) and read facts through these callables instead of the
+    live-MBA method/attr API. The Hex-Rays impl (``backends/hexrays/evidence``) makes the
+    identical call on whichever object it is handed, so behaviour is byte-identical for both
+    (the llr-zeyu polymorphism guard). Grows as extractions need methods (YAGNI).
+    """
+
+    get_function_entry_ea: Callable[..., Any]
+    get_mba_maturity: Callable[..., Any]
+
+
 _lock = threading.Lock()
 _bst_walkers: Optional[BstWalkerProvider] = None
+_microcode_evidence: Optional[MicrocodeEvidenceProvider] = None
 
 
 def register_bst_walkers(provider: BstWalkerProvider) -> None:
@@ -99,8 +116,35 @@ def get_bst_walkers() -> BstWalkerProvider:
     return provider
 
 
+def register_microcode_evidence(provider: MicrocodeEvidenceProvider) -> None:
+    """Register the backend microcode-evidence provider (composition root only)."""
+    global _microcode_evidence
+    with _lock:
+        _microcode_evidence = provider
+
+
+def get_microcode_evidence() -> MicrocodeEvidenceProvider:
+    """Return the registered microcode-evidence provider.
+
+    Raises:
+        LookupError: if no provider is registered -- the portable extraction REQUIRES this
+            seam on the live path, so a missing provider is a composition-root wiring bug
+            (fail loud), not an optional miss.
+    """
+    with _lock:
+        provider = _microcode_evidence
+    if provider is None:
+        raise LookupError(
+            "MicrocodeEvidenceProvider not registered: the composition root "
+            "(D810State.start_d810) must call register_microcode_evidence() before "
+            "portable analyses/transforms read live microcode evidence."
+        )
+    return provider
+
+
 def reset_providers_for_tests() -> None:
     """Clear all registered providers (test isolation)."""
-    global _bst_walkers
+    global _bst_walkers, _microcode_evidence
     with _lock:
         _bst_walkers = None
+        _microcode_evidence = None
