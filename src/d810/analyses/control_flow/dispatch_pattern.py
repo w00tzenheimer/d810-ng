@@ -74,28 +74,12 @@ class DispatchPatternCollector:
     level: str = "microcode"
 
     def collect(self, target, func_ea: int, maturity: int) -> ReconResult:
-        if hasattr(target, "blocks") and hasattr(target, "entry_serial"):
-            entry = getattr(target, "entry_serial", 0)
-            block_iter = list(target.blocks.values())
-            nodes = set(target.blocks.keys())
-            succs: dict[int, tuple[int, ...]] = {
-                b.serial: b.succs for b in block_iter
-            }
-        else:
-            entry = 0
-            nodes = set()
-            succs = {}
-            block_iter = []
-            qty = int(getattr(target, "qty", 0) or 0)
-            for i in range(qty):
-                blk = target.get_mblock(i)
-                if blk is None:
-                    continue
-                serial = int(getattr(blk, "serial", i))
-                nodes.add(serial)
-                out = tuple(int(s) for s in getattr(blk, "succset", ()))
-                succs[serial] = out
-                block_iter.append(blk)
+        entry = getattr(target, "entry_serial", 0)
+        block_iter = list(target.blocks.values())
+        nodes = set(target.blocks.keys())
+        succs: dict[int, tuple[int, ...]] = {
+            b.serial: b.succs for b in block_iter
+        }
 
         nway_blocks: list[tuple[int, int]] = []  # (serial, fan_out)
         indirect_count = 0
