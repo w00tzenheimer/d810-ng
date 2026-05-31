@@ -21,9 +21,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.ir.expressions import ExprRef
+from d810.ir.semantics import PredicateKind
 from d810.ir.value_refs import ValueRef
 
-__all__ = ["Assignment"]
+__all__ = ["Assignment", "ConditionalBranch"]
 
 
 @dataclass(frozen=True)
@@ -37,3 +38,24 @@ class Assignment:
 
     target: ValueRef | None
     value: ExprRef | None
+
+
+@dataclass(frozen=True)
+class ConditionalBranch:
+    """A portable two-way conditional control transfer (the control-flow analog
+    of :class:`Assignment`).
+
+    ``compare(predicate, lhs, rhs)`` then transfer to ``taken`` (predicate true)
+    or ``fallthrough`` (false).  Microcode fuses compare+branch into one ``m_jcc``
+    tail, so the operands ride here directly rather than via a separate boolean
+    value -- LLVM/VEX split that (``icmp``+``br`` / ``CmpEQ``+``Ist_Exit``); LiSA
+    and the fused microcode shape keep it together (predicate on the transfer,
+    successors as the two CFG edges).  Any field may be ``None`` when the operand
+    or edge is not (yet) recoverable.
+    """
+
+    predicate: PredicateKind | None
+    lhs: ExprRef | None
+    rhs: ExprRef | None
+    taken: int | None = None
+    fallthrough: int | None = None

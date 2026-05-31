@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from d810.ir.expressions import Const, Move
 from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
-from d810.ir.insn_projection import project_assignment
+from d810.ir.insn_projection import project_assignment, project_conditional_branch
 from d810.ir.locations import RegisterLocation, StackSlot, WeakStackSlot
-from d810.ir.statements import Assignment
+from d810.ir.semantics import PredicateKind
+from d810.ir.statements import Assignment, ConditionalBranch
 from d810.ir.value_refs import DefinitionRef
 
 M_MOV = 0x4
@@ -98,3 +99,33 @@ def test_number_source_with_no_value_does_not_fabricate_const():
 def test_unprojectable_source_and_dest_returns_none():
     lvar = MopSnapshot(kind=OperandKind.LVAR, lvar_off=4)
     assert project_assignment(_mov(lvar, lvar)) is None
+
+
+def _jcc(predicate: PredicateKind, l: MopSnapshot, r: MopSnapshot) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=0x2C, ea=0x1000, operands=(), kind=InsnKind.EQUALITY_JUMP,
+        branch_predicate=predicate, l=l, r=r,
+    )
+
+
+def test_conditional_branch_projects_predicate_operands_and_edges():
+    insn = _jcc(PredicateKind.EQ, _stk(0x3C), _num(7))
+    cb = project_conditional_branch(insn, taken=12, fallthrough=13)
+    assert cb == ConditionalBranch(
+        predicate=PredicateKind.EQ,
+        lhs=Move(source=DefinitionRef(location=StackSlot(offset=0x3C, size=4))),
+        rhs=Const(value=7),
+        taken=12,
+        fallthrough=13,
+    )
+
+
+def test_conditional_branch_none_for_non_branch():
+    assert project_conditional_branch(_mov(_num(1), _stk(0x10))) is None
+
+
+def test_conditional_branch_predicate_passthrough():
+    # The predicate is the already-portable PredicateKind carried on the snapshot.
+    cb = project_conditional_branch(_jcc(PredicateKind.TRUTHY, _stk(0x10), _num(0)))
+    assert cb is not None and cb.predicate is PredicateKind.TRUTHY
+    assert cb.taken is None and cb.fallthrough is None
