@@ -7,7 +7,7 @@ from d810.families.state_machine_cff.protocols import (
     UnflatteningStrategy as CanonicalUnflatteningStrategy,
 )
 from d810.optimizers.microcode.flow.flattening import engine
-from d810.optimizers.microcode.flow.flattening.engine.family import (
+from d810.families.state_machine_cff.family import (
     CFFStrategyFamily,
     DetectionResult as EngineDetectionResult,
 )

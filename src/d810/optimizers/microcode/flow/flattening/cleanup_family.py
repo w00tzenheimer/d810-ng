@@ -25,7 +25,7 @@ from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
     serialize_conditional_redirect_proofs,
     serialize_follow_up_reclassifications,
 )
-from d810.optimizers.microcode.flow.flattening.engine.family import (
+from d810.families.state_machine_cff.family import (
     CFFStrategyFamily,
 )
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (

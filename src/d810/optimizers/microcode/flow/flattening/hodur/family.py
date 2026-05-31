@@ -9,7 +9,7 @@ from d810.ir.flowgraph import FlowGraph
 from d810.core import logging
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
-from d810.optimizers.microcode.flow.flattening.engine.family import (
+from d810.families.state_machine_cff.family import (
     CFFStrategyFamily,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
