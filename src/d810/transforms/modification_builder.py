@@ -43,41 +43,24 @@ from d810.transforms.state_write_cleanup import (
 
 
 def snapshot_block_nsucc_map(snapshot: object) -> dict[int, int]:
-    """Build serial->nsucc map from snapshot.flow_graph, fallback to live mba."""
+    """Build serial->nsucc map from the snapshot's portable FlowGraph.
+
+    Every production ``AnalysisSnapshot`` is constructed with a non-None
+    ``flow_graph`` (4 ctor sites, all pass ``flow_graph=flow_graph``), so the
+    former live-``mba`` fallback was dead and has been removed.
+    """
     flow_graph = getattr(snapshot, "flow_graph", None)
-    if flow_graph is not None:
-        return {serial: block.nsucc for serial, block in flow_graph.blocks.items()}
-
-    mba = getattr(snapshot, "mba", None)
-    nsucc_map: dict[int, int] = {}
-    if mba is None:
-        return nsucc_map
-
-    for i in range(mba.qty):
-        blk = mba.get_mblock(i)
-        if blk is None:
-            continue
-        nsucc_map[blk.serial] = int(blk.nsucc())
-    return nsucc_map
+    if flow_graph is None:
+        return {}
+    return {serial: block.nsucc for serial, block in flow_graph.blocks.items()}
 
 
 def snapshot_block_succ_map(snapshot: object) -> dict[int, tuple[int, ...]]:
-    """Build serial->successor tuple map from snapshot.flow_graph, fallback to live mba."""
+    """Build serial->successor tuple map from the snapshot's portable FlowGraph."""
     flow_graph = getattr(snapshot, "flow_graph", None)
-    if flow_graph is not None:
-        return {serial: tuple(block.succs) for serial, block in flow_graph.blocks.items()}
-
-    mba = getattr(snapshot, "mba", None)
-    succ_map: dict[int, tuple[int, ...]] = {}
-    if mba is None:
-        return succ_map
-
-    for i in range(mba.qty):
-        blk = mba.get_mblock(i)
-        if blk is None:
-            continue
-        succ_map[blk.serial] = tuple(int(blk.succ(j)) for j in range(blk.nsucc()))
-    return succ_map
+    if flow_graph is None:
+        return {}
+    return {serial: tuple(block.succs) for serial, block in flow_graph.blocks.items()}
 
 
 def _infer_old_target(
