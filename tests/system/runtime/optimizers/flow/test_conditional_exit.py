@@ -16,9 +16,11 @@ from d810.analyses.control_flow.conditional_exit import (
 
 
 def _make_blk(nsucc: int, succs: list[int]):
+    # Mirror the portable d810.ir BlockSnapshot field API the helpers now
+    # consume: ``.nsucc`` is an int (not a method) and ``.succs`` a tuple.
     blk = types.SimpleNamespace()
-    blk.nsucc = lambda: nsucc
-    blk.succ = lambda i: succs[i]
+    blk.nsucc = nsucc
+    blk.succs = tuple(succs)
     return blk
 
 
