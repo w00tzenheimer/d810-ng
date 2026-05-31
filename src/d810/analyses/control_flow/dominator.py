@@ -4,7 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core.logging import getLogger
-from d810.core.typing import Any, Mapping, Sequence
+from d810.core.typing import Mapping, Sequence
+from d810.ir.flowgraph import FlowGraph
 
 logger = getLogger(__name__)
 
@@ -135,47 +136,27 @@ def dominates(dom: list[set[int]] | DominatorTree, a: int, b: int) -> bool:
     return a in dom[b]
 
 
-def _successors_from_mba(mba: Any) -> dict[int, list[int]]:
-    """Extract successor map from an MBA-like object via duck-typing."""
-    num_blocks = int(getattr(mba, "qty", 0) or 0)
-    successors: dict[int, list[int]] = {i: [] for i in range(num_blocks)}
-
-    direct_successors_available = True
-    for i in range(num_blocks):
-        blk = mba.get_mblock(i)
-        if hasattr(blk, "nsucc") and hasattr(blk, "succ"):
-            nsucc = int(blk.nsucc())
-            successors[i] = [int(blk.succ(j)) for j in range(nsucc)]
-        elif hasattr(blk, "succset"):
-            successors[i] = [int(s) for s in blk.succset]
-        else:
-            direct_successors_available = False
-            break
-
-    if direct_successors_available:
-        return successors
-
-    successors = {i: [] for i in range(num_blocks)}
-    for i in range(num_blocks):
-        blk = mba.get_mblock(i)
-        for pred in getattr(blk, "predset", ()):
-            pred_int = int(pred)
-            if 0 <= pred_int < num_blocks:
-                successors[pred_int].append(i)
-    return successors
+def _successors_from_flow_graph(flow_graph: FlowGraph) -> dict[int, list[int]]:
+    """Extract the successor map from a portable :class:`FlowGraph`."""
+    return {
+        serial: [int(succ) for succ in blk.succs]
+        for serial, blk in flow_graph.blocks.items()
+    }
 
 
-def compute_dominators(mba: Any) -> list[set[int]]:
-    """Compute dominator sets for each block in an MBA-like object.
+def compute_dominators(flow_graph: FlowGraph) -> list[set[int]]:
+    """Compute dominator sets for each block in a portable :class:`FlowGraph`.
 
     Returns a list where ``result[i]`` is the set of block serials
     that dominate block ``i``.
     """
-    num_blocks = int(getattr(mba, "qty", 0) or 0)
+    num_blocks = len(flow_graph.blocks)
     if num_blocks == 0:
         return []
 
-    tree = compute_dom_tree(_successors_from_mba(mba), entry=0)
+    tree = compute_dom_tree(
+        _successors_from_flow_graph(flow_graph), entry=flow_graph.entry_serial
+    )
     doms: list[set[int]] = []
     for node in range(num_blocks):
         doms.append(set(tree.dominators_of(node)))
