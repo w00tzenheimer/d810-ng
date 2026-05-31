@@ -238,11 +238,42 @@ D-810 is the union of both — and adds a third property neither has: **the arti
 
 | surface | portable today | still Hex-Rays-shaped | convergence gap (`llr-lxas`) |
 |-|-|-|-|
-| **Lift** (`ir`, `hexrays.mutation.ir_translator`) | FlowGraph/BlockSnapshot topology; `InsnKind`, `BranchPredicate`; anchors (ea/serial/handles) | `InsnSnapshot.{l,r,d}`, `opcode`, `display_text`; nested exprs flattened (lossy) | wire `InsnSnapshot` onto `ir.{expressions,value_refs,locations}`; retire `l/r/d` |
+| **Lift** (`ir`, `hexrays.mutation.ir_translator`) | topology; `InsnKind`, single `PredicateKind`; anchors (ea/serial/handles); statement projection (`Assignment` / `ConditionalBranch` over `ir.{expressions,value_refs,locations}`) for the MOV + conditional-jump families via `ir.insn_projection` | `InsnSnapshot.{l,r,d}`, `opcode`, `display_text`; nested `mop_d` still flattened (lossy) | extend the projection family-by-family; retire `l/r/d`; lift nested `mop_d` → nested `ExprRef` |
 | **Transform** (`analyses`, `transforms`) | declarative intents (`graph_modification.py`), mostly structural | a live handle still leaks via the seam/view | finish the anchored semantic lift so analyses stop needing the live shape |
 | **Lower** (`hexrays.mutation`) | `DeferredGraphModifier`, `cfg_verify`, anchor re-resolution, `MBL_KEEP` | lowering replays captured `mop_t` clones, not portable codegen | only needed if transforms must *synthesize* computation — defer |
 
 Pragmatic sequencing: keep lowering structural-only, and retire `l/r/d` **incrementally, driven by what each analysis actually needs** — each analysis that stops needing the live operand shape is one fewer reason for the seam/view to exist. A green data-model gate means the live method-*calls* left portable-core text, **not** that the IR converged.
+
+#### Identity vs. expression: an audited boundary (`llr-lxas`)
+
+A recurring temptation when promoting the statement nodes is to let `ConditionalBranch.lhs` (the compared operand, an *expression*) double as the **identity key** the dispatcher / state-machine readers use to group comparisons by variable. It must not. Identity and expression are **separate layers**: `d810.ir.mop_identity.mop_snapshot_key` — a size-*agnostic*, kind-prefixed key (`S{stkoff}` / `r{reg}` / `v{gaddr}` / `l{lvar_off}`) — is the LiSA *Identifier* / LLVM `Value`-identity / VEX guest-offset; `ConditionalBranch.lhs` is the syntactic operand expression. `mop_snapshot_key` is already vendor-free, so swapping it in for a size-aware `DefinitionRef(StackSlot(off, size))` pays no portability debt and only introduces regressions.
+
+This was settled **empirically, not by argument**. A `--full-diagnostics` dump writes a per-decompilation SQLite snapshot DB whose `instructions` table carries every captured operand's kind / offset / size, so the claim is queryable:
+
+```bash
+# 1. capture the diag DB (per function; MMAT snapshots + the D810 stages)
+PYTHONPATH=src python3 tools/d810cli.py dump -w <wt> \
+  -f sub_7FFD3338C040 -p hodur_flag2.json --full-diagnostics
+DB=$(ls -t .tmp/logs/d810_logs/*.diag.sqlite3 | head -1)
+
+# 2. SIZE SENSITIVITY — stack slots written at more than one width
+sqlite3 "$DB" "SELECT COUNT(*) FROM (SELECT dest_stkoff FROM instructions
+  WHERE dest_stkoff IS NOT NULL GROUP BY dest_stkoff
+  HAVING COUNT(DISTINCT dest_size) > 1)"            # -> 132  (of 256 slots = 52%)
+
+# 3. KIND COVERAGE — operand kind of the compared variable in conditional jumps
+#    (opcode 42..52 = m_jcnd..m_jle; mopt 1=reg 4=sub-insn/nested 5=stack 9=lvar)
+sqlite3 "$DB" "SELECT src_l_type, COUNT(*) FROM instructions
+  WHERE opcode BETWEEN 42 AND 52 GROUP BY src_l_type"
+  # -> mop_S 1668 | mop_d 96 (nested) | mop_l 16 (lvar) | mop_r 10
+```
+
+The two measured findings that kill the swap:
+
+* **Size sensitivity.** **132 of 256 stack slots (52%)** are written at more than one width (8 / 4 / 1 bytes — the `m_xdu` widening / sub-register access pattern). `mop_snapshot_key` keys `S{stkoff}` and treats a slot as one variable (correct); `DefinitionRef(StackSlot(off, size))` is size-aware and would split a single dispatcher state-variable into two or three.
+* **Kind coverage.** The compared operand is `mop_l` (lvar) 16× and `mop_d` (nested sub-instruction) 96×. `mop_snapshot_key` keys lvar; the size-aware location projection represents neither (→ `None` → dropped comparisons).
+
+Verdict: identity grouping **keeps** `mop_snapshot_key`; `ConditionalBranch` carries operands as expressions for value/structure analyses only — complementary layers, not redundant. The one genuine operand-lift this surfaced is the **96 nested `mop_d` compared operands** (4 even at GLBOPT1): lift those into nested `ExprRef` (`Add`/`Sub`/`And`/…) when an analysis needs the compared-expression *structure*, which is distinct from — and does not touch — the identity grouping.
 
 ---
 
