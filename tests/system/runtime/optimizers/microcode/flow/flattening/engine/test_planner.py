@@ -15,7 +15,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     PlanFragment,
     FAMILY_DIRECT,
 )
-from d810.optimizers.microcode.flow.flattening.hodur import planner as hodur_planner
+from d810.optimizers.microcode.flow.flattening.engine import planner as hodur_planner
 
 
 def _fragment(
