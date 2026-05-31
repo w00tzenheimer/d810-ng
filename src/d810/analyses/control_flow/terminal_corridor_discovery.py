@@ -9,7 +9,7 @@ from d810.analyses.control_flow.terminal_frontier import (
     classify_cfg_suffix_action,
     compute_terminal_cfg_suffix_frontier,
 )
-from d810.ir.flowgraph import BranchPredicate, InsnKind, OperandKind
+from d810.ir.flowgraph import PredicateKind, InsnKind, OperandKind
 from d810.core.typing import AbstractSet, Mapping, Protocol, Sequence
 from d810.analyses.control_flow.carrier_resolution import CarrierResolver
 from d810.analyses.control_flow.state_machine_analysis import (
@@ -231,7 +231,7 @@ def _is_corridor_control_flow_insn(insn: object) -> bool:
         kind is InsnKind.GOTO
         or (
             kind is InsnKind.EQUALITY_JUMP
-            and insn.branch_predicate is BranchPredicate.NOT_EQUAL
+            and insn.branch_predicate is PredicateKind.NE
         )
         or kind is InsnKind.INDIRECT_JUMP
         or kind is InsnKind.TABLE_JUMP

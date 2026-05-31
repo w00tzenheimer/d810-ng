@@ -4,7 +4,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.ir.flowgraph import (
-    BranchPredicate,
+    PredicateKind,
     InsnKind,
     InsnSnapshot,
     MopSnapshot,
@@ -49,7 +49,7 @@ def test_signed_branch_predicate_respects_64_bit_compare_width() -> None:
 
     assert (
         evaluate_branch_predicate(
-            BranchPredicate.SIGNED_LT,
+            PredicateKind.SLT,
             left,
             right,
             compare_width=8,
@@ -58,7 +58,7 @@ def test_signed_branch_predicate_respects_64_bit_compare_width() -> None:
     )
     assert (
         evaluate_branch_predicate(
-            BranchPredicate.SIGNED_LT,
+            PredicateKind.SLT,
             left,
             right,
             compare_width=4,
@@ -70,7 +70,7 @@ def test_signed_branch_predicate_respects_64_bit_compare_width() -> None:
 def test_equality_predicates_respect_compare_width_mask() -> None:
     assert (
         evaluate_branch_predicate(
-            BranchPredicate.EQUAL,
+            PredicateKind.EQ,
             0x1_0000_0000,
             0,
             compare_width=4,
@@ -79,7 +79,7 @@ def test_equality_predicates_respect_compare_width_mask() -> None:
     )
     assert (
         evaluate_branch_predicate(
-            BranchPredicate.NOT_EQUAL,
+            PredicateKind.NE,
             0x1_0000_0000,
             0,
             compare_width=4,
@@ -88,7 +88,7 @@ def test_equality_predicates_respect_compare_width_mask() -> None:
     )
     assert (
         evaluate_branch_predicate(
-            BranchPredicate.EQUAL,
+            PredicateKind.EQ,
             0x1_0000_0000,
             0,
             compare_width=None,
@@ -100,7 +100,7 @@ def test_equality_predicates_respect_compare_width_mask() -> None:
 def test_ordering_predicate_without_width_is_not_proven() -> None:
     assert (
         evaluate_branch_predicate(
-            BranchPredicate.SIGNED_LT,
+            PredicateKind.SLT,
             0xFFFFFFFF00000000,
             0,
             compare_width=None,

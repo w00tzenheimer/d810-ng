@@ -17,7 +17,7 @@ import pytest
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
 from d810.ir.flowgraph import (
-    BranchPredicate,
+    PredicateKind,
     BlockKind,
     BlockSnapshot,
     FlowGraph,
@@ -192,20 +192,20 @@ def test_capture_mop_snapshot_preserves_nested_stack_refs():
 
 def test_hexrays_branch_opcodes_map_to_backend_neutral_predicates():
     assert _branch_predicate_from_hexrays(ida_hexrays.m_jnz) is (
-        BranchPredicate.NOT_EQUAL
+        PredicateKind.NE
     )
-    assert _branch_predicate_from_hexrays(ida_hexrays.m_jz) is BranchPredicate.EQUAL
+    assert _branch_predicate_from_hexrays(ida_hexrays.m_jz) is PredicateKind.EQ
     assert _branch_predicate_from_hexrays(ida_hexrays.m_jae) is (
-        BranchPredicate.UNSIGNED_GE
+        PredicateKind.UGE
     )
     assert _branch_predicate_from_hexrays(ida_hexrays.m_jb) is (
-        BranchPredicate.UNSIGNED_LT
+        PredicateKind.ULT
     )
     assert _branch_predicate_from_hexrays(ida_hexrays.m_jg) is (
-        BranchPredicate.SIGNED_GT
+        PredicateKind.SGT
     )
     assert _branch_predicate_from_hexrays(ida_hexrays.m_jle) is (
-        BranchPredicate.SIGNED_LE
+        PredicateKind.SLE
     )
 
 
