@@ -34,7 +34,7 @@ from d810.mba.dsl import SymbolicExpression, SymbolicExpressionProtocol
 
 # Import types only for type checking to avoid circular imports and IDA dependencies
 if TYPE_CHECKING:
-    from d810.optimizers.core import OptimizationContext
+    from d810.passes.core import OptimizationContext
 
 logger = getLogger(__name__)
 
