@@ -35,8 +35,7 @@ from __future__ import annotations
 
 import os
 
-import ida_hexrays
-
+from d810.capabilities.providers import get_microcode_evidence
 from d810.core import logging
 from d810.transforms.lowering import LoweringMode
 from d810.core.algorithm_metadata import algorithm_metadata
@@ -642,9 +641,12 @@ class _SemanticExactNodeExperimentStrategy:
 
     def is_applicable(self, snapshot) -> bool:
         mba = getattr(snapshot, "mba", None)
-        if mba is None or int(getattr(mba, "entry_ea", 0)) != _SUB7FFD_FUNC_EA:
+        if mba is None:
             return False
-        if int(getattr(mba, "maturity", ida_hexrays.MMAT_ZERO)) != ida_hexrays.MMAT_GLBOPT1:
+        evidence = get_microcode_evidence()
+        if int(evidence.get_function_entry_ea(mba)) != _SUB7FFD_FUNC_EA:
+            return False
+        if not bool(evidence.is_glbopt1(mba)):
             return False
         return (
             getattr(snapshot, "state_machine", None) is not None
