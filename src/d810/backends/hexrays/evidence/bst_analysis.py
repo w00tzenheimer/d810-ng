@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 from d810.analyses.value_flow import state_write
 from d810.backends.hexrays import bst_runtime as _hexrays_bst_runtime
-from d810.capabilities.providers import BstWalkerProvider
+from d810.capabilities.providers import BstWalkerProvider, MicrocodeEvidenceProvider
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.core.logging import getLogger
 from d810.core.typing import (
@@ -2148,6 +2148,35 @@ def build_bst_walker_provider() -> BstWalkerProvider:
         resolve_via_bst_walk=resolve_via_bst_walk,
         get_block=_get_block,
         block_successors=_block_successors,
+    )
+
+
+def _get_function_entry_ea(mba: Any) -> int:
+    """Function entry EA off the opaque backend object (live ``mba_t`` or projection).
+
+    Byte-identical to the inlined ``mba.entry_ea`` the portable code used to read; both a
+    live ``mba_t`` and a ``FlowGraph`` projection expose ``entry_ea``.
+    """
+    return int(mba.entry_ea)
+
+
+def _get_mba_maturity(mba: Any) -> int:
+    """Maturity off the opaque backend object. Byte-identical to ``mba.maturity``."""
+    return int(mba.maturity)
+
+
+def build_microcode_evidence_provider() -> MicrocodeEvidenceProvider:
+    """Bundle this backend's live microcode-evidence seams for the provider registry.
+
+    Single source of truth for which Hex-Rays callables satisfy each
+    ``MicrocodeEvidenceProvider`` seam. Called by the composition root
+    (``D810State.start_d810``) and by unit-test fixtures, so production and tests inject
+    identical accessors into ``d810.capabilities.providers`` (portable analyses/transforms
+    read them via ``get_microcode_evidence()`` without importing this backend).
+    """
+    return MicrocodeEvidenceProvider(
+        get_function_entry_ea=_get_function_entry_ea,
+        get_mba_maturity=_get_mba_maturity,
     )
 
 
