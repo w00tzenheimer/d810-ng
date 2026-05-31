@@ -183,7 +183,7 @@ def _return_value_from_frontier_writer(
         return None
 
     from d810.backends.hexrays.evidence.bst_analysis import _get_mop_const_value
-    from d810.optimizers.microcode.flow.dispatcher.return_frontier_carrier_audit import (
+    from d810.backends.hexrays.evidence.dispatcher.return_frontier_carrier_audit import (
         _walk_to_return_writer,
     )
 
