@@ -79,30 +79,8 @@ class _BlockStateWriteContext:
 
 
 def _block_succs(target: Any, block_serial: int) -> tuple[int, ...]:
-    """Return successor serials for a block.
-
-    Handles both the live ``mba_t`` interface (``get_mblock`` + ``succset``
-    via ``nsucc()`` / ``succ(i)``) and the test ``BlockSnapshot`` shape
-    (``blocks`` mapping with ``succs`` list).
-    """
-    if hasattr(target, "qty") and hasattr(target, "get_mblock"):
-        try:
-            qty = int(getattr(target, "qty", 0) or 0)
-        except (TypeError, ValueError):
-            return ()
-        if not (0 <= block_serial < qty):
-            return ()
-        try:
-            blk = target.get_mblock(block_serial)
-        except Exception:
-            return ()
-        if blk is None:
-            return ()
-        try:
-            return tuple(int(blk.succ(i)) for i in range(int(blk.nsucc())))
-        except Exception:
-            return ()
-
+    """Return successor serials for a block from a portable FlowGraph
+    (``blocks`` mapping of ``BlockSnapshot`` with ``.succs``)."""
     blocks = getattr(target, "blocks", target)
     block_iter = blocks.values() if isinstance(blocks, Mapping) else blocks
     for blk in block_iter:
@@ -173,27 +151,6 @@ def _block_start_ea_lookup(target: Any) -> dict[int, int | None]:
     """Return a ``{block_serial: start_ea | None}`` map built from the
     snapshot/live target without re-iterating instructions."""
     lookup: dict[int, int | None] = {}
-    if hasattr(target, "qty") and hasattr(target, "get_mblock"):
-        try:
-            qty = int(getattr(target, "qty", 0) or 0)
-        except (TypeError, ValueError):
-            return lookup
-        for serial in range(qty):
-            try:
-                blk = target.get_mblock(serial)
-            except Exception:
-                continue
-            if blk is None:
-                continue
-            ea = getattr(blk, "start", None)
-            if ea is None:
-                ea = getattr(blk, "start_ea", None)
-            try:
-                lookup[serial] = int(ea) if ea is not None else None
-            except (TypeError, ValueError):
-                lookup[serial] = None
-        return lookup
-
     blocks = getattr(target, "blocks", target)
     block_iter = blocks.values() if isinstance(blocks, Mapping) else blocks
     for blk in block_iter:
