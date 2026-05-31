@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from d810.ir.flowgraph import (
     BlockKind,
-    BranchPredicate,
+    PredicateKind,
     FlowGraph,
     InsnKind,
     InsnSnapshot,
@@ -31,12 +31,12 @@ def _forward_eval_insn(*args, **kwargs):
 
 _BST_BRANCH_PREDICATES = frozenset(
     {
-        BranchPredicate.NOT_EQUAL,
-        BranchPredicate.EQUAL,
-        BranchPredicate.UNSIGNED_LE,
-        BranchPredicate.UNSIGNED_GT,
-        BranchPredicate.UNSIGNED_LT,
-        BranchPredicate.UNSIGNED_GE,
+        PredicateKind.NE,
+        PredicateKind.EQ,
+        PredicateKind.ULE,
+        PredicateKind.UGT,
+        PredicateKind.ULT,
+        PredicateKind.UGE,
     }
 )
 _LEGACY_BLT_STOP = 1
@@ -50,12 +50,12 @@ _LEGACY_INSN_KIND_OPCODES = {
     InsnKind.RET: frozenset({0x3A}),
 }
 _LEGACY_BRANCH_PREDICATE_OPCODES = {
-    0x2B: BranchPredicate.NOT_EQUAL,
-    0x2C: BranchPredicate.EQUAL,
-    0x2D: BranchPredicate.UNSIGNED_GE,
-    0x2E: BranchPredicate.UNSIGNED_LT,
-    0x2F: BranchPredicate.UNSIGNED_GT,
-    0x30: BranchPredicate.UNSIGNED_LE,
+    0x2B: PredicateKind.NE,
+    0x2C: PredicateKind.EQ,
+    0x2D: PredicateKind.UGE,
+    0x2E: PredicateKind.ULT,
+    0x2F: PredicateKind.UGT,
+    0x30: PredicateKind.ULE,
 }
 
 
@@ -210,7 +210,7 @@ def _tail_insn(block: object | None) -> object | None:
     return insns[-1] if insns else None
 
 
-def _branch_predicate_for_tail(tail: object | None) -> BranchPredicate | object | None:
+def _branch_predicate_for_tail(tail: object | None) -> PredicateKind | object | None:
     if tail is None:
         return None
     predicate = getattr(tail, "branch_predicate", None)
@@ -225,12 +225,12 @@ def _branch_predicate_for_tail(tail: object | None) -> BranchPredicate | object 
         except (TypeError, ValueError):
             return None
     return {
-        "m_jnz": BranchPredicate.NOT_EQUAL,
-        "m_jz": BranchPredicate.EQUAL,
-        "m_jbe": BranchPredicate.UNSIGNED_LE,
-        "m_ja": BranchPredicate.UNSIGNED_GT,
-        "m_jb": BranchPredicate.UNSIGNED_LT,
-        "m_jae": BranchPredicate.UNSIGNED_GE,
+        "m_jnz": PredicateKind.NE,
+        "m_jz": PredicateKind.EQ,
+        "m_jbe": PredicateKind.ULE,
+        "m_ja": PredicateKind.UGT,
+        "m_jb": PredicateKind.ULT,
+        "m_jae": PredicateKind.UGE,
     }.get(opcode_name)
 
 
@@ -1115,7 +1115,7 @@ def init_bst_cmp_opcodes() -> frozenset:
     The legacy name is kept for compatibility with tests and callers that
     monkeypatch ``_BST_CMP_OPCODES`` with synthetic opcode integers. The
     default remains the legacy numeric opcode set; portable
-    ``BranchPredicate`` values are accepted in the walkers as an additive
+    ``PredicateKind`` values are accepted in the walkers as an additive
     snapshot path.
     """
 
@@ -1131,17 +1131,17 @@ def eval_bst_condition(opcode: object, state: int, cmp_val: int) -> bool:
         except (TypeError, ValueError):
             pass
 
-    if _kind_matches(opcode, BranchPredicate.NOT_EQUAL, "m_jnz"):
+    if _kind_matches(opcode, PredicateKind.NE, "m_jnz"):
         return state != cmp_val
-    if _kind_matches(opcode, BranchPredicate.EQUAL, "m_jz"):
+    if _kind_matches(opcode, PredicateKind.EQ, "m_jz"):
         return state == cmp_val
-    if _kind_matches(opcode, BranchPredicate.UNSIGNED_LE, "m_jbe"):
+    if _kind_matches(opcode, PredicateKind.ULE, "m_jbe"):
         return state <= cmp_val
-    if _kind_matches(opcode, BranchPredicate.UNSIGNED_GT, "m_ja"):
+    if _kind_matches(opcode, PredicateKind.UGT, "m_ja"):
         return state > cmp_val
-    if _kind_matches(opcode, BranchPredicate.UNSIGNED_LT, "m_jb"):
+    if _kind_matches(opcode, PredicateKind.ULT, "m_jb"):
         return state < cmp_val
-    if _kind_matches(opcode, BranchPredicate.UNSIGNED_GE, "m_jae"):
+    if _kind_matches(opcode, PredicateKind.UGE, "m_jae"):
         return state >= cmp_val
     return False
 

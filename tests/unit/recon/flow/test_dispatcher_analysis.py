@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from d810.ir.flowgraph import (
-    BranchPredicate,
+    PredicateKind,
     BlockSnapshot,
     FlowGraph,
     InsnKind,
@@ -51,7 +51,7 @@ def _insn(
     *,
     l: MopSnapshot | None = None,
     r: MopSnapshot | None = None,
-    branch_predicate: BranchPredicate | None = None,
+    branch_predicate: PredicateKind | None = None,
 ) -> InsnSnapshot:
     return InsnSnapshot(
         opcode=0,
@@ -98,7 +98,7 @@ def _comparison_block(serial: int, constant: int) -> BlockSnapshot:
         InsnKind.EQUALITY_JUMP,
         l=_stack(),
         r=_number(constant),
-        branch_predicate=BranchPredicate.EQUAL,
+        branch_predicate=PredicateKind.EQ,
     )
     return _block(serial, insns=(tail,))
 
@@ -211,7 +211,7 @@ def test_truthy_conditional_jump_is_not_treated_as_state_comparison() -> None:
         InsnKind.COND_JUMP,
         l=_stack(),
         r=_number(0x200),
-        branch_predicate=BranchPredicate.TRUTHY,
+        branch_predicate=PredicateKind.TRUTHY,
     )
     flow_graph = _flow([_block(0, insns=(tail,))])
 

@@ -28,7 +28,6 @@ from d810.transforms.graph_modification import (
     NopInstructions,
 )
 from d810.ir.flowgraph import (
-    BranchPredicate,
     BlockKind,
     BlockSnapshot,
     FlowGraph,
@@ -117,25 +116,9 @@ def is_hexrays_opcode(opcode: int, name: str) -> bool:
     return value is not None and int(opcode) == int(value)
 
 
-def _branch_predicate_from_hexrays(opcode: int) -> BranchPredicate | None:
-    opcode = int(opcode)
-    mapping = (
-        ("m_jcnd", BranchPredicate.TRUTHY),
-        ("m_jnz", BranchPredicate.NOT_EQUAL),
-        ("m_jz", BranchPredicate.EQUAL),
-        ("m_jae", BranchPredicate.UNSIGNED_GE),
-        ("m_ja", BranchPredicate.UNSIGNED_GT),
-        ("m_jbe", BranchPredicate.UNSIGNED_LE),
-        ("m_jb", BranchPredicate.UNSIGNED_LT),
-        ("m_jge", BranchPredicate.SIGNED_GE),
-        ("m_jg", BranchPredicate.SIGNED_GT),
-        ("m_jle", BranchPredicate.SIGNED_LE),
-        ("m_jl", BranchPredicate.SIGNED_LT),
-    )
-    for name, predicate in mapping:
-        if is_hexrays_opcode(opcode, name):
-            return predicate
-    return None
+# ``_branch_predicate_from_hexrays`` (BranchPredicate) retired (llr-lxas):
+# ``_branch_predicate_only_from_hexrays`` below is the identical m_jX mapping in
+# the single ``PredicateKind`` vocabulary -- callers use it directly.
 
 
 def _compare_width_from_operands(*operands: object) -> int | None:
@@ -189,7 +172,7 @@ def _insn_kind_from_hexrays(opcode: int) -> InsnKind:
         return InsnKind.INDIRECT_JUMP
     if opcode in (int(ida_hexrays.m_jnz), int(ida_hexrays.m_jz)):
         return InsnKind.EQUALITY_JUMP
-    if _branch_predicate_from_hexrays(opcode) is not None:
+    if _branch_predicate_only_from_hexrays(opcode) is not None:
         return InsnKind.COND_JUMP
     return InsnKind.UNKNOWN
 
@@ -225,7 +208,7 @@ def is_control_flow_opcode(opcode: int) -> bool:
     (``m_call`` / ``m_icall``).  Use this to ask "is this instruction control
     flow?" without enumerating ``InsnKind`` cases at every call site.
     """
-    if _branch_predicate_from_hexrays(opcode) is not None:
+    if _branch_predicate_only_from_hexrays(opcode) is not None:
         return True
     for name in ("m_goto", "m_ijmp", "m_jtbl", "m_call", "m_icall"):
         if is_hexrays_opcode(opcode, name):
@@ -557,7 +540,7 @@ def capture_insn_snapshot(insn: "ida_hexrays.minsn_t") -> InsnSnapshot:
         if mop.t != ida_hexrays.mop_z  # type: ignore[attr-defined]
     )
     operands = tuple(operand for _, operand in operand_slots)
-    branch_predicate = _branch_predicate_from_hexrays(opcode)
+    branch_predicate = _branch_predicate_only_from_hexrays(opcode)
     insn_kind = _insn_kind_from_hexrays(opcode)
     left = capture_mop_snapshot(insn.l)
     right = capture_mop_snapshot(insn.r)

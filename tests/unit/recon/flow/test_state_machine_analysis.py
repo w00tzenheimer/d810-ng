@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 from types import SimpleNamespace
 
-from d810.ir.flowgraph import BranchPredicate, InsnKind, OperandKind
+from d810.ir.flowgraph import PredicateKind, InsnKind, OperandKind
 from d810.analyses.control_flow import state_machine_analysis as sma
 
 
@@ -30,7 +30,7 @@ class _SnapshotBlock:
         *,
         opcode: int | None = None,
         kind: InsnKind = InsnKind.UNKNOWN,
-        branch_predicate: BranchPredicate | None = None,
+        branch_predicate: PredicateKind | None = None,
         cmp_value: int | None = None,
         insn_count: int = 1,
     ):
@@ -266,7 +266,7 @@ def test_resolve_exit_via_bst_default_snapshot_skips_trivial_connectors():
                 (7, 20),
                 opcode="m_jnz",
                 kind=InsnKind.EQUALITY_JUMP,
-                branch_predicate=BranchPredicate.NOT_EQUAL,
+                branch_predicate=PredicateKind.NE,
                 cmp_value=0x1000,
             ),
             20: _SnapshotBlock(20, (22,)),
@@ -275,7 +275,7 @@ def test_resolve_exit_via_bst_default_snapshot_skips_trivial_connectors():
                 (122, 23),
                 opcode="m_jnz",
                 kind=InsnKind.EQUALITY_JUMP,
-                branch_predicate=BranchPredicate.NOT_EQUAL,
+                branch_predicate=PredicateKind.NE,
                 cmp_value=0x790A1FEB,
             ),
             122: _SnapshotBlock(
@@ -307,7 +307,7 @@ def test_resolve_exit_via_bst_default_snapshot_keeps_empty_handler_anchor():
                 (20, 122),
                 opcode="m_jnz",
                 kind=InsnKind.EQUALITY_JUMP,
-                branch_predicate=BranchPredicate.NOT_EQUAL,
+                branch_predicate=PredicateKind.NE,
                 cmp_value=0x1000,
             ),
             20: _SnapshotBlock(20, (8,)),

@@ -5,7 +5,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 from d810.ir.flowgraph import (
-    BranchPredicate,
+    PredicateKind,
     BlockSnapshot,
     FlowGraph,
     InsnKind,
@@ -95,7 +95,7 @@ def _jz(left: MopSnapshot, right: MopSnapshot, target: int) -> InsnSnapshot:
         r=right,
         d=_blk(target),
         kind=InsnKind.EQUALITY_JUMP,
-        branch_predicate=BranchPredicate.EQUAL,
+        branch_predicate=PredicateKind.EQ,
     )
 
 
@@ -110,7 +110,7 @@ def _jnz(left: MopSnapshot, right: MopSnapshot, target: int) -> InsnSnapshot:
         r=right,
         d=_blk(target),
         kind=InsnKind.COND_JUMP,
-        branch_predicate=BranchPredicate.NOT_EQUAL,
+        branch_predicate=PredicateKind.NE,
     )
 
 
@@ -125,7 +125,7 @@ def _jle(left: MopSnapshot, right: MopSnapshot, target: int) -> InsnSnapshot:
         r=right,
         d=_blk(target),
         kind=InsnKind.COND_JUMP,
-        branch_predicate=BranchPredicate.SIGNED_LE,
+        branch_predicate=PredicateKind.SLE,
     )
 
 

@@ -57,30 +57,32 @@ __all__ = [
 ]
 
 
-class PredicateKind(Enum):
+class PredicateKind(str, Enum):
     """Comparison / truthiness predicates used in conditional branches
     and ``m_set*`` materializations.
 
-    Naming follows LLVM ICMP conventions (shorter than
-    ``BranchPredicate`` in ``d810.ir.flowgraph``, which is the older
-    equivalent kept in place for back-compat with the slice-9 / slice-10
-    ``RedirectIntent`` work).  Conditional branches and ``set*`` byte
-    materializations both consume this -- they share the predicate
-    semantic; the call site separately determines whether the result
-    is "branch taken" or "byte materialized".
+    Naming follows LLVM ICMP conventions.  This is the single portable
+    predicate vocabulary: it absorbed and retired the older
+    ``BranchPredicate`` (formerly in ``d810.ir.flowgraph``) -- the string
+    values below are exactly BranchPredicate's, so any code that
+    reconstructs a predicate from its serialized value
+    (``PredicateKind(str(raw))``) keeps working.  Conditional branches and
+    ``set*`` byte materializations both consume this -- they share the
+    predicate semantic; the call site separately determines whether the
+    result is "branch taken" or "byte materialized".
     """
 
-    EQ = auto()
-    NE = auto()
-    UGE = auto()
-    UGT = auto()
-    ULE = auto()
-    ULT = auto()
-    SGE = auto()
-    SGT = auto()
-    SLE = auto()
-    SLT = auto()
-    TRUTHY = auto()
+    EQ = "eq"
+    NE = "ne"
+    UGE = "uge"
+    UGT = "ugt"
+    ULE = "ule"
+    ULT = "ult"
+    SGE = "sge"
+    SGT = "sgt"
+    SLE = "sle"
+    SLT = "slt"
+    TRUTHY = "truthy"
 
 
 class ControlTransferKind(Enum):

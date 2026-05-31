@@ -7,6 +7,7 @@ from enum import Enum
 from types import MappingProxyType
 
 from d810.core.logging import getLogger
+from d810.ir.semantics import PredicateKind  # re-exported; BranchPredicate retired (llr-lxas)
 
 logger = getLogger(__name__)
 
@@ -53,20 +54,10 @@ class InsnKind(Enum):
     RET = "ret"
 
 
-class BranchPredicate(Enum):
-    """Backend-neutral conditional branch predicate semantics."""
-
-    TRUTHY = "truthy"
-    EQUAL = "eq"
-    NOT_EQUAL = "ne"
-    UNSIGNED_GE = "uge"
-    UNSIGNED_GT = "ugt"
-    UNSIGNED_LE = "ule"
-    UNSIGNED_LT = "ult"
-    SIGNED_GE = "sge"
-    SIGNED_GT = "sgt"
-    SIGNED_LE = "sle"
-    SIGNED_LT = "slt"
+# ``BranchPredicate`` retired here (llr-lxas): the single portable predicate
+# vocabulary is the LLVM-named ``PredicateKind`` in ``d810.ir.semantics`` (a
+# (str, Enum) carrying the same "eq"/"ne"/... values).  Re-exported above so
+# existing ``from d810.ir.flowgraph import PredicateKind`` imports resolve.
 
 
 class SnapshotStage(str, Enum):
@@ -171,7 +162,7 @@ class InsnSnapshot:
     d: MopSnapshot | None = None   # dest operand
     kind: InsnKind = InsnKind.UNKNOWN
     raw_opcode: int | None = None
-    branch_predicate: BranchPredicate | None = None
+    branch_predicate: PredicateKind | None = None
     compare_width: int | None = None
     is_conditional_jump: bool = False
     is_unconditional_jump: bool = False
@@ -367,7 +358,7 @@ class FlowGraph:
 
 
 __all__ = [
-    "BranchPredicate",
+    "PredicateKind",
     "BlockKind",
     "InsnKind",
     "OperandKind",

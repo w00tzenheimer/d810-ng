@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from d810.ir.flowgraph import (
-    BranchPredicate,
+    PredicateKind,
     BlockSnapshot,
     FlowGraph,
     InsnKind,
@@ -187,7 +187,7 @@ def _is_state_comparison_tail(insn: InsnSnapshot | None) -> bool:
         return False
     if not insn.is_conditional_jump:
         return False
-    if insn.branch_predicate is BranchPredicate.TRUTHY:
+    if insn.branch_predicate is PredicateKind.TRUTHY:
         return False
     return insn.kind in {InsnKind.EQUALITY_JUMP, InsnKind.COND_JUMP}
 

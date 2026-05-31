@@ -1,7 +1,7 @@
 """Backend-neutral instruction semantic helpers for recon collectors."""
 from __future__ import annotations
 
-from d810.ir.flowgraph import BranchPredicate, InsnKind
+from d810.ir.flowgraph import PredicateKind, InsnKind
 
 
 def kind_name(insn: object | None) -> str:
@@ -21,14 +21,14 @@ def is_kind(insn: object | None, kind: InsnKind, *names: str) -> bool:
     return actual_name in names or actual_name == f"InsnKind.{kind.name}"
 
 
-def branch_predicate(insn: object | None) -> BranchPredicate | None:
+def branch_predicate(insn: object | None) -> PredicateKind | None:
     raw = getattr(insn, "branch_predicate", None)
-    if isinstance(raw, BranchPredicate):
+    if isinstance(raw, PredicateKind):
         return raw
     if raw is None:
         return None
     try:
-        return BranchPredicate(str(raw))
+        return PredicateKind(str(raw))
     except ValueError:
         return None
 
@@ -94,25 +94,25 @@ def signed_value(value: int, width: int | None) -> int | None:
 
 
 def evaluate_branch_predicate(
-    predicate: BranchPredicate | None,
+    predicate: PredicateKind | None,
     left_value: int | None,
     right_value: int | None,
     compare_width: int | None = None,
 ) -> bool | None:
     if predicate is None:
         return None
-    if predicate is BranchPredicate.TRUTHY:
+    if predicate is PredicateKind.TRUTHY:
         return None if left_value is None else bool(left_value)
     if left_value is None or right_value is None:
         return None
     left = int(left_value)
     right = int(right_value)
     mask = _mask_for_width(compare_width)
-    if predicate is BranchPredicate.EQUAL:
+    if predicate is PredicateKind.EQ:
         if mask is not None:
             return (left & mask) == (right & mask)
         return left == right
-    if predicate is BranchPredicate.NOT_EQUAL:
+    if predicate is PredicateKind.NE:
         if mask is not None:
             return (left & mask) != (right & mask)
         return left != right
@@ -120,25 +120,25 @@ def evaluate_branch_predicate(
         return None
     left_u = left & mask
     right_u = right & mask
-    if predicate is BranchPredicate.UNSIGNED_GE:
+    if predicate is PredicateKind.UGE:
         return left_u >= right_u
-    if predicate is BranchPredicate.UNSIGNED_GT:
+    if predicate is PredicateKind.UGT:
         return left_u > right_u
-    if predicate is BranchPredicate.UNSIGNED_LE:
+    if predicate is PredicateKind.ULE:
         return left_u <= right_u
-    if predicate is BranchPredicate.UNSIGNED_LT:
+    if predicate is PredicateKind.ULT:
         return left_u < right_u
     left_s = signed_value(left, compare_width)
     right_s = signed_value(right, compare_width)
     if left_s is None or right_s is None:
         return None
-    if predicate is BranchPredicate.SIGNED_GE:
+    if predicate is PredicateKind.SGE:
         return left_s >= right_s
-    if predicate is BranchPredicate.SIGNED_GT:
+    if predicate is PredicateKind.SGT:
         return left_s > right_s
-    if predicate is BranchPredicate.SIGNED_LE:
+    if predicate is PredicateKind.SLE:
         return left_s <= right_s
-    if predicate is BranchPredicate.SIGNED_LT:
+    if predicate is PredicateKind.SLT:
         return left_s < right_s
     return None
 
