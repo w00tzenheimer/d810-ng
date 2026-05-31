@@ -1,7 +1,7 @@
 """Microcode dump tool — render/explanation half + compat facade.
 
 This module hosts the RENDER / DISPATCHER-OVERLAY / DAG-DUMP half of
-the historical ``d810.optimizers.microcode.microcode_dump`` tool.  These functions
+the historical ``d810.backends.hexrays.evidence.microcode_dump`` tool.  These functions
 build human-readable strings, dispatcher-tree visualisations, and
 linearized-state-DAG dumps; they consume recon and evaluator analyses
 to annotate the live Hex-Rays MBA with semantic information.
@@ -15,9 +15,9 @@ Axis-C slice 1 (first half of the ``microcode_dump`` split):
   ``no-live-runtime-in-diagnostics`` rule's lawful-fix list.
 * The seven moved symbols (plus the constant tables) are re-exported
   below as a compatibility facade so the existing import sites at
-  ``d810.optimizers.microcode.microcode_dump`` keep working.
+  ``d810.backends.hexrays.evidence.microcode_dump`` keep working.
 * Dependency direction is **one-way**:
-  ``d810.optimizers.microcode.microcode_dump -> d810.hexrays.diagnostics.microcode_capture``,
+  ``d810.backends.hexrays.evidence.microcode_dump -> d810.hexrays.diagnostics.microcode_capture``,
   never the reverse.  Do not add an import from microcode_capture
   back into this module.
 
@@ -42,7 +42,7 @@ from d810.evaluator.hexrays_microcode.valranges import (
 # Compatibility facade: the live-capture half moved to
 # ``d810.hexrays.diagnostics.microcode_capture`` (axis-C slice 1).
 # These re-exports preserve the seven existing
-# ``d810.optimizers.microcode.microcode_dump`` import sites without touching them.
+# ``d810.backends.hexrays.evidence.microcode_dump`` import sites without touching them.
 from d810.hexrays.diagnostics.microcode_capture import (
     BlockInfo,
     FunctionMicrocode,
@@ -1254,13 +1254,13 @@ def main_cli():
         epilog="""
 Examples:
   # Dump function at address 0x650 from a binary
-  python -m d810.optimizers.microcode.microcode_dump binary.dylib 0x650
+  python -m d810.backends.hexrays.evidence.microcode_dump binary.dylib 0x650
 
   # Dump at specific maturity level
-  python -m d810.optimizers.microcode.microcode_dump binary.dylib 0x650 --maturity PREOPTIMIZED
+  python -m d810.backends.hexrays.evidence.microcode_dump binary.dylib 0x650 --maturity PREOPTIMIZED
 
   # Save output to file
-  python -m d810.optimizers.microcode.microcode_dump binary.dylib 0x650 -o output.json
+  python -m d810.backends.hexrays.evidence.microcode_dump binary.dylib 0x650 -o output.json
         """,
     )
     parser.add_argument("binary", help="Path to the binary file to analyze")

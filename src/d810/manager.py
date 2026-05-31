@@ -96,7 +96,7 @@ from d810.analyses.value_flow.zero_blob import ZeroBlobFactCollector
 from d810.analyses.control_flow.state_transition_anchor import (
     StateTransitionAnchorFactCollector,
 )
-from d810.optimizers.microcode.microcode_dump import mba_to_dict
+from d810.backends.hexrays.evidence.microcode_dump import mba_to_dict
 from d810.passes.analysis import AnalysisPhase
 from d810.passes.inferences import unflattening_inference
 from d810.passes.phase import ReconPhase
@@ -1028,7 +1028,7 @@ class D810Manager:
                 ProgramRenderStrategy,
                 RenderOrderStrategy,
             )
-            from d810.optimizers.microcode.microcode_dump import (
+            from d810.backends.hexrays.evidence.microcode_dump import (
                 build_live_linearized_program,
                 resolve_dispatcher_context_for_linearized_program,
             )
