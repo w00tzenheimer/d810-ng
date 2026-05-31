@@ -56,7 +56,7 @@ from d810.hexrays.utils.hexrays_helpers import CONTROL_FLOW_OPCODES
 from d810.transforms.reconstruction_emission import (
     execute_primary_reconstruction_modifications,
 )
-from d810.optimizers.microcode.flow.flattening.engine.family import (
+from d810.families.state_machine_cff.family import (
     CFFStrategyFamily,
 )
 from d810.optimizers.microcode.flow.flattening.ollvm_carrier_backend import (
