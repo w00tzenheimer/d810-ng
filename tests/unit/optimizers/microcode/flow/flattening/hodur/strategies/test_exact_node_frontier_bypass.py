@@ -18,7 +18,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.post_apply_runtime import (
     collect_live_residual_dispatcher_preds,
     collect_post_apply_bst_cleanup_blockers,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategy import (
+from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     BenefitMetrics,
     OwnershipScope,
     PlanFragment,
