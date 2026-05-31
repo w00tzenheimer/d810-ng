@@ -96,7 +96,7 @@ from d810.analyses.control_flow.linearized_state_dag import (
     render_linearized_state_dag,
     render_linearized_state_dag_dot,
 )
-from d810.optimizers.microcode.flow.flattening.dynamic_state_transition_recovery import (
+from d810.backends.hexrays.evidence.flattening.dynamic_state_transition_recovery import (
     recover_dynamic_state_write_transitions,
 )
 from d810.analyses.control_flow.persisted_recon_dag import get_persisted_recon_dag

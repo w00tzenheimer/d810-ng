@@ -104,7 +104,7 @@ from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap,
 from d810.analyses.control_flow.dispatcher_discovery_facts import (
     collect_state_dispatcher_discovery_fact_observations,
 )
-from d810.optimizers.microcode.flow.flattening.dynamic_state_transition_recovery import (
+from d810.backends.hexrays.evidence.flattening.dynamic_state_transition_recovery import (
     recover_dynamic_state_write_transitions,
 )
 from d810.optimizers.microcode.flow.dispatcher.equality_chain import (
