@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from d810.core.logging import getLogger
+from d810.hexrays.mutation.ir_translator import lift
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
 from d810.analyses.control_flow.indirect_jump_table_analysis import (
     IndirectJumpTableEntry,
@@ -118,11 +119,14 @@ def analyze_tigress_indirect_dispatcher_from_config(
     cfg = _config_for_function(mba, goto_table_info)
     if cfg is None:
         return None
+    # Lift once at the HIGH boundary; the portable EA-lookup helpers consume
+    # the FlowGraph snapshot (llr-zeyu upstream-lift).
+    flow_graph = lift(mba)
     dispatch_jump_ea = _parse_int(cfg.get("dispatch_jump_ea"))
     dispatcher_serial = (
         _find_ijmp_dispatcher_serial(mba)
         if dispatch_jump_ea is None else
-        _find_dispatcher_serial_by_ea(mba, dispatch_jump_ea)
+        _find_dispatcher_serial_by_ea(flow_graph, dispatch_jump_ea)
     )
     if dispatcher_serial is None:
         dispatcher_serial = _find_ijmp_dispatcher_serial(mba)
@@ -161,10 +165,10 @@ def analyze_tigress_indirect_dispatcher_from_config(
     }
     entries: list[IndirectJumpTableEntry] = []
     for index, target_ea in enumerate(raw_targets):
-        target_block = _find_mba_block_for_ea(mba, target_ea)
+        target_block = _find_mba_block_for_ea(flow_graph, target_ea)
         if target_block is None:
             target_block = _find_mba_block_for_target_interval(
-                mba,
+                flow_graph,
                 target_ea,
                 next_target_by_ea.get(int(target_ea)),
             )
