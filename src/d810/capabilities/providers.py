@@ -78,6 +78,19 @@ class MicrocodeEvidenceProvider:
 
     get_function_entry_ea: Callable[..., Any]
     get_mba_maturity: Callable[..., Any]
+    # Block-count + block-adjacency seams keep the reachability BFS in portable
+    # code: the backend returns the live ``mba.qty`` block count and a portable
+    # ``{serial: (successor_serial, ...)}`` map (omitting serials whose block is
+    # ``None``), so the BFS that consumes them never calls the live-MBA method
+    # API (``qty``/``get_mblock``/``nsucc``/``succ``) directly.
+    get_block_count: Callable[..., Any]
+    block_adjacency: Callable[..., Any]
+    # GLBOPT1 maturity gate seams.  ``is_glbopt1`` answers the ``mba.maturity ==
+    # ida_hexrays.MMAT_GLBOPT1`` predicate; ``glbopt1_maturity`` returns the raw
+    # ``MMAT_GLBOPT1`` constant for callers that pass it as an allowed-maturity
+    # value rather than testing it.
+    is_glbopt1: Callable[..., Any]
+    glbopt1_maturity: Callable[..., Any]
 
 
 _lock = threading.Lock()
