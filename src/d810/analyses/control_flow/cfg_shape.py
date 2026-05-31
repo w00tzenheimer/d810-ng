@@ -1,9 +1,8 @@
 """CFGShapeCollector - microcode CFG topology metrics.
 
-Operates on either a live ``mba_t`` (at IDA runtime) or a ``FlowGraph``
-snapshot (for unit tests). Distinguishes the two by duck-typing: if the
-target has a ``blocks`` attribute that maps serials to ``BlockSnapshot``,
-it is treated as a ``FlowGraph``; otherwise it is treated as an ``mba_t``.
+Consumes a portable ``d810.ir`` FlowGraph -- the HIGH layer lifts
+the live ``mba`` once at the FLOWGRAPH_READY boundary (E4a); the
+collector never touches a live ``mba_t``/``mblock_t`` (ticket llr-zeyu).
 
 Maturities fired: MMAT_CALLS (3), MMAT_PREOPTIMIZED (5).
 """
@@ -23,7 +22,7 @@ _HIGH_INDEGREE_THRESHOLD = 3
 
 
 def _collect_from_portable_cfg(target) -> tuple[set[int], dict[int, tuple[int, ...]], dict[int, set[int]]]:
-    """Extract nodes/succs/preds from a FlowGraph snapshot."""
+    """Extract nodes/succs/preds from a portable FlowGraph."""
     nodes: set[int] = set(target.blocks.keys())
     succs: dict[int, tuple[int, ...]] = {}
     preds: dict[int, set[int]] = {}
@@ -33,29 +32,6 @@ def _collect_from_portable_cfg(target) -> tuple[set[int], dict[int, tuple[int, .
         for s in blk.succs:
             preds.setdefault(s, set()).add(serial)
     # Ensure all nodes have entries
-    for n in nodes:
-        preds.setdefault(n, set())
-        succs.setdefault(n, ())
-    return nodes, succs, preds
-
-
-def _collect_from_mba(target) -> tuple[set[int], dict[int, tuple[int, ...]], dict[int, set[int]]]:
-    """Extract nodes/succs/preds from a live mba_t."""
-    nodes: set[int] = set()
-    succs: dict[int, tuple[int, ...]] = {}
-    preds: dict[int, set[int]] = {}
-    qty = int(getattr(target, "qty", 0) or 0)
-    for i in range(qty):
-        blk = target.get_mblock(i)
-        if blk is None:
-            continue
-        serial = int(getattr(blk, "serial", i))
-        nodes.add(serial)
-        out = tuple(int(s) for s in getattr(blk, "succset", ()))
-        succs[serial] = out
-        preds.setdefault(serial, set())
-        for s in out:
-            preds.setdefault(s, set()).add(serial)
     for n in nodes:
         preds.setdefault(n, set())
         succs.setdefault(n, ())
@@ -138,8 +114,6 @@ class CFGShapeCollector:
 
     Candidates flagged:
         - ``"high_indegree_block"`` when ``max_in_degree >= 3``
-
-    Accepts both ``FlowGraph`` (unit tests) and live ``mba_t`` (IDA runtime).
     """
 
     name: str = "CFGShapeCollector"
@@ -149,17 +123,13 @@ class CFGShapeCollector:
     def collect(self, target, func_ea: int, maturity: int) -> ReconResult:
         """Collect CFG shape metrics.
 
-        :param target: ``FlowGraph`` or live ``mba_t``.
+        :param target: portable ``d810.ir`` ``FlowGraph``.
         :param func_ea: Function effective address.
         :param maturity: Current maturity level.
         :return: Frozen ``ReconResult`` with CFG shape metrics.
         """
-        if hasattr(target, "blocks") and hasattr(target, "entry_serial"):
-            nodes, succs, preds = _collect_from_portable_cfg(target)
-            entry = getattr(target, "entry_serial", None)
-        else:
-            nodes, succs, preds = _collect_from_mba(target)
-            entry = 0 if 0 in nodes else (min(nodes) if nodes else None)
+        nodes, succs, preds = _collect_from_portable_cfg(target)
+        entry = getattr(target, "entry_serial", None)
 
         block_count = len(nodes)
         edge_count = sum(len(s) for s in succs.values())
