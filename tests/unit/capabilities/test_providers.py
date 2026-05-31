@@ -25,6 +25,8 @@ def _fake_provider() -> BstWalkerProvider:
         walk_handler_chain=lambda *a, **k: "walk",
         forward_eval_insn=lambda *a, **k: "eval",
         resolve_via_bst_walk=lambda *a, **k: "resolve",
+        get_block=lambda mba, serial: ("block", serial),
+        block_successors=lambda block: ("succs", block),
     )
 
 
@@ -65,7 +67,7 @@ class TestBstWalkerProvider:
         with pytest.raises(dataclasses.FrozenInstanceError):
             provider.forward_eval_insn = None  # type: ignore[misc]
 
-    def test_exposes_all_six_seams(self) -> None:
+    def test_exposes_all_seams(self) -> None:
         fields = {f.name for f in dataclasses.fields(BstWalkerProvider)}
         assert fields == {
             "detect_state_var_stkoff",
@@ -74,4 +76,6 @@ class TestBstWalkerProvider:
             "walk_handler_chain",
             "forward_eval_insn",
             "resolve_via_bst_walk",
+            "get_block",
+            "block_successors",
         }

@@ -42,6 +42,14 @@ class BstWalkerProvider:
     walk_handler_chain: Callable[..., Any]
     forward_eval_insn: Callable[..., Any]
     resolve_via_bst_walk: Callable[..., Any]
+    # Block topology accessors.  Portable-core path analyses hold an opaque
+    # backend object (a live ``mba_t`` OR a ``_FlowGraphMBAView`` snapshot
+    # projection) and must not call its live-MBA method API
+    # (``get_mblock``/``nsucc``/``succ``) directly.  They route through these
+    # seams; the backend impl makes the identical call on whichever object it
+    # is handed, so behaviour is unchanged for both (ticket llr-zeyu).
+    get_block: Callable[..., Any]
+    block_successors: Callable[..., Any]
 
 
 _lock = threading.Lock()

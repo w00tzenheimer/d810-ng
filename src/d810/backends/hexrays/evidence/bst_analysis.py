@@ -2109,6 +2109,27 @@ def build_dispatch_tree(
 # -----------------------------------------------------------------------------
 # Provider factory (composition-root wiring)
 # -----------------------------------------------------------------------------
+def _get_block(mba: object, serial: int) -> object | None:
+    """Backend block lookup seam (ticket llr-zeyu).
+
+    Lives in the backend layer where the live-MBA method API is allowed.  The
+    ``mba`` argument is whatever the portable caller holds -- a live ``mba_t``
+    or a ``_FlowGraphMBAView`` snapshot projection -- both of which expose
+    ``get_mblock``; the call is identical to the inlined access it replaces.
+    """
+    return mba.get_mblock(serial)
+
+
+def _block_successors(block: object) -> tuple[int, ...]:
+    """Backend successor-serial seam (ticket llr-zeyu).
+
+    Equivalent to the inlined ``[blk.succ(i) for i in range(blk.nsucc())]`` the
+    portable path analyses used to run; ``block`` is a live ``mblock_t`` or a
+    ``_BlockView`` projection, both of which expose ``nsucc``/``succ``.
+    """
+    return tuple(block.succ(i) for i in range(block.nsucc()))
+
+
 def build_bst_walker_provider() -> BstWalkerProvider:
     """Bundle this backend's BST evidence seams for the provider registry.
 
@@ -2125,6 +2146,8 @@ def build_bst_walker_provider() -> BstWalkerProvider:
         walk_handler_chain=_walk_handler_chain,
         forward_eval_insn=_forward_eval_insn,
         resolve_via_bst_walk=resolve_via_bst_walk,
+        get_block=_get_block,
+        block_successors=_block_successors,
     )
 
 
