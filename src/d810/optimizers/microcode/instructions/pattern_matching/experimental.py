@@ -5,7 +5,7 @@ to inspect or modify the instruction context beyond the source operands.
 """
 
 from d810.mba.dsl import Const, Var
-from d810.optimizers.extensions import context, when
+from d810.backends.hexrays.evidence.extensions import context, when
 from d810.mba.rules import VerifiableRule
 
 # Common variables

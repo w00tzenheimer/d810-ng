@@ -14,7 +14,7 @@ Example usage:
     ```python
     from d810.mba.dsl import Var, Const
     from d810.mba.rules import VerifiableRule
-    from d810.optimizers.extensions import when, context
+    from d810.backends.hexrays.evidence.extensions import when, context
 
     class FixHighMov(VerifiableRule):
         PATTERN = c0
