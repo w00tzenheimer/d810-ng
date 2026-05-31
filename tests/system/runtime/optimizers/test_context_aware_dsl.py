@@ -6,15 +6,15 @@ These tests verify that the context-aware DSL correctly handles:
 3. Destination updates (modifying the instruction destination)
 
 WHY THIS IS IN system/ TESTS:
-    The extensions module (d810.optimizers.extensions) directly imports from
+    The extensions module (d810.backends.hexrays.evidence.extensions) directly imports from
     ida_hexrays at module level, so it requires IDA Pro to be available.
     These are IDA-specific helpers for pattern matching optimization rules.
 """
 
 import pytest
 
-from d810.optimizers import extensions
-from d810.optimizers.extensions import context, when
+from d810.backends.hexrays.evidence import extensions
+from d810.backends.hexrays.evidence.extensions import context, when
 
 # --- DestinationHelpers tests ---
 
@@ -109,7 +109,7 @@ def test_extensions_module_has_docstring():
 
 def test_helpers_have_docstrings():
     """Verify all helpers have documentation."""
-    from d810.optimizers.extensions import ContextProviders, DestinationHelpers
+    from d810.backends.hexrays.evidence.extensions import ContextProviders, DestinationHelpers
 
     # Check DestinationHelpers
     assert DestinationHelpers.is_high_half.__doc__ is not None
