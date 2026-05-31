@@ -7,7 +7,7 @@ from d810.core.typing import Any
 from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     DispatcherStateMachine,
 )
-from d810.optimizers.microcode.flow.dispatcher.switch_table import (
+from d810.backends.hexrays.evidence.dispatcher.switch_table import (
     analyze_switch_table_dispatcher,
 )
 from d810.analyses.control_flow.state_machine_analysis import evaluate_handler_paths
