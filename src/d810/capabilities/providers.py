@@ -48,6 +48,18 @@ class BstWalkerProvider:
     # (``get_mblock``/``nsucc``/``succ``) directly.  They route through these
     # seams; the backend impl makes the identical call on whichever object it
     # is handed, so behaviour is unchanged for both (ticket llr-zeyu).
+    #
+    # WARNING -- TRANSITIONAL VENDOR BRIDGE, NOT the LLVM/LiSA IR end-state
+    # (ticket llr-lxas).  These accessors are phrased in Hex-Rays taxonomy
+    # (fetch a block off an opaque live object by serial) and keep a LIVE
+    # HANDLE alive in portable code: the analyses re-query the source object
+    # mid-analysis instead of consuming a once-lifted ``d810.ir.FlowGraph``.
+    # The portable destination is to lift ``mba_t -> FlowGraph`` at the
+    # optimizer/hodur call boundary so the path analyses take a ``FlowGraph``
+    # and read ``BlockSnapshot.succs`` directly, after which both of these
+    # seams (and the ``_FlowGraphMBAView`` mimicry adapter) are DELETED.
+    # "gate 0" means the live method-CALLS left portable-core text, NOT that
+    # the IR converged.
     get_block: Callable[..., Any]
     block_successors: Callable[..., Any]
 

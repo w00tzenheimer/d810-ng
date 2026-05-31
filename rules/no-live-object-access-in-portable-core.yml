@@ -108,6 +108,13 @@ note: |
       This is the canonical llr-zeyu fix used by the final 5 files.  For a
       non-topology vendor query, add a new capability Protocol and inject it.
 
+      NB: the block seam is a TRANSITIONAL vendor bridge (ticket llr-lxas), not
+      the LLVM/LiSA IR end-state -- it keeps a live handle in portable code and
+      is phrased in Hex-Rays taxonomy.  The destination is to lift
+      ``mba_t -> FlowGraph`` at the optimizer/hodur boundary and read
+      ``BlockSnapshot`` directly, retiring the seam.  A green gate here means
+      the live method-CALLS left portable-core text, NOT that the IR converged.
+
   (d) Genuinely vendor-irreducible mutation/probe -> the module is not
       portable-core; relocate it to a HIGH module or backends/<vendor>/.
 

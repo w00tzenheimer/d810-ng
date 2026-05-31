@@ -316,6 +316,18 @@ __all__ = [
 ]
 
 
+# WARNING -- TRANSITIONAL VENDOR-MIMICRY ADAPTER, slated for deletion (ticket
+# llr-lxas, follow-on to llr-zeyu).  ``_InsnView`` / ``_BlockView`` /
+# ``_FlowGraphMBAView`` exist ONLY to make a portable ``d810.ir.FlowGraph``
+# quack like a live Hex-Rays ``mba_t`` (they re-expose ``get_mblock`` /
+# ``nsucc()`` / ``succ(i)`` / ``head`` / ``next``).  This lets legacy live-mba-
+# shaped path analyses run unchanged -- it is NOT the LLVM/LiSA IR end-state.
+# The portable-core data-model gate (llr-zeyu) does not flag these because it
+# matches live method CALL-sites, not these mimicry method DEFINITIONS.  The
+# destination is to retire this trio: lift to ``FlowGraph`` at the
+# optimizer/hodur boundary and have the analyses read ``BlockSnapshot`` fields
+# directly.  Until then, treat this as a backend-shaped shim that happens to
+# live in portable-core, not as portable vocabulary.
 class _InsnView:
     __slots__ = (
         "opcode",
