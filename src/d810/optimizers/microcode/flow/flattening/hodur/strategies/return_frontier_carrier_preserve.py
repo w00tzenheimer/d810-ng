@@ -45,7 +45,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.optimizers.microcode.flow.dispatcher.return_frontier_carrier_audit import (
+from d810.backends.hexrays.evidence.dispatcher.return_frontier_carrier_audit import (
     audit_return_frontier_carriers,
 )
 

@@ -29,7 +29,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.post_apply_runtime import (
     collect_post_apply_bst_cleanup_blockers,
 )
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
-from d810.optimizers.microcode.flow.dispatcher.return_frontier_carrier_audit import (
+from d810.backends.hexrays.evidence.dispatcher.return_frontier_carrier_audit import (
     audit_return_frontier_carriers,
     is_audit_enabled as is_return_carrier_audit_enabled,
 )
