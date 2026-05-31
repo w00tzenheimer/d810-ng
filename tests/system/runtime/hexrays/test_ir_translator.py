@@ -52,7 +52,7 @@ from d810.transforms.plan import (
 from d810.transforms.materialization_payload import CapturedBlockBody, CapturedBlockBodySummary
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.mutation.ir_translator import (
-    _branch_predicate_from_hexrays,
+    _branch_predicate_only_from_hexrays,
     _block_kind_from_hexrays,
     _insn_kind_from_hexrays,
     _operand_kind_from_hexrays,
@@ -191,20 +191,20 @@ def test_capture_mop_snapshot_preserves_nested_stack_refs():
 
 
 def test_hexrays_branch_opcodes_map_to_backend_neutral_predicates():
-    assert _branch_predicate_from_hexrays(ida_hexrays.m_jnz) is (
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jnz) is (
         PredicateKind.NE
     )
-    assert _branch_predicate_from_hexrays(ida_hexrays.m_jz) is PredicateKind.EQ
-    assert _branch_predicate_from_hexrays(ida_hexrays.m_jae) is (
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jz) is PredicateKind.EQ
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jae) is (
         PredicateKind.UGE
     )
-    assert _branch_predicate_from_hexrays(ida_hexrays.m_jb) is (
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jb) is (
         PredicateKind.ULT
     )
-    assert _branch_predicate_from_hexrays(ida_hexrays.m_jg) is (
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jg) is (
         PredicateKind.SGT
     )
-    assert _branch_predicate_from_hexrays(ida_hexrays.m_jle) is (
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jle) is (
         PredicateKind.SLE
     )
 
