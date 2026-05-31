@@ -97,7 +97,7 @@ from d810.analyses.control_flow.branch_ownership import (
     branch_ownership_proof_from_any,
     collect_branch_ownership_proofs,
 )
-from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
     analyze_dispatcher_live,
 )
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap, StateDispatcherRow

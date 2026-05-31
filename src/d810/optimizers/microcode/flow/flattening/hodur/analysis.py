@@ -49,7 +49,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     DispatcherStateMachine,
 )
 from d810.analyses.control_flow.bst_model import BSTAnalysisResult
-from d810.optimizers.microcode.flow.dispatcher.dispatcher_history import (
+from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
     DispatcherAnalysis,
     analyze_dispatcher_live,
 )

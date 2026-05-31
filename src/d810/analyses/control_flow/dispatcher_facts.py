@@ -4,14 +4,14 @@ Holds the pure data classes used by dispatcher analysis -- no
 ``ida_hexrays`` types in any field annotation, no live IDA calls in
 any method body.  Consumed by the pure analyzer at
 ``d810.analyses.control_flow.dispatcher_analysis`` and the live adapter at
-``d810.optimizers.microcode.flow.dispatcher.dispatcher_history``.
+``d810.backends.hexrays.evidence.dispatcher.dispatcher_history``.
 
 Companion modules:
 
 * ``d810.analyses.control_flow.dispatcher_kind`` -- ``DispatcherType`` enum.
 * ``d810.analyses.control_flow.dispatcher_analysis`` -- pure
   ``analyze_dispatcher(flow_graph)`` + ``DispatcherAnalysis`` result.
-* ``d810.optimizers.microcode.flow.dispatcher.dispatcher_history`` --
+* ``d810.backends.hexrays.evidence.dispatcher.dispatcher_history`` --
   live adapter (``analyze_dispatcher_live``: mba lift + explicit
   cross-maturity history store).
 
@@ -80,7 +80,7 @@ class StateVariableCandidate:
     The operand identity is held as a portable
     ``d810.ir.flowgraph.MopSnapshot``, NOT a live ``ida_hexrays.mop_t``.
     The live adapter at
-    ``d810.optimizers.microcode.flow.dispatcher.dispatcher_history`` is
+    ``d810.backends.hexrays.evidence.dispatcher.dispatcher_history`` is
     the only construction site -- ``analyze_dispatcher_live`` lifts the mba via
     ``d810.hexrays.mutation.ir_translator.lift`` and then the pure
     ``analyze_dispatcher(flow_graph, ...)`` populates this candidate
