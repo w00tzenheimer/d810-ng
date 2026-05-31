@@ -349,7 +349,9 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             return self._slow_run_on_function(mba)
 
         try:
-            from . import _fast_dataflow
+            from d810.analyses.data_flow.constant_prop_dataflow import (
+                _fast_dataflow,
+            )
 
             total_changes = _fast_dataflow.cy_run_full_pass(mba)
         except (ImportError, AttributeError, TypeError):
@@ -369,7 +371,9 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         logger.debug("Running dataflow analysis")
         if self.cython_enabled:
             try:
-                from . import _fast_dataflow
+                from d810.analyses.data_flow.constant_prop_dataflow import (
+                    _fast_dataflow,
+                )
 
                 return _fast_dataflow.run_dataflow_cython(mba)
             except (ImportError, AttributeError, TypeError):
@@ -490,7 +494,9 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         self, mba: ida_hexrays.mba_t, ins: ida_hexrays.minsn_t, env: ConstMap
     ) -> int:
         try:
-            from . import _fast_dataflow
+            from d810.analyses.data_flow.constant_prop_dataflow import (
+                _fast_dataflow,
+            )
 
             if ins.opcode not in self.ALLOW_PROPAGATION_OPCODES:
                 return 0
@@ -507,7 +513,9 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         self, mba: ida_hexrays.mba_t, ins: ida_hexrays.minsn_t, env: ConstMap
     ):
         try:
-            from . import _fast_dataflow
+            from d810.analyses.data_flow.constant_prop_dataflow import (
+                _fast_dataflow,
+            )
 
             # Side-effects handling - for *imprecise* side-effecting instructions
             # (e.g. calls) we must drop every tracked constant.
