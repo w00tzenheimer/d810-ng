@@ -822,23 +822,6 @@ def test_induction_identity_lost_mapping_is_not_duplicated() -> None:
 
 
 def test_return_carrier_fact_gets_identity_lost_mapping() -> None:
-    class _Insn:
-        def __init__(self, ea: int, next_insn=None) -> None:
-            self.ea = ea
-            self.next = next_insn
-
-    class _Block:
-        def __init__(self, head) -> None:
-            self.head = head
-
-    class _Target:
-        qty = 12
-
-        def get_mblock(self, serial: int):
-            if int(serial) == 7:
-                return _Block(_Insn(0x1000))
-            return _Block(None)
-
     class _ReturnCarrierCollector:
         name = "return-carrier"
         fact_kinds = frozenset({"ReturnCarrierFact"})
@@ -869,7 +852,12 @@ def test_return_carrier_fact_gets_identity_lost_mapping() -> None:
     runtime.register(_ReturnCarrierCollector())
 
     runtime.capture(object(), func_ea=0x401000, provider_phase=_phase(1), phase="pre_d810")
-    runtime.capture(_Target(), func_ea=0x401000, provider_phase=_phase(2), phase="pre_d810")
+    runtime.capture(
+        _flow_graph_with_insn_ea(block_serial=7, insn_ea=0x1000),
+        func_ea=0x401000,
+        provider_phase=_phase(2),
+        phase="pre_d810",
+    )
     view = runtime.validated_view(0x401000, "MMAT_2")
 
     assert len(view.mappings) == 1
