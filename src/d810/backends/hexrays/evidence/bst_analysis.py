@@ -2237,6 +2237,126 @@ def _microcode_constants(mba: Any = None) -> MicrocodeConstants:
     )
 
 
+def _counter_hoist_rmw_arith_opcodes() -> frozenset[int]:
+    """RMW-eligible arithmetic opcodes (``m_add``/``m_sub``/``m_xor``/``m_or``/``m_and``)."""
+    return frozenset(
+        {
+            int(ida_hexrays.m_add),
+            int(ida_hexrays.m_sub),
+            int(ida_hexrays.m_xor),
+            int(ida_hexrays.m_or),
+            int(ida_hexrays.m_and),
+        }
+    )
+
+
+def _counter_hoist_embedded_load_side(
+    host: object,
+) -> Tuple[Optional[str], Optional[object]]:
+    """Return ('l'|'r', mop) when one operand carries an ``m_ldx`` sub-insn.
+
+    Byte-identical port of ``CounterHoistStrategy._embedded_load_side``; prefers
+    the ``l`` operand when both carry loads (canonical OLLVM induction shape).
+    """
+    for side in ("l", "r"):
+        mop = getattr(host, side)
+        if mop is None:
+            continue
+        if mop.t != ida_hexrays.mop_d or mop.d is None:
+            continue
+        if int(mop.d.opcode) == ida_hexrays.m_ldx:
+            return side, mop
+    return None, None
+
+
+def _counter_hoist_mops_equivalent(a: object, b: object) -> bool:
+    """Best-effort ``mop_t`` comparison, tolerant to size mismatches.
+
+    Byte-identical port of ``CounterHoistStrategy._mops_equivalent``.
+    """
+    if a is None or b is None:
+        return False
+    eq = getattr(a, "equal_mops", None)
+    if eq is not None:
+        try:
+            # EQ_IGNSIZE = 0x01 in hexrays.hpp; tolerate int/flag drift.
+            eq_ignsize = getattr(ida_hexrays, "EQ_IGNSIZE", 0x01)
+            return bool(eq(b, eq_ignsize))
+        except Exception:
+            pass
+    try:
+        return a.dstr() == b.dstr()
+    except Exception:
+        return False
+
+
+def _counter_hoist_match_load_arith_store(
+    host: object,
+    rmw_arith_opcodes: frozenset[int],
+) -> Optional[Tuple[str, int, int]]:
+    """Return (side, host_ea, host_opcode) for a load-arith-store step, else None.
+
+    Byte-identical port of ``CounterHoistStrategy._match_load_arith_store``.
+    """
+    if host is None:
+        return None
+    if int(host.opcode) not in rmw_arith_opcodes:
+        return None
+
+    side, sub_mop = _counter_hoist_embedded_load_side(host)
+    if side is None:
+        return None
+
+    ldx = sub_mop.d
+    # m_ldx layout: l = segment register, r = address operand, d = dest.
+    if ldx is None or int(ldx.opcode) != ida_hexrays.m_ldx:
+        return None
+
+    # Find a same-block m_stx that consumes host.d and writes back to the
+    # same address.  Bounded forward scan to avoid quadratic blowup.
+    scan = host.next
+    scan_budget = 16
+    while scan is not None and scan_budget > 0:
+        scan_budget -= 1
+        if int(scan.opcode) == ida_hexrays.m_stx:
+            # m_stx layout: l = value, r = segment, d = address operand.
+            if (
+                _counter_hoist_mops_equivalent(scan.l, host.d)
+                and _counter_hoist_mops_equivalent(scan.r, ldx.l)
+                and _counter_hoist_mops_equivalent(scan.d, ldx.r)
+            ):
+                return side, int(host.ea), int(host.opcode)
+        scan = scan.next
+
+    return None
+
+
+def _find_counter_hoist_candidates(
+    mba: Any,
+) -> List[Tuple[int, str, int, int]]:
+    """Walk the live ``mba`` for fused load-arith-store induction sites.
+
+    Returns ``(block_serial, operand_side, host_ea, host_opcode)`` tuples in
+    nested block-then-instruction order, byte-identical to the scan the
+    ``CounterHoistStrategy.plan`` loop used to inline (``mba.qty`` +
+    ``get_mblock`` + ``minsn_t`` chain walk).
+    """
+    rmw_arith_opcodes = _counter_hoist_rmw_arith_opcodes()
+    candidates: List[Tuple[int, str, int, int]] = []
+    for i in range(mba.qty):
+        blk = _get_block(mba, i)
+        if blk is None:
+            continue
+        insn = blk.head
+        while insn is not None:
+            hit = _counter_hoist_match_load_arith_store(insn, rmw_arith_opcodes)
+            if hit is not None:
+                side, host_ea, host_opcode = hit
+                candidates.append((int(blk.serial), side, host_ea, host_opcode))
+            insn = insn.next
+    return candidates
+
+
 def build_microcode_evidence_provider() -> MicrocodeEvidenceProvider:
     """Bundle this backend's live microcode-evidence seams for the provider registry.
 
@@ -2255,6 +2375,7 @@ def build_microcode_evidence_provider() -> MicrocodeEvidenceProvider:
         glbopt1_maturity=_glbopt1_maturity,
         mmat_zero=_mmat_zero,
         microcode_constants=_microcode_constants,
+        find_counter_hoist_candidates=_find_counter_hoist_candidates,
     )
 
 

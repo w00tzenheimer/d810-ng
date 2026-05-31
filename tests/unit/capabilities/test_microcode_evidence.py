@@ -54,6 +54,7 @@ def test_register_and_get_roundtrip():
         glbopt1_maturity=lambda mba: 8,
         mmat_zero=lambda mba: 0,
         microcode_constants=lambda mba=None: _FAKE_CONSTANTS,
+        find_counter_hoist_candidates=lambda mba: [(7, "l", 0x1234, 99)],
     )
     P.register_microcode_evidence(prov)
     got = P.get_microcode_evidence()
@@ -72,6 +73,7 @@ def test_register_and_get_roundtrip():
     assert constants is _FAKE_CONSTANTS
     assert constants.m_jnz == 4
     assert constants.mop_S == 16
+    assert got.find_counter_hoist_candidates(fake) == [(7, "l", 0x1234, 99)]
 
 
 def test_reset_clears_microcode_evidence():
@@ -85,6 +87,7 @@ def test_reset_clears_microcode_evidence():
             lambda m: 8,
             lambda m: 0,
             lambda m=None: _FAKE_CONSTANTS,
+            lambda m: [],
         )
     )
     P.reset_providers_for_tests()
