@@ -1219,7 +1219,7 @@ def resolve_singleton_state_write_value(
     if mba is None or state_var_stkoff is None:
         return None
     try:
-        block = mba.get_mblock(block_serial)
+        block = get_bst_walkers().get_block(mba, block_serial)
     except Exception:
         return None
     if block is None:
@@ -1283,7 +1283,7 @@ def block_has_state_var_write(
     if mba is None or state_var_stkoff is None:
         return False
     try:
-        block = mba.get_mblock(block_serial)
+        block = get_bst_walkers().get_block(mba, block_serial)
     except Exception:
         return False
     if block is None:
@@ -1306,8 +1306,8 @@ def resolve_evaluated_handoff_state_via_pred(
     if mba is None or state_var_stkoff is None:
         return None
     try:
-        pred_blk = mba.get_mblock(via_pred)
-        src_blk = mba.get_mblock(source_block)
+        pred_blk = get_bst_walkers().get_block(mba, via_pred)
+        src_blk = get_bst_walkers().get_block(mba, source_block)
     except Exception:
         return None
     if pred_blk is None or src_blk is None:
@@ -1352,7 +1352,7 @@ def resolve_immediate_handoff_target(
     if mba is None or state_var_stkoff is None:
         return None
     try:
-        block = mba.get_mblock(block_serial)
+        block = get_bst_walkers().get_block(mba, block_serial)
     except Exception:
         return None
     if block is None:
@@ -1676,7 +1676,7 @@ def resolve_single_successor_handoff_target(
     if mba is None:
         return None
     try:
-        block = mba.get_mblock(block_serial)
+        block = get_bst_walkers().get_block(mba, block_serial)
     except Exception:
         return None
     if block is None:
