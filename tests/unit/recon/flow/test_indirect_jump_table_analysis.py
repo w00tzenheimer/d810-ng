@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.analyses.control_flow.indirect_jump_table_analysis import (
     IndirectJumpTableEntry,
@@ -8,6 +6,31 @@ from d810.analyses.control_flow.indirect_jump_table_analysis import (
     _find_mba_block_for_target_interval,
     build_state_dispatcher_map_from_indirect_entries,
 )
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+
+
+def _fg(blocks: dict[int, tuple[int, tuple[int, ...]]]) -> FlowGraph:
+    """Build a topology-free FlowGraph from ``{serial: (start_ea, (insn_ea, ...))}``.
+
+    Only ``start_ea`` and the instruction EAs (the EA-lookup inputs) matter; the
+    last instruction is the block tail.
+    """
+    snaps = {
+        serial: BlockSnapshot(
+            serial=serial,
+            block_type=0,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=start_ea,
+            insn_snapshots=tuple(
+                InsnSnapshot(opcode=1, ea=ea, operands=(), kind=InsnKind.MOV)
+                for ea in insn_eas
+            ),
+        )
+        for serial, (start_ea, insn_eas) in blocks.items()
+    }
+    return FlowGraph(blocks=snaps, entry_serial=min(blocks), func_ea=0)
 
 
 def test_indirect_jump_table_rows_preserve_unmaterialized_targets() -> None:
@@ -37,58 +60,40 @@ def test_indirect_jump_table_rows_preserve_unmaterialized_targets() -> None:
 
 
 def test_indirect_jump_target_block_can_match_instruction_ea() -> None:
-    insn = SimpleNamespace(ea=0x18001761A, next=None)
-    blocks = {
-        0: SimpleNamespace(start=0, end=0, head=None),
-        1: SimpleNamespace(start=0, end=0, head=insn),
-    }
-    mba = SimpleNamespace(qty=2, get_mblock=lambda serial: blocks[serial])
+    fg = _fg({0: (0, ()), 1: (0, (0x18001761A,))})
 
-    assert _find_mba_block_for_ea(mba, 0x18001761A) == 1
+    assert _find_mba_block_for_ea(fg, 0x18001761A) == 1
 
 
 def test_indirect_jump_target_block_rejects_range_only_match() -> None:
-    blocks = {
-        0: SimpleNamespace(start=0x180017600, end=0x180017700, head=None),
-    }
-    mba = SimpleNamespace(qty=1, get_mblock=lambda serial: blocks[serial])
+    fg = _fg({0: (0x180017600, ())})
 
-    assert _find_mba_block_for_ea(mba, 0x18001761A) is None
+    assert _find_mba_block_for_ea(fg, 0x18001761A) is None
 
 
 def test_indirect_jump_dispatcher_lookup_matches_tail_ea_not_range() -> None:
-    blocks = {
-        0: SimpleNamespace(
-            start=0x180017600,
-            end=0x180017800,
-            head=None,
-            tail=SimpleNamespace(ea=0x180017700),
-        ),
-        1: SimpleNamespace(
-            start=0x180017800,
-            end=0x180017820,
-            head=None,
-            tail=SimpleNamespace(ea=0x1800177A8),
-        ),
-    }
-    mba = SimpleNamespace(qty=2, get_mblock=lambda serial: blocks[serial])
+    fg = _fg(
+        {
+            0: (0x180017600, (0x180017700,)),
+            1: (0x180017800, (0x1800177A8,)),
+        }
+    )
 
-    assert _find_dispatcher_serial_by_ea(mba, 0x1800177A8) == 1
+    assert _find_dispatcher_serial_by_ea(fg, 0x1800177A8) == 1
 
 
 def test_indirect_jump_target_block_can_match_label_interval() -> None:
-    folded_call = SimpleNamespace(ea=0x180017629, next=None)
-    next_label = SimpleNamespace(ea=0x18001764E, next=None)
-    blocks = {
-        0: SimpleNamespace(head=None),
-        1: SimpleNamespace(head=folded_call),
-        2: SimpleNamespace(head=next_label),
-    }
-    mba = SimpleNamespace(qty=3, get_mblock=lambda serial: blocks[serial])
+    fg = _fg(
+        {
+            0: (0, ()),
+            1: (0, (0x180017629,)),
+            2: (0, (0x18001764E,)),
+        }
+    )
 
     assert (
         _find_mba_block_for_target_interval(
-            mba,
+            fg,
             0x18001761A,
             0x18001764E,
         )

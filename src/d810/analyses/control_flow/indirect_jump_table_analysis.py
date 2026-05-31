@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.ir.flowgraph import FlowGraph
 from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
     StateDispatcherRow,
@@ -94,43 +95,36 @@ def build_state_dispatcher_map_from_indirect_entries(
     )
 
 
-def _find_dispatcher_serial_by_ea(mba: object, ea: int | None) -> int | None:
+def _find_dispatcher_serial_by_ea(flow_graph: FlowGraph, ea: int | None) -> int | None:
     if ea is None:
         return None
-    return _find_mba_block_for_instruction_ea(mba, int(ea))
+    return _find_mba_block_for_instruction_ea(flow_graph, int(ea))
 
 
-def _find_mba_block_for_instruction_ea(mba: object, target_ea: int) -> int | None:
+def _find_mba_block_for_instruction_ea(flow_graph: FlowGraph, target_ea: int) -> int | None:
     target = int(target_ea)
-    for serial in range(int(getattr(mba, "qty", 0) or 0)):
-        blk = mba.get_mblock(serial)
-        start = int(getattr(blk, "start", 0) or 0)
-        if start == target:
+    for serial, blk in flow_graph.blocks.items():
+        if int(blk.start_ea) == target:
             return int(serial)
-        tail = getattr(blk, "tail", None)
-        if tail is not None and int(getattr(tail, "ea", -1)) == target:
+        tail = blk.tail
+        if tail is not None and int(tail.ea) == target:
             return int(serial)
-        insn = getattr(blk, "head", None)
-        while insn is not None:
-            try:
-                if int(getattr(insn, "ea", -1)) == target:
-                    return int(serial)
-            except Exception:
-                pass
-            insn = getattr(insn, "next", None)
+        for insn in blk.insn_snapshots:
+            if int(insn.ea) == target:
+                return int(serial)
     return None
 
 
-def _find_mba_block_for_ea(mba: object, target_ea: int) -> int | None:
-    return _find_mba_block_for_instruction_ea(mba, target_ea)
+def _find_mba_block_for_ea(flow_graph: FlowGraph, target_ea: int) -> int | None:
+    return _find_mba_block_for_instruction_ea(flow_graph, target_ea)
 
 
 def _find_mba_block_for_target_interval(
-    mba: object,
+    flow_graph: FlowGraph,
     target_ea: int,
     next_target_ea: int | None,
 ) -> int | None:
-    """Find a block whose first live instruction belongs to a native label.
+    """Find a block whose first instruction belongs to a native label.
 
     Hex-Rays may fold the setup instructions at a computed-goto label into
     call arguments, leaving no micro-instruction with the exact label EA.  The
@@ -140,21 +134,14 @@ def _find_mba_block_for_target_interval(
     target = int(target_ea)
     interval_end = int(next_target_ea) if next_target_ea is not None else None
     best: tuple[int, int] | None = None
-    for serial in range(int(getattr(mba, "qty", 0) or 0)):
-        blk = mba.get_mblock(serial)
-        insn = getattr(blk, "head", None)
-        while insn is not None:
-            try:
-                ea = int(getattr(insn, "ea", -1))
-            except Exception:
-                insn = getattr(insn, "next", None)
-                continue
+    for serial, blk in flow_graph.blocks.items():
+        for insn in blk.insn_snapshots:
+            ea = int(insn.ea)
             if ea > target and (interval_end is None or ea < interval_end):
                 candidate = (ea, int(serial))
                 if best is None or candidate < best:
                     best = candidate
                 break
-            insn = getattr(insn, "next", None)
     return None if best is None else int(best[1])
 
 
