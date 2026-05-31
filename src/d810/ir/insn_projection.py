@@ -21,7 +21,7 @@ they need.
 """
 from __future__ import annotations
 
-from d810.ir.expressions import Const, ExprRef, Move
+from d810.ir.expressions import Add, And, Const, ExprRef, Move, Sub
 from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
 from d810.ir.locations import RegisterLocation, StackSlot, StorageLocation, WeakStackSlot
 from d810.ir.statements import Assignment, ConditionalBranch
@@ -48,12 +48,36 @@ def _location_of(mop: MopSnapshot | None) -> StorageLocation | None:
     return None
 
 
+# Nested-operation families currently lifted from a mop_d sub-instruction.
+# Extend on demand as analyses need more (m_or/m_xor/m_shl/... map to new
+# ir.expressions nodes); unmapped sub-ops project to None (lossy, never wrong).
+_BINOP_NODES = {
+    InsnKind.ADD: Add,
+    InsnKind.SUB: Sub,
+    InsnKind.AND: And,
+}
+
+
 def _value_of(mop: MopSnapshot | None) -> ExprRef | None:
-    """Portable value expression for a source operand, else ``None``."""
+    """Portable value expression for a source operand, else ``None``.
+
+    A ``mop_d`` (SUBINSN) operand recurses into its nested sub-operation
+    (``(var & mask)`` -> ``And(Move(...), Const(...))``), so analyses can read
+    the compared/computed expression *structure* (ticket llr-lxas).
+    """
     if mop is None:
         return None
     if mop.kind is OperandKind.NUMBER:
         return Const(value=int(mop.value)) if mop.value is not None else None
+    if mop.kind is OperandKind.SUBINSN:
+        node = _BINOP_NODES.get(mop.sub_kind)
+        if node is None:
+            return None
+        left = _value_of(mop.sub_l)
+        right = _value_of(mop.sub_r)
+        if left is None or right is None:
+            return None
+        return node(left=left, right=right)
     location = _location_of(mop)
     return Move(source=DefinitionRef(location=location)) if location is not None else None
 

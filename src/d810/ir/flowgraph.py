@@ -138,6 +138,14 @@ class MopSnapshot:
     stack_refs: tuple[int, ...] = ()
     kind: OperandKind = OperandKind.UNKNOWN
     raw_operand_type: int | None = None
+    # Nested sub-operation for a mop_d (SUBINSN) operand: the portable shape of
+    # the sub-instruction's operation + operands, so analyses can read the
+    # compared/computed expression *structure* (e.g. ``(var & mask)``) instead
+    # of the flattened ``stack_refs`` (ticket llr-lxas).  None for non-nested
+    # operands; ``sub_l`` / ``sub_r`` recurse for deeper nesting.
+    sub_kind: "InsnKind | None" = None
+    sub_l: "MopSnapshot | None" = None
+    sub_r: "MopSnapshot | None" = None
 
     def __post_init__(self) -> None:
         if self.raw_operand_type is None and self.t >= 0:
