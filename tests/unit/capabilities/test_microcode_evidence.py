@@ -31,6 +31,10 @@ _FAKE_CONSTANTS = P.MicrocodeConstants(
 )
 
 
+def _record_flags(block, flags):
+    block.flags = flags
+
+
 def setup_function():
     P.reset_providers_for_tests()
 
@@ -55,6 +59,11 @@ def test_register_and_get_roundtrip():
         mmat_zero=lambda mba: 0,
         microcode_constants=lambda mba=None: _FAKE_CONSTANTS,
         find_counter_hoist_candidates=lambda mba: [(7, "l", 0x1234, 99)],
+        get_block_by_serial=lambda mba, serial: ("blk", serial),
+        get_block_flags=lambda block: block.flags,
+        set_block_flags=_record_flags,
+        get_block_start_ea=lambda block: block.start,
+        mbl_keep_flag=lambda mba=None: 0x10000,
     )
     P.register_microcode_evidence(prov)
     got = P.get_microcode_evidence()
@@ -74,6 +83,13 @@ def test_register_and_get_roundtrip():
     assert constants.m_jnz == 4
     assert constants.mop_S == 16
     assert got.find_counter_hoist_candidates(fake) == [(7, "l", 0x1234, 99)]
+    assert got.get_block_by_serial(fake, 5) == ("blk", 5)
+    block = SimpleNamespace(flags=0x1, start=0x1800)
+    assert got.get_block_flags(block) == 0x1
+    got.set_block_flags(block, 0x1 | 0x10000)
+    assert block.flags == 0x10001
+    assert got.get_block_start_ea(block) == 0x1800
+    assert got.mbl_keep_flag(fake) == 0x10000
 
 
 def test_reset_clears_microcode_evidence():
@@ -88,6 +104,11 @@ def test_reset_clears_microcode_evidence():
             lambda m: 0,
             lambda m=None: _FAKE_CONSTANTS,
             lambda m: [],
+            lambda m, s: None,
+            lambda b: 0,
+            lambda b, f: None,
+            lambda b: 0,
+            lambda m=None: 0x10000,
         )
     )
     P.reset_providers_for_tests()
