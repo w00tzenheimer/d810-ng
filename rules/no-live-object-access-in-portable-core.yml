@@ -77,8 +77,12 @@ rule:
     # Live mblock_t topology methods (snapshot exposes int/tuple fields).
     - pattern: $X.nsucc()
     - pattern: $X.npred()
-    - pattern: $X.succ($$$)
-    - pattern: $X.pred($$$)
+    # Exactly ONE positional arg: live ``mblock_t.succ(i)`` / ``pred(i)`` always
+    # take a single index.  The portable ``RegionEntryBlockView`` Protocol seam
+    # (transforms/semantic_region_entry.py) uses 2-arg ``succ(serial, index)``
+    # backed by a FlowGraph and must NOT be flagged.
+    - pattern: $X.succ($A)
+    - pattern: $X.pred($A)
     # Live mblock_t successor/predecessor sets (snapshot uses .succs/.preds).
     - pattern: $X.succset
     - pattern: $X.predset
