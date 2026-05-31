@@ -132,6 +132,13 @@ class MicrocodeEvidenceProvider:
     # method call.  Returns a :class:`MicrocodeConstants` whose attributes are
     # byte-identical to the inlined ``ida_hexrays`` constants they replace.
     microcode_constants: Callable[..., Any]
+    # Counter-hoist detection seam.  Walks the live ``mba`` blocks/instructions
+    # (the ``mba.qty`` + ``get_mblock`` + ``minsn_t``/``mop_t`` introspection the
+    # CounterHoist strategy used to inline) and returns the matched
+    # ``(block_serial, operand_side, host_ea, host_opcode)`` tuples in nested
+    # block-then-instruction order, so the portable strategy only emits
+    # ``promote_operand_to_scalar`` modifications.
+    find_counter_hoist_candidates: Callable[..., Any]
 
 
 _lock = threading.Lock()
