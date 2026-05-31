@@ -45,14 +45,26 @@ def live_maturity_label(source: Any | None) -> str:
 
 
 def live_block_label(source: Any | None, serial: int | None) -> str:
-    """Format ``blk[serial]@0x...`` from a duck-typed ``mba`` source."""
+    """Format ``blk[serial]@0x...`` from a portable FlowGraph snapshot.
+
+    Reads ``source.blocks[serial].start_ea`` (the ``d810.ir`` shape) by
+    duck-typing only -- ``core`` may not import ``ir``. Degrades to
+    ``blk[serial]@?`` when no portable block / ``start_ea`` is available
+    (e.g. a producer still passing a bare live ``mba`` rather than a
+    FlowGraph). The ``@0x...`` suffix is a debug-label nicety, not load-bearing.
+    """
     if serial is None:
         return "blk[?]@?"
     serial_int = int(serial)
     if source is None:
         return f"blk[{serial_int}]@?"
     try:
-        blk = source.get_mblock(serial_int)
-        return f"blk[{serial_int}]@0x{int(blk.start):x}"
+        blocks = getattr(source, "blocks", None)
+        getter = getattr(blocks, "get", None)
+        blk = getter(serial_int) if callable(getter) else None
+        ea = getattr(blk, "start_ea", None) if blk is not None else None
+        if ea is not None:
+            return f"blk[{serial_int}]@0x{int(ea):x}"
     except Exception:
-        return f"blk[{serial_int}]@?"
+        pass
+    return f"blk[{serial_int}]@?"
