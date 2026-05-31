@@ -19,6 +19,8 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
+from d810.ir.expressions import Const
+from d810.ir.insn_projection import project_assignment
 from d810.ir.mop_identity import mop_snapshot_key, mop_snapshot_offset
 from d810.analyses.control_flow.dispatcher_facts import (
     BlockAnalysis,
@@ -294,11 +296,15 @@ def _analyze_state_assignments(
 
     for serial, block in _iter_blocks(flow_graph):
         for insn in block.iter_insns():
-            if insn.kind is not InsnKind.MOV:
+            # Proof-of-shape (llr-lxas): consume the portable projected
+            # assignment instead of the Hex-Rays-shaped ``l``/``d`` operands.
+            # ``value`` is a ``Const`` exactly when the MOV source is a number
+            # operand, so this matches the prior
+            # ``insn.l.kind is OperandKind.NUMBER`` guard byte-for-byte.
+            assignment = project_assignment(insn)
+            if assignment is None or not isinstance(assignment.value, Const):
                 continue
-            if insn.l is None or insn.l.kind is not OperandKind.NUMBER:
-                continue
-            const_val = insn.l.value
+            const_val = assignment.value.value
             if const_val in analysis.state_constants:
                 block_info = _get_or_create_block(analysis, serial)
                 block_info.state_constants.add(int(const_val))
