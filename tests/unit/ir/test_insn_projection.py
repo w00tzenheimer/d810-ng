@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from d810.ir.expressions import Const, Move
 from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
-from d810.ir.insn_projection import LiftedAssignment, project_assignment
-from d810.ir.locations import RegisterLocation, StackSlot
+from d810.ir.insn_projection import project_assignment
+from d810.ir.locations import RegisterLocation, StackSlot, WeakStackSlot
+from d810.ir.statements import Assignment
 from d810.ir.value_refs import DefinitionRef
 
 M_MOV = 0x4
@@ -34,10 +35,28 @@ def _mov(l: MopSnapshot | None, d: MopSnapshot | None) -> InsnSnapshot:
 
 def test_mov_const_to_stack_projects_const_and_stackslot():
     a = project_assignment(_mov(_num(0x41FB8FBB), _stk(0x3C)))
-    assert a == LiftedAssignment(
+    assert a == Assignment(
         target=DefinitionRef(location=StackSlot(offset=0x3C, size=4)),
         value=Const(value=0x41FB8FBB),
     )
+
+
+def test_mov_to_unknown_offset_stack_projects_weak_slot():
+    # A stack destination whose offset is unrecovered becomes a WeakStackSlot
+    # (LiSA weak identifier) -- imprecise, never dropped to None.
+    weak_dst = MopSnapshot(kind=OperandKind.STACK, stkoff=None, size=4)
+    a = project_assignment(_mov(_num(0x55), weak_dst))
+    assert a == Assignment(
+        target=DefinitionRef(location=WeakStackSlot(size=4)),
+        value=Const(value=0x55),
+    )
+
+
+def test_mov_from_unknown_offset_stack_projects_move_of_weak_slot():
+    weak_src = MopSnapshot(kind=OperandKind.STACK, stkoff=None, size=8)
+    a = project_assignment(_mov(weak_src, _reg(0)))
+    assert a is not None
+    assert a.value == Move(source=DefinitionRef(location=WeakStackSlot(size=8)))
 
 
 def test_mov_stack_to_register_projects_move_of_definition():
