@@ -2199,6 +2199,11 @@ def _glbopt1_maturity(mba: Any) -> int:
     return int(ida_hexrays.MMAT_GLBOPT1)
 
 
+def _mmat_zero(mba: Any) -> int:
+    """Return the raw ``MMAT_ZERO`` constant (the missing-maturity default)."""
+    return int(ida_hexrays.MMAT_ZERO)
+
+
 def build_microcode_evidence_provider() -> MicrocodeEvidenceProvider:
     """Bundle this backend's live microcode-evidence seams for the provider registry.
 
@@ -2215,6 +2220,7 @@ def build_microcode_evidence_provider() -> MicrocodeEvidenceProvider:
         block_adjacency=_block_adjacency,
         is_glbopt1=_is_glbopt1,
         glbopt1_maturity=_glbopt1_maturity,
+        mmat_zero=_mmat_zero,
     )
 
 

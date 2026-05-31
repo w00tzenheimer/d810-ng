@@ -10,8 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-import ida_hexrays
-
+from d810.capabilities.providers import get_microcode_evidence
 from d810.core import logging
 from d810.transforms.lowering import LoweringMode
 from d810.core.algorithm_metadata import algorithm_metadata
@@ -261,7 +260,8 @@ class ExactConditionalBridgeNodeLoweringStrategy:
         mba = getattr(snapshot, "mba", None)
         if mba is None or int(getattr(mba, "entry_ea", 0)) != _SUB7FFD_FUNC_EA:
             return False
-        if int(getattr(mba, "maturity", ida_hexrays.MMAT_ZERO)) != ida_hexrays.MMAT_GLBOPT1:
+        evidence = get_microcode_evidence()
+        if int(getattr(mba, "maturity", evidence.mmat_zero(mba))) != evidence.glbopt1_maturity(mba):
             return False
         return (
             getattr(snapshot, "state_machine", None) is not None
