@@ -32,11 +32,13 @@
 
 id: no-live-object-access-in-portable-core
 language: python
-# Severity is WARNING during the migration (the live-access count is
-# nonzero -- 157 sites across 38 files at the F0 baseline).  The
-# finalization plan flips this to ERROR at F2, once the portable-core
-# burn-down reaches zero (see the F-plan commit table).
-severity: warning
+# Severity is ERROR (F2 reached): the portable-core data-model burn-down hit
+# zero (ticket llr-zeyu).  The F0 baseline was 91 live-access sites across the
+# portable-core layers; the final 31 (5 files: state_machine_analysis,
+# exit_transition_discovery, residual_handoff_discovery, loop_bound_writer_guard,
+# branch_ownership_oracle) were routed through the BstWalkerProvider block seam.
+# Any NEW live-object access in portable-core now fails the gate.
+severity: error
 
 files:
   - "src/d810/support/**/*.py"
@@ -97,8 +99,14 @@ note: |
   (b) Snapshot is missing a field the live walk needed -> extend
       BlockSnapshot / InsnSnapshot; the backend lifter populates it.
 
-  (c) Genuinely needs a vendor query that is not topology -> add a
-      capability Protocol in ``d810/capabilities`` and inject it.
+  (c) Genuinely polymorphic block access -- the object is a live ``mba_t`` in
+      some paths and a ``_FlowGraphMBAView`` snapshot projection in others (so a
+      FlowGraph token-swap collapses the live path) -> route through the
+      ``BstWalkerProvider`` block seam: ``get_bst_walkers().get_block(mba, i)``
+      / ``.block_successors(block)``.  The backend impl makes the identical live
+      call from ``backends/``, so behaviour is byte-identical for both objects.
+      This is the canonical llr-zeyu fix used by the final 5 files.  For a
+      non-topology vendor query, add a new capability Protocol and inject it.
 
   (d) Genuinely vendor-irreducible mutation/probe -> the module is not
       portable-core; relocate it to a HIGH module or backends/<vendor>/.
