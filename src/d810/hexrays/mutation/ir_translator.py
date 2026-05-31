@@ -477,7 +477,15 @@ def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
         inner = getattr(mop, "d", None)
         sub_kind = sub_l = sub_r = None
         if inner is not None:
-            sub_kind = _insn_kind_from_hexrays(inner.opcode)
+            # Match the defensive ``getattr`` used for ``l``/``r`` below so a
+            # partial sub-instruction (a minsn without an opcode, or a test
+            # mock that models only operands) degrades ``sub_kind`` to None
+            # instead of raising -- ``_insn_kind_from_hexrays`` does
+            # ``int(opcode)`` and would crash on a missing/None opcode.
+            sub_opcode = getattr(inner, "opcode", None)
+            sub_kind = (
+                None if sub_opcode is None else _insn_kind_from_hexrays(sub_opcode)
+            )
             sub_l = capture_mop_snapshot(getattr(inner, "l", None))
             sub_r = capture_mop_snapshot(getattr(inner, "r", None))
         return CfgMopSnapshot(
