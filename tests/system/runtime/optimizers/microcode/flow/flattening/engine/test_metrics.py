@@ -7,7 +7,6 @@ from d810.optimizers.microcode.flow.flattening.engine.metrics import (
     structure_quality_score,
 )
 from d810.optimizers.microcode.flow.flattening.engine.strategy import StageResult
-from d810.optimizers.microcode.flow.flattening.hodur import metrics as hodur_metrics
 
 
 def test_handler_coverage_handles_zero_total() -> None:
@@ -40,8 +39,3 @@ def test_structure_quality_score_summarizes_stage_results() -> None:
         "stages_failed": 1,
         "final_reachability": 0.8,
     }
-
-
-def test_hodur_metrics_module_re_exports_engine_functions() -> None:
-    assert hodur_metrics.handler_coverage is handler_coverage
-    assert hodur_metrics.structure_quality_score is structure_quality_score
