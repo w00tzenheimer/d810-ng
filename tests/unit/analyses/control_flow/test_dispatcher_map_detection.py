@@ -83,6 +83,43 @@ def test_small_constants_are_not_state_checks():
     assert build_state_dispatcher_map_from_flow_graph(g) is None
 
 
+def _chain_with_loop_head_graph() -> FlowGraph:
+    # Mirror the live OLLVM shape: a dispatcher LOOP HEAD (blk 10) the handler tails back-edge to,
+    # followed by the equality-comparator chain (11 -> 12). The comparators each have in-degree 1
+    # (reached only from the previous link); blk 10 has the high fan-in (entry + every handler).
+    #   0 entry -> 10
+    #   10 loop head -> 11               preds = {0, 1, 3}   (handlers loop back here)
+    #   11 jnz state,C1,12  -> (1, 12)   handler 1 / next comparator 12
+    #   12 jnz state,C2,13  -> (3, 13)   handler 3 / exit 13
+    #   1,3 handlers -> 10               (back-edge to the loop head)
+    #   13 exit
+    return FlowGraph(
+        blocks={
+            0: _blk(0, (10,), ()),
+            10: _blk(10, (11,), (0, 1, 3)),
+            11: _blk(11, (1, 12), (10,), _ne_check(C1, 12)),
+            12: _blk(12, (3, 13), (11,), _ne_check(C2, 13)),
+            1: _blk(1, (10,), (11,)),
+            3: _blk(3, (10,), (12,)),
+            13: _blk(13, (), (12,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+
+def test_dispatcher_entry_is_loop_head_not_midchain_comparator():
+    # Regression: the entry must be the loop head the handlers converge on (blk 10, in-degree 3),
+    # NOT an arbitrary low-in-degree mid-chain comparator (11/12). Ranking only ``chain_blocks`` by
+    # in-degree picks a comparator; the dominator-walk from the function entry recovers the true head.
+    dmap = build_state_dispatcher_map_from_flow_graph(_chain_with_loop_head_graph())
+    assert dmap is not None
+    assert dmap.resolve_target(C1) == 1
+    assert dmap.resolve_target(C2) == 3
+    assert dmap.dispatcher_entry_block == 10
+    assert 10 not in dmap.dispatcher_blocks  # the head is not itself a state-comparison block
+
+
 def test_recover_dispatcher_surfaces_map_and_state_var():
     result = recover_dispatcher(_chain_graph(), facts=None)
     assert result.dispatch_map is not None
