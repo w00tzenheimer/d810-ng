@@ -37,7 +37,7 @@ from d810.optimizers.microcode.flow.flattening.engine.strategy import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop_dependency_diagnostics import (
+from d810.backends.hexrays.evidence.bad_while_loop_dependency_diagnostics import (
     BAD_WHILE_LOOP_DEPENDENCY_DIAGNOSTICS_METADATA_KEY,
     BadWhileLoopDependencyDiagnostic,
     build_bad_while_loop_dependency_diagnostic,
