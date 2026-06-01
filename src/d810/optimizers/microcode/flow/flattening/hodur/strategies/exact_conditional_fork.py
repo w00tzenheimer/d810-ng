@@ -43,8 +43,8 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditiona
     _edge_kind_name,
     _site_key,
 )
+from d810.capabilities.constant_fixpoint import ConstantFixpointBackend
 from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
-    ConstantFixpointBackend,
     DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
 )
 from d810.analyses.control_flow.path_horizon import resolve_transition_path_horizon
