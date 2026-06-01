@@ -23,7 +23,7 @@ from d810.transforms.snapshot import (
 from d810.transforms.planner_context import (
     CumulativePlannerView,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.dispatcher_trampoline_skip import (
+from d810.backends.hexrays.mutation.dispatcher_trampoline_skip import (
     DispatcherTrampolineSkipStrategy,
 )
 
