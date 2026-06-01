@@ -108,7 +108,7 @@ from d810.backends.hexrays.evidence.spurious_backedge_redirect import (
 from d810.backends.hexrays.evidence.topological_sort import (
     TopologicalSortStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
+from d810.passes.fake_jump import (
     FakeJumpStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (

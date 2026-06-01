@@ -45,7 +45,7 @@ from d810.passes.bad_while_loop import (
     serialize_bad_while_loop_edits,
     serialize_bad_while_loop_follow_up,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
+from d810.passes.fake_jump import (
     FAKE_JUMP_FIXES_METADATA_KEY,
     FakeJumpStrategy,
     extract_fake_jump_fixes,

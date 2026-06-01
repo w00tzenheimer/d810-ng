@@ -14,7 +14,7 @@ from d810.capabilities.constant_fixpoint import ConstantFixpointBackend
 from d810.backends.hexrays.evidence.datamodel import (
     DispatcherStateMachine,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
+from d810.passes.fake_jump import (
     FAKE_JUMP_FIXES_METADATA_KEY,
     serialize_fake_jump_fixes,
 )

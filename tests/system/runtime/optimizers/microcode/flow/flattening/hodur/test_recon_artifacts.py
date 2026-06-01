@@ -107,7 +107,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_front
 from d810.optimizers.microcode.flow.flattening.hodur.prototypes import (
     ExactConditionalBridgeNodeLoweringStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
+from d810.passes.fake_jump import (
     FAKE_JUMP_FIXES_METADATA_KEY,
     FakeJumpPredFix,
     FakeJumpStrategy,

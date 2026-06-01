@@ -36,7 +36,7 @@ from d810.passes.bad_while_loop import (
     BadWhileLoopGotoRedirect,
     collect_live_bad_while_loop_analysis,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
+from d810.passes.fake_jump import (
     FakeJumpPredFix,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.fix_predecessor_branch_arm import (

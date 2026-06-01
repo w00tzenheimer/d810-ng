@@ -10,7 +10,7 @@ from d810.evaluator.hexrays_microcode.tracker import (
     get_all_possibles_values,
 )
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t
-from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
+from d810.passes.fake_jump import (
     FakeJumpPredFix,
     resolve_fake_jump_target,
     should_skip_fake_jump_predecessor,
