@@ -18,7 +18,7 @@ from d810.transforms.snapshot import (
     AnalysisSnapshot,
 )
 from d810.transforms.plan_fragment import FAMILY_CLEANUP
-from d810.optimizers.microcode.flow.flattening.strategies.side_effect_select_loop import (
+from d810.passes.side_effect_select_loop import (
     SideEffectSelectLoopStrategy,
 )
 from d810.analyses.control_flow.side_effect_select_loop import (
