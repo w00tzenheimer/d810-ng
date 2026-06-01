@@ -15,7 +15,7 @@ from d810.analyses.control_flow.transition_builder import (
 if TYPE_CHECKING:
     import ida_hexrays
 
-    from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
+    from d810.backends.hexrays.evidence.analysis import (
         HodurStateMachineDetector,
     )
 

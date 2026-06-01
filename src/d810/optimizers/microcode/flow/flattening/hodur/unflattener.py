@@ -35,7 +35,7 @@ from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle impor
     ComposedUnflatteningRule,
 )
 from d810.optimizers.microcode.handler import ConfigParam
-from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
+from d810.backends.hexrays.evidence.analysis import (
     HODUR_STATE_CHECK_OPCODES,
     HODUR_STATE_UPDATE_OPCODES,
     MAX_STATE_CONSTANTS_HODUR,

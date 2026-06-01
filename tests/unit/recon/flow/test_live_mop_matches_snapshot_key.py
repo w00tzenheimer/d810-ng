@@ -1,7 +1,7 @@
 """Unit cover for hodur's ``_live_mop_matches_snapshot_key`` shape.
 
 The actual function is in
-``d810.optimizers.microcode.flow.flattening.hodur.analysis`` which
+``d810.backends.hexrays.evidence.analysis`` which
 imports ``ida_hexrays`` -- can't be exercised from a unit test.
 What we CAN cover here is the *protocol* the function implements:
 its result must be the same as

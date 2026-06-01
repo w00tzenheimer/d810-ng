@@ -1,7 +1,7 @@
 """Behavior tests for ``_live_mop_matches_snapshot_key`` (E3-schema P2).
 
 The function lives in
-``d810.optimizers.microcode.flow.flattening.hodur.analysis`` which
+``d810.backends.hexrays.evidence.analysis`` which
 imports ``ida_hexrays`` -- can't run from ``tests/unit/`` per the
 ``unit-tests-no-hexrays`` contract.  Lives here in
 ``tests/system/runtime/hodur/`` and exercises the matcher with
@@ -26,7 +26,7 @@ from types import SimpleNamespace
 
 from d810.ir.flowgraph import MopSnapshot, OperandKind
 from d810.ir.mop_identity import mop_snapshot_key
-from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
+from d810.backends.hexrays.evidence.analysis import (
     _live_mop_matches_snapshot_key,
 )
 

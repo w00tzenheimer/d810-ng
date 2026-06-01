@@ -12,7 +12,7 @@ from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.families.state_machine_cff.family import (
     CFFStrategyFamily,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
+from d810.backends.hexrays.evidence.analysis import (
     MAX_STATE_CONSTANTS_HODUR,
     MIN_STATE_CONSTANT,
     MIN_STATE_CONSTANTS,

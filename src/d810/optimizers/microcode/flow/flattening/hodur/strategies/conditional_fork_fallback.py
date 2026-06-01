@@ -8,7 +8,7 @@ from d810.core.algorithm_metadata import algorithm_metadata
 from d810.transforms.modification_builder import (
     ModificationBuilder,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
+from d810.backends.hexrays.evidence.analysis import (
     HODUR_STATE_CHECK_OPCODES,
     HodurStateMachineDetector,
 )
