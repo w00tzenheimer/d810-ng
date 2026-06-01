@@ -11,7 +11,7 @@ from d810.passes.recon_artifacts import (
     save_transition_report_to_store,
     write_return_frontier_artifact_from_store,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.audit_runtime import (
+from d810.passes.audit_runtime import (
     prepare_return_frontier_audit,
 )
 from d810.transforms.post_apply_runtime import (

@@ -21,7 +21,7 @@ from d810.transforms.plan_fragment import (
     PlanFragment,
     StageResult,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.audit_runtime import (
+from d810.passes.audit_runtime import (
     finalize_return_frontier_audit,
 )
 from d810.transforms.post_apply_runtime import (
