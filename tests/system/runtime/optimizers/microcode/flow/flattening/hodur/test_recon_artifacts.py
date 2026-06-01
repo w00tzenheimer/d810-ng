@@ -62,7 +62,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.live_rule_services import (
 from d810.optimizers.microcode.flow.flattening.hodur.rule_services import (
     HodurRuleServices,
 )
-from d810.optimizers.microcode.flow.flattening.state_machine_rule_services import (
+from d810.passes.state_machine_rule_services import (
     StateMachineRuleServices,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.snapshot_builder import (
