@@ -18,7 +18,7 @@ from d810.transforms.snapshot import (
     AnalysisSnapshot,
 )
 from d810.transforms.plan_fragment import FAMILY_CLEANUP
-from d810.optimizers.microcode.flow.flattening.strategies.selector_shell import (
+from d810.passes.selector_shell import (
     SelectorShellStrategy,
 )
 from d810.analyses.control_flow.selector_shell import (
