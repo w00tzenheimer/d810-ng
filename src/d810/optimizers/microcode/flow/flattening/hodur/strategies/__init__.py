@@ -50,7 +50,7 @@ from d810.backends.hexrays.evidence.valrange_resolution import (
 from d810.transforms.edge_split_conflict import (
     EdgeSplitConflictResolutionStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.terminal_loop_cleanup import (
+from d810.backends.hexrays.evidence.terminal_loop_cleanup import (
     TerminalLoopCleanupStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.conditional_fork_fallback import (

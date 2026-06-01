@@ -4,7 +4,7 @@ from __future__ import annotations
 from d810.backends.hexrays.evidence.valrange_resolution import (
     ValrangeResolutionStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.terminal_loop_cleanup import (
+from d810.backends.hexrays.evidence.terminal_loop_cleanup import (
     TerminalLoopCleanupStrategy,
 )
 from d810.backends.hexrays.evidence.dead_state_variable_elimination import (
