@@ -87,7 +87,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.dispatcher_tramp
 from d810.backends.hexrays.evidence.counter_hoist import (
     CounterHoistStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.return_frontier_carrier_preserve import (
+from d810.backends.hexrays.mutation.return_frontier_carrier_preserve import (
     ReturnFrontierCarrierPreserveStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_node import (
