@@ -79,7 +79,7 @@ from d810.optimizers.microcode.flow.flattening.strategies.single_iteration impor
     serialize_single_iteration_converts,
     serialize_single_iteration_fixes,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.tail_goto_merge import (
+from d810.passes.tail_goto_merge import (
     TAIL_GOTO_MERGE_METADATA_KEY,
     TailGotoMergeStrategy,
     extract_tail_goto_merge_candidates,

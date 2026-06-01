@@ -63,7 +63,7 @@ from d810.optimizers.microcode.flow.flattening.strategies.single_iteration impor
     SingleIterationConvertFix,
     SingleIterationPredFix,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.tail_goto_merge import (
+from d810.passes.tail_goto_merge import (
     TailGotoMergeCandidate,
     collect_tail_goto_merge_candidates,
 )
