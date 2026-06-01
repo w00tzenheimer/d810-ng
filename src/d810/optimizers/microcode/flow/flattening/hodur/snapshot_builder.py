@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from d810.capabilities.providers import get_microcode_evidence
+from d810.analyses.control_flow.reachability import reachable_from
 from d810.ir.flowgraph import FlowGraph
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
@@ -365,17 +366,13 @@ class HodurSnapshotPolicy:
         evidence = get_microcode_evidence()
         qty = evidence.get_block_count(mba)
         adjacency = evidence.block_adjacency(mba, qty)
-        visited: set[int] = set()
-        queue = [0]
-        while queue:
-            serial = queue.pop()
-            if serial in visited or serial < 0 or serial >= qty:
-                continue
-            visited.add(serial)
-            for succ in adjacency.get(serial, ()):
-                queue.append(succ)
+        # Reachability is now a shared portable analysis primitive (see
+        # d810.analyses.control_flow.reachability); the live policy supplies the
+        # provider adjacency, the portable recover_dispatcher pass supplies FlowGraph
+        # successors — identical reachable set either way.
+        visited = reachable_from(adjacency, qty, entry=0)
         return ReachabilityInfo(
             entry_serial=0,
-            reachable_blocks=frozenset(visited),
+            reachable_blocks=visited,
             total_blocks=qty,
         )

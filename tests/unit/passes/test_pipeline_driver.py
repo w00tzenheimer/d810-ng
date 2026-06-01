@@ -20,12 +20,25 @@ from d810.transforms.plan import PatchPlan
 from d810.passes.driver import CapabilityError, run_pipeline, validate_capabilities
 from d810.families.state_machine_cff.hodur_pipeline import HodurFamily
 from d810.families.registry import select_family, registered_families
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
+
+# A real 1-block FlowGraph so the (now real) recover_dispatcher pass can run over it.
+_GRAPH = FlowGraph(
+    blocks={
+        0: BlockSnapshot(
+            serial=0, block_type=1, succs=(), preds=(),
+            flags=0, start_ea=0x1000, insn_snapshots=(),
+        )
+    },
+    entry_serial=0,
+    func_ea=0x1000,
+)
 
 
 # --- minimal injected test doubles -------------------------------------------------
 @dataclass
 class _Src:
-    flow_graph: object = "G0"
+    flow_graph: object = _GRAPH
     func_ea: int = 0x1000
     live_source: object = "LIVE"
 
@@ -71,7 +84,7 @@ def test_run_pipeline_runs_all_five_passes_no_apply_on_empty_plans():
     # skeleton transforms emit empty plans -> backend.apply never called, graph unchanged.
     assert backend.applied == 0
     assert facts.invalidations == 0
-    assert out == "G0"
+    assert out is _GRAPH
 
 
 def test_run_pipeline_no_match_is_a_noop():
@@ -80,7 +93,7 @@ def test_run_pipeline_no_match_is_a_noop():
         source=_Src(), family=HodurFamily(), backend=backend,  # detect() -> None
         facts=_Facts(), project_config=None, maturity=None,
     )
-    assert backend.applied == 0 and out == "G0"
+    assert backend.applied == 0 and out is _GRAPH
 
 
 def test_run_pipeline_applies_nonempty_plan_and_invalidates():
