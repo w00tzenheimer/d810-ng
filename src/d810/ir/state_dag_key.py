@@ -1,8 +1,8 @@
 """Stable identity for a semantic state DAG node.
 
-Lives in the cfg layer so both `d810.cfg.*` lowering code and `d810.recon.flow.*`
-analysis code can reference the same type without creating an upward import
-from cfg to recon (which the layered import-linter contract forbids).
+Lives in the portable `d810.ir` layer so both lowering code
+(`d810.transforms.*`) and analysis code (`d810.analyses.*`) can reference the
+same type without an upward import between those sibling portable-core packages.
 
 `d810.analyses.control_flow.linearized_state_dag` re-exports `StateDagNodeKey` for
 backwards compatibility with existing `from d810.analyses.control_flow.linearized_state_dag
