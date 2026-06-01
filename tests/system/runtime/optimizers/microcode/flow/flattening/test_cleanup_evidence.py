@@ -20,7 +20,7 @@ from d810.transforms.plan import (
     PatchInsertBlock,
     compile_patch_plan,
 )
-from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
+from d810.transforms.cleanup_evidence import (
     BAD_WHILE_LOOP_SOURCE_RULE,
     CLEANUP_CONDITIONAL_REDIRECT_PROOF_METADATA_KEY,
     CleanupProofVerdict,

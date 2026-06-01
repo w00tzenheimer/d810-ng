@@ -11,7 +11,7 @@ from d810.optimizers.microcode.flow.flattening.cleanup_backend import (
     SimpleFlatteningCleanupBackend,
     SimpleFlatteningCleanupDetection,
 )
-from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
+from d810.transforms.cleanup_evidence import (
     CLEANUP_CONDITIONAL_REDIRECT_PROOF_METADATA_KEY,
     CLEANUP_DUPLICATE_REPLAY_METADATA_KEY,
     CLEANUP_FOLLOW_UP_RECLASSIFICATION_METADATA_KEY,

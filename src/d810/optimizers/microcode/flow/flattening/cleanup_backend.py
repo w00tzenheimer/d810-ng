@@ -12,7 +12,7 @@ from d810.transforms.materialization_payload import (
     CapturedBlockBodySummary,
 )
 from d810.core.typing import Protocol
-from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
+from d810.transforms.cleanup_evidence import (
     CleanupConditionalRedirectProof,
     CleanupDuplicateGroupReplayCandidate,
     CleanupSideEffectReplayCandidate,
