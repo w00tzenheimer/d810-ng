@@ -101,7 +101,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.lfg_handoff_resolution_back
     ProjectedSnapshotHandoffTargetRequest,
     SynthesizedHandoffTargetRequest,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend import (
+from d810.transforms.projected_topology_backend import (
     HodurProjectedTopologyBackend,
     ProjectedTopologyBackend,
 )
