@@ -47,7 +47,7 @@ from __future__ import annotations
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.valrange_resolution import (
     ValrangeResolutionStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.edge_split_conflict import (
+from d810.transforms.edge_split_conflict import (
     EdgeSplitConflictResolutionStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.terminal_loop_cleanup import (
