@@ -19,6 +19,7 @@ from d810.ir.flowgraph import FlowGraph, OperandKind
 from d810.ir.semantics import PredicateKind
 from d810.analyses.value_flow.model import ValidatedFactView
 from d810.analyses.control_flow.reachability import reachable_from
+from d810.analyses.control_flow.dominator import compute_dom_tree
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
@@ -123,8 +124,19 @@ def build_state_dispatcher_map_from_flow_graph(
         if state_var_stkoff is None or off == state_var_stkoff
     )
     chain_blocks = frozenset(row.dispatcher_block for row in rows)
-    # Dispatcher entry = the chain block with the highest in-degree (handlers loop back to it).
-    entry = max(chain_blocks, key=lambda s: len(graph.blocks[s].preds))
+    # Dispatcher entry = the loop head the handler tails converge on. The equality-chain comparators
+    # each have near-zero in-degree (reached only from the previous comparator); the block the
+    # handlers actually back-edge to is the comparators' common dominator -- the dispatcher loop
+    # header -- which is itself NOT a state-comparison block. ``max(chain_blocks, ...)`` therefore
+    # picked an arbitrary low in-degree mid-chain comparator. Walk the dominator tree from the
+    # function entry and rank every dominator of the chain by in-degree so the true high-fan-in loop
+    # head wins (the block ~all handler gotos return to).
+    succ_map = {s: [int(x) for x in b.succs] for s, b in graph.blocks.items()}
+    dom = compute_dom_tree(succ_map, graph.entry_serial)
+    entry_candidates: set[int] = set(chain_blocks)
+    for cb in chain_blocks:
+        entry_candidates |= dom.dominators_of(cb)
+    entry = max(entry_candidates, key=lambda s: len(graph.blocks[s].preds))
     return StateDispatcherMap(
         rows=rows,
         dispatcher_entry_block=int(entry),
