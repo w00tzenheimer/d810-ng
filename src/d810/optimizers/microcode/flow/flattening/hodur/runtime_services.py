@@ -31,7 +31,7 @@ from d810.transforms.post_apply_runtime import (
 from d810.optimizers.microcode.flow.flattening.hodur.post_pipeline_hooks import (
     HodurPostPipelineHooks,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.recon_artifacts import (
+from d810.passes.recon_artifacts import (
     load_return_frontier_audit_from_store,
     load_terminal_return_audit_from_store,
     load_transition_report_from_store,

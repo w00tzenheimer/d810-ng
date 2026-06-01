@@ -8,7 +8,7 @@ from d810.evaluator.hexrays_microcode.terminal_return_valranges import (
     build_terminal_return_valrange_report,
     build_terminal_return_valrange_report_from_mba,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.recon_artifacts import (
+from d810.passes.recon_artifacts import (
     load_terminal_return_audit_from_store,
     load_transition_report_from_store,
 )
