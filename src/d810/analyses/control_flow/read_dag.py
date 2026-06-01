@@ -27,10 +27,15 @@ from d810.analyses.control_flow.linearized_state_dag import (
     StateDagNode,
     StateNodeKind,
 )
+from d810.analyses.control_flow.local_structure import build_local_structure
 from d810.analyses.data_flow import FixpointResult
+from d810.analyses.data_flow.domain import NodeId
+from d810.core.typing import Callable, FrozenSet, Iterable
 from d810.ir.state_dag_key import StateDagNodeKey
 
 __all__ = ["read_dag_from"]
+
+_Succ = Callable[[NodeId], Iterable[NodeId]]
 
 
 def _state_label(
@@ -45,6 +50,9 @@ def read_dag_from(
     *,
     view: DispatcherView,
     owner_result: FixpointResult,
+    successors_of: _Succ | None = None,
+    predecessors_of: _Succ | None = None,
+    terminal_exit_blocks: FrozenSet[int] = frozenset(),
     dispatcher_entry_serial: int | None = None,
     state_var_stkoff: int | None = None,
     pre_header_serial: int | None = None,
@@ -80,6 +88,20 @@ def read_dag_from(
             kind = StateNodeKind.EXACT
             key = StateDagNodeKey(handler_serial=handler, state_const=state_const)
             label = _state_label(kind, state_const, None, None)
+
+        owned = tuple(owned_blocks(owners, handler))
+        shared = tuple(shared_suffix_blocks(owners, handler))
+        if successors_of is not None and predecessors_of is not None:
+            local_segments, local_edges = build_local_structure(
+                owned,
+                successors_of=successors_of,
+                predecessors_of=predecessors_of,
+                shared_blocks=frozenset(shared),
+                terminal_exit_blocks=frozenset(terminal_exit_blocks),
+            )
+        else:
+            local_segments, local_edges = (), ()
+
         nodes.append(
             StateDagNode(
                 key=key,
@@ -87,11 +109,11 @@ def read_dag_from(
                 state_label=label,
                 handler_serial=handler,
                 entry_anchor=handler,
-                owned_blocks=tuple(owned_blocks(owners, handler)),
+                owned_blocks=owned,
                 exclusive_blocks=tuple(exclusive_blocks(owners, handler)),
-                shared_suffix_blocks=tuple(shared_suffix_blocks(owners, handler)),
-                local_segments=(),
-                local_edges=(),
+                shared_suffix_blocks=shared,
+                local_segments=local_segments,
+                local_edges=local_edges,
             )
         )
 
