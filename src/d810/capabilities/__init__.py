@@ -24,10 +24,13 @@ from .source_lifter import (
     register_live_lifter,
     select_lifter,
 )
+from .resolver import CapabilityNotProvided, CapabilitySet
 from .use_def_safety import SeveranceViolation, UseDefSafetyCapability
 from .value_range import ValRange, ValRangeCapability
 
 __all__ = [
+    "CapabilityNotProvided",
+    "CapabilitySet",
     "ConstantFixpointBackend",  # back-compat alias of ConstantFixpointCapability
     "ConstantFixpointCapability",
     "ExternalRecurrenceCapability",

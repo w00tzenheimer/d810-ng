@@ -16,6 +16,7 @@ from d810.core.typing import Any, Callable, Protocol, runtime_checkable
 from d810.core.config import ProjectConfiguration
 from d810.ir.flowgraph import FlowGraph, SnapshotStage
 from d810.analyses.value_flow.model import ValidatedFactView
+from d810.capabilities.resolver import CapabilitySet
 from d810.transforms.plan import PatchPlan
 
 # Rewrite-plan vocabulary alias (canonical home already exists).
@@ -48,6 +49,10 @@ class FunctionPipelineContext:
     maturity: SnapshotStage
     project_config: ProjectConfiguration
     facts: ValidatedFactView
+    # Backend-provided capability instances keyed by Protocol type (the north-star
+    # ``capabilities`` object). Empty by default — passes query via ``optional`` so a
+    # run with no capabilities is a no-op for them.
+    capabilities: CapabilitySet = field(default_factory=CapabilitySet)
 
 
 @dataclass(frozen=True)

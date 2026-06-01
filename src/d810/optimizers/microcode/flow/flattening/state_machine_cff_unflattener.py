@@ -48,6 +48,11 @@ from d810.backends.hexrays.lifter import lift_function
 from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
 from d810.analyses.control_flow.dispatcher_recovery import recover_dispatcher
 from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
+from d810.capabilities.resolver import CapabilitySet
+from d810.capabilities.value_range import ValRangeCapability
+from d810.evaluator.hexrays_microcode.value_range_capability import (
+    HexRaysValRangeCapability,
+)
 from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
 from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.driver import run_pipeline
@@ -123,6 +128,12 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 logger.debug("s1a: pre-pipeline BST evidence failed", exc_info=True)
         facts = AnalysisManager(source.flow_graph, input_facts=fact_view)
         backend = HexRaysMutationBackend()
+        # Provide the live value-range capability so RecoverStateTransitions can resolve handler
+        # transitions the exact equality-chain leaves unresolved (the north-star
+        # ``capabilities.optional(ValRangeCapability)``).
+        capabilities = CapabilitySet(
+            {ValRangeCapability: HexRaysValRangeCapability(mba)}
+        )
         run_pipeline(
             source=source,
             family=HodurFamily(),
@@ -130,18 +141,21 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             facts=facts,
             project_config=None,
             maturity=getattr(mba, "maturity", None),
+            capabilities=capabilities,
         )
         # Iteration diagnostics: where does the §1a chain stand for this function?
         rec = facts.get_analysis("recover_dispatcher")
         tr = facts.get_analysis("transition_result")
         regions = facts.get_analysis("plan_semantic_regions")
+        valrange_confirmable = facts.get_analysis("valrange_confirmable_count")
         logger.info(
-            "s1a func=0x%x: input_facts=%s map_rows=%d transitions=%d regions=%d",
+            "s1a func=0x%x: input_facts=%s map_rows=%d transitions=%d regions=%d valrange_confirmable=%s",
             func_ea,
             fact_view is not None,
             len(rec.dispatch_map.rows) if rec and rec.dispatch_map else 0,
             len(tr.transitions) if tr else 0,
             len(regions.linear_regions) if regions else 0,
+            valrange_confirmable,
         )
         # Diag DB: publish the §1a structural analysis so the SQLite diag tables are not blind to
         # this path (the legacy recon instrumentation does not run under the flag). llr-6dq7.

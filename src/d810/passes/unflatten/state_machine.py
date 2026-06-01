@@ -27,6 +27,32 @@ from d810.analyses.control_flow.transition_builder import transition_result_from
 from d810.transforms.semantic_regions import plan_semantic_regions
 from d810.transforms.state_machine_unflatten import lower_to_direct_graph
 from d810.transforms.dispatcher_cleanup import cleanup_residual_dispatcher
+from d810.capabilities.value_range import ValRangeCapability
+
+
+def _count_valrange_confirmable(valrange, dispatch_map, state_var_stkoff) -> int:
+    """Count dispatcher rows whose routing the live value-range analysis independently confirms.
+
+    For each ``state_const -> target_block`` row, query the value range of the state variable at the
+    target block's start: a clean routing has the routing constant as the incoming value. A read-only
+    confirmation metric -- it does not yet add transitions (the substantive enrichment is gated on the
+    protected #4 emission). Proves the injected :class:`ValRangeCapability` executes end-to-end.
+    """
+    if state_var_stkoff is None:
+        return 0
+    confirmed = 0
+    for row in getattr(dispatch_map, "rows", ()):
+        target = getattr(row, "target_block", None)
+        const = getattr(row, "state_const", None)
+        if target is None or const is None:
+            continue
+        try:
+            resolved = valrange.resolve_state_value(int(target), int(state_var_stkoff))
+        except Exception:  # noqa: BLE001 — capability query is best-effort
+            resolved = None
+        if resolved is not None and int(resolved) == int(const):
+            confirmed += 1
+    return confirmed
 
 
 def _analysis(ctx: FunctionPipelineContext, name: str, default=None):
@@ -63,6 +89,21 @@ class RecoverStateTransitions:
         transition_result = transition_result_from_resolutions(
             resolutions, dispatch_map=dispatch_map
         )
+        # Consume the injected value-range capability (north-star
+        # ``capabilities.optional(ValRangeCapability)``). For now this records a read-only
+        # confirmation metric proving the live capability executes end-to-end; the substantive
+        # transition enrichment lands once #4's protected emission can absorb the richer DAG.
+        valrange = ctx.capabilities.optional(ValRangeCapability)
+        if valrange is not None and dispatch_map is not None:
+            _publish(
+                ctx,
+                "valrange_confirmable_count",
+                _count_valrange_confirmable(
+                    valrange,
+                    dispatch_map,
+                    getattr(recovery, "state_var_stkoff", None),
+                ),
+            )
         _publish(ctx, self.name, resolutions)
         _publish(ctx, "transition_result", transition_result)
         return PassResult(
