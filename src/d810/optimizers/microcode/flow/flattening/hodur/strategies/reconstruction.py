@@ -64,7 +64,7 @@ from d810.transforms.plan_fragment import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.reconstruction_fragment_builder import (
+from d810.transforms.reconstruction_fragment_builder import (
     finalize_reconstruction_fragment,
 )
 from d810.transforms.projected_topology_backend import (

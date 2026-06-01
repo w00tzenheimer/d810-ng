@@ -1179,7 +1179,7 @@ def _build_linearized_flow_graph_planner_context_contribution(
     """Scan emitted mods + owned_blocks to produce a PlannerContextContribution.
 
     Symmetric to
-    :func:`d810.optimizers.microcode.flow.flattening.hodur.reconstruction_fragment_builder._build_planner_context_contribution`:
+    :func:`d810.transforms.reconstruction_fragment_builder._build_planner_context_contribution`:
     every :class:`RedirectGoto` becomes a :class:`LinearizationDecision` so
     later strategies (same pipeline, later rounds) can call
     ``view.is_linearized(src)`` and skip emitting a contradictory reverse

@@ -175,7 +175,7 @@ from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting i
     snapshot_reconstruction_dag,
     snapshot_reconstruction_post_apply,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.reconstruction_fragment_builder import (
+from d810.transforms.reconstruction_fragment_builder import (
     finalize_reconstruction_fragment,
 )
 from d810.evaluator.hexrays_microcode.use_def_dominance import (

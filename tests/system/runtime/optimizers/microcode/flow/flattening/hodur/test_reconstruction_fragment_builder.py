@@ -21,7 +21,7 @@ from d810.transforms.planner_context import (
     LinearizationDecision,
     PlannerContextContribution,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.reconstruction_fragment_builder import (
+from d810.transforms.reconstruction_fragment_builder import (
     finalize_reconstruction_fragment,
 )
 

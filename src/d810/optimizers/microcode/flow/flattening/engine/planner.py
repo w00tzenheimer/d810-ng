@@ -538,7 +538,7 @@ def _collect_dag_audit_records(
     Strategies that participate in DAG-arbiter conformance store a
     ``tuple[DagDisagreementRecord, ...]`` under ``metadata["dag_audit"]``
     (see
-    :mod:`d810.optimizers.microcode.flow.flattening.hodur.reconstruction_fragment_builder`).
+    :mod:`d810.transforms.reconstruction_fragment_builder`).
     Fragments without that key contribute nothing.  Returns the flat
     aggregate in the same order fragments were planned, preserving
     intra-fragment record order so the per-run summary is deterministic.
