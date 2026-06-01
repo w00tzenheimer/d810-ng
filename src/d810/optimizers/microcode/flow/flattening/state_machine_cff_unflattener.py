@@ -48,6 +48,11 @@ from d810.backends.hexrays.lifter import lift_function
 from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
 from d810.analyses.control_flow.dispatcher_recovery import recover_dispatcher
 from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
+from d810.analyses.control_flow.semantic_transition import facts_from_validated_view
+from d810.analyses.control_flow.state_transition_domain import (
+    StateValue,
+    analyze_state_transitions,
+)
 from d810.analyses.control_flow.state_machine_analysis import (
     run_snapshot_constant_fixpoint,
 )
@@ -231,6 +236,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             # evidence-recovery WITHOUT touching production lowering, so a still-naive emission cannot
             # collapse the live output (llr-gp9d/mmfq/opck).
             bst = bst_evidence
+            # Inc4 (llr-mmfq): measure the sound #2 StateTransitionDomain fixpoint against the ad-hoc
+            # bst-walk + oracle BEFORE swapping it into the DAG. Pure logging, feeds nothing.
+            if bst is not None and fact_view is not None:
+                self._s1a_fixpoint_probe(source, bst, fact_view, entry_serial)
             # Prefer the BST-derived rich transition_result: it backfills handlers reachable only
             # through wide BST range intervals (the range-backed states the exact-only §1a #2 omits),
             # so the diag DAG node/edge counts approach the legacy oracle instead of being capped by
@@ -301,6 +310,63 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 observe_modifications(snap, _diag_modifications(plan))
         except Exception:  # noqa: BLE001 — diagnostics must never break the optimize path
             logger.debug("s1a: snapshot-correlated diagnostics failed", exc_info=True)
+
+    def _s1a_fixpoint_probe(self, source, bst, fact_view, dispatcher_entry: int) -> None:
+        """DIAG-ONLY: measure the sound #2 ``StateTransitionDomain`` fixpoint (llr-mmfq Inc4).
+
+        Builds the value-set ``transition_result`` from the SAME per-block state-write evidence the
+        fact view already carries (``StateWriteAnchor``) and the BST handler map, then logs its
+        conditional-transition count against the ad-hoc ``bst.conditional_transitions`` walk (the diag
+        DAG's CONDITIONAL_TRANSITION source) and the legacy oracle (66). Pure measurement: it feeds
+        nothing into the DAG/plan, so production and the diag DAG are untouched. The check confirms
+        whether the sound fixpoint constrains the over-count before the Inc5 swap.
+        """
+        try:
+            blocks = source.flow_graph.blocks
+            _, anchors = facts_from_validated_view(fact_view)
+            state_writes = {
+                int(a.block_serial): StateValue.of(int(a.state_const)) for a in anchors
+            }
+            handler_entry_by_state = {
+                int(state): int(blk)
+                for blk, state in bst.handler_state_map.items()
+                if blk not in bst.bst_node_blocks
+            }
+
+            def _succ(serial):
+                blk = blocks.get(serial)
+                return [int(x) for x in getattr(blk, "succs", ())] if blk is not None else []
+
+            def _pred(serial):
+                blk = blocks.get(serial)
+                return [int(x) for x in getattr(blk, "preds", ())] if blk is not None else []
+
+            fixpoint_tr = analyze_state_transitions(
+                nodes=list(blocks),
+                entry_nodes=[int(dispatcher_entry)],
+                successors_of=_succ,
+                predecessors_of=_pred,
+                state_writes=state_writes,
+                dispatcher_entry=int(dispatcher_entry),
+                handler_entry_by_state=handler_entry_by_state,
+                entry_state=StateValue.top(),
+            )
+            cond = sum(1 for t in fixpoint_tr.transitions if t.is_conditional)
+            bst_cond_edges = sum(
+                len(v) for v in (bst.conditional_transitions or {}).values()
+            )
+            logger.info(
+                "s1a #2 fixpoint-probe: fixpoint cond=%d uncond=%d total=%d handlers=%d "
+                "writes=%d | bst_walk cond_edges=%d | oracle cond=66",
+                cond,
+                len(fixpoint_tr.transitions) - cond,
+                len(fixpoint_tr.transitions),
+                len(handler_entry_by_state),
+                len(state_writes),
+                bst_cond_edges,
+            )
+        except Exception:  # noqa: BLE001 — probe must never break the optimize path
+            logger.debug("s1a: fixpoint probe failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
