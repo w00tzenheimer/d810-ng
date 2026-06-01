@@ -28,6 +28,7 @@ from d810.core.observability_models import (
 from d810.core.observability_recon import (
     diagnostics_enabled as _recon_diagnostics_enabled,
     observe_dag,
+    observe_dag_local_facts,
     observe_modifications,
     observe_reachability,
     observe_state_dispatcher_rows,
@@ -218,20 +219,18 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         )
 
     def _dual_build_read_dag_diff(
-        self, source, dmap, bst_evidence, legacy_dag, dag_tr
+        self, source, dmap, bst_evidence, dag_tr, func_ea, maturity
     ) -> None:
-        """Diag-only: build the portable ``read_dag_from`` read-off beside the live
-        ``build_live_linearized_state_dag_from_graph`` and log a field-by-field diff.
+        """Diag-only: build the portable ``read_dag_from`` read-off and OBSERVE it to
+        the diag DB under a separate snapshot (``s1a_read_dag_lisa``).
 
-        The legacy DAG is state-level (one node per routed state); the read-off is
-        handler-level (one node per handler, owned/exclusive/shared off the owner-set
-        fixpoint).  The headline measures the node-expansion gap + whether the
-        owner-set partition matches the legacy per-handler block assignment -- the
-        parity gate restated at node granularity (each divergence = one heuristic to
-        retire).  Best-effort, never breaks optimize.
+        The legacy DAG is observed under ``s1a_recover_dispatcher``; the read-off goes
+        to ``s1a_read_dag_lisa``, both into ``dag_nodes`` / ``dag_node_blocks`` /
+        ``dag_local_*``.  The parity diff (node-expansion gap, owner-set partition vs
+        the legacy per-handler block assignment, each divergence = one heuristic to
+        retire) is then a SQL query across the two snapshot labels -- not a log grep.
+        Best-effort, never breaks optimize.
         """
-        from collections import defaultdict
-
         try:
             flow_graph = source.flow_graph
             view = discover_dispatcher_from_flow_graph(
@@ -246,8 +245,12 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             handler_entries = frozenset(
                 int(h) for h in view.handler_entry_by_state.values()
             )
+            # KILL the STRUCTURAL dispatcher head (the loop header dmap.dispatcher_entry_block),
+            # NOT the fixpoint's widest-value-set block (view.dispatcher_entry): the latter sits
+            # mid-chain, so the head never gets killed and ownership cascades through the routing
+            # chain into every handler.
             dispatcher_region = frozenset(
-                {int(view.dispatcher_entry)} if view.dispatcher_entry is not None else ()
+                {int(dmap.dispatcher_entry_block)}
             ) | frozenset(int(b) for b in view.bst_node_blocks)
             owner_result = analyze_block_ownership(
                 nodes=list(succ),
@@ -267,54 +270,27 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 state_var_stkoff=int(dmap.state_var_stkoff),
             )
 
-            legacy_owned: dict[int, set] = defaultdict(set)
-            for node in legacy_dag.nodes:
-                legacy_owned[int(node.handler_serial)].update(
-                    int(b) for b in node.owned_blocks
-                )
-            mine = {int(n.handler_serial): n for n in my_dag.nodes}
-            common = set(legacy_owned) & set(mine)
-            owned_exact = sum(
-                1 for h in common if legacy_owned[h] == set(mine[h].owned_blocks)
+            # Observe the read-off into the diag DB under a SEPARATE snapshot so the
+            # diff vs the legacy DAG (label s1a_recover_dispatcher) is a SQL query over
+            # dag_nodes / dag_node_blocks / dag_local_*, not a log grep.
+            my_snap = request_capture_mba_snapshot(
+                blocks=_diag_blocks_from_flow_graph(flow_graph),
+                label="s1a_read_dag_lisa",
+                func_ea=func_ea,
+                maturity=maturity,
+                phase="post_pipeline",
             )
-            owned_subset = sum(
-                1 for h in common if set(mine[h].owned_blocks) <= legacy_owned[h]
-            )
-            logger.info(
-                "s1a read_dag(LiSA): my_nodes=%d legacy_nodes=%d | my_handlers=%d "
-                "legacy_handlers=%d common=%d | owned_exact=%d owned_subset=%d | "
-                "my_edges=%d legacy_edges=%d | only_mine=%d only_legacy=%d",
-                len(my_dag.nodes),
-                len(legacy_dag.nodes),
-                len(mine),
-                len(legacy_owned),
-                len(common),
-                owned_exact,
-                owned_subset,
-                len(my_dag.edges),
-                len(legacy_dag.edges),
-                len(set(mine) - set(legacy_owned)),
-                len(set(legacy_owned) - set(mine)),
-            )
-            # Pinpoint the first few owned-block divergences: the owner-set fixpoint
-            # is the sound answer, so each Δ is a legacy heuristic to retire (or a
-            # granularity artifact of the state-level expansion).
-            shown = 0
-            for handler in sorted(common):
-                mine_owned = set(int(b) for b in mine[handler].owned_blocks)
-                if mine_owned == legacy_owned[handler]:
-                    continue
+            if my_snap is not None:
+                observe_dag(my_snap, _diag_dag_nodes(my_dag), _diag_dag_edges(my_dag))
+                observe_dag_local_facts(my_snap, my_dag)
                 logger.info(
-                    "s1a read_dag(LiSA) owned Δ h=%d: mine_only=%s legacy_only=%s",
-                    handler,
-                    sorted(mine_owned - legacy_owned[handler])[:12],
-                    sorted(legacy_owned[handler] - mine_owned)[:12],
+                    "s1a read_dag(LiSA): observed %d nodes / %d edges to diag snapshot "
+                    "'s1a_read_dag_lisa' (SQL-diff vs 's1a_recover_dispatcher')",
+                    len(my_dag.nodes),
+                    len(my_dag.edges),
                 )
-                shown += 1
-                if shown >= 5:
-                    break
         except Exception:  # noqa: BLE001 — diag-only, never break optimize
-            logger.debug("s1a: read_dag dual-build diff failed", exc_info=True)
+            logger.debug("s1a: read_dag dual-build observe failed", exc_info=True)
 
     def _publish_s1a_diagnostics(
         self, mba, source, rec, tr, regions, fact_view, bst_evidence=None, capabilities=None
@@ -404,7 +380,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     prefer_local_corridors=True,
                 )
                 observe_dag(snap, _diag_dag_nodes(dag), _diag_dag_edges(dag))
-                self._dual_build_read_dag_diff(source, dmap, bst, dag, dag_tr)
+                observe_dag_local_facts(snap, dag)
+                self._dual_build_read_dag_diff(
+                    source, dmap, bst, dag_tr, func_ea, maturity
+                )
                 # Feed the BST-enriched DAG (built above) + the recovered BST node set so the #4
                 # return-wiring (gap3) lowers the CONDITIONAL_RETURN edges here in the diag rebuild.
                 # DIAG-ONLY: gated on --full-diagnostics + a capture subscriber, so it cannot touch
