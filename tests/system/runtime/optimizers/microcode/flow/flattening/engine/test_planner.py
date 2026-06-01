@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from d810.transforms.graph_modification import RedirectGoto
 from d810.optimizers.microcode.flow.flattening import engine
-from d810.optimizers.microcode.flow.flattening.engine.planner import (
+from d810.passes.planner import (
     PipelinePolicy,
     PlannerHintSignals,
     UnflatteningPlanner,
@@ -15,7 +15,7 @@ from d810.transforms.plan_fragment import (
     PlanFragment,
     FAMILY_DIRECT,
 )
-from d810.optimizers.microcode.flow.flattening.engine import planner as hodur_planner
+from d810.passes import planner as hodur_planner
 
 
 def _fragment(

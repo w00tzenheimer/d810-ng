@@ -21,7 +21,7 @@ from d810.transforms.graph_modification import (
 from d810.transforms.dag_authority import (
     DagDecision,
 )
-from d810.optimizers.microcode.flow.flattening.engine.planner import (
+from d810.passes.planner import (
     UnflatteningPlanner,
     _collect_dag_audit_records,
     _format_dag_audit_summary,

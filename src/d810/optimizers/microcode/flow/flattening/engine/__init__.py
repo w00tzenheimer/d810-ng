@@ -7,7 +7,7 @@ plan -> execute, with Hodur as the first production consumer.
 
 from d810.families.state_machine_cff.family import CFFStrategyFamily, DetectionResult
 from d810.passes.metrics import handler_coverage, structure_quality_score
-from .planner import PipelinePolicy, PlannerHintSignals, UnflatteningPlanner
+from d810.passes.planner import PipelinePolicy, PlannerHintSignals, UnflatteningPlanner
 from d810.analyses.control_flow.provenance import (
     DagDisagreementRecord,
     DecisionInputSummary,

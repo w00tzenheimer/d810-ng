@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.optimizers.microcode.flow.flattening.engine.planner import (
+from d810.passes.planner import (
     HintAdjustment,
     PlannerCandidate,
     PlannerDecision,
@@ -299,7 +299,7 @@ class TestPlannerDecision:
 
     def test_all_reasons_mapped(self) -> None:
         """Every PlannerDecisionReason must produce a valid DecisionRecord."""
-        from d810.optimizers.microcode.flow.flattening.engine.planner import (
+        from d810.passes.planner import (
             _REASON_TO_CODE,
             _REASON_TO_PHASE,
         )

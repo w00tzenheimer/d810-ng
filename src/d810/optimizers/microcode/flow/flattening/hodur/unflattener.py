@@ -59,7 +59,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.runtime_services import (
 from d810.optimizers.microcode.flow.flattening.hodur.rule_services import (
     HodurRuleServices,
 )
-from d810.optimizers.microcode.flow.flattening.engine.planner import (
+from d810.passes.planner import (
     PipelinePolicy,
     UnflatteningPlanner,
 )

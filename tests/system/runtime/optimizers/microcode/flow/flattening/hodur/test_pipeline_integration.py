@@ -16,7 +16,7 @@ from d810.optimizers.microcode.flow.flattening.engine import executor as _execut
 from d810.optimizers.microcode.flow.flattening.engine.executor import (
     TransactionalExecutor,
 )
-from d810.optimizers.microcode.flow.flattening.engine.planner import (
+from d810.passes.planner import (
     PipelinePolicy,
     UnflatteningPlanner,
 )
