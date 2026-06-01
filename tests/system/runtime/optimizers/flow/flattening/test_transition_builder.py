@@ -340,7 +340,7 @@ class TestTransitionBuilderSelection:
         assert s2.build_call_count == 1
 
     def test_default_strategies_instantiated(self):
-        from d810.optimizers.microcode.flow.flattening.hodur.transition_strategies import (
+        from d810.backends.hexrays.evidence.transition_strategies import (
             BFSWithMopTrackerStrategy,
             BSTWalkerStrategy,
             default_hodur_transition_strategies,
