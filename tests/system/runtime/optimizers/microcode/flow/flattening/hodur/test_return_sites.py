@@ -12,7 +12,7 @@ from d810.core.typing import Optional, Tuple
 import pytest
 
 from d810.analyses.control_flow.return_frontier import ReturnSite
-from d810.optimizers.microcode.flow.flattening.hodur.return_sites import (
+from d810.backends.hexrays.evidence.return_sites import (
     HodurReturnSiteProvider,
 )
 from d810.analyses.control_flow.transition_report import (

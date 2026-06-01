@@ -73,7 +73,7 @@ from d810.optimizers.microcode.flow.flattening.engine.state_machine_runtime impo
     run_state_machine_family_pass,
 )
 from d810.analyses.control_flow.graph_checks import SemanticGate
-from d810.optimizers.microcode.flow.flattening.hodur.return_sites import (
+from d810.backends.hexrays.evidence.return_sites import (
     HodurReturnSiteProvider,
 )
 unflat_logger = logging.getLogger("D810.unflat.hodur", logging.DEBUG)
