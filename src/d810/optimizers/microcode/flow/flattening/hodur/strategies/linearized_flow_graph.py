@@ -80,7 +80,7 @@ from d810.core.typing import TYPE_CHECKING, AbstractSet
 from d810.transforms.modification_builder import (
     ModificationBuilder,
 )
-from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+from d810.backends.hexrays.evidence._helpers import (
     blk_label,
 )
 from d810.capabilities.constant_fixpoint import ConstantFixpointBackend

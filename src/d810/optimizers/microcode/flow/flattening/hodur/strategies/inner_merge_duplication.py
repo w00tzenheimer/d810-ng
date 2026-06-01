@@ -22,7 +22,7 @@ from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+from d810.backends.hexrays.evidence._helpers import (
     collect_state_machine_blocks,
 )
 from d810.transforms.modification_builder import (

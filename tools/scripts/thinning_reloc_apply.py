@@ -171,9 +171,17 @@ def relocate_one(entry: dict, *, dry: bool) -> bool:
         print(f"  SKIP {stem}: source missing — already relocated?")
         return True
 
+    old_parent = old.rsplit(".", 1)[0]
+    # (1) absolute whole-module references anywhere
     cand = sh(["grep", "-rlE", "--include=*.py", re.escape(old), *TREES])
     files = {l for l in cand.stdout.splitlines() if l}
-    old_parent_path = "src/" + old.rsplit(".", 1)[0].replace(".", "/")
+    # (2) by-name absolute: `from <old_parent> import ... <stem> ...` (any tree).
+    #     Over-broad on purpose: repoint_file is a no-op unless <stem> is imported.
+    byname = sh(["grep", "-rlE", "--include=*.py",
+                 r"from " + re.escape(old_parent) + r" import", *TREES])
+    files |= {l for l in byname.stdout.splitlines() if l}
+    # (3) relative forms within the old package subtree
+    old_parent_path = "src/" + old_parent.replace(".", "/")
     rel = sh(["grep", "-rlE", "--include=*.py",
               r"from \.+[a-zA-Z0-9_.]*" + re.escape(stem) + r" import|from \.+ import",
               old_parent_path])

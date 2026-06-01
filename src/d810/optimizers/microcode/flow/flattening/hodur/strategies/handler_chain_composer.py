@@ -142,7 +142,7 @@ from d810.transforms.planner_context import (
     PLANNER_CTX_METADATA_KEY,
     PlannerContextContribution,
 )
-from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
+from d810.backends.hexrays.evidence._helpers import blk_label
 from d810.transforms.projected_topology_backend import (
     DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND,
     ProjectedTopologyBackend,
