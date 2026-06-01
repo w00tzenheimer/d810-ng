@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import ida_hexrays
 
 from d810.core.typing import AbstractSet, Protocol
-from d810.optimizers.microcode.flow.flattening.hodur.handler_chain_live_topology_backend import (
+from d810.backends.hexrays.evidence.handler_chain_live_topology_backend import (
     DEFAULT_HODUR_HANDLER_CHAIN_LIVE_TOPOLOGY_BACKEND,
     HandlerChainLiveTopologyBackend,
 )
