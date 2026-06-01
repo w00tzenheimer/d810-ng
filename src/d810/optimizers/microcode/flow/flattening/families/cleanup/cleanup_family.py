@@ -58,7 +58,7 @@ from d810.passes.fix_predecessor_branch_arm import (
     extract_fix_predecessor_branch_arm_fixes,
     serialize_fix_predecessor_branch_arm_fixes,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.guarded_state_machine import (
+from d810.passes.guarded_state_machine import (
     GuardedStateMachineStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.local_select_loop import (

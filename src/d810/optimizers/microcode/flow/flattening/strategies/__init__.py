@@ -67,7 +67,7 @@ from d810.analyses.control_flow.side_effect_select_loop import (
     extract_side_effect_select_loop_fixes,
     serialize_side_effect_select_loop_fixes,
 )
-from .guarded_state_machine import GuardedStateMachineStrategy
+from d810.passes.guarded_state_machine import GuardedStateMachineStrategy
 from .local_select_loop import LocalSelectLoopStrategy
 from .side_effect_select_loop import SideEffectSelectLoopStrategy
 from d810.passes.emulated_dispatcher_strategy import (
