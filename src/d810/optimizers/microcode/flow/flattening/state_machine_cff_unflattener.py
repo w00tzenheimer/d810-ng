@@ -166,13 +166,15 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         )
         # Diag DB: publish the §1a structural analysis so the SQLite diag tables are not blind to
         # this path (the legacy recon instrumentation does not run under the flag). llr-6dq7.
-        self._publish_s1a_diagnostics(mba, source, rec, tr, regions, fact_view, bst_evidence)
+        self._publish_s1a_diagnostics(
+            mba, source, rec, tr, regions, fact_view, bst_evidence, capabilities
+        )
         # Change accounting is the backend's concern (it lowered the plan); the §1a driver does not
         # yet surface an applied-count, so report 0 until the reconstruction passes land real plans.
         return 0
 
     def _publish_s1a_diagnostics(
-        self, mba, source, rec, tr, regions, fact_view, bst_evidence=None
+        self, mba, source, rec, tr, regions, fact_view, bst_evidence=None, capabilities=None
     ) -> None:
         """Populate the structured diag tables for the §1a path (otherwise blind under the flag).
 
@@ -274,6 +276,15 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         else None
                     ),
                     dispatcher=(bst.dispatcher if bst is not None else None),
+                    # Production-realistic claims: feed the SAME use-def-protected spine production
+                    # uses (filtered emission) so the diag postprocess measures the real claim set,
+                    # not the unfiltered greedy spine. ``live_source`` is the opaque live backend fn.
+                    use_def_safety=(
+                        capabilities.optional(UseDefSafetyCapability)
+                        if capabilities is not None
+                        else None
+                    ),
+                    live_function=getattr(source, "live_source", None),
                 )
                 observe_modifications(snap, _diag_modifications(plan))
         except Exception:  # noqa: BLE001 — diagnostics must never break the optimize path
