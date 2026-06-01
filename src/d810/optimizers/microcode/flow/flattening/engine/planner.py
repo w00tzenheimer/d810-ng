@@ -48,7 +48,7 @@ from d810.analyses.control_flow.provenance import (
 from d810.transforms.planner_context import (
     CumulativePlannerView,
 )
-from d810.optimizers.microcode.flow.flattening.engine.fragment_arbitration import (
+from d810.transforms.fragment_arbitration import (
     DAG_AUDIT_METADATA_KEY as _DAG_AUDIT_METADATA_KEY,
     apply_dag_conformance_gate as _apply_engine_dag_conformance_gate,
 )
