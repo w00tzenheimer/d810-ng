@@ -78,11 +78,9 @@ class TestHodurMatcherSourceContainsMirrorFormulas:
             Path(__file__).resolve().parents[4]
             / "src"
             / "d810"
-            / "optimizers"
-            / "microcode"
-            / "flow"
-            / "flattening"
-            / "hodur"
+            / "backends"
+            / "hexrays"
+            / "evidence"
             / "analysis.py"
         )
         return hodur_analysis_path.read_text()
