@@ -1,0 +1,33 @@
+{
+    "description": "§1a pipeline: StateMachineCffUnflattener (run_pipeline) + JumpFixer ONLY, replacing legacy HodurUnflattener. Requires D810_USE_S1A_PIPELINE=1 to activate the §1a path.",
+    "ins_rules": [],
+    "blk_rules": [
+        {
+            "name": "StateMachineCffUnflattener",
+            "is_activated": true,
+            "config": {}
+        },
+        {
+            "name": "JumpFixer",
+            "is_activated": true,
+            "config": {
+                "enabled_rules": [
+                    "CompareConstantRule1",
+                    "CompareConstantRule2",
+                    "CompareConstantRule3",
+                    "JaeRule1",
+                    "JbRule1",
+                    "JnzRule1",
+                    "JnzRule2",
+                    "JnzRule3",
+                    "JnzRule4",
+                    "JnzRule5",
+                    "JnzRule6",
+                    "JnzRule7",
+                    "JnzRule8",
+                    "JmpRuleZ3Const"
+                ]
+            }
+        }
+    ]
+}
