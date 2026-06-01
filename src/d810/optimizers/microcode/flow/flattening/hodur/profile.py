@@ -31,7 +31,7 @@ from d810.backends.hexrays.evidence.counter_hoist import (
 from d810.backends.hexrays.mutation.return_frontier_carrier_preserve import (
     ReturnFrontierCarrierPreserveStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.spurious_backedge_redirect import (
+from d810.backends.hexrays.evidence.spurious_backedge_redirect import (
     SpuriousBackedgeRedirectStrategy,
 )
 
