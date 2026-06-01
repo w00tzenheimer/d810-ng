@@ -32,15 +32,27 @@ class RecoverDispatcher:
     name = "recover_dispatcher"
 
     def run(self, ctx: FunctionPipelineContext) -> PassResult:
-        facts = recover_dispatcher(ctx.graph, ctx.facts)
-        return PassResult(facts=(facts,), preserved=PreservedAnalyses.all())
+        recovery = recover_dispatcher(ctx.graph, ctx.facts)
+        # Publish for downstream passes (LLVM AnalysisManager.getResult edge).
+        if hasattr(ctx.facts, "put_analysis"):
+            ctx.facts.put_analysis(self.name, recovery)
+        return PassResult(facts=(recovery,), preserved=PreservedAnalyses.all())
 
 
 class RecoverStateTransitions:
     name = "recover_state_transitions"
 
     def run(self, ctx: FunctionPipelineContext) -> PassResult:
-        transitions = resolve_state_transitions(ctx.graph, ctx.facts)
+        # Pull the dispatcher map recovered by pass #1 and resolve transitions through it.
+        dispatch_map = None
+        if hasattr(ctx.facts, "get_analysis"):
+            recovery = ctx.facts.get_analysis("recover_dispatcher")
+            dispatch_map = getattr(recovery, "dispatch_map", None)
+        transitions = resolve_state_transitions(
+            ctx.graph, ctx.facts, dispatch_map=dispatch_map
+        )
+        if hasattr(ctx.facts, "put_analysis"):
+            ctx.facts.put_analysis(self.name, transitions)
         return PassResult(facts=(transitions,), preserved=PreservedAnalyses.all())
 
 

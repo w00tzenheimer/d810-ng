@@ -20,13 +20,30 @@ from d810.passes.pass_pipeline import PreservedAnalyses
 class AnalysisManager:
     """Lazy, snapshot-keyed analysis cache for one function's pipeline run."""
 
-    def __init__(self, graph: object) -> None:
+    def __init__(self, graph: object, input_facts: object | None = None) -> None:
         self._graph = graph
         self._cache: dict[str, object] = {}
+        # The live input fact view (state observations etc.); portable passes that read
+        # observations (resolve_state_transitions) see them through this manager transparently.
+        self._input_facts = input_facts
+        self._derived: dict[str, object] = {}
 
     @property
     def graph(self) -> object:
         return self._graph
+
+    @property
+    def active_observations(self):
+        """Forward to the input fact view so ``facts_from_validated_view(am)`` works."""
+        return getattr(self._input_facts, "active_observations", ()) if self._input_facts else ()
+
+    def put_analysis(self, name: str, value: object) -> None:
+        """Publish a pass result for later passes (the LLVM ``AnalysisManager.getResult`` edge)."""
+        self._derived[name] = value
+
+    def get_analysis(self, name: str, default: object = None) -> object:
+        """Return a prior pass's published result, or ``default``."""
+        return self._derived.get(name, default)
 
     def view(self) -> "AnalysisManager":
         """Return the read handle passed to passes as ``ctx.facts``."""
