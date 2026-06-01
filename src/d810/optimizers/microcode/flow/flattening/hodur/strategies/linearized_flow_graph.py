@@ -84,7 +84,7 @@ from d810.backends.hexrays.evidence._helpers import (
     blk_label,
 )
 from d810.capabilities.constant_fixpoint import ConstantFixpointBackend
-from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
+from d810.passes.constant_fixpoint_backend import (
     DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
 )
 from d810.backends.hexrays.evidence.live_microcode_properties import (
