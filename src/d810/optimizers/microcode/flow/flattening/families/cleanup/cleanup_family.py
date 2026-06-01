@@ -61,7 +61,7 @@ from d810.passes.fix_predecessor_branch_arm import (
 from d810.passes.guarded_state_machine import (
     GuardedStateMachineStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.local_select_loop import (
+from d810.passes.local_select_loop import (
     LocalSelectLoopStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.side_effect_select_loop import (
