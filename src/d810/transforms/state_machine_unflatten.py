@@ -44,6 +44,9 @@ from d810.transforms.modification_builder import ModificationBuilder
 from d810.transforms.reconstruction_return_planning import (
     plan_reconstruction_return_modifications,
 )
+from d810.transforms.reconstruction_postprocess_planning import (
+    plan_reconstruction_postprocess_modifications,
+)
 from d810.transforms.semantic_regions import SemanticRegionPlan
 from d810.transforms.spine_emission import emit_spine_modifications
 from d810.transforms.use_def_redirect_filter import filter_use_def_severing_redirects
@@ -101,6 +104,42 @@ def _patch_from_graph_modification(mod: object) -> object | None:
     return None
 
 
+def _neutral_spine_mods(
+    dag,
+    dispatcher_entry_serial: int,
+    graph,
+    *,
+    use_def_safety=None,
+    live_function=None,
+    state_var_stkoff=None,
+) -> tuple[object, ...]:
+    """The protected spine emission as neutral ``GraphModification`` values (pre ``Patch*`` wrap).
+
+    Shared by the §1a #4 spine step and the full-reconstruction ``modifications`` input — the legacy
+    direct-reconstruction set the postprocess phases (bridge/feeder/fixpoint/return) thread their
+    claims from. ``emit_spine_modifications`` chooses the redirect kind from the live successor count,
+    then the use-def filter vetoes redirects that would orphan non-state uses (no-op without a
+    capability / live function).
+    """
+    blocks = getattr(graph, "blocks", {})
+    nsucc_map = {s: int(b.nsucc) for s, b in blocks.items()}
+    succ_map = {s: tuple(int(x) for x in b.succs) for s, b in blocks.items()}
+    mods = emit_spine_modifications(
+        dag=dag,
+        spine_edge_kinds=_SPINE_EDGE_KINDS,
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
+        block_nsucc_map=nsucc_map,
+        block_succ_map=succ_map,
+    )
+    return filter_use_def_severing_redirects(
+        mods,
+        use_def_safety=use_def_safety,
+        live_function=live_function,
+        pre_cfg=graph,
+        state_var_stkoff=state_var_stkoff,
+    )
+
+
 def _spine_redirects_from_dag(
     dag,
     dispatcher_entry_serial: int,
@@ -121,31 +160,19 @@ def _spine_redirects_from_dag(
     2-way *transition* comparator sources are rejected so the deferred apply never aborts on a
     "not 1-way" mismatch. The neutral mods are wrapped back into §1a ``Patch*`` steps.
     """
-    blocks = getattr(graph, "blocks", {})
-    nsucc_map = {s: int(b.nsucc) for s, b in blocks.items()}
-    succ_map = {s: tuple(int(x) for x in b.succs) for s, b in blocks.items()}
-    mods = emit_spine_modifications(
-        dag=dag,
-        spine_edge_kinds=_SPINE_EDGE_KINDS,
-        dispatcher_entry_serial=int(dispatcher_entry_serial),
-        block_nsucc_map=nsucc_map,
-        block_succ_map=succ_map,
-    )
-    # Protected emission: veto redirects that would orphan non-state-variable uses (the over-redirect
-    # that DCEs handler bodies). No-op on the portable/test path (no capability/live function).
-    mods = filter_use_def_severing_redirects(
-        mods,
+    mods = _neutral_spine_mods(
+        dag,
+        dispatcher_entry_serial,
+        graph,
         use_def_safety=use_def_safety,
         live_function=live_function,
-        pre_cfg=graph,
         state_var_stkoff=state_var_stkoff,
     )
-    steps = tuple(
+    return tuple(
         patch
         for patch in (_patch_from_graph_modification(mod) for mod in mods)
         if patch is not None
     )
-    return steps
 
 
 def _spine_members_from_dag(dag) -> frozenset[int]:
@@ -252,6 +279,91 @@ def _return_redirects_from_dag(
     )
 
 
+def _reconstruction_postprocess_mods(
+    dag,
+    graph,
+    dispatcher_entry_serial: int,
+    *,
+    spine_mods,
+    bst_node_blocks,
+    dispatcher,
+    common_return_corridor,
+    artifact_return_blocks,
+    state_var_stkoff,
+    constant_result=None,
+    projected_flow_graph=None,
+) -> tuple[object, ...]:
+    """Run the portable reconstruction postprocess -> the rich neutral mod set (the returns=8 chain).
+
+    Translates ``StateWriteReconstructionStrategy``'s postprocess: the already-portable
+    :func:`plan_reconstruction_postprocess_modifications` runs preheader -> bridge -> feeder ->
+    fixpoint-feeder -> return over the BST-enriched DAG, threading ``claimed_sources`` through each
+    phase (so the return planner sees the post-bridge claims, not the raw spine). ``spine_mods`` is the
+    neutral direct-reconstruction set; ``owned_blocks`` is its source/target span. Returns the union of
+    all sub-plan modifications (InsertBlock / EdgeRedirectViaPredSplit / ZeroStateWrite /
+    CreateConditionalRedirect / RedirectGoto / RedirectBranch) as neutral ``GraphModification`` values
+    for the ``planner_modifications`` channel. ``constant_result`` None -> the fixpoint feeder no-ops.
+    """
+    blocks = getattr(graph, "blocks", {})
+    nsucc_map = {s: int(b.nsucc) for s, b in blocks.items()}
+    succ_map = {s: tuple(int(x) for x in b.succs) for s, b in blocks.items()}
+    builder = ModificationBuilder(block_nsucc_map=nsucc_map, block_succ_map=succ_map)
+    node_by_key = {node.key: node for node in getattr(dag, "nodes", ())}
+    owned_blocks = {
+        int(serial)
+        for mod in spine_mods
+        for serial in (
+            getattr(mod, "from_serial", None),
+            getattr(mod, "new_target", None),
+        )
+        if serial is not None
+    }
+    result = plan_reconstruction_postprocess_modifications(
+        dag=dag,
+        flow_graph=graph,
+        projected_flow_graph=(
+            projected_flow_graph if projected_flow_graph is not None else graph
+        ),
+        builder=builder,
+        dispatcher_serial=int(dispatcher_entry_serial),
+        bst_node_blocks=set(int(b) for b in bst_node_blocks),
+        dispatcher=dispatcher,
+        modifications=list(spine_mods),
+        owned_blocks=owned_blocks,
+        rejected_metadata=[],
+        constant_result=constant_result,
+        state_var_stkoff=(
+            int(state_var_stkoff) if state_var_stkoff is not None else None
+        ),
+        artifact_return_blocks=set(int(b) for b in artifact_return_blocks),
+        common_return_corridor=set(int(b) for b in common_return_corridor),
+        node_by_key=node_by_key,
+    )
+    mods: list = []
+    if result.preheader_bridge.modification is not None:
+        mods.append(result.preheader_bridge.modification)
+    mods.extend(result.bridge_plan.modifications)
+    mods.extend(result.feeder_plan.modifications)
+    mods.extend(result.fixpoint_feeder_plan.modifications)
+    mods.extend(result.return_plan.modifications)
+    if logger.info_on:
+        skip_reasons: dict[str, int] = {}
+        for entry in result.return_plan.skipped_entries:
+            skip_reasons[entry.reason] = skip_reasons.get(entry.reason, 0) + 1
+        logger.info(
+            "s1a #4 postprocess: preheader=%d bridge=%d feeder=%d fixpoint=%d return=%d "
+            "owned=%d return_skipped=%s",
+            1 if result.preheader_bridge.modification is not None else 0,
+            len(result.bridge_plan.modifications),
+            len(result.feeder_plan.modifications),
+            len(result.fixpoint_feeder_plan.modifications),
+            len(result.return_plan.modifications),
+            len(owned_blocks),
+            skip_reasons,
+        )
+    return tuple(mods)
+
+
 def lower_to_direct_graph(
     graph: FlowGraph | None,
     facts: ValidatedFactView | None,
@@ -265,6 +377,9 @@ def lower_to_direct_graph(
     live_function=None,
     bst_node_blocks=None,
     dag=None,
+    dispatcher=None,
+    constant_result=None,
+    projected_flow_graph=None,
 ) -> PatchPlan:
     """Build a ``PatchPlan`` reconnecting handlers into a direct spine (dispatcher bypassed).
 
@@ -277,6 +392,14 @@ def lower_to_direct_graph(
     in (bst evidence promoted to production), the DAG carries CONDITIONAL_RETURN edges and the legacy
     return wiring is lowered (gap3). ``None`` -> the return phase is skipped (shallow production path,
     byte-identical).
+
+    ``dispatcher`` (the recovered ``IntervalDispatcher``) is the full-reconstruction signal: with both
+    it and ``bst_node_blocks`` present, #4 runs the entire portable postprocess orchestration
+    (preheader/bridge/feeder/fixpoint/return — :func:`_reconstruction_postprocess_mods`) and returns
+    the rich neutral mod set via ``planner_modifications`` (the channel the backend applies for
+    InsertBlock / ZeroStateWrite / …). ``None`` -> the redirect-only ``steps`` path below (the
+    committed, production-byte-identical behaviour). ``constant_result`` / ``projected_flow_graph`` are
+    optional postprocess inputs (``constant_result`` None -> the fixpoint feeder no-ops).
     """
     if (
         graph is None
@@ -296,6 +419,63 @@ def lower_to_direct_graph(
             dispatcher_entry_serial=dispatcher_entry_serial,
             state_var_stkoff=state_var_stkoff,
         )
+    # Full reconstruction (§1a gap3+gap4): with the recovered IntervalDispatcher AND the BST node set,
+    # run the entire portable postprocess orchestration over the enriched DAG and emit the rich neutral
+    # mod set through ``planner_modifications`` (the backend's apply channel for InsertBlock /
+    # ZeroStateWrite / per-pred splits / returns). Mirrors StateWriteReconstructionStrategy.plan;
+    # returns are EMERGENT from the full chain, not a discrete mod. Gated on ``dispatcher`` so the
+    # committed redirect-only ``steps`` path below stays byte-identical when it is absent.
+    if bst_node_blocks is not None and dispatcher is not None:
+        corridor = collect_common_return_corridor(
+            dag,
+            graph,
+            bst_node_blocks=set(int(b) for b in bst_node_blocks),
+            dispatcher_serial=int(dispatcher_entry_serial),
+        )
+        state_constants = {
+            int(row.state_const)
+            for row in getattr(dispatch_map, "rows", ())
+            if getattr(row, "state_const", None) is not None
+        }
+        artifact_return_blocks = (
+            classify_artifact_return_blocks(
+                graph,
+                state_var_stkoff=int(state_var_stkoff),
+                state_constants=state_constants,
+            )
+            if state_var_stkoff is not None
+            else set()
+        )
+        spine_mods = _neutral_spine_mods(
+            dag,
+            int(dispatcher_entry_serial),
+            graph,
+            use_def_safety=use_def_safety,
+            live_function=live_function,
+            state_var_stkoff=state_var_stkoff,
+        )
+        postprocess_mods = _reconstruction_postprocess_mods(
+            dag,
+            graph,
+            int(dispatcher_entry_serial),
+            spine_mods=spine_mods,
+            bst_node_blocks=bst_node_blocks,
+            dispatcher=dispatcher,
+            common_return_corridor=corridor,
+            artifact_return_blocks=artifact_return_blocks,
+            state_var_stkoff=state_var_stkoff,
+            constant_result=constant_result,
+            projected_flow_graph=projected_flow_graph,
+        )
+        planner_mods = (*spine_mods, *postprocess_mods)
+        if logger.info_on:
+            logger.info(
+                "s1a #4 full-reconstruction: spine=%d postprocess=%d total=%d",
+                len(spine_mods),
+                len(postprocess_mods),
+                len(planner_mods),
+            )
+        return PatchPlan(planner_modifications=planner_mods)
     redirect_steps = _spine_redirects_from_dag(
         dag,
         int(dispatcher_entry_serial),
