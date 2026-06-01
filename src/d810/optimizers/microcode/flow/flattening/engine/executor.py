@@ -96,7 +96,7 @@ from d810.transforms.plan_fragment import (
 from d810.evaluator.hexrays_microcode.use_def_dominance import (
     check_redirect_severs_use_def,
 )
-from d810.optimizers.microcode.flow.flattening.safeguards import (
+from d810.analyses.control_flow.safeguards import (
     should_apply_bulk_cfg_modifications,
 )
 from d810.analyses.control_flow.terminal_return_audit import build_terminal_return_audit
