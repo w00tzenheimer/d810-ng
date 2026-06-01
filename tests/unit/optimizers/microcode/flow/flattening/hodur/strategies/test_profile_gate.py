@@ -8,7 +8,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.profile_gate import (
     AttributeHodurProfileGate,
     accepts_exact_sub7ffd_glbopt1,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.live_microcode_properties import (
+from d810.backends.hexrays.evidence.live_microcode_properties import (
     AttributeHodurLiveMicrocodeProperties,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
