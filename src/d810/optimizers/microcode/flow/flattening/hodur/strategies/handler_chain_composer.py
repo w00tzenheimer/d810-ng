@@ -143,7 +143,7 @@ from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
     PlannerContextContribution,
 )
 from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
-from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend import (
+from d810.transforms.projected_topology_backend import (
     DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND,
     ProjectedTopologyBackend,
 )

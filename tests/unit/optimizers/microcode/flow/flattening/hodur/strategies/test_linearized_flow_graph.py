@@ -16,7 +16,7 @@ from d810.optimizers.microcode.flow.flattening.hodur import (
 from d810.optimizers.microcode.flow.flattening.hodur import (
     lfg_handoff_resolution_backend as handoff_backend_module,
 )
-from d810.optimizers.microcode.flow.flattening.hodur import (
+from d810.transforms import (
     projected_topology_backend as topology_backend_module,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_graph import (

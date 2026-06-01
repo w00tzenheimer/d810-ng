@@ -68,7 +68,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_
     LinearizedFlowGraphStrategy,
     _prepare_linearized_flow_graph_plan_setup,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend import (
+from d810.transforms.projected_topology_backend import (
     DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND,
     ProjectedTopologyBackend,
 )
