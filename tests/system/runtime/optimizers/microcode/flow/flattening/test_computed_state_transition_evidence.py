@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
-from d810.optimizers.microcode.flow.flattening.computed_state_transition_evidence import (
+from d810.backends.hexrays.evidence.computed_state_transition_evidence import (
     ComputedStatePattern,
     ComputedStateTransitionResolver,
 )
