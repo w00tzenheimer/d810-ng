@@ -93,7 +93,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_node_front
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.handler_chain_composer import (
     HandlerChainComposerStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.dispatcher_trampoline_skip import (
+from d810.backends.hexrays.mutation.dispatcher_trampoline_skip import (
     DispatcherTrampolineSkipStrategy,
 )
 from d810.backends.hexrays.evidence.counter_hoist import (
