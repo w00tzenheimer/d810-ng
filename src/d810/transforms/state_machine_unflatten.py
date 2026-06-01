@@ -53,6 +53,7 @@ def lower_to_direct_graph(
     if (
         graph is None
         or transition_result is None
+        or not transition_result.transitions
         or dispatch_map is None
         or dispatcher_entry_serial is None
     ):
