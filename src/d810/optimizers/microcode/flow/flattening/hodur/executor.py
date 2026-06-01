@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
-from d810.optimizers.microcode.flow.flattening.safeguards import (
+from d810.analyses.control_flow.safeguards import (
     should_apply_bulk_cfg_modifications,
 )
 
