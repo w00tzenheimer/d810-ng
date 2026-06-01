@@ -7,7 +7,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.valrange_resolut
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.terminal_loop_cleanup import (
     TerminalLoopCleanupStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.dead_state_variable_elimination import (
+from d810.backends.hexrays.evidence.dead_state_variable_elimination import (
     DeadStateVariableEliminationStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.state_constant_return_fixup import (
