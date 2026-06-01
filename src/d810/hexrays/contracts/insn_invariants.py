@@ -235,46 +235,48 @@ def _get_addrsize(mba) -> int:
 # Each entry: opcode → (needs_l, needs_r, needs_d)
 # None means "don't care"; True = must be present; False = must be absent.
 # ---------------------------------------------------------------------------
-def _operand_presence_table() -> dict[int, tuple[bool | None, bool | None, bool | None]]:
+def _operand_presence_table() -> (
+    dict[int, tuple[bool | None, bool | None, bool | None]]
+):
     hr = ida_hexrays
     T, F, N = True, False, None
     return {
-        int(hr.m_nop):   (F, F, F),
-        int(hr.m_ret):  (F, F, F),
-        int(hr.m_goto):  (T, F, F),
+        int(hr.m_nop): (F, F, F),
+        int(hr.m_ret): (F, F, F),
+        int(hr.m_goto): (T, F, F),
         int(hr.m_ijmp): (T, N, F),
-        int(hr.m_jtbl):  (T, T, F),
-        int(hr.m_jcnd):  (T, F, T),
-        int(hr.m_jnz):   (T, F, T),
-        int(hr.m_jz):    (T, F, T),
-        int(hr.m_jae):   (T, F, T),
-        int(hr.m_jb):    (T, F, T),
-        int(hr.m_ja):    (T, F, T),
-        int(hr.m_jbe):   (T, F, T),
-        int(hr.m_jg):   (T, F, T),
-        int(hr.m_jge):  (T, F, T),
-        int(hr.m_jl):   (T, F, T),
-        int(hr.m_jle):  (T, F, T),
+        int(hr.m_jtbl): (T, T, F),
+        int(hr.m_jcnd): (T, F, T),
+        int(hr.m_jnz): (T, F, T),
+        int(hr.m_jz): (T, F, T),
+        int(hr.m_jae): (T, F, T),
+        int(hr.m_jb): (T, F, T),
+        int(hr.m_ja): (T, F, T),
+        int(hr.m_jbe): (T, F, T),
+        int(hr.m_jg): (T, F, T),
+        int(hr.m_jge): (T, F, T),
+        int(hr.m_jl): (T, F, T),
+        int(hr.m_jle): (T, F, T),
         int(hr.m_call): (T, F, T),
         int(hr.m_icall): (T, F, T),
-        int(hr.m_mov):  (T, F, T),
-        int(hr.m_neg):  (T, F, T),
+        int(hr.m_mov): (T, F, T),
+        int(hr.m_neg): (T, F, T),
         int(hr.m_lnot): (T, F, T),
-        int(hr.m_add):  (T, T, T),
-        int(hr.m_sub):  (T, T, T),
-        int(hr.m_mul):  (T, T, T),
+        int(hr.m_add): (T, T, T),
+        int(hr.m_sub): (T, T, T),
+        int(hr.m_mul): (T, T, T),
         int(hr.m_udiv): (T, T, T),
         int(hr.m_sdiv): (T, T, T),
         int(hr.m_umod): (T, T, T),
         int(hr.m_smod): (T, T, T),
-        int(hr.m_or):   (T, T, T),
-        int(hr.m_and):  (T, T, T),
-        int(hr.m_xor):  (T, T, T),
-        int(hr.m_shl):  (T, T, T),
-        int(hr.m_shr):  (T, T, T),
-        int(hr.m_sar):  (T, T, T),
+        int(hr.m_or): (T, T, T),
+        int(hr.m_and): (T, T, T),
+        int(hr.m_xor): (T, T, T),
+        int(hr.m_shl): (T, T, T),
+        int(hr.m_shr): (T, T, T),
+        int(hr.m_sar): (T, T, T),
         int(hr.m_push): (T, F, F),
-        int(hr.m_pop):  (F, F, T),
+        int(hr.m_pop): (F, F, T),
     }
 
 
@@ -386,27 +388,12 @@ def _valid_pair_part_types() -> frozenset[int]:
 # ---------------------------------------------------------------------------
 def _forbidden_dst_types() -> frozenset[int]:
     hr = ida_hexrays
-    return frozenset(
-        {
-            hr.mop_d,
-            hr.mop_a,
-            hr.mop_n,
-            hr.mop_fn,
-            hr.mop_str,
-            hr.mop_h,
-        }
-    )
+    return frozenset({hr.mop_d, hr.mop_a, hr.mop_n, hr.mop_fn, hr.mop_str, hr.mop_h})
 
 
 def _dst_exempt_opcodes() -> frozenset[int]:
     hr = ida_hexrays
-    return frozenset(
-        {
-            hr.m_ijmp,
-            hr.m_stx,
-            hr.m_ext,
-        }
-    )
+    return frozenset({hr.m_ijmp, hr.m_stx, hr.m_ext})
 
 
 # ---------------------------------------------------------------------------
@@ -414,18 +401,13 @@ def _dst_exempt_opcodes() -> frozenset[int]:
 # ---------------------------------------------------------------------------
 def _shift_opcodes() -> frozenset[int]:
     hr = ida_hexrays
-    return frozenset(
-        {
-            hr.m_shl,
-            hr.m_shr,
-            hr.m_sar,
-        }
-    )
+    return frozenset({hr.m_shl, hr.m_shr, hr.m_sar})
 
 
 # ---------------------------------------------------------------------------
 # Group A — Basic instruction validity
 # ---------------------------------------------------------------------------
+
 
 def insn_basic_validity(
     mba,
@@ -840,6 +822,7 @@ def insn_basic_validity(
 # Group B — Operand presence for opcode (50807-50824)
 # ---------------------------------------------------------------------------
 
+
 def insn_operand_presence(
     mba,
     *,
@@ -949,6 +932,7 @@ def insn_operand_presence(
 # Group C — Operand size consistency (50830-50838, 50768, 50826, 50827, 52816)
 # ---------------------------------------------------------------------------
 
+
 def insn_operand_sizes(
     mba,
     *,
@@ -976,11 +960,18 @@ def insn_operand_sizes(
 
     # Binary ops where l.size == r.size == d.size
     binary_ops = frozenset(
-        int(getattr(hr, name))
-        for name in (
-            "m_add", "m_sub", "m_mul", "m_udiv", "m_sdiv",
-            "m_umod", "m_smod", "m_or", "m_and", "m_xor",
-        )
+        {
+            hr.m_add,
+            hr.m_sub,
+            hr.m_mul,
+            hr.m_udiv,
+            hr.m_sdiv,
+            hr.m_umod,
+            hr.m_smod,
+            hr.m_or,
+            hr.m_and,
+            hr.m_xor,
+        }
     )
 
     for serial in serials:
@@ -1155,6 +1146,7 @@ def insn_operand_sizes(
 # ---------------------------------------------------------------------------
 # Group D — Operand type validity
 # ---------------------------------------------------------------------------
+
 
 def insn_operand_types(
     mba,
@@ -1488,7 +1480,7 @@ def insn_operand_types(
                     # Best-effort: address should not be BADADDR and should fit
                     # in addrsize bytes.
                     if g_int != badaddr:
-                        addr_max = (1 << (addrsize * 8))
+                        addr_max = 1 << (addrsize * 8)
                         if g_int >= addr_max:
                             result.append(
                                 _violation(
@@ -2079,6 +2071,7 @@ def insn_operand_types(
 # Group E — Call/helper validity
 # ---------------------------------------------------------------------------
 
+
 def insn_call_validity(
     mba,
     *,
@@ -2254,6 +2247,7 @@ def insn_call_validity(
 # Combined runner
 # ---------------------------------------------------------------------------
 
+
 def check_all_insn_invariants(
     mba,
     *,
@@ -2262,8 +2256,12 @@ def check_all_insn_invariants(
 ) -> list[InvariantViolation]:
     """Run all instruction-level invariant checks and return combined violations."""
     violations: list[InvariantViolation] = []
-    violations.extend(insn_basic_validity(mba, phase=phase, focus_serials=focus_serials))
-    violations.extend(insn_operand_presence(mba, phase=phase, focus_serials=focus_serials))
+    violations.extend(
+        insn_basic_validity(mba, phase=phase, focus_serials=focus_serials)
+    )
+    violations.extend(
+        insn_operand_presence(mba, phase=phase, focus_serials=focus_serials)
+    )
     violations.extend(insn_operand_sizes(mba, phase=phase, focus_serials=focus_serials))
     violations.extend(insn_operand_types(mba, phase=phase, focus_serials=focus_serials))
     violations.extend(insn_call_validity(mba, phase=phase, focus_serials=focus_serials))
