@@ -96,7 +96,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.handler_chain_co
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.dispatcher_trampoline_skip import (
     DispatcherTrampolineSkipStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.counter_hoist import (
+from d810.backends.hexrays.evidence.counter_hoist import (
     CounterHoistStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.return_frontier_carrier_preserve import (
