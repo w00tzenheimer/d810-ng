@@ -48,6 +48,9 @@ from d810.backends.hexrays.lifter import lift_function
 from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
 from d810.analyses.control_flow.dispatcher_recovery import recover_dispatcher
 from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
+from d810.analyses.control_flow.state_machine_analysis import (
+    run_snapshot_constant_fixpoint,
+)
 from d810.capabilities.resolver import CapabilitySet
 from d810.capabilities.value_range import ValRangeCapability
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
@@ -285,6 +288,15 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         else None
                     ),
                     live_function=getattr(source, "live_source", None),
+                    # Const-prop out-stk maps (portable snapshot fixpoint) so the postprocess fixpoint
+                    # feeder is no longer dead at constant_result=None. Diag-only (gated above).
+                    constant_result=(
+                        run_snapshot_constant_fixpoint(
+                            source.flow_graph, dmap.state_var_stkoff
+                        )
+                        if dmap.state_var_stkoff is not None
+                        else None
+                    ),
                 )
                 observe_modifications(snap, _diag_modifications(plan))
         except Exception:  # noqa: BLE001 — diagnostics must never break the optimize path
