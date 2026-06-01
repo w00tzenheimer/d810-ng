@@ -153,14 +153,51 @@ def test_discovers_genuine_range_routed_handler():
     assert 1 not in view.handler_range_map  # the comparison/head is not a range handler
 
 
-def test_p1_range_handler_invisible_to_handler_entry_by_state():
-    # The known gap: only the exact (==K1) handler is in handler_entry_by_state; the range-routed
-    # K2/K3 handler is reachable ONLY via handler_range_map -> recover_transition_result misses it.
-    # This is what range-promotion (P1) must fix before parity.
+def test_p1_promotes_genuine_range_handler_to_handler_entry_by_state():
+    # P1: the range-routed handler (block 20, reached for {K2, K3}) is promoted
+    # into handler_entry_by_state keyed by its interval lo (K2), so
+    # recover_transition_result -- which consumes ONLY handler_entry_by_state --
+    # can see it.  The intermediate ne-arm block (2) is the default/catch-all
+    # (a comparison ne_target) and is NOT promoted, so the genuine handler (20),
+    # not the routing block (2), is the one that lands keyed at K2.
     view = _discover_range()
-    assert view.handler_entry_by_state == {K1: 10}
-    assert K2 not in view.handler_entry_by_state
-    assert K3 not in view.handler_entry_by_state
+    assert view.handler_entry_by_state == {K1: 10, K2: 20}
+    # Promotion ADDS to the exact map; the range map is left intact.
+    assert view.handler_range_map.get(20) == (K2, K3)
+
+
+# --- a SHADOW range block: reached from two exact handlers (the real sub_7FFD) -
+# Block 30 is a shared/merge block both exact handlers (K1->10, K2->20) fall into
+# before returning to the dispatcher, so its value-set is {K1, K2} -- every state
+# already has its own exact handler.  It is a range block but NOT a distinct
+# handler, so P1 must NOT promote it (promoting would only clobber an exact entry
+# without raising the count).  This is exactly sub_7FFD's two "range handlers".
+_SH_SUCC = {0: [1], 1: [10, 2], 2: [20, 99], 10: [30], 20: [30], 30: [1], 99: []}
+_SH_PRED: dict[int, list[int]] = {n: [] for n in _SH_SUCC}
+for _p, _ss in _SH_SUCC.items():
+    for _s in _ss:
+        _SH_PRED[_s].append(_p)
+_SH_COMPARISONS = {
+    1: BstComparison(block=1, const=K1, eq_target=10, ne_target=2),
+    2: BstComparison(block=2, const=K2, eq_target=20, ne_target=99),
+}
+
+
+def test_p1_does_not_promote_fully_shadowed_range_block():
+    view = discover_dispatcher(
+        nodes=_SH_SUCC.keys(),
+        entry_nodes=[0],
+        successors_of=lambda n: _SH_SUCC.get(int(n), ()),
+        predecessors_of=lambda n: _SH_PRED.get(int(n), ()),
+        state_writes={},
+        comparisons=_SH_COMPARISONS,
+        entry_state=StateValue.of_many([K1, K2]),
+    )
+    # block 30 IS surfaced as a range block (value-set {K1, K2})...
+    assert view.handler_range_map.get(30) == (K1, K2)
+    # ...but it is NOT promoted: both its states are already exact handlers.
+    assert view.handler_entry_by_state == {K1: 10, K2: 20}
+    assert 30 not in view.handler_entry_by_state.values()
 
 
 def test_require_resolved_head_raises_on_unseeded_top():
