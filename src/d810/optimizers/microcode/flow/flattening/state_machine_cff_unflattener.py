@@ -18,6 +18,10 @@ import os
 import ida_hexrays
 
 from d810.core import logging
+from d810.core.observability_recon import (
+    diagnostics_enabled as _recon_diagnostics_enabled,
+    observe_state_dispatcher_rows,
+)
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle import (
     ComposedUnflatteningRule,
@@ -102,6 +106,34 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             len(tr.transitions) if tr else 0,
             len(regions.linear_regions) if regions else 0,
         )
+        # Diag DB: publish the recovered dispatcher rows so the structured diag tables are not blind
+        # to this path (the legacy recon instrumentation does not run under the flag). llr-6dq7.
+        self._publish_s1a_diagnostics(mba, rec)
         # Change accounting is the backend's concern (it lowered the plan); the §1a driver does not
         # yet surface an applied-count, so report 0 until the reconstruction passes land real plans.
         return 0
+
+    def _publish_s1a_diagnostics(self, mba, rec) -> None:
+        """Publish the recovered dispatcher rows into the ``state_dispatcher_rows`` diag table.
+
+        That table is otherwise empty under ``D810_USE_S1A_PIPELINE`` -- only the legacy backend
+        recon collectors ever fed it -- so the structured diag DB was blind to the §1a dispatcher
+        (its entry serial, kind, and state->handler rows). Mirrors the backend's
+        ``_observe_state_dispatcher_map``: keyed by func_ea + maturity, no snapshot ref needed.
+        Best-effort and a no-op when no diag subscriber is installed. The snapshot-correlated tables
+        (``block_classification`` / ``dag_edges`` / ``modifications``) need a §1a-point capture
+        snapshot and remain follow-up work (llr-6dq7).
+        """
+        dmap = getattr(rec, "dispatch_map", None) if rec is not None else None
+        if dmap is None or not _recon_diagnostics_enabled():
+            return
+        try:
+            observe_state_dispatcher_rows(
+                func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                maturity=maturity_to_string(int(getattr(mba, "maturity", -1) or -1)),
+                dispatcher_entry_block=int(dmap.dispatcher_entry_block),
+                dispatcher_kind=dmap.source.name,
+                rows=dmap.rows,
+            )
+        except Exception:  # noqa: BLE001 — diagnostics must never break the optimize path
+            logger.debug("s1a: observe_state_dispatcher_rows failed", exc_info=True)
