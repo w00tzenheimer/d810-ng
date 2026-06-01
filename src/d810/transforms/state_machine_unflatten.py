@@ -37,6 +37,7 @@ from d810.transforms.dispatcher_backedge_disconnect_planning import (
 )
 from d810.transforms.semantic_regions import SemanticRegionPlan
 from d810.transforms.spine_emission import emit_spine_modifications
+from d810.transforms.use_def_redirect_filter import filter_use_def_severing_redirects
 
 # Edges that advance the state machine (a back-edge to an earlier state is still a TRANSITION,
 # so loops are preserved as cycles in the reconstructed graph).
@@ -75,7 +76,15 @@ def _patch_from_graph_modification(mod: object) -> object | None:
     return None
 
 
-def _spine_redirects_from_dag(dag, dispatcher_entry_serial: int, graph) -> tuple[object, ...]:
+def _spine_redirects_from_dag(
+    dag,
+    dispatcher_entry_serial: int,
+    graph,
+    *,
+    use_def_safety=None,
+    live_function=None,
+    state_var_stkoff=None,
+) -> tuple[object, ...]:
     """Walk the linearized DAG's transition edges -> one redirect per edge (the reachable spine).
 
     Each edge's ``source_anchor`` (a handler exit) is redirected off the dispatcher onto the
@@ -96,6 +105,15 @@ def _spine_redirects_from_dag(dag, dispatcher_entry_serial: int, graph) -> tuple
         dispatcher_entry_serial=int(dispatcher_entry_serial),
         block_nsucc_map=nsucc_map,
         block_succ_map=succ_map,
+    )
+    # Protected emission: veto redirects that would orphan non-state-variable uses (the over-redirect
+    # that DCEs handler bodies). No-op on the portable/test path (no capability/live function).
+    mods = filter_use_def_severing_redirects(
+        mods,
+        use_def_safety=use_def_safety,
+        live_function=live_function,
+        pre_cfg=graph,
+        state_var_stkoff=state_var_stkoff,
     )
     steps = tuple(
         patch
@@ -174,8 +192,16 @@ def lower_to_direct_graph(
     dispatcher_entry_serial: int | None = None,
     state_var_stkoff: int | None = None,
     regions: SemanticRegionPlan | None = None,
+    use_def_safety=None,
+    live_function=None,
 ) -> PatchPlan:
-    """Build a ``PatchPlan`` reconnecting handlers into a direct spine (dispatcher bypassed)."""
+    """Build a ``PatchPlan`` reconnecting handlers into a direct spine (dispatcher bypassed).
+
+    ``use_def_safety`` (an injected ``UseDefSafetyCapability``) + ``live_function`` (the opaque live
+    backend function) enable protected emission: spine redirects that would orphan a non-state
+    variable's uses are vetoed before they reach the plan. Both ``None`` on the portable/test path,
+    where emission is unfiltered (byte-identical).
+    """
     if (
         graph is None
         or transition_result is None
@@ -191,7 +217,12 @@ def lower_to_direct_graph(
         state_var_stkoff=state_var_stkoff,
     )
     redirect_steps = _spine_redirects_from_dag(
-        dag, int(dispatcher_entry_serial), graph
+        dag,
+        int(dispatcher_entry_serial),
+        graph,
+        use_def_safety=use_def_safety,
+        live_function=live_function,
+        state_var_stkoff=state_var_stkoff,
     )
     backedge_steps = _disconnect_residual_dispatcher_backedges(
         dag, int(dispatcher_entry_serial), graph, redirect_steps
