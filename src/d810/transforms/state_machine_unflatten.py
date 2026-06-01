@@ -17,6 +17,7 @@ deferred backend half.
 """
 from __future__ import annotations
 
+from d810.core import logging
 from d810.core.typing import Protocol, runtime_checkable
 from d810.ir.flowgraph import FlowGraph
 from d810.analyses.value_flow.model import ValidatedFactView
@@ -25,7 +26,11 @@ from d810.analyses.control_flow.linearized_state_dag import (
     SemanticEdgeKind,
     build_live_linearized_state_dag_from_graph,
 )
-from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
+from d810.transforms.graph_modification import (
+    ConvertToGoto,
+    RedirectBranch,
+    RedirectGoto,
+)
 from d810.transforms.plan import (
     PatchConvertToGoto,
     PatchPlan,
@@ -35,9 +40,21 @@ from d810.transforms.plan import (
 from d810.transforms.dispatcher_backedge_disconnect_planning import (
     plan_dispatcher_backedge_disconnects,
 )
+from d810.transforms.modification_builder import ModificationBuilder
+from d810.transforms.reconstruction_return_planning import (
+    plan_reconstruction_return_modifications,
+)
 from d810.transforms.semantic_regions import SemanticRegionPlan
 from d810.transforms.spine_emission import emit_spine_modifications
 from d810.transforms.use_def_redirect_filter import filter_use_def_severing_redirects
+from d810.analyses.control_flow.reconstruction_discovery import (
+    classify_artifact_return_blocks,
+)
+from d810.analyses.control_flow.return_corridor_discovery import (
+    collect_common_return_corridor,
+)
+
+logger = logging.getLogger("D810.transforms.s1a_lower")
 
 # Edges that advance the state machine (a back-edge to an earlier state is still a TRANSITION,
 # so loops are preserved as cycles in the reconstructed graph).
@@ -72,6 +89,14 @@ def _patch_from_graph_modification(mod: object) -> object | None:
             from_serial=mod.from_serial,
             old_target=mod.old_target,
             new_target=mod.new_target,
+        )
+    if isinstance(mod, ConvertToGoto):
+        # The return planner reaches ``builder.goto_redirect`` on a 2-way anchor, which the builder
+        # lowers to a ``ConvertToGoto`` (keep the live arm, drop the other). Mirror it as the §1a
+        # ``PatchConvertToGoto`` the backend already applies for the #4b back-edge disconnect.
+        return PatchConvertToGoto(
+            block_serial=mod.block_serial,
+            goto_target=mod.goto_target,
         )
     return None
 
@@ -183,6 +208,50 @@ def _disconnect_residual_dispatcher_backedges(
     return tuple(steps)
 
 
+def _return_redirects_from_dag(
+    dag,
+    graph,
+    dispatcher_entry_serial: int,
+    *,
+    bst_node_blocks,
+    common_return_corridor,
+    artifact_return_blocks,
+    claimed_sources: set[int],
+) -> tuple[object, ...]:
+    """Lower the DAG's CONDITIONAL_RETURN edges to terminal-return redirects (legacy return wiring).
+
+    Translates the return phase of ``StateWriteReconstructionStrategy.plan``: construct the portable
+    :class:`ModificationBuilder` over the live block successor maps, index the DAG nodes by key, and
+    delegate to :func:`plan_reconstruction_return_modifications` (the shared-corridor return model,
+    reused verbatim). Its neutral ``RedirectGoto`` / ``RedirectBranch`` / ``ConvertToGoto`` mods are
+    wrapped into §1a ``Patch*`` steps. ``claimed_sources`` is seeded with the spine + back-edge
+    sources so the same block is never redirected twice.
+    """
+    blocks = getattr(graph, "blocks", {})
+    nsucc_map = {s: int(b.nsucc) for s, b in blocks.items()}
+    succ_map = {s: tuple(int(x) for x in b.succs) for s, b in blocks.items()}
+    builder = ModificationBuilder(block_nsucc_map=nsucc_map, block_succ_map=succ_map)
+    node_by_key = {node.key: node for node in getattr(dag, "nodes", ())}
+    result = plan_reconstruction_return_modifications(
+        dag=dag,
+        flow_graph=graph,
+        builder=builder,
+        claimed_sources=claimed_sources,
+        dispatcher_serial=int(dispatcher_entry_serial),
+        bst_node_blocks=set(int(b) for b in bst_node_blocks),
+        common_return_corridor=set(int(b) for b in common_return_corridor),
+        artifact_return_blocks=set(int(b) for b in artifact_return_blocks),
+        node_by_key=node_by_key,
+    )
+    return tuple(
+        patch
+        for patch in (
+            _patch_from_graph_modification(mod) for mod in result.modifications
+        )
+        if patch is not None
+    )
+
+
 def lower_to_direct_graph(
     graph: FlowGraph | None,
     facts: ValidatedFactView | None,
@@ -194,6 +263,8 @@ def lower_to_direct_graph(
     regions: SemanticRegionPlan | None = None,
     use_def_safety=None,
     live_function=None,
+    bst_node_blocks=None,
+    dag=None,
 ) -> PatchPlan:
     """Build a ``PatchPlan`` reconnecting handlers into a direct spine (dispatcher bypassed).
 
@@ -201,6 +272,11 @@ def lower_to_direct_graph(
     backend function) enable protected emission: spine redirects that would orphan a non-state
     variable's uses are vetoed before they reach the plan. Both ``None`` on the portable/test path,
     where emission is unfiltered (byte-identical).
+
+    ``bst_node_blocks`` is the enriched-DAG signal: when the entry threads the recovered BST node set
+    in (bst evidence promoted to production), the DAG carries CONDITIONAL_RETURN edges and the legacy
+    return wiring is lowered (gap3). ``None`` -> the return phase is skipped (shallow production path,
+    byte-identical).
     """
     if (
         graph is None
@@ -210,12 +286,16 @@ def lower_to_direct_graph(
         or dispatcher_entry_serial is None
     ):
         return PatchPlan()
-    dag = build_live_linearized_state_dag_from_graph(
-        flow_graph=graph,
-        transition_result=transition_result,
-        dispatcher_entry_serial=dispatcher_entry_serial,
-        state_var_stkoff=state_var_stkoff,
-    )
+    # ``dag`` lets the caller inject a pre-built (BST-enriched) DAG — the entry's diag rebuild already
+    # constructs the oracle-grade DAG with the full value-range evidence. When ``None`` (production /
+    # portable test) we build the shallow exact-chain DAG from ``transition_result`` here.
+    if dag is None:
+        dag = build_live_linearized_state_dag_from_graph(
+            flow_graph=graph,
+            transition_result=transition_result,
+            dispatcher_entry_serial=dispatcher_entry_serial,
+            state_var_stkoff=state_var_stkoff,
+        )
     redirect_steps = _spine_redirects_from_dag(
         dag,
         int(dispatcher_entry_serial),
@@ -227,4 +307,57 @@ def lower_to_direct_graph(
     backedge_steps = _disconnect_residual_dispatcher_backedges(
         dag, int(dispatcher_entry_serial), graph, redirect_steps
     )
-    return PatchPlan(steps=(*redirect_steps, *backedge_steps))
+    # Return wiring (§1a gap3): lower the DAG's CONDITIONAL_RETURN edges to terminal returns by
+    # translating StateWriteReconstructionStrategy's return phase. GATED on ``bst_node_blocks`` — the
+    # enriched-DAG signal the entry threads in once bst evidence reaches production. On today's
+    # shallow production path (``None``) the return phase is skipped, so the plan is byte-identical.
+    return_steps: tuple[object, ...] = ()
+    if bst_node_blocks is not None:
+        corridor = collect_common_return_corridor(
+            dag,
+            graph,
+            bst_node_blocks=set(int(b) for b in bst_node_blocks),
+            dispatcher_serial=int(dispatcher_entry_serial),
+        )
+        state_constants = {
+            int(row.state_const)
+            for row in getattr(dispatch_map, "rows", ())
+            if getattr(row, "state_const", None) is not None
+        }
+        artifact_return_blocks = (
+            classify_artifact_return_blocks(
+                graph,
+                state_var_stkoff=int(state_var_stkoff),
+                state_constants=state_constants,
+            )
+            if state_var_stkoff is not None
+            else set()
+        )
+        # Seed claims with the spine + back-edge sources so the return phase never double-edits a
+        # block already redirected by #4/#4b (mirrors the legacy claimed_sources accumulation).
+        claimed_sources = {
+            int(serial)
+            for serial in (
+                *(getattr(step, "from_serial", None) for step in redirect_steps),
+                *(getattr(step, "block_serial", None) for step in backedge_steps),
+            )
+            if serial is not None
+        }
+        return_steps = _return_redirects_from_dag(
+            dag,
+            graph,
+            int(dispatcher_entry_serial),
+            bst_node_blocks=bst_node_blocks,
+            common_return_corridor=corridor,
+            artifact_return_blocks=artifact_return_blocks,
+            claimed_sources=claimed_sources,
+        )
+    if logger.info_on:
+        logger.info(
+            "s1a #4 lowering: spine=%d backedge=%d return=%d (bst=%s)",
+            len(redirect_steps),
+            len(backedge_steps),
+            len(return_steps),
+            "on" if bst_node_blocks is not None else "off",
+        )
+    return PatchPlan(steps=(*redirect_steps, *backedge_steps, *return_steps))
