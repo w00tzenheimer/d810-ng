@@ -62,7 +62,7 @@ from d810.backends.hexrays.evidence.dead_state_variable_elimination import (
 from d810.backends.hexrays.evidence.inner_merge_duplication import (
     InnerMergeDuplicationStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.state_constant_return_fixup import (
+from d810.backends.hexrays.evidence.state_constant_return_fixup import (
     StateConstantReturnFixupStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.linearized_flow_graph import (
