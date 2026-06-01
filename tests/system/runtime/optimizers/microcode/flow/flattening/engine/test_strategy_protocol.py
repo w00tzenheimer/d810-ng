@@ -8,7 +8,7 @@ import pytest
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.transforms.graph_modification import RedirectGoto
 from d810.optimizers.microcode.flow.flattening import engine
-from d810.optimizers.microcode.flow.flattening.engine import strategy as engine_strategy
+from d810.passes import strategy as engine_strategy
 from d810.transforms.plan_fragment import (
     BenefitMetrics,
     OwnershipScope,
@@ -79,7 +79,7 @@ class TestEnginePackageApi:
     def test_engine_strategy_star_import_omits_semantic_gate(self) -> None:
         namespace: dict[str, object] = {}
         exec(
-            "from d810.optimizers.microcode.flow.flattening.engine.strategy import *",
+            "from d810.passes.strategy import *",
             namespace,
         )
         assert "PlanFragment" in namespace

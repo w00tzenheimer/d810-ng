@@ -10,7 +10,7 @@ tests without an IDA environment.  The module lives in ``d810.transforms``
 (below ``optimizers``/``families``/``passes``) so importers can depend on it
 downward, which is legal under the layered-architecture import contract.
 
-``d810.optimizers.microcode.flow.flattening.engine.strategy`` re-exports these
+``d810.passes.strategy`` re-exports these
 names for back-compat with existing import sites; new code should import from
 here.
 """

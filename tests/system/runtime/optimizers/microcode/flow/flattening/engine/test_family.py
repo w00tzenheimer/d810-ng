@@ -17,7 +17,7 @@ from d810.optimizers.microcode.flow.flattening.engine.state_machine_runtime impo
 from d810.transforms.snapshot import (
     AnalysisSnapshot,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.passes.strategy import (
     UnflatteningStrategy,
 )
 from d810.transforms.plan_fragment import (
