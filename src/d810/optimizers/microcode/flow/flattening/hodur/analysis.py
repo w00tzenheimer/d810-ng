@@ -45,7 +45,7 @@ from d810.hexrays.utils.hexrays_helpers import (
     extract_num_mop,
     get_mop_index,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
+from d810.backends.hexrays.evidence.datamodel import (
     DispatcherStateMachine,
 )
 from d810.analyses.control_flow.bst_model import BSTAnalysisResult

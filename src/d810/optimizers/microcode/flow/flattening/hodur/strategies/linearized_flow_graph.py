@@ -274,7 +274,7 @@ from d810.analyses.control_flow.terminal_family_collection import (
 )
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
+    from d810.backends.hexrays.evidence.datamodel import (
         DispatcherStateMachine,
     )
     from d810.transforms.snapshot import (
