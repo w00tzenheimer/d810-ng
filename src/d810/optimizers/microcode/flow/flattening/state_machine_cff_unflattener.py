@@ -255,6 +255,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     prefer_local_corridors=True,
                 )
                 observe_dag(snap, _diag_dag_nodes(dag), _diag_dag_edges(dag))
+                # Feed the BST-enriched DAG (built above) + the recovered BST node set so the #4
+                # return-wiring (gap3) lowers the CONDITIONAL_RETURN edges here in the diag rebuild.
+                # DIAG-ONLY: gated on --full-diagnostics + a capture subscriber, so it cannot touch
+                # production lowering; it validates the translated return phase against the oracle.
                 plan = lower_to_direct_graph(
                     source.flow_graph,
                     fact_view,
@@ -263,6 +267,12 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     dispatcher_entry_serial=entry_serial,
                     state_var_stkoff=dmap.state_var_stkoff,
                     regions=regions,
+                    dag=dag,
+                    bst_node_blocks=(
+                        tuple(sorted(int(b) for b in bst.bst_node_blocks))
+                        if bst is not None
+                        else None
+                    ),
                 )
                 observe_modifications(snap, _diag_modifications(plan))
         except Exception:  # noqa: BLE001 — diagnostics must never break the optimize path

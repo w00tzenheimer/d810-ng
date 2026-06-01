@@ -15,10 +15,18 @@ from d810.analyses.control_flow.linearized_state_dag import (
     SemanticEdgeKind,
 )
 from d810.transforms.state_machine_unflatten import (
+    _patch_from_graph_modification,
+    _return_redirects_from_dag,
     _spine_redirects_from_dag,
     lower_to_direct_graph,
 )
-from d810.transforms.plan import PatchPlan, PatchRedirectBranch, PatchRedirectGoto
+from d810.transforms.graph_modification import ConvertToGoto
+from d810.transforms.plan import (
+    PatchConvertToGoto,
+    PatchPlan,
+    PatchRedirectBranch,
+    PatchRedirectGoto,
+)
 
 
 class _Map:
@@ -99,6 +107,69 @@ def test_non_transition_edges_and_dispatcher_selfloops_skipped():
     ))
     graph = _graph({10: (1, (5,)), 11: (1, (5,))})
     assert _spine_redirects_from_dag(dag, 5, graph) == ()
+
+
+def _graph_with_lookup(spec):
+    """Like ``_graph`` but also exposes ``get_block`` (the return planner reads it)."""
+    blocks = {
+        s: SimpleNamespace(nsucc=nsucc, succs=succs) for s, (nsucc, succs) in spec.items()
+    }
+    return SimpleNamespace(blocks=blocks, get_block=blocks.get)
+
+
+def _return_edge(source_block, key, ordered_path, *, arm=None):
+    anchor = SimpleNamespace(block_serial=source_block, branch_arm=arm)
+    return SimpleNamespace(
+        kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+        source_anchor=anchor,
+        source_key=key,
+        ordered_path=tuple(ordered_path),
+    )
+
+
+def test_return_wiring_emits_goto_for_conditional_return_anchor():
+    # gap3: a 1-way CONDITIONAL_RETURN anchor is wired onto the shared return corridor entry.
+    key = ("h", 30)
+    dag = SimpleNamespace(
+        nodes=(SimpleNamespace(key=key, shared_suffix_blocks=()),),
+        edges=(_return_edge(30, key, (30, 50)),),
+    )
+    graph = _graph_with_lookup({30: (1, (5,))})
+    steps = _return_redirects_from_dag(
+        dag, graph, 5,
+        bst_node_blocks=set(),
+        common_return_corridor={99},
+        artifact_return_blocks=set(),
+        claimed_sources=set(),
+    )
+    assert len(steps) == 1 and isinstance(steps[0], PatchRedirectGoto)
+    assert (steps[0].from_serial, steps[0].old_target, steps[0].new_target) == (30, 5, 99)
+
+
+def test_return_wiring_skips_already_claimed_anchor():
+    # The spine already redirected blk 30; the return phase must not double-edit it.
+    key = ("h", 30)
+    dag = SimpleNamespace(
+        nodes=(SimpleNamespace(key=key, shared_suffix_blocks=()),),
+        edges=(_return_edge(30, key, (30, 50)),),
+    )
+    graph = _graph_with_lookup({30: (1, (5,))})
+    steps = _return_redirects_from_dag(
+        dag, graph, 5,
+        bst_node_blocks=set(),
+        common_return_corridor={99},
+        artifact_return_blocks=set(),
+        claimed_sources={30},
+    )
+    assert steps == ()
+
+
+def test_convert_to_goto_modification_maps_to_patch_convert_to_goto():
+    # The return planner reaches builder.goto_redirect on a 2-way anchor -> ConvertToGoto, which the
+    # §1a wrapper must shadow as PatchConvertToGoto (the backend already applies it for #4b).
+    patch = _patch_from_graph_modification(ConvertToGoto(block_serial=15, goto_target=44))
+    assert isinstance(patch, PatchConvertToGoto)
+    assert (patch.block_serial, patch.goto_target) == (15, 44)
 
 
 def test_null_or_empty_inputs_yield_empty_plan():
