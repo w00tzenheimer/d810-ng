@@ -31,7 +31,7 @@ from d810.transforms.cleanup_evidence import (
     extract_side_effect_replay_candidates,
     extract_trampoline_isolation_candidates,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     FAMILY_CLEANUP,
     BenefitMetrics,
     OwnershipScope,

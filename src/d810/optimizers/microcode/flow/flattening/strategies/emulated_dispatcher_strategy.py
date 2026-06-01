@@ -21,7 +21,7 @@ from d810.transforms.graph_modification import (
     RedirectGoto,
     ZeroStateWrite,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     FAMILY_DIRECT,
     FAMILY_FALLBACK,
     BenefitMetrics,

@@ -23,7 +23,7 @@ from d810.transforms.state_var_cleanup import collect_state_constants
 from d810.evaluator.hexrays_microcode.return_cleanup_backend import (
     HexRaysReturnCleanupEvidenceBackend,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     FAMILY_CLEANUP,
     BenefitMetrics,
     OwnershipScope,

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from d810.ir.flowgraph import FlowGraph, InsnKind, OperandKind
 from d810.transforms.graph_modification import GraphModification, NopInstructions
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     FAMILY_CLEANUP,
     BenefitMetrics,
     OwnershipScope,

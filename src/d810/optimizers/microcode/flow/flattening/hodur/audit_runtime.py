@@ -6,7 +6,7 @@ from pathlib import Path
 from d810.analyses.control_flow.return_frontier import ReturnSite
 from d810.core.typing import Any
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import AnalysisSnapshot
-from d810.optimizers.microcode.flow.flattening.engine.strategy import StageResult
+from d810.transforms.plan_fragment import StageResult
 from d810.optimizers.microcode.flow.flattening.hodur.recon_artifacts import (
     load_return_frontier_audit_from_store,
     load_transition_report_from_store,

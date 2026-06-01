@@ -26,7 +26,7 @@ from d810.transforms.semantic_conditional_lowering import (
     edge_kind_name as _edge_kind_name,
     site_key as _site_key,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,

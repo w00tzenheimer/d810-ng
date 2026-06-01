@@ -39,7 +39,7 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     ExecutedPipeline,
     PlannedPipeline,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import StageResult
+from d810.transforms.plan_fragment import StageResult
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
     StateModelSummary,

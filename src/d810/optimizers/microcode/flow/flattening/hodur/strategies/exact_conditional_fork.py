@@ -24,7 +24,7 @@ from d810.transforms.semantic_conditional_lowering import (
     normalize_clean_conditional_fork_arms,
     ordered_path_first_hop,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,

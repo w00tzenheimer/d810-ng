@@ -135,13 +135,13 @@ class TestStageResultQuarantineField:
     """P1-3: StageResult quarantine field exists and defaults to False."""
 
     def test_stage_result_quarantine_field_exists(self) -> None:
-        from d810.optimizers.microcode.flow.flattening.engine.strategy import StageResult
+        from d810.transforms.plan_fragment import StageResult
 
         result = StageResult(strategy_name="test", quarantine=True)
         assert result.quarantine is True
 
     def test_stage_result_quarantine_defaults_false(self) -> None:
-        from d810.optimizers.microcode.flow.flattening.engine.strategy import StageResult
+        from d810.transforms.plan_fragment import StageResult
 
         result = StageResult(strategy_name="test")
         assert result.quarantine is False

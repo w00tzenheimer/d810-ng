@@ -58,7 +58,7 @@ from d810.transforms.semantic_exact_selection import (
     select_windowed_semantic_exact_edges,
     semantic_edge_state_pair,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,

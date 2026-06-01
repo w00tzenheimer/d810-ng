@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from d810.transforms.graph_modification import GraphModification, RedirectBranch, RedirectGoto
 from d810.transforms.selector_shell_planning import plan_selector_shell_cleanup
 from d810.core.typing import TYPE_CHECKING
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     FAMILY_CLEANUP,
     BenefitMetrics,
     OwnershipScope,

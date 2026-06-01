@@ -43,7 +43,7 @@ from d810.transforms.residual_target_resolution import (
 from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
     HodurStateMachineDetector,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     FAMILY_CLEANUP,
     BenefitMetrics,
     OwnershipScope,

@@ -41,14 +41,14 @@ import d810.optimizers.microcode.flow.flattening.hodur.strategies.reconstruction
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.reconstruction import (
     StateWriteReconstructionStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.families.state_machine_cff.protocols import UnflatteningStrategy
+from d810.transforms.plan_fragment import (
     FAMILY_CLEANUP,
     FAMILY_DIRECT,
     FAMILY_FALLBACK,
     BenefitMetrics,
     OwnershipScope,
     PlanFragment,
-    UnflatteningStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     ALL_STRATEGIES,

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     StageResult,
     VerificationGate,
 )

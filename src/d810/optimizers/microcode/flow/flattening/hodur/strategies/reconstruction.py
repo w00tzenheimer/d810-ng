@@ -58,7 +58,7 @@ from d810.transforms.mod_claims import collect_mod_claims
 from d810.transforms.modification_builder import (
     ModificationBuilder,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,

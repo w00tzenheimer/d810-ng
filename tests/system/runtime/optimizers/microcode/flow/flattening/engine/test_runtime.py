@@ -31,7 +31,7 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     run_family_pass,
     run_ordered_family_hooks,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     BenefitMetrics,
     OwnershipScope,
     PlanFragment,

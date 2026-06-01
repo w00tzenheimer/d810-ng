@@ -10,7 +10,7 @@ from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
 from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     DagDisagreementRecord,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import PlanFragment
+from d810.transforms.plan_fragment import PlanFragment
 
 __all__ = [
     "DAG_AUDIT_METADATA_KEY",

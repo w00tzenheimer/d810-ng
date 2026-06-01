@@ -34,7 +34,7 @@ from d810.evaluator.hexrays_microcode.valranges import resolve_state_via_valrang
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.valrange_resolution import (
     ValrangeResolutionStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     FAMILY_FALLBACK,
 )
 

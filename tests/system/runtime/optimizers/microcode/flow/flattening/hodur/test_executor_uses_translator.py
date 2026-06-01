@@ -21,7 +21,7 @@ from d810.transforms.graph_modification import (
 from d810.transforms.plan import PatchPlan, compile_patch_plan
 from d810.optimizers.microcode.flow.flattening.engine import executor as _executor_mod
 from d810.optimizers.microcode.flow.flattening.engine.executor import TransactionalExecutor
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,
@@ -605,7 +605,7 @@ def test_execute_pipeline_stops_on_quarantine(monkeypatch: pytest.MonkeyPatch):
         _executor_mod, "should_apply_bulk_cfg_modifications",
         lambda *args, **kwargs: True,
     )
-    from d810.optimizers.microcode.flow.flattening.engine.strategy import StageResult
+    from d810.transforms.plan_fragment import StageResult
 
     cfg = FlowGraph(
         blocks={

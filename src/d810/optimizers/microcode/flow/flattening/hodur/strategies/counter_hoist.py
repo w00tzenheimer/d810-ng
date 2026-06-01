@@ -35,7 +35,7 @@ from d810.capabilities.providers import get_microcode_evidence
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
 from d810.transforms.modification_builder import ModificationBuilder
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     FAMILY_CLEANUP,
     BenefitMetrics,
     OwnershipScope,

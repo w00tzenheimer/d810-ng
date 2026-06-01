@@ -12,7 +12,7 @@ from d810.transforms.graph_modification import (
 )
 from d810.transforms.guarded_state_machine_planning import build_guarded_state_machine_modifications
 from d810.core.typing import TYPE_CHECKING
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     FAMILY_CLEANUP,
     BenefitMetrics,
     OwnershipScope,
