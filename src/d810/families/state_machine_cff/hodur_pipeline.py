@@ -13,6 +13,9 @@ maturity hook).
 from __future__ import annotations
 
 from d810.passes.pass_pipeline import PassSpec, default, golden, live_mba, no_caps
+from d810.analyses.control_flow.dispatcher_recovery import (
+    build_state_dispatcher_map_from_flow_graph,
+)
 from d810.passes.unflatten.state_machine import (
     CleanupResidualDispatcher,
     LowerStateMachine,
@@ -30,11 +33,13 @@ class HodurFamily:
     def detect(self, graph, capabilities, context=None):
         """Recognize the Hodur state machine over a portable ``FlowGraph``.
 
-        Skeleton (seam pending): the live detector remains
-        ``HodurStateMachineDetector`` until ``recover_dispatcher`` carries detection.
-        Returns ``None`` (no match) so this family stays inert until wired.
+        A match is an equality-chain dispatcher with enough state constants — the same portable
+        detector pass #1 uses. The match IS the recovered ``StateDispatcherMap`` (truthy), so the
+        pipeline only runs where a real dispatcher is present.
         """
-        return None
+        if graph is None or not hasattr(graph, "blocks"):
+            return None
+        return build_state_dispatcher_map_from_flow_graph(graph)
 
     def pipeline_for(self, match, context) -> "tuple[PassSpec, ...]":
         return (
