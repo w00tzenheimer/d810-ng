@@ -224,7 +224,7 @@ class TestIsDegenerateLoopBlockSnapshot:
     """
 
     def test_nop_only_block_is_degenerate(self) -> None:
-        from d810.optimizers.microcode.flow.flattening.hodur.strategies.terminal_loop_cleanup import (
+        from d810.backends.hexrays.evidence.terminal_loop_cleanup import (
             TerminalLoopCleanupStrategy,
         )
         nop_insn = InsnSnapshot(opcode=M_NOP, ea=0x1000, operands=())
@@ -237,7 +237,7 @@ class TestIsDegenerateLoopBlockSnapshot:
         ) is True
 
     def test_goto_only_block_is_degenerate(self) -> None:
-        from d810.optimizers.microcode.flow.flattening.hodur.strategies.terminal_loop_cleanup import (
+        from d810.backends.hexrays.evidence.terminal_loop_cleanup import (
             TerminalLoopCleanupStrategy,
         )
         goto_insn = InsnSnapshot(opcode=M_GOTO, ea=0x1000, operands=())
@@ -250,7 +250,7 @@ class TestIsDegenerateLoopBlockSnapshot:
         ) is True
 
     def test_nop_and_goto_block_is_degenerate(self) -> None:
-        from d810.optimizers.microcode.flow.flattening.hodur.strategies.terminal_loop_cleanup import (
+        from d810.backends.hexrays.evidence.terminal_loop_cleanup import (
             TerminalLoopCleanupStrategy,
         )
         nop_insn = InsnSnapshot(opcode=M_NOP, ea=0x1000, operands=())
@@ -264,7 +264,7 @@ class TestIsDegenerateLoopBlockSnapshot:
         ) is True
 
     def test_mov_block_is_not_degenerate(self) -> None:
-        from d810.optimizers.microcode.flow.flattening.hodur.strategies.terminal_loop_cleanup import (
+        from d810.backends.hexrays.evidence.terminal_loop_cleanup import (
             TerminalLoopCleanupStrategy,
         )
         mov_insn = InsnSnapshot(opcode=M_MOV, ea=0x1000, operands=())
@@ -277,7 +277,7 @@ class TestIsDegenerateLoopBlockSnapshot:
         ) is False
 
     def test_empty_block_is_degenerate(self) -> None:
-        from d810.optimizers.microcode.flow.flattening.hodur.strategies.terminal_loop_cleanup import (
+        from d810.backends.hexrays.evidence.terminal_loop_cleanup import (
             TerminalLoopCleanupStrategy,
         )
         blk = BlockSnapshot(
@@ -289,7 +289,7 @@ class TestIsDegenerateLoopBlockSnapshot:
         ) is True
 
     def test_ret_block_is_not_degenerate(self) -> None:
-        from d810.optimizers.microcode.flow.flattening.hodur.strategies.terminal_loop_cleanup import (
+        from d810.backends.hexrays.evidence.terminal_loop_cleanup import (
             TerminalLoopCleanupStrategy,
         )
         ret_insn = InsnSnapshot(
