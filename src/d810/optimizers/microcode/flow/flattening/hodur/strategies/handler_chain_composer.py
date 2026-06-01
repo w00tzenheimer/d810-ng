@@ -170,7 +170,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.handler_chain_topology_walk
     DEFAULT_HODUR_HANDLER_CHAIN_TOPOLOGY_WALK_BACKEND,
     HandlerChainTopologyWalkBackend,
 )
-from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting import (
+from d810.backends.hexrays.evidence._reconstruction_reporting import (
     log_reconstruction_postprocess_result,
     snapshot_reconstruction_dag,
     snapshot_reconstruction_post_apply,
