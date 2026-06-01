@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from d810.core.typing import Protocol, runtime_checkable
+from d810.capabilities.resolver import CapabilitySet
 from d810.passes.pass_pipeline import (
     CapabilityPolicy,
     FunctionPipelineContext,
@@ -58,10 +59,15 @@ def validate_capabilities(backend, requirements: CapabilityPolicy) -> None:
         )
 
 
-def run_pipeline(*, source, family, backend, facts, project_config, maturity):
+def run_pipeline(
+    *, source, family, backend, facts, project_config, maturity, capabilities=None
+):
     """Run one family's pipeline over one function/maturity. Returns the final graph.
 
     Mirrors §1a ``run_d810_pipeline`` minus the lift/select bootstrap (the shell does those).
+    ``capabilities`` is the backend-provided :class:`CapabilitySet` (typed capability instances)
+    threaded into every pass's context; ``None`` -> an empty set (passes that only query
+    ``optional`` are unaffected).
     """
     graph = source.flow_graph
     match = family.detect(graph, backend.capabilities(), context=None)
@@ -74,6 +80,7 @@ def run_pipeline(*, source, family, backend, facts, project_config, maturity):
         maturity=maturity,
         project_config=project_config,
         facts=facts.view(),
+        capabilities=capabilities if capabilities is not None else CapabilitySet(),
     )
     for spec in family.pipeline_for(match, ctx):
         validate_capabilities(backend, spec.requirements)
