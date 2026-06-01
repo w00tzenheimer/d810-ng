@@ -46,6 +46,8 @@ from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle impor
 )
 from d810.backends.hexrays.lifter import lift_function
 from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
+from d810.analyses.control_flow.dispatcher_recovery import recover_dispatcher
+from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
 from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
 from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.driver import run_pipeline
@@ -103,6 +105,22 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 fact_view = flow_ctx.validated_fact_view(getattr(mba, "maturity", 0))
             except Exception:  # noqa: BLE001 — fact view is best-effort input
                 logger.debug("s1a: validated_fact_view unavailable", exc_info=True)
+        # Pre-mutation BST/interval evidence: walk the PRISTINE mba here (it still matches
+        # source.flow_graph; the pipeline mutates it below) so the value-range dispatcher recovery
+        # sees the intact BST. Gated on the diag capture — production never computes it. Consumed
+        # only by the diag DAG rebuild to validate evidence-recovery against the oracle (llr-gp9d).
+        bst_evidence = None
+        if _capture_diagnostics_enabled():
+            try:
+                prelim = recover_dispatcher(source.flow_graph, fact_view)
+                if getattr(prelim, "dispatcher_block_serial", None) is not None:
+                    bst_evidence = analyze_bst_dispatcher(
+                        mba,
+                        int(prelim.dispatcher_block_serial),
+                        getattr(prelim, "state_var_stkoff", None),
+                    )
+            except Exception:  # noqa: BLE001 — evidence recovery is best-effort diagnostics
+                logger.debug("s1a: pre-pipeline BST evidence failed", exc_info=True)
         facts = AnalysisManager(source.flow_graph, input_facts=fact_view)
         backend = HexRaysMutationBackend()
         run_pipeline(
@@ -127,12 +145,14 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         )
         # Diag DB: publish the §1a structural analysis so the SQLite diag tables are not blind to
         # this path (the legacy recon instrumentation does not run under the flag). llr-6dq7.
-        self._publish_s1a_diagnostics(mba, source, rec, tr, regions, fact_view)
+        self._publish_s1a_diagnostics(mba, source, rec, tr, regions, fact_view, bst_evidence)
         # Change accounting is the backend's concern (it lowered the plan); the §1a driver does not
         # yet surface an applied-count, so report 0 until the reconstruction passes land real plans.
         return 0
 
-    def _publish_s1a_diagnostics(self, mba, source, rec, tr, regions, fact_view) -> None:
+    def _publish_s1a_diagnostics(
+        self, mba, source, rec, tr, regions, fact_view, bst_evidence=None
+    ) -> None:
         """Populate the structured diag tables for the §1a path (otherwise blind under the flag).
 
         Two tiers:
@@ -180,20 +200,25 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 bst_serials=tuple(getattr(rec, "bst_block_serials", ()) or ()),
             )
             entry_serial = int(dmap.dispatcher_entry_block)
-            if tr is not None and getattr(tr, "transitions", None):
-                # Recover the live BST/interval evidence (value-range dispatcher, handler ranges,
-                # pre-header + initial state) so the diag DAG matches the legacy oracle's structure
-                # (RANGE_BACKED nodes + conditional/return edges). DIAG-ONLY: this validates the
-                # evidence-recovery WITHOUT touching the production lowering, so a still-naive
-                # emission cannot collapse the live output (llr-gp9d/mmfq/opck).
-                bst = None
+            # Pre-mutation BST evidence (value-range dispatcher, handler ranges, pre-header/initial
+            # state) recovered before the pipeline mutated the mba (passed in). DIAG-ONLY: validates
+            # evidence-recovery WITHOUT touching production lowering, so a still-naive emission cannot
+            # collapse the live output (llr-gp9d/mmfq/opck).
+            bst = bst_evidence
+            # Prefer the BST-derived rich transition_result: it backfills handlers reachable only
+            # through wide BST range intervals (the range-backed states the exact-only §1a #2 omits),
+            # so the diag DAG node/edge counts approach the legacy oracle instead of being capped by
+            # the shallow exact-chain transitions.
+            dag_tr = tr
+            if bst is not None:
                 try:
-                    bst = analyze_bst_dispatcher(mba, entry_serial, dmap.state_var_stkoff)
-                except Exception:  # noqa: BLE001 — evidence recovery is best-effort here
-                    logger.debug("s1a: analyze_bst_dispatcher failed", exc_info=True)
+                    dag_tr = _convert_bst_to_result(bst)
+                except Exception:  # noqa: BLE001 — fall back to the §1a transition_result
+                    dag_tr = tr
+            if dag_tr is not None and getattr(dag_tr, "transitions", None):
                 dag = build_live_linearized_state_dag_from_graph(
                     flow_graph=source.flow_graph,
-                    transition_result=tr,
+                    transition_result=dag_tr,
                     dispatcher_entry_serial=entry_serial,
                     state_var_stkoff=dmap.state_var_stkoff,
                     bst_node_blocks=(
