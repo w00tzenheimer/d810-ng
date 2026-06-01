@@ -91,7 +91,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.live_microcode_properties i
     DEFAULT_HODUR_LIVE_MICROCODE_PROPERTIES,
     HodurLiveMicrocodePropertiesBackend,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.lfg_handoff_resolution_backend import (
+from d810.backends.hexrays.evidence.lfg_handoff_resolution_backend import (
     AssignmentMapHandoffTargetRequest,
     DEFAULT_HODUR_LFG_HANDOFF_RESOLUTION_BACKEND,
     EffectiveTargetEntryRequest,
