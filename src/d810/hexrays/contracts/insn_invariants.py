@@ -10,102 +10,8 @@ from __future__ import annotations
 from types import MappingProxyType
 from d810.core.typing import Any, Iterable
 
-try:
-    import ida_hexrays
-except ImportError:  # pragma: no cover - exercised in unit tests without IDA.
-    class _FallbackHexRays:
-        # Opcodes
-        m_nop = 0
-        m_jtbl = 1
-        m_goto = 2
-        m_jcnd = 3
-        m_jnz = 4
-        m_jz = 5
-        m_jae = 6
-        m_jb = 7
-        m_ja = 8
-        m_jbe = 9
-        m_jg = 10
-        m_jge = 11
-        m_jl = 12
-        m_jle = 13
-        m_ijmp = 14
-        m_ret = 15
-        m_ext = 16
-        m_push = 17
-        m_pop = 18
-        m_call = 19
-        m_icall = 20
-        m_mov = 21
-        m_lnot = 22
-        m_neg = 23
-        m_add = 24
-        m_sub = 25
-        m_mul = 26
-        m_udiv = 27
-        m_sdiv = 28
-        m_umod = 29
-        m_smod = 30
-        m_or = 31
-        m_and = 32
-        m_xor = 33
-        m_shl = 34
-        m_shr = 35
-        m_sar = 36
-        m_cfadd = 37
-        m_ofadd = 38
-        m_cfshl = 39
-        m_cfshr = 40
-        m_sets = 41
-        m_seto = 42
-        m_setp = 43
-        m_setnz = 44
-        m_setz = 45
-        m_setae = 46
-        m_setb = 47
-        m_seta = 48
-        m_setbe = 49
-        m_setg = 50
-        m_setge = 51
-        m_setl = 52
-        m_setle = 53
-        m_ldx = 54
-        m_stx = 55
-        m_f2i = 56
-        m_f2u = 57
-        m_i2f = 58
-        m_u2f = 59
-        m_f2f = 60
-        m_fneg = 61
-        m_fadd = 62
-        m_fsub = 63
-        m_fmul = 64
-        m_fdiv = 65
-
-        # Max valid opcode (best-effort upper bound)
-        m_max = 66
-
-        # Operand types
-        mop_z = 0
-        mop_r = 1
-        mop_n = 2
-        mop_str = 3
-        mop_d = 4
-        mop_S = 5
-        mop_v = 6
-        mop_b = 7
-        mop_f = 8
-        mop_l = 9
-        mop_a = 10
-        mop_h = 11
-        mop_c = 12
-        mop_fn = 13
-        mop_p = 14
-        mop_sc = 15
-
-        BADADDR = 0xFFFFFFFFFFFFFFFF
-
-    ida_hexrays = _FallbackHexRays()  # type: ignore[assignment]
+import ida_hexrays
+import idaapi
 
 from d810.transforms.report import InvariantViolation
 
@@ -266,16 +172,22 @@ def _insn_ea(insn) -> int | None:
 
 
 def _badaddr() -> int:
-    return int(getattr(ida_hexrays, "BADADDR", 0xFFFFFFFFFFFFFFFF))
+    return int(idaapi.BADADDR)
+
+
+# ``m_max`` ("first unused opcode") is a C macro (SDK hexrays.hpp:
+# ``#define m_max 0x49``) and is not exported by ida_hexrays or idaapi, so the
+# ABI value is defined here as the exclusive upper bound for valid opcodes.
+_M_MAX = 0x49
 
 
 def _max_opcode() -> int:
-    return int(getattr(ida_hexrays, "m_max", 66))
+    return _M_MAX
 
 
 def _is_call_opcode(opcode: int) -> bool:
-    m_call = int(getattr(ida_hexrays, "m_call", 19))
-    m_icall = int(getattr(ida_hexrays, "m_icall", 20))
+    m_call = int(ida_hexrays.m_call)
+    m_icall = int(ida_hexrays.m_icall)
     return opcode in (m_call, m_icall)
 
 
@@ -304,7 +216,7 @@ def _op_present(op) -> bool:
     t = _mop_type(op)
     if t is None:
         return False
-    return t != int(getattr(ida_hexrays, "mop_z", 0))
+    return t != int(ida_hexrays.mop_z)
 
 
 def _get_addrsize(mba) -> int:
@@ -327,42 +239,42 @@ def _operand_presence_table() -> dict[int, tuple[bool | None, bool | None, bool 
     hr = ida_hexrays
     T, F, N = True, False, None
     return {
-        int(getattr(hr, "m_nop", 0)):   (F, F, F),
-        int(getattr(hr, "m_ret", 15)):  (F, F, F),
-        int(getattr(hr, "m_goto", 2)):  (T, F, F),
-        int(getattr(hr, "m_ijmp", 14)): (T, N, F),
-        int(getattr(hr, "m_jtbl", 1)):  (T, T, F),
-        int(getattr(hr, "m_jcnd", 3)):  (T, F, T),
-        int(getattr(hr, "m_jnz", 4)):   (T, F, T),
-        int(getattr(hr, "m_jz", 5)):    (T, F, T),
-        int(getattr(hr, "m_jae", 6)):   (T, F, T),
-        int(getattr(hr, "m_jb", 7)):    (T, F, T),
-        int(getattr(hr, "m_ja", 8)):    (T, F, T),
-        int(getattr(hr, "m_jbe", 9)):   (T, F, T),
-        int(getattr(hr, "m_jg", 10)):   (T, F, T),
-        int(getattr(hr, "m_jge", 11)):  (T, F, T),
-        int(getattr(hr, "m_jl", 12)):   (T, F, T),
-        int(getattr(hr, "m_jle", 13)):  (T, F, T),
-        int(getattr(hr, "m_call", 19)): (T, F, T),
-        int(getattr(hr, "m_icall", 20)): (T, F, T),
-        int(getattr(hr, "m_mov", 21)):  (T, F, T),
-        int(getattr(hr, "m_neg", 23)):  (T, F, T),
-        int(getattr(hr, "m_lnot", 22)): (T, F, T),
-        int(getattr(hr, "m_add", 24)):  (T, T, T),
-        int(getattr(hr, "m_sub", 25)):  (T, T, T),
-        int(getattr(hr, "m_mul", 26)):  (T, T, T),
-        int(getattr(hr, "m_udiv", 27)): (T, T, T),
-        int(getattr(hr, "m_sdiv", 28)): (T, T, T),
-        int(getattr(hr, "m_umod", 29)): (T, T, T),
-        int(getattr(hr, "m_smod", 30)): (T, T, T),
-        int(getattr(hr, "m_or", 31)):   (T, T, T),
-        int(getattr(hr, "m_and", 32)):  (T, T, T),
-        int(getattr(hr, "m_xor", 33)):  (T, T, T),
-        int(getattr(hr, "m_shl", 34)):  (T, T, T),
-        int(getattr(hr, "m_shr", 35)):  (T, T, T),
-        int(getattr(hr, "m_sar", 36)):  (T, T, T),
-        int(getattr(hr, "m_push", 17)): (T, F, F),
-        int(getattr(hr, "m_pop", 18)):  (F, F, T),
+        int(hr.m_nop):   (F, F, F),
+        int(hr.m_ret):  (F, F, F),
+        int(hr.m_goto):  (T, F, F),
+        int(hr.m_ijmp): (T, N, F),
+        int(hr.m_jtbl):  (T, T, F),
+        int(hr.m_jcnd):  (T, F, T),
+        int(hr.m_jnz):   (T, F, T),
+        int(hr.m_jz):    (T, F, T),
+        int(hr.m_jae):   (T, F, T),
+        int(hr.m_jb):    (T, F, T),
+        int(hr.m_ja):    (T, F, T),
+        int(hr.m_jbe):   (T, F, T),
+        int(hr.m_jg):   (T, F, T),
+        int(hr.m_jge):  (T, F, T),
+        int(hr.m_jl):   (T, F, T),
+        int(hr.m_jle):  (T, F, T),
+        int(hr.m_call): (T, F, T),
+        int(hr.m_icall): (T, F, T),
+        int(hr.m_mov):  (T, F, T),
+        int(hr.m_neg):  (T, F, T),
+        int(hr.m_lnot): (T, F, T),
+        int(hr.m_add):  (T, T, T),
+        int(hr.m_sub):  (T, T, T),
+        int(hr.m_mul):  (T, T, T),
+        int(hr.m_udiv): (T, T, T),
+        int(hr.m_sdiv): (T, T, T),
+        int(hr.m_umod): (T, T, T),
+        int(hr.m_smod): (T, T, T),
+        int(hr.m_or):   (T, T, T),
+        int(hr.m_and):  (T, T, T),
+        int(hr.m_xor):  (T, T, T),
+        int(hr.m_shl):  (T, T, T),
+        int(hr.m_shr):  (T, T, T),
+        int(hr.m_sar):  (T, T, T),
+        int(hr.m_push): (T, F, F),
+        int(hr.m_pop):  (F, F, T),
     }
 
 
@@ -373,14 +285,28 @@ def _operand_presence_table() -> dict[int, tuple[bool | None, bool | None, bool 
 def _nonpropagatable_opcodes() -> frozenset[int]:
     hr = ida_hexrays
     return frozenset(
-        int(getattr(hr, name, -1))
-        for name in (
-            "m_goto", "m_nop", "m_ext", "m_push", "m_ijmp", "m_stx",
-            "m_pop", "m_jcnd", "m_jnz", "m_jz", "m_jae", "m_jb",
-            "m_ja", "m_jbe", "m_jg", "m_jge", "m_jl", "m_jle",
-            "m_jtbl", "m_ret",
-        )
-        if int(getattr(hr, name, -1)) >= 0
+        {
+            hr.m_goto,
+            hr.m_nop,
+            hr.m_ext,
+            hr.m_push,
+            hr.m_ijmp,
+            hr.m_stx,
+            hr.m_pop,
+            hr.m_jcnd,
+            hr.m_jnz,
+            hr.m_jz,
+            hr.m_jae,
+            hr.m_jb,
+            hr.m_ja,
+            hr.m_jbe,
+            hr.m_jg,
+            hr.m_jge,
+            hr.m_jl,
+            hr.m_jle,
+            hr.m_jtbl,
+            hr.m_ret,
+        }
     )
 
 
@@ -391,12 +317,18 @@ def _nonpropagatable_opcodes() -> frozenset[int]:
 def _fpu_opcodes() -> frozenset[int]:
     hr = ida_hexrays
     return frozenset(
-        int(getattr(hr, name, -1))
-        for name in (
-            "m_f2i", "m_f2u", "m_i2f", "m_u2f", "m_f2f",
-            "m_fneg", "m_fadd", "m_fsub", "m_fmul", "m_fdiv",
-        )
-        if int(getattr(hr, name, -1)) >= 0
+        {
+            hr.m_f2i,
+            hr.m_f2u,
+            hr.m_i2f,
+            hr.m_u2f,
+            hr.m_f2f,
+            hr.m_fneg,
+            hr.m_fadd,
+            hr.m_fsub,
+            hr.m_fmul,
+            hr.m_fdiv,
+        }
     )
 
 
@@ -404,14 +336,25 @@ def _fpu_opcodes() -> frozenset[int]:
 def _fpinsn_exempt_opcodes() -> frozenset[int]:
     hr = ida_hexrays
     return frozenset(
-        int(getattr(hr, name, -1))
-        for name in (
-            "m_ext", "m_ldx", "m_stx", "m_mov",
-            "m_setnz", "m_setz", "m_setae", "m_setb", "m_seta",
-            "m_setbe", "m_setp", "m_jnz", "m_jz", "m_jae",
-            "m_jbe", "m_jb", "m_ja",
-        )
-        if int(getattr(hr, name, -1)) >= 0
+        {
+            hr.m_ext,
+            hr.m_ldx,
+            hr.m_stx,
+            hr.m_mov,
+            hr.m_setnz,
+            hr.m_setz,
+            hr.m_setae,
+            hr.m_setb,
+            hr.m_seta,
+            hr.m_setbe,
+            hr.m_setp,
+            hr.m_jnz,
+            hr.m_jz,
+            hr.m_jae,
+            hr.m_jbe,
+            hr.m_jb,
+            hr.m_ja,
+        }
     )
 
 
@@ -421,10 +364,18 @@ def _fpinsn_exempt_opcodes() -> frozenset[int]:
 def _valid_pair_part_types() -> frozenset[int]:
     hr = ida_hexrays
     return frozenset(
-        int(getattr(hr, name, -1))
-        for name in ("mop_r", "mop_n", "mop_d", "mop_S", "mop_v",
-                     "mop_l", "mop_a", "mop_fn", "mop_p", "mop_sc")
-        if int(getattr(hr, name, -1)) >= 0
+        {
+            hr.mop_r,
+            hr.mop_n,
+            hr.mop_d,
+            hr.mop_S,
+            hr.mop_v,
+            hr.mop_l,
+            hr.mop_a,
+            hr.mop_fn,
+            hr.mop_p,
+            hr.mop_sc,
+        }
     )
 
 
@@ -436,18 +387,25 @@ def _valid_pair_part_types() -> frozenset[int]:
 def _forbidden_dst_types() -> frozenset[int]:
     hr = ida_hexrays
     return frozenset(
-        int(getattr(hr, name, -1))
-        for name in ("mop_d", "mop_a", "mop_n", "mop_fn", "mop_str", "mop_h")
-        if int(getattr(hr, name, -1)) >= 0
+        {
+            hr.mop_d,
+            hr.mop_a,
+            hr.mop_n,
+            hr.mop_fn,
+            hr.mop_str,
+            hr.mop_h,
+        }
     )
 
 
 def _dst_exempt_opcodes() -> frozenset[int]:
     hr = ida_hexrays
     return frozenset(
-        int(getattr(hr, name, -1))
-        for name in ("m_ijmp", "m_stx", "m_ext")
-        if int(getattr(hr, name, -1)) >= 0
+        {
+            hr.m_ijmp,
+            hr.m_stx,
+            hr.m_ext,
+        }
     )
 
 
@@ -457,9 +415,11 @@ def _dst_exempt_opcodes() -> frozenset[int]:
 def _shift_opcodes() -> frozenset[int]:
     hr = ida_hexrays
     return frozenset(
-        int(getattr(hr, name, -1))
-        for name in ("m_shl", "m_shr", "m_sar")
-        if int(getattr(hr, name, -1)) >= 0
+        {
+            hr.m_shl,
+            hr.m_shr,
+            hr.m_sar,
+        }
     )
 
 
@@ -496,15 +456,15 @@ def insn_basic_validity(
     serials = _serials_for_scope(mba, focus_serials)
     badaddr = _badaddr()
     max_op = _max_opcode()
-    m_nop = int(getattr(ida_hexrays, "m_nop", 0))
-    m_ret = int(getattr(ida_hexrays, "m_ret", 15))
-    m_ext = int(getattr(ida_hexrays, "m_ext", 16))
-    m_lnot = int(getattr(ida_hexrays, "m_lnot", 22))
-    m_mov = int(getattr(ida_hexrays, "m_mov", 21))
-    m_jtbl = int(getattr(ida_hexrays, "m_jtbl", 1))
-    mop_d_type = int(getattr(ida_hexrays, "mop_d", 4))
-    mop_c_type = int(getattr(ida_hexrays, "mop_c", 12))
-    mop_n_type = int(getattr(ida_hexrays, "mop_n", 2))
+    m_nop = int(ida_hexrays.m_nop)
+    m_ret = int(ida_hexrays.m_ret)
+    m_ext = int(ida_hexrays.m_ext)
+    m_lnot = int(ida_hexrays.m_lnot)
+    m_mov = int(ida_hexrays.m_mov)
+    m_jtbl = int(ida_hexrays.m_jtbl)
+    mop_d_type = int(ida_hexrays.mop_d)
+    mop_c_type = int(ida_hexrays.mop_c)
+    mop_n_type = int(ida_hexrays.mop_n)
 
     nonprop = _nonpropagatable_opcodes()
     fpu_ops = _fpu_opcodes()
@@ -899,10 +859,10 @@ def insn_operand_presence(
     serials = _serials_for_scope(mba, focus_serials)
     table = _operand_presence_table()
 
-    m_ext = int(getattr(ida_hexrays, "m_ext", 16))
-    mop_b_type = int(getattr(ida_hexrays, "mop_b", 7))
-    mop_f_type = int(getattr(ida_hexrays, "mop_f", 8))
-    mop_d_type = int(getattr(ida_hexrays, "mop_d", 4))
+    m_ext = int(ida_hexrays.m_ext)
+    mop_b_type = int(ida_hexrays.mop_b)
+    mop_f_type = int(ida_hexrays.mop_f)
+    mop_d_type = int(ida_hexrays.mop_d)
     # m_ext forbidden operand types: mop_b and mop_f (from is_valid_m_ext_op)
     ext_forbidden_types = frozenset({mop_b_type, mop_f_type})
 
@@ -1008,20 +968,19 @@ def insn_operand_sizes(
     serials = _serials_for_scope(mba, focus_serials)
 
     hr = ida_hexrays
-    m_mov = int(getattr(hr, "m_mov", 21))
-    m_ldx = int(getattr(hr, "m_ldx", 54))
-    m_stx = int(getattr(hr, "m_stx", 55))
-    mop_d_type = int(getattr(hr, "mop_d", 4))
+    m_mov = int(hr.m_mov)
+    m_ldx = int(hr.m_ldx)
+    m_stx = int(hr.m_stx)
+    mop_d_type = int(hr.mop_d)
     addrsize = _get_addrsize(mba)
 
     # Binary ops where l.size == r.size == d.size
     binary_ops = frozenset(
-        int(getattr(hr, name, -1))
+        int(getattr(hr, name))
         for name in (
             "m_add", "m_sub", "m_mul", "m_udiv", "m_sdiv",
             "m_umod", "m_smod", "m_or", "m_and", "m_xor",
         )
-        if int(getattr(hr, name, -1)) >= 0
     )
 
     for serial in serials:
@@ -1241,22 +1200,22 @@ def insn_operand_types(
     addrsize = _get_addrsize(mba)
 
     hr = ida_hexrays
-    mop_z = int(getattr(hr, "mop_z", 0))
-    mop_r_type = int(getattr(hr, "mop_r", 1))
-    mop_n_type = int(getattr(hr, "mop_n", 2))
-    mop_str_type = int(getattr(hr, "mop_str", 3))
-    mop_d_type = int(getattr(hr, "mop_d", 4))
-    mop_S_type = int(getattr(hr, "mop_S", 5))
-    mop_v_type = int(getattr(hr, "mop_v", 6))
-    mop_b_type = int(getattr(hr, "mop_b", 7))
-    mop_f_type = int(getattr(hr, "mop_f", 8))
-    mop_l_type = int(getattr(hr, "mop_l", 9))
-    mop_a_type = int(getattr(hr, "mop_a", 10))
-    mop_h_type = int(getattr(hr, "mop_h", 11))
-    mop_c_type = int(getattr(hr, "mop_c", 12))
-    mop_fn_type = int(getattr(hr, "mop_fn", 13))
-    mop_p_type = int(getattr(hr, "mop_p", 14))
-    mop_sc_type = int(getattr(hr, "mop_sc", 15))
+    mop_z = int(hr.mop_z)
+    mop_r_type = int(hr.mop_r)
+    mop_n_type = int(hr.mop_n)
+    mop_str_type = int(hr.mop_str)
+    mop_d_type = int(hr.mop_d)
+    mop_S_type = int(hr.mop_S)
+    mop_v_type = int(hr.mop_v)
+    mop_b_type = int(hr.mop_b)
+    mop_f_type = int(hr.mop_f)
+    mop_l_type = int(hr.mop_l)
+    mop_a_type = int(hr.mop_a)
+    mop_h_type = int(hr.mop_h)
+    mop_c_type = int(hr.mop_c)
+    mop_fn_type = int(hr.mop_fn)
+    mop_p_type = int(hr.mop_p)
+    mop_sc_type = int(hr.mop_sc)
     # Max known mop_* value (conservative upper bound)
     mop_max = mop_sc_type + 1
 
@@ -1747,11 +1706,11 @@ def insn_operand_types(
                 a_type = _mop_type(a_inner)
                 # mop_a inner must be mop_l, mop_v, or mop_S (or mop_r for helpers)
                 valid_a_types = {
-                    int(getattr(hr, "mop_l", 9)),
-                    int(getattr(hr, "mop_v", 6)),
-                    int(getattr(hr, "mop_S", 5)),
-                    int(getattr(hr, "mop_r", 1)),
-                    int(getattr(hr, "mop_sc", 15)),
+                    int(hr.mop_l),
+                    int(hr.mop_v),
+                    int(hr.mop_S),
+                    int(hr.mop_r),
+                    int(hr.mop_sc),
                 }
                 if a_type is not None and a_type not in valid_a_types:
                     result.append(
@@ -2140,12 +2099,12 @@ def insn_call_validity(
     violations: list[InvariantViolation] = []
     serials = _serials_for_scope(mba, focus_serials)
 
-    mop_f_type = int(getattr(ida_hexrays, "mop_f", 8))
-    mop_h_type = int(getattr(ida_hexrays, "mop_h", 11))
-    mop_a_type = int(getattr(ida_hexrays, "mop_a", 10))
-    mop_r_type = int(getattr(ida_hexrays, "mop_r", 1))
-    m_call = int(getattr(ida_hexrays, "m_call", 19))
-    m_icall = int(getattr(ida_hexrays, "m_icall", 20))
+    mop_f_type = int(ida_hexrays.mop_f)
+    mop_h_type = int(ida_hexrays.mop_h)
+    mop_a_type = int(ida_hexrays.mop_a)
+    mop_r_type = int(ida_hexrays.mop_r)
+    m_call = int(ida_hexrays.m_call)
+    m_icall = int(ida_hexrays.m_icall)
     call_opcodes = frozenset({m_call, m_icall})
     badaddr = _badaddr()
 
