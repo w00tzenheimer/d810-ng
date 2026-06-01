@@ -63,7 +63,7 @@ from d810.evaluator.hexrays_microcode.instruction_capture_backend import (
     HexRaysInstructionCaptureBackend,
     StateWriteCleanupEvidenceBackend,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.residual_handoff_backend import (
+from d810.backends.hexrays.evidence.residual_handoff_backend import (
     EffectiveTargetEvidenceBackend,
     HexRaysEffectiveTargetEvidenceBackend,
 )
