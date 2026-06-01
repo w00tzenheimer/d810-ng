@@ -15,7 +15,7 @@ from d810.passes.fake_jump import (
     resolve_fake_jump_target,
     should_skip_fake_jump_predecessor,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
+from d810.passes.single_iteration import (
     DEFAULT_MAX_MAGIC,
     DEFAULT_MIN_MAGIC,
     SingleIterationConvertFix,

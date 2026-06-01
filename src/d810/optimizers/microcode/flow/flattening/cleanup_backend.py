@@ -59,7 +59,7 @@ from d810.analyses.control_flow.selector_shell import (
     SelectorShellFact,
     discover_selector_shell_facts,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
+from d810.passes.single_iteration import (
     SingleIterationConvertFix,
     SingleIterationPredFix,
 )

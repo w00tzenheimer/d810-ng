@@ -112,7 +112,7 @@ from d810.passes.fake_jump import (
     FakeJumpPredFix,
     FakeJumpStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
+from d810.passes.single_iteration import (
     SINGLE_ITERATION_FIXES_METADATA_KEY,
     SingleIterationPredFix,
     SingleIterationStrategy,
