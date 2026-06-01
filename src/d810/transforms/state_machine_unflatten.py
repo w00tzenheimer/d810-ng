@@ -36,7 +36,9 @@ from d810.transforms.plan import (
     PatchPlan,
     PatchRedirectBranch,
     PatchRedirectGoto,
+    compile_patch_plan,
 )
+from d810.transforms.edit_simulator import project_post_state
 from d810.transforms.dispatcher_backedge_disconnect_planning import (
     plan_dispatcher_backedge_disconnects,
 )
@@ -318,12 +320,21 @@ def _reconstruction_postprocess_mods(
         )
         if serial is not None
     }
+    # Project the graph through the spine mods so the feeder phase sees the POST-spine topology — its
+    # successor/predecessor checks need the reconstructed edges, not the stale dispatcher ones (the
+    # legacy ``execute_reconstruction_postprocess`` projects through ``modifications`` the same way).
+    # Best-effort: a projection failure falls back to the raw graph (feeder stays conservative).
+    if projected_flow_graph is None:
+        try:
+            projected_flow_graph = project_post_state(
+                graph, compile_patch_plan(list(spine_mods), graph)
+            )
+        except Exception:  # noqa: BLE001 — projection is best-effort diagnostics
+            projected_flow_graph = graph
     result = plan_reconstruction_postprocess_modifications(
         dag=dag,
         flow_graph=graph,
-        projected_flow_graph=(
-            projected_flow_graph if projected_flow_graph is not None else graph
-        ),
+        projected_flow_graph=projected_flow_graph,
         builder=builder,
         dispatcher_serial=int(dispatcher_entry_serial),
         bst_node_blocks=set(int(b) for b in bst_node_blocks),
