@@ -46,8 +46,8 @@ from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting i
     snapshot_reconstruction_dag,
     snapshot_reconstruction_post_apply,
 )
+from d810.capabilities.constant_fixpoint import ConstantFixpointBackend
 from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
-    ConstantFixpointBackend,
     DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
 )
 from d810.transforms.graph_modification import (

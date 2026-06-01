@@ -10,9 +10,7 @@ from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
 )
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import ReachabilityInfo
 from d810.optimizers.microcode.flow.flattening.engine.runtime import FamilyRunState
-from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
-    ConstantFixpointBackend,
-)
+from d810.capabilities.constant_fixpoint import ConstantFixpointBackend
 from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
     DispatcherStateMachine,
 )
