@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core import logging
 from d810.ir.flowgraph import FlowGraph
 from d810.analyses.value_flow.model import ValidatedFactView
 from d810.analyses.control_flow.transition_builder import TransitionResult
@@ -29,6 +30,8 @@ from d810.analyses.control_flow.linearized_state_dag import (
 from d810.analyses.control_flow.dag_region_detection import (
     detect_linear_transition_regions,
 )
+
+logger = logging.getLogger("D810.s1a.regions")
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,5 +75,14 @@ def plan_semantic_regions(
     regions = detect_linear_transition_regions(dag)
     linear_regions = tuple(
         tuple(int(node.key.handler_serial) for node in region) for region in regions
+    )
+    logger.info(
+        "s1a regions: dag_nodes=%d dag_edges=%d regions=%d entry=%s state_var=%s diag=%s",
+        len(dag.nodes),
+        len(dag.edges),
+        len(linear_regions),
+        dispatcher_entry_serial,
+        state_var_stkoff,
+        list(dag.diagnostics)[:8],
     )
     return SemanticRegionPlan(linear_regions=linear_regions)
