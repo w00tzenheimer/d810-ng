@@ -45,9 +45,7 @@ if IDA_AVAILABLE:
     from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
         handler_chain_composer as hcc_module,
     )
-    from d810.optimizers.microcode.flow.flattening.hodur import (
-        handler_chain_live_topology_backend as hcc_topology_backend_module,
-    )
+    from d810.backends.hexrays.evidence import handler_chain_live_topology_backend as hcc_topology_backend_module
     from d810.optimizers.microcode.flow.flattening.hodur import (
         handler_chain_materialization_capture_backend as hcc_capture_backend_module,
     )
