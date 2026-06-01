@@ -16,7 +16,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.transforms.graph_modification import RedirectGoto, ZeroStateWrite
-from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
+from d810.transforms.planner_context import (
     PLANNER_CTX_METADATA_KEY,
     CumulativePlannerView,
     PlannerContextContribution,

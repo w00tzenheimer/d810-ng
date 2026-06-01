@@ -20,7 +20,7 @@ from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
 )
-from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
+from d810.transforms.planner_context import (
     CumulativePlannerView,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.dispatcher_trampoline_skip import (

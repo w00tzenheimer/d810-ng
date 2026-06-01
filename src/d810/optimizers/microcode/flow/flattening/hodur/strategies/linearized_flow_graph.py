@@ -213,7 +213,7 @@ from d810.analyses.control_flow.shared_suffix_discovery import (
     is_shared_suffix_conditional_tail,
     pred_split_target_reaches_via_pred,
 )
-from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
+from d810.transforms.planner_context import (
     PLANNER_CTX_METADATA_KEY,
     LinearizationDecision,
     PlannerContextContribution,
