@@ -25,12 +25,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from d810.core.typing import Callable, Iterable, Mapping
+
 from d810.transforms.deflatten_primitives import (
     plan_dead_store_eliminate,
     plan_tail_duplicate,
 )
 
-__all__ = ["DeflattenTerminalsFacts", "DeflattenPlan", "plan_deflatten_terminals"]
+__all__ = [
+    "DeflattenTerminalsFacts",
+    "DeflattenPlan",
+    "plan_deflatten_terminals",
+    "deflatten_facts_from_analyses",
+]
+
+_Succ = Callable[[int], Iterable[int]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,4 +92,44 @@ def plan_deflatten_terminals(facts: DeflattenTerminalsFacts) -> DeflattenPlan:
         invalidates=frozenset({"BlockOwnership", "StateTransitions", "DispatcherMap"}),
         preserves=frozenset({"StateValueDomain"}),
         run_before_structuring=True,
+    )
+
+
+def deflatten_facts_from_analyses(
+    *,
+    owners: Mapping[int, frozenset[int]],
+    successors_of: _Succ,
+    predecessors_of: _Succ,
+    return_block: int,
+    staging_sites: Iterable[tuple[int, int]] = (),
+) -> "DeflattenTerminalsFacts | None":
+    """Derive the de-flatten facts by composing BlockOwnership + flow-graph topology.
+
+    The convergence is a *shared* block (``len(owners[b]) > 1`` -- the owner-set's
+    ``shared_suffix``, owned by more than one handler region) that is a direct predecessor of
+    the return; the terminals are that block's predecessors (each gets a private guard->return
+    clone). ``owners`` is ``block_owners(owner_result)`` from
+    :mod:`d810.analyses.control_flow.block_ownership_domain`.
+
+    Returns ``None`` when no shared fan-in precedes the return (nothing to de-converge).
+
+    **Deficiency #5 (analysis-API gap):** the staging-site ``insn_ea`` is *not* derivable from
+    the portable owner-set / transition facts -- ``StateWriteAnchor`` carries the block and the
+    written constant but not the instruction EA -- so it is injected here by the live caller.
+    Closing this means enriching the state-write fact with its ``insn_ea``.
+    """
+    return_block = int(return_block)
+    shared = {int(b) for b, owner_set in owners.items() if len(owner_set) > 1}
+    candidates = sorted(
+        b for b in shared if return_block in {int(s) for s in successors_of(b)}
+    )
+    if not candidates:
+        return None
+    convergence_block = candidates[0]
+    terminals = tuple(sorted(int(p) for p in predecessors_of(convergence_block)))
+    return DeflattenTerminalsFacts(
+        terminals=terminals,
+        convergence_block=convergence_block,
+        return_target=return_block,
+        staging_sites=tuple((int(b), int(ea)) for b, ea in staging_sites),
     )

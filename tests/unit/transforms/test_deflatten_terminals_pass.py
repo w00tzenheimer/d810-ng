@@ -65,3 +65,50 @@ def test_no_terminals_yields_no_tail_dup() -> None:
 def test_no_staging_yields_no_dse() -> None:
     plan = plan_deflatten_terminals(_facts(staging_sites=()))
     assert not any(isinstance(m, NopInstructions) for m in plan.modifications)
+
+
+from d810.transforms.deflatten_terminals_pass import (  # noqa: E402
+    deflatten_facts_from_analyses,
+)
+
+
+def _topo(edges):
+    preds = {n: [] for n in edges}
+    for s, ds in edges.items():
+        for d in ds:
+            preds.setdefault(d, []).append(s)
+    return (lambda n: edges.get(n, [])), (lambda n: preds.get(n, []))
+
+
+class TestFactExtractionFromAnalyses:
+    """Derive the facts by composing BlockOwnership (shared_suffix = convergence) + topology."""
+
+    def test_derives_convergence_and_terminals_from_owners(self) -> None:
+        # byte-emits 1,2,3 -> shared_guard 5 -> return 99. Block 5 is owned by >1 handler.
+        succ, pred = _topo({1: [5], 2: [5], 3: [5], 5: [99]})
+        owners = {1: frozenset({10}), 2: frozenset({20}), 3: frozenset({30}),
+                  5: frozenset({10, 20, 30}), 99: frozenset()}
+        facts = deflatten_facts_from_analyses(
+            owners=owners, successors_of=succ, predecessors_of=pred,
+            return_block=99, staging_sites=((1, 0x1000),),
+        )
+        assert facts is not None
+        assert facts.convergence_block == 5
+        assert facts.terminals == (1, 2, 3)
+        assert facts.return_target == 99
+        assert facts.staging_sites == ((1, 0x1000),)
+
+    def test_returns_none_when_no_shared_block_precedes_return(self) -> None:
+        succ, pred = _topo({1: [99], 2: [99]})  # no shared fan-in block
+        owners = {1: frozenset({10}), 2: frozenset({20}), 99: frozenset()}
+        assert deflatten_facts_from_analyses(
+            owners=owners, successors_of=succ, predecessors_of=pred, return_block=99,
+        ) is None
+
+    def test_exclusive_blocks_are_not_convergence(self) -> None:
+        # block 5 precedes return but is owned by ONE handler -> not a convergence.
+        succ, pred = _topo({1: [5], 5: [99]})
+        owners = {1: frozenset({10}), 5: frozenset({10}), 99: frozenset()}
+        assert deflatten_facts_from_analyses(
+            owners=owners, successors_of=succ, predecessors_of=pred, return_block=99,
+        ) is None
