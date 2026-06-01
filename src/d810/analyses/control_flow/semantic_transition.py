@@ -276,18 +276,25 @@ def semantic_transition_from_fact(
     )
 
 
-def resolve_state_transitions(graph, facts) -> "tuple[SemanticTransition, ...]":
-    """§1a pass #2 entry: portable state-transition resolution over a FlowGraph.
+def resolve_state_transitions(
+    graph, facts, *, dispatch_map: "StateDispatcherMap | None" = None
+) -> "tuple[StateTransitionResolution, ...]":
+    """§1a pass #2: resolve transition facts through the portable dispatcher map.
 
-    Delegates to the existing portable projection (``facts_from_validated_view`` +
-    ``semantic_transition_from_fact``). ``graph``/``facts`` are duck-typed
-    (FlowGraph / ValidatedFactView) to avoid a new import edge in this analysis
-    module. ``graph`` is the seam surface: the backend impl supplies dispatcher-map
-    resolution (``resolve_state_transitions_with_dispatcher_map``) once
-    ``hodur/snapshot_builder`` live reads move behind ``MicrocodeEvidenceProvider``.
+    Composes the canonical portable resolver — ``facts_from_validated_view`` projects the
+    validated facts into ``(transition_facts, state_write_anchors)``, then
+    ``resolve_state_transitions_with_dispatcher_map`` resolves each transition. LiSA-style: this is
+    the transfer step over the state-machine graph. ``dispatch_map`` is the seam input produced by
+    ``recover_dispatcher``; while it is ``None`` (state-machine detection not yet ported out of the
+    live ``emulated_dispatcher_family``), transitions resolve to an explicit ``unresolved`` kind
+    rather than silently dropping. ``graph``/``facts`` are duck-typed (FlowGraph / ValidatedFactView).
     """
-    transition_facts, _anchors = facts_from_validated_view(facts)
-    return tuple(semantic_transition_from_fact(f) for f in transition_facts)
+    transition_facts, state_write_anchors = facts_from_validated_view(facts)
+    return resolve_state_transitions_with_dispatcher_map(
+        transition_facts,
+        dispatch_map=dispatch_map,
+        state_write_anchors=state_write_anchors,
+    )
 
 
 __all__ = [
