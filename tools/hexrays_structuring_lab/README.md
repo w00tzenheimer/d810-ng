@@ -83,16 +83,24 @@ and we proved this empirically (2026-06-01):
   (`D810_USE_S1A_PIPELINE=1 -p hodur_flag2_s1a.json`): it **fires** but recovers
   nothing — `map_rows=0 transitions=0 regions=0`, `DELTA=0`, `returns=2`.
 
-**Root cause:** a *clean* C dispatcher is pre-structured by Hex-Rays into the
-loop nest **before** d810 runs (by GLBOPT1 there is no equality-chain dispatcher
-left to detect). Real OLLVM resists this via MBA/opaque state — which is exactly
-what d810's detection is tuned for. **Consequence:** the C-fixture level measures
-*Hex-Rays structuring of a given shape*, not *d810's unflattening*. To prove the
-mutation backend can emit the cascade we need a `microcode_mutation` case that
-either (a) directly applies the de-converge + de-stage edits to a flattened
-microcode start, or (b) uses a flattened fixture that survives to GLBOPT1
-un-structured. Until that lands, we have proven what Hex-Rays *wants* but not
-that d810 can hand it that.
+**Root cause (corrected by a LOCOPT microcode dump, 2026-06-01):** the dispatcher
+is **fully intact at every maturity** — the microcode shows the equality chain
+(`blk[4..9]: m_jz == 0,1,2,3,4,5 -> handlers`), and d810's recon classifies it
+`type=ollvm_flat, confidence=1.00` at LOCOPT. d810 does **not** lose it to
+structuring. The unflattener's `recover_dispatcher` returns `map_rows=0` for one
+concrete reason: `MIN_STATE_CONSTANT = 0x01000000` and the fixture's state
+constants are `stage = 0..6`, so `_split_const_state`'s `int(value) > min_const`
+filter (`dispatcher_recovery.py:54`) rejects every comparison. That floor exists
+to reject decoy/loop-bound compares because real OLLVM uses large random 32-bit
+states; the clean fixture's tiny sequential states fall under it.
+
+**Consequence:** the fixture *is* a valid minimal reproduction — the gap is a
+detector threshold, not Hex-Rays structuring. Two fixes, both small: (a) a
+large-constant variant (`stage = 0x1000_00xx`) so `recover_dispatcher` engages
+and the full unflatten path runs on ~14 blocks; or (b) the `microcode_mutation`
+case injects the de-flatten facts directly, bypassing detection, to test the
+backend emission in isolation. (a) is the better first step — it exercises
+detection + recovery + lowering end-to-end on a minimal case.
 
 ### Harness note (how to dump a lab function)
 
