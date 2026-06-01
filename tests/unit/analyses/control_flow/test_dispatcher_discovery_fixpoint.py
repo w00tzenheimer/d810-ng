@@ -87,11 +87,10 @@ def test_discovers_loop_header_as_widest_join():
     assert view.dispatcher_entry == 1
 
 
-def test_discovers_range_routed_intermediate():
-    view = _discover()
-    # block 2 is reached with {K2,K3} (K1 already peeled off) -> RANGE_BACKED
-    assert view.handler_range_map.get(2) == (K2, K3)
-    assert 1 not in view.handler_range_map  # head is the dispatcher, not a handler
+def test_equality_chain_has_no_range_handlers():
+    # Every state has an explicit ``s==K`` check, so all handlers are exact and the multi-const sets
+    # live only on the comparison blocks (excluded by P3) -> no genuine RANGE_BACKED handler.
+    assert _discover().handler_range_map == {}
 
 
 def test_bst_node_blocks_are_the_comparisons():
@@ -116,3 +115,65 @@ def test_transitions_fall_out_of_the_fixpoint():
     assert (K2, K3) in edges  # h2 writes K3
     # K3 is terminal (h3 has no write reaching the dispatcher back-edge) -> a return, not a transition
     assert not any(t.from_state == K3 for t in tr.transitions)
+
+
+# --- P4: a GENUINE range-routed handler (no final ==K check) ----------------
+# CFG: K1 has an exact check; {K2,K3} fall through to a single handler (a switch default / interval).
+#   0 -> 1
+#   1  if s==K1 -> 10 (h1)  else 2     # the only comparison
+#   2  (1-way, no check) -> 20         # block 20 is reached for s in {K2,K3}
+#   10 h1: s=K2 -> 1
+#   20 h_range: s=K3 -> 1              # handles BOTH K2 and K3 (range-routed)
+
+_R_SUCC = {0: [1], 1: [10, 2], 2: [20], 10: [1], 20: [1]}
+_R_PRED: dict[int, list[int]] = {n: [] for n in _R_SUCC}
+for _p, _ss in _R_SUCC.items():
+    for _s in _ss:
+        _R_PRED[_s].append(_p)
+_R_WRITES = {10: StateValue.of(K2), 20: StateValue.of(K3)}
+_R_COMPARISONS = {1: BstComparison(block=1, const=K1, eq_target=10, ne_target=2)}
+
+
+def _discover_range():
+    return discover_dispatcher(
+        nodes=_R_SUCC.keys(),
+        entry_nodes=[0],
+        successors_of=lambda n: _R_SUCC.get(int(n), ()),
+        predecessors_of=lambda n: _R_PRED.get(int(n), ()),
+        state_writes=_R_WRITES,
+        comparisons=_R_COMPARISONS,
+        entry_state=StateValue.of(K1),
+    )
+
+
+def test_discovers_genuine_range_routed_handler():
+    view = _discover_range()
+    # block 20 is a NON-comparison handler reached for {K2,K3} -> RANGE_BACKED
+    assert view.handler_range_map.get(20) == (K2, K3)
+    assert 1 not in view.handler_range_map  # the comparison/head is not a range handler
+
+
+def test_p1_range_handler_invisible_to_handler_entry_by_state():
+    # The known gap: only the exact (==K1) handler is in handler_entry_by_state; the range-routed
+    # K2/K3 handler is reachable ONLY via handler_range_map -> recover_transition_result misses it.
+    # This is what range-promotion (P1) must fix before parity.
+    view = _discover_range()
+    assert view.handler_entry_by_state == {K1: 10}
+    assert K2 not in view.handler_entry_by_state
+    assert K3 not in view.handler_entry_by_state
+
+
+def test_require_resolved_head_raises_on_unseeded_top():
+    import pytest
+
+    with pytest.raises(ValueError, match="head unresolved"):
+        discover_dispatcher(
+            nodes=_R_SUCC.keys(),
+            entry_nodes=[0],
+            successors_of=lambda n: _R_SUCC.get(int(n), ()),
+            predecessors_of=lambda n: _R_PRED.get(int(n), ()),
+            state_writes=_R_WRITES,
+            comparisons=_R_COMPARISONS,
+            entry_state=StateValue.top(),  # un-seeded -> head poisoned to ⊤
+            require_resolved_head=True,
+        )

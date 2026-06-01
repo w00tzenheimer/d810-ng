@@ -143,7 +143,15 @@ def read_dispatcher_from(
     handler_range_map: dict[NodeId, tuple[int, int]] = {}
     for block, in_state in in_states.items():
         block = int(block)
-        if in_state.is_top or in_state.is_bottom or block == widest_block:
+        # P3: a comparison block carries a multi-const set *because* it is mid-discrimination -- it is
+        # a BST node, not a range-routed handler. Only NON-comparison blocks reached for a genuine
+        # multi-state range (a switch / interval handler with no final ``==`` check) are RANGE_BACKED.
+        if (
+            in_state.is_top
+            or in_state.is_bottom
+            or block == widest_block
+            or block in bst_blocks
+        ):
             continue
         if len(in_state.constants) > 1:
             consts = sorted(in_state.constants)
@@ -166,27 +174,39 @@ def discover_dispatcher(
     predecessors_of: _Succ,
     state_writes: Mapping[NodeId, StateValue],
     comparisons: Mapping[NodeId, BstComparison],
-    entry_state: StateValue | None = None,
+    entry_state: StateValue,
     config: FixpointConfiguration | None = None,
+    require_resolved_head: bool = False,
 ) -> DispatcherView:
     """Discover the dispatcher by a forward value-set fixpoint with per-edge ``assume``.
 
     Replaces ``analyze_bst_dispatcher``'s BST + handler walk: propagate the state value-set from the
-    function entry (``⊤`` by default -- the value is unknown before the first comparison narrows it),
-    strong-updating at state writes and refining at every comparison edge, then read the dispatcher
-    structure off the result.  ``transition`` recovery is the existing
+    function entry, strong-updating at state writes and refining at every comparison edge, then read
+    the dispatcher structure off the result.  ``transition`` recovery is the existing
     :func:`state_transition_domain.recover_transition_result` fed this view's ``handler_entry_by_state``.
+
+    ``entry_state`` MUST be the recovered initial state (``StateValue.of(initial_state)`` from the
+    pre-header), NOT ``⊤``: seeding ``⊤`` poisons the loop header (``join(⊤, …) = ⊤``) so it never
+    resolves to a concrete value-set and the head reads back as ``None``.  ``require_resolved_head``
+    raises when that happens, surfacing an un-seeded / unreachable dispatcher rather than returning a
+    silently headless view (P2).
     """
     domain = StateTransitionDomain(dict(state_writes))
     result = run_fixpoint(
         domain,
         nodes=list(nodes),
         entry_nodes=list(entry_nodes),
-        entry_state=StateValue.top() if entry_state is None else entry_state,
+        entry_state=entry_state,
         successors_of=successors_of,
         predecessors_of=predecessors_of,
         config=FixpointConfiguration() if config is None else config,
         raise_on_nonconvergence=True,
         edge_refine=lambda p, n, s: assume_state(s, comparisons.get(int(p)), n),
     )
-    return read_dispatcher_from(result, comparisons)
+    view = read_dispatcher_from(result, comparisons)
+    if require_resolved_head and view.dispatcher_entry is None:
+        raise ValueError(
+            "dispatcher head unresolved (⊤): seed entry_state with the recovered "
+            "initial state, or the dispatcher loop is unreachable"
+        )
+    return view

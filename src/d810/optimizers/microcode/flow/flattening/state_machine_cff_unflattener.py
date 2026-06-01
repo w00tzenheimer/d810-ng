@@ -48,6 +48,9 @@ from d810.backends.hexrays.lifter import lift_function
 from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
 from d810.analyses.control_flow.dispatcher_recovery import recover_dispatcher
 from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
+from d810.analyses.control_flow.dispatcher_discovery_extractors import (
+    discover_dispatcher_from_flow_graph,
+)
 from d810.analyses.control_flow.semantic_transition import facts_from_validated_view
 from d810.analyses.control_flow.state_transition_domain import (
     StateValue,
@@ -136,6 +139,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         int(prelim.dispatcher_block_serial),
                         getattr(prelim, "state_var_stkoff", None),
                     )
+                    self._log_lisa_discovery_diff(source.flow_graph, prelim, bst_evidence)
             except Exception:  # noqa: BLE001 — evidence recovery is best-effort diagnostics
                 logger.debug("s1a: pre-pipeline BST evidence failed", exc_info=True)
         facts = AnalysisManager(source.flow_graph, input_facts=fact_view)
@@ -180,6 +184,36 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # Change accounting is the backend's concern (it lowered the plan); the §1a driver does not
         # yet surface an applied-count, so report 0 until the reconstruction passes land real plans.
         return 0
+
+    def _log_lisa_discovery_diff(self, flow_graph, prelim, bst_evidence) -> None:
+        """Compare the LiSA value-set dispatcher discovery to analyze_bst_dispatcher (gap1 parity gate).
+
+        Headline: does the fixpoint's exact-handler recovery (``handler_entry_by_state``) reach the BST
+        walk's handler count, and how many range-routed handlers does it surface (the P1 promotion
+        candidates the read-off does not yet fold into the exact map)? Diagnostics-only.
+        """
+        stkoff = getattr(prelim, "state_var_stkoff", None)
+        if stkoff is None:
+            return
+        try:
+            view = discover_dispatcher_from_flow_graph(
+                flow_graph,
+                state_var_stkoff=int(stkoff),
+                initial_state=getattr(bst_evidence, "initial_state", None),
+            )
+        except Exception:  # noqa: BLE001 — the diff is diagnostics-only
+            logger.debug("s1a: LiSA dispatcher discovery diff failed", exc_info=True)
+            return
+        logger.info(
+            "s1a discover(LiSA): exact_handlers=%d range_handlers=%d head=%s | "
+            "bst handlers=%d state_var=0x%x initial=%s",
+            len(view.handler_entry_by_state),
+            len(view.handler_range_map),
+            view.dispatcher_entry,
+            len(getattr(bst_evidence, "handler_state_map", {}) or {}),
+            int(stkoff),
+            getattr(bst_evidence, "initial_state", None),
+        )
 
     def _publish_s1a_diagnostics(
         self, mba, source, rec, tr, regions, fact_view, bst_evidence=None, capabilities=None
