@@ -242,7 +242,7 @@ class TestDagArbiterConformance:
         required fields) — uses duck typing to provide just the
         ``permits()`` method finalize_reconstruction_fragment exercises.
         """
-        from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+        from d810.transforms.dag_authority import (
             DagDecision,
         )
         allow = dict(allow_for or {})
@@ -438,7 +438,7 @@ class TestPhase6RetirementCriterion:
         # disagree with prior linearizations beyond what the arbiter
         # already vetoed).  This test pins that no-op behaviour so a
         # future deletion does not silently change semantics.
-        from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+        from d810.transforms.dag_authority import (
             DagDecision,
         )
 
@@ -483,7 +483,7 @@ class TestPhase6RetirementCriterion:
         # fail by remaining green when the legacy filter is removed,
         # forcing the tester to update both the production code and
         # this assertion together.
-        from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+        from d810.transforms.dag_authority import (
             DagDecision,
         )
 

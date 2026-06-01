@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from d810.core.typing import TYPE_CHECKING, Iterable
 
 if TYPE_CHECKING:  # pragma: no cover — type hints only
-    from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+    from d810.transforms.dag_authority import (
         DagAuthority,
     )
 
