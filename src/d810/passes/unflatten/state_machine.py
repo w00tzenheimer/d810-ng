@@ -95,6 +95,7 @@ class LowerStateMachine:
             transition_result=_analysis(ctx, "transition_result"),
             dispatch_map=getattr(recovery, "dispatch_map", None),
             dispatcher_entry_serial=getattr(recovery, "dispatcher_block_serial", None),
+            state_var_stkoff=getattr(recovery, "state_var_stkoff", None),
             regions=_analysis(ctx, "plan_semantic_regions"),
         )
         return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
