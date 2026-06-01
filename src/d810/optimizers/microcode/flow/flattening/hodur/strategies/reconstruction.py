@@ -41,7 +41,7 @@ from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.backends.hexrays.evidence._helpers import (
     blk_label,
 )
-from d810.optimizers.microcode.flow.flattening.hodur._reconstruction_reporting import (
+from d810.backends.hexrays.evidence._reconstruction_reporting import (
     log_reconstruction_postprocess_result,
     snapshot_reconstruction_dag,
     snapshot_reconstruction_post_apply,
