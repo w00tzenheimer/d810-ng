@@ -20,7 +20,7 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     plan_family_pipeline,
     run_ordered_family_hooks,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.audit_runtime import (
+from d810.passes.audit_runtime import (
     persist_terminal_return_audit,
     prepare_return_frontier_audit,
     record_return_frontier_stage,
