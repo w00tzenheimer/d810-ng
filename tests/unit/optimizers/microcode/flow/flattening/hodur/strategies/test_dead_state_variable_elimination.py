@@ -9,9 +9,7 @@ from d810.evaluator.hexrays_microcode.dead_state_variable_backend import (
     DeadStateVariableCleanupEvidence,
     StateVariableRef,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
-    dead_state_variable_elimination as strategy_module,
-)
+from d810.backends.hexrays.evidence import dead_state_variable_elimination as strategy_module
 
 
 _MBA = object()

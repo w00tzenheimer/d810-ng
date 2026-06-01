@@ -56,7 +56,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.terminal_loop_cl
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.conditional_fork_fallback import (
     ConditionalForkFallbackStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.dead_state_variable_elimination import (
+from d810.backends.hexrays.evidence.dead_state_variable_elimination import (
     DeadStateVariableEliminationStrategy,
 )
 from d810.backends.hexrays.evidence.inner_merge_duplication import (
