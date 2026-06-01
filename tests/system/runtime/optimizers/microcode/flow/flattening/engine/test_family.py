@@ -98,9 +98,10 @@ def test_engine_package_re_exports_family_types() -> None:
         EngineStateMachineFamilyRuntimeServices
         is StateMachineFamilyRuntimeServices
     )
-    # Slice 2: UnflatteningStrategy canonical home is
-    # d810.families.state_machine_cff.protocols.  Both the engine
-    # package re-export AND the engine.strategy shim must yield the
+    # UnflatteningStrategy canonical home is
+    # d810.capabilities.unflattening_strategy.  The
+    # d810.families.state_machine_cff.protocols re-export, the engine
+    # package re-export AND the engine.strategy shim must all yield the
     # same Protocol object.
     assert UnflatteningStrategy is CanonicalUnflatteningStrategy
     assert engine.UnflatteningStrategy is CanonicalUnflatteningStrategy

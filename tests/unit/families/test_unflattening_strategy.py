@@ -1,6 +1,7 @@
 """Unit tests for ``UnflatteningStrategy`` canonical home.
 
-Scope: canonical imports from ``d810.families.state_machine_cff`` only.
+Scope: canonical import from ``d810.capabilities.unflattening_strategy``
+plus the ``d810.families.state_machine_cff`` back-compat re-exports.
 Re-export-compatibility tests live in the system/runtime suite under
 ``tests/system/runtime/optimizers/...`` because the
 ``unit-tests-no-optimizers`` import-linter contract forbids unit tests
@@ -8,10 +9,13 @@ from importing ``d810.optimizers.*``.
 """
 from __future__ import annotations
 
+from d810.capabilities.unflattening_strategy import UnflatteningStrategy
 from d810.families.state_machine_cff import (
     UnflatteningStrategy as PackageReexport,
 )
-from d810.families.state_machine_cff.protocols import UnflatteningStrategy
+from d810.families.state_machine_cff.protocols import (
+    UnflatteningStrategy as ModuleReexport,
+)
 
 
 class _StubStrategy:
@@ -35,6 +39,7 @@ class _StubStrategy:
 def test_canonical_and_package_reexport_yield_same_protocol_object() -> None:
     """The Protocol class accessed via either canonical path must be the same object."""
     assert UnflatteningStrategy is PackageReexport
+    assert UnflatteningStrategy is ModuleReexport
 
 
 def test_unflattening_strategy_is_runtime_checkable() -> None:
@@ -70,11 +75,13 @@ def test_protocol_declares_expected_member_names() -> None:
 
 
 def test_protocol_lives_at_portable_canonical_path() -> None:
-    """Canonical Protocol home must be ``d810.families.state_machine_cff.protocols``.
+    """Canonical Protocol home must be ``d810.capabilities.unflattening_strategy``.
 
-    Guards against accidental moves to a HIGH layer that would violate
-    the target-layer-taxonomy import-linter contract.
+    The Protocol is a pure INTERFACE (imports only ``d810.core.typing``)
+    so its lowest legal home is the ``d810.capabilities`` layer.  Guards
+    against accidental moves to a HIGH layer that would violate the
+    target-layer-taxonomy import-linter contract.
     """
     assert UnflatteningStrategy.__module__ == (
-        "d810.families.state_machine_cff.protocols"
+        "d810.capabilities.unflattening_strategy"
     )

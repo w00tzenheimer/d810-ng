@@ -10,8 +10,9 @@ if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
         AnalysisSnapshot,
     )
-    # Canonical home (same families layer); engine.strategy only re-exports it.
-    from d810.families.state_machine_cff.protocols import UnflatteningStrategy
+    # Canonical home is the capabilities layer; engine.strategy and
+    # families.state_machine_cff.protocols only re-export it.
+    from d810.capabilities.unflattening_strategy import UnflatteningStrategy
 
 __all__ = ["CFFStrategyFamily", "DetectionResult"]
 
