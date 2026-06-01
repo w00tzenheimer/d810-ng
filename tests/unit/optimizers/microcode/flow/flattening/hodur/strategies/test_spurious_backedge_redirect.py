@@ -3,10 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.transforms.graph_modification import ConvertToGoto
-from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
-    spurious_backedge_redirect,
-)
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.spurious_backedge_redirect import (
+from d810.backends.hexrays.evidence import spurious_backedge_redirect
+from d810.backends.hexrays.evidence.spurious_backedge_redirect import (
     SpuriousBackedgeRedirectStrategy,
 )
 
