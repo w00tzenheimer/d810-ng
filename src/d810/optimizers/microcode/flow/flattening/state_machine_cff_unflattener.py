@@ -18,6 +18,7 @@ import os
 import ida_hexrays
 
 from d810.core import logging
+from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle import (
     ComposedUnflatteningRule,
 )
@@ -27,7 +28,7 @@ from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.driver import run_pipeline
 from d810.families.state_machine_cff.hodur_pipeline import HodurFamily
 
-logger = logging.getLogger("D810.unflat.s1a")
+logger = logging.getLogger("D810.unflat.s1a", logging.DEBUG)
 
 
 def _s1a_enabled() -> bool:
@@ -39,12 +40,21 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
 
     DESCRIPTION = "State-machine CFF unflattener via the §1a pipeline (families -> passes -> backend)"
     DEFAULT_UNFLATTENING_MATURITIES = [ida_hexrays.MMAT_GLBOPT1]
+    # The §1a pipeline does its own dispatcher detection (HodurFamily.detect); bypass the
+    # legacy flow-context unflattening gate (like the other ComposedUnflatteningRule subclasses).
+    HAS_OWN_DISPATCHER_COLLECTOR = True
 
     def __init__(self) -> None:
         super().__init__()
         self._s1a_done_for_ea: int = -1
 
     def optimize(self, blk: "ida_hexrays.mblock_t") -> int:
+        logger.info(
+            "s1a optimize: enabled=%s maturity=%s blk=%s",
+            _s1a_enabled(),
+            maturity_to_string(getattr(self.mba, "maturity", 0)),
+            getattr(blk, "serial", "?"),
+        )
         if not _s1a_enabled():
             return 0
         mba = self.mba
@@ -54,7 +64,16 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         self._s1a_done_for_ea = func_ea
 
         source = lift_function(mba, maturity=getattr(mba, "maturity", None))
-        facts = AnalysisManager(source.flow_graph)
+        # Supply the live validated fact view (state observations) so resolve_state_transitions
+        # has the transition evidence; without it the chain produces an empty plan.
+        fact_view = None
+        flow_ctx = getattr(self, "flow_context", None)
+        if flow_ctx is not None:
+            try:
+                fact_view = flow_ctx.validated_fact_view(getattr(mba, "maturity", 0))
+            except Exception:  # noqa: BLE001 — fact view is best-effort input
+                logger.debug("s1a: validated_fact_view unavailable", exc_info=True)
+        facts = AnalysisManager(source.flow_graph, input_facts=fact_view)
         backend = HexRaysMutationBackend()
         run_pipeline(
             source=source,
@@ -63,6 +82,18 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             facts=facts,
             project_config=None,
             maturity=getattr(mba, "maturity", None),
+        )
+        # Iteration diagnostics: where does the §1a chain stand for this function?
+        rec = facts.get_analysis("recover_dispatcher")
+        tr = facts.get_analysis("transition_result")
+        regions = facts.get_analysis("plan_semantic_regions")
+        logger.info(
+            "s1a func=0x%x: input_facts=%s map_rows=%d transitions=%d regions=%d",
+            func_ea,
+            fact_view is not None,
+            len(rec.dispatch_map.rows) if rec and rec.dispatch_map else 0,
+            len(tr.transitions) if tr else 0,
+            len(regions.linear_regions) if regions else 0,
         )
         # Change accounting is the backend's concern (it lowered the plan); the §1a driver does not
         # yet surface an applied-count, so report 0 until the reconstruction passes land real plans.
