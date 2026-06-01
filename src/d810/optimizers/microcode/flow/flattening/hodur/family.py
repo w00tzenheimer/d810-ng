@@ -18,7 +18,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
     MIN_STATE_CONSTANTS,
     HodurStateMachineDetector,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
+from d810.backends.hexrays.evidence.datamodel import (
     DispatcherStateMachine,
 )
 from d810.capabilities.constant_fixpoint import ConstantFixpointBackend

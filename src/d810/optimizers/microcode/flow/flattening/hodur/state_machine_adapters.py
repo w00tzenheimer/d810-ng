@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core.typing import Any
-from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
+from d810.backends.hexrays.evidence.datamodel import (
     DispatcherStateMachine,
 )
 from d810.backends.hexrays.evidence.dispatcher.switch_table import (

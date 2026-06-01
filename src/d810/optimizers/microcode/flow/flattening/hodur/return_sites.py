@@ -18,7 +18,7 @@ from d810.analyses.control_flow.return_sites import (
 )
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (
+    from d810.backends.hexrays.evidence.datamodel import (
         DispatcherStateMachine,
         HandlerPathResult,
     )
