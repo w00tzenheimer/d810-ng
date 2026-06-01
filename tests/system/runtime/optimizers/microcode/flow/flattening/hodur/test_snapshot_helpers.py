@@ -131,35 +131,35 @@ class TestCanReachReturnSnapshot:
     """Test snapshot-based BFS reachability to m_ret blocks."""
 
     def test_direct_ret_reachable(self) -> None:
-        from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+        from d810.backends.hexrays.evidence._helpers import (
             can_reach_return_snapshot,
         )
         fg = _make_linear_cfg_with_ret()
         assert can_reach_return_snapshot(fg, 0) is True
 
     def test_ret_reachable_from_middle(self) -> None:
-        from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+        from d810.backends.hexrays.evidence._helpers import (
             can_reach_return_snapshot,
         )
         fg = _make_linear_cfg_with_ret()
         assert can_reach_return_snapshot(fg, 1) is True
 
     def test_ret_reachable_from_ret_block(self) -> None:
-        from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+        from d810.backends.hexrays.evidence._helpers import (
             can_reach_return_snapshot,
         )
         fg = _make_linear_cfg_with_ret()
         assert can_reach_return_snapshot(fg, 2) is True
 
     def test_no_ret_reachable(self) -> None:
-        from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+        from d810.backends.hexrays.evidence._helpers import (
             can_reach_return_snapshot,
         )
         fg = _make_no_ret_cfg()
         assert can_reach_return_snapshot(fg, 0) is False
 
     def test_missing_block_returns_false(self) -> None:
-        from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+        from d810.backends.hexrays.evidence._helpers import (
             can_reach_return_snapshot,
         )
         fg = _make_linear_cfg_with_ret()
@@ -172,7 +172,7 @@ class TestFindTerminalExitTargetSnapshot:
     """Test snapshot-based terminal exit target resolution."""
 
     def test_finds_outside_successor_reaching_ret(self) -> None:
-        from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+        from d810.backends.hexrays.evidence._helpers import (
             find_terminal_exit_target_snapshot,
         )
         fg = _make_diamond_cfg_with_ret()
@@ -182,7 +182,7 @@ class TestFindTerminalExitTargetSnapshot:
         assert result == 2
 
     def test_finds_ret_block_when_no_outside_successor(self) -> None:
-        from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+        from d810.backends.hexrays.evidence._helpers import (
             find_terminal_exit_target_snapshot,
         )
         fg = _make_linear_cfg_with_ret()
@@ -195,7 +195,7 @@ class TestFindTerminalExitTargetSnapshot:
         assert result == 2
 
     def test_fallback_to_stop_block(self) -> None:
-        from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+        from d810.backends.hexrays.evidence._helpers import (
             find_terminal_exit_target_snapshot,
         )
         fg = _make_no_ret_cfg()
@@ -207,7 +207,7 @@ class TestFindTerminalExitTargetSnapshot:
         assert result == 1
 
     def test_returns_none_for_missing_check_block(self) -> None:
-        from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+        from d810.backends.hexrays.evidence._helpers import (
             find_terminal_exit_target_snapshot,
         )
         fg = _make_linear_cfg_with_ret()

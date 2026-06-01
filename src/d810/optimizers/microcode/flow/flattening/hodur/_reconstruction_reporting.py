@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core.observability import SnapshotRef
-from d810.optimizers.microcode.flow.flattening.hodur._helpers import blk_label
+from d810.backends.hexrays.evidence._helpers import blk_label
 
 
 @dataclass(frozen=True, slots=True)

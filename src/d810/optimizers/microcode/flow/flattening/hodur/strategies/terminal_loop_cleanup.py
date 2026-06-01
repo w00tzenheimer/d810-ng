@@ -12,7 +12,7 @@ from d810.core.typing import TYPE_CHECKING
 from d810.capabilities.providers import get_microcode_evidence
 from d810.core import logging
 from d810.ir.flowgraph import BlockSnapshot
-from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
+from d810.backends.hexrays.evidence._helpers import (
     collect_state_machine_blocks,
     find_terminal_exit_target_snapshot,
 )
