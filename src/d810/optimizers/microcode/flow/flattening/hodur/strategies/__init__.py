@@ -53,7 +53,7 @@ from d810.transforms.edge_split_conflict import (
 from d810.backends.hexrays.evidence.terminal_loop_cleanup import (
     TerminalLoopCleanupStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.conditional_fork_fallback import (
+from d810.backends.hexrays.evidence.conditional_fork_fallback import (
     ConditionalForkFallbackStrategy,
 )
 from d810.backends.hexrays.evidence.dead_state_variable_elimination import (
