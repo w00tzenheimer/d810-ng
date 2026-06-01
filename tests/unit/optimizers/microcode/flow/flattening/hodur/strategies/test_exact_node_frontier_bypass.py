@@ -9,7 +9,7 @@ from d810.transforms.graph_modification import RedirectGoto, ZeroStateWrite
 from d810.transforms.modification_builder import ModificationBuilder
 from d810.transforms.residual_target_resolution import is_structured_conditional_path_feeder
 from d810.ir.state_variable import StateVariableRef
-from d810.optimizers.microcode.flow.flattening.hodur.residual_handoff_backend import (
+from d810.backends.hexrays.evidence.residual_handoff_backend import (
     ResidualEffectiveTargetEvidence,
     ResidualStateWriteEvidence,
 )

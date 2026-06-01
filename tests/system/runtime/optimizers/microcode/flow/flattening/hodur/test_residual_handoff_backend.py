@@ -5,10 +5,8 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.ir.state_variable import StateVariableRef
-from d810.optimizers.microcode.flow.flattening.hodur import (
-    residual_handoff_backend as backend_module,
-)
-from d810.optimizers.microcode.flow.flattening.hodur.residual_handoff_backend import (
+from d810.backends.hexrays.evidence import residual_handoff_backend as backend_module
+from d810.backends.hexrays.evidence.residual_handoff_backend import (
     HexRaysEffectiveTargetEvidenceBackend,
     HexRaysResidualFrontierEvidenceBackend,
 )

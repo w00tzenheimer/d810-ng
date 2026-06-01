@@ -52,7 +52,7 @@ from d810.analyses.control_flow.target_entry_resolution import (
 )
 from d810.analyses.control_flow.state_machine_analysis import can_reach_return_snapshot
 from d810.analyses.control_flow.state_machine_analysis import find_last_state_write_site_snapshot
-from d810.optimizers.microcode.flow.flattening.hodur.residual_handoff_backend import (
+from d810.backends.hexrays.evidence.residual_handoff_backend import (
     HexRaysResidualFrontierEvidenceBackend,
     ResidualFrontierEvidenceBackend,
 )
