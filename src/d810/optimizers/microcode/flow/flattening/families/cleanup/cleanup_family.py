@@ -28,7 +28,7 @@ from d810.transforms.cleanup_evidence import (
 from d810.families.state_machine_cff.family import (
     CFFStrategyFamily,
 )
-from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+from d810.transforms.snapshot import (
     AnalysisSnapshot,
     ReachabilityInfo,
     StateModelSummary,

@@ -28,7 +28,7 @@ from d810.transforms.plan_fragment import (
 from d810.analyses.control_flow.bst_model import resolve_target_via_bst
 if TYPE_CHECKING:
     from d810.transforms.graph_modification import ReorderBlocks
-    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+    from d810.transforms.snapshot import (
         AnalysisSnapshot,
     )
 

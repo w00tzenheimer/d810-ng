@@ -22,7 +22,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.recon.conditional_chain_res
     collect_conditional_fork_resolution_candidates,
 )
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+    from d810.transforms.snapshot import (
         AnalysisSnapshot,
     )
 

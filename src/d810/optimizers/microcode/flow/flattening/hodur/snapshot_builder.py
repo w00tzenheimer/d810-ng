@@ -8,7 +8,7 @@ from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
     collect_live_fake_jump_fixes,
     collect_live_single_iteration_fixes,
 )
-from d810.optimizers.microcode.flow.flattening.engine.snapshot import ReachabilityInfo
+from d810.transforms.snapshot import ReachabilityInfo
 from d810.optimizers.microcode.flow.flattening.engine.runtime import FamilyRunState
 from d810.capabilities.constant_fixpoint import ConstantFixpointBackend
 from d810.optimizers.microcode.flow.flattening.hodur.datamodel import (

@@ -64,7 +64,7 @@ from d810.optimizers.microcode.flow.flattening.ollvm_carrier_backend import (
     collect_ollvm_post_execute_carrier_facts,
     collect_ollvm_profile_fact_observations,
 )
-from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+from d810.transforms.snapshot import (
     AnalysisSnapshot,
     ReachabilityInfo,
     StateModelSummary,

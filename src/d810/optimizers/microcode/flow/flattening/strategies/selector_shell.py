@@ -19,7 +19,7 @@ from d810.analyses.control_flow.selector_shell import (
 )
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+    from d810.transforms.snapshot import (
         AnalysisSnapshot,
     )
 

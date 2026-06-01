@@ -17,7 +17,7 @@ import ida_hexrays
 import pytest
 
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
-from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+from d810.transforms.snapshot import (
     AnalysisSnapshot,
 )
 from d810.transforms.planner_context import (

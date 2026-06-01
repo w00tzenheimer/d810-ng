@@ -23,7 +23,7 @@ from d810.optimizers.microcode.flow.flattening.engine.planner import (
 from d810.analyses.control_flow.provenance import (
     PlannerInputs,
 )
-from d810.optimizers.microcode.flow.flattening.engine.snapshot import AnalysisSnapshot
+from d810.transforms.snapshot import AnalysisSnapshot
 from d810.transforms.plan_fragment import (
     BenefitMetrics,
     FAMILY_DIRECT,

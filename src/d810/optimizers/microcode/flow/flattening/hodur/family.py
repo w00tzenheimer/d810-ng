@@ -25,7 +25,7 @@ from d810.capabilities.constant_fixpoint import ConstantFixpointBackend
 from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
     DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
 )
-from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+from d810.transforms.snapshot import (
     AnalysisSnapshot,
     ReachabilityInfo,
 )

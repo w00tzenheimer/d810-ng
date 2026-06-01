@@ -12,7 +12,7 @@ from d810.ir.flowgraph import (
     OperandKind,
 )
 from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
-from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+from d810.transforms.snapshot import (
     AnalysisSnapshot,
 )
 from d810.transforms.plan_fragment import (

@@ -507,7 +507,7 @@ def _make_fragment_with_audit(
 
 class TestPlanRunEndToEnd:
     def test_planner_aggregates_and_emits_summary(self, caplog) -> None:
-        from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+        from d810.transforms.snapshot import (
             AnalysisSnapshot,
         )
 
@@ -546,7 +546,7 @@ class TestPlanRunEndToEnd:
         # Backward compat: when no fragments carry audit records, no
         # PLANNER_DAG_AUDIT line is emitted and dag_audit_records stays
         # empty.
-        from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+        from d810.transforms.snapshot import (
             AnalysisSnapshot,
         )
 

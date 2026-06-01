@@ -47,7 +47,7 @@ from d810.backends.hexrays.evidence.bad_while_loop_dependency_diagnostics import
 
 if TYPE_CHECKING:
     from d810.transforms.materialization_payload import CapturedBlockBody
-    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+    from d810.transforms.snapshot import (
         AnalysisSnapshot,
     )
 

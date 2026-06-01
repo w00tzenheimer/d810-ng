@@ -50,7 +50,7 @@ from d810.backends.hexrays.evidence.dispatcher.return_frontier_carrier_audit imp
 )
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+    from d810.transforms.snapshot import (
         AnalysisSnapshot,
     )
 

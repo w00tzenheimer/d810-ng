@@ -37,7 +37,7 @@ from d810.transforms.plan_fragment import (
 
 if TYPE_CHECKING:
     from d810.ir.flowgraph import FlowGraph
-    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+    from d810.transforms.snapshot import (
         AnalysisSnapshot,
     )
 
