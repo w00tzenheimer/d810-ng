@@ -16,9 +16,14 @@ from d810.analyses.control_flow.dispatcher_discovery_fixpoint import DispatcherV
 from d810.analyses.control_flow.linearized_state_dag import (
     LocalEdgeKind,
     LocalSegmentKind,
+    SemanticEdgeKind,
     StateNodeKind,
 )
 from d810.analyses.control_flow.read_dag import read_dag_from
+from d810.analyses.control_flow.transition_builder import (
+    StateTransition,
+    TransitionResult,
+)
 
 K1, K2, K3 = 0x10000001, 0x10000002, 0x10000003
 
@@ -110,3 +115,37 @@ def test_local_structure_populated_when_topology_provided():
     assert kinds["blk[30]"] is LocalSegmentKind.SHARED_SUFFIX
     e = {(x.source_segment_id, x.target_segment_id, x.kind) for x in node10.local_edges}
     assert ("blk[10]", "blk[30]", LocalEdgeKind.SHARED_SUFFIX) in e
+
+
+def test_outer_transition_edge_from_transition_result():
+    # h1 (state K1) transitions to h_range (state K2).
+    tr = TransitionResult(
+        transitions=[StateTransition(from_state=K1, to_state=K2, from_block=10)]
+    )
+    dag = read_dag_from(
+        view=_view(), owner_result=_owner_result(), transitions=tr, dispatcher_entry_serial=1
+    )
+    assert len(dag.edges) == 1
+    edge = dag.edges[0]
+    assert edge.kind is SemanticEdgeKind.TRANSITION
+    assert edge.source_key.handler_serial == 10  # state K1 -> handler 10
+    assert edge.target_key.handler_serial == 20  # state K2 -> handler 20
+    assert edge.target_state == K2
+    assert edge.source_anchor.block_serial == 10
+
+
+def test_conditional_transition_edge_kind():
+    tr = TransitionResult(
+        transitions=[
+            StateTransition(
+                from_state=K1,
+                to_state=K2,
+                from_block=10,
+                condition_block=10,
+                is_conditional=True,
+            )
+        ]
+    )
+    dag = read_dag_from(view=_view(), owner_result=_owner_result(), transitions=tr)
+    assert dag.edges[0].kind is SemanticEdgeKind.CONDITIONAL_TRANSITION
+    assert dag.edges[0].source_anchor.kind.name == "CONDITIONAL_BRANCH"

@@ -24,10 +24,15 @@ from d810.analyses.control_flow.block_ownership_domain import (
 from d810.analyses.control_flow.dispatcher_discovery_fixpoint import DispatcherView
 from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
+    RedirectSourceKind,
+    SemanticEdgeKind,
+    StateDagEdge,
     StateDagNode,
     StateNodeKind,
+    StateRedirectAnchor,
 )
 from d810.analyses.control_flow.local_structure import build_local_structure
+from d810.analyses.control_flow.transition_builder import TransitionResult
 from d810.analyses.data_flow import FixpointResult
 from d810.analyses.data_flow.domain import NodeId
 from d810.core.typing import Callable, FrozenSet, Iterable
@@ -50,6 +55,7 @@ def read_dag_from(
     *,
     view: DispatcherView,
     owner_result: FixpointResult,
+    transitions: TransitionResult | None = None,
     successors_of: _Succ | None = None,
     predecessors_of: _Succ | None = None,
     terminal_exit_blocks: FrozenSet[int] = frozenset(),
@@ -117,6 +123,8 @@ def read_dag_from(
             )
         )
 
+    edges = _build_outer_edges(nodes, view, transitions)
+
     entry = (
         dispatcher_entry_serial
         if dispatcher_entry_serial is not None
@@ -129,5 +137,72 @@ def read_dag_from(
         initial_state=initial_state,
         bst_node_blocks=tuple(sorted(int(b) for b in view.bst_node_blocks)),
         nodes=tuple(nodes),
-        edges=(),
+        edges=edges,
     )
+
+
+def _build_outer_edges(
+    nodes: list[StateDagNode],
+    view: DispatcherView,
+    transitions: TransitionResult | None,
+) -> tuple[StateDagEdge, ...]:
+    """Project the outer state-level DAG edges off ``recover_transition_result``.
+
+    Each :class:`StateTransition` (``from_state -> to_state``) becomes a
+    :class:`StateDagEdge` between the handler nodes, ``CONDITIONAL_TRANSITION``
+    when the transition is conditional else ``TRANSITION``.  The richer
+    ``ordered_path`` / ``CONDITIONAL_RETURN`` lowering lands with the dual-build.
+    """
+    if transitions is None:
+        return ()
+    node_by_handler = {n.handler_serial: n for n in nodes}
+    handler_by_state = {int(s): int(h) for s, h in view.handler_entry_by_state.items()}
+
+    edges: list[StateDagEdge] = []
+    for transition in transitions.transitions:
+        if transition.from_state is None:
+            continue
+        source_handler = handler_by_state.get(int(transition.from_state))
+        source_node = node_by_handler.get(source_handler) if source_handler else None
+        if source_node is None:
+            continue
+        target_handler = handler_by_state.get(int(transition.to_state))
+        target_node = (
+            node_by_handler.get(target_handler) if target_handler is not None else None
+        )
+        is_conditional = bool(transition.is_conditional)
+        anchor = StateRedirectAnchor(
+            kind=(
+                RedirectSourceKind.CONDITIONAL_BRANCH
+                if is_conditional
+                else RedirectSourceKind.UNCONDITIONAL
+            ),
+            block_serial=int(transition.from_block),
+            branch_arm=None,
+        )
+        edges.append(
+            StateDagEdge(
+                kind=(
+                    SemanticEdgeKind.CONDITIONAL_TRANSITION
+                    if is_conditional
+                    else SemanticEdgeKind.TRANSITION
+                ),
+                source_key=source_node.key,
+                target_key=target_node.key if target_node is not None else None,
+                target_state=int(transition.to_state),
+                target_entry_anchor=target_handler if target_handler is not None else None,
+                target_label=target_node.state_label if target_node is not None else "",
+                source_anchor=anchor,
+                ordered_path=(int(transition.from_block),),
+                last_write_site=None,
+            )
+        )
+
+    edges.sort(
+        key=lambda e: (
+            int(e.source_key.handler_serial),
+            int(e.target_state) if e.target_state is not None else -1,
+            e.kind.name,
+        )
+    )
+    return tuple(edges)
