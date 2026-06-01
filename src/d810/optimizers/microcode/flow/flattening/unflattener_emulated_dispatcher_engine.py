@@ -30,7 +30,7 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
 from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle import (
     ComposedUnflatteningRule,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.emulated_dispatcher_strategy import (
+from d810.passes.emulated_dispatcher_strategy import (
     EmulatedDispatcherMetadata,
     extract_emulated_dispatcher_metadata,
 )
