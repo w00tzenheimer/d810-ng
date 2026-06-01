@@ -16,7 +16,7 @@ from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import
 from d810.optimizers.microcode.flow.flattening.engine.executor import (
     TransactionalExecutor,
 )
-from d810.optimizers.microcode.flow.flattening.engine.planner import (
+from d810.passes.planner import (
     UnflatteningPlanner,
 )
 from d810.analyses.control_flow.provenance import (

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from d810.transforms.graph_modification import RedirectGoto
-from d810.optimizers.microcode.flow.flattening.engine.planner import (
+from d810.passes.planner import (
     PipelinePolicy,
     UnflatteningPlanner,
 )

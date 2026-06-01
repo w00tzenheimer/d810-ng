@@ -14,7 +14,7 @@ from d810.analyses.control_flow.provenance import (
 from d810.passes.strategy import PlanFragment, StageResult
 
 if TYPE_CHECKING:
-    from .planner import UnflatteningPlanner
+    from d810.passes.planner import UnflatteningPlanner
     from d810.transforms.snapshot import AnalysisSnapshot
     from d810.passes.strategy import UnflatteningStrategy
 

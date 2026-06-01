@@ -22,7 +22,7 @@ from d810.transforms.plan_fragment import (
     PlanFragment,
     StageResult,
 )
-from d810.optimizers.microcode.flow.flattening.engine.planner import (
+from d810.passes.planner import (
     PipelinePolicy,
     PlannerCandidate,
     PlannerDecision,
