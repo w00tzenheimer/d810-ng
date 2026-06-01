@@ -43,7 +43,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.profile import (
 from d810.optimizers.microcode.flow.flattening.hodur.snapshot_builder import (
     HodurSnapshotPolicy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.state_machine_adapters import (
+from d810.backends.hexrays.evidence.state_machine_adapters import (
     detect_switch_table_state_machine,
 )
 from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (

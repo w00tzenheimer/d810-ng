@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.optimizers.microcode.flow.flattening.hodur import state_machine_adapters
+from d810.backends.hexrays.evidence import state_machine_adapters
 
 
 class _HandlerMap:
