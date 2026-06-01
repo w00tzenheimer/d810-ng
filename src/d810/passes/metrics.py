@@ -4,7 +4,7 @@ from __future__ import annotations
 from d810.core.typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.engine.strategy import StageResult
+    from d810.transforms.plan_fragment import StageResult
 
 __all__ = ["handler_coverage", "structure_quality_score"]
 

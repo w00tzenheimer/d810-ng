@@ -14,7 +14,7 @@ from d810.optimizers.microcode.flow.flattening.engine.planner import (
 from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     PlannerInputs,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     FAMILY_CLEANUP,
     FAMILY_DIRECT,
     FAMILY_FALLBACK,

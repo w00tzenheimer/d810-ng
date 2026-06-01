@@ -18,10 +18,12 @@ from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
 )
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+    UnflatteningStrategy,
+)
+from d810.transforms.plan_fragment import (
     BenefitMetrics,
     OwnershipScope,
     PlanFragment,
-    UnflatteningStrategy,
     FAMILY_DIRECT,
 )
 

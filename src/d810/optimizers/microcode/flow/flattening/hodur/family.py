@@ -33,7 +33,7 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import FamilyRunSt
 from d810.optimizers.microcode.flow.flattening.engine.state_machine_snapshot_builder import (
     StateMachineSnapshotBuilder,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     PlanFragment,
     StageResult,
 )

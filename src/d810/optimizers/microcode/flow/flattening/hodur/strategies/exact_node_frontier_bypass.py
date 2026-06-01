@@ -14,7 +14,7 @@ from d810.transforms.semantic_conditional_lowering import (
     collect_exact_conditional_alias_sites,
     is_straight_line_handoff,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,

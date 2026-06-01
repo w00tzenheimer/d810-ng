@@ -222,7 +222,7 @@ from d810.evaluator.hexrays_microcode.use_def_dominance import (
     HexRaysUseDefSafetyBackend,
     UseDefSafetyBackend,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,

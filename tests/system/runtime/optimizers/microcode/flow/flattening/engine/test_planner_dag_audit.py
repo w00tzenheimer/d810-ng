@@ -32,7 +32,7 @@ from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
 from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     DagDisagreementRecord,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,

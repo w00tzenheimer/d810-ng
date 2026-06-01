@@ -6,7 +6,7 @@ from d810.transforms.graph_modification import ConvertToGoto, RedirectGoto
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     FAMILY_CLEANUP,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (

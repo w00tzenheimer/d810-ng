@@ -9,7 +9,7 @@ from d810.transforms.semantic_conditional_lowering import (
     analyze_exact_conditional_alias_sites,
     collect_exact_conditional_alias_sites,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     BenefitMetrics,
     FAMILY_DIRECT,
     OwnershipScope,

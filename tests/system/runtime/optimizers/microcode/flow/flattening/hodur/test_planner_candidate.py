@@ -14,7 +14,7 @@ from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     DecisionReasonCode,
     DecisionRecord,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     BenefitMetrics,
     FAMILY_DIRECT,
     FAMILY_FALLBACK,

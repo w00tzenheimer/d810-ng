@@ -88,7 +88,7 @@ from d810.optimizers.microcode.flow.flattening.engine.return_carrier_fact_guard 
 from d810.optimizers.microcode.flow.flattening.engine.terminal_byte_emit_fact_guard import (
     filter_terminal_byte_emit_fact_redirects,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     PlanFragment,
     StageResult,
     VerificationGate,

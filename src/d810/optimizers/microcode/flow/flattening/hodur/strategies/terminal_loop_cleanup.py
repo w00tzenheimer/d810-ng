@@ -16,7 +16,7 @@ from d810.optimizers.microcode.flow.flattening.hodur._helpers import (
     collect_state_machine_blocks,
     find_terminal_exit_target_snapshot,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     FAMILY_CLEANUP,
     BenefitMetrics,
     OwnershipScope,

@@ -21,7 +21,7 @@ from d810.analyses.control_flow.exit_transition_discovery import (
 from d810.transforms.modification_builder import (
     ModificationBuilder,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     FAMILY_FALLBACK,
     BenefitMetrics,
     OwnershipScope,

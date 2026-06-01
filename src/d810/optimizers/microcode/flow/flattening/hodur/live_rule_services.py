@@ -21,7 +21,7 @@ from d810.hexrays.utils.hexrays_formatters import format_mop_t
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     StageResult,
 )
 from d810.optimizers.microcode.flow.flattening.state_machine_rule_services import (

@@ -16,7 +16,7 @@ from d810.transforms.plan import PatchConvertToGoto, PatchReorderBlocks, compile
 from d810.optimizers.microcode.flow.flattening.engine.executor import (
     TransactionalExecutor as EngineTransactionalExecutor,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     BenefitMetrics,
     OwnershipScope,
     PlanFragment,

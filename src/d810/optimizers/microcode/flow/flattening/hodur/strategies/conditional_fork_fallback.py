@@ -12,7 +12,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
     HODUR_STATE_CHECK_OPCODES,
     HodurStateMachineDetector,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     FAMILY_FALLBACK,
     BenefitMetrics,
     OwnershipScope,

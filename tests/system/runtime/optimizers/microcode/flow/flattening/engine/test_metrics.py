@@ -6,7 +6,7 @@ from d810.passes.metrics import (
     handler_coverage,
     structure_quality_score,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import StageResult
+from d810.transforms.plan_fragment import StageResult
 
 
 def test_handler_coverage_handles_zero_total() -> None:

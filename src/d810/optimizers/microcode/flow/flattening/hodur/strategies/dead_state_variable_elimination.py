@@ -28,7 +28,7 @@ from d810.evaluator.hexrays_microcode.dead_state_variable_backend import (
     HexRaysDeadStateVariableEvidenceBackend,
     StateVariableRef,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     FAMILY_CLEANUP,
     BenefitMetrics,
     OwnershipScope,

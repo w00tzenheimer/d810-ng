@@ -19,7 +19,7 @@ from d810.capabilities.providers import get_microcode_evidence
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
 from d810.transforms.reorder_blocks_planning import compute_reorder_blocks as plan_reorder_blocks
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     FAMILY_DIRECT,
     BenefitMetrics,
     OwnershipScope,

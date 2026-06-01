@@ -22,7 +22,7 @@ from d810.optimizers.microcode.flow.flattening.engine.provenance import (
     PipelineProvenance,
     PlannerInputs,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     BenefitMetrics,
     FAMILY_CLEANUP,
     FAMILY_DIRECT,

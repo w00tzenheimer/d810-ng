@@ -17,7 +17,7 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import (
+from d810.transforms.plan_fragment import (
     PlanFragment,
     StageResult,
 )

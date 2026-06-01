@@ -17,7 +17,7 @@ from d810.transforms.graph_modification import DuplicateBlock, RedirectGoto
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
     AnalysisSnapshot,
 )
-from d810.optimizers.microcode.flow.flattening.engine.strategy import FAMILY_CLEANUP
+from d810.transforms.plan_fragment import FAMILY_CLEANUP
 from d810.optimizers.microcode.flow.flattening.strategies.side_effect_select_loop import (
     SideEffectSelectLoopStrategy,
 )
