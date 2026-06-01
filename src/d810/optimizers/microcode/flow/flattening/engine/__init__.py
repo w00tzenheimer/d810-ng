@@ -45,7 +45,7 @@ from .state_machine_runtime import (
     StateMachineFamilyRuntimeServices,
     run_state_machine_family_pass,
 )
-from .strategy import (
+from d810.passes.strategy import (
     FAMILY_CLEANUP,
     FAMILY_DIRECT,
     FAMILY_FALLBACK,
@@ -112,7 +112,7 @@ __all__ = [
 
 def __getattr__(name: str):
     if name == "SemanticGate":
-        from . import strategy as strategy_module
+        from d810.passes import strategy as strategy_module
 
         return strategy_module.SemanticGate
     if name == "TransactionalExecutor":
