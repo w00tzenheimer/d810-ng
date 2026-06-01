@@ -53,7 +53,7 @@ from d810.optimizers.microcode.flow.flattening.emulated_dispatcher_family import
     tigress_indirect_dispatcher_profile,
     tigress_switch_dispatcher_profile,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.emulated_dispatcher_strategy import (
+from d810.passes.emulated_dispatcher_strategy import (
     EMULATED_DISPATCHER_CANDIDATE_RECORDS_KEY,
     EMULATED_DISPATCHER_METADATA_KEY,
     EMULATED_DISPATCHER_MODIFICATIONS_KEY,

@@ -69,7 +69,7 @@ from d810.transforms.snapshot import (
     ReachabilityInfo,
     StateModelSummary,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.emulated_dispatcher_strategy import (
+from d810.passes.emulated_dispatcher_strategy import (
     EMULATED_DISPATCHER_CANDIDATE_RECORDS_KEY,
     EMULATED_DISPATCHER_FALLBACK_MODIFICATIONS_KEY,
     EMULATED_DISPATCHER_LOOP_RECOVERY_MODIFICATIONS_KEY,
