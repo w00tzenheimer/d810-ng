@@ -25,7 +25,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.audit_runtime import (
     prepare_return_frontier_audit,
     record_return_frontier_stage,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.post_apply_runtime import (
+from d810.transforms.post_apply_runtime import (
     collect_live_residual_dispatcher_preds,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.post_pipeline_hooks import (

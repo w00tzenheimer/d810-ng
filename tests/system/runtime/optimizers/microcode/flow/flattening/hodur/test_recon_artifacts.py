@@ -14,7 +14,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.recon_artifacts import (
 from d810.optimizers.microcode.flow.flattening.hodur.audit_runtime import (
     prepare_return_frontier_audit,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.post_apply_runtime import (
+from d810.transforms.post_apply_runtime import (
     collect_live_residual_dispatcher_preds,
     collect_post_apply_bst_cleanup_blockers,
 )
