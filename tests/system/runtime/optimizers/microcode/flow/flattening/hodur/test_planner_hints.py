@@ -17,7 +17,7 @@ from d810.optimizers.microcode.flow.flattening.engine.planner import (
     compute_hint_adjustment,
     derive_hint_signals,
 )
-from d810.optimizers.microcode.flow.flattening.engine.provenance import (
+from d810.analyses.control_flow.provenance import (
     DecisionPhase,
     PipelineProvenance,
     PlannerInputs,

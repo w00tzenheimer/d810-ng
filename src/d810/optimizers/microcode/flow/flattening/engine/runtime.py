@@ -5,7 +5,7 @@ from dataclasses import dataclass, field, replace
 
 from d810.core.typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol
 
-from .provenance import (
+from d810.analyses.control_flow.provenance import (
     DecisionPhase,
     DecisionReasonCode,
     PipelineProvenance,

@@ -7,7 +7,7 @@ from d810.core.logging import getLogger
 from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
     CumulativePlannerView,
 )
-from d810.optimizers.microcode.flow.flattening.engine.provenance import (
+from d810.analyses.control_flow.provenance import (
     DagDisagreementRecord,
 )
 from d810.transforms.plan_fragment import PlanFragment

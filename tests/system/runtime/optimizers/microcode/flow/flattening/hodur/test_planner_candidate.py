@@ -9,7 +9,7 @@ from d810.optimizers.microcode.flow.flattening.engine.planner import (
     PlannerDecision,
     PlannerDecisionReason,
 )
-from d810.optimizers.microcode.flow.flattening.engine.provenance import (
+from d810.analyses.control_flow.provenance import (
     DecisionPhase,
     DecisionReasonCode,
     DecisionRecord,

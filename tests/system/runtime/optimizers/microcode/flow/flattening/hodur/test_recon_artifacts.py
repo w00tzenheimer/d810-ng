@@ -33,7 +33,7 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
 from d810.optimizers.microcode.flow.flattening.engine.state_machine_snapshot_builder import (
     StateMachineSnapshotBuilder,
 )
-from d810.optimizers.microcode.flow.flattening.engine.provenance import (
+from d810.analyses.control_flow.provenance import (
     PipelineProvenance,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.family import (

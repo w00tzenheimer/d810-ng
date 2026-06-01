@@ -30,7 +30,7 @@ from d810.hexrays.mutation.ir_translator import lift as lift_mba
 from d810.optimizers.microcode.flow.flattening import (
     emulated_dispatcher_family as emulated_family_module,
 )
-from d810.optimizers.microcode.flow.flattening.engine.provenance import (
+from d810.analyses.control_flow.provenance import (
     DecisionPhase,
     DecisionReasonCode,
     PipelineProvenance,

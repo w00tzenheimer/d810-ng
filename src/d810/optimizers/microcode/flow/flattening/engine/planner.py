@@ -37,7 +37,7 @@ from d810.core.typing import TYPE_CHECKING
 
 from d810.flow.terminal_return import TerminalReturnSourceKind
 from d810.core.logging import getLogger
-from d810.optimizers.microcode.flow.flattening.engine.provenance import (
+from d810.analyses.control_flow.provenance import (
     DagDisagreementRecord,
     DecisionPhase,
     DecisionReasonCode,
@@ -661,7 +661,7 @@ class UnflatteningPlanner:
     with full audit trail, closing the lifecycle loop.
 
     **Hint persistence:** ``PlannerHintSignals`` remain ephemeral —
-    see :class:`~d810.optimizers.microcode.flow.flattening.engine.provenance.PlannerInputs`
+    see :class:`~d810.analyses.control_flow.provenance.PlannerInputs`
     for rationale.  Persist only if a concrete need appears (offline
     audit, cross-pass caching, or a second planner consumer).
     """
