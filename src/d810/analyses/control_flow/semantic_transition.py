@@ -276,11 +276,26 @@ def semantic_transition_from_fact(
     )
 
 
+def resolve_state_transitions(graph, facts) -> "tuple[SemanticTransition, ...]":
+    """§1a pass #2 entry: portable state-transition resolution over a FlowGraph.
+
+    Delegates to the existing portable projection (``facts_from_validated_view`` +
+    ``semantic_transition_from_fact``). ``graph``/``facts`` are duck-typed
+    (FlowGraph / ValidatedFactView) to avoid a new import edge in this analysis
+    module. ``graph`` is the seam surface: the backend impl supplies dispatcher-map
+    resolution (``resolve_state_transitions_with_dispatcher_map``) once
+    ``hodur/snapshot_builder`` live reads move behind ``MicrocodeEvidenceProvider``.
+    """
+    transition_facts, _anchors = facts_from_validated_view(facts)
+    return tuple(semantic_transition_from_fact(f) for f in transition_facts)
+
+
 __all__ = [
     "SemanticTransition",
     "SemanticTransitionKind",
     "facts_from_validated_view",
     "semantic_transition_from_fact",
+    "resolve_state_transitions",
     "StateTransitionFact",
     "StateTransitionResolution",
     "StateWriteAnchor",
