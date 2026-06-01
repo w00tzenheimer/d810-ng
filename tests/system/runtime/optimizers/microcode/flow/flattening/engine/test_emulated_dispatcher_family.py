@@ -7577,7 +7577,7 @@ class TestEmulatedDispatcherManagedContext:
         from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
             collect_live_fake_jump_fixes,
         )
-        from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
+        from d810.passes.fake_jump import (
             FAKE_JUMP_FIXES_METADATA_KEY,
             serialize_fake_jump_fixes,
         )

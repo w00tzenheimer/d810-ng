@@ -13,7 +13,7 @@ from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
     collect_live_single_iteration_convert_fixes,
     collect_live_single_iteration_block_fixes,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
+from d810.passes.fake_jump import (
     FakeJumpPredFix,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (

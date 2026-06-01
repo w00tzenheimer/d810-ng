@@ -23,7 +23,7 @@ from d810.transforms.snapshot import (
 from d810.transforms.plan_fragment import (
     FAMILY_CLEANUP,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
+from d810.passes.fake_jump import (
     FAKE_JUMP_FIXES_METADATA_KEY,
     PAYLOAD_FAKE_JUMP_FIXES_METADATA_KEY,
     FakeJumpPredFix,

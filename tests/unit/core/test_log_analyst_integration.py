@@ -43,7 +43,7 @@ def create_test_database(db_path: str) -> None:
         # Entry into analysis
         {
             "timestamp": "2024-12-04T10:00:00.000000",
-            "logger": "d810.optimizers.microcode.flow.flattening.strategies.fake_jump",
+            "logger": "d810.passes.fake_jump",
             "level": "DEBUG",
             "levelno": 10,
             "function": "analyze_blk",
@@ -127,7 +127,7 @@ def create_test_database(db_path: str) -> None:
         # Summary from fake-jump strategy
         {
             "timestamp": "2024-12-04T10:00:00.700000",
-            "logger": "d810.optimizers.microcode.flow.flattening.strategies.fake_jump",
+            "logger": "d810.passes.fake_jump",
             "level": "INFO",
             "levelno": 20,
             "function": "analyze_blk",
@@ -144,7 +144,7 @@ def create_test_database(db_path: str) -> None:
         # Warning about inconsistency
         {
             "timestamp": "2024-12-04T10:00:00.800000",
-            "logger": "d810.optimizers.microcode.flow.flattening.strategies.fake_jump",
+            "logger": "d810.passes.fake_jump",
             "level": "WARNING",
             "levelno": 30,
             "function": "analyze_blk",
