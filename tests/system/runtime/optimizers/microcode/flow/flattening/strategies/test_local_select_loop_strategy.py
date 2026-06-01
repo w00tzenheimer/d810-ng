@@ -17,7 +17,7 @@ from d810.transforms.snapshot import (
     AnalysisSnapshot,
 )
 from d810.transforms.plan_fragment import FAMILY_CLEANUP
-from d810.optimizers.microcode.flow.flattening.strategies.local_select_loop import (
+from d810.passes.local_select_loop import (
     LocalSelectLoopStrategy,
 )
 from d810.analyses.control_flow.local_select_loop import (
