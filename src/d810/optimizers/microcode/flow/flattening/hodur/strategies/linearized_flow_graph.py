@@ -13,7 +13,8 @@ from __future__ import annotations
 from dataclasses import replace
 import os
 
-from d810.capabilities.providers import get_microcode_evidence
+import ida_hexrays
+
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.transforms.lowering import LoweringMode
 from d810.transforms.edit_simulator import project_post_state
@@ -1612,9 +1613,8 @@ class LinearizedFlowGraphStrategy:
         bst_result = snapshot.bst_result
         if mba is None or flow_graph is None or bst_result is None:
             return False
-        evidence = get_microcode_evidence()
-        func_ea = evidence.get_function_entry_ea(mba)
-        maturity = evidence.get_mba_maturity(mba)
+        func_ea = mba.entry_ea
+        maturity = mba.maturity
         key = (func_ea, maturity)
         bst_node_blocks = set(getattr(bst_result, "bst_node_blocks", ()) or ())
         residual_preds = cls._collect_residual_dispatcher_predecessors(
@@ -1704,9 +1704,8 @@ class LinearizedFlowGraphStrategy:
         """
         mba = snapshot.mba
         if mba is not None:
-            evidence = get_microcode_evidence()
-            func_ea = evidence.get_function_entry_ea(mba)
-            maturity = evidence.get_mba_maturity(mba)
+            func_ea = mba.entry_ea
+            maturity = mba.maturity
             if (func_ea, maturity) in LinearizedFlowGraphStrategy._applied:
                 if not self._allow_same_maturity_rerun(
                     snapshot,
@@ -1767,10 +1766,7 @@ class LinearizedFlowGraphStrategy:
             when the strategy has nothing to contribute.
         """
         mba = snapshot.mba
-        if mba is not None and (
-            get_microcode_evidence().get_function_entry_ea(mba),
-            get_microcode_evidence().get_mba_maturity(mba),
-        ) in self._applied:
+        if mba is not None and (mba.entry_ea, mba.maturity) in self._applied:
             if not self._allow_same_maturity_rerun(snapshot, consume_retry=True):
                 return None
         elif not self.is_applicable(snapshot):
