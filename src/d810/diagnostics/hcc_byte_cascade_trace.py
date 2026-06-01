@@ -318,7 +318,7 @@ def _count_source_ea_survival_per_snapshot(
 
     The diag writer stores ``ea_hex`` as ``0x{:016x}`` (lowercase, 16-digit
     zero-padded); the tracer emits ``source_eas`` in the same format via
-    :func:`d810.optimizers.microcode.flow.flattening.hodur.byte_cascade_coverage_tracer._format_ea_hex`
+    :func:`d810.analyses.control_flow.byte_cascade_coverage_tracer._format_ea_hex`
     (uppercase variant), so we normalise both sides to lowercase before
     matching.
 
