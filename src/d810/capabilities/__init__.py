@@ -25,6 +25,7 @@ from .source_lifter import (
     select_lifter,
 )
 from .use_def_safety import SeveranceViolation, UseDefSafetyCapability
+from .value_range import ValRange, ValRangeCapability
 
 __all__ = [
     "ConstantFixpointBackend",  # back-compat alias of ConstantFixpointCapability
@@ -35,6 +36,8 @@ __all__ = [
     "SeveranceViolation",
     "SourceLifter",
     "UseDefSafetyCapability",
+    "ValRange",
+    "ValRangeCapability",
     "register_live_lifter",
     "select_lifter",
 ]
