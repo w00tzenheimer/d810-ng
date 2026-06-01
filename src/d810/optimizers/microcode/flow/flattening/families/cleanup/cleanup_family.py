@@ -51,7 +51,7 @@ from d810.passes.fake_jump import (
     extract_fake_jump_fixes,
     serialize_fake_jump_fixes,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.fix_predecessor_branch_arm import (
+from d810.passes.fix_predecessor_branch_arm import (
     FIX_PREDECESSOR_BRANCH_ARM_FIXES_METADATA_KEY,
     FixPredecessorBranchArmStrategy,
     build_fix_predecessor_branch_arm_modifications,

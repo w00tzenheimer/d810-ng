@@ -39,7 +39,7 @@ from d810.passes.bad_while_loop import (
 from d810.passes.fake_jump import (
     FakeJumpPredFix,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.fix_predecessor_branch_arm import (
+from d810.passes.fix_predecessor_branch_arm import (
     FixPredecessorBranchArmFix,
     collect_live_fix_predecessor_branch_arm_fixes,
 )
