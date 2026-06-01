@@ -14,7 +14,7 @@ the canonical home AND the HR-side shim.
 
 This test lives under ``tests/system/runtime/`` (not ``tests/unit/``)
 because verifying the re-export REQUIRES importing
-``d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend``,
+``d810.passes.constant_fixpoint_backend``,
 which the ``unit-tests-no-optimizers`` import-linter contract forbids.
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ from d810.capabilities.constant_fixpoint import (
     ConstantFixpointBackend as CanonicalLegacyAlias,
     ConstantFixpointCapability as CanonicalCapability,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
+from d810.passes.constant_fixpoint_backend import (
     ConstantFixpointBackend as OldShimLegacyAlias,
     ConstantFixpointCapability as OldShimCapability,
     DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,

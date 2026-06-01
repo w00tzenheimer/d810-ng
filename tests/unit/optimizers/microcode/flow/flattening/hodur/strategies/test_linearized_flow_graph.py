@@ -10,9 +10,7 @@ from d810.ir.redirect import RedirectGotoIntent
 from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
     linearized_flow_graph as lfg_module,
 )
-from d810.optimizers.microcode.flow.flattening.hodur import (
-    constant_fixpoint_backend as constant_backend_module,
-)
+from d810.passes import constant_fixpoint_backend as constant_backend_module
 from d810.backends.hexrays.evidence import lfg_handoff_resolution_backend as handoff_backend_module
 from d810.transforms import (
     projected_topology_backend as topology_backend_module,

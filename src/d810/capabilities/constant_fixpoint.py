@@ -2,7 +2,7 @@
 
 Describes the backend boundary for state-variable constant-propagation
 evidence.  The default Hodur implementation lives at
-``d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend``;
+``d810.passes.constant_fixpoint_backend``;
 future angr / Ghidra backends would implement this Protocol next to
 their own data-flow analyses.
 

@@ -152,7 +152,7 @@ from d810.analyses.control_flow.byte_cascade_coverage_tracer import (
     ByteCascadeStage,
 )
 from d810.capabilities.constant_fixpoint import ConstantFixpointBackend
-from d810.optimizers.microcode.flow.flattening.hodur.constant_fixpoint_backend import (
+from d810.passes.constant_fixpoint_backend import (
     DEFAULT_HODUR_CONSTANT_FIXPOINT_BACKEND,
 )
 from d810.backends.hexrays.evidence.handler_chain_live_topology_backend import (
