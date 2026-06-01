@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from d810.optimizers.microcode.flow.flattening.hodur.profile_gate import (
+from d810.backends.hexrays.evidence.profile_gate import (
     AttributeHodurProfileGate,
     accepts_exact_sub7ffd_glbopt1,
 )

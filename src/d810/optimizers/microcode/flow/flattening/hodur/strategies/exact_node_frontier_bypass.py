@@ -24,7 +24,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_n
     _SUB7FFD_FUNC_EA,
     build_semantic_exact_round_summary,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.profile_gate import (
+from d810.backends.hexrays.evidence.profile_gate import (
     accepts_exact_sub7ffd_glbopt1,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.exact_conditional_node import (
