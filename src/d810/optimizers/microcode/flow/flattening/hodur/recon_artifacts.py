@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from d810.analyses.control_flow.return_frontier import ReturnSite
-from d810.optimizers.microcode.flow.flattening.hodur.return_sites import (
+from d810.backends.hexrays.evidence.return_sites import (
     HodurReturnSiteProvider,
 )
 from d810.passes.artifacts import (
