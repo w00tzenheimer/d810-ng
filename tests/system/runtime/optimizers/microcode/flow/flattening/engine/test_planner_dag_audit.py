@@ -38,7 +38,7 @@ from d810.transforms.plan_fragment import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.reconstruction_fragment_builder import (
+from d810.transforms.reconstruction_fragment_builder import (
     DAG_AUDIT_METADATA_KEY,
     finalize_reconstruction_fragment,
 )
