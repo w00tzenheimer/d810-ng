@@ -1,6 +1,6 @@
 """Concrete strategies built on top of the shared unflattening engine."""
 
-from .bad_while_loop import (
+from d810.passes.bad_while_loop import (
     BAD_WHILE_LOOP_DEPENDENCY_DIAGNOSTICS_METADATA_KEY,
     BAD_WHILE_LOOP_EDITS_METADATA_KEY,
     BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY,

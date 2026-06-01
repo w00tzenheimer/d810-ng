@@ -52,7 +52,7 @@ from d810.transforms.cleanup_evidence import (
     validate_side_effect_replay_candidate,
     validate_trampoline_isolation_candidate,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import (
+from d810.passes.bad_while_loop import (
     BAD_WHILE_LOOP_DUPLICATE_AND_REDIRECT,
     BAD_WHILE_LOOP_INSERT_BLOCK,
     BAD_WHILE_LOOP_UNSUPPORTED,
