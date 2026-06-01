@@ -35,6 +35,7 @@ def run_fixpoint(
     predecessors_of: Callable[[NodeId], Iterable[NodeId]],
     config: FixpointConfiguration = FixpointConfiguration(),
     raise_on_nonconvergence: bool = False,
+    edge_refine: Optional[Callable[[NodeId, NodeId, StateT], StateT]] = None,
 ) -> FixpointResult[StateT]:
     """Run a monotone worklist fixpoint for *domain* over a graph.
 
@@ -99,7 +100,13 @@ def run_fixpoint(
         iterations += 1
         visits[node] = visits.get(node, 0) + 1
 
-        incoming = [out_states[p] for p in flow_preds(node)]
+        # ``edge_refine`` is the LiSA per-edge ``assume``: the abstract state leaving ``p`` is
+        # refined for the edge ``p -> node`` (e.g. a state-comparison branch narrows the value-set
+        # along its true / false arm). ``None`` keeps the plain "meet predecessor OUTs" semantics.
+        if edge_refine is None:
+            incoming = [out_states[p] for p in flow_preds(node)]
+        else:
+            incoming = [edge_refine(p, node, out_states[p]) for p in flow_preds(node)]
         if node in entry_set:
             # Boundary condition participates in the meet (see docstring).
             incoming = [boundary, *incoming]

@@ -141,6 +141,31 @@ class StateValue:
             return False
         return self.constants <= other.constants
 
+    def meet_const(self, value: int) -> "StateValue":
+        """``assume (s == value)`` -- refine to ``self ⊓ {value}``.
+
+        The proof carried by a state-comparison's equality arm: ``⊤ ⊓ {v} = {v}``
+        (the comparison resolves the unknown to one constant); ``{...} ⊓ {v}`` is
+        ``{v}`` when ``v`` is possible here, else ``⊥`` (the arm is infeasible for
+        the incoming value-set -- a dead dispatcher edge, surfaced not guessed).
+        """
+        v = int(value) & _U64_MASK
+        if self.is_top:
+            return StateValue.of(v)
+        return StateValue.of(v) if v in self.constants else StateValue.bottom()
+
+    def exclude(self, value: int) -> "StateValue":
+        """``assume (s != value)`` -- refine to ``self ∖ {value}``.
+
+        The not-equal arm of a comparison.  ``⊤ ∖ {v}`` stays ``⊤`` (an
+        "everything except v" set is not representable in a finite powerset; the
+        sound over-approximation keeps ``⊤``).  A concrete set drops ``v``.
+        """
+        v = int(value) & _U64_MASK
+        if self.is_top:
+            return self
+        return StateValue(self.constants - {v}, False)
+
 
 class StateTransitionDomain:
     """Forward "may" value-set :class:`FlowDomain` over the state variable.
