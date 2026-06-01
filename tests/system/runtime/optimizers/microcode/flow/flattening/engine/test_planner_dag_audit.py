@@ -18,7 +18,7 @@ from d810.transforms.graph_modification import (
     ConvertToGoto,
     RedirectGoto,
 )
-from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+from d810.transforms.dag_authority import (
     DagDecision,
 )
 from d810.optimizers.microcode.flow.flattening.engine.planner import (
@@ -589,7 +589,7 @@ class TestEngineDagConformanceGate:
     """
 
     def _stub_authority_disagreeing(self, *, src: int, dag_target: int):
-        from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+        from d810.transforms.dag_authority import (
             DagDecision,
         )
         class _Authority:
@@ -601,7 +601,7 @@ class TestEngineDagConformanceGate:
         return _Authority()
 
     def _stub_authority_allow_all(self):
-        from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+        from d810.transforms.dag_authority import (
             DagDecision,
         )
         class _Authority:
@@ -613,7 +613,7 @@ class TestEngineDagConformanceGate:
         return _Authority()
 
     def _stub_authority_gap_all(self):
-        from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+        from d810.transforms.dag_authority import (
             DagDecision,
         )
         class _Authority:

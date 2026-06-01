@@ -307,7 +307,7 @@ def _refresh_cumulative_view_dag_authority(
 ) -> CumulativePlannerView:
     """Return a planner view whose arbiter matches HCC's corrected DAG."""
 
-    from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+    from d810.transforms.dag_authority import (
         DagAuthority,
     )
 

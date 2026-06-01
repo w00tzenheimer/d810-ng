@@ -62,7 +62,7 @@ from d810.transforms.plan_fragment import (
 )
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+    from d810.transforms.dag_authority import (
         DagAuthority,
     )
     from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
@@ -465,7 +465,7 @@ def _corridor_seed_data_for_snapshot(snapshot: AnalysisSnapshot) -> tuple:
     seed registry is the canonical source of corridor data for the
     DAG arbiter.
     """
-    from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+    from d810.transforms.dag_authority import (
         CorridorSpliceData,
     )
     mba = getattr(snapshot, "mba", None)
@@ -509,7 +509,7 @@ def _build_dag_authority(snapshot: AnalysisSnapshot) -> "DagAuthority | None":
     # Local import to avoid cyclic-import surface at module load time
     # (planner is imported during d810 startup; dag_authority is a
     # phase-1 artifact that should not be required for engine bootstrap).
-    from d810.optimizers.microcode.flow.flattening.engine.dag_authority import (
+    from d810.transforms.dag_authority import (
         CorridorSpliceData,
         DagAuthority,
     )
