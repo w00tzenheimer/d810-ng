@@ -52,7 +52,7 @@ from d810.optimizers.microcode.flow.flattening.engine.fragment_arbitration impor
     DAG_AUDIT_METADATA_KEY as _DAG_AUDIT_METADATA_KEY,
     apply_dag_conformance_gate as _apply_engine_dag_conformance_gate,
 )
-from d810.families.state_machine_cff.protocols import UnflatteningStrategy
+from d810.capabilities.unflattening_strategy import UnflatteningStrategy
 from d810.transforms.plan_fragment import (
     FAMILY_CLEANUP,
     FAMILY_DIRECT,

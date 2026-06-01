@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.families.state_machine_cff.protocols import (
+from d810.capabilities.unflattening_strategy import (
     StateMachineFamilyRuntimeServices,
 )
 
