@@ -77,13 +77,31 @@ def build_transition_result_from_state_machine(
 
 
 def transition_result_from_resolutions(
-    resolutions, *, strategy_name: str = "s1a"
+    resolutions, *, strategy_name: str = "s1a", dispatch_map=None
 ) -> TransitionResult:
     """Package §1a ``StateTransitionResolution``s into a ``TransitionResult`` (DAG-builder input).
 
     Each resolved transition (``source_state -> resolved_next_state`` at ``source_block``) becomes a
     ``StateTransition``. Unresolved rows (no next state) are dropped. Pure data transform.
+
+    When ``dispatch_map`` (the #1 ``StateDispatcherMap``) is supplied, also populate
+    ``TransitionResult.handlers`` keyed by ``state_const`` with ``check_block = target_block`` — the
+    entire report -> DAG -> region pipeline derives its rows from ``handlers``
+    (``build_transition_analysis_from_graph`` iterates ``transition_result.handlers``), so without
+    this the DAG has zero nodes and #3 ``plan_semantic_regions`` is empty even with N transitions.
+    Mirrors the legacy ``_convert_bst_to_result`` handler construction.
     """
+    handlers: Dict[int, StateHandler] = {}
+    if dispatch_map is not None:
+        for dmap_row in getattr(dispatch_map, "rows", ()):
+            state_const = int(dmap_row.state_const)
+            target_block = int(dmap_row.target_block)
+            handlers[state_const] = StateHandler(
+                state_value=state_const,
+                check_block=target_block,
+                handler_blocks=[target_block],
+                transitions=[],
+            )
     transitions: List[StateTransition] = []
     for row in resolutions:
         next_state = getattr(row, "resolved_next_state_const_u64", None)
@@ -94,15 +112,17 @@ def transition_result_from_resolutions(
             from_state = int(hexv, 16) if hexv else None
         except (TypeError, ValueError):
             from_state = None
-        transitions.append(
-            StateTransition(
-                from_state=from_state,
-                to_state=int(next_state),
-                from_block=int(getattr(row, "source_block_serial", 0)),
-            )
+        transition = StateTransition(
+            from_state=from_state,
+            to_state=int(next_state),
+            from_block=int(getattr(row, "source_block_serial", 0)),
         )
+        transitions.append(transition)
+        if from_state is not None and from_state in handlers:
+            handlers[from_state].transitions.append(transition)
     return TransitionResult(
         transitions=transitions,
+        handlers=handlers,
         strategy_name=strategy_name,
         resolved_count=len(transitions),
     )

@@ -60,7 +60,9 @@ class RecoverStateTransitions:
         resolutions = resolve_state_transitions(
             ctx.graph, ctx.facts, dispatch_map=dispatch_map
         )
-        transition_result = transition_result_from_resolutions(resolutions)
+        transition_result = transition_result_from_resolutions(
+            resolutions, dispatch_map=dispatch_map
+        )
         _publish(ctx, self.name, resolutions)
         _publish(ctx, "transition_result", transition_result)
         return PassResult(
