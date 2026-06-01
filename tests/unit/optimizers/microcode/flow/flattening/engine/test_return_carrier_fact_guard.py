@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.transforms.graph_modification import RedirectGoto
-from d810.optimizers.microcode.flow.flattening.engine import return_carrier_fact_guard
-from d810.optimizers.microcode.flow.flattening.engine.return_carrier_fact_guard import (
+from d810.transforms import return_carrier_fact_guard
+from d810.transforms.return_carrier_fact_guard import (
     filter_return_carrier_fact_redirects,
 )
 from d810.analyses.value_flow.facts import FactMapping, FactObservation, FactStatus, ValidatedFactView

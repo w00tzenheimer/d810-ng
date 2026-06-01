@@ -1,7 +1,7 @@
 """Fact-backed redirect guard for state-indexed terminal-byte hazards.
 
 This guard is the byte-emit analogue of
-:mod:`d810.optimizers.microcode.flow.flattening.engine.return_carrier_fact_guard`.
+:mod:`d810.transforms.return_carrier_fact_guard`.
 It rejects ``RedirectGoto`` / ``RedirectBranch`` candidates that would
 attach a *state-flow scaffolding block* (one that constant-defines the
 state variable ``%var_7BC``) as a predecessor of a known
