@@ -54,7 +54,7 @@ from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop import 
     serialize_bad_while_loop_edits,
     serialize_bad_while_loop_follow_up,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.bad_while_loop_dependency_diagnostics import (
+from d810.backends.hexrays.evidence.bad_while_loop_dependency_diagnostics import (
     build_bad_while_loop_dependency_diagnostic,
 )
 
