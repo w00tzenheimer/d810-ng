@@ -162,7 +162,7 @@ from d810.backends.hexrays.evidence.handler_chain_live_topology_backend import (
     LiveOneWaySuccessorProbe,
     LiveTopologyRegionEntryBlockView,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.handler_chain_materialization_capture_backend import (
+from d810.backends.hexrays.evidence.handler_chain_materialization_capture_backend import (
     DEFAULT_HODUR_HANDLER_CHAIN_MATERIALIZATION_CAPTURE_BACKEND,
     HandlerChainMaterializationCaptureBackend,
 )
