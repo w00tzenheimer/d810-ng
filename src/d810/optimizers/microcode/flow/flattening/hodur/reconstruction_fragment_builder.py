@@ -66,7 +66,7 @@ from d810.transforms.planner_context import (
     LinearizationDecision,
     PlannerContextContribution,
 )
-from d810.optimizers.microcode.flow.flattening.engine.fragment_arbitration import (
+from d810.transforms.fragment_arbitration import (
     DAG_AUDIT_METADATA_KEY,
     filter_dag_disagreements,
 )
