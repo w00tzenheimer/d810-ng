@@ -37,10 +37,9 @@ from d810.transforms.plan_fragment import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.backends.hexrays.evidence.bad_while_loop_dependency_diagnostics import (
+from d810.transforms.bad_while_loop_dependency_diagnostics import (
     BAD_WHILE_LOOP_DEPENDENCY_DIAGNOSTICS_METADATA_KEY,
     BadWhileLoopDependencyDiagnostic,
-    build_bad_while_loop_dependency_diagnostic,
     extract_bad_while_loop_dependency_diagnostics,
     serialize_bad_while_loop_dependency_diagnostics,
 )

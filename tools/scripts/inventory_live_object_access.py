@@ -25,7 +25,14 @@ import re
 import sys
 
 # Portable-core layers: these MUST NOT touch a live backend object directly.
-PORTABLE_CORE = ("ir", "analyses", "transforms", "capabilities", "support", "core")
+# Kept in sync with rules/no-live-object-access-in-portable-core.yml (which also
+# covers passes/ and families/); this tool is a SUPERSET heuristic of that rule --
+# it also counts getattr(...) duck-typed reads the ast-grep rule does not flag, so
+# its site count is expected to exceed `sg scan` (it is an inventory, not the gate).
+PORTABLE_CORE = (
+    "ir", "analyses", "transforms", "capabilities", "support", "core",
+    "passes", "families",
+)
 
 # Attribute names that only exist on a *live* Hex-Rays mba/mblock/minsn.
 # (Snapshot/portable equivalents use different shapes: BlockSnapshot.serial,
@@ -82,11 +89,14 @@ def scan(root: pathlib.Path) -> dict[str, list[tuple[str, int, str, str]]]:
 
 
 def main() -> int:
+    # Default to the checkout this script lives in (tools/scripts/<here>), so the
+    # tool is not pinned to one developer's worktree path.
+    default_root = pathlib.Path(__file__).resolve().parents[2]
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--root",
-        default="/Users/mahmoud/src/idapro/d810/.worktrees/llvm-lisa-restructure",
-        help="repo or worktree root (default: llvm-lisa-restructure worktree)",
+        default=str(default_root),
+        help="repo or worktree root (default: the checkout this script lives in)",
     )
     args = ap.parse_args()
     root = pathlib.Path(args.root)

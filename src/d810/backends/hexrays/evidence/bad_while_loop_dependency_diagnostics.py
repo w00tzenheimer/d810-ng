@@ -3,18 +3,19 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from d810.core.typing import Any
 from d810.evaluator.hexrays_microcode.definition_rescue_backend import (
     DefinitionRescueBackend,
     HexRaysDefinitionRescueBackend,
 )
-
-
-BAD_WHILE_LOOP_DEPENDENCY_DIAGNOSTICS_METADATA_KEY = (
-    "bad_while_loop_dependency_diagnostics"
+# Portable metadata pieces (key, alias, serialize/extract) live in portable-core so
+# that d810.passes / d810.transforms can consume diagnostics without importing this
+# live module's ida_hexrays-backed builder.  Re-exported below for back-compat.
+from d810.transforms.bad_while_loop_dependency_diagnostics import (
+    BAD_WHILE_LOOP_DEPENDENCY_DIAGNOSTICS_METADATA_KEY,
+    BadWhileLoopDependencyDiagnostic,
+    extract_bad_while_loop_dependency_diagnostics,
+    serialize_bad_while_loop_dependency_diagnostics,
 )
-
-BadWhileLoopDependencyDiagnostic = dict[str, object]
 
 
 def build_bad_while_loop_dependency_diagnostic(
@@ -110,36 +111,6 @@ def build_bad_while_loop_dependency_diagnostic(
         "final_bucket": bucket,
         "bucket_reason": bucket_reason,
     }
-
-
-def serialize_bad_while_loop_dependency_diagnostics(
-    diagnostics: Sequence[Mapping[str, object]],
-) -> list[dict[str, object]]:
-    """Return JSON-friendly diagnostic metadata rows."""
-    return [
-        _json_sanitize(dict(row))
-        for row in diagnostics
-        if isinstance(row, Mapping)
-    ]
-
-
-def extract_bad_while_loop_dependency_diagnostics(
-    flow_graph: object | None,
-) -> tuple[BadWhileLoopDependencyDiagnostic, ...]:
-    """Read BadWhileLoop dependency diagnostics from FlowGraph metadata."""
-    if flow_graph is None:
-        return ()
-    metadata = getattr(flow_graph, "metadata", None)
-    if not isinstance(metadata, Mapping):
-        return ()
-    raw = metadata.get(BAD_WHILE_LOOP_DEPENDENCY_DIAGNOSTICS_METADATA_KEY)
-    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
-        return ()
-    return tuple(
-        _json_sanitize(dict(row))
-        for row in raw
-        if isinstance(row, Mapping)
-    )
 
 
 def _collect_block_liveins_and_defs(
@@ -534,16 +505,6 @@ def _serialize_value(value: object | None) -> object:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [_serialize_value(item) for item in value]
     return {"type": type(value).__name__, "repr": repr(value)}
-
-
-def _json_sanitize(value: object) -> Any:
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if isinstance(value, Mapping):
-        return {str(key): _json_sanitize(item) for key, item in value.items()}
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [_json_sanitize(item) for item in value]
-    return repr(value)
 
 
 __all__ = [
