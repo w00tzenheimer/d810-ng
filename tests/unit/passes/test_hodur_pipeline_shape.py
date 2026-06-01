@@ -64,6 +64,7 @@ def test_full_pipeline_runs_end_to_end_on_a_portable_context():
         assert not r.rewrite_plan.operations if hasattr(r.rewrite_plan, "operations") else True
 
 
-def test_detect_is_inert_until_wired():
-    # The family stays a no-op match until recover_dispatcher carries detection (seam pending).
+def test_detect_returns_none_without_a_dispatcher():
+    # detect is real (portable equality-chain detector); no graph / no dispatcher -> no match.
     assert HodurFamily().detect(graph=None, capabilities=None) is None
+    assert HodurFamily().detect(graph="not-a-graph", capabilities=None) is None
