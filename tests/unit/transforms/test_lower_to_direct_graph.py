@@ -26,21 +26,32 @@ class _Map:
         return None
 
 
-def _edge(kind, source_block, target_entry, *, branch=False):
+def _edge(kind, source_block, target_entry, *, branch=False, arm=None):
+    branch_arm = arm if arm is not None else (0 if branch else None)
     anchor = SimpleNamespace(
         block_serial=source_block,
-        branch_arm=0 if branch else None,
+        branch_arm=branch_arm,
         kind=RedirectSourceKind.CONDITIONAL_BRANCH if branch else RedirectSourceKind.UNCONDITIONAL,
     )
     return SimpleNamespace(kind=kind, target_entry_anchor=target_entry, source_anchor=anchor)
 
 
+def _graph(spec):
+    """spec: {serial: (nsucc, (succ, ...))} -> bare FlowGraph-like stub with .blocks."""
+    blocks = {
+        s: SimpleNamespace(nsucc=nsucc, succs=succs) for s, (nsucc, succs) in spec.items()
+    }
+    return SimpleNamespace(blocks=blocks)
+
+
 def test_spine_redirects_one_goto_per_transition_edge():
+    # 1-way sources: old_target derived from the live block's single successor, not the dispatcher.
     dag = SimpleNamespace(edges=(
         _edge(SemanticEdgeKind.TRANSITION, 10, 20),
         _edge(SemanticEdgeKind.TRANSITION, 20, 30),
     ))
-    steps = _spine_redirects_from_dag(dag, dispatcher_entry_serial=5)
+    graph = _graph({10: (1, (5,)), 20: (1, (5,))})
+    steps = _spine_redirects_from_dag(dag, 5, graph)
     assert len(steps) == 2
     assert all(isinstance(s, PatchRedirectGoto) for s in steps)
     assert (steps[0].from_serial, steps[0].old_target, steps[0].new_target) == (10, 5, 20)
@@ -48,10 +59,19 @@ def test_spine_redirects_one_goto_per_transition_edge():
 
 
 def test_conditional_arm_anchor_becomes_branch_redirect():
-    dag = SimpleNamespace(edges=(_edge(SemanticEdgeKind.CONDITIONAL_TRANSITION, 9, 44, branch=True),))
-    steps = _spine_redirects_from_dag(dag, dispatcher_entry_serial=5)
+    # 2-way source: old_target is the current successor of the redirected arm (succs[arm]).
+    dag = SimpleNamespace(edges=(_edge(SemanticEdgeKind.CONDITIONAL_TRANSITION, 9, 44, branch=True, arm=1),))
+    graph = _graph({9: (2, (16, 17))})
+    steps = _spine_redirects_from_dag(dag, 5, graph)
     assert len(steps) == 1 and isinstance(steps[0], PatchRedirectBranch)
-    assert (steps[0].from_serial, steps[0].new_target) == (9, 44)
+    assert (steps[0].from_serial, steps[0].old_target, steps[0].new_target) == (9, 17, 44)
+
+
+def test_ambiguous_two_way_comparator_anchor_is_skipped():
+    # 2-way comparator source with no resolvable arm -> skipped (no abort on the deferred apply).
+    dag = SimpleNamespace(edges=(_edge(SemanticEdgeKind.CONDITIONAL_TRANSITION, 15, 44, arm=None),))
+    graph = _graph({15: (2, (16, 17))})
+    assert _spine_redirects_from_dag(dag, 5, graph) == ()
 
 
 def test_non_transition_edges_and_dispatcher_selfloops_skipped():
@@ -60,7 +80,8 @@ def test_non_transition_edges_and_dispatcher_selfloops_skipped():
         _edge(SemanticEdgeKind.TRANSITION, 10, 5),         # routes back to dispatcher (5)
         _edge(SemanticEdgeKind.TRANSITION, 11, None),      # no target
     ))
-    assert _spine_redirects_from_dag(dag, dispatcher_entry_serial=5) == ()
+    graph = _graph({10: (1, (5,)), 11: (1, (5,))})
+    assert _spine_redirects_from_dag(dag, 5, graph) == ()
 
 
 def test_null_or_empty_inputs_yield_empty_plan():

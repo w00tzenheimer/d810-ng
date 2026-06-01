@@ -22,7 +22,6 @@ from d810.ir.flowgraph import FlowGraph
 from d810.analyses.value_flow.model import ValidatedFactView
 from d810.analyses.control_flow.transition_builder import TransitionResult
 from d810.analyses.control_flow.linearized_state_dag import (
-    RedirectSourceKind,
     SemanticEdgeKind,
     build_live_linearized_state_dag_from_graph,
 )
@@ -43,12 +42,19 @@ class _DispatcherMap(Protocol):
     def resolve_target(self, state_value: int) -> int | None: ...
 
 
-def _spine_redirects_from_dag(dag, dispatcher_entry_serial: int) -> tuple[object, ...]:
+def _spine_redirects_from_dag(dag, dispatcher_entry_serial: int, graph) -> tuple[object, ...]:
     """Walk the linearized DAG's transition edges -> one redirect per edge (the reachable spine).
 
     Each edge's ``source_anchor`` (a handler exit) is redirected off the dispatcher onto the
-    successor handler's ``target_entry_anchor``. Conditional-arm anchors become branch redirects.
+    successor handler's ``target_entry_anchor``. The redirect kind is chosen from the *live*
+    block's successor count, not the static anchor kind: a 1-way source emits a goto redirect,
+    a 2-way source emits a branch redirect off the current arm successor. Ambiguous/comparator
+    2-way sources (no resolvable arm) are skipped and left to the #3 engine / #5 cleanup so the
+    deferred apply does not abort on a "not 1-way" mismatch.
     """
+    blocks = getattr(graph, "blocks", {})
+    nsucc_map = {s: int(b.nsucc) for s, b in blocks.items()}
+    succ_map = {s: tuple(b.succs) for s, b in blocks.items()}
     steps: list[object] = []
     for edge in dag.edges:
         if edge.kind not in _SPINE_EDGE_KINDS:
@@ -60,19 +66,29 @@ def _spine_redirects_from_dag(dag, dispatcher_entry_serial: int) -> tuple[object
         new_target = int(target)
         if new_target == dispatcher_entry_serial:
             continue  # state routes back to the dispatcher: leave for cleanup (#5)
-        from_serial = int(anchor.block_serial)
-        is_branch = (
-            anchor.branch_arm is not None
-            or anchor.kind is RedirectSourceKind.CONDITIONAL_BRANCH
-        )
-        cls = PatchRedirectBranch if is_branch else PatchRedirectGoto
-        steps.append(
-            cls(
-                from_serial=from_serial,
-                old_target=int(dispatcher_entry_serial),
-                new_target=new_target,
+        s = int(anchor.block_serial)
+        succs = succ_map.get(s, ())
+        nsucc = nsucc_map.get(s, len(succs))
+        if nsucc == 1:
+            old_target = int(succs[0]) if succs else int(dispatcher_entry_serial)
+            steps.append(
+                PatchRedirectGoto(
+                    from_serial=s, old_target=old_target, new_target=new_target
+                )
             )
-        )
+        elif nsucc == 2:
+            arm = anchor.branch_arm
+            if arm is None or arm >= len(succs):
+                continue  # ambiguous/comparator 2-way source: leave to #3 engine / #5 cleanup
+            old_target = int(succs[arm])
+            if old_target == new_target:
+                continue
+            steps.append(
+                PatchRedirectBranch(
+                    from_serial=s, old_target=old_target, new_target=new_target
+                )
+            )
+        # nsucc 0 or >2 -> skip
     return tuple(steps)
 
 
@@ -101,4 +117,6 @@ def lower_to_direct_graph(
         dispatcher_entry_serial=dispatcher_entry_serial,
         state_var_stkoff=state_var_stkoff,
     )
-    return PatchPlan(steps=_spine_redirects_from_dag(dag, int(dispatcher_entry_serial)))
+    return PatchPlan(
+        steps=_spine_redirects_from_dag(dag, int(dispatcher_entry_serial), graph)
+    )
