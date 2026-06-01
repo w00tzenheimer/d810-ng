@@ -70,7 +70,7 @@ from d810.passes.side_effect_select_loop import (
 from d810.passes.selector_shell import (
     SelectorShellStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
+from d810.passes.single_iteration import (
     SINGLE_ITERATION_CONVERTS_METADATA_KEY,
     SINGLE_ITERATION_FIXES_METADATA_KEY,
     SingleIterationStrategy,

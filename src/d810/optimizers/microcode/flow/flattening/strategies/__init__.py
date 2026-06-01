@@ -82,7 +82,7 @@ from d810.passes.emulated_dispatcher_strategy import (
     extract_emulated_dispatcher_metadata,
     extract_emulated_dispatcher_modifications,
 )
-from .single_iteration import (
+from d810.passes.single_iteration import (
     DEFAULT_MAX_MAGIC,
     DEFAULT_MIN_MAGIC,
     SINGLE_ITERATION_FIXES_METADATA_KEY,

@@ -111,7 +111,7 @@ from d810.backends.hexrays.evidence.topological_sort import (
 from d810.passes.fake_jump import (
     FakeJumpStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
+from d810.passes.single_iteration import (
     SingleIterationStrategy,
 )
 __all__ = [

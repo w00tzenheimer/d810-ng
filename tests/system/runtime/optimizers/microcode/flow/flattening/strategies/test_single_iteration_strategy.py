@@ -9,7 +9,7 @@ from d810.transforms.snapshot import (
 from d810.transforms.plan_fragment import (
     FAMILY_CLEANUP,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
+from d810.passes.single_iteration import (
     SINGLE_ITERATION_CONVERTS_METADATA_KEY,
     SINGLE_ITERATION_FIXES_METADATA_KEY,
     SingleIterationConvertFix,
