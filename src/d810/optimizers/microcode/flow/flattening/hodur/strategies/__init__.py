@@ -105,7 +105,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.return_frontier_
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.spurious_backedge_redirect import (
     SpuriousBackedgeRedirectStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.topological_sort import (
+from d810.backends.hexrays.evidence.topological_sort import (
     TopologicalSortStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.fake_jump import (
