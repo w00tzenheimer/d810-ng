@@ -228,7 +228,7 @@ from d810.transforms.plan_fragment import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.passes._linearized_flow_graph_reporting import (
+from d810.backends.hexrays.evidence._linearized_flow_graph_reporting import (
     log_dag_redirect_fallback_outcome,
     log_path_tail_redirect_outcome,
     log_residual_dispatcher_handoff_outcomes,

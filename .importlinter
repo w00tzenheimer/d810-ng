@@ -195,9 +195,15 @@ forbidden_modules =
     idapro
 
 [importlinter:contract:portable-core-no-ida]
-# Portable-core packages must not import live IDA / Hex-Rays
-# packages, even transitively, even at module-top, even lazily
-# inside a function. import-linter detects external-package imports
+# Portable-core packages must not import live IDA / Hex-Rays packages.
+# ENFORCEMENT NOTE: allow_indirect_imports=True below means this gate
+# currently flags only DIRECT imports of a forbidden package from a source
+# module. Full transitive enforcement (allow_indirect_imports=False) is
+# deferred until d810.core no longer transitively reaches idaapi via
+# core.persistence / core.platform -- see ticket llr-sf0p. Until then a
+# portable -> internal-live -> idaapi chain can still slip past this gate;
+# the no-live-object-access ast-grep rule + a no-IDA import sweep are the
+# compensating checks. import-linter detects external-package imports
 # because `include_external_packages = True` is set above.
 #
 # source_modules lists ONLY packages that currently exist on
