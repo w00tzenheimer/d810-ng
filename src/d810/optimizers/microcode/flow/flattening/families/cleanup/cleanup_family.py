@@ -67,7 +67,7 @@ from d810.passes.local_select_loop import (
 from d810.optimizers.microcode.flow.flattening.strategies.side_effect_select_loop import (
     SideEffectSelectLoopStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.strategies.selector_shell import (
+from d810.passes.selector_shell import (
     SelectorShellStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.strategies.single_iteration import (
