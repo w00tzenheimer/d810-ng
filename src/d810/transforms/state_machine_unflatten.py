@@ -25,7 +25,15 @@ from d810.analyses.control_flow.linearized_state_dag import (
     SemanticEdgeKind,
     build_live_linearized_state_dag_from_graph,
 )
-from d810.transforms.plan import PatchPlan, PatchRedirectBranch, PatchRedirectGoto
+from d810.transforms.plan import (
+    PatchConvertToGoto,
+    PatchPlan,
+    PatchRedirectBranch,
+    PatchRedirectGoto,
+)
+from d810.transforms.dispatcher_backedge_disconnect_planning import (
+    plan_dispatcher_backedge_disconnects,
+)
 from d810.transforms.semantic_regions import SemanticRegionPlan
 
 # Edges that advance the state machine (a back-edge to an earlier state is still a TRANSITION,
@@ -92,6 +100,66 @@ def _spine_redirects_from_dag(dag, dispatcher_entry_serial: int, graph) -> tuple
     return tuple(steps)
 
 
+def _spine_members_from_dag(dag) -> frozenset[int]:
+    """Block serials that are reachable spine members (a source or target in ``dag.edges``).
+
+    Used to scope the residual back-edge disconnect (#4b) so it only touches blocks that
+    participate in the reconstructed spine, never unrelated 2-way blocks elsewhere in the CFG.
+    """
+    members: set[int] = set()
+    for edge in dag.edges:
+        anchor = getattr(edge, "source_anchor", None)
+        if anchor is not None and getattr(anchor, "block_serial", None) is not None:
+            members.add(int(anchor.block_serial))
+        target = getattr(edge, "target_entry_anchor", None)
+        if target is not None:
+            members.add(int(target))
+    return frozenset(members)
+
+
+def _disconnect_residual_dispatcher_backedges(
+    dag, dispatcher_entry_serial: int, graph, redirect_steps
+) -> tuple[object, ...]:
+    """Convert residual 2-way dispatcher back-edges among spine members to 1-way gotos (#4b).
+
+    After the spine redirects (#4) some 2-way spine blocks still keep ``dispatcher_entry_serial``
+    as one of their two successors — a spurious back-edge that the vendor structurer renders as a
+    ``while`` loop. Mirroring the legacy ``_disconnect_bst_comparison_nodes`` seam, each such block
+    is converted to a 1-way goto that KEEPS its non-dispatcher successor. Scoped to spine members
+    (sources/targets in ``dag.edges``) so unrelated 2-way blocks are left untouched, and excluding
+    any block already handled by a #4 redirect so the same source is never double-edited.
+    """
+    blocks = getattr(graph, "blocks", {})
+    nsucc_map = {s: int(b.nsucc) for s, b in blocks.items()}
+    succ_map = {s: tuple(int(x) for x in b.succs) for s, b in blocks.items()}
+    # Seed ``emitted`` with the #4 redirect sources so the planner skips any block that already
+    # received a goto/branch redirect (matches the legacy ``already_redirected`` guard).
+    emitted = {
+        (int(step.from_serial), -1)
+        for step in redirect_steps
+        if getattr(step, "from_serial", None) is not None
+    }
+    plans = plan_dispatcher_backedge_disconnects(
+        block_nsucc_map=nsucc_map,
+        block_succ_map=succ_map,
+        dispatcher_serial=int(dispatcher_entry_serial),
+        bst_node_blocks=set(),
+        emitted=emitted,
+    )
+    spine_members = _spine_members_from_dag(dag)
+    steps: list[object] = []
+    for plan in plans:
+        if int(plan.source_block) not in spine_members:
+            continue  # only disconnect 2-way blocks that participate in the spine
+        steps.append(
+            PatchConvertToGoto(
+                block_serial=int(plan.source_block),
+                goto_target=int(plan.keep_target),
+            )
+        )
+    return tuple(steps)
+
+
 def lower_to_direct_graph(
     graph: FlowGraph | None,
     facts: ValidatedFactView | None,
@@ -117,6 +185,10 @@ def lower_to_direct_graph(
         dispatcher_entry_serial=dispatcher_entry_serial,
         state_var_stkoff=state_var_stkoff,
     )
-    return PatchPlan(
-        steps=_spine_redirects_from_dag(dag, int(dispatcher_entry_serial), graph)
+    redirect_steps = _spine_redirects_from_dag(
+        dag, int(dispatcher_entry_serial), graph
     )
+    backedge_steps = _disconnect_residual_dispatcher_backedges(
+        dag, int(dispatcher_entry_serial), graph, redirect_steps
+    )
+    return PatchPlan(steps=(*redirect_steps, *backedge_steps))
