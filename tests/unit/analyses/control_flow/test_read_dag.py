@@ -21,6 +21,7 @@ from d810.analyses.control_flow.linearized_state_dag import (
 )
 from d810.analyses.control_flow.read_dag import read_dag_from
 from d810.analyses.control_flow.transition_builder import (
+    StateHandler,
     StateTransition,
     TransitionResult,
 )
@@ -132,6 +133,37 @@ def test_outer_transition_edge_from_transition_result():
     assert edge.target_key.handler_serial == 20  # state K2 -> handler 20
     assert edge.target_state == K2
     assert edge.source_anchor.block_serial == 10
+
+
+def test_state_level_expansion_from_transition_handlers():
+    # The spine needs one node per ROUTED STATE (the legacy's 103 state-level nodes),
+    # not just per exact handler.  When the transition result's handler map covers
+    # more states than handler_entry_by_state (here K1 AND K2 both route to handler
+    # block 10), read_dag_from expands to one node per state, sharing the handler's
+    # owner-set region -- so the edge set can cover ALL transitions.
+    view = DispatcherView(
+        handler_entry_by_state={K1: 10},
+        handler_range_map={},
+        bst_node_blocks=frozenset({2}),
+        dispatcher_entry=1,
+        result=None,
+    )
+    tr = TransitionResult(
+        transitions=[StateTransition(from_state=K1, to_state=K2, from_block=10)],
+        handlers={
+            K1: StateHandler(state_value=K1, check_block=10, handler_blocks=[10]),
+            K2: StateHandler(state_value=K2, check_block=10, handler_blocks=[10]),
+        },
+    )
+    dag = read_dag_from(view=view, owner_result=_owner_result(), transitions=tr)
+    # two state-level nodes, both routing to handler block 10
+    assert len(dag.nodes) == 2
+    assert sorted(n.key.state_const for n in dag.nodes) == [K1, K2]
+    assert all(n.handler_serial == 10 for n in dag.nodes)
+    # both share handler 10's owner-set region
+    assert dag.nodes[0].owned_blocks == dag.nodes[1].owned_blocks
+    # the K1 -> K2 transition is now an edge (both states are mapped)
+    assert any(e.target_state == K2 for e in dag.edges)
 
 
 def test_conditional_transition_edge_kind():

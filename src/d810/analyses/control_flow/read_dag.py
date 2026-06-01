@@ -75,21 +75,29 @@ def read_dag_from(
     owners = block_owners(owner_result)
     range_map = {int(b): (int(lo), int(hi)) for b, (lo, hi) in view.handler_range_map.items()}
 
-    # Invert state -> handler to one node per handler (lowest mapped state wins).
-    handler_to_state: dict[int, int] = {}
-    for state_const, handler in view.handler_entry_by_state.items():
-        handler, state_const = int(handler), int(state_const)
-        if handler not in handler_to_state or state_const < handler_to_state[handler]:
-            handler_to_state[handler] = state_const
+    # state -> handler: the exact handlers, plus (when a transition result is given)
+    # the full transition handler map -- so the read-off expands to one node per
+    # ROUTED STATE (the legacy's state-level granularity) and the edges can cover
+    # every transition, not just the exact-handler subset.
+    state_to_handler: dict[int, int] = {
+        int(s): int(h) for s, h in view.handler_entry_by_state.items()
+    }
+    if transitions is not None:
+        for state, handler in transitions.handlers.items():
+            check_block = getattr(handler, "check_block", None)
+            if check_block is not None:
+                state_to_handler.setdefault(int(state), int(check_block))
 
     nodes: list[StateDagNode] = []
-    for handler in sorted(handler_to_state):
-        state_const = handler_to_state[handler]
+    for state_const in sorted(state_to_handler):
+        handler = state_to_handler[state_const]
         if handler in range_map:
             lo, hi = range_map[handler]
             kind = StateNodeKind.RANGE_BACKED
-            key = StateDagNodeKey(handler_serial=handler, range_lo=lo, range_hi=hi)
-            label = _state_label(kind, None, lo, hi)
+            key = StateDagNodeKey(
+                handler_serial=handler, state_const=state_const, range_lo=lo, range_hi=hi
+            )
+            label = _state_label(kind, state_const, lo, hi)
         else:
             kind = StateNodeKind.EXACT
             key = StateDagNodeKey(handler_serial=handler, state_const=state_const)
@@ -123,7 +131,7 @@ def read_dag_from(
             )
         )
 
-    edges = _build_outer_edges(nodes, view, transitions)
+    edges = _build_outer_edges(nodes, transitions)
 
     entry = (
         dispatcher_entry_serial
@@ -143,32 +151,32 @@ def read_dag_from(
 
 def _build_outer_edges(
     nodes: list[StateDagNode],
-    view: DispatcherView,
     transitions: TransitionResult | None,
 ) -> tuple[StateDagEdge, ...]:
     """Project the outer state-level DAG edges off ``recover_transition_result``.
 
     Each :class:`StateTransition` (``from_state -> to_state``) becomes a
-    :class:`StateDagEdge` between the handler nodes, ``CONDITIONAL_TRANSITION``
-    when the transition is conditional else ``TRANSITION``.  The richer
-    ``ordered_path`` / ``CONDITIONAL_RETURN`` lowering lands with the dual-build.
+    :class:`StateDagEdge` between the state-level nodes (keyed by ``state_const``),
+    ``CONDITIONAL_TRANSITION`` when the transition is conditional else
+    ``TRANSITION``.  A ``to_state`` with no node yields ``target_key=None`` (a
+    return/exit).  The richer ``ordered_path`` lowering lands with the spine port.
     """
     if transitions is None:
         return ()
-    node_by_handler = {n.handler_serial: n for n in nodes}
-    handler_by_state = {int(s): int(h) for s, h in view.handler_entry_by_state.items()}
+    node_by_state = {
+        int(n.key.state_const): n for n in nodes if n.key.state_const is not None
+    }
 
     edges: list[StateDagEdge] = []
     for transition in transitions.transitions:
         if transition.from_state is None:
             continue
-        source_handler = handler_by_state.get(int(transition.from_state))
-        source_node = node_by_handler.get(source_handler) if source_handler else None
+        source_node = node_by_state.get(int(transition.from_state))
         if source_node is None:
             continue
-        target_handler = handler_by_state.get(int(transition.to_state))
-        target_node = (
-            node_by_handler.get(target_handler) if target_handler is not None else None
+        target_node = node_by_state.get(int(transition.to_state))
+        target_handler = (
+            int(target_node.handler_serial) if target_node is not None else None
         )
         is_conditional = bool(transition.is_conditional)
         anchor = StateRedirectAnchor(
