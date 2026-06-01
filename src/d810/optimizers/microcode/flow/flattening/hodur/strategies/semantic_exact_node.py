@@ -89,7 +89,7 @@ from d810.analyses.control_flow.residual_handoff_discovery import (
     state_has_semantic_support,
     supplemental_selected_entry_for_state,
 )
-from d810.optimizers.microcode.flow.flattening.residual_handoff_resolution import (
+from d810.backends.hexrays.evidence.residual_handoff_resolution import (
     is_semantic_handoff_redirect,
     resolve_singleton_state_write_value,
 )

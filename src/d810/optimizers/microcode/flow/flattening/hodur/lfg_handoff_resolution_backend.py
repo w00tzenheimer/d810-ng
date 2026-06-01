@@ -10,7 +10,7 @@ from d810.analyses.control_flow.residual_handoff_discovery import (
     resolve_projected_path_tail_target,
     resolve_projected_snapshot_handoff_target,
 )
-from d810.optimizers.microcode.flow.flattening.residual_handoff_resolution import (
+from d810.backends.hexrays.evidence.residual_handoff_resolution import (
     resolve_effective_target_entry,
     resolve_synthesized_handoff_target,
 )
