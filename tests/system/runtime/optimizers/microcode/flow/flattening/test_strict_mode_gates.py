@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 from d810.core.gate_modes import GateOperationMode
-from d810.optimizers.microcode.flow.flattening.engine.provenance import (
+from d810.analyses.control_flow.provenance import (
     DecisionReasonCode,
     GateAccounting,
     GateDecision,

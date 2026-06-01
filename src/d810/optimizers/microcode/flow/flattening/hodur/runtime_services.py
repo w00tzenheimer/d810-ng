@@ -4,7 +4,7 @@ from __future__ import annotations
 from d810.capabilities.providers import get_microcode_evidence
 from d810.core import logging
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
-from d810.optimizers.microcode.flow.flattening.engine.provenance import (
+from d810.analyses.control_flow.provenance import (
     PlannerInputs,
 )
 from d810.optimizers.microcode.flow.flattening.engine.runtime import (

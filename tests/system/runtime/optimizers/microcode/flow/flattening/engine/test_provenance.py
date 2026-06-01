@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from d810.optimizers.microcode.flow.flattening import engine
-from d810.optimizers.microcode.flow.flattening.engine.provenance import (
+from d810.analyses.control_flow.provenance import (
     DecisionInputSummary,
     DecisionPhase,
     DecisionReasonCode,

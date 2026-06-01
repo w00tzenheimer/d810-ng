@@ -77,7 +77,7 @@ from d810.hexrays.mutation.ir_translator import (
     classify_live_insn_kind,
     classify_live_operand_kind,
 )
-from d810.optimizers.microcode.flow.flattening.engine.provenance import (
+from d810.analyses.control_flow.provenance import (
     GateAccounting,
     GateDecision,
     GateVerdict,

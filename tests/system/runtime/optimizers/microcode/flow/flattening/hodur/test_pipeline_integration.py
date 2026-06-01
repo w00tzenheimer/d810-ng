@@ -20,7 +20,7 @@ from d810.optimizers.microcode.flow.flattening.engine.planner import (
     PipelinePolicy,
     UnflatteningPlanner,
 )
-from d810.optimizers.microcode.flow.flattening.engine.provenance import (
+from d810.analyses.control_flow.provenance import (
     PlannerInputs,
 )
 from d810.optimizers.microcode.flow.flattening.engine.snapshot import AnalysisSnapshot

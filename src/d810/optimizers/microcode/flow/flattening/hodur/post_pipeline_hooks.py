@@ -7,7 +7,7 @@ from pathlib import Path
 from d810.capabilities.providers import get_microcode_evidence
 from d810.core.typing import Callable
 from d810.core import logging
-from d810.optimizers.microcode.flow.flattening.engine.provenance import (
+from d810.analyses.control_flow.provenance import (
     PipelineProvenance,
 )
 from d810.optimizers.microcode.flow.flattening.engine.runtime import (
