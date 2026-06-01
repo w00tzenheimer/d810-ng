@@ -157,6 +157,35 @@ def read_dispatcher_from(
             consts = sorted(in_state.constants)
             handler_range_map[block] = (consts[0], consts[-1])
 
+    # P1: promote each genuine range-routed handler into ``handler_entry_by_state``
+    # keyed by a representative state, so the exact-only ``recover_transition_result``
+    # consumer sees it.  This mirrors ``_convert_bst_to_result``'s IntervalDispatcher
+    # backfill (transition_builder.py) but reads the routing off the fixpoint instead
+    # of ``dispatcher._rows``, with two skips:
+    #   * the default / catch-all arm -- a range block that is some comparison's
+    #     ``ne_target`` is the "nothing matched" routing block, not a real handler
+    #     (the fixpoint-native analogue of the ``_target_freq > 1`` skip);
+    #   * a SHADOW block -- one whose entire value-set is already covered by exact
+    #     handlers.  The representative must be a state NOT already mapped; a block
+    #     with no such fresh state is a shared/merge block reachable on exact-handler
+    #     paths, not a distinct handler, so promoting it would only clobber an exact
+    #     entry without adding a handler.  (On real sub_7FFD both "range handlers"
+    #     are shadows -- the value-set fixpoint is strictly more precise than the BST
+    #     walk's count here, so the precise handler count stays at the 45 exact.)
+    # Deterministic: lowest block serial wins on ties; lowest fresh state is the key.
+    ne_targets = {int(comp.ne_target) for comp in comparisons.values()}
+    promoted_blocks = set(handler_entry_by_state.values())
+    for block in sorted(handler_range_map):
+        if block in ne_targets or block in promoted_blocks:
+            continue
+        fresh = sorted(
+            c for c in in_states[block].constants if c not in handler_entry_by_state
+        )
+        if not fresh:
+            continue
+        handler_entry_by_state[fresh[0]] = block
+        promoted_blocks.add(block)
+
     return DispatcherView(
         handler_entry_by_state=handler_entry_by_state,
         handler_range_map=handler_range_map,
