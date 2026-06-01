@@ -13,7 +13,11 @@ from __future__ import annotations
 
 from d810.analyses.control_flow.block_ownership_domain import analyze_block_ownership
 from d810.analyses.control_flow.dispatcher_discovery_fixpoint import DispatcherView
-from d810.analyses.control_flow.linearized_state_dag import StateNodeKind
+from d810.analyses.control_flow.linearized_state_dag import (
+    LocalEdgeKind,
+    LocalSegmentKind,
+    StateNodeKind,
+)
 from d810.analyses.control_flow.read_dag import read_dag_from
 
 K1, K2, K3 = 0x10000001, 0x10000002, 0x10000003
@@ -89,3 +93,20 @@ def test_container_carries_dispatcher_and_bst_blocks():
     dag = _dag()
     assert dag.dispatcher_entry_serial == 1
     assert dag.bst_node_blocks == (2,)
+
+
+def test_local_structure_populated_when_topology_provided():
+    dag = read_dag_from(
+        view=_view(),
+        owner_result=_owner_result(),
+        successors_of=lambda n: _SUCC.get(int(n), ()),
+        predecessors_of=lambda n: _PRED.get(int(n), ()),
+        dispatcher_entry_serial=1,
+    )
+    node10 = next(n for n in dag.nodes if n.handler_serial == 10)
+    # owned = (10, 30); 30 is the shared epilogue.
+    assert {s.segment_id for s in node10.local_segments} == {"blk[10]", "blk[30]"}
+    kinds = {s.segment_id: s.kind for s in node10.local_segments}
+    assert kinds["blk[30]"] is LocalSegmentKind.SHARED_SUFFIX
+    e = {(x.source_segment_id, x.target_segment_id, x.kind) for x in node10.local_edges}
+    assert ("blk[10]", "blk[30]", LocalEdgeKind.SHARED_SUFFIX) in e
