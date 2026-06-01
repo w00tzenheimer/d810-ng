@@ -49,6 +49,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         self._s1a_done_for_ea: int = -1
 
     def optimize(self, blk: "ida_hexrays.mblock_t") -> int:
+        # Bind the live mba FIRST (mirrors HodurUnflattener.optimize): the base
+        # ComposedUnflatteningRule only *annotates* ``self.mba`` and the cfg
+        # dispatch loop never assigns it, so reading ``self.mba`` before this
+        # binding raises AttributeError — which escapes ``func``'s narrow
+        # except set into IDA's optblock callback, suppressing this very log
+        # line and leaving AFTER == BEFORE (ticket llr-1330).
+        self.mba = blk.mba
         logger.info(
             "s1a optimize: enabled=%s maturity=%s blk=%s",
             _s1a_enabled(),
