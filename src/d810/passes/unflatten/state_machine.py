@@ -28,6 +28,7 @@ from d810.transforms.semantic_regions import plan_semantic_regions
 from d810.transforms.state_machine_unflatten import lower_to_direct_graph
 from d810.transforms.dispatcher_cleanup import cleanup_residual_dispatcher
 from d810.capabilities.value_range import ValRangeCapability
+from d810.capabilities.use_def_safety import UseDefSafetyCapability
 
 
 def _count_valrange_confirmable(valrange, dispatch_map, state_var_stkoff) -> int:
@@ -140,6 +141,10 @@ class LowerStateMachine:
             dispatcher_entry_serial=getattr(recovery, "dispatcher_block_serial", None),
             state_var_stkoff=getattr(recovery, "state_var_stkoff", None),
             regions=_analysis(ctx, "plan_semantic_regions"),
+            # Protected emission: the injected use-def safety capability vetoes redirects that would
+            # orphan non-state-variable uses (north-star LowerStateMachine.require(UseDefSafety)).
+            use_def_safety=ctx.capabilities.optional(UseDefSafetyCapability),
+            live_function=getattr(ctx.source, "live_source", None),
         )
         return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
 

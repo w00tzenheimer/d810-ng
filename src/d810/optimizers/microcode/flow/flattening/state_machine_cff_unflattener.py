@@ -50,8 +50,12 @@ from d810.analyses.control_flow.dispatcher_recovery import recover_dispatcher
 from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
 from d810.capabilities.resolver import CapabilitySet
 from d810.capabilities.value_range import ValRangeCapability
+from d810.capabilities.use_def_safety import UseDefSafetyCapability
 from d810.evaluator.hexrays_microcode.value_range_capability import (
     HexRaysValRangeCapability,
+)
+from d810.evaluator.hexrays_microcode.use_def_dominance import (
+    HexRaysUseDefSafetyBackend,
 )
 from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
 from d810.passes.analysis_manager import AnalysisManager
@@ -132,7 +136,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # transitions the exact equality-chain leaves unresolved (the north-star
         # ``capabilities.optional(ValRangeCapability)``).
         capabilities = CapabilitySet(
-            {ValRangeCapability: HexRaysValRangeCapability(mba)}
+            {
+                ValRangeCapability: HexRaysValRangeCapability(mba),
+                UseDefSafetyCapability: HexRaysUseDefSafetyBackend(),
+            }
         )
         run_pipeline(
             source=source,
