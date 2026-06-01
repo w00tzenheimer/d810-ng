@@ -77,7 +77,7 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     ExecutedPipeline,
     PlannedPipeline,
 )
-from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+from d810.transforms.snapshot import (
     AnalysisSnapshot,
     StateModelSummary,
 )

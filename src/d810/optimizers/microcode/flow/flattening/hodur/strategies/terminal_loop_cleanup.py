@@ -27,7 +27,7 @@ from d810.transforms.modification_builder import (
 )
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+    from d810.transforms.snapshot import (
         AnalysisSnapshot,
     )
 

@@ -22,7 +22,7 @@ if TYPE_CHECKING:
         DispatcherStateMachine,
         HandlerPathResult,
     )
-    from d810.optimizers.microcode.flow.flattening.engine.snapshot import AnalysisSnapshot
+    from d810.transforms.snapshot import AnalysisSnapshot
     from d810.analyses.control_flow.transition_report import (
         DispatcherTransitionReport,
         TransitionRow,

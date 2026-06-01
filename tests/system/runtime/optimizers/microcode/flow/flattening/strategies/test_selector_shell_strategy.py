@@ -14,7 +14,7 @@ from d810.ir.flowgraph import (
 )
 from d810.transforms.graph_modification import RedirectGoto
 from d810.transforms.selector_shell_planning import plan_selector_shell_cleanup
-from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+from d810.transforms.snapshot import (
     AnalysisSnapshot,
 )
 from d810.transforms.plan_fragment import FAMILY_CLEANUP

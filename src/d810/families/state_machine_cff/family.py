@@ -7,7 +7,7 @@ from d810.core.typing import TYPE_CHECKING
 from d810.families.protocols import DetectionResult
 
 if TYPE_CHECKING:
-    from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+    from d810.transforms.snapshot import (
         AnalysisSnapshot,
     )
     # Canonical home is the capabilities layer; engine.strategy and

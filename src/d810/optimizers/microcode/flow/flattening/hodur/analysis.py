@@ -96,7 +96,7 @@ HODUR_STATE_UPDATE_OPCODES = {
     ida_hexrays.m_xds,
 }
 
-from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+from d810.transforms.snapshot import (
     AnalysisSnapshot,
     ReachabilityInfo,
 )

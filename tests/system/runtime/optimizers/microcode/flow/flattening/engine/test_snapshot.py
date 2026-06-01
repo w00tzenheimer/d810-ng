@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from d810.optimizers.microcode.flow.flattening import engine
-from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+from d810.transforms.snapshot import (
     AnalysisSnapshot,
     ReachabilityInfo,
     StateModelSummary,

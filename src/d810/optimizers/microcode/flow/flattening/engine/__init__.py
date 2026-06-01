@@ -38,7 +38,7 @@ from .runtime import (
     run_family_pass,
     run_ordered_family_hooks,
 )
-from .snapshot import AnalysisSnapshot, ReachabilityInfo, StateModelSummary
+from d810.transforms.snapshot import AnalysisSnapshot, ReachabilityInfo, StateModelSummary
 from .state_machine_snapshot_builder import StateMachineSnapshotBuilder
 from .state_machine_runtime import (
     StateMachineFamilyPassResult,

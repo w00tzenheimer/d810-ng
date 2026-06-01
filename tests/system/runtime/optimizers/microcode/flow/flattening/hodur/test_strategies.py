@@ -59,7 +59,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
 from d810.optimizers.microcode.flow.flattening.hodur.profile import (
     default_hodur_profile,
 )
-from d810.optimizers.microcode.flow.flattening.engine.snapshot import AnalysisSnapshot
+from d810.transforms.snapshot import AnalysisSnapshot
 from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
     LocalSegmentKind,

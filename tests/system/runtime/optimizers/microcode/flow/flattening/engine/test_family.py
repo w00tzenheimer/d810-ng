@@ -14,7 +14,7 @@ from d810.families.state_machine_cff.family import (
 from d810.optimizers.microcode.flow.flattening.engine.state_machine_runtime import (
     StateMachineFamilyRuntimeServices as EngineStateMachineFamilyRuntimeServices,
 )
-from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+from d810.transforms.snapshot import (
     AnalysisSnapshot,
 )
 from d810.optimizers.microcode.flow.flattening.engine.strategy import (

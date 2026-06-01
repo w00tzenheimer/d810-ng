@@ -14,7 +14,7 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     FamilyPassResult,
     FamilyPostPipelineContext,
 )
-from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+from d810.transforms.snapshot import (
     AnalysisSnapshot,
 )
 from d810.transforms.plan_fragment import (

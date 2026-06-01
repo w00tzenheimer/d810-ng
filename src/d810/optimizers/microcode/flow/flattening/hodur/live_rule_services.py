@@ -18,7 +18,7 @@ from d810.hexrays.mutation.dispatcher_residue_cleanup import (
 )
 from d810.hexrays.mutation.ir_translator import lift
 from d810.hexrays.utils.hexrays_formatters import format_mop_t
-from d810.optimizers.microcode.flow.flattening.engine.snapshot import (
+from d810.transforms.snapshot import (
     AnalysisSnapshot,
 )
 from d810.transforms.plan_fragment import (
