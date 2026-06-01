@@ -40,7 +40,7 @@ from d810.transforms.residual_target_resolution import (
     resolve_dispatcher_trampoline_skip_candidate,
     walk_bst_dispatcher,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.analysis import (
+from d810.backends.hexrays.evidence.analysis import (
     HodurStateMachineDetector,
 )
 from d810.transforms.plan_fragment import (
