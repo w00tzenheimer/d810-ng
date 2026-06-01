@@ -20,12 +20,26 @@ from d810.passes.pass_pipeline import (
     PreservedAnalyses,
 )
 
-# --- WORK-LIST: portable extractions (skeleton bodies until the seam lands) ---
+# --- WORK-LIST: portable extractions composed by the passes ---
 from d810.analyses.control_flow.dispatcher_recovery import recover_dispatcher
 from d810.analyses.control_flow.semantic_transition import resolve_state_transitions
+from d810.analyses.control_flow.transition_builder import transition_result_from_resolutions
 from d810.transforms.semantic_regions import plan_semantic_regions
 from d810.transforms.state_machine_unflatten import lower_to_direct_graph
 from d810.transforms.dispatcher_cleanup import cleanup_residual_dispatcher
+
+
+def _analysis(ctx: FunctionPipelineContext, name: str, default=None):
+    """Read a prior pass's published result (LLVM AnalysisManager.getResult), or ``default``."""
+    facts = ctx.facts
+    if hasattr(facts, "get_analysis"):
+        return facts.get_analysis(name, default)
+    return default
+
+
+def _publish(ctx: FunctionPipelineContext, name: str, value) -> None:
+    if hasattr(ctx.facts, "put_analysis"):
+        ctx.facts.put_analysis(name, value)
 
 
 class RecoverDispatcher:
@@ -33,9 +47,7 @@ class RecoverDispatcher:
 
     def run(self, ctx: FunctionPipelineContext) -> PassResult:
         recovery = recover_dispatcher(ctx.graph, ctx.facts)
-        # Publish for downstream passes (LLVM AnalysisManager.getResult edge).
-        if hasattr(ctx.facts, "put_analysis"):
-            ctx.facts.put_analysis(self.name, recovery)
+        _publish(ctx, self.name, recovery)
         return PassResult(facts=(recovery,), preserved=PreservedAnalyses.all())
 
 
@@ -43,24 +55,32 @@ class RecoverStateTransitions:
     name = "recover_state_transitions"
 
     def run(self, ctx: FunctionPipelineContext) -> PassResult:
-        # Pull the dispatcher map recovered by pass #1 and resolve transitions through it.
-        dispatch_map = None
-        if hasattr(ctx.facts, "get_analysis"):
-            recovery = ctx.facts.get_analysis("recover_dispatcher")
-            dispatch_map = getattr(recovery, "dispatch_map", None)
-        transitions = resolve_state_transitions(
+        recovery = _analysis(ctx, "recover_dispatcher")
+        dispatch_map = getattr(recovery, "dispatch_map", None)
+        resolutions = resolve_state_transitions(
             ctx.graph, ctx.facts, dispatch_map=dispatch_map
         )
-        if hasattr(ctx.facts, "put_analysis"):
-            ctx.facts.put_analysis(self.name, transitions)
-        return PassResult(facts=(transitions,), preserved=PreservedAnalyses.all())
+        transition_result = transition_result_from_resolutions(resolutions)
+        _publish(ctx, self.name, resolutions)
+        _publish(ctx, "transition_result", transition_result)
+        return PassResult(
+            facts=(resolutions, transition_result), preserved=PreservedAnalyses.all()
+        )
 
 
 class PlanSemanticRegions:
     name = "plan_semantic_regions"
 
     def run(self, ctx: FunctionPipelineContext) -> PassResult:
-        regions = plan_semantic_regions(ctx.graph, ctx.facts)
+        recovery = _analysis(ctx, "recover_dispatcher")
+        regions = plan_semantic_regions(
+            ctx.graph,
+            ctx.facts,
+            transition_result=_analysis(ctx, "transition_result"),
+            dispatcher_entry_serial=getattr(recovery, "dispatcher_block_serial", None),
+            state_var_stkoff=getattr(recovery, "state_var_stkoff", None),
+        )
+        _publish(ctx, self.name, regions)
         return PassResult(facts=(regions,), preserved=PreservedAnalyses.all())
 
 
@@ -68,7 +88,15 @@ class LowerStateMachine:
     name = "lower_state_machine"
 
     def run(self, ctx: FunctionPipelineContext) -> PassResult:
-        plan = lower_to_direct_graph(ctx.graph, ctx.facts)
+        recovery = _analysis(ctx, "recover_dispatcher")
+        plan = lower_to_direct_graph(
+            ctx.graph,
+            ctx.facts,
+            transition_result=_analysis(ctx, "transition_result"),
+            dispatch_map=getattr(recovery, "dispatch_map", None),
+            dispatcher_entry_serial=getattr(recovery, "dispatcher_block_serial", None),
+            regions=_analysis(ctx, "plan_semantic_regions"),
+        )
         return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
 
 
@@ -76,5 +104,6 @@ class CleanupResidualDispatcher:
     name = "cleanup_residual_dispatcher"
 
     def run(self, ctx: FunctionPipelineContext) -> PassResult:
-        plan = cleanup_residual_dispatcher(ctx.graph, ctx.facts)
+        candidates = _analysis(ctx, "cleanup_candidates", ()) or ()
+        plan = cleanup_residual_dispatcher(ctx.graph, ctx.facts, candidates=candidates)
         return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())

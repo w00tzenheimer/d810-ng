@@ -13,7 +13,14 @@ from d810.ir.flowgraph import (
 from d810.ir.semantics import PredicateKind
 from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.pass_pipeline import FunctionPipelineContext
-from d810.passes.unflatten.state_machine import RecoverDispatcher, RecoverStateTransitions
+from d810.transforms.plan import PatchPlan
+from d810.passes.unflatten.state_machine import (
+    CleanupResidualDispatcher,
+    LowerStateMachine,
+    PlanSemanticRegions,
+    RecoverDispatcher,
+    RecoverStateTransitions,
+)
 
 C1 = 0x10000001
 STATE_OFF = 0x3C
@@ -64,6 +71,23 @@ def test_map_threads_from_pass1_to_pass2_and_resolves():
     assert len(resolutions) == 1
     assert resolutions[0].resolved_next_block_serial == 1  # C1 -> handler 1 via #1's map
     assert resolutions[0].resolution_reason == "resolved_exact_state"
+
+
+def test_full_five_pass_chain_threads_and_completes():
+    am = AnalysisManager(_chain_graph(), input_facts=SimpleNamespace(active_observations=(_obs(),)))
+    ctx = _ctx(am.graph, am.view())
+    passes = [
+        RecoverDispatcher(), RecoverStateTransitions(), PlanSemanticRegions(),
+        LowerStateMachine(), CleanupResidualDispatcher(),
+    ]
+    results = [p.run(ctx) for p in passes]
+    # every analysis dependency was published into the manager (the getResult edges)
+    assert am.get_analysis("recover_dispatcher").dispatch_map is not None
+    assert am.get_analysis("transition_result") is not None
+    assert am.get_analysis("plan_semantic_regions") is not None
+    # synthetic obs carries no next-state write -> empty transitions -> heavy DAG/lower guarded off
+    assert results[3].rewrite_plan == PatchPlan()  # lower_state_machine
+    assert results[4].rewrite_plan == PatchPlan()  # cleanup_residual_dispatcher
 
 
 def test_without_manager_edge_pass2_is_unresolved():

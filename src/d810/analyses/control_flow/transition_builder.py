@@ -76,6 +76,38 @@ def build_transition_result_from_state_machine(
     )
 
 
+def transition_result_from_resolutions(
+    resolutions, *, strategy_name: str = "s1a"
+) -> TransitionResult:
+    """Package §1a ``StateTransitionResolution``s into a ``TransitionResult`` (DAG-builder input).
+
+    Each resolved transition (``source_state -> resolved_next_state`` at ``source_block``) becomes a
+    ``StateTransition``. Unresolved rows (no next state) are dropped. Pure data transform.
+    """
+    transitions: List[StateTransition] = []
+    for row in resolutions:
+        next_state = getattr(row, "resolved_next_state_const_u64", None)
+        if next_state is None:
+            continue
+        hexv = getattr(row, "source_state_const_hex", None)
+        try:
+            from_state = int(hexv, 16) if hexv else None
+        except (TypeError, ValueError):
+            from_state = None
+        transitions.append(
+            StateTransition(
+                from_state=from_state,
+                to_state=int(next_state),
+                from_block=int(getattr(row, "source_block_serial", 0)),
+            )
+        )
+    return TransitionResult(
+        transitions=transitions,
+        strategy_name=strategy_name,
+        resolved_count=len(transitions),
+    )
+
+
 class TransitionBuilderStrategy(Protocol):
     """Protocol for pluggable transition-building strategies."""
 

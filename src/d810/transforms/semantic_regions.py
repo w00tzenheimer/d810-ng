@@ -56,7 +56,12 @@ def plan_semantic_regions(
     ``dispatcher_entry_serial`` are the §1a analysis dependencies (#2 and #1); while they are
     ``None`` (driver wiring pending) the plan is empty.
     """
-    if graph is None or transition_result is None or dispatcher_entry_serial is None:
+    if (
+        graph is None
+        or transition_result is None
+        or not transition_result.transitions
+        or dispatcher_entry_serial is None
+    ):
         return SemanticRegionPlan()
     dag = build_live_linearized_state_dag_from_graph(
         flow_graph=graph,
