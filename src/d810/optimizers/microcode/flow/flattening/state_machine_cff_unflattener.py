@@ -273,6 +273,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         if bst is not None
                         else None
                     ),
+                    dispatcher=(bst.dispatcher if bst is not None else None),
                 )
                 observe_modifications(snap, _diag_modifications(plan))
         except Exception:  # noqa: BLE001 — diagnostics must never break the optimize path
