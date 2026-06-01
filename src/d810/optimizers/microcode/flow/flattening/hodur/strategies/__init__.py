@@ -59,7 +59,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.conditional_fork
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.dead_state_variable_elimination import (
     DeadStateVariableEliminationStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.inner_merge_duplication import (
+from d810.backends.hexrays.evidence.inner_merge_duplication import (
     InnerMergeDuplicationStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.state_constant_return_fixup import (
