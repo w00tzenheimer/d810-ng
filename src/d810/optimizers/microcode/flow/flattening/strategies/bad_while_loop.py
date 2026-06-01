@@ -15,7 +15,7 @@ from d810.transforms.graph_modification import (
     RedirectGoto,
 )
 from d810.core.typing import TYPE_CHECKING
-from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
+from d810.transforms.cleanup_evidence import (
     CLEANUP_DUPLICATE_REPLAY_METADATA_KEY,
     CLEANUP_SIDE_EFFECT_REPLAY_METADATA_KEY,
     CLEANUP_TRAMPOLINE_ISOLATION_METADATA_KEY,

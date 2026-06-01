@@ -21,7 +21,7 @@ from d810.transforms.materialization_payload import (
 from d810.evaluator.hexrays_microcode.definition_rescue_backend import (
     DefinitionSiteEvidence,
 )
-from d810.optimizers.microcode.flow.flattening.cleanup_evidence import (
+from d810.transforms.cleanup_evidence import (
     CLEANUP_DUPLICATE_REPLAY_METADATA_KEY,
     CLEANUP_SIDE_EFFECT_REPLAY_METADATA_KEY,
     CleanupPerPredReplay,
