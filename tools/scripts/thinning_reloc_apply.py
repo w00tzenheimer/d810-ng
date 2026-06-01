@@ -242,6 +242,9 @@ def main() -> int:
     ap.add_argument("--count", type=int, default=6)
     ap.add_argument("--only", default="")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--skip-fail", action="store_true",
+                    help="on gate failure, roll back + record + CONTINUE (defer), "
+                         "instead of halting — lets the lint gate decide relocatability")
     a = ap.parse_args()
 
     plan = json.loads((ROOT / a.plan).read_text())
@@ -251,12 +254,21 @@ def main() -> int:
     else:
         batch = plan[a.start:a.start + a.count]
 
-    print(f"Relocating {len(batch)} files (dry={a.dry_run}):")
+    print(f"Relocating {len(batch)} files (dry={a.dry_run}, skip_fail={a.skip_fail}):")
+    deferred = []
     for e in batch:
         if not relocate_one(e, dry=a.dry_run):
-            print(f"\nHALTED at {e['old_module'].rsplit('.',1)[-1]}. Prior commits kept.")
+            stem = e["old_module"].rsplit(".", 1)[-1]
+            if a.skip_fail:
+                deferred.append(stem)
+                print(f"  DEFERRED {stem} (gate failed — left in optimizers)")
+                continue
+            print(f"\nHALTED at {stem}. Prior commits kept.")
             return 1
-    print(f"\nBatch done: {len(batch)} files relocated.")
+    moved = len(batch) - len(deferred)
+    print(f"\nSweep done: {moved} relocated, {len(deferred)} deferred.")
+    if deferred:
+        print("DEFERRED (need seam refactor / stay in optimizers): " + ", ".join(deferred))
     return 0
 
 
