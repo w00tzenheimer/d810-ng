@@ -393,7 +393,7 @@ def cmd_dump(args: argparse.Namespace) -> None:
     Dump before/after pseudocode and D810 rule stats for one or more functions.
     """
     from d810.core.stats import _maturity_name  # type: ignore[attr-defined]
-    from d810.optimizers.microcode.flow.flattening.hodur.diagnostics import (
+    from d810.passes.diagnostics import (
         build_terminal_return_valrange_report_from_store,
     )
     from d810.backends.hexrays.evidence.microcode_dump import mba_to_human_readable
