@@ -166,7 +166,7 @@ from d810.backends.hexrays.evidence.handler_chain_materialization_capture_backen
     DEFAULT_HODUR_HANDLER_CHAIN_MATERIALIZATION_CAPTURE_BACKEND,
     HandlerChainMaterializationCaptureBackend,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.handler_chain_topology_walk_backend import (
+from d810.backends.hexrays.evidence.handler_chain_topology_walk_backend import (
     DEFAULT_HODUR_HANDLER_CHAIN_TOPOLOGY_WALK_BACKEND,
     HandlerChainTopologyWalkBackend,
 )
