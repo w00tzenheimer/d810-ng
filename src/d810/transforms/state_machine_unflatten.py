@@ -25,6 +25,7 @@ from d810.analyses.control_flow.linearized_state_dag import (
     SemanticEdgeKind,
     build_live_linearized_state_dag_from_graph,
 )
+from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
 from d810.transforms.plan import (
     PatchConvertToGoto,
     PatchPlan,
@@ -35,6 +36,7 @@ from d810.transforms.dispatcher_backedge_disconnect_planning import (
     plan_dispatcher_backedge_disconnects,
 )
 from d810.transforms.semantic_regions import SemanticRegionPlan
+from d810.transforms.spine_emission import emit_spine_modifications
 
 # Edges that advance the state machine (a back-edge to an earlier state is still a TRANSITION,
 # so loops are preserved as cycles in the reconstructed graph).
@@ -50,54 +52,57 @@ class _DispatcherMap(Protocol):
     def resolve_target(self, state_value: int) -> int | None: ...
 
 
+def _patch_from_graph_modification(mod: object) -> object | None:
+    """Wrap a neutral spine ``GraphModification`` into the §1a ``PatchPlan`` step type.
+
+    The shared :func:`emit_spine_modifications` emits backend-neutral ``GraphModification`` values
+    (the same currency the legacy LFG path appends); the §1a backend consumes a ``PatchPlan``, so
+    each redirect is wrapped into its ``Patch*`` shadow. Only the two redirect shapes the spine
+    emitter produces are handled; anything else is dropped (returns ``None``).
+    """
+    if isinstance(mod, RedirectGoto):
+        return PatchRedirectGoto(
+            from_serial=mod.from_serial,
+            old_target=mod.old_target,
+            new_target=mod.new_target,
+        )
+    if isinstance(mod, RedirectBranch):
+        return PatchRedirectBranch(
+            from_serial=mod.from_serial,
+            old_target=mod.old_target,
+            new_target=mod.new_target,
+        )
+    return None
+
+
 def _spine_redirects_from_dag(dag, dispatcher_entry_serial: int, graph) -> tuple[object, ...]:
     """Walk the linearized DAG's transition edges -> one redirect per edge (the reachable spine).
 
     Each edge's ``source_anchor`` (a handler exit) is redirected off the dispatcher onto the
-    successor handler's ``target_entry_anchor``. The redirect kind is chosen from the *live*
-    block's successor count, not the static anchor kind: a 1-way source emits a goto redirect,
-    a 2-way source emits a branch redirect off the current arm successor. Ambiguous/comparator
-    2-way sources (no resolvable arm) are skipped and left to the #3 engine / #5 cleanup so the
-    deferred apply does not abort on a "not 1-way" mismatch.
+    successor handler's ``target_entry_anchor``. Emission is delegated to the portable
+    :func:`emit_spine_modifications`, shared verbatim with the legacy ``LinearizedFlowGraph``
+    path: the redirect kind is chosen from the *live* block's successor count, not the static
+    anchor kind (a 1-way source emits a goto redirect, a 2-way conditional source emits a branch
+    redirect off the live arm successor), ``old_target`` is the block's real current successor, and
+    2-way *transition* comparator sources are rejected so the deferred apply never aborts on a
+    "not 1-way" mismatch. The neutral mods are wrapped back into §1a ``Patch*`` steps.
     """
     blocks = getattr(graph, "blocks", {})
     nsucc_map = {s: int(b.nsucc) for s, b in blocks.items()}
-    succ_map = {s: tuple(b.succs) for s, b in blocks.items()}
-    steps: list[object] = []
-    for edge in dag.edges:
-        if edge.kind not in _SPINE_EDGE_KINDS:
-            continue
-        target = edge.target_entry_anchor
-        anchor = edge.source_anchor
-        if target is None or anchor is None:
-            continue
-        new_target = int(target)
-        if new_target == dispatcher_entry_serial:
-            continue  # state routes back to the dispatcher: leave for cleanup (#5)
-        s = int(anchor.block_serial)
-        succs = succ_map.get(s, ())
-        nsucc = nsucc_map.get(s, len(succs))
-        if nsucc == 1:
-            old_target = int(succs[0]) if succs else int(dispatcher_entry_serial)
-            steps.append(
-                PatchRedirectGoto(
-                    from_serial=s, old_target=old_target, new_target=new_target
-                )
-            )
-        elif nsucc == 2:
-            arm = anchor.branch_arm
-            if arm is None or arm >= len(succs):
-                continue  # ambiguous/comparator 2-way source: leave to #3 engine / #5 cleanup
-            old_target = int(succs[arm])
-            if old_target == new_target:
-                continue
-            steps.append(
-                PatchRedirectBranch(
-                    from_serial=s, old_target=old_target, new_target=new_target
-                )
-            )
-        # nsucc 0 or >2 -> skip
-    return tuple(steps)
+    succ_map = {s: tuple(int(x) for x in b.succs) for s, b in blocks.items()}
+    mods = emit_spine_modifications(
+        dag=dag,
+        spine_edge_kinds=_SPINE_EDGE_KINDS,
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
+        block_nsucc_map=nsucc_map,
+        block_succ_map=succ_map,
+    )
+    steps = tuple(
+        patch
+        for patch in (_patch_from_graph_modification(mod) for mod in mods)
+        if patch is not None
+    )
+    return steps
 
 
 def _spine_members_from_dag(dag) -> frozenset[int]:
