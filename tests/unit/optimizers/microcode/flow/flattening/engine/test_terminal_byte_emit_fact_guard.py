@@ -12,10 +12,8 @@ from d810.transforms.graph_modification import (
     RedirectBranch,
     RedirectGoto,
 )
-from d810.optimizers.microcode.flow.flattening.engine import (
-    terminal_byte_emit_fact_guard,
-)
-from d810.optimizers.microcode.flow.flattening.engine.terminal_byte_emit_fact_guard import (
+from d810.backends.hexrays.evidence import terminal_byte_emit_fact_guard
+from d810.backends.hexrays.evidence.terminal_byte_emit_fact_guard import (
     append_protected_non_carrier_return_writer_direct_lowerings,
     filter_terminal_byte_emit_fact_redirects,
 )
