@@ -18,7 +18,7 @@ from d810.transforms.plan_fragment import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.recon.conditional_chain_resolution import (
+from d810.backends.hexrays.evidence.conditional_chain_resolution import (
     collect_conditional_fork_resolution_candidates,
 )
 if TYPE_CHECKING:

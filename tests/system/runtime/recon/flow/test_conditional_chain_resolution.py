@@ -10,9 +10,7 @@ from d810.backends.hexrays.evidence.datamodel import (
     StateTransition,
 )
 from d810.transforms.snapshot import AnalysisSnapshot
-from d810.optimizers.microcode.flow.flattening.hodur.recon import (
-    conditional_chain_resolution as resolution,
-)
+from d810.backends.hexrays.evidence import conditional_chain_resolution as resolution
 
 
 class _DummyFlowGraph:
