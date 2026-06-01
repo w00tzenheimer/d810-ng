@@ -45,6 +45,7 @@ from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle impor
     ComposedUnflatteningRule,
 )
 from d810.backends.hexrays.lifter import lift_function
+from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
 from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
 from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.driver import run_pipeline
@@ -180,11 +181,32 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             )
             entry_serial = int(dmap.dispatcher_entry_block)
             if tr is not None and getattr(tr, "transitions", None):
+                # Recover the live BST/interval evidence (value-range dispatcher, handler ranges,
+                # pre-header + initial state) so the diag DAG matches the legacy oracle's structure
+                # (RANGE_BACKED nodes + conditional/return edges). DIAG-ONLY: this validates the
+                # evidence-recovery WITHOUT touching the production lowering, so a still-naive
+                # emission cannot collapse the live output (llr-gp9d/mmfq/opck).
+                bst = None
+                try:
+                    bst = analyze_bst_dispatcher(mba, entry_serial, dmap.state_var_stkoff)
+                except Exception:  # noqa: BLE001 — evidence recovery is best-effort here
+                    logger.debug("s1a: analyze_bst_dispatcher failed", exc_info=True)
                 dag = build_live_linearized_state_dag_from_graph(
                     flow_graph=source.flow_graph,
                     transition_result=tr,
                     dispatcher_entry_serial=entry_serial,
                     state_var_stkoff=dmap.state_var_stkoff,
+                    bst_node_blocks=(
+                        tuple(sorted(int(b) for b in bst.bst_node_blocks))
+                        if bst is not None
+                        else ()
+                    ),
+                    handler_range_map=(bst.handler_range_map if bst is not None else None),
+                    dispatcher=(bst.dispatcher if bst is not None else None),
+                    pre_header_serial=(bst.pre_header_serial if bst is not None else None),
+                    initial_state=(bst.initial_state if bst is not None else None),
+                    mba=mba,
+                    prefer_local_corridors=True,
                 )
                 observe_dag(snap, _diag_dag_nodes(dag), _diag_dag_edges(dag))
                 plan = lower_to_direct_graph(
