@@ -164,7 +164,7 @@ from d810.analyses.value_flow import (
 from d810.analyses.control_flow.residual_alias_discovery import (
     discover_residual_alias_overrides,
 )
-from d810.optimizers.microcode.flow.flattening.residual_handoff_resolution import (
+from d810.backends.hexrays.evidence.residual_handoff_resolution import (
     resolve_effective_target_entry,
 )
 from d810.analyses.control_flow.return_corridor_discovery import (
