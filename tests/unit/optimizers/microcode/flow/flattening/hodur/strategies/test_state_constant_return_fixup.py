@@ -8,10 +8,8 @@ from d810.evaluator.hexrays_microcode.return_cleanup_backend import (
     ReturnCleanupEvidence,
     ReturnCleanupSite,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies import (
-    state_constant_return_fixup as strategy_module,
-)
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.state_constant_return_fixup import (
+from d810.backends.hexrays.evidence import state_constant_return_fixup as strategy_module
+from d810.backends.hexrays.evidence.state_constant_return_fixup import (
     StateConstantReturnFixupStrategy,
 )
 
