@@ -1,7 +1,7 @@
 """Hodur profile strategy ordering for the shared unflattening engine."""
 from __future__ import annotations
 
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.valrange_resolution import (
+from d810.backends.hexrays.evidence.valrange_resolution import (
     ValrangeResolutionStrategy,
 )
 from d810.optimizers.microcode.flow.flattening.hodur.strategies.terminal_loop_cleanup import (

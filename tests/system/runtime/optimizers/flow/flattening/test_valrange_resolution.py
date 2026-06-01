@@ -31,7 +31,7 @@ def mba_fixture(ida_database, configure_hexrays, setup_libobfuscated_funcs):
     return cfunc.mba
 
 from d810.evaluator.hexrays_microcode.valranges import resolve_state_via_valranges
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.valrange_resolution import (
+from d810.backends.hexrays.evidence.valrange_resolution import (
     ValrangeResolutionStrategy,
 )
 from d810.transforms.plan_fragment import (
