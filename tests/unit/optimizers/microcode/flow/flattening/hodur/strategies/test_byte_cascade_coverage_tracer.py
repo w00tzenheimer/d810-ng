@@ -20,7 +20,7 @@ from d810.transforms.materialization_payload import (
     CapturedBlockBody,
     CapturedBlockBodySummary,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.byte_cascade_coverage_tracer import (
+from d810.analyses.control_flow.byte_cascade_coverage_tracer import (
     ByteCascadeCoverageTracer,
     ByteCascadeStage,
     ByteEvidence,

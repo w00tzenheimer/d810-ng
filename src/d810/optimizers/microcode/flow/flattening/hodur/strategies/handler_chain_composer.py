@@ -147,7 +147,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.projected_topology_backend 
     DEFAULT_HODUR_PROJECTED_TOPOLOGY_BACKEND,
     ProjectedTopologyBackend,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.byte_cascade_coverage_tracer import (
+from d810.analyses.control_flow.byte_cascade_coverage_tracer import (
     ByteCascadeCoverageTracer,
     ByteCascadeStage,
 )
