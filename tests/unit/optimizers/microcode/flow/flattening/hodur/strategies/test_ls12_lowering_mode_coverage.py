@@ -37,7 +37,7 @@ from d810.optimizers.microcode.flow.flattening.hodur.strategies.semantic_exact_n
     SemanticExactNodeAllPlannableEdgesStrategy,
     _SemanticExactNodeExperimentStrategy,
 )
-from d810.optimizers.microcode.flow.flattening.hodur.strategies.topological_sort import (
+from d810.backends.hexrays.evidence.topological_sort import (
     TopologicalSortStrategy,
 )
 # prototypes LAST (see cold-entry cycle note above)
