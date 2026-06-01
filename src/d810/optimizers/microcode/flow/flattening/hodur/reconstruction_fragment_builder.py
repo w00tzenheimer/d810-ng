@@ -60,7 +60,7 @@ from d810.transforms.graph_modification import (
     RedirectGoto,
 )
 from d810.transforms.plan import is_block_creating_modification
-from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
+from d810.transforms.planner_context import (
     PLANNER_CTX_METADATA_KEY,
     CumulativePlannerView,
     LinearizationDecision,

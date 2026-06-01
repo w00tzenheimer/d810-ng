@@ -27,7 +27,7 @@ from d810.transforms.lowering import LoweringMode
 
 if TYPE_CHECKING:
     from d810.ir.flowgraph import FlowGraph
-    from d810.optimizers.microcode.flow.flattening.engine.planner_context import (
+    from d810.transforms.planner_context import (
         PlannerContextContribution,
     )
     from d810.transforms.graph_modification import GraphModification
