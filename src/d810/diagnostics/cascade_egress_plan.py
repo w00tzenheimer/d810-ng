@@ -14,6 +14,9 @@ import json
 import sqlite3
 from pathlib import Path
 
+from d810._vendor.peewee import fn
+from d810.core.diag import open_diag_database
+from d810.core.diag.models import Block, FactObservation, Instruction
 from d810.transforms.terminal_tail_cascade_egress_planner import (
     TerminalByteEmitSite,
     TerminalTailBlock,
@@ -59,6 +62,9 @@ def choose_fact_snapshot(conn: sqlite3.Connection) -> int:
     Raises :class:`LookupError` when no fact rows exist at all (callers
     surface this as a CLI error rather than crashing the parser).
     """
+    # raw-SQL: GROUP BY snapshot over a fact/snapshot JOIN with a multi-
+    # predicate maturity/phase gate, latest-first; a grouped latest-with-
+    # fact probe reads more clearly as SQL (§3 complex-SQL policy).
     row = conn.execute(
         """
         SELECT f.snapshot_id
@@ -100,6 +106,9 @@ def choose_target_snapshot(conn: sqlite3.Connection) -> int:
 
     Raises :class:`LookupError` when no candidate exists.
     """
+    # raw-SQL: correlated EXISTS-over-blocks presence test plus a NOT LIKE
+    # pattern exclusion in the fallback; presence-test + pattern reads more
+    # clearly as SQL (§3 complex-SQL policy).
     row = conn.execute(
         """
         SELECT s.id
@@ -132,16 +141,28 @@ def load_blocks(
     conn: sqlite3.Connection, snapshot_id: int,
 ) -> dict[int, TerminalTailBlock]:
     """Build the planner-shaped block map for *snapshot_id*."""
-    rows = conn.execute(
-        "SELECT serial, type_name, start_ea_hex, succs, preds"
-        " FROM blocks WHERE snapshot_id=? ORDER BY serial",
-        (snapshot_id,),
-    ).fetchall()
-    op_rows = conn.execute(
-        "SELECT block_serial, opcode_name, COALESCE(dstr, '')"
-        " FROM instructions WHERE snapshot_id=? ORDER BY block_serial, insn_index",
-        (snapshot_id,),
-    ).fetchall()
+    rows = (
+        Block.select(
+            Block.serial,
+            Block.type_name,
+            Block.start_ea_hex,
+            Block.succs,
+            Block.preds,
+        )
+        .where(Block.snapshot == snapshot_id)
+        .order_by(Block.serial)
+        .tuples()
+    )
+    op_rows = (
+        Instruction.select(
+            Instruction.block_serial,
+            Instruction.opcode_name,
+            fn.COALESCE(Instruction.dstr, ""),
+        )
+        .where(Instruction.snapshot == snapshot_id)
+        .order_by(Instruction.block_serial, Instruction.insn_index)
+        .tuples()
+    )
     opcodes_by_block: dict[int, list[str]] = {}
     text_by_block: dict[int, list[str]] = {}
     for block_serial, opcode, dstr in op_rows:
@@ -172,13 +193,20 @@ def load_sites(
     Malformed payloads and non-dict rows are silently skipped so the
     planner only ever sees well-formed input.
     """
-    rows = conn.execute(
-        "SELECT fact_id, payload, source_ea_hex, confidence"
-        " FROM fact_observations"
-        " WHERE snapshot_id=? AND kind='TerminalByteEmitterFact'"
-        " ORDER BY fact_id",
-        (snapshot_id,),
-    ).fetchall()
+    rows = (
+        FactObservation.select(
+            FactObservation.fact_id,
+            FactObservation.payload,
+            FactObservation.source_ea_hex,
+            FactObservation.confidence,
+        )
+        .where(
+            (FactObservation.snapshot == snapshot_id)
+            & (FactObservation.kind == "TerminalByteEmitterFact")
+        )
+        .order_by(FactObservation.fact_id)
+        .tuples()
+    )
     sites: list[TerminalByteEmitSite] = []
     for fact_id, payload_json, source_ea_hex, confidence in rows:
         try:
@@ -219,7 +247,8 @@ def run_plan(
     """
     if not db_path.exists():
         return f"Error: diag DB not found: {db_path}\n"
-    conn = sqlite3.connect(str(db_path))
+    db = open_diag_database(str(db_path))
+    conn = db.connection()
     try:
         try:
             fact_id = (
@@ -237,7 +266,7 @@ def run_plan(
         blocks = load_blocks(conn, target_id)
         sites = load_sites(conn, fact_id)
     finally:
-        conn.close()
+        db.close()
     plan = TerminalTailCascadeEgressPlanner(blocks, sites).build_plan()
     return (
         f"# fact snapshot: {fact_id}\n"
