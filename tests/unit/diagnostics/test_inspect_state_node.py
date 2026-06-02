@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from d810.core.diag import create_diag_database
+from d810.core.diag.models import RenderedProgramLine
 from d810.diagnostics.inspect_state_node import (
     extract_after_lines,
     find_semantic_context,
@@ -54,50 +56,50 @@ def test_normalize_state_canonical_and_token(raw, expected_canon, expected_token
 # ---------------------------------------------------------------------------
 
 
-def _make_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.execute(
-        """
-        CREATE TABLE rendered_program_lines (
-            snapshot_id INTEGER NOT NULL,
-            variant_name TEXT NOT NULL,
-            line_no INTEGER NOT NULL,
-            text TEXT NOT NULL
-        )
-        """
-    )
-    return conn
+def _make_conn():
+    # create_diag_database binds the peewee Models to this in-memory DB, so the
+    # ORM reads in inspect_state_node hit this fixture data.
+    return create_diag_database(":memory:")
 
 
 def _insert_lines(
-    conn: sqlite3.Connection,
+    db,
     snapshot_id: int,
     variant: str,
     rows: list[tuple[int, str]],
 ) -> None:
-    conn.executemany(
-        "INSERT INTO rendered_program_lines (snapshot_id, variant_name, line_no, text)"
-        " VALUES (?, ?, ?, ?)",
-        [(snapshot_id, variant, line_no, text) for line_no, text in rows],
-    )
-    conn.commit()
+    RenderedProgramLine.insert_many(
+        [
+            {
+                "snapshot_id": snapshot_id,
+                "variant_name": variant,
+                "line_no": line_no,
+                "node_index": None,
+                "indent_level": 0,
+                "line_kind": "code",
+                "target_label": None,
+                "text": text,
+            }
+            for line_no, text in rows
+        ]
+    ).execute()
 
 
 def test_latest_semantic_snapshot_id_returns_max():
-    conn = _make_conn()
-    _insert_lines(conn, 3, "semantic_reference_like", [(1, "a")])
-    _insert_lines(conn, 7, "semantic_reference_like", [(1, "b")])
-    _insert_lines(conn, 9, "other_variant", [(1, "c")])
-    assert latest_semantic_snapshot_id(conn) == 7
+    db = _make_conn()
+    _insert_lines(db, 3, "semantic_reference_like", [(1, "a")])
+    _insert_lines(db, 7, "semantic_reference_like", [(1, "b")])
+    _insert_lines(db, 9, "other_variant", [(1, "c")])
+    assert latest_semantic_snapshot_id(db.connection()) == 7
 
 
 def test_latest_semantic_snapshot_id_returns_none_when_empty():
-    conn = _make_conn()
-    assert latest_semantic_snapshot_id(conn) is None
+    db = _make_conn()
+    assert latest_semantic_snapshot_id(db.connection()) is None
 
 
 def test_find_semantic_context_picks_hits_with_neighbours():
-    conn = _make_conn()
+    db = _make_conn()
     rows = [
         (1, "preamble"),
         (2, "more preamble"),
@@ -108,36 +110,36 @@ def test_find_semantic_context_picks_hits_with_neighbours():
         (7, "trailing"),
         (8, "way after"),
     ]
-    _insert_lines(conn, 12, "semantic_reference_like", rows)
-    out = find_semantic_context(conn, 12, "5FE86821", context=2)
+    _insert_lines(db, 12, "semantic_reference_like", rows)
+    out = find_semantic_context(db.connection(), 12, "5FE86821", context=2)
     line_nos = [n for n, _ in out]
     # min match = 3, max match = 6; context=2 → [1..8]
     assert line_nos == [1, 2, 3, 4, 5, 6, 7, 8]
 
 
 def test_find_semantic_context_returns_empty_for_unknown_state():
-    conn = _make_conn()
-    _insert_lines(conn, 12, "semantic_reference_like", [(1, "no match here")])
-    assert find_semantic_context(conn, 12, "DEADBEEF", context=3) == []
+    db = _make_conn()
+    _insert_lines(db, 12, "semantic_reference_like", [(1, "no match here")])
+    assert find_semantic_context(db.connection(), 12, "DEADBEEF", context=3) == []
 
 
 def test_find_semantic_context_clamps_start_to_one():
     """When the first match is at line 1 and context > 0, start must
     clamp to 1 — not 0 or negative."""
-    conn = _make_conn()
+    db = _make_conn()
     _insert_lines(
-        conn, 12, "semantic_reference_like",
+        db, 12, "semantic_reference_like",
         [(1, "STATE_DEADBEEF first"), (2, "next"), (3, "third")],
     )
-    out = find_semantic_context(conn, 12, "DEADBEEF", context=5)
+    out = find_semantic_context(db.connection(), 12, "DEADBEEF", context=5)
     assert out[0][0] == 1
 
 
 def test_find_semantic_context_only_reads_named_variant():
-    conn = _make_conn()
-    _insert_lines(conn, 12, "semantic_reference_like", [(5, "STATE_X here")])
-    _insert_lines(conn, 12, "other_variant", [(5, "STATE_X also here")])
-    out = find_semantic_context(conn, 12, "X", context=0)
+    db = _make_conn()
+    _insert_lines(db, 12, "semantic_reference_like", [(5, "STATE_X here")])
+    _insert_lines(db, 12, "other_variant", [(5, "STATE_X also here")])
+    out = find_semantic_context(db.connection(), 12, "X", context=0)
     assert out == [(5, "STATE_X here")]
 
 
