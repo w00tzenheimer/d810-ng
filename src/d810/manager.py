@@ -954,7 +954,7 @@ class D810Manager:
         candidates = [
             rule
             for rule in getattr(self.block_optimizer, "cfg_rules", ())
-            if type(rule).__name__ == "HodurUnflattener"
+            if type(rule).__name__ in ("HodurUnflattener", "StateMachineCffUnflattener")
             and int(getattr(rule, "_last_func_ea", 0) or 0) == entry_ea
         ]
 
