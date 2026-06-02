@@ -19,6 +19,7 @@ from dataclasses import dataclass
 import re
 
 from d810.core.typing import Any
+from d810.ir.directed_graph import tarjan_scc as _canonical_tarjan_scc
 from d810.analyses.value_flow.induction_carrier import (
     _MATURITY_VALUES,
     _InstructionView,
@@ -108,47 +109,19 @@ def _succs_by_block(target: Any) -> dict[int, tuple[int, ...]]:
 def _strongly_connected_components(
     succs_by_block: dict[int, tuple[int, ...]],
 ) -> tuple[tuple[int, ...], ...]:
-    """Tarjan SCC over the block graph."""
-    index = 0
-    stack: list[int] = []
-    on_stack: set[int] = set()
-    indexes: dict[int, int] = {}
-    lowlinks: dict[int, int] = {}
-    components: list[tuple[int, ...]] = []
+    """Tarjan SCC over the block graph (keys-only nodes), as a tuple of
+    sorted-tuple components.
 
-    def visit(node: int) -> None:
-        nonlocal index
-        indexes[node] = index
-        lowlinks[node] = index
-        index += 1
-        stack.append(node)
-        on_stack.add(node)
-
-        for succ in succs_by_block.get(node, ()):
-            if succ not in succs_by_block:
-                continue
-            if succ not in indexes:
-                visit(succ)
-                lowlinks[node] = min(lowlinks[node], lowlinks[succ])
-            elif succ in on_stack:
-                lowlinks[node] = min(lowlinks[node], indexes[succ])
-
-        if lowlinks[node] != indexes[node]:
-            return
-
-        component: list[int] = []
-        while stack:
-            popped = stack.pop()
-            on_stack.remove(popped)
-            component.append(popped)
-            if popped == node:
-                break
-        components.append(tuple(sorted(component)))
-
-    for node in sorted(succs_by_block):
-        if node not in indexes:
-            visit(node)
-    return tuple(components)
+    Delegates to the canonical ``d810.ir.directed_graph.tarjan_scc``;
+    successors not present as keys are not treated as nodes, and each component
+    is a sorted tuple (historical semantics preserved).
+    """
+    keys = set(succs_by_block)
+    adj = {
+        node: tuple(s for s in succs if s in keys)
+        for node, succs in succs_by_block.items()
+    }
+    return tuple(tuple(sorted(component)) for component in _canonical_tarjan_scc(adj))
 
 
 def _loop_scc_by_block(

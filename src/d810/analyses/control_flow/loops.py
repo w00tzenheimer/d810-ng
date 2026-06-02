@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.ir.directed_graph import tarjan_scc as _canonical_tarjan_scc
+
 __all__ = [
     "LoopInfo",
     "LoopRef",
@@ -51,51 +53,20 @@ class LoopInfo:
 def strongly_connected_components(
     succs_by_block: dict[int, tuple[int, ...]],
 ) -> tuple[tuple[int, ...], ...]:
-    """Tarjan SCC over the block graph.
+    """Tarjan SCC over the block graph (keys-only nodes), as a tuple of
+    sorted-tuple components.
 
-    Copied verbatim from ``d810.analyses.value_flow.loop_carrier`` to keep
-    ``d810.analyses`` free of the ``d810.cfg`` import that module carries.
+    Delegates to the canonical ``d810.ir.directed_graph.tarjan_scc`` (lowest
+    layer; pure — it carries none of the import baggage that originally forced
+    this verbatim copy). Successors not present as keys are NOT treated as
+    nodes (historical semantics), and each component is a sorted tuple.
     """
-    index = 0
-    stack: list[int] = []
-    on_stack: set[int] = set()
-    indexes: dict[int, int] = {}
-    lowlinks: dict[int, int] = {}
-    components: list[tuple[int, ...]] = []
-
-    def visit(node: int) -> None:
-        nonlocal index
-        indexes[node] = index
-        lowlinks[node] = index
-        index += 1
-        stack.append(node)
-        on_stack.add(node)
-
-        for succ in succs_by_block.get(node, ()):
-            if succ not in succs_by_block:
-                continue
-            if succ not in indexes:
-                visit(succ)
-                lowlinks[node] = min(lowlinks[node], lowlinks[succ])
-            elif succ in on_stack:
-                lowlinks[node] = min(lowlinks[node], indexes[succ])
-
-        if lowlinks[node] != indexes[node]:
-            return
-
-        component: list[int] = []
-        while stack:
-            popped = stack.pop()
-            on_stack.remove(popped)
-            component.append(popped)
-            if popped == node:
-                break
-        components.append(tuple(sorted(component)))
-
-    for node in sorted(succs_by_block):
-        if node not in indexes:
-            visit(node)
-    return tuple(components)
+    keys = set(succs_by_block)
+    adj = {
+        node: tuple(s for s in succs if s in keys)
+        for node, succs in succs_by_block.items()
+    }
+    return tuple(tuple(sorted(component)) for component in _canonical_tarjan_scc(adj))
 
 
 def loop_sccs(

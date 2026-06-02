@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 from d810.core.logging import getLogger
 from d810.core.typing import Mapping
+from d810.ir.directed_graph import tarjan_scc as _canonical_tarjan_scc
 
 logger = getLogger(__name__)
 
@@ -41,50 +42,13 @@ def _tarjan_scc(adj: dict[int, tuple[int, ...]]) -> list[frozenset[int]]:
     >>> _tarjan_scc({0: (1,), 1: (2,), 2: ()})
     [frozenset({2}), frozenset({1}), frozenset({0})]
     """
-    if not adj:
-        return []
-
-    nodes = set(adj.keys())
-    for succs in adj.values():
-        nodes.update(succs)
-
-    index = 0
-    stack: list[int] = []
-    indices: dict[int, int] = {}
-    lowlink: dict[int, int] = {}
-    on_stack: set[int] = set()
-    sccs: list[frozenset[int]] = []
-
-    def strongconnect(v: int) -> None:
-        nonlocal index
-        indices[v] = index
-        lowlink[v] = index
-        index += 1
-        stack.append(v)
-        on_stack.add(v)
-
-        for w in adj.get(v, ()):
-            if w not in indices:
-                strongconnect(w)
-                lowlink[v] = min(lowlink[v], lowlink[w])
-            elif w in on_stack:
-                lowlink[v] = min(lowlink[v], indices[w])
-
-        if lowlink[v] == indices[v]:
-            scc_nodes: set[int] = set()
-            while stack:
-                w = stack.pop()
-                on_stack.discard(w)
-                scc_nodes.add(w)
-                if w == v:
-                    break
-            sccs.append(frozenset(scc_nodes))
-
-    for n in nodes:
-        if n not in indices:
-            strongconnect(n)
-
-    return sccs
+    # Delegates to the canonical lowest-layer implementation
+    # (``d810.ir.directed_graph.tarjan_scc``). The algorithm previously lived
+    # here verbatim only because no shared home below ``analyses`` existed;
+    # ``d810.ir`` is below ``analyses`` (downward import is allowed). Same
+    # contract: ``list[frozenset]`` in reverse-topological order, referenced-
+    # but-unlisted successors included as singleton SCCs.
+    return _canonical_tarjan_scc(adj)
 
 
 @dataclass(frozen=True, slots=True)
