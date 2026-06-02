@@ -36,7 +36,7 @@ def _add_node(
 ) -> None:
     conn.execute(
         """
-        INSERT INTO dag_nodes
+        INSERT INTO state_cfg_nodes
             (snapshot_id, state_hex, state_i64, entry_block,
              classification, shared_suffix)
         VALUES (?,?,?,?,?,?)
@@ -57,7 +57,7 @@ def _add_block(
 ) -> None:
     conn.execute(
         """
-        INSERT INTO dag_node_blocks
+        INSERT INTO state_cfg_node_blocks
             (snapshot_id, state_hex, entry_block, block_serial,
              block_index, role)
         VALUES (?,?,?,?,?,?)
@@ -80,7 +80,7 @@ def _add_edge(
 ) -> None:
     conn.execute(
         """
-        INSERT INTO dag_edges
+        INSERT INTO state_cfg_edges
             (snapshot_id, edge_id, source_state_hex, source_state_i64,
              target_state_hex, target_state_i64, edge_kind,
              source_block, source_arm, target_entry, ordered_path)
@@ -106,7 +106,7 @@ def _add_collapsed_diagnostic(
 ) -> None:
     conn.execute(
         """
-        INSERT INTO dag_edge_diagnostics
+        INSERT INTO state_cfg_edge_diagnostics
             (snapshot_id, edge_id, classification, source_state_hex,
              target_state_hex, edge_kind, is_terminal_tail,
              original_state_const, rewritten_state_const,
@@ -292,6 +292,6 @@ def test_persist_idempotent() -> None:
     persist_alternate_correlations(conn, correlations)
     persist_alternate_correlations(conn, correlations)
     rows = conn.execute(
-        "SELECT COUNT(*) FROM dag_edge_alternate_correlations"
+        "SELECT COUNT(*) FROM state_cfg_edge_alternate_correlations"
     ).fetchone()
     assert rows[0] == 1

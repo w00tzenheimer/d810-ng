@@ -103,7 +103,7 @@ CREATE INDEX IF NOT EXISTS idx_insn_ea_hex
 -- Layer 2: Strategy Metadata
 
 -- DAG nodes (one per handler state)
-CREATE TABLE IF NOT EXISTS dag_nodes (
+CREATE TABLE IF NOT EXISTS state_cfg_nodes (
     snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
     state_hex       TEXT NOT NULL,
     state_i64       INTEGER NOT NULL,
@@ -114,7 +114,7 @@ CREATE TABLE IF NOT EXISTS dag_nodes (
 );
 
 -- DAG edges (one per transition)
-CREATE TABLE IF NOT EXISTS dag_edges (
+CREATE TABLE IF NOT EXISTS state_cfg_edges (
     snapshot_id           INTEGER NOT NULL REFERENCES snapshots(id),
     edge_id               INTEGER NOT NULL,
     source_state_hex      TEXT,
@@ -138,7 +138,7 @@ CREATE TABLE IF NOT EXISTS dag_edges (
 -- Typed local facts for each DAG node. These mirror LinearizedStateDag node
 -- internals so tools can reconstruct state-local CFG views without scraping
 -- rendered text.
-CREATE TABLE IF NOT EXISTS dag_node_blocks (
+CREATE TABLE IF NOT EXISTS state_cfg_node_blocks (
     snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
     state_hex       TEXT NOT NULL,
     entry_block     INTEGER NOT NULL,
@@ -152,7 +152,7 @@ CREATE TABLE IF NOT EXISTS dag_node_blocks (
     PRIMARY KEY (snapshot_id, state_hex, entry_block, role, block_index)
 );
 
-CREATE TABLE IF NOT EXISTS dag_local_segments (
+CREATE TABLE IF NOT EXISTS state_cfg_local_segments (
     snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
     state_hex       TEXT NOT NULL,
     entry_block     INTEGER NOT NULL,
@@ -163,7 +163,7 @@ CREATE TABLE IF NOT EXISTS dag_local_segments (
     PRIMARY KEY (snapshot_id, state_hex, entry_block, segment_index)
 );
 
-CREATE TABLE IF NOT EXISTS dag_local_edges (
+CREATE TABLE IF NOT EXISTS state_cfg_local_edges (
     snapshot_id        INTEGER NOT NULL REFERENCES snapshots(id),
     state_hex          TEXT NOT NULL,
     entry_block        INTEGER NOT NULL,
@@ -175,20 +175,20 @@ CREATE TABLE IF NOT EXISTS dag_local_edges (
     PRIMARY KEY (snapshot_id, state_hex, entry_block, edge_index)
 );
 
-CREATE INDEX IF NOT EXISTS idx_dag_node_blocks_state
-    ON dag_node_blocks(snapshot_id, state_hex, entry_block);
-CREATE INDEX IF NOT EXISTS idx_dag_local_segments_state
-    ON dag_local_segments(snapshot_id, state_hex, entry_block);
-CREATE INDEX IF NOT EXISTS idx_dag_local_edges_state
-    ON dag_local_edges(snapshot_id, state_hex, entry_block, edge_index);
+CREATE INDEX IF NOT EXISTS idx_state_cfg_node_blocks_state
+    ON state_cfg_node_blocks(snapshot_id, state_hex, entry_block);
+CREATE INDEX IF NOT EXISTS idx_state_cfg_local_segments_state
+    ON state_cfg_local_segments(snapshot_id, state_hex, entry_block);
+CREATE INDEX IF NOT EXISTS idx_state_cfg_local_edges_state
+    ON state_cfg_local_edges(snapshot_id, state_hex, entry_block, edge_index);
 
--- Edge classification diagnostics computed by correlating dag_edges
+-- Edge classification diagnostics computed by correlating state_cfg_edges
 -- with StateWriteAnchor STATE_CONST_REWRITTEN mappings,
 -- StateTransitionAnchorFact transit chains, and TerminalByteEmitterFact
 -- destinations.  Observability-only: NO behavior of recon edge target
 -- selection depends on these rows.  See
 -- ``d810.diagnostics.edge_diagnostics`` for classification rules.
-CREATE TABLE IF NOT EXISTS dag_edge_diagnostics (
+CREATE TABLE IF NOT EXISTS state_cfg_edge_diagnostics (
     snapshot_id            INTEGER NOT NULL REFERENCES snapshots(id),
     edge_id                INTEGER NOT NULL,
     classification         TEXT NOT NULL CHECK(classification IN (
@@ -208,15 +208,15 @@ CREATE TABLE IF NOT EXISTS dag_edge_diagnostics (
     reason                 TEXT NOT NULL,
     PRIMARY KEY (snapshot_id, edge_id)
 );
-CREATE INDEX IF NOT EXISTS idx_dag_edge_diagnostics_class
-    ON dag_edge_diagnostics(snapshot_id, classification);
-CREATE INDEX IF NOT EXISTS idx_dag_edge_diagnostics_terminal
-    ON dag_edge_diagnostics(is_terminal_tail, classification);
+CREATE INDEX IF NOT EXISTS idx_state_cfg_edge_diagnostics_class
+    ON state_cfg_edge_diagnostics(snapshot_id, classification);
+CREATE INDEX IF NOT EXISTS idx_state_cfg_edge_diagnostics_terminal
+    ON state_cfg_edge_diagnostics(is_terminal_tail, classification);
 
 -- DAG-frontier closure verifier output. Diagnostic-only: these rows explain
 -- semantic-SCC leaks and unresolved repair candidates. No runtime behavior may
 -- use them to authorize redirects.
-CREATE TABLE IF NOT EXISTS dag_frontier_closure_diagnostics (
+CREATE TABLE IF NOT EXISTS state_cfg_frontier_closure_diagnostics (
     snapshot_id             INTEGER NOT NULL REFERENCES snapshots(id),
     kind                    TEXT NOT NULL,
     reason                  TEXT,
@@ -238,8 +238,8 @@ CREATE TABLE IF NOT EXISTS dag_frontier_closure_diagnostics (
         reason
     )
 );
-CREATE INDEX IF NOT EXISTS idx_dag_frontier_closure_diag_kind
-    ON dag_frontier_closure_diagnostics(snapshot_id, kind, reason);
+CREATE INDEX IF NOT EXISTS idx_state_cfg_frontier_closure_diag_kind
+    ON state_cfg_frontier_closure_diagnostics(snapshot_id, kind, reason);
 
 -- BST-resolved next-state enrichment for StateTransitionAnchorFact rows.
 -- Computed by composing:
@@ -375,13 +375,13 @@ CREATE INDEX IF NOT EXISTS idx_branch_ownership_proofs_source
     ON branch_ownership_proofs(snapshot_id, source_block, branch_arm);
 
 -- Correlations between a ``COLLAPSED_TO_REWRITTEN_TARGET`` recon edge
--- and an alternate already-persisted ``dag_edges`` row whose source
+-- and an alternate already-persisted ``state_cfg_edges`` row whose source
 -- state is a RANGE_BACKED sibling whose owned/shared blocks overlap
 -- the collapsed source's blocks.  The alternate edge IS the
 -- traversing route that the collapsed exact edge is missing.
 -- Observability-only: NO recon edge target selection or HCC behavior
 -- depends on these rows.
-CREATE TABLE IF NOT EXISTS dag_edge_alternate_correlations (
+CREATE TABLE IF NOT EXISTS state_cfg_edge_alternate_correlations (
     snapshot_id              INTEGER NOT NULL REFERENCES snapshots(id),
     collapsed_edge_id        INTEGER NOT NULL,
     alternate_edge_id        INTEGER NOT NULL,
@@ -395,18 +395,18 @@ CREATE TABLE IF NOT EXISTS dag_edge_alternate_correlations (
     reason                   TEXT NOT NULL,
     PRIMARY KEY (snapshot_id, collapsed_edge_id, alternate_edge_id)
 );
-CREATE INDEX IF NOT EXISTS idx_dag_edge_alt_corr_collapsed
-    ON dag_edge_alternate_correlations(snapshot_id, collapsed_edge_id);
+CREATE INDEX IF NOT EXISTS idx_state_cfg_edge_alt_corr_collapsed
+    ON state_cfg_edge_alternate_correlations(snapshot_id, collapsed_edge_id);
 
 -- Per-alternate selection decisions: for each
--- ``dag_edge_alternate_correlations`` row, did the alternate edge
+-- ``state_cfg_edge_alternate_correlations`` row, did the alternate edge
 -- preserve terminal-tail byte progression (byte_index N -> N+k for
 -- some k >= 1)?  Computed by bounded BFS (depth <= 2) from the
--- alternate's target state through ``dag_edges`` looking for a state
+-- alternate's target state through ``state_cfg_edges`` looking for a state
 -- whose owned blocks contain a ``terminal_tail``
 -- ``TerminalByteEmitterFact`` destination with a byte_index strictly
 -- greater than the source's byte_index.  Observability-only.
-CREATE TABLE IF NOT EXISTS dag_edge_alternate_selections (
+CREATE TABLE IF NOT EXISTS state_cfg_edge_alternate_selections (
     snapshot_id            INTEGER NOT NULL REFERENCES snapshots(id),
     collapsed_edge_id      INTEGER NOT NULL,
     alternate_edge_id      INTEGER NOT NULL,
@@ -418,8 +418,8 @@ CREATE TABLE IF NOT EXISTS dag_edge_alternate_selections (
     evidence_json          TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (snapshot_id, collapsed_edge_id, alternate_edge_id)
 );
-CREATE INDEX IF NOT EXISTS idx_dag_edge_alt_sel_selected
-    ON dag_edge_alternate_selections(snapshot_id, selected);
+CREATE INDEX IF NOT EXISTS idx_state_cfg_edge_alt_sel_selected
+    ON state_cfg_edge_alternate_selections(snapshot_id, selected);
 
 -- Reconstruction modifications (one per emitted mod)
 CREATE TABLE IF NOT EXISTS modifications (
@@ -694,12 +694,77 @@ CREATE TABLE IF NOT EXISTS terminal_tail_dce_causes (
 
 CREATE INDEX IF NOT EXISTS idx_terminal_tail_dce_causes_cause
     ON terminal_tail_dce_causes(cause);
+
+-- Back-compat VIEWs for the renamed recovered-CFG tables.  These tables were
+-- historically named ``dag_*``; they are now ``state_cfg_*`` (a control-flow
+-- graph has cycles -- "DAG" was a misnomer).  The views keep old ad-hoc
+-- queries and external ``.diag.sqlite3`` readers working; production code
+-- reads/writes the ``state_cfg_*`` base tables directly.
+CREATE VIEW IF NOT EXISTS dag_nodes AS SELECT * FROM state_cfg_nodes;
+CREATE VIEW IF NOT EXISTS dag_edges AS SELECT * FROM state_cfg_edges;
+CREATE VIEW IF NOT EXISTS dag_node_blocks AS SELECT * FROM state_cfg_node_blocks;
+CREATE VIEW IF NOT EXISTS dag_local_segments AS SELECT * FROM state_cfg_local_segments;
+CREATE VIEW IF NOT EXISTS dag_local_edges AS SELECT * FROM state_cfg_local_edges;
+CREATE VIEW IF NOT EXISTS dag_edge_diagnostics AS SELECT * FROM state_cfg_edge_diagnostics;
+CREATE VIEW IF NOT EXISTS dag_frontier_closure_diagnostics
+    AS SELECT * FROM state_cfg_frontier_closure_diagnostics;
+CREATE VIEW IF NOT EXISTS dag_edge_alternate_correlations
+    AS SELECT * FROM state_cfg_edge_alternate_correlations;
+CREATE VIEW IF NOT EXISTS dag_edge_alternate_selections
+    AS SELECT * FROM state_cfg_edge_alternate_selections;
 """
+
+
+# Recovered-CFG tables were historically ``dag_*`` base tables; they are now
+# ``state_cfg_*`` base tables (+ ``dag_*`` back-compat views).  Maps each old
+# base-table name to its new name for in-place migration of older DBs.
+_LEGACY_DAG_TABLE_RENAMES = {
+    "dag_nodes": "state_cfg_nodes",
+    "dag_edges": "state_cfg_edges",
+    "dag_node_blocks": "state_cfg_node_blocks",
+    "dag_local_segments": "state_cfg_local_segments",
+    "dag_local_edges": "state_cfg_local_edges",
+    "dag_edge_diagnostics": "state_cfg_edge_diagnostics",
+    "dag_frontier_closure_diagnostics": "state_cfg_frontier_closure_diagnostics",
+    "dag_edge_alternate_correlations": "state_cfg_edge_alternate_correlations",
+    "dag_edge_alternate_selections": "state_cfg_edge_alternate_selections",
+}
+
+
+def _migrate_legacy_dag_tables(conn: sqlite3.Connection) -> None:
+    """Rename pre-existing ``dag_*`` base tables to ``state_cfg_*`` (idempotent).
+
+    Older ``.diag.sqlite3`` files created ``dag_*`` as base tables.  The current
+    schema makes ``state_cfg_*`` the base tables and ``dag_*`` read-only views.
+    For each pair, if the old base table still exists and the new one does not,
+    rename it in place (data and attached indexes follow the rename), then drop
+    the now-stale ``idx_dag_*`` indexes so the schema's ``idx_state_cfg_*``
+    indexes are canonical.  Must run BEFORE the schema DDL so the idempotent
+    ``CREATE TABLE IF NOT EXISTS state_cfg_*`` does not create an empty table
+    beside the orphaned legacy one.
+    """
+    existing = {
+        name: kind
+        for name, kind in conn.execute(
+            "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view')"
+        ).fetchall()
+    }
+    for old, new in _LEGACY_DAG_TABLE_RENAMES.items():
+        if existing.get(old) == "table" and new not in existing:
+            conn.execute(f"ALTER TABLE {old} RENAME TO {new}")
+    for (idx_name,) in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_dag_%'"
+    ).fetchall():
+        conn.execute(f"DROP INDEX IF EXISTS {idx_name}")
 
 
 def create_tables(conn: sqlite3.Connection) -> None:
     """Create all diagnostic snapshot tables, views, and indexes.
 
-    Uses IF NOT EXISTS so this is safe to call multiple times (idempotent).
+    Migrates any legacy ``dag_*`` base tables to ``state_cfg_*`` first, then
+    applies the schema.  Uses IF NOT EXISTS so this is safe to call multiple
+    times (idempotent).
     """
+    _migrate_legacy_dag_tables(conn)
     conn.executescript(_SCHEMA_SQL)
+    conn.execute("PRAGMA user_version = 1")

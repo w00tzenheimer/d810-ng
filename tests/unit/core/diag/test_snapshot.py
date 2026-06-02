@@ -903,10 +903,10 @@ class TestSnapshotDag:
         snapshot_dag(conn, 1, nodes, edges)
 
         node_count = conn.execute(
-            "SELECT COUNT(*) FROM dag_nodes WHERE snapshot_id=1"
+            "SELECT COUNT(*) FROM state_cfg_nodes WHERE snapshot_id=1"
         ).fetchone()[0]
         edge_count = conn.execute(
-            "SELECT COUNT(*) FROM dag_edges WHERE snapshot_id=1"
+            "SELECT COUNT(*) FROM state_cfg_edges WHERE snapshot_id=1"
         ).fetchone()[0]
         assert node_count == 3
         assert edge_count == 4
@@ -939,7 +939,7 @@ class TestSnapshotDag:
         snapshot_dag(conn, 1, [], [edge])
 
         row = conn.execute(
-            "SELECT ordered_path FROM dag_edges WHERE snapshot_id=1"
+            "SELECT ordered_path FROM state_cfg_edges WHERE snapshot_id=1"
         ).fetchone()
         assert json.loads(row[0]) == [131, 174, 176]
 
@@ -987,21 +987,21 @@ class TestSnapshotDag:
         snapshot_dag_local_facts(conn, 1, dag)
 
         block_rows = conn.execute(
-            "SELECT role, block_serial FROM dag_node_blocks "
+            "SELECT role, block_serial FROM state_cfg_node_blocks "
             "WHERE snapshot_id=1 ORDER BY role, block_serial"
         ).fetchall()
         assert ("shared_suffix", 217) in block_rows
         assert ("owned", 205) in block_rows
 
         segment_row = conn.execute(
-            "SELECT kind, blocks_json FROM dag_local_segments "
+            "SELECT kind, blocks_json FROM state_cfg_local_segments "
             "WHERE snapshot_id=1 AND segment_id='blk[205]'"
         ).fetchone()
         assert segment_row == ("BRANCH", "[205]")
 
         edge_rows = conn.execute(
             "SELECT source_segment_id, target_segment_id, kind, branch_arm "
-            "FROM dag_local_edges WHERE snapshot_id=1 ORDER BY edge_index"
+            "FROM state_cfg_local_edges WHERE snapshot_id=1 ORDER BY edge_index"
         ).fetchall()
         assert edge_rows[0] == ("blk[205]", "blk[207]", "TAKEN", 1)
         assert edge_rows[-1] == ("blk[217]", "blk[218]", "TERMINAL", None)
@@ -1054,10 +1054,10 @@ class TestSnapshotDag:
         snapshot_dag_local_facts(conn, 1, dag)
 
         outer_hex = conn.execute(
-            "SELECT state_hex FROM dag_nodes WHERE snapshot_id=1"
+            "SELECT state_hex FROM state_cfg_nodes WHERE snapshot_id=1"
         ).fetchone()[0]
         local_hex = conn.execute(
-            "SELECT DISTINCT state_hex FROM dag_node_blocks WHERE snapshot_id=1"
+            "SELECT DISTINCT state_hex FROM state_cfg_node_blocks WHERE snapshot_id=1"
         ).fetchone()[0]
         assert outer_hex == "0x0000000029837000"
         assert local_hex == outer_hex

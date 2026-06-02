@@ -169,13 +169,13 @@ def create_sub_7ffd_scenario(conn: sqlite3.Connection) -> int:
     ]
     for row in dag_edges:
         conn.execute(
-            "INSERT INTO dag_edges VALUES (1,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO state_cfg_edges VALUES (1,?,?,?,?,?,?,?,?,?,?)",
             row,
         )
 
     state_h, state_i = _dual(0x298372CC)
     conn.execute(
-        "INSERT INTO dag_nodes VALUES (1, ?, ?, 205, 'RANGE_BACKED', ?)",
+        "INSERT INTO state_cfg_nodes VALUES (1, ?, ?, 205, 'RANGE_BACKED', ?)",
         (state_h, state_i, json.dumps([217, 218])),
     )
     for role, serials in (
@@ -185,7 +185,7 @@ def create_sub_7ffd_scenario(conn: sqlite3.Connection) -> int:
     ):
         for block_index, serial in enumerate(serials):
             conn.execute(
-                "INSERT INTO dag_node_blocks VALUES (1, ?, 205, ?, ?, ?)",
+                "INSERT INTO state_cfg_node_blocks VALUES (1, ?, 205, ?, ?, ?)",
                 (state_h, serial, block_index, role),
             )
     for segment_index, (segment_id, kind, blocks_json) in enumerate((
@@ -196,7 +196,7 @@ def create_sub_7ffd_scenario(conn: sqlite3.Connection) -> int:
         ("blk[218]", "TERMINAL_SUFFIX", [218]),
     )):
         conn.execute(
-            "INSERT INTO dag_local_segments VALUES (1, ?, 205, ?, ?, ?, ?)",
+            "INSERT INTO state_cfg_local_segments VALUES (1, ?, 205, ?, ?, ?, ?)",
             (state_h, segment_index, segment_id, kind, json.dumps(blocks_json)),
         )
     for edge_index, src, dst, kind, branch_arm in (
@@ -206,7 +206,7 @@ def create_sub_7ffd_scenario(conn: sqlite3.Connection) -> int:
         (3, "blk[217]", "blk[218]", "TERMINAL", None),
     ):
         conn.execute(
-            "INSERT INTO dag_local_edges VALUES (1, ?, 205, ?, ?, ?, ?, ?)",
+            "INSERT INTO state_cfg_local_edges VALUES (1, ?, 205, ?, ?, ?, ?, ?)",
             (state_h, edge_index, src, dst, kind, branch_arm),
         )
 

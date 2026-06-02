@@ -64,10 +64,10 @@ def load_persisted_dup_sources(conn: sqlite3.Connection) -> frozenset[int]:
 
 
 def load_bst_table(conn: sqlite3.Connection) -> dict[int, int]:
-    """``state_const -> handler_block`` lookup from ``dag_edges``."""
+    """``state_const -> handler_block`` lookup from ``state_cfg_edges``."""
     out: dict[int, int] = {}
     for sc, h in conn.execute(
-        "SELECT DISTINCT target_state_i64, target_entry FROM dag_edges "
+        "SELECT DISTINCT target_state_i64, target_entry FROM state_cfg_edges "
         "WHERE target_state_i64 IS NOT NULL AND target_entry IS NOT NULL"
     ):
         out[int(sc) & 0xFFFFFFFFFFFFFFFF] = int(h)

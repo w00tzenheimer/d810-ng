@@ -1416,7 +1416,7 @@ def main(argv: list[str] | None = None) -> int:
         "dag-edge-diagnostics",
         parents=[common],
         help=(
-            "Classify recon-time dag_edges by correlating them with "
+            "Classify recon-time state_cfg_edges by correlating them with "
             "StateWriteAnchor STATE_CONST_REWRITTEN mappings, "
             "StateTransitionAnchor transit chains, and "
             "TerminalByteEmitterFact destinations. "
@@ -1430,7 +1430,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=(
             "Snapshot id to classify (default: every snapshot that has "
-            "dag_edges rows)"
+            "state_cfg_edges rows)"
         ),
     )
     p_dag_edge_diag.add_argument(
@@ -1453,7 +1453,7 @@ def main(argv: list[str] | None = None) -> int:
         "--persist",
         action="store_true",
         help=(
-            "Persist classifications into dag_edge_diagnostics table "
+            "Persist classifications into state_cfg_edge_diagnostics table "
             "(idempotent: existing rows for the snapshot are replaced)"
         ),
     )
@@ -1578,7 +1578,7 @@ def main(argv: list[str] | None = None) -> int:
         "dag-edge-alternate-correlations",
         parents=[common],
         help=(
-            "Pair COLLAPSED_TO_REWRITTEN_TARGET dag_edges rows with "
+            "Pair COLLAPSED_TO_REWRITTEN_TARGET state_cfg_edges rows with "
             "alternate already-persisted edges from RANGE_BACKED "
             "sibling nodes whose blocks overlap the collapsed source. "
             "Observability-only."
@@ -1600,7 +1600,7 @@ def main(argv: list[str] | None = None) -> int:
     p_alt_corr.add_argument(
         "--persist",
         action="store_true",
-        help="Persist correlations into dag_edge_alternate_correlations",
+        help="Persist correlations into state_cfg_edge_alternate_correlations",
     )
     p_alt_corr.add_argument(
         "--json",
@@ -1614,7 +1614,7 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Decide which correlated alternate edges preserve the "
             "terminal-tail byte progression: bounded BFS (depth <= 2) "
-            "from each alternate target through dag_edges to find a "
+            "from each alternate target through state_cfg_edges to find a "
             "later terminal_tail TerminalByteEmitterFact byte_index. "
             "Observability-only."
         ),
@@ -1624,7 +1624,7 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=None,
         help="Snapshot id to select for (default: every snapshot with "
-             "dag_edge_alternate_correlations rows)",
+             "state_cfg_edge_alternate_correlations rows)",
     )
     p_alt_sel.add_argument(
         "--collapsed-edge",
@@ -1646,7 +1646,7 @@ def main(argv: list[str] | None = None) -> int:
     p_alt_sel.add_argument(
         "--persist",
         action="store_true",
-        help="Persist into dag_edge_alternate_selections",
+        help="Persist into state_cfg_edge_alternate_selections",
     )
     p_alt_sel.add_argument(
         "--json",
@@ -2304,7 +2304,7 @@ def main(argv: list[str] | None = None) -> int:
             snap_ids = [
                 int(r[0])
                 for r in conn.execute(
-                    "SELECT DISTINCT snapshot_id FROM dag_edges ORDER BY snapshot_id"
+                    "SELECT DISTINCT snapshot_id FROM state_cfg_edges ORDER BY snapshot_id"
                 ).fetchall()
             ]
         all_diagnostics: list[EdgeDiagnostic] = []
@@ -2557,7 +2557,7 @@ def main(argv: list[str] | None = None) -> int:
                 int(r[0])
                 for r in conn.execute(
                     "SELECT DISTINCT snapshot_id "
-                    "FROM dag_edge_diagnostics "
+                    "FROM state_cfg_edge_diagnostics "
                     "WHERE classification='COLLAPSED_TO_REWRITTEN_TARGET' "
                     "ORDER BY snapshot_id"
                 ).fetchall()
@@ -2637,7 +2637,7 @@ def main(argv: list[str] | None = None) -> int:
                 int(r[0])
                 for r in conn.execute(
                     "SELECT DISTINCT snapshot_id "
-                    "FROM dag_edge_alternate_correlations "
+                    "FROM state_cfg_edge_alternate_correlations "
                     "ORDER BY snapshot_id"
                 ).fetchall()
             ]

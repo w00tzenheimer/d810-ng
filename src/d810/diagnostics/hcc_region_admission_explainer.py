@@ -20,9 +20,9 @@ Buckets (priority order, first match wins):
    ``frontier_overrides`` / ``late_shared_fallback``) but never admitted
    it to the raw region table; the raw region merge dropped/missed it.
 5. ``not_in_chain`` -- DB join shows the byte's ``dag_node`` has no
-   incoming or outgoing ``dag_edges`` rows; HCC saw the state but no
+   incoming or outgoing ``state_cfg_edges`` rows; HCC saw the state but no
    chain to admit.
-6. ``chain_too_short`` -- chain (BFS along ``dag_edges``) is below
+6. ``chain_too_short`` -- chain (BFS along ``state_cfg_edges``) is below
    ``MIN_ADMISSIBLE_CHAIN_LEN`` nodes; too short to bootstrap a region.
 7. ``no_accepted_pred_or_succ`` -- chain exists but no neighbor's
    block ever made it into the raw region table either; the entire
@@ -175,10 +175,10 @@ class AdmissionExplanation:
 
 
 def _latest_dag_snapshot_id(conn: sqlite3.Connection) -> int | None:
-    """Return the snapshot id of the latest non-empty dag_nodes row."""
+    """Return the snapshot id of the latest non-empty state_cfg_nodes row."""
     try:
         row = conn.execute(
-            "SELECT MAX(snapshot_id) FROM dag_nodes"
+            "SELECT MAX(snapshot_id) FROM state_cfg_nodes"
         ).fetchone()
     except sqlite3.OperationalError:
         return None
@@ -198,7 +198,7 @@ def _resolve_state_hex_for_block(
     try:
         row = conn.execute(
             """
-            SELECT state_hex FROM dag_node_blocks
+            SELECT state_hex FROM state_cfg_node_blocks
             WHERE snapshot_id=? AND block_serial=?
             ORDER BY CASE role
                 WHEN 'exclusive' THEN 0
@@ -224,7 +224,7 @@ def _dag_neighbor_counts(
     try:
         pred_rows = conn.execute(
             """
-            SELECT DISTINCT source_state_hex FROM dag_edges
+            SELECT DISTINCT source_state_hex FROM state_cfg_edges
             WHERE snapshot_id=? AND target_state_hex=?
               AND source_state_hex IS NOT NULL
             """,
@@ -232,7 +232,7 @@ def _dag_neighbor_counts(
         ).fetchall()
         succ_rows = conn.execute(
             """
-            SELECT DISTINCT target_state_hex FROM dag_edges
+            SELECT DISTINCT target_state_hex FROM state_cfg_edges
             WHERE snapshot_id=? AND source_state_hex=?
               AND target_state_hex IS NOT NULL
             """,
@@ -261,7 +261,7 @@ def _bfs_chain_size(
             placeholders = ",".join("?" for _ in frontier)
             rows = conn.execute(
                 f"""
-                SELECT source_state_hex, target_state_hex FROM dag_edges
+                SELECT source_state_hex, target_state_hex FROM state_cfg_edges
                 WHERE snapshot_id=?
                   AND (source_state_hex IN ({placeholders})
                        OR target_state_hex IN ({placeholders}))
@@ -308,7 +308,7 @@ def _count_neighbors_admitted_to_region(
         placeholders = ",".join("?" for _ in neighbor_state_hexes)
         rows = conn.execute(
             f"""
-            SELECT DISTINCT block_serial FROM dag_node_blocks
+            SELECT DISTINCT block_serial FROM state_cfg_node_blocks
             WHERE snapshot_id=? AND state_hex IN ({placeholders})
             """,
             (snapshot_id, *neighbor_state_hexes),
@@ -577,7 +577,7 @@ def format_report(
             )
         else:
             lines.append(
-                "  - no `dag_node_blocks` row joined for this byte's block;"
+                "  - no `state_cfg_node_blocks` row joined for this byte's block;"
                 " admission verdict relies on trace fields only"
             )
     return "\n".join(lines) + "\n"

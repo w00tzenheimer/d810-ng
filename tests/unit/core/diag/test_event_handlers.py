@@ -180,7 +180,7 @@ def test_followup_event_writes_under_correct_snapshot_id(fake_conn):
     observe_dag(snap, nodes, edges)
 
     dag_rows = fake_conn.execute(
-        "SELECT snapshot_id, state_hex, classification FROM dag_nodes"
+        "SELECT snapshot_id, state_hex, classification FROM state_cfg_nodes"
     ).fetchall()
     assert len(dag_rows) == 1
     assert dag_rows[0][1] == "0x0000000000000010"
@@ -239,7 +239,7 @@ def test_event_without_snapshot_mapping_is_a_noop(fake_conn):
     snap = SnapshotRef(key="stale-key", func_ea=1, label="L", maturity="M", phase="p")
     emit(DagObserved(snapshot=snap, nodes=(), edges=()))
 
-    rows = fake_conn.execute("SELECT COUNT(*) FROM dag_nodes").fetchone()
+    rows = fake_conn.execute("SELECT COUNT(*) FROM state_cfg_nodes").fetchone()
     assert rows[0] == 0
 
 

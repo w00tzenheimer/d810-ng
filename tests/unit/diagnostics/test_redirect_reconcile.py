@@ -34,7 +34,7 @@ def _make_diag_db(tmp_path: Path) -> Path:
         dispatcher threshold for tests using min_dispatcher_preds=5, but
         we exercise the threshold logic independently.
       - State-var writes on block 10 (mov #0x100, var_3C).
-      - dag_edges: one (state_const=0x100, target_entry=20) row -- so BST
+      - state_cfg_edges: one (state_const=0x100, target_entry=20) row -- so BST
         resolves 0x100 -> 20.
       - modifications:
           (a) RedirectGoto: source_block=10, old_target=20, target_block=20
@@ -53,7 +53,7 @@ def _make_diag_db(tmp_path: Path) -> Path:
                 insn_index INTEGER, dest_stkoff INTEGER,
                 src_l_stkoff INTEGER, src_r_stkoff INTEGER,
                 src_l_value_i64 INTEGER);
-            CREATE TABLE dag_edges(target_state_i64 INTEGER, target_entry INTEGER);
+            CREATE TABLE state_cfg_edges(target_state_i64 INTEGER, target_entry INTEGER);
             CREATE TABLE modifications(mod_type TEXT, status TEXT,
                 source_block INTEGER, old_target INTEGER, target_block INTEGER);
             INSERT INTO snapshots VALUES (5);
@@ -76,7 +76,7 @@ def _make_diag_db(tmp_path: Path) -> Path:
         )
         # BST: state 0x100 -> handler at block 20.
         conn.execute(
-            "INSERT INTO dag_edges VALUES (?, ?)",
+            "INSERT INTO state_cfg_edges VALUES (?, ?)",
             (0x100, 20),
         )
         # Persisted RedirectGoto: src=10 redirects old=20 -> new=20 (AGREE).
@@ -160,10 +160,10 @@ def test_load_bst_table_handles_negative_i64_via_uint64_mask(tmp_path: Path) -> 
     conn = sqlite3.connect(str(db))
     try:
         conn.executescript(
-            "CREATE TABLE dag_edges(target_state_i64 INTEGER, target_entry INTEGER);"
+            "CREATE TABLE state_cfg_edges(target_state_i64 INTEGER, target_entry INTEGER);"
         )
         # -1 as i64 -> 0xFFFF_FFFF_FFFF_FFFF as u64.
-        conn.execute("INSERT INTO dag_edges VALUES (?, ?)", (-1, 77))
+        conn.execute("INSERT INTO state_cfg_edges VALUES (?, ?)", (-1, 77))
         conn.commit()
         bst = load_bst_table(conn)
     finally:
@@ -307,7 +307,7 @@ def test_run_reconcile_against_empty_dag_edges(tmp_path: Path) -> None:
             CREATE TABLE instructions(snapshot_id INTEGER, block_serial INTEGER,
                 insn_index INTEGER, dest_stkoff INTEGER, src_l_stkoff INTEGER,
                 src_r_stkoff INTEGER, src_l_value_i64 INTEGER);
-            CREATE TABLE dag_edges(target_state_i64 INTEGER, target_entry INTEGER);
+            CREATE TABLE state_cfg_edges(target_state_i64 INTEGER, target_entry INTEGER);
             CREATE TABLE modifications(mod_type TEXT, status TEXT,
                 source_block INTEGER, old_target INTEGER, target_block INTEGER);
             INSERT INTO snapshots VALUES (5);
