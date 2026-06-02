@@ -4183,6 +4183,34 @@ def _build_local_edges(
     return tuple(edges)
 
 
+def _is_conditional_return(
+    is_terminal_no_write: bool,
+    target_state: int | None,
+    dispatcher_target: int | None,
+    default_block_serial: int | None,
+) -> bool:
+    """Classify a handler's conditional branch arm as reaching a return.
+
+    Two shapes both yield CONDITIONAL_RETURN:
+
+    * ``is_terminal_no_write`` — a direct return arm that writes no next-state (the legacy signal).
+    * an OLLVM *sentinel-state* terminal — the arm writes a next-state the dispatcher routes to its
+      default fall-through (the shared return block) rather than to a handler. The LiSA-sound test is
+      an interval-map lookup: ``dispatcher.lookup(next_state)`` (``dispatcher_target``) equals the
+      recovered ``default_block_serial``. Checking the *default block* (not merely "lookup is None")
+      stays correct when the dispatcher has a total cover and range-backed handlers (sub_7FFD), where
+      an uncovered/unresolved state still routes through a real interval row.
+
+    Without a recovered dispatcher default (``default_block_serial`` None — the portable/shallow
+    path) only the no-write terminal is recognised, so the classification is byte-identical there.
+    """
+    if is_terminal_no_write:
+        return True
+    if target_state is None or dispatcher_target is None or default_block_serial is None:
+        return False
+    return int(dispatcher_target) == int(default_block_serial)
+
+
 def _infer_terminal_edge_kind(
     path: HandlerPathResult,
     flow_graph: FlowGraph,
@@ -6598,19 +6626,36 @@ def build_linearized_state_dag_from_graph(
             continue
         paths = paths_by_handler.get(handler_serial, ())
         for cond in conds:
+            # Interval-map terminal classification: an arm writing a next-state the dispatcher routes
+            # to its default fall-through (the shared return block) is a CONDITIONAL_RETURN even when
+            # it DID write a (sentinel) state -- the OLLVM terminal shape that ``is_terminal_no_write``
+            # alone misses (e.g. ``state=0x1A2B3C4D`` routed to the dispatcher default). Without a
+            # recovered dispatcher (portable/shallow path) only the no-write terminal qualifies, so
+            # the classification stays byte-identical there.
+            _disp_target = (
+                dispatcher.lookup(cond.target_state)
+                if (dispatcher is not None and cond.target_state is not None)
+                else None
+            )
+            is_return = _is_conditional_return(
+                cond.is_terminal_no_write,
+                cond.target_state,
+                _disp_target,
+                # getattr: a dispatcher-like that does not expose the recovered default (test doubles,
+                # non-IntervalDispatcher backends) yields None -> no reclassification (byte-identical).
+                getattr(dispatcher, "default_target", None) if dispatcher is not None else None,
+            )
             kind = (
                 SemanticEdgeKind.CONDITIONAL_RETURN
-                if cond.is_terminal_no_write
+                if is_return
                 else SemanticEdgeKind.CONDITIONAL_TRANSITION
             )
             target_handler_serial = (
-                resolve_handler(cond.target_state)
-                if not cond.is_terminal_no_write
-                else None
+                resolve_handler(cond.target_state) if not is_return else None
             )
             target_node = (
                 resolve_target_node(target_handler_serial, cond.target_state)
-                if not cond.is_terminal_no_write
+                if not is_return
                 else None
             )
             matched_path = _select_path_for_state(paths, cond.target_state)
@@ -6646,11 +6691,11 @@ def build_linearized_state_dag_from_graph(
                 kind=_cond_kind,
                 source_key=source_node.key,
                 target_key=target_node.key if target_node is not None else None,
-                target_state=None if cond.is_terminal_no_write else cond.target_state,
+                target_state=None if is_return else cond.target_state,
                 target_entry_anchor=_cond_target_entry,
                 target_label=(
                     "RETURN"
-                    if cond.is_terminal_no_write
+                    if is_return
                     else (
                         target_node.state_label
                         if target_node is not None

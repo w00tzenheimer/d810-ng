@@ -401,7 +401,7 @@ class IntervalDispatcher:
         rows: Pre-built list of IntervalRow objects.
     """
 
-    __slots__ = ("_rows", "_starts")
+    __slots__ = ("_rows", "_starts", "_default_target")
 
     def __init__(self, rows: list[IntervalRow]) -> None:
         self._rows: list[IntervalRow] = sorted(rows)
@@ -413,6 +413,32 @@ class IntervalDispatcher:
                 f"IntervalDispatcher: overlapping rows {a} and {b}"
             )
         self._starts: list[int] = [r.lo for r in self._rows]
+        self._default_target: Any | None = self._compute_default_target()
+
+    def _compute_default_target(self) -> Any | None:
+        """The dispatcher's default fall-through target — the block reached when no handler state
+        matches, i.e. the shared return in a flattened state machine.
+
+        Derived structurally from the table: in a total-cover dispatcher the inter-handler *gap*
+        intervals all route to the default block, so it dominates the covered state space, while each
+        handler occupies a point (or narrow) interval. The target with the maximum total covered
+        width is therefore the default. Returns None for an empty table. A handler would have to
+        cover > 2^31 values to outweigh the default, which does not occur in real flattened
+        dispatchers; tables carrying only handler rows (no gap rows) yield a handler here, but the
+        classifier guards on ``dispatcher.lookup`` so an uncovered sentinel state still falls back to
+        the conservative (non-return) classification.
+        """
+        if not self._rows:
+            return None
+        width_by_target: dict[Any, int] = {}
+        for r in self._rows:
+            width_by_target[r.target] = width_by_target.get(r.target, 0) + (r.hi - r.lo)
+        return max(width_by_target, key=lambda t: width_by_target[t])
+
+    @property
+    def default_target(self) -> Any | None:
+        """Block the dispatcher routes to when no handler state matches (the shared return)."""
+        return self._default_target
 
     def to_json(self) -> str:
         """Serialize rows as JSON for log diagnostics."""
