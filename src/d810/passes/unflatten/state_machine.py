@@ -145,6 +145,13 @@ class LowerStateMachine:
             # orphan non-state-variable uses (north-star LowerStateMachine.require(UseDefSafety)).
             use_def_safety=ctx.capabilities.optional(UseDefSafetyCapability),
             live_function=getattr(ctx.source, "live_source", None),
+            # Ungate return materialization (gap3): the recovered BST comparison blocks are the
+            # enriched-DAG signal lower_to_direct_graph needs to lower the DAG's CONDITIONAL_RETURN
+            # edges into terminal returns. Without it #4 emits spine redirects but return=0, so the
+            # terminals degrade into gotos (the §1a returns=0 bug). recover_dispatcher already
+            # exposes bst_block_serials, so production can supply it. Flag-gated path; default golden
+            # uses the legacy HodurUnflattener and is unaffected.
+            bst_node_blocks=getattr(recovery, "bst_block_serials", None),
         )
         return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
 
