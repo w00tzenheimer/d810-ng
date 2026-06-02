@@ -23,7 +23,16 @@ from d810.passes.pass_pipeline import (
 # --- WORK-LIST: portable extractions composed by the passes ---
 from d810.analyses.control_flow.dispatcher_recovery import recover_dispatcher
 from d810.analyses.control_flow.semantic_transition import resolve_state_transitions
-from d810.analyses.control_flow.transition_builder import transition_result_from_resolutions
+from d810.analyses.control_flow.transition_builder import (
+    _convert_bst_to_result,
+    transition_result_from_resolutions,
+)
+from d810.analyses.control_flow.linearized_state_dag import (
+    build_live_linearized_state_dag_from_graph,
+)
+from d810.analyses.control_flow.state_machine_analysis import (
+    run_snapshot_constant_fixpoint,
+)
 from d810.transforms.semantic_regions import plan_semantic_regions
 from d810.transforms.state_machine_unflatten import lower_to_direct_graph
 from d810.transforms.dispatcher_cleanup import cleanup_residual_dispatcher
@@ -133,25 +142,81 @@ class LowerStateMachine:
 
     def run(self, ctx: FunctionPipelineContext) -> PassResult:
         recovery = _analysis(ctx, "recover_dispatcher")
+        transition_result = _analysis(ctx, "transition_result")
+        dispatcher_entry = getattr(recovery, "dispatcher_block_serial", None)
+        state_var_stkoff = getattr(recovery, "state_var_stkoff", None)
+        # Ungate return materialization (gap3): the recovered BST comparison blocks are the
+        # enriched-DAG signal lower_to_direct_graph needs to lower the DAG's CONDITIONAL_RETURN
+        # edges into terminal returns. Without it #4 emits spine redirects but return=0, so the
+        # terminals degrade into gotos. recover_dispatcher exposes bst_block_serials, so production
+        # can supply it. Flag-gated path; default golden uses HodurUnflattener and is unaffected.
+        bst_node_blocks = getattr(recovery, "bst_block_serials", None)
+        live_function = getattr(ctx.source, "live_source", None)
+
+        # gap3+gap4 promotion: consume the entry's pre-pipeline BST/interval evidence (the
+        # pristine-mba ``analyze_bst_dispatcher`` result, threaded through the AnalysisManager). With
+        # the IntervalDispatcher + handler_range_map the DAG's edge classification becomes an
+        # interval-map lookup -- a handler's written next-state landing in the dispatcher's
+        # default->Ret interval is a CONDITIONAL_RETURN edge (the LiSA-sound classifier), not the
+        # bounded ``classify_exit_state`` mba walk. That enriched DAG + the IntervalDispatcher arm
+        # lower_to_direct_graph's full-reconstruction path, which materializes terminal returns (the
+        # §1a returns=0 -> returns=N fix). Mirrors the diag rebuild (_publish_s1a_diagnostics) so
+        # production and the oracle build the identical DAG. Absent the evidence the call stays on
+        # the committed shallow path (dispatcher None -> redirect-only ``steps``, byte-identical).
+        bst_evidence = _analysis(ctx, "bst_evidence")
+        enriched_dag = None
+        dispatcher = None
+        constant_result = None
+        if (
+            bst_evidence is not None
+            and getattr(bst_evidence, "dispatcher", None) is not None
+            and transition_result is not None
+            and dispatcher_entry is not None
+        ):
+            try:
+                dag_tr = _convert_bst_to_result(bst_evidence)
+            except Exception:  # noqa: BLE001 — fall back to the §1a exact-chain transitions
+                dag_tr = transition_result
+            if getattr(dag_tr, "transitions", None):
+                bst_blocks = tuple(
+                    sorted(int(b) for b in getattr(bst_evidence, "bst_node_blocks", ()))
+                )
+                enriched_dag = build_live_linearized_state_dag_from_graph(
+                    flow_graph=ctx.graph,
+                    transition_result=dag_tr,
+                    dispatcher_entry_serial=int(dispatcher_entry),
+                    state_var_stkoff=state_var_stkoff,
+                    bst_node_blocks=bst_blocks,
+                    handler_range_map=getattr(bst_evidence, "handler_range_map", None),
+                    dispatcher=bst_evidence.dispatcher,
+                    pre_header_serial=getattr(bst_evidence, "pre_header_serial", None),
+                    initial_state=getattr(bst_evidence, "initial_state", None),
+                    mba=live_function,
+                    prefer_local_corridors=True,
+                )
+                dispatcher = bst_evidence.dispatcher
+                bst_node_blocks = bst_blocks
+                if state_var_stkoff is not None:
+                    constant_result = run_snapshot_constant_fixpoint(
+                        ctx.graph, state_var_stkoff
+                    )
+
         plan = lower_to_direct_graph(
             ctx.graph,
             ctx.facts,
-            transition_result=_analysis(ctx, "transition_result"),
+            transition_result=transition_result,
             dispatch_map=getattr(recovery, "dispatch_map", None),
-            dispatcher_entry_serial=getattr(recovery, "dispatcher_block_serial", None),
-            state_var_stkoff=getattr(recovery, "state_var_stkoff", None),
+            dispatcher_entry_serial=dispatcher_entry,
+            state_var_stkoff=state_var_stkoff,
             regions=_analysis(ctx, "plan_semantic_regions"),
             # Protected emission: the injected use-def safety capability vetoes redirects that would
             # orphan non-state-variable uses (north-star LowerStateMachine.require(UseDefSafety)).
             use_def_safety=ctx.capabilities.optional(UseDefSafetyCapability),
-            live_function=getattr(ctx.source, "live_source", None),
-            # Ungate return materialization (gap3): the recovered BST comparison blocks are the
-            # enriched-DAG signal lower_to_direct_graph needs to lower the DAG's CONDITIONAL_RETURN
-            # edges into terminal returns. Without it #4 emits spine redirects but return=0, so the
-            # terminals degrade into gotos (the §1a returns=0 bug). recover_dispatcher already
-            # exposes bst_block_serials, so production can supply it. Flag-gated path; default golden
-            # uses the legacy HodurUnflattener and is unaffected.
-            bst_node_blocks=getattr(recovery, "bst_block_serials", None),
+            live_function=live_function,
+            bst_node_blocks=bst_node_blocks,
+            dag=enriched_dag,
+            dispatcher=dispatcher,
+            constant_result=constant_result,
         )
         return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
 

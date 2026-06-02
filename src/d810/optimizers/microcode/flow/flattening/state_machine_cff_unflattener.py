@@ -45,6 +45,9 @@ from d810.transforms.state_machine_unflatten import lower_to_direct_graph
 from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle import (
     ComposedUnflatteningRule,
 )
+from d810.optimizers.microcode.flow.flattening.hodur.unflattener import (
+    HodurUnflattener,
+)
 from d810.backends.hexrays.lifter import lift_function
 from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
 from d810.analyses.control_flow.dispatcher_recovery import recover_dispatcher
@@ -83,18 +86,24 @@ def _s1a_enabled() -> bool:
     return os.environ.get("D810_USE_S1A_PIPELINE", "0").strip() == "1"
 
 
-class StateMachineCffUnflattener(ComposedUnflatteningRule):
-    """Run the §1a pipeline for the state-machine-CFF (Hodur) family. Flag-gated, opt-in."""
+class StateMachineCffUnflattener(HodurUnflattener):
+    """§1a state-machine-CFF entry. Flag-gated, opt-in.
 
-    DESCRIPTION = "State-machine CFF unflattener via the §1a pipeline (families -> passes -> backend)"
+    By default (``D810_S1A_USE_HCC=1``) this rule IS the proven, framework-driven
+    HandlerChainComposer-owned ``HodurUnflattener`` reconstruction (the ``returns=8``
+    path; standalone ``StateWriteReconstructionStrategy`` is retired -- HCC owns the
+    SWR orchestration).  It subclasses ``HodurUnflattener`` so every lifecycle hook
+    (gating, pass-count, fact runtime) drives the real HCC machinery.  Set
+    ``D810_S1A_USE_HCC=0`` to run the WIP portable §1a pipeline instead.
+    """
+
+    DESCRIPTION = "State-machine CFF unflattener (HCC reuse by default; portable §1a pipeline opt-in)"
     DEFAULT_UNFLATTENING_MATURITIES = [ida_hexrays.MMAT_GLBOPT1]
-    # The §1a pipeline does its own dispatcher detection (HodurFamily.detect); bypass the
-    # legacy flow-context unflattening gate (like the other ComposedUnflatteningRule subclasses).
-    HAS_OWN_DISPATCHER_COLLECTOR = True
 
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__()  # full HodurUnflattener (HCC) setup
         self._s1a_done_for_ea: int = -1
+        self._use_hcc = os.environ.get("D810_S1A_USE_HCC", "1").strip() == "1"
 
     def optimize(self, blk: "ida_hexrays.mblock_t") -> int:
         # Bind the live mba FIRST (mirrors HodurUnflattener.optimize): the base
@@ -112,6 +121,11 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         )
         if not _s1a_enabled():
             return 0
+        if self._use_hcc:
+            # Run the proven inherited HCC reconstruction (the returns=8 path). Do NOT
+            # also run the portable §1a pipeline below (double-apply). The §1a pipeline
+            # is the later portable-ization goal, gated behind D810_S1A_USE_HCC=0.
+            return super().optimize(blk)
         mba = self.mba
         func_ea = int(getattr(mba, "entry_ea", 0))
         if func_ea == self._s1a_done_for_ea:
@@ -130,22 +144,30 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 logger.debug("s1a: validated_fact_view unavailable", exc_info=True)
         # Pre-mutation BST/interval evidence: walk the PRISTINE mba here (it still matches
         # source.flow_graph; the pipeline mutates it below) so the value-range dispatcher recovery
-        # sees the intact BST. Gated on the diag capture — production never computes it. Consumed
-        # only by the diag DAG rebuild to validate evidence-recovery against the oracle (llr-gp9d).
+        # sees the intact BST. PROMOTED TO PRODUCTION (gap3+gap4, ticket llr-t1s8): #4's
+        # LowerStateMachine consumes this through the AnalysisManager to build the BST-enriched DAG
+        # whose CONDITIONAL_RETURN edges (interval-map classification, not the bounded mba walk)
+        # materialize terminal returns — the §1a returns=0 -> returns=N fix. analyze_bst_dispatcher
+        # lives in the hexrays backend (needs the live mba), which the portable LowerStateMachine
+        # can't import, so the evidence is computed here in the entry and threaded as an opaque fact.
+        # The LiSA-discovery diff log stays diag-only. Self-gating: no dispatcher -> no evidence ->
+        # #4 stays on the committed shallow path (byte-identical).
         bst_evidence = None
-        if _capture_diagnostics_enabled():
-            try:
-                prelim = recover_dispatcher(source.flow_graph, fact_view)
-                if getattr(prelim, "dispatcher_block_serial", None) is not None:
-                    bst_evidence = analyze_bst_dispatcher(
-                        mba,
-                        int(prelim.dispatcher_block_serial),
-                        getattr(prelim, "state_var_stkoff", None),
-                    )
+        try:
+            prelim = recover_dispatcher(source.flow_graph, fact_view)
+            if getattr(prelim, "dispatcher_block_serial", None) is not None:
+                bst_evidence = analyze_bst_dispatcher(
+                    mba,
+                    int(prelim.dispatcher_block_serial),
+                    getattr(prelim, "state_var_stkoff", None),
+                )
+                if _capture_diagnostics_enabled():
                     self._log_lisa_discovery_diff(source.flow_graph, prelim, bst_evidence)
-            except Exception:  # noqa: BLE001 — evidence recovery is best-effort diagnostics
-                logger.debug("s1a: pre-pipeline BST evidence failed", exc_info=True)
+        except Exception:  # noqa: BLE001 — evidence recovery is best-effort
+            logger.debug("s1a: pre-pipeline BST evidence failed", exc_info=True)
         facts = AnalysisManager(source.flow_graph, input_facts=fact_view)
+        if bst_evidence is not None:
+            facts.put_analysis("bst_evidence", bst_evidence)
         backend = HexRaysMutationBackend()
         # Provide the live value-range capability so RecoverStateTransitions can resolve handler
         # transitions the exact equality-chain leaves unresolved (the north-star
