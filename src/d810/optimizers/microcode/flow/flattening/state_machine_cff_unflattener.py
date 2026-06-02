@@ -99,6 +99,9 @@ class StateMachineCffUnflattener(HodurUnflattener):
 
     DESCRIPTION = "State-machine CFF unflattener (HCC reuse by default; portable §1a pipeline opt-in)"
     DEFAULT_UNFLATTENING_MATURITIES = [ida_hexrays.MMAT_GLBOPT1]
+    # The portable §1a pipeline (D810_S1A_USE_HCC=0) does its own dispatcher detection
+    # (HodurFamily.detect); bypass the legacy flow-context gate so it always runs.
+    HAS_OWN_DISPATCHER_COLLECTOR = True
 
     def __init__(self) -> None:
         super().__init__()  # full HodurUnflattener (HCC) setup

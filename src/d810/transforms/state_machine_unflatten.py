@@ -486,7 +486,11 @@ def lower_to_direct_graph(
                 len(postprocess_mods),
                 len(planner_mods),
             )
-        return PatchPlan(planner_modifications=planner_mods)
+        # Compile the neutral GraphModification mods into applicable PatchPlan steps
+        # (same bridge the legacy executor uses) so the §1a backend's lower() — which
+        # applies ``steps``, not the ``planner_modifications`` channel — materializes
+        # them. ``graph`` is the pre-mutation CFG for edge-split legality.
+        return compile_patch_plan(list(planner_mods), graph)
     redirect_steps = _spine_redirects_from_dag(
         dag,
         int(dispatcher_entry_serial),
