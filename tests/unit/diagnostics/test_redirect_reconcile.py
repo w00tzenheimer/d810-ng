@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from d810.core.diag import open_diag_database
 from d810.diagnostics.redirect_reconcile import (
     compute_dispatcher_blocks,
     load_block_succs,
@@ -106,17 +107,17 @@ def diag_db(tmp_path: Path) -> Path:
 
 
 def test_load_persisted_dup_sources_reads_distinct_emitted_rows(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        sources = load_persisted_dup_sources(conn)
+        sources = load_persisted_dup_sources(db.connection())
     finally:
-        conn.close()
+        db.close()
     assert sources == frozenset({30})
 
 
 def test_load_persisted_dup_sources_ignores_dropped_status(tmp_path: Path) -> None:
-    db = tmp_path / "x.sqlite3"
-    conn = sqlite3.connect(str(db))
+    db_path = tmp_path / "x.sqlite3"
+    conn = sqlite3.connect(str(db_path))
     try:
         conn.executescript(
             "CREATE TABLE modifications(mod_type TEXT, status TEXT,"
@@ -125,19 +126,23 @@ def test_load_persisted_dup_sources_ignores_dropped_status(tmp_path: Path) -> No
             " 'dropped', 99, NULL, NULL);"
         )
         conn.commit()
-        assert load_persisted_dup_sources(conn) == frozenset()
     finally:
         conn.close()
+    db = open_diag_database(str(db_path))
+    try:
+        assert load_persisted_dup_sources(db.connection()) == frozenset()
+    finally:
+        db.close()
 
 
 def test_load_persisted_redirect_goto_returns_first_row_per_source(
     diag_db: Path,
 ) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        persisted = load_persisted_redirect_goto(conn)
+        persisted = load_persisted_redirect_goto(db.connection())
     finally:
-        conn.close()
+        db.close()
     assert persisted == {10: (20, 20)}
 
 
@@ -147,17 +152,17 @@ def test_load_persisted_redirect_goto_returns_first_row_per_source(
 
 
 def test_load_bst_table_keys_by_uint64_state_const(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        bst = load_bst_table(conn)
+        bst = load_bst_table(db.connection())
     finally:
-        conn.close()
+        db.close()
     assert bst == {0x100: 20}
 
 
 def test_load_bst_table_handles_negative_i64_via_uint64_mask(tmp_path: Path) -> None:
-    db = tmp_path / "neg.sqlite3"
-    conn = sqlite3.connect(str(db))
+    db_path = tmp_path / "neg.sqlite3"
+    conn = sqlite3.connect(str(db_path))
     try:
         conn.executescript(
             "CREATE TABLE state_cfg_edges(target_state_i64 INTEGER, target_entry INTEGER);"
@@ -165,9 +170,13 @@ def test_load_bst_table_handles_negative_i64_via_uint64_mask(tmp_path: Path) -> 
         # -1 as i64 -> 0xFFFF_FFFF_FFFF_FFFF as u64.
         conn.execute("INSERT INTO state_cfg_edges VALUES (?, ?)", (-1, 77))
         conn.commit()
-        bst = load_bst_table(conn)
     finally:
         conn.close()
+    db = open_diag_database(str(db_path))
+    try:
+        bst = load_bst_table(db.connection())
+    finally:
+        db.close()
     assert bst == {0xFFFFFFFFFFFFFFFF: 77}
 
 
@@ -177,24 +186,25 @@ def test_load_bst_table_handles_negative_i64_via_uint64_mask(tmp_path: Path) -> 
 
 
 def test_load_block_succs_returns_tuple_per_block(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        succs = load_block_succs(conn, 5)
+        succs = load_block_succs(db.connection(), 5)
     finally:
-        conn.close()
+        db.close()
     assert succs == {10: (20,), 20: (30, 10), 30: (10,), 40: ()}
 
 
 def test_load_block_writes_and_predicates_pulls_state_consts(
     diag_db: Path,
 ) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
         writes, reads, consts = load_block_writes_and_predicates(
-            conn, snap_id=5, block_serials=[10, 20], state_var_stkoff=0x3C,
+            db.connection(), snap_id=5, block_serials=[10, 20],
+            state_var_stkoff=0x3C,
         )
     finally:
-        conn.close()
+        db.close()
     assert writes[10] == frozenset({"sk:0x3c"})
     assert reads[20] == frozenset({"sk:0x3c"})
     assert consts[10] == 0x100
