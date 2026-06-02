@@ -41,6 +41,7 @@ import re
 import sqlite3
 from dataclasses import dataclass
 
+from d810.core.diag.models import BstIntervalDispatcherRow, FactObservation
 from d810.core.typing import Iterable
 
 
@@ -131,19 +132,27 @@ def load_latest_bst_intervals_from_db(
     the latest snapshot that has interval rows is selected.
     """
     if snapshot_id is None:
-        row = conn.execute(
-            "SELECT snapshot_id FROM bst_interval_dispatcher_rows "
-            "GROUP BY snapshot_id ORDER BY snapshot_id DESC LIMIT 1"
-        ).fetchone()
+        row = (
+            BstIntervalDispatcherRow.select(BstIntervalDispatcherRow.snapshot)
+            .group_by(BstIntervalDispatcherRow.snapshot)
+            .order_by(BstIntervalDispatcherRow.snapshot.desc())
+            .limit(1)
+            .tuples()
+            .first()
+        )
         if row is None:
             return ()
         snapshot_id = int(row[0])
-    rows = conn.execute(
-        "SELECT lo_i64, hi_i64, target_block "
-        "FROM bst_interval_dispatcher_rows "
-        "WHERE snapshot_id=? ORDER BY row_index",
-        (int(snapshot_id),),
-    ).fetchall()
+    rows = (
+        BstIntervalDispatcherRow.select(
+            BstIntervalDispatcherRow.lo_i64,
+            BstIntervalDispatcherRow.hi_i64,
+            BstIntervalDispatcherRow.target_block,
+        )
+        .where(BstIntervalDispatcherRow.snapshot == int(snapshot_id))
+        .order_by(BstIntervalDispatcherRow.row_index)
+        .tuples()
+    )
     return tuple(
         BstInterval(
             lo=int(row[0]),
@@ -184,13 +193,14 @@ def _select_locopt_state_const_at_block(
     Reads the ``StateWriteAnchorFact`` payload directly so we don't need
     a parsed ``ValidatedFactView`` here.
     """
-    rows = conn.execute(
-        """
-        SELECT payload FROM fact_observations
-        WHERE kind='StateWriteAnchorFact' AND snapshot_id=?
-        """,
-        (int(snapshot_id),),
-    ).fetchall()
+    rows = (
+        FactObservation.select(FactObservation.payload)
+        .where(
+            (FactObservation.kind == "StateWriteAnchorFact")
+            & (FactObservation.snapshot == int(snapshot_id))
+        )
+        .tuples()
+    )
     for (payload_json,) in rows:
         try:
             payload = json.loads(payload_json) if payload_json else {}
@@ -232,15 +242,16 @@ def resolve_state_transition_facts(
 
     No recursive walking; single-hop interval resolution only.
     """
-    fact_rows = conn.execute(
-        """
-        SELECT fact_id, payload
-        FROM fact_observations
-        WHERE kind='StateTransitionAnchorFact'
-          AND snapshot_id=?
-        """,
-        (int(locopt_snapshot_id),),
-    ).fetchall()
+    fact_rows = (
+        FactObservation.select(
+            FactObservation.fact_id, FactObservation.payload
+        )
+        .where(
+            (FactObservation.kind == "StateTransitionAnchorFact")
+            & (FactObservation.snapshot == int(locopt_snapshot_id))
+        )
+        .tuples()
+    )
 
     resolutions: list[BstResolution] = []
     for fact_id, payload_json in fact_rows:
