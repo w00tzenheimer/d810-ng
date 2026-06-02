@@ -18,6 +18,9 @@ import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
 
+from d810._vendor.peewee import fn
+from d810.core.diag import open_diag_database
+from d810.core.diag.models import RenderedProgramLine
 from d810.diagnostics.output import add_output_argument, get_output, write_output
 from d810.diagnostics.dump_after import extract_after_pseudocode
 
@@ -41,14 +44,11 @@ def latest_semantic_snapshot_id(conn: sqlite3.Connection) -> int | None:
     """Return the highest snapshot_id with ``semantic_reference_like`` lines,
     or ``None`` if no such snapshot exists in the DB.
     """
-    row = conn.execute(
-        """
-        SELECT MAX(snapshot_id)
-        FROM rendered_program_lines
-        WHERE variant_name='semantic_reference_like'
-        """
-    ).fetchone()
-    value = row[0] if row else None
+    value = (
+        RenderedProgramLine.select(fn.MAX(RenderedProgramLine.snapshot_id))
+        .where(RenderedProgramLine.variant_name == "semantic_reference_like")
+        .scalar()
+    )
     return int(value) if value is not None else None
 
 
@@ -58,16 +58,18 @@ def _fetch_lines(
     start_line: int,
     end_line: int,
 ) -> list[tuple[int, str]]:
-    rows = conn.execute(
-        """
-        SELECT line_no, text
-        FROM rendered_program_lines
-        WHERE snapshot_id=? AND variant_name='semantic_reference_like'
-          AND line_no BETWEEN ? AND ?
-        ORDER BY line_no
-        """,
-        (snapshot_id, start_line, end_line),
-    ).fetchall()
+    rows = (
+        RenderedProgramLine.select(
+            RenderedProgramLine.line_no, RenderedProgramLine.text
+        )
+        .where(
+            (RenderedProgramLine.snapshot_id == snapshot_id)
+            & (RenderedProgramLine.variant_name == "semantic_reference_like")
+            & (RenderedProgramLine.line_no.between(start_line, end_line))
+        )
+        .order_by(RenderedProgramLine.line_no)
+        .tuples()
+    )
     return [(int(line_no), str(text)) for line_no, text in rows]
 
 
@@ -82,15 +84,22 @@ def find_semantic_context(
 
     Returns ``[]`` when no semantic line mentions the state.
     """
-    row = conn.execute(
-        """
-        SELECT MIN(line_no), MAX(line_no)
-        FROM rendered_program_lines
-        WHERE snapshot_id=? AND variant_name='semantic_reference_like'
-          AND text LIKE ?
-        """,
-        (snapshot_id, f"%STATE_{state_label}%"),
-    ).fetchone()
+    row = (
+        RenderedProgramLine.select(
+            fn.MIN(RenderedProgramLine.line_no),
+            fn.MAX(RenderedProgramLine.line_no),
+        )
+        .where(
+            (RenderedProgramLine.snapshot_id == snapshot_id)
+            & (RenderedProgramLine.variant_name == "semantic_reference_like")
+            # ``**`` is peewee's ILIKE -> SQLite ``LIKE`` (``%`` map gives
+            # GLOB on SQLite); pattern kept verbatim so the ``_`` after
+            # ``STATE`` stays a LIKE wildcard exactly like the raw query.
+            & (RenderedProgramLine.text ** f"%STATE_{state_label}%")
+        )
+        .tuples()
+        .first()
+    )
     if not row or row[0] is None:
         return []
     start = max(1, int(row[0]) - context)
@@ -178,7 +187,8 @@ def run(args: argparse.Namespace) -> int:
     if not db_path.exists():
         write_output(get_output(args), f"error: db not found: {db_path}")
         return 2
-    conn = sqlite3.connect(str(db_path))
+    db = open_diag_database(str(db_path))
+    conn = db.connection()
     try:
         snapshot_id = latest_semantic_snapshot_id(conn)
         if snapshot_id is None:
@@ -195,7 +205,7 @@ def run(args: argparse.Namespace) -> int:
             for line_no, text in semantic_rows:
                 write_output(get_output(args), f"{line_no:>5}: {text}")
     finally:
-        conn.close()
+        db.close()
 
     if args.dump:
         dump_path = Path(args.dump)
