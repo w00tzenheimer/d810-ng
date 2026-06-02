@@ -47,6 +47,30 @@ def create_diag_database(db_path: str) -> SqliteDatabase:
     db.bind(MODELS)
     return db
 
+
+def open_diag_database(db_path: str) -> SqliteDatabase:
+    """Open an EXISTING diag DB for **read-only inspection** and bind the
+    Models to its connection WITHOUT running DDL/migration (non-mutating).
+
+    Unlike :func:`create_diag_database` (the production *write* path, which
+    creates + migrates the schema and would mutate the database), this adopts
+    a fresh connection to an existing ``.diag.sqlite3`` and binds the Models so
+    ORM reads (``Model.select()...``) work, leaving the inspected database
+    byte-unchanged. Used by the developer-CLI reader modules.
+
+    Binding is module-global (the Models follow the most-recent bind), which is
+    correct for a single-DB CLI process and for tests that inspect one DB at a
+    time.
+    """
+    # Open the EXISTING file directly (path => the db is initialized, so ORM
+    # execution works) but do NOT call create_tables / migrate, and set no
+    # journal pragma -- so no DDL is issued and the inspected DB's schema is
+    # left unchanged. Reads do not mutate it.
+    db = SqliteDatabase(db_path)
+    db.connect()
+    db.bind(MODELS)
+    return db
+
 # Inversion-of-control hook for cfg-layer block-lineage drain.
 #
 # core.diag.snapshot needs to flush pending block-lineage rows under the
