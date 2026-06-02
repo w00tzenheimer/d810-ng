@@ -20,6 +20,9 @@ import json
 import sqlite3
 from pathlib import Path
 
+from d810._vendor.peewee import fn
+from d810.core.diag import open_diag_database
+from d810.core.diag.models import Block, Instruction, Snapshot
 from d810.diagnostics.output import add_output_argument, get_output, write_output
 from d810.core.typing import Iterable
 
@@ -39,25 +42,34 @@ def _resolve_snapshot_id(
     where ``post_bundle_stabilize`` appears at both snap17 and snap27).
     """
     if snapshot_id is not None:
-        row = conn.execute(
-            "SELECT id, label FROM snapshots WHERE id = ?",
-            (int(snapshot_id),),
-        ).fetchone()
+        row = (
+            Snapshot.select(Snapshot.id, Snapshot.label)
+            .where(Snapshot.id == int(snapshot_id))
+            .tuples()
+            .first()
+        )
         if row is None:
             raise ValueError(f"snapshot id {snapshot_id} not in DB")
         return int(row[0]), str(row[1])
     if label is not None:
-        row = conn.execute(
-            "SELECT id, label FROM snapshots WHERE label = ?"
-            " ORDER BY id DESC LIMIT 1",
-            (label,),
-        ).fetchone()
+        row = (
+            Snapshot.select(Snapshot.id, Snapshot.label)
+            .where(Snapshot.label == label)
+            .order_by(Snapshot.id.desc())
+            .limit(1)
+            .tuples()
+            .first()
+        )
         if row is None:
             raise ValueError(f"no snapshot with label {label!r}")
         return int(row[0]), str(row[1])
-    row = conn.execute(
-        "SELECT id, label FROM snapshots ORDER BY id DESC LIMIT 1",
-    ).fetchone()
+    row = (
+        Snapshot.select(Snapshot.id, Snapshot.label)
+        .order_by(Snapshot.id.desc())
+        .limit(1)
+        .tuples()
+        .first()
+    )
     if row is None:
         raise ValueError("diag DB has no snapshots")
     return int(row[0]), str(row[1])
@@ -70,24 +82,20 @@ def _iter_block_rows(
     only_serials: tuple[int, ...] | None,
 ) -> Iterable[tuple[int, str, str, str, int]]:
     """Yield ``(serial, type_name, succs_json, preds_json, insn_count)``."""
+    query = (
+        Block.select(
+            Block.serial,
+            Block.type_name,
+            Block.succs,
+            Block.preds,
+            Block.insn_count,
+        )
+        .where(Block.snapshot == snapshot_id)
+        .order_by(Block.serial)
+    )
     if only_serials:
-        placeholders = ",".join("?" for _ in only_serials)
-        cur = conn.execute(
-            f"SELECT serial, type_name, succs, preds, insn_count"
-            f"   FROM blocks"
-            f"  WHERE snapshot_id = ? AND serial IN ({placeholders})"
-            f"  ORDER BY serial",
-            (snapshot_id, *only_serials),
-        )
-    else:
-        cur = conn.execute(
-            "SELECT serial, type_name, succs, preds, insn_count"
-            "   FROM blocks"
-            "  WHERE snapshot_id = ?"
-            "  ORDER BY serial",
-            (snapshot_id,),
-        )
-    yield from cur
+        query = query.where(Block.serial.in_(list(only_serials)))
+    yield from query.tuples()
 
 
 def _iter_insn_rows(
@@ -96,14 +104,20 @@ def _iter_insn_rows(
     block_serial: int,
 ) -> Iterable[tuple[int, str, str, str]]:
     """Yield ``(insn_index, opcode_name, ea_hex, dstr)`` for a block."""
-    cur = conn.execute(
-        "SELECT insn_index, opcode_name, ea_hex, COALESCE(dstr, '')"
-        "   FROM instructions"
-        "  WHERE snapshot_id = ? AND block_serial = ?"
-        "  ORDER BY insn_index",
-        (snapshot_id, int(block_serial)),
+    query = (
+        Instruction.select(
+            Instruction.insn_index,
+            Instruction.opcode_name,
+            Instruction.ea_hex,
+            fn.COALESCE(Instruction.dstr, ""),
+        )
+        .where(
+            (Instruction.snapshot == snapshot_id)
+            & (Instruction.block_serial == int(block_serial))
+        )
+        .order_by(Instruction.insn_index)
     )
-    yield from cur
+    yield from query.tuples()
 
 
 def render_snapshot(
@@ -115,15 +129,20 @@ def render_snapshot(
     include_eas: bool,
 ) -> list[str]:
     """Render the requested snapshot's blocks + instructions to a string list."""
-    conn = sqlite3.connect(str(db_path))
+    db = open_diag_database(str(db_path))
+    conn = db.connection()
     try:
         snap_id, snap_label = _resolve_snapshot_id(
             conn, snapshot_id=snapshot_id, label=label,
         )
-        meta = conn.execute(
-            "SELECT block_count, maturity, phase FROM snapshots WHERE id = ?",
-            (snap_id,),
-        ).fetchone() or (None, None, None)
+        meta = (
+            Snapshot.select(
+                Snapshot.block_count, Snapshot.maturity, Snapshot.phase
+            )
+            .where(Snapshot.id == snap_id)
+            .tuples()
+            .first()
+        ) or (None, None, None)
         out: list[str] = [
             f"# snapshot id={snap_id} label={snap_label} blocks={meta[0]} "
             f"maturity={meta[1]} phase={meta[2]}",
@@ -149,7 +168,7 @@ def render_snapshot(
                     out.append(f"  [{insn_index}] {opcode}  {dstr}")
         return out
     finally:
-        conn.close()
+        db.close()
 
 
 def register_parser(sub) -> None:
