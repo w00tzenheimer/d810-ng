@@ -40,6 +40,17 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from d810._vendor.peewee import fn
+from d810.core.diag import open_diag_database
+from d810.core.diag.models import (
+    Block,
+    RegionShapeFeature,
+    Snapshot,
+    StateCfgEdge,
+    StateCfgEdgeAlternateCorrelation,
+    StateCfgEdgeDiagnostic,
+    TerminalTailDceCause,
+)
 from d810.diagnostics.output import add_output_argument, get_output, write_output
 from d810.core.typing import Any
 
@@ -72,6 +83,7 @@ from d810.diagnostics.edge_diagnostics import (
 )
 from d810.core.diag.formatting import format_block_id
 from d810.diagnostics.query import (
+    _reset_row_factory,
     block_detail,
     block_lineage,
     block_trace_by_ea,
@@ -119,24 +131,16 @@ def _resolve_snapshot_id(
     2. explicit snapshot id when >= 0
     3. latest snapshot (`-1`)
     """
+    _reset_row_factory(conn)
     mat = _normalize_maturity_name(maturity)
     if mat is not None or phase is not None:
-        if mat is not None and phase is not None:
-            row = conn.execute(
-                "SELECT MAX(id) FROM snapshots WHERE maturity=? AND phase=?",
-                (mat, phase),
-            ).fetchone()
-        elif mat is not None:
-            row = conn.execute(
-                "SELECT MAX(id) FROM snapshots WHERE maturity=?",
-                (mat,),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT MAX(id) FROM snapshots WHERE phase=?",
-                (phase,),
-            ).fetchone()
-        if row is None or row[0] is None:
+        query = Snapshot.select(fn.MAX(Snapshot.id))
+        if mat is not None:
+            query = query.where(Snapshot.maturity == mat)
+        if phase is not None:
+            query = query.where(Snapshot.phase == phase)
+        value = query.scalar()
+        if value is None:
             selector = []
             if mat is not None:
                 selector.append(f"maturity={mat}")
@@ -147,22 +151,25 @@ def _resolve_snapshot_id(
                 file=sys.stderr,
             )
             sys.exit(1)
-        return int(row[0])
+        return int(value)
     if snapshot >= 0:
         return snapshot
-    row = conn.execute("SELECT MAX(id) FROM snapshots").fetchone()
-    if row is None or row[0] is None:
+    value = Snapshot.select(fn.MAX(Snapshot.id)).scalar()
+    if value is None:
         print("ERROR: no snapshots in database", file=sys.stderr)
         sys.exit(1)
-    return row[0]
+    return value
 
 
 def _snapshot_header(conn: sqlite3.Connection, snapshot_id: int) -> str:
     """Return a one-line header with snapshot maturity and phase."""
-    row = conn.execute(
-        "SELECT maturity, phase FROM snapshots WHERE id=?",
-        (snapshot_id,),
-    ).fetchone()
+    _reset_row_factory(conn)
+    row = (
+        Snapshot.select(Snapshot.maturity, Snapshot.phase)
+        .where(Snapshot.id == snapshot_id)
+        .tuples()
+        .first()
+    )
     if row is None:
         return f"snapshot {snapshot_id}"
     maturity, phase = row
@@ -189,10 +196,12 @@ def _metadata_lineage_ea(meta: dict | None) -> str | int | None:
 
 
 def _block_identity_lookup(conn: sqlite3.Connection, snapshot_id: int) -> dict[int, str]:
-    rows = conn.execute(
-        "SELECT serial, start_ea_hex, meta FROM blocks WHERE snapshot_id=?",
-        (snapshot_id,),
-    ).fetchall()
+    _reset_row_factory(conn)
+    rows = (
+        Block.select(Block.serial, Block.start_ea_hex, Block.meta)
+        .where(Block.snapshot == snapshot_id)
+        .tuples()
+    )
     lookup: dict[int, str] = {}
     for row in rows:
         if isinstance(row, dict):
@@ -455,6 +464,8 @@ def _format_watch_transitions(
     query output looks familiar to anyone who has read the text log.
     """
     if sessions_only:
+        # raw-SQL: GROUP BY apply_session_id with COUNT/MIN/MAX aggregate
+        # and a MIN(id) ordering (§3 complex-SQL policy).
         rows = conn.execute(
             "SELECT apply_session_id, COUNT(*) AS n, "
             "MIN(timestamp) AS first_ts, MAX(timestamp) AS last_ts "
@@ -482,6 +493,8 @@ def _format_watch_transitions(
         params.append(phase)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
+    # raw-SQL: dynamic-WHERE select (optional block/session/phase filters)
+    # over watch_block_transitions, ORDER BY id (§3 complex-SQL policy).
     rows = conn.execute(
         f"SELECT apply_session_id, mod_index, mod_type, phase, block_serial, "
         f"prev_type_name, prev_succs, prev_preds, "
@@ -531,17 +544,20 @@ _MERGE_CAUSALITY_TO_DEFAULT = "maturity_MMAT_GLBOPT1_post_d810"
 
 def _resolve_snapshot_by_label(conn: sqlite3.Connection, label: str) -> int:
     """Resolve the newest snapshot whose label matches exactly."""
-    row = conn.execute(
-        "SELECT MAX(id) FROM snapshots WHERE label=?", (label,)
-    ).fetchone()
-    if row is None or row[0] is None:
+    _reset_row_factory(conn)
+    value = (
+        Snapshot.select(fn.MAX(Snapshot.id))
+        .where(Snapshot.label == label)
+        .scalar()
+    )
+    if value is None:
         print(
             f"ERROR: no snapshot with label={label!r}. "
             f"Use `SELECT id, label FROM snapshots` to list available labels.",
             file=sys.stderr,
         )
         sys.exit(1)
-    return int(row[0])
+    return int(value)
 
 
 _DISPOSITIONS = ("absorbed", "deleted", "synthesized_only")
@@ -714,6 +730,8 @@ def _ea_trace(conn: sqlite3.Connection, ea_values: list[int], exact: bool) -> st
     for ea in ea_values:
         ea_hex = f"0x{ea:X}"
         if exact:
+            # raw-SQL: blocks-x-snapshots JOIN projecting columns from both,
+            # filtered by exact start_ea_hex (§3 complex-SQL policy).
             rows = conn.execute(
                 "SELECT s.id, s.label, b.serial, b.start_ea_hex, b.end_ea_hex,"
                 "       b.succs, b.preds, b.type_name "
@@ -724,6 +742,8 @@ def _ea_trace(conn: sqlite3.Connection, ea_values: list[int], exact: bool) -> st
                 (ea_hex,),
             ).fetchall()
         else:
+            # raw-SQL: blocks-x-snapshots JOIN with a BETWEEN range-
+            # containment predicate (§3 complex-SQL policy).
             rows = conn.execute(
                 "SELECT s.id, s.label, b.serial, b.start_ea_hex, b.end_ea_hex,"
                 "       b.succs, b.preds, b.type_name "
@@ -743,9 +763,9 @@ def _ea_trace(conn: sqlite3.Connection, ea_values: list[int], exact: bool) -> st
             # Also find ALL snapshot IDs so we can report "(not found)".
             all_snap_ids = [
                 r[0]
-                for r in conn.execute(
-                    "SELECT id FROM snapshots ORDER BY id"
-                ).fetchall()
+                for r in Snapshot.select(Snapshot.id)
+                .order_by(Snapshot.id)
+                .tuples()
             ]
             # Build a lookup from snap_id to its rows.
             snap_rows: dict[int, list] = {}
@@ -755,9 +775,9 @@ def _ea_trace(conn: sqlite3.Connection, ea_values: list[int], exact: bool) -> st
             label_widths = [len(r[1]) for r in rows]
             all_labels = {
                 r[0]: r[1]
-                for r in conn.execute(
-                    "SELECT id, label FROM snapshots ORDER BY id"
-                ).fetchall()
+                for r in Snapshot.select(Snapshot.id, Snapshot.label)
+                .order_by(Snapshot.id)
+                .tuples()
             }
             for sid in all_snap_ids:
                 label_widths.append(len(all_labels.get(sid, "")))
@@ -948,6 +968,9 @@ def _state_write_trace(
     query works against the canonical fact-observation payload regardless
     of which collector emitted the row.
     """
+    # raw-SQL: json_extract(payload,'$.block_serial') filter + SELECT *
+    # returned verbatim as dicts, plus a follow-up fact_mappings IN-list;
+    # json_extract is an explicit §3 carve-out (complex-SQL policy).
     conn.row_factory = _dict_factory_for_state_writes  # type: ignore[assignment]
     observations = conn.execute(
         "SELECT * FROM fact_observations "
@@ -984,6 +1007,9 @@ def _state_write_rewrites(
     instruction_ea_hex in its payload, joined with the originating
     observation's source maturity for display.
     """
+    # raw-SQL: SELECT * with an optional json_extract(payload,'$.block_
+    # serial') filter, returned verbatim as dicts; json_extract is an
+    # explicit §3 carve-out (complex-SQL policy).
     conn.row_factory = _dict_factory_for_state_writes  # type: ignore[assignment]
     base_sql = (
         "SELECT * FROM fact_mappings "
@@ -2032,7 +2058,12 @@ def main(argv: list[str] | None = None) -> int:
         write_output(get_output(args), text, end="")
         return rc
 
-    conn = sqlite3.connect(args.db)
+    # Open the inspected diag DB read-only and bind the peewee Models so
+    # the ORM readers (query.py + the helpers below) target it; the
+    # subcommands' conn.close() calls close this bound connection.
+    _diag_db = open_diag_database(args.db)
+    conn = _diag_db.connection()
+    _reset_row_factory(conn)
     # region-shape is function-EA-scoped, not snapshot-scoped; the rows
     # carry snapshot_id directly and may not require any snapshots row
     # to exist (e.g. REF-only persistence ahead of D810 runs).
@@ -2303,9 +2334,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             snap_ids = [
                 int(r[0])
-                for r in conn.execute(
-                    "SELECT DISTINCT snapshot_id FROM state_cfg_edges ORDER BY snapshot_id"
-                ).fetchall()
+                for r in StateCfgEdge.select(StateCfgEdge.snapshot)
+                .distinct()
+                .order_by(StateCfgEdge.snapshot)
+                .tuples()
             ]
         all_diagnostics: list[EdgeDiagnostic] = []
         for snap in snap_ids:
@@ -2381,6 +2413,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.snap_id is not None:
             locopt_snap = int(args.snap_id)
         else:
+            # raw-SQL: label LIKE multi-wildcard match (LIKE maps to GLOB on
+            # SQLite under the ORM) (§3 complex-SQL policy).
             row = conn.execute(
                 "SELECT id FROM snapshots "
                 "WHERE label LIKE '%MMAT_LOCOPT%pre_d810%' "
@@ -2468,6 +2502,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.snap_id is not None:
             locopt_snap = int(args.snap_id)
         else:
+            # raw-SQL: label LIKE multi-wildcard match (LIKE maps to GLOB on
+            # SQLite under the ORM) (§3 complex-SQL policy).
             row = conn.execute(
                 "SELECT id FROM snapshots "
                 "WHERE label LIKE '%MMAT_LOCOPT%pre_d810%' "
@@ -2555,12 +2591,16 @@ def main(argv: list[str] | None = None) -> int:
         else:
             snap_ids = [
                 int(r[0])
-                for r in conn.execute(
-                    "SELECT DISTINCT snapshot_id "
-                    "FROM state_cfg_edge_diagnostics "
-                    "WHERE classification='COLLAPSED_TO_REWRITTEN_TARGET' "
-                    "ORDER BY snapshot_id"
-                ).fetchall()
+                for r in StateCfgEdgeDiagnostic.select(
+                    StateCfgEdgeDiagnostic.snapshot
+                )
+                .where(
+                    StateCfgEdgeDiagnostic.classification
+                    == "COLLAPSED_TO_REWRITTEN_TARGET"
+                )
+                .distinct()
+                .order_by(StateCfgEdgeDiagnostic.snapshot)
+                .tuples()
             ]
         all_correlations: list[AlternateCorrelation] = []
         for snap in snap_ids:
@@ -2635,11 +2675,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             snap_ids = [
                 int(r[0])
-                for r in conn.execute(
-                    "SELECT DISTINCT snapshot_id "
-                    "FROM state_cfg_edge_alternate_correlations "
-                    "ORDER BY snapshot_id"
-                ).fetchall()
+                for r in StateCfgEdgeAlternateCorrelation.select(
+                    StateCfgEdgeAlternateCorrelation.snapshot
+                )
+                .distinct()
+                .order_by(StateCfgEdgeAlternateCorrelation.snapshot)
+                .tuples()
             ]
         all_selections: list[AlternateSelection] = []
         for snap in snap_ids:
@@ -2714,21 +2755,30 @@ def main(argv: list[str] | None = None) -> int:
         func_ea = args.func_ea.strip().lower()
         if not func_ea.startswith("0x"):
             func_ea = "0x" + func_ea
-        clauses = ["func_ea_hex = ?"]
-        params: list = [func_ea]
-        if args.source:
-            clauses.append("source = ?")
-            params.append(args.source)
-        if args.snapshot_id is not None:
-            clauses.append("snapshot_id = ?")
-            params.append(int(args.snapshot_id))
-        sql = (
-            "SELECT source, snapshot_id, region, feature, value_text, "
-            "evidence_json FROM region_shape_features WHERE "
-            + " AND ".join(clauses)
-            + " ORDER BY source, snapshot_id, region, feature"
+        rsf_query = (
+            RegionShapeFeature.select(
+                RegionShapeFeature.source,
+                RegionShapeFeature.snapshot_id,
+                RegionShapeFeature.region,
+                RegionShapeFeature.feature,
+                RegionShapeFeature.value_text,
+                RegionShapeFeature.evidence_json,
+            )
+            .where(RegionShapeFeature.func_ea_hex == func_ea)
         )
-        rows = list(conn.execute(sql, params))
+        if args.source:
+            rsf_query = rsf_query.where(RegionShapeFeature.source == args.source)
+        if args.snapshot_id is not None:
+            rsf_query = rsf_query.where(
+                RegionShapeFeature.snapshot_id == int(args.snapshot_id)
+            )
+        rsf_query = rsf_query.order_by(
+            RegionShapeFeature.source,
+            RegionShapeFeature.snapshot_id,
+            RegionShapeFeature.region,
+            RegionShapeFeature.feature,
+        )
+        rows = list(rsf_query.tuples())
         if args.json_output:
             out = [
                 {
@@ -2751,20 +2801,26 @@ def main(argv: list[str] | None = None) -> int:
         func_ea = args.func_ea.strip().lower()
         if not func_ea.startswith("0x"):
             func_ea = "0x" + func_ea
-        clauses = ["func_ea_hex = ?"]
-        params: list = [func_ea]
-        if args.byte_index is not None:
-            clauses.append("byte_index = ?")
-            params.append(int(args.byte_index))
-        sql = (
-            "SELECT byte_index, last_present_snapshot_id, "
-            "first_missing_snapshot_id, last_block_serial, last_ea_hex, "
-            "cause, recommended_action, rationale, evidence_json "
-            "FROM terminal_tail_dce_causes WHERE "
-            + " AND ".join(clauses)
-            + " ORDER BY byte_index"
+        ttc_query = (
+            TerminalTailDceCause.select(
+                TerminalTailDceCause.byte_index,
+                TerminalTailDceCause.last_present_snapshot_id,
+                TerminalTailDceCause.first_missing_snapshot_id,
+                TerminalTailDceCause.last_block_serial,
+                TerminalTailDceCause.last_ea_hex,
+                TerminalTailDceCause.cause,
+                TerminalTailDceCause.recommended_action,
+                TerminalTailDceCause.rationale,
+                TerminalTailDceCause.evidence_json,
+            )
+            .where(TerminalTailDceCause.func_ea_hex == func_ea)
         )
-        rows = list(conn.execute(sql, params))
+        if args.byte_index is not None:
+            ttc_query = ttc_query.where(
+                TerminalTailDceCause.byte_index == int(args.byte_index)
+            )
+        ttc_query = ttc_query.order_by(TerminalTailDceCause.byte_index)
+        rows = list(ttc_query.tuples())
         if args.json_output:
             out = [
                 {

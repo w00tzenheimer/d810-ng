@@ -21,6 +21,18 @@ def _dict_factory(cursor: sqlite3.Cursor, row: tuple) -> dict:
     return {col[0]: row[i] for i, col in enumerate(cursor.description)}
 
 
+def _reset_row_factory(conn: sqlite3.Connection) -> None:
+    """Restore peewee's expected positional row handling.
+
+    The raw-SQL readers in this module set ``conn.row_factory =
+    _dict_factory`` on the shared diag connection. peewee's ORM cursor
+    wrappers require the default (``None``) row factory, so every ORM
+    reader resets it first; the diag CLI interleaves both styles on one
+    connection.
+    """
+    conn.row_factory = None  # type: ignore[assignment]
+
+
 def block_detail(
     conn: sqlite3.Connection, snapshot_id: int, serial: int
 ) -> dict[str, Any] | None:
@@ -129,6 +141,7 @@ def return_paths(
     Returns per-hop info including ``serial``, ``has_return_slot_write``,
     and ``write_opcode``.
     """
+    _reset_row_factory(conn)
     edges = list(
         StateCfgEdge.select()
         .where(
@@ -179,6 +192,7 @@ def rendered_program_text(
     variant_name: str,
 ) -> str | None:
     """Return the exact rendered program text for one stored variant."""
+    _reset_row_factory(conn)
     rows = list(
         RenderedProgramLine.select(RenderedProgramLine.text)
         .where(
@@ -489,6 +503,7 @@ def _real_instruction_eas(
 ) -> list[int]:
     if not _table_exists(conn, "instructions"):
         return []
+    _reset_row_factory(conn)
     rows = (
         Instruction.select(Instruction.ea_i64)
         .where(
