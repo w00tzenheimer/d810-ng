@@ -18,6 +18,9 @@ import json
 import sqlite3
 from pathlib import Path
 
+from d810._vendor.peewee import JOIN, fn
+from d810.core.diag import open_diag_database
+from d810.core.diag.models import Block, FactObservation, Snapshot
 from d810.transforms.terminal_tail_loss_localizer import (
     ByteEmitInitialState,
     format_localization_report,
@@ -40,20 +43,23 @@ def iter_observations(conn: sqlite3.Connection) -> list[ByteEmitObservation]:
     or that lack a ``byte_index`` are skipped silently -- the report logic
     expects only well-formed observations.
     """
-    rows = conn.execute(
-        """
-        SELECT
-            f.snapshot_id,
-            f.maturity,
-            f.phase,
-            COALESCE(s.label, '') AS label,
-            f.payload
-        FROM fact_observations f
-        LEFT JOIN snapshots s ON s.id = f.snapshot_id
-        WHERE f.kind='TerminalByteEmitterFact'
-        ORDER BY f.snapshot_id, f.fact_id
-        """
-    ).fetchall()
+    rows = (
+        FactObservation.select(
+            FactObservation.snapshot,
+            FactObservation.maturity,
+            FactObservation.phase,
+            fn.COALESCE(Snapshot.label, "").alias("label"),
+            FactObservation.payload,
+        )
+        .join(
+            Snapshot,
+            JOIN.LEFT_OUTER,
+            on=(Snapshot.id == FactObservation.snapshot),
+        )
+        .where(FactObservation.kind == "TerminalByteEmitterFact")
+        .order_by(FactObservation.snapshot, FactObservation.fact_id)
+        .tuples()
+    )
     out: list[ByteEmitObservation] = []
     for snap_id, maturity, phase, label, payload_json in rows:
         try:
@@ -101,11 +107,14 @@ def build_initial_states_at_snap(
     facts target the same byte index.
     """
     out: dict[int, ByteEmitInitialState] = {}
-    rows = conn.execute(
-        "SELECT payload FROM fact_observations "
-        "WHERE kind='TerminalByteEmitterFact' AND snapshot_id=?",
-        (snap_id,),
-    ).fetchall()
+    rows = (
+        FactObservation.select(FactObservation.payload)
+        .where(
+            (FactObservation.kind == "TerminalByteEmitterFact")
+            & (FactObservation.snapshot == snap_id)
+        )
+        .tuples()
+    )
     for (payload_json,) in rows:
         try:
             p = json.loads(payload_json or "{}")
@@ -120,10 +129,14 @@ def build_initial_states_at_snap(
         block_serial = int(p.get("block_serial", -1))
         if block_serial < 0:
             continue
-        block = conn.execute(
-            "SELECT start_ea_hex FROM blocks WHERE snapshot_id=? AND serial=?",
-            (snap_id, block_serial),
-        ).fetchone()
+        block = (
+            Block.select(Block.start_ea_hex)
+            .where(
+                (Block.snapshot == snap_id) & (Block.serial == block_serial)
+            )
+            .tuples()
+            .first()
+        )
         if not block:
             continue
         out[int(bi)] = ByteEmitInitialState(
@@ -146,12 +159,18 @@ def build_block_lookup(
     ids = list(snap_ids)
     if not ids:
         return {}
-    placeholders = ",".join("?" for _ in ids)
-    rows = conn.execute(
-        f"SELECT snapshot_id, start_ea_hex, serial, npred, nsucc, insn_count "
-        f"FROM blocks WHERE snapshot_id IN ({placeholders})",
-        ids,
-    ).fetchall()
+    rows = (
+        Block.select(
+            Block.snapshot,
+            Block.start_ea_hex,
+            Block.serial,
+            Block.npred,
+            Block.nsucc,
+            Block.insn_count,
+        )
+        .where(Block.snapshot.in_(ids))
+        .tuples()
+    )
     out: dict[tuple[int, str], tuple[int, int, int, int]] = {}
     for snap_id, start_ea, serial, npred, nsucc, insn_count in rows:
         if start_ea is None:
@@ -172,6 +191,10 @@ def glbopt1_snapshots(
     ``state_write_reconstruction_dag`` rows that only capture DAG state)
     and ``dump_raw_*`` post-hoc snapshots whose ids are out of sequence.
     """
+    # raw-SQL: correlated EXISTS subquery over blocks + a NOT LIKE
+    # pattern filter (LIKE maps to GLOB on SQLite under the ORM); this
+    # presence-test-with-pattern-exclusion reads more clearly as SQL
+    # (§3 complex-SQL policy).
     rows = conn.execute(
         """
         SELECT s.id, s.label, s.phase
@@ -198,13 +221,16 @@ def build_fact_lookup(
     ids = list(snap_ids)
     if not ids:
         return {}
-    placeholders = ",".join("?" for _ in ids)
     out: dict[tuple[int, int], bool] = {}
-    for snap_id, payload_json in conn.execute(
-        f"SELECT snapshot_id, payload FROM fact_observations "
-        f"WHERE kind='TerminalByteEmitterFact' "
-        f"AND snapshot_id IN ({placeholders})",
-        ids,
+    for snap_id, payload_json in (
+        FactObservation.select(
+            FactObservation.snapshot, FactObservation.payload
+        )
+        .where(
+            (FactObservation.kind == "TerminalByteEmitterFact")
+            & FactObservation.snapshot.in_(ids)
+        )
+        .tuples()
     ):
         try:
             p = json.loads(payload_json or "{}")
@@ -229,7 +255,8 @@ def run_audit(
     Returns the formatted report; missing-fact cases yield a one-line
     explanation rather than raising, so the CLI can produce stable output.
     """
-    conn = sqlite3.connect(str(db_path))
+    db = open_diag_database(str(db_path))
+    conn = db.connection()
     try:
         observations = iter_observations(conn)
         if not observations:
@@ -261,4 +288,4 @@ def run_audit(
             pieces.append(format_localization_report(loc_report))
         return "\n".join(pieces) + "\n"
     finally:
-        conn.close()
+        db.close()

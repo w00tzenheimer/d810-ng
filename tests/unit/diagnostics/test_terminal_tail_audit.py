@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from d810.core.diag import open_diag_database
 from d810.diagnostics.terminal_tail_audit import (
     build_block_lookup,
     build_fact_lookup,
@@ -143,11 +144,11 @@ def diag_db(tmp_path: Path) -> Path:
 
 
 def test_iter_observations_returns_only_terminal_byte_emitter_rows(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        obs = iter_observations(conn)
+        obs = iter_observations(db.connection())
     finally:
-        conn.close()
+        db.close()
     byte_indices = sorted({o.byte_index for o in obs})
     assert byte_indices == [2, 3, 6]
     # Bytes 2 and 6 only appear at snap 5; byte 3 appears at snap 5 and snap 17.
@@ -156,11 +157,11 @@ def test_iter_observations_returns_only_terminal_byte_emitter_rows(diag_db: Path
 
 
 def test_iter_observations_carries_label_and_phase(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        obs = iter_observations(conn)
+        obs = iter_observations(db.connection())
     finally:
-        conn.close()
+        db.close()
     snap_5 = next(o for o in obs if o.snapshot_id == 5 and o.byte_index == 3)
     assert snap_5.maturity == "MMAT_GLBOPT1"
     assert snap_5.phase == "pre_d810"
@@ -169,8 +170,8 @@ def test_iter_observations_carries_label_and_phase(diag_db: Path) -> None:
 
 
 def test_iter_observations_skips_rows_without_block_serial(tmp_path: Path) -> None:
-    db = tmp_path / "no_block.sqlite3"
-    conn = sqlite3.connect(str(db))
+    db_path = tmp_path / "no_block.sqlite3"
+    conn = sqlite3.connect(str(db_path))
     try:
         conn.executescript(
             """
@@ -187,15 +188,19 @@ def test_iter_observations_skips_rows_without_block_serial(tmp_path: Path) -> No
              json.dumps({"byte_index": 2})),  # no block_serial
         )
         conn.commit()
-        obs = iter_observations(conn)
     finally:
         conn.close()
+    db = open_diag_database(str(db_path))
+    try:
+        obs = iter_observations(db.connection())
+    finally:
+        db.close()
     assert obs == []
 
 
 def test_iter_observations_skips_malformed_payload(tmp_path: Path) -> None:
-    db = tmp_path / "bad_json.sqlite3"
-    conn = sqlite3.connect(str(db))
+    db_path = tmp_path / "bad_json.sqlite3"
+    conn = sqlite3.connect(str(db_path))
     try:
         conn.executescript(
             """
@@ -210,9 +215,13 @@ def test_iter_observations_skips_malformed_payload(tmp_path: Path) -> None:
             """
         )
         conn.commit()
-        assert iter_observations(conn) == []
     finally:
         conn.close()
+    db = open_diag_database(str(db_path))
+    try:
+        assert iter_observations(db.connection()) == []
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -223,11 +232,11 @@ def test_iter_observations_skips_malformed_payload(tmp_path: Path) -> None:
 def test_build_initial_states_pairs_byte_index_with_block_start_ea(
     diag_db: Path,
 ) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        states = build_initial_states_at_snap(conn, 5)
+        states = build_initial_states_at_snap(db.connection(), 5)
     finally:
-        conn.close()
+        db.close()
     by_byte = {s.byte_index: s for s in states}
     assert set(by_byte) == {2, 3, 6}
     assert by_byte[3].block_serial == 163
@@ -235,8 +244,8 @@ def test_build_initial_states_pairs_byte_index_with_block_start_ea(
 
 
 def test_build_initial_states_skips_when_block_row_missing(tmp_path: Path) -> None:
-    db = tmp_path / "no_block_row.sqlite3"
-    conn = sqlite3.connect(str(db))
+    db_path = tmp_path / "no_block_row.sqlite3"
+    conn = sqlite3.connect(str(db_path))
     try:
         conn.executescript(
             """
@@ -260,9 +269,13 @@ def test_build_initial_states_skips_when_block_row_missing(tmp_path: Path) -> No
              })),
         )
         conn.commit()
-        states = build_initial_states_at_snap(conn, 5)
     finally:
         conn.close()
+    db = open_diag_database(str(db_path))
+    try:
+        states = build_initial_states_at_snap(db.connection(), 5)
+    finally:
+        db.close()
     assert states == []
 
 
@@ -272,11 +285,11 @@ def test_build_initial_states_skips_when_block_row_missing(tmp_path: Path) -> No
 
 
 def test_build_block_lookup_keys_by_snap_and_ea(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        lookup = build_block_lookup(conn, [5, 17])
+        lookup = build_block_lookup(db.connection(), [5, 17])
     finally:
-        conn.close()
+        db.close()
     assert (5, "0x180014C00") in lookup
     assert lookup[(5, "0x180014C00")] == (56, 1, 1, 3)
     assert (17, "0x180014C00") in lookup
@@ -286,11 +299,11 @@ def test_build_block_lookup_keys_by_snap_and_ea(diag_db: Path) -> None:
 
 
 def test_build_block_lookup_empty_input_returns_empty(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        assert build_block_lookup(conn, []) == {}
+        assert build_block_lookup(db.connection(), []) == {}
     finally:
-        conn.close()
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +312,8 @@ def test_build_block_lookup_empty_input_returns_empty(diag_db: Path) -> None:
 
 
 def test_glbopt1_snapshots_skips_dump_raw_and_blockless(diag_db: Path) -> None:
+    # Insert the extra snapshots via a raw writer first, then inspect
+    # read-only via open_diag_database (glbopt1_snapshots stays raw SQL).
     conn = sqlite3.connect(str(diag_db))
     try:
         # Add a blockless GLBOPT1 snapshot that the helper must skip.
@@ -312,9 +327,13 @@ def test_glbopt1_snapshots_skips_dump_raw_and_blockless(diag_db: Path) -> None:
             (50, "dump_raw_lvars_after", "MMAT_GLBOPT1", "post"),
         )
         conn.commit()
-        snaps = glbopt1_snapshots(conn)
     finally:
         conn.close()
+    db = open_diag_database(str(diag_db))
+    try:
+        snaps = glbopt1_snapshots(db.connection())
+    finally:
+        db.close()
     ids = [s for s, _, _ in snaps]
     assert ids == [5, 17]
 
@@ -325,11 +344,11 @@ def test_glbopt1_snapshots_skips_dump_raw_and_blockless(diag_db: Path) -> None:
 
 
 def test_build_fact_lookup_marks_snapshot_byte_pairs(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        lookup = build_fact_lookup(conn, [5, 17])
+        lookup = build_fact_lookup(db.connection(), [5, 17])
     finally:
-        conn.close()
+        db.close()
     assert lookup.get((5, 2)) is True
     assert lookup.get((5, 3)) is True
     assert lookup.get((5, 6)) is True
