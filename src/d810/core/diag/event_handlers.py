@@ -31,8 +31,10 @@ from __future__ import annotations
 import sqlite3
 import threading
 
+from d810._vendor.peewee import fn
 from d810.core import logging as _d810_logging
 from d810.core.diag import get_diag_db
+from d810.core.diag.models import CfgProvenance, FactConsumer, Snapshot
 from d810.core.diag.snapshot import (
     snapshot_branch_ownership_proofs,
     snapshot_bst_interval_dispatcher_rows,
@@ -197,17 +199,18 @@ def _handle_bst_interval_dispatcher(
     if conn is None or not ev.rows:
         return
     func_hex = f"0x{int(ev.func_ea) & 0xFFFFFFFFFFFFFFFF:016x}"
-    row = conn.execute(
-        "SELECT id FROM snapshots WHERE func_ea_hex=? "
-        "ORDER BY id DESC LIMIT 1",
-        (func_hex,),
-    ).fetchone()
+    row = (
+        Snapshot.select(Snapshot.id)
+        .where(Snapshot.func_ea_hex == func_hex)
+        .order_by(Snapshot.id.desc())
+        .first()
+    )
     if row is None:
         _buffer_bst_interval_dispatcher(ev)
         return
     snapshot_bst_interval_dispatcher_rows(
         conn,
-        int(row[0]),
+        int(row.id),
         ev.rows,
         dispatcher_entry_block=ev.dispatcher_entry_block,
         maturity=ev.maturity,
@@ -256,17 +259,18 @@ def _handle_state_dispatcher_rows(
     if conn is None or not ev.rows:
         return
     func_hex = f"0x{int(ev.func_ea) & 0xFFFFFFFFFFFFFFFF:016x}"
-    row = conn.execute(
-        "SELECT id FROM snapshots WHERE func_ea_hex=? "
-        "ORDER BY id DESC LIMIT 1",
-        (func_hex,),
-    ).fetchone()
+    row = (
+        Snapshot.select(Snapshot.id)
+        .where(Snapshot.func_ea_hex == func_hex)
+        .order_by(Snapshot.id.desc())
+        .first()
+    )
     if row is None:
         _buffer_state_dispatcher_rows(ev)
         return
     snapshot_state_dispatcher_rows(
         conn,
-        int(row[0]),
+        int(row.id),
         ev.rows,
         dispatcher_entry_block=ev.dispatcher_entry_block,
         dispatcher_kind=ev.dispatcher_kind,
@@ -390,29 +394,29 @@ def _handle_fact_consumers_latest(ev: FactConsumersForLatestSnapshot) -> None:
     if conn is None or not ev.consumers:
         return
     func_hex = f"0x{int(ev.func_ea) & 0xFFFFFFFFFFFFFFFF:016x}"
-    row = conn.execute(
-        "SELECT id FROM snapshots WHERE func_ea_hex=? "
-        "ORDER BY id DESC LIMIT 1",
-        (func_hex,),
-    ).fetchone()
+    row = (
+        Snapshot.select(Snapshot.id)
+        .where(Snapshot.func_ea_hex == func_hex)
+        .order_by(Snapshot.id.desc())
+        .first()
+    )
     if row is None:
         return
-    snap_id = int(row[0])
+    snap_id = int(row.id)
     pending = []
     for consumer in ev.consumers:
-        exists = conn.execute(
-            "SELECT 1 FROM fact_consumers "
-            "WHERE func_ea_hex=? AND consumer=? AND strategy=? "
-            "AND fact_id=? AND maturity=? AND decision=? LIMIT 1",
-            (
-                func_hex,
-                getattr(consumer, "consumer", None),
-                getattr(consumer, "strategy", None),
-                getattr(consumer, "fact_id", None),
-                getattr(consumer, "maturity", None),
-                getattr(consumer, "decision", None),
-            ),
-        ).fetchone()
+        exists = (
+            FactConsumer.select(FactConsumer.func_ea_hex)
+            .where(
+                (FactConsumer.func_ea_hex == func_hex)
+                & (FactConsumer.consumer == getattr(consumer, "consumer", None))
+                & (FactConsumer.strategy == getattr(consumer, "strategy", None))
+                & (FactConsumer.fact_id == getattr(consumer, "fact_id", None))
+                & (FactConsumer.maturity == getattr(consumer, "maturity", None))
+                & (FactConsumer.decision == getattr(consumer, "decision", None))
+            )
+            .first()
+        )
         if exists is None:
             pending.append(consumer)
     if pending:
@@ -518,14 +522,15 @@ def _handle_cfg_provenance_latest(
     if conn is None:
         return
     func_hex = f"0x{int(ev.func_ea) & 0xFFFFFFFFFFFFFFFF:016x}"
-    row = conn.execute(
-        "SELECT id FROM snapshots WHERE func_ea_hex=? "
-        "ORDER BY id DESC LIMIT 1",
-        (func_hex,),
-    ).fetchone()
+    row = (
+        Snapshot.select(Snapshot.id)
+        .where(Snapshot.func_ea_hex == func_hex)
+        .order_by(Snapshot.id.desc())
+        .first()
+    )
     if row is None:
         return
-    _insert_cfg_provenance_events(conn, int(row[0]), ev.events)
+    _insert_cfg_provenance_events(conn, int(row.id), ev.events)
 
 
 def _insert_cfg_provenance_events(
@@ -537,12 +542,12 @@ def _insert_cfg_provenance_events(
     if not events:
         return
     try:
-        row = conn.execute(
-            "SELECT COALESCE(MAX(seq), -1) FROM cfg_provenance "
-            "WHERE snapshot_id=?",
-            (int(snap_id),),
-        ).fetchone()
-        next_seq = (int(row[0]) + 1) if row is not None else 0
+        max_seq = (
+            CfgProvenance.select(fn.COALESCE(fn.MAX(CfgProvenance.seq), -1))
+            .where(CfgProvenance.snapshot == int(snap_id))
+            .scalar()
+        )
+        next_seq = (int(max_seq) + 1) if max_seq is not None else 0
     except Exception:
         next_seq = 0
     rows = [
