@@ -25,6 +25,8 @@ import sqlite3
 from dataclasses import replace as _dc_replace
 from pathlib import Path
 
+from d810.core.diag import open_diag_database
+from d810.core.diag.models import Block, Instruction, Modification, StateCfgEdge
 from d810.analyses.control_flow.dispatcher_aware_classifier import (
     DispatcherContext,
     classify_backedges_dispatcher_aware,
@@ -55,20 +57,32 @@ def load_persisted_dup_sources(conn: sqlite3.Connection) -> frozenset[int]:
     ``modifications`` table is ground truth for "this source was redirected
     via per-pred routing", so we merge these into the HCC_DUP bucket.
     """
-    rows = conn.execute(
-        "SELECT DISTINCT source_block FROM modifications "
-        "WHERE mod_type='EdgeRedirectViaPredSplit' AND status='emitted' "
-        "AND source_block IS NOT NULL"
-    ).fetchall()
+    rows = (
+        Modification.select(Modification.source_block)
+        .where(
+            (Modification.mod_type == "EdgeRedirectViaPredSplit")
+            & (Modification.status == "emitted")
+            & Modification.source_block.is_null(False)
+        )
+        .distinct()
+        .tuples()
+    )
     return frozenset(int(r[0]) for r in rows)
 
 
 def load_bst_table(conn: sqlite3.Connection) -> dict[int, int]:
     """``state_const -> handler_block`` lookup from ``state_cfg_edges``."""
     out: dict[int, int] = {}
-    for sc, h in conn.execute(
-        "SELECT DISTINCT target_state_i64, target_entry FROM state_cfg_edges "
-        "WHERE target_state_i64 IS NOT NULL AND target_entry IS NOT NULL"
+    for sc, h in (
+        StateCfgEdge.select(
+            StateCfgEdge.target_state_i64, StateCfgEdge.target_entry
+        )
+        .where(
+            StateCfgEdge.target_state_i64.is_null(False)
+            & StateCfgEdge.target_entry.is_null(False)
+        )
+        .distinct()
+        .tuples()
     ):
         out[int(sc) & 0xFFFFFFFFFFFFFFFF] = int(h)
     return out
@@ -79,9 +93,10 @@ def load_block_succs(
 ) -> dict[int, tuple[int, ...]]:
     """``serial -> tuple(succ_serials)`` for *snap_id*."""
     out: dict[int, tuple[int, ...]] = {}
-    for s, j in conn.execute(
-        "SELECT serial, succs FROM blocks WHERE snapshot_id=?",
-        (snap_id,),
+    for s, j in (
+        Block.select(Block.serial, Block.succs)
+        .where(Block.snapshot == snap_id)
+        .tuples()
     ):
         out[int(s)] = tuple(json.loads(j) or ())
     return out
@@ -110,32 +125,49 @@ def load_block_writes_and_predicates(
     reads: dict[int, frozenset[str]] = {}
     consts: dict[int, int | None] = {}
     for serial in block_serials:
-        write_rows = conn.execute(
-            "SELECT dest_stkoff FROM instructions WHERE snapshot_id=? "
-            "AND block_serial=? AND dest_stkoff IS NOT NULL",
-            (snap_id, serial),
-        ).fetchall()
+        write_rows = (
+            Instruction.select(Instruction.dest_stkoff)
+            .where(
+                (Instruction.snapshot == snap_id)
+                & (Instruction.block_serial == serial)
+                & Instruction.dest_stkoff.is_null(False)
+            )
+            .tuples()
+        )
         writes[serial] = frozenset(
             _hex_tok(r[0]) for r in write_rows if r[0] is not None
         )
-        tail = conn.execute(
-            "SELECT src_l_stkoff, src_r_stkoff FROM instructions "
-            "WHERE snapshot_id=? AND block_serial=? "
-            "ORDER BY insn_index DESC LIMIT 1",
-            (snap_id, serial),
-        ).fetchone()
+        tail = (
+            Instruction.select(
+                Instruction.src_l_stkoff, Instruction.src_r_stkoff
+            )
+            .where(
+                (Instruction.snapshot == snap_id)
+                & (Instruction.block_serial == serial)
+            )
+            .order_by(Instruction.insn_index.desc())
+            .limit(1)
+            .tuples()
+            .first()
+        )
         reads[serial] = (
             frozenset(_hex_tok(s) for s in tail if s is not None)
             if tail
             else frozenset()
         )
-        row = conn.execute(
-            "SELECT src_l_value_i64 FROM instructions "
-            "WHERE snapshot_id=? AND block_serial=? AND dest_stkoff=? "
-            "AND src_l_value_i64 IS NOT NULL "
-            "ORDER BY insn_index DESC LIMIT 1",
-            (snap_id, serial, state_var_stkoff),
-        ).fetchone()
+        row = (
+            Instruction.select(Instruction.src_l_value_i64)
+            .where(
+                (Instruction.snapshot == snap_id)
+                & (Instruction.block_serial == serial)
+                & (Instruction.dest_stkoff == state_var_stkoff)
+                & Instruction.src_l_value_i64.is_null(False)
+            )
+            .order_by(Instruction.insn_index.desc())
+            .limit(1)
+            .tuples()
+            .first()
+        )
         consts[serial] = (
             int(row[0]) & 0xFFFFFFFFFFFFFFFF if row else None
         )
@@ -163,9 +195,17 @@ def load_persisted_redirect_goto(
     Only the first row per source is retained (legacy script behaviour).
     """
     out: dict[int, tuple[int | None, int | None]] = {}
-    for src, old, tgt in conn.execute(
-        "SELECT source_block, old_target, target_block FROM modifications "
-        "WHERE mod_type='RedirectGoto' AND status='emitted'"
+    for src, old, tgt in (
+        Modification.select(
+            Modification.source_block,
+            Modification.old_target,
+            Modification.target_block,
+        )
+        .where(
+            (Modification.mod_type == "RedirectGoto")
+            & (Modification.status == "emitted")
+        )
+        .tuples()
     ):
         if src is None or int(src) in out:
             continue
@@ -205,7 +245,8 @@ def run_reconcile(
     log_signals = parse_log_signals(log_text)
     logged_intent = parse_logged_intent(log_text)
 
-    conn = sqlite3.connect(str(db_path))
+    db = open_diag_database(str(db_path))
+    conn = db.connection()
     try:
         persisted_dup_sources = load_persisted_dup_sources(conn)
         if persisted_dup_sources:
@@ -274,7 +315,7 @@ def run_reconcile(
             log_signals=log_signals,
         )
     finally:
-        conn.close()
+        db.close()
 
     lines: list[str] = [
         f"# Reconciliation: snap {snap_id} ({db_path})",
