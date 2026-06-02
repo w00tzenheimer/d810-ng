@@ -27,6 +27,32 @@ from d810.core.typing import Callable
 _current_db: SqliteDatabase | None = None
 _current_conn: sqlite3.Connection | None = None
 _current_func_ea: int | None = None
+# The peewee db backing the connection most recently returned by get_diag_db
+# (session db, or a reopened/one-off db). Live ORM ops bind to THIS via
+# bind_ctx -- never the mutable process-global Model bind.
+_active_db: SqliteDatabase | None = None
+
+
+def active_diag_db() -> SqliteDatabase | None:
+    """The peewee db backing the connection ``get_diag_db`` would hand out.
+
+    Live ORM writers/readers bind to this via :func:`diag_models_on` /
+    ``db.bind_ctx(MODELS)`` so they always target the active capture connection,
+    immune to a CLI ``open_diag_database`` rebinding the global ``Model``
+    binding (the Phase-B/C "Cannot operate on a closed database" hazard).
+    """
+    return _active_db
+
+
+def diag_models_on(db: SqliteDatabase):
+    """``with diag_models_on(db): <orm ops>`` -- bind the Models to ``db`` for
+    the block and restore the previous binding on exit (re-entrant).
+
+    The bind-safe replacement for a process-global ``db.bind(MODELS)``: the
+    binding is explicit, local, and restored, so no ORM op depends on mutable
+    global state.
+    """
+    return db.bind_ctx(MODELS)
 
 
 def create_diag_database(db_path: str) -> SqliteDatabase:
@@ -36,15 +62,20 @@ def create_diag_database(db_path: str) -> SqliteDatabase:
     plain ``sqlite3.Connection`` via ``db.connection()`` and are unchanged.
     Used by both the production session paths below and the test harness.
     """
+    global _active_db
     db = SqliteDatabase(db_path, pragmas={"journal_mode": "wal"})
     db.connect()
     create_tables(db)
-    # Bind every Model to this live db so ORM writers (``Model.insert_many(
-    # ...).execute()`` / ``Model.create(...)``) target this session's
-    # connection. Each ``create_diag_database`` call rebinds to its own db,
-    # which is correct for the single-session production diag DB and for the
-    # tests (each builds its own db).
+    # Bind every Model to this live db so existing ORM call-sites work. (Phase D
+    # retires this permanent bind in favour of scoped ``bind_ctx`` once every
+    # call-site is converted; until then it coexists harmlessly with bind_ctx,
+    # which restores the prior bind on exit.)
     db.bind(MODELS)
+    # Record the active WRITE db so live writers can ``bind_ctx`` to it via
+    # ``active_diag_db()``. The read-only ``open_diag_database`` deliberately
+    # does NOT set this, so a CLI inspection can never hijack the live writer's
+    # target (the Phase-B/C closed-db hazard).
+    _active_db = db
     return db
 
 
@@ -280,20 +311,24 @@ def get_diag_db(func_ea: int = 0, log_dir: str | None = None) -> sqlite3.Connect
     connection is returned.  Otherwise a one-off DB is created for backward
     compatibility (e.g. test harness usage outside the decompilation lifecycle).
     """
+    global _active_db
     if not get_settings().diag_snapshots:
         return None
     if _current_conn is not None:
+        _active_db = _current_db  # track the session db for active_diag_db()
         return _current_conn
     latest_path = find_latest_diag_db_path(func_ea, log_dir=log_dir)
     if latest_path is not None:
-        return create_diag_database(str(latest_path)).connection()
+        _active_db = create_diag_database(str(latest_path))
+        return _active_db.connection()
     # Fallback: no session open — create a one-off DB (test harness path)
     resolved_log_dir = _resolve_log_dir(log_dir)
     resolved_log_dir.mkdir(parents=True, exist_ok=True)
     run_id = f"{int(time.time())}_{os.getpid()}"
     ea = func_ea if func_ea else 0
     db_path = resolved_log_dir / f"{ea:016x}_{run_id}.diag.sqlite3"
-    return create_diag_database(str(db_path)).connection()
+    _active_db = create_diag_database(str(db_path))
+    return _active_db.connection()
 
 
 # Register this backend with the abstract observability interface.
