@@ -24,6 +24,17 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from d810.core.diag import open_diag_database
+from d810.core.diag.models import (
+    Block,
+    BlockClassification,
+    Instruction,
+    Modification,
+    RenderedProgramLine,
+    RenderedProgramNode,
+    Snapshot,
+    StateCfgEdge,
+)
 from d810.diagnostics.output import add_output_argument, get_output, write_output
 from d810.core.typing import Iterable, Sequence
 
@@ -263,10 +274,18 @@ def _open_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def list_snapshots(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    return conn.execute(
-        "SELECT id, label, maturity, phase, block_count FROM snapshots ORDER BY id"
-    ).fetchall()
+def list_snapshots(conn: sqlite3.Connection) -> list[dict]:
+    return list(
+        Snapshot.select(
+            Snapshot.id,
+            Snapshot.label,
+            Snapshot.maturity,
+            Snapshot.phase,
+            Snapshot.block_count,
+        )
+        .order_by(Snapshot.id)
+        .dicts()
+    )
 
 
 def resolve_snapshot_id(
@@ -292,6 +311,10 @@ def resolve_snapshot_id(
         params.append(phase)
     where = " AND ".join(clauses) if clauses else "1=1"
 
+    # raw-SQL: snapshot resolution builds a dynamic WHERE plus an optional
+    # rendered_programs JOIN-gate and falls back through a MAX(id) probe;
+    # the multi-stage dynamic-predicate resolution reads more clearly as
+    # parameterised SQL (§3 complex-SQL policy).
     if variant_name:
         query = (
             "SELECT s.id FROM snapshots s "
@@ -320,6 +343,9 @@ def _snapshot_metadata(
     conn: sqlite3.Connection,
     snapshot_id: int,
 ) -> sqlite3.Row:
+    # raw-SQL: SELECT * row used for arbitrary column-name access
+    # (func_ea_i64, label, ...) downstream; a column-pinned ORM projection
+    # would couple this helper to the exact Snapshot field set (§3).
     row = conn.execute(
         "SELECT * FROM snapshots WHERE id = ?",
         (snapshot_id,),
@@ -338,6 +364,10 @@ def resolve_aux_snapshot_id(
     preferred_label_substring: str | None = None,
 ) -> int | None:
     """Resolve the latest snapshot that contains rows in ``table_name``."""
+    # raw-SQL: EXISTS-over-dynamic-table presence test with an instr()/
+    # CASE-based preferred-phase + label-substring ranking ORDER BY; a
+    # dynamic table name and instr() ranking are not a natural ORM fit
+    # (§3 complex-SQL policy).
     query = (
         "SELECT s.id, s.label, s.phase FROM snapshots s "
         f"WHERE s.func_ea_i64 = ? AND EXISTS (SELECT 1 FROM {table_name} t WHERE t.snapshot_id = s.id) "
@@ -359,16 +389,31 @@ def resolve_aux_snapshot_id(
 def load_blocks(conn: sqlite3.Connection, snapshot_id: int) -> dict[int, BlockInfo]:
     """Load blocks plus instructions for one snapshot."""
     blocks: dict[int, BlockInfo] = {}
-    block_rows = conn.execute(
-        "SELECT serial, type_name, succs, preds, meta FROM blocks "
-        "WHERE snapshot_id = ? ORDER BY serial",
-        (snapshot_id,),
-    ).fetchall()
-    insn_rows = conn.execute(
-        "SELECT block_serial, insn_index, opcode_name, dest_stkoff, src_l_value_hex, dstr "
-        "FROM instructions WHERE snapshot_id = ? ORDER BY block_serial, insn_index",
-        (snapshot_id,),
-    ).fetchall()
+    block_rows = (
+        Block.select(
+            Block.serial,
+            Block.type_name,
+            Block.succs,
+            Block.preds,
+            Block.meta,
+        )
+        .where(Block.snapshot == snapshot_id)
+        .order_by(Block.serial)
+        .dicts()
+    )
+    insn_rows = (
+        Instruction.select(
+            Instruction.block_serial,
+            Instruction.insn_index,
+            Instruction.opcode_name,
+            Instruction.dest_stkoff,
+            Instruction.src_l_value_hex,
+            Instruction.dstr,
+        )
+        .where(Instruction.snapshot == snapshot_id)
+        .order_by(Instruction.block_serial, Instruction.insn_index)
+        .dicts()
+    )
     instructions_by_block: dict[int, list[dict[str, object]]] = defaultdict(list)
     for row in insn_rows:
         instructions_by_block[int(row["block_serial"])].append({
@@ -401,11 +446,18 @@ def load_block_classification(
     """Load reachability/BST flags for one snapshot."""
     if snapshot_id is None:
         return {}
-    rows = conn.execute(
-        "SELECT serial, is_bst, is_reachable, is_gutted, in_claimed "
-        "FROM block_classification WHERE snapshot_id = ? ORDER BY serial",
-        (snapshot_id,),
-    ).fetchall()
+    rows = (
+        BlockClassification.select(
+            BlockClassification.serial,
+            BlockClassification.is_bst,
+            BlockClassification.is_reachable,
+            BlockClassification.is_gutted,
+            BlockClassification.in_claimed,
+        )
+        .where(BlockClassification.snapshot == snapshot_id)
+        .order_by(BlockClassification.serial)
+        .dicts()
+    )
     result: dict[int, dict[str, bool]] = {}
     for row in rows:
         result[int(row["serial"])] = {
@@ -436,23 +488,39 @@ def load_rendered_nodes(
     variant_name: str,
 ) -> list[RenderedNodeInfo]:
     """Load rendered program nodes plus short previews."""
-    line_rows = conn.execute(
-        "SELECT node_index, text FROM rendered_program_lines "
-        "WHERE snapshot_id = ? AND variant_name = ? ORDER BY line_no",
-        (snapshot_id, variant_name),
-    ).fetchall()
+    line_rows = (
+        RenderedProgramLine.select(
+            RenderedProgramLine.node_index, RenderedProgramLine.text
+        )
+        .where(
+            (RenderedProgramLine.snapshot_id == snapshot_id)
+            & (RenderedProgramLine.variant_name == variant_name)
+        )
+        .order_by(RenderedProgramLine.line_no)
+        .dicts()
+    )
     lines_by_node: dict[int, list[str]] = defaultdict(list)
     for row in line_rows:
         if row["node_index"] is None:
             continue
         lines_by_node[int(row["node_index"])].append(str(row["text"]))
 
-    node_rows = conn.execute(
-        "SELECT node_index, label_text, node_kind, state_label, handler_serial, entry_anchor "
-        "FROM rendered_program_nodes WHERE snapshot_id = ? AND variant_name = ? "
-        "ORDER BY node_index",
-        (snapshot_id, variant_name),
-    ).fetchall()
+    node_rows = (
+        RenderedProgramNode.select(
+            RenderedProgramNode.node_index,
+            RenderedProgramNode.label_text,
+            RenderedProgramNode.node_kind,
+            RenderedProgramNode.state_label,
+            RenderedProgramNode.handler_serial,
+            RenderedProgramNode.entry_anchor,
+        )
+        .where(
+            (RenderedProgramNode.snapshot_id == snapshot_id)
+            & (RenderedProgramNode.variant_name == variant_name)
+        )
+        .order_by(RenderedProgramNode.node_index)
+        .dicts()
+    )
     nodes: list[RenderedNodeInfo] = []
     for row in node_rows:
         node_index = int(row["node_index"])
@@ -481,11 +549,19 @@ def load_dag_edges(
     """Load DAG edges for one auxiliary snapshot."""
     if snapshot_id is None:
         return []
-    rows = conn.execute(
-        "SELECT edge_kind, source_block, target_entry, source_state_hex, target_state_hex, ordered_path "
-        "FROM state_cfg_edges WHERE snapshot_id = ? ORDER BY edge_id",
-        (snapshot_id,),
-    ).fetchall()
+    rows = (
+        StateCfgEdge.select(
+            StateCfgEdge.edge_kind,
+            StateCfgEdge.source_block,
+            StateCfgEdge.target_entry,
+            StateCfgEdge.source_state_hex,
+            StateCfgEdge.target_state_hex,
+            StateCfgEdge.ordered_path,
+        )
+        .where(StateCfgEdge.snapshot == snapshot_id)
+        .order_by(StateCfgEdge.edge_id)
+        .dicts()
+    )
     edges: list[DagEdgeInfo] = []
     for row in rows:
         ordered_path = tuple(int(v) for v in json.loads(row["ordered_path"] or "[]"))
@@ -513,11 +589,18 @@ def load_modifications(
     """Load emitted modifications for one auxiliary snapshot."""
     if snapshot_id is None:
         return []
-    rows = conn.execute(
-        "SELECT mod_type, source_block, target_block, status, reason "
-        "FROM modifications WHERE snapshot_id = ? ORDER BY mod_index",
-        (snapshot_id,),
-    ).fetchall()
+    rows = (
+        Modification.select(
+            Modification.mod_type,
+            Modification.source_block,
+            Modification.target_block,
+            Modification.status,
+            Modification.reason,
+        )
+        .where(Modification.snapshot == snapshot_id)
+        .order_by(Modification.mod_index)
+        .dicts()
+    )
     return [
         ModificationInfo(
             mod_type=str(row["mod_type"]),
@@ -1083,7 +1166,11 @@ def build_residual_dispatcher_worksheet(
     variant_name: str = DEFAULT_VARIANT,
 ) -> WorksheetResult:
     """Build worksheet rows from the available persisted sources."""
-    diag_conn = _open_db(diag_db_path)
+    diag_db = open_diag_database(str(diag_db_path))
+    # Bind Models for the ORM readers; the remaining raw resolver/metadata
+    # queries below use name-based row access, so set the Row factory.
+    diag_conn = diag_db.connection()
+    diag_conn.row_factory = sqlite3.Row
     try:
         resolved_snapshot_id = resolve_snapshot_id(
             diag_conn,
@@ -1127,7 +1214,7 @@ def build_residual_dispatcher_worksheet(
         if resolved_dag_snapshot_id is not None:
             dag_snapshot_label = str(_snapshot_metadata(diag_conn, resolved_dag_snapshot_id)["label"])
     finally:
-        diag_conn.close()
+        diag_db.close()
 
     transition_meta = load_transition_meta(recon_db_path, func_ea=resolved_func_ea)
     planner_rows = load_planner_ownership(recon_db_path, func_ea=resolved_func_ea)
@@ -1346,16 +1433,16 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
     if args.list_snapshots:
-        conn = _open_db(diag_db_path)
+        ls_db = open_diag_database(str(diag_db_path))
         try:
-            for row in list_snapshots(conn):
+            for row in list_snapshots(ls_db.connection()):
                 write_output(
                     get_output(args),
                     f"[{int(row['id']):>3}] {row['label']} "
                     f"({row['maturity']} / {row['phase']} / {row['block_count']} blocks)"
                 )
         finally:
-            conn.close()
+            ls_db.close()
         return 0
 
     recon_db_path = args.recon_db or find_latest_recon_db(search_roots=search_roots)
