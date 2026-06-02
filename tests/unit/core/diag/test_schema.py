@@ -3,12 +3,12 @@ import sqlite3
 
 import pytest
 
+from d810.core.diag import create_diag_database
 from d810.core.diag.schema import create_tables
 
 
 def test_create_tables_creates_all_expected_tables():
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     cursor = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
     )
@@ -39,15 +39,13 @@ def test_create_tables_creates_all_expected_tables():
 
 
 def test_create_tables_idempotent():
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
-    create_tables(conn)  # should not raise
+    db = create_diag_database(":memory:")
+    create_tables(db)  # second call (factory already created once) must not raise
 
 
 def test_json_extract_on_meta_columns():
     """Verify SQLite JSON extension works for meta column queries."""
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     # Insert a block with JSON meta containing valranges
     conn.execute(
         "INSERT INTO snapshots VALUES "
@@ -75,8 +73,7 @@ def test_json_extract_on_meta_columns():
 
 def test_edge_kind_check_constraint_rejects_invalid():
     """Verify CHECK constraint on edge_kind column."""
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     conn.execute(
         "INSERT INTO snapshots VALUES "
         "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
@@ -91,8 +88,7 @@ def test_edge_kind_check_constraint_rejects_invalid():
 
 def test_phase_check_constraint_rejects_invalid():
     """Verify CHECK constraint on phase column rejects invalid values."""
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
             "INSERT INTO snapshots VALUES "
@@ -103,8 +99,7 @@ def test_phase_check_constraint_rejects_invalid():
 
 def test_phase_check_constraint_accepts_valid():
     """Verify CHECK constraint accepts all valid phase values."""
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     valid_phases = ['pre_d810', 'post_apply', 'post_gut_wire', 'post_pipeline', 'post_d810', 'unknown']
     for i, phase in enumerate(valid_phases):
         conn.execute(
@@ -118,8 +113,7 @@ def test_phase_check_constraint_accepts_valid():
 
 def test_var_writes_view_exists():
     """Verify the var_writes view is created."""
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     cursor = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='view' ORDER BY name"
     )

@@ -1,5 +1,6 @@
 """Unit tests for generic python -m d810.diagnostics region-* subcommands."""
 from __future__ import annotations
+from d810.core.diag import create_diag_database
 
 import sqlite3
 
@@ -13,8 +14,7 @@ def test_region_shape_subcommand_lists_persisted_features(tmp_path):
     from d810.core.diag.schema import create_tables
 
     db_path = tmp_path / "test.diag.sqlite3"
-    conn = sqlite3.connect(str(db_path))
-    create_tables(conn)
+    conn = create_diag_database(str(db_path)).connection()
     conn.execute(
         "INSERT INTO region_shape_features "
         "(func_ea_hex, func_ea_i64, snapshot_id, source, region, "
@@ -46,8 +46,7 @@ def test_region_shape_subcommand_filters_by_source_and_snapshot_id(tmp_path):
     from d810.core.diag.schema import create_tables
 
     db_path = tmp_path / "test.diag.sqlite3"
-    conn = sqlite3.connect(str(db_path))
-    create_tables(conn)
+    conn = create_diag_database(str(db_path)).connection()
     rows = [
         (None, "REF", "ref_feat_1"),
         (17, "D810_SNAPSHOT", "snap17_feat_1"),
@@ -108,8 +107,7 @@ def test_terminal_tail_dce_subcommand_lists_persisted_causes(tmp_path):
     from d810.core.diag.schema import create_tables
 
     db = tmp_path / "test.diag.sqlite3"
-    conn = sqlite3.connect(str(db))
-    create_tables(conn)
+    conn = create_diag_database(str(db)).connection()
     conn.execute(
         "INSERT INTO terminal_tail_dce_causes "
         "(func_ea_hex, func_ea_i64, byte_index, last_present_snapshot_id, "
@@ -140,8 +138,7 @@ def test_terminal_tail_dce_subcommand_filters_by_byte_index(tmp_path):
     from d810.core.diag.schema import create_tables
 
     db = tmp_path / "test.diag.sqlite3"
-    conn = sqlite3.connect(str(db))
-    create_tables(conn)
+    conn = create_diag_database(str(db)).connection()
     for byte_index, cause in (
         (2, "FOLDED_INTO_SURVIVING_BYTE_EMIT"),
         (3, "DCE_DEAD_WRITE"),

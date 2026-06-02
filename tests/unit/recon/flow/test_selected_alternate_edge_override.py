@@ -1,5 +1,6 @@
 """Tests for selected-alternate edge override."""
 from __future__ import annotations
+from d810.core.diag import create_diag_database
 
 import contextlib
 import dataclasses
@@ -381,8 +382,7 @@ def _make_byte5_fact_view() -> ValidatedFactView:
 
 
 def test_no_op_when_setting_disabled() -> None:
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     _seed_byte5_diag(conn)
     dag = _make_byte5_dag()
     with patch.dict(os.environ, {"D810_FACT_LIFECYCLE": "0"}, clear=False), \
@@ -418,8 +418,7 @@ def test_no_op_when_diag_missing() -> None:
 
 def test_no_op_when_no_selected_rows() -> None:
     """Empty diag DB -> cascade produces no selections -> no override."""
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     conn.execute(
         """
         INSERT INTO snapshots
@@ -439,8 +438,7 @@ def test_no_op_when_no_selected_rows() -> None:
 
 def test_replaces_byte5_collapsed_edge() -> None:
     """Live byte5 case: edge 144 collapsed -> reached state 0x6107F8EC."""
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     _seed_byte5_diag(conn)
     dag = _make_byte5_dag()
 
@@ -464,8 +462,7 @@ def test_replaces_byte5_collapsed_edge() -> None:
 
 
 def test_recomputes_sccs_after_selected_alternate_rewrite() -> None:
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     _seed_byte5_diag(conn)
     base = _make_byte5_dag()
     reverse_edge = _make_edge(
@@ -489,8 +486,7 @@ def test_recomputes_sccs_after_selected_alternate_rewrite() -> None:
 def test_abstain_on_value_mapping_miss() -> None:
     """Diag DB has gating row but in-memory edge uses different
     source_block than what was persisted -> abstain."""
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     _seed_byte5_diag(conn)
     nodes = (
         _make_node(state_const=0x385BBE2D, entry=100),
@@ -520,8 +516,7 @@ def test_abstain_on_value_mapping_miss() -> None:
 
 def test_abstain_when_reached_state_has_no_node() -> None:
     """Diag selects 0x6107F8EC but dag.nodes has no such node -> abstain."""
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     _seed_byte5_diag(conn)
     nodes = (
         _make_node(state_const=0x385BBE2D, entry=100),

@@ -1,5 +1,6 @@
 """Tests for MBA diagnostic snapshot writers."""
 from __future__ import annotations
+from d810.core.diag import create_diag_database
 
 import json
 import sqlite3
@@ -101,8 +102,7 @@ def _make_block(
 
 
 def test_snapshot_state_dispatcher_rows_round_trip() -> None:
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     conn.execute(
         "INSERT INTO snapshots VALUES "
         "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', "
@@ -140,8 +140,7 @@ def test_snapshot_state_dispatcher_rows_round_trip() -> None:
 
 
 def test_snapshot_state_transition_dispatch_resolutions_round_trip() -> None:
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     conn.execute(
         "INSERT INTO snapshots VALUES "
         "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', "
@@ -174,8 +173,7 @@ def test_snapshot_state_transition_dispatch_resolutions_round_trip() -> None:
 
 
 def test_snapshot_state_transition_dispatch_resolutions_deduplicates_rows() -> None:
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     conn.execute(
         "INSERT INTO snapshots VALUES "
         "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', "
@@ -219,8 +217,7 @@ def test_snapshot_state_transition_dispatch_resolutions_deduplicates_rows() -> N
 
 
 def test_snapshot_switch_case_transition_facts_round_trip() -> None:
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     conn.execute(
         "INSERT INTO snapshots VALUES "
         "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', "
@@ -265,8 +262,7 @@ def test_snapshot_switch_case_transition_facts_round_trip() -> None:
 
 
 def test_snapshot_branch_ownership_proofs_round_trip() -> None:
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     conn.execute(
         "INSERT INTO snapshots VALUES "
         "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', "
@@ -325,8 +321,7 @@ def mock_mba_3_blocks() -> list[BlockSnapshot]:
 
 class TestSnapshotMba:
     def test_writes_blocks(self, mock_mba_3_blocks: list[BlockSnapshot]) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         snap_id = snapshot_mba(
             conn, mock_mba_3_blocks, label="test", func_ea=0x1000
         )
@@ -337,8 +332,7 @@ class TestSnapshotMba:
         assert len(rows) == 3
 
     def test_writes_instructions(self, mock_mba_3_blocks: list[BlockSnapshot]) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         snapshot_mba(conn, mock_mba_3_blocks, label="test", func_ea=0x1000)
         rows = conn.execute(
             "SELECT COUNT(*) FROM instructions WHERE snapshot_id=1"
@@ -346,8 +340,7 @@ class TestSnapshotMba:
         assert rows[0] == 6  # 3 blocks * 2 insns
 
     def test_writes_block_observations(self) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         block = BlockSnapshot(
             serial=33,
             block_type=1,
@@ -406,8 +399,7 @@ class TestSnapshotMba:
         assert row[7].startswith("fnv1a64:0x")
 
     def test_duplicate_ea_observations_remain_distinct_by_serial(self) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         original = BlockSnapshot(
             serial=32,
             block_type=1,
@@ -450,8 +442,7 @@ class TestSnapshotMba:
 
     def test_snapshot_mba_flushes_pending_block_lineage(self) -> None:
         reset_pending_block_lineage()
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         block = BlockSnapshot(
             serial=220,
             block_type=1,
@@ -504,8 +495,7 @@ class TestSnapshotMba:
             reset_pending_block_lineage()
 
     def test_snapshot_id_increments(self, mock_mba_3_blocks: list[BlockSnapshot]) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         id1 = snapshot_mba(conn, mock_mba_3_blocks, label="first", func_ea=0x1000)
         id2 = snapshot_mba(conn, mock_mba_3_blocks, label="second", func_ea=0x1000)
         assert id2 == id1 + 1
@@ -513,8 +503,7 @@ class TestSnapshotMba:
     def test_succs_preds_stored_as_json(
         self, mock_mba_3_blocks: list[BlockSnapshot]
     ) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         snapshot_mba(conn, mock_mba_3_blocks, label="test", func_ea=0x1000)
         row = conn.execute(
             "SELECT succs, preds FROM blocks WHERE snapshot_id=1 AND serial=1"
@@ -523,8 +512,7 @@ class TestSnapshotMba:
         assert json.loads(row[1]) == [0]
 
     def test_maturity_stored(self, mock_mba_3_blocks: list[BlockSnapshot]) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         snapshot_mba(
             conn,
             mock_mba_3_blocks,
@@ -538,8 +526,7 @@ class TestSnapshotMba:
         assert row[0] == "MMAT_GLBOPT1"
 
     def test_phase_stored(self, mock_mba_3_blocks: list[BlockSnapshot]) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         snapshot_mba(
             conn,
             mock_mba_3_blocks,
@@ -553,8 +540,7 @@ class TestSnapshotMba:
         assert row[0] == "post_apply"
 
     def test_phase_post_d810_stored(self, mock_mba_3_blocks: list[BlockSnapshot]) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         snapshot_mba(
             conn,
             mock_mba_3_blocks,
@@ -568,8 +554,7 @@ class TestSnapshotMba:
         assert row[0] == "post_d810"
 
     def test_phase_defaults_to_unknown(self, mock_mba_3_blocks: list[BlockSnapshot]) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         snapshot_mba(
             conn, mock_mba_3_blocks, label="test", func_ea=0x1000
         )
@@ -583,8 +568,7 @@ class TestSnapshotFacts:
     def test_writes_fact_lifecycle_rows(
         self, mock_mba_3_blocks: list[BlockSnapshot]
     ) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         snap_id = snapshot_mba(
             conn,
             mock_mba_3_blocks,
@@ -678,8 +662,7 @@ class TestSnapshotFacts:
     def test_fact_mapping_and_consumer_indices_append_across_calls(
         self, mock_mba_3_blocks: list[BlockSnapshot]
     ) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         snap_id = snapshot_mba(
             conn,
             mock_mba_3_blocks,
@@ -777,8 +760,7 @@ class TestSnapshotFacts:
         assert str(insn) == "mov #0xABC, %var_8.8"
 
     def test_empty_blocks_list(self) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         snap_id = snapshot_mba(conn, [], label="empty", func_ea=0x2000)
         row = conn.execute(
             "SELECT block_count FROM snapshots WHERE id=?", (snap_id,)
@@ -808,8 +790,7 @@ class TestSnapshotFacts:
             preds=[206],
             instructions=[insn],
         )
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         snapshot_mba(conn, [blk], label="test", func_ea=0x1000)
         row = conn.execute(
             "SELECT dest_stkoff, src_l_stkoff FROM instructions "
@@ -841,8 +822,7 @@ class TestSnapshotFacts:
             preds=[],
             instructions=[insn],
         )
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         # This must NOT raise OverflowError
         snap_id = snapshot_mba(conn, [blk], label="overflow", func_ea=large_ea)
         assert snap_id is not None
@@ -872,8 +852,7 @@ class TestSnapshotFacts:
 
 class TestSnapshotDag:
     def test_writes_nodes_and_edges(self) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         # Need a snapshot row first
         conn.execute(
             "INSERT INTO snapshots VALUES "
@@ -913,8 +892,7 @@ class TestSnapshotDag:
 
     def test_edge_kind_constraint(self) -> None:
         """Verify invalid edge_kind raises IntegrityError."""
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         conn.execute(
             "INSERT INTO snapshots VALUES "
             "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
@@ -925,8 +903,7 @@ class TestSnapshotDag:
             snapshot_dag(conn, 1, [], [bad_edge])
 
     def test_ordered_path_as_json(self) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         conn.execute(
             "INSERT INTO snapshots VALUES "
             "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
@@ -944,8 +921,7 @@ class TestSnapshotDag:
         assert json.loads(row[0]) == [131, 174, 176]
 
     def test_snapshot_dag_local_facts_writes_node_internals(self) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         conn.execute(
             "INSERT INTO snapshots VALUES "
             "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
@@ -1007,8 +983,7 @@ class TestSnapshotDag:
         assert edge_rows[-1] == ("blk[217]", "blk[218]", "TERMINAL", None)
 
     def test_range_only_node_identity_matches_outer_and_local_tables(self) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         conn.execute(
             "INSERT INTO snapshots VALUES "
             "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
@@ -1075,8 +1050,7 @@ class TestSnapshotDag:
 
 class TestSnapshotModifications:
     def test_writes_modifications(self) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         conn.execute(
             "INSERT INTO snapshots VALUES "
             "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
@@ -1119,8 +1093,7 @@ class TestSnapshotModifications:
         assert rows[1] == ("nop_instructions", "skipped")
 
     def test_empty_modifications(self) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         conn.execute(
             "INSERT INTO snapshots VALUES "
             "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
@@ -1134,8 +1107,7 @@ class TestSnapshotModifications:
 
 class TestSnapshotReachability:
     def test_writes_classification(self) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         conn.execute(
             "INSERT INTO snapshots VALUES "
             "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 10, 0.0)"
@@ -1169,8 +1141,7 @@ class TestSnapshotReachability:
         assert rows[4] == (4, 1, 0, 1, 0)
 
     def test_empty_sets(self) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         conn.execute(
             "INSERT INTO snapshots VALUES "
             "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
@@ -1187,8 +1158,7 @@ class TestSnapshotReachability:
 
 class TestSnapshotRenderedProgram:
     def test_writes_rendered_program_rows(self) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         conn.execute(
             "INSERT INTO snapshots VALUES "
             "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
@@ -1242,8 +1212,7 @@ class TestSnapshotRenderedProgram:
         assert line == ("goto", "STATE_FEEDC0DE", "    goto STATE_FEEDC0DE;")
 
     def test_replaces_existing_variant_rows(self) -> None:
-        conn = sqlite3.connect(":memory:")
-        create_tables(conn)
+        conn = create_diag_database(":memory:").connection()
         conn.execute(
             "INSERT INTO snapshots VALUES "
             "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"

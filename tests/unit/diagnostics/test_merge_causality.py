@@ -6,6 +6,7 @@ Locks in the cross-tab, the per-block disposition classification, and the
 EA-based absorber inference.
 """
 from __future__ import annotations
+from d810.core.diag import create_diag_database
 
 import json
 import sqlite3
@@ -86,8 +87,7 @@ def merge_causality_db(tmp_path: Path) -> Path:
     - blk 40: vanishes, only synthesized insns (ea=0) → synthesized_only
     """
     db_path = tmp_path / "merge.sqlite3"
-    conn = sqlite3.connect(str(db_path))
-    create_tables(conn)
+    conn = create_diag_database(str(db_path)).connection()
 
     # FROM snapshot (snap 1)
     _insert_snapshot(conn, 1, _FROM_LABEL)

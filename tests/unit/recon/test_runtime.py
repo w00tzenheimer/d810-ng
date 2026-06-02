@@ -1,6 +1,7 @@
 """Unit tests for ReconAnalysisRuntime coordinator."""
 
 from __future__ import annotations
+from d810.core.diag import create_diag_database
 
 import json
 import sqlite3
@@ -257,8 +258,7 @@ def test_fact_lifecycle_capture_persists_to_diag_snapshot() -> None:
     rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
     rt._fact_lifecycle.register(_Collector())  # targeted substrate test
 
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     conn.execute(
         "INSERT INTO snapshots VALUES "
         "(1, 'test', '0x0000000000401000', 0x401000, 'MMAT_GLBOPT1', "
@@ -338,8 +338,7 @@ def test_validated_fact_view_is_exposed_from_runtime() -> None:
 
 
 def test_record_fact_consumers_persists_to_latest_diag_snapshot() -> None:
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     conn.execute(
         "INSERT INTO snapshots "
         "(id, label, func_ea_hex, func_ea_i64, maturity, phase, block_count, timestamp) "
