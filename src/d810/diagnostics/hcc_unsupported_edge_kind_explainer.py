@@ -37,6 +37,15 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from d810._vendor.peewee import fn
+from d810.core.diag import open_diag_database
+from d810.core.diag.models import (
+    Block,
+    FactObservation,
+    StateCfgEdge,
+    StateCfgNode,
+    StateCfgNodeBlock,
+)
 from d810.core.typing import Any, Iterable, Sequence
 from d810.diagnostics.hcc_byte_cascade_trace import (
     ByteCascadeRow,
@@ -131,14 +140,12 @@ class EdgeKindExplanation:
 
 def _latest_dag_snapshot_id(conn: sqlite3.Connection) -> int | None:
     try:
-        row = conn.execute(
-            "SELECT MAX(snapshot_id) FROM state_cfg_nodes"
-        ).fetchone()
+        value = StateCfgNode.select(fn.MAX(StateCfgNode.snapshot)).scalar()
     except sqlite3.OperationalError:
         return None
-    if row is None or row[0] is None:
+    if value is None:
         return None
-    return int(row[0])
+    return int(value)
 
 
 def _resolve_state_hex_for_block(
@@ -148,6 +155,9 @@ def _resolve_state_hex_for_block(
 ) -> str | None:
     if block_serial is None:
         return None
+    # raw-SQL: role-priority CASE-WHEN ORDER BY picks the most-specific
+    # owning node for a block; a custom rank expression reads more clearly
+    # as SQL (§3 complex-SQL policy).
     try:
         row = conn.execute(
             """
@@ -175,15 +185,21 @@ def _outgoing_edges(
 ) -> list[tuple[int, str | None, str | None, str, int | None, str]]:
     """Return outgoing edges from *state_hex*: (edge_id, src_state, tgt_state, kind, source_block, ordered_path_str)."""
     try:
-        rows = conn.execute(
-            """
-            SELECT edge_id, source_state_hex, target_state_hex,
-                   edge_kind, source_block, ordered_path
-            FROM state_cfg_edges
-            WHERE snapshot_id=? AND source_state_hex=?
-            """,
-            (snapshot_id, state_hex),
-        ).fetchall()
+        rows = (
+            StateCfgEdge.select(
+                StateCfgEdge.edge_id,
+                StateCfgEdge.source_state_hex,
+                StateCfgEdge.target_state_hex,
+                StateCfgEdge.edge_kind,
+                StateCfgEdge.source_block,
+                StateCfgEdge.ordered_path,
+            )
+            .where(
+                (StateCfgEdge.snapshot == snapshot_id)
+                & (StateCfgEdge.source_state_hex == state_hex)
+            )
+            .tuples()
+        )
     except sqlite3.OperationalError:
         return []
     return [
@@ -205,10 +221,15 @@ def _entry_block_for_state(
     state_hex: str,
 ) -> int | None:
     try:
-        row = conn.execute(
-            "SELECT entry_block FROM state_cfg_nodes WHERE snapshot_id=? AND state_hex=?",
-            (snapshot_id, state_hex),
-        ).fetchone()
+        row = (
+            StateCfgNode.select(StateCfgNode.entry_block)
+            .where(
+                (StateCfgNode.snapshot == snapshot_id)
+                & (StateCfgNode.state_hex == state_hex)
+            )
+            .tuples()
+            .first()
+        )
     except sqlite3.OperationalError:
         return None
     return int(row[0]) if row else None
@@ -220,13 +241,15 @@ def _blocks_owned_by_state(
     state_hex: str,
 ) -> list[int]:
     try:
-        rows = conn.execute(
-            """
-            SELECT DISTINCT block_serial FROM state_cfg_node_blocks
-            WHERE snapshot_id=? AND state_hex=?
-            """,
-            (snapshot_id, state_hex),
-        ).fetchall()
+        rows = (
+            StateCfgNodeBlock.select(StateCfgNodeBlock.block_serial)
+            .where(
+                (StateCfgNodeBlock.snapshot == snapshot_id)
+                & (StateCfgNodeBlock.state_hex == state_hex)
+            )
+            .distinct()
+            .tuples()
+        )
     except sqlite3.OperationalError:
         return []
     return sorted({int(r[0]) for r in rows if r[0] is not None})
@@ -243,16 +266,18 @@ def _byte_facts_on_blocks(
     """
     if not block_serials:
         return set()
-    placeholders = ",".join("?" for _ in block_serials)
     try:
-        rows = conn.execute(
-            f"""
-            SELECT payload FROM fact_observations
-            WHERE snapshot_id=? AND kind='TerminalByteEmitterFact'
-              AND source_block IN ({placeholders})
-            """,
-            (snapshot_id, *(int(s) for s in block_serials)),
-        ).fetchall()
+        rows = (
+            FactObservation.select(FactObservation.payload)
+            .where(
+                (FactObservation.snapshot == snapshot_id)
+                & (FactObservation.kind == "TerminalByteEmitterFact")
+                & FactObservation.source_block.in_(
+                    [int(s) for s in block_serials]
+                )
+            )
+            .tuples()
+        )
     except sqlite3.OperationalError:
         return set()
     out: set[int] = set()
@@ -286,20 +311,26 @@ def _block_succs_preds(
     if block_serial is None:
         return (), ()
     try:
-        row = conn.execute(
-            "SELECT succs FROM blocks WHERE snapshot_id=? AND serial=?",
-            (snapshot_id, int(block_serial)),
-        ).fetchone()
+        row = (
+            Block.select(Block.succs)
+            .where(
+                (Block.snapshot == snapshot_id)
+                & (Block.serial == int(block_serial))
+            )
+            .tuples()
+            .first()
+        )
     except sqlite3.OperationalError:
         return (), ()
     succs: tuple[int, ...] = ()
     if row and row[0]:
         succs = _parse_int_list(str(row[0]))
     try:
-        pred_rows = conn.execute(
-            "SELECT serial, succs FROM blocks WHERE snapshot_id=?",
-            (snapshot_id,),
-        ).fetchall()
+        pred_rows = (
+            Block.select(Block.serial, Block.succs)
+            .where(Block.snapshot == snapshot_id)
+            .tuples()
+        )
     except sqlite3.OperationalError:
         return succs, ()
     preds: list[int] = []
@@ -498,11 +529,12 @@ def explain(
             )
             for r in targets
         ]
-    conn = sqlite3.connect(str(db_path))
+    db = open_diag_database(str(db_path))
     try:
+        conn = db.connection()
         return [explain_byte(conn, r) for r in targets]
     finally:
-        conn.close()
+        db.close()
 
 
 # ---------------------------------------------------------------------------
