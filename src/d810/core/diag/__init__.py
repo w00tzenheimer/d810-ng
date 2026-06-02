@@ -39,6 +39,12 @@ def create_diag_database(db_path: str) -> SqliteDatabase:
     db = SqliteDatabase(db_path, pragmas={"journal_mode": "wal"})
     db.connect()
     create_tables(db)
+    # Bind every Model to this live db so ORM writers (``Model.insert_many(
+    # ...).execute()`` / ``Model.create(...)``) target this session's
+    # connection. Each ``create_diag_database`` call rebinds to its own db,
+    # which is correct for the single-session production diag DB and for the
+    # tests (each builds its own db).
+    db.bind(MODELS)
     return db
 
 # Inversion-of-control hook for cfg-layer block-lineage drain.
