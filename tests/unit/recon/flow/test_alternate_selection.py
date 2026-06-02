@@ -39,7 +39,7 @@ def _add_block(
 ) -> None:
     conn.execute(
         """
-        INSERT INTO dag_node_blocks
+        INSERT INTO state_cfg_node_blocks
             (snapshot_id, state_hex, entry_block, block_serial,
              block_index, role)
         VALUES (?,?,?,?,?,?)
@@ -59,12 +59,12 @@ def _add_edge(
 ) -> None:
     if edge_id is None:
         edge_id = conn.execute(
-            "SELECT COALESCE(MAX(edge_id),0)+1 FROM dag_edges WHERE snapshot_id=?",
+            "SELECT COALESCE(MAX(edge_id),0)+1 FROM state_cfg_edges WHERE snapshot_id=?",
             (snap,),
         ).fetchone()[0]
     conn.execute(
         """
-        INSERT INTO dag_edges
+        INSERT INTO state_cfg_edges
             (snapshot_id, edge_id, source_state_hex, source_state_i64,
              target_state_hex, target_state_i64, edge_kind,
              source_block, source_arm, target_entry, ordered_path)
@@ -122,7 +122,7 @@ def _add_correlation(
 ) -> None:
     conn.execute(
         """
-        INSERT INTO dag_edge_alternate_correlations
+        INSERT INTO state_cfg_edge_alternate_correlations
             (snapshot_id, collapsed_edge_id, alternate_edge_id,
              collapsed_source_state, collapsed_target_state,
              alternate_source_state, alternate_target_state,
@@ -286,6 +286,6 @@ def test_persist_idempotent() -> None:
     persist_alternate_selections(conn, selections)
     persist_alternate_selections(conn, selections)
     n = conn.execute(
-        "SELECT COUNT(*) FROM dag_edge_alternate_selections"
+        "SELECT COUNT(*) FROM state_cfg_edge_alternate_selections"
     ).fetchone()[0]
     assert n == 1

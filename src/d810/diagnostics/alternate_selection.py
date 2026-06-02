@@ -1,4 +1,4 @@
-"""Selector for ``dag_edge_alternate_correlations`` rows.
+"""Selector for ``state_cfg_edge_alternate_correlations`` rows.
 
 Resolves the ambiguity that the correlation substrate exposes when
 multiple alternate edges overlap a collapsed source.  The selector is
@@ -15,7 +15,7 @@ from ``TerminalByteEmitterFact.destination_block`` against the
 collapsed source's owned blocks):
 
 * Bounded BFS from the alternate's ``target_state`` through
-  ``dag_edges``, depth ``<= 2``.
+  ``state_cfg_edges``, depth ``<= 2``.
 * If any reachable state's owned blocks contain a
   ``corridor_role = terminal_tail``
   ``TerminalByteEmitterFact`` destination with ``byte_index > N``,
@@ -123,7 +123,7 @@ def _state_owned_blocks(
     out: dict[str, set[int]] = {}
     rows = conn.execute(
         """
-        SELECT state_hex, block_serial FROM dag_node_blocks
+        SELECT state_hex, block_serial FROM state_cfg_node_blocks
         WHERE snapshot_id = ?
           AND role IN ('owned', 'exclusive', 'shared_suffix')
         """,
@@ -189,7 +189,7 @@ def _outgoing_by_state(
     rows = conn.execute(
         """
         SELECT source_state_hex, target_state_hex, edge_kind
-        FROM dag_edges
+        FROM state_cfg_edges
         WHERE snapshot_id = ?
         """,
         (int(snapshot_id),),
@@ -279,7 +279,7 @@ def select_alternate_edges(
         SELECT collapsed_edge_id, alternate_edge_id,
                collapsed_source_state, alternate_source_state,
                alternate_target_state
-        FROM dag_edge_alternate_correlations
+        FROM state_cfg_edge_alternate_correlations
         WHERE snapshot_id = ?
         """,
         (int(snapshot_id),),
@@ -409,13 +409,13 @@ def persist_alternate_selections(
     snapshot_ids = sorted({int(r[0]) for r in rows})
     for snap_id in snapshot_ids:
         conn.execute(
-            "DELETE FROM dag_edge_alternate_selections "
+            "DELETE FROM state_cfg_edge_alternate_selections "
             "WHERE snapshot_id = ?",
             (snap_id,),
         )
     conn.executemany(
         """
-        INSERT INTO dag_edge_alternate_selections
+        INSERT INTO state_cfg_edge_alternate_selections
             (snapshot_id, collapsed_edge_id, alternate_edge_id,
              selected, source_byte_index, reached_byte_index,
              reached_state_hex, reason, evidence_json)

@@ -483,7 +483,7 @@ def load_dag_edges(
         return []
     rows = conn.execute(
         "SELECT edge_kind, source_block, target_entry, source_state_hex, target_state_hex, ordered_path "
-        "FROM dag_edges WHERE snapshot_id = ? ORDER BY edge_id",
+        "FROM state_cfg_edges WHERE snapshot_id = ? ORDER BY edge_id",
         (snapshot_id,),
     ).fetchall()
     edges: list[DagEdgeInfo] = []
@@ -1101,7 +1101,7 @@ def build_residual_dispatcher_worksheet(
             else resolve_aux_snapshot_id(
                 diag_conn,
                 func_ea_i64=resolved_func_ea,
-                table_name="dag_edges",
+                table_name="state_cfg_edges",
                 preferred_phase="post_apply",
                 preferred_label_substring="state_write_reconstruction",
             )

@@ -275,12 +275,12 @@ def in_memory_db() -> sqlite3.Connection:
     conn.executescript(
         """
         CREATE TABLE snapshots (id INTEGER PRIMARY KEY, label TEXT);
-        CREATE TABLE dag_nodes (
+        CREATE TABLE state_cfg_nodes (
             snapshot_id INTEGER, state_hex TEXT, state_i64 INTEGER,
             entry_block INTEGER, classification TEXT, shared_suffix TEXT,
             PRIMARY KEY (snapshot_id, state_hex)
         );
-        CREATE TABLE dag_edges (
+        CREATE TABLE state_cfg_edges (
             snapshot_id INTEGER, edge_id INTEGER,
             source_state_hex TEXT, source_state_i64 INTEGER,
             target_state_hex TEXT, target_state_i64 INTEGER,
@@ -288,7 +288,7 @@ def in_memory_db() -> sqlite3.Connection:
             target_entry INTEGER, ordered_path TEXT,
             PRIMARY KEY (snapshot_id, edge_id)
         );
-        CREATE TABLE dag_node_blocks (
+        CREATE TABLE state_cfg_node_blocks (
             snapshot_id INTEGER, state_hex TEXT, entry_block INTEGER,
             block_serial INTEGER, block_index INTEGER, role TEXT,
             PRIMARY KEY (snapshot_id, state_hex, entry_block, role, block_index)
@@ -303,17 +303,17 @@ def in_memory_db() -> sqlite3.Connection:
         INSERT INTO snapshots VALUES (7, 'GLBOPT1_post_d810');
 
         -- byte's block 100 owned by state A; A has neighbors B, C
-        INSERT INTO dag_nodes VALUES (7, '0xa', 10, 200, 'EXACT', NULL);
-        INSERT INTO dag_nodes VALUES (7, '0xb', 11, 201, 'EXACT', NULL);
-        INSERT INTO dag_nodes VALUES (7, '0xc', 12, 202, 'EXACT', NULL);
+        INSERT INTO state_cfg_nodes VALUES (7, '0xa', 10, 200, 'EXACT', NULL);
+        INSERT INTO state_cfg_nodes VALUES (7, '0xb', 11, 201, 'EXACT', NULL);
+        INSERT INTO state_cfg_nodes VALUES (7, '0xc', 12, 202, 'EXACT', NULL);
 
-        INSERT INTO dag_node_blocks VALUES (7, '0xa', 200, 100, 0, 'owned');
-        INSERT INTO dag_node_blocks VALUES (7, '0xb', 201, 101, 0, 'owned');
-        INSERT INTO dag_node_blocks VALUES (7, '0xc', 202, 102, 0, 'owned');
+        INSERT INTO state_cfg_node_blocks VALUES (7, '0xa', 200, 100, 0, 'owned');
+        INSERT INTO state_cfg_node_blocks VALUES (7, '0xb', 201, 101, 0, 'owned');
+        INSERT INTO state_cfg_node_blocks VALUES (7, '0xc', 202, 102, 0, 'owned');
 
-        INSERT INTO dag_edges VALUES (7, 0, '0xb', 11, '0xa', 10,
+        INSERT INTO state_cfg_edges VALUES (7, 0, '0xb', 11, '0xa', 10,
                                       'TRANSITION', 11, NULL, 200, '');
-        INSERT INTO dag_edges VALUES (7, 1, '0xa', 10, '0xc', 12,
+        INSERT INTO state_cfg_edges VALUES (7, 1, '0xa', 10, '0xc', 12,
                                       'TRANSITION', 10, NULL, 202, '');
 
         -- region feature value names blk[101] => B is admitted, A and C are not

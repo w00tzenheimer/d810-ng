@@ -137,7 +137,7 @@ def _make_dag(nodes: tuple[StateDagNode, ...], edges: tuple[StateDagEdge, ...]) 
 def _seed_byte5_diag(conn: sqlite3.Connection) -> None:
     """Seed the diag DB so the cascade re-runs and produces selections.
 
-    We pre-populate ``dag_edges``, ``dag_nodes``, ``dag_node_blocks``,
+    We pre-populate ``state_cfg_edges``, ``state_cfg_nodes``, ``state_cfg_node_blocks``,
     ``fact_observations`` (StateWriteAnchorFact + TerminalByteEmitterFact)
     and ``fact_mappings`` (STATE_CONST_REWRITTEN) so the helper's
     cascade pass produces the same byte5 selection we observed live.
@@ -156,7 +156,7 @@ def _seed_byte5_diag(conn: sqlite3.Connection) -> None:
     # The collapsed edge: 0x385BBE2D -> 0x63D54755 at blk[100].
     conn.execute(
         """
-        INSERT INTO dag_edges
+        INSERT INTO state_cfg_edges
             (snapshot_id, edge_id, source_state_hex, source_state_i64,
              target_state_hex, target_state_i64, edge_kind,
              source_block, source_arm, target_entry, ordered_path)
@@ -180,7 +180,7 @@ def _seed_byte5_diag(conn: sqlite3.Connection) -> None:
     ):
         conn.execute(
             """
-            INSERT INTO dag_nodes
+            INSERT INTO state_cfg_nodes
                 (snapshot_id, state_hex, state_i64, entry_block,
                  classification, shared_suffix)
             VALUES (1, ?, ?, ?, ?, NULL)
@@ -203,7 +203,7 @@ def _seed_byte5_diag(conn: sqlite3.Connection) -> None:
     ):
         conn.execute(
             """
-            INSERT INTO dag_node_blocks
+            INSERT INTO state_cfg_node_blocks
                 (snapshot_id, state_hex, entry_block, block_serial,
                  block_index, role)
             VALUES (1, ?, ?, ?, ?, ?)

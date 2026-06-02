@@ -80,7 +80,7 @@ def test_persists_frontier_diagnostic_rows() -> None:
         "SELECT kind, reason, source_block, observed_target, branch_arm, "
         "from_dag_scc, to_dag_scc, candidate_targets_json, path_json, "
         "cfg_scc_size, payload_json "
-        "FROM dag_frontier_closure_diagnostics WHERE snapshot_id=7"
+        "FROM state_cfg_frontier_closure_diagnostics WHERE snapshot_id=7"
     ).fetchone()
     assert row[:7] == (
         "unresolved",

@@ -73,7 +73,7 @@ def load_frontier_diagnostics(
             d.path_json,
             d.cfg_scc_size,
             d.payload_json
-        FROM dag_frontier_closure_diagnostics d
+        FROM state_cfg_frontier_closure_diagnostics d
         JOIN snapshots s ON s.id = d.snapshot_id
         {where}
         ORDER BY

@@ -76,13 +76,13 @@ def _gated_overrides(
             d.classification,
             e.source_block,
             (
-                SELECT COUNT(*) FROM dag_edge_alternate_selections s2
+                SELECT COUNT(*) FROM state_cfg_edge_alternate_selections s2
                  WHERE s2.snapshot_id = d.snapshot_id
                    AND s2.collapsed_edge_id = d.edge_id
                    AND s2.selected = 1
             ) AS sel_count,
             (
-                SELECT s3.reached_state_hex FROM dag_edge_alternate_selections s3
+                SELECT s3.reached_state_hex FROM state_cfg_edge_alternate_selections s3
                  WHERE s3.snapshot_id = d.snapshot_id
                    AND s3.collapsed_edge_id = d.edge_id
                    AND s3.selected = 1
@@ -90,7 +90,7 @@ def _gated_overrides(
             ) AS reached_state_hex,
             (
                 SELECT s4.reached_byte_index
-                  FROM dag_edge_alternate_selections s4
+                  FROM state_cfg_edge_alternate_selections s4
                  WHERE s4.snapshot_id = d.snapshot_id
                    AND s4.collapsed_edge_id = d.edge_id
                    AND s4.selected = 1
@@ -98,14 +98,14 @@ def _gated_overrides(
             ) AS reached_byte_index,
             (
                 SELECT s5.source_byte_index
-                  FROM dag_edge_alternate_selections s5
+                  FROM state_cfg_edge_alternate_selections s5
                  WHERE s5.snapshot_id = d.snapshot_id
                    AND s5.collapsed_edge_id = d.edge_id
                    AND s5.selected = 1
                  LIMIT 1
             ) AS source_byte_index
-        FROM dag_edge_diagnostics d
-        JOIN dag_edges e
+        FROM state_cfg_edge_diagnostics d
+        JOIN state_cfg_edges e
           ON e.snapshot_id = d.snapshot_id
          AND e.edge_id     = d.edge_id
         WHERE d.snapshot_id = ?

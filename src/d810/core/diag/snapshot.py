@@ -314,7 +314,7 @@ def snapshot_dag(
             n.shared_suffix,
         ))
     conn.executemany(
-        "INSERT INTO dag_nodes VALUES (?,?,?,?,?,?)",
+        "INSERT INTO state_cfg_nodes VALUES (?,?,?,?,?,?)",
         node_rows,
     )
 
@@ -336,7 +336,7 @@ def snapshot_dag(
             e.ordered_path,
         ))
     conn.executemany(
-        "INSERT INTO dag_edges VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO state_cfg_edges VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         edge_rows,
     )
 
@@ -421,23 +421,23 @@ def snapshot_dag_local_facts(
                 int(branch_arm) if branch_arm is not None else None,
             ))
 
-    conn.execute("DELETE FROM dag_node_blocks WHERE snapshot_id=?", (snapshot_id,))
-    conn.execute("DELETE FROM dag_local_segments WHERE snapshot_id=?", (snapshot_id,))
-    conn.execute("DELETE FROM dag_local_edges WHERE snapshot_id=?", (snapshot_id,))
+    conn.execute("DELETE FROM state_cfg_node_blocks WHERE snapshot_id=?", (snapshot_id,))
+    conn.execute("DELETE FROM state_cfg_local_segments WHERE snapshot_id=?", (snapshot_id,))
+    conn.execute("DELETE FROM state_cfg_local_edges WHERE snapshot_id=?", (snapshot_id,))
 
     if block_rows:
         conn.executemany(
-            "INSERT INTO dag_node_blocks VALUES (?,?,?,?,?,?)",
+            "INSERT INTO state_cfg_node_blocks VALUES (?,?,?,?,?,?)",
             block_rows,
         )
     if segment_rows:
         conn.executemany(
-            "INSERT INTO dag_local_segments VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO state_cfg_local_segments VALUES (?,?,?,?,?,?,?)",
             segment_rows,
         )
     if edge_rows:
         conn.executemany(
-            "INSERT INTO dag_local_edges VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO state_cfg_local_edges VALUES (?,?,?,?,?,?,?,?)",
             edge_rows,
         )
 
@@ -620,7 +620,7 @@ def snapshot_dag_frontier_closure_diagnostics(
     candidates, but no behavior code consumes this table.
     """
     conn.execute(
-        "DELETE FROM dag_frontier_closure_diagnostics WHERE snapshot_id=?",
+        "DELETE FROM state_cfg_frontier_closure_diagnostics WHERE snapshot_id=?",
         (snapshot_id,),
     )
     db_rows = []
@@ -641,7 +641,7 @@ def snapshot_dag_frontier_closure_diagnostics(
         ))
     if db_rows:
         conn.executemany(
-            "INSERT INTO dag_frontier_closure_diagnostics VALUES "
+            "INSERT INTO state_cfg_frontier_closure_diagnostics VALUES "
             "(?,?,?,?,?,?,?,?,?,?,?,?)",
             db_rows,
         )

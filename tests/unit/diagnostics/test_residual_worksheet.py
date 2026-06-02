@@ -333,7 +333,7 @@ def _make_diag_db(tmp_path: Path) -> Path:
             handler_serial INTEGER,
             entry_anchor INTEGER
         );
-        CREATE TABLE dag_edges (
+        CREATE TABLE state_cfg_edges (
             snapshot_id INTEGER,
             edge_id INTEGER,
             edge_kind TEXT,

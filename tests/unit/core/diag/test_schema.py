@@ -18,11 +18,11 @@ def test_create_tables_creates_all_expected_tables():
     assert "block_lineage" in tables
     assert "instructions" in tables
     assert "snapshots" in tables
-    assert "dag_edges" in tables
-    assert "dag_nodes" in tables
-    assert "dag_node_blocks" in tables
-    assert "dag_local_segments" in tables
-    assert "dag_local_edges" in tables
+    assert "state_cfg_edges" in tables
+    assert "state_cfg_nodes" in tables
+    assert "state_cfg_node_blocks" in tables
+    assert "state_cfg_local_segments" in tables
+    assert "state_cfg_local_edges" in tables
     assert "modifications" in tables
     assert "block_classification" in tables
     assert "rendered_programs" in tables
@@ -83,7 +83,7 @@ def test_edge_kind_check_constraint_rejects_invalid():
     )
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
-            "INSERT INTO dag_edges VALUES "
+            "INSERT INTO state_cfg_edges VALUES "
             "(1, 1, NULL, NULL, NULL, NULL, 'INVALID_KIND', "
             "NULL, NULL, NULL, '[]')"
         )

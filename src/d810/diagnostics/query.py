@@ -116,7 +116,7 @@ def return_paths(
     """
     conn.row_factory = _dict_factory
     cur = conn.execute(
-        "SELECT * FROM dag_edges "
+        "SELECT * FROM state_cfg_edges "
         "WHERE snapshot_id=? AND edge_kind='CONDITIONAL_RETURN'",
         (snapshot_id,),
     )
@@ -739,8 +739,8 @@ def state_local(
 ) -> dict[str, Any] | None:
     """Return typed state-local DAG facts for one state.
 
-    The returned dict is built from ``dag_nodes`` plus the optional
-    ``dag_node_blocks``, ``dag_local_segments``, and ``dag_local_edges`` tables.
+    The returned dict is built from ``state_cfg_nodes`` plus the optional
+    ``state_cfg_node_blocks``, ``state_cfg_local_segments``, and ``state_cfg_local_edges`` tables.
     Old databases that lack the typed local tables return the basic node row
     with ``local_facts_available=False`` instead of raising.
     """
@@ -751,7 +751,7 @@ def state_local(
     short_hex = f"0x{state_value & 0xFFFFFFFF:08x}"
     short_hex_upper = short_hex.upper().replace("X", "x")
     cur = conn.execute(
-        "SELECT * FROM dag_nodes "
+        "SELECT * FROM state_cfg_nodes "
         "WHERE snapshot_id=? AND (state_hex IN (?, ?, ?, ?) OR state_i64=?) "
         "ORDER BY entry_block LIMIT 1",
         (
@@ -768,9 +768,9 @@ def state_local(
         return None
 
     required_tables = (
-        "dag_node_blocks",
-        "dag_local_segments",
-        "dag_local_edges",
+        "state_cfg_node_blocks",
+        "state_cfg_local_segments",
+        "state_cfg_local_edges",
     )
     table_presence = {
         table: _table_exists(conn, table)
@@ -806,7 +806,7 @@ def state_local(
         "shared_suffix": [],
     }
     block_rows = conn.execute(
-        "SELECT role, block_serial FROM dag_node_blocks "
+        "SELECT role, block_serial FROM state_cfg_node_blocks "
         f"WHERE snapshot_id=? AND state_hex IN ({state_hex_placeholders}) "
         "AND entry_block=? "
         "ORDER BY role, block_index",
@@ -816,7 +816,7 @@ def state_local(
         blocks_by_role.setdefault(row["role"], []).append(int(row["block_serial"]))
 
     segment_rows = conn.execute(
-        "SELECT segment_id, kind, blocks_json FROM dag_local_segments "
+        "SELECT segment_id, kind, blocks_json FROM state_cfg_local_segments "
         f"WHERE snapshot_id=? AND state_hex IN ({state_hex_placeholders}) "
         "AND entry_block=? "
         "ORDER BY segment_index",
@@ -833,7 +833,7 @@ def state_local(
 
     local_edges = conn.execute(
         "SELECT source_segment_id, target_segment_id, kind, branch_arm "
-        "FROM dag_local_edges "
+        "FROM state_cfg_local_edges "
         f"WHERE snapshot_id=? AND state_hex IN ({state_hex_placeholders}) "
         "AND entry_block=? "
         "ORDER BY edge_index",

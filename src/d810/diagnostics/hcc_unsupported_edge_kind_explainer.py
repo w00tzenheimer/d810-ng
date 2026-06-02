@@ -132,7 +132,7 @@ class EdgeKindExplanation:
 def _latest_dag_snapshot_id(conn: sqlite3.Connection) -> int | None:
     try:
         row = conn.execute(
-            "SELECT MAX(snapshot_id) FROM dag_nodes"
+            "SELECT MAX(snapshot_id) FROM state_cfg_nodes"
         ).fetchone()
     except sqlite3.OperationalError:
         return None
@@ -151,7 +151,7 @@ def _resolve_state_hex_for_block(
     try:
         row = conn.execute(
             """
-            SELECT state_hex FROM dag_node_blocks
+            SELECT state_hex FROM state_cfg_node_blocks
             WHERE snapshot_id=? AND block_serial=?
             ORDER BY CASE role
                 WHEN 'exclusive' THEN 0
@@ -179,7 +179,7 @@ def _outgoing_edges(
             """
             SELECT edge_id, source_state_hex, target_state_hex,
                    edge_kind, source_block, ordered_path
-            FROM dag_edges
+            FROM state_cfg_edges
             WHERE snapshot_id=? AND source_state_hex=?
             """,
             (snapshot_id, state_hex),
@@ -206,7 +206,7 @@ def _entry_block_for_state(
 ) -> int | None:
     try:
         row = conn.execute(
-            "SELECT entry_block FROM dag_nodes WHERE snapshot_id=? AND state_hex=?",
+            "SELECT entry_block FROM state_cfg_nodes WHERE snapshot_id=? AND state_hex=?",
             (snapshot_id, state_hex),
         ).fetchone()
     except sqlite3.OperationalError:
@@ -222,7 +222,7 @@ def _blocks_owned_by_state(
     try:
         rows = conn.execute(
             """
-            SELECT DISTINCT block_serial FROM dag_node_blocks
+            SELECT DISTINCT block_serial FROM state_cfg_node_blocks
             WHERE snapshot_id=? AND state_hex=?
             """,
             (snapshot_id, state_hex),
@@ -354,7 +354,7 @@ def _verdict_for(rejected_edges: Sequence[RejectedEdgeRow]) -> tuple[str, str]:
     if not rejected_edges:
         return (
             "no_outgoing_rejected_edges",
-            "no outgoing dag_edges have a rejected edge_kind for this byte's"
+            "no outgoing state_cfg_edges have a rejected edge_kind for this byte's"
             " state; the trace's `unsupported_edge_kind` rejection points at"
             " a different state or snapshot",
         )
@@ -392,7 +392,7 @@ def explain_byte(
             snapshot_id=None,
             rejected_edges=(),
             verdict="no_dag_snapshot",
-            narrative="diag DB has no dag_nodes rows; cannot resolve edges",
+            narrative="diag DB has no state_cfg_nodes rows; cannot resolve edges",
         )
     state_hex = _resolve_state_hex_for_block(
         conn, snap_id, row.block_serial,
@@ -407,7 +407,7 @@ def explain_byte(
             rejected_edges=(),
             verdict="no_state_for_block",
             narrative=(
-                "no dag_node_blocks row joins this byte's block to a state;"
+                "no state_cfg_node_blocks row joins this byte's block to a state;"
                 " cannot diagnose the rejection edge"
             ),
         )

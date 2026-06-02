@@ -1,7 +1,7 @@
 """Alternate-edge correlator for ``COLLAPSED_TO_REWRITTEN_TARGET`` rows.
 
 This module pairs a collapsed recon edge with an alternate
-already-persisted ``dag_edges`` row whose source is a RANGE_BACKED
+already-persisted ``state_cfg_edges`` row whose source is a RANGE_BACKED
 sibling node whose owned / shared blocks overlap the collapsed
 source's blocks.  The alternate edge IS the traversing route that the
 collapsed exact edge is missing -- recon already discovered it; we
@@ -23,15 +23,15 @@ Observability-only.  No recon or HCC behavior change.
 Correlation rules
 -----------------
 
-For each ``dag_edge_diagnostics`` row classified
+For each ``state_cfg_edge_diagnostics`` row classified
 ``COLLAPSED_TO_REWRITTEN_TARGET``:
 
 1. Get the collapsed source state's owned + shared blocks.
-2. Find sibling ``dag_nodes`` whose owned / shared blocks intersect
+2. Find sibling ``state_cfg_nodes`` whose owned / shared blocks intersect
    that set AND whose ``classification`` is ``RANGE_BACKED``.  (Exact
    siblings are skipped because the collapsed exact edge already
    represents the exact route.)
-3. For each candidate sibling, list its outgoing ``dag_edges`` rows.
+3. For each candidate sibling, list its outgoing ``state_cfg_edges`` rows.
 4. Pair the collapsed edge with each candidate alternate.  The
    ``ordered_path`` of the alternate is preserved verbatim (recon's
    own walk).
@@ -39,7 +39,7 @@ For each ``dag_edge_diagnostics`` row classified
 
 Single-step: only the immediate sibling-traversal edge is considered.
 The continuation chain (e.g. ``0x10743C4C -> 0x6107F8EC``) is NOT
-recursively followed; it is a separate ``dag_edges`` row already and
+recursively followed; it is a separate ``state_cfg_edges`` row already and
 can be queried directly via its source_state.
 
 If the source's blocks intersect a RANGE_BACKED sibling but that
@@ -99,7 +99,7 @@ def _collect_state_blocks(
     rows = conn.execute(
         """
         SELECT state_hex, block_serial
-        FROM dag_node_blocks
+        FROM state_cfg_node_blocks
         WHERE snapshot_id = ?
           AND role IN ('owned', 'exclusive', 'shared_suffix')
         """,
@@ -116,12 +116,12 @@ def _collect_node_classifications(
     conn: sqlite3.Connection,
     snapshot_id: int,
 ) -> dict[str, str]:
-    """``{state_hex: classification}`` for ``dag_nodes``."""
+    """``{state_hex: classification}`` for ``state_cfg_nodes``."""
     out: dict[str, str] = {}
     rows = conn.execute(
         """
         SELECT state_hex, classification
-        FROM dag_nodes
+        FROM state_cfg_nodes
         WHERE snapshot_id = ?
         """,
         (int(snapshot_id),),
@@ -143,7 +143,7 @@ def _collect_outgoing_edges(
         """
         SELECT edge_id, source_state_hex, target_state_hex,
                source_block, target_entry, ordered_path
-        FROM dag_edges
+        FROM state_cfg_edges
         WHERE snapshot_id = ?
         """,
         (int(snapshot_id),),
@@ -166,7 +166,7 @@ def _collect_collapsed_diagnostics(
     rows = conn.execute(
         """
         SELECT edge_id, source_state_hex, target_state_hex
-        FROM dag_edge_diagnostics
+        FROM state_cfg_edge_diagnostics
         WHERE snapshot_id = ?
           AND classification = 'COLLAPSED_TO_REWRITTEN_TARGET'
         """,
@@ -187,8 +187,8 @@ def correlate_collapsed_edges(
     edges from RANGE_BACKED sibling nodes whose blocks overlap the
     collapsed source's blocks.
 
-    Pure read against ``dag_edge_diagnostics`` / ``dag_nodes`` /
-    ``dag_node_blocks`` / ``dag_edges``.  Caller decides whether to
+    Pure read against ``state_cfg_edge_diagnostics`` / ``state_cfg_nodes`` /
+    ``state_cfg_node_blocks`` / ``state_cfg_edges``.  Caller decides whether to
     persist via :func:`persist_alternate_correlations`.
     """
     collapsed_rows = _collect_collapsed_diagnostics(conn, snapshot_id)
@@ -285,13 +285,13 @@ def persist_alternate_correlations(
     snapshot_ids = sorted({int(r[0]) for r in rows})
     for snap_id in snapshot_ids:
         conn.execute(
-            "DELETE FROM dag_edge_alternate_correlations "
+            "DELETE FROM state_cfg_edge_alternate_correlations "
             "WHERE snapshot_id = ?",
             (snap_id,),
         )
     conn.executemany(
         """
-        INSERT INTO dag_edge_alternate_correlations
+        INSERT INTO state_cfg_edge_alternate_correlations
             (snapshot_id, collapsed_edge_id, alternate_edge_id,
              collapsed_source_state, collapsed_target_state,
              alternate_source_state, alternate_target_state,

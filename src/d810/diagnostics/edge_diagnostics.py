@@ -1,6 +1,6 @@
 """DAG edge diagnostic classification.
 
-This module classifies recon-time ``dag_edges`` rows by correlating them
+This module classifies recon-time ``state_cfg_edges`` rows by correlating them
 with three fact-substrate sources written elsewhere in the diag DB:
 
 * ``StateWriteAnchor STATE_CONST_REWRITTEN`` mappings (per-block proof
@@ -13,7 +13,7 @@ with three fact-substrate sources written elsewhere in the diag DB:
   to the terminal byte-tail class we care about most).
 
 Observability-only: classifications are persisted to the
-``dag_edge_diagnostics`` table; no recon edge target selection or HCC
+``state_cfg_edge_diagnostics`` table; no recon edge target selection or HCC
 behavior depends on them.  Future fact-backed correction passes can
 target specific classification rows for narrow review.
 
@@ -61,7 +61,7 @@ Terminal-tail filter
 An edge is marked ``is_terminal_tail = 1`` when its
 ``source_block`` matches the ``destination_block`` of some
 ``terminal_tail`` ``TerminalByteEmitterFact``, OR its source-state
-entry_block (per ``dag_node_blocks``) matches such a destination_block.
+entry_block (per ``state_cfg_node_blocks``) matches such a destination_block.
 The flag is independent of the classification axis -- it lets queries
 filter to the byte1..byte6 corridor without re-deriving the mapping.
 """
@@ -85,7 +85,7 @@ _VALID_CLASSIFICATIONS: frozenset[str] = frozenset({
 
 @dataclass(frozen=True)
 class EdgeDiagnostic:
-    """One classified ``dag_edges`` row."""
+    """One classified ``state_cfg_edges`` row."""
 
     snapshot_id: int
     edge_id: int
@@ -216,7 +216,7 @@ def _select_state_entry_blocks(
     conn: sqlite3.Connection,
     snapshot_id: int,
 ) -> dict[str, set[int]]:
-    """Return ``{state_hex: {entry_block, ...}}`` for ``dag_nodes``.
+    """Return ``{state_hex: {entry_block, ...}}`` for ``state_cfg_nodes``.
 
     Used to widen the terminal-tail filter: an edge is terminal_tail if
     its source-state's entry_block (or any owned block) is a known
@@ -225,7 +225,7 @@ def _select_state_entry_blocks(
     out: dict[str, set[int]] = {}
     rows = conn.execute(
         """
-        SELECT state_hex, entry_block FROM dag_nodes WHERE snapshot_id = ?
+        SELECT state_hex, entry_block FROM state_cfg_nodes WHERE snapshot_id = ?
         """,
         (snapshot_id,),
     ).fetchall()
@@ -250,7 +250,7 @@ def _find_sibling_target_states(
     rows = conn.execute(
         """
         SELECT edge_id, source_state_hex, target_state_hex, edge_kind
-        FROM dag_edges
+        FROM state_cfg_edges
         WHERE snapshot_id = ?
           AND source_state_hex IS NOT NULL
           AND target_state_hex IS NOT NULL
@@ -267,11 +267,11 @@ def classify_dag_edges(
     conn: sqlite3.Connection,
     snapshot_id: int,
 ) -> tuple[EdgeDiagnostic, ...]:
-    """Classify every ``dag_edges`` row at ``snapshot_id``.
+    """Classify every ``state_cfg_edges`` row at ``snapshot_id``.
 
     Pure read against ``fact_mappings`` / ``fact_observations`` /
-    ``dag_nodes`` / ``dag_node_blocks`` / ``dag_edges``.  Caller decides
-    whether to persist the returned rows into ``dag_edge_diagnostics``
+    ``state_cfg_nodes`` / ``state_cfg_node_blocks`` / ``state_cfg_edges``.  Caller decides
+    whether to persist the returned rows into ``state_cfg_edge_diagnostics``
     (see :func:`persist_edge_diagnostics`).
     """
     by_block, rewritten_consts, rewritten_sources = _select_state_const_rewritten_index(
@@ -285,7 +285,7 @@ def classify_dag_edges(
     state_owned_blocks: dict[str, set[int]] = {}
     rows = conn.execute(
         """
-        SELECT state_hex, block_serial FROM dag_node_blocks WHERE snapshot_id = ?
+        SELECT state_hex, block_serial FROM state_cfg_node_blocks WHERE snapshot_id = ?
         """,
         (snapshot_id,),
     ).fetchall()
@@ -303,7 +303,7 @@ def classify_dag_edges(
     edge_rows = conn.execute(
         """
         SELECT edge_id, source_state_hex, target_state_hex, edge_kind, source_block
-        FROM dag_edges
+        FROM state_cfg_edges
         WHERE snapshot_id = ?
         """,
         (snapshot_id,),
@@ -433,7 +433,7 @@ def persist_edge_diagnostics(
     conn: sqlite3.Connection,
     diagnostics: Iterable[EdgeDiagnostic],
 ) -> int:
-    """Persist diagnostic rows to ``dag_edge_diagnostics``.
+    """Persist diagnostic rows to ``state_cfg_edge_diagnostics``.
 
     Idempotent: existing rows for the same ``(snapshot_id, edge_id)`` are
     deleted before insertion.  Returns the number of rows inserted.
@@ -444,12 +444,12 @@ def persist_edge_diagnostics(
     snapshot_ids = sorted({int(r[0]) for r in rows})
     for snap_id in snapshot_ids:
         conn.execute(
-            "DELETE FROM dag_edge_diagnostics WHERE snapshot_id = ?",
+            "DELETE FROM state_cfg_edge_diagnostics WHERE snapshot_id = ?",
             (snap_id,),
         )
     conn.executemany(
         """
-        INSERT INTO dag_edge_diagnostics
+        INSERT INTO state_cfg_edge_diagnostics
             (snapshot_id, edge_id, classification, source_state_hex,
              target_state_hex, edge_kind, is_terminal_tail,
              original_state_const, rewritten_state_const,
