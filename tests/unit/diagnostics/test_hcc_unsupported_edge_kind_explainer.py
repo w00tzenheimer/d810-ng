@@ -12,6 +12,15 @@ from pathlib import Path
 
 import pytest
 
+from d810.core.diag import create_diag_database
+from d810.core.diag.models import (
+    Block,
+    FactObservation,
+    Snapshot,
+    StateCfgEdge,
+    StateCfgNode,
+    StateCfgNodeBlock,
+)
 from d810.diagnostics.hcc_byte_cascade_trace import ByteCascadeRow
 from d810.diagnostics.hcc_unsupported_edge_kind_explainer import (
     ALLOWED_EDGE_KINDS,
@@ -236,78 +245,61 @@ def test_format_report_json_round_trips():
 
 @pytest.fixture
 def in_memory_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(
-        """
-        CREATE TABLE snapshots (id INTEGER PRIMARY KEY, label TEXT);
-        CREATE TABLE state_cfg_nodes (
-            snapshot_id INTEGER, state_hex TEXT, state_i64 INTEGER,
-            entry_block INTEGER, classification TEXT, shared_suffix TEXT,
-            PRIMARY KEY (snapshot_id, state_hex)
-        );
-        CREATE TABLE state_cfg_edges (
-            snapshot_id INTEGER, edge_id INTEGER,
-            source_state_hex TEXT, source_state_i64 INTEGER,
-            target_state_hex TEXT, target_state_i64 INTEGER,
-            edge_kind TEXT, source_block INTEGER, source_arm INTEGER,
-            target_entry INTEGER, ordered_path TEXT,
-            PRIMARY KEY (snapshot_id, edge_id)
-        );
-        CREATE TABLE state_cfg_node_blocks (
-            snapshot_id INTEGER, state_hex TEXT, entry_block INTEGER,
-            block_serial INTEGER, block_index INTEGER, role TEXT,
-            PRIMARY KEY (snapshot_id, state_hex, entry_block, role, block_index)
-        );
-        CREATE TABLE blocks (
-            snapshot_id INTEGER, serial INTEGER, type_name TEXT,
-            succs TEXT, meta TEXT,
-            PRIMARY KEY (snapshot_id, serial)
-        );
-        CREATE TABLE fact_observations (
-            snapshot_id INTEGER, func_ea_hex TEXT, func_ea_i64 INTEGER,
-            fact_id TEXT, kind TEXT, semantic_key TEXT, maturity TEXT,
-            phase TEXT, confidence REAL, source_block INTEGER,
-            source_ea_hex TEXT, source_ea_i64 INTEGER,
-            block_fingerprint TEXT, mop_signature TEXT,
-            payload TEXT, evidence TEXT,
-            PRIMARY KEY (snapshot_id, fact_id)
-        );
-
-        INSERT INTO snapshots VALUES (7, 'GLBOPT1_post_d810');
-
-        -- byte's block 100 -> state A; A has 2 outgoing edges, both
-        -- rejected (one to safe target B with byte fact, one to
-        -- non-byte target C without).
-        INSERT INTO state_cfg_nodes VALUES (7, '0xa', 10, 100, 'EXACT', NULL);
-        INSERT INTO state_cfg_nodes VALUES (7, '0xb', 11, 200, 'EXACT', NULL);
-        INSERT INTO state_cfg_nodes VALUES (7, '0xc', 12, 300, 'EXACT', NULL);
-
-        INSERT INTO state_cfg_node_blocks VALUES (7, '0xa', 100, 100, 0, 'owned');
-        INSERT INTO state_cfg_node_blocks VALUES (7, '0xb', 200, 200, 0, 'owned');
-        INSERT INTO state_cfg_node_blocks VALUES (7, '0xc', 300, 300, 0, 'owned');
-
-        INSERT INTO state_cfg_edges VALUES (7, 0, '0xa', 10, '0xb', 11,
-                                      'EXIT_ROUTINE', 100, NULL, 200, '[100, 200]');
-        INSERT INTO state_cfg_edges VALUES (7, 1, '0xa', 10, '0xc', 12,
-                                      'CONDITIONAL_RETURN', 100, NULL, 300, '[100, 300]');
-
-        INSERT INTO blocks VALUES (7, 100, 'BLT_2WAY', '200 300', NULL);
-        INSERT INTO blocks VALUES (7, 200, 'BLT_1WAY', '300', NULL);
-        INSERT INTO blocks VALUES (7, 300, 'BLT_STOP', '', NULL);
-
-        -- TerminalByteEmitterFact for byte 2 on block 200 (so target B
-        -- carries byte 2's role; the EXIT_ROUTINE rejection looks safe
-        -- to relax). No fact on block 300 (target C is genuinely a
-        -- non-byte path).
-        INSERT INTO fact_observations VALUES (
-            7, 'f', 1, 'fact_b2', 'TerminalByteEmitterFact',
-            'k', 'MMAT_GLBOPT1', 'pre_d810', 0.9, 200, NULL, NULL,
-            NULL, NULL, '{"byte_index": 2, "corridor_role": "terminal_tail"}', '{}'
-        );
-        """
-    )
-    conn.commit()
-    return conn
+    # create_diag_database binds the Models so explain_byte's ORM reads
+    # target this in-memory DB; the fixture returns the live connection.
+    db = create_diag_database(":memory:")
+    Snapshot.insert(
+        id=7, label="GLBOPT1_post_d810", func_ea_hex="0x0", func_ea_i64=0,
+        maturity="MMAT_GLBOPT1", phase="unknown", block_count=0, timestamp=0.0,
+    ).execute()
+    # byte's block 100 -> state A; A has 2 outgoing edges, both rejected
+    # (one to safe target B with byte fact, one to non-byte target C).
+    StateCfgNode.insert_many([
+        dict(snapshot=7, state_hex="0xa", state_i64=10, entry_block=100,
+             classification="EXACT", shared_suffix=None),
+        dict(snapshot=7, state_hex="0xb", state_i64=11, entry_block=200,
+             classification="EXACT", shared_suffix=None),
+        dict(snapshot=7, state_hex="0xc", state_i64=12, entry_block=300,
+             classification="EXACT", shared_suffix=None),
+    ]).execute()
+    StateCfgNodeBlock.insert_many([
+        dict(snapshot=7, state_hex="0xa", entry_block=100, block_serial=100,
+             block_index=0, role="owned"),
+        dict(snapshot=7, state_hex="0xb", entry_block=200, block_serial=200,
+             block_index=0, role="owned"),
+        dict(snapshot=7, state_hex="0xc", entry_block=300, block_serial=300,
+             block_index=0, role="owned"),
+    ]).execute()
+    StateCfgEdge.insert_many([
+        dict(snapshot=7, edge_id=0, source_state_hex="0xa", source_state_i64=10,
+             target_state_hex="0xb", target_state_i64=11,
+             edge_kind="EXIT_ROUTINE", source_block=100, source_arm=None,
+             target_entry=200, ordered_path="[100, 200]"),
+        dict(snapshot=7, edge_id=1, source_state_hex="0xa", source_state_i64=10,
+             target_state_hex="0xc", target_state_i64=12,
+             edge_kind="CONDITIONAL_RETURN", source_block=100, source_arm=None,
+             target_entry=300, ordered_path="[100, 300]"),
+    ]).execute()
+    Block.insert_many([
+        dict(snapshot=7, serial=100, block_type=0, type_name="BLT_2WAY",
+             nsucc=2, npred=0, succs="200 300", preds="[]", insn_count=0),
+        dict(snapshot=7, serial=200, block_type=0, type_name="BLT_1WAY",
+             nsucc=1, npred=1, succs="300", preds="[]", insn_count=0),
+        dict(snapshot=7, serial=300, block_type=0, type_name="BLT_STOP",
+             nsucc=0, npred=2, succs="", preds="[]", insn_count=0),
+    ]).execute()
+    # TerminalByteEmitterFact for byte 2 on block 200 (target B carries
+    # byte 2's role; the EXIT_ROUTINE rejection looks safe to relax). No
+    # fact on block 300 (target C is genuinely a non-byte path).
+    FactObservation.insert(
+        snapshot=7, func_ea_hex="f", func_ea_i64=1, fact_id="fact_b2",
+        kind="TerminalByteEmitterFact", semantic_key="k",
+        maturity="MMAT_GLBOPT1", phase="pre_d810", confidence=0.9,
+        source_block=200,
+        payload='{"byte_index": 2, "corridor_role": "terminal_tail"}',
+        evidence="{}",
+    ).execute()
+    return db.connection()
 
 
 def test_explain_byte_classifies_safe_to_allow_when_target_carries_byte_fact(
