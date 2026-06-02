@@ -11,33 +11,6 @@ from dataclasses import dataclass, field
 # so the runtime producer and the SQLite sink can share them without a
 # layer violation. The names are re-exported here for back-compat with
 # existing callers (`from d810.core.diag.snapshot import BlockSnapshot`).
-from d810._vendor.peewee import SqliteDatabase
-from d810.core.diag.models import (
-    Block,
-    BlockClassification,
-    BlockObservation,
-    BranchOwnershipProof,
-    BstIntervalDispatcherRow,
-    CfgProvenance,
-    FactConflict,
-    FactConsumer,
-    FactMapping,
-    FactObservation,
-    Instruction,
-    Modification as ModificationModel,
-    RenderedProgram,
-    RenderedProgramLine,
-    RenderedProgramNode,
-    Snapshot,
-    StateCfgFrontierClosureDiagnostic,
-    StateCfgLocalEdge,
-    StateCfgLocalSegment,
-    StateCfgNodeBlock,
-    StateDispatcherRow,
-    StateTransitionDispatchResolution,
-    SwitchCaseTransitionFact,
-    WatchBlockTransition,
-)
 from d810.core.formatting import format_block_id
 from d810.core.observability_models import (
     BlockSnapshot as BlockSnapshot,
@@ -49,17 +22,6 @@ from d810.core.observability_models import (
     dag_node_diagnostic_state as dag_node_diagnostic_state,
 )
 from d810.core.typing import Any, Iterable, Mapping
-
-
-def _diag_db() -> SqliteDatabase:
-    """Return the live diag db bound to the Models.
-
-    ``create_diag_database`` binds every Model to its session db, so any
-    Model's ``_meta.database`` is the connection the raw-SQL ``conn`` passed
-    to these writers also points at. ORM writers batch their inserts inside
-    ``with _diag_db().atomic():`` to avoid the slice-1 per-row commit cost.
-    """
-    return Snapshot._meta.database
 
 _SIGNED64_MAX = 0x7FFFFFFFFFFFFFFF
 _MASK64 = 0xFFFFFFFFFFFFFFFF
@@ -151,21 +113,21 @@ def _block_observation_row(
     *,
     maturity: str,
     phase: str,
-) -> dict[str, object]:
+) -> tuple[object, ...]:
     start_hex, start_i64 = _dual(block.start_ea)
-    return {
-        "snapshot": int(snapshot_id),
-        "serial": int(block.serial),
-        "maturity": str(maturity),
-        "phase": str(phase),
-        "start_ea_hex": start_hex,
-        "start_ea_i64": start_i64,
-        "insn_count": len(block.instructions),
-        "insn_ea_fingerprint": _insn_ea_fingerprint(block),
-        "opcode_fingerprint": _opcode_fingerprint(block),
-        "operand_fingerprint": _operand_fingerprint(block),
-        "body_fingerprint": _body_fingerprint(block),
-    }
+    return (
+        int(snapshot_id),
+        int(block.serial),
+        str(maturity),
+        str(phase),
+        start_hex,
+        start_i64,
+        len(block.instructions),
+        _insn_ea_fingerprint(block),
+        _opcode_fingerprint(block),
+        _operand_fingerprint(block),
+        _body_fingerprint(block),
+    )
 
 
 def snapshot_mba(
@@ -191,115 +153,118 @@ def snapshot_mba(
         The snapshot_id of the newly created row.
     """
     func_hex, func_i64 = _dual(func_ea)
-    db = _diag_db()
-    with db.atomic():
-        snapshot = Snapshot.create(
-            label=label,
-            func_ea_hex=func_hex,
-            func_ea_i64=func_i64,
+    cursor = conn.execute(
+        "INSERT INTO snapshots "
+        "(label, func_ea_hex, func_ea_i64, maturity, phase, block_count, timestamp) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (label, func_hex, func_i64, maturity, phase, len(blocks), time.time()),
+    )
+    snap_id = cursor.lastrowid
+    assert snap_id is not None
+
+    # Bulk insert blocks
+    block_rows = []
+    for b in blocks:
+        s_hex, s_i64 = _dual(b.start_ea)
+        e_hex, e_i64 = _dual(b.end_ea)
+        block_rows.append((
+            snap_id,
+            b.serial,
+            b.block_type,
+            b.type_name,
+            s_hex,
+            s_i64,
+            e_hex,
+            e_i64,
+            b.nsucc,
+            b.npred,
+            json.dumps(b.succs),
+            json.dumps(b.preds),
+            len(b.instructions),
+            b.meta,
+        ))
+    conn.executemany(
+        "INSERT INTO blocks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        block_rows,
+    )
+    observation_rows = [
+        _block_observation_row(
+            snap_id,
+            b,
             maturity=maturity,
             phase=phase,
-            block_count=len(blocks),
-            timestamp=time.time(),
         )
-        snap_id = snapshot.id
-        assert snap_id is not None
+        for b in blocks
+    ]
+    if observation_rows:
+        conn.executemany(
+            "INSERT INTO block_observations VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            observation_rows,
+        )
 
-        # Bulk insert blocks
-        block_rows = []
-        for b in blocks:
-            s_hex, s_i64 = _dual(b.start_ea)
-            e_hex, e_i64 = _dual(b.end_ea)
-            block_rows.append({
-                "snapshot": snap_id,
-                "serial": b.serial,
-                "block_type": b.block_type,
-                "type_name": b.type_name,
-                "start_ea_hex": s_hex,
-                "start_ea_i64": s_i64,
-                "end_ea_hex": e_hex,
-                "end_ea_i64": e_i64,
-                "nsucc": b.nsucc,
-                "npred": b.npred,
-                "succs": json.dumps(b.succs),
-                "preds": json.dumps(b.preds),
-                "insn_count": len(b.instructions),
-                "meta": b.meta,
-            })
-        if block_rows:
-            Block.insert_many(block_rows).execute()
-        observation_rows = [
-            _block_observation_row(
+    # Bulk insert instructions
+    insn_rows = []
+    for b in blocks:
+        for insn in b.instructions:
+            ea_hex, ea_i64 = _dual(insn.ea)
+            sl_hex, sl_i64 = _dual(insn.src_l_value)
+            sr_hex, sr_i64 = _dual(insn.src_r_value)
+            insn_rows.append((
                 snap_id,
-                b,
-                maturity=maturity,
-                phase=phase,
+                b.serial,
+                insn.index,
+                ea_hex,
+                ea_i64,
+                insn.opcode,
+                insn.opcode_name,
+                insn.dest_type,
+                _safe_int(insn.dest_stkoff),
+                insn.dest_size,
+                insn.src_l_type,
+                _safe_int(insn.src_l_stkoff),
+                sl_hex,
+                sl_i64,
+                insn.src_r_type,
+                _safe_int(insn.src_r_stkoff),
+                sr_hex,
+                sr_i64,
+                insn.dstr,
+                insn.meta,
+            ))
+    if insn_rows:
+        conn.executemany(
+            "INSERT INTO instructions VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            insn_rows,
+        )
+
+    # Flush any pending CFG provenance entries under this snapshot_id. Each
+    # call to ``log_cfg_provenance`` appends to a per-process buffer; the
+    # next ``snapshot_mba`` call drains that buffer and persists it to
+    # ``cfg_provenance``. Best-effort: failure here must NOT break snapshots.
+    try:
+        from d810.core.diag import drain_pending_provenance
+        prov_entries = drain_pending_provenance()
+        if prov_entries:
+            prov_rows = [
+                (
+                    snap_id,
+                    seq_idx,
+                    e.pass_name,
+                    e.action,
+                    int(e.block_serial),
+                    (int(e.target_serial) if e.target_serial is not None else None),
+                    e.reason,
+                    e.extra_json,
+                )
+                for seq_idx, e in enumerate(prov_entries)
+            ]
+            conn.executemany(
+                "INSERT INTO cfg_provenance VALUES (?,?,?,?,?,?,?,?)",
+                prov_rows,
             )
-            for b in blocks
-        ]
-        if observation_rows:
-            BlockObservation.insert_many(observation_rows).execute()
-
-        # Bulk insert instructions
-        insn_rows = []
-        for b in blocks:
-            for insn in b.instructions:
-                ea_hex, ea_i64 = _dual(insn.ea)
-                sl_hex, sl_i64 = _dual(insn.src_l_value)
-                sr_hex, sr_i64 = _dual(insn.src_r_value)
-                insn_rows.append({
-                    "snapshot": snap_id,
-                    "block_serial": b.serial,
-                    "insn_index": insn.index,
-                    "ea_hex": ea_hex,
-                    "ea_i64": ea_i64,
-                    "opcode": insn.opcode,
-                    "opcode_name": insn.opcode_name,
-                    "dest_type": insn.dest_type,
-                    "dest_stkoff": _safe_int(insn.dest_stkoff),
-                    "dest_size": insn.dest_size,
-                    "src_l_type": insn.src_l_type,
-                    "src_l_stkoff": _safe_int(insn.src_l_stkoff),
-                    "src_l_value_hex": sl_hex,
-                    "src_l_value_i64": sl_i64,
-                    "src_r_type": insn.src_r_type,
-                    "src_r_stkoff": _safe_int(insn.src_r_stkoff),
-                    "src_r_value_hex": sr_hex,
-                    "src_r_value_i64": sr_i64,
-                    "dstr": insn.dstr,
-                    "meta": insn.meta,
-                })
-        if insn_rows:
-            Instruction.insert_many(insn_rows).execute()
-
-        # Flush any pending CFG provenance entries under this snapshot_id. Each
-        # call to ``log_cfg_provenance`` appends to a per-process buffer; the
-        # next ``snapshot_mba`` call drains that buffer and persists it to
-        # ``cfg_provenance``. Best-effort: failure here must NOT break
-        # snapshots.
-        try:
-            from d810.core.diag import drain_pending_provenance
-            prov_entries = drain_pending_provenance()
-            if prov_entries:
-                prov_rows = [
-                    {
-                        "snapshot": snap_id,
-                        "seq": seq_idx,
-                        "pass_name": e.pass_name,
-                        "action": e.action,
-                        "block_serial": int(e.block_serial),
-                        "target_serial": (
-                            int(e.target_serial)
-                            if e.target_serial is not None else None
-                        ),
-                        "reason": e.reason,
-                        "extra_json": e.extra_json,
-                    }
-                    for seq_idx, e in enumerate(prov_entries)
-                ]
-                CfgProvenance.insert_many(prov_rows).execute()
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     # Flush any pending created-block lineage entries under this snapshot_id.
     # The executor buffers these after PatchPlan apply and before
@@ -337,17 +302,6 @@ def snapshot_dag(
         nodes: List of DagNode dataclasses.
         edges: List of DagEdge dataclasses.
     """
-    # NOTE: still raw SQL (NOT yet ORM). Converting these two inserts to
-    # ``StateCfgEdge.insert_many(...).execute()`` makes a CHECK-constraint
-    # violation surface as ``peewee.IntegrityError`` (peewee's module-level
-    # ExceptionWrapper rewraps the underlying ``sqlite3.IntegrityError``,
-    # and the two classes are unrelated). The existing
-    # ``test_edge_kind_constraint`` asserts ``pytest.raises(
-    # sqlite3.IntegrityError)`` on ``snapshot_dag`` and would break. Per the
-    # Phase B brief the writer tests must stay green unchanged, so this
-    # writer's ORM conversion is deferred to the phase that also rewrites
-    # that assertion (spec §6 decision 3 keeps CHECK-violation tests as
-    # raw-SQL-subject). All other writers are converted.
     node_rows = []
     for n in nodes:
         st_hex, st_i64 = _dual(n.state)
@@ -413,9 +367,9 @@ def snapshot_dag_local_facts(
     state-local CFG edges for on-demand DB rendering and planner audits.
     """
     nodes = tuple(getattr(dag, "nodes", ()) or ())
-    block_rows: list[dict] = []
-    segment_rows: list[dict] = []
-    edge_rows: list[dict] = []
+    block_rows: list[tuple] = []
+    segment_rows: list[tuple] = []
+    edge_rows: list[tuple] = []
 
     for node in nodes:
         state_hex, _state_i64 = _dual(_node_state_value(node))
@@ -431,54 +385,61 @@ def snapshot_dag_local_facts(
             for block_index, block_serial in enumerate(
                 getattr(node, attr, ()) or ()
             ):
-                block_rows.append({
-                    "snapshot": snapshot_id,
-                    "state_hex": state_hex,
-                    "entry_block": entry_block,
-                    "block_serial": int(block_serial),
-                    "block_index": block_index,
-                    "role": role,
-                })
+                block_rows.append((
+                    snapshot_id,
+                    state_hex,
+                    entry_block,
+                    int(block_serial),
+                    block_index,
+                    role,
+                ))
 
         for segment_index, segment in enumerate(
             getattr(node, "local_segments", ()) or ()
         ):
             blocks = [int(block) for block in getattr(segment, "blocks", ()) or ()]
-            segment_rows.append({
-                "snapshot": snapshot_id,
-                "state_hex": state_hex,
-                "entry_block": entry_block,
-                "segment_index": segment_index,
-                "segment_id": str(getattr(segment, "segment_id")),
-                "kind": _enum_name(getattr(segment, "kind")),
-                "blocks_json": json.dumps(blocks),
-            })
+            segment_rows.append((
+                snapshot_id,
+                state_hex,
+                entry_block,
+                segment_index,
+                str(getattr(segment, "segment_id")),
+                _enum_name(getattr(segment, "kind")),
+                json.dumps(blocks),
+            ))
 
         for edge_index, edge in enumerate(getattr(node, "local_edges", ()) or ()):
             branch_arm = getattr(edge, "branch_arm", None)
-            edge_rows.append({
-                "snapshot": snapshot_id,
-                "state_hex": state_hex,
-                "entry_block": entry_block,
-                "edge_index": edge_index,
-                "source_segment_id": str(getattr(edge, "source_segment_id")),
-                "target_segment_id": str(getattr(edge, "target_segment_id")),
-                "kind": _enum_name(getattr(edge, "kind")),
-                "branch_arm": int(branch_arm) if branch_arm is not None else None,
-            })
+            edge_rows.append((
+                snapshot_id,
+                state_hex,
+                entry_block,
+                edge_index,
+                str(getattr(edge, "source_segment_id")),
+                str(getattr(edge, "target_segment_id")),
+                _enum_name(getattr(edge, "kind")),
+                int(branch_arm) if branch_arm is not None else None,
+            ))
 
     conn.execute("DELETE FROM state_cfg_node_blocks WHERE snapshot_id=?", (snapshot_id,))
     conn.execute("DELETE FROM state_cfg_local_segments WHERE snapshot_id=?", (snapshot_id,))
     conn.execute("DELETE FROM state_cfg_local_edges WHERE snapshot_id=?", (snapshot_id,))
 
-    db = _diag_db()
-    with db.atomic():
-        if block_rows:
-            StateCfgNodeBlock.insert_many(block_rows).execute()
-        if segment_rows:
-            StateCfgLocalSegment.insert_many(segment_rows).execute()
-        if edge_rows:
-            StateCfgLocalEdge.insert_many(edge_rows).execute()
+    if block_rows:
+        conn.executemany(
+            "INSERT INTO state_cfg_node_blocks VALUES (?,?,?,?,?,?)",
+            block_rows,
+        )
+    if segment_rows:
+        conn.executemany(
+            "INSERT INTO state_cfg_local_segments VALUES (?,?,?,?,?,?,?)",
+            segment_rows,
+        )
+    if edge_rows:
+        conn.executemany(
+            "INSERT INTO state_cfg_local_edges VALUES (?,?,?,?,?,?,?,?)",
+            edge_rows,
+        )
 
     conn.commit()
 
@@ -498,23 +459,24 @@ def snapshot_modifications(
     rows = []
     for m in modifications:
         ws_hex, ws_i64 = _dual(m.write_site_ea)
-        rows.append({
-            "snapshot": snapshot_id,
-            "mod_index": m.mod_index,
-            "mod_type": m.mod_type,
-            "source_block": m.source_block,
-            "target_block": m.target_block,
-            "old_target": m.old_target,
-            "write_site_ea_hex": ws_hex,
-            "write_site_ea_i64": ws_i64,
-            "write_site_blk": m.write_site_blk,
-            "status": m.status,
-            "reason": m.reason,
-        })
-    db = _diag_db()
-    with db.atomic():
-        if rows:
-            ModificationModel.insert_many(rows).execute()
+        rows.append((
+            snapshot_id,
+            m.mod_index,
+            m.mod_type,
+            m.source_block,
+            m.target_block,
+            m.old_target,
+            ws_hex,
+            ws_i64,
+            m.write_site_blk,
+            m.status,
+            m.reason,
+        ))
+    conn.executemany(
+        "INSERT INTO modifications VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        rows,
+    )
+    conn.commit()
 
 
 def snapshot_rendered_program(
@@ -546,53 +508,61 @@ def snapshot_rendered_program(
         "DELETE FROM rendered_programs WHERE snapshot_id=? AND variant_name=?",
         (snapshot_id, variant_name),
     )
+    conn.execute(
+        "INSERT INTO rendered_programs VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            snapshot_id,
+            variant_name,
+            str(program.order_strategy),
+            str(program.program_strategy),
+            str(program.label_render_mode),
+            str(program.boundary_inline_mode),
+            str(program.comment_mode),
+            len(program.lines),
+            len(program.nodes),
+        ),
+    )
+
     node_rows = [
-        {
-            "snapshot_id": snapshot_id,
-            "variant_name": variant_name,
-            "node_index": int(node.node_index),
-            "label_text": str(node.label_text),
-            "node_kind": str(node.node_kind),
-            "state_label": node.state_label,
-            "handler_serial": _safe_int(node.handler_serial),
-            "entry_anchor": _safe_int(node.entry_anchor),
-            "label_num": _safe_int(node.label_num),
-            "line_start": int(node.line_start),
-            "line_end": int(node.line_end),
-        }
+        (
+            snapshot_id,
+            variant_name,
+            int(node.node_index),
+            str(node.label_text),
+            str(node.node_kind),
+            node.state_label,
+            _safe_int(node.handler_serial),
+            _safe_int(node.entry_anchor),
+            _safe_int(node.label_num),
+            int(node.line_start),
+            int(node.line_end),
+        )
         for node in program.nodes
     ]
+    if node_rows:
+        conn.executemany(
+            "INSERT INTO rendered_program_nodes VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            node_rows,
+        )
+
     line_rows = [
-        {
-            "snapshot_id": snapshot_id,
-            "variant_name": variant_name,
-            "line_no": int(line.line_no),
-            "node_index": _safe_int(line.node_index),
-            "indent_level": int(line.indent_level),
-            "line_kind": str(line.line_kind),
-            "target_label": line.target_label,
-            "text": str(line.text),
-        }
+        (
+            snapshot_id,
+            variant_name,
+            int(line.line_no),
+            _safe_int(line.node_index),
+            int(line.indent_level),
+            str(line.line_kind),
+            line.target_label,
+            str(line.text),
+        )
         for line in program.lines
     ]
-
-    db = _diag_db()
-    with db.atomic():
-        RenderedProgram.create(
-            snapshot=snapshot_id,
-            variant_name=variant_name,
-            order_strategy=str(program.order_strategy),
-            program_strategy=str(program.program_strategy),
-            label_render_mode=str(program.label_render_mode),
-            boundary_inline_mode=str(program.boundary_inline_mode),
-            comment_mode=str(program.comment_mode),
-            line_count=len(program.lines),
-            node_count=len(program.nodes),
+    if line_rows:
+        conn.executemany(
+            "INSERT INTO rendered_program_lines VALUES (?,?,?,?,?,?,?,?)",
+            line_rows,
         )
-        if node_rows:
-            RenderedProgramNode.insert_many(node_rows).execute()
-        if line_rows:
-            RenderedProgramLine.insert_many(line_rows).execute()
 
     conn.commit()
 
@@ -623,20 +593,20 @@ def snapshot_reachability(
     _claimed = claimed_sources or set()
 
     rows = [
-        {
-            "snapshot": snapshot_id,
-            "serial": serial,
-            "is_bst": 1 if serial in _bst else 0,
-            "is_reachable": 1 if serial in _reachable else 0,
-            "is_gutted": 1 if serial in _gutted else 0,
-            "in_claimed": 1 if serial in _claimed else 0,
-        }
+        (
+            snapshot_id,
+            serial,
+            1 if serial in _bst else 0,
+            1 if serial in _reachable else 0,
+            1 if serial in _gutted else 0,
+            1 if serial in _claimed else 0,
+        )
         for serial in sorted(all_serials)
     ]
-    db = _diag_db()
-    with db.atomic():
-        if rows:
-            BlockClassification.insert_many(rows).execute()
+    conn.executemany(
+        "INSERT INTO block_classification VALUES (?,?,?,?,?,?)",
+        rows,
+    )
 
 
 def snapshot_dag_frontier_closure_diagnostics(
@@ -655,26 +625,26 @@ def snapshot_dag_frontier_closure_diagnostics(
     )
     db_rows = []
     for row in rows:
-        db_rows.append({
-            "snapshot": int(snapshot_id),
-            "kind": str(_mapping_value(row, "kind")),
-            "reason": _mapping_value(row, "reason"),
-            "source_block": _mapping_value(row, "source_block"),
-            "observed_target": _mapping_value(row, "observed_target"),
-            "branch_arm": _mapping_value(row, "branch_arm"),
-            "from_dag_scc": _mapping_value(row, "from_dag_scc"),
-            "to_dag_scc": _mapping_value(row, "to_dag_scc"),
-            "candidate_targets_json": _json_text(
-                _mapping_value(row, "candidate_targets"), []
-            ),
-            "path_json": _json_text(_mapping_value(row, "path"), []),
-            "cfg_scc_size": _mapping_value(row, "cfg_scc_size"),
-            "payload_json": _json_text(_mapping_value(row, "payload"), {}),
-        })
-    db = _diag_db()
-    with db.atomic():
-        if db_rows:
-            StateCfgFrontierClosureDiagnostic.insert_many(db_rows).execute()
+        db_rows.append((
+            int(snapshot_id),
+            str(_mapping_value(row, "kind")),
+            _mapping_value(row, "reason"),
+            _mapping_value(row, "source_block"),
+            _mapping_value(row, "observed_target"),
+            _mapping_value(row, "branch_arm"),
+            _mapping_value(row, "from_dag_scc"),
+            _mapping_value(row, "to_dag_scc"),
+            _json_text(_mapping_value(row, "candidate_targets"), []),
+            _json_text(_mapping_value(row, "path"), []),
+            _mapping_value(row, "cfg_scc_size"),
+            _json_text(_mapping_value(row, "payload"), {}),
+        ))
+    if db_rows:
+        conn.executemany(
+            "INSERT INTO state_cfg_frontier_closure_diagnostics VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?)",
+            db_rows,
+        )
     conn.commit()
 
 
@@ -711,25 +681,27 @@ def snapshot_bst_interval_dispatcher_rows(
             "hi": f"0x{hi_i:x}",
             "target": target_i,
         }
-        db_rows.append({
-            "snapshot": int(snapshot_id),
-            "row_index": int(row_index),
-            "lo_hex": f"0x{lo_i:x}",
-            "lo_i64": lo_i,
-            "hi_hex": f"0x{hi_i:x}",
-            "hi_i64": hi_i,
-            "target_block": target_i,
-            "dispatcher_entry_block": (
+        db_rows.append((
+            int(snapshot_id),
+            int(row_index),
+            f"0x{lo_i:x}",
+            lo_i,
+            f"0x{hi_i:x}",
+            hi_i,
+            target_i,
+            (
                 int(dispatcher_entry_block)
                 if dispatcher_entry_block is not None else None
             ),
-            "maturity": maturity,
-            "payload_json": _json_text(payload, {}),
-        })
-    db = _diag_db()
-    with db.atomic():
-        if db_rows:
-            BstIntervalDispatcherRow.insert_many(db_rows).execute()
+            maturity,
+            _json_text(payload, {}),
+        ))
+    if db_rows:
+        conn.executemany(
+            "INSERT INTO bst_interval_dispatcher_rows VALUES "
+            "(?,?,?,?,?,?,?,?,?,?)",
+            db_rows,
+        )
     conn.commit()
 
 
@@ -790,34 +762,29 @@ def snapshot_state_dispatcher_rows(
         row_payload = _mapping_value(row, "payload")
         if isinstance(row_payload, MappingABC):
             payload = {**payload, **dict(row_payload)}
-        db_rows.append({
-            "snapshot": int(snapshot_id),
-            "row_index": int(row_index),
-            "state_const_hex": state_hex,
-            "state_const_i64": state_i64,
-            "target_block": target_i,
-            "dispatcher_entry_block": (
+        db_rows.append((
+            int(snapshot_id),
+            int(row_index),
+            state_hex,
+            state_i64,
+            target_i,
+            (
                 int(row_dispatcher_entry)
                 if row_dispatcher_entry is not None else None
             ),
-            "compare_block": (
-                int(row_compare_block)
-                if row_compare_block is not None else None
-            ),
-            "dispatcher_kind": str(
-                dispatcher_kind_value or dispatcher_kind or "unknown"
-            ),
-            "branch_kind": (
-                str(row_branch_kind) if row_branch_kind is not None else None
-            ),
-            "maturity": maturity,
-            "confidence": float(confidence),
-            "payload_json": _json_text(payload, payload),
-        })
-    db = _diag_db()
-    with db.atomic():
-        if db_rows:
-            StateDispatcherRow.insert_many(db_rows).execute()
+            int(row_compare_block) if row_compare_block is not None else None,
+            str(dispatcher_kind_value or dispatcher_kind or "unknown"),
+            str(row_branch_kind) if row_branch_kind is not None else None,
+            maturity,
+            float(confidence),
+            _json_text(payload, payload),
+        ))
+    if db_rows:
+        conn.executemany(
+            "INSERT INTO state_dispatcher_rows VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?)",
+            db_rows,
+        )
     snapshot_state_transition_dispatch_resolutions_from_latest_facts(
         conn,
         snapshot_id,
@@ -1022,32 +989,28 @@ def snapshot_state_transition_dispatch_resolutions(
             or resolution_maturity is None
         ):
             continue
-        db_row = {
-            "snapshot": int(snapshot_id),
-            "fact_id": str(fact_id),
-            "source_block_serial": int(source_block),
-            "source_state_const_hex": str(source_const_hex),
-            "resolved_next_block_serial": _mapping_value(
-                row, "resolved_next_block_serial"
-            ),
-            "resolved_next_state_const_hex": _mapping_value(
-                row, "resolved_next_state_const_hex"
-            ),
-            "resolved_next_state_const_u64": _mapping_value(
-                row, "resolved_next_state_const_u64"
-            ),
-            "resolution_kind": str(resolution_kind),
-            "resolution_reason": str(resolution_reason),
-            "resolution_maturity": str(resolution_maturity),
-        }
+        db_row = (
+            int(snapshot_id),
+            str(fact_id),
+            int(source_block),
+            str(source_const_hex),
+            _mapping_value(row, "resolved_next_block_serial"),
+            _mapping_value(row, "resolved_next_state_const_hex"),
+            _mapping_value(row, "resolved_next_state_const_u64"),
+            str(resolution_kind),
+            str(resolution_reason),
+            str(resolution_maturity),
+        )
         db_rows_by_key[(int(snapshot_id), str(fact_id), str(resolution_kind))] = (
             db_row
         )
-    db_rows = list(db_rows_by_key.values())
-    db = _diag_db()
-    with db.atomic():
-        if db_rows:
-            StateTransitionDispatchResolution.insert_many(db_rows).execute()
+    db_rows = tuple(db_rows_by_key.values())
+    if db_rows:
+        conn.executemany(
+            "INSERT INTO state_transition_dispatch_resolutions VALUES "
+            "(?,?,?,?,?,?,?,?,?,?)",
+            db_rows,
+        )
     conn.commit()
 
 
@@ -1068,31 +1031,33 @@ def snapshot_switch_case_transition_facts(
         reason = _mapping_value(row, "reason")
         if fact_id is None or transition_kind is None or reason is None:
             continue
-        db_rows.append({
-            "snapshot": int(snapshot_id),
-            "row_index": int(row_index),
-            "fact_id": str(fact_id),
-            "source_state_hex": _mapping_value(row, "source_state_hex"),
-            "source_state_i64": _mapping_value(row, "source_state_i64"),
-            "case_entry_block": _mapping_value(row, "case_entry_block"),
-            "transition_kind": str(transition_kind),
-            "next_state_a_hex": _mapping_value(row, "next_state_a_hex"),
-            "next_state_a_i64": _mapping_value(row, "next_state_a_i64"),
-            "next_state_b_hex": _mapping_value(row, "next_state_b_hex"),
-            "next_state_b_i64": _mapping_value(row, "next_state_b_i64"),
-            "return_value": _mapping_value(row, "return_value"),
-            "proof_kind": _mapping_value(row, "proof_kind"),
-            "trusted": 1 if bool(_mapping_value(row, "trusted", False)) else 0,
-            "reason": str(reason),
-            "profile_name": _mapping_value(row, "profile_name"),
-            "dispatcher_entry": _mapping_value(row, "dispatcher_entry"),
-            "target_block": _mapping_value(row, "target_block"),
-            "payload_json": _json_text(_mapping_value(row, "payload"), {}),
-        })
-    db = _diag_db()
-    with db.atomic():
-        if db_rows:
-            SwitchCaseTransitionFact.insert_many(db_rows).execute()
+        db_rows.append((
+            int(snapshot_id),
+            int(row_index),
+            str(fact_id),
+            _mapping_value(row, "source_state_hex"),
+            _mapping_value(row, "source_state_i64"),
+            _mapping_value(row, "case_entry_block"),
+            str(transition_kind),
+            _mapping_value(row, "next_state_a_hex"),
+            _mapping_value(row, "next_state_a_i64"),
+            _mapping_value(row, "next_state_b_hex"),
+            _mapping_value(row, "next_state_b_i64"),
+            _mapping_value(row, "return_value"),
+            _mapping_value(row, "proof_kind"),
+            1 if bool(_mapping_value(row, "trusted", False)) else 0,
+            str(reason),
+            _mapping_value(row, "profile_name"),
+            _mapping_value(row, "dispatcher_entry"),
+            _mapping_value(row, "target_block"),
+            _json_text(_mapping_value(row, "payload"), {}),
+        ))
+    if db_rows:
+        conn.executemany(
+            "INSERT INTO switch_case_transition_facts VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            db_rows,
+        )
     conn.commit()
 
 
@@ -1125,32 +1090,32 @@ def snapshot_branch_ownership_proofs(
         target_state_hex, target_state_i64 = _dual(
             _int_from_any(_mapping_value(row, "target_state"))
         )
-        db_rows.append({
-            "snapshot": int(snapshot_id),
-            "row_index": int(row_index),
-            "proof_id": str(proof_id),
-            "proof_kind": str(proof_kind),
-            "trusted": 1 if bool(_mapping_value(row, "trusted", False)) else 0,
-            "reason": str(reason),
-            "source_block": _mapping_value(row, "source_block"),
-            "branch_arm": _mapping_value(row, "branch_arm"),
-            "source_state_hex": source_state_hex,
-            "source_state_i64": source_state_i64,
-            "target_state_hex": target_state_hex,
-            "target_state_i64": target_state_i64,
-            "target_entry": _mapping_value(row, "target_entry"),
-            "predicate_block": _mapping_value(row, "predicate_block"),
-            "dispatcher_entry_block": _mapping_value(
-                row, "dispatcher_entry_block"
-            ),
-            "oracle_kind": str(oracle_kind),
-            "evidence_json": _json_text(_mapping_value(row, "evidence"), {}),
-            "payload_json": _json_text(_mapping_value(row, "payload"), {}),
-        })
-    db = _diag_db()
-    with db.atomic():
-        if db_rows:
-            BranchOwnershipProof.insert_many(db_rows).execute()
+        db_rows.append((
+            int(snapshot_id),
+            int(row_index),
+            str(proof_id),
+            str(proof_kind),
+            1 if bool(_mapping_value(row, "trusted", False)) else 0,
+            str(reason),
+            _mapping_value(row, "source_block"),
+            _mapping_value(row, "branch_arm"),
+            source_state_hex,
+            source_state_i64,
+            target_state_hex,
+            target_state_i64,
+            _mapping_value(row, "target_entry"),
+            _mapping_value(row, "predicate_block"),
+            _mapping_value(row, "dispatcher_entry_block"),
+            str(oracle_kind),
+            _json_text(_mapping_value(row, "evidence"), {}),
+            _json_text(_mapping_value(row, "payload"), {}),
+        ))
+    if db_rows:
+        conn.executemany(
+            "INSERT INTO branch_ownership_proofs VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            db_rows,
+        )
     conn.commit()
 
 
@@ -1179,32 +1144,29 @@ def snapshot_watch_transition(
     answer "which mod mutated blk[X]?" programmatically.
     """
     func_hex, func_i64 = _dual(func_ea)
-    db = _diag_db()
-    with db.atomic():
-        WatchBlockTransition.create(
-            func_ea_hex=func_hex,
-            func_ea_i64=func_i64,
-            apply_session_id=apply_session_id,
-            mod_index=mod_index,
-            mod_type=mod_type,
-            phase=phase,
-            block_serial=int(block_serial),
-            prev_type_name=prev_type_name,
-            prev_succs=(
-                json.dumps(list(prev_succs)) if prev_succs is not None else None
-            ),
-            prev_preds=(
-                json.dumps(list(prev_preds)) if prev_preds is not None else None
-            ),
-            now_type_name=now_type_name,
-            now_succs=(
-                json.dumps(list(now_succs)) if now_succs is not None else None
-            ),
-            now_preds=(
-                json.dumps(list(now_preds)) if now_preds is not None else None
-            ),
-            timestamp=time.time(),
-        )
+    conn.execute(
+        "INSERT INTO watch_block_transitions ("
+        "func_ea_hex, func_ea_i64, apply_session_id, mod_index, mod_type, "
+        "phase, block_serial, prev_type_name, prev_succs, prev_preds, "
+        "now_type_name, now_succs, now_preds, timestamp"
+        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            func_hex,
+            func_i64,
+            apply_session_id,
+            mod_index,
+            mod_type,
+            phase,
+            int(block_serial),
+            prev_type_name,
+            json.dumps(list(prev_succs)) if prev_succs is not None else None,
+            json.dumps(list(prev_preds)) if prev_preds is not None else None,
+            now_type_name,
+            json.dumps(list(now_succs)) if now_succs is not None else None,
+            json.dumps(list(now_preds)) if now_preds is not None else None,
+            time.time(),
+        ),
+    )
     conn.commit()
 
 
@@ -1252,28 +1214,30 @@ def snapshot_fact_observations(
     rows = []
     for obs in observations:
         source_ea_hex, source_ea_i64 = _dual(_mapping_value(obs, "source_ea"))
-        rows.append({
-            "snapshot": snapshot_id,
-            "func_ea_hex": func_hex,
-            "func_ea_i64": func_i64,
-            "fact_id": str(_mapping_value(obs, "fact_id")),
-            "kind": str(_mapping_value(obs, "kind")),
-            "semantic_key": str(_mapping_value(obs, "semantic_key")),
-            "maturity": str(_mapping_value(obs, "maturity")),
-            "phase": str(_mapping_value(obs, "phase")),
-            "confidence": float(_mapping_value(obs, "confidence")),
-            "source_block": _mapping_value(obs, "source_block"),
-            "source_ea_hex": source_ea_hex,
-            "source_ea_i64": source_ea_i64,
-            "block_fingerprint": _mapping_value(obs, "block_fingerprint"),
-            "mop_signature": _mapping_value(obs, "mop_signature"),
-            "payload": _json_text(_mapping_value(obs, "payload"), {}),
-            "evidence": _json_text(_mapping_value(obs, "evidence"), []),
-        })
-    db = _diag_db()
-    with db.atomic():
-        if rows:
-            FactObservation.insert_many(rows).on_conflict("REPLACE").execute()
+        rows.append((
+            snapshot_id,
+            func_hex,
+            func_i64,
+            str(_mapping_value(obs, "fact_id")),
+            str(_mapping_value(obs, "kind")),
+            str(_mapping_value(obs, "semantic_key")),
+            str(_mapping_value(obs, "maturity")),
+            str(_mapping_value(obs, "phase")),
+            float(_mapping_value(obs, "confidence")),
+            _mapping_value(obs, "source_block"),
+            source_ea_hex,
+            source_ea_i64,
+            _mapping_value(obs, "block_fingerprint"),
+            _mapping_value(obs, "mop_signature"),
+            _json_text(_mapping_value(obs, "payload"), {}),
+            _json_text(_mapping_value(obs, "evidence"), []),
+        ))
+    if rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO fact_observations VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
     conn.commit()
 
 
@@ -1292,30 +1256,30 @@ def snapshot_fact_mappings(
         target_ea_hex, target_ea_i64 = _dual(_mapping_value(mapping, "target_ea"))
         status = _mapping_value(mapping, "status")
         status_text = getattr(status, "value", status)
-        rows.append({
-            "snapshot": snapshot_id,
-            "func_ea_hex": func_hex,
-            "func_ea_i64": func_i64,
-            "mapping_index": index,
-            "source_fact_id": str(_mapping_value(mapping, "source_fact_id")),
-            "target_fact_id": _mapping_value(mapping, "target_fact_id"),
-            "source_maturity": str(_mapping_value(mapping, "source_maturity")),
-            "target_maturity": str(_mapping_value(mapping, "target_maturity")),
-            "status": str(status_text),
-            "confidence": float(_mapping_value(mapping, "confidence")),
-            "target_block": _mapping_value(mapping, "target_block"),
-            "target_ea_hex": target_ea_hex,
-            "target_ea_i64": target_ea_i64,
-            "target_mop_signature": _mapping_value(
-                mapping, "target_mop_signature"
-            ),
-            "reason": _mapping_value(mapping, "reason"),
-            "payload": _json_text(_mapping_value(mapping, "payload"), {}),
-        })
-    db = _diag_db()
-    with db.atomic():
-        if rows:
-            FactMapping.insert_many(rows).on_conflict("REPLACE").execute()
+        rows.append((
+            snapshot_id,
+            func_hex,
+            func_i64,
+            index,
+            str(_mapping_value(mapping, "source_fact_id")),
+            _mapping_value(mapping, "target_fact_id"),
+            str(_mapping_value(mapping, "source_maturity")),
+            str(_mapping_value(mapping, "target_maturity")),
+            str(status_text),
+            float(_mapping_value(mapping, "confidence")),
+            _mapping_value(mapping, "target_block"),
+            target_ea_hex,
+            target_ea_i64,
+            _mapping_value(mapping, "target_mop_signature"),
+            _mapping_value(mapping, "reason"),
+            _json_text(_mapping_value(mapping, "payload"), {}),
+        ))
+    if rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO fact_mappings VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
     conn.commit()
 
 
@@ -1331,23 +1295,25 @@ def snapshot_fact_consumers(
     start_index = _next_table_index(conn, "fact_consumers", "consumer_index", snapshot_id)
     for offset, consumer in enumerate(consumers):
         index = start_index + offset
-        rows.append({
-            "snapshot": snapshot_id,
-            "func_ea_hex": func_hex,
-            "func_ea_i64": func_i64,
-            "consumer_index": index,
-            "consumer": str(_mapping_value(consumer, "consumer")),
-            "strategy": str(_mapping_value(consumer, "strategy")),
-            "fact_id": str(_mapping_value(consumer, "fact_id")),
-            "maturity": str(_mapping_value(consumer, "maturity")),
-            "decision": str(_mapping_value(consumer, "decision")),
-            "reason": _mapping_value(consumer, "reason"),
-            "payload": _json_text(_mapping_value(consumer, "payload"), {}),
-        })
-    db = _diag_db()
-    with db.atomic():
-        if rows:
-            FactConsumer.insert_many(rows).on_conflict("REPLACE").execute()
+        rows.append((
+            snapshot_id,
+            func_hex,
+            func_i64,
+            index,
+            str(_mapping_value(consumer, "consumer")),
+            str(_mapping_value(consumer, "strategy")),
+            str(_mapping_value(consumer, "fact_id")),
+            str(_mapping_value(consumer, "maturity")),
+            str(_mapping_value(consumer, "decision")),
+            _mapping_value(consumer, "reason"),
+            _json_text(_mapping_value(consumer, "payload"), {}),
+        ))
+    if rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO fact_consumers VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
     conn.commit()
 
 
@@ -1361,20 +1327,22 @@ def snapshot_fact_conflicts(
     func_hex, func_i64 = _dual(func_ea)
     rows = []
     for conflict in conflicts:
-        rows.append({
-            "snapshot": snapshot_id,
-            "func_ea_hex": func_hex,
-            "func_ea_i64": func_i64,
-            "conflict_id": str(_mapping_value(conflict, "conflict_id")),
-            "fact_id": str(_mapping_value(conflict, "fact_id")),
-            "other_fact_id": str(_mapping_value(conflict, "other_fact_id")),
-            "maturity": str(_mapping_value(conflict, "maturity")),
-            "conflict_kind": str(_mapping_value(conflict, "conflict_kind")),
-            "reason": str(_mapping_value(conflict, "reason")),
-            "payload": _json_text(_mapping_value(conflict, "payload"), {}),
-        })
-    db = _diag_db()
-    with db.atomic():
-        if rows:
-            FactConflict.insert_many(rows).on_conflict("REPLACE").execute()
+        rows.append((
+            snapshot_id,
+            func_hex,
+            func_i64,
+            str(_mapping_value(conflict, "conflict_id")),
+            str(_mapping_value(conflict, "fact_id")),
+            str(_mapping_value(conflict, "other_fact_id")),
+            str(_mapping_value(conflict, "maturity")),
+            str(_mapping_value(conflict, "conflict_kind")),
+            str(_mapping_value(conflict, "reason")),
+            _json_text(_mapping_value(conflict, "payload"), {}),
+        ))
+    if rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO fact_conflicts VALUES "
+            "(?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
     conn.commit()
