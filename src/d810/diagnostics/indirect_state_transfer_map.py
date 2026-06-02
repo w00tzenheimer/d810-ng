@@ -24,6 +24,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from d810.core.diag import open_diag_database
+from d810.core.diag.models import Block, Instruction, StateDispatcherRow
 from d810.diagnostics.output import add_output_argument, get_output, write_output
 from d810.core.typing import Any
 
@@ -61,6 +63,10 @@ def _overlaps(left_start: int, left_size: int, right_start: int, right_size: int
 
 def choose_snapshot(conn: sqlite3.Connection) -> SnapshotChoice:
     """Choose the strongest snapshot carrying indirect state-dispatcher rows."""
+    # raw-SQL: GROUP BY + COUNT/SUM(CASE...) aggregation with a multi-key
+    # ranking ORDER BY built from CASE-WHEN priority expressions (phase,
+    # maturity tie-breaks) -- an analytical ranking query that an ORM
+    # rewrite would only obscure (§3 complex-SQL policy).
     rows = conn.execute(
         """
         SELECT
@@ -102,13 +108,19 @@ def choose_snapshot(conn: sqlite3.Connection) -> SnapshotChoice:
 
 def load_blocks(conn: sqlite3.Connection, snapshot_id: int) -> dict[int, dict[str, Any]]:
     blocks: dict[int, dict[str, Any]] = {}
-    for row in conn.execute(
-        """
-        SELECT serial, type_name, nsucc, npred, succs, preds, start_ea_hex, end_ea_hex
-        FROM blocks
-        WHERE snapshot_id = ?
-        """,
-        (snapshot_id,),
+    for row in (
+        Block.select(
+            Block.serial,
+            Block.type_name,
+            Block.nsucc,
+            Block.npred,
+            Block.succs,
+            Block.preds,
+            Block.start_ea_hex,
+            Block.end_ea_hex,
+        )
+        .where(Block.snapshot == snapshot_id)
+        .tuples()
     ):
         serial = int(row[0])
         blocks[serial] = {
@@ -129,30 +141,28 @@ def load_instructions(
     snapshot_id: int,
 ) -> dict[int, list[dict[str, Any]]]:
     by_block: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for row in conn.execute(
-        """
-        SELECT
-          block_serial,
-          insn_index,
-          ea_hex,
-          ea_i64,
-          opcode_name,
-          dest_type,
-          dest_stkoff,
-          dest_size,
-          src_l_type,
-          src_l_stkoff,
-          src_l_value_i64,
-          src_r_type,
-          src_r_stkoff,
-          src_r_value_i64,
-          dstr,
-          meta
-        FROM instructions
-        WHERE snapshot_id = ?
-        ORDER BY block_serial, insn_index
-        """,
-        (snapshot_id,),
+    for row in (
+        Instruction.select(
+            Instruction.block_serial,
+            Instruction.insn_index,
+            Instruction.ea_hex,
+            Instruction.ea_i64,
+            Instruction.opcode_name,
+            Instruction.dest_type,
+            Instruction.dest_stkoff,
+            Instruction.dest_size,
+            Instruction.src_l_type,
+            Instruction.src_l_stkoff,
+            Instruction.src_l_value_i64,
+            Instruction.src_r_type,
+            Instruction.src_r_stkoff,
+            Instruction.src_r_value_i64,
+            Instruction.dstr,
+            Instruction.meta,
+        )
+        .where(Instruction.snapshot == snapshot_id)
+        .order_by(Instruction.block_serial, Instruction.insn_index)
+        .tuples()
     ):
         block_serial = int(row[0])
         by_block[block_serial].append(
@@ -183,22 +193,24 @@ def load_dispatch_rows(
     snapshot_id: int,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for row in conn.execute(
-        """
-        SELECT
-          row_index,
-          state_const_i64,
-          state_const_hex,
-          target_block,
-          dispatcher_entry_block,
-          branch_kind,
-          payload_json
-        FROM state_dispatcher_rows
-        WHERE snapshot_id = ?
-          AND dispatcher_kind = 'INDIRECT_JUMP'
-        ORDER BY state_const_i64, row_index
-        """,
-        (snapshot_id,),
+    for row in (
+        StateDispatcherRow.select(
+            StateDispatcherRow.row_index,
+            StateDispatcherRow.state_const_i64,
+            StateDispatcherRow.state_const_hex,
+            StateDispatcherRow.target_block,
+            StateDispatcherRow.dispatcher_entry_block,
+            StateDispatcherRow.branch_kind,
+            StateDispatcherRow.payload_json,
+        )
+        .where(
+            (StateDispatcherRow.snapshot == snapshot_id)
+            & (StateDispatcherRow.dispatcher_kind == "INDIRECT_JUMP")
+        )
+        .order_by(
+            StateDispatcherRow.state_const_i64, StateDispatcherRow.row_index
+        )
+        .tuples()
     ):
         try:
             payload = json.loads(row[6] or "{}")
@@ -560,11 +572,15 @@ def extract_transfer_map(
     pointer_size: int = 8,
     max_depth: int = 64,
 ) -> dict[str, Any]:
-    conn = sqlite3.connect(str(db_path))
+    db = open_diag_database(str(db_path))
+    conn = db.connection()
     try:
         if snapshot_id is None:
             choice = choose_snapshot(conn)
         else:
+            # raw-SQL: GROUP BY + COUNT/SUM(CASE...) aggregate over a JOIN,
+            # selecting one snapshot's INDIRECT_JUMP dispatcher summary
+            # (§3 complex-SQL policy).
             row = conn.execute(
                 """
                 SELECT s.id, s.label, s.maturity, s.phase, s.block_count,
@@ -593,7 +609,7 @@ def extract_transfer_map(
         instructions_by_block = load_instructions(conn, choice.snapshot_id)
         dispatch_rows = load_dispatch_rows(conn, choice.snapshot_id)
     finally:
-        conn.close()
+        db.close()
 
     effective_table_count = int(table_count or len(dispatch_rows))
     transfers: list[dict[str, Any]] = []
