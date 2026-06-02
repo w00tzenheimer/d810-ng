@@ -20,7 +20,7 @@ from d810.core.diag.models import MODELS  # noqa: F401  (re-export; also suppres
 # the implicit ``models -> diag`` parent edge that would otherwise close a
 # spurious diag -> schema -> models -> diag cycle, since ``schema`` imports
 # ``models`` and ``__init__`` imports ``schema``).
-from d810.core.diag.schema import create_tables
+from d810.core.diag.schema import _LEGACY_DAG_TABLE_RENAMES, create_tables
 from d810.core.settings import get_settings
 from d810.core.typing import Callable
 
@@ -68,8 +68,34 @@ def open_diag_database(db_path: str) -> SqliteDatabase:
     # left unchanged. Reads do not mutate it.
     db = SqliteDatabase(db_path)
     db.connect()
+    _overlay_legacy_schema(db)
     db.bind(MODELS)
     return db
+
+
+def _overlay_legacy_schema(db: SqliteDatabase) -> None:
+    """Make a pre-migration (``dag_*``) diag DB ORM-readable, non-mutatingly.
+
+    Old ``.diag.sqlite3`` files have the recovered-CFG tables under their
+    historical ``dag_*`` names (as base tables) and no ``state_cfg_*`` tables,
+    so the Models -- which target ``state_cfg_*`` -- would raise ``no such
+    table``. For each renamed pair, if the old ``dag_*`` table exists and the
+    new ``state_cfg_*`` does not, create a connection-local **TEMP VIEW**
+    ``state_cfg_* -> dag_*``. TEMP views live in the per-connection temp schema,
+    never touching the inspected file (verified non-mutating), so old DBs become
+    readable through the ORM without an upgrade. New DBs already have the
+    ``state_cfg_*`` tables, so this is a no-op for them.
+    """
+    conn = db.connection()
+    existing = {
+        name
+        for (name,) in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
+        )
+    }
+    for old, new in _LEGACY_DAG_TABLE_RENAMES.items():
+        if old in existing and new not in existing:
+            conn.execute(f"CREATE TEMP VIEW {new} AS SELECT * FROM {old}")
 
 # Inversion-of-control hook for cfg-layer block-lineage drain.
 #
