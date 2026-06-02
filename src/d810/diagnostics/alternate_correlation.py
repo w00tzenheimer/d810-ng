@@ -55,6 +55,12 @@ import json
 import sqlite3
 from dataclasses import dataclass
 
+from d810.core.diag.models import (
+    StateCfgEdge,
+    StateCfgEdgeDiagnostic,
+    StateCfgNode,
+    StateCfgNodeBlock,
+)
 from d810.core.typing import Iterable
 
 
@@ -96,15 +102,18 @@ def _collect_state_blocks(
 ) -> dict[str, set[int]]:
     """``{state_hex: {block_serial, ...}}`` across owned + shared roles."""
     out: dict[str, set[int]] = {}
-    rows = conn.execute(
-        """
-        SELECT state_hex, block_serial
-        FROM state_cfg_node_blocks
-        WHERE snapshot_id = ?
-          AND role IN ('owned', 'exclusive', 'shared_suffix')
-        """,
-        (int(snapshot_id),),
-    ).fetchall()
+    rows = (
+        StateCfgNodeBlock.select(
+            StateCfgNodeBlock.state_hex, StateCfgNodeBlock.block_serial
+        )
+        .where(
+            (StateCfgNodeBlock.snapshot == int(snapshot_id))
+            & StateCfgNodeBlock.role.in_(
+                ["owned", "exclusive", "shared_suffix"]
+            )
+        )
+        .tuples()
+    )
     for state_hex, block_serial in rows:
         if state_hex is None:
             continue
@@ -118,14 +127,13 @@ def _collect_node_classifications(
 ) -> dict[str, str]:
     """``{state_hex: classification}`` for ``state_cfg_nodes``."""
     out: dict[str, str] = {}
-    rows = conn.execute(
-        """
-        SELECT state_hex, classification
-        FROM state_cfg_nodes
-        WHERE snapshot_id = ?
-        """,
-        (int(snapshot_id),),
-    ).fetchall()
+    rows = (
+        StateCfgNode.select(
+            StateCfgNode.state_hex, StateCfgNode.classification
+        )
+        .where(StateCfgNode.snapshot == int(snapshot_id))
+        .tuples()
+    )
     for state_hex, classification in rows:
         if state_hex is None:
             continue
@@ -139,15 +147,18 @@ def _collect_outgoing_edges(
 ) -> dict[str, list[tuple]]:
     """``{source_state_hex: [(edge_id, target_state, target_entry, ordered_path), ...]}``."""
     out: dict[str, list[tuple]] = {}
-    rows = conn.execute(
-        """
-        SELECT edge_id, source_state_hex, target_state_hex,
-               source_block, target_entry, ordered_path
-        FROM state_cfg_edges
-        WHERE snapshot_id = ?
-        """,
-        (int(snapshot_id),),
-    ).fetchall()
+    rows = (
+        StateCfgEdge.select(
+            StateCfgEdge.edge_id,
+            StateCfgEdge.source_state_hex,
+            StateCfgEdge.target_state_hex,
+            StateCfgEdge.source_block,
+            StateCfgEdge.target_entry,
+            StateCfgEdge.ordered_path,
+        )
+        .where(StateCfgEdge.snapshot == int(snapshot_id))
+        .tuples()
+    )
     for edge_id, src, tgt, _src_blk, _tgt_entry, path in rows:
         if src is None:
             continue
@@ -163,15 +174,21 @@ def _collect_collapsed_diagnostics(
 ) -> list[tuple]:
     """Return every ``COLLAPSED_TO_REWRITTEN_TARGET`` diagnostic row at
     ``snapshot_id``, joined with its source / target state hexes."""
-    rows = conn.execute(
-        """
-        SELECT edge_id, source_state_hex, target_state_hex
-        FROM state_cfg_edge_diagnostics
-        WHERE snapshot_id = ?
-          AND classification = 'COLLAPSED_TO_REWRITTEN_TARGET'
-        """,
-        (int(snapshot_id),),
-    ).fetchall()
+    rows = (
+        StateCfgEdgeDiagnostic.select(
+            StateCfgEdgeDiagnostic.edge_id,
+            StateCfgEdgeDiagnostic.source_state_hex,
+            StateCfgEdgeDiagnostic.target_state_hex,
+        )
+        .where(
+            (StateCfgEdgeDiagnostic.snapshot == int(snapshot_id))
+            & (
+                StateCfgEdgeDiagnostic.classification
+                == "COLLAPSED_TO_REWRITTEN_TARGET"
+            )
+        )
+        .tuples()
+    )
     return [
         (int(edge_id), str(src) if src is not None else None,
          str(tgt) if tgt is not None else None)
