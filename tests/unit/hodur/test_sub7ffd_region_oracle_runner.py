@@ -1,5 +1,6 @@
 """Tests for the sub7FFD Hodur oracle test-support runner."""
 from __future__ import annotations
+from d810.core.diag import create_diag_database
 
 import json
 import sqlite3
@@ -140,8 +141,7 @@ def test_resolver_returns_partial_results() -> None:
 
 
 def test_render_report_emits_concrete_d810_feature_values() -> None:
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     _insert_snapshot(conn, 17, "post_bundle_stabilize")
     _insert_snapshot(conn, 18, "GLBOPT1_post_d810")
     _insert_byte_fact(conn, 17)
@@ -163,8 +163,7 @@ def test_render_report_emits_concrete_d810_feature_values() -> None:
 
 
 def test_render_report_resolves_moved_sub7ffd_by_function_name() -> None:
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     _insert_snapshot(conn, 17, "post_bundle_stabilize")
     _insert_snapshot(conn, 18, "GLBOPT1_post_d810")
     _insert_byte_fact(conn, 17)
@@ -182,8 +181,7 @@ def test_render_report_resolves_moved_sub7ffd_by_function_name() -> None:
 
 
 def test_render_report_includes_microblock_evidence() -> None:
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     _insert_snapshot(conn, 17, "post_bundle_stabilize")
     _insert_snapshot(conn, 18, "GLBOPT1_post_d810")
     _insert_byte_fact(conn, 17)
@@ -200,8 +198,7 @@ def test_render_report_includes_microblock_evidence() -> None:
 
 
 def test_render_report_detects_byte_emit_survival_at_snap17() -> None:
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     _insert_snapshot(conn, 5, "maturity_MMAT_GLBOPT1_pre_d810")
     _insert_snapshot(conn, 17, "post_bundle_stabilize")
     _insert_snapshot(conn, 18, "GLBOPT1_post_d810")

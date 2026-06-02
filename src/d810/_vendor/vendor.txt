@@ -33,6 +33,20 @@ typing_extensions==4.15.0
 # License: Apache-2.0 WITH LLVM-exception
 clang==13.0.1+d810
 
+# peewee - small single-file ORM + selected playhouse extensions
+# Source: https://github.com/coleifer/peewee (PyPI: https://pypi.org/project/peewee/)
+# Pinned commit: 9bd107f1f895fc530d9f574842b1ab4f03a8049e
+# NOTE: Manually vendored (pinned commit, not the `vendoring` tool). The
+#   playhouse/* `from peewee import ...` / `from playhouse.X import ...` imports
+#   are rewritten to `d810._vendor.*` (pip-vendoring pattern). Optional deps
+#   (cockroachdb, cysqlite_ext, gevent, bz2, zlib) are NOT vendored; their
+#   imports stay in try/except and fall back gracefully.
+# Reason: diag DB layer — Models as schema source of truth, playhouse.migrate
+#   for migrations; sqliteq/pool/kv vendored for future thread-safe/pooled use.
+# Provides: peewee (core ORM); playhouse.{migrate,sqliteq,pool,kv,fields}
+# License: MIT (see peewee.LICENSE)
+peewee==3.17+d810
+
 # Candidates for future vendoring:
 # - miasm2: If we need specific version/patches for IDA compatibility
 # - z3-solver: If bundling is needed for binary distributions

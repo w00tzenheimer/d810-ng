@@ -1,6 +1,7 @@
 """Runtime tests for post-D810 handoff validation."""
 
 from __future__ import annotations
+from d810.core.diag import create_diag_database
 
 import sqlite3
 
@@ -134,8 +135,7 @@ def _seed_pre_bundle(conn: sqlite3.Connection, *, snapshot_id: int) -> None:
 
 
 def test_detect_post_d810_handoff_violations_flags_live_only_use_bundle():
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     _seed_snapshot(conn, snapshot_id=19, label="post_pipeline", phase="post_pipeline", block_count=223)
     _seed_snapshot(conn, snapshot_id=20, label="post_d810", phase="post_d810", block_count=44)
     _seed_pre_bundle(conn, snapshot_id=19)
@@ -177,8 +177,7 @@ def test_detect_post_d810_handoff_violations_flags_live_only_use_bundle():
 
 
 def test_detect_post_d810_handoff_violations_allows_surviving_defs():
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     _seed_snapshot(conn, snapshot_id=19, label="post_pipeline", phase="post_pipeline", block_count=223)
     _seed_snapshot(conn, snapshot_id=20, label="post_d810", phase="post_d810", block_count=44)
     _seed_pre_bundle(conn, snapshot_id=19)

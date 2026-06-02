@@ -15,12 +15,31 @@ import sqlite3
 import time
 from pathlib import Path
 
+from d810._vendor.peewee import SqliteDatabase
+from d810.core.diag.models import MODELS  # noqa: F401  (re-export; also suppresses
+# the implicit ``models -> diag`` parent edge that would otherwise close a
+# spurious diag -> schema -> models -> diag cycle, since ``schema`` imports
+# ``models`` and ``__init__`` imports ``schema``).
 from d810.core.diag.schema import create_tables
 from d810.core.settings import get_settings
 from d810.core.typing import Callable
 
+_current_db: SqliteDatabase | None = None
 _current_conn: sqlite3.Connection | None = None
 _current_func_ea: int | None = None
+
+
+def create_diag_database(db_path: str) -> SqliteDatabase:
+    """Open a peewee ``SqliteDatabase`` for the diag DB and apply the schema.
+
+    peewee owns the connection (WAL pragma); raw-SQL diag call-sites get a
+    plain ``sqlite3.Connection`` via ``db.connection()`` and are unchanged.
+    Used by both the production session paths below and the test harness.
+    """
+    db = SqliteDatabase(db_path, pragmas={"journal_mode": "wal"})
+    db.connect()
+    create_tables(db)
+    return db
 
 # Inversion-of-control hook for cfg-layer block-lineage drain.
 #
@@ -139,7 +158,7 @@ def open_diag_session(func_ea: int, log_dir: str | None = None) -> None:
     observability bus so runtime ``observe_*`` / ``request_capture_*``
     publishers reach the SQLite sink. The install is idempotent.
     """
-    global _current_conn, _current_func_ea
+    global _current_db, _current_conn, _current_func_ea
     if not get_settings().diag_snapshots:
         return
     close_diag_session()  # close any stale session
@@ -147,10 +166,9 @@ def open_diag_session(func_ea: int, log_dir: str | None = None) -> None:
     resolved_log_dir.mkdir(parents=True, exist_ok=True)
     run_id = f"{int(time.time())}_{os.getpid()}"
     db_path = resolved_log_dir / f"{func_ea:016x}_{run_id}.diag.sqlite3"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA journal_mode=WAL")
-    create_tables(conn)
-    _current_conn = conn
+    db = create_diag_database(str(db_path))
+    _current_db = db
+    _current_conn = db.connection()
     _current_func_ea = func_ea
     # Dynamic import via importlib to avoid a static import cycle:
     # event_handlers itself imports `get_diag_db` from this module
@@ -172,7 +190,7 @@ def close_diag_session() -> None:
     close-time emit can't be picked up by a stale subscriber bound to
     an already-closed connection.
     """
-    global _current_conn, _current_func_ea
+    global _current_db, _current_conn, _current_func_ea
     # Uninstall first so subsequent emits do not reach a stale conn.
     # Dynamic import via importlib avoids the same static cycle as
     # in `open_diag_session` above.
@@ -183,11 +201,18 @@ def close_diag_session() -> None:
         ).uninstall_diag_event_handlers()
     except Exception:
         pass
-    if _current_conn is not None:
+    # Closing the peewee db closes its underlying connection.
+    if _current_db is not None:
+        try:
+            _current_db.close()
+        except Exception:
+            pass
+    elif _current_conn is not None:
         try:
             _current_conn.close()
         except Exception:
             pass
+    _current_db = None
     _current_conn = None
     _current_func_ea = None
 
@@ -205,20 +230,14 @@ def get_diag_db(func_ea: int = 0, log_dir: str | None = None) -> sqlite3.Connect
         return _current_conn
     latest_path = find_latest_diag_db_path(func_ea, log_dir=log_dir)
     if latest_path is not None:
-        conn = sqlite3.connect(str(latest_path))
-        conn.execute("PRAGMA journal_mode=WAL")
-        create_tables(conn)
-        return conn
+        return create_diag_database(str(latest_path)).connection()
     # Fallback: no session open — create a one-off DB (test harness path)
     resolved_log_dir = _resolve_log_dir(log_dir)
     resolved_log_dir.mkdir(parents=True, exist_ok=True)
     run_id = f"{int(time.time())}_{os.getpid()}"
     ea = func_ea if func_ea else 0
     db_path = resolved_log_dir / f"{ea:016x}_{run_id}.diag.sqlite3"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA journal_mode=WAL")
-    create_tables(conn)
-    return conn
+    return create_diag_database(str(db_path)).connection()
 
 
 # Register this backend with the abstract observability interface.

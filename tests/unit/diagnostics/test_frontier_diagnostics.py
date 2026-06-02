@@ -1,4 +1,5 @@
 from __future__ import annotations
+from d810.core.diag import create_diag_database
 
 import argparse
 import json
@@ -15,8 +16,7 @@ from d810.diagnostics.frontier_diagnostics import (
 
 
 def _make_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     conn.execute(
         "INSERT INTO snapshots "
         "(id, label, func_ea_hex, func_ea_i64, maturity, phase, "
@@ -130,8 +130,7 @@ def test_frontier_diagnostics_report_formats_resolved_bst_proof() -> None:
 
 def test_frontier_diagnostics_cli_prints_unresolved_rows(tmp_path, capsys) -> None:
     db_path = tmp_path / "diag.sqlite3"
-    conn = sqlite3.connect(db_path)
-    create_tables(conn)
+    conn = create_diag_database(db_path).connection()
     conn.execute(
         "INSERT INTO snapshots "
         "(id, label, func_ea_hex, func_ea_i64, maturity, phase, "

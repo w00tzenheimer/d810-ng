@@ -1,5 +1,6 @@
 """Tests for block trace and block lineage diagnostics."""
 from __future__ import annotations
+from d810.core.diag import create_diag_database
 
 import json
 import sqlite3
@@ -92,8 +93,7 @@ def _insert_insn(
 
 @pytest.fixture()
 def correlation_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     _insert_snapshot(conn, 1, "pre")
     _insert_snapshot(conn, 2, "post")
     _insert_block(conn, 1, 10, start_ea=0x180010000, end_ea=0x180010010)
@@ -135,8 +135,7 @@ def correlation_conn() -> sqlite3.Connection:
 
 def _create_correlation_db(tmp_path: Path) -> Path:
     db_path = tmp_path / "correlation.sqlite3"
-    disk_conn = sqlite3.connect(str(db_path))
-    create_tables(disk_conn)
+    disk_conn = create_diag_database(str(db_path)).connection()
     _insert_snapshot(disk_conn, 1, "pre")
     _insert_snapshot(disk_conn, 2, "post")
     _insert_block(disk_conn, 1, 10, start_ea=0x180010000, end_ea=0x180010010)
@@ -178,8 +177,7 @@ def _create_correlation_db(tmp_path: Path) -> Path:
 
 def _create_legacy_db(tmp_path: Path) -> Path:
     db_path = tmp_path / "legacy.sqlite3"
-    conn = sqlite3.connect(str(db_path))
-    create_tables(conn)
+    conn = create_diag_database(str(db_path)).connection()
     conn.execute("DROP TABLE block_observations")
     conn.execute("DROP TABLE block_lineage")
     _insert_snapshot(conn, 1, "legacy")

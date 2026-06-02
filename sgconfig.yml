@@ -4,7 +4,8 @@
 ruleDirs:
   - rules
 
-# Exclude test directories from scanning
+# Exclude test directories + vendored third-party code from scanning
 ignore:
   - tests/
   - tools/scripts/
+  - src/d810/_vendor/

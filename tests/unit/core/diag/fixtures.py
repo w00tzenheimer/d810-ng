@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from d810.core.diag.schema import create_tables
 from d810.core.diag.snapshot import _dual
 
 
@@ -22,8 +21,10 @@ def create_sub_7ffd_scenario(conn: sqlite3.Connection) -> int:
     - blk[206] fallthrough -> blk[207] (m_xdu: writes var_8 from var_7BC!)
     - blk[207] -> blk[218] (return corridor) -> blk[219] (BLT_STOP)
     - blk[217] (correct return corridor: writes var_8 from var_178)
+
+    The caller is responsible for creating the schema (e.g. via
+    ``create_diag_database``); this only populates rows.
     """
-    create_tables(conn)
     fh, fi = _dual(0x180012B60)
     conn.execute(
         "INSERT INTO snapshots VALUES "

@@ -1,22 +1,25 @@
-"""SQLite schema for MBA diagnostic snapshots."""
+"""SQLite schema for MBA diagnostic snapshots.
+
+The diag DB is peewee-owned (``SqliteDatabase``). The first table-slice
+(``snapshots``, ``state_cfg_nodes``, ``state_cfg_edges``) is defined by peewee
+**Models** in :mod:`d810.core.diag.models` (schema source of truth); the
+remaining tables + the ``dag_*`` back-compat views are still raw DDL in
+``_SCHEMA_SQL`` below. ``create_tables`` applies both to a peewee db.
+"""
 from __future__ import annotations
 
 import sqlite3
 
+from d810._vendor.peewee import SqliteDatabase
+from d810._vendor.playhouse.migrate import SqliteMigrator, migrate
+from d810.core.diag.models import MODELS
+
 _SCHEMA_SQL = """\
 -- Layer 1: Universal MBA State
 
--- One row per snapshot checkpoint
-CREATE TABLE IF NOT EXISTS snapshots (
-    id              INTEGER PRIMARY KEY,
-    label           TEXT NOT NULL,
-    func_ea_hex     TEXT NOT NULL,
-    func_ea_i64     INTEGER NOT NULL,
-    maturity        TEXT NOT NULL,
-    phase           TEXT NOT NULL DEFAULT 'unknown' CHECK(phase IN ('pre_d810', 'post_apply', 'post_gut_wire', 'post_pipeline', 'post_d810', 'unknown')),
-    block_count     INTEGER NOT NULL,
-    timestamp       REAL NOT NULL
-);
+-- NOTE: ``snapshots``, ``state_cfg_nodes`` and ``state_cfg_edges`` are defined
+-- as peewee Models in d810.core.diag.models (created via db.create_tables);
+-- they are intentionally NOT in this DDL string.
 
 -- One row per microcode block
 CREATE TABLE IF NOT EXISTS blocks (
@@ -102,38 +105,8 @@ CREATE INDEX IF NOT EXISTS idx_insn_ea_hex
 
 -- Layer 2: Strategy Metadata
 
--- DAG nodes (one per handler state)
-CREATE TABLE IF NOT EXISTS state_cfg_nodes (
-    snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
-    state_hex       TEXT NOT NULL,
-    state_i64       INTEGER NOT NULL,
-    entry_block     INTEGER NOT NULL,
-    classification  TEXT NOT NULL,
-    shared_suffix   TEXT,
-    PRIMARY KEY (snapshot_id, state_hex)
-);
-
--- DAG edges (one per transition)
-CREATE TABLE IF NOT EXISTS state_cfg_edges (
-    snapshot_id           INTEGER NOT NULL REFERENCES snapshots(id),
-    edge_id               INTEGER NOT NULL,
-    source_state_hex      TEXT,
-    source_state_i64      INTEGER,
-    target_state_hex      TEXT,
-    target_state_i64      INTEGER,
-    edge_kind             TEXT NOT NULL CHECK(edge_kind IN (
-        'TRANSITION',
-        'CONDITIONAL_TRANSITION',
-        'CONDITIONAL_RETURN',
-        'EXIT_ROUTINE',
-        'UNKNOWN'
-    )),
-    source_block          INTEGER,
-    source_arm            INTEGER,
-    target_entry          INTEGER,
-    ordered_path          TEXT NOT NULL,
-    PRIMARY KEY (snapshot_id, edge_id)
-);
+-- NOTE: state_cfg_nodes and state_cfg_edges are peewee Models
+-- (d810.core.diag.models); created via db.create_tables, not this DDL.
 
 -- Typed local facts for each DAG node. These mirror LinearizedStateDag node
 -- internals so tools can reconstruct state-local CFG views without scraping
@@ -731,40 +704,49 @@ _LEGACY_DAG_TABLE_RENAMES = {
 }
 
 
-def _migrate_legacy_dag_tables(conn: sqlite3.Connection) -> None:
+def _migrate_legacy_dag_tables(db: SqliteDatabase) -> None:
     """Rename pre-existing ``dag_*`` base tables to ``state_cfg_*`` (idempotent).
 
     Older ``.diag.sqlite3`` files created ``dag_*`` as base tables.  The current
     schema makes ``state_cfg_*`` the base tables and ``dag_*`` read-only views.
     For each pair, if the old base table still exists and the new one does not,
-    rename it in place (data and attached indexes follow the rename), then drop
-    the now-stale ``idx_dag_*`` indexes so the schema's ``idx_state_cfg_*``
-    indexes are canonical.  Must run BEFORE the schema DDL so the idempotent
-    ``CREATE TABLE IF NOT EXISTS state_cfg_*`` does not create an empty table
-    beside the orphaned legacy one.
+    rename it via ``playhouse.migrate.SqliteMigrator`` (data + attached indexes
+    follow the rename), then drop the now-stale ``idx_dag_*`` indexes so the
+    schema's ``idx_state_cfg_*`` indexes are canonical.  Must run BEFORE
+    ``db.create_tables(MODELS)`` so a renamed legacy table is not shadowed by a
+    fresh empty modeled table.
     """
+    conn = db.connection()
     existing = {
         name: kind
         for name, kind in conn.execute(
             "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view')"
         ).fetchall()
     }
-    for old, new in _LEGACY_DAG_TABLE_RENAMES.items():
-        if existing.get(old) == "table" and new not in existing:
-            conn.execute(f"ALTER TABLE {old} RENAME TO {new}")
+    migrator = SqliteMigrator(db)
+    ops = [
+        migrator.rename_table(old, new)
+        for old, new in _LEGACY_DAG_TABLE_RENAMES.items()
+        if existing.get(old) == "table" and new not in existing
+    ]
+    if ops:
+        migrate(*ops)
     for (idx_name,) in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_dag_%'"
     ).fetchall():
         conn.execute(f"DROP INDEX IF EXISTS {idx_name}")
 
 
-def create_tables(conn: sqlite3.Connection) -> None:
-    """Create all diagnostic snapshot tables, views, and indexes.
+def create_tables(db: SqliteDatabase) -> None:
+    """Create all diagnostic snapshot tables, views, and indexes on ``db``.
 
-    Migrates any legacy ``dag_*`` base tables to ``state_cfg_*`` first, then
-    applies the schema.  Uses IF NOT EXISTS so this is safe to call multiple
-    times (idempotent).
+    Order: migrate legacy ``dag_*`` base tables → create the modeled tables
+    (``MODELS``) → apply the remaining raw DDL (tables + ``dag_*`` views).
+    Uses IF NOT EXISTS / safe=True so this is idempotent.
     """
-    _migrate_legacy_dag_tables(conn)
+    _migrate_legacy_dag_tables(db)
+    with db.bind_ctx(MODELS):
+        db.create_tables(MODELS, safe=True)
+    conn = db.connection()
     conn.executescript(_SCHEMA_SQL)
     conn.execute("PRAGMA user_version = 1")

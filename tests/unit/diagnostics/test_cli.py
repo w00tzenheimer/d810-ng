@@ -1,5 +1,6 @@
 """Tests for the ``python -m d810.diagnostics`` CLI entry point."""
 from __future__ import annotations
+from d810.core.diag import create_diag_database
 
 import json
 import sqlite3
@@ -29,7 +30,7 @@ from tests.unit.core.diag.fixtures import create_sub_7ffd_scenario
 def loaded_db_path(tmp_path: Path) -> Path:
     """Create a temporary SQLite DB pre-loaded with the sub_7FFD scenario."""
     db_path = tmp_path / "diag.sqlite3"
-    conn = sqlite3.connect(str(db_path))
+    conn = create_diag_database(str(db_path)).connection()
     create_sub_7ffd_scenario(conn)
     conn.close()
     return db_path
@@ -197,7 +198,7 @@ class TestSnapshotResolution:
     def test_resolve_snapshot_by_maturity_and_phase(
         self, loaded_db_path: Path, capsys: pytest.CaptureFixture
     ):
-        conn = sqlite3.connect(str(loaded_db_path))
+        conn = create_diag_database(str(loaded_db_path)).connection()
         fh, fi = _dual(0x180012B60)
         conn.execute(
             "INSERT INTO snapshots VALUES "
@@ -257,7 +258,7 @@ class TestSnapshotResolution:
     def test_resolve_snapshot_by_phase_only(
         self, loaded_db_path: Path, capsys: pytest.CaptureFixture
     ):
-        conn = sqlite3.connect(str(loaded_db_path))
+        conn = create_diag_database(str(loaded_db_path)).connection()
         fh, fi = _dual(0x180012B60)
         conn.execute(
             "INSERT INTO snapshots VALUES "
@@ -336,8 +337,7 @@ class TestStateTransitionBstResolutionsCommand:
     def _make_bst_resolution_db_and_log(self, tmp_path: Path) -> tuple[Path, Path]:
         db_path = tmp_path / "bst.sqlite3"
         log_path = tmp_path / "d810.log"
-        conn = sqlite3.connect(str(db_path))
-        create_tables(conn)
+        conn = create_diag_database(str(db_path)).connection()
         conn.execute(
             """
             INSERT INTO snapshots
@@ -440,7 +440,7 @@ class TestStateTransitionBstResolutionsCommand:
         assert rc == 0
         out = capsys.readouterr().out
         assert "persisted=True" in out
-        conn = sqlite3.connect(str(db_path))
+        conn = create_diag_database(str(db_path)).connection()
         row = conn.execute(
             "SELECT COUNT(*) FROM state_transition_bst_resolutions"
         ).fetchone()
@@ -451,7 +451,7 @@ class TestStateTransitionBstResolutionsCommand:
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
         db_path, _log_path = self._make_bst_resolution_db_and_log(tmp_path)
-        conn = sqlite3.connect(str(db_path))
+        conn = create_diag_database(str(db_path)).connection()
         snapshot_bst_interval_dispatcher_rows(
             conn,
             1,
@@ -471,7 +471,7 @@ class TestStateTransitionBstResolutionsCommand:
         out = capsys.readouterr().out
         assert "persisted=True" in out
         assert "intervals=1" in out
-        conn = sqlite3.connect(str(db_path))
+        conn = create_diag_database(str(db_path)).connection()
         row = conn.execute(
             "SELECT bst_resolved_next_block_serial "
             "FROM state_transition_bst_resolutions"
@@ -495,7 +495,7 @@ class TestStateTransitionBstResolutionsCommand:
         assert rc == 0
         out = capsys.readouterr().out
         assert "persisted=False" in out
-        conn = sqlite3.connect(str(db_path))
+        conn = create_diag_database(str(db_path)).connection()
         row = conn.execute(
             "SELECT COUNT(*) FROM state_transition_bst_resolutions"
         ).fetchone()
@@ -506,8 +506,7 @@ class TestStateTransitionBstResolutionsCommand:
 class TestStateTransitionDispatchResolutionsCommand:
     def _make_dispatch_resolution_db(self, tmp_path: Path) -> Path:
         db_path = tmp_path / "dispatch.sqlite3"
-        conn = sqlite3.connect(str(db_path))
-        create_tables(conn)
+        conn = create_diag_database(str(db_path)).connection()
         conn.execute(
             """
             INSERT INTO snapshots
@@ -587,7 +586,7 @@ class TestStateTransitionDispatchResolutionsCommand:
         out = capsys.readouterr().out
         assert "persisted=True" in out
         assert "rows=1" in out
-        conn = sqlite3.connect(str(db_path))
+        conn = create_diag_database(str(db_path)).connection()
         row = conn.execute(
             "SELECT resolved_next_block_serial "
             "FROM state_transition_dispatch_resolutions"
@@ -598,7 +597,7 @@ class TestStateTransitionDispatchResolutionsCommand:
 
 class TestFactCommands:
     def _load_fact_rows(self, db_path: Path) -> None:
-        conn = sqlite3.connect(str(db_path))
+        conn = create_diag_database(str(db_path)).connection()
         snapshot_fact_observations(
             conn,
             1,
@@ -683,7 +682,7 @@ class TestFactCommands:
         self, loaded_db_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
         self._load_fact_rows(loaded_db_path)
-        conn = sqlite3.connect(str(loaded_db_path))
+        conn = create_diag_database(str(loaded_db_path)).connection()
         snapshot_fact_observations(
             conn,
             99,
@@ -810,7 +809,7 @@ class TestFactCommands:
     def test_fact_diff_is_scoped_by_function_identity(
         self, loaded_db_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        conn = sqlite3.connect(str(loaded_db_path))
+        conn = create_diag_database(str(loaded_db_path)).connection()
         snapshot_fact_observations(
             conn,
             1,

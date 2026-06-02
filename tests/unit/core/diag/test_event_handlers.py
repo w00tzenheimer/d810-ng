@@ -6,6 +6,7 @@ tables. The mapping ``SnapshotRef.key -> snapshots.id`` is driven by
 the :class:`CaptureMbaSnapshotRequested` handler.
 """
 from __future__ import annotations
+from d810.core.diag import create_diag_database
 
 import sqlite3
 from unittest.mock import patch
@@ -86,8 +87,7 @@ def request_capture_mba_snapshot(
 @pytest.fixture
 def fake_conn():
     """In-memory SQLite with the diag schema populated."""
-    conn = sqlite3.connect(":memory:")
-    create_tables(conn)
+    conn = create_diag_database(":memory:").connection()
     return conn
 
 
