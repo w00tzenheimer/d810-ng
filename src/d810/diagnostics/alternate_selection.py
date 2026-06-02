@@ -44,6 +44,12 @@ import json
 import sqlite3
 from dataclasses import dataclass
 
+from d810.core.diag.models import (
+    FactObservation,
+    StateCfgEdge,
+    StateCfgEdgeAlternateCorrelation,
+    StateCfgNodeBlock,
+)
 from d810.core.typing import Iterable
 
 
@@ -88,12 +94,11 @@ def _terminal_tail_blocks_to_byte_index(
     values, the smaller byte_index wins (defensive; in practice each
     terminal_tail block carries one byte_index)."""
     out: dict[int, int] = {}
-    rows = conn.execute(
-        """
-        SELECT payload FROM fact_observations
-        WHERE kind='TerminalByteEmitterFact'
-        """,
-    ).fetchall()
+    rows = (
+        FactObservation.select(FactObservation.payload)
+        .where(FactObservation.kind == "TerminalByteEmitterFact")
+        .tuples()
+    )
     for (payload_json,) in rows:
         try:
             payload = json.loads(payload_json) if payload_json else {}
@@ -121,14 +126,18 @@ def _state_owned_blocks(
     snapshot_id: int,
 ) -> dict[str, set[int]]:
     out: dict[str, set[int]] = {}
-    rows = conn.execute(
-        """
-        SELECT state_hex, block_serial FROM state_cfg_node_blocks
-        WHERE snapshot_id = ?
-          AND role IN ('owned', 'exclusive', 'shared_suffix')
-        """,
-        (int(snapshot_id),),
-    ).fetchall()
+    rows = (
+        StateCfgNodeBlock.select(
+            StateCfgNodeBlock.state_hex, StateCfgNodeBlock.block_serial
+        )
+        .where(
+            (StateCfgNodeBlock.snapshot == int(snapshot_id))
+            & StateCfgNodeBlock.role.in_(
+                ["owned", "exclusive", "shared_suffix"]
+            )
+        )
+        .tuples()
+    )
     for state_hex, block_serial in rows:
         if state_hex is None:
             continue
@@ -186,14 +195,15 @@ def _outgoing_by_state(
 ) -> dict[str, list[tuple[str | None, str]]]:
     """``{source_state_hex: [(target_state_hex, edge_kind), ...]}``."""
     out: dict[str, list[tuple[str | None, str]]] = {}
-    rows = conn.execute(
-        """
-        SELECT source_state_hex, target_state_hex, edge_kind
-        FROM state_cfg_edges
-        WHERE snapshot_id = ?
-        """,
-        (int(snapshot_id),),
-    ).fetchall()
+    rows = (
+        StateCfgEdge.select(
+            StateCfgEdge.source_state_hex,
+            StateCfgEdge.target_state_hex,
+            StateCfgEdge.edge_kind,
+        )
+        .where(StateCfgEdge.snapshot == int(snapshot_id))
+        .tuples()
+    )
     for src, tgt, kind in rows:
         if src is None:
             continue
@@ -274,16 +284,18 @@ def select_alternate_edges(
 
     Pure read; caller persists with :func:`persist_alternate_selections`.
     """
-    correlation_rows = conn.execute(
-        """
-        SELECT collapsed_edge_id, alternate_edge_id,
-               collapsed_source_state, alternate_source_state,
-               alternate_target_state
-        FROM state_cfg_edge_alternate_correlations
-        WHERE snapshot_id = ?
-        """,
-        (int(snapshot_id),),
-    ).fetchall()
+    c = StateCfgEdgeAlternateCorrelation
+    correlation_rows = list(
+        c.select(
+            c.collapsed_edge_id,
+            c.alternate_edge_id,
+            c.collapsed_source_state,
+            c.alternate_source_state,
+            c.alternate_target_state,
+        )
+        .where(c.snapshot == int(snapshot_id))
+        .tuples()
+    )
     if not correlation_rows:
         return ()
 
