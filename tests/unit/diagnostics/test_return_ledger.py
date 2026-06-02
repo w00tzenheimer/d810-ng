@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from d810.core.diag import open_diag_database
 from d810.diagnostics.return_ledger import (
     AfterReturn,
     DEFAULT_RETURN_SLOT_STKOFF,
@@ -111,19 +112,19 @@ def diag_db(tmp_path: Path) -> Path:
 
 
 def test_pick_snapshot_returns_pre_gut_and_wire_post_apply(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        assert pick_snapshot(conn) == 10
+        assert pick_snapshot(db.connection()) == 10
     finally:
-        conn.close()
+        db.close()
 
 
 def test_pick_snapshot_returns_explicit_id_verbatim(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        assert pick_snapshot(conn, snapshot_id=12) == 12
+        assert pick_snapshot(db.connection(), snapshot_id=12) == 12
     finally:
-        conn.close()
+        db.close()
 
 
 def test_pick_snapshot_falls_back_to_last_post_apply_above_200(
@@ -131,8 +132,8 @@ def test_pick_snapshot_falls_back_to_last_post_apply_above_200(
 ) -> None:
     """No gut_and_wire snapshot exists -- pick the most recent post_apply
     snapshot with >200 blocks."""
-    db = tmp_path / "x.sqlite3"
-    conn = sqlite3.connect(str(db))
+    db_path = tmp_path / "x.sqlite3"
+    conn = sqlite3.connect(str(db_path))
     try:
         conn.executescript(
             "CREATE TABLE snapshots(id INTEGER PRIMARY KEY, label TEXT,"
@@ -142,16 +143,20 @@ def test_pick_snapshot_falls_back_to_last_post_apply_above_200(
             "INSERT INTO snapshots VALUES (3, 'other', 50);"
         )
         conn.commit()
-        assert pick_snapshot(conn) == 2
     finally:
         conn.close()
+    db = open_diag_database(str(db_path))
+    try:
+        assert pick_snapshot(db.connection()) == 2
+    finally:
+        db.close()
 
 
 def test_pick_snapshot_returns_last_snapshot_when_no_post_apply(
     tmp_path: Path,
 ) -> None:
-    db = tmp_path / "x.sqlite3"
-    conn = sqlite3.connect(str(db))
+    db_path = tmp_path / "x.sqlite3"
+    conn = sqlite3.connect(str(db_path))
     try:
         conn.executescript(
             "CREATE TABLE snapshots(id INTEGER PRIMARY KEY, label TEXT,"
@@ -160,17 +165,21 @@ def test_pick_snapshot_returns_last_snapshot_when_no_post_apply(
             "INSERT INTO snapshots VALUES (7, 'pre_d810', 12);"
         )
         conn.commit()
-        assert pick_snapshot(conn) == 7
     finally:
         conn.close()
+    db = open_diag_database(str(db_path))
+    try:
+        assert pick_snapshot(db.connection()) == 7
+    finally:
+        db.close()
 
 
 def test_list_snapshots_returns_all_rows(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        rows = list_snapshots(conn)
+        rows = list_snapshots(db.connection())
     finally:
-        conn.close()
+        db.close()
     assert [r[0] for r in rows] == [10, 11, 12]
     assert rows[0][2] == 250
 
@@ -181,11 +190,11 @@ def test_list_snapshots_returns_all_rows(diag_db: Path) -> None:
 
 
 def test_query_blocks_parses_preds_succs_and_meta(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        blocks = query_blocks(conn, 10)
+        blocks = query_blocks(db.connection(), 10)
     finally:
-        conn.close()
+        db.close()
     assert sorted(blocks) == [0, 5, 6, 7, 100, 200]
     assert blocks[100]["type"] == "BLT_STOP"
     assert blocks[100]["preds"] == [6, 7]
@@ -193,11 +202,11 @@ def test_query_blocks_parses_preds_succs_and_meta(diag_db: Path) -> None:
 
 
 def test_query_return_slot_writers_pulls_writer(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        writers = query_return_slot_writers(conn, 10)
+        writers = query_return_slot_writers(db.connection(), 10)
     finally:
-        conn.close()
+        db.close()
     assert list(writers) == [6]
     w = writers[6]
     assert w.opcode == "m_mov"
@@ -205,11 +214,11 @@ def test_query_return_slot_writers_pulls_writer(diag_db: Path) -> None:
 
 
 def test_query_v660_writers_returns_block_to_const_map(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        v660 = query_v660_writers(conn, 10)
+        v660 = query_v660_writers(db.connection(), 10)
     finally:
-        conn.close()
+        db.close()
     assert v660 == {7: "0xDEAD"}
 
 
@@ -219,24 +228,25 @@ def test_query_v660_writers_returns_block_to_const_map(diag_db: Path) -> None:
 
 
 def test_bfs_reachable_walks_from_block_zero(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        blocks = query_blocks(conn, 10)
+        blocks = query_blocks(db.connection(), 10)
     finally:
-        conn.close()
+        db.close()
     reachable = bfs_reachable(blocks)
     # 200 is the unreachable island; everything else is reachable.
     assert reachable == {0, 5, 6, 7, 100}
 
 
 def test_trace_return_paths_emits_per_feeder_family(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
+        conn = db.connection()
         blocks = query_blocks(conn, 10)
         writers = query_return_slot_writers(conn, 10)
         v660 = query_v660_writers(conn, 10)
     finally:
-        conn.close()
+        db.close()
     reachable = bfs_reachable(blocks)
     paths = trace_return_paths(blocks, writers, v660, reachable)
     # BLT_STOP has 2 preds (6, 7); each pred has exactly 1 pred (blk[5]),
@@ -350,13 +360,14 @@ def test_format_writer_prefers_value_then_stkoff_then_type() -> None:
 
 
 def _sample_render_inputs(diag_db: Path) -> dict:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
+        conn = db.connection()
         blocks = query_blocks(conn, 10)
         writers = query_return_slot_writers(conn, 10)
         v660 = query_v660_writers(conn, 10)
     finally:
-        conn.close()
+        db.close()
     reachable = bfs_reachable(blocks)
     paths = trace_return_paths(blocks, writers, v660, reachable)
     return dict(

@@ -25,6 +25,10 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
+from d810._vendor.peewee import fn
+from d810.core.diag import open_diag_database
+from d810.core.diag.models import Block, Instruction, Snapshot
+
 
 # Hardcoded stack offsets for sub_7FFD3338C040; preserved from the legacy
 # script to keep output bit-identical. Override by passing different values
@@ -88,9 +92,13 @@ def pick_snapshot(
     """
     if snapshot_id is not None:
         return snapshot_id
-    rows = conn.execute(
-        "SELECT id, label, block_count FROM snapshots ORDER BY id"
-    ).fetchall()
+    rows = list(
+        Snapshot.select(
+            Snapshot.id, Snapshot.label, Snapshot.block_count
+        )
+        .order_by(Snapshot.id)
+        .tuples()
+    )
     best: int | None = None
     for sid, label, bc in rows:
         label = label or ""
@@ -106,19 +114,25 @@ def pick_snapshot(
 
 def list_snapshots(conn: sqlite3.Connection) -> list[tuple[int, str, int]]:
     """Return ``(id, label, block_count)`` for every snapshot in the DB."""
-    rows = conn.execute(
-        "SELECT id, label, block_count FROM snapshots ORDER BY id"
-    ).fetchall()
+    rows = (
+        Snapshot.select(
+            Snapshot.id, Snapshot.label, Snapshot.block_count
+        )
+        .order_by(Snapshot.id)
+        .tuples()
+    )
     return [(int(sid), str(label or ""), int(bc or 0)) for sid, label, bc in rows]
 
 
 def query_blocks(conn: sqlite3.Connection, sid: int) -> dict[int, dict]:
     """``serial -> {type, preds, succs, valranges}`` for *sid*."""
-    rows = conn.execute(
-        "SELECT serial, type_name, preds, succs, meta FROM blocks "
-        "WHERE snapshot_id=?",
-        (sid,),
-    ).fetchall()
+    rows = (
+        Block.select(
+            Block.serial, Block.type_name, Block.preds, Block.succs, Block.meta
+        )
+        .where(Block.snapshot == sid)
+        .tuples()
+    )
     blocks: dict[int, dict] = {}
     for serial, type_name, preds_json, succs_json, meta_json in rows:
         try:
@@ -150,13 +164,22 @@ def query_return_slot_writers(
     dest_stkoff: int = DEFAULT_RETURN_SLOT_STKOFF,
 ) -> dict[int, ReturnSlotWriter]:
     """All instructions that write to the return-slot stack variable."""
-    rows = conn.execute(
-        "SELECT block_serial, opcode_name, src_l_type, src_l_stkoff,"
-        " src_l_value_hex, substr(dstr, 1, 160)"
-        " FROM instructions WHERE snapshot_id=? AND dest_stkoff=?"
-        " ORDER BY block_serial",
-        (sid, dest_stkoff),
-    ).fetchall()
+    rows = (
+        Instruction.select(
+            Instruction.block_serial,
+            Instruction.opcode_name,
+            Instruction.src_l_type,
+            Instruction.src_l_stkoff,
+            Instruction.src_l_value_hex,
+            fn.substr(Instruction.dstr, 1, 160),
+        )
+        .where(
+            (Instruction.snapshot == sid)
+            & (Instruction.dest_stkoff == dest_stkoff)
+        )
+        .order_by(Instruction.block_serial)
+        .tuples()
+    )
     out: dict[int, ReturnSlotWriter] = {}
     for bs, op, slt, sls, slv, dstr in rows:
         out[int(bs)] = ReturnSlotWriter(
@@ -177,12 +200,18 @@ def query_v660_writers(
     dest_stkoff: int = DEFAULT_V660_STKOFF,
 ) -> dict[int, str]:
     """Constant-valued writes to the v660 auxiliary slot."""
-    rows = conn.execute(
-        "SELECT block_serial, src_l_value_hex FROM instructions"
-        " WHERE snapshot_id=? AND dest_stkoff=? AND src_l_value_hex IS NOT NULL"
-        " ORDER BY block_serial",
-        (sid, dest_stkoff),
-    ).fetchall()
+    rows = (
+        Instruction.select(
+            Instruction.block_serial, Instruction.src_l_value_hex
+        )
+        .where(
+            (Instruction.snapshot == sid)
+            & (Instruction.dest_stkoff == dest_stkoff)
+            & Instruction.src_l_value_hex.is_null(False)
+        )
+        .order_by(Instruction.block_serial)
+        .tuples()
+    )
     return {int(bs): str(val) for bs, val in rows}
 
 
@@ -526,7 +555,8 @@ def run_ledger(
     """
     if not db_path.exists():
         return f"Error: diag DB not found: {db_path}\n"
-    conn = sqlite3.connect(str(db_path))
+    db = open_diag_database(str(db_path))
+    conn = db.connection()
     try:
         if list_snapshots_only:
             lines = ["snapshots:"]
@@ -534,9 +564,12 @@ def run_ledger(
                 lines.append(f"  [{sid:2d}] {label} ({bc} blocks)")
             return "\n".join(lines) + "\n"
         sid = pick_snapshot(conn, snapshot_id)
-        label_row = conn.execute(
-            "SELECT label FROM snapshots WHERE id=?", (sid,)
-        ).fetchone()
+        label_row = (
+            Snapshot.select(Snapshot.label)
+            .where(Snapshot.id == sid)
+            .tuples()
+            .first()
+        )
         snap_label = str(label_row[0]) if label_row else ""
         blocks = query_blocks(conn, sid)
         writers = query_return_slot_writers(conn, sid)
@@ -544,7 +577,7 @@ def run_ledger(
         reachable = bfs_reachable(blocks)
         paths = trace_return_paths(blocks, writers, v660_map, reachable)
     finally:
-        conn.close()
+        db.close()
 
     after_returns: list[AfterReturn] = []
     if dump_path is not None and dump_path.exists():
