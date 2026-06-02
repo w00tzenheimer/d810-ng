@@ -6,6 +6,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+
+from d810._vendor.peewee import fn
+from d810.core.diag.models import (
+    Instruction,
+    RenderedProgramLine,
+    StateCfgEdge,
+)
 from d810.core.typing import Any
 
 
@@ -21,6 +28,11 @@ def block_detail(
 
     Returns ``None`` if the block does not exist in the snapshot.
     """
+    # raw-SQL: SELECT * with arbitrary name-based column access (this
+    # function returns the whole block row as a dict and then mutates it);
+    # a column-pinned ORM projection would couple it to the Block field set
+    # (§3 complex-SQL policy). Same rationale for the instructions /
+    # block_classification SELECT * reads below.
     conn.row_factory = _dict_factory
     cur = conn.execute(
         "SELECT * FROM blocks WHERE snapshot_id=? AND serial=?",
@@ -90,6 +102,9 @@ def var_writes(
     Queries instructions where ``dest_stkoff == stkoff`` (i.e. dest is a
     stack variable at the given offset).
     """
+    # raw-SQL: SELECT i.* LEFT JOIN blocks with an aliased extra column
+    # (block_start_ea_hex), returned verbatim as dicts; a star-join with a
+    # joined alias is clearer as SQL (§3 complex-SQL policy).
     conn.row_factory = _dict_factory
     cur = conn.execute(
         "SELECT i.*, b.start_ea_hex AS block_start_ea_hex "
@@ -114,13 +129,14 @@ def return_paths(
     Returns per-hop info including ``serial``, ``has_return_slot_write``,
     and ``write_opcode``.
     """
-    conn.row_factory = _dict_factory
-    cur = conn.execute(
-        "SELECT * FROM state_cfg_edges "
-        "WHERE snapshot_id=? AND edge_kind='CONDITIONAL_RETURN'",
-        (snapshot_id,),
+    edges = list(
+        StateCfgEdge.select()
+        .where(
+            (StateCfgEdge.snapshot == snapshot_id)
+            & (StateCfgEdge.edge_kind == "CONDITIONAL_RETURN")
+        )
+        .dicts()
     )
-    edges = cur.fetchall()
 
     results: list[dict[str, Any]] = []
     for edge in edges:
@@ -129,15 +145,19 @@ def return_paths(
         for serial in path_serials:
             hop: dict[str, Any] = {"serial": serial}
             # Check if this block has an instruction writing to 0x7F0
-            insn_cur = conn.execute(
-                "SELECT opcode_name FROM instructions "
-                "WHERE snapshot_id=? AND block_serial=? AND dest_stkoff=?",
-                (snapshot_id, serial, 0x7F0),
+            write_row = (
+                Instruction.select(Instruction.opcode_name)
+                .where(
+                    (Instruction.snapshot == snapshot_id)
+                    & (Instruction.block_serial == serial)
+                    & (Instruction.dest_stkoff == 0x7F0)
+                )
+                .tuples()
+                .first()
             )
-            write_row = insn_cur.fetchone()
             if write_row:
                 hop["has_return_slot_write"] = True
-                hop["write_opcode"] = write_row["opcode_name"]
+                hop["write_opcode"] = write_row[0]
             else:
                 hop["has_return_slot_write"] = False
                 hop["write_opcode"] = None
@@ -159,16 +179,18 @@ def rendered_program_text(
     variant_name: str,
 ) -> str | None:
     """Return the exact rendered program text for one stored variant."""
-    cur = conn.execute(
-        "SELECT text FROM rendered_program_lines "
-        "WHERE snapshot_id=? AND variant_name=? ORDER BY line_no",
-        (snapshot_id, variant_name),
+    rows = list(
+        RenderedProgramLine.select(RenderedProgramLine.text)
+        .where(
+            (RenderedProgramLine.snapshot_id == snapshot_id)
+            & (RenderedProgramLine.variant_name == variant_name)
+        )
+        .order_by(RenderedProgramLine.line_no)
+        .tuples()
     )
-    rows = cur.fetchall()
     if not rows:
         return None
-    texts = [row[0] if not isinstance(row, dict) else row["text"] for row in rows]
-    return "\n".join(texts)
+    return "\n".join(row[0] for row in rows)
 
 
 def rendered_program_nodes(
@@ -177,6 +199,7 @@ def rendered_program_nodes(
     variant_name: str,
 ) -> list[dict[str, Any]]:
     """Return rendered label blocks for one stored program variant."""
+    # raw-SQL: SELECT * returned verbatim as dicts (§3 complex-SQL policy).
     conn.row_factory = _dict_factory
     cur = conn.execute(
         "SELECT * FROM rendered_program_nodes "
@@ -191,6 +214,7 @@ def rendered_program_variants(
     snapshot_id: int,
 ) -> list[dict[str, Any]]:
     """Return stored rendered-program variants for a snapshot."""
+    # raw-SQL: SELECT * returned verbatim as dicts (§3 complex-SQL policy).
     conn.row_factory = _dict_factory
     cur = conn.execute(
         "SELECT * FROM rendered_programs WHERE snapshot_id=? ORDER BY variant_name",
@@ -200,6 +224,9 @@ def rendered_program_variants(
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    # raw-SQL: sqlite_master schema probe -- peewee does not model the
+    # system catalog; the back-compat readers in this module test optional
+    # table presence on older diag DBs (§3 complex-SQL policy).
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
         (table_name,),
@@ -250,6 +277,10 @@ def _placeholders(values: list[Any]) -> str:
 
 
 def _observation_select(where_sql: str) -> str:
+    # raw-SQL: dynamic-WHERE LEFT JOIN (block_observations + snapshots +
+    # blocks) with aliased columns, reused by several callers with
+    # different predicates; a hand-built JOIN+alias projection is clearer
+    # as SQL (§3 complex-SQL policy).
     return (
         "SELECT bo.snapshot_id, s.label AS snapshot_label, "
         "       bo.serial, bo.maturity, bo.phase, "
@@ -361,6 +392,8 @@ def _observation_correlations(
 
 
 def _basic_block_select(where_sql: str) -> str:
+    # raw-SQL: dynamic-WHERE LEFT JOIN (blocks + snapshots) with aliased
+    # columns, reused with different predicates (§3 complex-SQL policy).
     return (
         "SELECT b.snapshot_id, s.label AS snapshot_label, "
         "       s.maturity, s.phase, b.serial, b.start_ea_hex, "
@@ -425,6 +458,8 @@ def _fallback_instruction_rows_by_ea(
 ) -> list[dict[str, Any]]:
     if not _table_exists(conn, "instructions"):
         return []
+    # raw-SQL: COUNT(*) + GROUP_CONCAT aggregate over a LEFT JOIN, grouped
+    # per (snapshot, block), with an EA-spelling IN-list (§3 complex-SQL).
     conn.row_factory = _dict_factory
     hexes = _ea_hex_candidates(ea)
     rows = conn.execute(
@@ -454,15 +489,19 @@ def _real_instruction_eas(
 ) -> list[int]:
     if not _table_exists(conn, "instructions"):
         return []
-    conn.row_factory = _dict_factory
-    rows = conn.execute(
-        "SELECT DISTINCT ea_i64 FROM instructions "
-        "WHERE snapshot_id=? AND block_serial=? "
-        "AND ea_i64 IS NOT NULL AND ea_i64 != 0 "
-        "ORDER BY ea_i64",
-        (snapshot_id, serial),
-    ).fetchall()
-    return [int(row["ea_i64"]) for row in rows]
+    rows = (
+        Instruction.select(Instruction.ea_i64)
+        .where(
+            (Instruction.snapshot == snapshot_id)
+            & (Instruction.block_serial == serial)
+            & Instruction.ea_i64.is_null(False)
+            & (Instruction.ea_i64 != 0)
+        )
+        .distinct()
+        .order_by(Instruction.ea_i64)
+        .tuples()
+    )
+    return [int(row[0]) for row in rows]
 
 
 def _fallback_instruction_correlations(
@@ -471,6 +510,8 @@ def _fallback_instruction_correlations(
 ) -> list[dict[str, Any]]:
     if not eas or not _table_exists(conn, "instructions"):
         return []
+    # raw-SQL: COUNT(DISTINCT ea_i64) aggregate over a LEFT JOIN, grouped
+    # per (snapshot, block), with a shared-EA IN-list (§3 complex-SQL).
     conn.row_factory = _dict_factory
     ea_values = _unique([int(ea) for ea in eas if ea])
     rows = conn.execute(
@@ -609,6 +650,8 @@ def _lineage_rows(
     where_sql: str,
     params: list[Any],
 ) -> list[dict[str, Any]]:
+    # raw-SQL: dynamic-WHERE LEFT JOIN (block_lineage + snapshots), reused
+    # by direct/origin/child lineage callers (§3 complex-SQL policy).
     conn.row_factory = _dict_factory
     return conn.execute(
         "SELECT bl.snapshot_id, s.label AS snapshot_label, bl.serial, "
@@ -631,6 +674,7 @@ def _cfg_provenance_rows(
 ) -> list[dict[str, Any]]:
     if not _table_exists(conn, "cfg_provenance"):
         return []
+    # raw-SQL: SELECT * returned verbatim as dicts (§3 complex-SQL policy).
     conn.row_factory = _dict_factory
     return conn.execute(
         "SELECT * FROM cfg_provenance "
@@ -744,6 +788,10 @@ def state_local(
     Old databases that lack the typed local tables return the basic node row
     with ``local_facts_available=False`` instead of raising.
     """
+    # raw-SQL: this function joins a SELECT * node row with three optional
+    # typed-local tables via multi-spelling state_hex IN-lists + entry_block
+    # filters and returns SELECT * rows verbatim as dicts; the dynamic
+    # multi-table assembly is clearer as SQL (§3 complex-SQL policy).
     conn.row_factory = _dict_factory
     state_value = int(state)
     fixed_hex = _state_hex(state_value)
@@ -903,6 +951,10 @@ def merge_causality(
     can be inferred) containing the best-match TO block with the count of
     shared EAs.
     """
+    # raw-SQL: cross-snapshot block-vanish/absorber inference -- SELECT *
+    # block rows, instruction EA scans, and a COUNT(*) GROUP BY ORDER BY
+    # DESC LIMIT 1 best-shared-EA aggregate over an EA IN-list; the
+    # aggregate correlation is clearer as SQL (§3 complex-SQL policy).
     conn.row_factory = _dict_factory
     from_serials = {
         r["serial"]
@@ -1015,6 +1067,9 @@ def _fact_rows(
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """Query one fact lifecycle table with exact-match filters."""
+    # raw-SQL: generic dynamic-WHERE SELECT * over a runtime-chosen fact
+    # table (table name + optional filters), returned verbatim as dicts;
+    # the dynamic table + predicate set is clearer as SQL (§3 policy).
     conn.row_factory = _dict_factory
     clauses: list[str] = []
     params: list[Any] = []
@@ -1144,6 +1199,9 @@ def fact_trace(
     kind: str | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Return observations and mappings for one semantic fact key."""
+    # raw-SQL: dynamic-WHERE SELECT * over fact_observations + a follow-up
+    # fact_mappings SELECT * gated by two computed IN-lists (fact ids +
+    # func eas), returned verbatim as dicts (§3 complex-SQL policy).
     conn.row_factory = _dict_factory
     clauses = ["semantic_key=?"]
     params: list[Any] = [semantic_key]
@@ -1202,6 +1260,10 @@ def fact_diff(
     target maturity are reported ACTIVE; otherwise the row is CARRIED_FORWARD
     because no target-maturity mapping invalidated the source fact.
     """
+    # raw-SQL: three dynamic-WHERE SELECT * passes (source observations,
+    # target-maturity mappings, target observations) correlated through
+    # computed fact-id/func-ea IN-lists; the multi-pass dynamic correlation
+    # is clearer as SQL (§3 complex-SQL policy).
     conn.row_factory = _dict_factory
     clauses = ["maturity=?"]
     params: list[Any] = [source_maturity]
