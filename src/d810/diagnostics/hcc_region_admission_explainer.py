@@ -39,6 +39,14 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from d810._vendor.peewee import fn
+from d810.core.diag import open_diag_database
+from d810.core.diag.models import (
+    RegionShapeFeature,
+    StateCfgEdge,
+    StateCfgNode,
+    StateCfgNodeBlock,
+)
 from d810.core.typing import Any, Iterable, Sequence
 from d810.diagnostics.hcc_byte_cascade_trace import (
     ByteCascadeRow,
@@ -177,14 +185,12 @@ class AdmissionExplanation:
 def _latest_dag_snapshot_id(conn: sqlite3.Connection) -> int | None:
     """Return the snapshot id of the latest non-empty state_cfg_nodes row."""
     try:
-        row = conn.execute(
-            "SELECT MAX(snapshot_id) FROM state_cfg_nodes"
-        ).fetchone()
+        value = StateCfgNode.select(fn.MAX(StateCfgNode.snapshot)).scalar()
     except sqlite3.OperationalError:
         return None
-    if row is None or row[0] is None:
+    if value is None:
         return None
-    return int(row[0])
+    return int(value)
 
 
 def _resolve_state_hex_for_block(
@@ -195,6 +201,9 @@ def _resolve_state_hex_for_block(
     """Best-effort: find a dag_node state_hex that owns *block_serial*."""
     if block_serial is None:
         return None
+    # raw-SQL: role-priority CASE-WHEN ORDER BY picks the most-specific
+    # owning node for a block; a custom rank expression reads more clearly
+    # as SQL (§3 complex-SQL policy).
     try:
         row = conn.execute(
             """
@@ -222,22 +231,26 @@ def _dag_neighbor_counts(
 ) -> tuple[int, int, list[str]]:
     """Return (#preds, #succs, distinct neighbor state_hexes)."""
     try:
-        pred_rows = conn.execute(
-            """
-            SELECT DISTINCT source_state_hex FROM state_cfg_edges
-            WHERE snapshot_id=? AND target_state_hex=?
-              AND source_state_hex IS NOT NULL
-            """,
-            (snapshot_id, state_hex),
-        ).fetchall()
-        succ_rows = conn.execute(
-            """
-            SELECT DISTINCT target_state_hex FROM state_cfg_edges
-            WHERE snapshot_id=? AND source_state_hex=?
-              AND target_state_hex IS NOT NULL
-            """,
-            (snapshot_id, state_hex),
-        ).fetchall()
+        pred_rows = (
+            StateCfgEdge.select(StateCfgEdge.source_state_hex)
+            .where(
+                (StateCfgEdge.snapshot == snapshot_id)
+                & (StateCfgEdge.target_state_hex == state_hex)
+                & StateCfgEdge.source_state_hex.is_null(False)
+            )
+            .distinct()
+            .tuples()
+        )
+        succ_rows = (
+            StateCfgEdge.select(StateCfgEdge.target_state_hex)
+            .where(
+                (StateCfgEdge.snapshot == snapshot_id)
+                & (StateCfgEdge.source_state_hex == state_hex)
+                & StateCfgEdge.target_state_hex.is_null(False)
+            )
+            .distinct()
+            .tuples()
+        )
     except sqlite3.OperationalError:
         return 0, 0, []
     preds = {str(r[0]) for r in pred_rows if r[0]}
@@ -258,16 +271,20 @@ def _bfs_chain_size(
     while frontier and len(visited) < max_nodes:
         next_frontier: list[str] = []
         try:
-            placeholders = ",".join("?" for _ in frontier)
-            rows = conn.execute(
-                f"""
-                SELECT source_state_hex, target_state_hex FROM state_cfg_edges
-                WHERE snapshot_id=?
-                  AND (source_state_hex IN ({placeholders})
-                       OR target_state_hex IN ({placeholders}))
-                """,
-                (snapshot_id, *frontier, *frontier),
-            ).fetchall()
+            rows = (
+                StateCfgEdge.select(
+                    StateCfgEdge.source_state_hex,
+                    StateCfgEdge.target_state_hex,
+                )
+                .where(
+                    (StateCfgEdge.snapshot == snapshot_id)
+                    & (
+                        StateCfgEdge.source_state_hex.in_(frontier)
+                        | StateCfgEdge.target_state_hex.in_(frontier)
+                    )
+                )
+                .tuples()
+            )
         except sqlite3.OperationalError:
             break
         for src, tgt in rows:
@@ -305,23 +322,24 @@ def _count_neighbors_admitted_to_region(
     if not neighbor_state_hexes:
         return 0
     try:
-        placeholders = ",".join("?" for _ in neighbor_state_hexes)
-        rows = conn.execute(
-            f"""
-            SELECT DISTINCT block_serial FROM state_cfg_node_blocks
-            WHERE snapshot_id=? AND state_hex IN ({placeholders})
-            """,
-            (snapshot_id, *neighbor_state_hexes),
-        ).fetchall()
+        rows = (
+            StateCfgNodeBlock.select(StateCfgNodeBlock.block_serial)
+            .where(
+                (StateCfgNodeBlock.snapshot == snapshot_id)
+                & StateCfgNodeBlock.state_hex.in_(list(neighbor_state_hexes))
+            )
+            .distinct()
+            .tuples()
+        )
     except sqlite3.OperationalError:
         return 0
     neighbor_blocks = {int(r[0]) for r in rows if r[0] is not None}
     if not neighbor_blocks:
         return 0
     try:
-        feat_rows = conn.execute(
-            "SELECT value_text FROM region_shape_features"
-        ).fetchall()
+        feat_rows = list(
+            RegionShapeFeature.select(RegionShapeFeature.value_text).tuples()
+        )
     except sqlite3.OperationalError:
         return 0
     admitted = 0
@@ -481,11 +499,12 @@ def explain(
             classify(r, gather_evidence_no_db(r))
             for r in targets
         ]
-    conn = sqlite3.connect(str(db_path))
+    db = open_diag_database(str(db_path))
     try:
+        conn = db.connection()
         return [classify(r, gather_evidence(conn, r)) for r in targets]
     finally:
-        conn.close()
+        db.close()
 
 
 def gather_evidence_no_db(row: ByteCascadeRow) -> AdmissionEvidence:

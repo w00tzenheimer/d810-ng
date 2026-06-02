@@ -11,6 +11,14 @@ from pathlib import Path
 
 import pytest
 
+from d810.core.diag import create_diag_database
+from d810.core.diag.models import (
+    RegionShapeFeature,
+    Snapshot,
+    StateCfgEdge,
+    StateCfgNode,
+    StateCfgNodeBlock,
+)
 from d810.diagnostics.hcc_byte_cascade_trace import ByteCascadeRow
 from d810.diagnostics.hcc_region_admission_explainer import (
     AdmissionEvidence,
@@ -270,60 +278,47 @@ def test_format_report_json_round_trips_via_dataclass_dict():
 
 @pytest.fixture
 def in_memory_db() -> sqlite3.Connection:
-    """Build a minimal diag-shaped DB exercising the join paths."""
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(
-        """
-        CREATE TABLE snapshots (id INTEGER PRIMARY KEY, label TEXT);
-        CREATE TABLE state_cfg_nodes (
-            snapshot_id INTEGER, state_hex TEXT, state_i64 INTEGER,
-            entry_block INTEGER, classification TEXT, shared_suffix TEXT,
-            PRIMARY KEY (snapshot_id, state_hex)
-        );
-        CREATE TABLE state_cfg_edges (
-            snapshot_id INTEGER, edge_id INTEGER,
-            source_state_hex TEXT, source_state_i64 INTEGER,
-            target_state_hex TEXT, target_state_i64 INTEGER,
-            edge_kind TEXT, source_block INTEGER, source_arm INTEGER,
-            target_entry INTEGER, ordered_path TEXT,
-            PRIMARY KEY (snapshot_id, edge_id)
-        );
-        CREATE TABLE state_cfg_node_blocks (
-            snapshot_id INTEGER, state_hex TEXT, entry_block INTEGER,
-            block_serial INTEGER, block_index INTEGER, role TEXT,
-            PRIMARY KEY (snapshot_id, state_hex, entry_block, role, block_index)
-        );
-        CREATE TABLE region_shape_features (
-            func_ea_hex TEXT, func_ea_i64 INTEGER, snapshot_id INTEGER,
-            source TEXT, region TEXT, feature TEXT, value_text TEXT,
-            evidence_json TEXT,
-            PRIMARY KEY (func_ea_hex, source, snapshot_id, feature)
-        );
+    """Build a minimal diag-shaped DB exercising the join paths.
 
-        INSERT INTO snapshots VALUES (7, 'GLBOPT1_post_d810');
-
-        -- byte's block 100 owned by state A; A has neighbors B, C
-        INSERT INTO state_cfg_nodes VALUES (7, '0xa', 10, 200, 'EXACT', NULL);
-        INSERT INTO state_cfg_nodes VALUES (7, '0xb', 11, 201, 'EXACT', NULL);
-        INSERT INTO state_cfg_nodes VALUES (7, '0xc', 12, 202, 'EXACT', NULL);
-
-        INSERT INTO state_cfg_node_blocks VALUES (7, '0xa', 200, 100, 0, 'owned');
-        INSERT INTO state_cfg_node_blocks VALUES (7, '0xb', 201, 101, 0, 'owned');
-        INSERT INTO state_cfg_node_blocks VALUES (7, '0xc', 202, 102, 0, 'owned');
-
-        INSERT INTO state_cfg_edges VALUES (7, 0, '0xb', 11, '0xa', 10,
-                                      'TRANSITION', 11, NULL, 200, '');
-        INSERT INTO state_cfg_edges VALUES (7, 1, '0xa', 10, '0xc', 12,
-                                      'TRANSITION', 10, NULL, 202, '');
-
-        -- region feature value names blk[101] => B is admitted, A and C are not
-        INSERT INTO region_shape_features VALUES (
-            'f', 1, 7, 'D810', 'h1', 'members', 'blk[101]', '{}'
-        );
-        """
-    )
-    conn.commit()
-    return conn
+    create_diag_database binds the Models so gather_evidence's ORM reads
+    target this in-memory DB; the fixture returns the live connection.
+    """
+    db = create_diag_database(":memory:")
+    Snapshot.insert(
+        id=7, label="GLBOPT1_post_d810", func_ea_hex="0x0", func_ea_i64=0,
+        maturity="MMAT_GLBOPT1", phase="unknown", block_count=0, timestamp=0.0,
+    ).execute()
+    # byte's block 100 owned by state A; A has neighbors B, C
+    StateCfgNode.insert_many([
+        dict(snapshot=7, state_hex="0xa", state_i64=10, entry_block=200,
+             classification="EXACT", shared_suffix=None),
+        dict(snapshot=7, state_hex="0xb", state_i64=11, entry_block=201,
+             classification="EXACT", shared_suffix=None),
+        dict(snapshot=7, state_hex="0xc", state_i64=12, entry_block=202,
+             classification="EXACT", shared_suffix=None),
+    ]).execute()
+    StateCfgNodeBlock.insert_many([
+        dict(snapshot=7, state_hex="0xa", entry_block=200, block_serial=100,
+             block_index=0, role="owned"),
+        dict(snapshot=7, state_hex="0xb", entry_block=201, block_serial=101,
+             block_index=0, role="owned"),
+        dict(snapshot=7, state_hex="0xc", entry_block=202, block_serial=102,
+             block_index=0, role="owned"),
+    ]).execute()
+    StateCfgEdge.insert_many([
+        dict(snapshot=7, edge_id=0, source_state_hex="0xb", source_state_i64=11,
+             target_state_hex="0xa", target_state_i64=10, edge_kind="TRANSITION",
+             source_block=11, source_arm=None, target_entry=200, ordered_path=""),
+        dict(snapshot=7, edge_id=1, source_state_hex="0xa", source_state_i64=10,
+             target_state_hex="0xc", target_state_i64=12, edge_kind="TRANSITION",
+             source_block=10, source_arm=None, target_entry=202, ordered_path=""),
+    ]).execute()
+    # region feature value names blk[101] => B is admitted, A and C are not
+    RegionShapeFeature.insert(
+        func_ea_hex="f", func_ea_i64=1, snapshot_id=7, source="D810",
+        region="h1", feature="members", value_text="blk[101]", evidence_json="{}",
+    ).execute()
+    return db.connection()
 
 
 def test_gather_evidence_resolves_chain_size_and_neighbors(in_memory_db):
