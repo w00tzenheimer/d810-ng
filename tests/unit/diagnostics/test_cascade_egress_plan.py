@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from d810.core.diag import open_diag_database
 from d810.diagnostics.cascade_egress_plan import (
     _json_int_tuple,
     choose_fact_snapshot,
@@ -255,11 +256,11 @@ def test_choose_target_snapshot_raises_when_nothing_eligible(
 
 
 def test_load_blocks_attaches_opcodes_and_text(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        blocks = load_blocks(conn, 17)
+        blocks = load_blocks(db.connection(), 17)
     finally:
-        conn.close()
+        db.close()
     assert sorted(blocks) == [0, 10, 20, 30, 100]
     assert blocks[20].insn_opcodes == ("m_mov",)
     assert "var_8" in blocks[20].insn_text[0]
@@ -269,11 +270,11 @@ def test_load_blocks_attaches_opcodes_and_text(diag_db: Path) -> None:
 
 
 def test_load_blocks_empty_when_snapshot_missing(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        assert load_blocks(conn, 999) == {}
+        assert load_blocks(db.connection(), 999) == {}
     finally:
-        conn.close()
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -282,11 +283,11 @@ def test_load_blocks_empty_when_snapshot_missing(diag_db: Path) -> None:
 
 
 def test_load_sites_returns_one_per_terminal_byte_fact(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        sites = load_sites(conn, 5)
+        sites = load_sites(db.connection(), 5)
     finally:
-        conn.close()
+        db.close()
     by_byte = {s.byte_index: s for s in sites}
     assert sorted(by_byte) == [3, 6]
     assert by_byte[3].block_serial == 20
@@ -296,18 +297,18 @@ def test_load_sites_returns_one_per_terminal_byte_fact(diag_db: Path) -> None:
 
 
 def test_load_sites_skips_non_terminal_fact_kinds(diag_db: Path) -> None:
-    conn = sqlite3.connect(str(diag_db))
+    db = open_diag_database(str(diag_db))
     try:
-        sites = load_sites(conn, 5)
+        sites = load_sites(db.connection(), 5)
     finally:
-        conn.close()
+        db.close()
     # The LoopCarrierFact row we inserted must not appear.
     assert all("fact_byte_" in s.fact_id for s in sites)
 
 
 def test_load_sites_skips_malformed_payload(tmp_path: Path) -> None:
-    db = tmp_path / "bad.sqlite3"
-    conn = sqlite3.connect(str(db))
+    db_path = tmp_path / "bad.sqlite3"
+    conn = sqlite3.connect(str(db_path))
     try:
         conn.executescript(
             "CREATE TABLE fact_observations(snapshot_id INTEGER,"
@@ -323,9 +324,13 @@ def test_load_sites_skips_malformed_payload(tmp_path: Path) -> None:
             (5, "non_dict", "TerminalByteEmitterFact", "[1,2,3]", None, 0.0),
         )
         conn.commit()
-        sites = load_sites(conn, 5)
     finally:
         conn.close()
+    db = open_diag_database(str(db_path))
+    try:
+        sites = load_sites(db.connection(), 5)
+    finally:
+        db.close()
     assert sites == []
 
 
