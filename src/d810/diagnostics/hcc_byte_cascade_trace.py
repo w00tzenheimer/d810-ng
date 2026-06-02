@@ -19,6 +19,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from d810.core.diag import open_diag_database
+from d810.core.diag.models import Snapshot
 from d810.core.typing import Any, Iterable, Sequence
 
 
@@ -282,6 +284,10 @@ def _count_var190_refs_per_snapshot(
         # return 0 for byte 0 -- not informative.
         return {}
     pattern = f"%var_190.8+#{byte_index}.8%"
+    # raw-SQL: LEFT JOIN + COUNT aggregate grouped per snapshot, gated by a
+    # dstr LIKE pattern in the JOIN condition (LIKE maps to GLOB on SQLite
+    # under the ORM); a per-snapshot conditional-count is a natural SQL
+    # aggregate, not a query-builder fit (§3 complex-SQL policy).
     try:
         cursor = conn.execute(
             """
@@ -330,10 +336,15 @@ def _count_source_ea_survival_per_snapshot(
     if not eas_lower:
         return {}
     try:
-        snap_rows = conn.execute(
-            "SELECT id, label FROM snapshots ORDER BY id"
-        ).fetchall()
+        snap_rows = (
+            Snapshot.select(Snapshot.id, Snapshot.label)
+            .order_by(Snapshot.id)
+            .tuples()
+        )
         placeholders = ",".join("?" for _ in eas_lower)
+        # raw-SQL: GROUP BY (snapshot, LOWER(ea_hex)) COUNT aggregate with a
+        # LOWER()-normalised IN filter -- a grouped survival count that an
+        # ORM rewrite would not clarify (§3 complex-SQL policy).
         survival_rows = conn.execute(
             f"""
             SELECT i.snapshot_id, LOWER(i.ea_hex), COUNT(*) AS n
@@ -373,7 +384,8 @@ def enrich_rows_with_db(
     """
     if not db_path.exists():
         return list(rows)
-    conn = sqlite3.connect(str(db_path))
+    db = open_diag_database(str(db_path))
+    conn = db.connection()
     try:
         from dataclasses import replace as _dc_replace
 
@@ -392,7 +404,7 @@ def enrich_rows_with_db(
             )
         return out
     finally:
-        conn.close()
+        db.close()
 
 
 # ---------------------------------------------------------------------------
