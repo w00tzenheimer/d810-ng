@@ -67,6 +67,13 @@ def _gated_overrides(
     snap_id: int,
 ) -> dict[tuple[str, str, int | None], tuple[str, int | None]]:
     """Return selected terminal-tail alternate targets keyed by edge value."""
+    # raw-SQL: four correlated scalar subqueries over
+    # state_cfg_edge_alternate_selections (per-edge sel_count + the
+    # reached_state/reached_byte/source_byte of the single selected row)
+    # joined to the edge + diagnostic rows. Runs on the active bound
+    # session connection (get_active_diag_conn), not a CLI-opened DB. An
+    # ORM rewrite of the correlated-subquery projection would be strictly
+    # less readable (§3 complex-SQL policy).
     rows = diag_db.execute(
         """
         SELECT
