@@ -52,7 +52,7 @@ from d810.backends.hexrays.lifter import lift_function
 from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
 from d810.analyses.control_flow.dispatcher_recovery import recover_dispatcher
 from d810.analyses.control_flow.block_ownership_domain import analyze_block_ownership
-from d810.analyses.control_flow.read_dag import read_dag_from
+from d810.analyses.control_flow.read_state_cfg import read_dag_from
 from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
 from d810.analyses.control_flow.dispatcher_discovery_extractors import (
     discover_dispatcher_from_flow_graph,

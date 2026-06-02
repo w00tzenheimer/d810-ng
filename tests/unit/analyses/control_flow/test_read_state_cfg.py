@@ -19,7 +19,7 @@ from d810.analyses.control_flow.linearized_state_dag import (
     SemanticEdgeKind,
     StateNodeKind,
 )
-from d810.analyses.control_flow.read_dag import read_dag_from
+from d810.analyses.control_flow.read_state_cfg import read_dag_from
 from d810.analyses.control_flow.transition_builder import (
     StateHandler,
     StateTransition,
@@ -253,7 +253,7 @@ def test_conditional_edges_from_conds_emits_conditional_transition():
     # #3.2 (reuse): the legacy's path-derived ConditionalTransition (from
     # detect_conditional_transitions) -> a CONDITIONAL_TRANSITION edge keyed by
     # the branch block + arm, target resolved via the state node set.
-    from d810.analyses.control_flow.read_dag import _conditional_edges_from_conds
+    from d810.analyses.control_flow.read_state_cfg import _conditional_edges_from_conds
     from d810.analyses.control_flow.state_machine_analysis import (
         ConditionalTransition,
     )
@@ -290,7 +290,7 @@ def test_conditional_edges_from_conds_emits_conditional_transition():
 def test_conditional_edges_from_conds_emits_conditional_return_for_terminal():
     # A terminal conditional arm (is_terminal_no_write) -> CONDITIONAL_RETURN with
     # target=None / "RETURN" (the legacy pass-2 terminal branch).
-    from d810.analyses.control_flow.read_dag import _conditional_edges_from_conds
+    from d810.analyses.control_flow.read_state_cfg import _conditional_edges_from_conds
     from d810.analyses.control_flow.state_machine_analysis import (
         ConditionalTransition,
     )
