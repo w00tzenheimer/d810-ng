@@ -12,6 +12,9 @@ import os
 import sqlite3
 from pathlib import Path
 
+from d810.core.diag import open_diag_database
+from d810.core.diag.models import Block, Snapshot
+
 
 _KILL_POINT_SNAPSHOT_ORDER: tuple[str, ...] = (
     "maturity_MMAT_GLBOPT1_pre_d810",
@@ -72,28 +75,31 @@ def _open_diag_db_readonly() -> sqlite3.Connection | None:
         )
         for path in candidates:
             try:
-                conn = sqlite3.connect(str(path))
+                # Bind Models read-only; returns the bound connection so the
+                # cross-snapshot ORM reads below target this diag DB.
+                conn = open_diag_database(str(path)).connection()
             except Exception:
                 continue
             try:
-                has_post_pipeline = conn.execute(
-                    "SELECT 1 FROM snapshots WHERE label = ? LIMIT 1",
-                    ("post_pipeline",),
-                ).fetchone()
-                has_glbopt1_post = conn.execute(
-                    "SELECT 1 FROM snapshots WHERE label = ? LIMIT 1",
-                    ("maturity_MMAT_GLBOPT1_post_d810",),
-                ).fetchone()
+                has_post_pipeline = (
+                    Snapshot.select(Snapshot.id)
+                    .where(Snapshot.label == "post_pipeline")
+                    .exists()
+                )
+                has_glbopt1_post = (
+                    Snapshot.select(Snapshot.id)
+                    .where(
+                        Snapshot.label == "maturity_MMAT_GLBOPT1_post_d810"
+                    )
+                    .exists()
+                )
             except Exception:
                 try:
                     conn.close()
                 except Exception:
                     pass
                 continue
-            if (
-                has_post_pipeline is not None
-                and has_glbopt1_post is not None
-            ):
+            if has_post_pipeline and has_glbopt1_post:
                 return conn
             try:
                 conn.close()
@@ -111,20 +117,29 @@ def _query_block_state_in_snapshot(
 ) -> dict[str, object] | None:
     """Return predecessor/successor/reachability state for one snapshot."""
     try:
-        row = conn.execute(
-            "SELECT id FROM snapshots WHERE label = ? ORDER BY id DESC LIMIT 1",
-            (snapshot_label,),
-        ).fetchone()
+        row = (
+            Snapshot.select(Snapshot.id)
+            .where(Snapshot.label == snapshot_label)
+            .order_by(Snapshot.id.desc())
+            .limit(1)
+            .tuples()
+            .first()
+        )
     except Exception:
         return None
     if row is None:
         return None
     snapshot_id = int(row[0])
     try:
-        blk_row = conn.execute(
-            "SELECT preds, succs FROM blocks WHERE snapshot_id = ? AND serial = ?",
-            (snapshot_id, block_serial),
-        ).fetchone()
+        blk_row = (
+            Block.select(Block.preds, Block.succs)
+            .where(
+                (Block.snapshot == snapshot_id)
+                & (Block.serial == block_serial)
+            )
+            .tuples()
+            .first()
+        )
     except Exception:
         return None
     if blk_row is None:
@@ -137,10 +152,11 @@ def _query_block_state_in_snapshot(
 
     reachable = "UNKNOWN"
     try:
-        all_rows = conn.execute(
-            "SELECT serial, succs FROM blocks WHERE snapshot_id = ?",
-            (snapshot_id,),
-        ).fetchall()
+        all_rows = (
+            Block.select(Block.serial, Block.succs)
+            .where(Block.snapshot == snapshot_id)
+            .tuples()
+        )
         succ_map: dict[int, list[int]] = {}
         for serial, succs_blob in all_rows:
             try:

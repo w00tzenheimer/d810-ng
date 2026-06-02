@@ -2,47 +2,53 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 
+from d810.core.diag import create_diag_database
+from d810.core.diag.models import Block, Snapshot
 from d810.diagnostics.hcc_anchor_snapshot_context import (
     collect_anchor_snapshot_context_from_connection,
     default_anchor_snapshot_context,
 )
 
 
-def _make_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.execute("CREATE TABLE snapshots (id INTEGER PRIMARY KEY, label TEXT)")
-    conn.execute(
-        "CREATE TABLE blocks (snapshot_id INTEGER, serial INTEGER, preds TEXT, succs TEXT)"
-    )
-    return conn
+def _make_conn():
+    # create_diag_database binds the Models to this in-memory DB so the ORM
+    # reads in collect_anchor_snapshot_context_from_connection hit it.
+    return create_diag_database(":memory:")
 
 
-def _insert_snapshot(conn: sqlite3.Connection, snapshot_id: int, label: str) -> None:
-    conn.execute(
-        "INSERT INTO snapshots (id, label) VALUES (?, ?)",
-        (snapshot_id, label),
-    )
+def _insert_snapshot(db, snapshot_id: int, label: str) -> None:
+    Snapshot.insert(
+        id=snapshot_id,
+        label=label,
+        func_ea_hex="0x0",
+        func_ea_i64=0,
+        maturity="MMAT_GLBOPT1",
+        phase="unknown",
+        block_count=0,
+        timestamp=0.0,
+    ).execute()
 
 
 def _insert_block(
-    conn: sqlite3.Connection,
+    db,
     snapshot_id: int,
     serial: int,
     *,
     preds: list[int] | None = None,
     succs: list[int] | None = None,
 ) -> None:
-    conn.execute(
-        "INSERT INTO blocks (snapshot_id, serial, preds, succs) VALUES (?, ?, ?, ?)",
-        (
-            snapshot_id,
-            serial,
-            json.dumps(preds or []),
-            json.dumps(succs or []),
-        ),
-    )
+    Block.insert(
+        snapshot=snapshot_id,
+        serial=serial,
+        block_type=0,
+        type_name="",
+        nsucc=len(succs or []),
+        npred=len(preds or []),
+        succs=json.dumps(succs or []),
+        preds=json.dumps(preds or []),
+        insn_count=0,
+    ).execute()
 
 
 def test_default_anchor_snapshot_context_is_unknown():
@@ -60,22 +66,22 @@ def test_default_anchor_snapshot_context_is_unknown():
 
 
 def test_collect_anchor_snapshot_context_reports_first_missing_snapshot():
-    conn = _make_conn()
-    _insert_snapshot(conn, 1, "maturity_MMAT_GLBOPT1_pre_d810")
-    _insert_snapshot(conn, 2, "handler_chain_composer_post_apply")
-    _insert_snapshot(conn, 3, "post_pipeline")
-    _insert_snapshot(conn, 4, "maturity_MMAT_GLBOPT1_post_d810")
-    _insert_block(conn, 1, 0, succs=[10])
-    _insert_block(conn, 1, 10, preds=[0], succs=[20])
-    _insert_block(conn, 1, 20, preds=[10], succs=[])
-    _insert_block(conn, 2, 0, succs=[10])
-    _insert_block(conn, 2, 10, preds=[0], succs=[30])
-    _insert_block(conn, 2, 30, preds=[10], succs=[])
-    _insert_block(conn, 3, 0, succs=[99])
-    _insert_block(conn, 4, 0, succs=[99])
+    db = _make_conn()
+    _insert_snapshot(db, 1, "maturity_MMAT_GLBOPT1_pre_d810")
+    _insert_snapshot(db, 2, "handler_chain_composer_post_apply")
+    _insert_snapshot(db, 3, "post_pipeline")
+    _insert_snapshot(db, 4, "maturity_MMAT_GLBOPT1_post_d810")
+    _insert_block(db, 1, 0, succs=[10])
+    _insert_block(db, 1, 10, preds=[0], succs=[20])
+    _insert_block(db, 1, 20, preds=[10], succs=[])
+    _insert_block(db, 2, 0, succs=[10])
+    _insert_block(db, 2, 10, preds=[0], succs=[30])
+    _insert_block(db, 2, 30, preds=[10], succs=[])
+    _insert_block(db, 3, 0, succs=[99])
+    _insert_block(db, 4, 0, succs=[99])
 
     context = collect_anchor_snapshot_context_from_connection(
-        conn,
+        db.connection(),
         anchor_serial=10,
     )
 
@@ -93,20 +99,20 @@ def test_collect_anchor_snapshot_context_reports_first_missing_snapshot():
 
 
 def test_collect_anchor_snapshot_context_keeps_latest_label_instance():
-    conn = _make_conn()
-    _insert_snapshot(conn, 1, "maturity_MMAT_GLBOPT1_pre_d810")
-    _insert_snapshot(conn, 2, "maturity_MMAT_GLBOPT1_pre_d810")
-    _insert_snapshot(conn, 3, "handler_chain_composer_post_apply")
-    _insert_snapshot(conn, 4, "post_pipeline")
-    _insert_snapshot(conn, 5, "maturity_MMAT_GLBOPT1_post_d810")
-    _insert_block(conn, 1, 10, preds=[1], succs=[2])
-    _insert_block(conn, 2, 10, preds=[3], succs=[4])
-    _insert_block(conn, 3, 10, preds=[3], succs=[4])
-    _insert_block(conn, 4, 10, preds=[3], succs=[4])
-    _insert_block(conn, 5, 10, preds=[3], succs=[4])
+    db = _make_conn()
+    _insert_snapshot(db, 1, "maturity_MMAT_GLBOPT1_pre_d810")
+    _insert_snapshot(db, 2, "maturity_MMAT_GLBOPT1_pre_d810")
+    _insert_snapshot(db, 3, "handler_chain_composer_post_apply")
+    _insert_snapshot(db, 4, "post_pipeline")
+    _insert_snapshot(db, 5, "maturity_MMAT_GLBOPT1_post_d810")
+    _insert_block(db, 1, 10, preds=[1], succs=[2])
+    _insert_block(db, 2, 10, preds=[3], succs=[4])
+    _insert_block(db, 3, 10, preds=[3], succs=[4])
+    _insert_block(db, 4, 10, preds=[3], succs=[4])
+    _insert_block(db, 5, 10, preds=[3], succs=[4])
 
     context = collect_anchor_snapshot_context_from_connection(
-        conn,
+        db.connection(),
         anchor_serial=10,
     )
 
