@@ -5,6 +5,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 
+from d810.core.diag.models import FactObservation, StateDispatcherRow
 from d810.core.typing import Iterable
 
 
@@ -58,23 +59,32 @@ def load_latest_state_dispatcher_map_from_db(
 ) -> LoadedStateDispatcherMap | None:
     """Load the latest persisted exact state-dispatcher rows."""
     if snapshot_id is None:
-        row = conn.execute(
-            "SELECT snapshot_id FROM state_dispatcher_rows "
-            "GROUP BY snapshot_id ORDER BY snapshot_id DESC LIMIT 1"
-        ).fetchone()
+        row = (
+            StateDispatcherRow.select(StateDispatcherRow.snapshot)
+            .group_by(StateDispatcherRow.snapshot)
+            .order_by(StateDispatcherRow.snapshot.desc())
+            .limit(1)
+            .tuples()
+            .first()
+        )
         if row is None:
             return None
         snapshot_id = int(row[0])
-    rows = conn.execute(
-        """
-        SELECT state_const_i64, target_block, dispatcher_entry_block,
-               compare_block, dispatcher_kind, branch_kind, confidence
-        FROM state_dispatcher_rows
-        WHERE snapshot_id=?
-        ORDER BY row_index
-        """,
-        (int(snapshot_id),),
-    ).fetchall()
+    rows = (
+        StateDispatcherRow.select(
+            StateDispatcherRow.state_const_i64,
+            StateDispatcherRow.target_block,
+            StateDispatcherRow.dispatcher_entry_block,
+            StateDispatcherRow.compare_block,
+            StateDispatcherRow.dispatcher_kind,
+            StateDispatcherRow.branch_kind,
+            StateDispatcherRow.confidence,
+        )
+        .where(StateDispatcherRow.snapshot == int(snapshot_id))
+        .order_by(StateDispatcherRow.row_index)
+        .tuples()
+    )
+    rows = list(rows)
     if not rows:
         return None
 
@@ -122,13 +132,14 @@ def _select_locopt_state_const_at_block(
     canonical_stkoff_hex: str,
     snapshot_id: int,
 ) -> int | None:
-    rows = conn.execute(
-        """
-        SELECT payload FROM fact_observations
-        WHERE kind='StateWriteAnchorFact' AND snapshot_id=?
-        """,
-        (int(snapshot_id),),
-    ).fetchall()
+    rows = (
+        FactObservation.select(FactObservation.payload)
+        .where(
+            (FactObservation.kind == "StateWriteAnchorFact")
+            & (FactObservation.snapshot == int(snapshot_id))
+        )
+        .tuples()
+    )
     for (payload_json,) in rows:
         try:
             payload = json.loads(payload_json) if payload_json else {}
@@ -159,15 +170,16 @@ def resolve_state_transition_facts_with_dispatcher(
     resolution_maturity: str = "MMAT_GLBOPT1",
 ) -> tuple[StateDispatchResolution, ...]:
     """Resolve transition facts using exact dispatcher rows."""
-    fact_rows = conn.execute(
-        """
-        SELECT fact_id, payload
-        FROM fact_observations
-        WHERE kind='StateTransitionAnchorFact'
-          AND snapshot_id=?
-        """,
-        (int(locopt_snapshot_id),),
-    ).fetchall()
+    fact_rows = (
+        FactObservation.select(
+            FactObservation.fact_id, FactObservation.payload
+        )
+        .where(
+            (FactObservation.kind == "StateTransitionAnchorFact")
+            & (FactObservation.snapshot == int(locopt_snapshot_id))
+        )
+        .tuples()
+    )
 
     resolutions: list[StateDispatchResolution] = []
     for fact_id, payload_json in fact_rows:
