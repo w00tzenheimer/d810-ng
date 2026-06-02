@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from d810.core.diag import create_diag_database
+from d810.core.diag.models import Modification, Snapshot
 from d810.diagnostics.hcc_byte_cascade_trace import ByteCascadeRow
 from d810.diagnostics.hcc_compose_evidence_explainer import (
     ComposeEvidenceExplanation,
@@ -296,33 +298,38 @@ def test_format_report_json_round_trips():
 
 @pytest.fixture
 def in_memory_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(
-        """
-        CREATE TABLE snapshots (id INTEGER PRIMARY KEY, label TEXT);
-        CREATE TABLE modifications (
-            snapshot_id INTEGER, mod_index INTEGER, mod_type TEXT,
-            source_block INTEGER, target_block INTEGER, old_target INTEGER,
-            write_site_ea_hex TEXT, write_site_ea_i64 INTEGER,
-            write_site_blk INTEGER, status TEXT, reason TEXT,
-            PRIMARY KEY (snapshot_id, mod_index)
-        );
-        INSERT INTO snapshots VALUES (7, 'hcc_post_apply');
-        -- block 200 is the target of an InsertBlock; trace will say
-        -- preserved_in_insertblock=0 -> insertblock_succ_no_byte_evidence.
-        INSERT INTO modifications VALUES
-            (7, 0, 'InsertBlock', 199, 200, 201, NULL, NULL, NULL, 'emitted', NULL);
-        -- block 300 is the source of a redirect (rewired away).
-        INSERT INTO modifications VALUES
-            (7, 1, 'RedirectGoto', 300, 999, 998, NULL, NULL, NULL, 'emitted', NULL);
-        -- block 400 is only a target of redirects.
-        INSERT INTO modifications VALUES
-            (7, 2, 'RedirectGoto', 401, 400, 999, NULL, NULL, NULL, 'emitted', NULL);
-        -- block 500 has no mod referencing it.
-        """
-    )
-    conn.commit()
-    return conn
+    # create_diag_database binds the Models so explain_byte's ORM reads
+    # target this in-memory DB; it returns the live connection.
+    db = create_diag_database(":memory:")
+    Snapshot.insert(
+        id=7,
+        label="hcc_post_apply",
+        func_ea_hex="0x0",
+        func_ea_i64=0,
+        maturity="MMAT_GLBOPT1",
+        phase="unknown",
+        block_count=0,
+        timestamp=0.0,
+    ).execute()
+    Modification.insert_many(
+        [
+            # block 200 is the target of an InsertBlock; trace will say
+            # preserved_in_insertblock=0 -> insertblock_succ_no_byte_evidence.
+            dict(snapshot=7, mod_index=0, mod_type="InsertBlock",
+                 source_block=199, target_block=200, old_target=201,
+                 status="emitted", reason=None),
+            # block 300 is the source of a redirect (rewired away).
+            dict(snapshot=7, mod_index=1, mod_type="RedirectGoto",
+                 source_block=300, target_block=999, old_target=998,
+                 status="emitted", reason=None),
+            # block 400 is only a target of redirects.
+            dict(snapshot=7, mod_index=2, mod_type="RedirectGoto",
+                 source_block=401, target_block=400, old_target=999,
+                 status="emitted", reason=None),
+            # block 500 has no mod referencing it.
+        ]
+    ).execute()
+    return db.connection()
 
 
 def test_explain_byte_no_mod_touches_block_when_block_500(in_memory_db):

@@ -55,6 +55,9 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from d810._vendor.peewee import fn
+from d810.core.diag import open_diag_database
+from d810.core.diag.models import Modification
 from d810.core.typing import Any, Iterable, Sequence
 from d810.diagnostics.hcc_byte_cascade_trace import (
     ByteCascadeRow,
@@ -211,14 +214,14 @@ class ComposeEvidenceExplanation:
 def _latest_modifications_snapshot_id(conn: sqlite3.Connection) -> int | None:
     """Return the snapshot id of the latest modifications row, or ``None``."""
     try:
-        row = conn.execute(
-            "SELECT MAX(snapshot_id) FROM modifications"
-        ).fetchone()
+        value = Modification.select(
+            fn.MAX(Modification.snapshot)
+        ).scalar()
     except sqlite3.OperationalError:
         return None
-    if row is None or row[0] is None:
+    if value is None:
         return None
-    return int(row[0])
+    return int(value)
 
 
 def _mods_touching_block(
@@ -230,17 +233,27 @@ def _mods_touching_block(
     source/target/old_target. Annotates each row with the role.
     """
     try:
-        rows = conn.execute(
-            """
-            SELECT mod_index, mod_type, source_block, target_block,
-                   old_target, status, reason
-            FROM modifications
-            WHERE snapshot_id=?
-              AND (source_block=? OR target_block=? OR old_target=?)
-            ORDER BY mod_index
-            """,
-            (snapshot_id, block_serial, block_serial, block_serial),
-        ).fetchall()
+        rows = (
+            Modification.select(
+                Modification.mod_index,
+                Modification.mod_type,
+                Modification.source_block,
+                Modification.target_block,
+                Modification.old_target,
+                Modification.status,
+                Modification.reason,
+            )
+            .where(
+                (Modification.snapshot == snapshot_id)
+                & (
+                    (Modification.source_block == block_serial)
+                    | (Modification.target_block == block_serial)
+                    | (Modification.old_target == block_serial)
+                )
+            )
+            .order_by(Modification.mod_index)
+            .tuples()
+        )
     except sqlite3.OperationalError:
         return []
     out: list[ModRow] = []
@@ -503,11 +516,12 @@ def explain(
             )
             for r in targets
         ]
-    conn = sqlite3.connect(str(db_path))
+    db = open_diag_database(str(db_path))
     try:
+        conn = db.connection()
         return [explain_byte(conn, r, region_entries) for r in targets]
     finally:
-        conn.close()
+        db.close()
 
 
 # ---------------------------------------------------------------------------
