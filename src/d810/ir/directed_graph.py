@@ -27,6 +27,9 @@ canonical home.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+from types import MappingProxyType
+
 from d810.core.typing import Hashable, Iterable, Mapping, Protocol, runtime_checkable
 
 __all__ = [
@@ -189,43 +192,47 @@ def has_cycles(graph: DirectedGraph) -> bool:
     return bool(back_edges(graph))
 
 
+@dataclass(frozen=True, slots=True)
 class AcyclicView:
     """Topo-orderable projection of a graph, valid **only** when acyclic.
 
     Constructed solely via :func:`acyclic_view` (which returns ``None`` for a
     cyclic graph), so holding one is proof the graph had no back-edges. This is
     the only place a topological ("DAG") order is legitimate.
+
+    Frozen slots dataclass consistent with the rest of ``d810.ir`` (e.g.
+    ``FlowGraph``): ``__post_init__`` normalizes ``nodes`` to a tuple and ``adj``
+    to a read-only ``MappingProxyType`` (matching ``FlowGraph.blocks``).
     """
 
-    __slots__ = ("_nodes", "_adj")
+    nodes: tuple[NodeId, ...]
+    adj: Mapping[NodeId, tuple[NodeId, ...]]
 
-    def __init__(
-        self, nodes: Iterable[NodeId], adj: Mapping[NodeId, tuple[NodeId, ...]]
-    ) -> None:
-        self._nodes: tuple[NodeId, ...] = tuple(nodes)
-        self._adj: dict[NodeId, tuple[NodeId, ...]] = dict(adj)
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "nodes", tuple(self.nodes))
+        object.__setattr__(self, "adj", MappingProxyType(dict(self.adj)))
 
     def node_ids(self) -> tuple[NodeId, ...]:
-        return self._nodes
+        return self.nodes
 
     def successors(self, node: NodeId) -> tuple[NodeId, ...]:
-        return self._adj.get(node, ())
+        return self.adj.get(node, ())
 
     def topo_order(self) -> tuple[NodeId, ...]:
         """Kahn's algorithm; ties broken by ``node_ids()`` order (deterministic)."""
-        order_index = {n: i for i, n in enumerate(self._nodes)}
-        indeg: dict[NodeId, int] = {n: 0 for n in self._nodes}
-        for n in self._nodes:
-            for s in self._adj.get(n, ()):
+        order_index = {n: i for i, n in enumerate(self.nodes)}
+        indeg: dict[NodeId, int] = {n: 0 for n in self.nodes}
+        for n in self.nodes:
+            for s in self.adj.get(n, ()):
                 if s in indeg:
                     indeg[s] += 1
-        ready = [n for n in self._nodes if indeg[n] == 0]
+        ready = [n for n in self.nodes if indeg[n] == 0]
         result: list[NodeId] = []
         while ready:
             ready.sort(key=order_index.__getitem__)
             node = ready.pop(0)
             result.append(node)
-            for s in self._adj.get(node, ()):
+            for s in self.adj.get(node, ()):
                 if s in indeg:
                     indeg[s] -= 1
                     if indeg[s] == 0:

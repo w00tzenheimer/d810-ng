@@ -19,6 +19,8 @@ Usage:
 
 from __future__ import annotations
 
+from d810.ir.directed_graph import tarjan_scc as _canonical_tarjan_scc
+
 __all__ = ["DispatchRegionDetector"]
 
 
@@ -56,7 +58,7 @@ class DispatchRegionDetector:
 
         >>> adj = {0: (1,), 1: (2,), 2: ()}
         >>> DispatchRegionDetector.detect(adj, 0)
-        frozenset()
+        frozenset({0})
         """
         if dispatcher_serial not in adj:
             return frozenset()
@@ -104,51 +106,11 @@ class DispatchRegionDetector:
         >>> DispatchRegionDetector.tarjan_scc(adj)
         [frozenset({2}), frozenset({1}), frozenset({0})]
         """
-        if not adj:
-            return []
-
-        nodes = set(adj.keys())
-        for succs in adj.values():
-            nodes.update(succs)
-
-        index = 0
-        stack: list[int] = []
-        indices: dict[int, int] = {}
-        lowlink: dict[int, int] = {}
-        on_stack: set[int] = set()
-        sccs: list[frozenset[int]] = []
-
-        def strongconnect(v: int) -> None:
-            nonlocal index
-            indices[v] = index
-            lowlink[v] = index
-            index += 1
-            stack.append(v)
-            on_stack.add(v)
-
-            for w in adj.get(v, ()):
-                if w not in indices:
-                    strongconnect(w)
-                    lowlink[v] = min(lowlink[v], lowlink[w])
-                elif w in on_stack:
-                    lowlink[v] = min(lowlink[v], indices[w])
-
-            if lowlink[v] == indices[v]:
-                scc_nodes: set[int] = set()
-                while stack:
-                    w = stack.pop()
-                    on_stack.remove(w)
-                    scc_nodes.add(w)
-                    if w == v:
-                        break
-                if scc_nodes:
-                    sccs.append(frozenset(scc_nodes))
-
-        for node in nodes:
-            if node not in indices:
-                strongconnect(node)
-
-        return sccs
+        # Delegates to the canonical lowest-layer implementation
+        # (``d810.ir.directed_graph.tarjan_scc``) — same contract
+        # (``list[frozenset]``, reverse-topological order). Kept as a static
+        # method for the existing ``DispatchRegionDetector.tarjan_scc`` API.
+        return _canonical_tarjan_scc(adj)
 
     @staticmethod
     def classify_blocks(
