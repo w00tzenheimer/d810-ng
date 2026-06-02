@@ -71,6 +71,13 @@ import json
 import sqlite3
 from dataclasses import dataclass
 
+from d810.core.diag.models import (
+    FactMapping,
+    FactObservation,
+    StateCfgEdge,
+    StateCfgNode,
+    StateCfgNodeBlock,
+)
 from d810.core.typing import Iterable
 
 
@@ -135,13 +142,11 @@ def _select_state_const_rewritten_index(
     rewritten_consts: set[str] = set()
     rewritten_to_sources: dict[str, list[str]] = {}
 
-    rows = conn.execute(
-        """
-        SELECT source_fact_id, payload
-        FROM fact_mappings
-        WHERE status = 'STATE_CONST_REWRITTEN'
-        """
-    ).fetchall()
+    rows = (
+        FactMapping.select(FactMapping.source_fact_id, FactMapping.payload)
+        .where(FactMapping.status == "STATE_CONST_REWRITTEN")
+        .tuples()
+    )
     for source_fact_id, payload_json in rows:
         try:
             payload = json.loads(payload_json) if payload_json else {}
@@ -187,13 +192,11 @@ def _select_terminal_tail_blocks(
     """
     blocks: set[int] = set()
     _ = snapshot_id  # accepted for API symmetry
-    rows = conn.execute(
-        """
-        SELECT payload
-        FROM fact_observations
-        WHERE kind = 'TerminalByteEmitterFact'
-        """,
-    ).fetchall()
+    rows = (
+        FactObservation.select(FactObservation.payload)
+        .where(FactObservation.kind == "TerminalByteEmitterFact")
+        .tuples()
+    )
     for (payload_json,) in rows:
         try:
             payload = json.loads(payload_json) if payload_json else {}
@@ -223,12 +226,11 @@ def _select_state_entry_blocks(
     byte-emit destination.
     """
     out: dict[str, set[int]] = {}
-    rows = conn.execute(
-        """
-        SELECT state_hex, entry_block FROM state_cfg_nodes WHERE snapshot_id = ?
-        """,
-        (snapshot_id,),
-    ).fetchall()
+    rows = (
+        StateCfgNode.select(StateCfgNode.state_hex, StateCfgNode.entry_block)
+        .where(StateCfgNode.snapshot == snapshot_id)
+        .tuples()
+    )
     for state_hex, entry_block in rows:
         if state_hex is None:
             continue
@@ -247,16 +249,20 @@ def _find_sibling_target_states(
     target_state.
     """
     out: dict[tuple[str, str], list[tuple[int, str]]] = {}
-    rows = conn.execute(
-        """
-        SELECT edge_id, source_state_hex, target_state_hex, edge_kind
-        FROM state_cfg_edges
-        WHERE snapshot_id = ?
-          AND source_state_hex IS NOT NULL
-          AND target_state_hex IS NOT NULL
-        """,
-        (snapshot_id,),
-    ).fetchall()
+    rows = (
+        StateCfgEdge.select(
+            StateCfgEdge.edge_id,
+            StateCfgEdge.source_state_hex,
+            StateCfgEdge.target_state_hex,
+            StateCfgEdge.edge_kind,
+        )
+        .where(
+            (StateCfgEdge.snapshot == snapshot_id)
+            & StateCfgEdge.source_state_hex.is_null(False)
+            & StateCfgEdge.target_state_hex.is_null(False)
+        )
+        .tuples()
+    )
     for edge_id, src, tgt, kind in rows:
         key = (str(src).lower(), str(tgt).lower())
         out.setdefault(key, []).append((int(edge_id), str(kind)))
@@ -283,12 +289,13 @@ def classify_dag_edges(
     # State-hex -> set(blocks owned/exclusive) so we can check whether an
     # edge's source_state's entry blocks intersect terminal-tail destinations.
     state_owned_blocks: dict[str, set[int]] = {}
-    rows = conn.execute(
-        """
-        SELECT state_hex, block_serial FROM state_cfg_node_blocks WHERE snapshot_id = ?
-        """,
-        (snapshot_id,),
-    ).fetchall()
+    rows = (
+        StateCfgNodeBlock.select(
+            StateCfgNodeBlock.state_hex, StateCfgNodeBlock.block_serial
+        )
+        .where(StateCfgNodeBlock.snapshot == snapshot_id)
+        .tuples()
+    )
     for state_hex, block_serial in rows:
         if state_hex is None:
             continue
@@ -300,14 +307,17 @@ def classify_dag_edges(
     sibling_index = _find_sibling_target_states(conn, snapshot_id)
 
     diagnostics: list[EdgeDiagnostic] = []
-    edge_rows = conn.execute(
-        """
-        SELECT edge_id, source_state_hex, target_state_hex, edge_kind, source_block
-        FROM state_cfg_edges
-        WHERE snapshot_id = ?
-        """,
-        (snapshot_id,),
-    ).fetchall()
+    edge_rows = (
+        StateCfgEdge.select(
+            StateCfgEdge.edge_id,
+            StateCfgEdge.source_state_hex,
+            StateCfgEdge.target_state_hex,
+            StateCfgEdge.edge_kind,
+            StateCfgEdge.source_block,
+        )
+        .where(StateCfgEdge.snapshot == snapshot_id)
+        .tuples()
+    )
 
     for edge_id, src_state, tgt_state, edge_kind, source_block in edge_rows:
         src_state_lower = str(src_state).lower() if src_state is not None else None
