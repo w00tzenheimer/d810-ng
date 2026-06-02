@@ -7,6 +7,13 @@ from enum import Enum
 from types import MappingProxyType
 
 from d810.core.logging import getLogger
+from d810.ir.directed_graph import (
+    AcyclicView,
+    acyclic_view as _acyclic_view,
+    back_edges as _back_edges,
+    has_cycles as _has_cycles,
+    sccs as _sccs,
+)
 from d810.ir.semantics import PredicateKind  # re-exported; BranchPredicate retired (llr-lxas)
 
 logger = getLogger(__name__)
@@ -347,9 +354,38 @@ class FlowGraph:
     def get_block(self, serial: int) -> BlockSnapshot | None:
         return self.blocks.get(serial)
 
+    # -- DirectedGraph protocol (d810.ir.directed_graph) -------------------
+    # FlowGraph *is* a heterogeneous directed cyclic graph: nodes are block
+    # serials, edges are control-flow successors (loops preserved as real
+    # back-edges).  These thin methods satisfy the structural ``DirectedGraph``
+    # protocol and expose the cycle/acyclic-view ops by delegating to the
+    # free functions -- composition, not inheritance.
+    def node_ids(self) -> tuple[int, ...]:
+        return tuple(self.blocks.keys())
+
     def successors(self, serial: int) -> tuple[int, ...]:
         blk = self.blocks.get(serial)
         return blk.succs if blk else ()
+
+    def has_cycles(self) -> bool:
+        """``True`` iff the CFG has back-edges (loops); see directed_graph."""
+        return _has_cycles(self)
+
+    def back_edges(self) -> frozenset[tuple[int, int]]:
+        """Loop back-edges (latch -> header, self-loops)."""
+        return _back_edges(self)
+
+    def sccs(self) -> tuple[frozenset[int], ...]:
+        """Strongly-connected components (reverse-topological order)."""
+        return _sccs(self)
+
+    def acyclic_view(self) -> AcyclicView | None:
+        """Topo-orderable view, or ``None`` when the CFG contains loops.
+
+        A "DAG"/topological order of this graph exists *only* when it is
+        acyclic; this returns ``None`` otherwise rather than fabricating one.
+        """
+        return _acyclic_view(self)
 
     def predecessors(self, serial: int) -> tuple[int, ...]:
         blk = self.blocks.get(serial)
@@ -374,4 +410,5 @@ __all__ = [
     "InsnSnapshot",
     "BlockSnapshot",
     "FlowGraph",
+    "AcyclicView",
 ]
