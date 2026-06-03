@@ -35,6 +35,7 @@ __all__ = [
     "analyze_return_carrier",
     "build_liveness_facts",
     "build_reaching_facts",
+    "carrier_terminal_returns",
 ]
 
 
@@ -149,3 +150,33 @@ def analyze_return_carrier(
         carrier_dominates=bool(reaching_defs_of(in_terminal, int(carrier_off))),
         state_dead=int(state_off) not in live.out_states[int(terminal_serial)],
     )
+
+
+def carrier_terminal_returns(
+    verdicts: Mapping[int, CarrierVerdict],
+    *,
+    carrier_expr: str,
+    leak_def_sites: Iterable,
+) -> dict[int, str]:
+    """Terminals whose leaked return must be replaced by the carrier expression.
+
+    The L1 -> L2 decision: a terminal is fixed iff its return slot reaches ONLY
+    ``leak_def_sites`` (the entry-default dispatcher-state write), the real
+    carrier dominates it, and the state variable is dead there. That is the
+    dataflow proof that the leaked state is the sole reaching definition and the
+    carrier is the value to deliver -- so ``build_region_tree(terminal_return=
+    carrier_terminal_returns(...).get)`` emits ``return <carrier>`` instead of
+    the leak. Terminals returning a genuinely computed value (their reaching
+    defs are not a subset of the leak set) are left untouched.
+    """
+    leak = frozenset(leak_def_sites)
+    fixes: dict[int, str] = {}
+    for serial, verdict in verdicts.items():
+        if (
+            verdict.return_reaching
+            and verdict.return_reaching <= leak
+            and verdict.carrier_dominates
+            and verdict.state_dead
+        ):
+            fixes[int(serial)] = carrier_expr
+    return fixes
