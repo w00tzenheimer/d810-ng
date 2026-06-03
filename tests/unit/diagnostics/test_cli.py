@@ -1,6 +1,6 @@
 """Tests for the ``python -m d810.diagnostics`` CLI entry point."""
 from __future__ import annotations
-from d810.core.diag import create_diag_database
+from d810.core.diag import create_diag_database, diag_models_on
 
 import json
 import subprocess
@@ -27,9 +27,10 @@ from tests.unit.core.diag.fixtures import create_sub_7ffd_scenario
 def loaded_db_path(tmp_path: Path) -> Path:
     """Create a temporary SQLite DB pre-loaded with the sub_7FFD scenario."""
     db_path = tmp_path / "diag.sqlite3"
-    conn = create_diag_database(str(db_path)).connection()
-    create_sub_7ffd_scenario(conn)
-    conn.close()
+    db = create_diag_database(str(db_path))
+    with diag_models_on(db):
+        create_sub_7ffd_scenario(db.connection())
+    db.close()
     return db_path
 
 
