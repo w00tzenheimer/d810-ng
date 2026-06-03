@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.analyses.data_flow.abstract_value import TOP, AbstractValue, Const
+
 __all__ = ["KnownBits"]
 
 
@@ -75,6 +77,21 @@ class KnownBits:
         if (self.zero | self.one) & self._mask != self._mask:
             return None
         return self.one & self._mask
+
+    # -- projection into the router value-side seam (S0) --------------------
+    def project(self) -> AbstractValue:
+        """Project this lattice element into an :class:`AbstractValue`.
+
+        Fully-known (``to_const`` not ``None``) → :class:`Const` (``width`` is in
+        bits, so the byte ``size`` is ``width // 8``, min 1).  Otherwise the
+        known-bits domain cannot enumerate a finite powerset of candidates, so a
+        partially-known *or* ⊤ element both project to :data:`TOP` — the honest,
+        sound over-approximation the router lifts to ``Unknown``.
+        """
+        c = self.to_const()
+        if c is None:
+            return TOP
+        return Const(c, max(1, self.width // 8))
 
     # -- lattice order + combinators (LiSA Lattice) ------------------------
     def leq(self, other: "KnownBits") -> bool:

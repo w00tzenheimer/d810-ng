@@ -41,6 +41,7 @@ from d810.analyses.data_flow import (
     FixpointResult,
     run_fixpoint,
 )
+from d810.analyses.data_flow.abstract_value import TOP, AbstractValue, Const, OneOf
 from d810.analyses.data_flow.domain import NodeId
 
 __all__ = [
@@ -117,6 +118,26 @@ class StateValue:
         if self.is_top or len(self.constants) != 1:
             return None
         return next(iter(self.constants))
+
+    #: Byte size stamped on the :class:`Const` ``project`` yields.  State
+    #: constants are masked to u64, so 8 is the sound width (callers that know a
+    #: narrower width can re-stamp; the router only reads ``.value``).
+    _PROJECT_CONST_SIZE: ClassVar[int] = 8
+
+    def project(self) -> AbstractValue:
+        """Project this powerset into the router value-side :class:`AbstractValue`.
+
+        Unifies with :meth:`d810.analyses.data_flow.abstract_value.OneOf.from_state_value`
+        (the inverse lift).  ``⊤`` → :data:`TOP`; a singleton → :class:`Const`
+        (size :data:`_PROJECT_CONST_SIZE`); a finite set → :class:`OneOf`; ``⊥``
+        (empty, not ⊤) → an empty :class:`OneOf`.
+        """
+        if self.is_top:
+            return TOP
+        only = self.single()
+        if only is not None:
+            return Const(only, self._PROJECT_CONST_SIZE)
+        return OneOf(frozenset(self.constants))
 
     def join(self, other: "StateValue") -> "StateValue":
         """Least upper bound -- set union, saturating to ``⊤``.
