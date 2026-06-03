@@ -11,6 +11,14 @@ from unittest.mock import patch
 
 import pytest
 
+from d810.core.diag.models import (
+    FactMapping as DiagFactMapping,
+    FactObservation as DiagFactObservation,
+    Snapshot,
+    StateCfgEdge,
+    StateCfgNode,
+    StateCfgNodeBlock,
+)
 from d810.ir.state_dag_key import StateDagNodeKey
 from d810.core.observability import SnapshotRef
 from d810.core.settings import reset_settings
@@ -142,134 +150,96 @@ def _seed_byte5_diag(conn: sqlite3.Connection) -> None:
     and ``fact_mappings`` (STATE_CONST_REWRITTEN) so the helper's
     cascade pass produces the same byte5 selection we observed live.
     """
-    conn.execute(
-        """
-        INSERT INTO snapshots
-            (id, label, func_ea_hex, func_ea_i64,
-             maturity, phase, block_count, timestamp)
-        VALUES (1, 'recon_dag', '0x180012df0', 0x180012df0,
-                'MMAT_GLBOPT1', 'pre_d810', 0, 0.0),
-               (2, 'locopt_pre', '0x180012df0', 0x180012df0,
-                'MMAT_LOCOPT', 'pre_d810', 0, 0.0)
-        """,
-    )
+    Snapshot.insert_many([
+        {"id": 1, "label": "recon_dag", "func_ea_hex": "0x180012df0",
+         "func_ea_i64": 0x180012df0, "maturity": "MMAT_GLBOPT1",
+         "phase": "pre_d810", "block_count": 0, "timestamp": 0.0},
+        {"id": 2, "label": "locopt_pre", "func_ea_hex": "0x180012df0",
+         "func_ea_i64": 0x180012df0, "maturity": "MMAT_LOCOPT",
+         "phase": "pre_d810", "block_count": 0, "timestamp": 0.0},
+    ]).execute()
     # The collapsed edge: 0x385BBE2D -> 0x63D54755 at blk[100].
-    conn.execute(
-        """
-        INSERT INTO state_cfg_edges
-            (snapshot_id, edge_id, source_state_hex, source_state_i64,
-             target_state_hex, target_state_i64, edge_kind,
-             source_block, source_arm, target_entry, ordered_path)
-        VALUES (1, 144, '0x00000000385bbe2d', 0x385bbe2d,
-                '0x0000000063d54755', 0x63d54755, 'TRANSITION',
-                100, NULL, 21, '[100]'),
-               (1, 68, '0x000000003873bc53', 0x3873bc53,
-                '0x0000000010743c4c', 0x10743c4c, 'TRANSITION',
-                101, NULL, 158, '[101, 103, 104]'),
-               (1, 39, '0x0000000010743c4c', 0x10743c4c,
-                '0x000000006107f8ec', 0x6107f8ec, 'TRANSITION',
-                158, NULL, 15, '[158]')
-        """,
-    )
+    StateCfgEdge.insert_many([
+        {"snapshot": 1, "edge_id": 144, "source_state_hex": "0x00000000385bbe2d",
+         "source_state_i64": 0x385bbe2d, "target_state_hex": "0x0000000063d54755",
+         "target_state_i64": 0x63d54755, "edge_kind": "TRANSITION",
+         "source_block": 100, "source_arm": None, "target_entry": 21,
+         "ordered_path": "[100]"},
+        {"snapshot": 1, "edge_id": 68, "source_state_hex": "0x000000003873bc53",
+         "source_state_i64": 0x3873bc53, "target_state_hex": "0x0000000010743c4c",
+         "target_state_i64": 0x10743c4c, "edge_kind": "TRANSITION",
+         "source_block": 101, "source_arm": None, "target_entry": 158,
+         "ordered_path": "[101, 103, 104]"},
+        {"snapshot": 1, "edge_id": 39, "source_state_hex": "0x0000000010743c4c",
+         "source_state_i64": 0x10743c4c, "target_state_hex": "0x000000006107f8ec",
+         "target_state_i64": 0x6107f8ec, "edge_kind": "TRANSITION",
+         "source_block": 158, "source_arm": None, "target_entry": 15,
+         "ordered_path": "[158]"},
+    ]).execute()
     # Source node EXACT, sibling node RANGE_BACKED with overlap.
-    for state, entry, kind in (
-        ("0x00000000385bbe2d", 100, "EXACT"),
-        ("0x000000003873bc53", 101, "RANGE_BACKED"),
-        ("0x0000000010743c4c", 158, "EXACT"),
-        ("0x000000006107f8ec", 15,  "RANGE_BACKED"),
-    ):
-        conn.execute(
-            """
-            INSERT INTO state_cfg_nodes
-                (snapshot_id, state_hex, state_i64, entry_block,
-                 classification, shared_suffix)
-            VALUES (1, ?, ?, ?, ?, NULL)
-            """,
-            (state, int(state, 16), entry, kind),
+    StateCfgNode.insert_many([
+        {"snapshot": 1, "state_hex": state, "state_i64": int(state, 16),
+         "entry_block": entry, "classification": kind, "shared_suffix": None}
+        for state, entry, kind in (
+            ("0x00000000385bbe2d", 100, "EXACT"),
+            ("0x000000003873bc53", 101, "RANGE_BACKED"),
+            ("0x0000000010743c4c", 158, "EXACT"),
+            ("0x000000006107f8ec", 15,  "RANGE_BACKED"),
         )
+    ]).execute()
     # Block ownerships: STATE_385BBE2D owns blk[100]; STATE_3873BC53
     # owns [101, 100, 102, 103, 104] (sibling overlap on 100); STATE_6107F8EC
     # owns [217] which is byte6 terminal_tail.
-    block_index = 0
-    for state, entry, blk, role in (
-        ("0x00000000385bbe2d", 100, 100, "owned"),
-        ("0x000000003873bc53", 101, 101, "owned"),
-        ("0x000000003873bc53", 101, 100, "shared_suffix"),
-        ("0x000000003873bc53", 101, 102, "owned"),
-        ("0x000000003873bc53", 101, 103, "owned"),
-        ("0x000000003873bc53", 101, 104, "owned"),
-        ("0x0000000010743c4c", 158, 158, "owned"),
-        ("0x000000006107f8ec",  15, 217, "owned"),
-    ):
-        conn.execute(
-            """
-            INSERT INTO state_cfg_node_blocks
-                (snapshot_id, state_hex, entry_block, block_serial,
-                 block_index, role)
-            VALUES (1, ?, ?, ?, ?, ?)
-            """,
-            (state, entry, blk, block_index, role),
-        )
-        block_index += 1
+    StateCfgNodeBlock.insert_many([
+        {"snapshot": 1, "state_hex": state, "entry_block": entry,
+         "block_serial": blk, "block_index": block_index, "role": role}
+        for block_index, (state, entry, blk, role) in enumerate((
+            ("0x00000000385bbe2d", 100, 100, "owned"),
+            ("0x000000003873bc53", 101, 101, "owned"),
+            ("0x000000003873bc53", 101, 100, "shared_suffix"),
+            ("0x000000003873bc53", 101, 102, "owned"),
+            ("0x000000003873bc53", 101, 103, "owned"),
+            ("0x000000003873bc53", 101, 104, "owned"),
+            ("0x0000000010743c4c", 158, 158, "owned"),
+            ("0x000000006107f8ec",  15, 217, "owned"),
+        ))
+    ]).execute()
     # TerminalByteEmitterFact: byte5 emit at blk[101], byte6 emit at blk[217].
-    for fact_id, dest, bi in (
-        ("byte5", 101, 5),
-        ("byte6", 217, 6),
-    ):
-        conn.execute(
-            """
-            INSERT INTO fact_observations
-                (snapshot_id, func_ea_hex, func_ea_i64, fact_id, kind,
-                 semantic_key, maturity, phase, confidence,
-                 source_block, source_ea_hex, source_ea_i64,
-                 block_fingerprint, mop_signature, payload, evidence)
-            VALUES (1, '0x180012df0', 0x180012df0, ?, 'TerminalByteEmitterFact',
-                    ?, 'MMAT_GLBOPT1', 'pre_d810', 0.9, ?, NULL, NULL,
-                    NULL, NULL, ?, '[]')
-            """,
-            (
-                fact_id, fact_id, dest,
-                json.dumps({
-                    "destination_block": dest,
-                    "block_serial": dest,
-                    "byte_index": bi,
-                    "corridor_role": "terminal_tail",
-                }),
-            ),
-        )
+    DiagFactObservation.insert_many([
+        {"snapshot": 1, "func_ea_hex": "0x180012df0", "func_ea_i64": 0x180012df0,
+         "fact_id": fact_id, "kind": "TerminalByteEmitterFact",
+         "semantic_key": fact_id, "maturity": "MMAT_GLBOPT1", "phase": "pre_d810",
+         "confidence": 0.9, "source_block": dest, "source_ea_hex": None,
+         "source_ea_i64": None, "block_fingerprint": None, "mop_signature": None,
+         "payload": json.dumps({
+             "destination_block": dest, "block_serial": dest,
+             "byte_index": bi, "corridor_role": "terminal_tail",
+         }), "evidence": "[]"}
+        for fact_id, dest, bi in (("byte5", 101, 5), ("byte6", 217, 6))
+    ]).execute()
     # STATE_CONST_REWRITTEN mapping for blk[100]: 0x5A21D9DB -> 0x63D54755.
-    conn.execute(
-        """
-        INSERT INTO fact_mappings
-            (snapshot_id, func_ea_hex, func_ea_i64, mapping_index,
-             source_fact_id, target_fact_id, source_maturity,
-             target_maturity, status, confidence,
-             target_block, target_ea_hex, target_ea_i64,
-             target_mop_signature, reason, payload)
-        VALUES (1, '0x180012df0', 0x180012df0, 0, 'anchor:100', NULL,
-                'MMAT_LOCOPT', 'MMAT_GLBOPT1', 'STATE_CONST_REWRITTEN', 0.9,
-                NULL, NULL, NULL, NULL, 'test', ?),
-               (1, '0x180012df0', 0x180012df0, 1, 'anchor:21', NULL,
-                'MMAT_LOCOPT', 'MMAT_GLBOPT1', 'STATE_CONST_REWRITTEN', 0.9,
-                NULL, NULL, NULL, NULL, 'test', ?)
-        """,
-        (
-            json.dumps({
-                "block_serial": 100,
-                "original_const_hex": "0x000000005a21d9db",
-                "rewritten_const_hex": "0x0000000063d54755",
-                "from_maturity": "MMAT_LOCOPT",
-                "to_maturity": "MMAT_GLBOPT1",
-            }),
-            json.dumps({
-                "block_serial": 21,
-                "original_const_hex": "0x000000004f000000",
-                "rewritten_const_hex": "0x0000000063d54755",
-                "from_maturity": "MMAT_LOCOPT",
-                "to_maturity": "MMAT_GLBOPT1",
-            }),
-        ),
-    )
+    DiagFactMapping.insert_many([
+        {"snapshot": 1, "func_ea_hex": "0x180012df0", "func_ea_i64": 0x180012df0,
+         "mapping_index": 0, "source_fact_id": "anchor:100", "target_fact_id": None,
+         "source_maturity": "MMAT_LOCOPT", "target_maturity": "MMAT_GLBOPT1",
+         "status": "STATE_CONST_REWRITTEN", "confidence": 0.9, "target_block": None,
+         "target_ea_hex": None, "target_ea_i64": None, "target_mop_signature": None,
+         "reason": "test", "payload": json.dumps({
+             "block_serial": 100, "original_const_hex": "0x000000005a21d9db",
+             "rewritten_const_hex": "0x0000000063d54755",
+             "from_maturity": "MMAT_LOCOPT", "to_maturity": "MMAT_GLBOPT1",
+         })},
+        {"snapshot": 1, "func_ea_hex": "0x180012df0", "func_ea_i64": 0x180012df0,
+         "mapping_index": 1, "source_fact_id": "anchor:21", "target_fact_id": None,
+         "source_maturity": "MMAT_LOCOPT", "target_maturity": "MMAT_GLBOPT1",
+         "status": "STATE_CONST_REWRITTEN", "confidence": 0.9, "target_block": None,
+         "target_ea_hex": None, "target_ea_i64": None, "target_mop_signature": None,
+         "reason": "test", "payload": json.dumps({
+             "block_serial": 21, "original_const_hex": "0x000000004f000000",
+             "rewritten_const_hex": "0x0000000063d54755",
+             "from_maturity": "MMAT_LOCOPT", "to_maturity": "MMAT_GLBOPT1",
+         })},
+    ]).execute()
     conn.commit()
 
 
@@ -418,15 +388,11 @@ def test_no_op_when_diag_missing() -> None:
 def test_no_op_when_no_selected_rows() -> None:
     """Empty diag DB -> cascade produces no selections -> no override."""
     conn = make_bound_diag_db().connection()
-    conn.execute(
-        """
-        INSERT INTO snapshots
-            (id, label, func_ea_hex, func_ea_i64,
-             maturity, phase, block_count, timestamp)
-        VALUES (1, 'recon_dag', '0x180012df0', 0x180012df0,
-                'MMAT_GLBOPT1', 'pre_d810', 0, 0.0)
-        """,
-    )
+    Snapshot.insert(
+        id=1, label="recon_dag", func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012df0, maturity="MMAT_GLBOPT1", phase="pre_d810",
+        block_count=0, timestamp=0.0,
+    ).execute()
     conn.commit()
     dag = _make_byte5_dag()
     with patch.dict(os.environ, {"D810_FACT_LIFECYCLE": "1"}, clear=False), \

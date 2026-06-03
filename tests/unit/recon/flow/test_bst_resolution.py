@@ -5,6 +5,11 @@ from tests.unit.core.diag._orm_bind import make_bound_diag_db
 import json
 import sqlite3
 
+from d810.core.diag.models import (
+    FactObservation,
+    Snapshot,
+    StateTransitionBstResolution,
+)
 from d810.diagnostics.bst_resolution import (
     BstInterval,
     load_latest_bst_intervals_from_db,
@@ -17,18 +22,13 @@ from d810.core.diag.snapshot import snapshot_bst_interval_dispatcher_rows
 
 
 def _make_db() -> sqlite3.Connection:
-    conn = make_bound_diag_db().connection()
-    conn.execute(
-        """
-        INSERT INTO snapshots
-            (id, label, func_ea_hex, func_ea_i64,
-             maturity, phase, block_count, timestamp)
-        VALUES (1, 'MMAT_LOCOPT_pre_d810', '0x180012df0',
-                0x180012df0, 'MMAT_LOCOPT', 'pre_d810', 0, 0.0)
-        """,
-    )
-    conn.commit()
-    return conn
+    db = make_bound_diag_db()
+    Snapshot.insert(
+        id=1, label="MMAT_LOCOPT_pre_d810", func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012df0, maturity="MMAT_LOCOPT", phase="pre_d810",
+        block_count=0, timestamp=0.0,
+    ).execute()
+    return db.connection()
 
 
 def _add_transition_fact(
@@ -53,22 +53,14 @@ def _add_transition_fact(
         "state_var_stkoff": int(canonical_stkoff_hex, 16),
         "state_var_stkoff_hex": canonical_stkoff_hex,
     }
-    conn.execute(
-        """
-        INSERT INTO fact_observations
-            (snapshot_id, func_ea_hex, func_ea_i64, fact_id, kind,
-             semantic_key, maturity, phase, confidence,
-             source_block, source_ea_hex, source_ea_i64,
-             block_fingerprint, mop_signature, payload, evidence)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            snap, "0x180012df0", 0x180012df0, fact_id,
-            "StateTransitionAnchorFact", fact_id, "MMAT_LOCOPT",
-            "pre_d810", 0.85, block, None, None, None, None,
-            json.dumps(payload), "[]",
-        ),
-    )
+    FactObservation.insert(
+        snapshot=snap, func_ea_hex="0x180012df0", func_ea_i64=0x180012df0,
+        fact_id=fact_id, kind="StateTransitionAnchorFact", semantic_key=fact_id,
+        maturity="MMAT_LOCOPT", phase="pre_d810", confidence=0.85,
+        source_block=block, source_ea_hex=None, source_ea_i64=None,
+        block_fingerprint=None, mop_signature=None, payload=json.dumps(payload),
+        evidence="[]",
+    ).execute()
 
 
 def _add_state_write_anchor(
@@ -94,22 +86,14 @@ def _add_state_write_anchor(
         f"state_write_anchor:blk={block}:insn={instruction_index}:"
         f"ea=0x{0x180000000 + block:x}:stkoff={canonical_stkoff_hex}"
     )
-    conn.execute(
-        """
-        INSERT INTO fact_observations
-            (snapshot_id, func_ea_hex, func_ea_i64, fact_id, kind,
-             semantic_key, maturity, phase, confidence,
-             source_block, source_ea_hex, source_ea_i64,
-             block_fingerprint, mop_signature, payload, evidence)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            snap, "0x180012df0", 0x180012df0, fact_id,
-            "StateWriteAnchorFact", fact_id, "MMAT_LOCOPT",
-            "pre_d810", 0.9, block, None, None, None, None,
-            json.dumps(payload), "[]",
-        ),
-    )
+    FactObservation.insert(
+        snapshot=snap, func_ea_hex="0x180012df0", func_ea_i64=0x180012df0,
+        fact_id=fact_id, kind="StateWriteAnchorFact", semantic_key=fact_id,
+        maturity="MMAT_LOCOPT", phase="pre_d810", confidence=0.9,
+        source_block=block, source_ea_hex=None, source_ea_i64=None,
+        block_fingerprint=None, mop_signature=None, payload=json.dumps(payload),
+        evidence="[]",
+    ).execute()
 
 
 def test_parse_bst_intervals_basic() -> None:
@@ -124,15 +108,11 @@ def test_parse_bst_intervals_basic() -> None:
 
 def test_load_latest_bst_intervals_from_db() -> None:
     conn = _make_db()
-    conn.execute(
-        """
-        INSERT INTO snapshots
-            (id, label, func_ea_hex, func_ea_i64,
-             maturity, phase, block_count, timestamp)
-        VALUES (2, 'MMAT_GLBOPT1_post_d810', '0x180012df0',
-                0x180012df0, 'MMAT_GLBOPT1', 'post_d810', 0, 1.0)
-        """,
-    )
+    Snapshot.insert(
+        id=2, label="MMAT_GLBOPT1_post_d810", func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012df0, maturity="MMAT_GLBOPT1", phase="post_d810",
+        block_count=0, timestamp=1.0,
+    ).execute()
     snapshot_bst_interval_dispatcher_rows(
         conn,
         1,
@@ -306,7 +286,4 @@ def test_persist_idempotent() -> None:
     )
     persist_bst_resolutions(conn, resolutions)
     persist_bst_resolutions(conn, resolutions)
-    rows = conn.execute(
-        "SELECT COUNT(*) FROM state_transition_bst_resolutions"
-    ).fetchone()
-    assert rows[0] == 1
+    assert StateTransitionBstResolution.select().count() == 1

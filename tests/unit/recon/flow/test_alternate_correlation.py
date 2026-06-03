@@ -4,6 +4,14 @@ from tests.unit.core.diag._orm_bind import make_bound_diag_db
 
 import sqlite3
 
+from d810.core.diag.models import (
+    Snapshot,
+    StateCfgEdge,
+    StateCfgEdgeAlternateCorrelation,
+    StateCfgEdgeDiagnostic,
+    StateCfgNode,
+    StateCfgNodeBlock,
+)
 from d810.diagnostics.alternate_correlation import (
     correlate_collapsed_edges,
     persist_alternate_correlations,
@@ -11,18 +19,13 @@ from d810.diagnostics.alternate_correlation import (
 
 
 def _make_db() -> sqlite3.Connection:
-    conn = make_bound_diag_db().connection()
-    conn.execute(
-        """
-        INSERT INTO snapshots
-            (id, label, func_ea_hex, func_ea_i64,
-             maturity, phase, block_count, timestamp)
-        VALUES (1, 'recon_dag', '0x180012df0', 0x180012df0,
-                'MMAT_GLBOPT1', 'pre_d810', 0, 0.0)
-        """,
-    )
-    conn.commit()
-    return conn
+    db = make_bound_diag_db()
+    Snapshot.insert(
+        id=1, label="recon_dag", func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012df0, maturity="MMAT_GLBOPT1", phase="pre_d810",
+        block_count=0, timestamp=0.0,
+    ).execute()
+    return db.connection()
 
 
 def _add_node(
@@ -33,15 +36,11 @@ def _add_node(
     classification: str,
     snap: int = 1,
 ) -> None:
-    conn.execute(
-        """
-        INSERT INTO state_cfg_nodes
-            (snapshot_id, state_hex, state_i64, entry_block,
-             classification, shared_suffix)
-        VALUES (?,?,?,?,?,?)
-        """,
-        (snap, state_hex, int(state_hex, 16), entry_block, classification, None),
-    )
+    StateCfgNode.insert(
+        snapshot=snap, state_hex=state_hex, state_i64=int(state_hex, 16),
+        entry_block=entry_block, classification=classification,
+        shared_suffix=None,
+    ).execute()
 
 
 def _add_block(
@@ -54,15 +53,10 @@ def _add_block(
     role: str = "owned",
     snap: int = 1,
 ) -> None:
-    conn.execute(
-        """
-        INSERT INTO state_cfg_node_blocks
-            (snapshot_id, state_hex, entry_block, block_serial,
-             block_index, role)
-        VALUES (?,?,?,?,?,?)
-        """,
-        (snap, state_hex, entry_block, block_serial, block_index, role),
-    )
+    StateCfgNodeBlock.insert(
+        snapshot=snap, state_hex=state_hex, entry_block=entry_block,
+        block_serial=block_serial, block_index=block_index, role=role,
+    ).execute()
 
 
 def _add_edge(
@@ -77,22 +71,13 @@ def _add_edge(
     kind: str = "TRANSITION",
     snap: int = 1,
 ) -> None:
-    conn.execute(
-        """
-        INSERT INTO state_cfg_edges
-            (snapshot_id, edge_id, source_state_hex, source_state_i64,
-             target_state_hex, target_state_i64, edge_kind,
-             source_block, source_arm, target_entry, ordered_path)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            snap, edge_id, src,
-            int(src, 16) if src else None,
-            tgt,
-            int(tgt, 16) if tgt else None,
-            kind, source_block, None, target_entry, ordered_path,
-        ),
-    )
+    StateCfgEdge.insert(
+        snapshot=snap, edge_id=edge_id, source_state_hex=src,
+        source_state_i64=int(src, 16) if src else None, target_state_hex=tgt,
+        target_state_i64=int(tgt, 16) if tgt else None, edge_kind=kind,
+        source_block=source_block, source_arm=None, target_entry=target_entry,
+        ordered_path=ordered_path,
+    ).execute()
 
 
 def _add_collapsed_diagnostic(
@@ -103,21 +88,13 @@ def _add_collapsed_diagnostic(
     tgt: str,
     snap: int = 1,
 ) -> None:
-    conn.execute(
-        """
-        INSERT INTO state_cfg_edge_diagnostics
-            (snapshot_id, edge_id, classification, source_state_hex,
-             target_state_hex, edge_kind, is_terminal_tail,
-             original_state_const, rewritten_state_const,
-             related_fact_ids, reason)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            snap, edge_id, "COLLAPSED_TO_REWRITTEN_TARGET", src, tgt,
-            "TRANSITION", 1, "0xAA", "0xBB", "[]",
-            "test collapse",
-        ),
-    )
+    StateCfgEdgeDiagnostic.insert(
+        snapshot=snap, edge_id=edge_id,
+        classification="COLLAPSED_TO_REWRITTEN_TARGET", source_state_hex=src,
+        target_state_hex=tgt, edge_kind="TRANSITION", is_terminal_tail=1,
+        original_state_const="0xAA", rewritten_state_const="0xBB",
+        related_fact_ids="[]", reason="test collapse",
+    ).execute()
 
 
 def test_correlates_byte5_alternate_edge() -> None:
@@ -290,7 +267,4 @@ def test_persist_idempotent() -> None:
     correlations = correlate_collapsed_edges(conn, snapshot_id=1)
     persist_alternate_correlations(conn, correlations)
     persist_alternate_correlations(conn, correlations)
-    rows = conn.execute(
-        "SELECT COUNT(*) FROM state_cfg_edge_alternate_correlations"
-    ).fetchone()
-    assert rows[0] == 1
+    assert StateCfgEdgeAlternateCorrelation.select().count() == 1
