@@ -10,6 +10,13 @@ from pathlib import Path
 import pytest
 
 from d810.diagnostics.__main__ import main
+from d810.core.diag.models import (
+    FactObservation as FactObservationModel,
+    RenderedProgram,
+    RenderedProgramLine,
+    RenderedProgramNode,
+    Snapshot,
+)
 from d810.core.diag.snapshot import (
     _dual,
     snapshot_bst_interval_dispatcher_rows,
@@ -196,46 +203,54 @@ class TestSnapshotResolution:
     def test_resolve_snapshot_by_maturity_and_phase(
         self, loaded_db_path: Path, capsys: pytest.CaptureFixture
     ):
-        conn = create_diag_database(str(loaded_db_path)).connection()
         fh, fi = _dual(0x180012B60)
-        conn.execute(
-            "INSERT INTO snapshots VALUES "
-            "(2, 'maturity_MMAT_GLBOPT1_post_d810', ?, ?, 'MMAT_GLBOPT1', 'post_d810', 0, 0.0)",
-            (fh, fi),
-        )
-        conn.execute(
-            "INSERT INTO rendered_programs VALUES (2, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                "semantic_reference_like",
-                "semantic",
-                "local_boundary_selective",
-                "state_family",
-                "inline_single_level",
-                "minimal",
-                1,
-                1,
-            ),
-        )
-        conn.execute(
-            "INSERT INTO rendered_program_nodes VALUES (2, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                "semantic_reference_like",
-                "STATE_GLBOPT1_POST",
-                "state_family",
-                "STATE_GLBOPT1_POST",
-                7,
-                7,
-                None,
-                1,
-                1,
-            ),
-        )
-        conn.execute(
-            "INSERT INTO rendered_program_lines VALUES (2, ?, 1, 0, 0, 'label', NULL, ?)",
-            ("semantic_reference_like", "STATE_GLBOPT1_POST:"),
-        )
-        conn.commit()
-        conn.close()
+        db = create_diag_database(str(loaded_db_path))
+        with diag_models_on(db):
+            Snapshot.insert(
+                id=2,
+                label="maturity_MMAT_GLBOPT1_post_d810",
+                func_ea_hex=fh,
+                func_ea_i64=fi,
+                maturity="MMAT_GLBOPT1",
+                phase="post_d810",
+                block_count=0,
+                timestamp=0.0,
+            ).execute()
+            RenderedProgram.insert(
+                snapshot=2,
+                variant_name="semantic_reference_like",
+                order_strategy="semantic",
+                program_strategy="local_boundary_selective",
+                label_render_mode="state_family",
+                boundary_inline_mode="inline_single_level",
+                comment_mode="minimal",
+                line_count=1,
+                node_count=1,
+            ).execute()
+            RenderedProgramNode.insert(
+                snapshot_id=2,
+                variant_name="semantic_reference_like",
+                node_index=0,
+                label_text="STATE_GLBOPT1_POST",
+                node_kind="state_family",
+                state_label="STATE_GLBOPT1_POST",
+                handler_serial=7,
+                entry_anchor=7,
+                label_num=None,
+                line_start=1,
+                line_end=1,
+            ).execute()
+            RenderedProgramLine.insert(
+                snapshot_id=2,
+                variant_name="semantic_reference_like",
+                line_no=1,
+                node_index=0,
+                indent_level=0,
+                line_kind="label",
+                target_label=None,
+                text="STATE_GLBOPT1_POST:",
+            ).execute()
+        db.close()
 
         rc = main(
             [
@@ -256,15 +271,20 @@ class TestSnapshotResolution:
     def test_resolve_snapshot_by_phase_only(
         self, loaded_db_path: Path, capsys: pytest.CaptureFixture
     ):
-        conn = create_diag_database(str(loaded_db_path)).connection()
         fh, fi = _dual(0x180012B60)
-        conn.execute(
-            "INSERT INTO snapshots VALUES "
-            "(2, 'maturity_MMAT_GLBOPT1_post_d810', ?, ?, 'MMAT_GLBOPT1', 'post_d810', 0, 0.0)",
-            (fh, fi),
-        )
-        conn.commit()
-        conn.close()
+        db = create_diag_database(str(loaded_db_path))
+        with diag_models_on(db):
+            Snapshot.insert(
+                id=2,
+                label="maturity_MMAT_GLBOPT1_post_d810",
+                func_ea_hex=fh,
+                func_ea_i64=fi,
+                maturity="MMAT_GLBOPT1",
+                phase="post_d810",
+                block_count=0,
+                timestamp=0.0,
+            ).execute()
+        db.close()
 
         rc = main(["block", "--db", str(loaded_db_path), "--phase", "post_d810", "206"])
         assert rc == 0
@@ -335,16 +355,6 @@ class TestStateTransitionBstResolutionsCommand:
     def _make_bst_resolution_db_and_log(self, tmp_path: Path) -> tuple[Path, Path]:
         db_path = tmp_path / "bst.sqlite3"
         log_path = tmp_path / "d810.log"
-        conn = create_diag_database(str(db_path)).connection()
-        conn.execute(
-            """
-            INSERT INTO snapshots
-                (id, label, func_ea_hex, func_ea_i64,
-                 maturity, phase, block_count, timestamp)
-            VALUES (1, 'maturity_MMAT_LOCOPT_pre_d810', '0x180012df0',
-                    0x180012df0, 'MMAT_LOCOPT', 'pre_d810', 0, 0.0)
-            """,
-        )
         transition_payload = {
             "source_block_serial": 100,
             "source_state_const": 0x150,
@@ -352,34 +362,6 @@ class TestStateTransitionBstResolutionsCommand:
             "successor_kind": "branch",
             "state_var_stkoff_hex": "0x3c",
         }
-        conn.execute(
-            """
-            INSERT INTO fact_observations
-                (snapshot_id, func_ea_hex, func_ea_i64, fact_id, kind,
-                 semantic_key, maturity, phase, confidence,
-                 source_block, source_ea_hex, source_ea_i64,
-                 block_fingerprint, mop_signature, payload, evidence)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                1,
-                "0x180012df0",
-                0x180012df0,
-                "state_transition_anchor:test",
-                "StateTransitionAnchorFact",
-                "state_transition_anchor:test",
-                "MMAT_LOCOPT",
-                "pre_d810",
-                0.9,
-                100,
-                None,
-                None,
-                None,
-                None,
-                json.dumps(transition_payload),
-                "[]",
-            ),
-        )
         write_payload = {
             "block_serial": 7,
             "state_const": 0x222,
@@ -387,35 +369,57 @@ class TestStateTransitionBstResolutionsCommand:
             "state_const_hex": "0x0000000000000222",
             "state_var_stkoff_hex": "0x3c",
         }
-        conn.execute(
-            """
-            INSERT INTO fact_observations
-                (snapshot_id, func_ea_hex, func_ea_i64, fact_id, kind,
-                 semantic_key, maturity, phase, confidence,
-                 source_block, source_ea_hex, source_ea_i64,
-                 block_fingerprint, mop_signature, payload, evidence)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                1,
-                "0x180012df0",
-                0x180012df0,
-                "state_write_anchor:test",
-                "StateWriteAnchorFact",
-                "state_write_anchor:test",
-                "MMAT_LOCOPT",
-                "pre_d810",
-                0.9,
-                7,
-                None,
-                None,
-                None,
-                None,
-                json.dumps(write_payload),
-                "[]",
-            ),
-        )
-        conn.commit()
+        db = create_diag_database(str(db_path))
+        with diag_models_on(db):
+            Snapshot.insert(
+                id=1,
+                label="maturity_MMAT_LOCOPT_pre_d810",
+                func_ea_hex="0x180012df0",
+                func_ea_i64=0x180012df0,
+                maturity="MMAT_LOCOPT",
+                phase="pre_d810",
+                block_count=0,
+                timestamp=0.0,
+            ).execute()
+            FactObservationModel.insert_many([
+                {
+                    "snapshot": 1,
+                    "func_ea_hex": "0x180012df0",
+                    "func_ea_i64": 0x180012df0,
+                    "fact_id": "state_transition_anchor:test",
+                    "kind": "StateTransitionAnchorFact",
+                    "semantic_key": "state_transition_anchor:test",
+                    "maturity": "MMAT_LOCOPT",
+                    "phase": "pre_d810",
+                    "confidence": 0.9,
+                    "source_block": 100,
+                    "source_ea_hex": None,
+                    "source_ea_i64": None,
+                    "block_fingerprint": None,
+                    "mop_signature": None,
+                    "payload": json.dumps(transition_payload),
+                    "evidence": "[]",
+                },
+                {
+                    "snapshot": 1,
+                    "func_ea_hex": "0x180012df0",
+                    "func_ea_i64": 0x180012df0,
+                    "fact_id": "state_write_anchor:test",
+                    "kind": "StateWriteAnchorFact",
+                    "semantic_key": "state_write_anchor:test",
+                    "maturity": "MMAT_LOCOPT",
+                    "phase": "pre_d810",
+                    "confidence": 0.9,
+                    "source_block": 7,
+                    "source_ea_hex": None,
+                    "source_ea_i64": None,
+                    "block_fingerprint": None,
+                    "mop_signature": None,
+                    "payload": json.dumps(write_payload),
+                    "evidence": "[]",
+                },
+            ]).execute()
+        conn = db.connection()
         conn.close()
         log_path.write_text(
             'INTERVAL_DISPATCHER_ROWS: [{"lo":"0x100","hi":"0x200","target":7}]\n',
@@ -504,25 +508,6 @@ class TestStateTransitionBstResolutionsCommand:
 class TestStateTransitionDispatchResolutionsCommand:
     def _make_dispatch_resolution_db(self, tmp_path: Path) -> Path:
         db_path = tmp_path / "dispatch.sqlite3"
-        conn = create_diag_database(str(db_path)).connection()
-        conn.execute(
-            """
-            INSERT INTO snapshots
-                (id, label, func_ea_hex, func_ea_i64,
-                 maturity, phase, block_count, timestamp)
-            VALUES (1, 'MMAT_LOCOPT_pre_d810', '0x180012df0',
-                    0x180012df0, 'MMAT_LOCOPT', 'pre_d810', 0, 0.0)
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO snapshots
-                (id, label, func_ea_hex, func_ea_i64,
-                 maturity, phase, block_count, timestamp)
-            VALUES (2, 'MMAT_GLBOPT1_post_d810', '0x180012df0',
-                    0x180012df0, 'MMAT_GLBOPT1', 'post_d810', 0, 1.0)
-            """
-        )
         payload = {
             "source_block_serial": 100,
             "source_state_const": 0x89407346,
@@ -530,34 +515,49 @@ class TestStateTransitionDispatchResolutionsCommand:
             "successor_kind": "branch",
             "state_var_stkoff_hex": "0x3c",
         }
-        conn.execute(
-            """
-            INSERT INTO fact_observations
-                (snapshot_id, func_ea_hex, func_ea_i64, fact_id, kind,
-                 semantic_key, maturity, phase, confidence,
-                 source_block, source_ea_hex, source_ea_i64,
-                 block_fingerprint, mop_signature, payload, evidence)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                1,
-                "0x180012df0",
-                0x180012DF0,
-                "state_transition_anchor:blk=100",
-                "StateTransitionAnchorFact",
-                "state_transition_anchor:blk=100",
-                "MMAT_LOCOPT",
-                "pre_d810",
-                0.85,
-                100,
-                None,
-                None,
-                None,
-                None,
-                json.dumps(payload),
-                "[]",
-            ),
-        )
+        db = create_diag_database(str(db_path))
+        with diag_models_on(db):
+            Snapshot.insert_many([
+                {
+                    "id": 1,
+                    "label": "MMAT_LOCOPT_pre_d810",
+                    "func_ea_hex": "0x180012df0",
+                    "func_ea_i64": 0x180012df0,
+                    "maturity": "MMAT_LOCOPT",
+                    "phase": "pre_d810",
+                    "block_count": 0,
+                    "timestamp": 0.0,
+                },
+                {
+                    "id": 2,
+                    "label": "MMAT_GLBOPT1_post_d810",
+                    "func_ea_hex": "0x180012df0",
+                    "func_ea_i64": 0x180012df0,
+                    "maturity": "MMAT_GLBOPT1",
+                    "phase": "post_d810",
+                    "block_count": 0,
+                    "timestamp": 1.0,
+                },
+            ]).execute()
+            FactObservationModel.insert(
+                snapshot=1,
+                func_ea_hex="0x180012df0",
+                func_ea_i64=0x180012DF0,
+                fact_id="state_transition_anchor:blk=100",
+                kind="StateTransitionAnchorFact",
+                semantic_key="state_transition_anchor:blk=100",
+                maturity="MMAT_LOCOPT",
+                phase="pre_d810",
+                confidence=0.85,
+                source_block=100,
+                source_ea_hex=None,
+                source_ea_i64=None,
+                block_fingerprint=None,
+                mop_signature=None,
+                payload=json.dumps(payload),
+                evidence="[]",
+            ).execute()
+        conn = db.connection()
         snapshot_state_dispatcher_rows(
             conn,
             2,
