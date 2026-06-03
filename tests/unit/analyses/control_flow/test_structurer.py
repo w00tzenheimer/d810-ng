@@ -196,10 +196,13 @@ def test_while_one_emits_break_at_midbody_exit():
     assert text.index("break;") < text.index("/* blk 4 */")
 
 
-def test_nway_block_recurses_all_arms_as_switch():
-    # sub_7FFD block 69 shape: a 3-way state branch (after a back-edge is
-    # excluded) whose arms are terminals. The structurer must recurse EVERY arm
-    # (so each terminal renders + returns), not leaf-drop the block.
+def test_nway_block_is_leaf_no_duplication_explosion():
+    # sub_7FFD block 69 shape: a 3-way state-dispatch branch. n-way blocks are
+    # leaf-rendered (not recursed): these residual-dispatch blocks are reached
+    # dozens of times, and recursing re-renders each arm's subtree once per visit
+    # -> a goto-free duplication explosion (observed: one block 45x, 848->3037
+    # lines). Clean full coverage needs DREAM-style de-duplicating structuring.
+    # The render stays goto-free and terminating.
     graph = _Graph(
         [
             _Blk(0, (69,)),
@@ -210,18 +213,11 @@ def test_nway_block_recurses_all_arms_as_switch():
         ],
         entry_serial=0,
     )
-    tree = build_region_tree(
-        graph,
-        render_block=_lines,
-        render_condition=_cond,
-        terminal_return=lambda s: "a5 + 0xD0",
-    )
+    tree = build_region_tree(graph, render_block=_lines, render_condition=_cond)
     text = render_region(tree)
     assert "goto" not in text
-    for arm in (41, 47, 122):
-        assert f"/* blk {arm} */" in text  # every arm rendered
-    assert text.count("return a5 + 0xD0;") == 3  # each terminal returns
-    assert any(isinstance(r, SwitchRegion) for r in _walk(tree))
+    assert "/* blk 69 */" in text  # the dispatch block renders
+    assert not any(isinstance(r, SwitchRegion) for r in _walk(tree))  # leaf
 
 
 def _walk(region):
