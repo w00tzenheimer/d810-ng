@@ -158,6 +158,28 @@ def test_self_loop_transition_is_dropped():
     assert cfg.successors(136) == ()  # no self-loop
 
 
+def test_block_level_self_edge_dropped_when_target_state_none():
+    # The enriched DAG's self-loop edges can carry target_state=None but resolve
+    # via target_entry_anchor back to the source block (block 8). The state-level
+    # guard (source_state==target_state) misses this; the block-level guard must
+    # still drop the 8->8 self-edge so no spurious do/while is emitted.
+    nodes = [_node(0x610BB4D9, 8, [8])]
+    edge = StateDagEdge(
+        kind=SemanticEdgeKind.TRANSITION,
+        source_key=StateDagNodeKey(handler_serial=8, state_const=0x610BB4D9),
+        target_key=None,
+        target_state=None,
+        target_entry_anchor=8,  # resolves back to the source block
+        target_label="",
+        source_anchor=StateRedirectAnchor(
+            kind=RedirectSourceKind.UNCONDITIONAL, block_serial=8
+        ),
+        ordered_path=(8,),
+    )
+    cfg = build_state_dag_cfg(_dag(nodes, [edge], initial_state=0x610BB4D9), base_successors={})
+    assert cfg.successors(8) == ()  # no 8->8 self-edge
+
+
 def test_prefix_ordered_paths_build_internal_branch_chain():
     # sub_7FFD node 0x606DC166 (blk14) shape: nested prefix paths
     # [14,140] [14,140,141] [14,140,142] each transitioning to a different next
