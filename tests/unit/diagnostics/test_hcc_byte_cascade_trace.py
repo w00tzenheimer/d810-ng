@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
 
-import pytest
-
+from d810.core.diag import create_diag_database, diag_models_on
+from d810.core.diag.models import Instruction, Snapshot
 from d810.diagnostics.hcc_byte_cascade_trace import (
     ByteCascadeRow,
     enrich_rows_with_db,
@@ -250,28 +249,44 @@ def test_format_report_json_round_trips() -> None:
 
 
 def _make_diag_db(tmp_path: Path) -> Path:
-    db = tmp_path / "diag.sqlite3"
-    conn = sqlite3.connect(str(db))
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE snapshots(id INTEGER PRIMARY KEY, label TEXT);
-            CREATE TABLE instructions(snapshot_id INTEGER, dstr TEXT);
-            INSERT INTO snapshots(id, label) VALUES
-                (5, 'pre_d810'),
-                (17, 'post_bundle_stabilize'),
-                (18, 'post_d810');
-            INSERT INTO instructions(snapshot_id, dstr) VALUES
-                (5, 'stx ([ds.2:%var_190.8+#3.8].1)'),
-                (17, 'stx ([ds.2:%var_190.8+#3.8].1)'),
-                (17, 'stx ([ds.2:%var_190.8+#3.8].1) second copy'),
-                (5, 'stx ([ds.2:%var_190.8+#6.8].1)');
-            """
+    db_path = tmp_path / "diag.sqlite3"
+    db = create_diag_database(str(db_path))
+    with diag_models_on(db):
+        snap5 = Snapshot.create(
+            id=5, label="pre_d810", func_ea_hex="0x0000000000000000",
+            func_ea_i64=0, maturity="GLBOPT1", phase="unknown",
+            block_count=0, timestamp=0.0,
         )
-        conn.commit()
-    finally:
-        conn.close()
-    return db
+        snap17 = Snapshot.create(
+            id=17, label="post_bundle_stabilize", func_ea_hex="0x0000000000000000",
+            func_ea_i64=0, maturity="GLBOPT1", phase="unknown",
+            block_count=0, timestamp=0.0,
+        )
+        Snapshot.create(
+            id=18, label="post_d810", func_ea_hex="0x0000000000000000",
+            func_ea_i64=0, maturity="GLBOPT1", phase="unknown",
+            block_count=0, timestamp=0.0,
+        )
+        Instruction.insert_many([
+            dict(snapshot=snap5.id, block_serial=0, insn_index=0,
+                 ea_hex="0x0000000000001000", ea_i64=0x1000,
+                 opcode=0, opcode_name="stx",
+                 dstr="stx ([ds.2:%var_190.8+#3.8].1)"),
+            dict(snapshot=snap17.id, block_serial=0, insn_index=0,
+                 ea_hex="0x0000000000001001", ea_i64=0x1001,
+                 opcode=0, opcode_name="stx",
+                 dstr="stx ([ds.2:%var_190.8+#3.8].1)"),
+            dict(snapshot=snap17.id, block_serial=0, insn_index=1,
+                 ea_hex="0x0000000000001002", ea_i64=0x1002,
+                 opcode=0, opcode_name="stx",
+                 dstr="stx ([ds.2:%var_190.8+#3.8].1) second copy"),
+            dict(snapshot=snap5.id, block_serial=0, insn_index=1,
+                 ea_hex="0x0000000000001003", ea_i64=0x1003,
+                 opcode=0, opcode_name="stx",
+                 dstr="stx ([ds.2:%var_190.8+#6.8].1)"),
+        ]).execute()
+    db.close()
+    return db_path
 
 
 def test_enrich_returns_rows_unchanged_when_db_missing(tmp_path: Path) -> None:
@@ -605,42 +620,39 @@ def test_enrich_populates_db_source_ea_survival(tmp_path: Path) -> None:
     """``_count_source_ea_survival_per_snapshot`` (driven via
     ``enrich_rows_with_db``) returns a per-snapshot per-EA survival map
     keyed by lowercase 16-digit hex, matching the diag DB schema."""
-    db = tmp_path / "src_ea.sqlite3"
-    conn = sqlite3.connect(str(db))
-    try:
-        # Realistic two-snapshot fixture: snap5 (pre_d810) has both EAs;
-        # snap18 (post_d810) only has one of the two.
-        conn.executescript(
-            """
-            CREATE TABLE snapshots(
-                id INTEGER PRIMARY KEY, label TEXT
-            );
-            CREATE TABLE instructions(
-                snapshot_id INTEGER, ea_hex TEXT,
-                dstr TEXT, dest_stkoff INTEGER
-            );
-            INSERT INTO snapshots VALUES
-                (5, 'maturity_MMAT_GLBOPT1_pre_d810'),
-                (18, 'maturity_MMAT_GLBOPT1_post_d810');
-            """
+    db_path = tmp_path / "src_ea.sqlite3"
+    db = create_diag_database(str(db_path))
+    with diag_models_on(db):
+        snap5 = Snapshot.create(
+            id=5, label="maturity_MMAT_GLBOPT1_pre_d810",
+            func_ea_hex="0x0000000000000000", func_ea_i64=0,
+            maturity="MMAT_GLBOPT1", phase="unknown",
+            block_count=0, timestamp=0.0,
         )
-        conn.executemany(
-            "INSERT INTO instructions(snapshot_id, ea_hex, dstr, dest_stkoff) VALUES (?,?,?,?)",
-            [
-                (5, "0x0000000180014d10", "stx ...", 0),
-                (5, "0x0000000180014d20", "stx ...", 0),
-                (18, "0x0000000180014d20", "stx ...", 0),
-            ],
+        snap18 = Snapshot.create(
+            id=18, label="maturity_MMAT_GLBOPT1_post_d810",
+            func_ea_hex="0x0000000000000000", func_ea_i64=0,
+            maturity="MMAT_GLBOPT1", phase="unknown",
+            block_count=0, timestamp=0.0,
         )
-        conn.commit()
-    finally:
-        conn.close()
+        Instruction.insert_many([
+            dict(snapshot=snap5.id, block_serial=0, insn_index=0,
+                 ea_hex="0x0000000180014d10", ea_i64=0x180014d10,
+                 opcode=0, opcode_name="stx", dstr="stx ..."),
+            dict(snapshot=snap5.id, block_serial=0, insn_index=1,
+                 ea_hex="0x0000000180014d20", ea_i64=0x180014d20,
+                 opcode=0, opcode_name="stx", dstr="stx ..."),
+            dict(snapshot=snap18.id, block_serial=0, insn_index=0,
+                 ea_hex="0x0000000180014d20", ea_i64=0x180014d20,
+                 opcode=0, opcode_name="stx", dstr="stx ..."),
+        ]).execute()
+    db.close()
     # Tracer emits uppercase 16-digit hex; the helper normalises to lower.
     row = _row(
         byte=3, final_status="preserved_redirect",
         source_eas=("0x0000000180014D10", "0x0000000180014D20"),
     )
-    [enriched] = enrich_rows_with_db([row], db)
+    [enriched] = enrich_rows_with_db([row], db_path)
     survival = enriched.db_source_ea_survival
     assert (
         survival["maturity_MMAT_GLBOPT1_pre_d810"]["0x0000000180014d10"] == 1
@@ -664,33 +676,33 @@ def test_enrich_marks_redirect_only_finalization_loss_when_all_source_eas_dead(
 ) -> None:
     """A byte whose every source EA is gone at post_d810 demotes to
     `redirect_only_finalization_loss` after enrichment."""
-    db = tmp_path / "all_dead.sqlite3"
-    conn = sqlite3.connect(str(db))
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE snapshots(id INTEGER PRIMARY KEY, label TEXT);
-            CREATE TABLE instructions(snapshot_id INTEGER, ea_hex TEXT,
-                dstr TEXT, dest_stkoff INTEGER);
-            INSERT INTO snapshots VALUES
-                (5,  'maturity_MMAT_GLBOPT1_pre_d810'),
-                (18, 'maturity_MMAT_GLBOPT1_post_d810');
-            """
+    db_path = tmp_path / "all_dead.sqlite3"
+    db = create_diag_database(str(db_path))
+    with diag_models_on(db):
+        snap5 = Snapshot.create(
+            id=5, label="maturity_MMAT_GLBOPT1_pre_d810",
+            func_ea_hex="0x0000000000000000", func_ea_i64=0,
+            maturity="MMAT_GLBOPT1", phase="unknown",
+            block_count=0, timestamp=0.0,
+        )
+        Snapshot.create(
+            id=18, label="maturity_MMAT_GLBOPT1_post_d810",
+            func_ea_hex="0x0000000000000000", func_ea_i64=0,
+            maturity="MMAT_GLBOPT1", phase="unknown",
+            block_count=0, timestamp=0.0,
         )
         # snap5 has the EA; snap18 has nothing matching.
-        conn.execute(
-            "INSERT INTO instructions(snapshot_id, ea_hex, dstr, dest_stkoff)"
-            " VALUES (?,?,?,?)",
-            (5, "0x0000000180014d10", "stx ...", 0),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+        Instruction.insert(
+            snapshot=snap5.id, block_serial=0, insn_index=0,
+            ea_hex="0x0000000180014d10", ea_i64=0x180014d10,
+            opcode=0, opcode_name="stx", dstr="stx ...",
+        ).execute()
+    db.close()
     row = _row(
         byte=3, final_status="preserved_redirect",
         source_eas=("0x0000000180014D10",),
     )
-    [enriched] = enrich_rows_with_db([row], db)
+    [enriched] = enrich_rows_with_db([row], db_path)
     assert enriched.final_status_refined == "redirect_only_finalization_loss"
 
 

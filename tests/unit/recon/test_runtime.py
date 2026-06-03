@@ -1,7 +1,6 @@
 """Unit tests for ReconAnalysisRuntime coordinator."""
 
 from __future__ import annotations
-from d810.core.diag import create_diag_database
 
 import json
 from pathlib import Path
@@ -11,6 +10,7 @@ from unittest.mock import MagicMock, call, create_autospec, patch
 import pytest
 
 from d810.core import ProviderPhaseSnapshot
+from d810.core.diag.models import FactConsumer, Snapshot
 from d810.core.settings import configure_settings, reset_settings
 from d810.passes.analysis import AnalysisPhase
 from d810.analyses.value_flow.facts import FactConsumerRecord, FactObservation
@@ -18,6 +18,7 @@ from d810.analyses.control_flow.models import DeobfuscationHints, ReconResult
 from d810.passes.phase import ReconPhase
 from d810.passes.runtime import ReconAnalysisRuntime
 from d810.passes.store import ReconStore
+from tests.unit.core.diag._orm_bind import make_bound_diag_db
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -255,12 +256,18 @@ def test_fact_lifecycle_capture_persists_to_diag_snapshot() -> None:
     rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
     rt._fact_lifecycle.register(_Collector())  # targeted substrate test
 
-    conn = create_diag_database(":memory:").connection()
-    conn.execute(
-        "INSERT INTO snapshots VALUES "
-        "(1, 'test', '0x0000000000401000', 0x401000, 'MMAT_GLBOPT1', "
-        "'pre_d810', 1, 0.0)"
-    )
+    db = make_bound_diag_db()
+    conn = db.connection()
+    Snapshot.insert(
+        id=1,
+        label="test",
+        func_ea_hex="0x0000000000401000",
+        func_ea_i64=0x401000,
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+        block_count=1,
+        timestamp=0.0,
+    ).execute()
 
     # Wire the abstract observability backend to the test conn and bind
     # a SnapshotRef whose key resolves to snap_id=1 in this fixture.
@@ -291,10 +298,13 @@ def test_fact_lifecycle_capture_persists_to_diag_snapshot() -> None:
         uninstall_diag_event_handlers()
 
     assert summary.observation_count == 1
-    row = conn.execute(
-        "SELECT kind, source_block FROM fact_observations "
-        "WHERE fact_id='induction:runtime'"
-    ).fetchone()
+    from d810.core.diag.models import FactObservation as FactObservationModel
+    row = (
+        FactObservationModel.select(FactObservationModel.kind, FactObservationModel.source_block)
+        .where(FactObservationModel.fact_id == "induction:runtime")
+        .tuples()
+        .first()
+    )
     assert row == ("InductionCarrierFact", 42)
 
 
@@ -335,23 +345,18 @@ def test_validated_fact_view_is_exposed_from_runtime() -> None:
 
 
 def test_record_fact_consumers_persists_to_latest_diag_snapshot() -> None:
-    conn = create_diag_database(":memory:").connection()
-    conn.execute(
-        "INSERT INTO snapshots "
-        "(id, label, func_ea_hex, func_ea_i64, maturity, phase, block_count, timestamp) "
-        "VALUES (?,?,?,?,?,?,?,?)",
-        (
-            7,
-            "pre",
-            f"0x{_FUNC_EA:016x}",
-            _FUNC_EA,
-            "MMAT_GLBOPT1",
-            "pre_d810",
-            3,
-            0.0,
-        ),
-    )
-    conn.commit()
+    db = make_bound_diag_db()
+    conn = db.connection()
+    Snapshot.insert(
+        id=7,
+        label="pre",
+        func_ea_hex=f"0x{_FUNC_EA:016x}",
+        func_ea_i64=_FUNC_EA,
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+        block_count=3,
+        timestamp=0.0,
+    ).execute()
     rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
     record = FactConsumerRecord(
         consumer="hodur.unflattener",
@@ -398,7 +403,7 @@ def test_record_fact_consumers_persists_to_latest_diag_snapshot() -> None:
             # New emit; subscriber sees the row already exists and dedups.
             rt.record_fact_consumers(_FUNC_EA, (record,))
 
-        assert conn.execute("SELECT COUNT(*) FROM fact_consumers").fetchone()[0] == 1
+        assert FactConsumer.select().count() == 1
     finally:
         uninstall_diag_event_handlers()
 

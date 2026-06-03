@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from d810.core.diag import open_diag_database
+from d810.core.diag import diag_models_on, open_diag_database
+from d810.core.diag.models import Block, FactObservation, Snapshot
 from d810.diagnostics.terminal_tail_audit import (
     build_block_lookup,
     build_fact_lookup,
@@ -16,7 +17,6 @@ from d810.diagnostics.terminal_tail_audit import (
     iter_observations,
     run_audit,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixture: a minimal diag DB shaped enough to exercise each helper.
@@ -27,110 +27,94 @@ def _make_diag_db(tmp_path: Path) -> Path:
     """Build a minimal diag SQLite with two GLBOPT1 snapshots (pre_d810 and
     post_bundle_stabilize) and three byte-emit facts at byte_index 2,3,6
     that survive into the second snapshot."""
-    db = tmp_path / "diag.sqlite3"
-    conn = sqlite3.connect(str(db))
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE snapshots(
-                id INTEGER PRIMARY KEY,
-                label TEXT,
-                maturity TEXT,
-                phase TEXT
-            );
-            CREATE TABLE blocks(
-                snapshot_id INTEGER,
-                serial INTEGER,
-                start_ea_hex TEXT,
-                npred INTEGER,
-                nsucc INTEGER,
-                insn_count INTEGER
-            );
-            CREATE TABLE fact_observations(
-                snapshot_id INTEGER,
-                fact_id INTEGER,
-                kind TEXT,
-                maturity TEXT,
-                phase TEXT,
-                payload TEXT
-            );
-            INSERT INTO snapshots(id, label, maturity, phase) VALUES
-                (5,  'pre_d810',              'MMAT_GLBOPT1', 'pre_d810'),
-                (17, 'post_bundle_stabilize', 'MMAT_GLBOPT1', 'post_apply'),
-                (99, 'dump_raw_lvars',        'MMAT_LVARS',   'post_d810');
-            INSERT INTO blocks(snapshot_id, serial, start_ea_hex, npred, nsucc, insn_count) VALUES
-                (5,  56,  '0x180014C00', 1, 1, 3),
-                (5,  163, '0x180014D00', 2, 2, 5),
-                (5,  217, '0x180014E00', 1, 1, 4),
-                (17, 56,  '0x180014C00', 1, 1, 3),
-                (17, 163, '0x180014D00', 2, 2, 5);
-            """
-        )
+    from d810.core.diag import create_diag_database
+
+    db_path = tmp_path / "diag.sqlite3"
+    db_obj = create_diag_database(str(db_path))
+    with diag_models_on(db_obj):
+        Snapshot.insert_many([
+            dict(id=5,  label="pre_d810",              func_ea_hex="0x0", func_ea_i64=0, maturity="MMAT_GLBOPT1", phase="pre_d810",   block_count=0, timestamp=0.0),
+            dict(id=17, label="post_bundle_stabilize", func_ea_hex="0x0", func_ea_i64=0, maturity="MMAT_GLBOPT1", phase="post_apply", block_count=0, timestamp=0.0),
+            dict(id=99, label="dump_raw_lvars",        func_ea_hex="0x0", func_ea_i64=0, maturity="MMAT_LVARS",   phase="post_d810",  block_count=0, timestamp=0.0),
+        ]).execute()
+        Block.insert_many([
+            dict(snapshot=5,  serial=56,  block_type=1, type_name="BLT_1WAY", start_ea_hex="0x180014C00", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=1, npred=1, succs="[]", preds="[]", insn_count=3),
+            dict(snapshot=5,  serial=163, block_type=2, type_name="BLT_2WAY", start_ea_hex="0x180014D00", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=2, npred=2, succs="[]", preds="[]", insn_count=5),
+            dict(snapshot=5,  serial=217, block_type=1, type_name="BLT_1WAY", start_ea_hex="0x180014E00", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=1, npred=1, succs="[]", preds="[]", insn_count=4),
+            dict(snapshot=17, serial=56,  block_type=1, type_name="BLT_1WAY", start_ea_hex="0x180014C00", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=1, npred=1, succs="[]", preds="[]", insn_count=3),
+            dict(snapshot=17, serial=163, block_type=2, type_name="BLT_2WAY", start_ea_hex="0x180014D00", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=2, npred=2, succs="[]", preds="[]", insn_count=5),
+        ]).execute()
         # byte 2 fact at snap 5
-        conn.execute(
-            "INSERT INTO fact_observations VALUES (?, ?, ?, ?, ?, ?)",
-            (5, 1, "TerminalByteEmitterFact", "MMAT_GLBOPT1", "pre_d810",
-             json.dumps({
-                 "byte_index": 2,
-                 "block_serial": 56,
-                 "corridor_role": "terminal_tail",
-                 "source_byte_expression": "xdu([ds.2:%var_190.8+#2.8].1)",
-                 "destination_buffer_expression": "[ds.2:.+%var_188.8]",
-                 "counter_carrier": "var_178",
-                 "block_ea_hex": "0x180014C00",
-             })),
-        )
-        # byte 3 fact at snap 5 + snap 17 (survives bundle stabilize)
-        conn.execute(
-            "INSERT INTO fact_observations VALUES (?, ?, ?, ?, ?, ?)",
-            (5, 2, "TerminalByteEmitterFact", "MMAT_GLBOPT1", "pre_d810",
-             json.dumps({
-                 "byte_index": 3,
-                 "block_serial": 163,
-                 "corridor_role": "terminal_tail",
-                 "source_byte_expression": "xdu([ds.2:%var_190.8+#3.8].1)",
-                 "destination_buffer_expression": "[ds.2:.+%var_188.8]",
-                 "counter_carrier": "var_178",
-                 "block_ea_hex": "0x180014D00",
-             })),
-        )
-        conn.execute(
-            "INSERT INTO fact_observations VALUES (?, ?, ?, ?, ?, ?)",
-            (17, 3, "TerminalByteEmitterFact", "MMAT_GLBOPT1", "post_apply",
-             json.dumps({
-                 "byte_index": 3,
-                 "block_serial": 163,
-                 "corridor_role": "terminal_tail",
-                 "source_byte_expression": "xdu([ds.2:%var_190.8+#3.8].1)",
-                 "destination_buffer_expression": "[ds.2:.+%var_188.8]",
-                 "counter_carrier": "var_178",
-                 "block_ea_hex": "0x180014D00",
-             })),
-        )
+        FactObservation.insert(
+            snapshot=5, func_ea_hex="0x0", func_ea_i64=0,
+            fact_id="1", kind="TerminalByteEmitterFact",
+            semantic_key="byte_emit_2", maturity="MMAT_GLBOPT1", phase="pre_d810",
+            confidence=1.0, payload=json.dumps({
+                "byte_index": 2,
+                "block_serial": 56,
+                "corridor_role": "terminal_tail",
+                "source_byte_expression": "xdu([ds.2:%var_190.8+#2.8].1)",
+                "destination_buffer_expression": "[ds.2:.+%var_188.8]",
+                "counter_carrier": "var_178",
+                "block_ea_hex": "0x180014C00",
+            }), evidence="{}",
+        ).execute()
+        # byte 3 fact at snap 5
+        FactObservation.insert(
+            snapshot=5, func_ea_hex="0x0", func_ea_i64=0,
+            fact_id="2", kind="TerminalByteEmitterFact",
+            semantic_key="byte_emit_3", maturity="MMAT_GLBOPT1", phase="pre_d810",
+            confidence=1.0, payload=json.dumps({
+                "byte_index": 3,
+                "block_serial": 163,
+                "corridor_role": "terminal_tail",
+                "source_byte_expression": "xdu([ds.2:%var_190.8+#3.8].1)",
+                "destination_buffer_expression": "[ds.2:.+%var_188.8]",
+                "counter_carrier": "var_178",
+                "block_ea_hex": "0x180014D00",
+            }), evidence="{}",
+        ).execute()
+        # byte 3 fact at snap 17 (survives bundle stabilize)
+        FactObservation.insert(
+            snapshot=17, func_ea_hex="0x0", func_ea_i64=0,
+            fact_id="3", kind="TerminalByteEmitterFact",
+            semantic_key="byte_emit_3", maturity="MMAT_GLBOPT1", phase="post_apply",
+            confidence=1.0, payload=json.dumps({
+                "byte_index": 3,
+                "block_serial": 163,
+                "corridor_role": "terminal_tail",
+                "source_byte_expression": "xdu([ds.2:%var_190.8+#3.8].1)",
+                "destination_buffer_expression": "[ds.2:.+%var_188.8]",
+                "counter_carrier": "var_178",
+                "block_ea_hex": "0x180014D00",
+            }), evidence="{}",
+        ).execute()
         # byte 6 fact at snap 5 only (lost at snap 17 in our fixture)
-        conn.execute(
-            "INSERT INTO fact_observations VALUES (?, ?, ?, ?, ?, ?)",
-            (5, 4, "TerminalByteEmitterFact", "MMAT_GLBOPT1", "pre_d810",
-             json.dumps({
-                 "byte_index": 6,
-                 "block_serial": 217,
-                 "corridor_role": "terminal_tail",
-                 "source_byte_expression": "xdu([ds.2:%var_190.8+#6.8].1)",
-                 "destination_buffer_expression": "[ds.2:.+%var_188.8]",
-                 "counter_carrier": "var_178",
-                 "block_ea_hex": "0x180014E00",
-             })),
-        )
+        FactObservation.insert(
+            snapshot=5, func_ea_hex="0x0", func_ea_i64=0,
+            fact_id="4", kind="TerminalByteEmitterFact",
+            semantic_key="byte_emit_6", maturity="MMAT_GLBOPT1", phase="pre_d810",
+            confidence=1.0, payload=json.dumps({
+                "byte_index": 6,
+                "block_serial": 217,
+                "corridor_role": "terminal_tail",
+                "source_byte_expression": "xdu([ds.2:%var_190.8+#6.8].1)",
+                "destination_buffer_expression": "[ds.2:.+%var_188.8]",
+                "counter_carrier": "var_178",
+                "block_ea_hex": "0x180014E00",
+            }), evidence="{}",
+        ).execute()
         # An unrelated fact that should NOT show up in the audit.
-        conn.execute(
-            "INSERT INTO fact_observations VALUES (?, ?, ?, ?, ?, ?)",
-            (5, 5, "LoopCarrierFact", "MMAT_GLBOPT1", "pre_d810",
-             json.dumps({"some_field": "ignored"})),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    return db
+        FactObservation.insert(
+            snapshot=5, func_ea_hex="0x0", func_ea_i64=0,
+            fact_id="5", kind="LoopCarrierFact",
+            semantic_key="loop_carrier", maturity="MMAT_GLBOPT1", phase="pre_d810",
+            confidence=1.0, payload=json.dumps({"some_field": "ignored"}),
+            evidence="{}",
+        ).execute()
+        db_obj.connection().commit()
+    db_obj.close()
+    return db_path
 
 
 @pytest.fixture()
@@ -312,28 +296,27 @@ def test_build_block_lookup_empty_input_returns_empty(diag_db: Path) -> None:
 
 
 def test_glbopt1_snapshots_skips_dump_raw_and_blockless(diag_db: Path) -> None:
-    # Insert the extra snapshots via a raw writer first, then inspect
-    # read-only via open_diag_database (glbopt1_snapshots stays raw SQL).
-    conn = sqlite3.connect(str(diag_db))
-    try:
+    # Insert the extra snapshots via ORM, then inspect read-only via
+    # open_diag_database (glbopt1_snapshots stays raw SQL).
+    extra_db = open_diag_database(str(diag_db))
+    with diag_models_on(extra_db):
         # Add a blockless GLBOPT1 snapshot that the helper must skip.
-        conn.execute(
-            "INSERT INTO snapshots VALUES (?, ?, ?, ?)",
-            (10, "state_write_reconstruction_dag", "MMAT_GLBOPT1", "intermediate"),
-        )
+        Snapshot.insert(
+            id=10, label="state_write_reconstruction_dag",
+            func_ea_hex="0x0", func_ea_i64=0,
+            maturity="MMAT_GLBOPT1", phase="unknown",
+            block_count=0, timestamp=0.0,
+        ).execute()
         # Add a dump_raw GLBOPT1 snapshot that the helper must skip.
-        conn.execute(
-            "INSERT INTO snapshots VALUES (?, ?, ?, ?)",
-            (50, "dump_raw_lvars_after", "MMAT_GLBOPT1", "post"),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    db = open_diag_database(str(diag_db))
-    try:
-        snaps = glbopt1_snapshots(db.connection())
-    finally:
-        db.close()
+        Snapshot.insert(
+            id=50, label="dump_raw_lvars_after",
+            func_ea_hex="0x0", func_ea_i64=0,
+            maturity="MMAT_GLBOPT1", phase="post_apply",
+            block_count=0, timestamp=0.0,
+        ).execute()
+        extra_db.connection().commit()
+    snaps = glbopt1_snapshots(extra_db.connection())
+    extra_db.close()
     ids = [s for s, _, _ in snaps]
     assert ids == [5, 17]
 

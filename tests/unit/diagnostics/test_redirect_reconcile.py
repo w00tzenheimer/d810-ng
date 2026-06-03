@@ -1,12 +1,12 @@
 """Tests for the redirect-reconcile diag subcommand."""
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
 
-from d810.core.diag import open_diag_database
+from d810.core.diag import create_diag_database, diag_models_on, open_diag_database
+from d810.core.diag.models import Block, Instruction, Modification, Snapshot, StateCfgEdge
 from d810.diagnostics.redirect_reconcile import (
     compute_dispatcher_blocks,
     load_block_succs,
@@ -16,6 +16,7 @@ from d810.diagnostics.redirect_reconcile import (
     load_persisted_redirect_goto,
     run_reconcile,
 )
+from tests.unit.core.diag._orm_bind import make_bound_diag_db
 
 
 # ---------------------------------------------------------------------------
@@ -41,58 +42,54 @@ def _make_diag_db(tmp_path: Path) -> Path:
               -- AGREE_FULL with resolver/intent
           (b) EdgeRedirectViaPredSplit: source_block=30 -- HCC_DUP
     """
-    db = tmp_path / "diag.sqlite3"
-    conn = sqlite3.connect(str(db))
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE snapshots(id INTEGER PRIMARY KEY);
-            CREATE TABLE blocks(snapshot_id INTEGER, serial INTEGER,
-                succs TEXT, start_ea_hex TEXT);
-            CREATE TABLE instructions(snapshot_id INTEGER, block_serial INTEGER,
-                insn_index INTEGER, dest_stkoff INTEGER,
-                src_l_stkoff INTEGER, src_r_stkoff INTEGER,
-                src_l_value_i64 INTEGER);
-            CREATE TABLE state_cfg_edges(target_state_i64 INTEGER, target_entry INTEGER);
-            CREATE TABLE modifications(mod_type TEXT, status TEXT,
-                source_block INTEGER, old_target INTEGER, target_block INTEGER);
-            INSERT INTO snapshots VALUES (5);
-            INSERT INTO blocks(snapshot_id, serial, succs) VALUES
-                (5, 10, '[20]'),
-                (5, 20, '[30, 10]'),
-                (5, 30, '[10]'),
-                (5, 40, '[]');
-            """
-        )
+    db_path = tmp_path / "diag.sqlite3"
+    db = create_diag_database(str(db_path))
+    with diag_models_on(db):
+        Snapshot.insert(
+            id=5, label="", func_ea_hex="0x0", func_ea_i64=0,
+            maturity="", phase="unknown", block_count=0, timestamp=0.0,
+        ).execute()
+        Block.insert_many([
+            dict(snapshot=5, serial=10, block_type=0, type_name="",
+                 nsucc=1, npred=2, succs="[20]", preds="[]", insn_count=0),
+            dict(snapshot=5, serial=20, block_type=0, type_name="",
+                 nsucc=2, npred=1, succs="[30, 10]", preds="[]", insn_count=0),
+            dict(snapshot=5, serial=30, block_type=0, type_name="",
+                 nsucc=1, npred=1, succs="[10]", preds="[]", insn_count=0),
+            dict(snapshot=5, serial=40, block_type=0, type_name="",
+                 nsucc=0, npred=0, succs="[]", preds="[]", insn_count=0),
+        ]).execute()
         # Block 10 writes 0x100 to state var (stkoff 0x3C).
-        conn.execute(
-            "INSERT INTO instructions VALUES (?,?,?,?,?,?,?)",
-            (5, 10, 0, 0x3C, None, None, 0x100),
-        )
+        Instruction.insert(
+            snapshot=5, block_serial=10, insn_index=0,
+            ea_hex="0x0", ea_i64=0, opcode=0, opcode_name="",
+            dest_stkoff=0x3C, src_l_value_i64=0x100,
+        ).execute()
         # Block 20 reads state var in its tail (predicate).
-        conn.execute(
-            "INSERT INTO instructions VALUES (?,?,?,?,?,?,?)",
-            (5, 20, 0, None, 0x3C, None, None),
-        )
+        Instruction.insert(
+            snapshot=5, block_serial=20, insn_index=0,
+            ea_hex="0x0", ea_i64=0, opcode=0, opcode_name="",
+            src_l_stkoff=0x3C,
+        ).execute()
         # BST: state 0x100 -> handler at block 20.
-        conn.execute(
-            "INSERT INTO state_cfg_edges VALUES (?, ?)",
-            (0x100, 20),
-        )
+        StateCfgEdge.insert(
+            snapshot=5, edge_id=0,
+            target_state_i64=0x100, target_entry=20,
+            edge_kind="UNKNOWN", ordered_path="[]",
+        ).execute()
         # Persisted RedirectGoto: src=10 redirects old=20 -> new=20 (AGREE).
-        conn.execute(
-            "INSERT INTO modifications VALUES (?,?,?,?,?)",
-            ("RedirectGoto", "emitted", 10, 20, 20),
-        )
+        Modification.insert(
+            snapshot=5, mod_index=0, mod_type="RedirectGoto",
+            source_block=10, old_target=20, target_block=20,
+            status="emitted",
+        ).execute()
         # Persisted typed clone/split at source 30 -- HCC_DUP.
-        conn.execute(
-            "INSERT INTO modifications VALUES (?,?,?,?,?)",
-            ("EdgeRedirectViaPredSplit", "emitted", 30, None, None),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    return db
+        Modification.insert(
+            snapshot=5, mod_index=1, mod_type="EdgeRedirectViaPredSplit",
+            source_block=30, status="emitted",
+        ).execute()
+    db.close()
+    return db_path
 
 
 @pytest.fixture()
@@ -115,23 +112,16 @@ def test_load_persisted_dup_sources_reads_distinct_emitted_rows(diag_db: Path) -
 
 
 def test_load_persisted_dup_sources_ignores_dropped_status(tmp_path: Path) -> None:
-    db_path = tmp_path / "x.sqlite3"
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.executescript(
-            "CREATE TABLE modifications(mod_type TEXT, status TEXT,"
-            " source_block INTEGER, old_target INTEGER, target_block INTEGER);"
-            "INSERT INTO modifications VALUES ('EdgeRedirectViaPredSplit',"
-            " 'dropped', 99, NULL, NULL);"
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    db = open_diag_database(str(db_path))
-    try:
-        assert load_persisted_dup_sources(db.connection()) == frozenset()
-    finally:
-        db.close()
+    db = make_bound_diag_db()
+    Snapshot.insert(
+        id=1, label="", func_ea_hex="0x0", func_ea_i64=0,
+        maturity="", phase="unknown", block_count=0, timestamp=0.0,
+    ).execute()
+    Modification.insert(
+        snapshot=1, mod_index=0, mod_type="EdgeRedirectViaPredSplit",
+        source_block=99, status="dropped",
+    ).execute()
+    assert load_persisted_dup_sources(db.connection()) == frozenset()
 
 
 def test_load_persisted_redirect_goto_returns_first_row_per_source(
@@ -160,22 +150,18 @@ def test_load_bst_table_keys_by_uint64_state_const(diag_db: Path) -> None:
 
 
 def test_load_bst_table_handles_negative_i64_via_uint64_mask(tmp_path: Path) -> None:
-    db_path = tmp_path / "neg.sqlite3"
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.executescript(
-            "CREATE TABLE state_cfg_edges(target_state_i64 INTEGER, target_entry INTEGER);"
-        )
-        # -1 as i64 -> 0xFFFF_FFFF_FFFF_FFFF as u64.
-        conn.execute("INSERT INTO state_cfg_edges VALUES (?, ?)", (-1, 77))
-        conn.commit()
-    finally:
-        conn.close()
-    db = open_diag_database(str(db_path))
-    try:
-        bst = load_bst_table(db.connection())
-    finally:
-        db.close()
+    db = make_bound_diag_db()
+    Snapshot.insert(
+        id=1, label="", func_ea_hex="0x0", func_ea_i64=0,
+        maturity="", phase="unknown", block_count=0, timestamp=0.0,
+    ).execute()
+    # -1 as i64 -> 0xFFFF_FFFF_FFFF_FFFF as u64.
+    StateCfgEdge.insert(
+        snapshot=1, edge_id=0,
+        target_state_i64=-1, target_entry=77,
+        edge_kind="UNKNOWN", ordered_path="[]",
+    ).execute()
+    bst = load_bst_table(db.connection())
     assert bst == {0xFFFFFFFFFFFFFFFF: 77}
 
 
@@ -305,29 +291,17 @@ def test_run_reconcile_persisted_dup_source_merges_into_log_signals(
 def test_run_reconcile_against_empty_dag_edges(tmp_path: Path) -> None:
     """Sparse DB with no BST entries -- BST table size renders as 0 and no
     edges resolve."""
-    db = tmp_path / "empty.sqlite3"
-    conn = sqlite3.connect(str(db))
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE snapshots(id INTEGER PRIMARY KEY);
-            CREATE TABLE blocks(snapshot_id INTEGER, serial INTEGER,
-                succs TEXT, start_ea_hex TEXT);
-            CREATE TABLE instructions(snapshot_id INTEGER, block_serial INTEGER,
-                insn_index INTEGER, dest_stkoff INTEGER, src_l_stkoff INTEGER,
-                src_r_stkoff INTEGER, src_l_value_i64 INTEGER);
-            CREATE TABLE state_cfg_edges(target_state_i64 INTEGER, target_entry INTEGER);
-            CREATE TABLE modifications(mod_type TEXT, status TEXT,
-                source_block INTEGER, old_target INTEGER, target_block INTEGER);
-            INSERT INTO snapshots VALUES (5);
-            """
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    db_path = tmp_path / "empty.sqlite3"
+    db = create_diag_database(str(db_path))
+    with diag_models_on(db):
+        Snapshot.insert(
+            id=5, label="", func_ea_hex="0x0", func_ea_i64=0,
+            maturity="", phase="unknown", block_count=0, timestamp=0.0,
+        ).execute()
+    db.close()
     log = tmp_path / "d810.log"
     log.write_text("")
-    out = run_reconcile(db, log, snap_id=5, state_var_stkoff=0x3C)
+    out = run_reconcile(db_path, log, snap_id=5, state_var_stkoff=0x3C)
     assert "BST table size: 0 state -> handler entries" in out
     assert "Round-trip back-edges: 0" in out
 

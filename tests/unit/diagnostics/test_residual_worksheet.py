@@ -13,13 +13,21 @@ Covers:
 from __future__ import annotations
 
 import json
-import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from d810.core.diag import create_diag_database, diag_models_on
+from d810.core.diag.models import (
+    Block,
+    BlockClassification,
+    Instruction,
+    RenderedProgramLine,
+    RenderedProgramNode,
+    Snapshot,
+)
 from d810.diagnostics.residual_worksheet import (
     BlockInfo,
     DagEdgeInfo,
@@ -287,131 +295,87 @@ def test_detect_feeder_blocks_falls_back_to_dag_edges():
 
 def _make_diag_db(tmp_path: Path) -> Path:
     """Build a minimal diag DB with one snapshot and three blocks."""
-    db = tmp_path / "diag.sqlite3"
-    conn = sqlite3.connect(str(db))
-    conn.executescript(
-        """
-        CREATE TABLE snapshots (
-            id INTEGER PRIMARY KEY,
-            label TEXT,
-            maturity TEXT,
-            phase TEXT,
-            block_count INTEGER,
-            func_ea_i64 INTEGER
-        );
-        CREATE TABLE blocks (
-            snapshot_id INTEGER,
-            serial INTEGER,
-            type_name TEXT,
-            succs TEXT,
-            preds TEXT,
-            meta TEXT
-        );
-        CREATE TABLE instructions (
-            snapshot_id INTEGER,
-            block_serial INTEGER,
-            insn_index INTEGER,
-            opcode_name TEXT,
-            dest_stkoff INTEGER,
-            src_l_value_hex TEXT,
-            dstr TEXT
-        );
-        CREATE TABLE rendered_program_lines (
-            snapshot_id INTEGER,
-            variant_name TEXT,
-            node_index INTEGER,
-            line_no INTEGER,
-            text TEXT
-        );
-        CREATE TABLE rendered_program_nodes (
-            snapshot_id INTEGER,
-            variant_name TEXT,
-            node_index INTEGER,
-            label_text TEXT,
-            node_kind TEXT,
-            state_label TEXT,
-            handler_serial INTEGER,
-            entry_anchor INTEGER
-        );
-        CREATE TABLE state_cfg_edges (
-            snapshot_id INTEGER,
-            edge_id INTEGER,
-            edge_kind TEXT,
-            source_block INTEGER,
-            target_entry INTEGER,
-            source_state_hex TEXT,
-            target_state_hex TEXT,
-            ordered_path TEXT
-        );
-        CREATE TABLE modifications (
-            snapshot_id INTEGER,
-            mod_index INTEGER,
-            mod_type TEXT,
-            source_block INTEGER,
-            target_block INTEGER,
-            status TEXT,
-            reason TEXT
-        );
-        CREATE TABLE block_classification (
-            snapshot_id INTEGER,
-            serial INTEGER,
-            is_bst INTEGER,
-            is_reachable INTEGER,
-            is_gutted INTEGER,
-            in_claimed INTEGER
-        );
-        """
-    )
-    conn.execute(
-        "INSERT INTO snapshots (id, label, maturity, phase, block_count, func_ea_i64)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
-        (5, "GLBOPT1_post_d810", "MMAT_GLBOPT1", "post_d810", 3, 0x180012DF0),
-    )
-    conn.executemany(
-        "INSERT INTO blocks (snapshot_id, serial, type_name, succs, preds, meta)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
-        [
-            (5, 0, "BLT_NWAY", json.dumps([100]), json.dumps([]), "{}"),
-            (5, 100, "BLT_NWAY", json.dumps([200]), json.dumps([0, 6, 7]), "{}"),
-            (5, 6, "BLT_NWAY", json.dumps([100]), json.dumps([]), "{}"),
-            (5, 7, "BLT_NWAY", json.dumps([100]), json.dumps([]), "{}"),
-            (5, 200, "BLT_STOP", json.dumps([]), json.dumps([100]), "{}"),
-        ],
-    )
-    conn.executemany(
-        "INSERT INTO instructions (snapshot_id, block_serial, insn_index, opcode_name,"
-        " dest_stkoff, src_l_value_hex, dstr) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [
-            (5, 6, 0, "m_mov", 0x3C, "0x5FE86821", "i = 0x5FE86821"),
-            (5, 6, 1, "m_goto", None, None, "goto blk[100]"),
-            (5, 7, 0, "m_mov", 0x3C, "0xDEADBEEF", "i = 0xDEADBEEF"),
-        ],
-    )
-    conn.execute(
-        "INSERT INTO rendered_program_nodes (snapshot_id, variant_name, node_index,"
-        " label_text, node_kind, state_label, handler_serial, entry_anchor)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (5, "semantic_reference_like", 0, "STATE_5FE86821", "handler", "5FE86821", 6, 6),
-    )
-    conn.execute(
-        "INSERT INTO rendered_program_lines (snapshot_id, variant_name, node_index,"
-        " line_no, text) VALUES (?, ?, ?, ?, ?)",
-        (5, "semantic_reference_like", 0, 1, "STATE_5FE86821:"),
-    )
-    conn.executemany(
-        "INSERT INTO block_classification (snapshot_id, serial, is_bst,"
-        " is_reachable, is_gutted, in_claimed) VALUES (?, ?, ?, ?, ?, ?)",
-        [
-            (5, 0, 0, 1, 0, 0),
-            (5, 100, 1, 1, 0, 0),
-            (5, 6, 0, 1, 0, 1),
-            (5, 7, 0, 1, 0, 1),
-            (5, 200, 0, 1, 0, 0),
-        ],
-    )
-    conn.commit()
-    conn.close()
-    return db
+    db_path = tmp_path / "diag.sqlite3"
+    db = create_diag_database(str(db_path))
+    with diag_models_on(db):
+        snap = Snapshot.create(
+            id=5,
+            label="GLBOPT1_post_d810",
+            func_ea_hex="0x00000001800012df0",
+            func_ea_i64=0x180012DF0,
+            maturity="MMAT_GLBOPT1",
+            phase="post_d810",
+            block_count=3,
+            timestamp=0.0,
+        )
+        Block.insert_many([
+            dict(snapshot=snap.id, serial=0, block_type=1, type_name="BLT_NWAY",
+                 nsucc=1, npred=0, succs=json.dumps([100]), preds=json.dumps([]),
+                 insn_count=0, meta="{}"),
+            dict(snapshot=snap.id, serial=100, block_type=1, type_name="BLT_NWAY",
+                 nsucc=1, npred=3, succs=json.dumps([200]), preds=json.dumps([0, 6, 7]),
+                 insn_count=0, meta="{}"),
+            dict(snapshot=snap.id, serial=6, block_type=1, type_name="BLT_NWAY",
+                 nsucc=1, npred=0, succs=json.dumps([100]), preds=json.dumps([]),
+                 insn_count=2, meta="{}"),
+            dict(snapshot=snap.id, serial=7, block_type=1, type_name="BLT_NWAY",
+                 nsucc=1, npred=0, succs=json.dumps([100]), preds=json.dumps([]),
+                 insn_count=1, meta="{}"),
+            dict(snapshot=snap.id, serial=200, block_type=4, type_name="BLT_STOP",
+                 nsucc=0, npred=1, succs=json.dumps([]), preds=json.dumps([100]),
+                 insn_count=0, meta="{}"),
+        ]).execute()
+        Instruction.insert_many([
+            dict(snapshot=snap.id, block_serial=6, insn_index=0,
+                 ea_hex="0x0000000000001000", ea_i64=0x1000,
+                 opcode=4, opcode_name="m_mov",
+                 dest_stkoff=0x3C, src_l_value_hex="0x5FE86821",
+                 dstr="i = 0x5FE86821"),
+            dict(snapshot=snap.id, block_serial=6, insn_index=1,
+                 ea_hex="0x0000000000001001", ea_i64=0x1001,
+                 opcode=7, opcode_name="m_goto",
+                 dstr="goto blk[100]"),
+            dict(snapshot=snap.id, block_serial=7, insn_index=0,
+                 ea_hex="0x0000000000001002", ea_i64=0x1002,
+                 opcode=4, opcode_name="m_mov",
+                 dest_stkoff=0x3C, src_l_value_hex="0xDEADBEEF",
+                 dstr="i = 0xDEADBEEF"),
+        ]).execute()
+        RenderedProgramNode.insert(
+            snapshot_id=snap.id,
+            variant_name="semantic_reference_like",
+            node_index=0,
+            label_text="STATE_5FE86821",
+            node_kind="handler",
+            state_label="5FE86821",
+            handler_serial=6,
+            entry_anchor=6,
+            line_start=0,
+            line_end=1,
+        ).execute()
+        RenderedProgramLine.insert(
+            snapshot_id=snap.id,
+            variant_name="semantic_reference_like",
+            line_no=1,
+            node_index=0,
+            indent_level=0,
+            line_kind="label",
+            text="STATE_5FE86821:",
+        ).execute()
+        BlockClassification.insert_many([
+            dict(snapshot=snap.id, serial=0, is_bst=0, is_reachable=1,
+                 is_gutted=0, in_claimed=0),
+            dict(snapshot=snap.id, serial=100, is_bst=1, is_reachable=1,
+                 is_gutted=0, in_claimed=0),
+            dict(snapshot=snap.id, serial=6, is_bst=0, is_reachable=1,
+                 is_gutted=0, in_claimed=1),
+            dict(snapshot=snap.id, serial=7, is_bst=0, is_reachable=1,
+                 is_gutted=0, in_claimed=1),
+            dict(snapshot=snap.id, serial=200, is_bst=0, is_reachable=1,
+                 is_gutted=0, in_claimed=0),
+        ]).execute()
+    db.close()
+    return db_path
 
 
 def test_build_worksheet_uses_dag_fallback_when_no_log_or_dispatcher(
