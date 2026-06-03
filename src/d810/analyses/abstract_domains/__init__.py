@@ -23,6 +23,19 @@ from d810.analyses.abstract_domains.relational import (
     RelationalDomain,
     Satisfiability,
 )
+from d810.analyses.abstract_domains.operations import (
+    BinaryOp,
+    CompareOp,
+    UnaryOp,
+    eval_const_binary,
+    eval_const_compare,
+    eval_const_unary,
+)
+from d810.analyses.abstract_domains.value_domain import (
+    KnownBitsValueDomain,
+    ValueDomain,
+    WrappedIntervalValueDomain,
+)
 
 __all__ = [
     "AbstractDomain",
@@ -33,4 +46,15 @@ __all__ = [
     "NullRelational",
     "LinearConstraint",
     "Satisfiability",
+    # operations
+    "BinaryOp",
+    "UnaryOp",
+    "CompareOp",
+    "eval_const_binary",
+    "eval_const_unary",
+    "eval_const_compare",
+    # value-domain semantic layer
+    "ValueDomain",
+    "KnownBitsValueDomain",
+    "WrappedIntervalValueDomain",
 ]
