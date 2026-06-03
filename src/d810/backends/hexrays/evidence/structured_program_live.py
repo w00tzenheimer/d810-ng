@@ -55,6 +55,7 @@ from d810.analyses.value_flow.stack_value_flow import (
     carrier_terminal_returns,
 )
 from d810.analyses.control_flow.structurer import build_region_tree
+from d810.analyses.control_flow.dominator import compute_dom_tree
 from d810.ir.structured_region import render_region
 
 logger = getLogger(__name__)
@@ -138,6 +139,26 @@ def structure_recovered_program_live(
         if sc is not None:
             state_consts.add(int(sc) & 0xFFFFFFFF)
     state_var_name = _infer_state_var_name(block_payload, state_consts)
+
+    # Diagnostic: dump the adapter graph's back-edges (loop signals) so we can
+    # tell genuine handler loops from spurious 2-cycles / self-edges.
+    if logger.info_on:
+        _succ = {
+            int(s): tuple(int(x) for x in flow_graph.successors(s))
+            for s in flow_graph.blocks
+        }
+        _entry = int(flow_graph.entry_serial)
+        _dom = compute_dom_tree(_succ, _entry)
+        _back = [
+            (u, v) for u, vs in _succ.items() for v in vs if _dom.dominates(v, u)
+        ]
+        _self = [(u, v) for (u, v) in _back if u == v]
+        logger.info(
+            "structurer: %d back-edge(s) (%d self-loops); sample=%s",
+            len(_back),
+            len(_self),
+            sorted(_back)[:20],
+        )
 
     branch_cond: dict[int, str] = {}
     for serial in flow_graph.blocks:

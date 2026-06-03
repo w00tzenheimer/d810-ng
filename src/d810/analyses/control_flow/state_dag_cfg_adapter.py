@@ -178,6 +178,14 @@ def build_state_dag_cfg(
     return_terminals: set[int] = set()
 
     def _add_edge(src: int, dst: int) -> None:
+        if src == dst:
+            # Block-level self-edge: a dispatcher-spin / unresolved artifact (the
+            # state-level self-loop guard misses these when target_state is None
+            # but the resolved target entry equals the source). Never a genuine
+            # successor in the recovered handler CFG -> drop, else the structurer
+            # emits a spurious do/while around a straight-line handler.
+            block_set.add(src)
+            return
         block_set.add(src)
         block_set.add(dst)
         bucket = succ.setdefault(src, [])
