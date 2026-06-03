@@ -18,7 +18,8 @@ deferred backend half.
 from __future__ import annotations
 
 from d810.core import logging
-from d810.core.typing import Protocol, runtime_checkable
+from d810.core.typing import Optional, Protocol, runtime_checkable
+from d810.analyses.data_flow.abstract_value import Block, RouteResult
 from d810.ir.flowgraph import FlowGraph
 from d810.analyses.value_flow.model import ValidatedFactView
 from d810.analyses.control_flow.transition_builder import TransitionResult
@@ -73,10 +74,64 @@ _SPINE_EDGE_KINDS = frozenset(
 
 
 @runtime_checkable
-class _DispatcherMap(Protocol):
-    """Minimal portable view of the recovered dispatcher map (#1)."""
+class DispatcherModel(Protocol):
+    """Portable view of a recovered dispatcher (#1) — the consolidation seam (S1).
 
-    def resolve_target(self, state_value: int) -> int | None: ...
+    One ``route`` body per dispatcher *kind* replaces the six divergent
+    ``resolve_target`` routers (see ``docs/plans/dispatcher-model-consolidation.md``).
+    A model knows its state variable, its entry, which blocks form the dispatcher
+    region, and — the substance — how to :meth:`route` a concrete state value to a
+    :class:`~d810.analyses.data_flow.abstract_value.RouteResult`
+    (``Block`` | ``EntersDispatcher`` | ``RouteOneOf`` | ``Unknown``).
+
+    ``resolve_target`` is retained as a **deprecated default** so existing exact-only
+    callers keep compiling while S2 migrates them onto :meth:`route`: it calls
+    ``route`` and unwraps a single :class:`Block` (anything else → ``None``).
+    Concrete models inherit this default unless they override it.
+    """
+
+    def route(self, value: int) -> RouteResult:
+        """Route a concrete state ``value`` to a :class:`RouteResult`."""
+        ...
+
+    def state_var(self) -> int | None:
+        """The dispatcher's state variable identity (stack offset), or ``None``."""
+        ...
+
+    @property
+    def entry(self) -> int | None:
+        """The dispatcher entry block serial (loop head), or ``None``."""
+        ...
+
+    def is_dispatcher(self, block_serial: int) -> bool:
+        """Whether ``block_serial`` belongs to the dispatcher region."""
+        ...
+
+    def region(self) -> frozenset[int]:
+        """The set of block serials forming the dispatcher region."""
+        ...
+
+    def resolve_target(self, state_value: int) -> Optional[int]:
+        """DEPRECATED exact-unwrap shim: ``route(value)`` then unwrap a ``Block``.
+
+        Default body shared by every model so callers still typed against the old
+        ``resolve_target`` keep working through S1/S2.  Returns the target block
+        serial for a :class:`Block` route, else ``None`` (``Unknown`` /
+        ``EntersDispatcher`` / ``RouteOneOf`` do not name a single exact target).
+        """
+        rr = self.route(int(state_value))
+        return rr.serial if isinstance(rr, Block) else None
+
+
+def _resolve_target_via_route(model: "DispatcherModel", state_value: int) -> int | None:
+    """Free-function form of the deprecated default (for non-subclass call sites)."""
+    rr = model.route(int(state_value))
+    return rr.serial if isinstance(rr, Block) else None
+
+
+#: Backward-compatible alias: the old minimal name still resolves to the grown
+#: Protocol so existing ``dispatch_map: _DispatcherMap`` annotations keep typing.
+_DispatcherMap = DispatcherModel
 
 
 def _patch_from_graph_modification(mod: object) -> object | None:
