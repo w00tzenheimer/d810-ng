@@ -46,8 +46,12 @@ from d810.backends.hexrays.evidence.stack_value_flow_live import (
 from d810.analyses.data_flow.configuration import Direction, FixpointConfiguration
 from d810.analyses.data_flow.worklist import run_fixpoint
 from d810.analyses.value_flow.reaching_defs import ReachingDefsDomain, reaching_defs_of
-from d810.analyses.value_flow.stack_value_flow import CarrierVerdict
-from d810.analyses.control_flow.structurer import structure_recovered_program
+from d810.analyses.value_flow.stack_value_flow import (
+    CarrierVerdict,
+    carrier_terminal_returns,
+)
+from d810.analyses.control_flow.structurer import build_region_tree
+from d810.ir.structured_region import render_region
 
 logger = getLogger(__name__)
 
@@ -171,11 +175,27 @@ def structure_recovered_program_live(
     def _render_condition(block: object) -> str:
         return branch_cond.get(int(getattr(block, "serial", -1)), "cond")
 
-    return structure_recovered_program(
+    # Terminal returns: deliver the carrier at every genuine function return (the
+    # EXIT_ROUTINE corridor tails the adapter marked) AND at any leak terminal
+    # the carrier verdict flagged. Dead-end blocks at recovery gaps stay
+    # return-less (the structurer simply ends the block).
+    fixes = carrier_terminal_returns(
+        verdicts, carrier_expr=carrier_expr, leak_def_sites=leak_def_sites
+    )
+    return_terminals = getattr(flow_graph, "return_terminals", frozenset())
+
+    def _terminal_return(serial: int) -> str | None:
+        s = int(serial)
+        if s in fixes:
+            return fixes[s]
+        if s in return_terminals:
+            return carrier_expr
+        return None
+
+    tree = build_region_tree(
         flow_graph,
         render_block=_render_block,
         render_condition=_render_condition,
-        carrier_verdicts=verdicts,
-        carrier_expr=carrier_expr,
-        leak_def_sites=leak_def_sites,
+        terminal_return=_terminal_return,
     )
+    return render_region(tree)

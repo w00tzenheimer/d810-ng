@@ -79,10 +79,15 @@ class StateDagCfg:
 
     Satisfies the structurer's flow-graph protocol: ``.blocks`` (serial-keyed
     dict), ``.entry_serial``, ``.get_block``, ``.successors``, ``.predecessors``.
+
+    ``return_terminals`` are the blocks that tail an ``EXIT_ROUTINE`` corridor --
+    the genuine function returns (as opposed to dead-end blocks at recovery
+    gaps). The structurer emits a ``return`` there.
     """
 
     blocks: dict[int, StateDagCfgBlock]
     entry_serial: int
+    return_terminals: frozenset[int] = frozenset()
 
     def get_block(self, serial: object) -> Optional[StateDagCfgBlock]:
         return self.blocks.get(int(serial))
@@ -170,6 +175,7 @@ def build_state_dag_cfg(
                 entry_by_state.setdefault(int(state_const) & 0xFFFFFFFF, entry_anchor)
 
     succ: dict[int, list[int]] = {}
+    return_terminals: set[int] = set()
 
     def _add_edge(src: int, dst: int) -> None:
         block_set.add(src)
@@ -189,6 +195,12 @@ def build_state_dag_cfg(
         if kind_name == "EXIT_ROUTINE":
             # The corridor is wired by the path; the tail is the function return
             # (terminal). No edge to a target -> the structurer emits a return.
+            anchor = getattr(edge, "source_anchor", None)
+            anchor_block = getattr(anchor, "block_serial", None) if anchor else None
+            tail = path[-1] if path else anchor_block
+            if tail is not None:
+                block_set.add(int(tail))
+                return_terminals.add(int(tail))
             continue
         if kind_name not in _FORWARD_EDGE_KINDS:
             continue  # UNKNOWN / CONDITIONAL_RETURN: no forward block edge.
@@ -240,7 +252,14 @@ def build_state_dag_cfg(
         )
         for b in sorted(block_set)
     }
-    return StateDagCfg(blocks=blocks, entry_serial=entry_serial)
+    # Only blocks that actually end up terminal (no successor) count as returns;
+    # an EXIT_ROUTINE tail that also has a forward edge is a pass-through.
+    real_terminals = frozenset(
+        b for b in return_terminals if not blocks[b].succs
+    )
+    return StateDagCfg(
+        blocks=blocks, entry_serial=entry_serial, return_terminals=real_terminals
+    )
 
 
 def _default_entry(
