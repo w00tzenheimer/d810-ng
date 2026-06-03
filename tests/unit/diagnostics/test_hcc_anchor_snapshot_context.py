@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from d810.core.diag import create_diag_database
+from tests.unit.core.diag._orm_bind import make_bound_diag_db
 from d810.core.diag.models import Block, Snapshot
 from d810.diagnostics.hcc_anchor_snapshot_context import (
     collect_anchor_snapshot_context_from_connection,
@@ -12,9 +12,9 @@ from d810.diagnostics.hcc_anchor_snapshot_context import (
 
 
 def _make_conn():
-    # create_diag_database binds the Models to this in-memory DB so the ORM
+    # make_bound_diag_db binds the Models to this in-memory DB so the ORM
     # reads in collect_anchor_snapshot_context_from_connection hit it.
-    return create_diag_database(":memory:")
+    return make_bound_diag_db()
 
 
 def _insert_snapshot(db, snapshot_id: int, label: str) -> None:

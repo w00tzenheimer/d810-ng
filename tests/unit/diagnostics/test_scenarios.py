@@ -5,7 +5,7 @@ is implemented -- the expected failure mode is ImportError or AttributeError
 on the query functions, NOT on fixture setup.
 """
 from __future__ import annotations
-from d810.core.diag import create_diag_database
+from tests.unit.core.diag._orm_bind import make_bound_diag_db
 
 import sqlite3
 
@@ -14,7 +14,7 @@ from tests.unit.core.diag.fixtures import create_sub_7ffd_scenario
 
 
 def _db() -> sqlite3.Connection:
-    conn = create_diag_database(":memory:").connection()
+    conn = make_bound_diag_db().connection()
     create_sub_7ffd_scenario(conn)
     return conn
 

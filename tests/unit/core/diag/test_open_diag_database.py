@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import sqlite3
 
-from d810.core.diag import create_diag_database, open_diag_database
+from d810.core.diag import (
+    create_diag_database,
+    diag_models_on,
+    open_diag_database,
+)
 from d810.core.diag.models import Snapshot, StateCfgEdge
 
 
@@ -49,16 +53,19 @@ def test_legacy_dag_schema_db_is_orm_readable_non_mutatingly(tmp_path) -> None:
 
 
 def _seed(path: str) -> None:
+    # Write path: create_diag_database no longer applies a global Model bind, so
+    # the ORM write binds explicitly (production writers bind the same way).
     wdb = create_diag_database(path)
-    Snapshot.create(
-        label="s",
-        func_ea_hex="0x1000",
-        func_ea_i64=0x1000,
-        maturity="MMAT_GLBOPT1",
-        phase="unknown",
-        block_count=3,
-        timestamp=0.0,
-    )
+    with diag_models_on(wdb):
+        Snapshot.create(
+            label="s",
+            func_ea_hex="0x1000",
+            func_ea_i64=0x1000,
+            maturity="MMAT_GLBOPT1",
+            phase="unknown",
+            block_count=3,
+            timestamp=0.0,
+        )
     wdb.close()
 
 

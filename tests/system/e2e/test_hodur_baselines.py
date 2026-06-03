@@ -325,7 +325,11 @@ class TestSemanticReferenceRegression:
                     pytest.fail("sub_7FFD3338C040 decompile returned None")
 
         # Find the diag DB created during decompilation
-        from d810.core.diag import get_diag_conn
+        from d810.core.diag import (
+            active_diag_db,
+            diag_models_on,
+            get_diag_conn,
+        )
         from d810.diagnostics.query import rendered_program_text
 
         diag_conn = get_diag_conn(func_ea)
@@ -346,7 +350,13 @@ class TestSemanticReferenceRegression:
             "No MMAT_GLBOPT1/post_d810 snapshot found in diag DB"
         )
 
-        program = rendered_program_text(diag_conn, snap_id, "semantic_reference_like")
+        # rendered_program_text uses the ORM; bind the Models to the reopened
+        # diag DB (active_diag_db(), backing diag_conn) for the read -- the
+        # write path no longer leaves a process-global bind.
+        with diag_models_on(active_diag_db()):
+            program = rendered_program_text(
+                diag_conn, snap_id, "semantic_reference_like"
+            )
         assert program is not None and len(program) > 100, (
             f"semantic_reference_like program missing or too short "
             f"(snap_id={snap_id}, len={len(program) if program else 0})"

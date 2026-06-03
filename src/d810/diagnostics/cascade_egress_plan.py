@@ -15,7 +15,7 @@ import sqlite3
 from pathlib import Path
 
 from d810._vendor.peewee import fn
-from d810.core.diag import open_diag_database
+from d810.core.diag import read_diag_db
 from d810.core.diag.models import Block, FactObservation, Instruction
 from d810.transforms.terminal_tail_cascade_egress_planner import (
     TerminalByteEmitSite,
@@ -247,9 +247,8 @@ def run_plan(
     """
     if not db_path.exists():
         return f"Error: diag DB not found: {db_path}\n"
-    db = open_diag_database(str(db_path))
-    conn = db.connection()
-    try:
+    with read_diag_db(str(db_path)) as db:
+        conn = db.connection()
         try:
             fact_id = (
                 int(fact_snapshot_id)
@@ -265,8 +264,6 @@ def run_plan(
             return f"Error: {exc}\n"
         blocks = load_blocks(conn, target_id)
         sites = load_sites(conn, fact_id)
-    finally:
-        db.close()
     plan = TerminalTailCascadeEgressPlanner(blocks, sites).build_plan()
     return (
         f"# fact snapshot: {fact_id}\n"

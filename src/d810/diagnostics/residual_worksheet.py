@@ -24,7 +24,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from d810.core.diag import open_diag_database
+from d810.core.diag import read_diag_db
 from d810.core.diag.models import (
     Block,
     BlockClassification,
@@ -1166,12 +1166,11 @@ def build_residual_dispatcher_worksheet(
     variant_name: str = DEFAULT_VARIANT,
 ) -> WorksheetResult:
     """Build worksheet rows from the available persisted sources."""
-    diag_db = open_diag_database(str(diag_db_path))
-    # Bind Models for the ORM readers; the remaining raw resolver/metadata
-    # queries below use name-based row access, so set the Row factory.
-    diag_conn = diag_db.connection()
-    diag_conn.row_factory = sqlite3.Row
-    try:
+    with read_diag_db(str(diag_db_path)) as diag_db:
+        # Bind Models for the ORM readers; the remaining raw resolver/metadata
+        # queries below use name-based row access, so set the Row factory.
+        diag_conn = diag_db.connection()
+        diag_conn.row_factory = sqlite3.Row
         resolved_snapshot_id = resolve_snapshot_id(
             diag_conn,
             snapshot_id=snapshot_id,
@@ -1213,8 +1212,6 @@ def build_residual_dispatcher_worksheet(
         dag_snapshot_label: str | None = None
         if resolved_dag_snapshot_id is not None:
             dag_snapshot_label = str(_snapshot_metadata(diag_conn, resolved_dag_snapshot_id)["label"])
-    finally:
-        diag_db.close()
 
     transition_meta = load_transition_meta(recon_db_path, func_ea=resolved_func_ea)
     planner_rows = load_planner_ownership(recon_db_path, func_ea=resolved_func_ea)
@@ -1433,16 +1430,13 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
     if args.list_snapshots:
-        ls_db = open_diag_database(str(diag_db_path))
-        try:
+        with read_diag_db(str(diag_db_path)) as ls_db:
             for row in list_snapshots(ls_db.connection()):
                 write_output(
                     get_output(args),
                     f"[{int(row['id']):>3}] {row['label']} "
                     f"({row['maturity']} / {row['phase']} / {row['block_count']} blocks)"
                 )
-        finally:
-            ls_db.close()
         return 0
 
     recon_db_path = args.recon_db or find_latest_recon_db(search_roots=search_roots)

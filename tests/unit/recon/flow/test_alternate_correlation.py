@@ -1,6 +1,6 @@
 """Tests for alternate-edge correlator."""
 from __future__ import annotations
-from d810.core.diag import create_diag_database
+from tests.unit.core.diag._orm_bind import make_bound_diag_db
 
 import sqlite3
 
@@ -11,7 +11,7 @@ from d810.diagnostics.alternate_correlation import (
 
 
 def _make_db() -> sqlite3.Connection:
-    conn = create_diag_database(":memory:").connection()
+    conn = make_bound_diag_db().connection()
     conn.execute(
         """
         INSERT INTO snapshots

@@ -19,7 +19,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from d810._vendor.peewee import fn
-from d810.core.diag import open_diag_database
+from d810.core.diag import read_diag_db
 from d810.core.diag.models import RenderedProgramLine
 from d810.diagnostics.output import add_output_argument, get_output, write_output
 from d810.diagnostics.dump_after import extract_after_pseudocode
@@ -187,9 +187,8 @@ def run(args: argparse.Namespace) -> int:
     if not db_path.exists():
         write_output(get_output(args), f"error: db not found: {db_path}")
         return 2
-    db = open_diag_database(str(db_path))
-    conn = db.connection()
-    try:
+    with read_diag_db(str(db_path)) as db:
+        conn = db.connection()
         snapshot_id = latest_semantic_snapshot_id(conn)
         if snapshot_id is None:
             write_output(get_output(args), "error: no semantic_reference_like snapshot found")
@@ -204,8 +203,6 @@ def run(args: argparse.Namespace) -> int:
         else:
             for line_no, text in semantic_rows:
                 write_output(get_output(args), f"{line_no:>5}: {text}")
-    finally:
-        db.close()
 
     if args.dump:
         dump_path = Path(args.dump)

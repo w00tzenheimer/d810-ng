@@ -31,8 +31,10 @@ from __future__ import annotations
 import sqlite3
 import threading
 
+from d810._vendor.peewee import fn
 from d810.core import logging as _d810_logging
-from d810.core.diag import get_diag_conn
+from d810.core.diag import active_diag_db, diag_models_on, get_diag_conn
+from d810.core.diag.models import CfgProvenance, FactConsumer, Snapshot
 from d810.core.diag.snapshot import (
     snapshot_branch_ownership_proofs,
     snapshot_bst_interval_dispatcher_rows,
@@ -133,6 +135,32 @@ def _conn_for(snap: SnapshotRef) -> sqlite3.Connection | None:
         return None
 
 
+def _func_hex(func_ea: int) -> str:
+    """Canonical persisted spelling of a function EA (matches the writers)."""
+    return f"0x{int(func_ea) & 0xFFFFFFFFFFFFFFFF:016x}"
+
+
+def _latest_snapshot_id_for_func(func_ea: int) -> int | None:
+    """Return the id of the newest ``snapshots`` row for ``func_ea`` (ORM).
+
+    Callers reach here only after :func:`_conn_for` / ``get_diag_conn`` has
+    resolved the active capture db, so ``active_diag_db()`` is the same db the
+    raw connection wraps. We bind the Models to it with ``diag_models_on``
+    (``bind_ctx``) for the read, never the mutable process-global bind.
+    """
+    db = active_diag_db()
+    if db is None:
+        return None
+    with diag_models_on(db):
+        row = (
+            Snapshot.select(Snapshot.id)
+            .where(Snapshot.func_ea_hex == _func_hex(func_ea))
+            .order_by(Snapshot.id.desc())
+            .first()
+        )
+        return int(row.id) if row is not None else None
+
+
 # ---------------------------------------------------------------------------
 # Handler bodies
 # ---------------------------------------------------------------------------
@@ -194,18 +222,13 @@ def _handle_bst_interval_dispatcher(
         return
     if conn is None or not ev.rows:
         return
-    func_hex = f"0x{int(ev.func_ea) & 0xFFFFFFFFFFFFFFFF:016x}"
-    row = conn.execute(
-        "SELECT id FROM snapshots WHERE func_ea_hex=? "
-        "ORDER BY id DESC LIMIT 1",
-        (func_hex,),
-    ).fetchone()
-    if row is None:
+    snap_id = _latest_snapshot_id_for_func(ev.func_ea)
+    if snap_id is None:
         _buffer_bst_interval_dispatcher(ev)
         return
     snapshot_bst_interval_dispatcher_rows(
         conn,
-        int(row[0]),
+        snap_id,
         ev.rows,
         dispatcher_entry_block=ev.dispatcher_entry_block,
         maturity=ev.maturity,
@@ -253,18 +276,13 @@ def _handle_state_dispatcher_rows(
         return
     if conn is None or not ev.rows:
         return
-    func_hex = f"0x{int(ev.func_ea) & 0xFFFFFFFFFFFFFFFF:016x}"
-    row = conn.execute(
-        "SELECT id FROM snapshots WHERE func_ea_hex=? "
-        "ORDER BY id DESC LIMIT 1",
-        (func_hex,),
-    ).fetchone()
-    if row is None:
+    snap_id = _latest_snapshot_id_for_func(ev.func_ea)
+    if snap_id is None:
         _buffer_state_dispatcher_rows(ev)
         return
     snapshot_state_dispatcher_rows(
         conn,
-        int(row[0]),
+        snap_id,
         ev.rows,
         dispatcher_entry_block=ev.dispatcher_entry_block,
         dispatcher_kind=ev.dispatcher_kind,
@@ -387,32 +405,30 @@ def _handle_fact_consumers_latest(ev: FactConsumersForLatestSnapshot) -> None:
         return
     if conn is None or not ev.consumers:
         return
-    func_hex = f"0x{int(ev.func_ea) & 0xFFFFFFFFFFFFFFFF:016x}"
-    row = conn.execute(
-        "SELECT id FROM snapshots WHERE func_ea_hex=? "
-        "ORDER BY id DESC LIMIT 1",
-        (func_hex,),
-    ).fetchone()
-    if row is None:
+    snap_id = _latest_snapshot_id_for_func(ev.func_ea)
+    if snap_id is None:
         return
-    snap_id = int(row[0])
+    func_hex = _func_hex(ev.func_ea)
+    db = active_diag_db()
+    if db is None:
+        return
     pending = []
-    for consumer in ev.consumers:
-        exists = conn.execute(
-            "SELECT 1 FROM fact_consumers "
-            "WHERE func_ea_hex=? AND consumer=? AND strategy=? "
-            "AND fact_id=? AND maturity=? AND decision=? LIMIT 1",
-            (
-                func_hex,
-                getattr(consumer, "consumer", None),
-                getattr(consumer, "strategy", None),
-                getattr(consumer, "fact_id", None),
-                getattr(consumer, "maturity", None),
-                getattr(consumer, "decision", None),
-            ),
-        ).fetchone()
-        if exists is None:
-            pending.append(consumer)
+    with diag_models_on(db):
+        for consumer in ev.consumers:
+            exists = (
+                FactConsumer.select(FactConsumer.consumer_index)
+                .where(
+                    (FactConsumer.func_ea_hex == func_hex)
+                    & (FactConsumer.consumer == getattr(consumer, "consumer", None))
+                    & (FactConsumer.strategy == getattr(consumer, "strategy", None))
+                    & (FactConsumer.fact_id == getattr(consumer, "fact_id", None))
+                    & (FactConsumer.maturity == getattr(consumer, "maturity", None))
+                    & (FactConsumer.decision == getattr(consumer, "decision", None))
+                )
+                .exists()
+            )
+            if not exists:
+                pending.append(consumer)
     if pending:
         snapshot_fact_consumers(
             conn, snap_id, int(ev.func_ea), tuple(pending),
@@ -515,15 +531,10 @@ def _handle_cfg_provenance_latest(
         return
     if conn is None:
         return
-    func_hex = f"0x{int(ev.func_ea) & 0xFFFFFFFFFFFFFFFF:016x}"
-    row = conn.execute(
-        "SELECT id FROM snapshots WHERE func_ea_hex=? "
-        "ORDER BY id DESC LIMIT 1",
-        (func_hex,),
-    ).fetchone()
-    if row is None:
+    snap_id = _latest_snapshot_id_for_func(ev.func_ea)
+    if snap_id is None:
         return
-    _insert_cfg_provenance_events(conn, int(row[0]), ev.events)
+    _insert_cfg_provenance_events(conn, snap_id, ev.events)
 
 
 def _insert_cfg_provenance_events(
@@ -531,40 +542,43 @@ def _insert_cfg_provenance_events(
     snap_id: int,
     events: tuple[CfgProvenanceObserved, ...] | list[CfgProvenanceObserved],
 ) -> None:
-    """Insert CFG provenance rows under ``snap_id``."""
+    """Insert CFG provenance rows under ``snap_id`` (ORM)."""
     if not events:
         return
+    db = active_diag_db()
+    if db is None:
+        return
     try:
-        row = conn.execute(
-            "SELECT COALESCE(MAX(seq), -1) FROM cfg_provenance "
-            "WHERE snapshot_id=?",
-            (int(snap_id),),
-        ).fetchone()
-        next_seq = (int(row[0]) + 1) if row is not None else 0
-    except Exception:
-        next_seq = 0
-    rows = [
-        (
-            int(snap_id),
-            next_seq + seq_idx,
-            ev.pass_name,
-            ev.action,
-            int(ev.block_serial),
-            (int(ev.target_serial) if ev.target_serial is not None else None),
-            ev.reason,
-            _provenance_extra_json(ev),
-        )
-        for seq_idx, ev in enumerate(events)
-    ]
-    try:
-        conn.executemany(
-            "INSERT INTO cfg_provenance VALUES (?,?,?,?,?,?,?,?)",
-            rows,
-        )
+        with diag_models_on(db):
+            current_max = (
+                CfgProvenance.select(fn.MAX(CfgProvenance.seq))
+                .where(CfgProvenance.snapshot == int(snap_id))
+                .scalar()
+            )
+            next_seq = (int(current_max) + 1) if current_max is not None else 0
+            rows = [
+                {
+                    "snapshot": int(snap_id),
+                    "seq": next_seq + seq_idx,
+                    "pass_name": ev.pass_name,
+                    "action": ev.action,
+                    "block_serial": int(ev.block_serial),
+                    "target_serial": (
+                        int(ev.target_serial)
+                        if ev.target_serial is not None
+                        else None
+                    ),
+                    "reason": ev.reason,
+                    "extra_json": _provenance_extra_json(ev),
+                }
+                for seq_idx, ev in enumerate(events)
+            ]
+            with db.atomic():
+                CfgProvenance.insert_many(rows).execute()
     except Exception:
         _logger.exception(
             "flushing %d cfg_provenance rows failed for snap_id=%d",
-            len(rows),
+            len(events),
             snap_id,
         )
 

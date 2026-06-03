@@ -915,7 +915,11 @@ class TestDumpFunctionPseudocode:
                             print(" ".join(parts))
 
                     try:
-                        from d810.core.diag import get_diag_conn
+                        from d810.core.diag import (
+                            active_diag_db,
+                            diag_models_on,
+                            get_diag_conn,
+                        )
                         from d810.diagnostics.query import rendered_program_text
 
                         _diag_conn = get_diag_conn(func_ea)
@@ -931,11 +935,14 @@ class TestDumpFunctionPseudocode:
                                 else None
                             )
                             if _snap_id is not None:
-                                _program = rendered_program_text(
-                                    _diag_conn,
-                                    _snap_id,
-                                    "semantic_reference_like",
-                                )
+                                # rendered_program_text uses the ORM; bind the
+                                # Models to the reopened diag DB for the read.
+                                with diag_models_on(active_diag_db()):
+                                    _program = rendered_program_text(
+                                        _diag_conn,
+                                        _snap_id,
+                                        "semantic_reference_like",
+                                    )
                                 if _program:
                                     print(
                                         f"\n--- LINEARIZED PROGRAM SEMANTIC REFERENCE-LIKE "

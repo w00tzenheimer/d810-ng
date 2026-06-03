@@ -24,7 +24,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from d810.core.diag import open_diag_database
+from d810.core.diag import read_diag_db
 from d810.core.diag.models import Block, Instruction, StateDispatcherRow
 from d810.diagnostics.output import add_output_argument, get_output, write_output
 from d810.core.typing import Any
@@ -572,9 +572,8 @@ def extract_transfer_map(
     pointer_size: int = 8,
     max_depth: int = 64,
 ) -> dict[str, Any]:
-    db = open_diag_database(str(db_path))
-    conn = db.connection()
-    try:
+    with read_diag_db(str(db_path)) as db:
+        conn = db.connection()
         if snapshot_id is None:
             choice = choose_snapshot(conn)
         else:
@@ -608,8 +607,6 @@ def extract_transfer_map(
         blocks = load_blocks(conn, choice.snapshot_id)
         instructions_by_block = load_instructions(conn, choice.snapshot_id)
         dispatch_rows = load_dispatch_rows(conn, choice.snapshot_id)
-    finally:
-        db.close()
 
     effective_table_count = int(table_count or len(dispatch_rows))
     transfers: list[dict[str, Any]] = []
