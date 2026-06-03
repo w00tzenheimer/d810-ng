@@ -441,3 +441,185 @@ __all__ = [
     "recognize_derived_xor_dispatcher_models",
     "recognize_global_or_state_write_transition",
 ]
+
+
+# ---------------------------------------------------------------------------
+# General MBA-folded state-write recognizer
+#
+# OLLVM computes many next-states as opaque-but-constant MBA over *locally
+# assigned* constants, e.g.::
+#
+#     var_780 = 0xDC240D83
+#     var_778 = 0x71D1654B
+#     var_770 = 0x77535232
+#     var_64  = (var_770 ^ var_778) - var_780     ; == 0x2A5E29F6, a real state
+#
+# The BST walker only proves bare ``mov #const`` writes, so these handlers look
+# self-looping / edgeless. A *local forward constant propagation* over the block,
+# folding the state-write RHS through the portable KnownBits value domain,
+# recovers the concrete next-state without symbolic execution.
+# ---------------------------------------------------------------------------
+
+from d810.analyses.abstract_domains.operations import BinaryOp, UnaryOp  # noqa: E402
+from d810.analyses.abstract_domains.value_domain import (  # noqa: E402
+    KnownBitsValueDomain,
+)
+
+_FOLD_WIDTH = 64  # evaluate in 64-bit, mask the state to 32-bit at the end
+
+
+def _binary_op_map() -> dict:
+    return {
+        ida_hexrays.m_add: BinaryOp.ADD,
+        ida_hexrays.m_sub: BinaryOp.SUB,
+        ida_hexrays.m_mul: BinaryOp.MUL,
+        ida_hexrays.m_and: BinaryOp.AND,
+        ida_hexrays.m_or: BinaryOp.OR,
+        ida_hexrays.m_xor: BinaryOp.XOR,
+        ida_hexrays.m_shl: BinaryOp.SHL,
+        ida_hexrays.m_shr: BinaryOp.SHR_U,
+        ida_hexrays.m_sar: BinaryOp.SHR_S,
+    }
+
+
+def _unary_op_map() -> dict:
+    return {
+        ida_hexrays.m_bnot: UnaryOp.NOT,
+        ida_hexrays.m_neg: UnaryOp.NEG,
+    }
+
+
+def _passthrough_opcodes() -> frozenset:
+    # value-preserving for constant folding (extend/move/truncate-low)
+    return frozenset(
+        {
+            ida_hexrays.m_mov,
+            ida_hexrays.m_xdu,
+            ida_hexrays.m_xds,
+            ida_hexrays.m_low,
+        }
+    )
+
+
+def _dest_key(mop):
+    if mop is None:
+        return None
+    t = getattr(mop, "t", None)
+    if t == ida_hexrays.mop_S:
+        return ("S", _mop_stkoff(mop))
+    if t == ida_hexrays.mop_l:
+        return ("l", _mop_lvar_idx(mop))
+    if t == ida_hexrays.mop_r:
+        return ("r", getattr(mop, "r", None))
+    return None
+
+
+def _eval_mop(mop, env: dict, vd: KnownBitsValueDomain):
+    c = _mop_const_value(mop)
+    if c is not None:
+        return vd.const(int(c) & ((1 << _FOLD_WIDTH) - 1), _FOLD_WIDTH)
+    t = getattr(mop, "t", None)
+    if t == ida_hexrays.mop_d:
+        sub = getattr(mop, "d", None)
+        if sub is not None:
+            return _eval_insn(sub, env, vd)
+        return vd.top(_FOLD_WIDTH)
+    key = _dest_key(mop)
+    if key is not None and key in env:
+        return env[key]
+    return vd.top(_FOLD_WIDTH)
+
+
+def _eval_insn(insn, env: dict, vd: KnownBitsValueDomain):
+    opcode = getattr(insn, "opcode", None)
+    binmap = _binary_op_map()
+    unmap = _unary_op_map()
+    left = _eval_mop(getattr(insn, "l", None), env, vd)
+    if opcode in unmap:
+        return vd.eval_unary(unmap[opcode], left, _FOLD_WIDTH)
+    if opcode in _passthrough_opcodes():
+        return left
+    if opcode in binmap:
+        right = _eval_mop(getattr(insn, "r", None), env, vd)
+        return vd.eval_binary(binmap[opcode], left, right, _FOLD_WIDTH)
+    return vd.top(_FOLD_WIDTH)
+
+
+def fold_block_state_write(
+    *,
+    mba,
+    block_serial: int,
+    state_var_stkoff: int,
+    state_var_lvar_idx: int | None = None,
+) -> int | None:
+    """Fold the next-state value the block writes to the state var, or ``None``.
+
+    Local forward constant-propagation: evaluate each instruction's value into a
+    per-block environment (recursing into ``mop_d`` sub-instructions), then read
+    the value of the *last* write to the state variable. Returns the folded
+    state masked to 32 bits, or ``None`` if it does not fold to a constant.
+    """
+    try:
+        blk = mba.get_mblock(int(block_serial))
+    except Exception:
+        blk = None
+    if blk is None:
+        return None
+    vd = KnownBitsValueDomain()
+    env: dict = {}
+    result = None
+    ins = getattr(blk, "head", None)
+    while ins is not None:
+        value = _eval_insn(ins, env, vd)
+        dest = getattr(ins, "d", None)
+        key = _dest_key(dest)
+        if key is not None and value is not None:
+            env[key] = value
+        if _mop_matches_state_var(
+            dest,
+            mba=mba,
+            state_var_stkoff=int(state_var_stkoff),
+            state_var_lvar_idx=state_var_lvar_idx,
+        ):
+            if value is not None:
+                result = value
+        ins = getattr(ins, "next", None)
+    if result is None:
+        return None
+    folded = vd.to_const(result)
+    return None if folded is None else (folded & 0xFFFFFFFF)
+
+
+def recognize_constant_folded_state_write(
+    *,
+    mba,
+    handler_serial: int,
+    state_var_stkoff: int,
+    state_var_lvar_idx: int | None = None,
+    known_states: Iterable[int] = (),
+) -> DynamicStateWriteEvidence | None:
+    """Recover a next-state from an MBA-over-constants state write by folding it.
+
+    Returns evidence iff the fold yields a *known* dispatcher state (so we never
+    invent a target that is not in the routing map).
+    """
+    known = {int(v) & 0xFFFFFFFF for v in known_states}
+    if not known:
+        return None
+    folded = fold_block_state_write(
+        mba=mba,
+        block_serial=int(handler_serial),
+        state_var_stkoff=int(state_var_stkoff),
+        state_var_lvar_idx=state_var_lvar_idx,
+    )
+    if folded is None or folded not in known:
+        return None
+    return DynamicStateWriteEvidence(
+        handler_serial=int(handler_serial),
+        global_ea=0,
+        target_state=int(folded),
+        or_insn_ea=None,
+        state_write_ea=None,
+        state_write_block=int(handler_serial),
+        provenance="constant_folded_state_write",
+    )
