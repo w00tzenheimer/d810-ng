@@ -7603,3 +7603,174 @@ def test_terminal_alias_node_collapses_to_source_terminal_sibling() -> None:
         and edge.target_state == 0x6E958F9A
     )
     assert incoming.target_entry_anchor == 162
+
+
+def test_resolve_target_node_reconnects_mid_interval_next_state() -> None:
+    """S4: a mid-interval ``to_state`` resolves to its RANGE_BACKED node.
+
+    Reproduces the sub_7FFD 28-orphan symptom in miniature: handler blk[10]
+    (exact state ``0x10000000``) writes next-state ``0x79F598F7``, which is NOT
+    an exact key but lies inside the interval ``[0x737189D6, 0x7C2C0220]`` owned
+    by the RANGE_BACKED handler blk[52].  Before S4 the exact-only
+    ``node_by_state.get`` missed and the edge ``10 -> 52`` was dropped, orphaning
+    blk[52].  The interval-containment fallback (``route_comparison_target``)
+    reconnects it.
+    """
+    flow_graph = FlowGraph(
+        blocks={
+            10: BlockSnapshot(10, 0, (52,), (), 0, 0, ()),
+            52: BlockSnapshot(52, 0, (), (10,), 0, 0, ()),
+        },
+        entry_serial=10,
+        func_ea=0x401000,
+    )
+    report = DispatcherTransitionReport(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        state_var_lvar_idx=None,
+        pre_header_serial=None,
+        initial_state=0x10000000,
+        handler_state_map={10: 0x10000000},
+        handler_range_map={52: (0x737189D6, 0x7C2C0220)},
+        bst_node_blocks=(),
+        rows=(
+            TransitionRow(
+                state_const=0x10000000,
+                state_range_lo=None,
+                state_range_hi=None,
+                handler_serial=10,
+                kind=TransitionKind.TRANSITION,
+                next_state=0x79F598F7,
+                conditional_states=(),
+                state_label="0x10000000",
+                transition_label="0x10000000",
+                chain_preview=(10,),
+                path=TransitionPath(
+                    handler_serial=10,
+                    chain=(10,),
+                    next_state=0x79F598F7,
+                    conditional_states=(),
+                    back_edge=False,
+                    reaches_exit_block=False,
+                    classified_exit=False,
+                    unresolved=False,
+                ),
+            ),
+            TransitionRow(
+                state_const=None,
+                state_range_lo=0x737189D6,
+                state_range_hi=0x7C2C0220,
+                handler_serial=52,
+                kind=TransitionKind.UNKNOWN,
+                next_state=None,
+                conditional_states=(),
+                state_label="range alias",
+                transition_label="range alias",
+                chain_preview=(52,),
+                path=TransitionPath(
+                    handler_serial=52,
+                    chain=(52,),
+                    next_state=None,
+                    conditional_states=(),
+                    back_edge=False,
+                    reaches_exit_block=False,
+                    classified_exit=False,
+                    unresolved=True,
+                ),
+            ),
+        ),
+        summary=TransitionSummary(
+            handlers_total=2,
+            known_count=1,
+            conditional_count=0,
+            exit_count=0,
+            unknown_count=1,
+        ),
+        diagnostics=(),
+    )
+    transition_result = TransitionResult(
+        transitions=[
+            StateTransition(
+                from_state=0x10000000,
+                to_state=0x79F598F7,
+                from_block=10,
+                is_conditional=False,
+            ),
+        ],
+        handlers={
+            0x10000000: StateHandler(
+                state_value=0x10000000,
+                check_block=10,
+                handler_blocks=[10],
+                transitions=[
+                    StateTransition(
+                        from_state=0x10000000,
+                        to_state=0x79F598F7,
+                        from_block=10,
+                        is_conditional=False,
+                    ),
+                ],
+            ),
+        },
+        initial_state=0x10000000,
+        strategy_name="test",
+        resolved_count=1,
+    )
+
+    dag = build_linearized_state_dag_from_graph(
+        flow_graph,
+        report,
+        transition_result,
+    )
+
+    # The RANGE_BACKED node for blk[52] exists.
+    range_node = next(
+        node
+        for node in dag.nodes
+        if node.handler_serial == 52
+        and node.kind == StateNodeKind.RANGE_BACKED
+    )
+
+    # The mid-interval edge 10 -> 52 is reconnected (target_key resolves to the
+    # RANGE_BACKED node, NOT dropped to None).
+    reconnect = next(
+        edge
+        for edge in dag.edges
+        if edge.target_state == 0x79F598F7
+    )
+    assert reconnect.target_key is not None
+    assert reconnect.target_key == range_node.key
+    assert reconnect.target_key.handler_serial == 52
+
+
+def test_route_comparison_target_matches_mid_interval_handler() -> None:
+    """Contract: the reused interval matcher routes the mid-interval value to 52."""
+    from d810.analyses.control_flow.linearized_state_dag import (
+        route_comparison_target,
+    )
+
+    assert (
+        route_comparison_target(
+            0x79F598F7,
+            state_to_handler={0x10000000: 10},
+            handler_range_map={52: (0x737189D6, 0x7C2C0220)},
+        )
+        == 52
+    )
+    # Exact keys still win and out-of-range values still miss.
+    assert (
+        route_comparison_target(
+            0x10000000,
+            state_to_handler={0x10000000: 10},
+            handler_range_map={52: (0x737189D6, 0x7C2C0220)},
+        )
+        == 10
+    )
+    assert (
+        route_comparison_target(
+            0x00000001,
+            state_to_handler={0x10000000: 10},
+            handler_range_map={52: (0x737189D6, 0x7C2C0220)},
+        )
+        is None
+    )
