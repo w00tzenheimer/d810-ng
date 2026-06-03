@@ -5,6 +5,7 @@ import enum
 from dataclasses import dataclass
 
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
+from d810.analyses.data_flow.abstract_value import Block
 from d810.ir import ValueRef
 
 
@@ -88,14 +89,41 @@ def _select_state_write(
     return None
 
 
+def _route_target(
+    model: object | None,
+    dispatch_map: StateDispatcherMap,
+    source_state: int,
+) -> int | None:
+    """Route a source state to a target block via ``model.route()`` (S2) or exact rows.
+
+    When a ``model`` (e.g. ``ComparisonDispatcherModel``) is supplied, route
+    through it and unwrap a single :class:`Block` (interval-aware); else fall
+    back to the exact-only ``dispatch_map.resolve_target`` (legacy behaviour).
+    """
+    if model is not None and hasattr(model, "route"):
+        rr = model.route(int(source_state))
+        return rr.serial if isinstance(rr, Block) else None
+    return dispatch_map.resolve_target(int(source_state))
+
+
 def resolve_state_transitions_with_dispatcher_map(
     transition_facts: tuple[StateTransitionFact, ...],
     *,
     dispatch_map: StateDispatcherMap | None,
     state_write_anchors: tuple[StateWriteAnchor, ...] = (),
     resolution_kind: str = "state_dispatcher_map",
+    model: object | None = None,
 ) -> tuple[StateTransitionResolution, ...]:
-    """Resolve transition facts using in-memory exact dispatcher rows."""
+    """Resolve transition facts using in-memory dispatcher rows.
+
+    ``model`` (S2) is an optional ``ComparisonDispatcherModel`` (any object with
+    a ``route(value) -> RouteResult`` method).  When supplied, routing goes
+    through ``model.route()`` — exact *and* interval rows — so an interval-routed
+    next-state (``0x79F598F7 ∈ [..] -> blk 52``) resolves instead of being
+    dropped as ``"state_not_in_dispatcher_map"`` (the 28-orphan fix).  Absent a
+    model, routing stays exact-only via ``dispatch_map.resolve_target``
+    (byte-identical legacy behaviour).
+    """
     write_lookup = _state_write_lookup(state_write_anchors)
     resolutions: list[StateTransitionResolution] = []
     for fact in transition_facts:
@@ -113,7 +141,7 @@ def resolve_state_transitions_with_dispatcher_map(
         elif dispatch_map is None or not dispatch_map.rows:
             reason = "no_dispatcher_rows_available"
         else:
-            target_block = dispatch_map.resolve_target(source_state)
+            target_block = _route_target(model, dispatch_map, source_state)
             if target_block is None:
                 reason = "state_not_in_dispatcher_map"
             elif target_block in dispatch_map.dispatcher_blocks:
@@ -277,7 +305,11 @@ def semantic_transition_from_fact(
 
 
 def resolve_state_transitions(
-    graph, facts, *, dispatch_map: "StateDispatcherMap | None" = None
+    graph,
+    facts,
+    *,
+    dispatch_map: "StateDispatcherMap | None" = None,
+    model: object | None = None,
 ) -> "tuple[StateTransitionResolution, ...]":
     """§1a pass #2: resolve transition facts through the portable dispatcher map.
 
@@ -294,6 +326,7 @@ def resolve_state_transitions(
         transition_facts,
         dispatch_map=dispatch_map,
         state_write_anchors=state_write_anchors,
+        model=model,
     )
 
 
