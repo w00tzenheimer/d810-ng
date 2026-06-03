@@ -469,6 +469,11 @@ from d810.analyses.abstract_domains.operations import BinaryOp, UnaryOp  # noqa:
 from d810.analyses.abstract_domains.value_domain import (  # noqa: E402
     KnownBitsValueDomain,
 )
+from d810.analyses.data_flow.abstract_value import (  # noqa: E402
+    TOP,
+    AbstractValue,
+    Const,
+)
 
 _FOLD_WIDTH = 64  # evaluate in 64-bit, mask the state to 32-bit at the end
 
@@ -627,9 +632,9 @@ def _resolve_stkvar_via_du(mop, mba, use_block) -> int | None:
             state_var_lvar_idx=None,
             cross_block_resolver=None,  # one level only -- no recursion
         )
-        if folded is None:
+        if not isinstance(folded, Const):
             return None  # an unfoldable reaching def -> not provably constant
-        seen.add(int(folded) & 0xFFFFFFFF)
+        seen.add(int(folded.value) & 0xFFFFFFFF)
     return next(iter(seen)) if len(seen) == 1 else None
 
 
@@ -688,13 +693,17 @@ def fold_block_state_write(
     state_var_stkoff: int,
     state_var_lvar_idx: int | None = None,
     cross_block_resolver=None,
-) -> int | None:
-    """Fold the next-state value the block writes to the state var, or ``None``.
+) -> AbstractValue:
+    """Fold the next-state value the block writes to the state var (tier T1).
 
     Local forward constant-propagation: evaluate each instruction's value into a
     per-block environment (recursing into ``mop_d`` sub-instructions), then read
-    the value of the *last* write to the state variable. Returns the folded
-    state masked to 32 bits, or ``None`` if it does not fold to a constant.
+    the value of the *last* write to the state variable.
+
+    Returns an :class:`AbstractValue` (the dispatcher-model-consolidation seam,
+    S3): :class:`Const` (value masked to 32 bits, size 4) when the write folds
+    to a single constant, else :data:`TOP` to escalate to the next resolve tier
+    (no block / no state write / non-constant write all yield ``⊤``).
 
     When *cross_block_resolver* is supplied, operands defined outside this block
     are resolved through it (SCCP / DU reaching defs) before degrading to ⊤.
@@ -704,7 +713,7 @@ def fold_block_state_write(
     except Exception:
         blk = None
     if blk is None:
-        return None
+        return TOP
     vd = KnownBitsValueDomain()
     env: dict = {}
     result = None
@@ -725,9 +734,9 @@ def fold_block_state_write(
                 result = value
         ins = getattr(ins, "next", None)
     if result is None:
-        return None
+        return TOP
     folded = vd.to_const(result)
-    return None if folded is None else (folded & 0xFFFFFFFF)
+    return TOP if folded is None else Const(folded & 0xFFFFFFFF, 4)
 
 
 def recognize_constant_folded_state_write(
@@ -749,14 +758,20 @@ def recognize_constant_folded_state_write(
     known = {int(v) & 0xFFFFFFFF for v in known_states}
     if not known:
         return None
-    folded = fold_block_state_write(
+    folded_value = fold_block_state_write(
         mba=mba,
         block_serial=int(handler_serial),
         state_var_stkoff=int(state_var_stkoff),
         state_var_lvar_idx=state_var_lvar_idx,
         cross_block_resolver=cross_block_resolver,
     )
-    if folded is None or folded not in known:
+    # S3: fold_block_state_write now returns an AbstractValue. Unwrap Const ->
+    # int so this recognizer's external behaviour is byte-identical to the old
+    # ``int | None`` contract (Top / non-Const escalates -> no evidence here).
+    if not isinstance(folded_value, Const):
+        return None
+    folded = int(folded_value.value) & 0xFFFFFFFF
+    if folded not in known:
         return None
     return DynamicStateWriteEvidence(
         handler_serial=int(handler_serial),

@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
+from d810.analyses.data_flow.abstract_value import TOP, Const
 from d810.evaluator.hexrays_microcode.dynamic_state_write_backend import (
     fold_block_state_write,
 )
@@ -76,12 +77,12 @@ def test_local_only_fold_leaves_cross_block_operand_top():
     # state = S[0x100]  (S[0x100] is defined in a predecessor, not here)
     insn = _insn(ida_hexrays.m_mov, d=_mop_S(_STATE_OFF), l=_mop_S(0x100))
     mba = _mba_with_block(insn)
-    # No resolver -> operand is ⊤ -> not provably constant.
+    # No resolver -> operand is ⊤ -> not provably constant (S3: AbstractValue Top).
     assert (
         fold_block_state_write(
             mba=mba, block_serial=0, state_var_stkoff=_STATE_OFF
         )
-        is None
+        is TOP
     )
 
 
@@ -95,7 +96,7 @@ def test_fold_consumes_cross_block_resolver_for_simple_mov():
         state_var_stkoff=_STATE_OFF,
         cross_block_resolver=resolver,
     )
-    assert folded == 0x2A5E29F6
+    assert folded == Const(0x2A5E29F6, 4)
 
 
 def test_fold_consumes_cross_block_operands_in_mba():
@@ -112,7 +113,7 @@ def test_fold_consumes_cross_block_operands_in_mba():
         state_var_stkoff=_STATE_OFF,
         cross_block_resolver=resolver,
     )
-    assert folded == (((a ^ b) - c) & _MASK)
+    assert folded == Const(((a ^ b) - c) & _MASK, 4)
 
 
 def test_resolver_returning_none_never_invents_a_state():
@@ -127,7 +128,7 @@ def test_resolver_returning_none_never_invents_a_state():
             state_var_stkoff=_STATE_OFF,
             cross_block_resolver=resolver,
         )
-        is None
+        is TOP
     )
 
 
@@ -149,5 +150,5 @@ def test_local_constant_still_wins_over_resolver():
         state_var_stkoff=_STATE_OFF,
         cross_block_resolver=resolver,
     )
-    assert folded == 0x1234
+    assert folded == Const(0x1234, 4)
     assert seen == []  # resolver never consulted for a local constant
