@@ -135,6 +135,19 @@ def test_exit_routine_wires_corridor_to_terminal_return():
     assert cfg.successors(225) == ()  # corridor tail = terminal return
 
 
+def test_exit_routine_tail_is_a_return_terminal():
+    # The EXIT_ROUTINE corridor tail (225) is flagged as a genuine function
+    # return; a dead-end block at a recovery gap is NOT.
+    nodes = [_node(0xB, 20, [20, 224, 225]), _node(0xC, 30, [30])]
+    edges = [
+        _edge(SemanticEdgeKind.EXIT_ROUTINE, 0xB, None, 20, None, [20, 224, 225]),
+        _edge(SemanticEdgeKind.TRANSITION, 0xC, 0xB, 30, 20, [30]),
+    ]
+    cfg = build_state_dag_cfg(_dag(nodes, edges, initial_state=0xC), base_successors={})
+    assert cfg.return_terminals == frozenset({225})
+    assert cfg.successors(225) == ()
+
+
 def test_self_loop_transition_is_dropped():
     # A TRANSITION whose source state == target state is a recovery
     # unresolved/spin artifact; dropping it keeps the node a terminal instead of
