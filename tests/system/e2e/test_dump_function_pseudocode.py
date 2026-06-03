@@ -562,6 +562,37 @@ class TestDumpFunctionPseudocode:
                                     "\n[linearized semantic reference-like program dump failed: "
                                     f"{e}]"
                                 )
+                            if (
+                                os.environ.get("D810_USE_STRUCTURER") == "1"
+                                and hodur_stkoff is not None
+                            ):
+                                try:
+                                    from d810.backends.hexrays.evidence.structured_program_live import (
+                                        structure_recovered_program_live,
+                                    )
+
+                                    _ret_slot = int(
+                                        os.environ.get(
+                                            "D810_STRUCTURER_RETURN_SLOT", "0x7F0"
+                                        ),
+                                        0,
+                                    )
+                                    structured = structure_recovered_program_live(
+                                        mba,
+                                        state_var_stkoff=int(hodur_stkoff),
+                                        return_slot_stkoff=_ret_slot,
+                                    )
+                                    print(
+                                        f"\n--- STRUCTURED PROGRAM (D810_USE_STRUCTURER, {mba_source}) ---"
+                                    )
+                                    print(structured)
+                                    print("=" * 88)
+                                except Exception as exc:
+                                    import traceback as _tb
+
+                                    print(
+                                        f"\n[structured program failed: {exc}]\n{_tb.format_exc()}"
+                                    )
                             if dump_all_linearized_programs:
                                 try:
                                     ida_label_program = build_live_linearized_program(
