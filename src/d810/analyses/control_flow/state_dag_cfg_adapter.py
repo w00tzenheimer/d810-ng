@@ -14,18 +14,23 @@ verified block-keyed reaching-defs/liveness in
 :mod:`d810.backends.hexrays.evidence.stack_value_flow_live`) operate on real
 handler block serials:
 
-* **Nodes** = the union of every state node's ``owned_blocks`` (handler bodies);
-  no dispatcher / BST blocks are pulled in.
-* **Intra-handler edges** = the base CFG's successors *restricted to the same
-  state node's owned set* -- the genuine local control flow inside a handler.
-  Edges that leave the owned set are dispatcher round-trips and are dropped.
-* **Inter-handler edges** = the DAG's semantic transitions: a
-  :class:`StateDagEdge`'s ``source_anchor.block_serial`` -> the target state
-  node's entry block. This is the dispatcher *replacement*.
-* **Terminals** = blocks with no outgoing edge after rewiring (``EXIT_ROUTINE`` /
-  ``CONDITIONAL_RETURN`` arms, or owned blocks whose only base successors leave
-  the handler without a recovered transition). The structurer emits a ``return``
-  for them; the carrier-delivery verdict decides the value.
+* **Nodes** = the union of every state node's ``owned_blocks`` plus every block
+  named in a wired edge's ``ordered_path`` (handler bodies + the return
+  corridor); no dispatcher / BST blocks are pulled in.
+* **Edges** = primarily each semantic transition's ``ordered_path``: in the
+  *flattened* base CFG, handler blocks do not directly succeed one another (they
+  round-trip through the dispatcher), so the DAG's traced ``ordered_path`` is the
+  authoritative intra+inter wiring. Consecutive path blocks are chained, and the
+  path's last block (or ``source_anchor.block_serial`` when the path is empty)
+  connects to the target handler's entry. ``base_successors`` restricted to a
+  node's owned set is added as a supplement (covers owned body blocks not named
+  in any path).
+* **Self-loop transitions** (``source_state == target_state``) are dropped: they
+  are the recovery's unresolved/​spin artifacts and would otherwise terminate the
+  forward chain as a ``while (1)``.
+* **Terminals** = ``EXIT_ROUTINE`` corridor tails and blocks left with no
+  outgoing edge. The structurer emits a ``return`` for them; the carrier-delivery
+  verdict decides the value.
 
 Portable: no IDA import. ``base_successors`` is supplied by the caller (the live
 wrapper passes the lifted FlowGraph's successor map; unit tests pass a literal).
@@ -112,19 +117,30 @@ def _resolve_target_entry(
     return None
 
 
+def _edge_path(edge: object) -> tuple[int, ...]:
+    return tuple(int(b) for b in getattr(edge, "ordered_path", ()) or ())
+
+
+def _source_state(edge: object) -> Optional[int]:
+    key = getattr(edge, "source_key", None)
+    state = getattr(key, "state_const", None) if key is not None else None
+    return int(state) & 0xFFFFFFFF if state is not None else None
+
+
 def build_state_dag_cfg(
     dag: "LinearizedStateDag",
     *,
-    base_successors: Mapping[int, Iterable[int]],
+    base_successors: Optional[Mapping[int, Iterable[int]]] = None,
     entry_serial: Optional[int] = None,
 ) -> StateDagCfg:
     """Project ``dag`` into a block CFG the structurer can structure.
 
     Args:
         dag: The recovered :class:`LinearizedStateDag` (handler nodes + edges).
-        base_successors: The base CFG's successor map (serial -> successors),
-            used for intra-handler control flow. Edges leaving a handler's
-            owned set are dropped (they are dispatcher round-trips).
+        base_successors: Optional base CFG successor map (serial -> successors).
+            Restricted to each handler's owned set and added as a supplement to
+            the primary ``ordered_path`` wiring (covers owned body blocks not
+            named in any path). In a flattened CFG this is usually near-empty.
         entry_serial: Override the function entry block. Defaults to the
             initial-state handler's entry anchor (falling back to the
             dispatcher entry serial, then the first node's entry anchor).
@@ -132,13 +148,11 @@ def build_state_dag_cfg(
     Returns:
         A :class:`StateDagCfg` of handler blocks with dispatcher-free edges.
     """
+    base_successors = base_successors or {}
     nodes = tuple(getattr(dag, "nodes", ()) or ())
 
-    # 1. Index handler blocks and per-block owning node. First writer wins on
-    #    overlap (a shared suffix block is attributed to the first owner; its
-    #    extra predecessors arrive as inter-handler edges).
+    # 1. Index handler blocks + entry-resolution maps.
     owned_of: dict[int, frozenset[int]] = {}
-    owner_node: dict[int, object] = {}
     entry_by_key: dict[object, int] = {}
     entry_by_state: dict[int, int] = {}
     block_set: set[int] = set()
@@ -147,9 +161,7 @@ def build_state_dag_cfg(
         owned = frozenset(int(b) for b in getattr(node, "owned_blocks", ()) or ())
         owned = owned | {entry_anchor}
         owned_of[entry_anchor] = owned
-        for b in owned:
-            block_set.add(b)
-            owner_node.setdefault(b, node)
+        block_set.update(owned)
         key = getattr(node, "key", None)
         if key is not None:
             entry_by_key.setdefault(key, entry_anchor)
@@ -157,50 +169,61 @@ def build_state_dag_cfg(
             if state_const is not None:
                 entry_by_state.setdefault(int(state_const) & 0xFFFFFFFF, entry_anchor)
 
-    succ: dict[int, list[int]] = {b: [] for b in block_set}
+    succ: dict[int, list[int]] = {}
 
     def _add_edge(src: int, dst: int) -> None:
-        if dst not in block_set:
-            return
+        block_set.add(src)
+        block_set.add(dst)
         bucket = succ.setdefault(src, [])
         if dst not in bucket:
             bucket.append(dst)
 
-    # 2. Intra-handler edges: base successors restricted to the same owned set.
-    for node in nodes:
-        entry_anchor = int(getattr(node, "entry_anchor"))
-        owned = owned_of.get(entry_anchor, frozenset())
-        for b in owned:
-            for s in base_successors.get(b, ()) or ():
-                s = int(s)
-                if s in owned:
-                    _add_edge(b, s)
-
-    # 3. Inter-handler edges: the DAG's semantic transitions (dispatcher
-    #    replacement). Only forward kinds add a block edge; EXIT_ROUTINE /
-    #    CONDITIONAL_RETURN / UNKNOWN arms stay terminal.
+    # 2. Primary wiring: each semantic transition's ordered_path. Consecutive
+    #    path blocks are chained; the path tail (or source anchor when empty)
+    #    connects to the target handler entry. Self-loop transitions are dropped.
     for edge in getattr(dag, "edges", ()) or ():
         kind_name = getattr(getattr(edge, "kind", None), "name", "")
+        path = _edge_path(edge)
+        for a, b in zip(path, path[1:]):
+            _add_edge(a, b)
+        if kind_name == "EXIT_ROUTINE":
+            # The corridor is wired by the path; the tail is the function return
+            # (terminal). No edge to a target -> the structurer emits a return.
+            continue
         if kind_name not in _FORWARD_EDGE_KINDS:
-            continue
-        anchor = getattr(edge, "source_anchor", None)
-        src_block = getattr(anchor, "block_serial", None) if anchor is not None else None
-        if src_block is None or int(src_block) not in block_set:
-            continue
+            continue  # UNKNOWN / CONDITIONAL_RETURN: no forward block edge.
+        src_state = _source_state(edge)
+        tgt_state = getattr(edge, "target_state", None)
+        if (
+            src_state is not None
+            and tgt_state is not None
+            and src_state == (int(tgt_state) & 0xFFFFFFFF)
+        ):
+            continue  # degenerate self-loop (unresolved/spin) -> skip.
         target_entry = _resolve_target_entry(
             edge, entry_by_key=entry_by_key, entry_by_state=entry_by_state
         )
         if target_entry is None:
             continue
-        _add_edge(int(src_block), int(target_entry))
+        anchor = getattr(edge, "source_anchor", None)
+        anchor_block = getattr(anchor, "block_serial", None) if anchor else None
+        exit_block = path[-1] if path else anchor_block
+        if exit_block is None:
+            continue
+        _add_edge(int(exit_block), int(target_entry))
+
+    # 3. Supplement: base successors restricted to a handler's owned set.
+    for entry_anchor, owned in owned_of.items():
+        for b in owned:
+            for s in base_successors.get(b, ()) or ():
+                if int(s) in owned:
+                    _add_edge(b, int(s))
 
     # 4. Resolve the function entry.
     if entry_serial is None:
         entry_serial = _default_entry(dag, entry_by_state)
     entry_serial = int(entry_serial)
     if entry_serial not in block_set and block_set:
-        # Defensive: keep a valid entry even if the initial-state anchor was
-        # not materialized as an owned block.
         entry_serial = min(block_set)
 
     # 5. Materialize blocks with predecessor lists.

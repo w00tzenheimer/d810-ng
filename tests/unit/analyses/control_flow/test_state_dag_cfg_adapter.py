@@ -120,16 +120,52 @@ def test_conditional_transition_makes_two_way_branch():
     assert cfg.get_block(20).nsucc == 2
 
 
-def test_exit_routine_and_unknown_edges_are_terminal_arms():
-    # EXIT_ROUTINE (-> function return) and UNKNOWN (self-loop) add NO forward
-    # block edge, so the source stays terminal / unlooped.
-    nodes = [_node(0xB, 20, [20])]
+def test_exit_routine_wires_corridor_to_terminal_return():
+    # EXIT_ROUTINE wires its ordered_path corridor (20->224->225) with the tail
+    # (225) left terminal -> the structurer emits the function return there.
+    # UNKNOWN adds no forward edge (no spurious self-loop).
+    nodes = [_node(0xB, 20, [20, 224, 225])]
     edges = [
         _edge(SemanticEdgeKind.EXIT_ROUTINE, 0xB, None, 20, None, [20, 224, 225]),
         _edge(SemanticEdgeKind.UNKNOWN, 0xB, 0xB, 20, 20, [20]),
     ]
     cfg = build_state_dag_cfg(_dag(nodes, edges, initial_state=0xB), base_successors={})
-    assert cfg.successors(20) == ()  # terminal; no self-loop from UNKNOWN
+    assert cfg.successors(20) == (224,)
+    assert cfg.successors(224) == (225,)
+    assert cfg.successors(225) == ()  # corridor tail = terminal return
+
+
+def test_self_loop_transition_is_dropped():
+    # A TRANSITION whose source state == target state is a recovery
+    # unresolved/spin artifact; dropping it keeps the node a terminal instead of
+    # a while(1) that terminates the chain (the sub_7FFD 0x139F2922 / blk136 case).
+    nodes = [_node(0x139F2922, 136, [136])]
+    edges = [_edge(SemanticEdgeKind.TRANSITION, 0x139F2922, 0x139F2922, 136, 136, [136])]
+    cfg = build_state_dag_cfg(_dag(nodes, edges, initial_state=0x139F2922), base_successors={})
+    assert cfg.successors(136) == ()  # no self-loop
+
+
+def test_prefix_ordered_paths_build_internal_branch_chain():
+    # sub_7FFD node 0x606DC166 (blk14) shape: nested prefix paths
+    # [14,140] [14,140,141] [14,140,142] each transitioning to a different next
+    # state. ordered_path chaining reconstructs the internal spine 14->140->141,
+    # 140->142, with each tail connecting to its target handler entry.
+    nodes = [
+        _node(0x606DC166, 14, [14, 140, 141, 142]),
+        _node(0xAA, 21, [21]),
+        _node(0xBB, 211, [211]),
+        _node(0xCC, 151, [151]),
+    ]
+    edges = [
+        _edge(SemanticEdgeKind.TRANSITION, 0x606DC166, 0xAA, 140, 21, [14, 140]),
+        _edge(SemanticEdgeKind.TRANSITION, 0x606DC166, 0xBB, 141, 211, [14, 140, 141]),
+        _edge(SemanticEdgeKind.TRANSITION, 0x606DC166, 0xCC, 142, 151, [14, 140, 141, 142]),
+    ]
+    cfg = build_state_dag_cfg(_dag(nodes, edges, initial_state=0x606DC166), base_successors={})
+    assert cfg.successors(14) == (140,)
+    assert set(cfg.successors(140)) == {141, 21}   # continue or transition
+    assert set(cfg.successors(141)) == {142, 211}
+    assert set(cfg.successors(142)) == {151}
 
 
 def test_shared_suffix_fan_in_converges_on_single_return():

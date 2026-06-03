@@ -29,6 +29,7 @@ from d810.hexrays.mutation.ir_translator import lift as lift_flow_graph
 from d810.hexrays.utils.pseudocode_render import render_branch_condition
 from d810.backends.hexrays.evidence.microcode_dump import (
     _build_block_payload_by_serial,
+    _build_live_linearized_state_dag,
 )
 from d810.analyses.control_flow.linearized_state_dag import (
     _prune_terminal_control_lines,
@@ -60,6 +61,7 @@ def structure_recovered_program_live(
     return_slot_stkoff: int,
     slot_width: int = 8,
     carrier_expr: str = "a5 + 0xD0",
+    dispatcher_entry_serial: int | None = None,
 ) -> str:
     """Render the recovered function as goto-free pseudocode with the leak fixed.
 
@@ -71,20 +73,37 @@ def structure_recovered_program_live(
         slot_width: Width in bytes of the tracked slots (default 8).
         carrier_expr: The real carrier expression to deliver at leaking aligned
             terminals (default ``"a5 + 0xD0"``, the byte_offset pointer).
+        dispatcher_entry_serial: When provided, the **enriched** state-DAG is
+            rebuilt live (``_build_live_linearized_state_dag``) -- the same DAG
+            the reference-like linearized renderer uses, with the full
+            conditional-transition chain. Preferred over the shallow §1a stash.
     """
-    # Prefer the §1a recovered state-DAG projected to a block CFG: handler blocks
-    # only, dispatcher-free (the BST comparison blocks are gone). Fall back to the
-    # projected FlowGraph, then the raw lift — both of which retain the dispatcher
-    # and would structure it instead of the handler logic.
+    # The structurer must run on the recovered state graph (dispatcher-free), not
+    # the lifted/projected FlowGraph (which retains the BST comparison blocks).
+    # Prefer the ENRICHED DAG rebuilt live (full conditional-transition chain,
+    # same as the linearized renderer); fall back to the §1a shallow stash.
     base_graph = get_recovered_flow_graph()
     if base_graph is None:
         base_graph = lift_flow_graph(mba)
-    state_dag = get_recovered_state_dag()
+    base_successors = {
+        int(serial): tuple(int(s) for s in getattr(blk, "succs", ()))
+        for serial, blk in base_graph.blocks.items()
+    }
+
+    state_dag = None
+    if dispatcher_entry_serial is not None:
+        try:
+            state_dag = _build_live_linearized_state_dag(
+                mba,
+                int(dispatcher_entry_serial),
+                state_var_stkoff=int(state_var_stkoff),
+            )
+        except Exception as exc:  # noqa: BLE001 — diagnostics; fall back to stash
+            logger.info("structurer: enriched DAG rebuild failed (%s); using stash", exc)
+    if state_dag is None:
+        state_dag = get_recovered_state_dag()
+
     if state_dag is not None:
-        base_successors = {
-            int(serial): tuple(int(s) for s in getattr(blk, "succs", ()))
-            for serial, blk in base_graph.blocks.items()
-        }
         flow_graph = build_state_dag_cfg(state_dag, base_successors=base_successors)
         logger.info(
             "structurer: using recovered state-DAG (%d handler blocks, entry=%d)",
@@ -94,7 +113,7 @@ def structure_recovered_program_live(
     else:
         flow_graph = base_graph
         logger.info(
-            "structurer: no state-DAG stashed; structuring FlowGraph (%d blocks)",
+            "structurer: no state-DAG available; structuring FlowGraph (%d blocks)",
             len(getattr(flow_graph, "blocks", {})),
         )
     block_payload = _build_block_payload_by_serial(mba)
