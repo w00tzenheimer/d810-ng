@@ -39,6 +39,10 @@ from d810.analyses.control_flow.recovered_graph_capture import (
     get_recovered_state_dag,
 )
 from d810.analyses.control_flow.state_dag_cfg_adapter import build_state_dag_cfg
+from d810.analyses.control_flow.state_write_dse import (
+    infer_state_var_name as _infer_state_var_name,
+    prune_dead_state_writes as _prune_dead_state_writes,
+)
 from d810.backends.hexrays.evidence.stack_value_flow_live import (
     build_live_reaching_facts,
     is_state_var_live_at_entry,
@@ -122,6 +126,19 @@ def structure_recovered_program_live(
         )
     block_payload = _build_block_payload_by_serial(mba)
 
+    # Dead dispatcher-state writes (``var_64 = 0x<state_const>``) are noise after
+    # unflattening -- the state var is dead. Collect the recovered state
+    # constants so the renderer can DSE those assignment lines (this also removes
+    # the cosmetic ``0x298372CC`` state-write occurrences). Computed state writes
+    # are dropped too once we know the state var's rendered name.
+    state_consts: set[int] = set()
+    for node in getattr(state_dag, "nodes", ()) or ():
+        key = getattr(node, "key", None)
+        sc = getattr(key, "state_const", None) if key is not None else None
+        if sc is not None:
+            state_consts.add(int(sc) & 0xFFFFFFFF)
+    state_var_name = _infer_state_var_name(block_payload, state_consts)
+
     branch_cond: dict[int, str] = {}
     for serial in flow_graph.blocks:
         blk = mba.get_mblock(int(serial))
@@ -149,6 +166,12 @@ def structure_recovered_program_live(
     )
 
     terminals = [s for s in flow_graph.blocks if not tuple(flow_graph.successors(s))]
+    logger.info(
+        "structurer: %d terminal(s)=%s return_terminals=%s",
+        len(terminals),
+        sorted(terminals)[:20],
+        sorted(getattr(flow_graph, "return_terminals", frozenset()))[:20],
+    )
     verdicts: dict[int, CarrierVerdict] = {}
     for terminal in terminals:
         return_reaching = reaching_defs_of(
@@ -167,10 +190,12 @@ def structure_recovered_program_live(
 
     def _render_block(block: object) -> tuple:
         # Strip the block's control-flow tail (goto/jcc/ret): those are carried
-        # by the region structure, not emitted as statements.
-        return _prune_terminal_control_lines(
+        # by the region structure, not emitted as statements. Then DSE the dead
+        # dispatcher-state writes (the state var is dead after unflattening).
+        lines = _prune_terminal_control_lines(
             tuple(block_payload.get(int(getattr(block, "serial", -1)), ()))
         )
+        return _prune_dead_state_writes(lines, state_var_name, state_consts)
 
     def _render_condition(block: object) -> str:
         return branch_cond.get(int(getattr(block, "serial", -1)), "cond")
