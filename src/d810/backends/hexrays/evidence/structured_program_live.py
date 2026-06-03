@@ -22,6 +22,8 @@ docker §1a dump behind the ``D810_USE_STRUCTURER`` flag.
 """
 from __future__ import annotations
 
+import os
+
 import ida_hexrays  # noqa: F401  (import guard: this module requires Hex-Rays)
 
 from d810.core.logging import getLogger
@@ -126,6 +128,29 @@ def structure_recovered_program_live(
             len(getattr(flow_graph, "blocks", {})),
         )
     block_payload = _build_block_payload_by_serial(mba)
+
+    # Dump the adapter graph topology to JSON so the portable structurer can be
+    # reproduced/debugged offline (no IDA / docker cycle). Diagnostic-only; cwd
+    # inside the container is the mounted worktree, so this lands in .tmp/.
+    try:
+        import json as _json
+
+        _topo = {
+            "entry_serial": int(flow_graph.entry_serial),
+            "return_terminals": sorted(
+                int(s) for s in getattr(flow_graph, "return_terminals", ())
+            ),
+            "succ": {
+                str(int(s)): [int(x) for x in flow_graph.successors(s)]
+                for s in flow_graph.blocks
+            },
+        }
+        _dump_path = os.path.join(".tmp", "structurer_graph.json")
+        with open(_dump_path, "w") as _fh:
+            _json.dump(_topo, _fh)
+        logger.info("structurer: dumped adapter graph to %s", _dump_path)
+    except Exception as _exc:  # noqa: BLE001 — diagnostics only
+        logger.info("structurer: graph dump failed (%s)", _exc)
 
     # Dead dispatcher-state writes (``var_64 = 0x<state_const>``) are noise after
     # unflattening -- the state var is dead. Collect the recovered state

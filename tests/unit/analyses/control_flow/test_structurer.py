@@ -13,6 +13,7 @@ from d810.ir.structured_region import (
     ConditionRegion,
     LoopRegion,
     SequenceRegion,
+    SwitchRegion,
     render_region,
 )
 
@@ -193,6 +194,46 @@ def test_while_one_emits_break_at_midbody_exit():
     assert "goto" not in text
     # blk 4 appears after the loop body, not inside it.
     assert text.index("break;") < text.index("/* blk 4 */")
+
+
+def test_nway_block_recurses_all_arms_as_switch():
+    # sub_7FFD block 69 shape: a 3-way state branch (after a back-edge is
+    # excluded) whose arms are terminals. The structurer must recurse EVERY arm
+    # (so each terminal renders + returns), not leaf-drop the block.
+    graph = _Graph(
+        [
+            _Blk(0, (69,)),
+            _Blk(69, (41, 47, 122), (0,)),
+            _Blk(41, (), (69,)),
+            _Blk(47, (), (69,)),
+            _Blk(122, (), (69,)),
+        ],
+        entry_serial=0,
+    )
+    tree = build_region_tree(
+        graph,
+        render_block=_lines,
+        render_condition=_cond,
+        terminal_return=lambda s: "a5 + 0xD0",
+    )
+    text = render_region(tree)
+    assert "goto" not in text
+    for arm in (41, 47, 122):
+        assert f"/* blk {arm} */" in text  # every arm rendered
+    assert text.count("return a5 + 0xD0;") == 3  # each terminal returns
+    assert any(isinstance(r, SwitchRegion) for r in _walk(tree))
+
+
+def _walk(region):
+    yield region
+    for attr in ("regions", "cases"):
+        for child in getattr(region, attr, ()) or ():
+            sub = child[1] if isinstance(child, tuple) else child
+            yield from _walk(sub)
+    for attr in ("then_region", "else_region", "body"):
+        sub = getattr(region, attr, None)
+        if sub is not None:
+            yield from _walk(sub)
 
 
 def test_do_while_latch_is_condition():
