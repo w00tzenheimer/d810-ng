@@ -4,6 +4,20 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from d810.core.diag.models import (
+    Block,
+    BlockClassification,
+    Instruction,
+    RenderedProgram,
+    RenderedProgramLine,
+    RenderedProgramNode,
+    Snapshot,
+    StateCfgEdge,
+    StateCfgLocalEdge,
+    StateCfgLocalSegment,
+    StateCfgNode,
+    StateCfgNodeBlock,
+)
 from d810.core.diag.snapshot import _dual
 
 
@@ -22,15 +36,22 @@ def create_sub_7ffd_scenario(conn: sqlite3.Connection) -> int:
     - blk[207] -> blk[218] (return corridor) -> blk[219] (BLT_STOP)
     - blk[217] (correct return corridor: writes var_8 from var_178)
 
-    The caller is responsible for creating the schema (e.g. via
-    ``create_diag_database``); this only populates rows.
+    Rows are written via the peewee ORM; the Models are bound by the caller
+    (the in-memory diag DB from ``make_bound_diag_db``), whose connection is
+    ``conn``. The caller is responsible for creating the schema (e.g. via
+    ``create_diag_database`` / ``make_bound_diag_db``).
     """
     fh, fi = _dual(0x180012B60)
-    conn.execute(
-        "INSERT INTO snapshots VALUES "
-        "(1, 'pass0_post_apply', ?, ?, 'MMAT_GLBOPT1', 'post_apply', 233, 0.0)",
-        (fh, fi),
-    )
+    Snapshot.insert(
+        id=1,
+        label="pass0_post_apply",
+        func_ea_hex=fh,
+        func_ea_i64=fi,
+        maturity="MMAT_GLBOPT1",
+        phase="post_apply",
+        block_count=233,
+        timestamp=0.0,
+    ).execute()
 
     # Blocks with succs/preds and key meta
     blocks = [
@@ -61,54 +82,61 @@ def create_sub_7ffd_scenario(conn: sqlite3.Connection) -> int:
         217: (0x1800164C5, 0x1800164C9),
         218: (0x1800164CD, 0x1800164D1),
     }
+    block_rows = []
     for serial, btype, tname, nsucc, npred, succs, preds, icnt, meta in blocks:
         start_hex, start_i64 = _dual(block_eas.get(serial, (None, None))[0])
         end_hex, end_i64 = _dual(block_eas.get(serial, (None, None))[1])
-        conn.execute(
-            "INSERT INTO blocks VALUES "
-            "(1,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                serial,
-                btype,
-                tname,
-                start_hex,
-                start_i64,
-                end_hex,
-                end_i64,
-                nsucc,
-                len(preds),
-                json.dumps(succs),
-                json.dumps(preds),
-                icnt,
-                meta,
-            ),
-        )
+        block_rows.append({
+            "snapshot": 1,
+            "serial": serial,
+            "block_type": btype,
+            "type_name": tname,
+            "start_ea_hex": start_hex,
+            "start_ea_i64": start_i64,
+            "end_ea_hex": end_hex,
+            "end_ea_i64": end_i64,
+            "nsucc": nsucc,
+            "npred": len(preds),
+            "succs": json.dumps(succs),
+            "preds": json.dumps(preds),
+            "insn_count": icnt,
+            "meta": meta,
+        })
+    Block.insert_many(block_rows).execute()
 
     # Key instructions -- the ones that matter for variable provenance
-    #
-    # Tuple layout matches schema column order:
-    #   block_serial, insn_index, ea_hex, ea_i64, opcode, opcode_name,
-    #   dest_type, dest_stkoff, dest_size,
-    #   src_l_type, src_l_stkoff, src_l_value_hex, src_l_value_i64,
-    #   src_r_type, src_r_stkoff, src_r_value_hex, src_r_value_i64,
-    #   dstr, meta
     def _insn_row(
         blk: int, idx: int, ea: int, opcode: int, opcode_name: str,
         dest_type: str | None, dest_stkoff: int | None, dest_size: int | None,
         src_l_type: str | None, src_l_stkoff: int | None, src_l_value: int | None,
         src_r_type: str | None, src_r_stkoff: int | None, src_r_value: int | None,
         dstr: str, meta: str | None,
-    ) -> tuple:
+    ) -> dict:
         ea_h, ea_i = _dual(ea)
         sl_h, sl_i = _dual(src_l_value)
         sr_h, sr_i = _dual(src_r_value)
-        return (
-            blk, idx, ea_h, ea_i, opcode, opcode_name,
-            dest_type, dest_stkoff, dest_size,
-            src_l_type, src_l_stkoff, sl_h, sl_i,
-            src_r_type, src_r_stkoff, sr_h, sr_i,
-            dstr, meta,
-        )
+        return {
+            "snapshot": 1,
+            "block_serial": blk,
+            "insn_index": idx,
+            "ea_hex": ea_h,
+            "ea_i64": ea_i,
+            "opcode": opcode,
+            "opcode_name": opcode_name,
+            "dest_type": dest_type,
+            "dest_stkoff": dest_stkoff,
+            "dest_size": dest_size,
+            "src_l_type": src_l_type,
+            "src_l_stkoff": src_l_stkoff,
+            "src_l_value_hex": sl_h,
+            "src_l_value_i64": sl_i,
+            "src_r_type": src_r_type,
+            "src_r_stkoff": src_r_stkoff,
+            "src_r_value_hex": sr_h,
+            "src_r_value_i64": sr_i,
+            "dstr": dstr,
+            "meta": meta,
+        }
 
     instructions = [
         # blk[131]: assert mov state var
@@ -137,22 +165,29 @@ def create_sub_7ffd_scenario(conn: sqlite3.Connection) -> int:
                   "mop_n", None, 0x432DC789, None, None, None,
                   "mov #0x432DC789, %var_7BC.4", None),
     ]
-    for row in instructions:
-        conn.execute(
-            "INSERT INTO instructions VALUES "
-            "(1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            row,
-        )
+    Instruction.insert_many(instructions).execute()
 
     # DAG edges
     def _edge_row(
         eid: int, src: int | None, tgt: int | None,
         kind: str, sblk: int | None, sarm: int | None,
         tentry: int | None, path: str,
-    ) -> tuple:
+    ) -> dict:
         ss_h, ss_i = _dual(src)
         ts_h, ts_i = _dual(tgt)
-        return (eid, ss_h, ss_i, ts_h, ts_i, kind, sblk, sarm, tentry, path)
+        return {
+            "snapshot": 1,
+            "edge_id": eid,
+            "source_state_hex": ss_h,
+            "source_state_i64": ss_i,
+            "target_state_hex": ts_h,
+            "target_state_i64": ts_i,
+            "edge_kind": kind,
+            "source_block": sblk,
+            "source_arm": sarm,
+            "target_entry": tentry,
+            "ordered_path": path,
+        }
 
     dag_edges = [
         _edge_row(0, 0x0ACD0BD5, 0x258ED455, "CONDITIONAL_TRANSITION",
@@ -168,27 +203,35 @@ def create_sub_7ffd_scenario(conn: sqlite3.Connection) -> int:
         _edge_row(5, 0x298372CC, None, "CONDITIONAL_RETURN",
                   206, 0, None, "[206,207,218,219]"),
     ]
-    for row in dag_edges:
-        conn.execute(
-            "INSERT INTO state_cfg_edges VALUES (1,?,?,?,?,?,?,?,?,?,?)",
-            row,
-        )
+    StateCfgEdge.insert_many(dag_edges).execute()
 
     state_h, state_i = _dual(0x298372CC)
-    conn.execute(
-        "INSERT INTO state_cfg_nodes VALUES (1, ?, ?, 205, 'RANGE_BACKED', ?)",
-        (state_h, state_i, json.dumps([217, 218])),
-    )
+    StateCfgNode.insert(
+        snapshot=1,
+        state_hex=state_h,
+        state_i64=state_i,
+        entry_block=205,
+        classification="RANGE_BACKED",
+        shared_suffix=json.dumps([217, 218]),
+    ).execute()
+    node_block_rows = []
     for role, serials in (
         ("owned", [205, 207, 206, 217, 218]),
         ("exclusive", [205, 207, 206]),
         ("shared_suffix", [217, 218]),
     ):
         for block_index, serial in enumerate(serials):
-            conn.execute(
-                "INSERT INTO state_cfg_node_blocks VALUES (1, ?, 205, ?, ?, ?)",
-                (state_h, serial, block_index, role),
-            )
+            node_block_rows.append({
+                "snapshot": 1,
+                "state_hex": state_h,
+                "entry_block": 205,
+                "block_serial": serial,
+                "block_index": block_index,
+                "role": role,
+            })
+    StateCfgNodeBlock.insert_many(node_block_rows).execute()
+
+    segment_rows = []
     for segment_index, (segment_id, kind, blocks_json) in enumerate((
         ("blk[205]", "BRANCH", [205]),
         ("blk[207]", "STRAIGHT_LINE", [207]),
@@ -196,71 +239,101 @@ def create_sub_7ffd_scenario(conn: sqlite3.Connection) -> int:
         ("blk[217]", "SHARED_SUFFIX", [217]),
         ("blk[218]", "TERMINAL_SUFFIX", [218]),
     )):
-        conn.execute(
-            "INSERT INTO state_cfg_local_segments VALUES (1, ?, 205, ?, ?, ?, ?)",
-            (state_h, segment_index, segment_id, kind, json.dumps(blocks_json)),
-        )
+        segment_rows.append({
+            "snapshot": 1,
+            "state_hex": state_h,
+            "entry_block": 205,
+            "segment_index": segment_index,
+            "segment_id": segment_id,
+            "kind": kind,
+            "blocks_json": json.dumps(blocks_json),
+        })
+    StateCfgLocalSegment.insert_many(segment_rows).execute()
+
+    local_edge_rows = []
     for edge_index, src, dst, kind, branch_arm in (
         (0, "blk[205]", "blk[207]", "TAKEN", 1),
         (1, "blk[205]", "blk[206]", "FALLTHROUGH", 0),
         (2, "blk[206]", "blk[217]", "SHARED_SUFFIX", None),
         (3, "blk[217]", "blk[218]", "TERMINAL", None),
     ):
-        conn.execute(
-            "INSERT INTO state_cfg_local_edges VALUES (1, ?, 205, ?, ?, ?, ?, ?)",
-            (state_h, edge_index, src, dst, kind, branch_arm),
-        )
+        local_edge_rows.append({
+            "snapshot": 1,
+            "state_hex": state_h,
+            "entry_block": 205,
+            "edge_index": edge_index,
+            "source_segment_id": src,
+            "target_segment_id": dst,
+            "kind": kind,
+            "branch_arm": branch_arm,
+        })
+    StateCfgLocalEdge.insert_many(local_edge_rows).execute()
 
-    # Block classification
-    for serial in [131, 174, 175, 176, 200, 23, 24, 32, 62, 206, 207, 217, 218, 219]:
-        is_bst = 0
-        is_gutted = 0
-        conn.execute(
-            "INSERT INTO block_classification VALUES (1,?,?,1,?,0)",
-            (serial, is_bst, is_gutted),
-        )
+    # Block classification (all blocks: is_bst=0, is_reachable=1, is_gutted=0)
+    BlockClassification.insert_many([
+        {
+            "snapshot": 1,
+            "serial": serial,
+            "is_bst": 0,
+            "is_reachable": 1,
+            "is_gutted": 0,
+            "in_claimed": 0,
+        }
+        for serial in [131, 174, 175, 176, 200, 23, 24, 32, 62, 206, 207, 217, 218, 219]
+    ]).execute()
 
-    conn.execute(
-        "INSERT INTO rendered_programs VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            "semantic_reference_like",
-            "semantic",
-            "local_boundary_selective",
-            "state_family",
-            "inline_single_level",
-            "minimal",
-            8,
-            1,
-        ),
-    )
-    conn.execute(
-        "INSERT INTO rendered_program_nodes VALUES (1, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            "semantic_reference_like",
-            "STATE_139F2922",
-            "state_family",
-            "STATE_139F2922",
-            136,
-            136,
-            None,
-            3,
-            8,
-        ),
-    )
+    RenderedProgram.insert(
+        snapshot=1,
+        variant_name="semantic_reference_like",
+        order_strategy="semantic",
+        program_strategy="local_boundary_selective",
+        label_render_mode="state_family",
+        boundary_inline_mode="inline_single_level",
+        comment_mode="minimal",
+        line_count=8,
+        node_count=1,
+    ).execute()
+    RenderedProgramNode.insert(
+        snapshot_id=1,
+        variant_name="semantic_reference_like",
+        node_index=0,
+        label_text="STATE_139F2922",
+        node_kind="state_family",
+        state_label="STATE_139F2922",
+        handler_serial=136,
+        entry_anchor=136,
+        label_num=None,
+        line_start=3,
+        line_end=8,
+    ).execute()
     rendered_lines = [
-        (1, "semantic_reference_like", 1, None, 0, "statement", None, "=== LINEARIZED STATE PROGRAM (starting from 0x5D0AEBD3) ==="),
-        (1, "semantic_reference_like", 2, None, 0, "blank", None, ""),
-        (1, "semantic_reference_like", 3, 0, 0, "label", None, "STATE_139F2922:"),
-        (1, "semantic_reference_like", 4, 0, 1, "comment", None, "    // entry blk[131]"),
-        (1, "semantic_reference_like", 5, 0, 1, "comment", None, "    // local-cfg: blk[131] -> blk[174]"),
-        (1, "semantic_reference_like", 6, 0, 1, "statement", None, "    v56 = v135 + v136 + v137;"),
-        (1, "semantic_reference_like", 7, 0, 1, "if", None, "    if (v56 == 0)"),
-        (1, "semantic_reference_like", 8, 0, 2, "goto", "STATE_16F7FF74", "        goto STATE_16F7FF74;"),
+        {"snapshot_id": 1, "variant_name": "semantic_reference_like", "line_no": 1,
+         "node_index": None, "indent_level": 0, "line_kind": "statement",
+         "target_label": None,
+         "text": "=== LINEARIZED STATE PROGRAM (starting from 0x5D0AEBD3) ==="},
+        {"snapshot_id": 1, "variant_name": "semantic_reference_like", "line_no": 2,
+         "node_index": None, "indent_level": 0, "line_kind": "blank",
+         "target_label": None, "text": ""},
+        {"snapshot_id": 1, "variant_name": "semantic_reference_like", "line_no": 3,
+         "node_index": 0, "indent_level": 0, "line_kind": "label",
+         "target_label": None, "text": "STATE_139F2922:"},
+        {"snapshot_id": 1, "variant_name": "semantic_reference_like", "line_no": 4,
+         "node_index": 0, "indent_level": 1, "line_kind": "comment",
+         "target_label": None, "text": "    // entry blk[131]"},
+        {"snapshot_id": 1, "variant_name": "semantic_reference_like", "line_no": 5,
+         "node_index": 0, "indent_level": 1, "line_kind": "comment",
+         "target_label": None, "text": "    // local-cfg: blk[131] -> blk[174]"},
+        {"snapshot_id": 1, "variant_name": "semantic_reference_like", "line_no": 6,
+         "node_index": 0, "indent_level": 1, "line_kind": "statement",
+         "target_label": None, "text": "    v56 = v135 + v136 + v137;"},
+        {"snapshot_id": 1, "variant_name": "semantic_reference_like", "line_no": 7,
+         "node_index": 0, "indent_level": 1, "line_kind": "if",
+         "target_label": None, "text": "    if (v56 == 0)"},
+        {"snapshot_id": 1, "variant_name": "semantic_reference_like", "line_no": 8,
+         "node_index": 0, "indent_level": 2, "line_kind": "goto",
+         "target_label": "STATE_16F7FF74", "text": "        goto STATE_16F7FF74;"},
     ]
-    conn.executemany(
-        "INSERT INTO rendered_program_lines VALUES (?,?,?,?,?,?,?,?)",
-        rendered_lines,
-    )
+    RenderedProgramLine.insert_many(rendered_lines).execute()
 
     conn.commit()
     return 1
