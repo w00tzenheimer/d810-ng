@@ -37,6 +37,7 @@ from d810.ir.structured_region import (
     Region,
     ReturnRegion,
     SequenceRegion,
+    SwitchRegion,
     render_region,
 )
 
@@ -200,9 +201,28 @@ def build_region_tree(
                     cur = None
                 else:
                     cur = follow
-            else:  # n-way (switch); leaf for now, recovered in a later slice
+            else:  # n-way: recover EVERY arm up to the common post-dominator so
+                # no reachable block is dropped (residual state dispatch / switch).
                 parts.append(BlockRegion(int(cur), tuple(block_lines(blk))))
-                cur = None
+                follow = _join(cur)
+                cases: list = []
+                for arm in forward:
+                    if loop_exit is not None and arm == loop_exit:
+                        arm_region: "Region" = BreakRegion()
+                    elif arm != follow:
+                        arm_region = _region_from(arm, follow, seen, active, loop_exit)
+                    else:
+                        arm_region = SequenceRegion(())
+                    # Case label is the recovered target block serial (these are
+                    # state-dispatch arms; exact case values need jtbl recovery).
+                    cases.append(((int(arm),), arm_region))
+                parts.append(
+                    SwitchRegion(discriminant=condition_of(blk), cases=tuple(cases))
+                )
+                if loop_exit is not None and follow == loop_exit:
+                    cur = None
+                else:
+                    cur = follow if follow in blocks else None
         return _as_region(parts)
 
     return _region_from(entry, None, frozenset())
