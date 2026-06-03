@@ -142,7 +142,7 @@ class TestTigressIndirectSemanticOracle:
 
         assert "EmulatedDispatcherUnflattener" in block_rules_fired
 
-        from d810.core.diag import get_diag_db
+        from d810.core.diag import get_diag_conn
         from d810.diagnostics.indirect_state_transfer_map import extract_transfer_map
         from tests.system.e2e.tigress.tigress_indirect_semantic_oracle import (
             evaluate_tigress_indirect_semantic_oracle,
@@ -150,7 +150,7 @@ class TestTigressIndirectSemanticOracle:
             render_tigress_indirect_semantic_oracle_report,
         )
 
-        diag_conn = get_diag_db(func_ea)
+        diag_conn = get_diag_conn(func_ea)
         assert diag_conn is not None, (
             "tigress_flatten_indirect oracle requires a diag DB"
         )

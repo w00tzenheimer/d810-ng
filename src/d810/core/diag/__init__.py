@@ -304,23 +304,25 @@ def close_diag_session() -> None:
     _current_func_ea = None
 
 
-def get_diag_db(func_ea: int = 0, log_dir: str | None = None) -> sqlite3.Connection | None:
-    """Return the current session's diag DB connection, or None if disabled.
+def get_diag_db(func_ea: int = 0, log_dir: str | None = None) -> SqliteDatabase | None:
+    """Return the current session's diag **peewee db** (or None if disabled).
 
-    If a session is active (opened via ``open_diag_session``), the session
-    connection is returned.  Otherwise a one-off DB is created for backward
-    compatibility (e.g. test harness usage outside the decompilation lifecycle).
+    Phase D: returns the ``SqliteDatabase`` (was a raw ``sqlite3.Connection``).
+    ORM callers bind to it with ``diag_models_on(db)``; raw-SQL callers use
+    :func:`get_diag_conn` (or ``db.connection()``). If a session is active the
+    session db is returned; otherwise a one-off/reopened db is created
+    (test-harness / lifecycle-external use).
     """
     global _active_db
     if not get_settings().diag_snapshots:
         return None
-    if _current_conn is not None:
-        _active_db = _current_db  # track the session db for active_diag_db()
-        return _current_conn
+    if _current_db is not None:
+        _active_db = _current_db
+        return _current_db
     latest_path = find_latest_diag_db_path(func_ea, log_dir=log_dir)
     if latest_path is not None:
         _active_db = create_diag_database(str(latest_path))
-        return _active_db.connection()
+        return _active_db
     # Fallback: no session open — create a one-off DB (test harness path)
     resolved_log_dir = _resolve_log_dir(log_dir)
     resolved_log_dir.mkdir(parents=True, exist_ok=True)
@@ -328,7 +330,20 @@ def get_diag_db(func_ea: int = 0, log_dir: str | None = None) -> sqlite3.Connect
     ea = func_ea if func_ea else 0
     db_path = resolved_log_dir / f"{ea:016x}_{run_id}.diag.sqlite3"
     _active_db = create_diag_database(str(db_path))
-    return _active_db.connection()
+    return _active_db
+
+
+def get_diag_conn(
+    func_ea: int = 0, log_dir: str | None = None
+) -> sqlite3.Connection | None:
+    """Return the active diag DB's raw ``sqlite3.Connection`` (or None).
+
+    Convenience for raw-SQL / non-ORM consumers (the observability
+    ``get_active_diag_conn`` provider, developer e2e tests) now that
+    :func:`get_diag_db` returns the ``SqliteDatabase`` itself.
+    """
+    db = get_diag_db(func_ea, log_dir=log_dir)
+    return db.connection() if db is not None else None
 
 
 # Register this backend with the abstract observability interface.
@@ -344,4 +359,4 @@ from d810.core.observability import (
 )
 
 _register_diag_session_handlers(open_diag_session, close_diag_session)
-_register_diag_conn_provider(get_diag_db)
+_register_diag_conn_provider(get_diag_conn)

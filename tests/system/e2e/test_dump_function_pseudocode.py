@@ -662,7 +662,7 @@ class TestDumpFunctionPseudocode:
                 # --- Diagnostic SQLite snapshot for BST dump MBA ---
                 try:
                     if mba:
-                        from d810.core.diag import get_diag_db
+                        from d810.core.diag import get_diag_conn
                         from d810.hexrays.mba_serializer import mba_to_block_snapshots
                         from d810.core.diag.snapshot import (
                             snapshot_mba as _snap_mba,
@@ -670,7 +670,7 @@ class TestDumpFunctionPseudocode:
                         )
 
                         _bst_mat = _bst_maturity_name.upper() if _bst_maturity_name else "LVARS"
-                        _diag_conn = get_diag_db(func_ea)
+                        _diag_conn = get_diag_conn(func_ea)
                         if _diag_conn is not None:
                             _snap_blocks = mba_to_block_snapshots(mba)
                             _bst_snap_id = _snap_mba(
@@ -798,11 +798,11 @@ class TestDumpFunctionPseudocode:
 
                     # --- Diagnostic SQLite snapshot (gated by D810_DIAG_SNAPSHOT=1) ---
                     try:
-                        from d810.core.diag import get_diag_db
+                        from d810.core.diag import get_diag_conn
                         from d810.hexrays.mba_serializer import mba_to_block_snapshots
                         from d810.core.diag.snapshot import snapshot_mba as _snap_mba
 
-                        _diag_conn = get_diag_db(func_ea)
+                        _diag_conn = get_diag_conn(func_ea)
                         if _diag_conn is not None:
                             _snap_blocks = mba_to_block_snapshots(mba)
                             _snap_mba(
@@ -918,10 +918,10 @@ class TestDumpFunctionPseudocode:
                             print(" ".join(parts))
 
                     try:
-                        from d810.core.diag import get_diag_db
+                        from d810.core.diag import get_diag_conn
                         from d810.diagnostics.query import rendered_program_text
 
-                        _diag_conn = get_diag_db(func_ea)
+                        _diag_conn = get_diag_conn(func_ea)
                         if _diag_conn is not None:
                             _snap_label = f"maturity_MMAT_{d810_mat_name}_post_d810"
                             _row = _diag_conn.execute(
@@ -1023,9 +1023,9 @@ class TestDumpFunctionPseudocode:
 
                     # --- Diagnostic SQLite snapshot (gated by D810_DIAG_SNAPSHOT=1) ---
                     try:
-                        from d810.core.diag import get_diag_db
+                        from d810.core.diag import get_diag_conn
 
-                        _diag_conn = get_diag_db(func_ea)
+                        _diag_conn = get_diag_conn(func_ea)
                         if _diag_conn is not None:
                             from d810.hexrays.mba_serializer import mba_to_block_snapshots
                             from d810.core.diag.snapshot import snapshot_mba as _snap_mba

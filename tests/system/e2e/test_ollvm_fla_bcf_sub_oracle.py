@@ -69,13 +69,13 @@ class TestOllvmFlaBcfSubOracle:
                 )
                 code_after = pseudocode_to_string(cfunc.get_pseudocode())
 
-        from d810.core.diag import get_diag_db
+        from d810.core.diag import get_diag_conn
         from tests.system.e2e.ollvm.ollvm_fla_bcf_sub_oracle import (
             evaluate_ollvm_fla_bcf_sub_oracle,
             render_ollvm_fla_bcf_sub_oracle_report,
         )
 
-        diag_conn = get_diag_db(func_ea)
+        diag_conn = get_diag_conn(func_ea)
         assert diag_conn is not None, (
             "test_function_ollvm_fla_bcf_sub oracle requires a diag DB"
         )

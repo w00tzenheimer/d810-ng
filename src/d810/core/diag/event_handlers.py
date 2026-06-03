@@ -32,7 +32,7 @@ import sqlite3
 import threading
 
 from d810.core import logging as _d810_logging
-from d810.core.diag import get_diag_db
+from d810.core.diag import get_diag_conn
 from d810.core.diag.snapshot import (
     snapshot_branch_ownership_proofs,
     snapshot_bst_interval_dispatcher_rows,
@@ -129,7 +129,7 @@ def _clear_snapshot_mapping() -> None:
 def _conn_for(snap: SnapshotRef) -> sqlite3.Connection | None:
     """Acquire the function-scoped diag connection, or ``None``."""
     try:
-        return get_diag_db(int(snap.func_ea))
+        return get_diag_conn(int(snap.func_ea))
     except Exception:
         _logger.exception("get_diag_db failed for func_ea=0x%x", snap.func_ea)
         return None
@@ -191,7 +191,7 @@ def _handle_bst_interval_dispatcher(
     ev: BstIntervalDispatcherObserved,
 ) -> None:
     try:
-        conn = get_diag_db(int(ev.func_ea))
+        conn = get_diag_conn(int(ev.func_ea))
     except Exception:
         return
     if conn is None or not ev.rows:
@@ -250,7 +250,7 @@ def _handle_state_dispatcher_rows(
     ev: StateDispatcherRowsObserved,
 ) -> None:
     try:
-        conn = get_diag_db(int(ev.func_ea))
+        conn = get_diag_conn(int(ev.func_ea))
     except Exception:
         return
     if conn is None or not ev.rows:
@@ -384,7 +384,7 @@ def _handle_fact_consumers_latest(ev: FactConsumersForLatestSnapshot) -> None:
     after deduplicating against existing rows.
     """
     try:
-        conn = get_diag_db(int(ev.func_ea))
+        conn = get_diag_conn(int(ev.func_ea))
     except Exception:
         return
     if conn is None or not ev.consumers:
@@ -463,7 +463,7 @@ def _handle_reachability(ev: ReachabilityObserved) -> None:
 
 def _handle_watch_block_transition(ev: WatchBlockTransitionObserved) -> None:
     try:
-        conn = get_diag_db(int(ev.func_ea))
+        conn = get_diag_conn(int(ev.func_ea))
     except Exception:
         return
     if conn is None:
@@ -512,7 +512,7 @@ def _handle_cfg_provenance_latest(
     if not ev.events:
         return
     try:
-        conn = get_diag_db(int(ev.func_ea))
+        conn = get_diag_conn(int(ev.func_ea))
     except Exception:
         return
     if conn is None:
