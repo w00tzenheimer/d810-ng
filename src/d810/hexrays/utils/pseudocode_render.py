@@ -602,6 +602,31 @@ def render_block(blk) -> List[str]:
     return lines
 
 
+def render_branch_condition(blk) -> str:
+    """Render the boolean condition of a 2-way block's conditional-jump tail.
+
+    Returns the bare ``l CMP r`` expression (no ``if (...) goto``), for use as a
+    ``ConditionRegion`` condition by the structurer. Falls back to ``"cond"``
+    when the tail is not a recognized conditional jump.
+
+    Args:
+        blk: An ``ida_hexrays.mblock_t`` whose tail is a conditional jump.
+
+    Returns:
+        A C-like comparison string, e.g. ``"v52 == 0"``.
+    """
+    tail = getattr(blk, "tail", None) if blk is not None else None
+    if tail is None:
+        return "cond"
+    try:
+        opcode = tail.opcode
+    except Exception:
+        return "cond"
+    if opcode in _JCC_OPS:
+        return f"{render_mop(tail.l)} {_JCC_OPS[opcode]} {render_mop(tail.r)}"
+    return "cond"
+
+
 def render_block_str(blk) -> str:
     """Render a block as a single multi-line string.
 
