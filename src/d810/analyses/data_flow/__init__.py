@@ -25,6 +25,19 @@ that module for back-compat.
 """
 from __future__ import annotations
 
+from d810.analyses.data_flow.abstract_value import (
+    AbstractValue,
+    Block,
+    Const,
+    EntersDispatcher,
+    Guarded,
+    OneOf,
+    RouteOneOf,
+    RouteResult,
+    TOP,
+    Top,
+    Unknown,
+)
 from d810.analyses.data_flow.analyzed_cfg import AnalyzedCFG, FixpointResult
 from d810.analyses.data_flow.configuration import Direction, FixpointConfiguration
 from d810.analyses.data_flow.domain import FlowDomain, NodeId, StateT
@@ -33,14 +46,25 @@ from d810.analyses.data_flow.working_set import WorkingSet
 from d810.analyses.data_flow.worklist import run_fixpoint
 
 __all__ = [
+    "AbstractValue",
     "AnalyzedCFG",
+    "Block",
+    "Const",
     "Direction",
+    "EntersDispatcher",
     "FixpointConfiguration",
     "FixpointDidNotConverge",
     "FixpointResult",
     "FlowDomain",
+    "Guarded",
     "NodeId",
+    "OneOf",
+    "RouteOneOf",
+    "RouteResult",
     "StateT",
+    "TOP",
+    "Top",
+    "Unknown",
     "WorkingSet",
     "run_fixpoint",
 ]

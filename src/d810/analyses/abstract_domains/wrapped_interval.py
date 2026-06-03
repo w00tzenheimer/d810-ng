@@ -20,7 +20,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.analyses.data_flow.abstract_value import TOP, AbstractValue, Const, OneOf
+
 __all__ = ["WrappedInterval"]
+
+#: Enumerate an interval as a finite ``OneOf`` only while it is no wider than
+#: this; broader arcs project to ``⊤`` (no silent enumeration of huge ranges).
+#: Matches ``StateValue.MAX_CONSTS`` so the two powerset seams stay aligned.
+_ONEOF_PROJECTION_CAP = 256
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +79,26 @@ class WrappedInterval:
 
     def to_const(self) -> int | None:
         return self.lo if self.kind == "range" and self.lo == self.hi else None
+
+    # -- projection into the router value-side seam (S0) --------------------
+    def project(self) -> AbstractValue:
+        """Project this arc into an :class:`AbstractValue`.
+
+        Singleton arc → :class:`Const` (byte ``size`` is ``width // 8``, min 1);
+        a bounded arc of at most :data:`_ONEOF_PROJECTION_CAP` values → an
+        enumerated :class:`OneOf`; ⊤ or a broader arc → :data:`TOP` (no silent
+        enumeration of a huge range).
+        """
+        c = self.to_const()
+        if c is not None:
+            return Const(c, max(1, self.width // 8))
+        if self.is_top() or self.is_bottom():
+            return TOP
+        card = self.cardinality()
+        if card > _ONEOF_PROJECTION_CAP:
+            return TOP
+        m = self._mod
+        return OneOf(frozenset((self.lo + i) % m for i in range(card)))
 
     # -- lattice order -----------------------------------------------------
     def leq(self, other: "WrappedInterval") -> bool:
