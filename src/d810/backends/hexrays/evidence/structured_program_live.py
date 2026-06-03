@@ -200,20 +200,23 @@ def structure_recovered_program_live(
     def _render_condition(block: object) -> str:
         return branch_cond.get(int(getattr(block, "serial", -1)), "cond")
 
-    # Terminal returns: deliver the carrier at every genuine function return (the
-    # EXIT_ROUTINE corridor tails the adapter marked) AND at any leak terminal
-    # the carrier verdict flagged. Dead-end blocks at recovery gaps stay
-    # return-less (the structurer simply ends the block).
+    # Terminal returns: every forward-degree-0 block in the recovered handler
+    # graph is a chain end -- a genuine function return (or a recovery dead-end).
+    # Deliver the recovered carrier there. EXIT_ROUTINE corridor tails and the
+    # carrier-leak verdict (return reaches only a leaked state-constant write)
+    # are the principled core; the broader terminal set guarantees the recovered
+    # return value is delivered rather than a leaked dispatcher state.
     fixes = carrier_terminal_returns(
         verdicts, carrier_expr=carrier_expr, leak_def_sites=leak_def_sites
     )
     return_terminals = getattr(flow_graph, "return_terminals", frozenset())
+    terminal_set = set(terminals)
 
     def _terminal_return(serial: int) -> str | None:
         s = int(serial)
         if s in fixes:
             return fixes[s]
-        if s in return_terminals:
+        if s in return_terminals or s in terminal_set:
             return carrier_expr
         return None
 
