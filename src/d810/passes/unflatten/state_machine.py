@@ -22,6 +22,11 @@ from d810.passes.pass_pipeline import (
 
 # --- WORK-LIST: portable extractions composed by the passes ---
 from d810.analyses.control_flow.dispatcher_recovery import recover_dispatcher
+from d810.analyses.control_flow.comparison_dispatcher_model import (
+    ComparisonDispatcherModel,
+)
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.semantic_transition import resolve_state_transitions
 from d810.analyses.control_flow.transition_builder import (
     _convert_bst_to_result,
@@ -65,6 +70,45 @@ def _count_valrange_confirmable(valrange, dispatch_map, state_var_stkoff) -> int
     return confirmed
 
 
+# DispatcherType (recovery taxonomy) -> RouterKind (portable router enum). Only the
+# comparison kinds get a ComparisonDispatcherModel; the §1a equality-chain detector
+# (dispatcher_recovery) yields CONDITIONAL_CHAIN -> CONDITION_CHAIN.
+_DISPATCHER_TYPE_TO_ROUTER_KIND = {
+    DispatcherType.SWITCH_TABLE: RouterKind.SWITCH,
+    DispatcherType.CONDITIONAL_CHAIN: RouterKind.CONDITION_CHAIN,
+    DispatcherType.INDIRECT_JUMP: RouterKind.INDIRECT_TABLE,
+    DispatcherType.UNKNOWN: RouterKind.UNKNOWN,
+}
+
+# RouterKinds whose route() is the shared comparison body (exact ∪ interval).
+_COMPARISON_ROUTER_KINDS = frozenset(
+    {
+        RouterKind.BST,
+        RouterKind.SWITCH,
+        RouterKind.EQUALITY_CHAIN,
+        RouterKind.CONDITION_CHAIN,
+    }
+)
+
+
+def _build_comparison_model(recovery, bst_evidence):
+    """Build a ``ComparisonDispatcherModel`` when the kind is a comparison router.
+
+    Returns ``None`` for non-comparison kinds (INDIRECT_TABLE / UNKNOWN) or when no
+    dispatch map was recovered, so the caller falls back to exact-only routing.
+    """
+    dispatch_map = getattr(recovery, "dispatch_map", None)
+    if dispatch_map is None:
+        return None
+    source = getattr(dispatch_map, "source", None)
+    router_kind = _DISPATCHER_TYPE_TO_ROUTER_KIND.get(source, RouterKind.UNKNOWN)
+    if router_kind not in _COMPARISON_ROUTER_KINDS:
+        return None
+    return ComparisonDispatcherModel.from_recovery(
+        dispatch_map, bst_evidence=bst_evidence
+    )
+
+
 def _analysis(ctx: FunctionPipelineContext, name: str, default=None):
     """Read a prior pass's published result (LLVM AnalysisManager.getResult), or ``default``."""
     facts = ctx.facts
@@ -84,6 +128,13 @@ class RecoverDispatcher:
     def run(self, ctx: FunctionPipelineContext) -> PassResult:
         recovery = recover_dispatcher(ctx.graph, ctx.facts)
         _publish(ctx, self.name, recovery)
+        # S2: build the consolidated ComparisonDispatcherModel for comparison
+        # router kinds, folding in the pristine BST/interval evidence so
+        # interval-routed next-states resolve via WrappedInterval.contains. The
+        # model is published for RecoverStateTransitions to route through; None
+        # for non-comparison kinds (caller falls back to exact-only).
+        model = _build_comparison_model(recovery, _analysis(ctx, "bst_evidence"))
+        _publish(ctx, "dispatcher_model", model)
         return PassResult(facts=(recovery,), preserved=PreservedAnalyses.all())
 
 
@@ -93,8 +144,12 @@ class RecoverStateTransitions:
     def run(self, ctx: FunctionPipelineContext) -> PassResult:
         recovery = _analysis(ctx, "recover_dispatcher")
         dispatch_map = getattr(recovery, "dispatch_map", None)
+        # S2: route through the consolidated ComparisonDispatcherModel (exact ∪
+        # interval) published by RecoverDispatcher; absent it (non-comparison
+        # kind), resolution falls back to exact-only inside the resolver.
+        model = _analysis(ctx, "dispatcher_model")
         resolutions = resolve_state_transitions(
-            ctx.graph, ctx.facts, dispatch_map=dispatch_map
+            ctx.graph, ctx.facts, dispatch_map=dispatch_map, model=model
         )
         transition_result = transition_result_from_resolutions(
             resolutions, dispatch_map=dispatch_map

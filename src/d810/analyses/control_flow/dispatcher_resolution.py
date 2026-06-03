@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from d810.analyses.control_flow.comparison_dispatcher_model import (
+    route_comparison_target,
+)
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.capabilities.dispatcher import RouterKind
 
@@ -85,8 +88,20 @@ class StateDispatcherMap:
         }
 
     def resolve_target(self, state_value: int) -> int | None:
-        """Resolve a concrete state value to a handler block."""
-        return self.state_to_handler().get(int(state_value))
+        """Resolve a concrete state value to a handler block.
+
+        DEPRECATED: delegates to the shared :func:`route_comparison_target`
+        (S2) so the exact-only method and the ``ComparisonDispatcherModel`` can
+        never diverge again.  Passes ONLY the exact rows (no interval rows, no
+        ``default_target_block``) so the result is byte-identical to the old
+        ``state_to_handler().get`` body — legacy callers (including the live
+        ``emulated_dispatcher_family``) see no change.  Interval/default routing
+        is supplied by ``ComparisonDispatcherModel`` built with BST evidence.
+        """
+        return route_comparison_target(
+            int(state_value),
+            state_to_handler=self.state_to_handler(),
+        )
 
     def to_dispatcher_handler_map(self):
         """Convert to the existing dispatcher-agnostic handler map."""
