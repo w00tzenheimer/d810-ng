@@ -170,6 +170,31 @@ def test_structure_recovered_program_end_to_end_fix():
     assert "goto" not in text
 
 
+def test_while_one_emits_break_at_midbody_exit():
+    # while(1) with a MID-BODY conditional exit (neither header nor single latch
+    # carries the loop condition): 0 -> 1(header) -> 2(2-way: 3 continue, 4 exit);
+    # 3 -> 1 (back-edge); 4 terminal. The exit must become a `break`, and the
+    # exit block must render AFTER the loop (not be swallowed -> infinite loop).
+    graph = _Graph(
+        [
+            _Blk(0, (1,)),
+            _Blk(1, (2,), (0, 3)),
+            _Blk(2, (3, 4), (1,)),
+            _Blk(3, (1,), (2,)),
+            _Blk(4, (), (2,)),
+        ],
+        entry_serial=0,
+    )
+    tree = build_region_tree(graph, render_block=_lines, render_condition=_cond)
+    text = render_region(tree)
+    assert "while ( 1 )" in text
+    assert "break;" in text          # mid-body exit -> break (loop is escapable)
+    assert "/* blk 4 */" in text     # exit block rendered after the loop
+    assert "goto" not in text
+    # blk 4 appears after the loop body, not inside it.
+    assert text.index("break;") < text.index("/* blk 4 */")
+
+
 def test_do_while_latch_is_condition():
     # 0 -> 1 -> 2(cond) ; 2 -> {1 back-edge, 3 exit}
     graph = _Graph(

@@ -31,6 +31,7 @@ from d810.analyses.value_flow.stack_value_flow import (
 )
 from d810.ir.structured_region import (
     BlockRegion,
+    BreakRegion,
     ConditionRegion,
     LoopRegion,
     Region,
@@ -128,8 +129,11 @@ def build_region_tree(
                     condition=condition_of(flow_graph.get_block(latch)),
                 )
 
-        # infinite / odd loop: structure internals under while (1).
-        body = _region_from(header, exit_block, seen, active)
+        # infinite / odd loop: structure internals under while (1). The loop's
+        # single exit is mid-body (neither header nor latch carries the
+        # condition), so transfers to ``exit_block`` inside the body become
+        # ``break`` (else the rendered while(1) would be inescapable).
+        body = _region_from(header, exit_block, seen, active, loop_exit=exit_block)
         return LoopRegion(body=body, kind="while", condition="1")
 
     def _region_from(
@@ -137,6 +141,7 @@ def build_region_tree(
         stop: Optional[int],
         seen: frozenset,
         active: frozenset = frozenset(),
+        loop_exit: Optional[int] = None,
     ) -> "Region":
         parts: list = []
         cur = node
@@ -160,7 +165,10 @@ def build_region_tree(
             )
             if len(forward) <= 1:
                 parts.append(BlockRegion(int(cur), tuple(block_lines(blk))))
-                if forward:
+                if forward and loop_exit is not None and forward[0] == loop_exit:
+                    parts.append(BreakRegion())  # exit the enclosing while(1)
+                    cur = None
+                elif forward:
                     cur = forward[0]
                 else:
                     returned = return_of(int(cur))
@@ -171,24 +179,27 @@ def build_region_tree(
                 parts.append(BlockRegion(int(cur), tuple(block_lines(blk))))
                 follow = _join(cur)
                 taken, fallback = forward
-                then_region = (
-                    _region_from(taken, follow, seen, active)
-                    if taken != follow
-                    else None
-                )
-                else_region = (
-                    _region_from(fallback, follow, seen, active)
-                    if fallback != follow
-                    else None
-                )
+
+                def _arm(target: int) -> Optional["Region"]:
+                    if loop_exit is not None and target == loop_exit:
+                        return BreakRegion()  # this arm leaves the loop
+                    if target != follow:
+                        return _region_from(target, follow, seen, active, loop_exit)
+                    return None
+
                 parts.append(
                     ConditionRegion(
                         condition=condition_of(blk),
-                        then_region=then_region,
-                        else_region=else_region,
+                        then_region=_arm(taken),
+                        else_region=_arm(fallback),
                     )
                 )
-                cur = follow
+                # If the conditional reconverges at the loop exit, both paths
+                # leave the loop -> stop here (the arms already broke / fell out).
+                if loop_exit is not None and follow == loop_exit:
+                    cur = None
+                else:
+                    cur = follow
             else:  # n-way (switch); leaf for now, recovered in a later slice
                 parts.append(BlockRegion(int(cur), tuple(block_lines(blk))))
                 cur = None
