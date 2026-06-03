@@ -5,6 +5,15 @@ from tests.unit.core.diag._orm_bind import make_bound_diag_db
 import json
 import sqlite3
 
+from d810.core.diag.models import (
+    FactMapping,
+    FactObservation,
+    Snapshot,
+    StateCfgEdge,
+    StateCfgEdgeDiagnostic,
+    StateCfgNode,
+    StateCfgNodeBlock,
+)
 from d810.diagnostics.edge_diagnostics import (
     classify_dag_edges,
     persist_edge_diagnostics,
@@ -12,19 +21,13 @@ from d810.diagnostics.edge_diagnostics import (
 
 
 def _make_db() -> sqlite3.Connection:
-    conn = make_bound_diag_db().connection()
-    conn.execute(
-        """
-        INSERT INTO snapshots
-            (id, label, func_ea_hex, func_ea_i64,
-             maturity, phase, block_count, timestamp)
-        VALUES (?,?,?,?,?,?,?,?)
-        """,
-        (1, "test_snap", "0x180012df0", 0x180012df0,
-         "MMAT_GLBOPT1", "pre_d810", 0, 0.0),
-    )
-    conn.commit()
-    return conn
+    db = make_bound_diag_db()
+    Snapshot.insert(
+        id=1, label="test_snap", func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012df0, maturity="MMAT_GLBOPT1", phase="pre_d810",
+        block_count=0, timestamp=0.0,
+    ).execute()
+    return db.connection()
 
 
 def _add_dag_edge(
@@ -38,22 +41,14 @@ def _add_dag_edge(
     target_entry: int | None = None,
     snap: int = 1,
 ) -> None:
-    conn.execute(
-        """
-        INSERT INTO state_cfg_edges
-            (snapshot_id, edge_id, source_state_hex, source_state_i64,
-             target_state_hex, target_state_i64, edge_kind,
-             source_block, source_arm, target_entry, ordered_path)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            snap, edge_id, src_state_hex,
-            int(src_state_hex, 16) if src_state_hex else None,
-            tgt_state_hex,
-            int(tgt_state_hex, 16) if tgt_state_hex else None,
-            kind, source_block, None, target_entry, "[]",
-        ),
-    )
+    StateCfgEdge.insert(
+        snapshot=snap, edge_id=edge_id, source_state_hex=src_state_hex,
+        source_state_i64=int(src_state_hex, 16) if src_state_hex else None,
+        target_state_hex=tgt_state_hex,
+        target_state_i64=int(tgt_state_hex, 16) if tgt_state_hex else None,
+        edge_kind=kind, source_block=source_block, source_arm=None,
+        target_entry=target_entry, ordered_path="[]",
+    ).execute()
 
 
 def _add_dag_node(
@@ -65,15 +60,11 @@ def _add_dag_node(
     snap: int = 1,
 ) -> None:
     state_i64 = int(state_hex, 16)
-    conn.execute(
-        """
-        INSERT INTO state_cfg_nodes
-            (snapshot_id, state_hex, state_i64, entry_block,
-             classification, shared_suffix)
-        VALUES (?,?,?,?,?,?)
-        """,
-        (snap, state_hex, state_i64, entry_block, classification, None),
-    )
+    StateCfgNode.insert(
+        snapshot=snap, state_hex=state_hex, state_i64=state_i64,
+        entry_block=entry_block, classification=classification,
+        shared_suffix=None,
+    ).execute()
 
 
 def _add_dag_node_block(
@@ -86,15 +77,10 @@ def _add_dag_node_block(
     role: str = "owned",
     snap: int = 1,
 ) -> None:
-    conn.execute(
-        """
-        INSERT INTO state_cfg_node_blocks
-            (snapshot_id, state_hex, entry_block, block_serial,
-             block_index, role)
-        VALUES (?,?,?,?,?,?)
-        """,
-        (snap, state_hex, entry_block, block_serial, block_index, role),
-    )
+    StateCfgNodeBlock.insert(
+        snapshot=snap, state_hex=state_hex, entry_block=entry_block,
+        block_serial=block_serial, block_index=block_index, role=role,
+    ).execute()
 
 
 def _add_state_const_rewritten(
@@ -114,22 +100,14 @@ def _add_state_const_rewritten(
         "from_maturity": "MMAT_LOCOPT",
         "to_maturity": "MMAT_GLBOPT1",
     }
-    conn.execute(
-        """
-        INSERT INTO fact_mappings
-            (snapshot_id, func_ea_hex, func_ea_i64, mapping_index,
-             source_fact_id, target_fact_id, source_maturity,
-             target_maturity, status, confidence,
-             target_block, target_ea_hex, target_ea_i64,
-             target_mop_signature, reason, payload)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            snap, "0x180012df0", 0x180012df0, mapping_index, fact_id, None,
-            "MMAT_LOCOPT", "MMAT_GLBOPT1", "STATE_CONST_REWRITTEN", 0.9,
-            None, None, None, None, "test", json.dumps(payload),
-        ),
-    )
+    FactMapping.insert(
+        snapshot=snap, func_ea_hex="0x180012df0", func_ea_i64=0x180012df0,
+        mapping_index=mapping_index, source_fact_id=fact_id, target_fact_id=None,
+        source_maturity="MMAT_LOCOPT", target_maturity="MMAT_GLBOPT1",
+        status="STATE_CONST_REWRITTEN", confidence=0.9, target_block=None,
+        target_ea_hex=None, target_ea_i64=None, target_mop_signature=None,
+        reason="test", payload=json.dumps(payload),
+    ).execute()
 
 
 def _add_terminal_tail_fact(
@@ -146,22 +124,14 @@ def _add_terminal_tail_fact(
         "byte_index": byte_index,
         "corridor_role": "terminal_tail",
     }
-    conn.execute(
-        """
-        INSERT INTO fact_observations
-            (snapshot_id, func_ea_hex, func_ea_i64, fact_id, kind,
-             semantic_key, maturity, phase, confidence,
-             source_block, source_ea_hex, source_ea_i64,
-             block_fingerprint, mop_signature, payload, evidence)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            snap, "0x180012df0", 0x180012df0, fact_id,
-            "TerminalByteEmitterFact", fact_id, "MMAT_GLBOPT1", "pre_d810",
-            0.9, destination_block, None, None, None, None,
-            json.dumps(payload), "[]",
-        ),
-    )
+    FactObservation.insert(
+        snapshot=snap, func_ea_hex="0x180012df0", func_ea_i64=0x180012df0,
+        fact_id=fact_id, kind="TerminalByteEmitterFact", semantic_key=fact_id,
+        maturity="MMAT_GLBOPT1", phase="pre_d810", confidence=0.9,
+        source_block=destination_block, source_ea_hex=None, source_ea_i64=None,
+        block_fingerprint=None, mop_signature=None, payload=json.dumps(payload),
+        evidence="[]",
+    ).execute()
 
 
 def test_target_unresolved_after_rewrite() -> None:
@@ -355,7 +325,4 @@ def test_persist_idempotent() -> None:
     diagnostics = classify_dag_edges(conn, snapshot_id=1)
     persist_edge_diagnostics(conn, diagnostics)
     persist_edge_diagnostics(conn, diagnostics)
-    rows = conn.execute(
-        "SELECT COUNT(*) FROM state_cfg_edge_diagnostics"
-    ).fetchone()
-    assert rows[0] == 1
+    assert StateCfgEdgeDiagnostic.select().count() == 1

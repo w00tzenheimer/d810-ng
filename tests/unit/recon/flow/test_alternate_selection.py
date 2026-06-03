@@ -5,6 +5,15 @@ from tests.unit.core.diag._orm_bind import make_bound_diag_db
 import json
 import sqlite3
 
+from d810._vendor.peewee import fn
+from d810.core.diag.models import (
+    FactObservation,
+    Snapshot,
+    StateCfgEdge,
+    StateCfgEdgeAlternateCorrelation,
+    StateCfgEdgeAlternateSelection,
+    StateCfgNodeBlock,
+)
 from d810.diagnostics.alternate_selection import (
     persist_alternate_selections,
     select_alternate_edges,
@@ -12,18 +21,13 @@ from d810.diagnostics.alternate_selection import (
 
 
 def _make_db() -> sqlite3.Connection:
-    conn = make_bound_diag_db().connection()
-    conn.execute(
-        """
-        INSERT INTO snapshots
-            (id, label, func_ea_hex, func_ea_i64,
-             maturity, phase, block_count, timestamp)
-        VALUES (1, 'recon_dag', '0x180012df0', 0x180012df0,
-                'MMAT_GLBOPT1', 'pre_d810', 0, 0.0)
-        """,
-    )
-    conn.commit()
-    return conn
+    db = make_bound_diag_db()
+    Snapshot.insert(
+        id=1, label="recon_dag", func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012df0, maturity="MMAT_GLBOPT1", phase="pre_d810",
+        block_count=0, timestamp=0.0,
+    ).execute()
+    return db.connection()
 
 
 def _add_block(
@@ -36,15 +40,10 @@ def _add_block(
     block_index: int = 0,
     snap: int = 1,
 ) -> None:
-    conn.execute(
-        """
-        INSERT INTO state_cfg_node_blocks
-            (snapshot_id, state_hex, entry_block, block_serial,
-             block_index, role)
-        VALUES (?,?,?,?,?,?)
-        """,
-        (snap, state_hex, entry_block, block_serial, block_index, role),
-    )
+    StateCfgNodeBlock.insert(
+        snapshot=snap, state_hex=state_hex, entry_block=entry_block,
+        block_serial=block_serial, block_index=block_index, role=role,
+    ).execute()
 
 
 def _add_edge(
@@ -57,24 +56,18 @@ def _add_edge(
     snap: int = 1,
 ) -> None:
     if edge_id is None:
-        edge_id = conn.execute(
-            "SELECT COALESCE(MAX(edge_id),0)+1 FROM state_cfg_edges WHERE snapshot_id=?",
-            (snap,),
-        ).fetchone()[0]
-    conn.execute(
-        """
-        INSERT INTO state_cfg_edges
-            (snapshot_id, edge_id, source_state_hex, source_state_i64,
-             target_state_hex, target_state_i64, edge_kind,
-             source_block, source_arm, target_entry, ordered_path)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            snap, edge_id, src, int(src, 16) if src else None,
-            tgt, int(tgt, 16) if tgt else None, edge_kind,
-            None, None, None, "[]",
-        ),
-    )
+        max_id = (
+            StateCfgEdge.select(fn.MAX(StateCfgEdge.edge_id))
+            .where(StateCfgEdge.snapshot == snap)
+            .scalar()
+        )
+        edge_id = (max_id or 0) + 1
+    StateCfgEdge.insert(
+        snapshot=snap, edge_id=edge_id, source_state_hex=src,
+        source_state_i64=int(src, 16) if src else None, target_state_hex=tgt,
+        target_state_i64=int(tgt, 16) if tgt else None, edge_kind=edge_kind,
+        source_block=None, source_arm=None, target_entry=None, ordered_path="[]",
+    ).execute()
 
 
 def _add_terminal_tail_fact(
@@ -90,22 +83,14 @@ def _add_terminal_tail_fact(
         "byte_index": byte_index,
         "corridor_role": "terminal_tail",
     }
-    conn.execute(
-        """
-        INSERT INTO fact_observations
-            (snapshot_id, func_ea_hex, func_ea_i64, fact_id, kind,
-             semantic_key, maturity, phase, confidence,
-             source_block, source_ea_hex, source_ea_i64,
-             block_fingerprint, mop_signature, payload, evidence)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            snap, "0x180012df0", 0x180012df0, fact_id,
-            "TerminalByteEmitterFact", fact_id, "MMAT_GLBOPT1",
-            "pre_d810", 0.9, destination_block, None, None, None, None,
-            json.dumps(payload), "[]",
-        ),
-    )
+    FactObservation.insert(
+        snapshot=snap, func_ea_hex="0x180012df0", func_ea_i64=0x180012df0,
+        fact_id=fact_id, kind="TerminalByteEmitterFact", semantic_key=fact_id,
+        maturity="MMAT_GLBOPT1", phase="pre_d810", confidence=0.9,
+        source_block=destination_block, source_ea_hex=None, source_ea_i64=None,
+        block_fingerprint=None, mop_signature=None, payload=json.dumps(payload),
+        evidence="[]",
+    ).execute()
 
 
 def _add_correlation(
@@ -119,22 +104,14 @@ def _add_correlation(
     alt_tgt: str | None,
     snap: int = 1,
 ) -> None:
-    conn.execute(
-        """
-        INSERT INTO state_cfg_edge_alternate_correlations
-            (snapshot_id, collapsed_edge_id, alternate_edge_id,
-             collapsed_source_state, collapsed_target_state,
-             alternate_source_state, alternate_target_state,
-             alternate_ordered_path, overlap_blocks,
-             alternate_classification, reason)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            snap, collapsed_edge, alt_edge,
-            collapsed_src, collapsed_tgt,
-            alt_src, alt_tgt, "[]", "[]", "RANGE_BACKED", "test",
-        ),
-    )
+    StateCfgEdgeAlternateCorrelation.insert(
+        snapshot=snap, collapsed_edge_id=collapsed_edge,
+        alternate_edge_id=alt_edge, collapsed_source_state=collapsed_src,
+        collapsed_target_state=collapsed_tgt, alternate_source_state=alt_src,
+        alternate_target_state=alt_tgt, alternate_ordered_path="[]",
+        overlap_blocks="[]", alternate_classification="RANGE_BACKED",
+        reason="test",
+    ).execute()
 
 
 def test_byte5_selects_alt_with_byte6_continuation() -> None:
@@ -284,7 +261,4 @@ def test_persist_idempotent() -> None:
     selections = select_alternate_edges(conn, snapshot_id=1)
     persist_alternate_selections(conn, selections)
     persist_alternate_selections(conn, selections)
-    n = conn.execute(
-        "SELECT COUNT(*) FROM state_cfg_edge_alternate_selections"
-    ).fetchone()[0]
-    assert n == 1
+    assert StateCfgEdgeAlternateSelection.select().count() == 1
