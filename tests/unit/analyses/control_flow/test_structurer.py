@@ -3,7 +3,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.analyses.control_flow.structurer import build_region_tree
+from d810.analyses.control_flow.structurer import (
+    build_region_tree,
+    structure_recovered_program,
+)
+from d810.analyses.value_flow.stack_value_flow import CarrierVerdict
 from d810.ir.structured_region import (
     BlockRegion,
     ConditionRegion,
@@ -140,6 +144,30 @@ def test_while_loop_header_is_condition():
     loop = next(r for r in tree.regions if isinstance(r, LoopRegion))
     assert loop.kind == "while" and loop.condition == "c1"
     assert [r.serial for r in tree.regions if isinstance(r, BlockRegion)] == [0, 3]
+
+
+def test_structure_recovered_program_end_to_end_fix():
+    # carrier diamond: 0 -> {1 aligned-leak terminal, 2 byte path}
+    graph = _Graph(
+        [_Blk(0, (1, 2)), _Blk(1, (), (0,)), _Blk(2, (), (0,))],
+        entry_serial=0,
+    )
+    leak = (("entry", 0x100),)
+    verdicts = {
+        1: CarrierVerdict(frozenset(leak), carrier_dominates=True, state_dead=True),
+        2: CarrierVerdict(frozenset({("blk2", 0x300)}), True, True),
+    }
+    text = structure_recovered_program(
+        graph,
+        render_block=_lines,
+        render_condition=_cond,
+        carrier_verdicts=verdicts,
+        carrier_expr="a5 + 0xD0",
+        leak_def_sites=leak,
+    )
+    assert "return a5 + 0xD0;" in text   # aligned terminal delivers the carrier
+    assert "0x298372CC" not in text       # the leak is gone
+    assert "goto" not in text
 
 
 def test_do_while_latch_is_condition():
