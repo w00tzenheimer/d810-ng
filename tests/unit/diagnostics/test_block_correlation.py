@@ -1,6 +1,5 @@
 """Tests for block trace and block lineage diagnostics."""
 from __future__ import annotations
-from d810.core.diag import create_diag_database
 
 import json
 import sqlite3
@@ -8,21 +7,36 @@ from pathlib import Path
 
 import pytest
 
+from d810.core.diag import create_diag_database, diag_models_on
+from d810.core.diag.models import (
+    Block,
+    BlockLineage,
+    BlockObservation,
+    CfgProvenance,
+    Instruction,
+    Snapshot,
+)
+from d810.core.diag.snapshot import _dual
 from d810.diagnostics.__main__ import main
 from d810.diagnostics.query import block_trace_by_ea
-from d810.core.diag.snapshot import _dual
+from tests.unit.core.diag._orm_bind import make_bound_diag_db
 
 
-def _insert_snapshot(conn: sqlite3.Connection, snap_id: int, label: str) -> None:
+def _insert_snapshot(snap_id: int, label: str) -> None:
     fh, fi = _dual(0x180010000)
-    conn.execute(
-        "INSERT INTO snapshots VALUES (?, ?, ?, ?, 'MMAT_GLBOPT1', 'unknown', 0, 0.0)",
-        (snap_id, label, fh, fi),
-    )
+    Snapshot.insert(
+        id=snap_id,
+        label=label,
+        func_ea_hex=fh,
+        func_ea_i64=fi,
+        maturity="MMAT_GLBOPT1",
+        phase="unknown",
+        block_count=0,
+        timestamp=0.0,
+    ).execute()
 
 
 def _insert_block(
-    conn: sqlite3.Connection,
     snap_id: int,
     serial: int,
     *,
@@ -32,24 +46,25 @@ def _insert_block(
 ) -> None:
     sh, si = _dual(start_ea)
     eh, ei = _dual(end_ea)
-    conn.execute(
-        "INSERT INTO blocks VALUES (?,?,1,'BLT_1WAY',?,?,?,?,1,0,?,?,?,NULL)",
-        (
-            snap_id,
-            serial,
-            sh,
-            si,
-            eh,
-            ei,
-            json.dumps([]),
-            json.dumps([]),
-            insn_count,
-        ),
-    )
+    Block.insert(
+        snapshot=snap_id,
+        serial=serial,
+        block_type=1,
+        type_name="BLT_1WAY",
+        start_ea_hex=sh,
+        start_ea_i64=si,
+        end_ea_hex=eh,
+        end_ea_i64=ei,
+        nsucc=1,
+        npred=0,
+        succs=json.dumps([]),
+        preds=json.dumps([]),
+        insn_count=insn_count,
+        meta=None,
+    ).execute()
 
 
 def _insert_observation(
-    conn: sqlite3.Connection,
     snap_id: int,
     serial: int,
     *,
@@ -57,76 +72,85 @@ def _insert_observation(
     body_fingerprint: str,
 ) -> None:
     sh, si = _dual(start_ea)
-    conn.execute(
-        "INSERT INTO block_observations VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (
-            snap_id,
-            serial,
-            "MMAT_GLBOPT1",
-            "unknown",
-            sh,
-            si,
-            1,
-            f"ea:{serial}",
-            f"op:{serial}",
-            f"operand:{serial}",
-            body_fingerprint,
-        ),
-    )
+    BlockObservation.insert(
+        snapshot=snap_id,
+        serial=serial,
+        maturity="MMAT_GLBOPT1",
+        phase="unknown",
+        start_ea_hex=sh,
+        start_ea_i64=si,
+        insn_count=1,
+        insn_ea_fingerprint=f"ea:{serial}",
+        opcode_fingerprint=f"op:{serial}",
+        operand_fingerprint=f"operand:{serial}",
+        body_fingerprint=body_fingerprint,
+    ).execute()
 
 
 def _insert_insn(
-    conn: sqlite3.Connection,
     snap_id: int,
     serial: int,
     *,
     ea: int,
 ) -> None:
     eh, ei = _dual(ea)
-    conn.execute(
-        "INSERT INTO instructions VALUES (?,?,?,?,?,1,'m_mov',NULL,NULL,NULL,"
-        "NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL)",
-        (snap_id, serial, 0, eh, ei),
-    )
+    Instruction.insert(
+        snapshot=snap_id,
+        block_serial=serial,
+        insn_index=0,
+        ea_hex=eh,
+        ea_i64=ei,
+        opcode=1,
+        opcode_name="m_mov",
+        dest_type=None,
+        dest_stkoff=None,
+        dest_size=None,
+        src_l_type=None,
+        src_l_stkoff=None,
+        src_l_value_hex=None,
+        src_l_value_i64=None,
+        src_r_type=None,
+        src_r_stkoff=None,
+        src_r_value_hex=None,
+        src_r_value_i64=None,
+        dstr=None,
+        meta=None,
+    ).execute()
 
 
 @pytest.fixture()
 def correlation_conn() -> sqlite3.Connection:
-    conn = create_diag_database(":memory:").connection()
-    _insert_snapshot(conn, 1, "pre")
-    _insert_snapshot(conn, 2, "post")
-    _insert_block(conn, 1, 10, start_ea=0x180010000, end_ea=0x180010010)
-    _insert_block(conn, 2, 20, start_ea=0x180010000, end_ea=0x180010020)
+    db = make_bound_diag_db()
+    _insert_snapshot(1, "pre")
+    _insert_snapshot(2, "post")
+    _insert_block(1, 10, start_ea=0x180010000, end_ea=0x180010010)
+    _insert_block(2, 20, start_ea=0x180010000, end_ea=0x180010020)
     _insert_observation(
-        conn,
         1,
         10,
         start_ea=0x180010000,
         body_fingerprint="fnv1a64:0xaaaaaaaaaaaaaaaa",
     )
     _insert_observation(
-        conn,
         2,
         20,
         start_ea=0x180010000,
         body_fingerprint="fnv1a64:0xaaaaaaaaaaaaaaaa",
     )
-    conn.execute(
-        "INSERT INTO block_lineage VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (
-            2,
-            20,
-            1,
-            10,
-            "0x0000000180010000",
-            "fnv1a64:0xaaaaaaaaaaaaaaaa",
-            "duplicate",
-            "unit-test duplicate",
-            "planner-20",
-            "InsertBlock",
-            None,
-        ),
-    )
+    BlockLineage.insert(
+        snapshot=2,
+        serial=20,
+        origin_snapshot_id=1,
+        origin_serial=10,
+        origin_start_ea_hex="0x0000000180010000",
+        origin_body_fingerprint="fnv1a64:0xaaaaaaaaaaaaaaaa",
+        creation_kind="duplicate",
+        creation_reason="unit-test duplicate",
+        planner_block_id="planner-20",
+        source_mod_type="InsertBlock",
+        extra_json=None,
+    ).execute()
+    conn = db.connection()
     conn.commit()
     yield conn
     conn.close()
@@ -134,60 +158,65 @@ def correlation_conn() -> sqlite3.Connection:
 
 def _create_correlation_db(tmp_path: Path) -> Path:
     db_path = tmp_path / "correlation.sqlite3"
-    disk_conn = create_diag_database(str(db_path)).connection()
-    _insert_snapshot(disk_conn, 1, "pre")
-    _insert_snapshot(disk_conn, 2, "post")
-    _insert_block(disk_conn, 1, 10, start_ea=0x180010000, end_ea=0x180010010)
-    _insert_block(disk_conn, 2, 20, start_ea=0x180010000, end_ea=0x180010020)
-    _insert_observation(
-        disk_conn,
-        1,
-        10,
-        start_ea=0x180010000,
-        body_fingerprint="fnv1a64:0xaaaaaaaaaaaaaaaa",
-    )
-    _insert_observation(
-        disk_conn,
-        2,
-        20,
-        start_ea=0x180010000,
-        body_fingerprint="fnv1a64:0xaaaaaaaaaaaaaaaa",
-    )
-    disk_conn.execute(
-        "INSERT INTO block_lineage VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (
-            2,
-            20,
+    db = create_diag_database(str(db_path))
+    with diag_models_on(db):
+        _insert_snapshot(1, "pre")
+        _insert_snapshot(2, "post")
+        _insert_block(1, 10, start_ea=0x180010000, end_ea=0x180010010)
+        _insert_block(2, 20, start_ea=0x180010000, end_ea=0x180010020)
+        _insert_observation(
             1,
             10,
-            "0x0000000180010000",
-            "fnv1a64:0xaaaaaaaaaaaaaaaa",
-            "duplicate",
-            "unit-test duplicate",
-            "planner-20",
-            "InsertBlock",
-            None,
-        ),
-    )
-    disk_conn.commit()
-    disk_conn.close()
+            start_ea=0x180010000,
+            body_fingerprint="fnv1a64:0xaaaaaaaaaaaaaaaa",
+        )
+        _insert_observation(
+            2,
+            20,
+            start_ea=0x180010000,
+            body_fingerprint="fnv1a64:0xaaaaaaaaaaaaaaaa",
+        )
+        BlockLineage.insert(
+            snapshot=2,
+            serial=20,
+            origin_snapshot_id=1,
+            origin_serial=10,
+            origin_start_ea_hex="0x0000000180010000",
+            origin_body_fingerprint="fnv1a64:0xaaaaaaaaaaaaaaaa",
+            creation_kind="duplicate",
+            creation_reason="unit-test duplicate",
+            planner_block_id="planner-20",
+            source_mod_type="InsertBlock",
+            extra_json=None,
+        ).execute()
+        db.connection().commit()
+    db.close()
     return db_path
 
 
 def _create_legacy_db(tmp_path: Path) -> Path:
     db_path = tmp_path / "legacy.sqlite3"
-    conn = create_diag_database(str(db_path)).connection()
+    db = create_diag_database(str(db_path))
+    conn = db.connection()
+    # Schema DDL manipulation — kept raw (DROP TABLE is schema/DDL subject SQL)
     conn.execute("DROP TABLE block_observations")
     conn.execute("DROP TABLE block_lineage")
-    _insert_snapshot(conn, 1, "legacy")
-    _insert_block(conn, 1, 30, start_ea=0x180020000, end_ea=0x180020010)
-    _insert_insn(conn, 1, 30, ea=0x180020004)
-    conn.execute(
-        "INSERT INTO cfg_provenance VALUES (?,?,?,?,?,?,?,?)",
-        (1, 0, "unit", "CREATE", 30, None, "created in test", None),
-    )
-    conn.commit()
-    conn.close()
+    with diag_models_on(db):
+        _insert_snapshot(1, "legacy")
+        _insert_block(1, 30, start_ea=0x180020000, end_ea=0x180020010)
+        _insert_insn(1, 30, ea=0x180020004)
+        CfgProvenance.insert(
+            snapshot=1,
+            seq=0,
+            pass_name="unit",
+            action="CREATE",
+            block_serial=30,
+            target_serial=None,
+            reason="created in test",
+            extra_json=None,
+        ).execute()
+        db.connection().commit()
+    db.close()
     return db_path
 
 

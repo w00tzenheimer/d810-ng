@@ -1,6 +1,5 @@
 """Tests for the sub7FFD Hodur oracle test-support runner."""
 from __future__ import annotations
-from d810.core.diag import create_diag_database
 
 import json
 import sqlite3
@@ -9,6 +8,8 @@ from tests.system.e2e.hodur.sub7ffd_region_oracle_runner import (
     render_region_oracle_report,
     resolve_oracle_snap_ids,
 )
+from tests.unit.core.diag._orm_bind import make_bound_diag_db
+from d810.core.diag.models import Block, FactObservation, Snapshot
 
 _FUNC_EA = "0x0000000180012df0"
 _FUNC_EA_I64 = 0x180012DF0
@@ -24,75 +25,67 @@ def _make_conn_with_snaps(snaps: list[tuple[int, str]]) -> sqlite3.Connection:
     return conn
 
 
-def _insert_snapshot(conn: sqlite3.Connection, snap_id: int, label: str) -> None:
-    conn.execute(
-        "INSERT INTO snapshots (id, label, func_ea_hex, func_ea_i64, "
-        "maturity, phase, block_count, timestamp) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (snap_id, label, _FUNC_EA, _FUNC_EA_I64, "MMAT_GLBOPT1", "post_d810", 1, 0.0),
-    )
+def _insert_snapshot(snap_id: int, label: str) -> None:
+    Snapshot.insert(
+        id=snap_id,
+        label=label,
+        func_ea_hex=_FUNC_EA,
+        func_ea_i64=_FUNC_EA_I64,
+        maturity="MMAT_GLBOPT1",
+        phase="post_d810",
+        block_count=1,
+        timestamp=0.0,
+    ).execute()
 
 
 def _insert_byte_fact(
-    conn: sqlite3.Connection,
     snap_id: int,
     *,
     block_serial: int = 161,
 ) -> None:
-    conn.execute(
-        "INSERT INTO fact_observations "
-        "(snapshot_id, func_ea_hex, func_ea_i64, fact_id, kind, "
-        "semantic_key, maturity, phase, confidence, payload, evidence) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            snap_id,
-            _FUNC_EA,
-            _FUNC_EA_I64,
-            f"tbe_3_{snap_id}",
-            "TerminalByteEmitterFact",
-            "byte_emit_3",
-            "MMAT_GLBOPT1",
-            "post_bundle_stabilize",
-            1.0,
-            json.dumps(
-                {
-                    "byte_index": 3,
-                    "block_serial": block_serial,
-                    "corridor_role": "terminal_tail",
-                    "source_byte_expression": "v52[3]",
-                    "destination_buffer_expression": "%var_dst.8",
-                    "counter_carrier": "%var_53.8",
-                    "guard_condition": "jcnd %var_53.8 == #3.8, @241",
-                    "emitter_role": "memory_store",
-                }
-            ),
-            "{}",
+    FactObservation.insert(
+        snapshot=snap_id,
+        func_ea_hex=_FUNC_EA,
+        func_ea_i64=_FUNC_EA_I64,
+        fact_id=f"tbe_3_{snap_id}",
+        kind="TerminalByteEmitterFact",
+        semantic_key="byte_emit_3",
+        maturity="MMAT_GLBOPT1",
+        phase="post_bundle_stabilize",
+        confidence=1.0,
+        source_block=block_serial,
+        payload=json.dumps(
+            {
+                "byte_index": 3,
+                "block_serial": block_serial,
+                "corridor_role": "terminal_tail",
+                "source_byte_expression": "v52[3]",
+                "destination_buffer_expression": "%var_dst.8",
+                "counter_carrier": "%var_53.8",
+                "guard_condition": "jcnd %var_53.8 == #3.8, @241",
+                "emitter_role": "memory_store",
+            }
         ),
-    )
+        evidence="{}",
+    ).execute()
 
 
-def _insert_block(conn: sqlite3.Connection, snap_id: int, serial: int) -> None:
-    conn.execute(
-        "INSERT INTO blocks (snapshot_id, serial, block_type, type_name, "
-        "start_ea_hex, start_ea_i64, end_ea_hex, end_ea_i64, npred, nsucc, "
-        "preds, succs, insn_count) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            snap_id,
-            serial,
-            1,
-            "BLT_1WAY",
-            _FUNC_EA,
-            _FUNC_EA_I64,
-            "0x0000000180012e00",
-            0x180012E00,
-            0,
-            1,
-            "[]",
-            "[218]",
-            0,
-        ),
-    )
+def _insert_block(snap_id: int, serial: int) -> None:
+    Block.insert(
+        snapshot=snap_id,
+        serial=serial,
+        block_type=1,
+        type_name="BLT_1WAY",
+        start_ea_hex=_FUNC_EA,
+        start_ea_i64=_FUNC_EA_I64,
+        end_ea_hex="0x0000000180012e00",
+        end_ea_i64=0x180012E00,
+        npred=0,
+        nsucc=1,
+        preds="[]",
+        succs="[218]",
+        insn_count=0,
+    ).execute()
 
 
 def test_resolver_picks_highest_id_for_primary_label() -> None:
@@ -140,12 +133,12 @@ def test_resolver_returns_partial_results() -> None:
 
 
 def test_render_report_emits_concrete_d810_feature_values() -> None:
-    conn = create_diag_database(":memory:").connection()
-    _insert_snapshot(conn, 17, "post_bundle_stabilize")
-    _insert_snapshot(conn, 18, "GLBOPT1_post_d810")
-    _insert_byte_fact(conn, 17)
-    _insert_block(conn, 17, 161)
-    conn.commit()
+    db = make_bound_diag_db()
+    conn = db.connection()
+    _insert_snapshot(17, "post_bundle_stabilize")
+    _insert_snapshot(18, "GLBOPT1_post_d810")
+    _insert_byte_fact(17)
+    _insert_block(17, 161)
 
     payload = json.loads(
         render_region_oracle_report(conn, func_ea_hex=_FUNC_EA, json_output=True)
@@ -162,12 +155,12 @@ def test_render_report_emits_concrete_d810_feature_values() -> None:
 
 
 def test_render_report_resolves_moved_sub7ffd_by_function_name() -> None:
-    conn = create_diag_database(":memory:").connection()
-    _insert_snapshot(conn, 17, "post_bundle_stabilize")
-    _insert_snapshot(conn, 18, "GLBOPT1_post_d810")
-    _insert_byte_fact(conn, 17)
-    _insert_block(conn, 17, 161)
-    conn.commit()
+    db = make_bound_diag_db()
+    conn = db.connection()
+    _insert_snapshot(17, "post_bundle_stabilize")
+    _insert_snapshot(18, "GLBOPT1_post_d810")
+    _insert_byte_fact(17)
+    _insert_block(17, 161)
 
     body = render_region_oracle_report(
         conn,
@@ -180,12 +173,12 @@ def test_render_report_resolves_moved_sub7ffd_by_function_name() -> None:
 
 
 def test_render_report_includes_microblock_evidence() -> None:
-    conn = create_diag_database(":memory:").connection()
-    _insert_snapshot(conn, 17, "post_bundle_stabilize")
-    _insert_snapshot(conn, 18, "GLBOPT1_post_d810")
-    _insert_byte_fact(conn, 17)
-    _insert_block(conn, 17, 161)
-    conn.commit()
+    db = make_bound_diag_db()
+    conn = db.connection()
+    _insert_snapshot(17, "post_bundle_stabilize")
+    _insert_snapshot(18, "GLBOPT1_post_d810")
+    _insert_byte_fact(17)
+    _insert_block(17, 161)
 
     body = render_region_oracle_report(
         conn,
@@ -197,14 +190,14 @@ def test_render_report_includes_microblock_evidence() -> None:
 
 
 def test_render_report_detects_byte_emit_survival_at_snap17() -> None:
-    conn = create_diag_database(":memory:").connection()
-    _insert_snapshot(conn, 5, "maturity_MMAT_GLBOPT1_pre_d810")
-    _insert_snapshot(conn, 17, "post_bundle_stabilize")
-    _insert_snapshot(conn, 18, "GLBOPT1_post_d810")
-    _insert_byte_fact(conn, 5)
-    _insert_block(conn, 5, 161)
-    _insert_block(conn, 17, 200)
-    conn.commit()
+    db = make_bound_diag_db()
+    conn = db.connection()
+    _insert_snapshot(5, "maturity_MMAT_GLBOPT1_pre_d810")
+    _insert_snapshot(17, "post_bundle_stabilize")
+    _insert_snapshot(18, "GLBOPT1_post_d810")
+    _insert_byte_fact(5)
+    _insert_block(5, 161)
+    _insert_block(17, 200)
 
     payload = json.loads(
         render_region_oracle_report(conn, func_ea_hex=_FUNC_EA, json_output=True)

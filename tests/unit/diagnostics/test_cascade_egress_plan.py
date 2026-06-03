@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from d810.core.diag import open_diag_database
+from d810.core.diag import diag_models_on, open_diag_database
+from d810.core.diag.models import Block, FactObservation, Instruction, Snapshot
 from d810.diagnostics.cascade_egress_plan import (
     _json_int_tuple,
     choose_fact_snapshot,
@@ -35,83 +36,75 @@ def _make_diag_db(tmp_path: Path) -> Path:
       blk[0] -> blk[10] -> blk[20] -> blk[100] (BLT_STOP)
                        -> blk[30] -> blk[100]
     """
-    db = tmp_path / "diag.sqlite3"
-    conn = sqlite3.connect(str(db))
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE snapshots(
-                id INTEGER PRIMARY KEY,
-                label TEXT,
-                maturity TEXT,
-                phase TEXT
-            );
-            CREATE TABLE blocks(
-                snapshot_id INTEGER, serial INTEGER, type_name TEXT,
-                start_ea_hex TEXT, preds TEXT, succs TEXT
-            );
-            CREATE TABLE instructions(
-                snapshot_id INTEGER, block_serial INTEGER, insn_index INTEGER,
-                opcode_name TEXT, dstr TEXT
-            );
-            CREATE TABLE fact_observations(
-                snapshot_id INTEGER, fact_id TEXT, kind TEXT,
-                payload TEXT, source_ea_hex TEXT, confidence REAL
-            );
-            INSERT INTO snapshots VALUES
-                (5,  'pre_d810',              'MMAT_GLBOPT1', 'pre_d810'),
-                (17, 'post_bundle_stabilize', 'MMAT_GLBOPT1', 'post_apply'),
-                (99, 'dump_raw_lvars',        'MMAT_LVARS',   'post_d810');
-            INSERT INTO blocks(snapshot_id, serial, type_name, start_ea_hex, preds, succs) VALUES
-                (17, 0,   'BLT_NWAY', '0x180014000', '[]',        '[10]'),
-                (17, 10,  'BLT_2WAY', '0x180014100', '[0]',       '[20, 30]'),
-                (17, 20,  'BLT_1WAY', '0x180014200', '[10]',      '[100]'),
-                (17, 30,  'BLT_1WAY', '0x180014300', '[10]',      '[100]'),
-                (17, 100, 'BLT_STOP', '0x180014FFF', '[20, 30]',  '[]');
-            INSERT INTO instructions(snapshot_id, block_serial, insn_index, opcode_name, dstr) VALUES
-                (17, 20, 0, 'm_mov', 'mov #0xAA.8, %var_8.8'),
-                (17, 30, 0, 'm_mov', 'mov #0xBB.8, %var_8.8');
-            """
-        )
-        conn.execute(
-            "INSERT INTO fact_observations VALUES (?,?,?,?,?,?)",
-            (5, "fact_byte_3", "TerminalByteEmitterFact",
-             json.dumps({
-                 "byte_index": 3,
-                 "destination_block": 20,
-                 "block_ea": 0x180014200,
-                 "opcode": "m_stx",
-                 "emitter_role": "memory_store",
-                 "corridor_role": "terminal_tail",
-                 "destination_buffer_expression": "[ds.2:.+%var_188.8]",
-                 "source_byte_expression": "xdu([ds.2:%var_190.8+#3.8].1)",
-             }),
-             "0x180014210", 0.85),
-        )
-        conn.execute(
-            "INSERT INTO fact_observations VALUES (?,?,?,?,?,?)",
-            (5, "fact_byte_6", "TerminalByteEmitterFact",
-             json.dumps({
-                 "byte_index": 6,
-                 "destination_block": 30,
-                 "block_ea": 0x180014300,
-                 "opcode": "m_stx",
-                 "emitter_role": "memory_store",
-                 "corridor_role": "terminal_tail",
-                 "destination_buffer_expression": "[ds.2:.+%var_188.8]",
-                 "source_byte_expression": "xdu([ds.2:%var_190.8+#6.8].1)",
-             }),
-             "0x180014310", 0.85),
-        )
+    from d810.core.diag import create_diag_database
+
+    db_path = tmp_path / "diag.sqlite3"
+    db_obj = create_diag_database(str(db_path))
+    with diag_models_on(db_obj):
+        Snapshot.insert_many([
+            dict(id=5,  label="pre_d810",              func_ea_hex="0x0", func_ea_i64=0, maturity="MMAT_GLBOPT1", phase="pre_d810",   block_count=0, timestamp=0.0),
+            dict(id=17, label="post_bundle_stabilize", func_ea_hex="0x0", func_ea_i64=0, maturity="MMAT_GLBOPT1", phase="post_apply", block_count=0, timestamp=0.0),
+            dict(id=99, label="dump_raw_lvars",        func_ea_hex="0x0", func_ea_i64=0, maturity="MMAT_LVARS",   phase="post_d810",  block_count=0, timestamp=0.0),
+        ]).execute()
+        Block.insert_many([
+            dict(snapshot=17, serial=0,   block_type=4, type_name="BLT_NWAY", start_ea_hex="0x180014000", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=1, npred=0,    succs="[10]",       preds="[]",        insn_count=0),
+            dict(snapshot=17, serial=10,  block_type=2, type_name="BLT_2WAY", start_ea_hex="0x180014100", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=2, npred=1,    succs="[20, 30]",   preds="[0]",       insn_count=0),
+            dict(snapshot=17, serial=20,  block_type=1, type_name="BLT_1WAY", start_ea_hex="0x180014200", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=1, npred=1,    succs="[100]",      preds="[10]",      insn_count=0),
+            dict(snapshot=17, serial=30,  block_type=1, type_name="BLT_1WAY", start_ea_hex="0x180014300", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=1, npred=1,    succs="[100]",      preds="[10]",      insn_count=0),
+            dict(snapshot=17, serial=100, block_type=0, type_name="BLT_STOP", start_ea_hex="0x180014FFF", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=0, npred=2,    succs="[]",         preds="[20, 30]",  insn_count=0),
+        ]).execute()
+        Instruction.insert_many([
+            dict(snapshot=17, block_serial=20, insn_index=0, ea_hex="0x0", ea_i64=0, opcode=4, opcode_name="m_mov", dstr="mov #0xAA.8, %var_8.8"),
+            dict(snapshot=17, block_serial=30, insn_index=0, ea_hex="0x0", ea_i64=0, opcode=4, opcode_name="m_mov", dstr="mov #0xBB.8, %var_8.8"),
+        ]).execute()
+        FactObservation.insert(
+            snapshot=5, func_ea_hex="0x0", func_ea_i64=0,
+            fact_id="fact_byte_3", kind="TerminalByteEmitterFact",
+            semantic_key="byte_emit_3", maturity="MMAT_GLBOPT1", phase="pre_d810",
+            confidence=0.85,
+            source_ea_hex="0x180014210",
+            payload=json.dumps({
+                "byte_index": 3,
+                "destination_block": 20,
+                "block_ea": 0x180014200,
+                "opcode": "m_stx",
+                "emitter_role": "memory_store",
+                "corridor_role": "terminal_tail",
+                "destination_buffer_expression": "[ds.2:.+%var_188.8]",
+                "source_byte_expression": "xdu([ds.2:%var_190.8+#3.8].1)",
+            }),
+            evidence="{}",
+        ).execute()
+        FactObservation.insert(
+            snapshot=5, func_ea_hex="0x0", func_ea_i64=0,
+            fact_id="fact_byte_6", kind="TerminalByteEmitterFact",
+            semantic_key="byte_emit_6", maturity="MMAT_GLBOPT1", phase="pre_d810",
+            confidence=0.85,
+            source_ea_hex="0x180014310",
+            payload=json.dumps({
+                "byte_index": 6,
+                "destination_block": 30,
+                "block_ea": 0x180014300,
+                "opcode": "m_stx",
+                "emitter_role": "memory_store",
+                "corridor_role": "terminal_tail",
+                "destination_buffer_expression": "[ds.2:.+%var_188.8]",
+                "source_byte_expression": "xdu([ds.2:%var_190.8+#6.8].1)",
+            }),
+            evidence="{}",
+        ).execute()
         # An unrelated fact that must be skipped.
-        conn.execute(
-            "INSERT INTO fact_observations VALUES (?,?,?,?,?,?)",
-            (5, "fact_other", "LoopCarrierFact", json.dumps({}), None, 0.0),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    return db
+        FactObservation.insert(
+            snapshot=5, func_ea_hex="0x0", func_ea_i64=0,
+            fact_id="fact_other", kind="LoopCarrierFact",
+            semantic_key="loop_carrier", maturity="MMAT_GLBOPT1", phase="pre_d810",
+            confidence=0.0,
+            payload=json.dumps({}),
+            evidence="{}",
+        ).execute()
+        db_obj.connection().commit()
+    db_obj.close()
+    return db_path
 
 
 @pytest.fixture()

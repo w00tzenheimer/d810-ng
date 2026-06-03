@@ -1,6 +1,7 @@
 """Unit tests for generic python -m d810.diagnostics region-* subcommands."""
 from __future__ import annotations
-from d810.core.diag import create_diag_database
+from d810.core.diag import create_diag_database, diag_models_on
+from d810.core.diag.models import RegionShapeFeature, TerminalTailDceCause
 
 
 
@@ -12,18 +13,19 @@ def test_region_shape_subcommand_lists_persisted_features(tmp_path):
     import sys
 
     db_path = tmp_path / "test.diag.sqlite3"
-    conn = create_diag_database(str(db_path)).connection()
-    conn.execute(
-        "INSERT INTO region_shape_features "
-        "(func_ea_hex, func_ea_i64, snapshot_id, source, region, "
-        " feature, value_text, evidence_json) VALUES "
-        "(?, ?, ?, ?, ?, ?, ?, ?)",
-        ("0x0000000180012df0", 0x180012df0, 17, "D810_SNAPSHOT",
-         "terminal_tail", "byte_emit_3_present", "True",
-         json.dumps({"side": "d810", "block_serial": 161})),
-    )
-    conn.commit()
-    conn.close()
+    db = create_diag_database(str(db_path))
+    with diag_models_on(db):
+        RegionShapeFeature.insert(
+            func_ea_hex="0x0000000180012df0",
+            func_ea_i64=0x180012df0,
+            snapshot_id=17,
+            source="D810_SNAPSHOT",
+            region="terminal_tail",
+            feature="byte_emit_3_present",
+            value_text="True",
+            evidence_json=json.dumps({"side": "d810", "block_serial": 161}),
+        ).execute()
+    db.close()
 
     env = {**os.environ, "PYTHONPATH": "src"}
     result = subprocess.run(
@@ -43,23 +45,27 @@ def test_region_shape_subcommand_filters_by_source_and_snapshot_id(tmp_path):
     import sys
 
     db_path = tmp_path / "test.diag.sqlite3"
-    conn = create_diag_database(str(db_path)).connection()
-    rows = [
-        (None, "REF", "ref_feat_1"),
-        (17, "D810_SNAPSHOT", "snap17_feat_1"),
-        (18, "D810_SNAPSHOT", "snap18_feat_1"),
-    ]
-    for snap_id, source, feature in rows:
-        conn.execute(
-            "INSERT INTO region_shape_features "
-            "(func_ea_hex, func_ea_i64, snapshot_id, source, region, "
-            " feature, value_text, evidence_json) VALUES "
-            "(?, ?, ?, ?, ?, ?, ?, ?)",
-            ("0x0000000180012df0", 0x180012df0, snap_id, source,
-             "terminal_tail", feature, "True", json.dumps({})),
-        )
-    conn.commit()
-    conn.close()
+    db = create_diag_database(str(db_path))
+    with diag_models_on(db):
+        rows = [
+            (None, "REF", "ref_feat_1"),
+            (17, "D810_SNAPSHOT", "snap17_feat_1"),
+            (18, "D810_SNAPSHOT", "snap18_feat_1"),
+        ]
+        RegionShapeFeature.insert_many([
+            dict(
+                func_ea_hex="0x0000000180012df0",
+                func_ea_i64=0x180012df0,
+                snapshot_id=snap_id,
+                source=source,
+                region="terminal_tail",
+                feature=feature,
+                value_text="True",
+                evidence_json=json.dumps({}),
+            )
+            for snap_id, source, feature in rows
+        ]).execute()
+    db.close()
 
     env = {**os.environ, "PYTHONPATH": "src"}
 
@@ -103,20 +109,22 @@ def test_terminal_tail_dce_subcommand_lists_persisted_causes(tmp_path):
     import json, os, sys, subprocess
 
     db = tmp_path / "test.diag.sqlite3"
-    conn = create_diag_database(str(db)).connection()
-    conn.execute(
-        "INSERT INTO terminal_tail_dce_causes "
-        "(func_ea_hex, func_ea_i64, byte_index, last_present_snapshot_id, "
-        " first_missing_snapshot_id, last_block_serial, last_ea_hex, "
-        " cause, recommended_action, rationale, evidence_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        ("0x0000000180012df0", 0x180012df0, 3, 17, 18, 161,
-         "0x0000000180012df0", "FOLDED_INTO_SURVIVING_BYTE_EMIT",
-         "STRUCTURER_SHAPING", "tail-equivalent fold",
-         json.dumps({"side": "d810"})),
-    )
-    conn.commit()
-    conn.close()
+    diag_db = create_diag_database(str(db))
+    with diag_models_on(diag_db):
+        TerminalTailDceCause.insert(
+            func_ea_hex="0x0000000180012df0",
+            func_ea_i64=0x180012df0,
+            byte_index=3,
+            last_present_snapshot_id=17,
+            first_missing_snapshot_id=18,
+            last_block_serial=161,
+            last_ea_hex="0x0000000180012df0",
+            cause="FOLDED_INTO_SURVIVING_BYTE_EMIT",
+            recommended_action="STRUCTURER_SHAPING",
+            rationale="tail-equivalent fold",
+            evidence_json=json.dumps({"side": "d810"}),
+        ).execute()
+    diag_db.close()
 
     env = {**os.environ, "PYTHONPATH": "src"}
     result = subprocess.run(
@@ -133,25 +141,28 @@ def test_terminal_tail_dce_subcommand_filters_by_byte_index(tmp_path):
     import json, os, sys, subprocess
 
     db = tmp_path / "test.diag.sqlite3"
-    conn = create_diag_database(str(db)).connection()
-    for byte_index, cause in (
-        (2, "FOLDED_INTO_SURVIVING_BYTE_EMIT"),
-        (3, "DCE_DEAD_WRITE"),
-    ):
-        conn.execute(
-            "INSERT INTO terminal_tail_dce_causes "
-            "(func_ea_hex, func_ea_i64, byte_index, "
-            " last_present_snapshot_id, first_missing_snapshot_id, "
-            " last_block_serial, last_ea_hex, cause, "
-            " recommended_action, rationale, evidence_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("0x0000000180012df0", 0x180012df0, byte_index, 17, 18,
-             100 + byte_index, "0x0", cause,
-             "STRUCTURER_SHAPING", "...",
-             json.dumps({})),
-        )
-    conn.commit()
-    conn.close()
+    diag_db = create_diag_database(str(db))
+    with diag_models_on(diag_db):
+        TerminalTailDceCause.insert_many([
+            dict(
+                func_ea_hex="0x0000000180012df0",
+                func_ea_i64=0x180012df0,
+                byte_index=byte_index,
+                last_present_snapshot_id=17,
+                first_missing_snapshot_id=18,
+                last_block_serial=100 + byte_index,
+                last_ea_hex="0x0",
+                cause=cause,
+                recommended_action="STRUCTURER_SHAPING",
+                rationale="...",
+                evidence_json=json.dumps({}),
+            )
+            for byte_index, cause in (
+                (2, "FOLDED_INTO_SURVIVING_BYTE_EMIT"),
+                (3, "DCE_DEAD_WRITE"),
+            )
+        ]).execute()
+    diag_db.close()
 
     env = {**os.environ, "PYTHONPATH": "src"}
     result = subprocess.run(

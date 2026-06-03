@@ -1,12 +1,12 @@
 from __future__ import annotations
-from d810.core.diag import create_diag_database
+from d810.core.diag import create_diag_database, diag_models_on
 from tests.unit.core.diag._orm_bind import make_bound_diag_db
 
 import argparse
 import json
-import sqlite3
 
 from d810.transforms.dag_frontier_closure import FrontierClosureDiagnosticRow
+from d810.core.diag.models import Snapshot
 from d810.core.diag.snapshot import snapshot_dag_frontier_closure_diagnostics
 from d810.diagnostics.frontier_diagnostics import (
     format_frontier_diagnostics,
@@ -15,25 +15,19 @@ from d810.diagnostics.frontier_diagnostics import (
 )
 
 
-def _make_db() -> sqlite3.Connection:
-    conn = make_bound_diag_db().connection()
-    conn.execute(
-        "INSERT INTO snapshots "
-        "(id, label, func_ea_hex, func_ea_i64, maturity, phase, "
-        " block_count, timestamp) "
-        "VALUES (?,?,?,?,?,?,?,?)",
-        (
-            7,
-            "handler_chain_composer_state_write_reconstruction_post_apply",
-            "0x00000001800134e0",
-            0x1800134E0,
-            "MMAT_GLBOPT1",
-            "post_apply",
-            245,
-            1.0,
-        ),
-    )
-    return conn
+def _make_db():
+    db = make_bound_diag_db()
+    Snapshot.insert(
+        id=7,
+        label="handler_chain_composer_state_write_reconstruction_post_apply",
+        func_ea_hex="0x00000001800134e0",
+        func_ea_i64=0x1800134E0,
+        maturity="MMAT_GLBOPT1",
+        phase="post_apply",
+        block_count=245,
+        timestamp=1.0,
+    ).execute()
+    return db.connection()
 
 
 def _unresolved_row() -> FrontierClosureDiagnosticRow:
@@ -130,23 +124,19 @@ def test_frontier_diagnostics_report_formats_resolved_bst_proof() -> None:
 
 def test_frontier_diagnostics_cli_prints_unresolved_rows(tmp_path, capsys) -> None:
     db_path = tmp_path / "diag.sqlite3"
-    conn = create_diag_database(db_path).connection()
-    conn.execute(
-        "INSERT INTO snapshots "
-        "(id, label, func_ea_hex, func_ea_i64, maturity, phase, "
-        " block_count, timestamp) "
-        "VALUES (?,?,?,?,?,?,?,?)",
-        (
-            7,
-            "handler_chain_composer_state_write_reconstruction_post_apply",
-            "0x00000001800134e0",
-            0x1800134E0,
-            "MMAT_GLBOPT1",
-            "post_apply",
-            245,
-            1.0,
-        ),
-    )
+    db = create_diag_database(db_path)
+    with diag_models_on(db):
+        Snapshot.insert(
+            id=7,
+            label="handler_chain_composer_state_write_reconstruction_post_apply",
+            func_ea_hex="0x00000001800134e0",
+            func_ea_i64=0x1800134E0,
+            maturity="MMAT_GLBOPT1",
+            phase="post_apply",
+            block_count=245,
+            timestamp=1.0,
+        ).execute()
+    conn = db.connection()
     snapshot_dag_frontier_closure_diagnostics(conn, 7, [_unresolved_row()])
     conn.close()
 

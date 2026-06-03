@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
 
 import pytest
 
-from d810.core.diag import open_diag_database
+from d810.core.diag import create_diag_database, diag_models_on, open_diag_database
+from d810.core.diag.models import Block, Instruction, Snapshot
 from d810.diagnostics.return_ledger import (
     DEFAULT_RETURN_SLOT_STKOFF,
     DEFAULT_V660_STKOFF,
@@ -25,6 +25,7 @@ from d810.diagnostics.return_ledger import (
     run_ledger,
     trace_return_paths,
 )
+from tests.unit.core.diag._orm_bind import make_bound_diag_db
 
 
 # ---------------------------------------------------------------------------
@@ -50,53 +51,55 @@ def _make_diag_db(tmp_path: Path) -> Path:
     Return-slot writer at blk[6] (m_mov #1, 0x7F0).
     v660 writer at blk[7]   (m_mov #0xDEAD, 0x660).
     """
-    db = tmp_path / "diag.sqlite3"
-    conn = sqlite3.connect(str(db))
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE snapshots(id INTEGER PRIMARY KEY, label TEXT,
-                block_count INTEGER);
-            CREATE TABLE blocks(snapshot_id INTEGER, serial INTEGER,
-                type_name TEXT, preds TEXT, succs TEXT, meta TEXT);
-            CREATE TABLE instructions(snapshot_id INTEGER, block_serial INTEGER,
-                opcode_name TEXT, src_l_type TEXT, src_l_stkoff INTEGER,
-                src_l_value_hex TEXT, dstr TEXT, dest_stkoff INTEGER);
-            INSERT INTO snapshots VALUES
-                (10, 'state_write_reconstruction_post_apply', 250),
-                (11, 'state_write_reconstruction_post_gut_and_wire', 60),
-                (12, 'state_write_reconstruction_post_apply', 220);
-            """
-        )
+    db_path = tmp_path / "diag.sqlite3"
+    db = create_diag_database(str(db_path))
+    with diag_models_on(db):
+        Snapshot.insert_many([
+            dict(id=10, label="state_write_reconstruction_post_apply",
+                 func_ea_hex="0x0", func_ea_i64=0, maturity="",
+                 phase="post_apply", block_count=250, timestamp=0.0),
+            dict(id=11, label="state_write_reconstruction_post_gut_and_wire",
+                 func_ea_hex="0x0", func_ea_i64=0, maturity="",
+                 phase="post_gut_wire", block_count=60, timestamp=1.0),
+            dict(id=12, label="state_write_reconstruction_post_apply",
+                 func_ea_hex="0x0", func_ea_i64=0, maturity="",
+                 phase="post_apply", block_count=220, timestamp=2.0),
+        ]).execute()
+        blocks_for_snap = [
+            dict(serial=0,   type_name="BLT_NWAY", preds="[]",     succs="[5]",
+                 block_type=0, nsucc=1, npred=0, insn_count=0, meta=None),
+            dict(serial=5,   type_name="BLT_2WAY", preds="[0]",    succs="[6, 7]",
+                 block_type=0, nsucc=2, npred=1, insn_count=0, meta=None),
+            dict(serial=6,   type_name="BLT_1WAY", preds="[5]",    succs="[100]",
+                 block_type=0, nsucc=1, npred=1, insn_count=0,
+                 meta='{"valranges": "rax: [1, 1]"}'),
+            dict(serial=7,   type_name="BLT_1WAY", preds="[5]",    succs="[100]",
+                 block_type=0, nsucc=1, npred=1, insn_count=0, meta=None),
+            dict(serial=100, type_name="BLT_STOP", preds="[6, 7]", succs="[]",
+                 block_type=0, nsucc=0, npred=2, insn_count=0, meta=None),
+            dict(serial=200, type_name="BLT_1WAY", preds="[]",     succs="[]",
+                 block_type=0, nsucc=0, npred=0, insn_count=0, meta=None),
+        ]
         for sid in (10, 12):
-            conn.executemany(
-                "INSERT INTO blocks VALUES (?, ?, ?, ?, ?, ?)",
-                [
-                    (sid, 0,   "BLT_NWAY", "[]",      "[5]",     "{}"),
-                    (sid, 5,   "BLT_2WAY", "[0]",     "[6, 7]",  "{}"),
-                    (sid, 6,   "BLT_1WAY", "[5]",     "[100]",
-                     '{"valranges": "rax: [1, 1]"}'),
-                    (sid, 7,   "BLT_1WAY", "[5]",     "[100]",   "{}"),
-                    (sid, 100, "BLT_STOP", "[6, 7]",  "[]",      "{}"),
-                    (sid, 200, "BLT_1WAY", "[]",      "[]",      "{}"),
-                ],
-            )
+            Block.insert_many([dict(snapshot=sid, **b) for b in blocks_for_snap]).execute()
         # Return slot writer at blk[6] for snap 10.
-        conn.execute(
-            "INSERT INTO instructions VALUES (?,?,?,?,?,?,?,?)",
-            (10, 6, "m_mov", "const", None, "0x1",
-             "mov #0x1.8, %var_8.8", DEFAULT_RETURN_SLOT_STKOFF),
-        )
+        Instruction.insert(
+            snapshot=10, block_serial=6, insn_index=0,
+            ea_hex="0x0", ea_i64=0, opcode=0, opcode_name="m_mov",
+            src_l_type="const", src_l_value_hex="0x1",
+            dstr="mov #0x1.8, %var_8.8",
+            dest_stkoff=DEFAULT_RETURN_SLOT_STKOFF,
+        ).execute()
         # v660 writer at blk[7] for snap 10.
-        conn.execute(
-            "INSERT INTO instructions VALUES (?,?,?,?,?,?,?,?)",
-            (10, 7, "m_mov", "const", None, "0xDEAD",
-             "mov #0xDEAD.8, %var_660.8", DEFAULT_V660_STKOFF),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    return db
+        Instruction.insert(
+            snapshot=10, block_serial=7, insn_index=0,
+            ea_hex="0x0", ea_i64=0, opcode=0, opcode_name="m_mov",
+            src_l_type="const", src_l_value_hex="0xDEAD",
+            dstr="mov #0xDEAD.8, %var_660.8",
+            dest_stkoff=DEFAULT_V660_STKOFF,
+        ).execute()
+    db.close()
+    return db_path
 
 
 @pytest.fixture()
@@ -130,46 +133,29 @@ def test_pick_snapshot_falls_back_to_last_post_apply_above_200(
 ) -> None:
     """No gut_and_wire snapshot exists -- pick the most recent post_apply
     snapshot with >200 blocks."""
-    db_path = tmp_path / "x.sqlite3"
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.executescript(
-            "CREATE TABLE snapshots(id INTEGER PRIMARY KEY, label TEXT,"
-            " block_count INTEGER);"
-            "INSERT INTO snapshots VALUES (1, 'something_post_apply', 100);"
-            "INSERT INTO snapshots VALUES (2, 'something_post_apply', 240);"
-            "INSERT INTO snapshots VALUES (3, 'other', 50);"
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    db = open_diag_database(str(db_path))
-    try:
-        assert pick_snapshot(db.connection()) == 2
-    finally:
-        db.close()
+    db = make_bound_diag_db()
+    Snapshot.insert_many([
+        dict(id=1, label="something_post_apply", func_ea_hex="0x0", func_ea_i64=0,
+             maturity="", phase="post_apply", block_count=100, timestamp=0.0),
+        dict(id=2, label="something_post_apply", func_ea_hex="0x0", func_ea_i64=0,
+             maturity="", phase="post_apply", block_count=240, timestamp=1.0),
+        dict(id=3, label="other", func_ea_hex="0x0", func_ea_i64=0,
+             maturity="", phase="unknown", block_count=50, timestamp=2.0),
+    ]).execute()
+    assert pick_snapshot(db.connection()) == 2
 
 
 def test_pick_snapshot_returns_last_snapshot_when_no_post_apply(
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "x.sqlite3"
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.executescript(
-            "CREATE TABLE snapshots(id INTEGER PRIMARY KEY, label TEXT,"
-            " block_count INTEGER);"
-            "INSERT INTO snapshots VALUES (1, 'pre_d810', 10);"
-            "INSERT INTO snapshots VALUES (7, 'pre_d810', 12);"
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    db = open_diag_database(str(db_path))
-    try:
-        assert pick_snapshot(db.connection()) == 7
-    finally:
-        db.close()
+    db = make_bound_diag_db()
+    Snapshot.insert_many([
+        dict(id=1, label="pre_d810", func_ea_hex="0x0", func_ea_i64=0,
+             maturity="", phase="pre_d810", block_count=10, timestamp=0.0),
+        dict(id=7, label="pre_d810", func_ea_hex="0x0", func_ea_i64=0,
+             maturity="", phase="pre_d810", block_count=12, timestamp=1.0),
+    ]).execute()
+    assert pick_snapshot(db.connection()) == 7
 
 
 def test_list_snapshots_returns_all_rows(diag_db: Path) -> None:

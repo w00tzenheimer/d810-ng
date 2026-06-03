@@ -6,7 +6,6 @@ Locks in the cross-tab, the per-block disposition classification, and the
 EA-based absorber inference.
 """
 from __future__ import annotations
-from d810.core.diag import create_diag_database
 
 import json
 import sqlite3
@@ -14,25 +13,32 @@ from pathlib import Path
 
 import pytest
 
+from d810.core.diag import create_diag_database, diag_models_on
+from d810.core.diag.models import Block, Instruction, Snapshot
+from d810.core.diag.snapshot import _dual
 from d810.diagnostics.__main__ import main
 from d810.diagnostics.query import merge_causality
-from d810.core.diag.snapshot import _dual
 
 
 _FROM_LABEL = "from_snap"
 _TO_LABEL = "to_snap"
 
 
-def _insert_snapshot(conn: sqlite3.Connection, snap_id: int, label: str) -> None:
+def _insert_snapshot(snap_id: int, label: str) -> None:
     fh, fi = _dual(0x180010000)
-    conn.execute(
-        "INSERT INTO snapshots VALUES (?, ?, ?, ?, 'MMAT_GLBOPT1', 'unknown', 0, 0.0)",
-        (snap_id, label, fh, fi),
-    )
+    Snapshot.insert(
+        id=snap_id,
+        label=label,
+        func_ea_hex=fh,
+        func_ea_i64=fi,
+        maturity="MMAT_GLBOPT1",
+        phase="unknown",
+        block_count=0,
+        timestamp=0.0,
+    ).execute()
 
 
 def _insert_block(
-    conn: sqlite3.Connection,
     snap_id: int,
     serial: int,
     *,
@@ -43,23 +49,25 @@ def _insert_block(
 ) -> None:
     preds = preds or []
     succs = succs or []
-    conn.execute(
-        "INSERT INTO blocks VALUES (?,?,1,?,NULL,NULL,NULL,NULL,?,?,?,?,?,NULL)",
-        (
-            snap_id,
-            serial,
-            type_name,
-            len(succs),
-            len(preds),
-            json.dumps(succs),
-            json.dumps(preds),
-            insn_count,
-        ),
-    )
+    Block.insert(
+        snapshot=snap_id,
+        serial=serial,
+        block_type=1,
+        type_name=type_name,
+        start_ea_hex=None,
+        start_ea_i64=None,
+        end_ea_hex=None,
+        end_ea_i64=None,
+        nsucc=len(succs),
+        npred=len(preds),
+        succs=json.dumps(succs),
+        preds=json.dumps(preds),
+        insn_count=insn_count,
+        meta=None,
+    ).execute()
 
 
 def _insert_insn(
-    conn: sqlite3.Connection,
     snap_id: int,
     block_serial: int,
     insn_index: int,
@@ -68,11 +76,28 @@ def _insert_insn(
     opcode_name: str,
 ) -> None:
     ea_h, ea_i = _dual(ea)
-    conn.execute(
-        "INSERT INTO instructions VALUES (?,?,?,?,?,1,?,NULL,NULL,NULL,"
-        "NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL)",
-        (snap_id, block_serial, insn_index, ea_h, ea_i, opcode_name),
-    )
+    Instruction.insert(
+        snapshot=snap_id,
+        block_serial=block_serial,
+        insn_index=insn_index,
+        ea_hex=ea_h,
+        ea_i64=ea_i,
+        opcode=1,
+        opcode_name=opcode_name,
+        dest_type=None,
+        dest_stkoff=None,
+        dest_size=None,
+        src_l_type=None,
+        src_l_stkoff=None,
+        src_l_value_hex=None,
+        src_l_value_i64=None,
+        src_r_type=None,
+        src_r_stkoff=None,
+        src_r_value_hex=None,
+        src_r_value_i64=None,
+        dstr=None,
+        meta=None,
+    ).execute()
 
 
 @pytest.fixture()
@@ -86,34 +111,34 @@ def merge_causality_db(tmp_path: Path) -> Path:
     - blk 40: vanishes, only synthesized insns (ea=0) → synthesized_only
     """
     db_path = tmp_path / "merge.sqlite3"
-    conn = create_diag_database(str(db_path)).connection()
+    db = create_diag_database(str(db_path))
+    with diag_models_on(db):
+        # FROM snapshot (snap 1)
+        _insert_snapshot(1, _FROM_LABEL)
+        _insert_block(1, 10, insn_count=2, succs=[20])
+        _insert_insn(1, 10, 0, ea=0x100, opcode_name="op_4")
+        _insert_insn(1, 10, 1, ea=0x101, opcode_name="op_4")
+        _insert_block(1, 20, insn_count=4, succs=[30], preds=[10])
+        for i, ea in enumerate((0x102, 0x103, 0x104, 0x105)):
+            _insert_insn(1, 20, i, ea=ea, opcode_name="op_4")
+        _insert_block(1, 30, insn_count=3, succs=[40], preds=[20])
+        for i, ea in enumerate((0x200, 0x201, 0x202)):
+            _insert_insn(1, 30, i, ea=ea, opcode_name="m_und")
+        _insert_block(1, 40, insn_count=2, preds=[30])
+        for i in range(2):
+            _insert_insn(1, 40, i, ea=0x0, opcode_name="op_4")
 
-    # FROM snapshot (snap 1)
-    _insert_snapshot(conn, 1, _FROM_LABEL)
-    _insert_block(conn, 1, 10, insn_count=2, succs=[20])
-    _insert_insn(conn, 1, 10, 0, ea=0x100, opcode_name="op_4")
-    _insert_insn(conn, 1, 10, 1, ea=0x101, opcode_name="op_4")
-    _insert_block(conn, 1, 20, insn_count=4, succs=[30], preds=[10])
-    for i, ea in enumerate((0x102, 0x103, 0x104, 0x105)):
-        _insert_insn(conn, 1, 20, i, ea=ea, opcode_name="op_4")
-    _insert_block(conn, 1, 30, insn_count=3, succs=[40], preds=[20])
-    for i, ea in enumerate((0x200, 0x201, 0x202)):
-        _insert_insn(conn, 1, 30, i, ea=ea, opcode_name="m_und")
-    _insert_block(conn, 1, 40, insn_count=2, preds=[30])
-    for i in range(2):
-        _insert_insn(conn, 1, 40, i, ea=0x0, opcode_name="op_4")
+        # TO snapshot (snap 2) — blk 10 absorbs blk 20's content; blk 50 is new.
+        _insert_snapshot(2, _TO_LABEL)
+        _insert_block(2, 10, insn_count=5, succs=[50])
+        # blk 10 in TO keeps its own EAs plus blk 20's first three (0x102..0x104)
+        for i, ea in enumerate((0x100, 0x101, 0x102, 0x103, 0x104)):
+            _insert_insn(2, 10, i, ea=ea, opcode_name="op_4")
+        _insert_block(2, 50, insn_count=1, preds=[10])
+        _insert_insn(2, 50, 0, ea=0x300, opcode_name="op_1")
 
-    # TO snapshot (snap 2) — blk 10 absorbs blk 20's content; blk 50 is new.
-    _insert_snapshot(conn, 2, _TO_LABEL)
-    _insert_block(conn, 2, 10, insn_count=5, succs=[50])
-    # blk 10 in TO keeps its own EAs plus blk 20's first three (0x102..0x104)
-    for i, ea in enumerate((0x100, 0x101, 0x102, 0x103, 0x104)):
-        _insert_insn(conn, 2, 10, i, ea=ea, opcode_name="op_4")
-    _insert_block(conn, 2, 50, insn_count=1, preds=[10])
-    _insert_insn(conn, 2, 50, 0, ea=0x300, opcode_name="op_1")
-
-    conn.commit()
-    conn.close()
+        db.connection().commit()
+    db.close()
     return db_path
 
 

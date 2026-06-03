@@ -3,8 +3,8 @@ from __future__ import annotations
 from tests.unit.core.diag._orm_bind import make_bound_diag_db
 
 import json
-import sqlite3
 
+from d810.core.diag.models import FactObservation, Snapshot, StateTransitionDispatchResolution
 from d810.core.diag.snapshot import snapshot_state_dispatcher_rows
 from d810.diagnostics.state_dispatcher_resolution import (
     load_latest_state_dispatcher_map_from_db,
@@ -13,32 +13,33 @@ from d810.diagnostics.state_dispatcher_resolution import (
 )
 
 
-def _make_db() -> sqlite3.Connection:
-    conn = make_bound_diag_db().connection()
-    conn.execute(
-        """
-        INSERT INTO snapshots
-            (id, label, func_ea_hex, func_ea_i64,
-             maturity, phase, block_count, timestamp)
-        VALUES (1, 'MMAT_LOCOPT_pre_d810', '0x180012df0',
-                0x180012df0, 'MMAT_LOCOPT', 'pre_d810', 0, 0.0)
-        """,
-    )
-    conn.execute(
-        """
-        INSERT INTO snapshots
-            (id, label, func_ea_hex, func_ea_i64,
-             maturity, phase, block_count, timestamp)
-        VALUES (2, 'MMAT_GLBOPT1_post_d810', '0x180012df0',
-                0x180012df0, 'MMAT_GLBOPT1', 'post_d810', 0, 1.0)
-        """,
-    )
-    conn.commit()
-    return conn
+def _make_db():
+    db = make_bound_diag_db()
+    Snapshot.insert(
+        id=1,
+        label="MMAT_LOCOPT_pre_d810",
+        func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012DF0,
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        block_count=0,
+        timestamp=0.0,
+    ).execute()
+    Snapshot.insert(
+        id=2,
+        label="MMAT_GLBOPT1_post_d810",
+        func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012DF0,
+        maturity="MMAT_GLBOPT1",
+        phase="post_d810",
+        block_count=0,
+        timestamp=1.0,
+    ).execute()
+    return db.connection()
 
 
 def _add_transition_fact(
-    conn: sqlite3.Connection,
+    conn,
     *,
     fact_id: str,
     block: int,
@@ -52,38 +53,28 @@ def _add_transition_fact(
         "successor_kind": successor_kind,
         "state_var_stkoff_hex": "0x3c",
     }
-    conn.execute(
-        """
-        INSERT INTO fact_observations
-            (snapshot_id, func_ea_hex, func_ea_i64, fact_id, kind,
-             semantic_key, maturity, phase, confidence,
-             source_block, source_ea_hex, source_ea_i64,
-             block_fingerprint, mop_signature, payload, evidence)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            1,
-            "0x180012df0",
-            0x180012DF0,
-            fact_id,
-            "StateTransitionAnchorFact",
-            fact_id,
-            "MMAT_LOCOPT",
-            "pre_d810",
-            0.85,
-            block,
-            None,
-            None,
-            None,
-            None,
-            json.dumps(payload),
-            "[]",
-        ),
-    )
+    FactObservation.insert(
+        snapshot=1,
+        func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012DF0,
+        fact_id=fact_id,
+        kind="StateTransitionAnchorFact",
+        semantic_key=fact_id,
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.85,
+        source_block=block,
+        source_ea_hex=None,
+        source_ea_i64=None,
+        block_fingerprint=None,
+        mop_signature=None,
+        payload=json.dumps(payload),
+        evidence="[]",
+    ).execute()
 
 
 def _add_state_write_anchor(
-    conn: sqlite3.Connection,
+    conn,
     *,
     block: int,
     state_const: int,
@@ -94,34 +85,24 @@ def _add_state_write_anchor(
         "state_const_hex": f"0x{state_const:016x}",
         "state_var_stkoff_hex": "0x3c",
     }
-    conn.execute(
-        """
-        INSERT INTO fact_observations
-            (snapshot_id, func_ea_hex, func_ea_i64, fact_id, kind,
-             semantic_key, maturity, phase, confidence,
-             source_block, source_ea_hex, source_ea_i64,
-             block_fingerprint, mop_signature, payload, evidence)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            1,
-            "0x180012df0",
-            0x180012DF0,
-            f"state_write_anchor:blk={block}",
-            "StateWriteAnchorFact",
-            f"state_write_anchor:blk={block}",
-            "MMAT_LOCOPT",
-            "pre_d810",
-            0.9,
-            block,
-            None,
-            None,
-            None,
-            None,
-            json.dumps(payload),
-            "[]",
-        ),
-    )
+    FactObservation.insert(
+        snapshot=1,
+        func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012DF0,
+        fact_id=f"state_write_anchor:blk={block}",
+        kind="StateWriteAnchorFact",
+        semantic_key=f"state_write_anchor:blk={block}",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        source_block=block,
+        source_ea_hex=None,
+        source_ea_i64=None,
+        block_fingerprint=None,
+        mop_signature=None,
+        payload=json.dumps(payload),
+        evidence="[]",
+    ).execute()
 
 
 def test_loads_rows_and_resolves_exact_state() -> None:
@@ -249,7 +230,4 @@ def test_persist_idempotent() -> None:
     persist_state_dispatch_resolutions(conn, resolutions)
     persist_state_dispatch_resolutions(conn, resolutions)
 
-    row = conn.execute(
-        "SELECT COUNT(*) FROM state_transition_dispatch_resolutions"
-    ).fetchone()
-    assert row[0] == 1
+    assert StateTransitionDispatchResolution.select().count() == 1

@@ -17,7 +17,6 @@ from tests.system.e2e.hodur.sub7ffd_region_oracle import (
     build_d810_evidence,
     build_ref_evidence_from_spec_path,
     opcode_signature,
-    spec_for,
 )
 
 
