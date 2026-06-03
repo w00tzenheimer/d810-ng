@@ -22,9 +22,13 @@ text. ``terminal_return`` is the Layer-1 -> Layer-2 seam (carrier delivery).
 """
 from __future__ import annotations
 
-from d810.core.typing import Callable, Optional
+from d810.core.typing import Callable, Iterable, Mapping, Optional
 from d810.analyses.control_flow.dominator import compute_dom_tree
 from d810.analyses.control_flow.sese_hammock import compute_postdominator_tree
+from d810.analyses.value_flow.stack_value_flow import (
+    CarrierVerdict,
+    carrier_terminal_returns,
+)
 from d810.ir.structured_region import (
     BlockRegion,
     ConditionRegion,
@@ -32,9 +36,10 @@ from d810.ir.structured_region import (
     Region,
     ReturnRegion,
     SequenceRegion,
+    render_region,
 )
 
-__all__ = ["build_region_tree"]
+__all__ = ["build_region_tree", "structure_recovered_program"]
 
 
 def _as_region(parts: list) -> "Region":
@@ -190,3 +195,33 @@ def build_region_tree(
         return _as_region(parts)
 
     return _region_from(entry, None, frozenset())
+
+
+def structure_recovered_program(
+    flow_graph: object,
+    *,
+    render_block: Callable[[object], tuple],
+    render_condition: Callable[[object], str],
+    carrier_verdicts: Mapping[int, CarrierVerdict],
+    carrier_expr: str,
+    leak_def_sites: Iterable,
+) -> str:
+    """End-to-end L1 -> L2 -> L3: recovered CFG + dataflow verdicts -> goto-free text.
+
+    The carrier verdicts decide which terminals get the real carrier delivered
+    (``carrier_terminal_returns``); the structurer builds the goto-free region
+    tree (``build_region_tree``); ``render_region`` serializes it. In production
+    ``render_block`` is ``hexrays.utils.pseudocode_render.render_block`` and
+    ``render_condition`` the jcc-condition helper; the verdicts come from
+    ``stack_value_flow_live`` + ``analyze_return_carrier`` over the live mba.
+    """
+    fixes = carrier_terminal_returns(
+        carrier_verdicts, carrier_expr=carrier_expr, leak_def_sites=leak_def_sites
+    )
+    tree = build_region_tree(
+        flow_graph,
+        render_block=render_block,
+        render_condition=render_condition,
+        terminal_return=fixes.get,
+    )
+    return render_region(tree)
