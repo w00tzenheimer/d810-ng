@@ -14,8 +14,14 @@ live §1a run that set it, for the same function.
 from __future__ import annotations
 
 _LAST_RECOVERED_FLOW_GRAPH: object | None = None
+_LAST_RECOVERED_STATE_DAG: object | None = None
 
-__all__ = ["record_recovered_flow_graph", "get_recovered_flow_graph"]
+__all__ = [
+    "record_recovered_flow_graph",
+    "get_recovered_flow_graph",
+    "record_recovered_state_dag",
+    "get_recovered_state_dag",
+]
 
 
 def record_recovered_flow_graph(flow_graph: object) -> None:
@@ -27,3 +33,19 @@ def record_recovered_flow_graph(flow_graph: object) -> None:
 def get_recovered_flow_graph() -> object | None:
     """Return the most recently recorded recovered FlowGraph, or ``None``."""
     return _LAST_RECOVERED_FLOW_GRAPH
+
+
+def record_recovered_state_dag(dag: object) -> None:
+    """Stash the §1a recovered ``LinearizedStateDag`` (the clean handler graph).
+
+    Read by the ``D810_USE_STRUCTURER`` diagnostic structurer so it structures
+    the recovered state graph (dispatcher-free) instead of the lifted/projected
+    FlowGraph (which retains the BST comparison blocks).
+    """
+    global _LAST_RECOVERED_STATE_DAG
+    _LAST_RECOVERED_STATE_DAG = dag
+
+
+def get_recovered_state_dag() -> object | None:
+    """Return the most recently recorded recovered state-DAG, or ``None``."""
+    return _LAST_RECOVERED_STATE_DAG

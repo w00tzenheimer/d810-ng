@@ -41,6 +41,7 @@ from d810.transforms.plan import (
 from d810.transforms.edit_simulator import project_post_state
 from d810.analyses.control_flow.recovered_graph_capture import (
     record_recovered_flow_graph,
+    record_recovered_state_dag,
 )
 from d810.transforms.dispatcher_backedge_disconnect_planning import (
     plan_dispatcher_backedge_disconnects,
@@ -435,6 +436,9 @@ def lower_to_direct_graph(
             dispatcher_entry_serial=dispatcher_entry_serial,
             state_var_stkoff=state_var_stkoff,
         )
+    # Diagnostics: stash the recovered (dispatcher-free) state-DAG so the
+    # D810_USE_STRUCTURER dump structures it instead of the lifted FlowGraph.
+    record_recovered_state_dag(dag)
     # Full reconstruction (§1a gap3+gap4): with the recovered IntervalDispatcher AND the BST node set,
     # run the entire portable postprocess orchestration over the enriched DAG and emit the rich neutral
     # mod set through ``planner_modifications`` (the backend's apply channel for InsertBlock /
