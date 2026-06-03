@@ -35,7 +35,9 @@ from d810.analyses.control_flow.linearized_state_dag import (
 )
 from d810.analyses.control_flow.recovered_graph_capture import (
     get_recovered_flow_graph,
+    get_recovered_state_dag,
 )
+from d810.analyses.control_flow.state_dag_cfg_adapter import build_state_dag_cfg
 from d810.backends.hexrays.evidence.stack_value_flow_live import (
     build_live_reaching_facts,
     is_state_var_live_at_entry,
@@ -70,12 +72,31 @@ def structure_recovered_program_live(
         carrier_expr: The real carrier expression to deliver at leaking aligned
             terminals (default ``"a5 + 0xD0"``, the byte_offset pointer).
     """
-    # Prefer the §1a recovered (projected post-edit) FlowGraph — the dispatcher
-    # is gone there. Fall back to lifting the raw mba only if the §1a run did not
-    # stash one (then the structure would be the flattened dispatcher).
-    flow_graph = get_recovered_flow_graph()
-    if flow_graph is None:
-        flow_graph = lift_flow_graph(mba)
+    # Prefer the §1a recovered state-DAG projected to a block CFG: handler blocks
+    # only, dispatcher-free (the BST comparison blocks are gone). Fall back to the
+    # projected FlowGraph, then the raw lift — both of which retain the dispatcher
+    # and would structure it instead of the handler logic.
+    base_graph = get_recovered_flow_graph()
+    if base_graph is None:
+        base_graph = lift_flow_graph(mba)
+    state_dag = get_recovered_state_dag()
+    if state_dag is not None:
+        base_successors = {
+            int(serial): tuple(int(s) for s in getattr(blk, "succs", ()))
+            for serial, blk in base_graph.blocks.items()
+        }
+        flow_graph = build_state_dag_cfg(state_dag, base_successors=base_successors)
+        logger.info(
+            "structurer: using recovered state-DAG (%d handler blocks, entry=%d)",
+            len(flow_graph.blocks),
+            flow_graph.entry_serial,
+        )
+    else:
+        flow_graph = base_graph
+        logger.info(
+            "structurer: no state-DAG stashed; structuring FlowGraph (%d blocks)",
+            len(getattr(flow_graph, "blocks", {})),
+        )
     block_payload = _build_block_payload_by_serial(mba)
 
     branch_cond: dict[int, str] = {}
