@@ -135,8 +135,17 @@ def structure_recovered_program_live(
     try:
         import json as _json
 
+        def _ea_hex(serial: int) -> str | None:
+            # Standing rule: a serialized block number always carries its EA.
+            try:
+                _blk = mba.get_mblock(int(serial))
+                return f"0x{int(_blk.start) & 0xFFFFFFFFFFFFFFFF:016x}"
+            except Exception:
+                return None
+
         _topo = {
             "entry_serial": int(flow_graph.entry_serial),
+            "entry_ea": _ea_hex(int(flow_graph.entry_serial)),
             "return_terminals": sorted(
                 int(s) for s in getattr(flow_graph, "return_terminals", ())
             ),
@@ -144,6 +153,9 @@ def structure_recovered_program_live(
                 str(int(s)): [int(x) for x in flow_graph.successors(s)]
                 for s in flow_graph.blocks
             },
+            # serial -> block start EA, so the dump is self-describing offline
+            # without a separate diag-DB cross-reference.
+            "ea": {str(int(s)): _ea_hex(s) for s in flow_graph.blocks},
         }
         _dump_path = os.path.join(".tmp", "structurer_graph.json")
         with open(_dump_path, "w") as _fh:
