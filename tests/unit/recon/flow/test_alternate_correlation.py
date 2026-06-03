@@ -8,7 +8,6 @@ from d810.diagnostics.alternate_correlation import (
     correlate_collapsed_edges,
     persist_alternate_correlations,
 )
-from d810.core.diag.schema import create_tables
 
 
 def _make_db() -> sqlite3.Connection:

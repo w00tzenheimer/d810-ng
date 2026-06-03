@@ -54,13 +54,11 @@ from d810.core.diag.snapshot import (
 )
 from d810.core.observability import (
     SnapshotRef,
-    emit as _emit,
     register_snapshot_id_resolver,
     subscribe,
     unsubscribe,
 )
 from d810.core.observability_events import (
-    BlockLineageDrainRequested,
     BranchOwnershipProofsObserved,
     BstIntervalDispatcherObserved,
     CaptureMbaSnapshotRequested,

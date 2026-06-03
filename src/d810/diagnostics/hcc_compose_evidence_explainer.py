@@ -52,13 +52,13 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from d810._vendor.peewee import fn
 from d810.core.diag import open_diag_database
 from d810.core.diag.models import Modification
-from d810.core.typing import Any, Iterable, Sequence
+from d810.core.typing import Any, Sequence
 from d810.diagnostics.hcc_byte_cascade_trace import (
     ByteCascadeRow,
     parse_trace_log,

@@ -5,7 +5,6 @@ from d810.core.diag import create_diag_database
 
 import sqlite3
 
-from d810.core.diag.schema import create_tables
 from d810.manager import detect_post_d810_handoff_violations
 
 

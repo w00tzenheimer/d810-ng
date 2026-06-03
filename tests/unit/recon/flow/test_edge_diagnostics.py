@@ -9,7 +9,6 @@ from d810.diagnostics.edge_diagnostics import (
     classify_dag_edges,
     persist_edge_diagnostics,
 )
-from d810.core.diag.schema import create_tables
 
 
 def _make_db() -> sqlite3.Connection:

@@ -13,7 +13,6 @@ from d810.diagnostics.bst_resolution import (
     resolve_state_transition_facts,
     resolve_via_intervals,
 )
-from d810.core.diag.schema import create_tables
 from d810.core.diag.snapshot import snapshot_bst_interval_dispatcher_rows
 
 

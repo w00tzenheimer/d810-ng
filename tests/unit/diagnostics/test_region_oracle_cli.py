@@ -2,7 +2,6 @@
 from __future__ import annotations
 from d810.core.diag import create_diag_database
 
-import sqlite3
 
 
 def test_region_shape_subcommand_lists_persisted_features(tmp_path):
@@ -11,7 +10,6 @@ def test_region_shape_subcommand_lists_persisted_features(tmp_path):
     import os
     import subprocess
     import sys
-    from d810.core.diag.schema import create_tables
 
     db_path = tmp_path / "test.diag.sqlite3"
     conn = create_diag_database(str(db_path)).connection()
@@ -43,7 +41,6 @@ def test_region_shape_subcommand_filters_by_source_and_snapshot_id(tmp_path):
     import os
     import subprocess
     import sys
-    from d810.core.diag.schema import create_tables
 
     db_path = tmp_path / "test.diag.sqlite3"
     conn = create_diag_database(str(db_path)).connection()
@@ -104,7 +101,6 @@ def test_region_shape_subcommand_filters_by_source_and_snapshot_id(tmp_path):
 def test_terminal_tail_dce_subcommand_lists_persisted_causes(tmp_path):
     """Subprocess: python -m d810.diagnostics terminal-tail-dce."""
     import json, os, sys, subprocess
-    from d810.core.diag.schema import create_tables
 
     db = tmp_path / "test.diag.sqlite3"
     conn = create_diag_database(str(db)).connection()
@@ -135,7 +131,6 @@ def test_terminal_tail_dce_subcommand_lists_persisted_causes(tmp_path):
 
 def test_terminal_tail_dce_subcommand_filters_by_byte_index(tmp_path):
     import json, os, sys, subprocess
-    from d810.core.diag.schema import create_tables
 
     db = tmp_path / "test.diag.sqlite3"
     conn = create_diag_database(str(db)).connection()

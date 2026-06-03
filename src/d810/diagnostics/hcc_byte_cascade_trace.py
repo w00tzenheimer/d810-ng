@@ -278,10 +278,7 @@ def _count_var190_refs_per_snapshot(
     that lack one of the columns; returns ``{}`` on any error.
     """
     if byte_index == 0:
-        # Byte 0 has no offset form; match the bare stack var.
-        like = "%var_190.8%"
-        # Subtract +#K. for K >= 1 by issuing a separate query? Simpler:
-        # return 0 for byte 0 -- not informative.
+        # Byte 0 has no offset form and is not informative here; skip it.
         return {}
     pattern = f"%var_190.8+#{byte_index}.8%"
     # raw-SQL: LEFT JOIN + COUNT aggregate grouped per snapshot, gated by a

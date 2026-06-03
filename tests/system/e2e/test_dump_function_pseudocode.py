@@ -445,9 +445,6 @@ class TestDumpFunctionPseudocode:
                             hodur_state_constants = None
                             hodur_transitions = None
                             try:
-                                from d810.optimizers.microcode.flow.flattening.hodur.unflattener import (
-                                    HodurUnflattener,
-                                )
 
                                 # Re-enable d810 briefly to get Hodur context
                                 # (best-effort: may not be available at this maturity)

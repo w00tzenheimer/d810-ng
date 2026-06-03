@@ -65,7 +65,6 @@ from d810.diagnostics.alternate_selection import (
     select_alternate_edges,
 )
 from d810.diagnostics.bst_resolution import (
-    BstResolution,
     load_latest_bst_intervals_from_db,
     parse_latest_bst_intervals_from_log,
     persist_bst_resolutions,

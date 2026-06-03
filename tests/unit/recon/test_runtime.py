@@ -4,7 +4,6 @@ from __future__ import annotations
 from d810.core.diag import create_diag_database
 
 import json
-import sqlite3
 from pathlib import Path
 from types import MappingProxyType
 from unittest.mock import MagicMock, call, create_autospec, patch
@@ -12,14 +11,12 @@ from unittest.mock import MagicMock, call, create_autospec, patch
 import pytest
 
 from d810.core import ProviderPhaseSnapshot
-from d810.core import logging
-from d810.core.diag.schema import create_tables
 from d810.core.settings import configure_settings, reset_settings
 from d810.passes.analysis import AnalysisPhase
 from d810.analyses.value_flow.facts import FactConsumerRecord, FactObservation
 from d810.analyses.control_flow.models import DeobfuscationHints, ReconResult
 from d810.passes.phase import ReconPhase
-from d810.passes.runtime import ReconAnalysisRuntime, logger
+from d810.passes.runtime import ReconAnalysisRuntime
 from d810.passes.store import ReconStore
 
 # ---------------------------------------------------------------------------
@@ -280,7 +277,7 @@ def test_fact_lifecycle_capture_persists_to_diag_snapshot() -> None:
     _bind_snapshot_id(snap_ref, 1)
     try:
         with patch(
-            "d810.core.diag.event_handlers.get_diag_db",
+            "d810.core.diag.event_handlers.get_diag_conn",
             return_value=conn,
         ):
             summary = rt.capture_maturity_facts(
@@ -377,7 +374,7 @@ def test_record_fact_consumers_persists_to_latest_diag_snapshot() -> None:
     install_diag_event_handlers()
     try:
         with patch(
-            "d810.core.diag.event_handlers.get_diag_db", return_value=conn,
+            "d810.core.diag.event_handlers.get_diag_conn", return_value=conn,
         ):
             persisted = rt.record_fact_consumers(_FUNC_EA, (record,))
 
@@ -396,7 +393,7 @@ def test_record_fact_consumers_persists_to_latest_diag_snapshot() -> None:
         assert json.loads(row[5]) == {"active": 0}
 
         with patch(
-            "d810.core.diag.event_handlers.get_diag_db", return_value=conn,
+            "d810.core.diag.event_handlers.get_diag_conn", return_value=conn,
         ):
             # New emit; subscriber sees the row already exists and dedups.
             rt.record_fact_consumers(_FUNC_EA, (record,))

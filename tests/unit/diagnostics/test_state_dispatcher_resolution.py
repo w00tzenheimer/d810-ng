@@ -5,7 +5,6 @@ from d810.core.diag import create_diag_database
 import json
 import sqlite3
 
-from d810.core.diag.schema import create_tables
 from d810.core.diag.snapshot import snapshot_state_dispatcher_rows
 from d810.diagnostics.state_dispatcher_resolution import (
     load_latest_state_dispatcher_map_from_db,

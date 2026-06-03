@@ -9,7 +9,6 @@ from d810.diagnostics.alternate_selection import (
     persist_alternate_selections,
     select_alternate_edges,
 )
-from d810.core.diag.schema import create_tables
 
 
 def _make_db() -> sqlite3.Connection:

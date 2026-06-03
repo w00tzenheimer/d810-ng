@@ -5,7 +5,6 @@ from d810.core.diag import create_diag_database
 import json
 import sqlite3
 
-from d810.core.diag.schema import create_tables
 from tests.system.e2e.hodur.sub7ffd_region_oracle_runner import (
     render_region_oracle_report,
     resolve_oracle_snap_ids,
