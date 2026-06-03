@@ -12,6 +12,9 @@ from d810.ir.flowgraph import FlowGraph, InsnKind
 from d810.core import logging
 from d810.core.typing import Callable, Mapping
 from d810.analyses.control_flow.interval_map import IntervalDispatcher
+from d810.analyses.control_flow.comparison_dispatcher_model import (
+    route_comparison_target,
+)
 from d810.analyses.control_flow.dispatch_region import DispatchRegionDetector
 from d810.analyses.control_flow.scc_analysis import (
     LoopRegion,
@@ -6513,6 +6516,36 @@ def build_linearized_state_dag_from_graph(
                     )
                     return None
                 return direct_node
+            # S4 (dispatcher-model consolidation): exact ``node_by_state.get``
+            # missed.  A mid-interval next-state (e.g. ``0x79f598f7 ∈
+            # [0x737189d6, 0x7c2c0220] → blk 52``) is unrepresented in the
+            # exact index even though a RANGE_BACKED node for the covering
+            # interval already exists.  Resolve it through the SAME interval
+            # logic the comparison dispatcher / ``resolve_target_via_bst`` use
+            # (``route_comparison_target``: exact -> interval -> default with the
+            # ``>= 0xFFFF0000`` degenerate-span guard) so a mid-interval value
+            # reconnects to its RANGE_BACKED node instead of dropping the edge.
+            if resolved_node is None and report.handler_range_map:
+                interval_handler = route_comparison_target(
+                    masked_target_state,
+                    state_to_handler={
+                        state: int(node.handler_serial)
+                        for state, node in node_by_state.items()
+                        if getattr(node, "kind", None) == StateNodeKind.EXACT
+                    },
+                    handler_range_map=report.handler_range_map,
+                )
+                if interval_handler is not None:
+                    interval_node = primary_node_by_handler.get(int(interval_handler))
+                    if interval_node is not None:
+                        logger.info(
+                            "DAG: target-node interval-containment resolve: "
+                            "state 0x%X -> blk[%d] (kind=%s)",
+                            masked_target_state,
+                            int(interval_node.handler_serial),
+                            getattr(interval_node, "kind", None),
+                        )
+                        return interval_node
         if resolved_node is not None:
             return resolved_node
         if target_handler_serial is None:
