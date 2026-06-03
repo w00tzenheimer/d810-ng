@@ -42,6 +42,13 @@ from d810.analyses.data_flow.analyzed_cfg import AnalyzedCFG, FixpointResult
 from d810.analyses.data_flow.configuration import Direction, FixpointConfiguration
 from d810.analyses.data_flow.domain import FlowDomain, NodeId, StateT
 from d810.analyses.data_flow.exceptions import FixpointDidNotConverge
+from d810.analyses.data_flow.resolve import (
+    ResolveContext,
+    ResolvePoint,
+    ResolveTier,
+    VarRef,
+    resolve,
+)
 from d810.analyses.data_flow.working_set import WorkingSet
 from d810.analyses.data_flow.worklist import run_fixpoint
 
@@ -59,12 +66,17 @@ __all__ = [
     "Guarded",
     "NodeId",
     "OneOf",
+    "ResolveContext",
+    "ResolvePoint",
+    "ResolveTier",
     "RouteOneOf",
     "RouteResult",
     "StateT",
     "TOP",
     "Top",
     "Unknown",
+    "VarRef",
     "WorkingSet",
+    "resolve",
     "run_fixpoint",
 ]
