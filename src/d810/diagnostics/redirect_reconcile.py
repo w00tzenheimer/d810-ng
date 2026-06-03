@@ -25,7 +25,7 @@ import sqlite3
 from dataclasses import replace as _dc_replace
 from pathlib import Path
 
-from d810.core.diag import open_diag_database
+from d810.core.diag import read_diag_db
 from d810.core.diag.models import Block, Instruction, Modification, StateCfgEdge
 from d810.analyses.control_flow.dispatcher_aware_classifier import (
     DispatcherContext,
@@ -245,9 +245,8 @@ def run_reconcile(
     log_signals = parse_log_signals(log_text)
     logged_intent = parse_logged_intent(log_text)
 
-    db = open_diag_database(str(db_path))
-    conn = db.connection()
-    try:
+    with read_diag_db(str(db_path)) as db:
+        conn = db.connection()
         persisted_dup_sources = load_persisted_dup_sources(conn)
         if persisted_dup_sources:
             log_signals = _dc_replace(
@@ -314,8 +313,6 @@ def run_reconcile(
             bst_table=bst_table,
             log_signals=log_signals,
         )
-    finally:
-        db.close()
 
     lines: list[str] = [
         f"# Reconciliation: snap {snap_id} ({db_path})",

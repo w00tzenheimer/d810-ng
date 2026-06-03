@@ -19,7 +19,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from d810.core.diag import open_diag_database
+from d810.core.diag import read_diag_db
 from d810.core.diag.models import Snapshot
 from d810.core.typing import Any, Iterable, Sequence
 
@@ -381,9 +381,8 @@ def enrich_rows_with_db(
     """
     if not db_path.exists():
         return list(rows)
-    db = open_diag_database(str(db_path))
-    conn = db.connection()
-    try:
+    with read_diag_db(str(db_path)) as db:
+        conn = db.connection()
         from dataclasses import replace as _dc_replace
 
         out: list[ByteCascadeRow] = []
@@ -400,8 +399,6 @@ def enrich_rows_with_db(
                 )
             )
         return out
-    finally:
-        db.close()
 
 
 # ---------------------------------------------------------------------------

@@ -35,6 +35,22 @@ _IDA_MODULES = frozenset(
 
 
 @pytest.fixture(autouse=True)
+def _release_diag_test_binds():
+    """Disconnect the per-test bound diag DB singleton at teardown.
+
+    Production never relies on a process-global Model bind; unit tests that call
+    ORM readers directly bind explicitly via ``make_bound_diag_db``
+    (``tests.unit.core.diag._orm_bind``). This restores the prior bind and
+    disconnects that singleton after each test so it never leaks. No-op for
+    tests that never bound anything.
+    """
+    yield
+    from tests.unit.core.diag._orm_bind import release_diag_test_binds
+
+    release_diag_test_binds()
+
+
+@pytest.fixture(autouse=True)
 def _enforce_no_ida_mocks():
     """Fail any unit test that injects mock IDA modules into sys.modules."""
 

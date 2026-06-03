@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from d810._vendor.peewee import fn
-from d810.core.diag import open_diag_database
+from d810.core.diag import read_diag_db
 from d810.core.diag.models import (
     Block,
     FactObservation,
@@ -529,12 +529,9 @@ def explain(
             )
             for r in targets
         ]
-    db = open_diag_database(str(db_path))
-    try:
+    with read_diag_db(str(db_path)) as db:
         conn = db.connection()
         return [explain_byte(conn, r) for r in targets]
-    finally:
-        db.close()
 
 
 # ---------------------------------------------------------------------------

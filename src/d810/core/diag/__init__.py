@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from d810._vendor.peewee import SqliteDatabase
@@ -66,15 +67,16 @@ def create_diag_database(db_path: str) -> SqliteDatabase:
     db = SqliteDatabase(db_path, pragmas={"journal_mode": "wal"})
     db.connect()
     create_tables(db)
-    # Bind every Model to this live db so existing ORM call-sites work. (Phase D
-    # retires this permanent bind in favour of scoped ``bind_ctx`` once every
-    # call-site is converted; until then it coexists harmlessly with bind_ctx,
-    # which restores the prior bind on exit.)
-    db.bind(MODELS)
+    # NO process-global ``db.bind(MODELS)`` here. The live WRITE path binds the
+    # Models per-op with ``diag_models_on(active_diag_db())`` (``bind_ctx``), so
+    # it never depends on a mutable global bind -- this is the retirement of the
+    # Phase-B/C closed-db hazard source (a CLI ``open_diag_database`` rebinding
+    # the global Model bind could no longer corrupt a live writer even in
+    # principle, because the writer does not consult that bind).
     # Record the active WRITE db so live writers can ``bind_ctx`` to it via
     # ``active_diag_db()``. The read-only ``open_diag_database`` deliberately
     # does NOT set this, so a CLI inspection can never hijack the live writer's
-    # target (the Phase-B/C closed-db hazard).
+    # target.
     _active_db = db
     return db
 
@@ -89,9 +91,15 @@ def open_diag_database(db_path: str) -> SqliteDatabase:
     ORM reads (``Model.select()...``) work, leaving the inspected database
     byte-unchanged. Used by the developer-CLI reader modules.
 
-    Binding is module-global (the Models follow the most-recent bind), which is
-    correct for a single-DB CLI process and for tests that inspect one DB at a
-    time.
+    Binding is module-global (the Models follow the most-recent bind). This is
+    the one *sanctioned* process-global bind, retained for the two callers that
+    cannot use the scoped :func:`read_diag_db` CM: the developer CLI
+    ``__main__`` (one DB for the whole ~960-line dispatch) and
+    ``hcc_anchor_snapshot_context`` (returns a bound connection that ORM reads
+    outlive the open call). It is safe BECAUSE the live WRITE path no longer
+    consults the global bind (it uses ``active_diag_db()`` + ``bind_ctx``), so a
+    reader rebind here can never corrupt a writer. New library readers must use
+    :func:`read_diag_db` (``bind_ctx``, scoped, no global mutation) instead.
     """
     # Open the EXISTING file directly (path => the db is initialized, so ORM
     # execution works) but do NOT call create_tables / migrate, and set no
@@ -102,6 +110,35 @@ def open_diag_database(db_path: str) -> SqliteDatabase:
     _overlay_legacy_schema(db)
     db.bind(MODELS)
     return db
+
+
+@contextmanager
+def read_diag_db(db_path: str):
+    """Open an existing diag DB read-only, bind the Models for the block, close on exit.
+
+    The bind-safe reader entry point. Opens the file non-mutatingly (no DDL;
+    legacy ``dag_*`` schema overlaid for old DBs), binds the Models via
+    ``diag_models_on`` (``bind_ctx``) for the duration of the ``with`` block --
+    restoring the prior binding on exit -- and closes the db. Use this instead
+    of the ``db = open_diag_database(path); ...; db.close()`` pattern so no
+    reader depends on the mutable process-global Model bind. Re-entrant: nested
+    reads of different DBs restore each other's binding correctly (the
+    ``residual_worksheet`` two-DB case relied on this).
+
+    Example::
+
+        with read_diag_db(str(db_path)) as db:
+            conn = db.connection()  # raw-SQL readers
+            rows = Snapshot.select()...  # ORM readers
+    """
+    db = SqliteDatabase(db_path)
+    db.connect()
+    _overlay_legacy_schema(db)
+    try:
+        with diag_models_on(db):
+            yield db
+    finally:
+        db.close()
 
 
 def _overlay_legacy_schema(db: SqliteDatabase) -> None:

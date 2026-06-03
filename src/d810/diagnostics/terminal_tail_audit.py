@@ -19,7 +19,7 @@ import sqlite3
 from pathlib import Path
 
 from d810._vendor.peewee import JOIN, fn
-from d810.core.diag import open_diag_database
+from d810.core.diag import read_diag_db
 from d810.core.diag.models import Block, FactObservation, Snapshot
 from d810.transforms.terminal_tail_loss_localizer import (
     ByteEmitInitialState,
@@ -255,9 +255,8 @@ def run_audit(
     Returns the formatted report; missing-fact cases yield a one-line
     explanation rather than raising, so the CLI can produce stable output.
     """
-    db = open_diag_database(str(db_path))
-    conn = db.connection()
-    try:
+    with read_diag_db(str(db_path)) as db:
+        conn = db.connection()
         observations = iter_observations(conn)
         if not observations:
             return f"# No TerminalByteEmitterFact rows in {db_path}\n"
@@ -287,5 +286,3 @@ def run_audit(
             pieces.append("")
             pieces.append(format_localization_report(loc_report))
         return "\n".join(pieces) + "\n"
-    finally:
-        db.close()

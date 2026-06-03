@@ -21,7 +21,7 @@ import sqlite3
 from pathlib import Path
 
 from d810._vendor.peewee import fn
-from d810.core.diag import open_diag_database
+from d810.core.diag import read_diag_db
 from d810.core.diag.models import Block, Instruction, Snapshot
 from d810.diagnostics.output import add_output_argument, get_output, write_output
 from d810.core.typing import Iterable
@@ -129,9 +129,8 @@ def render_snapshot(
     include_eas: bool,
 ) -> list[str]:
     """Render the requested snapshot's blocks + instructions to a string list."""
-    db = open_diag_database(str(db_path))
-    conn = db.connection()
-    try:
+    with read_diag_db(str(db_path)) as db:
+        conn = db.connection()
         snap_id, snap_label = _resolve_snapshot_id(
             conn, snapshot_id=snapshot_id, label=label,
         )
@@ -167,8 +166,6 @@ def render_snapshot(
                 else:
                     out.append(f"  [{insn_index}] {opcode}  {dstr}")
         return out
-    finally:
-        db.close()
 
 
 def register_parser(sub) -> None:

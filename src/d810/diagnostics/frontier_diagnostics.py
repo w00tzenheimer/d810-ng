@@ -8,7 +8,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from d810.core.diag import open_diag_database
+from d810.core.diag import read_diag_db
 from d810.core.diag.models import Snapshot, StateCfgFrontierClosureDiagnostic
 from d810.diagnostics.output import add_output_argument, get_output, write_output
 
@@ -219,15 +219,12 @@ def run(args: argparse.Namespace) -> int:
         print(f"error: db not found: {db_path}", file=sys.stderr)
         return 2
     kind = None if args.all_kinds else args.kind
-    db = open_diag_database(str(db_path))
-    try:
+    with read_diag_db(str(db_path)) as db:
         rows = load_frontier_diagnostics(
             db.connection(),
             snapshot_id=args.snapshot_id,
             kind=kind,
         )
-    finally:
-        db.close()
     if args.json_output:
         write_output(get_output(args), json.dumps(rows, indent=2, sort_keys=True))
     else:

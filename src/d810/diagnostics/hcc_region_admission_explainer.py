@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from d810._vendor.peewee import fn
-from d810.core.diag import open_diag_database
+from d810.core.diag import read_diag_db
 from d810.core.diag.models import (
     RegionShapeFeature,
     StateCfgEdge,
@@ -499,12 +499,9 @@ def explain(
             classify(r, gather_evidence_no_db(r))
             for r in targets
         ]
-    db = open_diag_database(str(db_path))
-    try:
+    with read_diag_db(str(db_path)) as db:
         conn = db.connection()
         return [classify(r, gather_evidence(conn, r)) for r in targets]
-    finally:
-        db.close()
 
 
 def gather_evidence_no_db(row: ByteCascadeRow) -> AdmissionEvidence:

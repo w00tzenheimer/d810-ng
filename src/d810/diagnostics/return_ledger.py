@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from d810._vendor.peewee import fn
-from d810.core.diag import open_diag_database
+from d810.core.diag import read_diag_db
 from d810.core.diag.models import Block, Instruction, Snapshot
 
 
@@ -555,9 +555,8 @@ def run_ledger(
     """
     if not db_path.exists():
         return f"Error: diag DB not found: {db_path}\n"
-    db = open_diag_database(str(db_path))
-    conn = db.connection()
-    try:
+    with read_diag_db(str(db_path)) as db:
+        conn = db.connection()
         if list_snapshots_only:
             lines = ["snapshots:"]
             for sid, label, bc in list_snapshots(conn):
@@ -576,8 +575,6 @@ def run_ledger(
         v660_map = query_v660_writers(conn, sid)
         reachable = bfs_reachable(blocks)
         paths = trace_return_paths(blocks, writers, v660_map, reachable)
-    finally:
-        db.close()
 
     after_returns: list[AfterReturn] = []
     if dump_path is not None and dump_path.exists():

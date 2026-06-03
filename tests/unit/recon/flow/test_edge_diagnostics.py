@@ -1,6 +1,6 @@
 """Tests for DAG edge classification."""
 from __future__ import annotations
-from d810.core.diag import create_diag_database
+from tests.unit.core.diag._orm_bind import make_bound_diag_db
 
 import json
 import sqlite3
@@ -12,7 +12,7 @@ from d810.diagnostics.edge_diagnostics import (
 
 
 def _make_db() -> sqlite3.Connection:
-    conn = create_diag_database(":memory:").connection()
+    conn = make_bound_diag_db().connection()
     conn.execute(
         """
         INSERT INTO snapshots

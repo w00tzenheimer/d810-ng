@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from d810.core.diag import create_diag_database
+from tests.unit.core.diag._orm_bind import make_bound_diag_db
 from d810.core.diag.models import Modification, Snapshot
 from d810.diagnostics.hcc_byte_cascade_trace import ByteCascadeRow
 from d810.diagnostics.hcc_compose_evidence_explainer import (
@@ -298,9 +298,9 @@ def test_format_report_json_round_trips():
 
 @pytest.fixture
 def in_memory_db() -> sqlite3.Connection:
-    # create_diag_database binds the Models so explain_byte's ORM reads
+    # make_bound_diag_db binds the Models so explain_byte's ORM reads
     # target this in-memory DB; it returns the live connection.
-    db = create_diag_database(":memory:")
+    db = make_bound_diag_db()
     Snapshot.insert(
         id=7,
         label="hcc_post_apply",

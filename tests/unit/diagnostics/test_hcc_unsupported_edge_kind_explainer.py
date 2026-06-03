@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from d810.core.diag import create_diag_database
+from tests.unit.core.diag._orm_bind import make_bound_diag_db
 from d810.core.diag.models import (
     Block,
     FactObservation,
@@ -245,9 +245,9 @@ def test_format_report_json_round_trips():
 
 @pytest.fixture
 def in_memory_db() -> sqlite3.Connection:
-    # create_diag_database binds the Models so explain_byte's ORM reads
+    # make_bound_diag_db binds the Models so explain_byte's ORM reads
     # target this in-memory DB; the fixture returns the live connection.
-    db = create_diag_database(":memory:")
+    db = make_bound_diag_db()
     Snapshot.insert(
         id=7, label="GLBOPT1_post_d810", func_ea_hex="0x0", func_ea_i64=0,
         maturity="MMAT_GLBOPT1", phase="unknown", block_count=0, timestamp=0.0,

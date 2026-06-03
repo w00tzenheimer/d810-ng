@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from d810.core.diag import create_diag_database
+from tests.unit.core.diag._orm_bind import make_bound_diag_db
 from d810.core.diag.models import RenderedProgramLine
 from d810.diagnostics.inspect_state_node import (
     extract_after_lines,
@@ -57,9 +57,9 @@ def test_normalize_state_canonical_and_token(raw, expected_canon, expected_token
 
 
 def _make_conn():
-    # create_diag_database binds the peewee Models to this in-memory DB, so the
+    # make_bound_diag_db binds the peewee Models to this in-memory DB, so the
     # ORM reads in inspect_state_node hit this fixture data.
-    return create_diag_database(":memory:")
+    return make_bound_diag_db()
 
 
 def _insert_lines(
