@@ -234,12 +234,12 @@ class TestHodurBaselines:
                 "sub_7FFD3338C040 return-carrier regression: "
                 "the AFTER pseudocode no longer returns 0x5644FD01B1049C4B"
             )
-            from d810.core.diag import get_diag_db
+            from d810.core.diag import get_diag_conn
             from tests.system.e2e.hodur.sub7ffd_region_oracle_runner import (
                 render_region_oracle_report,
             )
 
-            diag_conn = get_diag_db(func_ea)
+            diag_conn = get_diag_conn(func_ea)
             if diag_conn is None:
                 pytest.fail("sub7FFD region oracle requires a diag DB")
             report = render_region_oracle_report(
@@ -325,10 +325,10 @@ class TestSemanticReferenceRegression:
                     pytest.fail("sub_7FFD3338C040 decompile returned None")
 
         # Find the diag DB created during decompilation
-        from d810.core.diag import get_diag_db
+        from d810.core.diag import get_diag_conn
         from d810.diagnostics.query import rendered_program_text
 
-        diag_conn = get_diag_db(func_ea)
+        diag_conn = get_diag_conn(func_ea)
         if diag_conn is None:
             pytest.fail(
                 "sub_7FFD3338C040 semantic-reference guard requires a diag DB; "

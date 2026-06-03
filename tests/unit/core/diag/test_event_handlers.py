@@ -100,7 +100,7 @@ def _bus_and_handlers(fake_conn):
         return fake_conn
 
     with patch(
-        "d810.core.diag.event_handlers.get_diag_db", new=fake_get_diag_db,
+        "d810.core.diag.event_handlers.get_diag_conn", new=fake_get_diag_db,
     ):
         install_diag_event_handlers()
         yield
@@ -370,7 +370,7 @@ def test_capture_handler_short_circuits_when_no_conn():
 
     reset_diagnostic_bus()
     with patch(
-        "d810.core.diag.event_handlers.get_diag_db", new=no_conn,
+        "d810.core.diag.event_handlers.get_diag_conn", new=no_conn,
     ):
         install_diag_event_handlers()
         snap = request_capture_mba_snapshot(
