@@ -7,6 +7,8 @@ import sqlite3
 
 import pytest
 
+from d810._vendor import peewee
+
 from d810.core.diag.formatting import format_block_id
 from d810.core.diag.schema import create_tables
 from d810.transforms.block_lineage import (
@@ -899,7 +901,9 @@ class TestSnapshotDag:
         )
 
         bad_edge = DagEdge(0, None, None, "BOGUS_KIND")
-        with pytest.raises(sqlite3.IntegrityError):
+        # snapshot_dag is ORM now: peewee rewraps the CHECK-constraint
+        # sqlite3.IntegrityError as peewee.IntegrityError.
+        with pytest.raises(peewee.IntegrityError):
             snapshot_dag(conn, 1, [], [bad_edge])
 
     def test_ordered_path_as_json(self) -> None:

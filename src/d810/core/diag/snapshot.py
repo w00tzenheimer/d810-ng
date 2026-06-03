@@ -31,8 +31,10 @@ from d810.core.diag.models import (
     RenderedProgramNode,
     Snapshot,
     StateCfgFrontierClosureDiagnostic,
+    StateCfgEdge,
     StateCfgLocalEdge,
     StateCfgLocalSegment,
+    StateCfgNode,
     StateCfgNodeBlock,
     StateDispatcherRow,
     StateTransitionDispatchResolution,
@@ -342,56 +344,42 @@ def snapshot_dag(
         nodes: List of DagNode dataclasses.
         edges: List of DagEdge dataclasses.
     """
-    # NOTE: still raw SQL (NOT yet ORM). Converting these two inserts to
-    # ``StateCfgEdge.insert_many(...).execute()`` makes a CHECK-constraint
-    # violation surface as ``peewee.IntegrityError`` (peewee's module-level
-    # ExceptionWrapper rewraps the underlying ``sqlite3.IntegrityError``,
-    # and the two classes are unrelated). The existing
-    # ``test_edge_kind_constraint`` asserts ``pytest.raises(
-    # sqlite3.IntegrityError)`` on ``snapshot_dag`` and would break. Per the
-    # Phase B brief the writer tests must stay green unchanged, so this
-    # writer's ORM conversion is deferred to the phase that also rewrites
-    # that assertion (spec §6 decision 3 keeps CHECK-violation tests as
-    # raw-SQL-subject). All other writers are converted.
-    node_rows = []
-    for n in nodes:
-        st_hex, st_i64 = _dual(n.state)
-        node_rows.append((
-            snapshot_id,
-            st_hex,
-            st_i64,
-            n.entry_block,
-            n.classification,
-            n.shared_suffix,
-        ))
-    conn.executemany(
-        "INSERT INTO state_cfg_nodes VALUES (?,?,?,?,?,?)",
-        node_rows,
-    )
-
-    edge_rows = []
-    for e in edges:
-        ss_hex, ss_i64 = _dual(e.source_state)
-        ts_hex, ts_i64 = _dual(e.target_state)
-        edge_rows.append((
-            snapshot_id,
-            e.edge_id,
-            ss_hex,
-            ss_i64,
-            ts_hex,
-            ts_i64,
-            e.edge_kind,
-            e.source_block,
-            e.source_arm,
-            e.target_entry,
-            e.ordered_path,
-        ))
-    conn.executemany(
-        "INSERT INTO state_cfg_edges VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        edge_rows,
-    )
-
-    conn.commit()
+    # ORM, bind_ctx-scoped to the active write db (Phase D). A bad ``edge_kind``
+    # now surfaces as ``peewee.IntegrityError`` (peewee rewraps the underlying
+    # ``sqlite3.IntegrityError``); the constraint test asserts accordingly.
+    node_rows = [
+        {
+            "snapshot": snapshot_id,
+            "state_hex": (sv := _dual(n.state))[0],
+            "state_i64": sv[1],
+            "entry_block": n.entry_block,
+            "classification": n.classification,
+            "shared_suffix": n.shared_suffix,
+        }
+        for n in nodes
+    ]
+    edge_rows = [
+        {
+            "snapshot": snapshot_id,
+            "edge_id": e.edge_id,
+            "source_state_hex": (ss := _dual(e.source_state))[0],
+            "source_state_i64": ss[1],
+            "target_state_hex": (ts := _dual(e.target_state))[0],
+            "target_state_i64": ts[1],
+            "edge_kind": e.edge_kind,
+            "source_block": e.source_block,
+            "source_arm": e.source_arm,
+            "target_entry": e.target_entry,
+            "ordered_path": e.ordered_path,
+        }
+        for e in edges
+    ]
+    db = _diag_db()
+    with diag_models_on(db), db.atomic():
+        if node_rows:
+            StateCfgNode.insert_many(node_rows).execute()
+        if edge_rows:
+            StateCfgEdge.insert_many(edge_rows).execute()
 
 
 def _enum_name(value: object) -> str:
