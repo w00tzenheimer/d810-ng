@@ -159,6 +159,26 @@ def structure_recovered_program_live(
             len(_self),
             sorted(_back)[:20],
         )
+        # Reachability BFS from entry over the adapter graph: distinguishes
+        # "reachable but structurer didn't visit" (traversal gap) from
+        # "unreachable in the graph" (edge gap).
+        _seen_bfs = {_entry}
+        _stack = [_entry]
+        while _stack:
+            _n = _stack.pop()
+            for _s in _succ.get(_n, ()):
+                if _s not in _seen_bfs:
+                    _seen_bfs.add(_s)
+                    _stack.append(_s)
+        _term = [s for s in flow_graph.blocks if not _succ.get(s)]
+        _unreach_term = sorted(t for t in _term if t not in _seen_bfs)
+        logger.info(
+            "structurer: BFS-reachable=%d/%d blocks; terminals=%s unreachable-terminals=%s",
+            len(_seen_bfs),
+            len(_succ),
+            sorted(_term),
+            _unreach_term,
+        )
 
     branch_cond: dict[int, str] = {}
     for serial in flow_graph.blocks:
@@ -232,9 +252,11 @@ def structure_recovered_program_live(
     )
     return_terminals = getattr(flow_graph, "return_terminals", frozenset())
     terminal_set = set(terminals)
+    _reached: set[int] = set()
 
     def _terminal_return(serial: int) -> str | None:
         s = int(serial)
+        _reached.add(s)
         if s in fixes:
             return fixes[s]
         if s in return_terminals or s in terminal_set:
@@ -247,4 +269,11 @@ def structure_recovered_program_live(
         render_condition=_render_condition,
         terminal_return=_terminal_return,
     )
+    if logger.info_on:
+        missed = sorted(terminal_set - _reached)
+        logger.info(
+            "structurer: terminal_return reached %s; UNREACHED terminals=%s",
+            sorted(t for t in _reached if t in terminal_set),
+            missed,
+        )
     return render_region(tree)
