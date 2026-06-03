@@ -3,16 +3,13 @@ from __future__ import annotations
 from d810.core.diag import create_diag_database
 
 import json
-import sqlite3
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from d810.diagnostics.__main__ import main
-from d810.core.diag.schema import create_tables
 from d810.core.diag.snapshot import (
     _dual,
     snapshot_bst_interval_dispatcher_rows,

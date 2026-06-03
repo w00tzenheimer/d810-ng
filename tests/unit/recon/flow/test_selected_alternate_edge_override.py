@@ -12,7 +12,6 @@ from unittest.mock import patch
 import pytest
 
 from d810.ir.state_dag_key import StateDagNodeKey
-from d810.core.diag.schema import create_tables
 from d810.core.observability import SnapshotRef
 from d810.core.settings import reset_settings
 from d810.analyses.value_flow.model import (

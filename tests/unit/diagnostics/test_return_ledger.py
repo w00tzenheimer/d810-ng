@@ -9,10 +9,8 @@ import pytest
 
 from d810.core.diag import open_diag_database
 from d810.diagnostics.return_ledger import (
-    AfterReturn,
     DEFAULT_RETURN_SLOT_STKOFF,
     DEFAULT_V660_STKOFF,
-    ReturnPath,
     ReturnSlotWriter,
     bfs_reachable,
     extract_after_returns,

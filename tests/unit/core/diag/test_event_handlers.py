@@ -8,7 +8,6 @@ the :class:`CaptureMbaSnapshotRequested` handler.
 from __future__ import annotations
 from d810.core.diag import create_diag_database
 
-import sqlite3
 from unittest.mock import patch
 
 import pytest
@@ -23,7 +22,6 @@ from d810.core.diag.event_handlers import (
     is_installed,
     uninstall_diag_event_handlers,
 )
-from d810.core.diag.schema import create_tables
 from d810.core.observability import (
     SnapshotRef,
     emit,

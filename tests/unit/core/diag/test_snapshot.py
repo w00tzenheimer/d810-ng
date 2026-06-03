@@ -3,14 +3,12 @@ from __future__ import annotations
 from d810.core.diag import create_diag_database
 
 import json
-import sqlite3
 
 import pytest
 
 from d810._vendor import peewee
 
 from d810.core.diag.formatting import format_block_id
-from d810.core.diag.schema import create_tables
 from d810.transforms.block_lineage import (
     BlockLineageEntry,
     buffer_block_lineage,

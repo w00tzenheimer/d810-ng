@@ -5,7 +5,6 @@ import json
 import sqlite3
 import time
 from collections.abc import Mapping as MappingABC
-from dataclasses import dataclass, field
 
 # Neutral observation dataclasses live under d810.core.observability_models
 # so the runtime producer and the SQLite sink can share them without a
@@ -41,7 +40,6 @@ from d810.core.diag.models import (
     SwitchCaseTransitionFact,
     WatchBlockTransition,
 )
-from d810.core.formatting import format_block_id
 from d810.core.observability_models import (
     BlockSnapshot as BlockSnapshot,
     DagEdge as DagEdge,

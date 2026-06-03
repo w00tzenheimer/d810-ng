@@ -16,7 +16,6 @@ import pytest
 
 from d810.diagnostics.__main__ import main
 from d810.diagnostics.query import merge_causality
-from d810.core.diag.schema import create_tables
 from d810.core.diag.snapshot import _dual
 
 

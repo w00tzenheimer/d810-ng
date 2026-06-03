@@ -6,7 +6,6 @@ import json
 import sqlite3
 
 from d810.transforms.dag_frontier_closure import FrontierClosureDiagnosticRow
-from d810.core.diag.schema import create_tables
 from d810.core.diag.snapshot import snapshot_dag_frontier_closure_diagnostics
 from d810.diagnostics.frontier_diagnostics import (
     format_frontier_diagnostics,

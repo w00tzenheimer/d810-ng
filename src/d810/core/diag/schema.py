@@ -8,7 +8,6 @@ Models (``db.create_tables(MODELS)``) and then the view DDL.
 """
 from __future__ import annotations
 
-import sqlite3
 
 from d810._vendor.peewee import SqliteDatabase
 from d810._vendor.playhouse.migrate import SqliteMigrator, migrate
