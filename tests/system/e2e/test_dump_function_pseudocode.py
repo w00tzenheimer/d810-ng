@@ -562,37 +562,47 @@ class TestDumpFunctionPseudocode:
                                     "\n[linearized semantic reference-like program dump failed: "
                                     f"{e}]"
                                 )
-                            if (
-                                os.environ.get("D810_USE_STRUCTURER") == "1"
-                                and hodur_stkoff is not None
-                            ):
-                                try:
-                                    from d810.backends.hexrays.evidence.structured_program_live import (
-                                        structure_recovered_program_live,
-                                    )
+                            if os.environ.get("D810_USE_STRUCTURER") == "1":
+                                # State slot: legacy detector if present, else
+                                # the §1a recovery value via env (sub_7FFD=0x64).
+                                _state_slot = hodur_stkoff
+                                _env_state = os.environ.get(
+                                    "D810_STRUCTURER_STATE_SLOT"
+                                )
+                                if _env_state is not None:
+                                    _state_slot = int(_env_state, 0)
+                                _ret_slot = int(
+                                    os.environ.get(
+                                        "D810_STRUCTURER_RETURN_SLOT", "0x7F0"
+                                    ),
+                                    0,
+                                )
+                                print(
+                                    f"\n[D810_USE_STRUCTURER active: state_slot={_state_slot}"
+                                    f" return_slot={hex(_ret_slot)}]"
+                                )
+                                if _state_slot is not None:
+                                    try:
+                                        from d810.backends.hexrays.evidence.structured_program_live import (
+                                            structure_recovered_program_live,
+                                        )
 
-                                    _ret_slot = int(
-                                        os.environ.get(
-                                            "D810_STRUCTURER_RETURN_SLOT", "0x7F0"
-                                        ),
-                                        0,
-                                    )
-                                    structured = structure_recovered_program_live(
-                                        mba,
-                                        state_var_stkoff=int(hodur_stkoff),
-                                        return_slot_stkoff=_ret_slot,
-                                    )
-                                    print(
-                                        f"\n--- STRUCTURED PROGRAM (D810_USE_STRUCTURER, {mba_source}) ---"
-                                    )
-                                    print(structured)
-                                    print("=" * 88)
-                                except Exception as exc:
-                                    import traceback as _tb
+                                        structured = structure_recovered_program_live(
+                                            mba,
+                                            state_var_stkoff=int(_state_slot),
+                                            return_slot_stkoff=_ret_slot,
+                                        )
+                                        print(
+                                            f"\n--- STRUCTURED PROGRAM (D810_USE_STRUCTURER, {mba_source}) ---"
+                                        )
+                                        print(structured)
+                                        print("=" * 88)
+                                    except Exception as exc:
+                                        import traceback as _tb
 
-                                    print(
-                                        f"\n[structured program failed: {exc}]\n{_tb.format_exc()}"
-                                    )
+                                        print(
+                                            f"\n[structured program failed: {exc}]\n{_tb.format_exc()}"
+                                        )
                             if dump_all_linearized_programs:
                                 try:
                                     ida_label_program = build_live_linearized_program(
