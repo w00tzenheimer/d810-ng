@@ -591,6 +591,7 @@ class TestDumpFunctionPseudocode:
                                             mba,
                                             state_var_stkoff=int(_state_slot),
                                             return_slot_stkoff=_ret_slot,
+                                            dispatcher_entry_serial=dispatcher_serial,
                                         )
                                         print(
                                             f"\n--- STRUCTURED PROGRAM (D810_USE_STRUCTURER, {mba_source}) ---"
