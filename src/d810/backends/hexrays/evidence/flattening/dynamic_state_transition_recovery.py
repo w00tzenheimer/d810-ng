@@ -11,6 +11,7 @@ from d810.evaluator.hexrays_microcode.dynamic_state_write_backend import (
     DerivedXorTransitionEvidence,
     derive_initial_xor_dispatch_state,
     recognize_carrier_xor_transition,
+    recognize_constant_folded_state_write,
     recognize_derived_xor_dispatcher_model,
     recognize_global_or_state_write_transition,
 )
@@ -173,6 +174,17 @@ def recover_dynamic_state_write_transitions(
                 known_states=known_state_set,
             )
             if evidence is None:
+                # General fallback: fold an MBA-over-constants next-state write
+                # (the bulk of OLLVM's unresolved next-states) via the KnownBits
+                # value domain. Only accepts a result that is a known state.
+                evidence = recognize_constant_folded_state_write(
+                    mba=mba,
+                    handler_serial=handler.check_block,
+                    state_var_stkoff=int(state_var_stkoff),
+                    state_var_lvar_idx=state_var_lvar_idx,
+                    known_states=known_state_set,
+                )
+            if evidence is None:
                 continue
             if evidence.target_state not in cloned_handlers:
                 continue
@@ -197,11 +209,13 @@ def recover_dynamic_state_write_transitions(
             added += 1
             logger.info(
                 "Recovered guarded dynamic state transition: "
-                "state 0x%08X blk[%d] -> 0x%08X via global 0x%X",
+                "state 0x%08X blk[%d] -> 0x%08X via %s",
                 int(state_value) & 0xFFFFFFFF,
                 int(handler.check_block),
                 int(evidence.target_state) & 0xFFFFFFFF,
-                int(evidence.global_ea),
+                evidence.provenance
+                if evidence.provenance != "global_or_state_write"
+                else f"global 0x{int(evidence.global_ea):X}",
             )
 
     derived_model = recognize_derived_xor_dispatcher_model(
