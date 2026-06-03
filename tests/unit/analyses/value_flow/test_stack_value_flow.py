@@ -11,9 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.analyses.value_flow.stack_value_flow import (
+    CarrierVerdict,
     analyze_return_carrier,
     build_liveness_facts,
     build_reaching_facts,
+    carrier_terminal_returns,
 )
 
 RET, CARRIER, STATE = 0x7F0, 0x178, 0x3C
@@ -82,6 +84,20 @@ def test_carrier_verdict_at_aligned_terminal():
     assert verdict.carrier_dominates is True
     # The dispatcher state var is dead there -> its entry-default write is removable.
     assert verdict.state_dead is True
+
+
+def test_carrier_terminal_returns_fixes_only_leaking_dominated_dead():
+    leak = (("entry", 0x100),)  # the entry-default state def-site
+    verdicts = {
+        1: CarrierVerdict(frozenset(leak), carrier_dominates=True, state_dead=True),   # leak -> fix
+        2: CarrierVerdict(frozenset({("blk2", 0x300)}), True, True),  # real computed value -> keep
+        3: CarrierVerdict(frozenset(leak), carrier_dominates=False, state_dead=True),  # carrier unavailable -> keep
+        4: CarrierVerdict(frozenset(leak), carrier_dominates=True, state_dead=False),  # state live -> keep
+    }
+    fixes = carrier_terminal_returns(
+        verdicts, carrier_expr="a5 + 0xD0", leak_def_sites=leak
+    )
+    assert fixes == {1: "a5 + 0xD0"}
 
 
 def test_build_facts_shapes():
