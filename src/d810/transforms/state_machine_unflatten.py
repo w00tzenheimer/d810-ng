@@ -39,6 +39,9 @@ from d810.transforms.plan import (
     compile_patch_plan,
 )
 from d810.transforms.edit_simulator import project_post_state
+from d810.analyses.control_flow.recovered_graph_capture import (
+    record_recovered_flow_graph,
+)
 from d810.transforms.dispatcher_backedge_disconnect_planning import (
     plan_dispatcher_backedge_disconnects,
 )
@@ -331,6 +334,8 @@ def _reconstruction_postprocess_mods(
             )
         except Exception:  # noqa: BLE001 — projection is best-effort diagnostics
             projected_flow_graph = graph
+    # Diagnostics: stash the recovered topology for the D810_USE_STRUCTURER dump.
+    record_recovered_flow_graph(projected_flow_graph)
     result = plan_reconstruction_postprocess_modifications(
         dag=dag,
         flow_graph=graph,

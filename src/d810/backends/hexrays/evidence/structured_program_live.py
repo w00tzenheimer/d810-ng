@@ -33,6 +33,9 @@ from d810.backends.hexrays.evidence.microcode_dump import (
 from d810.analyses.control_flow.linearized_state_dag import (
     _prune_terminal_control_lines,
 )
+from d810.analyses.control_flow.recovered_graph_capture import (
+    get_recovered_flow_graph,
+)
 from d810.backends.hexrays.evidence.stack_value_flow_live import (
     build_live_reaching_facts,
     is_state_var_live_at_entry,
@@ -67,7 +70,12 @@ def structure_recovered_program_live(
         carrier_expr: The real carrier expression to deliver at leaking aligned
             terminals (default ``"a5 + 0xD0"``, the byte_offset pointer).
     """
-    flow_graph = lift_flow_graph(mba)
+    # Prefer the §1a recovered (projected post-edit) FlowGraph — the dispatcher
+    # is gone there. Fall back to lifting the raw mba only if the §1a run did not
+    # stash one (then the structure would be the flattened dispatcher).
+    flow_graph = get_recovered_flow_graph()
+    if flow_graph is None:
+        flow_graph = lift_flow_graph(mba)
     block_payload = _build_block_payload_by_serial(mba)
 
     branch_cond: dict[int, str] = {}
