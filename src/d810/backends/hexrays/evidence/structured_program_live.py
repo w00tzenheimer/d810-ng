@@ -30,6 +30,9 @@ from d810.hexrays.utils.pseudocode_render import render_branch_condition
 from d810.backends.hexrays.evidence.microcode_dump import (
     _build_block_payload_by_serial,
 )
+from d810.analyses.control_flow.linearized_state_dag import (
+    _prune_terminal_control_lines,
+)
 from d810.backends.hexrays.evidence.stack_value_flow_live import (
     build_live_reaching_facts,
     is_state_var_live_at_entry,
@@ -111,7 +114,11 @@ def structure_recovered_program_live(
         )
 
     def _render_block(block: object) -> tuple:
-        return block_payload.get(int(getattr(block, "serial", -1)), ())
+        # Strip the block's control-flow tail (goto/jcc/ret): those are carried
+        # by the region structure, not emitted as statements.
+        return _prune_terminal_control_lines(
+            tuple(block_payload.get(int(getattr(block, "serial", -1)), ()))
+        )
 
     def _render_condition(block: object) -> str:
         return branch_cond.get(int(getattr(block, "serial", -1)), "cond")
