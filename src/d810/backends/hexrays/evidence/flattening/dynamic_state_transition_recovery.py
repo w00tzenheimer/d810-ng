@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 
 from d810.core import logging
@@ -10,6 +11,7 @@ from d810.evaluator.hexrays_microcode.dynamic_state_write_backend import (
     DynamicStateWriteEvidence,
     DerivedXorTransitionEvidence,
     derive_initial_xor_dispatch_state,
+    make_cross_block_resolver,
     recognize_carrier_xor_transition,
     recognize_constant_folded_state_write,
     recognize_derived_xor_dispatcher_model,
@@ -160,6 +162,30 @@ def recover_dynamic_state_write_transitions(
     added = 0
 
     if state_var_stkoff is not None:
+        # Build the cross-block constant resolver once (SCCP runs a single
+        # whole-function pass) — only when at least one handler still needs
+        # recovery, so byte-clean dispatchers pay nothing.
+        #
+        # GATED OFF by default (``D810_FOLD_CROSS_BLOCK``): cross-block
+        # resolution over-connects handlers whose next-state operand is constant
+        # only on *some* reachable path, materialising spurious back-edges that
+        # the structurer renders as loops (measured: hodur_func +12 whiles,
+        # sub_7FFD +1 while). The local-only fold stays the byte-identical
+        # default; enable the flag to research the additional resolutions.
+        cross_block_enabled = (
+            os.environ.get("D810_FOLD_CROSS_BLOCK", "0").strip() == "1"
+        )
+        cross_block_resolver = (
+            make_cross_block_resolver(mba)
+            if (
+                cross_block_enabled
+                and any(
+                    _handler_needs_dynamic_recovery(handler)
+                    for handler in cloned_handlers.values()
+                )
+            )
+            else None
+        )
         for state_value, handler in sorted(cloned_handlers.items()):
             if not _handler_needs_dynamic_recovery(handler):
                 continue
@@ -183,6 +209,7 @@ def recover_dynamic_state_write_transitions(
                     state_var_stkoff=int(state_var_stkoff),
                     state_var_lvar_idx=state_var_lvar_idx,
                     known_states=known_state_set,
+                    cross_block_resolver=cross_block_resolver,
                 )
             if evidence is None:
                 continue

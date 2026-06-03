@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from d810.core import logging
 from d810.core.typing import Iterable
 
 import ida_hexrays
+
+logger = logging.getLogger(
+    "D810.evaluator.hexrays_microcode.dynamic_state_write_backend", logging.INFO
+)
 
 
 @dataclass(frozen=True)
@@ -514,7 +519,7 @@ def _dest_key(mop):
     return None
 
 
-def _eval_mop(mop, env: dict, vd: KnownBitsValueDomain):
+def _eval_mop(mop, env: dict, vd: KnownBitsValueDomain, xresolve=None, use_block=None):
     c = _mop_const_value(mop)
     if c is not None:
         return vd.const(int(c) & ((1 << _FOLD_WIDTH) - 1), _FOLD_WIDTH)
@@ -522,27 +527,158 @@ def _eval_mop(mop, env: dict, vd: KnownBitsValueDomain):
     if t == ida_hexrays.mop_d:
         sub = getattr(mop, "d", None)
         if sub is not None:
-            return _eval_insn(sub, env, vd)
+            return _eval_insn(sub, env, vd, xresolve, use_block)
         return vd.top(_FOLD_WIDTH)
     key = _dest_key(mop)
     if key is not None and key in env:
         return env[key]
+    # Cross-block fallback: the operand is defined outside this block. Resolve a
+    # whole-function / reaching-def constant (read-only) when one is provable.
+    # ``xresolve`` returns ``None`` on any ambiguity, so a miss degrades to ⊤
+    # rather than inventing a value.
+    if xresolve is not None:
+        cv = xresolve(mop, use_block)
+        if cv is not None:
+            return vd.const(int(cv) & ((1 << _FOLD_WIDTH) - 1), _FOLD_WIDTH)
     return vd.top(_FOLD_WIDTH)
 
 
-def _eval_insn(insn, env: dict, vd: KnownBitsValueDomain):
+def _eval_insn(insn, env: dict, vd: KnownBitsValueDomain, xresolve=None, use_block=None):
     opcode = getattr(insn, "opcode", None)
     binmap = _binary_op_map()
     unmap = _unary_op_map()
-    left = _eval_mop(getattr(insn, "l", None), env, vd)
+    left = _eval_mop(getattr(insn, "l", None), env, vd, xresolve, use_block)
     if opcode in unmap:
         return vd.eval_unary(unmap[opcode], left, _FOLD_WIDTH)
     if opcode in _passthrough_opcodes():
         return left
     if opcode in binmap:
-        right = _eval_mop(getattr(insn, "r", None), env, vd)
+        right = _eval_mop(getattr(insn, "r", None), env, vd, xresolve, use_block)
         return vd.eval_binary(binmap[opcode], left, right, _FOLD_WIDTH)
     return vd.top(_FOLD_WIDTH)
+
+
+# ---------------------------------------------------------------------------
+# Cross-block operand resolution
+# ---------------------------------------------------------------------------
+# A handler may compute its next-state from operands assigned in a *predecessor*
+# block (OLLVM spills the MBA constants into a shared preheader, then each
+# handler reads them).  Local forward propagation leaves those operands at ⊤.
+# Two read-only sources recover the missing constants:
+#
+#   1. SCCP (Sparse Conditional Constant Propagation) -- a whole-function const
+#      map keyed by ``get_mop_key`` with CFG reachability (mop_r / mop_S).
+#   2. A one-level stack DU reaching-def re-fold for ``mop_S`` operands SCCP
+#      leaves overdefined (catches def blocks whose RHS folds locally but whose
+#      leaves SCCP could not key, e.g. lvar / nested-mop_d leaves).
+#
+# Both sources only ever return a *unique provable* constant; ambiguity yields
+# ``None`` so the fold degrades to ⊤ rather than inventing a state.
+
+
+def _sccp_const_map(mba) -> dict:
+    """Whole-function SCCP constant map keyed by ``get_mop_key`` (read-only)."""
+    try:
+        from d810.evaluator.hexrays_microcode.sccp import run_sccp
+
+        raw = run_sccp(mba) or {}
+    except Exception:
+        return {}
+    return {key: int(value) for key, value in raw.items() if value is not None}
+
+
+def _resolve_stkvar_via_du(mop, mba, use_block) -> int | None:
+    """One-level stack DU fallback: unique constant reaching def of *mop*.
+
+    For a ``mop_S`` operand read in *use_block*, walk the stack DU chain to its
+    reaching def block(s) and re-fold each block *locally* (no further
+    cross-block) for that stack offset.  Returns the value only if every
+    out-of-block reaching def folds to the same constant; ``None`` otherwise.
+    Read-only.
+    """
+    if use_block is None:
+        return None
+    stkoff = _mop_stkoff(mop)
+    size = getattr(mop, "size", None)
+    if stkoff is None or not size:
+        return None
+    try:
+        from d810.evaluator.hexrays_microcode.chains import (
+            find_reaching_defs_for_stkvar,
+        )
+
+        defs = find_reaching_defs_for_stkvar(
+            mba, int(use_block), int(stkoff), int(size)
+        )
+    except Exception:
+        return None
+    if not defs:
+        return None
+    seen: set[int] = set()
+    for site in defs:
+        def_blk = int(site.block_serial)
+        if def_blk == int(use_block):
+            # Same-block def is covered by the in-progress local env already.
+            continue
+        folded = fold_block_state_write(
+            mba=mba,
+            block_serial=def_blk,
+            state_var_stkoff=int(stkoff),
+            state_var_lvar_idx=None,
+            cross_block_resolver=None,  # one level only -- no recursion
+        )
+        if folded is None:
+            return None  # an unfoldable reaching def -> not provably constant
+        seen.add(int(folded) & 0xFFFFFFFF)
+    return next(iter(seen)) if len(seen) == 1 else None
+
+
+def make_cross_block_resolver(mba):
+    """Build a read-only ``(mop, use_block) -> int | None`` constant resolver.
+
+    SCCP is the primary source; a one-level ``mop_S`` DU re-fold is the
+    fallback.  Returns ``None`` when no unique cross-block constant is provable.
+    """
+    sccp_map = _sccp_const_map(mba)
+    try:
+        from d810.hexrays.expr.p_ast import get_mop_key
+    except Exception:
+        get_mop_key = None
+    mask = (1 << _FOLD_WIDTH) - 1
+
+    debug = logger.debug_on
+
+    def resolve(mop, use_block=None) -> int | None:
+        if mop is None:
+            return None
+        if get_mop_key is not None and sccp_map:
+            try:
+                key = get_mop_key(mop)
+            except Exception:
+                key = None
+            if key is not None and key in sccp_map:
+                if debug:
+                    logger.debug(
+                        "cross_block: SCCP resolved %s -> 0x%X (use_block=%s)",
+                        getattr(mop, "dstr", lambda: "?")(),
+                        sccp_map[key] & mask,
+                        use_block,
+                    )
+                return sccp_map[key] & mask
+        if getattr(mop, "t", None) == ida_hexrays.mop_S:
+            du_val = _resolve_stkvar_via_du(mop, mba, use_block)
+            if du_val is not None:
+                if debug:
+                    logger.debug(
+                        "cross_block: DU resolved %s -> 0x%X (use_block=%s)",
+                        getattr(mop, "dstr", lambda: "?")(),
+                        du_val & mask,
+                        use_block,
+                    )
+                return du_val & mask
+        return None
+
+    return resolve
 
 
 def fold_block_state_write(
@@ -551,6 +687,7 @@ def fold_block_state_write(
     block_serial: int,
     state_var_stkoff: int,
     state_var_lvar_idx: int | None = None,
+    cross_block_resolver=None,
 ) -> int | None:
     """Fold the next-state value the block writes to the state var, or ``None``.
 
@@ -558,6 +695,9 @@ def fold_block_state_write(
     per-block environment (recursing into ``mop_d`` sub-instructions), then read
     the value of the *last* write to the state variable. Returns the folded
     state masked to 32 bits, or ``None`` if it does not fold to a constant.
+
+    When *cross_block_resolver* is supplied, operands defined outside this block
+    are resolved through it (SCCP / DU reaching defs) before degrading to ⊤.
     """
     try:
         blk = mba.get_mblock(int(block_serial))
@@ -570,7 +710,7 @@ def fold_block_state_write(
     result = None
     ins = getattr(blk, "head", None)
     while ins is not None:
-        value = _eval_insn(ins, env, vd)
+        value = _eval_insn(ins, env, vd, cross_block_resolver, int(block_serial))
         dest = getattr(ins, "d", None)
         key = _dest_key(dest)
         if key is not None and value is not None:
@@ -597,11 +737,14 @@ def recognize_constant_folded_state_write(
     state_var_stkoff: int,
     state_var_lvar_idx: int | None = None,
     known_states: Iterable[int] = (),
+    cross_block_resolver=None,
 ) -> DynamicStateWriteEvidence | None:
     """Recover a next-state from an MBA-over-constants state write by folding it.
 
     Returns evidence iff the fold yields a *known* dispatcher state (so we never
-    invent a target that is not in the routing map).
+    invent a target that is not in the routing map).  *cross_block_resolver*, if
+    supplied, lets the fold resolve operands defined in predecessor blocks
+    (SCCP / DU reaching defs).
     """
     known = {int(v) & 0xFFFFFFFF for v in known_states}
     if not known:
@@ -611,6 +754,7 @@ def recognize_constant_folded_state_write(
         block_serial=int(handler_serial),
         state_var_stkoff=int(state_var_stkoff),
         state_var_lvar_idx=state_var_lvar_idx,
+        cross_block_resolver=cross_block_resolver,
     )
     if folded is None or folded not in known:
         return None
