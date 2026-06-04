@@ -884,6 +884,7 @@ def _inject_explore_resolved_edges(
     )
 
     cross_block_resolver = make_cross_block_resolver(mba)
+    resolve_trace: dict[int, object] = {}
 
     def resolve_state(_state_var, site):
         # T2 value-set resolver: returns ``OneOf`` when the handler's state-write
@@ -891,7 +892,7 @@ def _inject_explore_resolved_edges(
         # (a shared OLLVM temp), else falls back internally to the T1 const-fold
         # (``Const | Top``). ``explore()`` fans the powerset out, one routed edge
         # per member.
-        return resolve_state_write_value_set(
+        result = resolve_state_write_value_set(
             mba=mba,
             block_serial=int(site),
             state_var_stkoff=int(state_var_stkoff),
@@ -899,18 +900,74 @@ def _inject_explore_resolved_edges(
             cross_block_resolver=cross_block_resolver,
             corridor_stop_serial=int(dispatcher_entry_serial),
         )
+        resolve_trace[int(site)] = result
+        return result
 
+    # Enumerate EVERY basic block IDA gives us (not the dag's partial 78-handler
+    # ``node_by_handler`` view). Each block that writes the state var becomes a
+    # transition source; blocks that don't resolve to ``Top`` (no edge). This is
+    # the real DFS over the dispatcher CFG -- the lossy dag-node subset was the
+    # coverage gap (range-backed / producer blocks like 152 / 195 were skipped).
+    _all_block_serials = sorted(
+        {int(s) for s in range(int(getattr(mba, "qty", 0) or 0))}
+        | {int(s) for s in node_by_handler}
+    )
     write_sites = [
         WriteSite(
-            from_handler=int(handler_serial),
+            from_handler=int(serial),
             state_var=int(state_var_stkoff),
-            site=int(handler_serial),
-            from_ea=_block_start_ea(mba, handler_serial),
+            site=int(serial),
+            from_ea=_block_start_ea(mba, serial),
         )
-        for handler_serial in node_by_handler
+        for serial in _all_block_serials
     ]
 
     view = explore(write_sites, model=model, resolve_state=resolve_state)
+
+    # Diagnostic: dump exactly what resolve()/route() produced for EVERY handler
+    # write-site (the ground truth, no inference from a stale diag). Lands in the
+    # mounted worktree's .tmp/ so it can be read after a live structurer dump.
+    try:
+        import json as _json
+
+        from d810.analyses.data_flow.abstract_value import cases as _av_cases
+
+        _states = []
+        for _ws in write_sites:
+            _h = int(_ws.from_handler)
+            _av = resolve_trace.get(_h)
+            _routes = []
+            if _av is not None:
+                for _guard, _const in _av_cases(_av):
+                    _rr = model.route(int(_const))
+                    _tgt = getattr(_rr, "serial", None)
+                    _routes.append(
+                        {
+                            "value": f"0x{int(_const) & 0xFFFFFFFF:08X}",
+                            "route_kind": type(_rr).__name__,
+                            "target_serial": (int(_tgt) if _tgt is not None else None),
+                            "target_ea": (
+                                f"0x{_block_start_ea(mba, int(_tgt)):X}"
+                                if _tgt is not None
+                                else None
+                            ),
+                        }
+                    )
+            _states.append(
+                {
+                    "handler": _h,
+                    "ea": (f"0x{int(_ws.from_ea):X}" if _ws.from_ea else None),
+                    "resolve_kind": (type(_av).__name__ if _av is not None else None),
+                    "resolve": (repr(_av) if _av is not None else None),
+                    "routes": _routes,
+                }
+            )
+        _states.sort(key=lambda d: d["handler"])
+        with open(os.path.join(".tmp", "explore_states.json"), "w") as _fh:
+            _json.dump(_states, _fh, indent=1)
+        logger.info("explore: dumped %d resolve/route states to .tmp/explore_states.json", len(_states))
+    except Exception:
+        logger.warning("explore-states dump failed", exc_info=True)
 
     # Pre-index the existing (source_handler, target_handler) edge pairs so we only
     # add genuinely absent edges (idempotent w.r.t. the builder's own wiring).
