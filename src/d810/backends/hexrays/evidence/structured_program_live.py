@@ -44,9 +44,9 @@ from d810.analyses.control_flow.recovered_graph_capture import (
     get_recovered_flow_graph,
     get_recovered_state_dag,
 )
-from d810.analyses.control_flow.state_dag_cfg_adapter import (
-    augment_state_dag_cfg,
-    build_state_dag_cfg,
+from d810.analyses.control_flow.state_transition_graph import (
+    augment_state_transition_graph,
+    build_state_transition_graph,
 )
 from d810.analyses.control_flow.state_write_dse import (
     infer_state_var_name as _infer_state_var_name,
@@ -160,7 +160,7 @@ def structure_recovered_program_live(
         # build materialises them as nodes so their resolved edges attach below.
         # Empty when explore is off -> the projection (hence golden) is identical.
         materialize_blocks = get_explore_materialize_blocks() if use_explore else ()
-        flow_graph = build_state_dag_cfg(
+        flow_graph = build_state_transition_graph(
             state_dag,
             base_successors=base_successors,
             materialize_blocks=materialize_blocks,
@@ -186,7 +186,7 @@ def structure_recovered_program_live(
                 if getattr(edge, "resolution", None) == Resolution.RESOLVED
                 and int(getattr(edge, "to_serial", -1)) >= 0
             ]
-            flow_graph, added = augment_state_dag_cfg(flow_graph, pairs)
+            flow_graph, added = augment_state_transition_graph(flow_graph, pairs)
             if added:
                 if logger.info_on:
                     # Standing rule: a serialized block number carries its EA.

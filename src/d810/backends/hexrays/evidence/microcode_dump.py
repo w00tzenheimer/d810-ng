@@ -963,7 +963,7 @@ def _inject_explore_resolved_edges(
     # Stash the FULL resolved edge set (block-level src -> dst, e.g. 152 -> 48)
     # so the live structurer can re-attach the edges this dag-level injection
     # cannot reach: adapter-only blocks (152 / 195) are not handler nodes here,
-    # but they DO exist in the projected block CFG (build_state_dag_cfg). The
+    # but they DO exist in the projected block CFG (build_state_transition_graph). The
     # structurer reads this stash and augments that CFG at the block level. Set
     # fresh on every rebuild; read immediately after for the same function.
     record_explore_resolved_edges(view.resolved)
@@ -982,7 +982,7 @@ def _inject_explore_resolved_edges(
     #   * writes the state var: semantic, not orphan-driven -- a shared-temp
     #     writer (blk194 writes var_70, which explore's corridor walk only
     #     mis-attributes a state write to) is excluded.
-    # build_state_dag_cfg adds these as nodes so the resolved edges attach instead
+    # build_state_transition_graph adds these as nodes so the resolved edges attach instead
     # of being dropped at the dispatcher-region boundary.
     _materialize: set[int] = set()
     for _edge in view.resolved:
