@@ -119,8 +119,14 @@ from d810.analyses.control_flow.recovered_graph_capture import (
     record_explore_resolved_edges,
 )
 from d810.evaluator.hexrays_microcode.dynamic_state_write_backend import (
+    fold_block_state_write,
     make_cross_block_resolver,
     resolve_state_write_value_set,
+)
+from d810.analyses.data_flow.resolve import (
+    ResolveContext,
+    ResolvePoint,
+    resolve as resolve_ladder,
 )
 from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
 from d810.analyses.control_flow.transition_report import (
@@ -889,20 +895,45 @@ def _inject_explore_resolved_edges(
     cross_block_resolver = make_cross_block_resolver(mba)
     resolve_trace: dict[int, object] = {}
 
-    def resolve_state(_state_var, site):
-        # T2 value-set resolver: returns ``OneOf`` when the handler's state-write
-        # source is a single variable with several distinct const reaching defs
-        # (a shared OLLVM temp), else falls back internally to the T1 const-fold
-        # (``Const | Top``). ``explore()`` fans the powerset out, one routed edge
-        # per member.
-        result = resolve_state_write_value_set(
+    # Wire the S3 ``resolve()`` ladder (T1 local fold -> T2 cross-block value-set
+    # -> T3 escalation -> T4) and hand it to ``explore()`` as its resolver. The
+    # tiers are IDA-coupled closures injected here (``analyses.data_flow.resolve``
+    # cannot import upward); explore stays a pure function of the injected ladder.
+    def _t1_local_fold(_var, point: ResolvePoint):
+        # Local forward const-fold over the one block (``Const | Top``).
+        return fold_block_state_write(
             mba=mba,
-            block_serial=int(site),
+            block_serial=int(point.serial),
+            state_var_stkoff=int(state_var_stkoff),
+            state_var_lvar_idx=state_var_lvar_idx,
+            cross_block_resolver=cross_block_resolver,
+        )
+
+    def _t2_value_set(_var, point: ResolvePoint):
+        # Cross-block value set: ``OneOf`` for a shared-temp source with several
+        # const reaching defs, plus the correlated opaque-const-split fold
+        # (``var ^ var`` per def-block). ``Top`` to escalate.
+        return resolve_state_write_value_set(
+            mba=mba,
+            block_serial=int(point.serial),
             state_var_stkoff=int(state_var_stkoff),
             state_var_lvar_idx=state_var_lvar_idx,
             cross_block_resolver=cross_block_resolver,
             corridor_stop_serial=int(dispatcher_entry_serial),
         )
+
+    # T3 (MopTracker / emulated-dispatcher escalation) and T4 (Z3 guard solver)
+    # are reachable seams: wire a tier here to extend coverage. Absent tiers are
+    # skipped (treated as ``Top``), so today the ladder behaves exactly like the
+    # T1->T2 chain it replaces.
+    resolve_ctx = ResolveContext(
+        t1_local_fold=_t1_local_fold,
+        t2_value_set=_t2_value_set,
+    )
+
+    def resolve_state(state_var, site):
+        point = ResolvePoint(serial=int(site), ea=_block_start_ea(mba, int(site)))
+        result = resolve_ladder(state_var, point, resolve_ctx)
         resolve_trace[int(site)] = result
         return result
 
