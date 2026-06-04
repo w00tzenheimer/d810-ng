@@ -17,6 +17,7 @@ from d810.analyses.abstract_domains.protocol import AbstractDomain
 from d810.analyses.abstract_domains.known_bits import KnownBits
 from d810.analyses.abstract_domains.wrapped_interval import WrappedInterval
 from d810.analyses.abstract_domains.interval_box import IntervalBox
+from d810.analyses.abstract_domains.interval_set import Interval, IntervalSet
 from d810.analyses.abstract_domains.relational import (
     LinearConstraint,
     NullRelational,
@@ -42,6 +43,8 @@ __all__ = [
     "KnownBits",
     "WrappedInterval",
     "IntervalBox",
+    "Interval",
+    "IntervalSet",
     "RelationalDomain",
     "NullRelational",
     "LinearConstraint",
