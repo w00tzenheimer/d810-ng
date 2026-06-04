@@ -16,6 +16,7 @@ from __future__ import annotations
 _LAST_RECOVERED_FLOW_GRAPH: object | None = None
 _LAST_RECOVERED_STATE_DAG: object | None = None
 _LAST_EXPLORE_RESOLVED_EDGES: tuple[object, ...] = ()
+_LAST_EXPLORE_MATERIALIZE_BLOCKS: frozenset[int] = frozenset()
 
 __all__ = [
     "record_recovered_flow_graph",
@@ -24,6 +25,8 @@ __all__ = [
     "get_recovered_state_dag",
     "record_explore_resolved_edges",
     "get_explore_resolved_edges",
+    "record_explore_materialize_blocks",
+    "get_explore_materialize_blocks",
 ]
 
 
@@ -72,3 +75,24 @@ def record_explore_resolved_edges(edges: object) -> None:
 def get_explore_resolved_edges() -> tuple[object, ...]:
     """Return the most recently stashed ``explore()`` resolved edges (or ``()``)."""
     return _LAST_EXPLORE_RESOLVED_EDGES
+
+
+def record_explore_materialize_blocks(blocks: object) -> None:
+    """Stash blocks the projection must materialise as state-graph nodes.
+
+    A dispatcher/BST-region block that ``explore()`` routed to AND that writes
+    the state var directly (e.g. the ``!= 0x7D9C16EC`` BST else-leaf ``blk57``,
+    which re-dispatches ``0x307BF0E5`` -> ``186``).  Absent from the projected
+    handler CFG, such a block severs the routed chain and orphans the block it
+    re-dispatches to.  The ``D810_USE_EXPLORE`` structurer reads this set and
+    materialises those blocks before attaching the explore edges.  Computed at
+    the microcode layer because the state-var-write check needs the ``mba``; a
+    shared-*temp* writer (``blk194`` writes ``var_70``) is deliberately excluded.
+    """
+    global _LAST_EXPLORE_MATERIALIZE_BLOCKS
+    _LAST_EXPLORE_MATERIALIZE_BLOCKS = frozenset(int(b) for b in (blocks or ()))
+
+
+def get_explore_materialize_blocks() -> frozenset[int]:
+    """Return the most recently stashed materialise set (or empty)."""
+    return _LAST_EXPLORE_MATERIALIZE_BLOCKS

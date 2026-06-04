@@ -1101,6 +1101,35 @@ def _find_state_write_insn(
     return found
 
 
+def block_writes_state_var(
+    *,
+    mba,
+    block_serial: int,
+    state_var_stkoff: int,
+    state_var_lvar_idx: int | None = None,
+) -> bool:
+    """Whether *block_serial* contains a direct write to the dispatcher state var.
+
+    ``True`` when the block has any instruction whose destination is the state
+    var (a ``mov #const`` re-dispatch, an MBA fold, etc.).  Distinguishes a
+    genuine state handler -- e.g. the BST ``!=`` else-leaf ``blk57`` writing
+    ``var_7BC`` -- from a shared-*temp* writer (``blk194`` writes ``var_70``, not
+    the state var; ``explore()``'s corridor walk only mis-attributes a state
+    write to it).  The projection uses this to decide which dispatcher-region
+    routed targets to materialise as state-graph nodes (the check needs the
+    ``mba``, so it runs at the microcode layer, not in the portable adapter).
+    """
+    return (
+        _find_state_write_insn(
+            mba=mba,
+            block_serial=int(block_serial),
+            state_var_stkoff=int(state_var_stkoff),
+            state_var_lvar_idx=state_var_lvar_idx,
+        )
+        is not None
+    )
+
+
 def _collect_stkvar_leaves(insn) -> set[tuple[int, int]]:
     """``(stkoff, size)`` of every bare ``mop_S`` leaf in *insn*'s operand tree.
 

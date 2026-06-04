@@ -142,6 +142,7 @@ def build_state_dag_cfg(
     *,
     base_successors: Optional[Mapping[int, Iterable[int]]] = None,
     entry_serial: Optional[int] = None,
+    materialize_blocks: Iterable[int] = (),
 ) -> StateDagCfg:
     """Project ``dag`` into a block CFG the structurer can structure.
 
@@ -154,6 +155,16 @@ def build_state_dag_cfg(
         entry_serial: Override the function entry block. Defaults to the
             initial-state handler's entry anchor (falling back to the
             dispatcher entry serial, then the first node's entry anchor).
+        materialize_blocks: Extra physical-CFG blocks to project as nodes even
+            though they are not equality-leaf handlers -- dispatcher/BST-region
+            blocks that write the state var and are resolved-edge endpoints (e.g.
+            the ``!= 0x7D9C16EC`` BST else-leaf ``blk57``, reached by range-
+            narrowing rather than an exact-equality leaf). The mba-aware caller
+            decides this set via the state-var-write criterion; here they are
+            simply added as nodes so :func:`augment_state_dag_cfg` can attach
+            their resolved edges (``35 -> 57 -> 186``). Without this, a resolved
+            edge whose endpoint lives in the dispatcher region would be dropped,
+            orphaning the block it re-dispatches to.
 
     Returns:
         A :class:`StateDagCfg` of handler blocks with dispatcher-free edges.
@@ -243,6 +254,14 @@ def build_state_dag_cfg(
             for s in base_successors.get(b, ()) or ():
                 if int(s) in owned:
                     _add_edge(b, int(s))
+
+    # 3b. Materialise mba-decided routed state-write blocks (dispatcher-region
+    #     blocks that write the state var; absent from the equality-leaf handler
+    #     projection above). They enter as bare nodes here; their resolved edges
+    #     attach in augment_state_dag_cfg. No resolved edge is dropped merely
+    #     because one endpoint lives behind a BST comparison.
+    for b in materialize_blocks:
+        block_set.add(int(b))
 
     # 4. Resolve the function entry.
     if entry_serial is None:

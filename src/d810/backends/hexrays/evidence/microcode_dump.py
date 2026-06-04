@@ -114,11 +114,13 @@ from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
     StateDispatcherRow,
 )
-from d810.analyses.control_flow.explore import WriteSite, explore
+from d810.analyses.control_flow.explore import Resolution, WriteSite, explore
 from d810.analyses.control_flow.recovered_graph_capture import (
+    record_explore_materialize_blocks,
     record_explore_resolved_edges,
 )
 from d810.evaluator.hexrays_microcode.dynamic_state_write_backend import (
+    block_writes_state_var,
     fold_block_state_write,
     make_cross_block_resolver,
     resolve_state_write_value_set,
@@ -965,6 +967,36 @@ def _inject_explore_resolved_edges(
     # structurer reads this stash and augments that CFG at the block level. Set
     # fresh on every rebuild; read immediately after for the same function.
     record_explore_resolved_edges(view.resolved)
+
+    # mba-aware materialisation decision (the projection's portable adapter
+    # cannot make it): a block that is the *destination* of a RESOLVED transition
+    # and *writes the state var directly* must exist in the projected state-
+    # transition graph, even if it sits inside the dispatcher/BST region and was
+    # never registered as an equality-leaf handler (e.g. the `!= 0x7D9C16EC`
+    # else-leaf blk57, routed-to by 35 and re-dispatching 0x307BF0E5 -> 186).
+    # Two filters, both load-bearing:
+    #   * routed-*to* (a `to_serial`): a source-only state-writer with no inbound
+    #     route (blk1 -> 78) is NOT part of the reachable machine -- materialising
+    #     it would invent a phantom orphan. A materialised dst's own outbound edge
+    #     (57 -> 186) still attaches, so dst-only loses nothing.
+    #   * writes the state var: semantic, not orphan-driven -- a shared-temp
+    #     writer (blk194 writes var_70, which explore's corridor walk only
+    #     mis-attributes a state write to) is excluded.
+    # build_state_dag_cfg adds these as nodes so the resolved edges attach instead
+    # of being dropped at the dispatcher-region boundary.
+    _materialize: set[int] = set()
+    for _edge in view.resolved:
+        if getattr(_edge, "resolution", None) != Resolution.RESOLVED:
+            continue
+        _serial = int(getattr(_edge, "to_serial", -1))
+        if _serial >= 0 and block_writes_state_var(
+            mba=mba,
+            block_serial=_serial,
+            state_var_stkoff=int(state_var_stkoff),
+            state_var_lvar_idx=state_var_lvar_idx,
+        ):
+            _materialize.add(_serial)
+    record_explore_materialize_blocks(_materialize)
 
     # Diagnostic: dump exactly what resolve()/route() produced for EVERY handler
     # write-site (the ground truth, no inference from a stale diag). Lands in the
