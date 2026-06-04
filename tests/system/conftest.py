@@ -100,6 +100,44 @@ from d810.core import MOP_TO_AST_CACHE as CORE_MOP_TO_AST_CACHE
 
 # Just scan/import modules to populate registries - no reload needed for tests
 reloadable.Scanner.scan(d810.__path__, "d810.", skip_packages=False)
+
+
+def _restore_reexported_members_shadowed_by_submodules() -> None:
+    """Repair package attributes clobbered by the eager submodule scan.
+
+    ``Scanner.scan`` imports every ``d810`` submodule.  Importing a submodule
+    ``pkg.name`` binds it as ``pkg.name`` (the *module*), silently overwriting a
+    same-named symbol that ``pkg/__init__`` re-exported (e.g. ``from
+    d810.analyses.data_flow.resolve import resolve`` exposes the *function*
+    ``data_flow.resolve``, but importing the ``resolve`` submodule rebinds
+    ``data_flow.resolve`` to the module).  This leaks across files: a later test
+    that does ``from pkg import name`` then gets the *module* and calling it
+    raises ``'module' object is not callable``.  We restore the re-exported
+    member wherever a submodule shadows a ``__all__`` entry and itself defines a
+    same-named non-module member; pure module re-exports (``mba.rules.add`` etc.)
+    are left untouched.
+    """
+    import types
+
+    for module_name, module in list(sys.modules.items()):
+        if (
+            module is None
+            or not isinstance(module, types.ModuleType)
+            or not module_name.startswith("d810")
+        ):
+            continue
+        for attr in getattr(module, "__all__", None) or ():
+            value = getattr(module, attr, None)
+            if (
+                isinstance(value, types.ModuleType)
+                and value.__name__ == f"{module_name}.{attr}"
+            ):
+                member = getattr(value, attr, None)
+                if member is not None and not isinstance(member, types.ModuleType):
+                    setattr(module, attr, member)
+
+
+_restore_reexported_members_shadowed_by_submodules()
 print("  d810 modules loaded")
 
 
