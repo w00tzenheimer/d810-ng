@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from d810.analyses.control_flow.comparison_dispatcher_model import (
     ComparisonDispatcherModel,
     build_partition,
+    build_partition_from_dispatcher,
     intervals_from_range_map,
     route_via_interval_sets,
 )
@@ -275,3 +276,28 @@ def test_from_recovery_multi_interval_handler_resolves_every_range():
     )
     assert lossy.resolve_target(0x150) == _BLK52
     assert lossy.resolve_target(0x850) is None  # range B silently dropped
+
+
+def test_build_partition_from_dispatcher_keeps_all_ranges():
+    # The complete-partition source for the HCC trial: every disjoint range of a
+    # split-range handler is retained (vs intervals_from_range_map's one).
+    from d810.analyses.control_flow.interval_map import (
+        IntervalDispatcher,
+        IntervalRow,
+    )
+
+    disp = IntervalDispatcher(
+        [
+            IntervalRow(0x0, 0x100, 99),
+            IntervalRow(0x100, 0x200, _BLK52),  # range A
+            IntervalRow(0x200, 0x800, 99),
+            IntervalRow(0x800, 0x900, _BLK52),  # range B (lossy map would drop this)
+            IntervalRow(0x900, 0x1_0000_0000, 99),
+        ]
+    )
+    part = build_partition_from_dispatcher(disp)
+    assert 99 not in part  # the wide catch-all / default arm is excluded
+    assert part[_BLK52].contains(0x150)  # range A
+    assert part[_BLK52].contains(0x850)  # range B -- the multi-interval win
+    assert not part[_BLK52].contains(0x500)  # the gap between A and B
+    assert build_partition_from_dispatcher(None) == {}

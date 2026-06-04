@@ -43,6 +43,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ComparisonDispatcherModel",
     "build_partition",
+    "build_partition_from_dispatcher",
     "route_via_interval_sets",
     "intervals_from_range_map",
 ]
@@ -62,21 +63,21 @@ _U64_MASK = 0xFFFFFFFFFFFFFFFF
 _STATE_WIDTH = 32
 
 
-def _build_target_intervals(bst_evidence: object | None) -> "dict[int, IntervalSet]":
-    """Build the complete per-handler :class:`IntervalSet` partition.
+def build_partition_from_dispatcher(dispatcher: object | None) -> "dict[int, IntervalSet]":
+    """Complete per-handler :class:`IntervalSet` partition from an ``IntervalDispatcher``.
 
-    Sources the FULL interval rows from ``bst_evidence.dispatcher`` (the
-    :class:`IntervalDispatcher`, which carries every ``(lo, hi)`` row, not just
-    one per handler) and unions each handler's disjoint ranges into one
-    :class:`IntervalSet`.  The dispatcher's default / catch-all target (its
-    ``default_target``, the max-width arm) is excluded so gap states still fall
-    through to the surfaced ``Unknown`` rather than being swallowed by the
-    default arm -- matching the legacy ``>= 0xFFFF0000`` degenerate-span guard.
+    Sources the FULL interval rows from the :class:`IntervalDispatcher` (which
+    carries every ``(lo, hi)`` row, not just one per handler) and unions each
+    handler's disjoint ranges into one :class:`IntervalSet`, so a split-range
+    handler keeps ALL its ranges -- unlike :func:`intervals_from_range_map`,
+    which only retains the single ``(lo, hi)`` the lossy ``handler_range_map``
+    kept.  The dispatcher's default / catch-all target (``default_target``, the
+    max-width arm) is excluded so gap states still fall through to the surfaced
+    ``Unknown`` rather than being swallowed by the default arm.
 
-    Returns an empty map when no ``IntervalDispatcher`` is available, so callers
-    fall back to the single-interval ``handler_range_map``.
+    Returns an empty map when no ``IntervalDispatcher`` (or its rows) is
+    available, so callers fall back to the single-interval source.
     """
-    dispatcher = getattr(bst_evidence, "dispatcher", None)
     rows = getattr(dispatcher, "_rows", None)
     if not rows:
         return {}
@@ -93,6 +94,13 @@ def _build_target_intervals(bst_evidence: object | None) -> "dict[int, IntervalS
     return {
         target: IntervalSet(_STATE_WIDTH, ivs) for target, ivs in per_target.items()
     }
+
+
+def _build_target_intervals(bst_evidence: object | None) -> "dict[int, IntervalSet]":
+    """Complete per-handler partition from ``bst_evidence.dispatcher`` (the
+    :class:`IntervalDispatcher`); thin wrapper over
+    :func:`build_partition_from_dispatcher`."""
+    return build_partition_from_dispatcher(getattr(bst_evidence, "dispatcher", None))
 
 
 def _range_to_intervals(
