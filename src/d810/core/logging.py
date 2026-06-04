@@ -333,6 +333,15 @@ conf: dict[str, typing.Any] = {
             "handlers": ["defaultFileHandler"],
             "propagate": False,
         },
+        # Vendored peewee ORM (diag layer): pin at WARNING so its per-query SQL
+        # DEBUG ("CREATE TABLE ...", "SELECT ...") never floods diag dumps under
+        # --full-diagnostics (root=DEBUG).  Child loggers (peewee.pool /
+        # peewee.sqliteq) inherit this level.  The SQL is not a d810 signal.
+        "peewee": {
+            "level": "WARNING",
+            "handlers": ["defaultFileHandler"],
+            "propagate": False,
+        },
         "D810.helper": {
             "level": "INFO",
             "handlers": ["defaultFileHandler"],
