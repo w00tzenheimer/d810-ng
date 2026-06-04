@@ -42,16 +42,25 @@ def _mop_n(value: int, size: int = _W):
     return SimpleNamespace(t=ida_hexrays.mop_n, nnn=SimpleNamespace(value=value), size=size)
 
 
+def _mop_d(sub_insn, size: int = _W):
+    """A nested sub-instruction operand (``mop_d``) -- e.g. ``(var_B0 ^ var_A8)``."""
+    return SimpleNamespace(t=ida_hexrays.mop_d, d=sub_insn, size=size)
+
+
 def _insn(opcode, *, d=None, l=None, r=None):
     return SimpleNamespace(opcode=opcode, d=d, l=l, r=r, ea=0, next=None)
 
 
-def _block(*insns, succset=()):
+def _block(*insns, succset=(), predset=()):
     head = None
     for ins in reversed(insns):
         ins.next = head
         head = ins
-    return SimpleNamespace(head=head, succset=tuple(int(s) for s in succset))
+    return SimpleNamespace(
+        head=head,
+        succset=tuple(int(s) for s in succset),
+        predset=tuple(int(p) for p in predset),
+    )
 
 
 def _mba(blocks: dict[int, object]):
@@ -202,3 +211,84 @@ def test_value_set_resolver_const_source_delegates_to_t1():
     )
     assert v == Const(0x1234, 4)
     assert consulted == []  # const source never reaches the value-set provider
+
+
+# --------------------------------------------------- T2c predecessor-partitioned
+# The live sub_7FFD ``blk10`` shape: a shared compute block writes the state var
+# from a nested MBA over operands set per incoming edge --
+# ``sub((var_B0 ^ var_A8), var_A0) -> statevar`` -- which the bare-source T2 and
+# bare-binop T2b cannot key. The predecessor-partitioned resolver folds the tree
+# once per predecessor (the LiSA disjunctive join), never ``join``-ing the
+# operand sets (which would cross-product). var_B0/var_A8/var_A0 use the live
+# raw ``mop_S.s.off`` values (0x748/0x750/0x758).
+_B0, _A8, _A0 = 0x748, 0x750, 0x758
+
+
+def _operand_pred(b0: int, a8: int, a0: int):
+    """A predecessor that ``mov #const`` each of the three shared MBA operands."""
+    return _block(
+        _insn(ida_hexrays.m_mov, d=_mop_S(_B0), l=_mop_n(b0)),
+        _insn(ida_hexrays.m_mov, d=_mop_S(_A8), l=_mop_n(a8)),
+        _insn(ida_hexrays.m_mov, d=_mop_S(_A0), l=_mop_n(a0)),
+        succset=(10,),
+    )
+
+
+def _shared_compute_mba(preds: dict[int, object]):
+    """blk10: ``sub((var_B0 ^ var_A8), var_A0) -> statevar``; ``preds`` flow in."""
+    xor_insn = _insn(ida_hexrays.m_xor, l=_mop_S(_B0), r=_mop_S(_A8))
+    state_write = _insn(
+        ida_hexrays.m_sub, d=_mop_S(_STATE_OFF), l=_mop_d(xor_insn), r=_mop_S(_A0)
+    )
+    blk10 = _block(state_write, succset=(2,), predset=tuple(preds))
+    return _mba({10: blk10, **preds})
+
+
+def test_value_set_resolver_predecessor_partitioned_oneof():
+    # Per-edge fold (NOT the spurious A_i op B_j cross product):
+    #   144: (0x77535232 ^ 0x71D1654B) - 0xDC240D83 = 0x2A5E29F6
+    #     9: (0xD778CBDF ^ 0x3D766243) - 0xCD4068E9 = 0x1CCE40B3
+    preds = {
+        144: _operand_pred(0x77535232, 0x71D1654B, 0xDC240D83),
+        9: _operand_pred(0xD778CBDF, 0x3D766243, 0xCD4068E9),
+    }
+    v = resolve_state_write_value_set(
+        mba=_shared_compute_mba(preds),
+        block_serial=10,
+        state_var_stkoff=_STATE_OFF,
+    )
+    assert isinstance(v, OneOf)
+    assert v.values == frozenset({0x2A5E29F6, 0x1CCE40B3})
+
+
+def test_value_set_resolver_partitioned_singleton_is_const():
+    # A single predecessor -> one folded state -> Const (not OneOf).
+    preds = {144: _operand_pred(0x77535232, 0x71D1654B, 0xDC240D83)}
+    v = resolve_state_write_value_set(
+        mba=_shared_compute_mba(preds),
+        block_serial=10,
+        state_var_stkoff=_STATE_OFF,
+    )
+    assert v == Const(0x2A5E29F6, 4)
+
+
+def test_value_set_resolver_partitioned_non_const_partition_is_top():
+    # One predecessor leaves an operand non-constant (var_A0 <- another stack var,
+    # not #const). Soundness: the whole join escalates to ⊤ rather than inventing
+    # a partial state (and T2b/T1 cannot resolve the cross-block operands either).
+    bad_pred = _block(
+        _insn(ida_hexrays.m_mov, d=_mop_S(_B0), l=_mop_n(0xD778CBDF)),
+        _insn(ida_hexrays.m_mov, d=_mop_S(_A8), l=_mop_n(0x3D766243)),
+        _insn(ida_hexrays.m_mov, d=_mop_S(_A0), l=_mop_S(0xBEEF)),  # non-const
+        succset=(10,),
+    )
+    preds = {
+        144: _operand_pred(0x77535232, 0x71D1654B, 0xDC240D83),
+        9: bad_pred,
+    }
+    v = resolve_state_write_value_set(
+        mba=_shared_compute_mba(preds),
+        block_serial=10,
+        state_var_stkoff=_STATE_OFF,
+    )
+    assert v is TOP

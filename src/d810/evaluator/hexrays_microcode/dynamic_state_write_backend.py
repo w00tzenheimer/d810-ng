@@ -1019,6 +1019,206 @@ def _resolve_correlated_binop_state_write(
     )
 
 
+# ---------------------------------------------------------------------------
+# T2c predecessor-partitioned value-set resolver (LiSA disjunctive join)
+#
+# A handler may stage its next-state operands in a *shared compute block* that
+# several predecessors flow into, each writing its own constants::
+#
+#     blk9:    mov #0xD778CBDF,%var_B0; mov #0x3D766243,%var_A8; mov #0xCD4068E9,%var_A0
+#     blk144:  mov #0x77535232,%var_B0; mov #0x71D1654B,%var_A8; mov #0xDC240D83,%var_A0
+#     blk10:   sub((%var_B0 ^ %var_A8), %var_A0) -> %var_7BC ; goto dispatcher
+#
+# Block 10 is a CFG *join*.  The LiSA reading: keep a *disjunctive* (trace-
+# partitioned) environment -- one constant env per incoming edge -- and apply
+# the transfer inside each disjunct, instead of ``join``-ing the operand
+# environments first.  ``join``-ing first folds ``var_B0 = {0x77535232,
+# 0xD778CBDF}`` to ⊤ (T1's cross-block resolver does exactly this and degrades
+# to ⊤); pairing the joined sets naively would instead manufacture the spurious
+# cross product ``A_i op B_j``.  Partitioning by predecessor yields exactly one
+# concrete state per real data flow; their ``OneOf`` is the join's value and
+# ``explore()`` fans it out to one routed edge each.
+#
+# This SUBSUMES the bare 2-operand split (:func:`_resolve_correlated_binop_state_write`,
+# T2b) -- same per-edge pairing -- and additionally folds the nested MBA trees
+# the bare-operand matcher cannot key (``sub((var_B0 ^ var_A8), var_A0)``).
+# ---------------------------------------------------------------------------
+
+
+def _block_predset(mba, block_serial: int) -> tuple[int, ...]:
+    """Return the physical predecessor serials of *block_serial* (read-only)."""
+    try:
+        blk = mba.get_mblock(int(block_serial))
+    except Exception:
+        return ()
+    if blk is None:
+        return ()
+    predset = getattr(blk, "predset", None)
+    if predset is None:
+        return ()
+    out: list[int] = []
+    try:
+        for p in predset:
+            out.append(int(p))
+    except Exception:
+        return ()
+    return tuple(out)
+
+
+def _find_state_write_insn(
+    *,
+    mba,
+    block_serial: int,
+    state_var_stkoff: int,
+    state_var_lvar_idx: int | None,
+):
+    """Return the LAST instruction in *block_serial* that writes the state var.
+
+    Unlike :func:`_state_write_source_identity` (``mov`` only) and
+    :func:`_state_write_binop_operands` (bare 2-operand binop only), this matches
+    *any* opcode -- in particular a nested MBA equation such as
+    ``sub((var_B0 ^ var_A8), var_A0) -> statevar`` -- so the predecessor-
+    partitioned resolver can fold the whole operand tree.  Returns the
+    ``minsn_t`` or ``None`` when the block writes no state var.
+    """
+    try:
+        blk = mba.get_mblock(int(block_serial))
+    except Exception:
+        blk = None
+    if blk is None:
+        return None
+    found = None
+    insn = getattr(blk, "head", None)
+    while insn is not None:
+        if _mop_matches_state_var(
+            getattr(insn, "d", None),
+            mba=mba,
+            state_var_stkoff=int(state_var_stkoff),
+            state_var_lvar_idx=state_var_lvar_idx,
+        ):
+            found = insn  # last writer wins
+        insn = getattr(insn, "next", None)
+    return found
+
+
+def _collect_stkvar_leaves(insn) -> set[tuple[int, int]]:
+    """``(stkoff, size)`` of every bare ``mop_S`` leaf in *insn*'s operand tree.
+
+    Recurses through nested ``mop_d`` sub-instructions, so an operand such as
+    ``(var_B0 ^ var_A8)`` contributes both ``var_B0`` and ``var_A8``.  Only the
+    value operands (``l`` / ``r``) are walked -- never the destination -- so the
+    state var being written is not itself collected.
+    """
+    leaves: set[tuple[int, int]] = set()
+
+    def visit(mop) -> None:
+        if mop is None:
+            return
+        t = getattr(mop, "t", None)
+        if t == ida_hexrays.mop_S:
+            off = _mop_stkoff(mop)
+            size = getattr(mop, "size", None)
+            if off is not None and size:
+                leaves.add((int(off), int(size)))
+        elif t == ida_hexrays.mop_d:
+            sub = getattr(mop, "d", None)
+            if sub is not None:
+                visit(getattr(sub, "l", None))
+                visit(getattr(sub, "r", None))
+
+    visit(getattr(insn, "l", None))
+    visit(getattr(insn, "r", None))
+    return leaves
+
+
+def _const_on_path_back(
+    mba, *, start: int, stkoff: int, max_back: int = 6
+) -> int | None:
+    """Constant written to ``stkoff`` reaching *start* along its unique-pred chain.
+
+    Reads :func:`_read_const_writer` at *start*; when *start* does not write the
+    variable, walks UP the single-predecessor chain (a partition is one CFG edge,
+    so only a 1-predecessor walk preserves flow-sensitivity) up to *max_back*
+    hops looking for the ``mov #const``.  Returns ``None`` on the first fork /
+    visited-cycle / missing const, so the partition degrades to ⊤ rather than
+    guessing a value across a join.
+    """
+    serial = int(start)
+    visited: set[int] = set()
+    for _ in range(int(max_back) + 1):
+        if serial in visited:
+            return None
+        visited.add(serial)
+        cv = _read_const_writer(
+            mba=mba, block_serial=serial, stkoff=int(stkoff), lvar_idx=None
+        )
+        if cv is not None:
+            return int(cv)
+        preds = _block_predset(mba, serial)
+        if len(preds) != 1:
+            return None  # join / entry -> no flow-sensitively unique const
+        serial = preds[0]
+    return None
+
+
+def _resolve_predecessor_partitioned_state_write(
+    *,
+    mba,
+    block_serial: int,
+    state_var_stkoff: int,
+    state_var_lvar_idx: int | None,
+    size: int = 4,
+    max_back: int = 6,
+) -> AbstractValue:
+    """Resolve a shared-block MBA state write as a predecessor-partitioned set (T2c).
+
+    Enumerates the predecessors of *block_serial* (the CFG join), binds every
+    stack-operand leaf of the state write to the constant it carries on that
+    incoming edge, folds the write's full MBA tree (:func:`_eval_insn`, recursing
+    nested ``mop_d``) per partition, and projects the per-edge states via
+    :func:`value_set_from_reaching_def_consts` (:class:`Const` for a singleton,
+    :class:`OneOf` for several).
+
+    Soundness: returns :data:`TOP` (escalate to T2b / T1) unless EVERY
+    predecessor binds EVERY operand to a provable constant -- a partition with a
+    non-const operand never invents a state, and the per-edge environments are
+    never ``join``-ed (no spurious cross product).  Only fires for a genuine
+    multi-operand MBA write (``>= 2`` distinct stack leaves); a bare / single-
+    source write is left to the downstream tiers.
+    """
+    state_write = _find_state_write_insn(
+        mba=mba,
+        block_serial=int(block_serial),
+        state_var_stkoff=int(state_var_stkoff),
+        state_var_lvar_idx=state_var_lvar_idx,
+    )
+    if state_write is None:
+        return TOP
+    leaves = _collect_stkvar_leaves(state_write)
+    if len(leaves) < 2:
+        return TOP  # bare / single-operand source -> T2b / T1 territory
+    preds = _block_predset(mba, int(block_serial))
+    if not preds:
+        return TOP
+    vd = KnownBitsValueDomain()
+    mask = (1 << _FOLD_WIDTH) - 1
+    states: list[int] = []
+    for pred in preds:
+        env: dict = {}
+        for off, _size in leaves:
+            cv = _const_on_path_back(
+                mba, start=int(pred), stkoff=int(off), max_back=int(max_back)
+            )
+            if cv is None:
+                return TOP  # this partition's operands are not all constant
+            env[("S", int(off))] = vd.const(int(cv) & mask, _FOLD_WIDTH)
+        folded = vd.to_const(_eval_insn(state_write, env, vd, None, int(pred)))
+        if folded is None:
+            return TOP
+        states.append(int(folded) & 0xFFFFFFFF)
+    return value_set_from_reaching_def_consts(states)
+
+
 def resolve_state_write_value_set(
     *,
     mba,
@@ -1047,8 +1247,16 @@ def resolve_state_write_value_set(
        each block's const ``mov #const, V`` writer (injectable reader).
     3. Project via :func:`value_set_from_reaching_def_consts`:
        every def const -> :class:`OneOf` (or :class:`Const` for a singleton);
-       any non-const def / no defs / non-bare source -> fall back to T1
-       :func:`fold_block_state_write` (``Const | Top``).
+       any non-const def / no defs / non-bare source -> fall through to the
+       shared-MBA tiers below.
+
+    When the write is NOT a bare-source ``mov`` (an MBA equation over operands
+    set per incoming edge -- ``op(varA, varB)`` or a nested
+    ``sub((var_B0 ^ var_A8), var_A0)``), the resolver instead partitions by
+    predecessor: T2c (:func:`_resolve_predecessor_partitioned_state_write`, the
+    LiSA disjunctive join) first, then T2b
+    (:func:`_resolve_correlated_binop_state_write`, per-def-block correlation),
+    then T1 :func:`fold_block_state_write` (``Const | Top``).
 
     The two provider hooks default to the live DU-chain / block-scan readers but
     are injectable so the resolver is unit-testable without IDA.  Each serialized
@@ -1083,6 +1291,18 @@ def resolve_state_write_value_set(
     # ``op(varA, varB)`` (T2b: var ^ var folded per correlated def-block) -- try
     # that before degrading to the T1 local fold (const / lvar / true-MBA source).
     if src_stkoff is None:
+        # T2c: predecessor-partitioned (LiSA disjunctive-join) fold. Tried first
+        # because it subsumes the bare 2-operand split below AND folds nested MBA
+        # trees (``sub((var_B0 ^ var_A8), var_A0)``) the binop matcher cannot key.
+        partitioned_value_set = _resolve_predecessor_partitioned_state_write(
+            mba=mba,
+            block_serial=int(block_serial),
+            state_var_stkoff=int(state_var_stkoff),
+            state_var_lvar_idx=state_var_lvar_idx,
+            size=int(size),
+        )
+        if not isinstance(partitioned_value_set, Top):
+            return partitioned_value_set
         binop_value_set = _resolve_correlated_binop_state_write(
             mba=mba,
             block_serial=int(block_serial),
