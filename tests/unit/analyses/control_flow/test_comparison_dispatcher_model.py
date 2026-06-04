@@ -211,3 +211,54 @@ def test_resolver_drops_edge_without_model_but_resolves_with_it():
     fixed = resolve_state_transitions(None, facts, dispatch_map=dmap, model=model)[0]
     assert fixed.resolved_next_block_serial == _BLK52
     assert fixed.resolution_reason == "resolved_exact_state"
+
+
+# --- multi-interval (split-range) handler completeness ---------------------
+# The lossy ``handler_range_map`` stores ONE ``(lo, hi)`` per handler, so a
+# split-range handler (reachable via two disjoint intervals) drops one range.
+# ``from_recovery`` now builds the complete abstract-domain ``IntervalSet`` from
+# the full ``IntervalDispatcher`` rows, so BOTH ranges resolve.
+
+
+def test_from_recovery_multi_interval_handler_resolves_every_range():
+    from d810.analyses.control_flow.interval_map import (
+        IntervalDispatcher,
+        IntervalRow,
+    )
+
+    # blk 52 is reached via TWO disjoint ranges; blk 99 is the wide catch-all
+    # default arm (excluded from the per-handler partition).
+    dispatcher = IntervalDispatcher(
+        [
+            IntervalRow(0x0, 0x100, 99),
+            IntervalRow(0x100, 0x200, _BLK52),  # range A: [0x100, 0x1FF]
+            IntervalRow(0x200, 0x800, 99),
+            IntervalRow(0x800, 0x900, _BLK52),  # range B: [0x800, 0x8FF]
+            IntervalRow(0x900, 0x1_0000_0000, 99),
+        ]
+    )
+
+    class _Evidence:
+        handler_range_map = {_BLK52: (0x100, 0x1FF)}  # lossy: only range A
+        default_block_serial = None
+        dispatcher_attr = dispatcher
+
+        def __init__(self):
+            self.dispatcher = self.dispatcher_attr
+
+    model = ComparisonDispatcherModel.from_recovery(
+        _map(), bst_evidence=_Evidence()
+    )
+    # Range A (the one the lossy map kept) AND range B (the one it dropped)
+    # both resolve to blk 52 -- the multi-interval completeness fix.
+    assert model.resolve_target(0x150) == _BLK52
+    assert model.resolve_target(0x850) == _BLK52
+    # A true gap (no handler covers it) still surfaces as Unknown / None.
+    assert model.resolve_target(0x500) is None
+
+    # Contrast: a model carrying only the lossy single-interval map drops B.
+    lossy = ComparisonDispatcherModel(
+        dispatch_map=_map(), handler_range_map={_BLK52: (0x100, 0x1FF)}
+    )
+    assert lossy.resolve_target(0x150) == _BLK52
+    assert lossy.resolve_target(0x850) is None  # range B silently dropped
