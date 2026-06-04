@@ -497,6 +497,13 @@ def clear_logs(log_dir: str | pathlib.Path) -> None:
     shutil.rmtree(log_dir, ignore_errors=True)
 
 
+#: Loggers kept at their authored level even when ``D810_DEBUG_LOGGING`` forces
+#: everything else to DEBUG.  ``peewee`` (the vendored diag ORM) logs every
+#: CREATE/SELECT/INSERT; its SQL is never a d810 signal and only floods dumps.
+#: Child loggers (``peewee.pool`` / ``peewee.sqliteq``) inherit by hierarchy.
+_DEBUG_FORCE_EXCLUDE = frozenset({"peewee"})
+
+
 def configure_loggers(log_dir: str | pathlib.Path) -> None:
     """
     Configures the loggers using a dictionary, creating log files in the specified directory.
@@ -530,6 +537,11 @@ def configure_loggers(log_dir: str | pathlib.Path) -> None:
         from d810.core.settings import get_settings
         if get_settings().debug_logging:
             for _name, _cfg in conf.get("loggers", {}).items():
+                # Third-party loggers pinned for noise control (peewee's per-query
+                # SQL) stay where they are even under D810_DEBUG_LOGGING -- their
+                # DEBUG output is never a d810 signal and only floods the dump.
+                if _name in _DEBUG_FORCE_EXCLUDE:
+                    continue
                 _cfg["level"] = "DEBUG"
             console_handler = conf.get("handlers", {}).get("consoleHandler")
             if console_handler is not None:
