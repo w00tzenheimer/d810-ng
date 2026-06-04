@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from d810.analyses.control_flow.comparison_dispatcher_model import (
+    build_partition,
+    route_via_interval_sets,
+)
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.capabilities.dispatcher import RouterKind
 
@@ -87,13 +91,16 @@ class StateDispatcherMap:
     def resolve_target(self, state_value: int) -> int | None:
         """Resolve a concrete state value to a handler block (EXACT rows only).
 
-        Exact-match lookup over the dispatcher's ``state_const -> handler`` rows.
-        Interval / range routing is NOT this method's job -- that is the
-        ``ComparisonDispatcherModel`` (built with BST evidence), the single
-        IntervalSet router.  Kept as the trivial exact primitive; callers needing
-        range routing must build a model.
+        Routes through the ONE mechanism -- the abstract-domain
+        :class:`IntervalSet` partition (:func:`build_partition` over this map's
+        exact rows as singletons, then :func:`route_via_interval_sets` membership)
+        -- so there is no separate ``dict.get`` resolution path.  Exact-only here;
+        range routing needs a ``ComparisonDispatcherModel`` built with BST evidence.
         """
-        return self.state_to_handler().get(int(state_value) & 0xFFFFFFFFFFFFFFFF)
+        return route_via_interval_sets(
+            state_value,
+            target_intervals=build_partition(self.state_to_handler()),
+        )
 
     def to_dispatcher_handler_map(self):
         """Convert to the existing dispatcher-agnostic handler map."""
