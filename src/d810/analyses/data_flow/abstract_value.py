@@ -35,6 +35,7 @@ __all__ = [
     "OneOf",
     "Top",
     "AbstractValue",
+    "cases",
     "Block",
     "EntersDispatcher",
     "RouteOneOf",
@@ -115,6 +116,44 @@ Top = _Top  # alias so callers can ``isinstance(v, Top)``
 
 #: The value-side seam: a projection of a per-variable lattice element.
 AbstractValue = Union[Const, Guarded, OneOf, _Top]
+
+
+def cases(value: "AbstractValue") -> tuple[tuple[object | None, int], ...]:
+    """Enumerate the ``(guard, const)`` cases an :class:`AbstractValue` routes over.
+
+    The router fans out over this: each ``(guard, const)`` becomes one routed
+    edge (``guard`` is the predicate the const is valid under, or ``None`` when
+    unconditional).  Additive over the four shapes:
+
+    * :class:`Const` -> ``((None, value),)`` — one unconditional case.
+    * :class:`OneOf`  -> ``((None, v0), (None, v1), …)`` — one unconditional case
+      per powerset member (deterministically sorted so edge sets are stable).
+    * :class:`Guarded` -> one case per ``(guard, inner)`` choice, recursing into
+      each inner :class:`AbstractValue` and carrying the guard down.  A non-const
+      inner (``⊤`` / empty ``OneOf``) contributes nothing under that guard.
+    * :data:`TOP` (``⊤``) -> ``()`` — no enumerable const; the router emits an
+      explicit unresolved gap rather than inventing a target.
+
+    Defined as a module function (not a method) because the ``Const`` variant IS
+    the shared :class:`d810.ir.lattice.Const`, which this seam must not mutate.
+    """
+    if value is TOP or isinstance(value, _Top):
+        return ()
+    if isinstance(value, Const):
+        return ((None, int(value.value) & _U64_MASK),)
+    if isinstance(value, OneOf):
+        return tuple((None, v) for v in sorted(value.values))
+    if isinstance(value, Guarded):
+        out: list[tuple[object | None, int]] = []
+        for guard, inner in value.choices:
+            for inner_guard, const in cases(inner):
+                # Outer guard dominates; an inner guard (nested ``Guarded``) is
+                # only reached when the outer one already holds, so keep the
+                # outer guard as the case's predicate.
+                _ = inner_guard
+                out.append((guard, const))
+        return tuple(out)
+    return ()
 
 
 # ---------------------------------------------------------------------------
