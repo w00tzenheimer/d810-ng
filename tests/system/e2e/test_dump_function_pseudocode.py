@@ -563,14 +563,12 @@ class TestDumpFunctionPseudocode:
                                     f"{e}]"
                                 )
                             if os.environ.get("D810_USE_STRUCTURER") == "1":
-                                # State slot: legacy detector if present, else
-                                # the §1a recovery value via env (sub_7FFD=0x64).
-                                _state_slot = hodur_stkoff
-                                _env_state = os.environ.get(
-                                    "D810_STRUCTURER_STATE_SLOT"
-                                )
-                                if _env_state is not None:
-                                    _state_slot = int(_env_state, 0)
+                                # State slot: pass recon's detected value straight
+                                # through (None when the detector context isn't
+                                # available at this maturity -- the structurer then
+                                # self-detects on its own mba). No hardcoded-slot
+                                # override: the dispatcher state var is detected,
+                                # never guessed.
                                 _ret_slot = int(
                                     os.environ.get(
                                         "D810_STRUCTURER_RETURN_SLOT", "0x7F0"
@@ -578,32 +576,31 @@ class TestDumpFunctionPseudocode:
                                     0,
                                 )
                                 print(
-                                    f"\n[D810_USE_STRUCTURER active: state_slot={_state_slot}"
-                                    f" return_slot={hex(_ret_slot)}]"
+                                    f"\n[D810_USE_STRUCTURER active: state_slot={hodur_stkoff!r}"
+                                    f" (auto-detect if None) return_slot={hex(_ret_slot)}]"
                                 )
-                                if _state_slot is not None:
-                                    try:
-                                        from d810.backends.hexrays.evidence.structured_program_live import (
-                                            structure_recovered_program_live,
-                                        )
+                                try:
+                                    from d810.backends.hexrays.evidence.structured_program_live import (
+                                        structure_recovered_program_live,
+                                    )
 
-                                        structured = structure_recovered_program_live(
-                                            mba,
-                                            state_var_stkoff=int(_state_slot),
-                                            return_slot_stkoff=_ret_slot,
-                                            dispatcher_entry_serial=dispatcher_serial,
-                                        )
-                                        print(
-                                            f"\n--- STRUCTURED PROGRAM (D810_USE_STRUCTURER, {mba_source}) ---"
-                                        )
-                                        print(structured)
-                                        print("=" * 88)
-                                    except Exception as exc:
-                                        import traceback as _tb
+                                    structured = structure_recovered_program_live(
+                                        mba,
+                                        state_var_stkoff=hodur_stkoff,
+                                        return_slot_stkoff=_ret_slot,
+                                        dispatcher_entry_serial=dispatcher_serial,
+                                    )
+                                    print(
+                                        f"\n--- STRUCTURED PROGRAM (D810_USE_STRUCTURER, {mba_source}) ---"
+                                    )
+                                    print(structured)
+                                    print("=" * 88)
+                                except Exception as exc:
+                                    import traceback as _tb
 
-                                        print(
-                                            f"\n[structured program failed: {exc}]\n{_tb.format_exc()}"
-                                        )
+                                    print(
+                                        f"\n[structured program failed: {exc}]\n{_tb.format_exc()}"
+                                    )
                             if dump_all_linearized_programs:
                                 try:
                                     ida_label_program = build_live_linearized_program(
