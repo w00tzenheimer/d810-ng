@@ -29,6 +29,7 @@ import ida_hexrays  # noqa: F401  (import guard: this module requires Hex-Rays)
 from d810.core.logging import getLogger
 from d810.hexrays.mutation.ir_translator import lift as lift_flow_graph
 from d810.hexrays.utils.pseudocode_render import render_branch_condition
+from d810.backends.hexrays.evidence.bst_analysis import _detect_state_var_stkoff
 from d810.backends.hexrays.evidence.microcode_dump import (
     _build_block_payload_by_serial,
     _build_live_linearized_state_dag,
@@ -73,7 +74,7 @@ __all__ = ["structure_recovered_program_live"]
 def structure_recovered_program_live(
     mba: object,
     *,
-    state_var_stkoff: int,
+    state_var_stkoff: int | None = None,
     return_slot_stkoff: int,
     slot_width: int = 8,
     carrier_expr: str = "a5 + 0xD0",
@@ -94,6 +95,39 @@ def structure_recovered_program_live(
             the reference-like linearized renderer uses, with the full
             conditional-transition chain. Preferred over the shallow §1a stash.
     """
+    # Resolve the dispatcher state variable's stack offset. Prefer the value the
+    # caller hands in (recon's Hodur detector); when absent, SELF-DETECT on this
+    # mba at its own maturity via the same ``_detect_state_var_stkoff`` the recon
+    # path uses. Detection is authoritative -- never fall back to a hardcoded slot
+    # (a prior diagnostic env override silently fed the WRONG variable, e.g. 0x64
+    # instead of the real 0x3C, producing a graph keyed on a non-state slot).
+    if state_var_stkoff is None:
+        if dispatcher_entry_serial is None:
+            raise ValueError(
+                "structure_recovered_program_live: state_var_stkoff not provided "
+                "and dispatcher_entry_serial is None -- cannot self-detect the "
+                "dispatcher state variable"
+            )
+        detected_stkoff, detected_lvar_idx = _detect_state_var_stkoff(
+            mba, int(dispatcher_entry_serial), diag=False
+        )
+        if detected_stkoff is None:
+            raise ValueError(
+                "structure_recovered_program_live: state-var auto-detection failed "
+                f"at dispatcher entry {dispatcher_entry_serial}"
+            )
+        state_var_stkoff = int(detected_stkoff)
+        logger.info(
+            "structurer: auto-detected state_var_stkoff=0x%X (lvar_idx=%s)",
+            state_var_stkoff,
+            detected_lvar_idx,
+        )
+    else:
+        state_var_stkoff = int(state_var_stkoff)
+        logger.info(
+            "structurer: using caller-supplied state_var_stkoff=0x%X", state_var_stkoff
+        )
+
     # The structurer must run on the recovered state graph (dispatcher-free), not
     # the lifted/projected FlowGraph (which retains the BST comparison blocks).
     # Prefer the ENRICHED DAG rebuilt live (full conditional-transition chain,
