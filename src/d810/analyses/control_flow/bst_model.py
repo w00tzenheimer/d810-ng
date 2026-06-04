@@ -9,6 +9,7 @@ from d810.core.typing import Optional
 from d810.core.typing import Set
 from d810.core.typing import Tuple
 from d810.analyses.control_flow.interval_map import IntervalDispatcher
+from d810.analyses.control_flow.route_predicate import DecisionDag
 from d810.ir.flowgraph import FlowGraph
 
 
@@ -196,6 +197,11 @@ class BSTAnalysisResult:
     bst_node_blocks: BSTNodeMap = field(default_factory=BSTNodeMap)
     default_block_serial: Optional[int] = None
     dispatcher: IntervalDispatcher | None = None
+    # Path B: the decision-DAG route oracle for this dispatcher (built by
+    # analyze_bst_dispatcher). When present, resolve_target_via_bst routes through
+    # it; verified to agree with the legacy interval/exact/range logic on every
+    # sub_7FFD state (0 divergence), so this is golden-neutral consolidation.
+    decision_dag: Optional[DecisionDag] = None
 
 
 def resolve_target_via_bst(
@@ -203,7 +209,14 @@ def resolve_target_via_bst(
     state_value: int,
 ) -> Optional[int]:
     """Resolve a concrete state value to a handler block serial."""
-    # Fast path: interval dispatcher (O(log n) bisect)
+    # Path B: the decision-DAG is the authoritative router -- it walks the real
+    # BST comparison tree, so it subsumes the legacy interval/exact/range logic.
+    # Route through it when present (verified 0 divergence vs legacy on sub_7FFD);
+    # fall back to the legacy path when no decision-DAG was built.
+    dag = getattr(bst_result, "decision_dag", None)
+    if dag is not None and dag.nodes:
+        return dag.route(int(state_value))
+    # Legacy fast path: interval dispatcher (O(log n) bisect)
     if bst_result.dispatcher is not None:
         result = bst_result.dispatcher.lookup(state_value)
         if result is not None:

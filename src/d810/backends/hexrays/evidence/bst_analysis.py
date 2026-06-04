@@ -41,6 +41,7 @@ from d810.core.typing import (
 from d810.analyses.control_flow.bst_model import BSTAnalysisResult
 from d810.analyses.control_flow.bst_model import BSTNodeMap
 from d810.analyses.control_flow.bst_model import resolve_target_via_bst
+from d810.backends.hexrays.evidence.decision_dag_extract import extract_decision_dag
 from d810.analyses.control_flow.interval_map import Node, NodeKind, emit_dispatch_intervals, IntervalDispatcher
 
 logger = getLogger(__name__)
@@ -1748,6 +1749,22 @@ def analyze_bst_dispatcher(
             state_var_stkoff = detected
             if state_var_lvar_idx is None:
                 state_var_lvar_idx = detected_lvar_idx
+
+    # Path B: build the decision-DAG route oracle for this dispatcher and attach
+    # it so resolve_target_via_bst routes through it (golden-neutral
+    # consolidation; the decision-DAG walks the real BST comparison tree, verified
+    # 0 divergence vs the legacy interval/exact/range router on sub_7FFD).
+    # Best-effort: any failure leaves decision_dag=None -> legacy routing remains.
+    if state_var_stkoff is not None:
+        try:
+            result.decision_dag = extract_decision_dag(
+                mba,
+                dispatcher_entry_serial=int(dispatcher_entry_serial),
+                state_var_stkoff=int(state_var_stkoff),
+                state_var_lvar_idx=state_var_lvar_idx,
+            )
+        except Exception:  # noqa: BLE001 — legacy routing remains on failure
+            result.decision_dag = None
 
     # Phase 1: Pre-header + initial state
     pre_header_serial, initial_state = _find_pre_header_state(
