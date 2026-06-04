@@ -47,7 +47,9 @@ from d810.analyses.control_flow.recovered_graph_capture import (
 from d810.analyses.control_flow.state_transition_graph import (
     augment_state_transition_graph,
     build_state_transition_graph,
+    prune_infeasible_sibling_arms,
 )
+from d810.backends.hexrays.evidence.decision_dag_extract import extract_decision_dag
 from d810.analyses.control_flow.state_write_dse import (
     infer_state_var_name as _infer_state_var_name,
     prune_dead_state_writes as _prune_dead_state_writes,
@@ -212,6 +214,35 @@ def structure_recovered_program_live(
                     len(flow_graph.blocks),
                     flow_graph.entry_serial,
                 )
+            # Step 4a: prune infeasible BST sibling-arm edges via the decision-DAG
+            # route oracle. blk35 routes 0x7FDCE054 -> 57 (past != 0x7D9C16EC); the
+            # recovery also wired 35 -> 56 (the == 0x7D9C16EC sibling arm), which
+            # 0x7FDCE054 never reaches. Drop exactly those proven-infeasible
+            # siblings (narrow: only a comparison's other arm, never an unrelated
+            # ordered-path successor).
+            if dispatcher_entry_serial is not None:
+                try:
+                    dag = extract_decision_dag(
+                        mba,
+                        dispatcher_entry_serial=int(dispatcher_entry_serial),
+                        state_var_stkoff=int(state_var_stkoff),
+                    )
+                    route_targets: dict[int, set[int]] = {}
+                    for _src, _dst in pairs:
+                        route_targets.setdefault(int(_src), set()).add(int(_dst))
+                    flow_graph, sib_pruned = prune_infeasible_sibling_arms(
+                        flow_graph,
+                        route_targets=route_targets,
+                        sibling_arms=dag.sibling_arms(),
+                    )
+                    if sib_pruned and logger.info_on:
+                        logger.info(
+                            "structurer: pruned %d infeasible BST sibling edge(s): %s",
+                            len(sib_pruned),
+                            ", ".join(f"blk[{s}]->blk[{d}]" for s, d in sib_pruned),
+                        )
+                except Exception as exc:  # noqa: BLE001 — diagnostics; never fatal
+                    logger.info("structurer: sibling-arm prune skipped (%s)", exc)
     else:
         flow_graph = base_graph
         logger.info(

@@ -116,6 +116,37 @@ def _parse_state_comparison(blk, op_map, state_var_stkoff, state_var_lvar_idx, m
     return op, const, int(target)
 
 
+def _descend_to_root(
+    mba, entry, op_map, state_var_stkoff, state_var_lvar_idx, mask, max_hops=8
+):
+    """Follow single-successor blocks from *entry* to the first state-var comparison.
+
+    The dispatcher entry handed in may be a loop header / glue block that flows
+    (1-way) into the actual BST root; descend until a state-var comparison is
+    found (or the chain forks / ends).
+    """
+    cur = int(entry)
+    for _ in range(int(max_hops) + 1):
+        try:
+            blk = mba.get_mblock(cur)
+        except Exception:
+            return cur
+        if blk is None:
+            return cur
+        if (
+            _parse_state_comparison(
+                blk, op_map, int(state_var_stkoff), state_var_lvar_idx, mask
+            )
+            is not None
+        ):
+            return cur
+        succs = _block_succs(blk)
+        if len(succs) != 1:
+            return cur
+        cur = succs[0]
+    return cur
+
+
 def extract_decision_dag(
     mba,
     *,
@@ -142,9 +173,13 @@ def extract_decision_dag(
     """
     op_map = _op_mnemonic_map()
     mask = (1 << int(width)) - 1
+    root = _descend_to_root(
+        mba, int(dispatcher_entry_serial), op_map, int(state_var_stkoff),
+        state_var_lvar_idx, mask,
+    )
     nodes: dict[int, BstComparison] = {}
     visited: set[int] = set()
-    stack = [int(dispatcher_entry_serial)]
+    stack = [root]
     while stack:
         serial = stack.pop()
         if serial in visited or len(nodes) >= max_nodes:
@@ -176,4 +211,4 @@ def extract_decision_dag(
         )
         stack.append(int(true_target))
         stack.append(int(false_target))
-    return DecisionDag(int(width), nodes, int(dispatcher_entry_serial))
+    return DecisionDag(int(width), nodes, root)

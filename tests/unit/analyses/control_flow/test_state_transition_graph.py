@@ -26,6 +26,7 @@ from d810.analyses.control_flow.state_transition_graph import (
     StateTransitionGraphBlock,
     augment_state_transition_graph,
     build_state_transition_graph,
+    prune_infeasible_sibling_arms,
 )
 from d810.ir.state_dag_key import StateDagNodeKey
 
@@ -423,3 +424,41 @@ def test_augment_drops_edge_to_unmaterialized_block():
     aug, added = augment_state_transition_graph(cfg, [(109, 194), (194, 39), (194, 90)])
     assert 194 not in aug.blocks
     assert added == ()
+
+
+# -- prune_infeasible_sibling_arms (decision-DAG sibling-feasibility) -----------
+
+
+def test_prune_drops_only_the_infeasible_sibling_arm():
+    # blk35 routes to 57; 56 is blk55's sibling arm (== 0x7D9C16EC). 35->56 is
+    # dropped; 35->57 (the route) and 35->99 (an unrelated ordered-path successor,
+    # NOT a sibling) are kept.
+    cfg = _cfg({78: (35,), 35: (56, 57, 99), 56: (), 57: (), 99: (), 120: (56,)}, entry=78)
+    aug, pruned = prune_infeasible_sibling_arms(
+        cfg,
+        route_targets={35: {57}},
+        sibling_arms={57: {56}, 56: {57}},  # blk55's two arms
+    )
+    assert pruned == ((35, 56),)
+    assert set(aug.successors(35)) == {57, 99}  # sibling gone, route + body kept
+    assert 35 not in aug.predecessors(56)
+    assert 120 in aug.predecessors(56)  # 56 still reachable via its real writer
+
+
+def test_prune_keeps_sibling_that_is_also_a_real_route_target():
+    # If 56 is ALSO a routed target of 35 (a genuine fan-out), it is NOT pruned.
+    cfg = _cfg({35: (56, 57), 56: (), 57: ()}, entry=35)
+    aug, pruned = prune_infeasible_sibling_arms(
+        cfg, route_targets={35: {56, 57}}, sibling_arms={57: {56}, 56: {57}}
+    )
+    assert pruned == ()
+    assert aug is cfg
+
+
+def test_prune_no_route_no_authority():
+    cfg = _cfg({35: (56, 57), 56: (), 57: ()}, entry=35)
+    aug, pruned = prune_infeasible_sibling_arms(
+        cfg, route_targets={}, sibling_arms={57: {56}, 56: {57}}
+    )
+    assert pruned == ()
+    assert aug is cfg
