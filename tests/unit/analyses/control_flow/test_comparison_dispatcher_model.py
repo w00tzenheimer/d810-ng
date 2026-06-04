@@ -10,7 +10,8 @@ from types import SimpleNamespace
 
 from d810.analyses.control_flow.comparison_dispatcher_model import (
     ComparisonDispatcherModel,
-    route_comparison_target,
+    intervals_from_range_map,
+    route_via_interval_sets,
 )
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.analyses.control_flow.dispatcher_resolution import (
@@ -52,17 +53,27 @@ def _row(state_const, target, *, block=2):
 # --- the pure routing function --------------------------------------------
 
 
+def _route(value, *, state_to_handler, handler_range_map=None, default_target_block=None):
+    """Route via the single IntervalSet router (adapts a legacy range map)."""
+    return route_via_interval_sets(
+        value,
+        state_to_handler=state_to_handler,
+        target_intervals=intervals_from_range_map(handler_range_map),
+        default_target_block=default_target_block,
+    )
+
+
 def test_route_exact_first():
     assert (
-        route_comparison_target(0xAA, state_to_handler={0xAA: 7}) == 7
+        _route(0xAA, state_to_handler={0xAA: 7}) == 7
     )
 
 
 def test_route_interval_resolves_the_dropped_edge():
     # THE bug: exact-only returns None; interval row resolves to 52.
-    assert route_comparison_target(_STATE, state_to_handler={}) is None
+    assert _route(_STATE, state_to_handler={}) is None
     assert (
-        route_comparison_target(
+        _route(
             _STATE, state_to_handler={}, handler_range_map={_BLK52: (_LO, _HI)}
         )
         == _BLK52
@@ -72,7 +83,7 @@ def test_route_interval_resolves_the_dropped_edge():
 def test_route_interval_miss_returns_none():
     out_of_range = _HI + 1
     assert (
-        route_comparison_target(
+        _route(
             out_of_range, state_to_handler={}, handler_range_map={_BLK52: (_LO, _HI)}
         )
         is None
@@ -82,7 +93,7 @@ def test_route_interval_miss_returns_none():
 def test_route_skips_degenerate_catchall_span():
     # A near-full-word span is the dispatcher default arm, not a handler range.
     assert (
-        route_comparison_target(
+        _route(
             0x1234, state_to_handler={}, handler_range_map={99: (0, 0xFFFFFFFF)}
         )
         is None
@@ -91,7 +102,7 @@ def test_route_skips_degenerate_catchall_span():
 
 def test_route_skips_rows_already_claimed_exactly():
     # handler 7 is exact; its range row must not double-claim a different value.
-    out = route_comparison_target(
+    out = _route(
         0x500,
         state_to_handler={0x100: 7},
         handler_range_map={7: (0x400, 0x600)},
@@ -101,7 +112,7 @@ def test_route_skips_rows_already_claimed_exactly():
 
 def test_route_default_arm_last():
     assert (
-        route_comparison_target(0xDEAD, state_to_handler={}, default_target_block=3)
+        _route(0xDEAD, state_to_handler={}, default_target_block=3)
         == 3
     )
 

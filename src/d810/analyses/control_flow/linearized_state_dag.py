@@ -13,7 +13,8 @@ from d810.core import logging
 from d810.core.typing import Callable, Mapping
 from d810.analyses.control_flow.interval_map import IntervalDispatcher
 from d810.analyses.control_flow.comparison_dispatcher_model import (
-    route_comparison_target,
+    intervals_from_range_map,
+    route_via_interval_sets,
 )
 from d810.analyses.control_flow.dispatch_region import DispatchRegionDetector
 from d810.analyses.control_flow.scc_analysis import (
@@ -6522,18 +6523,20 @@ def build_linearized_state_dag_from_graph(
             # exact index even though a RANGE_BACKED node for the covering
             # interval already exists.  Resolve it through the SAME interval
             # logic the comparison dispatcher / ``resolve_target_via_bst`` use
-            # (``route_comparison_target``: exact -> interval -> default with the
+            # (``route_via_interval_sets``: exact -> interval -> default with the
             # ``>= 0xFFFF0000`` degenerate-span guard) so a mid-interval value
             # reconnects to its RANGE_BACKED node instead of dropping the edge.
             if resolved_node is None and report.handler_range_map:
-                interval_handler = route_comparison_target(
+                interval_handler = route_via_interval_sets(
                     masked_target_state,
                     state_to_handler={
                         state: int(node.handler_serial)
                         for state, node in node_by_state.items()
                         if getattr(node, "kind", None) == StateNodeKind.EXACT
                     },
-                    handler_range_map=report.handler_range_map,
+                    target_intervals=intervals_from_range_map(
+                        report.handler_range_map
+                    ),
                 )
                 if interval_handler is not None:
                     interval_node = primary_node_by_handler.get(int(interval_handler))

@@ -34,9 +34,6 @@ from d810.backends.hexrays.evidence.bst_analysis import (
     analyze_bst_dispatcher,
 )
 from d810.analyses.control_flow.bst_model import resolve_target_via_bst
-from d810.analyses.control_flow.comparison_dispatcher_model import (
-    route_comparison_target,
-)
 from d810.backends.hexrays.evidence.microcode_dump import (
     _build_block_payload_by_serial,
     _build_live_linearized_state_dag,
@@ -275,21 +272,9 @@ def structure_recovered_program_live(
                     )
                     # Force the LEGACY body so the comparison is genuine.
                     bst_result.decision_dag = None
-                    # R2 substance fed from the SAME bst evidence the legacy body
-                    # reads, so a dag-vs-R2 divergence isolates whether R1's legacy
-                    # interval/exact/range body and route_comparison_target are
-                    # genuinely redundant (safe to dedupe) or carry intentionally
-                    # different default/gap semantics (must NOT be merged).
-                    r2_state_to_handler = {
-                        int(st): int(blk)
-                        for blk, st in bst_result.handler_state_map.items()
-                    }
-                    r2_range_map = bst_result.handler_range_map
-                    r2_default = bst_result.default_block_serial
                     cells = probe_dag.resolve_paths()
                     samples = 0
                     diverged: list[tuple[int, int, object]] = []
-                    diverged_r2: list[tuple[int, int, object]] = []
                     for cell in cells:
                         for iv in cell.domain.intervals:
                             for pt in {int(iv.low), int(iv.high)}:
@@ -299,36 +284,12 @@ def structure_recovered_program_live(
                                 legacy_i = int(legacy) if legacy is not None else None
                                 if legacy_i != dag_tgt:
                                     diverged.append((pt, dag_tgt, legacy_i))
-                                r2 = route_comparison_target(
-                                    pt,
-                                    state_to_handler=r2_state_to_handler,
-                                    handler_range_map=r2_range_map,
-                                    default_target_block=r2_default,
-                                )
-                                r2_i = int(r2) if r2 is not None else None
-                                if r2_i != dag_tgt:
-                                    diverged_r2.append((pt, dag_tgt, r2_i))
                     logger.info(
                         "EQUIVALENCE PROBE: %d cells, %d sample points, %d diverge "
                         "(decision-DAG.route vs LEGACY resolve_target_via_bst)",
                         len(cells),
                         samples,
                         len(diverged),
-                    )
-                    # EXPECTED to be non-zero: route_comparison_target is a strict
-                    # CONSERVATIVE subset of the dag -- it surfaces range-routed
-                    # states its handler_range_map does not cover as Unknown
-                    # ("state_not_in_dispatcher_map") instead of guessing.  Every
-                    # divergence here is dag->handler / R2->None (never a wrong
-                    # handler, never R2->handler where dag->None), which is exactly
-                    # why R1 (dag, complete) and R2 (deliberately conservative) are
-                    # domain-separated and must NOT be merged.
-                    logger.info(
-                        "EQUIVALENCE PROBE R2: %d sample points, %d diverge "
-                        "(decision-DAG.route vs route_comparison_target over bst maps; "
-                        "EXPECTED>0: R2 surfaces uncovered range routes as Unknown)",
-                        samples,
-                        len(diverged_r2),
                     )
                     for pt, dd, legacy in diverged[:60]:
                         logger.info(
@@ -337,14 +298,6 @@ def structure_recovered_program_live(
                             pt,
                             dd,
                             legacy,
-                        )
-                    for pt, dd, r2v in diverged_r2[:60]:
-                        logger.info(
-                            "  EQUIV-R2 DIVERGE state=0x%08X: decision-DAG->blk%s "
-                            "route_comparison_target->blk%s",
-                            pt,
-                            dd,
-                            r2v,
                         )
                 except Exception as exc:  # noqa: BLE001 — probe is best-effort
                     logger.info("EQUIVALENCE PROBE failed: %s", exc)

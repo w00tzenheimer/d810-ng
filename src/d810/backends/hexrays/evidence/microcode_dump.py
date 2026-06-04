@@ -821,7 +821,7 @@ def _build_comparison_model_from_bst(
 
     ``bst_result.handler_state_map`` (``handler_serial -> state_const``) is
     inverted into exact ``StateDispatcherRow`` rows; the interval evidence
-    (``handler_range_map``) routes through :func:`route_comparison_target` inside
+    (``handler_range_map``) routes through :func:`route_via_interval_sets` inside
     the model.  ``block_ea`` carries each handler's EA so the routed
     :class:`Block` results name ``serial@0xEA`` (standing rule).
     """
