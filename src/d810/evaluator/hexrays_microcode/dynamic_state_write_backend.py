@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import operator
 from dataclasses import dataclass
 from d810.core import logging
 from d810.core.typing import Iterable
@@ -475,6 +476,7 @@ from d810.analyses.data_flow.abstract_value import (  # noqa: E402
     AbstractValue,
     Const,
     Top,
+    fold_correlated_binop,
     value_set_from_reaching_def_consts,
 )
 
@@ -911,6 +913,112 @@ def _default_reaching_def_blocks(mba, *, block_serial: int, stkoff: int, size: i
     return seen
 
 
+def _py_binop_map() -> dict:
+    """opcode -> pure 2-arg constant evaluator (for the correlated-binop fold)."""
+    return {
+        ida_hexrays.m_xor: operator.xor,
+        ida_hexrays.m_add: operator.add,
+        ida_hexrays.m_sub: operator.sub,
+        ida_hexrays.m_mul: operator.mul,
+        ida_hexrays.m_and: operator.and_,
+        ida_hexrays.m_or: operator.or_,
+    }
+
+
+def _bare_stk_operand(mop) -> tuple[int, int] | None:
+    """``(stkoff, size)`` of *mop* iff it is a bare ``mop_S`` stack var, else ``None``."""
+    if mop is None or getattr(mop, "t", None) != ida_hexrays.mop_S:
+        return None
+    stkoff = _mop_stkoff(mop)
+    size = getattr(mop, "size", None)
+    if stkoff is None or not size:
+        return None
+    return int(stkoff), int(size)
+
+
+def _state_write_binop_operands(
+    *, mba, block_serial: int, state_var_stkoff: int, state_var_lvar_idx: int | None
+):
+    """Find the LAST ``op(A, B) -> statevar`` write where ``A``/``B`` are bare
+    stack vars and ``op`` is a foldable binary op.
+
+    Returns ``(opcode, (a_stkoff, a_size), (b_stkoff, b_size))`` or ``None`` (no
+    such write -- the source is a const / bare var / unsupported op).
+    """
+    try:
+        blk = mba.get_mblock(int(block_serial))
+    except Exception:
+        blk = None
+    if blk is None:
+        return None
+    binmap = _py_binop_map()
+    found = None
+    insn = getattr(blk, "head", None)
+    while insn is not None:
+        opcode = getattr(insn, "opcode", None)
+        if opcode in binmap and _mop_matches_state_var(
+            getattr(insn, "d", None),
+            mba=mba,
+            state_var_stkoff=int(state_var_stkoff),
+            state_var_lvar_idx=state_var_lvar_idx,
+        ):
+            left = _bare_stk_operand(getattr(insn, "l", None))
+            right = _bare_stk_operand(getattr(insn, "r", None))
+            if left is not None and right is not None:
+                found = (opcode, left, right)  # last writer wins
+        insn = getattr(insn, "next", None)
+    return found
+
+
+def _resolve_correlated_binop_state_write(
+    *,
+    mba,
+    block_serial: int,
+    state_var_stkoff: int,
+    state_var_lvar_idx: int | None,
+    size: int = 4,
+    reaching_def_blocks_provider=None,
+) -> AbstractValue:
+    """Resolve a state write ``op(varA, varB)`` as a correlated value set (T2b).
+
+    OLLVM opaque-constant *split*: the state var is written as a binary op of two
+    bare stack vars that are each ``mov #const`` in the SAME shared predecessor
+    blocks (e.g. ``var_7BC = var_D0 ^ var_C8``).  T1's cross-block resolver
+    collapses to ``⊤`` because each operand has several reaching consts; this
+    pairs the operands *per def-block* and folds the op, recovering the real
+    states (no spurious cross product).  Returns :data:`TOP` unless both operands
+    are defined in the exact same provable-const block set.
+    """
+    binop = _state_write_binop_operands(
+        mba=mba,
+        block_serial=int(block_serial),
+        state_var_stkoff=int(state_var_stkoff),
+        state_var_lvar_idx=state_var_lvar_idx,
+    )
+    if binop is None:
+        return TOP
+    opcode, (a_stk, a_sz), (b_stk, b_sz) = binop
+    op = _py_binop_map().get(opcode)
+    if op is None:
+        return TOP
+    provider = reaching_def_blocks_provider or _default_reaching_def_blocks
+
+    def consts_by_def_block(stk: int, sz: int) -> dict:
+        blocks = provider(
+            mba, block_serial=int(block_serial), stkoff=int(stk), size=int(sz)
+        )
+        return {
+            int(b): _read_const_writer(
+                mba=mba, block_serial=int(b), stkoff=int(stk), lvar_idx=None
+            )
+            for b in blocks
+        }
+
+    return fold_correlated_binop(
+        consts_by_def_block(a_stk, a_sz), consts_by_def_block(b_stk, b_sz), op
+    )
+
+
 def resolve_state_write_value_set(
     *,
     mba,
@@ -970,9 +1078,21 @@ def resolve_state_write_value_set(
         if staged is not None:
             write_block, (src_stkoff, src_lvar_idx) = staged
 
-    # Only a bare *stack* source is value-set resolvable here (the DU reaching-def
-    # provider keys on a stack offset). A const / mop_d / lvar source -> T1.
+    # Only a bare *stack* source is value-set resolvable via the DU reaching-def
+    # provider. A non-bare source may still be an opaque-constant SPLIT
+    # ``op(varA, varB)`` (T2b: var ^ var folded per correlated def-block) -- try
+    # that before degrading to the T1 local fold (const / lvar / true-MBA source).
     if src_stkoff is None:
+        binop_value_set = _resolve_correlated_binop_state_write(
+            mba=mba,
+            block_serial=int(block_serial),
+            state_var_stkoff=int(state_var_stkoff),
+            state_var_lvar_idx=state_var_lvar_idx,
+            size=int(size),
+            reaching_def_blocks_provider=reaching_def_blocks_provider,
+        )
+        if not isinstance(binop_value_set, Top):
+            return binop_value_set
         return fold_block_state_write(
             mba=mba,
             block_serial=int(block_serial),

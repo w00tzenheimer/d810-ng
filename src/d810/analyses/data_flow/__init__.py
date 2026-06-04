@@ -37,6 +37,7 @@ from d810.analyses.data_flow.abstract_value import (
     TOP,
     Top,
     Unknown,
+    fold_correlated_binop,
     value_set_from_reaching_def_consts,
 )
 from d810.analyses.data_flow.analyzed_cfg import AnalyzedCFG, FixpointResult
@@ -81,4 +82,5 @@ __all__ = [
     "resolve",
     "run_fixpoint",
     "value_set_from_reaching_def_consts",
+    "fold_correlated_binop",
 ]

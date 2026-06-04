@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from d810.core.typing import Iterable, Union
+from d810.core.typing import Callable, Iterable, Mapping, Union
 
 from d810.ir.lattice import Const
 
@@ -37,6 +37,7 @@ __all__ = [
     "AbstractValue",
     "cases",
     "value_set_from_reaching_def_consts",
+    "fold_correlated_binop",
     "Block",
     "EntersDispatcher",
     "RouteOneOf",
@@ -149,6 +150,42 @@ def value_set_from_reaching_def_consts(
     if len(seen) == 1:
         return Const(next(iter(seen)), 4)
     return OneOf(frozenset(seen))
+
+
+def fold_correlated_binop(
+    consts_a: Mapping[int, int | None],
+    consts_b: Mapping[int, int | None],
+    op: Callable[[int, int], int],
+) -> "AbstractValue":
+    """Fold ``op(a, b)`` over two operands' per-def-block constant maps (pure).
+
+    OLLVM hides a constant state by *splitting* it across a binary op whose two
+    operands are each ``mov #const`` in the SAME shared predecessor blocks, then
+    recombining at a merge (e.g. ``var_7BC = var_D0 ^ var_C8`` where ``var_D0`` /
+    ``var_C8`` are written ``#A1`` / ``#B1`` in one predecessor and ``#A2`` /
+    ``#B2`` in another).  The operands are therefore **correlated by def-block**,
+    NOT an independent cross product -- pairing them per block recovers the real
+    states (``A1 op B1``, ``A2 op B2``), whereas a cross product would also invent
+    the spurious ``A1 op B2`` / ``A2 op B1``.
+
+    ``consts_a`` / ``consts_b`` map each operand's reaching-def block -> the const
+    it writes there (``None`` if that def is not a provable constant).  Pairs by
+    common block, evaluates ``op`` (masked to 32 bits), and projects the results
+    via :func:`value_set_from_reaching_def_consts` (``Const`` / ``OneOf``).
+
+    Soundness: returns :data:`TOP` (escalate) unless BOTH operands are defined in
+    the EXACT same set of blocks and every one of those defs is a provable const
+    -- a mismatched / incomplete correlation never invents a state.
+    """
+    if not consts_a or set(consts_a) != set(consts_b):
+        return TOP
+    results: list[int | None] = []
+    for block in consts_a:
+        a, b = consts_a[block], consts_b[block]
+        if a is None or b is None:
+            return TOP
+        results.append(op(int(a), int(b)) & 0xFFFFFFFF)
+    return value_set_from_reaching_def_consts(results)
 
 
 def cases(value: "AbstractValue") -> tuple[tuple[object | None, int], ...]:
