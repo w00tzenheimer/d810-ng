@@ -13,6 +13,7 @@ from d810.core import logging
 from d810.core.typing import Callable, Mapping
 from d810.analyses.control_flow.interval_map import IntervalDispatcher
 from d810.analyses.control_flow.comparison_dispatcher_model import (
+    build_partition,
     intervals_from_range_map,
     route_via_interval_sets,
 )
@@ -6529,13 +6530,13 @@ def build_linearized_state_dag_from_graph(
             if resolved_node is None and report.handler_range_map:
                 interval_handler = route_via_interval_sets(
                     masked_target_state,
-                    state_to_handler={
-                        state: int(node.handler_serial)
-                        for state, node in node_by_state.items()
-                        if getattr(node, "kind", None) == StateNodeKind.EXACT
-                    },
-                    target_intervals=intervals_from_range_map(
-                        report.handler_range_map
+                    target_intervals=build_partition(
+                        {
+                            state: int(node.handler_serial)
+                            for state, node in node_by_state.items()
+                            if getattr(node, "kind", None) == StateNodeKind.EXACT
+                        },
+                        intervals_from_range_map(report.handler_range_map),
                     ),
                 )
                 if interval_handler is not None:

@@ -7746,33 +7746,15 @@ def test_resolve_target_node_reconnects_mid_interval_next_state() -> None:
 def test_interval_set_router_matches_mid_interval_handler() -> None:
     """Contract: the single IntervalSet router routes the mid-interval value to 52."""
     from d810.analyses.control_flow.comparison_dispatcher_model import (
+        build_partition,
         intervals_from_range_map,
         route_via_interval_sets,
     )
 
-    target_intervals = intervals_from_range_map({52: (0x737189D6, 0x7C2C0220)})
-    assert (
-        route_via_interval_sets(
-            0x79F598F7,
-            state_to_handler={0x10000000: 10},
-            target_intervals=target_intervals,
-        )
-        == 52
+    partition = build_partition(
+        {0x10000000: 10}, intervals_from_range_map({52: (0x737189D6, 0x7C2C0220)})
     )
+    assert route_via_interval_sets(0x79F598F7, target_intervals=partition) == 52
     # Exact keys still win and out-of-range values still miss.
-    assert (
-        route_via_interval_sets(
-            0x10000000,
-            state_to_handler={0x10000000: 10},
-            target_intervals=target_intervals,
-        )
-        == 10
-    )
-    assert (
-        route_via_interval_sets(
-            0x00000001,
-            state_to_handler={0x10000000: 10},
-            target_intervals=target_intervals,
-        )
-        is None
-    )
+    assert route_via_interval_sets(0x10000000, target_intervals=partition) == 10
+    assert route_via_interval_sets(0x00000001, target_intervals=partition) is None

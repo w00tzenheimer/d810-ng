@@ -22,6 +22,7 @@ function.  The asserted edge set is the sub_7FFD corpus:
 from __future__ import annotations
 
 from d810.analyses.control_flow.comparison_dispatcher_model import (
+    build_partition,
     intervals_from_range_map,
     route_via_interval_sets,
 )
@@ -95,8 +96,7 @@ class _FakeModel:
     def route(self, value: int) -> Block | Unknown:
         target = route_via_interval_sets(
             value,
-            state_to_handler=_EXACT,
-            target_intervals=intervals_from_range_map(_RANGES),
+            target_intervals=build_partition(_EXACT, intervals_from_range_map(_RANGES)),
         )
         if target is None:
             return Unknown("state_not_in_dispatcher_map")
