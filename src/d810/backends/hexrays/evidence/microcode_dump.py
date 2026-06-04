@@ -28,7 +28,9 @@ cannot live below those layers.
 
 from __future__ import annotations
 
+import os
 import re
+from dataclasses import replace
 
 from d810.core.logging import getLogger
 from d810.core.typing import Any, Dict, List, Optional, Tuple, cast
@@ -85,9 +87,13 @@ from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
     ProgramCommentMode,
     ProgramRenderStrategy,
+    RedirectSourceKind,
     RenderedProgramSnapshot,
     RenderOrderStrategy,
+    SemanticEdgeKind,
     StateAnchorDivergence,
+    StateDagEdge,
+    StateRedirectAnchor,
     build_linearized_state_program,
     build_live_linearized_state_dag_from_graph,
     compute_dag_anchor_divergence,
@@ -100,6 +106,19 @@ from d810.backends.hexrays.evidence.flattening.dynamic_state_transition_recovery
     recover_dynamic_state_write_transitions,
 )
 from d810.analyses.control_flow.persisted_recon_dag import get_persisted_recon_dag
+from d810.analyses.control_flow.comparison_dispatcher_model import (
+    ComparisonDispatcherModel,
+)
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.analyses.control_flow.dispatcher_resolution import (
+    StateDispatcherMap,
+    StateDispatcherRow,
+)
+from d810.analyses.control_flow.explore import WriteSite, explore
+from d810.evaluator.hexrays_microcode.dynamic_state_write_backend import (
+    fold_block_state_write,
+    make_cross_block_resolver,
+)
 from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
 from d810.analyses.control_flow.transition_report import (
     TransitionKind,
@@ -765,6 +784,188 @@ def dump_dispatcher_tree(
 # -----------------------------------------------------------------------------
 
 
+def _block_start_ea(mba: "idaapi.mbl_array_t", serial: int) -> Optional[int]:
+    """Return the start EA of block ``serial`` (standing rule), else ``None``."""
+    try:
+        blk = mba.get_mblock(int(serial))
+    except Exception:
+        return None
+    if blk is None:
+        return None
+    try:
+        return int(blk.start) & 0xFFFFFFFFFFFFFFFF
+    except Exception:
+        return None
+
+
+def _build_comparison_model_from_bst(
+    bst_result,
+    *,
+    mba: "idaapi.mbl_array_t",
+    dispatcher_entry_serial: int,
+    state_var_stkoff: Optional[int],
+    state_var_lvar_idx: Optional[int],
+) -> ComparisonDispatcherModel:
+    """Build a :class:`ComparisonDispatcherModel` from BST recovery evidence.
+
+    ``bst_result.handler_state_map`` (``handler_serial -> state_const``) is
+    inverted into exact ``StateDispatcherRow`` rows; the interval evidence
+    (``handler_range_map``) routes through :func:`route_comparison_target` inside
+    the model.  ``block_ea`` carries each handler's EA so the routed
+    :class:`Block` results name ``serial@0xEA`` (standing rule).
+    """
+    rows: list[StateDispatcherRow] = []
+    block_ea: dict[int, int] = {}
+    for handler_serial, state_const in bst_result.handler_state_map.items():
+        rows.append(
+            StateDispatcherRow(
+                state_const=int(state_const) & 0xFFFFFFFF,
+                target_block=int(handler_serial),
+                dispatcher_block=int(dispatcher_entry_serial),
+                compare_block=None,
+                branch_kind="bst",
+                source=DispatcherType.CONDITIONAL_CHAIN,
+            )
+        )
+        ea = _block_start_ea(mba, handler_serial)
+        if ea is not None:
+            block_ea[int(handler_serial)] = ea
+    dispatch_map = StateDispatcherMap(
+        rows=tuple(rows),
+        dispatcher_entry_block=int(dispatcher_entry_serial),
+        dispatcher_blocks=frozenset(int(s) for s in bst_result.bst_node_blocks)
+        | {int(dispatcher_entry_serial)},
+        state_var_stkoff=state_var_stkoff,
+        state_var_lvar_idx=state_var_lvar_idx,
+        source=DispatcherType.CONDITIONAL_CHAIN,
+        initial_state=bst_result.initial_state,
+    )
+    return ComparisonDispatcherModel.from_recovery(
+        dispatch_map, bst_evidence=bst_result, block_ea=block_ea
+    )
+
+
+def _inject_explore_resolved_edges(
+    dag,
+    *,
+    bst_result,
+    mba: "idaapi.mbl_array_t",
+    state_var_stkoff: Optional[int],
+    state_var_lvar_idx: Optional[int],
+    dispatcher_entry_serial: int,
+):
+    """Reconnect orphaned handlers with S5a ``explore()`` resolved edges (gated).
+
+    For each handler the model knows, fold its next-state write (T1 const-fold via
+    :func:`fold_block_state_write`, returning ``Const | Top``), route the folded
+    constants through a :class:`ComparisonDispatcherModel`, and add a
+    :class:`StateDagEdge` (``TRANSITION``) for every RESOLVED ``src -> dst`` whose
+    endpoints both exist as dag nodes and whose edge is not already present.
+
+    Returns ``dag`` unchanged when ``state_var_stkoff`` is unknown or no edge is
+    injected; otherwise a ``replace(dag, edges=...)`` with the augmented edge set.
+    Each injected edge is logged with both serials AND their EAs (standing rule).
+    """
+    if state_var_stkoff is None:
+        logger.info("explore: state_var_stkoff unknown; skipping edge injection")
+        return dag
+
+    node_by_handler = dag.node_by_handler()
+    if not node_by_handler:
+        return dag
+
+    model = _build_comparison_model_from_bst(
+        bst_result,
+        mba=mba,
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        state_var_stkoff=state_var_stkoff,
+        state_var_lvar_idx=state_var_lvar_idx,
+    )
+
+    cross_block_resolver = make_cross_block_resolver(mba)
+
+    def resolve_state(_state_var, site):
+        return fold_block_state_write(
+            mba=mba,
+            block_serial=int(site),
+            state_var_stkoff=int(state_var_stkoff),
+            state_var_lvar_idx=state_var_lvar_idx,
+            cross_block_resolver=cross_block_resolver,
+        )
+
+    write_sites = [
+        WriteSite(
+            from_handler=int(handler_serial),
+            state_var=int(state_var_stkoff),
+            site=int(handler_serial),
+            from_ea=_block_start_ea(mba, handler_serial),
+        )
+        for handler_serial in node_by_handler
+    ]
+
+    view = explore(write_sites, model=model, resolve_state=resolve_state)
+
+    # Pre-index the existing (source_handler, target_handler) edge pairs so we only
+    # add genuinely absent edges (idempotent w.r.t. the builder's own wiring).
+    existing_pairs: set[tuple[int, int]] = set()
+    for edge in dag.edges:
+        src_key = getattr(edge, "source_key", None)
+        src_handler = getattr(src_key, "handler_serial", None)
+        tgt_anchor = getattr(edge, "target_entry_anchor", None)
+        if src_handler is not None and tgt_anchor is not None:
+            existing_pairs.add((int(src_handler), int(tgt_anchor)))
+
+    injected: list[StateDagEdge] = []
+    for s5_edge in view.resolved:
+        src_handler = int(s5_edge.from_serial)
+        dst_handler = int(s5_edge.to_serial)
+        src_node = node_by_handler.get(src_handler)
+        dst_node = node_by_handler.get(dst_handler)
+        if src_node is None or dst_node is None:
+            continue
+        dst_entry = int(dst_node.entry_anchor)
+        if (src_handler, dst_entry) in existing_pairs:
+            continue
+        existing_pairs.add((src_handler, dst_entry))
+        injected.append(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=src_node.key,
+                target_key=dst_node.key,
+                # target_entry_anchor (below) is the authoritative resolution the
+                # CFG adapter prefers; leave target_state unset so the adapter's
+                # src==tgt self-loop guard is not tripped by a stale value.
+                target_state=getattr(dst_node.key, "state_const", None),
+                target_entry_anchor=dst_entry,
+                target_label=dst_node.state_label,
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=src_handler,
+                ),
+                ordered_path=(),
+            )
+        )
+        src_ea = s5_edge.from_ea
+        dst_ea = s5_edge.to_ea
+        logger.info(
+            "explore: inject edge blk[%d]@%s -> blk[%d]@%s (entry blk[%d]@%s)",
+            src_handler,
+            "?" if src_ea is None else f"0x{src_ea:016x}",
+            dst_handler,
+            "?" if dst_ea is None else f"0x{dst_ea:016x}",
+            dst_entry,
+            "?"
+            if (_dea := _block_start_ea(mba, dst_entry)) is None
+            else f"0x{_dea:016x}",
+        )
+
+    if not injected:
+        logger.info("explore: no absent resolved edges to inject")
+        return dag
+    logger.info("explore: injected %d resolved edge(s) into state-DAG", len(injected))
+    return replace(dag, edges=dag.edges + tuple(injected))
+
+
 def _build_live_linearized_state_dag(
     mba: "idaapi.mbl_array_t",
     dispatcher_entry_serial: int,
@@ -804,7 +1005,7 @@ def _build_live_linearized_state_dag(
         state_var_stkoff=state_var_stkoff,
         known_states=known_states,
     )
-    return build_live_linearized_state_dag_from_graph(
+    dag = build_live_linearized_state_dag_from_graph(
         flow_graph,
         transition_result,
         dispatcher_entry_serial=dispatcher_entry_serial,
@@ -818,6 +1019,18 @@ def _build_live_linearized_state_dag(
         mba=mba,
         prefer_local_corridors=True,
     )
+    # S5c (gated): reconnect orphaned handlers with explore()'s resolved edges.
+    # Flag OFF (default) -> this path is never entered -> byte-identical golden.
+    if os.environ.get("D810_USE_EXPLORE", "0").strip() == "1":
+        dag = _inject_explore_resolved_edges(
+            dag,
+            bst_result=bst_result,
+            mba=mba,
+            state_var_stkoff=state_var_stkoff,
+            state_var_lvar_idx=state_var_lvar_idx,
+            dispatcher_entry_serial=dispatcher_entry_serial,
+        )
+    return dag
 
 
 def dump_linearized_dag(
