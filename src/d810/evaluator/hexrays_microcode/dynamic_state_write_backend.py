@@ -445,6 +445,7 @@ __all__ = [
     "recognize_derived_xor_dispatcher_model",
     "recognize_derived_xor_dispatcher_models",
     "recognize_global_or_state_write_transition",
+    "resolve_state_write_value_set",
 ]
 
 
@@ -473,6 +474,8 @@ from d810.analyses.data_flow.abstract_value import (  # noqa: E402
     TOP,
     AbstractValue,
     Const,
+    Top,
+    value_set_from_reaching_def_consts,
 )
 
 _FOLD_WIDTH = 64  # evaluate in 64-bit, mask the state to 32-bit at the end
@@ -737,6 +740,273 @@ def fold_block_state_write(
         return TOP
     folded = vd.to_const(result)
     return TOP if folded is None else Const(folded & 0xFFFFFFFF, 4)
+
+
+# ---------------------------------------------------------------------------
+# T2 value-set state-write resolver
+#
+# Some handlers do NOT write the state var from a locally-folded MBA equation;
+# they write it from a *bare source variable* that is itself written elsewhere by
+# several distinct const ``mov`` sites::
+#
+#     blk194:  mov #0x41FB8FBB, %var_70      ; one const writer of var_70
+#     blk51:   mov #0x71E22BF3, %var_70      ; another const writer
+#     blk195:  mov %var_70, %var_7BC          ; state write reads the shared temp
+#
+# T1 (:func:`fold_block_state_write`) returns ``Top`` for such a multi-valued
+# source.  T2 collects ALL reaching defs of the source variable, reads each def's
+# const, and -- when every reaching def is a provable constant -- returns the
+# value set as ``OneOf`` (or ``Const`` for a singleton).  ``explore()`` then fans
+# the powerset out, routing each member to its own handler.  A non-const reaching
+# def (or a source that is not a bare stack/lvar variable) falls back to T1.
+# ---------------------------------------------------------------------------
+
+
+def _state_write_source_identity(
+    *,
+    mba,
+    block_serial: int,
+    state_var_stkoff: int,
+    state_var_lvar_idx: int | None,
+) -> tuple[int | None, int | None] | None:
+    """Return the ``(stkoff, lvar_idx)`` of the bare source of the state write.
+
+    Scans *block_serial* for the LAST ``mov V, statevar`` whose source ``V`` is a
+    bare stack/lvar variable, and returns ``V``'s identity.  Returns ``None`` when
+    the block has no such write or its source is an MBA equation / constant (T1's
+    job), so the caller falls back to :func:`fold_block_state_write`.
+    """
+    try:
+        blk = mba.get_mblock(int(block_serial))
+    except Exception:
+        blk = None
+    if blk is None:
+        return None
+    source_identity: tuple[int | None, int | None] | None = None
+    insn = getattr(blk, "head", None)
+    while insn is not None:
+        if getattr(insn, "opcode", None) == ida_hexrays.m_mov and _mop_matches_state_var(
+            getattr(insn, "d", None),
+            mba=mba,
+            state_var_stkoff=int(state_var_stkoff),
+            state_var_lvar_idx=state_var_lvar_idx,
+        ):
+            identity = _mop_local_identity(getattr(insn, "l", None))
+            # Only a *bare* stack/lvar source qualifies; a const or mop_d
+            # (MBA) source is left to T1.
+            source_identity = identity
+        insn = getattr(insn, "next", None)
+    return source_identity
+
+
+def _block_succset(mba, block_serial: int) -> tuple[int, ...]:
+    """Return the physical successor serials of *block_serial* (read-only)."""
+    try:
+        blk = mba.get_mblock(int(block_serial))
+    except Exception:
+        return ()
+    if blk is None:
+        return ()
+    succset = getattr(blk, "succset", None)
+    if succset is None:
+        return ()
+    out: list[int] = []
+    try:
+        for s in succset:
+            out.append(int(s))
+    except Exception:
+        return ()
+    return tuple(out)
+
+
+def _find_corridor_state_write_block(
+    *,
+    mba,
+    handler_serial: int,
+    state_var_stkoff: int,
+    state_var_lvar_idx: int | None,
+    corridor_stop_serial: int | None,
+    max_depth: int = 6,
+) -> tuple[int, tuple[int | None, int | None]] | None:
+    """Find the block in the handler's forward corridor that stages the state.
+
+    OLLVM frequently writes a handler's *real* next-state from a shared temp in a
+    dispatcher *staging* block reached one or more hops downstream of the handler
+    entry (the handler's own block may ``mov #const`` a placeholder first).  This
+    walk follows physical successors forward from *handler_serial*, skipping the
+    dispatcher entry (*corridor_stop_serial*) and respecting *max_depth* /
+    visited-set bounds, and returns the first block whose state-var write reads a
+    *bare* stack/lvar source (the shared temp), together with that source's
+    identity.  Returns ``None`` when no such staging write exists in range
+    (the caller then resolves the handler block itself).
+    """
+    visited: set[int] = set()
+    frontier: list[tuple[int, int]] = [(int(handler_serial), 0)]
+    while frontier:
+        serial, depth = frontier.pop(0)
+        if serial in visited or depth > max_depth:
+            continue
+        visited.add(serial)
+        if corridor_stop_serial is not None and serial == int(corridor_stop_serial):
+            continue
+        identity = _state_write_source_identity(
+            mba=mba,
+            block_serial=serial,
+            state_var_stkoff=int(state_var_stkoff),
+            state_var_lvar_idx=state_var_lvar_idx,
+        )
+        # A bare *stack* source in a DOWNSTREAM block (not the handler entry) is a
+        # staging write -> resolve its value set there.
+        if serial != int(handler_serial) and identity is not None and identity[0] is not None:
+            return serial, identity
+        for succ in _block_succset(mba, serial):
+            if succ not in visited:
+                frontier.append((succ, depth + 1))
+    return None
+
+
+def _read_const_writer(
+    *,
+    mba,
+    block_serial: int,
+    stkoff: int | None,
+    lvar_idx: int | None,
+) -> int | None:
+    """Return the const of the LAST ``mov #const, V`` in *block_serial*, or ``None``.
+
+    ``V`` is the variable identified by *stkoff* / *lvar_idx*.  ``None`` when the
+    block has no constant ``mov`` into ``V`` (a non-const def -> the value set is
+    not fully known).
+    """
+    try:
+        blk = mba.get_mblock(int(block_serial))
+    except Exception:
+        blk = None
+    if blk is None:
+        return None
+    value: int | None = None
+    insn = getattr(blk, "head", None)
+    while insn is not None:
+        if getattr(insn, "opcode", None) == ida_hexrays.m_mov and _mop_matches_identity(
+            getattr(insn, "d", None),
+            stkoff=stkoff,
+            lvar_idx=lvar_idx,
+        ):
+            c = _mop_const_value(getattr(insn, "l", None))
+            value = c  # last writer wins; None when this def is non-const
+        insn = getattr(insn, "next", None)
+    return value
+
+
+def _default_reaching_def_blocks(mba, *, block_serial: int, stkoff: int, size: int):
+    """Default reaching-def provider: block serials defining ``stkoff`` (DU chains)."""
+    from d810.evaluator.hexrays_microcode.chains import find_reaching_defs_for_stkvar
+
+    defs = find_reaching_defs_for_stkvar(mba, int(block_serial), int(stkoff), int(size))
+    seen: list[int] = []
+    for site in defs:
+        b = int(site.block_serial)
+        if b not in seen:
+            seen.append(b)
+    return seen
+
+
+def resolve_state_write_value_set(
+    *,
+    mba,
+    block_serial: int,
+    state_var_stkoff: int,
+    state_var_lvar_idx: int | None = None,
+    size: int = 4,
+    cross_block_resolver=None,
+    corridor_stop_serial: int | None = None,
+    reaching_def_blocks_provider=None,
+    const_writer_reader=None,
+) -> AbstractValue:
+    """Resolve a handler's next-state write as a value set (tier T2).
+
+    When the state write reads a *bare source variable* with several distinct
+    const reaching defs (e.g. a shared OLLVM temp written ``#A`` in one block and
+    ``#B`` in another), T1's local const-fold returns ``⊤`` because the source is
+    multi-valued.  T2 recovers the powerset:
+
+    1. Locate the state-var write that reads a bare source ``V``: first the
+       handler block, else (when the handler only ``mov #const`` a placeholder)
+       the dispatcher *staging* block one or more hops downstream in the handler's
+       forward corridor (bounded; stops at *corridor_stop_serial*, the dispatcher
+       entry).
+    2. DU-collect ALL reaching-def blocks of ``V`` (injectable provider) and read
+       each block's const ``mov #const, V`` writer (injectable reader).
+    3. Project via :func:`value_set_from_reaching_def_consts`:
+       every def const -> :class:`OneOf` (or :class:`Const` for a singleton);
+       any non-const def / no defs / non-bare source -> fall back to T1
+       :func:`fold_block_state_write` (``Const | Top``).
+
+    The two provider hooks default to the live DU-chain / block-scan readers but
+    are injectable so the resolver is unit-testable without IDA.  Each serialized
+    block carries its EA at the call sites (standing rule); this resolver returns
+    only values, not edges.
+    """
+    write_block = int(block_serial)
+    source_identity = _state_write_source_identity(
+        mba=mba,
+        block_serial=write_block,
+        state_var_stkoff=int(state_var_stkoff),
+        state_var_lvar_idx=state_var_lvar_idx,
+    )
+    src_stkoff = source_identity[0] if source_identity is not None else None
+    src_lvar_idx = source_identity[1] if source_identity is not None else None
+
+    # The handler block itself does not read a bare stack source -> the real
+    # next-state may be staged downstream from a shared temp. Follow the corridor.
+    if src_stkoff is None:
+        staged = _find_corridor_state_write_block(
+            mba=mba,
+            handler_serial=int(block_serial),
+            state_var_stkoff=int(state_var_stkoff),
+            state_var_lvar_idx=state_var_lvar_idx,
+            corridor_stop_serial=corridor_stop_serial,
+        )
+        if staged is not None:
+            write_block, (src_stkoff, src_lvar_idx) = staged
+
+    # Only a bare *stack* source is value-set resolvable here (the DU reaching-def
+    # provider keys on a stack offset). A const / mop_d / lvar source -> T1.
+    if src_stkoff is None:
+        return fold_block_state_write(
+            mba=mba,
+            block_serial=int(block_serial),
+            state_var_stkoff=int(state_var_stkoff),
+            state_var_lvar_idx=state_var_lvar_idx,
+            cross_block_resolver=cross_block_resolver,
+        )
+
+    provider = reaching_def_blocks_provider or _default_reaching_def_blocks
+    reader = const_writer_reader or (
+        lambda def_block: _read_const_writer(
+            mba=mba,
+            block_serial=int(def_block),
+            stkoff=src_stkoff,
+            lvar_idx=src_lvar_idx,
+        )
+    )
+
+    def_blocks = provider(
+        mba, block_serial=int(write_block), stkoff=int(src_stkoff), size=int(size)
+    )
+    consts = [reader(int(def_block)) for def_block in def_blocks]
+    value_set = value_set_from_reaching_def_consts(consts)
+    # A value set was proven (Const or OneOf) -> use it. Otherwise (Top: a
+    # non-const reaching def, no defs, etc.) fall back to the T1 local fold.
+    if isinstance(value_set, Top):
+        return fold_block_state_write(
+            mba=mba,
+            block_serial=int(block_serial),
+            state_var_stkoff=int(state_var_stkoff),
+            state_var_lvar_idx=state_var_lvar_idx,
+            cross_block_resolver=cross_block_resolver,
+        )
+    return value_set
 
 
 def recognize_constant_folded_state_write(

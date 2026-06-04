@@ -116,8 +116,8 @@ from d810.analyses.control_flow.dispatcher_resolution import (
 )
 from d810.analyses.control_flow.explore import WriteSite, explore
 from d810.evaluator.hexrays_microcode.dynamic_state_write_backend import (
-    fold_block_state_write,
     make_cross_block_resolver,
+    resolve_state_write_value_set,
 )
 from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
 from d810.analyses.control_flow.transition_report import (
@@ -856,9 +856,10 @@ def _inject_explore_resolved_edges(
 ):
     """Reconnect orphaned handlers with S5a ``explore()`` resolved edges (gated).
 
-    For each handler the model knows, fold its next-state write (T1 const-fold via
-    :func:`fold_block_state_write`, returning ``Const | Top``), route the folded
-    constants through a :class:`ComparisonDispatcherModel`, and add a
+    For each handler the model knows, resolve its next-state write to a value set
+    (T2 :func:`resolve_state_write_value_set`: ``OneOf`` for a multi-const shared
+    source, falling back to T1 const-fold ``Const | Top``), route every member
+    through a :class:`ComparisonDispatcherModel`, and add a
     :class:`StateDagEdge` (``TRANSITION``) for every RESOLVED ``src -> dst`` whose
     endpoints both exist as dag nodes and whose edge is not already present.
 
@@ -885,12 +886,18 @@ def _inject_explore_resolved_edges(
     cross_block_resolver = make_cross_block_resolver(mba)
 
     def resolve_state(_state_var, site):
-        return fold_block_state_write(
+        # T2 value-set resolver: returns ``OneOf`` when the handler's state-write
+        # source is a single variable with several distinct const reaching defs
+        # (a shared OLLVM temp), else falls back internally to the T1 const-fold
+        # (``Const | Top``). ``explore()`` fans the powerset out, one routed edge
+        # per member.
+        return resolve_state_write_value_set(
             mba=mba,
             block_serial=int(site),
             state_var_stkoff=int(state_var_stkoff),
             state_var_lvar_idx=state_var_lvar_idx,
             cross_block_resolver=cross_block_resolver,
+            corridor_stop_serial=int(dispatcher_entry_serial),
         )
 
     write_sites = [

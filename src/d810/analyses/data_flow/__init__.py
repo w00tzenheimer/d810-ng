@@ -37,6 +37,7 @@ from d810.analyses.data_flow.abstract_value import (
     TOP,
     Top,
     Unknown,
+    value_set_from_reaching_def_consts,
 )
 from d810.analyses.data_flow.analyzed_cfg import AnalyzedCFG, FixpointResult
 from d810.analyses.data_flow.configuration import Direction, FixpointConfiguration
@@ -79,4 +80,5 @@ __all__ = [
     "WorkingSet",
     "resolve",
     "run_fixpoint",
+    "value_set_from_reaching_def_consts",
 ]

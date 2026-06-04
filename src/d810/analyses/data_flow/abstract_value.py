@@ -36,6 +36,7 @@ __all__ = [
     "Top",
     "AbstractValue",
     "cases",
+    "value_set_from_reaching_def_consts",
     "Block",
     "EntersDispatcher",
     "RouteOneOf",
@@ -116,6 +117,38 @@ Top = _Top  # alias so callers can ``isinstance(v, Top)``
 
 #: The value-side seam: a projection of a per-variable lattice element.
 AbstractValue = Union[Const, Guarded, OneOf, _Top]
+
+
+def value_set_from_reaching_def_consts(
+    consts: Iterable[int | None],
+) -> "AbstractValue":
+    """Project a set of reaching-def constants into an :class:`AbstractValue`.
+
+    Pure decision core for the T2 value-set state-write resolver (no IDA): given
+    the constant value of every reaching definition of a state-write source
+    variable (``None`` for any def that is *not* a provable constant), decide the
+    value-side seam shape:
+
+    * any non-constant reaching def (a ``None`` in *consts*) -> :data:`TOP`
+      (the value set is not fully known; escalate to the next resolve tier).
+    * no reaching defs at all -> :data:`TOP` (nothing proven).
+    * exactly one distinct const -> :class:`Const` (masked to 32 bits, size 4),
+      so a single-valued source collapses to the scalar the router prefers.
+    * two or more distinct consts -> :class:`OneOf` (the powerset the router
+      fans out over, one routed edge per member).
+
+    The 32-bit mask mirrors :func:`fold_block_state_write`'s state width.
+    """
+    seen: set[int] = set()
+    for c in consts:
+        if c is None:
+            return TOP
+        seen.add(int(c) & 0xFFFFFFFF)
+    if not seen:
+        return TOP
+    if len(seen) == 1:
+        return Const(next(iter(seen)), 4)
+    return OneOf(frozenset(seen))
 
 
 def cases(value: "AbstractValue") -> tuple[tuple[object | None, int], ...]:
