@@ -39,6 +39,7 @@ from d810.analyses.control_flow.linearized_state_dag import (
 )
 from d810.analyses.control_flow.explore import Resolution
 from d810.analyses.control_flow.recovered_graph_capture import (
+    get_explore_materialize_blocks,
     get_explore_resolved_edges,
     get_recovered_flow_graph,
     get_recovered_state_dag,
@@ -154,7 +155,16 @@ def structure_recovered_program_live(
         state_dag = get_recovered_state_dag()
 
     if state_dag is not None:
-        flow_graph = build_state_dag_cfg(state_dag, base_successors=base_successors)
+        use_explore = os.environ.get("D810_USE_EXPLORE", "0").strip() == "1"
+        # mba-decided dispatcher-region routed state-write blocks (e.g. blk57):
+        # build materialises them as nodes so their resolved edges attach below.
+        # Empty when explore is off -> the projection (hence golden) is identical.
+        materialize_blocks = get_explore_materialize_blocks() if use_explore else ()
+        flow_graph = build_state_dag_cfg(
+            state_dag,
+            base_successors=base_successors,
+            materialize_blocks=materialize_blocks,
+        )
         logger.info(
             "structurer: using recovered state-DAG (%d handler blocks, entry=%d)",
             len(flow_graph.blocks),
@@ -168,7 +178,7 @@ def structure_recovered_program_live(
         # Those blocks exist in flow_graph.blocks, so attach the edges here, where
         # both endpoints are present. Flag OFF -> the stash is never read and the
         # CFG (hence the golden output) is byte-identical.
-        if os.environ.get("D810_USE_EXPLORE", "0").strip() == "1":
+        if use_explore:
             resolved_edges = get_explore_resolved_edges()
             pairs = [
                 (int(edge.from_serial), int(edge.to_serial))

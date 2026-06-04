@@ -376,3 +376,50 @@ def test_augment_fans_out_multiple_edges_from_one_block():
     aug, added = augment_state_dag_cfg(cfg, [(195, 90), (195, 39)])
     assert set(added) == {(195, 90), (195, 39)}
     assert set(aug.successors(195)) == {90, 39}
+
+
+# -- materialise routed state-write blocks (the mba-aware build decision) -------
+
+
+def test_build_materializes_extra_routed_state_write_block():
+    # blk57 (the BST `!=` else-leaf) writes the state var and is a resolved-edge
+    # endpoint, but is not an equality-leaf handler, so the handler projection
+    # skips it. The mba-aware caller (which checked the state-var write) passes it
+    # in materialize_blocks; build adds it as a (bare) node so augment can later
+    # attach 35 -> 57 -> 186.
+    nodes = [_node(0xA, 35, [35]), _node(0xB, 186, [186])]
+    cfg = build_state_dag_cfg(
+        _dag(nodes, [], initial_state=0xA),
+        base_successors={},
+        materialize_blocks=[57],
+    )
+    assert {35, 186, 57} <= set(cfg.blocks)
+    assert cfg.successors(57) == ()  # bare node; its edges attach in augment
+
+
+def test_build_plus_augment_reconnects_via_materialized_block():
+    # End-to-end: build materialises blk57; augment (connect-only) wires the
+    # resolved chain 35 -> 57 -> 186 so 186 is no longer orphaned.
+    nodes = [_node(0xA, 35, [35]), _node(0xB, 186, [186])]
+    cfg = build_state_dag_cfg(
+        _dag(nodes, [], initial_state=0xA),
+        base_successors={},
+        materialize_blocks=[57],
+    )
+    aug, added = augment_state_dag_cfg(cfg, [(35, 57), (57, 186)])
+    assert aug.successors(35) == (57,)
+    assert aug.successors(57) == (186,)
+    assert 57 in aug.predecessors(186)
+    assert set(added) == {(35, 57), (57, 186)}
+
+
+def test_augment_drops_edge_to_unmaterialized_block():
+    # The blk194 invariant: 194 writes the *temp* var_70, not the state var, so
+    # the mba-aware caller does NOT materialise it. It never becomes a node, and
+    # connect-only augment drops 109 -> 194 rather than inventing a node from a
+    # mis-attributed shared-temp OneOf.
+    nodes = [_node(0xA, 109, [109]), _node(0xB, 39, [39]), _node(0xC, 90, [90])]
+    cfg = build_state_dag_cfg(_dag(nodes, [], initial_state=0xA), base_successors={})
+    aug, added = augment_state_dag_cfg(cfg, [(109, 194), (194, 39), (194, 90)])
+    assert 194 not in aug.blocks
+    assert added == ()
