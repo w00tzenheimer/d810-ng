@@ -7613,7 +7613,7 @@ def test_resolve_target_node_reconnects_mid_interval_next_state() -> None:
     an exact key but lies inside the interval ``[0x737189D6, 0x7C2C0220]`` owned
     by the RANGE_BACKED handler blk[52].  Before S4 the exact-only
     ``node_by_state.get`` missed and the edge ``10 -> 52`` was dropped, orphaning
-    blk[52].  The interval-containment fallback (``route_comparison_target``)
+    blk[52].  The interval-containment fallback (``route_via_interval_sets``)
     reconnects it.
     """
     flow_graph = FlowGraph(
@@ -7743,34 +7743,36 @@ def test_resolve_target_node_reconnects_mid_interval_next_state() -> None:
     assert reconnect.target_key.handler_serial == 52
 
 
-def test_route_comparison_target_matches_mid_interval_handler() -> None:
-    """Contract: the reused interval matcher routes the mid-interval value to 52."""
-    from d810.analyses.control_flow.linearized_state_dag import (
-        route_comparison_target,
+def test_interval_set_router_matches_mid_interval_handler() -> None:
+    """Contract: the single IntervalSet router routes the mid-interval value to 52."""
+    from d810.analyses.control_flow.comparison_dispatcher_model import (
+        intervals_from_range_map,
+        route_via_interval_sets,
     )
 
+    target_intervals = intervals_from_range_map({52: (0x737189D6, 0x7C2C0220)})
     assert (
-        route_comparison_target(
+        route_via_interval_sets(
             0x79F598F7,
             state_to_handler={0x10000000: 10},
-            handler_range_map={52: (0x737189D6, 0x7C2C0220)},
+            target_intervals=target_intervals,
         )
         == 52
     )
     # Exact keys still win and out-of-range values still miss.
     assert (
-        route_comparison_target(
+        route_via_interval_sets(
             0x10000000,
             state_to_handler={0x10000000: 10},
-            handler_range_map={52: (0x737189D6, 0x7C2C0220)},
+            target_intervals=target_intervals,
         )
         == 10
     )
     assert (
-        route_comparison_target(
+        route_via_interval_sets(
             0x00000001,
             state_to_handler={0x10000000: 10},
-            handler_range_map={52: (0x737189D6, 0x7C2C0220)},
+            target_intervals=target_intervals,
         )
         is None
     )

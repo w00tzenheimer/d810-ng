@@ -31,7 +31,6 @@ from dataclasses import dataclass, field
 from d810.core.typing import TYPE_CHECKING, Mapping, Optional
 
 from d810.analyses.abstract_domains.interval_set import Interval, IntervalSet
-from d810.analyses.abstract_domains.wrapped_interval import WrappedInterval
 from d810.analyses.data_flow.abstract_value import Block, RouteResult, Unknown
 
 if TYPE_CHECKING:
@@ -41,7 +40,11 @@ if TYPE_CHECKING:
     # (``state_to_handler`` / ``state_var_stkoff`` / ``dispatcher_*``).
     from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
 
-__all__ = ["ComparisonDispatcherModel", "route_comparison_target"]
+__all__ = [
+    "ComparisonDispatcherModel",
+    "route_via_interval_sets",
+    "intervals_from_range_map",
+]
 
 #: The degenerate "range covers (almost) the whole word" guard, copied from
 #: ``bst_model.resolve_target_via_bst``: a span this wide is the dispatcher's
@@ -91,55 +94,72 @@ def _build_target_intervals(bst_evidence: object | None) -> "dict[int, IntervalS
     }
 
 
-def _interval(lo: Optional[int], hi: Optional[int]) -> WrappedInterval | None:
-    """A 64-bit :class:`WrappedInterval` for a two-sided inclusive ``[lo, hi]``."""
-    if lo is None or hi is None:
-        return None
-    return WrappedInterval(64, int(lo) & _U64_MASK, int(hi) & _U64_MASK, "range")
+def _range_to_intervals(
+    lo: Optional[int], hi: Optional[int]
+) -> "list[Interval]":
+    """Lower one ``(lo, hi)`` handler-range row to closed :class:`Interval`s.
+
+    Preserves the exact semantics of the retired ``route_comparison_target``
+    body: a two-sided range wider than the ``>= 0xFFFF0000`` degenerate span is
+    the catch-all arm (dropped); a one-sided bound (``lo``/``hi`` ``None``) is
+    the half-line ``>= lo`` / ``<= hi`` over ``[0, 2**32)``; ``(None, None)``
+    matches nothing.
+    """
+    if lo is not None and hi is not None:
+        if (hi - lo) >= _DEGENERATE_RANGE_SPAN:
+            return []
+        return [Interval(int(lo), int(hi))]
+    top = (1 << _STATE_WIDTH) - 1
+    if lo is not None:
+        return [Interval(int(lo), top)]
+    if hi is not None:
+        return [Interval(0, int(hi))]
+    return []
 
 
-def _bound_contains(lo: Optional[int], hi: Optional[int], v: int) -> bool:
-    """One-sided membership matching ``resolve_target_via_bst`` (``< lo`` / ``> hi``)."""
-    if lo is None and hi is None:
-        return False
-    if lo is not None and v < lo:
-        return False
-    if hi is not None and v > hi:
-        return False
-    return True
+def intervals_from_range_map(
+    handler_range_map: Mapping[int, tuple[Optional[int], Optional[int]]] | None,
+) -> "dict[int, IntervalSet]":
+    """Adapt a single-``(lo, hi)``-per-handler range map to the IntervalSet domain.
+
+    The lossy fallback source: callers that only carry the legacy
+    ``handler_range_map`` (no full :class:`IntervalDispatcher`) get one
+    :class:`IntervalSet` per handler so they route through the SAME
+    abstract-domain path as :func:`route_via_interval_sets`.
+    """
+    out: dict[int, IntervalSet] = {}
+    for handler_serial, (lo, hi) in (handler_range_map or {}).items():
+        ivs = _range_to_intervals(lo, hi)
+        if ivs:
+            out[int(handler_serial)] = IntervalSet(_STATE_WIDTH, ivs)
+    return out
 
 
-def route_comparison_target(
+def route_via_interval_sets(
     value: int,
     *,
     state_to_handler: Mapping[int, int],
-    handler_range_map: Mapping[int, tuple[Optional[int], Optional[int]]] | None = None,
+    target_intervals: Mapping[int, IntervalSet],
     default_target_block: Optional[int] = None,
 ) -> Optional[int]:
-    """Pure comparison-dispatcher routing (exact -> interval -> default), no ADT.
+    """The single dispatcher-routing implementation: exact -> IntervalSet -> default.
 
-    The shared substance both :class:`ComparisonDispatcherModel` and the
-    deprecated :meth:`StateDispatcherMap.resolve_target` delegate to, so the two
-    can never diverge again.  Returns the target block serial or ``None``.
-    Mirrors :func:`d810.analyses.control_flow.bst_model.resolve_target_via_bst`:
-    exact map first, then ``handler_range_map`` lo/hi (skipping the degenerate
-    ``>= 0xFFFF0000`` catch-all span and rows already claimed exactly), then the
-    default arm.
+    Routes a concrete state ``value`` to its handler serial via the
+    abstract-domain :class:`IntervalSet` partition (the disjoint union per
+    handler, so split-range handlers resolve every range), skipping intervals
+    whose handler already owns an exact row, and falling through to the default
+    arm (or ``None`` -- the surfaced gap) on a miss.  Replaces the lossy
+    ``route_comparison_target`` so there is exactly ONE way to route.
     """
     v = int(value) & _U64_MASK
     exact = state_to_handler.get(v)
     if exact is not None:
         return int(exact)
     exact_handlers = set(state_to_handler.values())
-    for handler_serial, (lo, hi) in (handler_range_map or {}).items():
+    for handler_serial, iset in target_intervals.items():
         if int(handler_serial) in exact_handlers:
             continue
-        if lo is not None and hi is not None and (hi - lo) >= _DEGENERATE_RANGE_SPAN:
-            continue
-        wi = _interval(lo, hi)
-        if wi is not None and wi.contains(v):
-            return int(handler_serial)
-        if wi is None and _bound_contains(lo, hi, v):
+        if iset.contains(v):
             return int(handler_serial)
     if default_target_block is not None:
         return int(default_target_block)
@@ -214,27 +234,20 @@ class ComparisonDispatcherModel:
         return self._block(target)
 
     def _route_target(self, value: int) -> Optional[int]:
-        """Resolve *value* to a handler serial (or ``None`` for the surfaced gap)."""
-        v = int(value) & _U64_MASK
-        state_to_handler = self.dispatch_map.state_to_handler()
-        exact = state_to_handler.get(v)
-        if exact is not None:
-            return int(exact)
-        if self.target_intervals:
-            exact_handlers = set(state_to_handler.values())
-            for handler_serial, iset in self.target_intervals.items():
-                if int(handler_serial) in exact_handlers:
-                    continue
-                if iset.contains(v):
-                    return int(handler_serial)
-            if self.default_target_block is not None:
-                return int(self.default_target_block)
-            return None
-        # Fallback: no IntervalSet substrate -> the legacy single-interval map.
-        return route_comparison_target(
-            v,
-            state_to_handler=state_to_handler,
-            handler_range_map=self.handler_range_map,
+        """Resolve *value* to a handler serial (or ``None`` for the surfaced gap).
+
+        Routes through the single :func:`route_via_interval_sets` implementation
+        over the complete :attr:`target_intervals` partition, adapting the legacy
+        single-interval ``handler_range_map`` only when no IntervalDispatcher-built
+        partition is present.
+        """
+        target_intervals = self.target_intervals or intervals_from_range_map(
+            self.handler_range_map
+        )
+        return route_via_interval_sets(
+            value,
+            state_to_handler=self.dispatch_map.state_to_handler(),
+            target_intervals=target_intervals,
             default_target_block=self.default_target_block,
         )
 

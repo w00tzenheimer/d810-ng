@@ -1,6 +1,6 @@
 """S5a isolation tests: ``explore()`` over the validated sub_7FFD corpus.
 
-No IDA: a fake ``model`` (``route`` delegates to ``route_comparison_target`` over
+No IDA: a fake ``model`` (``route`` delegates to ``route_via_interval_sets`` over
 the sub_7FFD routing — exact ∪ interval) and a fake ``resolve_state`` (returns
 the solved next-states) are injected, so the verb is exercised as a pure
 function.  The asserted edge set is the sub_7FFD corpus:
@@ -22,7 +22,8 @@ function.  The asserted edge set is the sub_7FFD corpus:
 from __future__ import annotations
 
 from d810.analyses.control_flow.comparison_dispatcher_model import (
-    route_comparison_target,
+    intervals_from_range_map,
+    route_via_interval_sets,
 )
 from d810.analyses.control_flow.explore import (
     Resolution,
@@ -84,7 +85,7 @@ _BLOCK_EA = {
 
 
 class _FakeModel:
-    """A fake :class:`DispatcherModel`: ``route`` via ``route_comparison_target``.
+    """A fake :class:`DispatcherModel`: ``route`` via ``route_via_interval_sets``.
 
     Routes exact-first then by interval over the sub_7FFD corpus and lifts the
     target serial to a :class:`Block` (carrying its EA), matching
@@ -92,10 +93,10 @@ class _FakeModel:
     """
 
     def route(self, value: int) -> Block | Unknown:
-        target = route_comparison_target(
+        target = route_via_interval_sets(
             value,
             state_to_handler=_EXACT,
-            handler_range_map=_RANGES,
+            target_intervals=intervals_from_range_map(_RANGES),
         )
         if target is None:
             return Unknown("state_not_in_dispatcher_map")
