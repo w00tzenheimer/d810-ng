@@ -48,10 +48,10 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
-    "StateDagCfgBlock",
-    "StateDagCfg",
-    "build_state_dag_cfg",
-    "augment_state_dag_cfg",
+    "StateTransitionGraphBlock",
+    "StateTransitionGraph",
+    "build_state_transition_graph",
+    "augment_state_transition_graph",
 ]
 
 
@@ -62,7 +62,7 @@ _FORWARD_EDGE_KINDS = frozenset({"TRANSITION", "CONDITIONAL_TRANSITION"})
 
 
 @dataclass(frozen=True, slots=True)
-class StateDagCfgBlock:
+class StateTransitionGraphBlock:
     """One basic block in the projected handler CFG."""
 
     serial: int
@@ -79,7 +79,7 @@ class StateDagCfgBlock:
 
 
 @dataclass(frozen=True, slots=True)
-class StateDagCfg:
+class StateTransitionGraph:
     """A block-granularity CFG projected from a :class:`LinearizedStateDag`.
 
     Satisfies the structurer's flow-graph protocol: ``.blocks`` (serial-keyed
@@ -90,11 +90,11 @@ class StateDagCfg:
     gaps). The structurer emits a ``return`` there.
     """
 
-    blocks: dict[int, StateDagCfgBlock]
+    blocks: dict[int, StateTransitionGraphBlock]
     entry_serial: int
     return_terminals: frozenset[int] = frozenset()
 
-    def get_block(self, serial: object) -> Optional[StateDagCfgBlock]:
+    def get_block(self, serial: object) -> Optional[StateTransitionGraphBlock]:
         return self.blocks.get(int(serial))
 
     def successors(self, serial: object) -> tuple[int, ...]:
@@ -137,13 +137,13 @@ def _source_state(edge: object) -> Optional[int]:
     return int(state) & 0xFFFFFFFF if state is not None else None
 
 
-def build_state_dag_cfg(
+def build_state_transition_graph(
     dag: "LinearizedStateDag",
     *,
     base_successors: Optional[Mapping[int, Iterable[int]]] = None,
     entry_serial: Optional[int] = None,
     materialize_blocks: Iterable[int] = (),
-) -> StateDagCfg:
+) -> StateTransitionGraph:
     """Project ``dag`` into a block CFG the structurer can structure.
 
     Args:
@@ -161,13 +161,13 @@ def build_state_dag_cfg(
             the ``!= 0x7D9C16EC`` BST else-leaf ``blk57``, reached by range-
             narrowing rather than an exact-equality leaf). The mba-aware caller
             decides this set via the state-var-write criterion; here they are
-            simply added as nodes so :func:`augment_state_dag_cfg` can attach
+            simply added as nodes so :func:`augment_state_transition_graph` can attach
             their resolved edges (``35 -> 57 -> 186``). Without this, a resolved
             edge whose endpoint lives in the dispatcher region would be dropped,
             orphaning the block it re-dispatches to.
 
     Returns:
-        A :class:`StateDagCfg` of handler blocks with dispatcher-free edges.
+        A :class:`StateTransitionGraph` of handler blocks with dispatcher-free edges.
     """
     base_successors = base_successors or {}
     nodes = tuple(getattr(dag, "nodes", ()) or ())
@@ -258,7 +258,7 @@ def build_state_dag_cfg(
     # 3b. Materialise mba-decided routed state-write blocks (dispatcher-region
     #     blocks that write the state var; absent from the equality-leaf handler
     #     projection above). They enter as bare nodes here; their resolved edges
-    #     attach in augment_state_dag_cfg. No resolved edge is dropped merely
+    #     attach in augment_state_transition_graph. No resolved edge is dropped merely
     #     because one endpoint lives behind a BST comparison.
     for b in materialize_blocks:
         block_set.add(int(b))
@@ -277,7 +277,7 @@ def build_state_dag_cfg(
             preds.setdefault(dst, []).append(src)
 
     blocks = {
-        b: StateDagCfgBlock(
+        b: StateTransitionGraphBlock(
             serial=b,
             succs=tuple(succ.get(b, ())),
             preds=tuple(preds.get(b, ())),
@@ -289,15 +289,15 @@ def build_state_dag_cfg(
     real_terminals = frozenset(
         b for b in return_terminals if not blocks[b].succs
     )
-    return StateDagCfg(
+    return StateTransitionGraph(
         blocks=blocks, entry_serial=entry_serial, return_terminals=real_terminals
     )
 
 
-def augment_state_dag_cfg(
-    cfg: StateDagCfg,
+def augment_state_transition_graph(
+    cfg: StateTransitionGraph,
     edges: Iterable[tuple[int, int]],
-) -> tuple[StateDagCfg, tuple[tuple[int, int], ...]]:
+) -> tuple[StateTransitionGraph, tuple[tuple[int, int], ...]]:
     """Re-attach extra ``src -> dst`` block edges to an existing block CFG.
 
     The dag-level ``explore()`` injection
@@ -305,7 +305,7 @@ def augment_state_dag_cfg(
     can only attach edges whose endpoints are :class:`LinearizedStateDag`
     *handler* nodes (the ~78-node ``node_by_handler`` view). Adapter-only blocks
     -- range-backed / producer blocks such as ``152`` / ``195`` pulled into the
-    projected CFG by :func:`build_state_dag_cfg` -- are not handler nodes, so
+    projected CFG by :func:`build_state_transition_graph` -- are not handler nodes, so
     their enumerated transitions (e.g. ``152 -> 48``) are dropped on injection
     even though both blocks exist here, in the projected 136-node CFG.
 
@@ -316,7 +316,7 @@ def augment_state_dag_cfg(
     ``do/while``). Predecessor lists and ``return_terminals`` are recomputed so
     a former terminal that gains a successor is no longer reported as a return.
 
-    Pure / IDA-free (operates on the portable :class:`StateDagCfg`); the live
+    Pure / IDA-free (operates on the portable :class:`StateTransitionGraph`); the live
     structurer supplies the resolved edge pairs.
 
     Args:
@@ -326,7 +326,7 @@ def augment_state_dag_cfg(
     Returns:
         ``(augmented_cfg, added_pairs)`` -- ``cfg`` unchanged (same object) and
         an empty tuple when nothing was attachable; otherwise a fresh
-        :class:`StateDagCfg` and the edges actually added (for EA-carrying
+        :class:`StateTransitionGraph` and the edges actually added (for EA-carrying
         diagnostics: every serialized block number carries its EA at the call
         site).
     """
@@ -356,7 +356,7 @@ def augment_state_dag_cfg(
             preds[dst].append(src)
 
     blocks = {
-        serial: StateDagCfgBlock(
+        serial: StateTransitionGraphBlock(
             serial=serial,
             succs=tuple(succ[serial]),
             preds=tuple(preds[serial]),
@@ -367,7 +367,7 @@ def augment_state_dag_cfg(
         b for b in cfg.return_terminals if not blocks[b].succs
     )
     return (
-        StateDagCfg(
+        StateTransitionGraph(
             blocks=blocks,
             entry_serial=cfg.entry_serial,
             return_terminals=return_terminals,
