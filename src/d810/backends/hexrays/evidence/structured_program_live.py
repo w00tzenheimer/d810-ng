@@ -29,7 +29,11 @@ import ida_hexrays  # noqa: F401  (import guard: this module requires Hex-Rays)
 from d810.core.logging import getLogger
 from d810.hexrays.mutation.ir_translator import lift as lift_flow_graph
 from d810.hexrays.utils.pseudocode_render import render_branch_condition
-from d810.backends.hexrays.evidence.bst_analysis import _detect_state_var_stkoff
+from d810.backends.hexrays.evidence.bst_analysis import (
+    _detect_state_var_stkoff,
+    analyze_bst_dispatcher,
+)
+from d810.analyses.control_flow.bst_model import resolve_target_via_bst
 from d810.backends.hexrays.evidence.microcode_dump import (
     _build_block_payload_by_serial,
     _build_live_linearized_state_dag,
@@ -243,6 +247,50 @@ def structure_recovered_program_live(
                         )
                 except Exception as exc:  # noqa: BLE001 — diagnostics; never fatal
                     logger.info("structurer: sibling-arm prune skipped (%s)", exc)
+
+            # PROMOTION PROBE: compare the production router (resolve_target_via_bst)
+            # to the decision-DAG over every partition cell. A divergence is exactly
+            # where promoting the decision-DAG to production routing would CHANGE
+            # behaviour (fix a real routing bug) rather than merely consolidate.
+            # Runs in the explore diagnostic path (gated, never touches golden).
+            if use_explore:
+                try:
+                    probe_dag = extract_decision_dag(
+                        mba,
+                        dispatcher_entry_serial=int(dispatcher_entry_serial),
+                        state_var_stkoff=int(state_var_stkoff),
+                    )
+                    bst_result = analyze_bst_dispatcher(
+                        mba,
+                        int(dispatcher_entry_serial),
+                        state_var_stkoff=int(state_var_stkoff),
+                    )
+                    cells = probe_dag.resolve_paths()
+                    diverged: list[tuple[int, int, object]] = []
+                    for cell in cells:
+                        if not cell.domain.intervals:
+                            continue
+                        rep = int(cell.domain.intervals[0].low)
+                        prod = resolve_target_via_bst(bst_result, rep)
+                        prod_i = int(prod) if prod is not None else None
+                        if prod_i != int(cell.target):
+                            diverged.append((rep, int(cell.target), prod_i))
+                    logger.info(
+                        "ROUTING PROBE: %d partition cells, %d diverge "
+                        "(decision-DAG vs production resolve_target_via_bst)",
+                        len(cells),
+                        len(diverged),
+                    )
+                    for rep, dd, prod in diverged[:60]:
+                        logger.info(
+                            "  ROUTING DIVERGE state=0x%08X: decision-DAG->blk%s "
+                            "production->blk%s",
+                            rep,
+                            dd,
+                            prod,
+                        )
+                except Exception as exc:  # noqa: BLE001 — probe is best-effort
+                    logger.info("ROUTING PROBE failed: %s", exc)
     else:
         flow_graph = base_graph
         logger.info(
