@@ -20,6 +20,7 @@ from d810.analyses.data_flow import (
     TOP,
     Top,
     Unknown,
+    value_set_from_reaching_def_consts,
 )
 from d810.ir.lattice import Const as LatticeConst
 
@@ -57,6 +58,36 @@ def test_guarded_carries_choices():
     g = Guarded((("g0", Const(1, 4)), ("g1", OneOf.of([2, 3]))))
     assert len(g.choices) == 2
     assert g.choices[0][1] == Const(1, 4)
+
+
+# --- value_set_from_reaching_def_consts (T2 pure decision core) ------------
+
+
+def test_value_set_multi_const_is_oneof():
+    # The S5d shared-temp case: var_70 has two const reaching defs
+    # (blk194 #0x41FB8FBB, blk51 #0x71E22BF3) -> OneOf of both members.
+    v = value_set_from_reaching_def_consts([0x41FB8FBB, 0x71E22BF3])
+    assert isinstance(v, OneOf)
+    assert v.values == frozenset({0x41FB8FBB, 0x71E22BF3})
+
+
+def test_value_set_single_const_collapses_to_const():
+    assert value_set_from_reaching_def_consts([0x2A5E29F6]) == Const(0x2A5E29F6, 4)
+    # duplicate const writers collapse to a single Const, not a OneOf
+    assert value_set_from_reaching_def_consts([0x55, 0x55]) == Const(0x55, 4)
+
+
+def test_value_set_non_const_or_empty_is_top():
+    # any non-const reaching def -> ⊤ (escalate to the next tier)
+    assert value_set_from_reaching_def_consts([0x10, None, 0x20]) is TOP
+    # no reaching defs proven -> ⊤
+    assert value_set_from_reaching_def_consts([]) is TOP
+
+
+def test_value_set_masks_to_32_bits():
+    v = value_set_from_reaching_def_consts([0x1_0000_0001, 0x2])
+    assert isinstance(v, OneOf)
+    assert v.values == frozenset({0x1, 0x2})
 
 
 # --- RouteResult shapes (EA carried alongside serial) ----------------------
