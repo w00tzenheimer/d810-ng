@@ -15,12 +15,15 @@ from __future__ import annotations
 
 _LAST_RECOVERED_FLOW_GRAPH: object | None = None
 _LAST_RECOVERED_STATE_DAG: object | None = None
+_LAST_EXPLORE_RESOLVED_EDGES: tuple[object, ...] = ()
 
 __all__ = [
     "record_recovered_flow_graph",
     "get_recovered_flow_graph",
     "record_recovered_state_dag",
     "get_recovered_state_dag",
+    "record_explore_resolved_edges",
+    "get_explore_resolved_edges",
 ]
 
 
@@ -49,3 +52,23 @@ def record_recovered_state_dag(dag: object) -> None:
 def get_recovered_state_dag() -> object | None:
     """Return the most recently recorded recovered state-DAG, or ``None``."""
     return _LAST_RECOVERED_STATE_DAG
+
+
+def record_explore_resolved_edges(edges: object) -> None:
+    """Stash ``explore()``'s resolved transition edges (``view.resolved``).
+
+    The dag-level injection can only attach edges between
+    :class:`LinearizedStateDag` handler nodes; adapter-only blocks (range-backed
+    / producer blocks) that exist only in the projected block CFG drop their
+    enumerated edges. The ``D810_USE_EXPLORE`` structurer reads this stash to
+    re-attach those edges at the block-CFG level (where both endpoints exist).
+    Set fresh on every live state-DAG rebuild; read immediately after by the
+    same dump path for the same function (diagnostics only).
+    """
+    global _LAST_EXPLORE_RESOLVED_EDGES
+    _LAST_EXPLORE_RESOLVED_EDGES = tuple(edges or ())
+
+
+def get_explore_resolved_edges() -> tuple[object, ...]:
+    """Return the most recently stashed ``explore()`` resolved edges (or ``()``)."""
+    return _LAST_EXPLORE_RESOLVED_EDGES

@@ -47,7 +47,12 @@ if TYPE_CHECKING:
         StateDagEdge,
     )
 
-__all__ = ["StateDagCfgBlock", "StateDagCfg", "build_state_dag_cfg"]
+__all__ = [
+    "StateDagCfgBlock",
+    "StateDagCfg",
+    "build_state_dag_cfg",
+    "augment_state_dag_cfg",
+]
 
 
 # Edge kinds (by name, to avoid importing the enum) that carry control forward to
@@ -267,6 +272,88 @@ def build_state_dag_cfg(
     )
     return StateDagCfg(
         blocks=blocks, entry_serial=entry_serial, return_terminals=real_terminals
+    )
+
+
+def augment_state_dag_cfg(
+    cfg: StateDagCfg,
+    edges: Iterable[tuple[int, int]],
+) -> tuple[StateDagCfg, tuple[tuple[int, int], ...]]:
+    """Re-attach extra ``src -> dst`` block edges to an existing block CFG.
+
+    The dag-level ``explore()`` injection
+    (:func:`d810.backends.hexrays.evidence.microcode_dump._inject_explore_resolved_edges`)
+    can only attach edges whose endpoints are :class:`LinearizedStateDag`
+    *handler* nodes (the ~78-node ``node_by_handler`` view). Adapter-only blocks
+    -- range-backed / producer blocks such as ``152`` / ``195`` pulled into the
+    projected CFG by :func:`build_state_dag_cfg` -- are not handler nodes, so
+    their enumerated transitions (e.g. ``152 -> 48``) are dropped on injection
+    even though both blocks exist here, in the projected 136-node CFG.
+
+    This helper closes that gap: it adds each ``(src, dst)`` edge whose **both**
+    endpoints already exist as blocks in ``cfg`` (an edge to an absent block has
+    nowhere to attach) and whose ``src != dst`` (a block-level self-edge is a
+    dispatcher-spin artifact the structurer would turn into a spurious
+    ``do/while``). Predecessor lists and ``return_terminals`` are recomputed so
+    a former terminal that gains a successor is no longer reported as a return.
+
+    Pure / IDA-free (operates on the portable :class:`StateDagCfg`); the live
+    structurer supplies the resolved edge pairs.
+
+    Args:
+        cfg: The projected block CFG to augment.
+        edges: ``(src_serial, dst_serial)`` pairs to attach.
+
+    Returns:
+        ``(augmented_cfg, added_pairs)`` -- ``cfg`` unchanged (same object) and
+        an empty tuple when nothing was attachable; otherwise a fresh
+        :class:`StateDagCfg` and the edges actually added (for EA-carrying
+        diagnostics: every serialized block number carries its EA at the call
+        site).
+    """
+    succ: dict[int, list[int]] = {
+        serial: list(block.succs) for serial, block in cfg.blocks.items()
+    }
+    added: list[tuple[int, int]] = []
+    for src, dst in edges:
+        src = int(src)
+        dst = int(dst)
+        if src == dst:
+            continue
+        if src not in cfg.blocks or dst not in cfg.blocks:
+            continue
+        bucket = succ[src]
+        if dst in bucket:
+            continue
+        bucket.append(dst)
+        added.append((src, dst))
+
+    if not added:
+        return cfg, ()
+
+    preds: dict[int, list[int]] = {serial: [] for serial in cfg.blocks}
+    for src, dsts in succ.items():
+        for dst in dsts:
+            preds[dst].append(src)
+
+    blocks = {
+        serial: StateDagCfgBlock(
+            serial=serial,
+            succs=tuple(succ[serial]),
+            preds=tuple(preds[serial]),
+        )
+        for serial in cfg.blocks
+    }
+    return_terminals = frozenset(
+        b for b in cfg.return_terminals if not blocks[b].succs
+    )
+    return (
+        StateDagCfg(
+            blocks=blocks,
+            entry_serial=cfg.entry_serial,
+            return_terminals=return_terminals,
+        ),
+        tuple(added),
     )
 
 

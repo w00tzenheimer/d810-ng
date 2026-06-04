@@ -115,6 +115,9 @@ from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherRow,
 )
 from d810.analyses.control_flow.explore import WriteSite, explore
+from d810.analyses.control_flow.recovered_graph_capture import (
+    record_explore_resolved_edges,
+)
 from d810.evaluator.hexrays_microcode.dynamic_state_write_backend import (
     make_cross_block_resolver,
     resolve_state_write_value_set,
@@ -923,6 +926,14 @@ def _inject_explore_resolved_edges(
     ]
 
     view = explore(write_sites, model=model, resolve_state=resolve_state)
+
+    # Stash the FULL resolved edge set (block-level src -> dst, e.g. 152 -> 48)
+    # so the live structurer can re-attach the edges this dag-level injection
+    # cannot reach: adapter-only blocks (152 / 195) are not handler nodes here,
+    # but they DO exist in the projected block CFG (build_state_dag_cfg). The
+    # structurer reads this stash and augments that CFG at the block level. Set
+    # fresh on every rebuild; read immediately after for the same function.
+    record_explore_resolved_edges(view.resolved)
 
     # Diagnostic: dump exactly what resolve()/route() produced for EVERY handler
     # write-site (the ground truth, no inference from a stale diag). Lands in the
