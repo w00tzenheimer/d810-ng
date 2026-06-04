@@ -248,11 +248,16 @@ def structure_recovered_program_live(
                 except Exception as exc:  # noqa: BLE001 — diagnostics; never fatal
                     logger.info("structurer: sibling-arm prune skipped (%s)", exc)
 
-            # PROMOTION PROBE: compare the production router (resolve_target_via_bst)
-            # to the decision-DAG over every partition cell. A divergence is exactly
-            # where promoting the decision-DAG to production routing would CHANGE
-            # behaviour (fix a real routing bug) rather than merely consolidate.
-            # Runs in the explore diagnostic path (gated, never touches golden).
+            # EQUIVALENCE PROBE: compare the decision-DAG against the LEGACY
+            # interval/exact/range router body (resolve_target_via_bst with its
+            # decision_dag forced off).  This is the keystone for the §7 router
+            # consolidation: it proves the decision-DAG subsumes the legacy logic
+            # so the legacy body can be safely retired.  NOTE: the legacy
+            # comparison REQUIRES forcing ``bst_result.decision_dag = None`` --
+            # otherwise resolve_target_via_bst routes through the dag and the
+            # probe degenerates to a tautological dag-vs-dag check.  Multiple
+            # sample points per cell (interval endpoints) catch within-cell
+            # divergence.  Gated diagnostic; never touches the golden.
             if use_explore:
                 try:
                     probe_dag = extract_decision_dag(
@@ -265,32 +270,37 @@ def structure_recovered_program_live(
                         int(dispatcher_entry_serial),
                         state_var_stkoff=int(state_var_stkoff),
                     )
+                    # Force the LEGACY body so the comparison is genuine.
+                    bst_result.decision_dag = None
                     cells = probe_dag.resolve_paths()
+                    samples = 0
                     diverged: list[tuple[int, int, object]] = []
                     for cell in cells:
-                        if not cell.domain.intervals:
-                            continue
-                        rep = int(cell.domain.intervals[0].low)
-                        prod = resolve_target_via_bst(bst_result, rep)
-                        prod_i = int(prod) if prod is not None else None
-                        if prod_i != int(cell.target):
-                            diverged.append((rep, int(cell.target), prod_i))
+                        for iv in cell.domain.intervals:
+                            for pt in {int(iv.low), int(iv.high)}:
+                                samples += 1
+                                legacy = resolve_target_via_bst(bst_result, pt)
+                                legacy_i = int(legacy) if legacy is not None else None
+                                dag_tgt = int(probe_dag.route(pt))
+                                if legacy_i != dag_tgt:
+                                    diverged.append((pt, dag_tgt, legacy_i))
                     logger.info(
-                        "ROUTING PROBE: %d partition cells, %d diverge "
-                        "(decision-DAG vs production resolve_target_via_bst)",
+                        "EQUIVALENCE PROBE: %d cells, %d sample points, %d diverge "
+                        "(decision-DAG.route vs LEGACY resolve_target_via_bst)",
                         len(cells),
+                        samples,
                         len(diverged),
                     )
-                    for rep, dd, prod in diverged[:60]:
+                    for pt, dd, legacy in diverged[:60]:
                         logger.info(
-                            "  ROUTING DIVERGE state=0x%08X: decision-DAG->blk%s "
-                            "production->blk%s",
-                            rep,
+                            "  EQUIV DIVERGE state=0x%08X: decision-DAG->blk%s "
+                            "legacy->blk%s",
+                            pt,
                             dd,
-                            prod,
+                            legacy,
                         )
                 except Exception as exc:  # noqa: BLE001 — probe is best-effort
-                    logger.info("ROUTING PROBE failed: %s", exc)
+                    logger.info("EQUIVALENCE PROBE failed: %s", exc)
     else:
         flow_graph = base_graph
         logger.info(
