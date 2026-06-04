@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ComparisonDispatcherModel",
+    "build_partition",
     "route_via_interval_sets",
     "intervals_from_range_map",
 ]
@@ -135,30 +136,59 @@ def intervals_from_range_map(
     return out
 
 
+def build_partition(
+    state_to_handler: Mapping[int, int],
+    range_intervals: Mapping[int, IntervalSet] | None = None,
+) -> "dict[int, IntervalSet]":
+    """Build the complete, disjoint per-handler :class:`IntervalSet` partition.
+
+    The single source of truth for routing: EVERY handler -- exact and ranged --
+    is one :class:`IntervalSet`, so a concrete state is resolved by membership
+    alone (there is no separate exact ``dict.get`` resolution path).
+
+    * each exact row ``state -> handler`` contributes the singleton ``{state}``;
+    * each range handler (one NOT already claimed by an exact row -- mirrors the
+      legacy ``skip-exact-claimed`` guard) contributes its ranges MINUS every
+      exact state, so an exact state always wins over an overlapping range
+      (the membership equivalent of "exact first").
+    """
+    mask = (1 << _STATE_WIDTH) - 1
+    exact_states = IntervalSet(
+        _STATE_WIDTH,
+        [Interval(int(s) & mask, int(s) & mask) for s in state_to_handler],
+    )
+    partition: dict[int, IntervalSet] = {}
+    for state, handler in state_to_handler.items():
+        singleton = IntervalSet(_STATE_WIDTH, [Interval(int(state) & mask, int(state) & mask)])
+        h = int(handler)
+        partition[h] = partition.get(h, IntervalSet.empty(_STATE_WIDTH)).union(singleton)
+    exact_handlers = {int(h) for h in state_to_handler.values()}
+    for handler, iset in (range_intervals or {}).items():
+        h = int(handler)
+        if h in exact_handlers:
+            continue  # exact-claimed: routes via its exact rows only
+        net = iset.difference(exact_states)  # exact states win over the range
+        if not net.is_empty():
+            partition[h] = partition.get(h, IntervalSet.empty(_STATE_WIDTH)).union(net)
+    return partition
+
+
 def route_via_interval_sets(
     value: int,
     *,
-    state_to_handler: Mapping[int, int],
     target_intervals: Mapping[int, IntervalSet],
     default_target_block: Optional[int] = None,
 ) -> Optional[int]:
-    """The single dispatcher-routing implementation: exact -> IntervalSet -> default.
+    """The single dispatcher-routing implementation: abstract-domain membership.
 
-    Routes a concrete state ``value`` to its handler serial via the
-    abstract-domain :class:`IntervalSet` partition (the disjoint union per
-    handler, so split-range handlers resolve every range), skipping intervals
-    whose handler already owns an exact row, and falling through to the default
-    arm (or ``None`` -- the surfaced gap) on a miss.  Replaces the lossy
-    ``route_comparison_target`` so there is exactly ONE way to route.
+    Routes a concrete state ``value`` to its handler serial purely by
+    :class:`IntervalSet` membership over the complete partition
+    (:func:`build_partition` -- exact singletons AND ranges, so there is no
+    separate ``dict.get`` resolution path), falling through to the default arm
+    (or ``None`` -- the surfaced gap) on a miss.  THE one way to route.
     """
     v = int(value) & _U64_MASK
-    exact = state_to_handler.get(v)
-    if exact is not None:
-        return int(exact)
-    exact_handlers = set(state_to_handler.values())
     for handler_serial, iset in target_intervals.items():
-        if int(handler_serial) in exact_handlers:
-            continue
         if iset.contains(v):
             return int(handler_serial)
     if default_target_block is not None:
@@ -196,6 +226,11 @@ class ComparisonDispatcherModel:
     #: handler.  When populated, :meth:`route_one` routes through it (complete);
     #: otherwise it falls back to ``handler_range_map`` (single-interval).
     target_intervals: Mapping[int, IntervalSet] = field(default_factory=dict)
+    #: Lazily-built cache of the complete exact-singleton ∪ range partition
+    #: (see :meth:`_partition`); not part of identity/equality.
+    _partition_cache: "Optional[Mapping[int, IntervalSet]]" = field(
+        default=None, init=False, compare=False, repr=False
+    )
 
     # -- DispatcherModel metadata (Protocol surface) -----------------------
     def state_var(self) -> int | None:
@@ -236,20 +271,29 @@ class ComparisonDispatcherModel:
     def _route_target(self, value: int) -> Optional[int]:
         """Resolve *value* to a handler serial (or ``None`` for the surfaced gap).
 
-        Routes through the single :func:`route_via_interval_sets` implementation
-        over the complete :attr:`target_intervals` partition, adapting the legacy
-        single-interval ``handler_range_map`` only when no IntervalDispatcher-built
-        partition is present.
+        Pure :class:`IntervalSet` membership over the complete partition
+        (exact singletons AND ranges, :func:`build_partition`) -- the one routing
+        mechanism, with no separate exact ``dict.get`` path.
         """
-        target_intervals = self.target_intervals or intervals_from_range_map(
-            self.handler_range_map
-        )
         return route_via_interval_sets(
             value,
-            state_to_handler=self.dispatch_map.state_to_handler(),
-            target_intervals=target_intervals,
+            target_intervals=self._partition(),
             default_target_block=self.default_target_block,
         )
+
+    def _partition(self) -> Mapping[int, IntervalSet]:
+        """The complete exact-singleton ∪ range partition (built lazily, cached)."""
+        cached = self._partition_cache
+        if cached is not None:
+            return cached
+        range_intervals = self.target_intervals or intervals_from_range_map(
+            self.handler_range_map
+        )
+        partition = build_partition(
+            self.dispatch_map.state_to_handler(), range_intervals
+        )
+        object.__setattr__(self, "_partition_cache", partition)
+        return partition
 
     def route(self, value: int) -> RouteResult:
         """Public Protocol entry point (single concrete value -> route)."""

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from d810.analyses.control_flow.comparison_dispatcher_model import (
     ComparisonDispatcherModel,
+    build_partition,
     intervals_from_range_map,
     route_via_interval_sets,
 )
@@ -54,11 +55,12 @@ def _row(state_const, target, *, block=2):
 
 
 def _route(value, *, state_to_handler, handler_range_map=None, default_target_block=None):
-    """Route via the single IntervalSet router (adapts a legacy range map)."""
+    """Route via the single IntervalSet router over the complete partition."""
     return route_via_interval_sets(
         value,
-        state_to_handler=state_to_handler,
-        target_intervals=intervals_from_range_map(handler_range_map),
+        target_intervals=build_partition(
+            state_to_handler, intervals_from_range_map(handler_range_map)
+        ),
         default_target_block=default_target_block,
     )
 
