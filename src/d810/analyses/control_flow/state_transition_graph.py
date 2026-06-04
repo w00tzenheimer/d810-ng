@@ -52,6 +52,7 @@ __all__ = [
     "StateTransitionGraph",
     "build_state_transition_graph",
     "augment_state_transition_graph",
+    "prune_infeasible_sibling_arms",
 ]
 
 
@@ -373,6 +374,78 @@ def augment_state_transition_graph(
             return_terminals=return_terminals,
         ),
         tuple(added),
+    )
+
+
+def prune_infeasible_sibling_arms(
+    cfg: StateTransitionGraph,
+    *,
+    route_targets: Mapping[int, "Iterable[int]"],
+    sibling_arms: Mapping[int, "Iterable[int]"],
+) -> tuple[StateTransitionGraph, tuple[tuple[int, int], ...]]:
+    """Drop ``src -> dst`` where *dst* is the infeasible BST sibling of *src*'s route.
+
+    A block ``src`` that dispatches a concrete state routes, through the BST, to a
+    single feasible target; the recovery can also wire it to that comparison's
+    OTHER arm (e.g. ``blk35`` sets ``0x7FDCE054`` and routes past ``!= 0x7D9C16EC``
+    to ``57``, yet is also wired to ``56``, the ``== 0x7D9C16EC`` sibling arm).
+    Given the decision-DAG route oracle, drop exactly those infeasible sibling
+    edges -- NARROW by construction: only a block in ``sibling_arms[T]`` (the
+    proven other arm of a comparison reaching ``T``) for a routed target ``T`` of
+    ``src``, and never a sibling that is itself one of ``src``'s routed targets
+    (a genuine fan-out). Unrelated ordered-path successors are not siblings, so
+    they are untouched (this is why the broad route-set prune over-pruned).
+
+    *route_targets* maps ``src`` -> its resolved dispatch targets (``explore()``);
+    *sibling_arms* maps a block -> the other arm(s) of comparisons reaching it
+    (:meth:`DecisionDag.sibling_arms`). Pure / IDA-free.
+    """
+    succ: dict[int, list[int]] = {
+        serial: list(block.succs) for serial, block in cfg.blocks.items()
+    }
+    pruned: list[tuple[int, int]] = []
+    for raw_src, targets in route_targets.items():
+        src = int(raw_src)
+        if src not in succ:
+            continue
+        target_set = {int(t) for t in targets}
+        infeasible: set[int] = set()
+        for t in target_set:
+            infeasible |= {int(s) for s in sibling_arms.get(t, ())}
+        infeasible -= target_set  # a sibling that is ALSO a real target stays
+        if not infeasible:
+            continue
+        kept: list[int] = []
+        for dst in succ[src]:
+            if dst in infeasible and dst != src:
+                pruned.append((src, dst))
+            else:
+                kept.append(dst)
+        succ[src] = kept
+
+    if not pruned:
+        return cfg, ()
+
+    preds: dict[int, list[int]] = {serial: [] for serial in cfg.blocks}
+    for src, dsts in succ.items():
+        for dst in dsts:
+            if dst in preds:
+                preds[dst].append(src)
+    blocks = {
+        serial: StateTransitionGraphBlock(
+            serial=serial,
+            succs=tuple(succ[serial]),
+            preds=tuple(preds[serial]),
+        )
+        for serial in cfg.blocks
+    }
+    return (
+        StateTransitionGraph(
+            blocks=blocks,
+            entry_serial=cfg.entry_serial,
+            return_terminals=cfg.return_terminals,
+        ),
+        tuple(pruned),
     )
 
 
