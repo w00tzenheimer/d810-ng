@@ -51,20 +51,20 @@ _U64_MASK = 0xFFFFFFFFFFFFFFFF
 # State constants and their concrete next-state handler block serials.
 _STATE_41FB = 0x41FB8FBB  # blk195's next-state; exact -> block 90
 _BLK90 = 90
-_BLK90_EA = 0x180014A90
+_BLK90_EA = 0x180014D34
 
 _STATE_6D20 = 0x6D207773  # blk152's next-state; exact -> block 48
 _BLK48 = 48
-_BLK48_EA = 0x18001450D
+_BLK48_EA = 0x18001443D
 
 _STATE_71E2 = 0x71E22BF3  # shared sink peer; exact -> handler block 39
 _BLK39 = 39
-_BLK39_EA = 0x180013F00
+_BLK39_EA = 0x180014255
 
 # Interval-routed: 0x1864829A is interior to block 152's entry interval(s).
 _STATE_1864 = 0x1864829A
 _BLK152 = 152
-_BLK152_EA = 0x180015100
+_BLK152_EA = 0x180016512
 _BLK152_LO, _BLK152_HI = 0x149F5A99, 0x1A9A9DD9  # spanning union -> [lo..hi]
 
 # Exact dispatcher rows.
