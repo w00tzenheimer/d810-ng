@@ -23,6 +23,8 @@ from d810.analyses.control_flow.linearized_state_dag import (
 )
 from d810.analyses.control_flow.state_dag_cfg_adapter import (
     StateDagCfg,
+    StateDagCfgBlock,
+    augment_state_dag_cfg,
     build_state_dag_cfg,
 )
 from d810.ir.state_dag_key import StateDagNodeKey
@@ -298,3 +300,79 @@ def test_adapter_feeds_structurer_goto_free_with_carrier_return():
     assert "goto" not in text
     assert "0x298372CC" not in text and "return 0x298372CC" not in text
     assert "return a5 + 0xD0;" in text
+
+
+# -- augment_state_dag_cfg (S5e: FlowGraph-level explore() edge injection) -----
+
+
+def _cfg(succ_map, *, entry=10, return_terminals=frozenset()):
+    """Build a StateDagCfg directly from a serial -> successors map."""
+    serials = set(succ_map) | {d for dsts in succ_map.values() for d in dsts}
+    preds: dict[int, list[int]] = {s: [] for s in serials}
+    for s, dsts in succ_map.items():
+        for d in dsts:
+            preds[d].append(s)
+    blocks = {
+        s: StateDagCfgBlock(
+            serial=s,
+            succs=tuple(succ_map.get(s, ())),
+            preds=tuple(preds[s]),
+        )
+        for s in serials
+    }
+    return StateDagCfg(
+        blocks=blocks, entry_serial=entry, return_terminals=return_terminals
+    )
+
+
+def test_augment_attaches_edge_between_existing_blocks():
+    # The sub_7FFD shape: 90 -> 152 already wired; 152 is an adapter-only block
+    # with no outbound edge (its 152 -> 48 was dropped by the dag-level inject).
+    cfg = _cfg({90: (152,), 152: (), 48: (130,), 130: ()})
+    aug, added = augment_state_dag_cfg(cfg, [(152, 48)])
+    assert added == ((152, 48),)
+    assert aug.successors(152) == (48,)
+    assert 152 in aug.predecessors(48)
+    # 48 is now reachable from entry via 90 -> 152 -> 48 -> 130.
+    assert aug is not cfg
+
+
+def test_augment_drops_edge_to_absent_block():
+    # 195 -> 39 where 39 is not a block here -> nowhere to attach -> dropped.
+    cfg = _cfg({90: (195,), 195: ()})
+    aug, added = augment_state_dag_cfg(cfg, [(195, 39)])
+    assert added == ()
+    assert aug is cfg  # unchanged identity when nothing attaches
+
+
+def test_augment_drops_self_edge():
+    cfg = _cfg({10: (11,), 11: ()})
+    aug, added = augment_state_dag_cfg(cfg, [(11, 11)])
+    assert added == ()
+    assert aug is cfg
+
+
+def test_augment_idempotent_for_existing_edge():
+    cfg = _cfg({10: (11,), 11: ()})
+    aug, added = augment_state_dag_cfg(cfg, [(10, 11)])
+    assert added == ()
+    assert aug is cfg
+
+
+def test_augment_clears_terminal_that_gains_successor():
+    # 152 was a return terminal; once 152 -> 48 attaches it is a pass-through.
+    cfg = _cfg(
+        {90: (152,), 152: (), 48: ()},
+        return_terminals=frozenset({152, 48}),
+    )
+    aug, added = augment_state_dag_cfg(cfg, [(152, 48)])
+    assert added == ((152, 48),)
+    assert aug.return_terminals == frozenset({48})  # 152 dropped, 48 still terminal
+
+
+def test_augment_fans_out_multiple_edges_from_one_block():
+    # 195 -> OneOf{90, 39}: both targets present -> both attach.
+    cfg = _cfg({195: (), 90: (), 39: ()})
+    aug, added = augment_state_dag_cfg(cfg, [(195, 90), (195, 39)])
+    assert set(added) == {(195, 90), (195, 39)}
+    assert set(aug.successors(195)) == {90, 39}

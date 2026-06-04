@@ -36,11 +36,16 @@ from d810.backends.hexrays.evidence.microcode_dump import (
 from d810.analyses.control_flow.linearized_state_dag import (
     _prune_terminal_control_lines,
 )
+from d810.analyses.control_flow.explore import Resolution
 from d810.analyses.control_flow.recovered_graph_capture import (
+    get_explore_resolved_edges,
     get_recovered_flow_graph,
     get_recovered_state_dag,
 )
-from d810.analyses.control_flow.state_dag_cfg_adapter import build_state_dag_cfg
+from d810.analyses.control_flow.state_dag_cfg_adapter import (
+    augment_state_dag_cfg,
+    build_state_dag_cfg,
+)
 from d810.analyses.control_flow.state_write_dse import (
     infer_state_var_name as _infer_state_var_name,
     prune_dead_state_writes as _prune_dead_state_writes,
@@ -121,6 +126,48 @@ def structure_recovered_program_live(
             len(flow_graph.blocks),
             flow_graph.entry_serial,
         )
+        # S5e (gated): re-attach explore()'s resolved transitions at the block-CFG
+        # level. The dag-level injection (microcode_dump) can only wire edges
+        # between LinearizedStateDag handler nodes (~78), so transitions targeting
+        # adapter-only blocks -- range-backed / producer blocks such as 152 / 195,
+        # pulled into this projected CFG but absent from the dag -- were dropped.
+        # Those blocks exist in flow_graph.blocks, so attach the edges here, where
+        # both endpoints are present. Flag OFF -> the stash is never read and the
+        # CFG (hence the golden output) is byte-identical.
+        if os.environ.get("D810_USE_EXPLORE", "0").strip() == "1":
+            resolved_edges = get_explore_resolved_edges()
+            pairs = [
+                (int(edge.from_serial), int(edge.to_serial))
+                for edge in resolved_edges
+                if getattr(edge, "resolution", None) == Resolution.RESOLVED
+                and int(getattr(edge, "to_serial", -1)) >= 0
+            ]
+            flow_graph, added = augment_state_dag_cfg(flow_graph, pairs)
+            if added:
+                if logger.info_on:
+                    # Standing rule: a serialized block number carries its EA.
+                    def _blk_ea(serial: int) -> str:
+                        try:
+                            blk = mba.get_mblock(int(serial))
+                            return f"0x{int(blk.start) & 0xFFFFFFFFFFFFFFFF:016x}"
+                        except Exception:
+                            return "?"
+
+                    for _src, _dst in added:
+                        logger.info(
+                            "structurer: attach explore edge blk[%d]@%s -> blk[%d]@%s",
+                            _src,
+                            _blk_ea(_src),
+                            _dst,
+                            _blk_ea(_dst),
+                        )
+                logger.info(
+                    "structurer: augmented adapter CFG with %d explore edge(s) "
+                    "(%d blocks, entry=%d)",
+                    len(added),
+                    len(flow_graph.blocks),
+                    flow_graph.entry_serial,
+                )
     else:
         flow_graph = base_graph
         logger.info(
