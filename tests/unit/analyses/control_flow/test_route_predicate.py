@@ -8,11 +8,10 @@ trace (``.tmp/bst_trace.py``), and blk56's partition cell must be EXACTLY
 """
 from __future__ import annotations
 
+from d810.analyses.abstract_domains.interval_set import Interval, IntervalSet
 from d810.analyses.control_flow.route_predicate import (
     BstComparison,
     DecisionDag,
-    Interval,
-    IntervalSet,
     satisfying_set,
 )
 

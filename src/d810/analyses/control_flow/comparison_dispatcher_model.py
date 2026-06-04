@@ -30,8 +30,8 @@ from dataclasses import dataclass, field
 
 from d810.core.typing import TYPE_CHECKING, Mapping, Optional
 
+from d810.analyses.abstract_domains.interval_set import Interval, IntervalSet
 from d810.analyses.abstract_domains.wrapped_interval import WrappedInterval
-from d810.analyses.control_flow.route_predicate import Interval, IntervalSet
 from d810.analyses.data_flow.abstract_value import Block, RouteResult, Unknown
 
 if TYPE_CHECKING:
