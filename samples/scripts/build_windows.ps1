@@ -6,9 +6,20 @@
     Initializes VS environment via Enter-VsDevShell, then calls make.
     Requires Visual Studio 2022+, GNU make, and Git for Windows.
 
+.PARAMETER MasmFuncs
+    Optional space-separated subset of masm/<name>.asm functions to link
+    (default: all of masm/*.asm are auto-discovered). Assembled with ml64 and
+    linked + exported via the clang-cl/link.exe path.
+
 .EXAMPLE
     .\build_windows.ps1
+
+.EXAMPLE
+    .\build_windows.ps1 -MasmFuncs "sub_7FFD3338C040"
 #>
+param(
+    [string]$MasmFuncs = ""
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -119,6 +130,10 @@ if ($RealSh) {
 }
 # Pass USING_CLANG_CL=1 and CC_BASE explicitly because make's sh.exe can't run 'where'
 $makeArgs = @("TARGET_OS=windows", "BINARY_NAME=libobfuscated", "USING_CLANG_CL=1", "CC_BASE=clang-cl.exe")
+if ($MasmFuncs) {
+    Write-Host "  MASM functions: $MasmFuncs (assembled with ml64, linked + exported)" -ForegroundColor Green
+    $makeArgs += "MASM_FUNCS=$MasmFuncs"
+}
 if ($RealSh) {
     $makeArgs += "SHELL=$RealSh"
 }

@@ -281,10 +281,32 @@ ifeq ($(TARGET_OS),windows)
 endif
 
 # ----------------------------- Sources & Objects -----------------------------
+# Hand-assembled functions live in masm/<name>.asm and are auto-discovered:
+# each is assembled (ml64) to an MSVC-COFF object, linked in + exported, and its
+# matching src/c/<name>.c body is dropped from the build.
+#
+# MASM is Windows-x64 / MSVC-COFF only, so it ACTIVATES ONLY on the clang-cl
+# (Windows) path. On mac/linux/MinGW the masm/ dir is ignored and the C bodies
+# build as usual; use `make masm` for a Windows DLL with the asm linked in.
+ifeq ($(HOST_OS),windows)
+    ML64 ?= ml64
+else
+    ML64 ?= llvm-ml64
+endif
+
+ifeq ($(USING_CLANG_CL),1)
+    MASM_ASM   := $(wildcard masm/*.asm)
+    MASM_FUNCS := $(patsubst masm/%.asm,%,$(MASM_ASM))
+    MASM_OBJS  := $(MASM_ASM:.asm=.obj)
+else
+    MASM_FUNCS :=
+    MASM_OBJS  :=
+endif
+
 # Exclude mba_hard.c from the default build - it has its own binary (libmba_hard)
 # and contains symbols that duplicate those in manually_obfuscated.c
 # SRCS := $(filter-out src/c/mba_hard.c src/c/sub_7FFC1EB47830.c,$(wildcard src/c/*.c))
-SRCS := $(wildcard src/c/*.c)
+SRCS := $(filter-out $(MASM_FUNCS:%=src/c/%.c),$(wildcard src/c/*.c))
 ifeq ($(USING_CLANG_CL),1)
 OBJS := $(SRCS:.c=.obj)
 AUTO_EXPORTS_RSP := bins/auto_exports.rsp
@@ -293,7 +315,7 @@ OBJS := $(SRCS:.c=.o)
 endif
 
 # ----------------------------- Rules -----------------------------
-.PHONY: all clean docker-windows-dockerfile docker-windows-setup docker-linux-dockerfile docker-linux-setup docker-windows-build test-all-platforms
+.PHONY: all clean masm docker-windows-dockerfile docker-windows-setup docker-linux-dockerfile docker-linux-setup docker-windows-build test-all-platforms
 
 # If using Docker, intercept and run in container.
 ifeq ($(USE_DOCKER_WINDOWS),1)
@@ -319,12 +341,26 @@ $(AUTO_EXPORTS_RSP): $(OBJS) | bins
 		-OutFile "$@" \
 		-Objects "$(OBJS)"
 
-$(TARGET_LIB): $(OBJS) $(AUTO_EXPORTS_RSP)
+$(TARGET_LIB): $(OBJS) $(MASM_OBJS) $(AUTO_EXPORTS_RSP)
 	@echo "Linking $(TARGET_LIB)"
-	link.exe /nologo /OUT:$@ $(OBJS) $(LDFLAGS) @$(AUTO_EXPORTS_RSP)
+	link.exe /nologo /OUT:$@ $(OBJS) $(MASM_OBJS) $(LDFLAGS) $(MASM_FUNCS:%=/EXPORT:%) @$(AUTO_EXPORTS_RSP)
 
 %.obj: %.c
 	$(CC) /nologo $(CFLAGS) /c /Fo:$@ $<
+
+# Assemble hand-written MASM functions (MSVC-COFF). ml64 and llvm-ml64 share
+# this CLI; the resulting .obj links cleanly with link.exe (clang-cl path).
+# A raw IDA "Produce assembly file" listing is auto-converted to compilable MASM.
+# Committed masm/*.asm must be COMPILABLE MASM produced by the in-IDA
+# "Export disassembly -> MASM" action (materialized data). Notes:
+#  * real ml64 is inherently 64-bit and rejects -m64 (an llvm-ml64 flag);
+#    `/nologo /c /Fo<obj> <asm>` is accepted by both ml64 and llvm-ml64.
+#  * under git-bash (MSYS) the `/`-prefixed options are rewritten to Windows
+#    paths (`/c` -> `C:/`); MSYS2_ARG_CONV_EXCL='*' disables that mangling
+#    (the var is simply ignored on mac/linux).
+masm/%.obj: masm/%.asm
+	@echo "Assembling $< ($(ML64))"
+	MSYS2_ARG_CONV_EXCL='*' $(ML64) /nologo /c /Fo$@ $<
 else ifeq ($(CC),cl)
 $(TARGET_LIB): $(OBJS)
 	$(CC) $(LDFLAGS) /Fe:$@ $^
@@ -372,8 +408,19 @@ $(SRCS:.c=.d): %.d: %.c
 endif
 endif
 
+# ---------------------------------------------------------------------------
+# MASM build (mac/linux): assemble + link every masm/*.asm function via the MSVC
+# ABI (clang msvc-target + llvm-ml64 + lld-link), independent of MinGW/Docker.
+#   make masm                 # auto-discovers masm/*.asm
+#   make masm MASM_FUNCS="sub_7FFD3338C040"   # explicit subset
+# ---------------------------------------------------------------------------
+masm:
+	@MASM_FUNCS="$(MASM_FUNCS)" BINARY_NAME="$(BINARY_NAME)" \
+		bash scripts/build_masm.sh
+
 clean:
-	-$(RM) $(TARGET_LIB) $(OBJS) $(SRCS:.c=.d) $(AUTO_EXPORTS_RSP) 2>/dev/null || true
+	-$(RM) $(TARGET_LIB) $(OBJS) $(MASM_OBJS) $(SRCS:.c=.d) $(AUTO_EXPORTS_RSP) 2>/dev/null || true
+	-$(RM) -r .build_masm 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Optional helper: generate a simple Dockerfile for Windows cross-builds

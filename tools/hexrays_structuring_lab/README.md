@@ -36,86 +36,6 @@ The lab gives us a controlled way to answer questions like:
 - What happens when state-write cleanup turns blocks into `m_und` shells?
 - Which barriers survive Hex-Rays cleanup without leaking ugly pseudocode?
 
-## Established Finding: Return Preservation (Terminal-Tail Construction)
-
-The lab's first load-bearing result for d810's `returns=0` problem. Two C
-fixtures, both `cfg_validation: passed`, form a controlled A/B on the **same**
-7-byte terminal cascade — the only difference is how the terminals reach their
-return:
-
-| fixture | construction | GLBOPT1 pseudocode | verdict |
-|-|-|-|
-| `terminal_tail_ref_cascade` | nested early-return cascade, no state var | **returns=7, whiles=0, gotos=0** (22→16 blocks) | **good oracle** |
-| `terminal_tail_shared_convergence` | `stage` state var + one `shared_guard` all terminals route through | **returns=2, whiles=5** (26→19 blocks) | **negative control — "the D810-like bad shape"** (its own source comment) |
-
-`unique_continuation` and `split_guard` further show that **topology alone** and
-**source-level splitting alone** do *not* recover the cascade, and
-`side_effect_boundary_anchor` shows a `noinline volatile` call is **not** a
-block-structure barrier.
-
-**The recipe Hex-Rays rewards (measured, not guessed).** To preserve N returns,
-the terminal lowering must emit the `ref_cascade` shape — three properties, all
-of which d810's current `§1a #4` redirect-to-`common_return_corridor` path
-violates:
-
-1. **No shared convergence** — each terminal owns its return block; do not
-   redirect terminals into a shared corridor/guard. (The fan-in is what becomes
-   a loop nest.)
-2. **Nested guard cascade** — `if (cond_i) return X_i;` chained, each guard
-   either returns or falls to the next. Not a switch that re-converges.
-3. **No residual state-staging writes** — leftover `stage = K` writes are what
-   Hex-Rays reads as loop induction (the 5 whiles). They must be removed, not
-   just left dead for DCE.
-
-**The d810 invariant this implies:** terminal-tail lowering MUST produce the
-cascade shape; the redirect-to-shared-corridor emission is the negative control
-and cannot yield distinct returns. Verify with: `return_epilogue` has one
-predecessor per terminal and the GLBOPT1 pseudocode has `whiles=0`.
-
-**Open rung (the bridge to production) — and why C fixtures can't close it.**
-Every case above is a C/compiled fixture proving the *target shape* Hex-Rays
-rewards. They cannot, however, test d810's **detect → unflatten → emit** path,
-and we proved this empirically (2026-06-01):
-
-- Running `HodurUnflattener` (`-p hodur_flag2.json`) on `shared_convergence`:
-  `DELTA=0` — no change.
-- Running the §1a `StateMachineCffUnflattener`
-  (`D810_USE_S1A_PIPELINE=1 -p hodur_flag2_s1a.json`): it **fires** but recovers
-  nothing — `map_rows=0 transitions=0 regions=0`, `DELTA=0`, `returns=2`.
-
-**Root cause (corrected by a LOCOPT microcode dump, 2026-06-01):** the dispatcher
-is **fully intact at every maturity** — the microcode shows the equality chain
-(`blk[4..9]: m_jz == 0,1,2,3,4,5 -> handlers`), and d810's recon classifies it
-`type=ollvm_flat, confidence=1.00` at LOCOPT. d810 does **not** lose it to
-structuring. The unflattener's `recover_dispatcher` returns `map_rows=0` for one
-concrete reason: `MIN_STATE_CONSTANT = 0x01000000` and the fixture's state
-constants are `stage = 0..6`, so `_split_const_state`'s `int(value) > min_const`
-filter (`dispatcher_recovery.py:54`) rejects every comparison. That floor exists
-to reject decoy/loop-bound compares because real OLLVM uses large random 32-bit
-states; the clean fixture's tiny sequential states fall under it.
-
-**Consequence:** the fixture *is* a valid minimal reproduction — the gap is a
-detector threshold, not Hex-Rays structuring. Two fixes, both small: (a) a
-large-constant variant (`stage = 0x1000_00xx`) so `recover_dispatcher` engages
-and the full unflatten path runs on ~14 blocks; or (b) the `microcode_mutation`
-case injects the de-flatten facts directly, bypassing detection, to test the
-backend emission in isolation. (a) is the better first step — it exercises
-detection + recovery + lowering end-to-end on a minimal case.
-
-### Harness note (how to dump a lab function)
-
-The pseudocode dump test is marked `pseudocode_dump`, which `pyproject.toml`
-`addopts` deselects by default (`-m "not ... pseudocode_dump ..."`). A lab dump
-that yields `0 selected` is this filter, **not** a missing function. Re-select
-it explicitly:
-
-```bash
-D810_CAPTURE_POST_MATURITY=GLBOPT1 D810_TEST_BINARY=libobfuscated.dll \
-  ./tools/scripts/run_system_tests_docker.sh dump \
-  -f <lab_function> -p <project.json> -o hexrays_structuring_lab/<out>.txt \
-  -l --enable-debug-logging -- -m pseudocode_dump
-```
-
 ## Scope
 
 This is not an attempt to fully reverse engineer Hex-Rays.
@@ -200,7 +120,7 @@ project:
 - Merge-causality query: `python -m d810.diagnostics merge-causality`
 - Block trace / lineage queries: `block-trace`, `block-lineage`, `ea-trace`
 - CFG provenance logging: `src/d810/core/diag/cfg_provenance.py`
-- Existing C/ASM samples under `samples/src/c` and `samples/src/asm`
+- Existing C/ASM samples under `samples/src/c` and `samples/masm`
 
 ## Current CLI
 

@@ -44,8 +44,8 @@ class TestDisasmFormats:
     """Test DISASM_FORMATS constant."""
 
     def test_has_all_formats(self):
-        """Test all 4 formats are defined."""
-        assert len(DISASM_FORMATS) == 4
+        """Test all formats are defined (ASM, LST, MAP, IDC, MASM)."""
+        assert len(DISASM_FORMATS) == 5
 
     def test_format_structure(self):
         """Test each format is a (id, description) tuple."""
@@ -62,6 +62,7 @@ class TestDisasmFormats:
         assert "LST" in format_ids
         assert "MAP" in format_ids
         assert "IDC" in format_ids
+        assert "MASM" in format_ids
 
 
 class TestToIdaFormatInt:
@@ -189,3 +190,44 @@ class TestSuggestDisasmFilename:
         """Test valid characters are preserved."""
         assert suggest_disasm_filename("my_func_123", "ASM") == "my_func_123.asm"
         assert suggest_disasm_filename("FuncABC", "LST") == "FuncABC.lst"
+
+
+class TestMasmPrinter:
+    def test_indent_and_newline(self):
+        from d810.ui.actions.export_disasm_logic import MasmPrinter
+        p = MasmPrinter()
+        p.line("_TEXT SEGMENT")
+        p.indent(2)
+        p.write("mov rax, ")
+        p.hex(0xDEAD)
+        p.line()
+        p.indent(-2)
+        p.line("_TEXT ENDS")
+        assert str(p) == "_TEXT SEGMENT\n  mov rax, 0DEADh\n_TEXT ENDS\n"
+
+    def test_hex_small_decimal(self):
+        from d810.ui.actions.export_disasm_logic import MasmPrinter
+        p = MasmPrinter(); p.hex(9)
+        assert str(p) == "9"
+
+    def test_hex_leading_zero_and_negative(self):
+        from d810.ui.actions.export_disasm_logic import MasmPrinter
+        p = MasmPrinter(); p.hex(0xFF)
+        assert str(p) == "0FFh"
+        p = MasmPrinter(); p.hex(0xFFFFFFFFFFFFFFFF)  # -1 sign-extended
+        assert str(p) == "-1"
+
+    def test_force_sign(self):
+        from d810.ui.actions.export_disasm_logic import MasmPrinter
+        p = MasmPrinter(); p.hex(0x10, force_sign=True)
+        assert str(p) == "+10h"
+
+    def test_write_bytes_rows(self):
+        from d810.ui.actions.export_disasm_logic import MasmPrinter
+        p = MasmPrinter(); p.write_bytes(bytes(range(4)), 0, 4, per_line=2)
+        assert str(p) == "db 0,1\ndb 2,3"
+
+    def test_sext64(self):
+        from d810.ui.actions.export_disasm_logic import masm_sext64
+        assert masm_sext64(0xFFFFFFFFFFFFFFFF) == -1
+        assert masm_sext64(0x10) == 16
