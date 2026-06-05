@@ -115,7 +115,7 @@ class StateMachineCffUnflattener(HodurUnflattener):
         # binding raises AttributeError — which escapes ``func``'s narrow
         # except set into IDA's optblock callback, suppressing this very log
         # line and leaving AFTER == BEFORE (ticket llr-1330).
-        self.mba = blk.mba
+        self.mba : ida_hexrays.mba_t = blk.mba
         logger.info(
             "s1a optimize: enabled=%s maturity=%s blk=%s",
             _s1a_enabled(),
@@ -130,19 +130,19 @@ class StateMachineCffUnflattener(HodurUnflattener):
             # is the later portable-ization goal, gated behind D810_S1A_USE_HCC=0.
             return super().optimize(blk)
         mba = self.mba
-        func_ea = int(getattr(mba, "entry_ea", 0))
+        func_ea: int = mba.entry_ea
         if func_ea == self._s1a_done_for_ea:
             return 0  # one pipeline run per function/maturity
         self._s1a_done_for_ea = func_ea
 
-        source = lift_function(mba, maturity=getattr(mba, "maturity", None))
+        source = lift_function(mba, maturity=mba.maturity)
         # Supply the live validated fact view (state observations) so resolve_state_transitions
         # has the transition evidence; without it the chain produces an empty plan.
         fact_view = None
         flow_ctx = getattr(self, "flow_context", None)
         if flow_ctx is not None:
             try:
-                fact_view = flow_ctx.validated_fact_view(getattr(mba, "maturity", 0))
+                fact_view = flow_ctx.validated_fact_view(mba.maturity)
             except Exception:  # noqa: BLE001 — fact view is best-effort input
                 logger.debug("s1a: validated_fact_view unavailable", exc_info=True)
         # Pre-mutation BST/interval evidence: walk the PRISTINE mba here (it still matches
@@ -187,7 +187,7 @@ class StateMachineCffUnflattener(HodurUnflattener):
             backend=backend,
             facts=facts,
             project_config=None,
-            maturity=getattr(mba, "maturity", None),
+            maturity=mba.maturity,
             capabilities=capabilities,
         )
         # Iteration diagnostics: where does the §1a chain stand for this function?

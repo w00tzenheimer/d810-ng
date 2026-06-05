@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import idaapi
+
 from d810.ir.flowgraph import FlowGraph
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 
@@ -35,7 +37,7 @@ class HexRaysFunctionSource:
         return self._mba
 
 
-def lift_function(mba: object, maturity: object | None = None) -> HexRaysFunctionSource:
+def lift_function(mba: idaapi.mba_t, maturity: object | None = None) -> HexRaysFunctionSource:
     """Lift a live ``mba_t`` into a §1a ``FunctionSource`` (portable FlowGraph + opaque live mba)."""
     translator = IDAIRTranslator()
     return HexRaysFunctionSource(_mba=mba, _flow_graph=translator.lift(mba))
