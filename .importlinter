@@ -46,7 +46,6 @@ layers =
     d810.analyses
     d810.capabilities
     d810.ir
-    d810.support
     d810.core
     d810.errors
 
@@ -228,7 +227,6 @@ source_modules =
     d810.transforms
     d810.analyses
     d810.passes
-    d810.support
 forbidden_modules =
     idaapi
     ida_hexrays
@@ -262,7 +260,6 @@ source_modules =
     d810.transforms
     d810.analyses
     d810.passes
-    d810.support
 forbidden_modules =
     d810.hexrays.mutation
     # When created, append:
@@ -291,7 +288,6 @@ source_modules =
     d810.transforms
     d810.analyses
     d810.passes
-    d810.support
 forbidden_modules =
     angr
     pyvex
