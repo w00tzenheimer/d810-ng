@@ -1,7 +1,7 @@
 import ida_hexrays
 
 from d810.core import getLogger
-from d810.hexrays.cfg_utils import change_1way_block_successor, safe_verify
+from d810.hexrays.cfg_utils import change_1way_block_successor, mba_maturity_unflatten_global_opt_early, safe_verify
 from d810.hexrays.hexrays_formatters import dump_microcode_for_debug, format_minsn_t
 from d810.hexrays.tracker import MopTracker
 from d810.optimizers.microcode.flow.flattening.generic import GenericUnflatteningRule
@@ -211,15 +211,30 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
         self.mba = blk.mba
         if not self.check_if_rule_should_be_used(blk):
             return 0
+        unflat_logger.info(
+            "Starting fake-jump unflattening: func=0x%x maturity=%s pass=%s blk=%s",
+            self.mba.entry_ea,
+            self.cur_maturity,
+            self.cur_maturity_pass,
+            blk.serial,
+        )
         self.last_pass_nb_patch_done = self.analyze_blk(blk)
         if self.last_pass_nb_patch_done > 0:
             self.mba.mark_chains_dirty()
-            self.mba.optimize_local(0)
+            _is_early_glbopt = mba_maturity_unflatten_global_opt_early(self.mba)
+            if not _is_early_glbopt:
+                self.mba.optimize_local(0)
+            else:
+                unflat_logger.info(
+                    "UnflattenerFakeJump: skipping optimize_local(0) at MMAT_GLBOPT1..3 "
+                    "(avoids INTERR 50860/51832)"
+                )
             try:
                 safe_verify(
                     self.mba,
                     "optimizing UnflattenerFakeJump",
                     logger_func=unflat_logger.error,
+                    raise_on_failure=not _is_early_glbopt,
                 )
             except RuntimeError:
                 self._verify_failed = True
@@ -229,5 +244,15 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
                     "a corrupted MBA"
                 )
                 # Return patch count so IDA knows the MBA was touched
+                unflat_logger.info(
+                    "Finished fake-jump unflattening: func=0x%x total_changes=%d (verify failed)",
+                    self.mba.entry_ea,
+                    self.last_pass_nb_patch_done,
+                )
                 return self.last_pass_nb_patch_done
+        unflat_logger.info(
+            "Finished fake-jump unflattening: func=0x%x total_changes=%d",
+            self.mba.entry_ea,
+            self.last_pass_nb_patch_done,
+        )
         return self.last_pass_nb_patch_done

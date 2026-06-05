@@ -34,12 +34,16 @@ import idc
 from d810.core import getLogger
 from d810.expr.emulator import MicroCodeEnvironment, MicroCodeInterpreter
 from d810.hexrays.cfg_utils import (
+    _simple_goto_retarget_plan,
     change_1way_block_successor,
     create_block,
+    check_mba_cfg_consistency,
     ensure_child_has_an_unconditional_father,
     ensure_last_block_is_goto,
     mba_deep_cleaning,
+    mba_maturity_unflatten_global_opt_early,
     safe_verify,
+    unflatten_stability_guards_enabled,
 )
 from d810.hexrays.hexrays_formatters import (
     dump_microcode_for_debug,
@@ -627,8 +631,13 @@ class GenericUnflatteningRule(FlowOptimizationRule):
         modifier = DeferredGraphModifier(self.mba)
         modifier.modifications = pending
         is_calls_maturity = self.mba.maturity == ida_hexrays.MMAT_CALLS
+        # optimize_local(0) after scheduled CFG rewrites triggers INTERR 50860/51832
+        # during MMAT_GLBOPT1..3 — same hazard as the post-cleanup path in optimize().
+        # Use deep_cleaning (which already guards remove_empty) instead, and skip
+        # optimize_local entirely at early global-opt maturities.
+        is_early_global_opt = mba_maturity_unflatten_global_opt_early(self.mba)
         applied = modifier.apply(
-            run_optimize_local=True,
+            run_optimize_local=not is_early_global_opt,
             run_deep_cleaning=False,
             verify_each_mod=is_calls_maturity,
             rollback_on_verify_failure=is_calls_maturity,
@@ -817,6 +826,12 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             "MMAT_CALLS guard: defer to later maturities when dispatcher entry has conditional predecessor(s)",
         ),
         ConfigParam(
+            "defer_calls_on_conditional_chain_dispatcher",
+            bool,
+            True,
+            "MMAT_CALLS guard: defer CONDITIONAL_CHAIN dispatcher unflattening to later maturities",
+        ),
+        ConfigParam(
             "log_calls_layout_signals",
             bool,
             True,
@@ -869,6 +884,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
     DEFAULT_MAX_CALLS_ENTRY_PREDS = 24
     DEFAULT_MAX_CALLS_EXIT_BLOCKS = 24
     DEFAULT_DEFER_CALLS_ON_CONDITIONAL_ENTRY_FATHER = True
+    DEFAULT_DEFER_CALLS_ON_CONDITIONAL_CHAIN_DISPATCHER = True
     DEFAULT_LOG_CALLS_LAYOUT_SIGNALS = True
     DEFAULT_PRE_UNFLATTEN_OPTIMIZE_LOCAL_ROUNDS = 0
     DEFAULT_PRE_UNFLATTEN_VERIFY = True
@@ -883,6 +899,9 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         self.max_calls_exit_blocks = self.DEFAULT_MAX_CALLS_EXIT_BLOCKS
         self.defer_calls_on_conditional_entry_father = (
             self.DEFAULT_DEFER_CALLS_ON_CONDITIONAL_ENTRY_FATHER
+        )
+        self.defer_calls_on_conditional_chain_dispatcher = (
+            self.DEFAULT_DEFER_CALLS_ON_CONDITIONAL_CHAIN_DISPATCHER
         )
         self.log_calls_layout_signals = self.DEFAULT_LOG_CALLS_LAYOUT_SIGNALS
         self.min_cfg_edges_required = -1
@@ -920,6 +939,13 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             return False
         if not super().check_if_rule_should_be_used(blk):
             return False
+        # NOTE: We previously added an extra GLBOPT1..3 single-pass cap here,
+        # but that misunderstood ``cur_maturity_pass``: it's the count of
+        # optimizer *callbacks* from IDA (one per block), not the number of
+        # unflatten passes over the whole function.  The existing guard on the
+        # next line (skip when the previous callback made no changes) already
+        # bounds work correctly, and _verify_failed above stops everything
+        # after remove_flattening() aborts a broken pass.
         if (self.cur_maturity_pass >= 1) and (self.last_pass_nb_patch_done == 0):
             return False
         if (self.max_passes is not None) and (
@@ -941,6 +967,10 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         if "defer_calls_on_conditional_entry_father" in self.config.keys():
             self.defer_calls_on_conditional_entry_father = self.config[
                 "defer_calls_on_conditional_entry_father"
+            ]
+        if "defer_calls_on_conditional_chain_dispatcher" in self.config.keys():
+            self.defer_calls_on_conditional_chain_dispatcher = self.config[
+                "defer_calls_on_conditional_chain_dispatcher"
             ]
         if "log_calls_layout_signals" in self.config.keys():
             self.log_calls_layout_signals = self.config["log_calls_layout_signals"]
@@ -967,6 +997,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         "max_calls_entry_preds",
         "max_calls_exit_blocks",
         "defer_calls_on_conditional_entry_father",
+        "defer_calls_on_conditional_chain_dispatcher",
         "log_calls_layout_signals",
         "min_cfg_edges_required",
         "pre_unflatten_optimize_local_rounds",
@@ -1064,6 +1095,14 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         rounds = int(max(0, self.pre_unflatten_optimize_local_rounds))
         if rounds <= 0:
             return 0
+        # optimize_local(0) triggers INTERR 50860/51832 during MMAT_GLBOPT1..3
+        # on partially-rewritten CFGs.  Skip entirely at early global-opt passes.
+        if mba_maturity_unflatten_global_opt_early(self.mba):
+            unflat_logger.info(
+                "Skipping pre-unflatten optimize_local at MMAT_GLBOPT1..3 "
+                "(avoids INTERR 50860/51832)"
+            )
+            return 0
         total_changes = 0
         for round_index in range(rounds):
             nb_changes = int(self.mba.optimize_local(0))
@@ -1078,6 +1117,7 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                         self.__class__.__name__,
                     ),
                     logger_func=unflat_logger.error,
+                    raise_on_failure=not mba_maturity_unflatten_global_opt_early(self.mba),
                 )
         if total_changes > 0:
             self.mba.mark_chains_dirty()
@@ -1208,6 +1248,28 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 item["exit_block_count"],
             )
 
+    def _should_skip_calls_for_conditional_chain(self) -> bool:
+        """Return True when MMAT_CALLS should defer CONDITIONAL_CHAIN unflattening."""
+        if (
+            self.mba is None
+            or self.mba.maturity != ida_hexrays.MMAT_CALLS
+            or not self.defer_calls_on_conditional_chain_dispatcher
+        ):
+            return False
+        try:
+            from d810.optimizers.microcode.flow.flattening.dispatcher_detection import (
+                DispatcherCache,
+                DispatcherType,
+            )
+            analysis = DispatcherCache.get_or_create(self.mba).analyze()
+            return analysis.dispatcher_type == DispatcherType.CONDITIONAL_CHAIN
+        except Exception as exc:
+            # Fail-open: if classifier is unavailable, keep existing behavior.
+            unflat_logger.debug(
+                "MMAT_CALLS conditional-chain guard unavailable: %s", exc
+            )
+            return False
+
     # Maximum blocks for which retrieve_all_dispatchers will attempt
     # full exploration.  Beyond this, the dispatcher search is skipped
     # to prevent quadratic/exponential blowup in subsequent analysis.
@@ -1286,7 +1348,14 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
     # Maximum number of histories allowed per dispatcher father before
     # we skip duplication.  Beyond this threshold duplicate_histories()
     # becomes prohibitively expensive (exponential block creation).
-    MAX_HISTORIES_PER_FATHER = 100
+    #
+    # Empirically, multi-variable state machines (e.g. 0x401130 in
+    # hello_full_obf.i64) produce ~8 histories per state-bridge father,
+    # each expanding into ~12 new blocks -> ~93 blocks per father.  A
+    # threshold of 4 keeps the total expansion under the decompiler budget
+    # (~3x baseline) for small functions while still letting clean 1-2
+    # history fathers through.
+    MAX_HISTORIES_PER_FATHER = 4
 
     def _is_past_deadline(self) -> bool:
         """Check if the current optimize() call has exceeded its time budget."""
@@ -1350,6 +1419,50 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             dispatcher_father.serial,
             father_histories_cst,
         )
+
+        # Pre-flight emulation check:
+        #
+        # duplicate_histories() is expensive — it physically rewires the CFG
+        # and can add dozens of blocks.  If the subsequent
+        # resolve_dispatcher_father() run will fail on those new blocks
+        # anyway (e.g. because the function uses a multi-variable state
+        # machine where some fathers need to emulate register-bridged state
+        # copies the tracker cannot follow), the duplication is pure waste:
+        # we end up with a half-expanded CFG that IDA's own decompiler can't
+        # finish.
+        #
+        # Guard against that by running each history through the dispatcher
+        # emulator *before* any CFG write.  If any history lands on an
+        # internal dispatcher block (i.e. emulation bailed mid-way) we skip
+        # this father and let the pass continue with the fathers we can
+        # actually resolve.
+        try:
+            exit_serials = {
+                eb.serial for eb in dispatcher_info.dispatcher_exit_blocks
+            }
+            for fh in father_histories:
+                probe_blk, _ = dispatcher_info.emulate_dispatcher_with_father_history(
+                    fh, resolve_conditional_exits=True,
+                )
+                if probe_blk is None or probe_blk.serial not in exit_serials:
+                    raise NotDuplicableFatherException(
+                        "Dispatcher {0} predecessor {1}: pre-flight emulation "
+                        "landed on non-exit block {2}; refusing to duplicate "
+                        "(register-bridged state or untracked variable)".format(
+                            dispatcher_entry_block.serial,
+                            dispatcher_father.serial,
+                            probe_blk.serial if probe_blk is not None else None,
+                        )
+                    )
+        except NotResolvableFatherException as e:
+            # emulator itself raised — treat as not duplicable.
+            raise NotDuplicableFatherException(
+                "Dispatcher {0} predecessor {1}: pre-flight emulation raised: "
+                "{2}".format(
+                    dispatcher_entry_block.serial, dispatcher_father.serial, e,
+                )
+            ) from e
+
         nb_duplication, nb_change = duplicate_histories(
             father_histories, max_nb_pass=self.max_duplication_passes
         )
@@ -2046,6 +2159,31 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             dispatcher_father_histories[0],
             resolve_conditional_exits=True,
         )
+        # Guard: emulate_dispatcher_with_father_history returns cur_blk when
+        # eval_instruction fails mid-emulation (e.g. undefined stack variable).
+        # That cur_blk is an *internal* dispatcher block, not a valid exit target.
+        # Redirecting a father to a dispatcher-internal block corrupts the MBA
+        # and triggers INTERR 51832.  Detect this and abort safely.
+        if target_blk is not None:
+            exit_serials = {
+                eb.serial for eb in dispatcher_info.dispatcher_exit_blocks
+            }
+            internal_serials = {
+                ib.serial for ib in dispatcher_info.dispatcher_internal_blocks
+            }
+            if target_blk.serial not in exit_serials:
+                raise NotResolvableFatherException(
+                    "Emulation of dispatcher {0} with father {1} returned "
+                    "block {2} which is not an exit block (internal={3}, "
+                    "exits={4}); likely mid-emulation failure — skipping "
+                    "to prevent MBA corruption (INTERR 51832)".format(
+                        dispatcher_info.entry_block.serial,
+                        dispatcher_father.serial,
+                        target_blk.serial,
+                        target_blk.serial in internal_serials,
+                        sorted(exit_serials),
+                    )
+                )
         if target_blk is not None:
             watch_edge_raw = os.environ.get("D810_DEFERRED_WATCH_EDGE", "").strip()
             if watch_edge_raw and ":" in watch_edge_raw:
@@ -2486,12 +2624,143 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
 
     # Maximum cumulative blocks that may be created by duplicate_histories()
     # across all dispatcher fathers in a single remove_flattening() pass.
-    MAX_CUMULATIVE_DUPLICATIONS = 500
+    # Lowered from 500 to 100 so multi-variable state machines cannot
+    # balloon the CFG past IDA's decompiler tolerance before the
+    # decompile-budget guard at the top of remove_flattening() kicks in on
+    # the next pass.
+    MAX_CUMULATIVE_DUPLICATIONS = 100
 
     def remove_flattening(self) -> int:
+        # MMAT_GLBOPT2/GLBOPT3 guard: generic dispatcher unflattening at these
+        # maturities builds on top of CFG edits already applied at MMAT_CALLS
+        # and MMAT_GLBOPT1.  Successive unflattening passes on an already-
+        # rewritten CFG accumulate subtle microcode-level inconsistencies
+        # (e.g. stale SSA use-def chains against new block structure) that
+        # IDA's own C++ GLBOPT optimizer rejects with INTERR 51832 once the
+        # MBA is returned — an error that cannot be caught from Python.
+        #
+        # Empirically, MMAT_CALLS + MMAT_GLBOPT1 provide the bulk of the
+        # deobfuscation benefit; GLBOPT2/GLBOPT3 rewrites are both risky and
+        # marginal.  Skipping them entirely keeps the MBA acceptable to
+        # Hex-Rays so decompilation can finish.
+        if self.mba.maturity in (
+            ida_hexrays.MMAT_GLBOPT2,
+            ida_hexrays.MMAT_GLBOPT3,
+        ):
+            unflat_logger.info(
+                "remove_flattening: skipping generic unflattening at %s for "
+                "func=0x%x (MMAT_CALLS+GLBOPT1 already ran; further rewrites "
+                "risk INTERR 51832 inside IDA's C++ GLBOPT optimizer)",
+                self.cur_maturity,
+                int(self.mba.entry_ea),
+            )
+            return 0
+
+        # Decompiler-budget guard: IDA's Hex-Rays pseudocode builder refuses
+        # MBAs whose block count has ballooned too far beyond the original
+        # function, returning INTERR 51832 from ``decompile()`` even though
+        # our CFG rewrites succeeded in isolation.  Record the very first
+        # block count we ever see for this function (typically at
+        # MMAT_CALLS) and compare every subsequent pass against it -- if
+        # duplication has pushed us beyond a hard threshold, stop now and
+        # mark the rule disabled so Hex-Rays can attempt decompilation with
+        # whatever we have already resolved.
+        _budget_baseline = getattr(self, "_decompile_budget_baseline_qty", None)
+        current_qty = int(self.mba.qty)
+        if _budget_baseline is None:
+            self._decompile_budget_baseline_qty = current_qty
+            _budget_baseline = current_qty
+        _DECOMPILE_BUDGET_RATIO = 3   # accept up to 3x the original function size
+        _DECOMPILE_BUDGET_FLOOR = 80  # and never below an absolute floor
+        _budget_ceiling = max(
+            _budget_baseline * _DECOMPILE_BUDGET_RATIO, _DECOMPILE_BUDGET_FLOOR
+        )
+        if current_qty >= _budget_ceiling:
+            unflat_logger.warning(
+                "remove_flattening: skipping further unflatten at %s for "
+                "func=0x%x -- block count %d has hit %dx baseline %d (ceiling "
+                "%d); additional rewrites would trigger INTERR 51832 from "
+                "IDA's decompiler",
+                self.cur_maturity,
+                int(self.mba.entry_ea),
+                current_qty,
+                _DECOMPILE_BUDGET_RATIO,
+                _budget_baseline,
+                _budget_ceiling,
+            )
+            self._verify_failed = True
+            return 0
+
+        # NOTE: Historically this guard deferred aggressive unflatten from
+        # MMAT_GLBOPT1 to GLBOPT2/3 when simple-goto cleanup would be partial
+        # (risk of INTERR 50860/51832).  We now SKIP GLBOPT2/3 entirely (see
+        # guard at top of this method), so deferring here would produce zero
+        # deobfuscation.  Instead, proceed with unflatten at MMAT_GLBOPT1 and
+        # rely on the other defensive mechanisms (soft safe_verify, return 0
+        # on verify failure, optimize_local suppression at GLBOPT1..3) to keep
+        # the MBA acceptable to Hex-Rays.
+        if False and (
+            self.mba.maturity == ida_hexrays.MMAT_GLBOPT1
+            and not unflatten_stability_guards_enabled()
+        ):
+            _goto_probe, _goto_candidates, _goto_partial = _simple_goto_retarget_plan(
+                self.mba,
+                log_abort=False,
+                abort_all_on_unsupported=False,
+            )
+            if _goto_partial:
+                unflat_logger.warning(
+                    "remove_flattening: deferring aggressive unflatten from "
+                    "MMAT_GLBOPT1 to later maturities for func=0x%x because "
+                    "simple-goto cleanup would be partial.",
+                    int(self.mba.entry_ea),
+                )
+                self.non_significant_changes = 0
+                return 0
+
+        if (
+            mba_maturity_unflatten_global_opt_early(self.mba)
+            and unflatten_stability_guards_enabled()
+        ):
+            goto_probe, _, _ = _simple_goto_retarget_plan(
+                self.mba,
+                log_abort=False,
+                abort_all_on_unsupported=True,
+            )
+            if goto_probe is None:
+                unflat_logger.warning(
+                    "remove_flattening: skipping entire pass at MMAT_GLBOPT1..3 "
+                    "(func=0x%x): simple-goto layout includes an unsupported hub "
+                    "(e.g. 2-way fallthrough into a goto-only block). Deferring avoids "
+                    "mba.verify failures (INTERR 50860/51832). "
+                    "Set options.json unflatten_cfg_guard_mode=deobfuscation to force "
+                    "this pass.",
+                    int(self.mba.entry_ea),
+                )
+                self.non_significant_changes = 0
+                return 0
+
         total_nb_change = 0
         self.non_significant_changes = ensure_last_block_is_goto(self.mba, verify=False)
         self.non_significant_changes += self.ensure_all_dispatcher_fathers_are_direct()
+
+        if (
+            mba_maturity_unflatten_global_opt_early(self.mba)
+            and unflatten_stability_guards_enabled()
+        ):
+            goto_probe2, _, _ = _simple_goto_retarget_plan(
+                self.mba,
+                log_abort=False,
+                abort_all_on_unsupported=True,
+            )
+            if goto_probe2 is None:
+                unflat_logger.warning(
+                    "remove_flattening: stopping before dispatcher work at MMAT_GLBOPT1..3 "
+                    "(func=0x%x): after father normalization, simple-goto retarget would "
+                    "abort; skipping duplication and deferred CFG to preserve verify.",
+                    int(self.mba.entry_ea),
+                )
+                return total_nb_change
 
         # Reset tracking for this optimization pass
         self._processed_dispatcher_fathers.clear()
@@ -2587,6 +2856,31 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                     ),
                 )
 
+            # Abandoned-duplication guard: if ensure_dispatcher_father_is_resolvable
+            # expanded the CFG (created new blocks via duplicate_histories) but
+            # resolve_dispatcher_father failed to convert any of them into direct
+            # gotos, the MBA is now in a "half-expanded" state (blocks duplicated
+            # but still pointing back at the dispatcher).  IDA's C++ GLBOPT
+            # optimizer rejects this with INTERR 51832 on the next pass.
+            # Mark verify_failed so optimize() returns 0 and Hex-Rays discards
+            # our edits, keeping the MBA acceptable.
+            if (
+                total_duplications > 0
+                and nb_flattened_branches == 0
+                and mba_maturity_unflatten_global_opt_early(self.mba)
+            ):
+                self._verify_failed = True
+                unflat_logger.warning(
+                    "Abandoned duplication detected for dispatcher %d at %s: "
+                    "%d blocks created by duplicate_histories but 0 fathers "
+                    "resolved — half-expanded CFG would trigger INTERR 51832. "
+                    "Aborting to discard edits.",
+                    dispatcher_info.entry_block.serial,
+                    self.cur_maturity,
+                    total_duplications,
+                )
+                return 0
+
         # Apply all deferred CFG modifications after analysis is complete
         if deferred_modifier.has_modifications():
             num_redirected = len(deferred_modifier.modifications)
@@ -2633,6 +2927,9 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                             self.mba,
                             "after jtbl cross-case overlap canonicalization",
                             logger_func=unflat_logger.error,
+                            raise_on_failure=(
+                                not mba_maturity_unflatten_global_opt_early(self.mba)
+                            ),
                         )
                         total_nb_change += canonicalized_cases
                     # DeferredGraphModifier maintenance is deferred so we can
@@ -2642,6 +2939,9 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                         self.mba,
                         "after deferred modifications (generic post-maintenance)",
                         logger_func=unflat_logger.error,
+                        raise_on_failure=(
+                            not mba_maturity_unflatten_global_opt_early(self.mba)
+                        ),
                     )
 
             if deferred_modifier.verify_failed:
@@ -2678,6 +2978,14 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         if not self.check_if_rule_should_be_used(blk):
             return 0
 
+        unflat_logger.info(
+            "Starting unflattening optimize: func=0x%x maturity=%s pass=%s blk=%s",
+            self.mba.entry_ea,
+            self.cur_maturity,
+            self.cur_maturity_pass,
+            blk.serial,
+        )
+
         self._optimize_deadline = _time.monotonic() + self.MAX_OPTIMIZE_SECONDS
 
         # Apply any modifications scheduled for this maturity level
@@ -2706,12 +3014,23 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
         self.retrieve_all_dispatchers()
         if len(self.dispatcher_list) == 0:
             unflat_logger.info("No dispatcher found at maturity %s", self.mba.maturity)
+            unflat_logger.info(
+                "Finished unflattening optimize: func=0x%x total_changes=%d (no dispatcher)",
+                self.mba.entry_ea,
+                initial_changes,
+            )
             return initial_changes
 
         layout_signals = self._collect_dispatcher_layout_signals()
         self._emit_layout_signals(layout_signals)
 
         if self.mba.maturity == ida_hexrays.MMAT_CALLS:
+            if self._should_skip_calls_for_conditional_chain():
+                unflat_logger.warning(
+                    "Skipping MMAT_CALLS unflattening for CONDITIONAL_CHAIN dispatcher; "
+                    "deferring to later maturities"
+                )
+                return initial_changes
             # Selective MMAT_CALLS guard:
             # We only skip the risky shape (high fan-in + large dispatcher) and
             # preserve MMAT_CALLS behavior for common compact dispatchers.
@@ -2768,6 +3087,11 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
                 unflat_logger.warning(skip_reason)
             else:
                 unflat_logger.warning("Skipping unflattening pass via layout guard")
+            unflat_logger.info(
+                "Finished unflattening optimize: func=0x%x total_changes=%d (pass skipped)",
+                self.mba.entry_ea,
+                initial_changes,
+            )
             return initial_changes
         unflat_logger.info(
             "Unflattening: %s dispatcher(s) found", len(self.dispatcher_list)
@@ -2826,7 +3150,44 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             )
             return self.last_pass_nb_patch_done + initial_changes
 
+        if (
+            mba_maturity_unflatten_global_opt_early(self.mba)
+            and not unflatten_stability_guards_enabled()
+        ):
+            _goto_probe, _goto_candidates, _goto_partial = _simple_goto_retarget_plan(
+                self.mba,
+                log_abort=False,
+                abort_all_on_unsupported=False,
+            )
+            if _goto_partial and self.last_pass_nb_patch_done > 0:
+                unflat_logger.warning(
+                    "Skipping post-unflattening cleanup at %s for func=0x%x: "
+                    "aggressive unflatten made changes, but simple-goto cleanup "
+                    "would be partial. Returning the rewritten MBA without "
+                    "deep_cleaning/verify to preserve deobfuscation and avoid "
+                    "the known INTERR 50860/51832 cleanup path.",
+                    self.cur_maturity,
+                    int(self.mba.entry_ea),
+                )
+                self.mba.mark_chains_dirty()
+                return self.last_pass_nb_patch_done + initial_changes
+
         nb_clean = mba_deep_cleaning(self.mba, False)
+        if nb_clean == -1:
+            # mba_deep_cleaning detected CFG pred/succ inconsistency after
+            # simple-goto retargeting at MMAT_GLBOPT1..3.  The MBA is corrupt;
+            # returning 0 tells Hex-Rays we made no net change, preventing
+            # IDA's C++ GLBOPT optimizer from receiving a broken MBA and
+            # raising INTERR 50860/51832.
+            self._verify_failed = True
+            unflat_logger.warning(
+                "Generic unflatten: mba_deep_cleaning reported CFG corruption at %s "
+                "for func=0x%x — aborting optimize() with return 0 to prevent "
+                "INTERR 50860/51832.",
+                self.cur_maturity,
+                int(self.mba.entry_ea),
+            )
+            return 0
         if self.dump_intermediate_microcode:
             dump_microcode_for_debug(
                 self.mba,
@@ -2835,10 +3196,52 @@ class GenericDispatcherUnflatteningRule(GenericUnflatteningRule):
             )
         if self.last_pass_nb_patch_done + nb_clean + self.non_significant_changes > 0:
             self.mba.mark_chains_dirty()
-            self.mba.optimize_local(0)
-        safe_verify(
+            # optimize_local(0) after our CFG retargets can trigger INTERR 50860 in
+            # Hex-Rays C++ and worsen downstream 51832 during early global-opt passes;
+            # defer local opts to later maturities.
+            if not mba_maturity_unflatten_global_opt_early(self.mba):
+                self.mba.optimize_local(0)
+            else:
+                unflat_logger.info(
+                    "Generic unflatten: skipping post-cleanup optimize_local(0) at "
+                    "MMAT_GLBOPT1..3 (avoids INTERR cascade after deep_cleaning retargets)"
+                )
+        if mba_maturity_unflatten_global_opt_early(self.mba):
+            unflat_logger.info(
+                "Generic unflatten: final safe_verify uses soft mode at MMAT_GLBOPT1..3 "
+                "(verify failure logged, not raised)"
+            )
+        final_strict = not mba_maturity_unflatten_global_opt_early(self.mba)
+        verify_ok = safe_verify(
             self.mba,
             "optimizing GenericDispatcherUnflatteningRule.optimize",
             logger_func=unflat_logger.error,
+            raise_on_failure=final_strict,
         )
-        return self.last_pass_nb_patch_done + initial_changes
+        if not final_strict and not verify_ok:
+            # MBA verify failed at MMAT_GLBOPT1..3 (soft mode: error printed but
+            # not raised).  The MBA is now in a corrupt state — mba_deep_cleaning's
+            # simple-goto retargets or other CFG rewrites created an inconsistency
+            # that IDA's own C++ GLBOPT optimizer will trip over (INTERR 51832).
+            #
+            # Mark _verify_failed so the rule is disabled for subsequent passes,
+            # and return 0 to tell Hex-Rays *we made no net change*.  Returning 0
+            # causes Hex-Rays to not commit our edits as the authoritative MBA
+            # state and re-run decompilation from the last clean checkpoint,
+            # avoiding the INTERR 51832 crash.
+            self._verify_failed = True
+            unflat_logger.warning(
+                "Generic unflatten: MBA verify failed at %s for func=0x%x — "
+                "returning 0 to discard corrupt edits and prevent INTERR 51832. "
+                "Deobfuscation at this maturity will be skipped.",
+                self.cur_maturity,
+                int(self.mba.entry_ea),
+            )
+            return 0
+        total_changes = self.last_pass_nb_patch_done + initial_changes
+        unflat_logger.info(
+            "Finished unflattening optimize: func=0x%x total_changes=%d",
+            self.mba.entry_ea,
+            total_changes,
+        )
+        return total_changes

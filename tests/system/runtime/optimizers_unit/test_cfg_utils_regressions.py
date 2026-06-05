@@ -262,6 +262,87 @@ def test_ensure_child_guard_paths_noop(father_factory, monkeypatch):
     assert changed == 0
 
 
+def test_update_blk_successor_handles_2way_fallthrough_via_helper(monkeypatch):
+    """2-way fallthrough successor rewrites should use the helper-block path."""
+    from d810.hexrays import cfg_utils
+
+    mba = _FakeMBA(qty=20)
+    cond_target = _FakeBlock(11, mba, succs=[])
+    fallthrough = _FakeBlock(12, mba, succs=[])
+    father = _FakeBlock(
+        8,
+        mba,
+        succs=[11, 12],
+        preds=[],
+        tail=SimpleNamespace(d=SimpleNamespace(b=11)),
+    )
+    father.nextb = fallthrough
+    helper_blk = _FakeBlock(77, mba, succs=[99], preds=[8])
+
+    calls = {"fallthrough": None}
+
+    def _change_fallthrough(blk, serial, verify=True):
+        calls["fallthrough"] = (blk.serial, serial, verify)
+        return helper_blk
+
+    monkeypatch.setattr(
+        cfg_utils,
+        "change_2way_block_fallthrough_successor",
+        _change_fallthrough,
+    )
+
+    changed = cfg_utils.update_blk_successor(
+        father,
+        old_successor_serial=12,
+        new_successor_serial=99,
+        verify=False,
+    )
+
+    assert changed == 1
+    assert calls["fallthrough"] == (8, 99, False)
+
+
+def test_simple_goto_plan_rejects_conditional_fallthrough_predecessor(monkeypatch):
+    """Simple-goto cleanup still skips conditional fallthrough predecessors."""
+    from d810.hexrays import cfg_utils
+
+    mba = _FakeMBA(qty=20)
+    dst = _FakeBlock(2, mba, succs=[])
+    goto_blk = _FakeBlock(
+        9,
+        mba,
+        succs=[2],
+        preds=[8],
+        tail=SimpleNamespace(l=SimpleNamespace(b=2)),
+    )
+    goto_blk.is_simple_goto_block = lambda: True
+    pred = _FakeBlock(
+        8,
+        mba,
+        succs=[10, 9],
+        preds=[],
+        tail=SimpleNamespace(opcode=0x44, d=SimpleNamespace(b=10)),
+    )
+    pred.nextb = goto_blk
+
+    monkeypatch.setattr(
+        cfg_utils.ida_hexrays,
+        "is_mcode_jcond",
+        lambda opcode: opcode == 0x44,
+        raising=False,
+    )
+
+    pending, candidates, any_reject = cfg_utils._simple_goto_retarget_plan(
+        mba,
+        log_abort=False,
+        abort_all_on_unsupported=True,
+    )
+
+    assert candidates == 1
+    assert any_reject is True
+    assert pending is None
+
+
 def test_create_block_0way_clears_goto_and_edges(monkeypatch):
     """0-way created blocks must not keep insert_nop_blk's goto (INTERR 50856 regression)."""
     from d810.hexrays import cfg_utils

@@ -1,4 +1,5 @@
 {
+    "unflatten_cfg_guard_mode": "deobfuscation",
     "erase_logs_on_reload": true,
     "generate_z3_code": false,
     "dump_intermediate_microcode": false,

@@ -14,11 +14,69 @@ import idaapi
 from d810.core import getLogger
 from d810.errors import ControlFlowException
 from d810.hexrays.hexrays_formatters import block_printer
-from d810.hexrays.hexrays_helpers import CONDITIONAL_JUMP_OPCODES
+from d810.hexrays.hexrays_helpers import CONDITIONAL_JUMP_OPCODES, MicrocodeHelper
 
 helper_logger = getLogger(__name__)
 
 _VALID_MOP_SIZES = frozenset({1, 2, 4, 8, 16})
+
+
+def _mba_verify_diag(mba: ida_hexrays.mba_t) -> str:
+    """Short MBA context for verify / CFG logs (best-effort)."""
+    parts: list[str] = []
+    with contextlib.suppress(Exception):
+        ea = int(getattr(mba, "entry_ea", 0))
+        parts.append("func=%s" % hex(ea))
+    with contextlib.suppress(Exception):
+        m = int(mba.maturity)
+        label = MicrocodeHelper.get_mmat_name(m) or str(m)
+        parts.append("maturity=%s" % label)
+    with contextlib.suppress(Exception):
+        parts.append("blk_qty=%d" % int(mba.qty))
+    return " ".join(parts) if parts else "mba=?"
+
+
+def mba_maturity_unflatten_global_opt_early(mba: ida_hexrays.mba_t) -> bool:
+    """True during MMAT_GLBOPT1..GLBOPT3 for shared unflatten / CFG safety guards.
+
+    The same simple-goto / ``remove_empty`` / ``mba.verify`` failure modes were
+    observed through GLBOPT3 on heavily flattened CFGs, not only GLBOPT1.
+    """
+    return mba.maturity in (
+        ida_hexrays.MMAT_GLBOPT1,
+        ida_hexrays.MMAT_GLBOPT2,
+        ida_hexrays.MMAT_GLBOPT3,
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def _cached_unflatten_cfg_guard_mode() -> str:
+    """Load `unflatten_cfg_guard_mode` once per plugin session/reload."""
+    try:
+        from d810.core.config import D810Configuration
+
+        raw = D810Configuration().get(
+            "unflatten_cfg_guard_mode", "deobfuscation"
+        )
+    except Exception:
+        raw = "deobfuscation"
+    return str(raw).strip().lower()
+
+
+def unflatten_stability_guards_enabled() -> bool:
+    """When True, use stability-first CFG behavior for generic unflattening.
+
+    Reads ``unflatten_cfg_guard_mode`` from D-810 ``options.json``:
+    - ``stability`` / ``safe``: skip ``remove_flattening`` / ``remove_empty`` when
+      simple-goto retarget would be partial or unsafe; use all-or-nothing goto
+      cleanup (fewer INTERR 50860/51832, less deobfuscation).
+    - ``deobfuscation`` / ``aggressive`` (default): run unflatten and partial
+      simple-goto cleanup; rely on soft ``safe_verify`` during GLBOPT1..3.
+
+    Unknown values default to **deobfuscation** (guards off).
+    """
+    s = _cached_unflatten_cfg_guard_mode()
+    return s in ("stability", "stable", "safe")
 
 
 def safe_make_number(mop, value, size):
@@ -108,8 +166,6 @@ def get_stack_var_name(mop: ida_hexrays.mop_t) -> str | None:
         name = _cached_stack_var_name(id(mop), mop.t, mop.r, mop.size, mop.valnum, None)
     else:
         return None
-    return name
-
     _VALNUM_NAME_CACHE[mop.valnum] = name
     return name
 
@@ -136,10 +192,31 @@ def safe_verify(
     logger_func=helper_logger.error,
     capture_blocks: list[int] | set[int] | tuple[int, ...] | None = None,
     capture_metadata: dict[str, Any] | None = None,
-) -> None:
-    """Run mba.verify(True) and produce helpful diagnostics on failure."""
+    raise_on_failure: bool = True,
+) -> bool:
+    """Run mba.verify(True) and produce helpful diagnostics on failure.
+
+    Hex-Rays ``mba.verify`` can report INTERR 50860 on otherwise workable CFGs
+    at ``MMAT_GLBOPT1`` after batch D810 rewrites. Callers may pass
+    ``raise_on_failure=False`` to log diagnostics and continue (IDA may still
+    print INTERR to its console before raising).
+
+    Returns:
+        True if ``mba.verify`` succeeded; False if it failed and the failure
+        was swallowed (``raise_on_failure=False``). On ``raise_on_failure=True``
+        and failure, raises ``RuntimeError`` (no return).
+    """
+    diag = _mba_verify_diag(mba)
+    helper_logger.debug(
+        "safe_verify: start ctx=%r %s raise_on_failure=%s",
+        ctx,
+        diag,
+        raise_on_failure,
+    )
     try:
         mba.verify(True)
+        helper_logger.debug("safe_verify: ok ctx=%r %s", ctx, diag)
+        return True
     except RuntimeError as e:
         logger_func("verify failed after %s: %s", ctx, e, exc_info=True)
         capture_failure_artifact(
@@ -168,7 +245,16 @@ def safe_verify(
                 log_block_info(
                     mba.get_mblock(0), logger_func, f"{divider}[blk 0]{divider}"
                 )
-        raise
+        if raise_on_failure:
+            raise
+        helper_logger.warning(
+            "safe_verify: swallowing failure (raise_on_failure=False) ctx=%r %s "
+            "err=%s",
+            ctx,
+            diag,
+            e,
+        )
+        return False
 
 
 def _snapshot_insn(insn: ida_hexrays.minsn_t | None) -> dict[str, Any] | None:
@@ -539,19 +625,121 @@ def change_2way_block_conditional_successor(
         raise e
 
 
+def change_2way_block_fallthrough_successor(
+    blk: ida_hexrays.mblock_t, blk_successor_serial: int, verify: bool = True
+) -> ida_hexrays.mblock_t | None:
+    """Redirect a conditional block's fallthrough via an explicit helper block.
+
+    Hex-Rays represents the fallthrough edge of a 2-way conditional block as a
+    physical adjacency (`blk.nextb`) rather than an explicit operand in the
+    terminating instruction. To rewrite that edge safely, we insert a helper
+    NOP/goto block directly after *blk* using `copy_block()` and wire its CFG
+    from scratch, so the fallthrough becomes explicit without the
+    `insert_nop_blk() -> redirect again` pattern that triggered INTERR 50858.
+    """
+    if (
+        blk.nsucc() != 2
+        or blk.nextb is None
+        or blk.tail is None
+        or not ida_hexrays.is_mcode_jcond(blk.tail.opcode)
+    ):
+        return None
+
+    mba = blk.mba
+    previous_blk_fallthrough_successor = blk.nextb
+    target_blk = mba.get_mblock(blk_successor_serial)
+    if target_blk is None:
+        return None
+
+    # Do NOT use insert_nop_blk() here. We want a helper inserted immediately
+    # after blk, but without first splicing it toward the old fallthrough and
+    # then redirecting it again; that pattern has triggered INTERR 50858.
+    helper_blk = mba.copy_block(blk, blk.serial)
+
+    # Serial numbers may shift after a mid-CFG insertion. Refresh serials from
+    # the original SWIG block objects, which stay bound to the same logical
+    # blocks.
+    previous_fallthrough_serial = previous_blk_fallthrough_successor.serial
+    target_serial = target_blk.serial
+
+    prev_successor_serials = [x for x in helper_blk.succset]
+    for prev_serial in prev_successor_serials:
+        helper_blk.succset._del(prev_serial)
+        prev_succ = mba.get_mblock(prev_serial)
+        prev_succ.predset._del(helper_blk.serial)
+        if prev_succ.serial != mba.qty - 1:
+            prev_succ.mark_lists_dirty()
+
+    prev_predecessor_serials = [x for x in helper_blk.predset]
+    for prev_serial in prev_predecessor_serials:
+        helper_blk.predset._del(prev_serial)
+
+    cur_ins = helper_blk.head
+    if cur_ins is None:
+        cur_inst = ida_hexrays.minsn_t(mba.entry_ea)
+        cur_inst.opcode = ida_hexrays.m_nop
+        helper_blk.insert_into_block(cur_inst, helper_blk.head)
+    else:
+        while cur_ins is not None:
+            helper_blk.make_nop(cur_ins)
+            cur_ins = cur_ins.next
+
+    insert_goto_instruction(
+        helper_blk, target_serial, nop_previous_instruction=False
+    )
+    helper_blk.type = ida_hexrays.BLT_1WAY
+    helper_blk.flags |= ida_hexrays.MBL_GOTO
+    helper_blk.succset.push_back(target_serial)
+    if not _serial_in_predset(helper_blk, blk.serial):
+        helper_blk.predset.push_back(blk.serial)
+    helper_blk.mark_lists_dirty()
+
+    blk.succset._del(previous_fallthrough_serial)
+    blk.succset.push_back(helper_blk.serial)
+    blk.mark_lists_dirty()
+
+    previous_blk_fallthrough_successor.predset._del(blk.serial)
+    if previous_blk_fallthrough_successor.serial != mba.qty - 1:
+        previous_blk_fallthrough_successor.mark_lists_dirty()
+
+    if not _serial_in_predset(target_blk, helper_blk.serial):
+        target_blk.predset.push_back(helper_blk.serial)
+    if target_blk.serial != mba.qty - 1:
+        target_blk.mark_lists_dirty()
+
+    mba.mark_chains_dirty()
+    if not verify:
+        return helper_blk
+    try:
+        mba.verify(True)
+        return helper_blk
+    except RuntimeError as e:
+        helper_logger.error(
+            "Error in change_2way_block_fallthrough_successor: {0}".format(e)
+        )
+        log_block_info(blk, helper_logger.error)
+        log_block_info(helper_blk, helper_logger.error)
+        log_block_info(previous_blk_fallthrough_successor, helper_logger.error)
+        raise e
+
+
 def update_blk_successor(
     blk: ida_hexrays.mblock_t, old_successor_serial: int, new_successor_serial: int, verify: bool = True
 ) -> int:
     if blk.nsucc() == 1:
         change_1way_block_successor(blk, new_successor_serial, verify=verify)
     elif blk.nsucc() == 2:
-        if old_successor_serial == blk.nextb.serial:
-            helper_logger.info(
-                "Can't update direct block successor: {0} - {1} - {2}".format(
-                    blk.serial, old_successor_serial, new_successor_serial
-                )
+        if blk.nextb is not None and old_successor_serial == blk.nextb.serial:
+            helper_blk = change_2way_block_fallthrough_successor(
+                blk, new_successor_serial, verify=verify
             )
-            return 0
+            if helper_blk is None:
+                helper_logger.info(
+                    "Can't update direct block successor: {0} - {1} - {2}".format(
+                        blk.serial, old_successor_serial, new_successor_serial
+                    )
+                )
+                return 0
         else:
             change_2way_block_conditional_successor(blk, new_successor_serial, verify=verify)
     else:
@@ -924,6 +1112,75 @@ def _serial_in_predset(blk: "ida_hexrays.mblock_t", serial: int) -> bool:
     return False
 
 
+def check_mba_cfg_consistency(mba: ida_hexrays.mba_t) -> list[str]:
+    """Light-weight pred/succ symmetry check.
+
+    Returns a list of human-readable inconsistency descriptions.
+    An empty list means the CFG looks consistent.
+
+    Checks:
+      1. Every entry in blk.succset has blk.serial in its predset.
+      2. Every entry in blk.predset has blk.serial in its succset.
+      3. For a conditional block, tail.d.b must be in succset.
+
+    Intentionally does NOT check blk.nextb vs succset: in IDA microcode,
+    nextb is the physically adjacent block, not necessarily the fallthrough
+    CFG successor, so that check produces false positives.
+    """
+    issues: list[str] = []
+    try:
+        for i in range(mba.qty):
+            blk = mba.get_mblock(i)
+            if blk is None:
+                continue
+            blk_serial = blk.serial
+            # Check 1: each successor knows us as a predecessor
+            for succ_serial in blk.succset:
+                succ_blk = mba.get_mblock(succ_serial)
+                if succ_blk is None:
+                    issues.append(
+                        f"blk {blk_serial}: succset contains invalid serial {succ_serial}"
+                    )
+                    continue
+                if not _serial_in_predset(succ_blk, blk_serial):
+                    issues.append(
+                        f"blk {blk_serial} -> {succ_serial}: "
+                        f"{blk_serial} missing from predset of {succ_serial}"
+                    )
+            # Check 2: each predecessor knows us as a successor
+            for pred_serial in blk.predset:
+                pred_blk = mba.get_mblock(pred_serial)
+                if pred_blk is None:
+                    issues.append(
+                        f"blk {blk_serial}: predset contains invalid serial {pred_serial}"
+                    )
+                    continue
+                pred_succ_serials = [s for s in pred_blk.succset]
+                if blk_serial not in pred_succ_serials:
+                    issues.append(
+                        f"blk {blk_serial} in predset of {pred_serial}: "
+                        f"{blk_serial} missing from succset of {pred_serial} "
+                        f"(succset={pred_succ_serials})"
+                    )
+            # Check 3: conditional tail target must be in succset
+            if (
+                blk.tail is not None
+                and ida_hexrays.is_mcode_jcond(blk.tail.opcode)
+                and blk.tail.d is not None
+                and blk.tail.d.t == ida_hexrays.mop_b
+            ):
+                cond_target = blk.tail.d.b
+                succ_serials = [s for s in blk.succset]
+                if cond_target not in succ_serials:
+                    issues.append(
+                        f"blk {blk_serial}: jcond target {cond_target} "
+                        f"not in succset {succ_serials}"
+                    )
+    except Exception as e:
+        issues.append(f"check_mba_cfg_consistency: exception during scan: {e}")
+    return issues
+
+
 def _get_fallthrough_successor_serial(blk: ida_hexrays.mblock_t) -> int | None:
     """Return the logical fallthrough successor for *blk* when available."""
     if blk.nsucc() == 0:
@@ -1098,9 +1355,17 @@ def ensure_last_block_is_goto(mba: ida_hexrays.mbl_array_t, verify: bool = True)
     elif last_blk.nsucc() == 0:
         return 0
     else:
-        raise ControlFlowException(
-            "Last block {0} is not one way (not supported yet)".format(last_blk.serial)
+        # After a first unflatten pass, the block second-from-last may be a
+        # 2-way conditional (e.g. the dispatcher fallback).  That is a legal
+        # CFG shape; simply skip the goto-promotion pre-step instead of
+        # aborting the entire optimizer pass with an exception.
+        helper_logger.info(
+            "ensure_last_block_is_goto: skipping — block %d has nsucc=%d "
+            "(not 0/1-way); leaving CFG unchanged",
+            last_blk.serial,
+            last_blk.nsucc(),
         )
+        return 0
 
 
 def duplicate_block(block_to_duplicate: ida_hexrays.mblock_t, verify: bool = True) -> tuple[ida_hexrays.mblock_t, ida_hexrays.mblock_t | None]:
@@ -1193,20 +1458,127 @@ def get_block_serials_by_address_range(mba: ida_hexrays.mbl_array_t, address: in
     return blk_serial_list
 
 
-def mba_remove_simple_goto_blocks(mba: ida_hexrays.mbl_array_t, verify: bool = True) -> int:
+def _simple_goto_retarget_plan(
+    mba: ida_hexrays.mbl_array_t,
+    *,
+    log_abort: bool = True,
+    abort_all_on_unsupported: bool = True,
+) -> tuple[list[tuple[int, int, list[int]]] | None, int, bool]:
+    """Plan simple-goto predecessor retargeting.
+
+    If *abort_all_on_unsupported* is True and any hub fails preflight, returns
+    ``(None, n_candidates, True)`` (caller must not retarget any hub).
+
+    If False, unsupported hubs are skipped individually and *pending* lists only
+    safe hubs (may be shorter than *simple_goto_candidates*).
+
+    The third value is True if **any** hub failed preflight (abort-all path or
+    partial skip); False if every simple-goto hub passed preflight.
+    """
     last_block_index = mba.qty - 1
-    nb_change = 0
+    simple_goto_candidates = 0
+    pending_cleanups: list[tuple[int, int, list[int]]] = []
+    any_preflight_reject: bool = False
+
     for goto_blk_serial in range(last_block_index):
         goto_blk: ida_hexrays.mblock_t = mba.get_mblock(goto_blk_serial)
-        if goto_blk.is_simple_goto_block():
-            goto_blk_dst_serial = goto_blk.tail.l.b
-            goto_blk_preset = [x for x in goto_blk.predset]
-            for father_serial in goto_blk_preset:
-                father_blk: ida_hexrays.mblock_t = mba.get_mblock(father_serial)
-                nb_change += update_blk_successor(
-                    father_blk, goto_blk_serial, goto_blk_dst_serial, verify=verify
+        if not goto_blk.is_simple_goto_block():
+            continue
+        simple_goto_candidates += 1
+        goto_blk_dst_serial = goto_blk.tail.l.b
+        goto_blk_preset = [x for x in goto_blk.predset]
+        unsupported_pred = None
+        unsupported_reason = None
+        for father_serial in goto_blk_preset:
+            father_blk: ida_hexrays.mblock_t = mba.get_mblock(father_serial)
+            if father_blk is None:
+                unsupported_pred = father_serial
+                unsupported_reason = "missing predecessor block"
+                break
+            if father_blk.nsucc() == 1:
+                continue
+            if father_blk.nsucc() == 2:
+                if father_blk.nextb is not None and father_blk.nextb.serial == goto_blk_serial:
+                    unsupported_pred = father_serial
+                    unsupported_reason = "2-way predecessor reaches goto via fallthrough"
+                    break
+                continue
+            unsupported_pred = father_serial
+            unsupported_reason = f"unsupported predecessor nsucc={father_blk.nsucc()}"
+            break
+        if unsupported_pred is not None:
+            any_preflight_reject = True
+            if abort_all_on_unsupported:
+                if log_abort:
+                    helper_logger.info(
+                        "simple_goto_retarget: aborting ALL cleanups for %s - would "
+                        "need to skip goto hub %d -> %d (pred %d: %s). Partial retargeting "
+                        "risks inconsistent CFG.",
+                        _mba_verify_diag(mba),
+                        goto_blk_serial,
+                        goto_blk_dst_serial,
+                        unsupported_pred,
+                        unsupported_reason,
+                    )
+                return None, simple_goto_candidates, True
+            if log_abort:
+                helper_logger.info(
+                    "Skipping simple goto cleanup for block %d -> %d: pred %d (%s)",
+                    goto_blk_serial,
+                    goto_blk_dst_serial,
+                    unsupported_pred,
+                    unsupported_reason,
                 )
+            continue
+        pending_cleanups.append(
+            (goto_blk_serial, goto_blk_dst_serial, goto_blk_preset)
+        )
+
+    return pending_cleanups, simple_goto_candidates, any_preflight_reject
+
+
+def _apply_simple_goto_retarget_plan(
+    mba: ida_hexrays.mbl_array_t,
+    pending_cleanups: list[tuple[int, int, list[int]]],
+    simple_goto_candidates: int,
+    verify: bool,
+) -> int:
+    nb_change = 0
+    for goto_blk_serial, goto_blk_dst_serial, goto_blk_preset in pending_cleanups:
+        for father_serial in goto_blk_preset:
+            father_blk: ida_hexrays.mblock_t = mba.get_mblock(father_serial)
+            nb_change += update_blk_successor(
+                father_blk, goto_blk_serial, goto_blk_dst_serial, verify=verify
+            )
+    helper_logger.info(
+        "mba_remove_simple_goto_blocks: %s verify=%s simple_goto_blocks=%d "
+        "cleaned_hubs=%d predecessor_retarget_updates=%d",
+        _mba_verify_diag(mba),
+        verify,
+        simple_goto_candidates,
+        len(pending_cleanups),
+        nb_change,
+    )
     return nb_change
+
+
+def mba_remove_simple_goto_blocks(mba: ida_hexrays.mbl_array_t, verify: bool = False) -> int:
+    """Remove trivial goto-only blocks; *verify* defaults False to avoid INTERR 50860 on
+    ``mba.verify`` during batch retargeting (GLBOPT1+ flattened CFGs).
+
+    With ``unflatten_cfg_guard_mode=stability`` in ``options.json``, if any hub
+    fails preflight the whole pass is skipped (all-or-nothing). With
+    ``deobfuscation`` (default), only unsafe hubs are skipped (partial cleanup).
+    """
+    pending, simple_goto_candidates, _any_skip = _simple_goto_retarget_plan(
+        mba,
+        abort_all_on_unsupported=unflatten_stability_guards_enabled(),
+    )
+    if pending is None:
+        return 0
+    return _apply_simple_goto_retarget_plan(
+        mba, pending, simple_goto_candidates, verify
+    )
 
 
 def mba_deep_cleaning(mba: ida_hexrays.mba_t, call_mba_combine_block=True) -> int:
@@ -1214,19 +1586,122 @@ def mba_deep_cleaning(mba: ida_hexrays.mba_t, call_mba_combine_block=True) -> in
         # Doing this optimization before MMAT_CALLS may create blocks with call instruction (not last instruction)
         # IDA does like that and will raise a 50864 error
         return 0
+    helper_logger.info(
+        "mba_deep_cleaning: start %s merge_blocks=%s",
+        _mba_verify_diag(mba),
+        call_mba_combine_block,
+    )
+    # Pre-remove_empty plan decides whether to skip remove_empty during early
+    # global-opt passes. After remove_empty the graph may change, so re-plan
+    # before apply.
+    stability_guards = unflatten_stability_guards_enabled()
+    plan_before_remove, n_before, any_preflight_reject = _simple_goto_retarget_plan(
+        mba,
+        log_abort=False,
+        abort_all_on_unsupported=stability_guards,
+    )
+    if plan_before_remove is None:
+        helper_logger.info(
+            "mba_deep_cleaning: simple-goto retarget plan aborted on pre-clean CFG (%s)",
+            _mba_verify_diag(mba),
+        )
+    elif any_preflight_reject and not stability_guards:
+        helper_logger.info(
+            "mba_deep_cleaning: partial simple-goto plan on pre-clean CFG (%s); "
+            "will skip remove_empty at MMAT_GLBOPT1..3 to reduce INTERR 50860 risk",
+            _mba_verify_diag(mba),
+        )
+    skip_remove_empty = (
+        (not call_mba_combine_block)
+        and mba_maturity_unflatten_global_opt_early(mba)
+        and (
+            (stability_guards and plan_before_remove is None)
+            or ((not stability_guards) and any_preflight_reject)
+        )
+    )
+    if skip_remove_empty:
+        helper_logger.info(
+            "mba_deep_cleaning: %s skipping remove_empty_and_unreachable_blocks at "
+            "MMAT_GLBOPT1..3 (unsafe/partial simple-goto layout; remove_empty has "
+            "triggered INTERR 50860 on similar graphs)",
+            _mba_verify_diag(mba),
+        )
+
     if call_mba_combine_block:
         # Ideally we want IDA to simplify the graph for us with combine_blocks
         # However, We observe several crashes when this option is activated
         # (especially when it is used during  O-LLVM unflattening)
         # TODO: investigate the root cause of this issue
         mba.merge_blocks()
-    else:
-        if idaapi.IDA_SDK_VERSION >= 760:
-            # In IDA Pro 7.6, remove_empty_blocks is removed and replaced (?) by remove_empty_and_unreachable_blocks
-            mba.remove_empty_and_unreachable_blocks()
+    elif not skip_remove_empty:
+        try:
+            if idaapi.IDA_SDK_VERSION >= 760:
+                # In IDA Pro 7.6, remove_empty_blocks is removed and replaced (?) by remove_empty_and_unreachable_blocks
+                mba.remove_empty_and_unreachable_blocks()
+            else:
+                mba.remove_empty_blocks()  # type: ignore
+        except RuntimeError as e:
+            # remove_empty_and_unreachable_blocks() can raise INTERR 51832 / 50860
+            # on partially-rewritten CFGs during MMAT_GLBOPT1..3. Swallow the
+            # exception here — the MBA is still usable; callers and safe_verify()
+            # will decide whether to abort or continue based on verify results.
+            helper_logger.warning(
+                "mba_deep_cleaning: remove_empty raised RuntimeError (%s) for %s — "
+                "skipping cleanup (CFG may contain unreachable blocks)",
+                e,
+                _mba_verify_diag(mba),
+            )
+
+    # GLBOPT1..3 pre-flight: if the CFG already has pred/succ asymmetry
+    # (left by a prior pass), any simple-goto retarget will make it worse
+    # and IDA's C++ GLBOPT optimizer will raise INTERR 50860/51832 when it
+    # receives the modified MBA.  Detect this *before* touching the CFG and
+    # return the sentinel -1 so callers can abort and return 0 to Hex-Rays,
+    # keeping the MBA in its current (already-broken-but-not-worse) state.
+    if mba_maturity_unflatten_global_opt_early(mba) and not call_mba_combine_block:
+        pre_issues = check_mba_cfg_consistency(mba)
+        if pre_issues:
+            helper_logger.warning(
+                "mba_deep_cleaning: CFG pred/succ inconsistency detected BEFORE "
+                "simple-goto retarget (%d issue(s)) for %s — skipping all "
+                "retargeting to avoid INTERR 50860/51832. First issue: %s",
+                len(pre_issues),
+                _mba_verify_diag(mba),
+                pre_issues[0],
+            )
+            return -1
+
+    if skip_remove_empty:
+        if plan_before_remove is None:
+            nb_change = 0
         else:
-            mba.remove_empty_blocks()  # type: ignore
-    nb_change = mba_remove_simple_goto_blocks(mba)
+            nb_change = _apply_simple_goto_retarget_plan(
+                mba, plan_before_remove, n_before, verify=False
+            )
+    else:
+        goto_pending, goto_n, _r2 = _simple_goto_retarget_plan(
+            mba,
+            log_abort=False,
+            abort_all_on_unsupported=stability_guards,
+        )
+        if goto_pending is None:
+            helper_logger.info(
+                "mba_deep_cleaning: simple-goto retarget plan aborted after "
+                "remove_empty (%s)",
+                _mba_verify_diag(mba),
+            )
+            nb_change = 0
+        else:
+            nb_change = _apply_simple_goto_retarget_plan(
+                mba, goto_pending, goto_n, verify=False
+            )
+
+    helper_logger.info(
+        "mba_deep_cleaning: done %s merge_blocks=%s simple_goto_updates=%d",
+        _mba_verify_diag(mba),
+        call_mba_combine_block,
+        nb_change,
+    )
     return nb_change
 
 

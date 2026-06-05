@@ -35,6 +35,7 @@ from d810.hexrays.cfg_utils import (
     change_1way_block_successor,
     duplicate_block,
     make_2way_block_goto,
+    mba_maturity_unflatten_global_opt_early,
     safe_verify,
     update_blk_successor,
 )
@@ -705,6 +706,13 @@ class HodurUnflattener(GenericUnflatteningRule):
             return 0
 
         unflat_logger.info(
+            "Starting Hodur unflattening: func=0x%x maturity=%s pass=%s blk=%s",
+            self.mba.entry_ea,
+            self.cur_maturity,
+            self.cur_maturity_pass,
+            blk.serial,
+        )
+        unflat_logger.info(
             "HodurUnflattener: Starting pass %d at maturity %d",
             self.cur_maturity_pass,
             self.cur_maturity,
@@ -716,6 +724,10 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         if self.state_machine is None:
             unflat_logger.info("No Hodur state machine detected")
+            unflat_logger.info(
+                "Finished Hodur unflattening: func=0x%x total_changes=0 (no state machine)",
+                self.mba.entry_ea,
+            )
             return 0
 
         # Log the detected structure
@@ -772,6 +784,11 @@ class HodurUnflattener(GenericUnflatteningRule):
         unflat_logger.info(
             "HodurUnflattener: Pass %d made %d changes",
             self.cur_maturity_pass,
+            nb_changes,
+        )
+        unflat_logger.info(
+            "Finished Hodur unflattening: func=0x%x total_changes=%d",
+            self.mba.entry_ea,
             nb_changes,
         )
 
@@ -1319,7 +1336,13 @@ class HodurUnflattener(GenericUnflatteningRule):
 
         if nb_fixed > 0:
             self.mba.mark_chains_dirty()
-            self.mba.optimize_local(0)
+            if not mba_maturity_unflatten_global_opt_early(self.mba):
+                self.mba.optimize_local(0)
+            else:
+                unflat_logger.info(
+                    "UnflattenerHodur: skipping optimize_local(0) at MMAT_GLBOPT1..3 "
+                    "(avoids INTERR 50860/51832)"
+                )
 
         return nb_fixed
 
@@ -1578,13 +1601,34 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Apply patches: jump never taken (fall through)
         for pred_blk, check_blk, fall_through in patches_fall_through:
             try:
+                # update_blk_successor() cannot retarget a 2-way predecessor's
+                # fallthrough edge; skip this unsafe shape.
+                if (
+                    pred_blk.nsucc() == 2
+                    and pred_blk.nextb is not None
+                    and pred_blk.nextb.serial == check_blk.serial
+                ):
+                    unflat_logger.warning(
+                        "Skipping Hodur fall-through patch for pred %d -> check %d: "
+                        "unsupported 2-way fallthrough predecessor edge",
+                        pred_blk.serial,
+                        check_blk.serial,
+                    )
+                    continue
                 new_jmp_block, new_default_block = duplicate_block(
                     check_blk, verify=False
                 )
                 make_2way_block_goto(new_jmp_block, fall_through, verify=False)
-                update_blk_successor(
+                if not update_blk_successor(
                     pred_blk, check_blk.serial, new_jmp_block.serial, verify=False
-                )
+                ):
+                    unflat_logger.warning(
+                        "Failed to redirect Hodur predecessor %d from check %d to clone %d",
+                        pred_blk.serial,
+                        check_blk.serial,
+                        new_jmp_block.serial,
+                    )
+                    continue
                 nb_changes += 1
                 unflat_logger.debug(
                     "Applied fall-through patch: pred %d -> new block %d -> %d",
@@ -1602,13 +1646,34 @@ class HodurUnflattener(GenericUnflatteningRule):
         # Apply patches: jump always taken
         for pred_blk, check_blk, jump_target in patches_jump_taken:
             try:
+                # update_blk_successor() cannot retarget a 2-way predecessor's
+                # fallthrough edge; skip this unsafe shape.
+                if (
+                    pred_blk.nsucc() == 2
+                    and pred_blk.nextb is not None
+                    and pred_blk.nextb.serial == check_blk.serial
+                ):
+                    unflat_logger.warning(
+                        "Skipping Hodur jump-taken patch for pred %d -> check %d: "
+                        "unsupported 2-way fallthrough predecessor edge",
+                        pred_blk.serial,
+                        check_blk.serial,
+                    )
+                    continue
                 new_jmp_block, new_default_block = duplicate_block(
                     check_blk, verify=False
                 )
                 make_2way_block_goto(new_jmp_block, jump_target, verify=False)
-                update_blk_successor(
+                if not update_blk_successor(
                     pred_blk, check_blk.serial, new_jmp_block.serial, verify=False
-                )
+                ):
+                    unflat_logger.warning(
+                        "Failed to redirect Hodur predecessor %d from check %d to clone %d",
+                        pred_blk.serial,
+                        check_blk.serial,
+                        new_jmp_block.serial,
+                    )
+                    continue
                 nb_changes += 1
                 unflat_logger.debug(
                     "Applied jump-taken patch: pred %d -> new block %d -> %d",

@@ -2090,6 +2090,13 @@ class UnflattenControlFlowRule(FlowOptimizationRule):
             return 0
         ea = mba.entry_ea
 
+        logger.info(
+            "Starting CF unflattening optimize: func=0x%x maturity=%s blk=%s",
+            ea,
+            mba.maturity,
+            blk.serial,
+        )
+
         # whitelist / blacklist handled by BlockOptimizerManager prior to call,
         # but keep a safeguard here for manual usage.
         if self.use_whitelist and ea not in self.whitelisted_function_ea_list:
@@ -2111,6 +2118,11 @@ class UnflattenControlFlowRule(FlowOptimizationRule):
         finally:
             # Reset maturity so the pass can run again on the next function
             self.reset_maturity()
+        logger.info(
+            "Finished CF unflattening optimize: func=0x%x total_changes=%d",
+            ea,
+            changed,
+        )
         return changed
 
     def enforce_unflatten(self, vaddr):

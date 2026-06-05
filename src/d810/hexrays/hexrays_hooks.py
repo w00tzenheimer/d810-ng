@@ -544,6 +544,15 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
     # where the optimizer keeps matching but never converges.
     _MAX_PASSES_PER_MATURITY = 500
 
+    # Early-exit guard: once all CFG rules have returned 0 this many times
+    # in a row at the same maturity, conclude that no CFG rule is still
+    # matching and suppress further block-optimizer passes.  Protects against
+    # IDA's own instruction optimizer triggering an endless block-optimizer
+    # loop after CFG rewrites stabilise.  16 is large enough to give slow
+    # rules headroom across IDA's multi-block callback fan-out, but small
+    # enough that we exit well before the 500-pass hard cap.
+    _MAX_NO_CHANGE_STREAK = 16
+
     def __init__(self, stats: OptimizationStatistics, log_dir: pathlib.Path):
         optimizer_logger.debug("Initializing {0}...".format(self.__class__.__name__))
         super().__init__()
@@ -564,6 +573,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
 
         self.current_maturity = None
         self._pass_count = 0
+        self._no_change_streak = 0
         self._flow_context: FlowMaturityContext | None = None
         self._flow_context_key: tuple[int, int] | None = None
         # usage tracking moved to centralized statistics object
@@ -574,6 +584,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         Called when maturity changes so the guard does not carry over.
         """
         self._pass_count = 0
+        self._no_change_streak = 0
 
     def _invalidate_flow_context(self, reason: str = "") -> None:
         if self._flow_context is not None and reason:
@@ -626,11 +637,32 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 )
             return 0
 
+        # Early-exit guard: once our CFG rules have converged (all returning 0
+        # for many consecutive callbacks), keep returning 0 silently so IDA
+        # can move on to the next maturity.  Without this guard, IDA's own
+        # instruction optimizer will continue dirtying the MBA after our CFG
+        # rewrites stabilise, triggering another block-optimizer pass and
+        # eventually tripping the 500-pass hard cap -- which IDA interprets
+        # as a fatal loop and aborts decompilation.
+        if self._no_change_streak >= self._MAX_NO_CHANGE_STREAK:
+            return 0
+
         # Bug 2 fix: catch exceptions so they don't escape to IDA's callback
         # handler, which would continue with a corrupted MBA and hang at the
         # next maturity level.  Mirrors InstructionOptimizerManager.func().
         try:
             nb_patch = self.optimize(blk)
+            if nb_patch > 0:
+                self._no_change_streak = 0
+            else:
+                self._no_change_streak += 1
+                if self._no_change_streak == self._MAX_NO_CHANGE_STREAK:
+                    optimizer_logger.info(
+                        "BlockOptimizer: %d consecutive no-change callbacks at "
+                        "%s; suppressing further passes until maturity changes",
+                        self._MAX_NO_CHANGE_STREAK,
+                        maturity_to_string(self.current_maturity),
+                    )
             return nb_patch
         except RuntimeError as e:
             optimizer_logger.warning(

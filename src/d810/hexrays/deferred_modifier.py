@@ -208,6 +208,7 @@ from d810.hexrays.cfg_utils import (
     log_block_info,
     make_2way_block_goto,
     mba_deep_cleaning,
+    mba_maturity_unflatten_global_opt_early,
     safe_verify,
     snapshot_block_for_capture,
 )
@@ -1158,16 +1159,36 @@ class DeferredGraphModifier:
                 self._applied = True
                 return successful
 
+            # optimize_local(0) on a partially-rewritten CFG during MMAT_GLBOPT1..3
+            # triggers INTERR 50860 / 51832 inside IDA's C++ layer — it does NOT
+            # raise a Python RuntimeError, so there is no way to catch it here.
+            # Replace with a conservative mba_deep_cleaning (which already guards
+            # remove_empty_and_unreachable_blocks) at early global-opt maturities.
+            _is_early_glbopt = mba_maturity_unflatten_global_opt_early(self.mba)
             if run_deep_cleaning:
                 mba_deep_cleaning(self.mba, call_mba_combine_block=True)
-            elif run_optimize_local:
+            elif run_optimize_local and not _is_early_glbopt:
                 self.mba.optimize_local(0)
             else:
-                # Caller requested no optimize_local. Still run conservative
-                # cleanup so deferred CFG rewrites don't leave transient orphans.
+                if run_optimize_local and _is_early_glbopt:
+                    logger.info(
+                        "DeferredGraphModifier: skipping optimize_local(0) at "
+                        "MMAT_GLBOPT1..3 (avoids INTERR 50860/51832 cascade)"
+                    )
+                # Caller requested no optimize_local, or it was suppressed above.
+                # Still run conservative cleanup so deferred CFG rewrites don't
+                # leave transient orphans.
                 mba_deep_cleaning(self.mba, call_mba_combine_block=False)
 
             try:
+                strict_post_verify = not mba_maturity_unflatten_global_opt_early(
+                    self.mba
+                )
+                if not strict_post_verify:
+                    logger.info(
+                        "DeferredGraphModifier: post-apply safe_verify soft mode "
+                        "(MMAT_GLBOPT1..3); verify failure is logged but not raised"
+                    )
                 safe_verify(
                     self.mba,
                     "after deferred modifications",
@@ -1178,6 +1199,7 @@ class DeferredGraphModifier:
                         "queued_modifications": len(sorted_mods),
                         "recent_modifications": list(recent_modifications),
                     },
+                    raise_on_failure=strict_post_verify,
                 )
             except RuntimeError:
                 # The modifications are already applied in-place and cannot
@@ -1193,9 +1215,13 @@ class DeferredGraphModifier:
                 )
                 # Best-effort recovery: conservative cleanup + one re-verify
                 # attempt. If this succeeds, callers can safely continue.
+                # Use the same strictness as the primary verify above: soft
+                # (raise_on_failure=False) at MMAT_GLBOPT1..3 to avoid
+                # propagating INTERR 51832 / 50860 as a fatal decompilation
+                # abort when the CFG is only transiently inconsistent.
                 try:
                     mba_deep_cleaning(self.mba, call_mba_combine_block=False)
-                    safe_verify(
+                    recovery_ok = safe_verify(
                         self.mba,
                         "after deferred modifications (recovery)",
                         logger_func=logger.error,
@@ -1205,12 +1231,19 @@ class DeferredGraphModifier:
                             "queued_modifications": len(sorted_mods),
                             "recent_modifications": list(recent_modifications),
                         },
+                        raise_on_failure=strict_post_verify,
                     )
-                    self.verify_failed = False
-                    logger.warning(
-                        "Recovered MBA after deferred-apply verify failure via "
-                        "conservative cleanup"
-                    )
+                    if recovery_ok:
+                        self.verify_failed = False
+                        logger.warning(
+                            "Recovered MBA after deferred-apply verify failure via "
+                            "conservative cleanup"
+                        )
+                    else:
+                        logger.warning(
+                            "Recovery verify also failed at MMAT_GLBOPT1..3 "
+                            "(raise_on_failure=False); MBA remains suspect"
+                        )
                 except RuntimeError:
                     pass
 
@@ -1790,16 +1823,33 @@ class ImmediateGraphModifier:
         if self.modifications_applied > 0:
             self.mba.mark_chains_dirty()
 
+            _is_early_glbopt = mba_maturity_unflatten_global_opt_early(self.mba)
             if run_deep_cleaning:
                 mba_deep_cleaning(self.mba, call_mba_combine_block=True)
-            elif run_optimize_local:
+            elif run_optimize_local and not _is_early_glbopt:
                 self.mba.optimize_local(0)
+            else:
+                if run_optimize_local and _is_early_glbopt:
+                    logger.info(
+                        "ImmediateGraphModifier: skipping optimize_local(0) at "
+                        "MMAT_GLBOPT1..3 (avoids INTERR 50860/51832 cascade)"
+                    )
+                mba_deep_cleaning(self.mba, call_mba_combine_block=False)
 
             try:
+                strict_post_verify = not mba_maturity_unflatten_global_opt_early(
+                    self.mba
+                )
+                if not strict_post_verify:
+                    logger.info(
+                        "ImmediateGraphModifier: post-apply safe_verify soft mode "
+                        "(MMAT_GLBOPT1..3); verify failure is logged but not raised"
+                    )
                 safe_verify(
                     self.mba,
                     "after immediate modifications",
                     logger_func=logger.error,
+                    raise_on_failure=strict_post_verify,
                 )
             except RuntimeError:
                 self.verify_failed = True

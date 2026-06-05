@@ -25,6 +25,7 @@ from d810.core import getLogger
 from d810.core.bits import unsigned_to_signed
 from d810.hexrays.cfg_utils import (
     make_2way_block_goto,
+    mba_maturity_unflatten_global_opt_early,
     safe_verify,
     update_blk_successor,
 )
@@ -700,6 +701,25 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
                 mod.cond_block_serial, mod.target_serial
             )
 
+        # update_blk_successor() can retarget:
+        # - any edge for 1-way predecessors
+        # - only the conditional edge (tail.d.b) for 2-way predecessors
+        # It cannot retarget a 2-way predecessor's fallthrough edge.
+        if pred_blk.nsucc() == 2:
+            cond_target = (
+                pred_blk.tail.d.b
+                if pred_blk.tail is not None and ida_hexrays.is_mcode_jcond(pred_blk.tail.opcode)
+                else None
+            )
+            if cond_target is None or int(cond_target) != int(mod.cond_block_serial):
+                unflat_logger.warning(
+                    "Skipping predecessor rewrite for pred %d -> cond %d: "
+                    "unsupported 2-way fallthrough/source edge",
+                    mod.pred_serial,
+                    mod.cond_block_serial,
+                )
+                return False
+
         try:
             new_jmp_block = None
             new_jmp_block = self._clone_conditional_block(cond_blk)
@@ -794,12 +814,23 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
             _pred_analysis_cache.invalidate_for_mba(self.mba)
 
             self.mba.mark_chains_dirty()
-            self.mba.optimize_local(0)
+            # optimize_local(0) on a partially-rewritten CFG at MMAT_GLBOPT1..3
+            # triggers INTERR 50860/51832 in IDA's C++ layer without raising a
+            # Python RuntimeError — skip it at early global-opt maturities.
+            _is_early_glbopt = mba_maturity_unflatten_global_opt_early(self.mba)
+            if not _is_early_glbopt:
+                self.mba.optimize_local(0)
+            else:
+                unflat_logger.info(
+                    "FixPredecessorOfConditionalJumpBlock: skipping optimize_local(0) "
+                    "at MMAT_GLBOPT1..3 (avoids INTERR 50860/51832)"
+                )
             try:
                 safe_verify(
                     self.mba,
                     "optimizing FixPredecessorOfConditionalJumpBlock",
-                    logger_func=unflat_logger.error
+                    logger_func=unflat_logger.error,
+                    raise_on_failure=not _is_early_glbopt,
                 )
             except RuntimeError:
                 self._verify_failed = True

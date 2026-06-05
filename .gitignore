@@ -54,7 +54,8 @@ _indexable
 # Auto-downloaded IDA SDK
 .ida-sdk/
 
-\.*db
+# Python packaging build artifacts
+*.egg-info/
+src/*.egg-info/
 
-# docs
-docs/
+\.*db

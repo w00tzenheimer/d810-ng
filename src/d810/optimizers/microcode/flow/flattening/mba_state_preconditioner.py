@@ -33,7 +33,7 @@ from dataclasses import dataclass
 import ida_hexrays
 
 from d810.core import getLogger, typing
-from d810.hexrays.cfg_utils import safe_verify
+from d810.hexrays.cfg_utils import mba_maturity_unflatten_global_opt_early, safe_verify
 from d810.hexrays.hexrays_formatters import maturity_to_string
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule, FlowRulePriority
 from d810.optimizers.microcode.handler import ConfigParam
@@ -143,19 +143,28 @@ class MbaStatePreconditioner(FlowOptimizationRule):
         self._in_progress.add(mba)
         total_changes = 0
         rounds_run = 0
+        _is_early_glbopt = mba_maturity_unflatten_global_opt_early(mba)
         try:
-            for _ in range(max(0, self.max_optimize_local_rounds)):
-                rounds_run += 1
-                nb_changes = int(mba.optimize_local(0))
-                if nb_changes <= 0:
-                    break
-                total_changes += nb_changes
-                if self.verify_after_round:
-                    safe_verify(
-                        mba,
-                        f"{self.__class__.__name__} round {rounds_run}",
-                        logger_func=logger.error,
-                    )
+            if _is_early_glbopt:
+                logger.info(
+                    "%s: skipping optimize_local rounds at MMAT_GLBOPT1..3 "
+                    "(avoids INTERR 50860/51832)",
+                    self.__class__.__name__,
+                )
+            else:
+                for _ in range(max(0, self.max_optimize_local_rounds)):
+                    rounds_run += 1
+                    nb_changes = int(mba.optimize_local(0))
+                    if nb_changes <= 0:
+                        break
+                    total_changes += nb_changes
+                    if self.verify_after_round:
+                        safe_verify(
+                            mba,
+                            f"{self.__class__.__name__} round {rounds_run}",
+                            logger_func=logger.error,
+                            raise_on_failure=False,
+                        )
         finally:
             seen = self._seen.setdefault(mba, set())
             seen.add(marker)

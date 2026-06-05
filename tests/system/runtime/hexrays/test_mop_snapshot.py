@@ -61,6 +61,21 @@ class TestMopSnapshot:
         snap = MopSnapshot(t=6, size=8, gaddr=0x140001000)
         assert snap.gaddr == 0x140001000
 
+    def test_to_mop_reconstructs_global_var(self):
+        import ida_hexrays
+
+        snap = MopSnapshot(
+            t=ida_hexrays.mop_v,
+            size=8,
+            gaddr=0x140001000,
+        )
+
+        mop = snap.to_mop()
+
+        assert mop.t == ida_hexrays.mop_v
+        assert mop.g == 0x140001000
+        assert mop.size == 8
+
     def test_helper_snapshot(self):
         snap = MopSnapshot(t=11, size=0, helper_name="memcpy")
         assert snap.helper_name == "memcpy"

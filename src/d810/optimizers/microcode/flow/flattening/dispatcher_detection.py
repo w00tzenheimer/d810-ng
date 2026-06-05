@@ -263,13 +263,20 @@ class DispatcherCache:
             maturity=self.mba.maturity,
         )
 
+        # Flattening detection pipeline:
+        # 1) Fast path for switch/jtbl style
+        # 2) Full multi-strategy analysis for conditional-chain style
+        # 3) Type classification with score-based fallback/lock-in
+        #
         # Quick check: does this function have a switch/jtbl? If so, it's O-LLVM style
         # and we can skip expensive analysis (O-LLVM doesn't need dispatcher skipping)
         has_jtbl = False
+        jtbl_block_serial = -1
         for i in range(self.mba.qty):
             blk = self.mba.get_mblock(i)
             if blk.tail and blk.tail.opcode == ida_hexrays.m_jtbl:
                 has_jtbl = True
+                jtbl_block_serial = i
                 break
 
         if has_jtbl:
@@ -277,7 +284,12 @@ class DispatcherCache:
             analysis.dispatcher_type = DispatcherType.SWITCH_TABLE
             self._analysis = analysis
             self._last_maturity = self.mba.maturity
-            logger.debug("Detected jtbl - switch table dispatcher")
+            logger.info(
+                "Detected switch-table flattening candidate at block %d (func=0x%x, maturity=%d)",
+                jtbl_block_serial,
+                self.func_ea,
+                self.mba.maturity,
+            )
             return analysis
 
         # Run all detection strategies for potential conditional chain style
@@ -523,6 +535,12 @@ class DispatcherCache:
                 # Check predecessor uniformity
                 if pred_count > 0 and uncond_count / pred_count >= MIN_PREDECESSOR_UNIFORMITY_RATIO:
                     block_info.strategies |= DispatcherStrategy.PREDECESSOR_UNIFORM
+                logger.debug(
+                    "Block %d marked as high fan-in dispatcher candidate (pred=%d, uncond=%d)",
+                    i,
+                    pred_count,
+                    uncond_count,
+                )
 
     def _analyze_state_comparisons(self, analysis: DispatcherAnalysis) -> None:
         """Strategy 2: State comparison detection."""
@@ -588,6 +606,20 @@ class DispatcherCache:
                 # Mark as high constant frequency if many unique constants
                 if len(unique_constants) >= MIN_UNIQUE_CONSTANTS:
                     block_info.strategies |= DispatcherStrategy.CONSTANT_FREQUENCY
+
+            logger.info(
+                "Detected state variable candidate for flattening (type=%d, offset=%d, comparisons=%d, unique_consts=%d)",
+                analysis.state_variable.mop_type,
+                analysis.state_variable.mop_offset,
+                analysis.state_variable.comparison_count,
+                len(unique_constants),
+            )
+        elif var_comparisons:
+            logger.debug(
+                "State comparison hints found but below threshold (vars=%d, min_consts=%d)",
+                len(var_comparisons),
+                MIN_UNIQUE_CONSTANTS,
+            )
 
     def _get_mop_offset(self, mop: ida_hexrays.mop_t) -> int:
         """Get the offset/identifier from an mop_t."""
@@ -785,6 +817,14 @@ class DispatcherCache:
 
         if not has_jtbl and len(analysis.state_constants) >= MIN_UNIQUE_CONSTANTS:
             conditional_chain_score += 20
+        logger.debug(
+            "Conditional-chain score for 0x%x: score=%d, nested_depth=%d, state_consts=%d, has_jtbl=%s",
+            self.func_ea,
+            conditional_chain_score,
+            analysis.nested_loop_depth,
+            len(analysis.state_constants),
+            has_jtbl,
+        )
 
         # Dynamic threshold: lower requirement when nested loops are detected
         # Nested loops are a strong structural indicator even when constants are gone
@@ -869,10 +909,21 @@ def should_skip_dispatcher(mba: ida_hexrays.mba_t, blk: ida_hexrays.mblock_t) ->
     # Only skip if this is conditional chain style (nested while loops, no switch/jtbl)
     # Switch-table style should NOT be skipped - it needs the predecessor patching
     if not analysis.is_conditional_chain:
+        logger.debug(
+            "No dispatcher skip for block %d: dispatcher_type=%s",
+            blk.serial,
+            analysis.dispatcher_type.name,
+        )
         return False
 
     # For conditional chain style, skip blocks flagged as dispatchers
     if cache.is_dispatcher(blk.serial):
+        logger.info(
+            "Skipping dispatcher block %d for conditional-chain flattening (func=0x%x)",
+            blk.serial,
+            mba.entry_ea,
+        )
         return True
 
+    logger.debug("Block %d not flagged as dispatcher, continuing patching", blk.serial)
     return False
