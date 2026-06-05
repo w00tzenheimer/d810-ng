@@ -95,7 +95,8 @@ Write-Host "  Done."
 
 # Step 3: Build
 Write-Step 3 $TotalSteps "Building libobfuscated.dll via Makefile"
-Set-Location $SamplesDir
+Push-Location $SamplesDir
+try {
 
 # Prefer a real Git bash shell path for GNU make recipes.
 $RealSh = $null
@@ -147,4 +148,8 @@ if (Test-Path $DllPath) {
 if (Test-Path $PdbPath) {
     $PdbSize = (Get-Item $PdbPath).Length
     Write-Host "  libobfuscated.pdb: $([math]::Round($PdbSize/1KB, 1)) KB"
+}
+
+} finally {
+    Pop-Location
 }
