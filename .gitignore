@@ -13,7 +13,6 @@
 .cursor/
 .claude/
 .codesight/
-reviews/
 
 # AI CLI Crap
 GEMINI.md
@@ -32,6 +31,8 @@ c*?_debug/
 # Project Specific
 samples/src/**/*.d
 samples/src/**/*.o
+samples/masm/*.obj
+samples/.build_masm/
 samples/bins/*
 !samples/bins/**/*.dll
 !samples/bins/**/*.so

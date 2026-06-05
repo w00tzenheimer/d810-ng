@@ -131,3 +131,47 @@ class TestExportActionIntegration:
         )
         flags_segments = to_ida_flags_with_loader(settings_segments, loader=ida_loader)
         assert flags_both == (ida_loader.GENFLG_ASMTYPE | flags_segments)
+
+
+@pytest.mark.skipif(not IDA_AVAILABLE, reason="Requires IDA Pro")
+class TestMasmExportApiSurface:
+    """Verify the IDA APIs the MASM export glue depends on exist.
+
+    The MASM export path generates an OFILE_ASM listing into a real FILE*
+    (ida_diskio.fopen*/ida_fpro.qfclose), then reads referenced data symbol
+    values from the IDB. This guards against API drift in those entry points.
+    """
+
+    def test_file_io_api(self):
+        import ida_diskio
+        import ida_fpro
+
+        assert callable(ida_diskio.fopenWT)
+        assert callable(ida_diskio.fopenWB)
+        assert callable(ida_fpro.qfclose)
+
+    def test_name_and_byte_readers_exist(self):
+        """The structural MASM exporter materializes data via these readers."""
+        import ida_bytes
+        import ida_name
+
+        assert callable(ida_name.get_name_ea)
+        for reader in ("get_byte", "get_word", "get_dword", "get_qword",
+                       "get_bytes", "get_item_size"):
+            assert callable(getattr(ida_bytes, reader)), f"Missing {reader}"
+
+
+@pytest.mark.skipif(not IDA_AVAILABLE, reason="Requires IDA Pro")
+class TestStructuralMasmGenerator:
+    """The structural x64 MASM generator must be live (not the inert fallback)."""
+
+    def test_generator_available_in_ida(self):
+        from d810.ui import export_disasm_masm_emit as emit
+
+        assert emit.IDA_AVAILABLE is True
+        assert callable(emit.generate_masm_for_function)
+
+    def test_action_prefers_structural_engine(self):
+        from d810.ui.actions.export_disasm import MASM_EMIT_AVAILABLE
+
+        assert MASM_EMIT_AVAILABLE is True
