@@ -8,7 +8,7 @@ struct timeval {
 extern int gettimeofday(struct timeval *tv, void *tz);
 extern int printf(char const *format, ...);
 extern int scanf(char const *format, ...);
-extern int strncmp(char const *s1, char const *s2, unsigned int maxlen);
+extern int strncmp(char const *s1, char const *s2, size_t maxlen);
 
 // https://github.com/Neutrino6/thesis_project/blob/main/C_files_analysis/C_obfuscated/minmaxarray_tigress.c
 /** Original code:
@@ -57,7 +57,7 @@ EXPORT int tigress_minmaxarray(int argc , char **argv , char **_formal_envp )
   int i ;
   int big ;
   int small ;
-  int _BARRIER_0 ;
+  int _BARRIER_0 ATTR_UNUSED;
   unsigned long _1_main_next ;
 
   {
@@ -88,7 +88,7 @@ EXPORT int tigress_minmaxarray(int argc , char **argv , char **_formal_envp )
   _global_argc = argc;
   _global_argv = argv;
   _global_envp = _formal_envp;
-  _BARRIER_0 = 1;
+  _BARRIER_0 = 1;  
   {
   _1_main_next = 11UL;
   }
@@ -372,7 +372,7 @@ _3_tigress_flatten_indirect_lab27:
   goto *(_3_tigress_flatten_indirect_jumpTab[_3_tigress_flatten_indirect_next - 1]);
 
 _3_tigress_flatten_indirect_lab28:
-  if ((int)((((~((unsigned long)i) & 100UL) | ((~((unsigned long)i) | 100UL) & ((unsigned long)i - 100UL))) >> 63UL) & 1UL)) {
+  if ((int)(((unsigned long long)((~((unsigned long)i) & 100UL) | ((~((unsigned long)i) | 100UL) & ((unsigned long)i - 100UL))) >> 63) & 1ULL)) {
     _3_tigress_flatten_indirect_next = 32UL;
   } else {
     _3_tigress_flatten_indirect_next = 11UL;

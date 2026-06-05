@@ -51,16 +51,36 @@ typedef void VOID;
 #define __fastcall
 #endif
 
+#if !defined(_In_)
 #define _In_
+#endif
+#if !defined(_Inout_)
 #define _Inout_
+#endif
+#if !defined(_Out_)
 #define _Out_
+#endif
+#if !defined(_Outptr_)
 #define _Outptr_
+#endif
+#if !defined(_In_opt_)
 #define _In_opt_
+#endif
+#if !defined(_Inout_opt_)
 #define _Inout_opt_
+#endif
+#if !defined(_Out_opt_)
 #define _Out_opt_
+#endif
+#if !defined(_Outptr_opt_)
 #define _Outptr_opt_
-#define _In_reads_(s)
-#define _In_reads_opt_(s)
+#endif
+#if !defined(_In_reads_)
+#define _In_reads_
+#endif
+#if !defined(_In_reads_opt_)
+#define _In_reads_opt_
+#endif
 
 /* Hex-Rays synthetic memory indirection helper.
  * Allows expressions like MEMORY[0x123](); to compile in samples.
