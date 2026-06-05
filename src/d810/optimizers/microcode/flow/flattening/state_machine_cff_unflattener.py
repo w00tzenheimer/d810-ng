@@ -17,7 +17,32 @@ import json
 import os
 
 import ida_hexrays
-
+from d810.analyses.control_flow.block_ownership_domain import \
+    analyze_block_ownership
+from d810.analyses.control_flow.dispatcher_discovery_extractors import (
+    discover_dispatcher_from_flow_graph,
+)
+from d810.analyses.control_flow.dispatcher_recovery import recover_dispatcher
+from d810.analyses.control_flow.linearized_state_dag import (
+    build_live_linearized_state_dag_from_graph,
+)
+from d810.analyses.control_flow.read_state_cfg import read_dag_from
+from d810.analyses.control_flow.semantic_transition import \
+    facts_from_validated_view
+from d810.analyses.control_flow.state_machine_analysis import (
+    run_snapshot_constant_fixpoint,
+)
+from d810.analyses.control_flow.state_transition_domain import (
+    StateValue,
+    analyze_state_transitions,
+)
+from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
+from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
+from d810.backends.hexrays.lifter import lift_function
+from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
+from d810.capabilities.resolver import CapabilitySet
+from d810.capabilities.use_def_safety import UseDefSafetyCapability
+from d810.capabilities.value_range import ValRangeCapability
 from d810.core import logging
 from d810.core.observability_models import (
     BlockSnapshot as _DiagBlockSnapshot,
@@ -33,51 +58,24 @@ from d810.core.observability_recon import (
     observe_reachability,
     observe_state_dispatcher_rows,
 )
+from d810.evaluator.hexrays_microcode.use_def_dominance import (
+    HexRaysUseDefSafetyBackend,
+)
+from d810.evaluator.hexrays_microcode.value_range_capability import (
+    HexRaysValRangeCapability,
+)
+from d810.families.state_machine_cff.hodur_pipeline import HodurFamily
 from d810.hexrays.observability import (
     diagnostics_enabled as _capture_diagnostics_enabled,
     request_capture_mba_snapshot,
 )
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
-from d810.analyses.control_flow.linearized_state_dag import (
-    build_live_linearized_state_dag_from_graph,
-)
-from d810.transforms.state_machine_unflatten import lower_to_direct_graph
-from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle import (
-    ComposedUnflatteningRule,
-)
 from d810.optimizers.microcode.flow.flattening.hodur.unflattener import (
     HodurUnflattener,
 )
-from d810.backends.hexrays.lifter import lift_function
-from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
-from d810.analyses.control_flow.dispatcher_recovery import recover_dispatcher
-from d810.analyses.control_flow.block_ownership_domain import analyze_block_ownership
-from d810.analyses.control_flow.read_state_cfg import read_dag_from
-from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
-from d810.analyses.control_flow.dispatcher_discovery_extractors import (
-    discover_dispatcher_from_flow_graph,
-)
-from d810.analyses.control_flow.semantic_transition import facts_from_validated_view
-from d810.analyses.control_flow.state_transition_domain import (
-    StateValue,
-    analyze_state_transitions,
-)
-from d810.analyses.control_flow.state_machine_analysis import (
-    run_snapshot_constant_fixpoint,
-)
-from d810.capabilities.resolver import CapabilitySet
-from d810.capabilities.value_range import ValRangeCapability
-from d810.capabilities.use_def_safety import UseDefSafetyCapability
-from d810.evaluator.hexrays_microcode.value_range_capability import (
-    HexRaysValRangeCapability,
-)
-from d810.evaluator.hexrays_microcode.use_def_dominance import (
-    HexRaysUseDefSafetyBackend,
-)
-from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
 from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.driver import run_pipeline
-from d810.families.state_machine_cff.hodur_pipeline import HodurFamily
+from d810.transforms.state_machine_unflatten import lower_to_direct_graph
 
 logger = logging.getLogger("D810.unflat.s1a", logging.DEBUG)
 
