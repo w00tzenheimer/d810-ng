@@ -203,12 +203,27 @@ D810_TEST_BINARY=restructuring_lab.dll \
 - **GLBOPT1 state map** (dest-filtered): dispatcher=blk2; handlers H0=blk6 (writes
   K1), H1=blk7 (writes K2), H2=blk8 (writes TERM); terminal=blk5; state
   slot=`%var_8.4`. Mapped by state-write value (robust to serial renumbering).
-- **LIVE RENDER GAP (xfail).** Applying the same plan in a `glbopt` Hexrays_Hooks
-  and finishing the pipeline trips **INTERR 50346** at ctree: the inserts pass
-  `verify()` at glbopt time but the terminal pipeline rejects them. `glbopt` is
-  post-optimization; the supported CFG-mutation stage is the **optblock/GLBOPT1**
-  pass (d810 `BlockOptimizerManager`), where IDA re-optimizes the inserts. This
-  is the Phase 1 render follow-up. Test: `test_insert_renders_linear` (xfail).
+- **LIVE RENDER WORKS (optblock stage).** Applying the insert plan via an
+  `optblock_t` during the GLBOPT1 pass (and returning the change count so IDA
+  re-runs optimization) makes `lab_flat_mini` decompile to the true linear chain
+  with no dispatcher loop, no state var, no INTERR:
+  ```c
+  int __cdecl lab_flat_mini(int token) {
+      g_hexrays_lab_sink = token + 0x11;
+      g_hexrays_lab_sink = (token + 0x11) ^ 0x22;
+      g_hexrays_lab_sink = ((token + 0x11) ^ 0x22) - 0x33;
+      return ((token + 0x11) ^ 0x22) - 0x33;
+  }
+  ```
+  Test: `test_insert_renders_linear_optblock` (PASS). The stage is the critical
+  variable.
+- **NEGATIVE CONTROL (xfail).** The same plan applied in a `glbopt` Hexrays_Hooks
+  (post-optimization) trips **INTERR 50346** at ctree. Reverse-engineered (hexx64
+  `mba_finalize_glbopt__verify_graphcache_50346`): 50346 fires when the mba
+  graph/chains cache (`mbl_graph_t` at `*(mba+0x310)`) is left dirty; the cheap
+  post-mutation fixes (`mark_chains_dirty`+`build_graph`) do NOT clear the
+  structural bit0. Only the optblock pass (where IDA rebuilds the cache) clears
+  it. Test: `test_insert_renders_linear` (xfail) — kept as the stage A/B control.
 - **`MBL_KEEP`: not load-bearing**, as predicted in §8 — the inserts are
   reachable; `verify()` is clean whether or not KEEP is set (`insert_nop_blk`
   sets it via `copy_block_keep`).

@@ -12,7 +12,8 @@
     "terminal": 5,
     "state_slot": "%var_8.4"
   },
-  "live_render": "xfail",
+  "live_render": "PASS via optblock_t (GLBOPT1 pass, return change-count); renders linear chain, no dispatcher loop / state var / INTERR. Test: test_insert_renders_linear_optblock.",
+  "live_render_glbopt_stage": "xfail negative control: glbopt-stage mutation -> INTERR 50346 (stage is the critical variable).",
   "live_render_interr": "50346",
   "live_render_blocker": "glbopt-stage mutation passes mba.verify() but is rejected at ctree with INTERR 50346; clean live render needs mutating in the optblock/GLBOPT1 pass (d810 BlockOptimizerManager) where IDA re-optimizes the inserts",
   "root_cause_verify_cpp": "50346 not in SDK verify.cpp/cverify.cpp (raised deeper in hexx64); verify.cpp:1829 documents the sibling-class 50409 = microcode modified without informing the decompiler (returning 0 from a callback).",

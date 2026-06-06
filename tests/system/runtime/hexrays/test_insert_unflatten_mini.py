@@ -275,3 +275,59 @@ class TestInsertUnflattenMini:
         assert f"{STATE_K2:X}" not in up, f"K2 dispatcher const survived:\n{text}"
         # Linear: no dispatcher loop.
         assert "WHILE" not in up, f"dispatcher loop survived:\n{text}"
+
+    def test_insert_renders_linear_optblock(self, ida_database, configure_hexrays):
+        """Apply the insert plan via an optblock_t during the GLBOPT1 pass (not the
+        glbopt notification). Returning the change count makes IDA re-run
+        optimization, which rebuilds the graph/chains cache and clears the dirty
+        bit that otherwise raises INTERR 50346 -- so the function renders."""
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+        ea = get_func_ea(FUNCTION)
+
+        class _InsertOptblock(ida_hexrays.optblock_t):
+            def __init__(self):
+                super().__init__()
+                self.done = False
+                self.applied = 0
+                self.error = None
+
+            def func(self, blk):  # returns number of changes
+                try:
+                    mba = blk.mba
+                    if (self.done or mba is None
+                            or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)):
+                        return 0
+                    plan, disp = _build_insert_plan(mba)
+                    if len(plan) != 3 or disp < 0:
+                        return 0
+                    self.done = True  # one-shot; set before apply (re-entrancy)
+                    mod = DeferredGraphModifier(mba)
+                    for src, final, old in plan:
+                        mod.queue_create_and_redirect(src, final, [], old_target_serial=old)
+                    mod.coalesce()
+                    self.applied = mod.apply(run_optimize_local=True)
+                    return self.applied  # signal IDA: CFG changed, re-run + re-verify
+                except Exception as exc:  # noqa: BLE001
+                    self.error = repr(exc)
+                    return 0
+
+        opt = _InsertOptblock()
+        opt.install()
+        hf = ida_hexrays.hexrays_failure_t()
+        try:
+            ida_hexrays.mark_cfunc_dirty(ea)
+            cfunc = ida_hexrays.decompile(ea, hf)
+        finally:
+            opt.remove()
+        print(f"\n=== optblock render (applied={opt.applied} err={opt.error} "
+              f"hf={hf.code}/{hf.desc()!r}) ===")
+        if cfunc is not None:
+            print(str(cfunc))
+        print("=== end optblock render ===")
+        assert opt.applied >= 3, f"optblock applied={opt.applied} err={opt.error}"
+        assert cfunc is not None, f"decompile failed: {hf.code} {hf.desc()!r}"
+        up = str(cfunc).upper()
+        assert f"{STATE_K1:X}" not in up, f"K1 dispatcher const survived:\n{cfunc}"
+        assert f"{STATE_K2:X}" not in up, f"K2 dispatcher const survived:\n{cfunc}"
+        assert "WHILE" not in up, f"dispatcher loop survived:\n{cfunc}"
