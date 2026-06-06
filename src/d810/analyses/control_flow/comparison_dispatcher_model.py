@@ -96,10 +96,35 @@ def build_partition_from_dispatcher(dispatcher: object | None) -> "dict[int, Int
     }
 
 
+def _target_intervals_from_decision_dag(dag: object) -> "dict[int, IntervalSet]":
+    """Per-leaf :class:`IntervalSet` partition from a :class:`DecisionDag`.
+
+    ``DecisionDag.resolve_paths`` partitions the whole state space into disjoint
+    ``(domain, target)`` cells with per-comparison signedness handled correctly
+    (the sign-bit-XOR reduction in ``route_predicate.satisfying_set``). This is
+    the complete, signed-correct routing substrate -- unlike the legacy unsigned
+    :class:`IntervalDispatcher`, which is blind to signed (``jle``/``jg``) BSTs.
+    """
+    partition: dict[int, IntervalSet] = {}
+    for cell in dag.resolve_paths():
+        h = int(cell.target)
+        partition[h] = partition.get(h, IntervalSet.empty(_STATE_WIDTH)).union(
+            cell.domain
+        )
+    return partition
+
+
 def _build_target_intervals(bst_evidence: object | None) -> "dict[int, IntervalSet]":
-    """Complete per-handler partition from ``bst_evidence.dispatcher`` (the
-    :class:`IntervalDispatcher`); thin wrapper over
-    :func:`build_partition_from_dispatcher`."""
+    """Complete per-handler partition for the :class:`ComparisonDispatcherModel`.
+
+    Prefers the signedness-aware :class:`DecisionDag` (``route_predicate``
+    :class:`IntervalSet`) when the recovery attached one with comparison nodes;
+    falls back to the legacy unsigned :class:`IntervalDispatcher`
+    (``bst_evidence.dispatcher``) only when no decision-DAG is available.
+    """
+    dag = getattr(bst_evidence, "decision_dag", None)
+    if dag is not None and getattr(dag, "nodes", None):
+        return _target_intervals_from_decision_dag(dag)
     return build_partition_from_dispatcher(getattr(bst_evidence, "dispatcher", None))
 
 

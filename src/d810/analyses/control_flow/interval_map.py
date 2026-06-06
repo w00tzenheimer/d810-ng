@@ -420,20 +420,27 @@ class IntervalDispatcher:
         matches, i.e. the shared return in a flattened state machine.
 
         Derived structurally from the table: in a total-cover dispatcher the inter-handler *gap*
-        intervals all route to the default block, so it dominates the covered state space, while each
-        handler occupies a point (or narrow) interval. The target with the maximum total covered
-        width is therefore the default. Returns None for an empty table. A handler would have to
-        cover > 2^31 values to outweigh the default, which does not occur in real flattened
-        dispatchers; tables carrying only handler rows (no gap rows) yield a handler here, but the
-        classifier guards on ``dispatcher.lookup`` so an uncovered sentinel state still falls back to
-        the conservative (non-return) classification.
+        intervals all route to the default block, so the default is reached by the **most distinct
+        rows** (one per gap), while each handler occupies a single point/narrow interval. The target
+        with the maximum ROW COUNT is therefore the default (tie-broken by total width). Row-count —
+        not total width — is the robust signal: a SIGNED BST puts the whole negative half (high bit
+        set) into ONE enormous interval routed to a single handler, so a max-WIDTH rule mis-picks
+        that negative-half handler as the default. Returns None for an empty table; tables carrying
+        only handler rows (no gap rows) yield a handler here, but the classifier guards on
+        ``dispatcher.lookup`` so an uncovered sentinel state still falls back to the conservative
+        (non-return) classification.
         """
         if not self._rows:
             return None
+        rows_by_target: dict[Any, int] = {}
         width_by_target: dict[Any, int] = {}
         for r in self._rows:
+            rows_by_target[r.target] = rows_by_target.get(r.target, 0) + 1
             width_by_target[r.target] = width_by_target.get(r.target, 0) + (r.hi - r.lo)
-        return max(width_by_target, key=lambda t: width_by_target[t])
+        return max(
+            rows_by_target,
+            key=lambda t: (rows_by_target[t], width_by_target[t]),
+        )
 
     @property
     def default_target(self) -> Any | None:

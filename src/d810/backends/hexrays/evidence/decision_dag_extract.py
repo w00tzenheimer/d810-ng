@@ -60,7 +60,12 @@ _FLIP = {
 }
 
 
-def _is_state_var(mop, state_var_stkoff: int, state_var_lvar_idx: Optional[int]) -> bool:
+def _is_state_var(
+    mop,
+    state_var_stkoff: int,
+    state_var_lvar_idx: Optional[int],
+    state_var_reg: Optional[int] = None,
+) -> bool:
     if mop is None:
         return False
     t = getattr(mop, "t", None)
@@ -72,7 +77,41 @@ def _is_state_var(mop, state_var_stkoff: int, state_var_lvar_idx: Optional[int])
         lref = getattr(mop, "l", None)
         idx = getattr(lref, "idx", None) if lref is not None else None
         return idx is not None and int(idx) == int(state_var_lvar_idx)
+    # Register-resident dispatchers (MASM/non-spilled builds) load the state var
+    # into a register once and compare that register (``jg eax, #const``).
+    if t == ida_hexrays.mop_r and state_var_reg is not None:
+        return int(getattr(mop, "r", -1)) == int(state_var_reg)
     return False
+
+
+def _detect_state_var_reg(
+    mba, dispatcher_entry_serial: int, state_var_stkoff: int
+) -> Optional[int]:
+    """Mreg the state var is loaded into at the dispatcher entry, or ``None``.
+
+    Scans the entry block for ``<load> mop_S(state_var_stkoff) -> mop_r(R)`` (e.g.
+    ``xdu var_694, rax``); the BST children then compare ``R``.
+    """
+    try:
+        blk = mba.get_mblock(int(dispatcher_entry_serial))
+    except Exception:
+        return None
+    if blk is None:
+        return None
+    cur = getattr(blk, "head", None)
+    while cur is not None:
+        d = getattr(cur, "d", None)
+        l = getattr(cur, "l", None)
+        if (
+            d is not None
+            and getattr(d, "t", None) == ida_hexrays.mop_r
+            and l is not None
+            and getattr(l, "t", None) == ida_hexrays.mop_S
+            and getattr(getattr(l, "s", None), "off", None) == int(state_var_stkoff)
+        ):
+            return int(getattr(d, "r", -1))
+        cur = getattr(cur, "next", None)
+    return None
 
 
 def _const_value(mop, mask: int) -> Optional[int]:
@@ -90,7 +129,9 @@ def _block_succs(blk) -> tuple:
         return ()
 
 
-def _parse_state_comparison(blk, op_map, state_var_stkoff, state_var_lvar_idx, mask):
+def _parse_state_comparison(
+    blk, op_map, state_var_stkoff, state_var_lvar_idx, mask, state_var_reg=None
+):
     """``(op, const, true_target)`` if *blk*'s tail compares the state var, else ``None``."""
     tail = getattr(blk, "tail", None)
     if tail is None:
@@ -100,9 +141,9 @@ def _parse_state_comparison(blk, op_map, state_var_stkoff, state_var_lvar_idx, m
         return None
     left = getattr(tail, "l", None)
     right = getattr(tail, "r", None)
-    if _is_state_var(left, state_var_stkoff, state_var_lvar_idx):
+    if _is_state_var(left, state_var_stkoff, state_var_lvar_idx, state_var_reg):
         const = _const_value(right, mask)
-    elif _is_state_var(right, state_var_stkoff, state_var_lvar_idx):
+    elif _is_state_var(right, state_var_stkoff, state_var_lvar_idx, state_var_reg):
         const = _const_value(left, mask)
         op = _FLIP.get(op, op)  # state var on the right -> mirror the relation
     else:
@@ -117,7 +158,8 @@ def _parse_state_comparison(blk, op_map, state_var_stkoff, state_var_lvar_idx, m
 
 
 def _descend_to_root(
-    mba, entry, op_map, state_var_stkoff, state_var_lvar_idx, mask, max_hops=8
+    mba, entry, op_map, state_var_stkoff, state_var_lvar_idx, mask, max_hops=8,
+    state_var_reg=None,
 ):
     """Follow single-successor blocks from *entry* to the first state-var comparison.
 
@@ -135,7 +177,8 @@ def _descend_to_root(
             return cur
         if (
             _parse_state_comparison(
-                blk, op_map, int(state_var_stkoff), state_var_lvar_idx, mask
+                blk, op_map, int(state_var_stkoff), state_var_lvar_idx, mask,
+                state_var_reg,
             )
             is not None
         ):
@@ -173,9 +216,15 @@ def extract_decision_dag(
     """
     op_map = _op_mnemonic_map()
     mask = (1 << int(width)) - 1
+    # Register-resident dispatchers compare the state var in a register below the
+    # root; detect it so the comparison nodes are recognized (else the DAG
+    # collapses to the root leaf and routing degrades to exact-only).
+    state_var_reg = _detect_state_var_reg(
+        mba, int(dispatcher_entry_serial), int(state_var_stkoff)
+    )
     root = _descend_to_root(
         mba, int(dispatcher_entry_serial), op_map, int(state_var_stkoff),
-        state_var_lvar_idx, mask,
+        state_var_lvar_idx, mask, state_var_reg=state_var_reg,
     )
     nodes: dict[int, BstComparison] = {}
     visited: set[int] = set()
@@ -192,7 +241,8 @@ def extract_decision_dag(
         if blk is None:
             continue
         parsed = _parse_state_comparison(
-            blk, op_map, int(state_var_stkoff), state_var_lvar_idx, mask
+            blk, op_map, int(state_var_stkoff), state_var_lvar_idx, mask,
+            state_var_reg,
         )
         if parsed is None:
             continue  # leaf / handler -- not a state-var comparison node

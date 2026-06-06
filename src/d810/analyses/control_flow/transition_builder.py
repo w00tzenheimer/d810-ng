@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from d810.core import getLogger
 from d810.core.typing import Dict, List, Optional, Protocol
 
 from d810.analyses.control_flow.bst_model import BSTAnalysisResult
+
+logger = getLogger(__name__)
 
 
 @dataclass
@@ -176,6 +179,23 @@ def _convert_bst_to_result(bst: BSTAnalysisResult) -> TransitionResult:
         _target_freq: dict[int, int] = _Counter(
             r.target for r in bst.dispatcher._rows
         )
+        # Ground-truth genuine states: those a handler explicitly writes
+        # (handler_state_map) plus exact equality-leaf constants (lo == hi rows,
+        # which the dispatcher literally compares ``==`` against).  A WIDE
+        # interval's ``lo`` is a SYNTHETIC partition boundary -- typically
+        # ``previous_state + 1`` -- and is NOT a value the program ever occupies.
+        # Enrolling it as a representative state fabricates a phantom handler that
+        # seeds forward-eval drift (e.g. state 0x11cd1da4 = 0x11cd1da3 + 1, which
+        # then routes interval-interior back onto a real handler and manufactures
+        # spurious self/transition edges).  Prefer a genuine state that falls
+        # inside the interval; if none exists the target is unreachable by any
+        # real state and the row is skipped (it is, by construction, never the
+        # sole enrolment path for a live handler -- those arrive via the
+        # handler_state_map point-match above).
+        genuine_states: set[int] = set(bst.handler_state_map.values())
+        genuine_states.update(
+            r.lo for r in bst.dispatcher._rows if r.lo == r.hi
+        )
         for row in bst.dispatcher._rows:
             target = row.target
             if target in bst.bst_node_blocks:
@@ -184,11 +204,26 @@ def _convert_bst_to_result(bst: BSTAnalysisResult) -> TransitionResult:
                 continue  # catch-all / default block
             # Only add if this target block has no entry yet (avoid
             # overwriting point-match entries with a range representative).
-            if target not in {blk for blk in state_to_handler_blk.values()}:
-                # Use the interval lo as a representative state value
-                # that the dispatcher will resolve back to this target.
+            if target in {blk for blk in state_to_handler_blk.values()}:
+                continue
+            if row.lo == row.hi:
                 representative_state = row.lo
-                state_to_handler_blk[representative_state] = target
+            else:
+                in_range = sorted(
+                    state for state in genuine_states if row.lo <= state <= row.hi
+                )
+                if not in_range:
+                    logger.debug(
+                        "convert_bst: skip interval row lo=0x%x hi=0x%x target=%d "
+                        "(no genuine state in range; refusing to enrol synthetic "
+                        "boundary as a state)",
+                        row.lo,
+                        row.hi,
+                        target,
+                    )
+                    continue
+                representative_state = in_range[0]
+            state_to_handler_blk[representative_state] = target
 
     handlers: Dict[int, StateHandler] = {}
     for state, handler_serial in state_to_handler_blk.items():
