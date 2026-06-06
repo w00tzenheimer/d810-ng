@@ -5,8 +5,17 @@ import enum
 from dataclasses import dataclass
 
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
+from d810.analyses.control_flow.state_machine_analysis import (
+    find_last_state_write_site_on_path_snapshot,
+)
 from d810.analyses.data_flow.abstract_value import Block
 from d810.ir import ValueRef
+
+# Maximum corridor depth followed when folding a binop-computed next-state.
+# A handler whose next-state is computed (not a literal ``mov #const``) is
+# resolved by carrying a const env down its UNIQUE successor chain; the bound
+# keeps the walk finite for malformed graphs.
+_MAX_CORRIDOR_HOPS = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +115,77 @@ def _route_target(
     return dispatch_map.resolve_target(int(source_state))
 
 
+def _build_corridor_path(
+    graph: object,
+    target_block: int,
+    dispatch_map: StateDispatcherMap,
+    *,
+    max_hops: int = _MAX_CORRIDOR_HOPS,
+) -> tuple[int, ...]:
+    """Follow the UNIQUE successor chain from *target_block* into a corridor path.
+
+    Stops when a block has != 1 successor, when the next block re-enters the
+    dispatcher, on a cycle, or after *max_hops* hops.  The returned path always
+    starts with ``target_block`` so the snapshot path-eval can carry the
+    handler-local const env (the two ``mov #const`` register loads) forward into
+    the corridor block that performs the binop state write.
+    """
+    path: list[int] = [int(target_block)]
+    visited: set[int] = {int(target_block)}
+    current = int(target_block)
+    for _ in range(max_hops):
+        block = graph.get_block(current)
+        if block is None:
+            break
+        succs = tuple(block.succs)
+        if len(succs) != 1:
+            break
+        nxt = int(succs[0])
+        if nxt in visited or nxt in dispatch_map.dispatcher_blocks:
+            break
+        path.append(nxt)
+        visited.add(nxt)
+        current = nxt
+    return tuple(path)
+
+
+def _fold_corridor_state_write(
+    graph: object | None,
+    dispatch_map: StateDispatcherMap,
+    *,
+    target_block: int,
+    state_var_stkoff: int | None,
+) -> int | None:
+    """Fold a binop-computed next-state along *target_block*'s single corridor.
+
+    Returns the folded 32-bit next-state ONLY when it is a known dispatcher
+    target (``dispatch_map.resolve_target`` succeeds, or it appears as a state
+    constant in the map); otherwise ``None`` so the caller keeps the next-state
+    BLANK.  This handles UNCONDITIONAL single-corridor handlers only.
+    """
+    if graph is None or state_var_stkoff is None:
+        return None
+
+    ordered_path = _build_corridor_path(graph, int(target_block), dispatch_map)
+    folded = find_last_state_write_site_on_path_snapshot(
+        graph,
+        ordered_path,
+        int(state_var_stkoff),
+    )
+    if folded is None:
+        return None
+
+    _write_block, site = folded
+    candidate = int(site.state_value) & 0xFFFFFFFF
+    known_states = set(dispatch_map.state_to_handler().keys())
+    if (
+        dispatch_map.resolve_target(candidate) is not None
+        or candidate in known_states
+    ):
+        return candidate
+    return None
+
+
 def resolve_state_transitions_with_dispatcher_map(
     transition_facts: tuple[StateTransitionFact, ...],
     *,
@@ -113,6 +193,8 @@ def resolve_state_transitions_with_dispatcher_map(
     state_write_anchors: tuple[StateWriteAnchor, ...] = (),
     resolution_kind: str = "state_dispatcher_map",
     model: object | None = None,
+    graph: object | None = None,
+    state_var_stkoff: int | None = None,
 ) -> tuple[StateTransitionResolution, ...]:
     """Resolve transition facts using in-memory dispatcher rows.
 
@@ -155,7 +237,32 @@ def resolve_state_transitions_with_dispatcher_map(
                 )
                 if next_state is not None:
                     next_state_hex = _hex_u64(next_state)
-                reason = "resolved_exact_state"
+                    reason = "resolved_exact_state"
+                else:
+                    # No LITERAL state-write anchor at the routed handler: the
+                    # next-state is binop-computed (e.g. ``xor eax,ecx``).  Fold
+                    # it along the handler's single corridor.  Additive/safe:
+                    # only fills a previously-BLANK next-state, never overrides
+                    # an existing literal resolution.
+                    fold_stkoff = (
+                        fact.state_var_stkoff
+                        if fact.state_var_stkoff is not None
+                        else state_var_stkoff
+                        if state_var_stkoff is not None
+                        else dispatch_map.state_var_stkoff
+                    )
+                    folded = _fold_corridor_state_write(
+                        graph,
+                        dispatch_map,
+                        target_block=target_block,
+                        state_var_stkoff=fold_stkoff,
+                    )
+                    if folded is not None:
+                        next_state = folded
+                        next_state_hex = _hex_u64(next_state)
+                        reason = "resolved_folded_state_write"
+                    else:
+                        reason = "resolved_exact_state"
 
         resolutions.append(
             StateTransitionResolution(
@@ -310,6 +417,7 @@ def resolve_state_transitions(
     *,
     dispatch_map: "StateDispatcherMap | None" = None,
     model: object | None = None,
+    state_var_stkoff: int | None = None,
 ) -> "tuple[StateTransitionResolution, ...]":
     """§1a pass #2: resolve transition facts through the portable dispatcher map.
 
@@ -327,6 +435,8 @@ def resolve_state_transitions(
         dispatch_map=dispatch_map,
         state_write_anchors=state_write_anchors,
         model=model,
+        graph=graph,
+        state_var_stkoff=state_var_stkoff,
     )
 
 
