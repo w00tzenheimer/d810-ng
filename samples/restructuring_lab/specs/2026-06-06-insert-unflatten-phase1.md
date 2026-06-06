@@ -193,6 +193,28 @@ D810_TEST_BINARY=restructuring_lab.dll \
   tests/system/runtime/hexrays/test_insert_unflatten_mini.py -q
 ```
 
+## Result (2026-06-06, Phase 1)
+
+- **INSERT VALIDITY PROVEN.** Inserting 3 private blocks
+  (`queue_create_and_redirect`, `old_target=dispatcher`) to rewire
+  `H0 -> H1 -> H2 -> terminal` on a live GLBOPT1 mba applies 3/3, 0 rollback, and
+  `mba.verify()` is clean — **no INTERR**. This is the safe replacement for
+  clone-and-replay (the core thesis). Test: `test_insert_verifies_clean`.
+- **GLBOPT1 state map** (dest-filtered): dispatcher=blk2; handlers H0=blk6 (writes
+  K1), H1=blk7 (writes K2), H2=blk8 (writes TERM); terminal=blk5; state
+  slot=`%var_8.4`. Mapped by state-write value (robust to serial renumbering).
+- **LIVE RENDER GAP (xfail).** Applying the same plan in a `glbopt` Hexrays_Hooks
+  and finishing the pipeline trips **INTERR 50346** at ctree: the inserts pass
+  `verify()` at glbopt time but the terminal pipeline rejects them. `glbopt` is
+  post-optimization; the supported CFG-mutation stage is the **optblock/GLBOPT1**
+  pass (d810 `BlockOptimizerManager`), where IDA re-optimizes the inserts. This
+  is the Phase 1 render follow-up. Test: `test_insert_renders_linear` (xfail).
+- **`MBL_KEEP`: not load-bearing**, as predicted in §8 — the inserts are
+  reachable; `verify()` is clean whether or not KEEP is set (`insert_nop_blk`
+  sets it via `copy_block_keep`).
+- **State-write cleanup: not needed for validity** — `verify()` is clean without
+  `queue_zero_state_write`; the render gap is the mutation stage, not residue.
+
 ## 10. Out of scope
 
 - Conditional/branching transitions (Phase 2), shared-block duplication (Phase 3).

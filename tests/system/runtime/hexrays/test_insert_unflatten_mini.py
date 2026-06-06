@@ -181,3 +181,84 @@ class TestInsertUnflattenMini:
             verify_ok = False
             print(f"=== mba.verify FAILED: {exc} ===")
         assert verify_ok, "mba.verify() reported INTERR after insert"
+
+    @pytest.mark.xfail(
+        reason="Live render via glbopt-stage mutation trips INTERR 50346 at ctree: "
+        "the inserts pass mba.verify() at glbopt time but the terminal pipeline "
+        "rejects them. Clean live render requires mutating in the optblock/GLBOPT1 "
+        "pass (d810 BlockOptimizerManager) where IDA re-optimizes the inserts. "
+        "Insert VALIDITY is already proven by test_insert_verifies_clean.",
+        strict=False,
+    )
+    def test_insert_renders_linear(self, ida_database, configure_hexrays):
+        """Apply the insert plan during a live decompile (one-shot GLBOPT1 hook)
+        and assert the pseudocode renders without the dispatcher loop.
+
+        XFAIL (see marker): glbopt is the wrong mutation stage; tracked follow-up.
+        """
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+        ea = get_func_ea(FUNCTION)
+
+        class _InsertHook(ida_hexrays.Hexrays_Hooks):
+            def __init__(self):
+                super().__init__()
+                self.done = False
+                self.calls = 0
+                self.applied = 0
+                self.verify_ok = None
+                self.error = None
+
+            def glbopt(self, mba):  # noqa: D401
+                self.calls += 1
+                if self.done:
+                    return 0
+                try:
+                    plan, disp = _build_insert_plan(mba)
+                except Exception as exc:  # noqa: BLE001
+                    self.error = f"plan: {exc}"
+                    return 0
+                if len(plan) != 3 or disp < 0:
+                    self.error = f"bad plan {plan} disp={disp}"
+                    return 0
+                mod = DeferredGraphModifier(mba)
+                for src, final, old in plan:
+                    mod.queue_create_and_redirect(src, final, [], old_target_serial=old)
+                mod.coalesce()
+                self.applied = mod.apply(
+                    run_optimize_local=True, enable_snapshot_rollback=True
+                )
+                try:
+                    mba.verify(True)
+                    self.verify_ok = True
+                except Exception as exc:  # noqa: BLE001
+                    self.verify_ok = False
+                    self.error = f"verify: {exc}"
+                self.done = True
+                return 0
+
+        hook = _InsertHook()
+        assert hook.hook()
+        hf = ida_hexrays.hexrays_failure_t()
+        try:
+            ida_hexrays.mark_cfunc_dirty(ea)  # bypass the baseline cfunc cache
+            cfunc = ida_hexrays.decompile(ea, hf)
+        finally:
+            hook.unhook()
+        print(f"\n=== decompile: calls={hook.calls} applied={hook.applied} "
+              f"verify_ok={hook.verify_ok} hook_err={hook.error} "
+              f"hf.code={hf.code} hf.errea={hf.errea:#x} hf.desc={hf.desc()!r} ===")
+        assert cfunc is not None, f"decompile failed: code={hf.code} {hf.desc()!r}"
+        text = str(cfunc)
+        print(f"\n=== rendered (calls={hook.calls} applied={hook.applied} "
+              f"verify_ok={hook.verify_ok} error={hook.error}) ===")
+        print(text)
+        print("=== end render ===")
+        assert hook.applied >= 3, f"hook applied={hook.applied}; mutation did not fire"
+        assert hook.verify_ok, "mba.verify() reported INTERR after insert"
+        up = text.upper()
+        # Dispatcher gone: the state-compare constants no longer appear.
+        assert f"{STATE_K1:X}" not in up, f"K1 dispatcher const survived:\n{text}"
+        assert f"{STATE_K2:X}" not in up, f"K2 dispatcher const survived:\n{text}"
+        # Linear: no dispatcher loop.
+        assert "WHILE" not in up, f"dispatcher loop survived:\n{text}"
