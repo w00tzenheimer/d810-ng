@@ -1794,6 +1794,11 @@ class DeferredGraphModifier:
                 Required when source is 2-way (disambiguates which arm of the
                 conditional jump to redirect). Defaults to ``final_target_serial``
                 when source is 1-way.
+
+        Stage requirement: this insert marks the mba graph/chains cache
+        structurally dirty; if applied outside the GLBOPT1 optblock pass the
+        decompiler raises INTERR 50346 at ctree. See ``apply()`` (Mutation-stage
+        requirement) for the full rationale and the optblock_t pattern.
         """
         self.modifications.append(GraphModification(
             mod_type=ModificationType.BLOCK_CREATE_WITH_REDIRECT,
@@ -3351,6 +3356,26 @@ class DeferredGraphModifier:
             Number of successful modifications applied. When ``transactional``
             is True, returns either ``len(self.modifications)`` on full success
             or ``0`` on any failure (after rollback).
+
+        Mutation-stage requirement -- INTERR 50346 (proven 2026-06-06):
+            CFG-shape changes -- especially ``BLOCK_CREATE_WITH_REDIRECT``
+            inserts (``queue_create_and_redirect``) -- mark the mba graph/chains
+            cache (``mbl_graph_t`` at ``*(mba+0x310)``, dirty bit0 of ``+0x30``)
+            *structurally dirty*. The decompiler only clears that bit by
+            re-running optimization. The post-glbopt finalizer (reverse-engineered
+            as hexx64 ``mba_finalize_glbopt__verify_graphcache_50346``, gated by
+            ``MBA_LVARS0``) raises **INTERR 50346** at ctree time if it is still
+            dirty.
+
+            Therefore drive ``apply()`` for shape-changing mods from an
+            ``ida_hexrays.optblock_t.func`` during ``MMAT_GLBOPT1`` and return the
+            change count, so IDA re-optimizes and rebuilds the cache (this is the
+            ``BlockOptimizerManager`` path). Applying the same mods from a
+            *post-optimization* ``Hexrays_Hooks.glbopt`` callback leaves the bit
+            set -> INTERR 50346; ``mba.mark_chains_dirty()`` + ``mba.build_graph()``
+            afterwards do NOT clear it. Proof + reproduction:
+            ``samples/restructuring_lab/specs/2026-06-06-insert-unflatten-phase1.md``
+            and ``tests/system/runtime/hexrays/test_insert_unflatten_mini.py``.
         """
         if self._applied:
             logger.warning("DeferredGraphModifier.apply() called twice")
