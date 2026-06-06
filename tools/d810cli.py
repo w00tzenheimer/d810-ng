@@ -502,6 +502,33 @@ def cmd_state(args: argparse.Namespace) -> int:
     return subprocess.call(diag_argv, env=env)
 
 
+def cmd_route(args: argparse.Namespace) -> int:
+    """Workflow wrapper for `python -m d810.diagnostics route`.
+
+    Resolves the latest diag DB for the worktree (or honours --db) and dumps
+    BST-route provenance for one dispatcher state (state -> handler blk/ea,
+    writers, terminal/exit, recovery-target disagreement). All logic lives in
+    ``d810.diagnostics.state_route``.
+    """
+    wt = args.worktree
+    worktree = worktree_dir(wt)
+    db = resolve_db(wt, args.db)
+    env = os.environ.copy()
+    src_path = str(worktree / "src")
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
+    diag_argv = [
+        sys.executable, "-m", "d810.diagnostics", "route",
+        "--db", str(db),
+        "--snapshot", str(args.snapshot),
+        args.state,
+        "--root", str(args.root),
+        "--slot", str(args.slot),
+        "--width", str(args.width),
+    ]
+    return subprocess.call(diag_argv, env=env)
+
+
 def cmd_db(args: argparse.Namespace) -> int:
     wt = args.worktree
     worktree = worktree_dir(wt)
@@ -1292,6 +1319,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dump", help="explicit dump file (default: latest in worktree)")
     sp.add_argument("--context", type=int, default=6)
     sp.set_defaults(func=cmd_state)
+
+    sp = sub.add_parser(
+        "route",
+        help=(
+            "BST-route provenance for one dispatcher state: state -> handler"
+            " blk/ea, writers, terminal/exit, and route_predicate-vs-recovery"
+            " disagreement. Wraps `python -m d810.diagnostics route`."
+        ),
+    )
+    _add_worktree(sp)
+    sp.add_argument("state", help="state value, e.g. 0x1A9A9DD9")
+    sp.add_argument("--db", help="explicit diag DB (default: latest in worktree)")
+    sp.add_argument("--snapshot", type=int, default=-1, help="snapshot id (-1 = latest with compares)")
+    sp.add_argument("--root", type=int, default=3, help="dispatcher root block (default 3)")
+    sp.add_argument("--slot", default="52", help="state-var diag stkoff (default 52)")
+    sp.add_argument("--width", type=int, default=32, help="state-var bit width (default 32)")
+    sp.set_defaults(func=cmd_route)
 
     sp = sub.add_parser(
         "db",
