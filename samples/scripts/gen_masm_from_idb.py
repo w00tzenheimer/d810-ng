@@ -7,7 +7,7 @@ IDA database without the GUI, and optionally assembles the result with
 
 Usage:
     PYTHONPATH=src python3 samples/scripts/gen_masm_from_idb.py \
-        <database.i64> <func_name_or_hex_ea> [out.asm] [--assemble]
+        <database.i64> <func_name_or_hex_ea> [out.asm] [--assemble] [--const]
 
 Example:
     PYTHONPATH=src python3 samples/scripts/gen_masm_from_idb.py \
@@ -24,6 +24,7 @@ from pathlib import Path
 def main(argv: list[str]) -> int:
     args = [a for a in argv[1:] if not a.startswith("--")]
     do_assemble = "--assemble" in argv
+    const_data = "--const" in argv
     if len(args) < 2:
         print(__doc__)
         return 2
@@ -50,7 +51,7 @@ def main(argv: list[str]) -> int:
         if ea == idaapi.BADADDR:
             print(f"function not found: {target}")
             return 1
-        source = generate_masm_for_function(ea)
+        source = generate_masm_for_function(ea, const_data=const_data)
     finally:
         idapro.close_database(False)
 
