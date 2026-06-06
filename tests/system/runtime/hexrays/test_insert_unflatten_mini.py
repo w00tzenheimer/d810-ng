@@ -183,11 +183,14 @@ class TestInsertUnflattenMini:
         assert verify_ok, "mba.verify() reported INTERR after insert"
 
     @pytest.mark.xfail(
-        reason="Live render via glbopt-stage mutation trips INTERR 50346 at ctree: "
-        "the inserts pass mba.verify() at glbopt time but the terminal pipeline "
-        "rejects them. Clean live render requires mutating in the optblock/GLBOPT1 "
-        "pass (d810 BlockOptimizerManager) where IDA re-optimizes the inserts. "
-        "Insert VALIDITY is already proven by test_insert_verifies_clean.",
+        reason="Live render via glbopt-stage mutation trips INTERR 50346 at ctree. "
+        "Reverse-engineered (hexx64 mba_finalize_glbopt__verify_graphcache_50346): "
+        "50346 fires when the mba graph/chains cache (mbl_graph_t at *(mba+0x310)) "
+        "is left dirty at the post-glbopt finalizer. The cheap post-mutation fixes "
+        "(mark_chains_dirty + build_graph) do NOT clear the structural dirty bit0, "
+        "so clean live render requires mutating in the optblock/GLBOPT1 pass (d810 "
+        "BlockOptimizerManager) where IDA manages this cache. Insert VALIDITY is "
+        "already proven by test_insert_verifies_clean.",
         strict=False,
     )
     def test_insert_renders_linear(self, ida_database, configure_hexrays):
@@ -228,6 +231,16 @@ class TestInsertUnflattenMini:
                 self.applied = mod.apply(
                     run_optimize_local=True, enable_snapshot_rollback=True
                 )
+                # Post-mutation cache hygiene. NOTE (reverse-engineered): these are
+                # NECESSARY but NOT SUFFICIENT at the glbopt stage -- the finalizer
+                # mba_finalize_glbopt__verify_graphcache_50346 still sees the
+                # structural dirty bit0 of *(mba+0x310)+0x30 and raises INTERR 50346.
+                # Only optblock/GLBOPT1-stage mutation clears it (see xfail reason).
+                mba.mark_chains_dirty()
+                try:
+                    mba.build_graph()
+                except Exception as exc:  # noqa: BLE001
+                    self.error = "build_graph: %r" % exc
                 try:
                     mba.verify(True)
                     self.verify_ok = True
