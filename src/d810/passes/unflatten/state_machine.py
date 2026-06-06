@@ -228,6 +228,11 @@ class LowerStateMachine:
             and transition_result is not None
             and dispatcher_entry is not None
         ):
+            # _convert_bst_to_result now reads bst.transitions, which Phase 2
+            # rebuilds from the signedness-aware decision_dag (ALL 62 handlers incl.
+            # interval-interior + terminal/return), and bst.dispatcher (also
+            # decision_dag-derived). So this is the consolidated router path, not
+            # the legacy register-blind ~30-edge one.
             try:
                 dag_tr = _convert_bst_to_result(bst_evidence)
             except Exception:  # noqa: BLE001 — fall back to the §1a exact-chain transitions

@@ -68,6 +68,75 @@ def _state_var_offset(operand) -> int | None:
     return None
 
 
+def _state_var_identity(operand) -> tuple[str, int] | None:
+    """Votable identity for a state operand: ``('stk', off)`` or ``('reg', reg)``.
+
+    The equality leaves of a *register-resident* dispatcher compare a register
+    (``jz eax, #state_const``) rather than a stack slot, so ``_state_var_offset``
+    returns ``None`` and those votes are silently dropped -- which lets a lone
+    decoy stack comparison win the vote. Identifying the operand by its register
+    keeps those votes; the winner is resolved back to a stack slot afterwards.
+    """
+    if operand is None:
+        return None
+    off = _state_var_offset(operand)
+    if off is not None:
+        return ("stk", off)
+    if getattr(operand, "reg", None) is not None:
+        return ("reg", int(operand.reg))
+    return None
+
+
+def _resolve_state_identity_to_stkoff(identity, graph) -> int | None:
+    """Resolve a voted state identity to a stack offset.
+
+    Stack identities map directly. A register identity is resolved to the stack
+    slot the register is loaded from (e.g. ``xdu [state_var], eax`` at the
+    dispatcher head) -- the dominant stack source of that register across the
+    function -- so downstream stkoff-based passes still see the real state var.
+    """
+    if identity is None:
+        return None
+    kind, key = identity
+    if kind == "stk":
+        return int(key)
+    # Register: collect the stack slots it is loaded from, and (separately) the
+    # slots that receive state-constant writes. A general-purpose register is
+    # loaded from many scratch slots, so "most common load source" alone picks a
+    # decoy; the state variable is the loaded slot that also receives the dispatch
+    # transitions' next-state constant writes.
+    src_counts: dict[int, int] = {}
+    write_counts: dict[int, int] = {}
+    for blk in graph.blocks.values():
+        for insn in blk.insn_snapshots:
+            dst = insn.d
+            src = insn.l
+            if (
+                dst is not None
+                and getattr(dst, "reg", None) == key
+                and src is not None
+                and getattr(src, "stkoff", None) is not None
+            ):
+                src_counts[int(src.stkoff)] = src_counts.get(int(src.stkoff), 0) + 1
+            if (
+                dst is not None
+                and getattr(dst, "stkoff", None) is not None
+                and src is not None
+                and getattr(src, "value", None) is not None
+                and int(src.value) >= MIN_STATE_CONSTANT
+            ):
+                write_counts[int(dst.stkoff)] = write_counts.get(int(dst.stkoff), 0) + 1
+    if not src_counts:
+        return None
+    # Prefer the loaded slot with the most state-constant writes (the state var).
+    state_slots = {off: write_counts.get(off, 0) for off in src_counts}
+    best = max(state_slots, key=lambda k: state_slots[k])
+    if state_slots[best] > 0:
+        return best
+    # Fall back: the most common load source.
+    return max(src_counts, key=lambda k: src_counts[k])
+
+
 def build_state_dispatcher_map_from_flow_graph(
     graph: FlowGraph, *, min_state_constant: int = MIN_STATE_CONSTANT
 ) -> StateDispatcherMap | None:
@@ -76,7 +145,7 @@ def build_state_dispatcher_map_from_flow_graph(
     Hand-port of the live detector's equality-chain recognition. Returns ``None`` when no
     state-check chain is present.
     """
-    raw: list[tuple[StateDispatcherRow, int | None]] = []
+    raw: list[tuple[StateDispatcherRow, object]] = []
     dispatcher_blocks: set[int] = set()
     for serial, blk in graph.blocks.items():
         tail = blk.tail
@@ -103,7 +172,7 @@ def build_state_dispatcher_map_from_flow_graph(
                     branch_kind=pred.value,
                     source=DispatcherType.CONDITIONAL_CHAIN,
                 ),
-                _state_var_offset(state_op),
+                state_op,
             )
         )
         dispatcher_blocks.add(int(serial))
@@ -113,15 +182,20 @@ def build_state_dispatcher_map_from_flow_graph(
 
     # Pick the dominant state variable (most comparisons), keep only its rows — the live detector's
     # "operand with the most state comparisons" wisdom, which rejects decoy/early comparisons.
-    votes: dict[int, int] = {}
-    for _row, off in raw:
-        if off is not None:
-            votes[off] = votes.get(off, 0) + 1
-    state_var_stkoff = max(votes, key=lambda k: votes[k]) if votes else None
+    # Votes are cast on a register/stack *identity* so register-resident compares
+    # (``jz eax, #state_const`` — the MASM/non-spilled form) count instead of being
+    # dropped and letting a lone decoy stack comparison win.
+    votes: dict[tuple[str, int], int] = {}
+    for _row, st_op in raw:
+        identity = _state_var_identity(st_op)
+        if identity is not None:
+            votes[identity] = votes.get(identity, 0) + 1
+    winner = max(votes, key=lambda k: votes[k]) if votes else None
+    state_var_stkoff = _resolve_state_identity_to_stkoff(winner, graph)
     rows = tuple(
         row
-        for row, off in raw
-        if state_var_stkoff is None or off == state_var_stkoff
+        for row, st_op in raw
+        if winner is None or _state_var_identity(st_op) == winner
     )
     chain_blocks = frozenset(row.dispatcher_block for row in rows)
     # Dispatcher entry = the loop head the handler tails converge on. The equality-chain comparators

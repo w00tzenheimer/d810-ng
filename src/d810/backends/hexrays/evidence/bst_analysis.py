@@ -1763,8 +1763,16 @@ def analyze_bst_dispatcher(
                 state_var_stkoff=int(state_var_stkoff),
                 state_var_lvar_idx=state_var_lvar_idx,
             )
+            logger.info(
+                "DECISION_DAG: state_var_stkoff=%s entry=%s nodes=%s root=%s",
+                state_var_stkoff,
+                dispatcher_entry_serial,
+                len(getattr(result.decision_dag, "nodes", {}) or {}),
+                getattr(result.decision_dag, "root", None),
+            )
         except Exception:  # noqa: BLE001 — legacy routing remains on failure
             result.decision_dag = None
+            logger.warning("DECISION_DAG: extract failed", exc_info=True)
 
     # Phase 1: Pre-header + initial state
     pre_header_serial, initial_state = _find_pre_header_state(
@@ -1800,22 +1808,52 @@ def analyze_bst_dispatcher(
 
     result.handler_state_map = handler_state_map
     result.handler_range_map = handler_range_map
+    # Register EVERY BST comparison node from the decision_dag (incl. the
+    # register-resident range nodes the legacy walk is blind to), so the
+    # handler-path walk STOPS at the full dispatcher boundary. An incomplete
+    # bst_node_blocks lets the path walk traverse INTO the dispatcher BST, which
+    # makes ``evaluate_handler_paths`` enumerate a combinatorial blow-up of paths
+    # and ``detect_conditional_transitions`` over-produce thousands of spurious
+    # conditional edges (the cond-explosion that starves return materialization).
+    _ddag_bst = getattr(result, "decision_dag", None)
+    if _ddag_bst is not None and getattr(_ddag_bst, "nodes", None):
+        _added_bst = 0
+        for _ns, _node in _ddag_bst.nodes.items():
+            if int(_ns) not in bst_node_blocks:
+                bst_node_blocks.add(
+                    int(_ns), comparison_const=getattr(_node, "const", None)
+                )
+                _added_bst += 1
+        if _added_bst:
+            logger.info(
+                "DECISION_DAG_BST_NODES: registered %d extra BST comparison nodes "
+                "(total bst_node_blocks=%d)",
+                _added_bst,
+                len(bst_node_blocks),
+            )
     result.bst_node_blocks = bst_node_blocks
 
-    # Phase 1b: Build interval dispatcher (parallel to existing BST walk)
-    dispatcher = None
-    try:
-        dispatch_tree, _dispatch_bst_serials = build_dispatch_tree(
-            mba, dispatcher_entry_serial, state_var_stkoff,
-        )
-        if dispatch_tree is not None:
-            emitted = emit_dispatch_intervals(dispatch_tree)
-            dispatcher = IntervalDispatcher.from_emitted(emitted)
-    except Exception:
-        logger.warning(
-            "INTERVAL_MAP: build_dispatch_tree failed", exc_info=True
-        )
-        dispatcher = None
+    # Phase 1b: Build interval dispatcher. Prefer the signedness-aware DecisionDag
+    # (route_predicate IntervalSet) partition -- it is the single correct router and
+    # handles signed (jle/jg) + register-resident BSTs the legacy unsigned
+    # build_dispatch_tree is blind to. Fall back to build_dispatch_tree only when no
+    # DecisionDag is available.
+    dispatcher = _interval_dispatcher_from_decision_dag(
+        getattr(result, "decision_dag", None)
+    )
+    if dispatcher is None:
+        try:
+            dispatch_tree, _dispatch_bst_serials = build_dispatch_tree(
+                mba, dispatcher_entry_serial, state_var_stkoff,
+            )
+            if dispatch_tree is not None:
+                emitted = emit_dispatch_intervals(dispatch_tree)
+                dispatcher = IntervalDispatcher.from_emitted(emitted)
+        except Exception:
+            logger.warning(
+                "INTERVAL_MAP: build_dispatch_tree failed", exc_info=True
+            )
+            dispatcher = None
     result.dispatcher = dispatcher
     if dispatcher is not None:
         logger.info("INTERVAL_DISPATCHER_ROWS: %s", dispatcher.to_json())
@@ -1927,6 +1965,65 @@ def analyze_bst_dispatcher(
     result.default_block_serial = find_bst_default_block(
         mba, dispatcher_entry_serial, bst_node_blocks, handler_serials,
     )
+
+    # NUKE the register-blind leaf set (user directive llr-kufq): when the
+    # signedness-aware decision_dag is available, derive the COMPLETE handler set
+    # from it -- route every written next-state to its leaf -- so Phase 2 walks
+    # ALL handlers (incl. the interval-interior ones the equality-leaf walk
+    # missed), not just the ~36 register-blind equality leaves.
+    _dag = getattr(result, "decision_dag", None)
+    if (
+        _dag is not None
+        and getattr(_dag, "nodes", None)
+        and state_var_stkoff is not None
+    ):
+        _MIN_STATE = 0x01000000  # MIN_STATE_CONSTANT
+        written_states: set[int] = set()
+        for _serial in range(int(getattr(mba, "qty", 0) or 0)):
+            try:
+                _blk = mba.get_mblock(_serial)
+            except Exception:
+                _blk = None
+            if _blk is None:
+                continue
+            _st = _extract_state_from_block(
+                _blk,
+                int(state_var_stkoff),
+                state_var_lvar_idx=state_var_lvar_idx,
+                mba=mba,
+            )
+            if _st is not None and int(_st) >= _MIN_STATE:
+                written_states.add(int(_st))
+        if result.initial_state is not None:
+            written_states.add(int(result.initial_state))
+        # UNION (not replace): keep the original equality-leaf handlers (correct
+        # block identity + return classification) and ADD only the interval-interior
+        # states they missed, routed via the decision_dag.
+        _covered = set(handler_state_map.values())
+        _added = 0
+        for _s in sorted(written_states):
+            if _s in _covered:
+                continue
+            _h = _dag.route(int(_s))
+            if (
+                _h is None
+                or int(_h) in _dag.nodes
+                or int(_h) in handler_state_map
+            ):
+                continue
+            handler_state_map[int(_h)] = int(_s)
+            handler_serials.add(int(_h))
+            _covered.add(int(_s))
+            _added += 1
+        if _added:
+            logger.info(
+                "DECISION_DAG_HANDLERS: added %d interval-interior handlers to %d "
+                "equality leaves (%d written states)",
+                _added,
+                len(handler_serials) - _added,
+                len(written_states),
+            )
+            result.handler_state_map = handler_state_map
 
     # Phase 2: Walk each handler chain
     for h_serial in sorted(handler_serials):
@@ -2042,6 +2139,30 @@ def decode_dispatch_cond(
         taken_serial=taken_serial,
         fall_serial=fall_serial,
     )
+
+
+def _interval_dispatcher_from_decision_dag(dag) -> "IntervalDispatcher | None":
+    """Build an :class:`IntervalDispatcher` from a :class:`DecisionDag` partition.
+
+    ``DecisionDag.resolve_paths`` partitions the whole state space into disjoint
+    ``(IntervalSet domain, leaf)`` cells with per-comparison signedness handled
+    correctly (``route_predicate.satisfying_set``). Converting it to the legacy
+    :class:`IntervalDispatcher` shape lets the existing §1a DAG-builder /
+    handler_range_map consumers route through the one correct router. Returns
+    ``None`` when no decision-DAG (with comparison nodes) is available.
+    """
+    if dag is None or not getattr(dag, "nodes", None):
+        return None
+    from d810.analyses.control_flow.interval_map import IntervalRow
+
+    rows: list[IntervalRow] = []
+    for cell in dag.resolve_paths():
+        target = int(cell.target)
+        for iv in cell.domain.intervals:  # inclusive [low, high]
+            rows.append(IntervalRow(lo=int(iv.low), hi=int(iv.high) + 1, target=target))
+    if not rows:
+        return None
+    return IntervalDispatcher(rows)
 
 
 def build_dispatch_tree(
