@@ -1819,10 +1819,13 @@ class HandlerChainComposerStrategy:
     # Planner-level use-def veto for direct reconstruction redirects.  This is
     # intentionally reject-only; previous generalized repair attempts expanded
     # this into broad split/copy emission and regressed the recovered shape.
-    HCC_USE_DEF_VETO_ENABLED: bool = os.environ.get(
-        "D810_HCC_USE_DEF_VETO",
-        "1",
-    ).strip() != "0"
+    # OFF by default; opt in with D810_USE_DEF_VETO=1 (dominance-only veto is
+    # mostly false positives, not load-bearing — see d81-7zf7).  Legacy
+    # D810_HCC_USE_DEF_VETO=1 still honored as an alias.
+    HCC_USE_DEF_VETO_ENABLED: bool = (
+        os.environ.get("D810_USE_DEF_VETO", "0").strip() == "1"
+        or os.environ.get("D810_HCC_USE_DEF_VETO", "0").strip() == "1"
+    )
 
     prerequisites: list[str] = []
 

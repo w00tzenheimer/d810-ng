@@ -354,7 +354,13 @@ def _lfg_bounded_postprocess_enabled() -> bool:
 
 
 def _lfg_use_def_veto_enabled() -> bool:
-    return os.environ.get("D810_HCC_USE_DEF_VETO", "1").strip() != "0"
+    # OFF by default; opt in with D810_USE_DEF_VETO=1. The dominance-only
+    # severance veto mostly produces false positives and is not load-bearing
+    # (see d81-7zf7). Legacy D810_HCC_USE_DEF_VETO=1 still honored as an alias.
+    return (
+        os.environ.get("D810_USE_DEF_VETO", "0").strip() == "1"
+        or os.environ.get("D810_HCC_USE_DEF_VETO", "0").strip() == "1"
+    )
 
 
 def _filter_lfg_use_def_vetoes(
