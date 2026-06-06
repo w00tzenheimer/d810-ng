@@ -81,12 +81,26 @@ def plan_reconstruction_return_modifications(
         suffix_entry_serial: int | None = None
         anchor_serial: int | None = None
         terminal = ordered[-1]
+        ordered_set = set(ordered)
         corridor_candidates = sorted(block for block in common_return_corridor if block != terminal)
         if not corridor_candidates:
+            # The per-node ``shared_suffix_blocks`` fallback includes EVERY block
+            # downstream of the handler -- both the return path AND the handler's
+            # forward/transition continuation (e.g. block 18's byte-copy arm
+            # blocks 19,20,197,201).  A return corridor must lie on the return's
+            # OWN path; restricting the candidates to ``ordered`` prevents picking
+            # a forward-continuation block (blk19) as the "return entry" and then
+            # redirecting the already-correct return arm (208) onto it, which
+            # degenerates the successor set (INTERR 50860).  A direct return
+            # (``ordered == (anchor, terminal)``) yields no candidates -> the
+            # fallback below correctly sees the arm already reaches the terminal
+            # and emits nothing.
             corridor_candidates = sorted(
                 block
                 for block in node_shared_suffix
-                if block != terminal and block not in bst_set
+                if block != terminal
+                and block not in bst_set
+                and block in ordered_set
             )
         if corridor_candidates:
             suffix_entry_serial = corridor_candidates[0]
