@@ -1,0 +1,22 @@
+{
+  "case_id": "flat_mini_insert_unflatten",
+  "binary": "restructuring_lab.dll",
+  "function": "lab_flat_mini",
+  "phase": 1,
+  "insert_verifies_clean": true,
+  "inserts_applied": 3,
+  "rollback_fired": false,
+  "glbopt1_state_map": {
+    "dispatcher": 2,
+    "handlers": {"H0_writes_K1": 6, "H1_writes_K2": 7, "H2_writes_TERM": 8},
+    "terminal": 5,
+    "state_slot": "%var_8.4"
+  },
+  "live_render": "xfail",
+  "live_render_interr": "50346",
+  "live_render_blocker": "glbopt-stage mutation passes mba.verify() but is rejected at ctree with INTERR 50346; clean live render needs mutating in the optblock/GLBOPT1 pass (d810 BlockOptimizerManager) where IDA re-optimizes the inserts",
+  "mbl_keep_needed": false,
+  "mbl_keep_note": "insert_nop_blk sets MBL_KEEP via copy_block_keep, but the inserts are reachable so KEEP is incidental; verify is clean regardless",
+  "state_write_cleanup_needed": false,
+  "state_write_cleanup_note": "mba.verify() is clean without queue_zero_state_write; the render gap is the mutation STAGE, not state-write residue"
+}
