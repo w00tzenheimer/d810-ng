@@ -113,6 +113,18 @@ def _collect_stkvar_defs_in_block(
     seen: set[tuple[int, int]] = set()
     cur = blk.head
     while cur is not None:
+        # ``m_stx`` does NOT modify its ``d`` operand: per the Hex-Rays SDK
+        # (hexrays.hpp: ``m_stx l, {r=sel, d=off}`` and "Some instructions
+        # (e.g. m_stx) do not modify the 'd' operand"), ``d`` is the *store
+        # address*, not a defined stack variable.  Counting it as a def
+        # fabricates phantom defs of pointer-typed stack slots (e.g. the
+        # ``a5+0xD0`` return carrier, stored through in many handlers), which
+        # then trip false-positive severance vetoes on nearly every spine
+        # redirect.  Skip it; ``m_ldx`` *does* define ``d`` (loaded value) and
+        # is intentionally not excluded.
+        if cur.opcode == ida_hexrays.m_stx:
+            cur = cur.next
+            continue
         d = cur.d
         if (
             d is not None
