@@ -844,7 +844,7 @@
       "status": "compiled_cfg_validated",
       "fixture_kind": "c_with_compiled_cfg_validation",
       "function": "hexrays_lab_badwhile_direct_triangle_case_asm",
-      "binary": "hexrays_structuring_lab.dll",
+      "binary": "restructuring_lab.dll",
       "project": "default_instruction_only.json",
       "compiler_flags": [
         "-O0"
@@ -871,7 +871,7 @@
         "compiler_flags": [
           "-O0"
         ],
-        "binary_hash": "sha256:81b415a59e7d8f0460b7bdf10e6e61d2d2371a3da8b850b3957114c45cc3963e",
+        "binary_hash": "sha256:8e04eb1128079ed4a70b36c60c19df638a65d2454f746fb291094ac61a9182a6",
         "artifact_path": "tools/hexrays_structuring_lab/observations/badwhile_direct_triangle_case.json",
         "expected": {
           "accepted_maturity": "MMAT_LOCOPT",
@@ -899,7 +899,7 @@
       "status": "compiled_cfg_validated",
       "fixture_kind": "c_with_compiled_cfg_validation",
       "function": "hexrays_lab_badwhile_trampoline_triangle_case_asm",
-      "binary": "hexrays_structuring_lab.dll",
+      "binary": "restructuring_lab.dll",
       "project": "default_instruction_only.json",
       "compiler_flags": [
         "-O0"
@@ -926,7 +926,7 @@
         "compiler_flags": [
           "-O0"
         ],
-        "binary_hash": "sha256:81b415a59e7d8f0460b7bdf10e6e61d2d2371a3da8b850b3957114c45cc3963e",
+        "binary_hash": "sha256:8e04eb1128079ed4a70b36c60c19df638a65d2454f746fb291094ac61a9182a6",
         "artifact_path": "tools/hexrays_structuring_lab/observations/badwhile_trampoline_triangle_case.json",
         "expected": {
           "accepted_maturity": "MMAT_LOCOPT",
@@ -955,7 +955,7 @@
       "status": "compiled_cfg_validated",
       "fixture_kind": "c_with_compiled_cfg_validation",
       "function": "hexrays_lab_badwhile_duplicate_group_triangle_asm",
-      "binary": "hexrays_structuring_lab.dll",
+      "binary": "restructuring_lab.dll",
       "project": "default_instruction_only.json",
       "compiler_flags": [
         "-O0"
@@ -983,7 +983,7 @@
         "compiler_flags": [
           "-O0"
         ],
-        "binary_hash": "sha256:81b415a59e7d8f0460b7bdf10e6e61d2d2371a3da8b850b3957114c45cc3963e",
+        "binary_hash": "sha256:8e04eb1128079ed4a70b36c60c19df638a65d2454f746fb291094ac61a9182a6",
         "artifact_path": "tools/hexrays_structuring_lab/observations/badwhile_duplicate_group_triangle.json",
         "expected": {
           "accepted_maturity": "MMAT_LOCOPT",

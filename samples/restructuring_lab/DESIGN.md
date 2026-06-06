@@ -99,7 +99,7 @@ samples/restructuring_lab/
   harness resolves binaries.
 
 ## 6. Success criteria
-- `tools/hexrays_structuring_lab/build_lab_binary.sh`-style one command rebuilds
+- `samples/restructuring_lab/build_lab.sh` (one command) rebuilds
   `restructuring_lab.dll` locally via Docker, with both a C and a MASM fixture
   linked + exported, and `libobfuscated.dll` provably untouched (hash unchanged).
 - The produced DLL loads in IDA and both fixture functions are present/exported.

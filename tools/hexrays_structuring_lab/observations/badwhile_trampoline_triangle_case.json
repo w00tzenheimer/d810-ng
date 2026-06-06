@@ -1,6 +1,7 @@
 {
-  "binary": "hexrays_structuring_lab.dll",
-  "binary_hash": "sha256:81b415a59e7d8f0460b7bdf10e6e61d2d2371a3da8b850b3957114c45cc3963e",
+  "binary": "restructuring_lab.dll",
+  "binary_hash": "sha256:8e04eb1128079ed4a70b36c60c19df638a65d2454f746fb291094ac61a9182a6",
+  "note": "Re-homed 2026-06-06 from hexrays_structuring_lab.dll to restructuring_lab.dll (samples/restructuring_lab): ported verbatim (machine code byte-identical to the prior DLL) and re-validated through the IDA validate-cfg gate against restructuring_lab.dll (status=passed; binary_hash matches the committed DLL).",
   "case_id": "badwhile_trampoline_triangle_case",
   "cfg_validation": {
     "accepted_maturity": "MMAT_LOCOPT",
