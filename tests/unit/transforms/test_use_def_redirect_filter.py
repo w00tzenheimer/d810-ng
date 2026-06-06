@@ -51,7 +51,24 @@ def test_no_live_function_keeps_all():
     assert out == mods
 
 
-def test_vetoes_non_state_var_severance():
+def test_default_off_keeps_all_even_with_severance(monkeypatch):
+    # The veto is OFF by default (D810_USE_DEF_VETO unset): a non-state-var
+    # severance is *not* dropped.
+    monkeypatch.delenv("D810_USE_DEF_VETO", raising=False)
+    mods = [_goto(1)]
+    cap = _FakeUseDef([_violation(0x100)])
+    out = filter_use_def_severing_redirects(
+        mods,
+        use_def_safety=cap,
+        live_function=object(),
+        pre_cfg=None,
+        state_var_stkoff=STATE_VAR,
+    )
+    assert out == mods
+
+
+def test_vetoes_non_state_var_severance(monkeypatch):
+    monkeypatch.setenv("D810_USE_DEF_VETO", "1")
     mods = [_goto(1)]
     cap = _FakeUseDef([_violation(0x100)])  # non-state-var use orphaned -> drop
     out = filter_use_def_severing_redirects(
@@ -64,7 +81,8 @@ def test_vetoes_non_state_var_severance():
     assert out == []
 
 
-def test_state_var_severance_is_kept():
+def test_state_var_severance_is_kept(monkeypatch):
+    monkeypatch.setenv("D810_USE_DEF_VETO", "1")
     mods = [_goto(1)]
     cap = _FakeUseDef([_violation(STATE_VAR)])  # only the state var -> the unflattening
     out = filter_use_def_severing_redirects(
@@ -77,7 +95,8 @@ def test_state_var_severance_is_kept():
     assert out == mods
 
 
-def test_no_violations_keeps_all():
+def test_no_violations_keeps_all(monkeypatch):
+    monkeypatch.setenv("D810_USE_DEF_VETO", "1")
     mods = [_goto(1), _goto(2)]
     out = filter_use_def_severing_redirects(
         mods,

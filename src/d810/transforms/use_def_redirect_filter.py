@@ -12,6 +12,8 @@ the caller passes the opaque live function (``ida_hexrays.mba_t``) and the pre-m
 """
 from __future__ import annotations
 
+import os
+
 from d810.core import logging
 from d810.transforms.graph_modification import (
     RedirectBranch,
@@ -20,6 +22,19 @@ from d810.transforms.graph_modification import (
 )
 
 logger = logging.getLogger("D810.transforms.use_def_filter")
+
+
+def _veto_enabled() -> bool:
+    """The use-def severance veto is OFF by default; opt in with
+    ``D810_USE_DEF_VETO=1``.
+
+    Empirically (sub_7FFD, §1a and HCC) the veto is not load-bearing: with it
+    disabled the redirects apply without INTERR, carriers (e.g. ``a5+0xD0``) are
+    preserved, and the dispatcher output is no worse — the veto's dominance-only
+    check mostly produces *false* severances (see d81-7zf7).  It stays available
+    as an opt-in safety gate for functions where genuine non-state severances
+    must be blocked."""
+    return os.environ.get("D810_USE_DEF_VETO", "0").strip() == "1"
 
 __all__ = ["filter_use_def_severing_redirects"]
 
@@ -47,7 +62,7 @@ def filter_use_def_severing_redirects(
     Returns:
         The kept modifications (a list), in input order.
     """
-    if use_def_safety is None or live_function is None:
+    if use_def_safety is None or live_function is None or not _veto_enabled():
         return list(mods)
     kept: list = []
     vetoed = 0
@@ -85,7 +100,7 @@ def filter_use_def_severing_redirects(
                 for v in real_violations[:6]
             )
             logger.debug(
-                "USE_DEF_VETO_DETAIL: redirect src=%s old=%s new=%s vetoed by %d "
+                "USE_DEF_VETO_DETAIL: redirect src=%s old=%s new=%s would-veto by %d "
                 "real violation(s): %s",
                 getattr(intent, "from_serial", "?"),
                 getattr(intent, "old_target", "?"),
