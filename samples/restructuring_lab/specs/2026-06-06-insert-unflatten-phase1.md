@@ -230,6 +230,25 @@ D810_TEST_BINARY=restructuring_lab.dll \
 - **State-write cleanup: not needed for validity** — `verify()` is clean without
   `queue_zero_state_write`; the render gap is the mutation stage, not residue.
 
+## Phase 2 result (conditional transition -> if/else)
+
+- **2a DONE.** `lab_flat_cond` (H0 conditionally -> H1/H2) reconstructs to a clean
+  `if (token&1) H1 else H2` (no dispatcher loop) via the optblock-stage path: a
+  mini dispatcher-routing extractor (`m_jz`/`m_jnz` matched on known state
+  constants, since the compared state sits in a register) + 4 linear inserts that
+  redirect H0's arms -> their handlers and the handlers -> terminal, **preserving
+  the handler's existing jcc**. Test: `test_cond_renders_branch_optblock` (PASS).
+  Hex-Rays folds the else-arm constant (`(token+0x11)-0x33` -> `token-0x22`), so
+  assert the if/else structure, not literal handler constants.
+- **Finding:** compiler flattening keeps the branch predicate in the HANDLER as a
+  real jcc, so a conditional transition reconstructs by *preserving* that jcc
+  (linear inserts) -- NOT via `queue_create_conditional_redirect`. The
+  conditional-insert primitive is for *synthesizing* a branch (branchless/cmov
+  predicate, or one recovered from dataflow), which has no clean
+  compiler-flattened fixture.
+- **2b DEFERRED:** `queue_create_conditional_redirect` validation is a separate
+  focused task (needs a branchless / recovered-predicate scenario).
+
 ## 10. Out of scope
 
 - Conditional/branching transitions (Phase 2), shared-block duplication (Phase 3).
