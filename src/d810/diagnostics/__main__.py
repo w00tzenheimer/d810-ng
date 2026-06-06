@@ -1152,6 +1152,13 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("return-paths", parents=[common],
                    help="Show return path hop status")
 
+    from d810.diagnostics.state_route import add_arguments as _route_add_args
+    p_route = sub.add_parser(
+        "route", parents=[common],
+        help="BST-route provenance for one dispatcher state (state -> handler blk/ea)",
+    )
+    _route_add_args(p_route)
+
     p_program = sub.add_parser(
         "program",
         parents=[common],
@@ -2027,6 +2034,13 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         return _run_indirect_transfer_map(args)
+
+    # route reconstructs the DecisionDag from diag compares and opens its own
+    # connection (auto-discovers the latest diag DB), bypassing the common block.
+    if args.command == "route":
+        from d810.diagnostics.state_route import run as _run_route
+
+        return _run_route(args)
 
     # inspect-state-node opens its own DB on a path that may differ from
     # the heuristic default, so it does not flow through the common
