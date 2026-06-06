@@ -1600,6 +1600,28 @@ def detect_conditional_transitions(
             )
         )
 
+    # A two-way branch whose arms all reach the SAME next state is not selecting
+    # a state: the transition is unconditional and the branch is intra-handler
+    # work. Such a branch produces one conditional per arm (all with the same
+    # target_state); emitting them duplicates the shared next-state handler in
+    # every consumer (sub_7FFD STATE_37B42A40 / handler 122 over-production,
+    # llr-zfyi). Drop these degenerate groups; genuine state-selecting branches
+    # (arms reaching distinct states) are unaffected.
+    targets_by_block: dict[int, set[int]] = {}
+    count_by_block: dict[int, int] = {}
+    for cond in results:
+        targets_by_block.setdefault(cond.branch_block, set()).add(cond.target_state)
+        count_by_block[cond.branch_block] = count_by_block.get(cond.branch_block, 0) + 1
+    degenerate_blocks = {
+        block
+        for block, targets in targets_by_block.items()
+        if count_by_block[block] >= 2 and len(targets) == 1
+    }
+    if degenerate_blocks:
+        results = [
+            cond for cond in results if cond.branch_block not in degenerate_blocks
+        ]
+
     return results
 
 
