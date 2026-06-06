@@ -15,6 +15,7 @@
   "live_render": "xfail",
   "live_render_interr": "50346",
   "live_render_blocker": "glbopt-stage mutation passes mba.verify() but is rejected at ctree with INTERR 50346; clean live render needs mutating in the optblock/GLBOPT1 pass (d810 BlockOptimizerManager) where IDA re-optimizes the inserts",
+  "root_cause_verify_cpp": "50346 is not in the SDK-shipped verify.cpp/cverify.cpp (codes 506xx-507xx,523xx,50311/12/40/97/409/420) -- raised deeper in hexx64. But verify.cpp:1829 documents the sibling 50409: 'a nop instruction is still present at ctree generation time ... caused by modifying the microcode without informing the decompiler, i.e. erroneously returning 0 from a callback.' Our inserts add m_nop via insert_nop_blk and we mutate in glbopt returning 0 -> nops survive + decompiler uninformed -> ctree INTERR. Fix = mutate in the optblock optimizer pass (return change count so IDA re-optimizes/cleans nops). hexrays_hooks.py:1770 notes d810 hit INTERRs with both optblock_t and glbopt, so this needs the full BlockOptimizerManager machinery.",
   "mbl_keep_needed": false,
   "mbl_keep_note": "insert_nop_blk sets MBL_KEEP via copy_block_keep, but the inserts are reachable so KEEP is incidental; verify is clean regardless",
   "state_write_cleanup_needed": false,
