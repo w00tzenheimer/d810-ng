@@ -33,6 +33,8 @@ samples/src/**/*.d
 samples/src/**/*.o
 samples/masm/*.obj
 samples/.build_masm/
+samples/restructuring_lab/build/
+samples/restructuring_lab/bins/
 samples/bins/*
 !samples/bins/**/*.dll
 !samples/bins/**/*.so

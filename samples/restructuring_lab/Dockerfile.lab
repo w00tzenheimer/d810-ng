@@ -1,0 +1,13 @@
+# Restructuring-lab cross toolchain: MinGW (for C) + LLVM (for llvm-ml64 MASM).
+# Separate from samples/Dockerfile.windows because that image has no MASM
+# assembler. Built by build_lab.sh as image `restructuring-lab`.
+FROM debian:stable-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        clang lld llvm mingw-w64 make file \
+    && rm -rf /var/lib/apt/lists/* \
+    # debian's `llvm` ships `llvm-ml` (not on PATH, no `llvm-ml64`). llvm-ml
+    # switches to 64-bit when invoked as `llvm-ml64` (argv[0] detection, like
+    # ml64.exe), so expose that name on PATH.
+    && ln -s "$(ls /usr/lib/llvm-*/bin/llvm-ml)" /usr/local/bin/llvm-ml64
+WORKDIR /work
+CMD ["make"]
