@@ -276,7 +276,9 @@ class _FunctionMasmEmitter:
                 continue  # alignment padding is irrelevant for analysis
         return body
 
-    def generate(self, materialize_data: bool = True) -> str:
+    def generate(
+        self, materialize_data: bool = True, const_data: bool = False
+    ) -> str:
         fname = self.sym_name(self.start) or f"sub_{self.start:X}"
         body = self.collect_body()  # populates proc_externs / data_refs
 
@@ -311,10 +313,19 @@ class _FunctionMasmEmitter:
             out.line(f"EXTERN {name}:BYTE")
 
         if str(data_lines):
+            # const_data -> a read-only segment named `.rdata` (READONLY + class
+            # 'CONST'); otherwise the writable `_DATA`. Both assemble under
+            # ml64/llvm-ml64 and the `.rdata` name lands in the PE's .rdata.
+            if const_data:
+                seg = ".rdata"
+                header = ".rdata SEGMENT READONLY ALIGN(16) 'CONST'"
+            else:
+                seg = "_DATA"
+                header = "_DATA SEGMENT"
             out.line()
-            out.line("_DATA SEGMENT")
+            out.line(header)
             out.extend(data_lines)
-            out.line("_DATA ENDS")
+            out.line(f"{seg} ENDS")
 
         out.line()
         out.line("_TEXT SEGMENT ALIGN(16) 'CODE'")
@@ -349,12 +360,18 @@ def ida_lines_tag_remove(text: str) -> str:
     return ida_lines.tag_remove(text) if text else ""
 
 
-def generate_masm_for_function(func_ea: int, materialize_data: bool = True) -> str:
+def generate_masm_for_function(
+    func_ea: int, materialize_data: bool = True, const_data: bool = False
+) -> str:
     """Generate compilable x64 ml64 MASM for the function at ``func_ea``.
 
     Raises RuntimeError if called outside IDA. The result includes the function
-    body, its referenced data closure (materialized) and call externs.
+    body, its referenced data closure (materialized) and call externs. When
+    ``const_data`` is set, the materialized data goes in a read-only ``CONST``
+    segment (.rdata) instead of the writable ``_DATA`` segment.
     """
     if not IDA_AVAILABLE:
         raise RuntimeError("generate_masm_for_function requires IDA Pro")
-    return _FunctionMasmEmitter(func_ea).generate(materialize_data=materialize_data)
+    return _FunctionMasmEmitter(func_ea).generate(
+        materialize_data=materialize_data, const_data=const_data
+    )
