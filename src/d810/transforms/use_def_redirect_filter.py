@@ -76,6 +76,23 @@ def filter_use_def_severing_redirects(
             kept.append(mod)
             continue
         vetoed += 1  # would orphan non-state-var (handler body) uses -> drop
+        if logger.debug_on:
+            intent = to_redirect_intent(mod)
+            detail = ", ".join(
+                "var_stkoff=0x{:x} size={} use_blk={} use_ea=0x{:x}".format(
+                    int(v.var_stkoff), int(v.var_size), int(v.use_block), int(v.use_ea)
+                )
+                for v in real_violations[:6]
+            )
+            logger.debug(
+                "USE_DEF_VETO_DETAIL: redirect src=%s old=%s new=%s vetoed by %d "
+                "real violation(s): %s",
+                getattr(intent, "from_serial", "?"),
+                getattr(intent, "old_target", "?"),
+                getattr(intent, "new_target", "?"),
+                len(real_violations),
+                detail,
+            )
     if vetoed:
         logger.info("use-def veto filtered %d redirect(s)", vetoed)
     return kept
