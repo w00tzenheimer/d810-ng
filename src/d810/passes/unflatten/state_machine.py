@@ -191,40 +191,54 @@ class PlanSemanticRegions:
         return PassResult(facts=(regions,), preserved=PreservedAnalyses.all())
 
 
-def _select_s1a_router(
-    recovery, bst_evidence, dispatcher_entry: int | None, *, configured_kind=None
-):
-    """Pick the interval-set router for the §1a back-edge emit via the injectable
-    resolver chain (ticket llr-oq8v).
-
-    Router kind is **configured AND/OR detected**: pass ``configured_kind`` (a
-    :class:`~d810.capabilities.dispatcher.RouterKind`) to pin a provider, otherwise
-    detection ranks providers by handler coverage -- the pre-mutation comparison-BST
-    (``bst_evidence.dispatcher``) is the default, and the recovered exact
-    ``state -> handler`` map wins only when it strictly out-covers a COLLAPSED bst
-    (e.g. an OLLVM -fla equality chain degraded to ``[0,2^32)->dispatcher_entry``).
-    The provider chain + ranking live in
-    :mod:`d810.analyses.control_flow.router_resolver`.
-    """
-    dmap = getattr(recovery, "dispatch_map", None) if recovery is not None else None
-    has_rows = dmap is not None and getattr(dmap, "rows", None)
-    ctx = RouterResolutionContext(
-        bst_router=(
-            getattr(bst_evidence, "dispatcher", None)
-            if bst_evidence is not None
-            else None
-        ),
-        state_to_handler=dmap.state_to_handler() if has_rows else None,
-        default_target=(
-            getattr(dmap, "default_target_block", None) if dmap is not None else None
-        ),
-        dispatcher_entry=dispatcher_entry,
-    )
-    return select_router(default_resolvers(), ctx, configured_kind=configured_kind)
-
-
 class LowerStateMachine:
+    """Lower the recovered state machine to dispatcher-bypass redirects (§1a).
+
+    The dispatcher router is **injectable** (ticket llr-oq8v): pass a custom
+    ``resolvers`` chain and/or a ``configured_kind`` to pin the router shape; both
+    default to the standard range-bst + exact-map detection chain, so the argless
+    factory the pass driver invokes (``spec.pass_factory()``) is unchanged. To pin a
+    kind per family, register ``lambda: LowerStateMachine(configured_kind=...)``.
+    """
+
     name = "lower_state_machine"
+
+    def __init__(self, *, resolvers=None, configured_kind=None) -> None:
+        self._resolvers = (
+            tuple(resolvers) if resolvers is not None else default_resolvers()
+        )
+        self._configured_kind = configured_kind
+
+    def _resolve_router(self, recovery, bst_evidence, dispatcher_entry: int | None):
+        """Adapt the recovered evidence into a router via the injectable chain.
+
+        Router kind is configured AND/OR detected: ``self._configured_kind`` pins a
+        provider, else detection ranks by handler coverage (the pre-mutation
+        comparison-BST is the default; the recovered exact ``state -> handler`` map
+        wins only when it strictly out-covers a COLLAPSED bst, e.g. an OLLVM -fla
+        equality chain degraded to ``[0,2^32)->dispatcher_entry``). The provider
+        chain + ranking live in
+        :mod:`d810.analyses.control_flow.router_resolver`.
+        """
+        dmap = getattr(recovery, "dispatch_map", None) if recovery is not None else None
+        has_rows = dmap is not None and getattr(dmap, "rows", None)
+        ctx = RouterResolutionContext(
+            bst_router=(
+                getattr(bst_evidence, "dispatcher", None)
+                if bst_evidence is not None
+                else None
+            ),
+            state_to_handler=dmap.state_to_handler() if has_rows else None,
+            default_target=(
+                getattr(dmap, "default_target_block", None)
+                if dmap is not None
+                else None
+            ),
+            dispatcher_entry=dispatcher_entry,
+        )
+        return select_router(
+            self._resolvers, ctx, configured_kind=self._configured_kind
+        )
 
     def run(self, ctx: FunctionPipelineContext) -> PassResult:
         recovery = _analysis(ctx, "recover_dispatcher")
@@ -242,7 +256,7 @@ class LowerStateMachine:
         # across shared blocks and mis-resolved conditional handlers (e.g.
         # 0x610BB4D9 collapsed to the exit). The rich StateDag metadata can be
         # re-added later if needed; the redirect output does not require it.
-        dispatcher = _select_s1a_router(recovery, bst_evidence, dispatcher_entry)
+        dispatcher = self._resolve_router(recovery, bst_evidence, dispatcher_entry)
         if (
             dispatcher is not None
             and dispatcher_entry is not None
