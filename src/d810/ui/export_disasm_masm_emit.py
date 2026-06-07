@@ -16,6 +16,8 @@ Only the per-function entry point is public: :func:`generate_masm_for_function`.
 """
 from __future__ import annotations
 
+import re
+
 from d810.core.logging import getLogger
 from d810.ui.actions.export_disasm_logic import MasmPrinter, masm_sext64
 
@@ -155,6 +157,11 @@ class _FunctionMasmEmitter:
             return _hexlit(delta)
 
         if ty == ida_ua.o_mem:
+            # A base-less SIB index (e.g. `lea ecx, ds:0[rax*8]`) is encoded as
+            # o_mem with a SIB byte but no base/symbol; resolving op.addr would
+            # yield [0] and drop the index*scale, so defer to IDA's renderer.
+            if op.specflag1 == 1 and ((op.specflag2 >> 3) & 7) != 4:
+                return self._deferred_mem(ea, op, is_lea, size_kw)
             name, delta = self.resolve(ea, op.addr, op, force_addr=True)
             inner = (name or "") + (_hexlit(delta, force_sign=True) if (name and delta) else "")
             if name is None:
@@ -170,12 +177,8 @@ class _FunctionMasmEmitter:
             has_sib = op.specflag1 == 1
             sib_index = (op.specflag2 >> 3) & 7 if has_sib else 4
             if has_sib and sib_index != 4:
-                # SIB with index -> REX-correct rendering from IDA. IDA's operand
-                # text already carries its own `<size> ptr`, so don't double it.
-                inner = ida_lines_tag_remove(idc.print_operand(ea, op.n) or "")
-                if is_lea or "ptr" in inner:
-                    return inner
-                return f"{size_kw} ptr {inner}"
+                # SIB with index -> defer to IDA's (REX-correct) renderer.
+                return self._deferred_mem(ea, op, is_lea, size_kw)
             base = ida_idp.get_reg_name(op.phrase, NATIVE_WIDTH) or f"reg{op.phrase}"
             disp = masm_sext64(op.addr) if ty == ida_ua.o_displ else 0
             body = f"[{base}{_hexlit(disp, force_sign=True) if disp else ''}]"
@@ -184,8 +187,21 @@ class _FunctionMasmEmitter:
         if ty == ida_ua.o_idpspec3:  # x87 st(i)
             return "st" if op.reg == 0 else f"st({op.reg})"
 
-        # Unknown operand kind: fall back to IDA's renderer rather than guess.
-        return ida_lines_tag_remove(idc.print_operand(ea, op.n) or "")
+        # Unknown operand kind: fall back to IDA's (cleaned) renderer.
+        return _clean_ida_mem(ida_lines_tag_remove(idc.print_operand(ea, op.n) or ""))
+
+    def _deferred_mem(self, ea: int, op, is_lea: bool, size_kw: str) -> str:
+        """Render a memory operand via IDA's renderer, cleaned for MASM.
+
+        Used for SIB/indexed forms where reconstructing base/index/scale by hand
+        is REX-unsafe. IDA's text already carries its own `<size> ptr`, so it is
+        not re-prefixed; segment overrides and the `0[idx]` display form are
+        normalized to assemblable MASM.
+        """
+        inner = _clean_ida_mem(ida_lines_tag_remove(idc.print_operand(ea, op.n) or ""))
+        if is_lea or "ptr" in inner:
+            return inner
+        return f"{size_kw} ptr {inner}"
 
     def emit_insn(self, ea: int) -> MasmPrinter:
         p = MasmPrinter()
@@ -358,6 +374,22 @@ def _is_import(ea: int) -> bool:
 
 def ida_lines_tag_remove(text: str) -> str:
     return ida_lines.tag_remove(text) if text else ""
+
+
+# Flat-64-bit segment overrides IDA prints but that are meaningless for ml64.
+_SEG_OVERRIDE_RE = re.compile(r"\b(?:cs|ds|es|ss|fs|gs):")
+# IDA's zero-displacement-before-index display: `0[rax*8]` -> `[rax*8]`.
+_ZERO_DISP_RE = re.compile(r"(?<![\w)\]])0\[")
+
+
+def _clean_ida_mem(text: str) -> str:
+    """Normalize an IDA operand string into assemblable MASM.
+
+    Drops segment overrides (cs:/ds:/... are no-ops in flat 64-bit) and the
+    `0[idx]` zero-displacement display form (`ds:0[rax*8]` -> `[rax*8]`), which
+    would otherwise be emitted as the index-losing `[0]`.
+    """
+    return _ZERO_DISP_RE.sub("[", _SEG_OVERRIDE_RE.sub("", text))
 
 
 def generate_masm_for_function(
