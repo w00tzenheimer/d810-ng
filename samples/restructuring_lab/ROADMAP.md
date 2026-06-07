@@ -45,6 +45,29 @@ findings). Each item below names what d810 HAS and what's MISSING.
 - **Phase C (shape breadth):** L6 (jtbl), L7 (multi-block), L8 (conditional synthesis). Each a new fixture + validate.
 - **Phase D (polish):** L9, L11, L13. L12 (MBA) is an orthogonal optimizer-rule track.
 
+## Adjacent d810 capabilities to leverage (not just the lowering ops)
+
+The lab uses **manual** plans; production d810 already has automatic machinery the
+roadmap should lean on instead of reinventing:
+
+- **Detection / routing** (vs our hand-rolled `_dispatcher_routing`): decision-DAG
+  route oracle (`route_predicate`, `decision_dag_extract`), `bst_analysis`,
+  `switch_case_transitions`, `carrier_resolver_live`, `state_machine_adapters`,
+  `structured_program_live` (under `backends/hexrays/evidence/`). Move the lab
+  from hand-mapped routing to recon-driven once the primitives are proven.
+- **Abstract domains** (value/predicate recovery for **L8** synthesis + **L12**
+  MBA): `analyses/abstract_domains/` — `known_bits`, `wrapped_interval`,
+  `interval_set`, `interval_box`, `relational`, `value_domain`. Recover the
+  branchless predicate / fold MBA instead of pattern-matching.
+- **Production unflatteners** (the integration target the primitives feed):
+  `state_machine_cff_unflattener`, `unflattener_emulated_dispatcher_engine`,
+  `unflattener_cleanup_family`, hodur.
+- **LLVM-shaped deflatten / terminal stack** (already built): `transforms/`
+  `deflatten_primitives`, `deflatten_terminals_pass`, `terminal_corridor_emission`
+  /`planning`, `terminal_family_split`, `terminal_tail_cascade_egress_planner`,
+  `terminal_tail_*` — the terminal-tail cascade (the `ref_cascade` shape the lab
+  proved). Reuse for terminal lowering rather than re-deriving it.
+
 ## Validation contract (every item)
 
 A lowering item is DONE when its lab fixture: (1) builds + passes the compiled-CFG
