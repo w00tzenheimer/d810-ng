@@ -166,11 +166,19 @@ class TestStateTransitionDomainFixpoint:
         assert res.out_states[9].is_bottom
         assert 999 not in res.out_states[1].constants
 
-    def test_meet_is_the_lattice_join(self) -> None:
+    def test_confluence_is_the_lattice_join(self) -> None:
         domain = StateTransitionDomain({})
-        assert domain.meet(StateValue.of(1), StateValue.of(2)) == StateValue.of_many(
-            [1, 2]
-        )
+        assert domain.confluence(
+            StateValue.of(1), StateValue.of(2)
+        ) == StateValue.of_many([1, 2])
+
+    def test_element_meet_is_the_glb(self) -> None:
+        # element-level meet (glb) is set intersection, NOT the domain confluence
+        assert StateValue.of_many([1, 2, 3]).meet(
+            StateValue.of_many([2, 3, 4])
+        ) == StateValue.of_many([2, 3])
+        assert StateValue.of(1).meet(StateValue.of(2)).is_bottom  # disjoint -> ⊥
+        assert StateValue.top().meet(StateValue.of(7)) == StateValue.of(7)  # ⊤ id
 
     def test_widen_is_identity_on_current(self) -> None:
         # Finite-height lattice: widening need not accelerate, it returns the

@@ -54,7 +54,7 @@ class ReachingDefsDomain:
         """Least element: no definition reaches yet."""
         return frozenset()
 
-    def meet(self, left: ReachingState, right: ReachingState) -> ReachingState:
+    def confluence(self, left: ReachingState, right: ReachingState) -> ReachingState:
         """Merge point: a definition reaches if it reaches on any path."""
         return left | right
 

@@ -27,8 +27,14 @@ class FlowDomain(Protocol[StateT]):
         """Least element -- the initial state carrying no information."""
         ...
 
-    def meet(self, left: StateT, right: StateT) -> StateT:
-        """Combine two states at a control-flow merge point."""
+    def confluence(self, left: StateT, right: StateT) -> StateT:
+        """Combine two states at a control-flow merge point.
+
+        The dataflow "meet-over-all-paths" operator -- for may-analyses it is a
+        join (lub).  Named ``confluence`` rather than ``meet`` so this whole-state
+        merge is never confused with the lattice-theoretic ``meet`` (glb) carried
+        by value-lattice *elements* (e.g. ``KnownBits.meet``).
+        """
         ...
 
     def transfer(self, node: NodeId, in_state: StateT) -> StateT:

@@ -51,7 +51,7 @@ class LivenessDomain:
         """Least element: nothing live."""
         return frozenset()
 
-    def meet(self, left: LivenessState, right: LivenessState) -> LivenessState:
+    def confluence(self, left: LivenessState, right: LivenessState) -> LivenessState:
         """Merge point: live if live on any successor path."""
         return left | right
 
