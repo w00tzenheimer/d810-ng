@@ -72,7 +72,9 @@ class BlockOwnershipDomain:
     def bottom(self) -> frozenset[int]:
         return frozenset()
 
-    def meet(self, left: frozenset[int], right: frozenset[int]) -> frozenset[int]:
+    def confluence(
+        self, left: frozenset[int], right: frozenset[int]
+    ) -> frozenset[int]:
         # Confluence is union: a block reachable from either region is owned by
         # both, so the shared epilogue emerges as a lattice join.
         return left | right

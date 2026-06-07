@@ -162,6 +162,26 @@ class StateValue:
             return False
         return self.constants <= other.constants
 
+    def meet(self, other: "StateValue") -> "StateValue":
+        """Greatest lower bound ⊓ -- set intersection (the lattice glb).
+
+        ``⊤`` is the identity (``⊤ ⊓ x = x``) and ``⊥`` is absorbing.  Two
+        concrete sets meet to their intersection; *disjoint* sets meet to ``⊥``
+        (no value satisfies both).  Distinct from :meth:`meet_const` (``assume
+        s == k`` against one constant) and from
+        :meth:`StateTransitionDomain.confluence` (the lattice *join*, not glb).
+        """
+        if self.is_top:
+            return other
+        if other.is_top:
+            return self
+        return StateValue(self.constants & other.constants, False)
+
+    def widen(self, other: "StateValue") -> "StateValue":
+        # finite height (powerset capped at MAX_CONSTS, then ⊤) -> join suffices
+        # (no infinite ascending chains); mirrors KnownBits.widen.
+        return self.join(other)
+
     def meet_const(self, value: int) -> "StateValue":
         """``assume (s == value)`` -- refine to ``self ⊓ {value}``.
 
@@ -193,8 +213,8 @@ class StateTransitionDomain:
 
     Implements the abstract-domain Protocol the portable
     :func:`d810.analyses.data_flow.run_fixpoint` engine drives
-    (``bottom``/``meet``/``transfer``/``equals``/``widen``), parameterised by a
-    per-block view of how each block writes the state variable.
+    (``bottom``/``confluence``/``transfer``/``equals``/``widen``), parameterised
+    by a per-block view of how each block writes the state variable.
 
     ``state_writes`` maps a block serial to the :class:`StateValue` the block
     *strong-updates* the variable to: ``StateValue.of(k)`` for a resolved
@@ -204,10 +224,12 @@ class StateTransitionDomain:
 
     The lattice is finite-height (a powerset of constants capped at
     :attr:`StateValue.MAX_CONSTS`, plus ``⊤``), so ``widen`` need not accelerate
-    -- it returns the current state, mirroring the ``ReachingDefinitionsDomain``
-    worked example.  ``meet`` is the lattice join (set union), the sound
-    confluence for a forward may-analysis: an as-yet-unreached predecessor
-    contributes ``⊥`` and so adds nothing.
+    -- it delegates to :meth:`StateValue.widen` (the finite-height join),
+    mirroring the ``ReachingDefinitionsDomain`` worked example.  ``confluence``
+    is the lattice join (set union), the sound merge for a forward may-analysis:
+    an as-yet-unreached predecessor contributes ``⊥`` and so adds nothing.  Note
+    it is a *join* (lub), NOT the element-level :meth:`StateValue.meet` (glb) --
+    hence ``confluence`` rather than ``meet``.
     """
 
     def __init__(self, state_writes: Mapping[NodeId, StateValue]) -> None:
@@ -216,7 +238,7 @@ class StateTransitionDomain:
     def bottom(self) -> StateValue:
         return StateValue.bottom()
 
-    def meet(self, left: StateValue, right: StateValue) -> StateValue:
+    def confluence(self, left: StateValue, right: StateValue) -> StateValue:
         return left.join(right)
 
     def transfer(self, node: NodeId, in_state: StateValue) -> StateValue:
@@ -235,7 +257,7 @@ class StateTransitionDomain:
         return left == right
 
     def widen(self, previous: StateValue, current: StateValue) -> StateValue:
-        return current
+        return previous.widen(current)
 
 
 def build_state_writes_with_dispatch_assume(

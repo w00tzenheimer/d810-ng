@@ -108,13 +108,13 @@ def run_fixpoint(
         else:
             incoming = [edge_refine(p, node, out_states[p]) for p in flow_preds(node)]
         if node in entry_set:
-            # Boundary condition participates in the meet (see docstring).
+            # Boundary condition participates in the confluence (see docstring).
             incoming = [boundary, *incoming]
 
         if incoming:
             in_candidate = incoming[0]
             for state in incoming[1:]:
-                in_candidate = domain.meet(in_candidate, state)
+                in_candidate = domain.confluence(in_candidate, state)
         else:
             # Non-entry node with no incoming edges: keep its current state.
             in_candidate = in_states[node]

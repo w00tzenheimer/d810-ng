@@ -60,7 +60,7 @@ class ReachingDefinitionsDomain:
     def bottom(self) -> frozenset:
         return frozenset()
 
-    def meet(self, left: frozenset, right: frozenset) -> frozenset:
+    def confluence(self, left: frozenset, right: frozenset) -> frozenset:
         return left | right
 
     def transfer(self, node: int, in_state: frozenset) -> frozenset:
@@ -137,7 +137,7 @@ class BoundedCounterDomain:
     def bottom(self) -> object:
         return 0
 
-    def meet(self, a: object, b: object) -> object:
+    def confluence(self, a: object, b: object) -> object:
         if a == _TOP or b == _TOP:
             return _TOP
         return max(a, b)
@@ -206,7 +206,7 @@ class DistanceToExitDomain:
     def bottom(self) -> int:
         return 0
 
-    def meet(self, a: int, b: int) -> int:
+    def confluence(self, a: int, b: int) -> int:
         return min(a, b)
 
     def transfer(self, node: int, s: int) -> int:
