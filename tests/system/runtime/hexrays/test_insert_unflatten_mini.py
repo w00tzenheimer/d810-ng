@@ -1,11 +1,12 @@
 """Phase 1: reconstruct lab_flat_mini's linear CFG via block INSERT (not patch).
 
-Runs in the Docker IDA harness with D810_TEST_BINARY=restructuring_lab.dll.
+Opens restructuring_lab.dll directly (pinned). lab_flat_mini only exists in the
+lab DLL, so the global D810_TEST_BINARY override (e.g. =libobfuscated.dll, set
+for the full system suite) is intentionally NOT honored here.
 See samples/restructuring_lab/specs/2026-06-06-insert-unflatten-phase1.md.
 """
 from __future__ import annotations
 
-import os
 import re
 from collections import Counter
 
@@ -89,8 +90,11 @@ def _build_insert_plan(mba):
 
 
 class TestInsertUnflattenMini:
-    # ida_database reads this CLASS attribute to pick which binary to open.
-    binary_name = os.environ.get("D810_TEST_BINARY", "restructuring_lab.dll")
+    # ida_database opens this CLASS attribute's binary. Pinned to the lab DLL:
+    # lab_flat_mini only exists in restructuring_lab.dll, so we must NOT honor a
+    # global D810_TEST_BINARY (=libobfuscated.dll for the full suite) that would
+    # send these tests at the wrong binary -> "symbol not found: lab_flat_mini".
+    binary_name = "restructuring_lab.dll"
 
     def test_baseline_is_flattened(self, ida_database, configure_hexrays):
         """Sanity: lab_flat_mini decompiles to a dispatcher loop (it is flattened)."""
@@ -452,7 +456,7 @@ class TestInsertUnflattenCond:
     """Phase 2: a flattened CONDITIONAL transition (H0 -> H1|H2) reconstructed
     into a real if/else branch via the conditional insert primitive."""
 
-    binary_name = os.environ.get("D810_TEST_BINARY", "restructuring_lab.dll")
+    binary_name = "restructuring_lab.dll"
 
     def test_dump_cond_structure(self, ida_database, configure_hexrays):
         """Diagnostic: dump the conditional fixture's GLBOPT1 layout, marking the
@@ -622,7 +626,7 @@ class TestInsertUnflattenShared:
     """Phase 3: a SHARED block (2 preds) de-shared into two private copies emitted
     STATE-FREE via capture-then-insert (the captured payload omits state writes)."""
 
-    binary_name = os.environ.get("D810_TEST_BINARY", "restructuring_lab.dll")
+    binary_name = "restructuring_lab.dll"
 
     def test_dump_shared_structure(self, ida_database, configure_hexrays):
         if not idaapi.init_hexrays_plugin():
@@ -799,7 +803,7 @@ class TestInsertUnflattenLoop:
     reconstructs the back-edge, so the render is a real do/while on the counter,
     not the dispatcher loop."""
 
-    binary_name = os.environ.get("D810_TEST_BINARY", "restructuring_lab.dll")
+    binary_name = "restructuring_lab.dll"
 
     def test_dump_loop_structure(self, ida_database, configure_hexrays):
         """Diagnostic: map the loop fixture. The back-edge proof is that the
