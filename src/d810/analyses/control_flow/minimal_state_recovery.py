@@ -37,6 +37,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.analyses.control_flow.state_machine_analysis import (
+    _constant_dest_locator_snapshot,
+    _eval_insn_view_snapshot,
     _is_stop_block,
     _transfer_snapshot_constant_block,
 )
@@ -80,6 +82,47 @@ class StateWriteTransition:
     via_block: int | None = None  # when set, redirect ``write_block -> via_block``
                                   # (bypass the shared back-edge) instead of
                                   # ``write_block -> dispatcher``
+
+
+def _resolve_state_var_alias(
+    flow_graph, dispatcher_entry_serial: int, state_var_stkoff: int
+) -> int:
+    """Follow a dispatcher-header copy ``state_var = src`` back to ``src``.
+
+    OLLVM ``-fla`` keeps the dispatcher's *compared* state slot as a copy of the
+    slot the handlers actually write the NEXT state to: the loop header does
+    ``compared = next_write`` then routes on ``compared``.  At a handler
+    back-edge the compared slot still holds the OLD (current) state, so folding
+    it makes every handler resolve to its own incoming state -> ``route(own)`` is
+    the handler itself -> self-loop, and the dispatcher collapses unchanged.  The
+    slot the handlers freshly write is the copy SOURCE; fold *that* so back-edge
+    next-states resolve.
+
+    Detected structurally (no opcode interpretation -- the lifter leaves
+    ``insn.kind`` UNKNOWN): a write into ``state_var_stkoff`` whose left operand
+    is a *different* stack slot and whose right operand is empty is a pure copy
+    (mov / widen), not arithmetic.  Returns the original offset when the header
+    has no such incoming copy (clean hodur / sub_7FFD chains -> unchanged).
+    """
+    blk = flow_graph.get_block(int(dispatcher_entry_serial))
+    if blk is None:
+        return int(state_var_stkoff)
+    soff = int(state_var_stkoff)
+    source = soff
+    for insn in getattr(blk, "insn_snapshots", ()):
+        view = _eval_insn_view_snapshot(insn)
+        if _constant_dest_locator_snapshot(getattr(view, "d", None)) != ("stk", soff):
+            continue
+        r = getattr(view, "r", None)
+        if (
+            _constant_dest_locator_snapshot(r) is not None
+            or getattr(r, "value", None) is not None
+        ):
+            continue  # binary op (add/xor/...) -> not a pure copy
+        lloc = _constant_dest_locator_snapshot(getattr(view, "l", None))
+        if lloc is not None and lloc[0] == "stk" and lloc[1] != soff:
+            source = int(lloc[1])  # last copy into state_var wins
+    return source
 
 
 def _resolve_back_edge_states(
@@ -182,10 +225,14 @@ def recover_state_write_transitions(
     if disp_block is None:
         return ()
 
+    # Follow a dispatcher-header copy (compared state var <- next-state slot) so
+    # the fold reads the slot handlers freshly write (OLLVM -fla shadow); a clean
+    # chain returns the same offset unchanged.
+    effective_stkoff = _resolve_state_var_alias(flow_graph, disp, int(state_var_stkoff))
     back_edge_states = _resolve_back_edge_states(
         flow_graph,
         dispatcher=dispatcher,
-        state_var_stkoff=int(state_var_stkoff),
+        state_var_stkoff=effective_stkoff,
         dispatcher_entry=disp,
         max_depth=max_depth,
     )
