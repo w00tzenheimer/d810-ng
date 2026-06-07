@@ -21,7 +21,7 @@ dump → summarize), which consumes the DLL this lab produces.
 - A full local `libobfuscated` rebuild is blocked by sibling samples that need
   MSVC intrinsics (`sub_7FFB206BBD50.c` `__security_cookie`, etc.), so new
   fixtures need an isolated DLL anyway.
-- The main `samples/Makefile` now **auto-discovers `samples/masm/*.asm`** and its
+- The main `samples/Makefile` now **auto-discovers `samples/src/masm/*.asm`** and its
   masm-assembly rule is **clang-cl-only**; reusing it for a MinGW/MASM lab would
   entangle the libobfuscated build. A separate project sidesteps both.
 
@@ -59,7 +59,7 @@ samples/restructuring_lab/
      restructuring-lab make
    ```
    The container can write **only** inside `/work` (the lab dir). It physically
-   cannot reach `samples/Makefile`, `samples/masm/`, or
+   cannot reach `samples/Makefile`, `samples/src/masm/`, or
    `samples/bins/libobfuscated.dll`. No throwaway-`/tmp` copy is needed.
 3. Copy the uniquely-named `bins/restructuring_lab.dll` into `samples/bins/`
    (and `.pdb` if produced) so the existing harness / `D810_TEST_BINARY` resolve

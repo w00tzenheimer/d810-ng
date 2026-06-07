@@ -31,7 +31,7 @@ c*?_debug/
 # Project Specific
 samples/src/**/*.d
 samples/src/**/*.o
-samples/masm/*.obj
+samples/src/masm/*.obj
 samples/.build_masm/
 samples/restructuring_lab/build/
 samples/restructuring_lab/bins/
