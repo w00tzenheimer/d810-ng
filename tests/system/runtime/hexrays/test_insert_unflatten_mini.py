@@ -338,18 +338,26 @@ COND_FUNCTION = "lab_flat_cond"
 
 
 def _state_slot(mba):
-    """Return the dest string of the slot written with the init state K0."""
+    """Return the real state-var slot. Several slots may receive state-constant
+    writes (entry-conditional register temps, decoy copies); the true state var
+    is distinguished by receiving the TERMINAL state (STATE_TERM) -- decoy copies
+    only carry the routed next-states. Tie-break by write count."""
+    writes: dict[str, list[int]] = {}
     for i in range(mba.qty):
         blk = mba.get_mblock(i)
         ins = blk.head if blk else None
         while ins is not None:
             if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
                     and ins.l.t == ida_hexrays.mop_n
-                    and (int(ins.l.nnn.value) & 0xFFFFFFFF) == STATE_K0
+                    and (int(ins.l.nnn.value) & 0xFFFFFFFF) in STATE_CONSTS
                     and ins.d is not None):
-                return ins.d.dstr()
+                writes.setdefault(ins.d.dstr(), []).append(int(ins.l.nnn.value) & 0xFFFFFFFF)
             ins = ins.next
-    return None
+    if not writes:
+        return None
+    term_slots = {d: v for d, v in writes.items() if STATE_TERM in v}
+    pool = term_slots or writes
+    return max(pool, key=lambda d: len(pool[d]))
 
 
 def _state_writers(mba, state_dest):
@@ -573,3 +581,161 @@ class TestInsertUnflattenCond:
         assert "0X22" in up, f"taken-arm XOR missing:\n{cfunc}"
         # No dispatcher loop.
         assert "WHILE" not in up and "FOR (" not in up, f"loop survived:\n{cfunc}"
+
+
+SHARED_FUNCTION = "lab_flat_shared"
+# In lab_flat_shared: A,B write KS (==STATE_K2); SHARED writes KT (==STATE_TERM).
+STATE_KS = STATE_K2
+
+
+_CONTROL_OPS = frozenset({
+    ida_hexrays.m_goto, ida_hexrays.m_jcnd,
+    ida_hexrays.m_jnz, ida_hexrays.m_jz,
+    ida_hexrays.m_jae, ida_hexrays.m_jb, ida_hexrays.m_ja, ida_hexrays.m_jbe,
+    ida_hexrays.m_jg, ida_hexrays.m_jge, ida_hexrays.m_jl, ida_hexrays.m_jle,
+})
+
+
+def _capture_state_free(blk):
+    """Return blk's live instructions with ALL state-constant writes (to any
+    slot) and ALL control-flow removed -- the state-free straight-line payload to
+    copy into private blocks. The inserted block supplies its own goto, so the
+    captured body must carry neither dispatcher scaffolding nor a terminator.
+    (Identity vs blk.tail is unreliable -- SWIG returns fresh wrappers -- so we
+    strip control-flow by opcode.)"""
+    insns = []
+    ins = blk.head
+    while ins is not None:
+        op = int(ins.opcode)
+        is_state_const_write = (op == ida_hexrays.m_mov and ins.l is not None
+                                and ins.l.t == ida_hexrays.mop_n
+                                and (int(ins.l.nnn.value) & 0xFFFFFFFF) in STATE_CONSTS)
+        if not is_state_const_write and op not in _CONTROL_OPS:
+            insns.append(ins)
+        ins = ins.next
+    return insns
+
+
+class TestInsertUnflattenShared:
+    """Phase 3: a SHARED block (2 preds) de-shared into two private copies emitted
+    STATE-FREE via capture-then-insert (the captured payload omits state writes)."""
+
+    binary_name = os.environ.get("D810_TEST_BINARY", "restructuring_lab.dll")
+
+    def test_dump_shared_structure(self, ida_database, configure_hexrays):
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+        ea = get_func_ea(SHARED_FUNCTION)
+        mba = gen_microcode_at_maturity(ea, ida_hexrays.MMAT_GLBOPT1)
+        assert mba is not None
+        sd = _state_slot(mba)
+        writers = _state_writers(mba, sd)
+        routing = _dispatcher_routing(mba, sd)
+        term = _terminal_serial(mba)
+        # Per-slot state-const-write map (which slot is the real state var).
+        per_slot: dict[str, list[str]] = {}
+        for i in range(mba.qty):
+            b = mba.get_mblock(i)
+            ins = b.head if b else None
+            while ins is not None:
+                if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
+                        and ins.l.t == ida_hexrays.mop_n
+                        and (int(ins.l.nnn.value) & 0xFFFFFFFF) in STATE_CONSTS
+                        and ins.d is not None):
+                    per_slot.setdefault(ins.d.dstr(), []).append(
+                        "blk%d:%#x" % (i, int(ins.l.nnn.value) & 0xFFFFFFFF))
+                ins = ins.next
+        print(f"\n=== lab_flat_shared GLBOPT1 qty={mba.qty} state_slot={sd!r} ===")
+        print(f"  per_slot_state_writes={per_slot}")
+        print(f"  writers={ {hex(k): v for k, v in writers.items()} }")
+        print(f"  routing={ {hex(k): v for k, v in routing.items()} } terminal={term}")
+        shared = routing.get(STATE_KS)
+        if shared is not None:
+            free = _capture_state_free(mba.get_mblock(shared))
+            print(f"  SHARED=blk[{shared}] state-free insns: "
+                  f"{[ins.dstr() for ins in free]}")
+        # KS is written by BOTH A and B (2 preds to SHARED).
+        assert len(writers.get(STATE_KS, [])) == 2, writers
+        assert shared is not None
+
+    def test_shared_deshare_optblock(self, ida_database, configure_hexrays):
+        """De-share SHARED into two private STATE-FREE copies (one per path) via
+        capture-then-insert at the optblock stage. The copies carry SHARED's work
+        but no state writes by construction; assert the render has no state var."""
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+        ea = get_func_ea(SHARED_FUNCTION)
+
+        class _DeshareOptblock(ida_hexrays.optblock_t):
+            def __init__(self):
+                super().__init__()
+                self.done = False
+                self.applied = 0
+                self.captured = None
+                self.error = None
+
+            def func(self, blk):
+                try:
+                    mba = blk.mba
+                    if (self.done or mba is None
+                            or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)):
+                        return 0
+                    sd = _state_slot(mba)
+                    writers = _state_writers(mba, sd)
+                    routing = _dispatcher_routing(mba, sd)
+                    term = _terminal_serial(mba)
+                    arms = writers.get(STATE_KS, [])
+                    shared = routing.get(STATE_KS)
+                    if len(arms) != 2 or shared is None or term < 0:
+                        return 0
+                    free = _capture_state_free(mba.get_mblock(shared))
+                    if not free:
+                        return 0
+                    self.captured = [ins.dstr() for ins in free]
+                    succ_sets = [set(int(s) for s in mba.get_mblock(a).succset) for a in arms]
+                    inter = set.intersection(*succ_sets)
+                    if not inter:
+                        return 0
+                    disp = min(inter)
+                    self.done = True
+                    mod = DeferredGraphModifier(mba)
+                    for arm in arms:
+                        # Insert a private STATE-FREE copy of SHARED on each path.
+                        mod.queue_create_and_redirect(
+                            arm, term, list(free), old_target_serial=disp)
+                    mod.coalesce()
+                    self.applied = mod.apply(run_optimize_local=True)
+                    return self.applied
+                except Exception as exc:  # noqa: BLE001
+                    self.error = repr(exc)
+                    return 0
+
+        opt = _DeshareOptblock()
+        opt.install()
+        hf = ida_hexrays.hexrays_failure_t()
+        try:
+            ida_hexrays.mark_cfunc_dirty(ea)
+            cfunc = ida_hexrays.decompile(ea, hf)
+        finally:
+            opt.remove()
+        print(f"\n=== shared de-share (applied={opt.applied} captured={opt.captured} "
+              f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ===")
+        if cfunc is not None:
+            print(str(cfunc))
+        print("=== end shared de-share ===")
+        assert opt.applied >= 2, f"applied={opt.applied} err={opt.error}"
+        assert cfunc is not None, f"decompile failed: {hf.code} {hf.desc()!r}"
+        up = str(cfunc).upper()
+        # The de-shared SHARED block is STATE-FREE by construction: its state
+        # constants (KS, written by the copies' source; KT, the terminal) are
+        # gone -- the captured payload carried no state writes (not DCE).
+        assert f"{STATE_KS:X}" not in up, f"SHARED state KS survived:\n{cfunc}"
+        assert f"{STATE_TERM:X}" not in up, f"terminal state KT survived:\n{cfunc}"
+        # SHARED's work (-0x33) was de-shared into the paths.
+        assert "0X33" in up, f"SHARED work missing after de-share:\n{cfunc}"
+        # No dispatcher loop; the two paths are a clean branch.
+        assert "WHILE" not in up and "FOR (" not in up, f"loop survived:\n{cfunc}"
+        assert "IF (" in up, f"branch missing:\n{cfunc}"
+        # NOTE: the entry selector (K0/K1 in v1) is residual scaffolding from the
+        # un-reconstructed entry conditional (reg-sourced; a Phase 2 entry
+        # reconstruction, out of scope for this de-share demo).

@@ -249,6 +249,28 @@ D810_TEST_BINARY=restructuring_lab.dll \
 - **2b DEFERRED:** `queue_create_conditional_redirect` validation is a separate
   focused task (needs a branchless / recovered-predicate scenario).
 
+## Phase 3 result (de-share via state-free capture-then-insert)
+
+- **DONE.** `lab_flat_shared` (paths A,B converge on a SHARED block via the
+  dispatcher) de-shares SHARED into two **private STATE-FREE copies** (one per
+  path) using `queue_create_and_redirect(instructions_to_copy=captured)` at the
+  optblock stage. The captured payload (`_capture_state_free`) strips **all**
+  state-constant writes (to any slot) and all control-flow, so the copies carry
+  only SHARED's real work (`-0x33`, the sink store) — state-free **by
+  construction, not by DCE**. Render: `if(token&1){A;-0x33} else {B;-0x33}`, no
+  dispatcher loop; KS/KT gone. Test: `test_shared_deshare_optblock` (PASS).
+- **State-var detection lesson:** several slots receive state-constant writes
+  (an entry conditional's register temp; a decoy copy slot). The true state var
+  is the one that receives the **terminal state** (`STATE_TERM`); decoy copies
+  only carry routed next-states. `_state_slot` discriminates on that.
+- **INTERR 50860 (`CFG_SUCC_MISMATCH`)** appeared when the captured payload still
+  contained SHARED's tail `goto` (the `ins is blk.tail` identity check fails —
+  SWIG returns fresh wrappers). Strip control-flow by **opcode**, not identity;
+  the inserted block supplies its own goto.
+- **Residual (out of scope):** the entry selector `v1 = K0/K1` survives because
+  the entry conditional is reg-sourced and un-reconstructed — that is a Phase 2
+  entry reconstruction, not part of the de-share.
+
 ## 10. Out of scope
 
 - Conditional/branching transitions (Phase 2), shared-block duplication (Phase 3).
