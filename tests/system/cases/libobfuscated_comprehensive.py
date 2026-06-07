@@ -421,8 +421,12 @@ APPROOV_CASES = [
             "while ( a2 > 0 );",
             "a1 *= 2;",
             "if ( a1 <= 0x3E8 )",
-            "++dword_18001D318;",
             "return (unsigned int)a1;",
+        ],
+        # Address-agnostic: the incremented global's address shifts with the
+        # build base, so match the increment of a dword global semantically.
+        deobfuscated_regexes=[
+            r"\+\+dword_[0-9A-Fa-f]+;",
         ],
         deobfuscated_not_contains=[
             "LABEL_x9BC",
@@ -844,8 +848,11 @@ HARDENED_OLLVM_COND_CHAIN_CASES = [
         # unflattening.  Depending on the decompile path, IDA may print the
         # return with or without an explicit unsigned cast; both forms are
         # equivalent for the recovered unsigned-int expression.
-        deobfuscated_contains=[
-            "dword_18001D440 = 3 * a1 + 7;",
+        # Address-agnostic: the writable global's address varies by build base
+        # (PE/Mach-O naming, and shifts when the binary is rebuilt), so match the
+        # semantic RHS rather than the exact dword_<addr> symbol name.
+        deobfuscated_regexes=[
+            r"dword_[0-9A-Fa-f]+ = 3 \* a1 \+ 7;",
         ],
         deobfuscated_not_contains=["g_opaque_table"],
         acceptable_patterns=[
