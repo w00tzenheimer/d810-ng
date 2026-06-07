@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from enum import Enum, auto
 import re
 
-from d810.ir.flowgraph import FlowGraph, InsnKind
+from d810.ir.flowgraph import BlockKind, FlowGraph, InsnKind
 from d810.core import logging
 from d810.core.typing import Callable, Mapping
 from d810.analyses.control_flow.interval_map import IntervalDispatcher
@@ -6556,6 +6556,67 @@ def build_linearized_state_dag_from_graph(
             return None
         return None
 
+    # Dispatcher is ground truth for state -> handler (half-open [lo,hi)). The
+    # node-based resolution can land on a STRUCTURAL phantom -- an EXACT node
+    # whose entry block the dispatcher never routes any state to (e.g. opaque
+    # XOR next-state 0x1A9A9DD9 attributed to fall-through blk131, while the
+    # dispatcher routes it to blk207 -> blk208[STOP], the exit routine). When a
+    # transition's next-state is really a return (its dispatcher route reaches a
+    # terminal STOP without re-entering the dispatcher) AND the node resolution
+    # is such a phantom, emit a return-to-exit edge instead of a transition to
+    # the wrong block.
+    _edge_bst_set = set(report.bst_node_blocks)
+    _dispatcher_targets: set[int] = (
+        {int(r.target) for r in getattr(dispatcher, "_rows", ())}
+        if dispatcher is not None
+        else set()
+    )
+
+    def _state_routes_to_exit(state: int | None) -> bool:
+        if dispatcher is None or state is None:
+            return False
+        cur = dispatcher.lookup(state)
+        if (
+            cur is None
+            or int(cur) == int(report.dispatcher_entry_serial)
+            or int(cur) in _edge_bst_set
+        ):
+            return False
+        seen: set[int] = set()
+        while cur is not None and int(cur) not in seen:
+            seen.add(int(cur))
+            blk = flow_graph.get_block(int(cur))
+            if blk is None:
+                return False
+            if getattr(blk, "kind", None) == BlockKind.STOP:
+                return True  # genuine terminal STOP == the exit routine
+            onward = [
+                int(s)
+                for s in (getattr(blk, "succs", ()) or ())
+                if int(s) != int(report.dispatcher_entry_serial)
+                and int(s) not in _edge_bst_set
+            ]
+            if len(onward) != 1:
+                # a dead-end that is NOT a STOP (incomplete/orphan), a branch, or
+                # a dispatcher re-entry -- not a clean exit corridor.
+                return False
+            cur = onward[0]
+        return False
+
+    def _node_disagrees_with_route(node: object | None, state: int | None) -> bool:
+        """True when the node's entry differs from the dispatcher's half-open
+        route for ``state`` -- i.e. the node resolution is wrong (a phantom
+        fall-through block like blk131, OR the inclusive ``<=``-side neighbour
+        like blk60, when the dispatcher routes the state half-open to blk207).
+        ``node is None`` also counts as disagreement (no resolution at all)."""
+        if node is None:
+            return True
+        entry = getattr(node, "entry_anchor", None)
+        if entry is None or dispatcher is None or state is None:
+            return False
+        routed = dispatcher.lookup(state)
+        return routed is not None and int(entry) != int(routed)
+
     edges: list[StateDagEdge] = []
     seen_edge_keys: set[
         tuple[
@@ -6601,6 +6662,44 @@ def build_linearized_state_dag_from_graph(
             )
             _writes = getattr(matched_path, 'state_writes', []) if matched_path is not None else []
             _last_write = _writes[-1] if _writes else None
+            # Phantom-exit reclassification: the dispatcher routes this next-state
+            # to the exit STOP (it is really a return) but node resolution landed
+            # on a structural phantom block. Emit a return-to-exit edge.
+            if _state_routes_to_exit(transition.to_state) and _node_disagrees_with_route(
+                target_node, transition.to_state
+            ):
+                logger.info(
+                    "DAG: exit-routed transition -> EXIT_ROUTINE: src=blk[%d] "
+                    "state 0x%X (dispatcher route reaches STOP; node entry was "
+                    "phantom)",
+                    int(transition.from_block),
+                    transition.to_state & 0xFFFFFFFF,
+                )
+                _exit_edge = StateDagEdge(
+                    kind=SemanticEdgeKind.EXIT_ROUTINE,
+                    source_key=source_node.key,
+                    target_key=None,
+                    target_state=None,
+                    target_entry_anchor=None,
+                    target_label="RETURN",
+                    source_anchor=source_anchor,
+                    ordered_path=ordered_path,
+                    last_write_site=_last_write,
+                )
+                _exit_key = (
+                    _exit_edge.kind,
+                    _exit_edge.source_key,
+                    None,
+                    None,
+                    None,
+                    _exit_edge.source_anchor.kind,
+                    _exit_edge.source_anchor.block_serial,
+                    _exit_edge.source_anchor.branch_arm,
+                )
+                if _exit_key not in seen_edge_keys:
+                    seen_edge_keys.add(_exit_key)
+                    edges.append(_exit_edge)
+                continue
             # Fix 1: resolve target_entry_anchor past BST region
             _target_entry: int | None = (
                 target_node.entry_anchor if target_node is not None else target_handler_serial
@@ -6840,6 +6939,52 @@ def build_linearized_state_dag_from_graph(
                         block_serial=path.exit_block,
                     )
                 )
+                # Phantom-exit reclassification (mirror of the first loop): this
+                # path's next-state is really a return -- the dispatcher routes it
+                # half-open to a terminal STOP -- but node resolution landed on a
+                # structural phantom block. Emit a return-to-exit edge so the
+                # render/lowering reach the exit routine instead of the phantom.
+                if _state_routes_to_exit(path.final_state) and _node_disagrees_with_route(
+                    target_node, path.final_state
+                ):
+                    _lo_exit_kind = (
+                        SemanticEdgeKind.CONDITIONAL_RETURN
+                        if branch_anchor is not None
+                        else SemanticEdgeKind.EXIT_ROUTINE
+                    )
+                    logger.info(
+                        "DAG: exit-routed leftover edge -> %s: src=blk[%d] "
+                        "state 0x%X (dispatcher route reaches STOP; node entry "
+                        "phantom)",
+                        _lo_exit_kind.name,
+                        int(source_anchor.block_serial),
+                        path.final_state & 0xFFFFFFFF,
+                    )
+                    _lo_exit_edge = StateDagEdge(
+                        kind=_lo_exit_kind,
+                        source_key=source_node.key,
+                        target_key=None,
+                        target_state=None,
+                        target_entry_anchor=None,
+                        target_label="RETURN",
+                        source_anchor=source_anchor,
+                        ordered_path=tuple(path.ordered_path),
+                        last_write_site=_leftover_last_write,
+                    )
+                    _lo_exit_key = (
+                        _lo_exit_edge.kind,
+                        _lo_exit_edge.source_key,
+                        None,
+                        None,
+                        None,
+                        _lo_exit_edge.source_anchor.kind,
+                        _lo_exit_edge.source_anchor.block_serial,
+                        _lo_exit_edge.source_anchor.branch_arm,
+                    )
+                    if _lo_exit_key not in seen_edge_keys:
+                        seen_edge_keys.add(_lo_exit_key)
+                        edges.append(_lo_exit_edge)
+                    continue
                 # Fix 1: resolve target_entry_anchor past BST region
                 _lo_target_entry: int | None = (
                     target_node.entry_anchor if target_node is not None else target_handler_serial
