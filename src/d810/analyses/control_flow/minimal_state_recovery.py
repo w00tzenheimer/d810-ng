@@ -68,6 +68,7 @@ class TransitionArm:
     branch_block: int | None     # the 2-way block that selected this arm (None => unconditional)
     write_block: int | None      # block whose state-var write produced next_state
     exit_block: int | None       # last block of the scanned path (the boundary)
+    ordered_path: tuple[int, ...] = ()  # handler-local blocks visited (entry..exit)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,26 +112,28 @@ def _scan_handler(
     dispatcher_entry_serial: int | None,
     handler_entries: set[int],
     max_depth: int = _MAX_CORRIDOR_DEPTH,
-) -> list[tuple[int | None, int | None, int]]:
+) -> list[tuple[int | None, int | None, tuple[int, ...]]]:
     """Strictly handler-local forward scan from *entry*.
 
-    Returns a list of ``(next_state, branch_block, exit_block)`` — one entry per
-    distinct terminal path.  ``next_state`` is the last folded state-var value on
-    that path (``None`` if the handler writes no next-state).  The scan stops at:
-    the dispatcher entry, any *other* handler's entry block, or a STOP/terminal.
+    Returns a list of ``(next_state, branch_block, ordered_path)`` — one entry
+    per distinct terminal path.  ``next_state`` is the last folded state-var
+    value on that path (``None`` if the handler writes no next-state).
+    ``ordered_path`` is the blocks visited (entry..boundary), used downstream to
+    pick the redirect source.  The scan stops at: the dispatcher entry, any
+    *other* handler's entry block, or a STOP/terminal.
     """
 
-    results: list[tuple[int | None, int | None, int]] = []
-    # stack frames: (block_serial, stk_map, reg_map, branch_block, visited, depth)
-    stack: list[tuple[int, dict, dict, int | None, frozenset[int], int]] = [
-        (int(entry), {}, {}, None, frozenset({int(entry)}), 0)
+    results: list[tuple[int | None, int | None, tuple[int, ...]]] = []
+    # stack frames: (block, stk_map, reg_map, branch_block, visited, depth, path)
+    stack: list[tuple[int, dict, dict, int | None, frozenset[int], int, tuple[int, ...]]] = [
+        (int(entry), {}, {}, None, frozenset({int(entry)}), 0, (int(entry),))
     ]
 
     while stack:
-        blk_serial, stk, reg, branch, visited, depth = stack.pop()
+        blk_serial, stk, reg, branch, visited, depth, path = stack.pop()
         block = flow_graph.get_block(blk_serial)
         if block is None:
-            results.append((stk.get(state_var_stkoff), branch, blk_serial))
+            results.append((stk.get(state_var_stkoff), branch, path))
             continue
 
         # Fold this block's state-var write into the carried const env.
@@ -162,14 +165,14 @@ def _scan_handler(
             or depth >= max_depth
         )
         if terminal:
-            results.append((running_state, branch, blk_serial))
+            results.append((running_state, branch, path))
             continue
 
         # A 2-way block whose arms continue is a state-selecting branch.
         new_branch = branch if len(succs) < 2 else blk_serial
         for s in onward:
             stack.append(
-                (s, nstk, nreg, new_branch, visited | {s}, depth + 1)
+                (s, nstk, nreg, new_branch, visited | {s}, depth + 1, path + (s,))
             )
 
     return results
@@ -178,12 +181,13 @@ def _scan_handler(
 def _classify_arm(
     next_state: int | None,
     branch_block: int | None,
-    exit_block: int,
+    ordered_path: tuple[int, ...],
     *,
     dispatcher,
     flow_graph,
 ) -> TransitionArm:
     default = dispatcher.default_target
+    exit_block = ordered_path[-1] if ordered_path else None
     target: int | None = None
     is_return = False
     if next_state is None:
@@ -207,6 +211,7 @@ def _classify_arm(
         branch_block=branch_block,
         write_block=exit_block,
         exit_block=exit_block,
+        ordered_path=tuple(ordered_path),
     )
 
 
@@ -250,14 +255,14 @@ def recover_handler_transitions(
         # Dedup arms by next_state: identical next-states on multiple paths are
         # the same edge (a degenerate branch), not a conditional.
         seen: dict[int | None, TransitionArm] = {}
-        for next_state, branch_block, exit_block in paths:
+        for next_state, branch_block, ordered_path in paths:
             key = (int(next_state) & 0xFFFFFFFF) if next_state is not None else None
             if key in seen:
                 continue
             seen[key] = _classify_arm(
                 next_state,
                 branch_block,
-                exit_block,
+                ordered_path,
                 dispatcher=dispatcher,
                 flow_graph=flow_graph,
             )
@@ -273,6 +278,7 @@ def recover_handler_transitions(
                     branch_block=None,
                     write_block=arms[0].write_block,
                     exit_block=arms[0].exit_block,
+                    ordered_path=arms[0].ordered_path,
                 ),
             )
         results.append(
