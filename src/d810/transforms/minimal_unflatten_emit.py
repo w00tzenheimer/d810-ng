@@ -112,6 +112,40 @@ def build_state_write_redirects(
     return mods
 
 
+def _recover_initial_state(
+    flow_graph,
+    transitions: tuple[StateWriteTransition, ...],
+    dispatcher_entry_serial: int,
+    pre_header_serial: int | None,
+) -> int | None:
+    """Derive the initial dispatcher state from the prologue's state-write fold.
+
+    The prologue (function entry -> dispatcher, no back-edge) is a dispatcher
+    predecessor, so :func:`recover_state_write_transitions` already folded its
+    next-state. Identify the prologue structurally (reachable from the function
+    entry without passing through the dispatcher) and return its resolved,
+    non-return next-state -- the state the function is in on first dispatch.
+    Matches both a direct write (``write_block``) and a bypassed pure-glue
+    prologue (``via_block``). Returns None when the prologue state did not fold.
+    """
+    prologue_preds = {
+        int(p)
+        for p in _dispatcher_entry_preds(
+            flow_graph, dispatcher_entry_serial, pre_header_hint=pre_header_serial
+        )
+    }
+    if not prologue_preds:
+        return None
+    for t in transitions:
+        if t.next_state is None or t.is_return:
+            continue
+        wb = int(t.write_block)
+        vb = int(t.via_block) if t.via_block is not None else None
+        if wb in prologue_preds or (vb is not None and vb in prologue_preds):
+            return int(t.next_state)
+    return None
+
+
 def _dispatcher_entry_preds(
     flow_graph,
     dispatcher_entry_serial: int,
@@ -179,6 +213,47 @@ def emit_minimal_unflatten(
         int(state_var_stkoff),
         dispatcher_entry_serial=int(dispatcher_entry_serial),
     )
+    # Recover the initial state from the prologue's own state-write fold when the
+    # caller could not supply it. The comparison-BST evidence collapses to a
+    # single catch-all on a wide equality chain (OLLVM -fla), so
+    # ``bst_evidence.initial_state`` is None -- but the prologue is a dispatcher
+    # predecessor too, so its folded next-state (already in ``transitions``) IS
+    # the initial state. Without it the entry bridge is skipped and removing the
+    # dispatcher orphans every handler.
+    if initial_state is None:
+        initial_state = _recover_initial_state(
+            flow_graph,
+            transitions,
+            int(dispatcher_entry_serial),
+            pre_header_serial,
+        )
+    # Safety: the entry bridge is REQUIRED for correctness. Removing the
+    # dispatcher orphans every handler unless the function-entry path is bridged
+    # to ``route(initial_state)``. When a prologue exists but that bridge cannot
+    # be established -- the initial state was not recovered, or it routes nowhere
+    # -- bail and leave the function intact rather than gut it. This fires when
+    # state-var detection picked a current-state SHADOW slot (OLLVM -fla writes
+    # the next state to one stack slot and a copy of the current state to
+    # another; choosing the shadow makes every handler self-loop and hides the
+    # prologue's real initial-state write). Better a flattened function than a
+    # destroyed one. See ticket for the state-var disambiguation fix.
+    if dispatcher_entry_serial is not None:
+        prologue_preds = _dispatcher_entry_preds(
+            flow_graph, int(dispatcher_entry_serial), pre_header_hint=pre_header_serial
+        )
+        if prologue_preds:
+            bridged = (
+                initial_state is not None
+                and dispatcher.lookup(int(initial_state) & 0xFFFFFFFF) is not None
+            )
+            if not bridged:
+                if logger.info_on:
+                    logger.info(
+                        "s1a minimal unflatten: BAILED (no entry bridge: "
+                        "initial_state=%s) -- leaving function intact",
+                        initial_state,
+                    )
+                return compile_patch_plan([], flow_graph)
     mods = build_state_write_redirects(
         flow_graph,
         dispatcher,

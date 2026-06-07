@@ -21,7 +21,11 @@ from d810.ir.flowgraph import (
     OperandKind,
 )
 from d810.transforms.graph_modification import RedirectGoto
-from d810.transforms.minimal_unflatten_emit import build_state_write_redirects
+from d810.transforms.minimal_unflatten_emit import (
+    _recover_initial_state,
+    build_state_write_redirects,
+    emit_minimal_unflatten,
+)
 
 _OP_MOV = 4
 _T_NUM, _T_STK, _T_REG = 2, 4, 1
@@ -126,3 +130,46 @@ def test_emits_back_edge_redirect_and_entry_bridge(_seam) -> None:
     assert (10, 2, 20) in gotos
     # entry bridge: blk0 -> route(initial 0x10) = blk10
     assert (0, 2, 10) in gotos
+
+
+def test_recovers_initial_state_from_prologue(_seam) -> None:
+    # prologue blk0 -> blk1(writes initial 0x10) -> dispatcher blk2.  The prologue
+    # is a dispatcher predecessor too, so its folded state IS the initial state --
+    # recovered without any caller-supplied initial_state / bst evidence.
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),                                   # entry
+            1: _b(1, (2,), (0,), (_mov_state(0x900, 0x10),)),     # prologue writes 0x10
+            2: _b(2, (10, 20), (1, 10, 20)),                      # dispatcher
+            10: _b(10, (2,), (2,), (_mov_state(0x1000, 0x20),)),  # handler writes 0x20
+            20: _b(20, (2,), (2,)),
+        },
+        entry_serial=0, func_ea=0x1000,
+    )
+    disp = _disp({0x10: 10, 0x20: 20}, exit_block=99)
+    transitions = recover_state_write_transitions(
+        fg, disp, _STATE, dispatcher_entry_serial=2
+    )
+    assert _recover_initial_state(fg, transitions, 2, None) == 0x10
+
+
+def test_emit_bails_when_no_entry_bridge(_seam) -> None:
+    # The prologue blk1 writes NO state, so the initial state is unrecoverable and
+    # the entry can't be bridged.  Removing the dispatcher would orphan every
+    # handler, so emit must BAIL (empty plan) and leave the function intact rather
+    # than gut it (the OLLVM current-state-shadow failure mode).
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),                                 # NO state write
+            2: _b(2, (10, 20), (1, 10, 20)),
+            10: _b(10, (2,), (2,), (_mov_state(0x1000, 0x20),)),  # resolvable handler
+            20: _b(20, (2,), (2,)),
+        },
+        entry_serial=0, func_ea=0x1000,
+    )
+    disp = _disp({0x10: 10, 0x20: 20}, exit_block=99)
+    plan = emit_minimal_unflatten(
+        fg, disp, state_var_stkoff=_STATE, dispatcher_entry_serial=2
+    )
+    assert len(plan.as_graph_modifications()) == 0

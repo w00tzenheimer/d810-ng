@@ -408,6 +408,7 @@ class IntervalDispatcher:
         rows: list[IntervalRow],
         *,
         default_target: Any | None = None,
+        compute_default: bool = True,
     ) -> None:
         self._rows: list[IntervalRow] = sorted(rows)
         # Validate no overlaps
@@ -420,12 +421,21 @@ class IntervalDispatcher:
         self._starts: list[int] = [r.lo for r in self._rows]
         # When the default is known structurally (e.g. an equality-chain
         # ``StateDispatcherMap`` whose no-match fall-through is the shared
-        # return), trust it; otherwise derive it from the table's gap rows.
-        self._default_target: Any | None = (
-            default_target
-            if default_target is not None
-            else self._compute_default_target()
-        )
+        # return), trust it. Otherwise derive it from the table's gap rows --
+        # BUT only when ``compute_default`` is set. The max-row-count heuristic
+        # is meaningful for a comparison-BST table (gap rows route to the
+        # default), but for an EXACT single-value map (built by
+        # ``interval_dispatcher_from_state_map``) every row is one point and the
+        # heuristic would spuriously crown an arbitrary handler the default,
+        # mis-classifying every transition into it as a return. Such exact maps
+        # pass ``compute_default=False`` and rely on the consumer's structural
+        # checks (uncovered-state / STOP-block routing) to detect returns.
+        if default_target is not None:
+            self._default_target: Any | None = default_target
+        elif compute_default:
+            self._default_target = self._compute_default_target()
+        else:
+            self._default_target = None
 
     def _compute_default_target(self) -> Any | None:
         """The dispatcher's default fall-through target — the block reached when no handler state
@@ -619,9 +629,15 @@ def interval_dispatcher_from_state_map(
         IntervalRow(lo=int(s) & 0xFFFFFFFF, hi=(int(s) & 0xFFFFFFFF) + 1, target=int(t))
         for s, t in state_to_target.items()
     ]
+    # Exact single-value rows: never run the gap-row max-count heuristic (it is
+    # meaningless here and would spuriously pick a handler as the default). Trust
+    # an explicit ``default_target`` (e.g. a SWITCH_TABLE's resolved default
+    # case); otherwise leave it None and let the consumer classify returns
+    # structurally (uncovered state / STOP-block routing).
     return IntervalDispatcher(
         rows,
         default_target=(int(default_target) if default_target is not None else None),
+        compute_default=False,
     )
 
 

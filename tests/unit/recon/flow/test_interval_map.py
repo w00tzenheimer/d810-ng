@@ -487,11 +487,13 @@ class TestIntervalDispatcherFromStateMap:
         )
         assert d.default_target == 999
 
-    def test_no_default_falls_back_to_row_count_heuristic(self) -> None:
-        # Two states route to the same block → that block has the most rows →
-        # it becomes the structural default.
+    def test_no_default_stays_none_no_heuristic(self) -> None:
+        # Exact single-value maps must NOT run the gap-row max-count heuristic
+        # (it would spuriously crown a real handler the default and mis-classify
+        # transitions into it as returns). With no explicit default it stays None;
+        # the consumer detects returns structurally (uncovered / STOP routing).
         d = interval_dispatcher_from_state_map({0x10: 50, 0x20: 50, 0x30: 300})
-        assert d.default_target == 50
+        assert d.default_target is None
 
     def test_state_handler_is_the_default_block(self) -> None:
         # A written state can legitimately route to the shared-return block; the
