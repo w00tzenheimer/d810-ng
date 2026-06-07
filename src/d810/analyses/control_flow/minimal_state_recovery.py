@@ -50,7 +50,206 @@ __all__ = [
     "TransitionArm",
     "HandlerTransition",
     "recover_handler_transitions",
+    "StateWriteTransition",
+    "recover_state_write_transitions",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class StateWriteTransition:
+    """One dispatcher back-edge: a block that writes the next state then re-enters
+    the dispatcher.
+
+    The state-machine's *real* transition points are the dispatcher's
+    predecessors — every block that writes the state variable and branches back
+    into the comparison tree.  (For the OLLVM shape this module targets, the set
+    of dispatcher predecessors is *exactly* the set of state-var-writing blocks.)
+    Anchoring recovery on these back-edges — rather than on the dispatcher's
+    routed *targets* (handler entries) — is robust to handlers that share
+    suffixes or chain through one another's entry blocks: those interior fall
+    -throughs are left as natural control flow and only the back-edge to the
+    dispatcher is rewritten.
+    """
+
+    write_block: int             # redirect source (the back-edge, or a predecessor
+                                 # of it when the back-edge is a per-predecessor split)
+    next_state: int | None       # folded state-var value entering the dispatcher
+    target_handler: int | None   # dispatcher route of next_state (None unresolved)
+    is_return: bool              # routes to exit/STOP/default, or unresolved
+    branch_arm: int | None       # succ index of the dispatcher edge (None => 1-way)
+    via_block: int | None = None  # when set, redirect ``write_block -> via_block``
+                                  # (bypass the shared back-edge) instead of
+                                  # ``write_block -> dispatcher``
+
+
+def _resolve_back_edge_states(
+    flow_graph,
+    *,
+    dispatcher,
+    state_var_stkoff: int,
+    dispatcher_entry: int,
+    max_depth: int,
+) -> dict[int, set[int]]:
+    """Per-region forward const-fold -> the state each back-edge writes.
+
+    Walks forward from every region entry (each dispatcher target + the function
+    prologue), carrying exact stack/register constants block-by-block.  Carrying
+    *region-local* constants — rather than meeting across all predecessors —
+    resolves opaque ``state = reg_a ^ reg_b`` / ``sub`` writes whose register
+    operands are constants set earlier in the same handler region.  Whenever the
+    walk reaches a block that branches back into the dispatcher, the folded
+    state value at that block is recorded for that back-edge.  A back-edge that
+    folds to two distinct states across different region paths is a
+    predecessor-partitioned (opaque-split) write and is reported as ambiguous.
+    """
+
+    disp = int(dispatcher_entry)
+    soff = int(state_var_stkoff)
+    region_entries: set[int] = {
+        int(row.target)
+        for row in getattr(dispatcher, "_rows", ())
+        if row.target is not None
+    }
+    entry = getattr(flow_graph, "entry_serial", None)
+    if entry is not None:
+        region_entries.add(int(entry))
+    region_entries.discard(disp)
+
+    # back-edge serial -> { immediate predecessor (None at a region head) -> states }.
+    # Partitioning by the immediate predecessor recovers opaque ``state =
+    # reg_a ^ reg_b`` writes whose register operands are set to *different*
+    # constants on each incoming edge (the LiSA disjunctive / predecessor-
+    # partitioned case): each edge folds to its own state instead of collapsing
+    # to an ambiguous set.
+    back_edge_states: dict[int, dict[int | None, set[int]]] = {}
+    for start in sorted(region_entries):
+        stack: list[tuple[int, dict, dict, frozenset[int], int, int | None]] = [
+            (start, {}, {}, frozenset({start}), 0, None)
+        ]
+        while stack:
+            blk_serial, in_stk, in_reg, visited, depth, parent = stack.pop()
+            block = flow_graph.get_block(blk_serial)
+            if block is None:
+                continue
+            out_stk, out_reg = _transfer_snapshot_constant_block(
+                block, dict(in_stk), dict(in_reg), soff
+            )
+            succs = tuple(int(s) for s in block.succs)
+            if disp in succs:
+                # This block branches back into the dispatcher -- it is a
+                # back-edge (the region's transition point).  Record the folded
+                # state keyed by the edge we arrived on, and STOP: do not walk
+                # past it into the *next* region.
+                value = out_stk.get(soff)
+                if value is not None:
+                    back_edge_states.setdefault(blk_serial, {}).setdefault(
+                        parent, set()
+                    ).add(int(value) & 0xFFFFFFFF)
+                continue
+            if depth >= max_depth:
+                continue
+            for succ in succs:
+                if succ == disp or succ in visited:
+                    continue
+                if _is_stop_block(flow_graph.get_block(succ)):
+                    continue
+                stack.append(
+                    (succ, out_stk, out_reg, visited | {succ}, depth + 1, blk_serial)
+                )
+    return back_edge_states
+
+
+def recover_state_write_transitions(
+    flow_graph,
+    dispatcher,
+    state_var_stkoff: int,
+    *,
+    dispatcher_entry_serial: int,
+    max_depth: int = _MAX_CORRIDOR_DEPTH,
+) -> tuple[StateWriteTransition, ...]:
+    """Recover one transition per dispatcher back-edge (state-write block).
+
+    For every predecessor ``P`` of the dispatcher, the next state ``S`` it writes
+    is resolved by a per-region forward fold (see
+    :func:`_resolve_back_edge_states`).  The transition is ``P -> route(S)``.
+    Back-edges that do not fold to a single state (unresolved, or a
+    predecessor-partitioned opaque split that needs block de-sharing) are
+    returned as ``is_return`` so the emitter routes them to the shared return.
+    """
+
+    disp = int(dispatcher_entry_serial)
+    disp_block = flow_graph.get_block(disp)
+    if disp_block is None:
+        return ()
+
+    back_edge_states = _resolve_back_edge_states(
+        flow_graph,
+        dispatcher=dispatcher,
+        state_var_stkoff=int(state_var_stkoff),
+        dispatcher_entry=disp,
+        max_depth=max_depth,
+    )
+    default = dispatcher.default_target
+
+    def _classify(state: int) -> tuple[int | None, bool]:
+        routed = dispatcher.lookup(state)
+        if routed is None:
+            return None, True
+        if default is not None and int(routed) == int(default):
+            return int(routed), True
+        if _is_stop_block(flow_graph.get_block(int(routed))):
+            return int(routed), True
+        return int(routed), False
+
+    out: list[StateWriteTransition] = []
+    for pred in sorted(int(p) for p in disp_block.preds):
+        block = flow_graph.get_block(pred)
+        if block is None:
+            continue
+        succs = tuple(int(s) for s in block.succs)
+        if disp not in succs:
+            continue
+        arm = succs.index(disp) if len(succs) > 1 else None
+        edge_states = back_edge_states.get(pred, {})
+        all_states = {s for states in edge_states.values() for s in states}
+
+        if len(all_states) == 1:
+            # Unambiguous: every incoming edge folds to the same state -> redirect
+            # the back-edge itself off the dispatcher.
+            state = next(iter(all_states))
+            target, is_ret = _classify(state)
+            out.append(StateWriteTransition(pred, state, target, is_ret, arm))
+            continue
+
+        if all_states and all(
+            ipred is not None and len(states) == 1
+            for ipred, states in edge_states.items()
+        ):
+            # Predecessor-partitioned (opaque ``reg_a ^ reg_b`` split): each
+            # incoming edge folds to its own state.  The back-edge block is pure
+            # state-glue, so bypass it -- redirect every predecessor straight to
+            # its own routed handler.
+            for ipred, states in sorted(edge_states.items()):
+                state = next(iter(states))
+                target, is_ret = _classify(state)
+                ip_block = flow_graph.get_block(int(ipred))
+                ip_arm = (
+                    [int(s) for s in ip_block.succs].index(pred)
+                    if ip_block is not None and ip_block.nsucc > 1 and pred in [int(s) for s in ip_block.succs]
+                    else None
+                )
+                out.append(
+                    StateWriteTransition(
+                        int(ipred), state, target, is_ret, ip_arm, via_block=pred
+                    )
+                )
+            continue
+
+        # Unresolved (no fold, or a predecessor maps to multiple states) -> route
+        # the back-edge to the shared return.
+        out.append(StateWriteTransition(pred, None, None, True, arm))
+
+    return tuple(out)
 
 
 @dataclass(frozen=True, slots=True)

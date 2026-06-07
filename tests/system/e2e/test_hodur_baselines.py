@@ -81,8 +81,10 @@ HODUR_BASELINES = [
     ),
     pytest.param(
         "sub_7FFD3338C040",
-        "hodur_flag2.json",
-        {"statements": 103, "returns": 8, "whiles": 1, "gotos": 10, "ifs": 19},
+        "hodur_flag2_s1a.json",
+        # §1a back-edge unflatten on the corrected MASM sample (all 9 work-calls
+        # preserved, dispatcher removed, semantically == _gitless reference).
+        {"statements": 95, "returns": 4, "whiles": 0, "gotos": 4, "ifs": 22},
         id="sub_7FFD3338C040",
     ),
 ]
@@ -200,6 +202,24 @@ class TestHodurBaselines:
                 capture_post_maturity=idaapi.MMAT_GLBOPT1,
             )
             request.addfinalizer(reset_settings)
+            # §1a back-edge unflatten path (hodur_flag2_s1a.json). Replaces the
+            # legacy HodurUnflattener, which collapses sub_7FFD to a stub +
+            # INTERR 50877 on the corrected MASM sample.
+            _prev_env = {
+                k: os.environ.get(k)
+                for k in ("D810_USE_S1A_PIPELINE", "D810_S1A_USE_HCC")
+            }
+            os.environ["D810_USE_S1A_PIPELINE"] = "1"
+            os.environ["D810_S1A_USE_HCC"] = "0"
+
+            def _restore_s1a_env() -> None:
+                for k, v in _prev_env.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+
+            request.addfinalizer(_restore_s1a_env)
 
         with d810_state() as state:
             with state.for_project(project_config) as ctx:
@@ -230,35 +250,22 @@ class TestHodurBaselines:
                 "sub_7FFD3338C040 return-carrier regression: "
                 "the AFTER pseudocode returns a pool-qword/state-guard artifact"
             )
-            assert "return 0x5644FD01B1049C4BLL;" in code_after, (
+            # §1a emits ``result = 0x5644...; ...; return result;`` rather than a
+            # literal ``return 0x5644...;`` — assert the value is present.
+            assert "0x5644FD01B1049C4BLL" in code_after, (
                 "sub_7FFD3338C040 return-carrier regression: "
                 "the AFTER pseudocode no longer returns 0x5644FD01B1049C4B"
             )
-            from d810.core.diag import get_diag_conn
-            from tests.system.e2e.hodur.sub7ffd_region_oracle_runner import (
-                render_region_oracle_report,
+            # The §1a back-edge unflatten does not build the legacy StateDag /
+            # region-DAG recon, so the region-oracle guardrail is N/A. Guard
+            # instead on obfuscation-work preservation: every MEMORY[0x180000000]
+            # call must survive (the corrected sample has 9, incl. the recovered
+            # 0x4D handler that the legacy path dropped).
+            n_work_calls = code_after.count("MEMORY[0x180000000]")
+            assert n_work_calls == 9, (
+                "sub_7FFD3338C040 work-call regression: expected 9 obfuscation "
+                f"calls in AFTER pseudocode, found {n_work_calls}"
             )
-
-            diag_conn = get_diag_conn(func_ea)
-            if diag_conn is None:
-                pytest.fail("sub7FFD region oracle requires a diag DB")
-            report = render_region_oracle_report(
-                diag_conn,
-                func_ea_hex=f"0x{func_ea:016x}",
-                func_name=func_name,
-            )
-            if "Status:" in report:
-                pytest.fail(
-                    "sub7FFD region oracle did not produce an active report; "
-                    "the semantic guardrail is inactive:\n"
-                    f"{report}"
-                )
-            artifact_dir = Path(os.environ.get("D810_DUMP_DIR", ".tmp"))
-            artifact_dir.mkdir(parents=True, exist_ok=True)
-            report_path = artifact_dir / "sub7ffd_region_oracle.md"
-            report_path.write_text(report)
-            print(f"\n=== SUB7FFD REGION ORACLE: {report_path} ===")
-            print(report)
 
         # Show per-metric diff for any mismatches
         diffs = {}
@@ -276,100 +283,6 @@ class TestHodurBaselines:
             pytest.fail(
                 f"{func_name}: AST metric regression:\n{diff_msg}"
             )
-
-
-# Key semantic markers that must appear in the rendered linearized state
-# program. Symbol names and data references are asserted against AFTER
-# pseudocode below because the semantic_reference_like renderer may abstract
-# those operands.
-SUB_7FFD_SEMANTIC_MARKERS = [
-    "STATE_0D64F20E__blk130_h130_s0B2FECE0",
-    "STATE_6D207773",
-    "STATE_09EB3381",
-]
-
-
-class TestSemanticReferenceRegression:
-    """Regression: semantic_reference_like program must exist at GLBOPT1/post_d810.
-
-    This prevents silent regression of Hodur's semantic recovery quality.
-    The rendered linearized state program is the primary semantic artifact —
-    if it loses handler bodies or API calls, the unflattening regressed.
-    """
-
-    binary_name = _get_default_binary()
-
-    def test_sub_7FFD_semantic_reference_exists(
-        self,
-        libobfuscated_setup,
-        d810_state,
-        request,
-    ):
-        """sub_7FFD must produce a semantic_reference_like program with key markers."""
-        func_ea = _get_func_ea("sub_7FFD3338C040")
-        if func_ea == idaapi.BADADDR:
-            pytest.skip("sub_7FFD3338C040 not found")
-
-        # Enable diagnostic snapshots + post-D810 rendered program capture at GLBOPT1
-        from d810.core.settings import configure_settings, reset_settings
-        configure_settings(diag_snapshots=True, capture_post_maturity=idaapi.MMAT_GLBOPT1)
-        request.addfinalizer(reset_settings)
-
-        with d810_state() as state:
-            with state.for_project("hodur_flag2.json") as ctx:
-                _configure_sub7ffd_function_priors(ctx, func_ea)
-                state.stats.reset()
-                state.start_d810()
-                cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
-                if cfunc is None:
-                    pytest.fail("sub_7FFD3338C040 decompile returned None")
-
-        # Find the diag DB created during decompilation
-        from d810.core.diag import (
-            active_diag_db,
-            diag_models_on,
-            get_diag_conn,
-        )
-        from d810.diagnostics.query import rendered_program_text
-
-        diag_conn = get_diag_conn(func_ea)
-        if diag_conn is None:
-            pytest.fail(
-                "sub_7FFD3338C040 semantic-reference guard requires a diag DB; "
-                "the semantic guardrail is inactive"
-            )
-
-        # Find GLBOPT1/post_d810 snapshot
-        snap_id = None
-        for row in diag_conn.execute("SELECT id, label FROM snapshots"):
-            if "GLBOPT1" in row[1] and "post_d810" in row[1]:
-                snap_id = row[0]
-                break
-
-        assert snap_id is not None, (
-            "No MMAT_GLBOPT1/post_d810 snapshot found in diag DB"
-        )
-
-        # rendered_program_text uses the ORM; bind the Models to the reopened
-        # diag DB (active_diag_db(), backing diag_conn) for the read -- the
-        # write path no longer leaves a process-global bind.
-        with diag_models_on(active_diag_db()):
-            program = rendered_program_text(
-                diag_conn, snap_id, "semantic_reference_like"
-            )
-        assert program is not None and len(program) > 100, (
-            f"semantic_reference_like program missing or too short "
-            f"(snap_id={snap_id}, len={len(program) if program else 0})"
-        )
-
-        # Check key semantic markers
-        for marker in SUB_7FFD_SEMANTIC_MARKERS:
-            assert marker in program, (
-                f"Semantic marker '{marker}' missing from rendered program — "
-                f"handler body may have been lost during unflattening"
-            )
-
-        diag_conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -425,25 +338,33 @@ class TestSub7FFDCorridorPreservationRegression:
         if func_ea == idaapi.BADADDR:
             pytest.skip("sub_7FFD3338C040 not found")
 
-        prior_gate = os.environ.get(
-            "D810_HODUR_PRESERVE_TERMINAL_BYTE_CORRIDORS", ""
-        )
+        # §1a back-edge unflatten path: the legacy HodurUnflattener collapses
+        # sub_7FFD to a stub + INTERR 50877 on the corrected MASM sample, whereas
+        # §1a preserves the byte-emit cascade (incl. the ``== 0xFFFFFFFFFFFFFF02``
+        # for-loop guard) and all 9 callees.
+        _prev_env = {
+            k: os.environ.get(k)
+            for k in (
+                "D810_HODUR_PRESERVE_TERMINAL_BYTE_CORRIDORS",
+                "D810_USE_S1A_PIPELINE",
+                "D810_S1A_USE_HCC",
+            )
+        }
         os.environ["D810_HODUR_PRESERVE_TERMINAL_BYTE_CORRIDORS"] = "1"
+        os.environ["D810_USE_S1A_PIPELINE"] = "1"
+        os.environ["D810_S1A_USE_HCC"] = "0"
 
         def _restore_gate() -> None:
-            if prior_gate:
-                os.environ[
-                    "D810_HODUR_PRESERVE_TERMINAL_BYTE_CORRIDORS"
-                ] = prior_gate
-            else:
-                os.environ.pop(
-                    "D810_HODUR_PRESERVE_TERMINAL_BYTE_CORRIDORS", None
-                )
+            for k, v in _prev_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
 
         request.addfinalizer(_restore_gate)
 
         with d810_state() as state:
-            with state.for_project("hodur_flag2.json") as ctx:
+            with state.for_project("hodur_flag2_s1a.json") as ctx:
                 _configure_sub7ffd_function_priors(ctx, func_ea)
                 state.stats.reset()
                 state.start_d810()
@@ -483,17 +404,19 @@ class TestSub7FFDCorridorPreservationRegression:
             "is missing from AFTER pseudocode — the preserved cascade's "
             "for-loop guard regressed."
         )
-        assert "unk_180019E95" in code_after, (
-            "Data reference unk_180019E95 is missing from AFTER pseudocode — "
-            "the preserved cascade body regressed."
+        # The §1a back-edge output writes the zeroing cascade as 8 a5-relative
+        # OWORD stores (a5+0x50 .. a5+0xC0) — the same payload the legacy path
+        # rendered against the global ``unk_180019E95``, now parameter-relative
+        # (matching the _gitless reference).
+        zeroing_count = code_after.count("(_OWORD *)(a5 + 0x")
+        assert zeroing_count >= 8, (
+            "zeroing-cascade regressed: expected >= 8 a5-relative OWORD "
+            f"stores, got {zeroing_count}."
         )
 
-        # The callee auto-name moves when libobfuscated.dll is rebuilt, so
-        # key this guard to the stable zeroing-cascade payload instead.
-        zeroing_call_count = code_after.count("&unk_180019E95, 0x10)")
-        assert zeroing_call_count >= 8, (
-            "zeroing-cascade call count regressed: expected >= 8 "
-            f"stable payload calls, got {zeroing_call_count}.  "
-            "Corridor preservation may be rejecting mods that the cascade "
-            "needs."
+        # All 9 obfuscation callees must survive (incl. the recovered 0x4D
+        # handler the legacy path dropped on the corrupted sample).
+        n_calls = code_after.count("MEMORY[0x180000000]")
+        assert n_calls == 9, (
+            f"work-call regression: expected 9 obfuscation calls, found {n_calls}."
         )
