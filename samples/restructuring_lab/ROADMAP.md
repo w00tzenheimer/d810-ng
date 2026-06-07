@@ -24,19 +24,19 @@ findings). Each item below names what d810 HAS and what's MISSING.
 
 | id | item | d810 HAS | gap | prio | spec |
 |-|-|-|-|-|-|
-| L1 | loops / back-edges | `backedge_classifier`,`loops`,`loop_prover`,`scc_analysis`,`PhaseCycleLowering` | lab-validate a reconstructed loop renders `while`/`do-while` | HIGH | todo |
-| L2 | full state elimination (reg/computed) | `_state_slot`(KT-disc.),`ZeroStateWrite` | strip reg-sourced/computed state; reconstruct the entry selector (P3 residual) | HIGH | todo |
-| L3 | EA / provenance | `insn_snapshot_materializer` | real `insn_ea` on inserted insns (ledger: `StateWriteAnchor` lacks `insn_ea`); we use the `entry_ea` hack | HIGH | todo |
-| L4 | projected-gate wiring | `verify_projected`/`projected_contract` (`transaction_engine`/`policy`/`contract`) | drive lab inserts through the pre-mutation gate ("prove before commit") | HIGH | todo |
-| L5 | INTERR→projected-invariant coverage | `contracts/invariants`,`*parity_matrix.json`,native_oracle | populate the "close a gap" map: each `native_verify` INTERR (50346/50860/…) gets a projected invariant | HIGH | todo |
-| L6 | jump-table / N-way dispatch | `NormalizeNWayDispatcherExit`,`CanonicalizeJumpTableCaseOverlap`,`dispatcher_materialization` | `m_jtbl` fixture + lab-validate (our fixtures are if-chain) | MED | todo |
-| L7 | multi-block subgraph insert | `DuplicateReplayAndRedirect`,`new_blocks: PatchBlockSpec` | insert a captured *region* (2+ blocks, internal edges) as a unit | MED | todo |
-| L8 | conditional synthesis (P2b) | `LowerConditionalStateTransition`,`CreateConditionalRedirect` | branchless/cmov or dataflow-recovered predicate → synthesize the branch | MED | todo |
-| L9 | true dead-def removal | `ZeroStateWrite`,`insn_snapshot_materializer`(IPROP_PERSIST) | deterministic dead-def removal, not DCE-reliance (ledger) | MED | todo |
-| L10 | maturity-timing contract | (none) | formalize which op is legal at which maturity; we hardcode GLBOPT1 (ledger) | MED | todo |
-| L11 | operand / alias fixups | `PromoteOperandToScalar`,`ScalarizeLocalAliasAccess` | stack/alias-operand fixture + lab-validate | LOW | todo |
-| L12 | MBA / opaque-predicate simplification | optimizer rule engine | handler-body simplification (the *structurability* half; separate track) | LOW | todo |
-| L13 | robustness | `ReorderBlocks`,`dispatcher_residue_cleanup` | idempotency across optblock passes, reorder/cleanup, transactional rollback in lab | LOW | todo |
+| L1 | loops / back-edges | `backedge_classifier`,`loops`,`loop_prover`,`scc_analysis`,`PhaseCycleLowering` | lab-validate a reconstructed loop renders `while`/`do-while` | HIGH | drafted |
+| L2 | full state elimination (reg/computed) | `_state_slot`(KT-disc.),`ZeroStateWrite` | strip reg-sourced/computed state; reconstruct the entry selector (P3 residual) | HIGH | drafted |
+| L3 | EA / provenance | `insn_snapshot_materializer` | real `insn_ea` on inserted insns (ledger: `StateWriteAnchor` lacks `insn_ea`); we use the `entry_ea` hack | HIGH | drafted |
+| L4 | projected-gate wiring | `verify_projected`/`projected_contract` (`transaction_engine`/`policy`/`contract`) | drive lab inserts through the pre-mutation gate ("prove before commit") | HIGH | drafted |
+| L5 | INTERR→projected-invariant coverage | `contracts/invariants`,`*parity_matrix.json`,native_oracle | populate the "close a gap" map: each `native_verify` INTERR (50346/50860/…) gets a projected invariant | HIGH | drafted |
+| L6 | jump-table / N-way dispatch | `NormalizeNWayDispatcherExit`,`CanonicalizeJumpTableCaseOverlap`,`dispatcher_materialization` | `m_jtbl` fixture + lab-validate (our fixtures are if-chain) | MED | drafted |
+| L7 | multi-block subgraph insert | `DuplicateReplayAndRedirect`,`new_blocks: PatchBlockSpec` | insert a captured *region* (2+ blocks, internal edges) as a unit | MED | drafted |
+| L8 | conditional synthesis (P2b) | `LowerConditionalStateTransition`,`CreateConditionalRedirect` | branchless/cmov or dataflow-recovered predicate → synthesize the branch | MED | drafted |
+| L9 | true dead-def removal | `ZeroStateWrite`,`insn_snapshot_materializer`(IPROP_PERSIST) | deterministic dead-def removal, not DCE-reliance (ledger) | MED | drafted |
+| L10 | maturity-timing contract | (none) | formalize which op is legal at which maturity; we hardcode GLBOPT1 (ledger) | MED | drafted |
+| L11 | operand / alias fixups | `PromoteOperandToScalar`,`ScalarizeLocalAliasAccess` | stack/alias-operand fixture + lab-validate | LOW | drafted |
+| L12 | MBA / opaque-predicate simplification | optimizer rule engine | handler-body simplification (the *structurability* half; separate track) | LOW | drafted |
+| L13 | robustness | `ReorderBlocks`,`dispatcher_residue_cleanup` | idempotency across optblock passes, reorder/cleanup, transactional rollback in lab | LOW | drafted |
 
 ## Phasing & dependencies
 
