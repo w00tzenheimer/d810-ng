@@ -120,7 +120,7 @@ project:
 - Merge-causality query: `python -m d810.diagnostics merge-causality`
 - Block trace / lineage queries: `block-trace`, `block-lineage`, `ea-trace`
 - CFG provenance logging: `src/d810/core/diag/cfg_provenance.py`
-- Existing C/ASM samples under `samples/src/c` and `samples/masm`
+- Existing C/ASM samples under `samples/src/c` and `samples/src/masm`
 
 ## Current CLI
 

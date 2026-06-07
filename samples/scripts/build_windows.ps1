@@ -7,8 +7,8 @@
     Requires Visual Studio 2022+, GNU make, and Git for Windows.
 
 .PARAMETER MasmFuncs
-    Optional space-separated subset of masm/<name>.asm functions to link
-    (default: all of masm/*.asm are auto-discovered). Assembled with ml64 and
+    Optional space-separated subset of src/masm/<name>.asm functions to link
+    (default: all of src/masm/*.asm are auto-discovered). Assembled with ml64 and
     linked + exported via the clang-cl/link.exe path.
 
 .EXAMPLE

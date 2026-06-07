@@ -5,7 +5,7 @@
 #
 # Isolation guarantees (why this is safe where the libobfuscated build is not):
 #   * The container mounts ONLY this lab dir (writable) + samples/include
-#     (read-only). It physically cannot reach samples/Makefile, samples/masm/,
+#     (read-only). It physically cannot reach samples/Makefile, samples/src/masm/,
 #     or samples/bins/libobfuscated.dll.
 #   * This lab's Makefile only ever writes build/ and bins/ inside the lab dir.
 #   * No throwaway-/tmp copy is needed -- there is nothing shared to clobber.

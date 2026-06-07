@@ -168,9 +168,9 @@ Use `make clean` to wipe previous `bins/` outputs.
 
 To rebuild a function from its **real disassembly** instead of recompiled C — so
 d810 attacks the genuine obfuscated control flow — drop its MASM into
-`masm/<name>.asm`. Every `masm/*.asm` is **auto-discovered**: assembled to a
+`src/masm/<name>.asm`. Every `src/masm/*.asm` is **auto-discovered**: assembled to a
 `.obj`, linked in and exported, with the matching `src/c/<name>.c` body dropped.
-Produce `masm/<name>.asm` with the in-IDA **"Export disassembly → MASM"** action
+Produce `src/masm/<name>.asm` with the in-IDA **"Export disassembly → MASM"** action
 (Disassembly view → right-click), which decodes the function structurally,
 resolves references to relocatable symbols, and **materializes the referenced
 data** (real constant values) — so the rebuilt binary preserves genuine code +
@@ -180,13 +180,13 @@ MASM is Windows-x64 / **MSVC-COFF** only, so it activates on the MSVC ABI:
 
 ```bash
 # mac / linux: clang (MSVC target) + llvm-ml64 + lld-link  (needs Homebrew llvm)
-make masm                       # links every masm/*.asm
+make masm                       # links every src/masm/*.asm
 
 # Windows: clang-cl + ml64 + link.exe (auto-integrated into the normal build)
 .\scripts\build_windows.ps1
 ```
 
-On mac/linux/MinGW *default* builds the `masm/` dir is ignored and the C bodies
+On mac/linux/MinGW *default* builds the `src/masm/` dir is ignored and the C bodies
 build as usual. The external `call` targets remain unresolved (tolerated, like
 the C build). Confirm the function is present with the export check below.
 

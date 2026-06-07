@@ -281,12 +281,12 @@ ifeq ($(TARGET_OS),windows)
 endif
 
 # ----------------------------- Sources & Objects -----------------------------
-# Hand-assembled functions live in masm/<name>.asm and are auto-discovered:
+# Hand-assembled functions live in src/masm/<name>.asm and are auto-discovered:
 # each is assembled (ml64) to an MSVC-COFF object, linked in + exported, and its
 # matching src/c/<name>.c body is dropped from the build.
 #
 # MASM is Windows-x64 / MSVC-COFF only, so it ACTIVATES ONLY on the clang-cl
-# (Windows) path. On mac/linux/MinGW the masm/ dir is ignored and the C bodies
+# (Windows) path. On mac/linux/MinGW the src/masm/ dir is ignored and the C bodies
 # build as usual; use `make masm` for a Windows DLL with the asm linked in.
 ifeq ($(HOST_OS),windows)
     ML64 ?= ml64
@@ -295,8 +295,8 @@ else
 endif
 
 ifeq ($(USING_CLANG_CL),1)
-    MASM_ASM   := $(wildcard masm/*.asm)
-    MASM_FUNCS := $(patsubst masm/%.asm,%,$(MASM_ASM))
+    MASM_ASM   := $(wildcard src/masm/*.asm)
+    MASM_FUNCS := $(patsubst src/masm/%.asm,%,$(MASM_ASM))
     MASM_OBJS  := $(MASM_ASM:.asm=.obj)
 else
     MASM_FUNCS :=
@@ -351,14 +351,14 @@ $(TARGET_LIB): $(OBJS) $(MASM_OBJS) $(AUTO_EXPORTS_RSP)
 # Assemble hand-written MASM functions (MSVC-COFF). ml64 and llvm-ml64 share
 # this CLI; the resulting .obj links cleanly with link.exe (clang-cl path).
 # A raw IDA "Produce assembly file" listing is auto-converted to compilable MASM.
-# Committed masm/*.asm must be COMPILABLE MASM produced by the in-IDA
+# Committed src/masm/*.asm must be COMPILABLE MASM produced by the in-IDA
 # "Export disassembly -> MASM" action (materialized data). Notes:
 #  * real ml64 is inherently 64-bit and rejects -m64 (an llvm-ml64 flag);
 #    `/nologo /c /Fo<obj> <asm>` is accepted by both ml64 and llvm-ml64.
 #  * under git-bash (MSYS) the `/`-prefixed options are rewritten to Windows
 #    paths (`/c` -> `C:/`); MSYS2_ARG_CONV_EXCL='*' disables that mangling
 #    (the var is simply ignored on mac/linux).
-masm/%.obj: masm/%.asm
+src/masm/%.obj: src/masm/%.asm
 	@echo "Assembling $< ($(ML64))"
 	MSYS2_ARG_CONV_EXCL='*' $(ML64) /nologo /c /Fo$@ $<
 else ifeq ($(CC),cl)
@@ -409,9 +409,9 @@ endif
 endif
 
 # ---------------------------------------------------------------------------
-# MASM build (mac/linux): assemble + link every masm/*.asm function via the MSVC
+# MASM build (mac/linux): assemble + link every src/masm/*.asm function via the MSVC
 # ABI (clang msvc-target + llvm-ml64 + lld-link), independent of MinGW/Docker.
-#   make masm                 # auto-discovers masm/*.asm
+#   make masm                 # auto-discovers src/masm/*.asm
 #   make masm MASM_FUNCS="sub_7FFD3338C040"   # explicit subset
 # ---------------------------------------------------------------------------
 masm:

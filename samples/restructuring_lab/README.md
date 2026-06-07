@@ -29,10 +29,10 @@ This:
 ## Why it cannot clobber libobfuscated
 
 - Own `Makefile` (never invokes `samples/Makefile`); writes only `build/` + `bins/`.
-- Own `masm/` dir, so the main Makefile's `samples/masm/*.asm` auto-discovery
+- Own `masm/` dir, so the main Makefile's `samples/src/masm/*.asm` auto-discovery
   never sees these fixtures.
 - The container mounts only this dir (writable) + `samples/include` (read-only);
-  it physically cannot reach `samples/Makefile`, `samples/masm/`, or
+  it physically cannot reach `samples/Makefile`, `samples/src/masm/`, or
   `samples/bins/libobfuscated.dll`.
 
 ## Layout

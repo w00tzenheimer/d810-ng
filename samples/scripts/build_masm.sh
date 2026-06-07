@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build libobfuscated.dll with functions supplied as hand-assembled MASM
-# (masm/<name>.asm, auto-discovered) instead of compiled C.
+# (src/masm/<name>.asm, auto-discovered) instead of compiled C.
 #
 # MASM objects are MSVC-COFF, so the WHOLE build uses the MSVC ABI:
 #   C   -> clang --target=x86_64-pc-windows-msvc
@@ -35,12 +35,12 @@ CC="$(resolve_tool "${CC:-clang}")"          || { echo "error: clang not found" 
 ML64="$(resolve_tool "${ML64:-llvm-ml64}")"  || { echo "error: llvm-ml64/ml64 not found" >&2; exit 1; }
 LINKER="$(resolve_tool "${LINKER:-lld-link}")" || { echo "error: lld-link not found" >&2; exit 1; }
 
-# Default to every masm/*.asm (auto-discovery); MASM_FUNCS may override a subset.
+# Default to every src/masm/*.asm (auto-discovery); MASM_FUNCS may override a subset.
 if [ -z "$MASM_FUNCS" ]; then
-    MASM_FUNCS="$(for a in masm/*.asm; do [ -e "$a" ] && basename "$a" .asm; done | tr '\n' ' ')"
+    MASM_FUNCS="$(for a in src/masm/*.asm; do [ -e "$a" ] && basename "$a" .asm; done | tr '\n' ' ')"
 fi
 if [ -z "$(echo "$MASM_FUNCS" | tr -d ' ')" ]; then
-    echo "error: no masm/*.asm files found (and MASM_FUNCS empty)" >&2
+    echo "error: no src/masm/*.asm files found (and MASM_FUNCS empty)" >&2
     exit 2
 fi
 
@@ -72,9 +72,9 @@ echo "C objects: compiled=$compiled skipped=$skipped"
 # --- assemble the MASM functions -------------------------------------------
 export_flags=()
 for f in $MASM_FUNCS; do
-    # masm/<f>.asm must be compilable MASM from the in-IDA "Export disassembly
+    # src/masm/<f>.asm must be compilable MASM from the in-IDA "Export disassembly
     # -> MASM" action (materialized data + relocatable symbols).
-    src="masm/$f.asm"
+    src="src/masm/$f.asm"
     [ -f "$src" ] || { echo "error: missing $src" >&2; exit 1; }
     obj="$BUILD_DIR/$f.obj"
     "$ML64" /nologo /c /Fo"$obj" "$src" >"$BUILD_DIR/$f.asm.log" 2>&1 \
