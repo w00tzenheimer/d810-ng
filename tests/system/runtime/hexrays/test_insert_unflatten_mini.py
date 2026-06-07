@@ -6,6 +6,8 @@ See samples/restructuring_lab/specs/2026-06-06-insert-unflatten-phase1.md.
 from __future__ import annotations
 
 import os
+import re
+from collections import Counter
 
 import pytest
 
@@ -739,3 +741,186 @@ class TestInsertUnflattenShared:
         # NOTE: the entry selector (K0/K1 in v1) is residual scaffolding from the
         # un-reconstructed entry conditional (reg-sourced; a Phase 2 entry
         # reconstruction, out of scope for this de-share demo).
+
+
+LOOP_FUNCTION = "lab_flat_loop"
+
+
+def _build_unflatten_plan(mba):
+    """General insert-based unflatten (L1): redirect EVERY state-writer block to
+    the handler the written state routes to (terminal-state writers -> the return
+    block). This is the generalization of the linear P1 plan -- and a loop falls
+    out *for free*: when a handler writes a state that routes back to an earlier
+    handler (the body's back-edge), the redirect becomes a genuine retreating edge
+    and the render is a structured loop, not the dispatcher.
+
+    Returns (plan, disp, info) where plan = [(source, final, old_target), ...] and
+    info = (state_slot, writers, routing, terminal) for diagnostics. The same
+    old_target (the dispatcher head every handler currently gotos) applies to all
+    redirects.
+    """
+    state_dest = _state_slot(mba)
+    writers = _state_writers(mba, state_dest)        # K -> [writer serials]
+    routing = _dispatcher_routing(mba, state_dest)   # K -> handler serial
+    terminal = _terminal_serial(mba)
+    # Dispatcher head = the block handlers re-enter to re-read the state: the MOST
+    # COMMON successor among all state-writer blocks (NOT their intersection). A
+    # handler that is ALSO a 2WAY -- e.g. the loop body, which writes its own
+    # next-state then branches on the counter into its arms -- contributes its
+    # arms, not the dispatcher, so an intersection collapses to empty. The mode is
+    # robust to such spurious writers.
+    succ_counter: Counter = Counter()
+    for blist in writers.values():
+        for b in blist:
+            for s in mba.get_mblock(b).succset:
+                succ_counter[int(s)] += 1
+    disp = succ_counter.most_common(1)[0][0] if succ_counter else -1
+    plan = []
+    for k, blist in writers.items():
+        target = routing.get(k)
+        if target is None and k == STATE_TERM:
+            target = terminal
+        if target is None or target < 0:
+            continue
+        for w in blist:
+            # Only redirect GENUINE dispatcher-returning writers (succ == disp).
+            # A block that merely happens to write the state but branches
+            # elsewhere (the loop body's hoisted next-state) is not a dispatcher
+            # edge -- skip it, or we'd emit a degenerate self-redirect (7 -> 7).
+            if disp in [int(s) for s in mba.get_mblock(w).succset]:
+                plan.append((w, target, disp))
+    return plan, disp, (state_dest, writers, routing, terminal)
+
+
+class TestInsertUnflattenLoop:
+    """L1: a flattened state machine whose TRUE CFG contains a LOOP (the body
+    handler conditionally back-edges to itself on a counter). The general
+    unflatten plan -- redirect every state-writer to its routed handler --
+    reconstructs the back-edge, so the render is a real do/while on the counter,
+    not the dispatcher loop."""
+
+    binary_name = os.environ.get("D810_TEST_BINARY", "restructuring_lab.dll")
+
+    def test_dump_loop_structure(self, ida_database, configure_hexrays):
+        """Diagnostic: map the loop fixture. The back-edge proof is that the
+        body-state (K1) is written by TWO blocks -- the init handler (forward into
+        the loop) and the body's own continue-arm (the back-edge)."""
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+        ea = get_func_ea(LOOP_FUNCTION)
+        mba = gen_microcode_at_maturity(ea, ida_hexrays.MMAT_GLBOPT1)
+        assert mba is not None
+        plan, disp, (sd, writers, routing, term) = _build_unflatten_plan(mba)
+        print(f"\n=== lab_flat_loop GLBOPT1 qty={mba.qty} state_slot={sd!r} ===")
+        for i in range(mba.qty):
+            blk = mba.get_mblock(i)
+            if blk is None:
+                continue
+            succs = [int(s) for s in blk.succset]
+            preds = [int(p) for p in blk.predset]
+            tail = blk.tail
+            top = int(tail.opcode) if tail is not None else -1
+            sw = None
+            ins = blk.head
+            while ins is not None:
+                if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
+                        and ins.l.t == ida_hexrays.mop_n and ins.d is not None
+                        and ins.d.dstr() == sd):
+                    sw = hex(int(ins.l.nnn.value) & 0xFFFFFFFF)
+                ins = ins.next
+            two = "(2WAY)" if blk.type == ida_hexrays.BLT_2WAY else ""
+            print(f"  blk[{i}] type={int(blk.type)}{two} preds={preds} "
+                  f"succs={succs} tail_op={top}"
+                  f"{' STATE_WRITE=' + sw if sw else ''}")
+        print(f"  writers={ {hex(k): v for k, v in writers.items()} }")
+        print(f"  routing={ {hex(k): v for k, v in routing.items()} } "
+              f"disp={disp} terminal={term}")
+        print(f"  plan={plan}")
+        # The exit transition (K2) routes to a handler distinct from the body.
+        assert STATE_K1 in routing and STATE_K2 in routing, routing
+        assert routing[STATE_K1] != routing[STATE_K2], routing
+        assert disp >= 0 and term >= 0, (disp, term)
+        # The back-edge: TWO genuine dispatcher-returning writers route to the
+        # body handler -- the forward entry (from init) AND the body's own
+        # continue-arm (whose predecessor IS the body handler) -> a retreating
+        # edge. (The raw writers[K1] also includes the body block's hoisted
+        # self-write, which the plan correctly filters out.)
+        body = routing[STATE_K1]
+        body_redirects = [s for (s, f, _o) in plan if f == body]
+        assert len(body_redirects) >= 2, f"no back-edge in plan: {plan}"
+        back_arm = body  # the body handler; its successor arm is the back-edge src
+        assert any(back_arm in [int(p) for p in mba.get_mblock(s).predset]
+                   for s in body_redirects), (
+            f"no continue-arm whose pred is the body handler: {body_redirects}")
+
+    def test_loop_renders_optblock(self, ida_database, configure_hexrays):
+        """Reconstruct the loop via the general unflatten plan at the optblock
+        stage. The body's continue-arm redirect becomes a back-edge; the render
+        is a structured loop on the counter with no dispatcher state constants."""
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+        ea = get_func_ea(LOOP_FUNCTION)
+
+        class _LoopOptblock(ida_hexrays.optblock_t):
+            def __init__(self):
+                super().__init__()
+                self.done = False
+                self.applied = 0
+                self.plan = None
+                self.error = None
+
+            def func(self, blk):
+                try:
+                    mba = blk.mba
+                    if (self.done or mba is None
+                            or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)):
+                        return 0
+                    plan, disp, info = _build_unflatten_plan(mba)
+                    _sd, writers, routing, term = info
+                    # Act only once the machine is fully mapped (the live mba
+                    # stabilizes during GLBOPT1; let earlier passes retry).
+                    if not (len(writers.get(STATE_K1, [])) >= 2
+                            and STATE_K1 in routing and STATE_K2 in routing
+                            and term >= 0 and disp >= 0 and len(plan) >= 4):
+                        return 0
+                    self.plan = plan
+                    self.done = True
+                    mod = DeferredGraphModifier(mba)
+                    for src, final, old in plan:
+                        mod.queue_create_and_redirect(
+                            src, final, [], old_target_serial=old)
+                    mod.coalesce()
+                    self.applied = mod.apply(run_optimize_local=True)
+                    return self.applied
+                except Exception as exc:  # noqa: BLE001
+                    self.error = repr(exc)
+                    return 0
+
+        opt = _LoopOptblock()
+        opt.install()
+        hf = ida_hexrays.hexrays_failure_t()
+        try:
+            ida_hexrays.mark_cfunc_dirty(ea)
+            cfunc = ida_hexrays.decompile(ea, hf)
+        finally:
+            opt.remove()
+        print(f"\n=== loop render (plan={opt.plan} applied={opt.applied} "
+              f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ===")
+        if cfunc is not None:
+            print(str(cfunc))
+        print("=== end loop render ===")
+        assert opt.applied >= 4, f"applied={opt.applied} err={opt.error}"
+        assert cfunc is not None, f"decompile failed: {hf.code} {hf.desc()!r}"
+        text = str(cfunc)
+        up = text.upper()
+        # Dispatcher gone: no state-routing constants survive.
+        assert f"{STATE_K0:X}" not in up, f"K0 dispatcher const survived:\n{text}"
+        assert f"{STATE_K1:X}" not in up, f"K1 dispatcher const survived:\n{text}"
+        assert f"{STATE_K2:X}" not in up, f"K2 dispatcher const survived:\n{text}"
+        # A REAL structured loop over the counter survives (the back-edge was
+        # reconstructed). Hex-Rays emits a lowercase while/do/for keyword.
+        assert re.search(r"\b(while|do|for)\b", text), (
+            f"no structured loop keyword (back-edge not structured):\n{text}")
+        # Body + exit work present (the volatile sink forces materialization).
+        assert "0X22" in up, f"body XOR work missing:\n{text}"
+        assert "0X33" in up, f"exit subtract work missing:\n{text}"

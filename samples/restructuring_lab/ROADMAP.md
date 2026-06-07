@@ -19,12 +19,13 @@ findings). Each item below names what d810 HAS and what's MISSING.
 - **P2a conditional preserve** — handler jcc preserved + arm redirects + dispatcher-routing extractor; renders if/else.
 - **P3 de-share state-free** — `capture_payload`-style capture stripping all state-const writes + control-flow; renders duplicated work, no state var.
 - **INTERR 50346/50860 reverse-engineered** + optblock-stage requirement, documented in `deferred_modifier`, the hexx64 IDB, spec, memory.
+- **L1 loops / back-edges** — general `_build_unflatten_plan` (redirect every genuine dispatcher-returning state-writer to its routed handler); a back-edge falls out for free, renders a clean `do/while`. Dispatcher head = MODE of writer successors (not intersection); spurious body-writer filtered by `succ==disp`. `PhaseCycleLowering` unused. Obs: `flat_loop_insert_unflatten.json`.
 
 ## Backlog
 
 | id | item | d810 HAS | gap | prio | spec |
 |-|-|-|-|-|-|
-| L1 | loops / back-edges | `backedge_classifier`,`loops`,`loop_prover`,`scc_analysis`,`PhaseCycleLowering` | lab-validate a reconstructed loop renders `while`/`do-while` | HIGH | drafted |
+| L1 | loops / back-edges | `backedge_classifier`,`loops`,`loop_prover`,`scc_analysis`,`PhaseCycleLowering` | ~~lab-validate a reconstructed loop renders `while`/`do-while`~~ **DONE** — general plan; back-edge for free; renders `do/while` | HIGH | done |
 | L2 | full state elimination (reg/computed) | `_state_slot`(KT-disc.),`ZeroStateWrite` | strip reg-sourced/computed state; reconstruct the entry selector (P3 residual) | HIGH | drafted |
 | L3 | EA / provenance | `insn_snapshot_materializer` | real `insn_ea` on inserted insns (ledger: `StateWriteAnchor` lacks `insn_ea`); we use the `entry_ea` hack | HIGH | drafted |
 | L4 | projected-gate wiring | `verify_projected`/`projected_contract` (`transaction_engine`/`policy`/`contract`) | drive lab inserts through the pre-mutation gate ("prove before commit") | HIGH | drafted |

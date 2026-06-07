@@ -1,0 +1,30 @@
+{
+  "case_id": "flat_loop_insert_unflatten",
+  "binary": "restructuring_lab.dll",
+  "function": "lab_flat_loop",
+  "roadmap_item": "L1",
+  "phase": "L1 (loops / back-edges)",
+  "verifies_clean": true,
+  "inserts_applied": 5,
+  "interr": null,
+  "glbopt1_state_map": {
+    "qty": 12,
+    "state_slot": "%var_8.4",
+    "dispatcher_chain": [2, 3, 4],
+    "dispatcher_head": 2,
+    "terminal": 5,
+    "stop": 11,
+    "writers": {"K0_0xc6685257": [1], "K1_0xb92456de": [6, 7, 8], "K2_0x3c8960a9": [9], "TERM_0x1a2b3c4d": [10]},
+    "routing": {"K0": 6, "K1": 7, "K2": 10},
+    "note_blk7": "blk7 is the BODY handler (routed-to by K1) AND a 2WAY that writes its own next-state K1, with succs {8,9} (its counter arms), NOT the dispatcher. It is a spurious writer and is filtered out of the plan."
+  },
+  "plan": [[1, 6, 2], [6, 7, 2], [8, 7, 2], [9, 10, 2], [10, 5, 2]],
+  "back_edge": "blk8 (body continue-arm, pred = blk7 BODY) redirected to blk7 -> a retreating edge to an ancestor = the reconstructed loop back-edge. blk6 (init) -> blk7 is the forward entry.",
+  "live_render": "PASS via optblock_t (GLBOPT1, return change-count). Renders a clean do/while on the counter: init r+=0x11 outside; do { r^=0x22; sink=r; --counter } while(counter); then r-=0x33; sink; return. No dispatcher loop, no state constants, mba.verify() clean.",
+  "general_rule": "The general insert-based unflatten -- redirect every GENUINE dispatcher-returning state-writer (succ == dispatcher head) to the handler its written state routes to (TERM-writers -> terminal) -- reconstructs a loop FOR FREE: a handler that writes a state routing back to an earlier handler becomes a real back-edge. This generalizes the linear P1 plan; L1 needs no loop-specific lowering op (PhaseCycleLowering unused).",
+  "dispatcher_head_detection": "MODE (most common successor) of all state-writer blocks, NOT their intersection. A handler that is also a 2WAY (the loop body) contributes its arms, so an intersection collapses to empty (disp=-1). The mode is robust: dispatcher head blk2 appears 5x (from writers 1,6,8,9,10); the body's arms 8/9 appear once each.",
+  "spurious_writer_filter": "Redirect only writers whose successor includes the dispatcher head. The body block (blk7) writes K1 but branches into its own arms -- redirecting 7 -> routing[K1]=7 would be a degenerate self-redirect. Filtering by succ==disp excludes it.",
+  "counter_induction_preserved": "The counter (var_8? no -- counter is a separate slot; state_slot is %var_8.4) survives as the loop induction variable; it is never written a state constant, so _state_slot never confuses it for the state var. The do/while renders directly on it.",
+  "mbl_keep_needed": false,
+  "test": "tests/system/runtime/hexrays/test_insert_unflatten_mini.py::TestInsertUnflattenLoop (test_dump_loop_structure + test_loop_renders_optblock); 10 passed / 1 xfailed across the lab file."
+}
