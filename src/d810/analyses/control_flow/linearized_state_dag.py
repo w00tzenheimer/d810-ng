@@ -9024,6 +9024,82 @@ def _render_selective_local_boundary_program(
             )
         ]
         inlined_segments: set[str] = set()
+
+        # --- Path A: two-way-merge routing (llr-zfyi) ------------------------
+        # When a 2-way branch's arms converge on a single merge block that
+        # writes the next state, the merge body must render ONCE -- at its own
+        # label -- with each arm routing to that label and the node's exit
+        # transition attached to the merge (not re-emitted per arm). A semantic
+        # edge whose ordered_path terminates at a VISIBLE (labeled) merge segment
+        # in THIS node routes to that merge's label, emitting only its pre-merge
+        # tail. The merge label carries the real exit transition
+        # (exit_transition_by_segment) and is forbidden from inlining (see
+        # can_inline_boundary_target). This is recovery-independent: it triggers
+        # only on a brancher's own semantic edge whose path ends at a labeled
+        # merge, sparing single-incoming tails and merges with their own exits.
+        visible_segment_first_block: dict[int, str] = {}
+        for _vseg_id in visible_segments:
+            _vseg = segment_by_id[_vseg_id]
+            if _vseg.blocks:
+                visible_segment_first_block[_vseg.blocks[0]] = _vseg_id
+
+        def _edge_merge_routing(
+            edge: StateDagEdge,
+        ) -> tuple[str | None, tuple[int, ...]]:
+            """If ``edge``'s path enters a visible merge segment, return
+            ``(merge_segment_id, pre_merge_owned_blocks)``; else ``(None, ())``."""
+            if not edge.ordered_path:
+                return (None, ())
+            saw_source = False
+            pre_blocks: list[int] = []
+            for block_serial in edge.ordered_path:
+                if not saw_source:
+                    if block_serial == edge.source_anchor.block_serial:
+                        saw_source = True
+                    continue
+                merge_segment_id = visible_segment_first_block.get(block_serial)
+                if merge_segment_id is not None:
+                    return (merge_segment_id, tuple(pre_blocks))
+                if block_serial in owned_block_set:
+                    pre_blocks.append(block_serial)
+            return (None, ())
+
+        edge_merge_target: dict[int, str] = {}
+        edge_merge_pre_tail: dict[int, tuple[int, ...]] = {}
+        exit_transition_by_segment: dict[str, StateDagEdge] = {}
+        for _seg_sem_edges in semantic_edges_by_segment.values():
+            for _sem_edge in _seg_sem_edges:
+                _merge_seg, _pre_tail = _edge_merge_routing(_sem_edge)
+                if _merge_seg is None:
+                    continue
+                edge_merge_target[id(_sem_edge)] = _merge_seg
+                edge_merge_pre_tail[id(_sem_edge)] = _pre_tail
+                _existing = exit_transition_by_segment.get(_merge_seg)
+                if _existing is None or (
+                    _existing.source_anchor.kind == RedirectSourceKind.CONDITIONAL_BRANCH
+                    and _sem_edge.source_anchor.kind
+                    != RedirectSourceKind.CONDITIONAL_BRANCH
+                ):
+                    exit_transition_by_segment[_merge_seg] = _sem_edge
+
+        def _emit_merge_routed_edge(edge: StateDagEdge, *, indent: str) -> bool:
+            """If ``edge`` routes into a visible merge, emit its pre-merge tail
+            then a goto to the merge label; return True. Else return False."""
+            merge_segment_id = edge_merge_target.get(id(edge))
+            if merge_segment_id is None:
+                return False
+            pre_blocks = edge_merge_pre_tail.get(id(edge), ())
+            if pre_blocks:
+                _emit_block_payload_lines(
+                    lines,
+                    blocks=pre_blocks,
+                    indent=indent,
+                    block_payload_by_serial=block_payload_by_serial,
+                    transition_state_values=_edge_target_states((edge,)),
+                )
+            lines.append(f"{indent}goto {segment_labels[merge_segment_id]};")
+            return True
+
         visible_parent_cache: dict[str, frozenset[str]] = {}
 
         def visible_parent_boundaries(
@@ -9062,6 +9138,10 @@ def _render_selective_local_boundary_program(
             if segment_id == entry_segment_id or segment_id in inlined_segments:
                 return False
             if segment_id not in visible_segments:
+                return False
+            if segment_id in exit_transition_by_segment:
+                # Merge target carrying the node's exit transition: keep it a
+                # shared label both arms goto, not an inlined per-arm copy.
                 return False
             if len(visible_parent_boundaries(segment_id)) > 1:
                 return False
@@ -9140,12 +9220,21 @@ def _render_selective_local_boundary_program(
                     edge.target_segment_id,
                 ),
             )
+            # A visible merge segment carries the deferred exit transition of the
+            # branch that converges on it (Path A). Suppress its next-state write
+            # line in the body; the goto is emitted once after the body below.
+            deferred_exit = exit_transition_by_segment.get(segment_id)
+            payload_transition_values = _edge_target_states(semantic_edges)
+            if deferred_exit is not None:
+                payload_transition_values = payload_transition_values | _edge_target_states(
+                    (deferred_exit,)
+                )
             _emit_block_payload_lines(
                 lines,
                 blocks=segment.blocks,
                 indent=indent,
                 block_payload_by_serial=block_payload_by_serial,
-                transition_state_values=_edge_target_states(semantic_edges),
+                transition_state_values=payload_transition_values,
             )
             segment_condition = _extract_terminal_if_condition(segment_id)
 
@@ -9194,15 +9283,18 @@ def _render_selective_local_boundary_program(
                     lines.append(
                         f"{indent}if ({segment_condition or f'/* blk[{taken_semantic.source_anchor.block_serial}].taken */'})"
                     )
-                    _emit_semantic_edge_tail_payload(
-                        taken_semantic,
-                        current_segment=segment,
-                        indent=f"{indent}    ",
-                    )
-                    lines.append(
-                        f"{indent}    "
-                        f"{_render_segment_edge_action(taken_semantic, node_by_key=node_by_key, label_by_key=label_by_key, labels_by_base=labels_by_base, labels_by_base_and_entry=labels_by_base_and_entry, label_render_mode=label_render_mode)}"
-                    )
+                    if not _emit_merge_routed_edge(
+                        taken_semantic, indent=f"{indent}    "
+                    ):
+                        _emit_semantic_edge_tail_payload(
+                            taken_semantic,
+                            current_segment=segment,
+                            indent=f"{indent}    ",
+                        )
+                        lines.append(
+                            f"{indent}    "
+                            f"{_render_segment_edge_action(taken_semantic, node_by_key=node_by_key, label_by_key=label_by_key, labels_by_base=labels_by_base, labels_by_base_and_entry=labels_by_base_and_entry, label_render_mode=label_render_mode)}"
+                        )
                 elif taken_local is not None:
                     action, comment, _collapsed_chain = _render_local_destination(
                         taken_local.target_segment_id
@@ -9227,27 +9319,30 @@ def _render_selective_local_boundary_program(
                 if fallthrough_semantic is not None:
                     if fallthrough_semantic.kind == SemanticEdgeKind.EXIT_ROUTINE:
                         emitted_exit_routine = True
-                    _emit_semantic_edge_tail_payload(
-                        fallthrough_semantic,
-                        current_segment=segment,
-                        indent=indent,
-                    )
-                    lines.append(
-                        f"{indent}"
-                        + with_optional_comment(
-                            _render_segment_edge_action(
-                                fallthrough_semantic,
-                                node_by_key=node_by_key,
-                                label_by_key=label_by_key,
-                                labels_by_base=labels_by_base,
-                                labels_by_base_and_entry=labels_by_base_and_entry,
-                                label_render_mode=label_render_mode,
-                            ),
-                            debug_suffix(
-                                f"// blk[{fallthrough_semantic.source_anchor.block_serial}].fallthrough"
-                            ),
+                    if not _emit_merge_routed_edge(
+                        fallthrough_semantic, indent=indent
+                    ):
+                        _emit_semantic_edge_tail_payload(
+                            fallthrough_semantic,
+                            current_segment=segment,
+                            indent=indent,
                         )
-                    )
+                        lines.append(
+                            f"{indent}"
+                            + with_optional_comment(
+                                _render_segment_edge_action(
+                                    fallthrough_semantic,
+                                    node_by_key=node_by_key,
+                                    label_by_key=label_by_key,
+                                    labels_by_base=labels_by_base,
+                                    labels_by_base_and_entry=labels_by_base_and_entry,
+                                    label_render_mode=label_render_mode,
+                                ),
+                                debug_suffix(
+                                    f"// blk[{fallthrough_semantic.source_anchor.block_serial}].fallthrough"
+                                ),
+                            )
+                        )
                 elif fallthrough_local is not None:
                     action, comment, _collapsed_chain = _render_local_destination(
                         fallthrough_local.target_segment_id
@@ -9309,6 +9404,16 @@ def _render_selective_local_boundary_program(
             for edge in semantic_passthrough:
                 if edge.kind == SemanticEdgeKind.EXIT_ROUTINE:
                     emitted_exit_routine = True
+                merge_segment_id = edge_merge_target.get(id(edge))
+                if merge_segment_id is not None:
+                    # An unconditional passthrough into a visible merge is
+                    # redundant with the local branch-arm routing. If it is the
+                    # merge's exit-carrier, its exit is emitted once at the merge
+                    # label; otherwise route it (pre-merge tail + goto label).
+                    if exit_transition_by_segment.get(merge_segment_id) is edge:
+                        continue
+                    _emit_merge_routed_edge(edge, indent=indent)
+                    continue
                 _emit_semantic_edge_tail_payload(
                     edge,
                     current_segment=segment,
@@ -9353,6 +9458,32 @@ def _render_selective_local_boundary_program(
                     f"{indent}{action}{'' if emitted_payload else (comment or debug_suffix(f'  // {edge.source_segment_id} {edge.kind.name.lower()}'))}"
                 )
 
+            emitted_deferred_exit = False
+            if deferred_exit is not None and not (
+                taken_semantic or fallthrough_semantic or semantic_passthrough
+            ):
+                # The merge label emits the node's exit transition exactly once,
+                # after the merge body (Path A). Both arms goto this label above.
+                if deferred_exit.kind == SemanticEdgeKind.EXIT_ROUTINE:
+                    emitted_exit_routine = True
+                lines.append(
+                    f"{indent}"
+                    + with_optional_comment(
+                        _render_segment_edge_action(
+                            deferred_exit,
+                            node_by_key=node_by_key,
+                            label_by_key=label_by_key,
+                            labels_by_base=labels_by_base,
+                            labels_by_base_and_entry=labels_by_base_and_entry,
+                            label_render_mode=label_render_mode,
+                        ),
+                        debug_suffix(
+                            f"// {_format_anchor(deferred_exit.source_anchor)} {deferred_exit.kind.name.lower()} (merge exit)"
+                        ),
+                    )
+                )
+                emitted_deferred_exit = True
+
             if not (
                 taken_semantic
                 or fallthrough_semantic
@@ -9360,6 +9491,7 @@ def _render_selective_local_boundary_program(
                 or fallthrough_local
                 or semantic_passthrough
                 or local_passthrough
+                or emitted_deferred_exit
             ):
                 emit_debug_comment(indent, "// no local or semantic exits")
 
