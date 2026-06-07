@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 
 import pytest
 
@@ -3904,6 +3905,157 @@ def test_render_linearized_state_program_emits_semantic_edge_tail_payload() -> N
     assert "v_tail = on_fallthrough()" in rendered
     assert "goto STATE_00000030;" in rendered
     assert "goto STATE_00000050;" in rendered
+
+
+def test_render_linearized_state_program_emits_two_way_merge_once_with_transition() -> None:
+    """A 2-way branch whose arms converge on one merge block that writes the next
+    state must render the merge body ONCE (at its own label), with both arms routing
+    to that label and a single exit goto -- not duplicated per arm.
+
+    Mirrors sub_7FFD handler block 122 (STATE_37B42A40): blk[20] BRANCH, blk[24]
+    merge (GOTO_LABEL), blk[23] straight side. An unconditional TRANSITION (path
+    20->24) AND a redundant CONDITIONAL_TRANSITION arm0 (path 20->23->24) both target
+    the same next state 0x30 -- the live recovery shape. Regression for llr-zfyi
+    (block 124 was emitted 3x: taken-arm inline + 2 semantic-edge tails).
+    """
+    source_key = StateDagNodeKey(handler_serial=20, state_const=0x20)
+    target_key = StateDagNodeKey(handler_serial=30, state_const=0x30)
+    dag = LinearizedStateDag(
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x3C,
+        pre_header_serial=None,
+        initial_state=0x20,
+        bst_node_blocks=(),
+        nodes=(
+            StateDagNode(
+                key=source_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000020",
+                handler_serial=20,
+                entry_anchor=20,
+                owned_blocks=(20, 24, 23),
+                exclusive_blocks=(20, 24, 23),
+                shared_suffix_blocks=(),
+                local_segments=(
+                    StateLocalSegment(
+                        segment_id="blk[20]",
+                        kind=LocalSegmentKind.BRANCH,
+                        blocks=(20,),
+                    ),
+                    StateLocalSegment(
+                        segment_id="blk[24]",
+                        kind=LocalSegmentKind.GOTO_LABEL,
+                        blocks=(24,),
+                    ),
+                    StateLocalSegment(
+                        segment_id="blk[23]",
+                        kind=LocalSegmentKind.STRAIGHT_LINE,
+                        blocks=(23,),
+                    ),
+                ),
+                local_edges=(
+                    StateLocalEdge(
+                        source_segment_id="blk[20]",
+                        target_segment_id="blk[24]",
+                        kind=LocalEdgeKind.TAKEN,
+                        branch_arm=1,
+                    ),
+                    StateLocalEdge(
+                        source_segment_id="blk[20]",
+                        target_segment_id="blk[23]",
+                        kind=LocalEdgeKind.FALLTHROUGH,
+                        branch_arm=0,
+                    ),
+                    StateLocalEdge(
+                        source_segment_id="blk[23]",
+                        target_segment_id="blk[24]",
+                        kind=LocalEdgeKind.JOIN,
+                    ),
+                ),
+            ),
+            StateDagNode(
+                key=target_key,
+                kind=StateNodeKind.EXACT,
+                state_label="0x00000030",
+                handler_serial=30,
+                entry_anchor=30,
+                owned_blocks=(30,),
+                exclusive_blocks=(30,),
+                shared_suffix_blocks=(),
+                local_segments=(),
+                local_edges=(),
+            ),
+        ),
+        edges=(
+            StateDagEdge(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=source_key,
+                target_key=target_key,
+                target_state=0x30,
+                target_entry_anchor=30,
+                target_label="0x00000030",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                    block_serial=20,
+                ),
+                ordered_path=(20, 24),
+            ),
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_key,
+                target_key=target_key,
+                target_state=0x30,
+                target_entry_anchor=30,
+                target_label="0x00000030",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=20,
+                    branch_arm=0,
+                ),
+                ordered_path=(20, 23, 24),
+            ),
+        ),
+    )
+
+    rendered = render_linearized_state_program(
+        dag,
+        order_strategy=RenderOrderStrategy.SEMANTIC,
+        program_strategy=ProgramRenderStrategy.LOCAL_BOUNDARY_SELECTIVE,
+        boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
+        comment_mode=ProgramCommentMode.MINIMAL,
+        block_payload_by_serial={
+            20: (
+                "v0 = cond()",
+                "if (v0 >=u 0x10) goto LABEL_24",
+            ),
+            23: ("v_side = adjust()",),
+            24: (
+                "v_merge = finalize()",
+                "state = 0x30",
+            ),
+        },
+    )
+
+    lines = rendered.splitlines()
+    merge_label = "STATE_00000020__blk_24"
+    # The merge body is emitted exactly once.
+    assert sum(1 for ln in lines if ln.strip() == "v_merge = finalize()") == 1
+    # The merge carries its own label.
+    assert any(ln.rstrip() == f"{merge_label}:" for ln in lines)
+    # Both arms route to the merge label (2 gotos to it), not inline copies.
+    assert sum(1 for ln in lines if f"goto {merge_label};" in ln) == 2
+    # Exactly one exit transition out of the merge.
+    assert sum(1 for ln in lines if ln.strip() == "goto STATE_00000030;") == 1
+    # No dangling gotos: every goto target is defined as a label somewhere.
+    defined = {
+        m.group(1)
+        for ln in lines
+        if (m := re.match(r"^\s*([A-Za-z_]\w*)\s*:\s*$", ln))
+    }
+    goto_targets = {
+        g for ln in lines for g in re.findall(r"\bgoto\s+([A-Za-z_]\w*)\s*;", ln)
+    }
+    assert goto_targets <= defined, f"dangling gotos: {sorted(goto_targets - defined)}"
 
 
 def test_render_linearized_state_program_minimal_comment_mode_hides_metadata_scaffolding() -> None:
