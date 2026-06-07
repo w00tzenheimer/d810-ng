@@ -69,9 +69,11 @@ IDENTITY_CALL_SELF_REFERENCE = DeobfuscationCase(
     project="identity_call.json",
     must_change=False,
     check_stats=True,
-    deobfuscated_contains=[
-        "qword_18001D4A0 = (__int64)identity_call_self_reference;",
-        "dword_18001D460 = v3(a1, a2);",
+    # Address-agnostic: writable-global addresses shift with the build base, so
+    # match the semantic assignment shape rather than the exact symbol address.
+    deobfuscated_regexes=[
+        r"qword_[0-9A-Fa-f]+ = \(__int64\)identity_call_self_reference;",
+        r"dword_[0-9A-Fa-f]+ = v3\(a1, a2\);",
     ],
 )
 

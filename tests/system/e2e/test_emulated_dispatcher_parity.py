@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 
 import pytest
 
@@ -203,11 +204,16 @@ class TestEmulatedDispatcherParity:
 
         assert code_after != code_before
         assert code_comparator.are_equivalent(code_after, project_code)
-        assert "qword_18001D320 |= 0xF6A20uLL;" in code_after
-        assert "if ( (_DWORD)qword_18001D320 == 0xF6A20 )" in code_after
-        assert "dword_18001D318 = a1;" in code_after
-        assert "dword_18001D318 += a1;" in code_after
-        assert "qword_18001D320 |= 0x40uLL;" in code_after
+        # Address-agnostic: writable-global addresses shift with the build base,
+        # so normalize dword_/qword_<addr> symbols before asserting the shape.
+        code_after_norm = re.sub(
+            r"\b((?:dword|qword|word|byte)_)[0-9A-Fa-f]+\b", r"\1ADDR", code_after
+        )
+        assert "qword_ADDR |= 0xF6A20uLL;" in code_after_norm
+        assert "if ( (_DWORD)qword_ADDR == 0xF6A20 )" in code_after_norm
+        assert "dword_ADDR = a1;" in code_after_norm
+        assert "dword_ADDR += a1;" in code_after_norm
+        assert "qword_ADDR |= 0x40uLL;" in code_after_norm
         assert gap_summary is not None
         assert gap_summary["detection"]["state_transport"] == "state_dispatcher_map"
         assert "father_history" not in str(gap_summary)
