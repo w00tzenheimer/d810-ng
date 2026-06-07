@@ -20,12 +20,21 @@ llr-7ouc; see plan ``2026-06-07-concolic-state-transition-fusion-plan.md``.
 from __future__ import annotations
 
 from d810.analyses.data_flow.concolic.abstract_evidence import AbstractEvidence
+from d810.analyses.data_flow.concolic.partitioning import (
+    TRIVIAL_PATH,
+    PartitionedState,
+    PathPredicate,
+)
 from d810.analyses.data_flow.concolic.refs import (
     LocationKind,
     LocationRef,
     ValueRef,
 )
 from d810.analyses.data_flow.concolic.store import ConcolicStore
+from d810.analyses.data_flow.concolic.transition_domain import (
+    ConcolicTransitionDomain,
+    ValueLatticeOps,
+)
 from d810.analyses.data_flow.concolic.values import (
     ConcolicValue,
     PrecisionStatus,
@@ -41,4 +50,10 @@ __all__ = [
     "ConcolicValue",
     "PrecisionStatus",
     "reduce",
+    # trace partitioning + the transition domain (S2)
+    "PathPredicate",
+    "PartitionedState",
+    "TRIVIAL_PATH",
+    "ConcolicTransitionDomain",
+    "ValueLatticeOps",
 ]
