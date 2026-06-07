@@ -26,8 +26,10 @@ from d810.analyses.control_flow.comparison_dispatcher_model import (
     ComparisonDispatcherModel,
 )
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
-from d810.analyses.control_flow.interval_map import (
-    interval_dispatcher_from_state_map,
+from d810.analyses.control_flow.router_resolver import (
+    RouterResolutionContext,
+    default_resolvers,
+    select_router,
 )
 from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.semantic_transition import resolve_state_transitions
@@ -189,61 +191,36 @@ class PlanSemanticRegions:
         return PassResult(facts=(regions,), preserved=PreservedAnalyses.all())
 
 
-def _router_handler_coverage(dispatcher, entry: int | None) -> int:
-    """Distinct handler targets a router resolves, EXCLUDING the dispatcher entry.
+def _select_s1a_router(
+    recovery, bst_evidence, dispatcher_entry: int | None, *, configured_kind=None
+):
+    """Pick the interval-set router for the §1a back-edge emit via the injectable
+    resolver chain (ticket llr-oq8v).
 
-    A comparison-tree dispatcher that collapsed to a single catch-all routes only
-    to the dispatcher entry (e.g. OLLVM -fla 55-way chain -> ``[0,2^32)->blk2``),
-    so its coverage is 0; a healthy router covers one target per handler. Returns
-    -1 for ``None`` so any real router strictly out-covers the absence of one.
+    Router kind is **configured AND/OR detected**: pass ``configured_kind`` (a
+    :class:`~d810.capabilities.dispatcher.RouterKind`) to pin a provider, otherwise
+    detection ranks providers by handler coverage -- the pre-mutation comparison-BST
+    (``bst_evidence.dispatcher``) is the default, and the recovered exact
+    ``state -> handler`` map wins only when it strictly out-covers a COLLAPSED bst
+    (e.g. an OLLVM -fla equality chain degraded to ``[0,2^32)->dispatcher_entry``).
+    The provider chain + ranking live in
+    :mod:`d810.analyses.control_flow.router_resolver`.
     """
-    if dispatcher is None:
-        return -1
-    targets = {
-        int(r.target)
-        for r in getattr(dispatcher, "_rows", ())
-        if r.target is not None
-    }
-    if entry is not None:
-        targets.discard(int(entry))
-    return len(targets)
-
-
-def _select_s1a_router(recovery, bst_evidence, dispatcher_entry: int | None):
-    """Pick the interval-set router for the §1a back-edge emit (abstract-domain
-    pattern, shared across dispatcher shapes).
-
-    The pre-mutation comparison-BST evidence (``bst_evidence.dispatcher``) is the
-    default: it carries the wide RANGE rows + the structurally-derived default a
-    signed comparison BST needs (sub_7FFD). But the comparison-tree walk can
-    COLLAPSE to a single catch-all on a wide equality chain -- an OLLVM -fla
-    dispatcher with 55 handlers degrades to ``[0,2^32)->dispatcher_entry`` at
-    GLBOPT1, so the emit resolves nothing. There the recovered exact
-    ``StateDispatcherMap`` is the authoritative router: rebuild it as single-value
-    interval rows (``interval_dispatcher_from_state_map``), passing through the
-    map's resolved default (set for SWITCH_TABLE; None for the equality chain,
-    whose returns the emit detects structurally via uncovered/STOP routing).
-
-    Selection is by HANDLER COVERAGE so the exact map wins ONLY when it strictly
-    resolves more handlers (the collapse case). Ties (hodur_func 13==13) and
-    range-routed BSTs (sub_7FFD 46<76) keep ``bst_evidence.dispatcher`` -- so this
-    never regresses a shape the comparison evidence already routes correctly.
-    """
-    bst_router = (
-        getattr(bst_evidence, "dispatcher", None) if bst_evidence is not None else None
-    )
     dmap = getattr(recovery, "dispatch_map", None) if recovery is not None else None
-    if dmap is None or not getattr(dmap, "rows", None):
-        return bst_router
-    exact_router = interval_dispatcher_from_state_map(
-        dmap.state_to_handler(),
-        default_target=getattr(dmap, "default_target_block", None),
+    has_rows = dmap is not None and getattr(dmap, "rows", None)
+    ctx = RouterResolutionContext(
+        bst_router=(
+            getattr(bst_evidence, "dispatcher", None)
+            if bst_evidence is not None
+            else None
+        ),
+        state_to_handler=dmap.state_to_handler() if has_rows else None,
+        default_target=(
+            getattr(dmap, "default_target_block", None) if dmap is not None else None
+        ),
+        dispatcher_entry=dispatcher_entry,
     )
-    if _router_handler_coverage(exact_router, dispatcher_entry) > _router_handler_coverage(
-        bst_router, dispatcher_entry
-    ):
-        return exact_router
-    return bst_router
+    return select_router(default_resolvers(), ctx, configured_kind=configured_kind)
 
 
 class LowerStateMachine:
