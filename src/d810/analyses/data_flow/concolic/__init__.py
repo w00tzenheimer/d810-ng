@@ -20,6 +20,19 @@ llr-7ouc; see plan ``2026-06-07-concolic-state-transition-fusion-plan.md``.
 from __future__ import annotations
 
 from d810.analyses.data_flow.concolic.abstract_evidence import AbstractEvidence
+from d810.analyses.data_flow.concolic.concrete_refiner import (
+    fold_exact,
+    refine_concrete,
+)
+from d810.analyses.data_flow.concolic.emulation import (
+    Abstain,
+    ConcreteStore,
+    EmulationCapability,
+    ExactResult,
+    InsnRef,
+    ReferenceEmulator,
+    Unsupported,
+)
 from d810.analyses.data_flow.concolic.partitioning import (
     TRIVIAL_PATH,
     PartitionedState,
@@ -56,4 +69,14 @@ __all__ = [
     "TRIVIAL_PATH",
     "ConcolicTransitionDomain",
     "ValueLatticeOps",
+    # concrete emulation capability + refiner (S3)
+    "EmulationCapability",
+    "ExactResult",
+    "Abstain",
+    "Unsupported",
+    "ConcreteStore",
+    "InsnRef",
+    "ReferenceEmulator",
+    "fold_exact",
+    "refine_concrete",
 ]
