@@ -5,6 +5,7 @@ import pytest
 
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.analyses.control_flow.minimal_state_recovery import (
+    _resolve_state_var_alias,
     recover_state_write_transitions,
 )
 from d810.analyses.value_flow.state_write import (
@@ -76,6 +77,16 @@ def _mov_state(ea, const):
         opcode=_OP_MOV, ea=ea, operands=(),
         l=MopSnapshot(t=_T_NUM, size=4, value=const, kind=OperandKind.NUMBER),
         d=MopSnapshot(t=_T_STK, size=4, stkoff=_STATE, kind=OperandKind.STACK),
+        kind=InsnKind.MOV,
+    )
+
+
+def _mov_stk(ea, src_off, dst_off):
+    # pure stack->stack copy: dst = src (no right operand)
+    return InsnSnapshot(
+        opcode=_OP_MOV, ea=ea, operands=(),
+        l=MopSnapshot(t=_T_STK, size=4, stkoff=src_off, kind=OperandKind.STACK),
+        d=MopSnapshot(t=_T_STK, size=4, stkoff=dst_off, kind=OperandKind.STACK),
         kind=InsnKind.MOV,
     )
 
@@ -173,3 +184,33 @@ def test_emit_bails_when_no_entry_bridge(_seam) -> None:
         fg, disp, state_var_stkoff=_STATE, dispatcher_entry_serial=2
     )
     assert len(plan.as_graph_modifications()) == 0
+
+
+def test_resolves_state_var_alias_through_header_copy(_seam) -> None:
+    # Dispatcher header copies the COMPARED slot (_STATE) FROM the next-state slot
+    # (0x40): handlers write 0x40, the header does ``_STATE = 0x40`` then routes on
+    # _STATE.  At a back-edge _STATE is still stale, so the fold must read 0x40 --
+    # _resolve_state_var_alias follows the header copy (OLLVM -fla shadow).
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (10,), (0, 10), (_mov_stk(0x2000, 0x40, _STATE),)),  # _STATE <- 0x40
+            10: _b(10, (2,), (2,)),
+        },
+        entry_serial=0, func_ea=0x1000,
+    )
+    assert _resolve_state_var_alias(fg, 2, _STATE) == 0x40
+
+
+def test_state_var_alias_unchanged_without_header_copy(_seam) -> None:
+    # No copy into the compared slot at the header -> offset unchanged (the clean
+    # hodur / sub_7FFD chains must not be remapped).
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (10,), (0, 10)),                                     # no copy
+            10: _b(10, (2,), (2,), (_mov_state(0x2000, 0x20),)),
+        },
+        entry_serial=0, func_ea=0x1000,
+    )
+    assert _resolve_state_var_alias(fg, 2, _STATE) == _STATE
