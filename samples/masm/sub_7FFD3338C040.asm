@@ -450,7 +450,7 @@ sub_7FFD3338C040:
     jz loc_7FFD33392D42
     mov rcx, qword ptr [rsp+50h]
     movzx edx, byte ptr [rcx+3]
-    lea ecx, [0]
+    lea ecx, [rax*8]
     shl rdx, cl
     mov rcx, qword ptr [rsp+48h]
     and rax, -8
@@ -1019,7 +1019,7 @@ sub_7FFD3338C040:
     lea rdx, [rcx+rcx*4]
     lea rdx, [rcx+rdx*2]
     not rcx
-    lea r8, [0]
+    lea r8, [rcx*8]
     sub r8, rcx
     mov rcx, rax
     mov r11, 427120C85274FB03h
@@ -3268,7 +3268,7 @@ sub_7FFD3338C040:
     nop
     mov r8, qword ptr [rsp+60h]
     or r8, rdx
-    lea r9, [0]
+    lea r9, [r8*8]
     nop
     nop
     nop
@@ -3489,7 +3489,7 @@ sub_7FFD3338C040:
     nop
     nop
     mov eax, dword ptr [dword_7FFD3352CA4C]
-    lea ecx, [77DFFCACh]
+    lea ecx, 77DFFCACh[rax*2]
     add ecx, eax
     neg ecx
     add eax, ecx
@@ -3598,7 +3598,7 @@ sub_7FFD3338C040:
     mov rcx, qword ptr [rsp+98h]
     mov rdx, rcx
     xor rdx, rax
-    lea r8, [0]
+    lea r8, [rdx*8]
     not rax
     and rax, rcx
     nop
@@ -4958,7 +4958,7 @@ sub_7FFD3338C040:
     mov eax, dword ptr [dword_7FFD3352CABC]
     lea ecx, [rax-26AA65D4h]
     xor ecx, -4017F861h
-    lea edx, [2646406Ch]
+    lea edx, 2646406Ch[rax*2]
     add eax, 1CD9F84Bh
     sub ecx, edx
     add ecx, -121CC1CCh
@@ -6508,7 +6508,7 @@ sub_7FFD3338C040:
     nop
     nop
     nop
-    lea r10d, [0]
+    lea r10d, [rcx*8]
     sub r10d, ecx
     mov r11, -57FE056A41BF1D89h
     xor edx, r11d
@@ -6797,7 +6797,7 @@ sub_7FFD3338C040:
     mov eax, edx
     not eax
     and eax, 7Fh
-    lea rcx, [0]
+    lea rcx, [rax*8]
     sub rcx, rax
     mov qword ptr [rsp+3A8h], rcx
     or rdx, 7Fh
@@ -6817,7 +6817,7 @@ sub_7FFD3338C040:
     lea rax, [rdi+0D0h]
     mov qword ptr [rsp+38h], rax
     mov eax, dword ptr [dword_7FFD3352CA48]
-    lea ecx, [-6C0DC71Dh]
+    lea ecx, 0FFFFFFFF93F238E3h[rax*2]
     lea edx, [rax-6C0DC71Dh]
     mov r8d, edx
     xor r8d, 280309BDh
@@ -7098,7 +7098,7 @@ sub_7FFD3338C040:
     lea r9, [r8+r8*4]
     lea r9, [r8+r9*2]
     not r8
-    lea r10, [0]
+    lea r10, [r8*8]
     sub r10, r8
     mov r8, rdx
     or r8, rax
@@ -7936,7 +7936,7 @@ sub_7FFD3338C040:
     and ecx, edx
     and eax, edx
     not edx
-    lea r10d, [0]
+    lea r10d, [rdx*8]
     sub r10d, edx
     not r8d
     lea edx, [r8+r8*8]
@@ -9372,7 +9372,7 @@ sub_7FFD3338C040:
     lea r10d, [rax+rax*2]
     mov r11d, r8d
     xor r11d, r9d
-    lea eax, [0]
+    lea eax, [r11*8]
     sub eax, r11d
     mov r11d, r9d
     not r11d
@@ -11203,7 +11203,7 @@ sub_7FFD3338C040:
     and r11, r14
     add r11, r11
     sub rdx, r11
-    lea r11, [0]
+    lea r11, [r9*8]
     sub r9, r11
     add r9, rdx
     mov rdx, -37F7118CFB16F456h
@@ -11227,7 +11227,7 @@ sub_7FFD3338C040:
     or r8, rcx
     mov r9, r8
     not r9
-    lea r10, [0]
+    lea r10, [r9*8]
     sub r10, r9
     lea r8, [r8+r8*2]
     and rax, rcx
@@ -12042,7 +12042,7 @@ sub_7FFD3338C040:
     xor r8d, r14d
     mov r9d, r8d
     not r9d
-    lea r10d, [0]
+    lea r10d, [r8*8]
     mov r11d, eax
     and r11d, ebx
     shl r11d, 3
@@ -12732,7 +12732,7 @@ sub_7FFD3338C040:
     sub r10d, dword ptr [rsp+1E0h]
     mov r8d, r10d
     not r8d
-    lea eax, [0]
+    lea eax, [r8*8]
     sub eax, r8d
     mov r8d, r10d
     mov rdx, qword ptr [rsp+2D0h]
@@ -13027,7 +13027,7 @@ sub_7FFD3338C040:
     mov r10, 4B9605D08D3F6F6Eh
     or rdx, r10
     not rdx
-    lea r8, [0]
+    lea r8, [rdx*8]
     sub r8, rdx
     nop
     nop
@@ -13491,7 +13491,7 @@ sub_7FFD3338C040:
     xor ecx, 6DEE0B2Eh
     lea edx, [rcx+2F926137h]
     xor edx, -6ECB657Fh
-    lea r8d, [-51E59D82h]
+    lea r8d, 0FFFFFFFFAE1A627Eh[rdx*2]
     lea r9d, [rdx+rcx]
     add r9d, -51E59D82h
     add r9d, r8d
@@ -13601,7 +13601,7 @@ sub_7FFD3338C040:
     mov rdx, qword ptr [rsp+520h]
     or qword ptr [rax+rcx*8], rdx
     mov eax, dword ptr [dword_7FFD3352CB20]
-    lea ecx, [356E4B67h]
+    lea ecx, 356E4B67h[rax*2]
     add eax, 356E4B67h
     mov edx, -1937B61Dh
     sub edx, ecx
@@ -14235,7 +14235,7 @@ sub_7FFD3338C040:
     mov rdx, r9
     or rdx, r8
     not rdx
-    lea rcx, [0]
+    lea rcx, [rdx*8]
     sub rcx, rdx
     mov r10, r9
     or r10, rax
@@ -14582,7 +14582,7 @@ sub_7FFD3338C040:
     or rcx, -80h
     mov qword ptr [rsp+3C0h], rcx
     xor rax, 7Fh
-    lea rcx, [0]
+    lea rcx, [rax*8]
     sub rcx, rax
     mov qword ptr [rsp+3C8h], rcx
     mov eax, dword ptr [dword_7FFD3352CAC0]
