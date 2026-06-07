@@ -329,17 +329,13 @@ class _FunctionMasmEmitter:
             out.line(f"EXTERN {name}:BYTE")
 
         if str(data_lines):
-            # const_data -> a read-only segment named `.rdata` (READONLY + class
-            # 'CONST'); otherwise the writable `_DATA`. Both assemble under
-            # ml64/llvm-ml64 and the `.rdata` name lands in the PE's .rdata.
-            if const_data:
-                seg = ".rdata"
-                header = ".rdata SEGMENT READONLY ALIGN(16) 'CONST'"
-            else:
-                seg = "_DATA"
-                header = "_DATA SEGMENT"
+            # const_data -> MASM's built-in read-only CONST segment (link.exe
+            # places it in the PE .rdata section); otherwise writable _DATA.
+            # NB: a literal `.rdata`-named segment is NOT portable -- real ml64
+            # needs OPTION DOTNAME which llvm-ml64 rejects -- so use CONST.
+            seg = "CONST" if const_data else "_DATA"
             out.line()
-            out.line(header)
+            out.line(f"{seg} SEGMENT")
             out.extend(data_lines)
             out.line(f"{seg} ENDS")
 
