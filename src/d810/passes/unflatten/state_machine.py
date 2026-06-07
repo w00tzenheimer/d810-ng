@@ -29,17 +29,11 @@ from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.semantic_transition import resolve_state_transitions
 from d810.analyses.control_flow.transition_builder import (
-    _convert_bst_to_result,
     transition_result_from_resolutions,
-)
-from d810.analyses.control_flow.linearized_state_dag import (
-    build_live_linearized_state_dag_from_graph,
-)
-from d810.analyses.control_flow.state_machine_analysis import (
-    run_snapshot_constant_fixpoint,
 )
 from d810.transforms.semantic_regions import plan_semantic_regions
 from d810.transforms.state_machine_unflatten import lower_to_direct_graph
+from d810.transforms.minimal_unflatten_emit import emit_minimal_unflatten
 from d810.transforms.dispatcher_cleanup import cleanup_residual_dispatcher
 from d810.capabilities.value_range import ValRangeCapability
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
@@ -200,67 +194,39 @@ class LowerStateMachine:
         transition_result = _analysis(ctx, "transition_result")
         dispatcher_entry = getattr(recovery, "dispatcher_block_serial", None)
         state_var_stkoff = getattr(recovery, "state_var_stkoff", None)
-        # Ungate return materialization (gap3): the recovered BST comparison blocks are the
-        # enriched-DAG signal lower_to_direct_graph needs to lower the DAG's CONDITIONAL_RETURN
-        # edges into terminal returns. Without it #4 emits spine redirects but return=0, so the
-        # terminals degrade into gotos. recover_dispatcher exposes bst_block_serials, so production
-        # can supply it. Flag-gated path; default golden uses HodurUnflattener and is unaffected.
-        bst_node_blocks = getattr(recovery, "bst_block_serials", None)
         live_function = getattr(ctx.source, "live_source", None)
-
-        # gap3+gap4 promotion: consume the entry's pre-pipeline BST/interval evidence (the
-        # pristine-mba ``analyze_bst_dispatcher`` result, threaded through the AnalysisManager). With
-        # the IntervalDispatcher + handler_range_map the DAG's edge classification becomes an
-        # interval-map lookup -- a handler's written next-state landing in the dispatcher's
-        # default->Ret interval is a CONDITIONAL_RETURN edge (the LiSA-sound classifier), not the
-        # bounded ``classify_exit_state`` mba walk. That enriched DAG + the IntervalDispatcher arm
-        # lower_to_direct_graph's full-reconstruction path, which materializes terminal returns (the
-        # §1a returns=0 -> returns=N fix). Mirrors the diag rebuild (_publish_s1a_diagnostics) so
-        # production and the oracle build the identical DAG. Absent the evidence the call stays on
-        # the committed shallow path (dispatcher None -> redirect-only ``steps``, byte-identical).
         bst_evidence = _analysis(ctx, "bst_evidence")
-        enriched_dag = None
-        dispatcher = None
-        constant_result = None
-        if (
-            bst_evidence is not None
-            and getattr(bst_evidence, "dispatcher", None) is not None
-            and transition_result is not None
-            and dispatcher_entry is not None
-        ):
-            # _convert_bst_to_result now reads bst.transitions, which Phase 2
-            # rebuilds from the signedness-aware decision_dag (ALL 62 handlers incl.
-            # interval-interior + terminal/return), and bst.dispatcher (also
-            # decision_dag-derived). So this is the consolidated router path, not
-            # the legacy register-blind ~30-edge one.
-            try:
-                dag_tr = _convert_bst_to_result(bst_evidence)
-            except Exception:  # noqa: BLE001 — fall back to the §1a exact-chain transitions
-                dag_tr = transition_result
-            if getattr(dag_tr, "transitions", None):
-                bst_blocks = tuple(
-                    sorted(int(b) for b in getattr(bst_evidence, "bst_node_blocks", ()))
-                )
-                enriched_dag = build_live_linearized_state_dag_from_graph(
-                    flow_graph=ctx.graph,
-                    transition_result=dag_tr,
-                    dispatcher_entry_serial=int(dispatcher_entry),
-                    state_var_stkoff=state_var_stkoff,
-                    bst_node_blocks=bst_blocks,
-                    handler_range_map=getattr(bst_evidence, "handler_range_map", None),
-                    dispatcher=bst_evidence.dispatcher,
-                    pre_header_serial=getattr(bst_evidence, "pre_header_serial", None),
-                    initial_state=getattr(bst_evidence, "initial_state", None),
-                    mba=live_function,
-                    prefer_local_corridors=True,
-                )
-                dispatcher = bst_evidence.dispatcher
-                bst_node_blocks = bst_blocks
-                if state_var_stkoff is not None:
-                    constant_result = run_snapshot_constant_fixpoint(
-                        ctx.graph, state_var_stkoff
-                    )
 
+        # Direct interval-set unflatten (epic d81-jfg2): the interval-set
+        # dispatcher (state -> handler) + per-handler next-state recovery IS the
+        # state-transition graph; walk it and emit dispatcher-bypass redirects.
+        # This replaces the StateDag build (build_live_linearized_state_dag_from_graph)
+        # + lower_to_direct_graph(dag=...) full-reconstruction path, which drifted
+        # across shared blocks and mis-resolved conditional handlers (e.g.
+        # 0x610BB4D9 collapsed to the exit). The rich StateDag metadata can be
+        # re-added later if needed; the redirect output does not require it.
+        dispatcher = (
+            getattr(bst_evidence, "dispatcher", None)
+            if bst_evidence is not None
+            else None
+        )
+        if (
+            dispatcher is not None
+            and dispatcher_entry is not None
+            and state_var_stkoff is not None
+        ):
+            plan = emit_minimal_unflatten(
+                ctx.graph,
+                dispatcher,
+                state_var_stkoff=int(state_var_stkoff),
+                dispatcher_entry_serial=int(dispatcher_entry),
+                pre_header_serial=getattr(bst_evidence, "pre_header_serial", None),
+                initial_state=getattr(bst_evidence, "initial_state", None),
+            )
+            return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
+
+        # Fallback (no interval dispatcher recovered): the committed shallow
+        # redirect-only path.
         plan = lower_to_direct_graph(
             ctx.graph,
             ctx.facts,
@@ -273,10 +239,6 @@ class LowerStateMachine:
             # orphan non-state-variable uses (north-star LowerStateMachine.require(UseDefSafety)).
             use_def_safety=ctx.capabilities.optional(UseDefSafetyCapability),
             live_function=live_function,
-            bst_node_blocks=bst_node_blocks,
-            dag=enriched_dag,
-            dispatcher=dispatcher,
-            constant_result=constant_result,
         )
         return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
 
