@@ -44,7 +44,9 @@ from d810.capabilities.providers import (
     register_bst_walkers,
     register_microcode_evidence,
 )
+from d810.hexrays.expr_mop_ops import HexRaysMopOps
 from d810.hexrays.hooks.ctree_hooks import CtreeOptimizationRule, CtreeOptimizerManager
+from d810.ir.expr.mop_ops import register_mop_ops
 from d810.hexrays.hooks.hexrays_hooks import (
     HEXRAYS_MICROCODE_PROVIDER,
     BlockOptimizerManager,
@@ -2001,6 +2003,10 @@ class D810State(metaclass=SingletonMeta):
         """
         register_bst_walkers(_bst_evidence.build_bst_walker_provider())
         register_microcode_evidence(_bst_evidence.build_microcode_evidence_provider())
+        # Live-mop comparison oracle for the (now portable) constraint DSL's
+        # matching-time checks (equal_mops / is_bnot); replaces the old
+        # importlib->hexrays_helpers dodge. See ticket llr-n2so.
+        register_mop_ops(HexRaysMopOps())
 
     def start_d810(self):
         self._register_backend_analysis_providers()
