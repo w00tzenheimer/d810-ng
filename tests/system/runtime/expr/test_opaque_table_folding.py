@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import platform
 import sys
 
@@ -677,8 +678,15 @@ class TestIntegrationOpaqueTableFolding:
                     f"State constant {const} should be eliminated"
 
             code_lines = {line.strip() for line in code.splitlines()}
-            assert "dword_18001D440 = 3 * a1 + 7;" in code_lines, \
-                "Expected collapsed side-effect assignment: dword_18001D440 = 3 * a1 + 7"
+            # Writable-global addresses shift with the build base (.rdata rebuild),
+            # so normalize dword_/qword_<addr> symbols before asserting the shape
+            # (mirrors the address-agnostic oracle pins from 3d83eb5d8).
+            code_lines_norm = {
+                re.sub(r"\b((?:dword|qword|word|byte)_)[0-9A-Fa-f]+\b", r"\1ADDR", line)
+                for line in code_lines
+            }
+            assert "dword_ADDR = 3 * a1 + 7;" in code_lines_norm, \
+                "Expected collapsed side-effect assignment: dword_<g_opaque_table> = 3 * a1 + 7"
             assert (
                 "return 3 * a1 + 7;" in code_lines
                 or "return (unsigned int)(3 * a1 + 7);" in code_lines
