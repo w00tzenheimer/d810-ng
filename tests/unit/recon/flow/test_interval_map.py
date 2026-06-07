@@ -15,6 +15,7 @@ from d810.analyses.control_flow.interval_map import (
     sort_and_validate,
     coalesce_same_target,
     compute_gaps,
+    interval_dispatcher_from_state_map,
     U32_MIN,
     U32_MAX_EXCL,
 )
@@ -441,3 +442,81 @@ class TestIntervalDispatcherLookupRange:
     def test_single_point_range(self):
         d = self._make_dispatcher([(10, 20, 42)])
         assert d.lookup_range(15, 15) == 42
+
+
+# ---------------------------------------------------------------------------
+# TestIntervalDispatcherFromStateMap
+# ---------------------------------------------------------------------------
+
+
+class TestIntervalDispatcherFromStateMap:
+    """Tests for interval_dispatcher_from_state_map().
+
+    This is the equality-chain adapter: a register/equality-chain
+    ``StateDispatcherMap`` (``jz eax, #state, @handler``) becomes the same
+    interval-set router the comparison-BST path produces, so the §1a back-edge
+    emit is dispatcher-shape-agnostic.
+    """
+
+    def test_each_state_routes_to_its_handler(self) -> None:
+        d = interval_dispatcher_from_state_map({0x10: 100, 0x20: 200, 0x30: 300})
+        assert d.lookup(0x10) == 100
+        assert d.lookup(0x20) == 200
+        assert d.lookup(0x30) == 300
+
+    def test_single_value_rows(self) -> None:
+        # Each state occupies exactly [state, state + 1) — a one-point row.
+        d = interval_dispatcher_from_state_map({0x42: 7})
+        assert d.lookup(0x42) == 7
+        assert d.lookup(0x41) is None
+        assert d.lookup(0x43) is None
+
+    def test_gap_states_uncovered(self) -> None:
+        d = interval_dispatcher_from_state_map({0x10: 100, 0x30: 300})
+        # 0x20 is in the gap between the two single-value rows.
+        assert d.lookup(0x20) is None
+        assert d.lookup(0x00) is None
+        assert d.lookup(0xFFFFFFFF) is None
+
+    def test_explicit_default_trusted_over_max_row_count(self) -> None:
+        # With three single-value rows the max-row-count heuristic would pick a
+        # handler (each appears once → tie). An explicit default must win.
+        d = interval_dispatcher_from_state_map(
+            {0x10: 100, 0x20: 200, 0x30: 300},
+            default_target=999,
+        )
+        assert d.default_target == 999
+
+    def test_no_default_falls_back_to_row_count_heuristic(self) -> None:
+        # Two states route to the same block → that block has the most rows →
+        # it becomes the structural default.
+        d = interval_dispatcher_from_state_map({0x10: 50, 0x20: 50, 0x30: 300})
+        assert d.default_target == 50
+
+    def test_state_handler_is_the_default_block(self) -> None:
+        # A written state can legitimately route to the shared-return block; the
+        # lookup still resolves it, and default_target reports the same block.
+        d = interval_dispatcher_from_state_map(
+            {0x10: 100, 0x20: 777},
+            default_target=777,
+        )
+        assert d.lookup(0x20) == 777
+        assert d.default_target == 777
+
+    def test_high_bit_state_masked_to_32_bit(self) -> None:
+        # Signed/high-bit state constants are masked to their unsigned 32-bit
+        # form so lookup matches the masked query.
+        d = interval_dispatcher_from_state_map({0xFEB2A1D6: 182})
+        assert d.lookup(0xFEB2A1D6) == 182
+
+    def test_negative_state_normalized(self) -> None:
+        # A negative Python int (signed view) maps to the same row as its
+        # unsigned 32-bit representation.
+        d = interval_dispatcher_from_state_map({-2: 5})
+        assert d.lookup(0xFFFFFFFE) == 5
+
+    def test_empty_map(self) -> None:
+        d = interval_dispatcher_from_state_map({})
+        assert len(d) == 0
+        assert d.lookup(0x10) is None
+        assert d.default_target is None

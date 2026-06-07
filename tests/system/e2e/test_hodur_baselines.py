@@ -75,7 +75,14 @@ def _get_default_binary() -> str:
 HODUR_BASELINES = [
     pytest.param(
         "hodur_func",
-        "example_libobfuscated.json",
+        "hodur_flag2_s1a.json",
+        # §1a back-edge unflatten (conditional/equality-chain migration, ticket
+        # llr-28ht). hodur_func is a pure CONDITIONAL_CHAIN dispatcher; its
+        # exact state->handler map IS routed through emit_minimal_unflatten just
+        # like sub_7FFD. The AST metrics are byte-identical to the legacy
+        # emulated path ({statements:39, returns:3, whiles:0, gotos:1, ifs:8}),
+        # proving semantic equivalence; the emulated conditional-chain path is
+        # thus retired for this shape.
         {"statements": 39, "returns": 3, "whiles": 0, "gotos": 1, "ifs": 8},
         id="hodur_func",
     ),
@@ -194,7 +201,7 @@ class TestHodurBaselines:
         if func_ea == idaapi.BADADDR:
             pytest.skip(f"Function '{func_name}' not found in binary")
 
-        if func_name == "sub_7FFD3338C040":
+        if project_config == "hodur_flag2_s1a.json":
             from d810.core.settings import configure_settings, reset_settings
 
             configure_settings(
@@ -202,9 +209,11 @@ class TestHodurBaselines:
                 capture_post_maturity=idaapi.MMAT_GLBOPT1,
             )
             request.addfinalizer(reset_settings)
-            # §1a back-edge unflatten path (hodur_flag2_s1a.json). Replaces the
-            # legacy HodurUnflattener, which collapses sub_7FFD to a stub +
-            # INTERR 50877 on the corrected MASM sample.
+            # §1a back-edge unflatten path (hodur_flag2_s1a.json). Drives both the
+            # comparison-BST sub_7FFD and the equality-chain hodur_func through
+            # emit_minimal_unflatten. Replaces the legacy HodurUnflattener (which
+            # collapses sub_7FFD to a stub + INTERR 50877 on the corrected MASM
+            # sample) and the emulated dispatcher engine (hodur_func).
             _prev_env = {
                 k: os.environ.get(k)
                 for k in ("D810_USE_S1A_PIPELINE", "D810_S1A_USE_HCC")

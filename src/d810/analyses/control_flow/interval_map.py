@@ -11,7 +11,7 @@ from bisect import bisect_right
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from d810.core.logging import getLogger
-from d810.core.typing import Any
+from d810.core.typing import Any, Mapping
 
 logger = getLogger(__name__)
 
@@ -403,7 +403,12 @@ class IntervalDispatcher:
 
     __slots__ = ("_rows", "_starts", "_default_target")
 
-    def __init__(self, rows: list[IntervalRow]) -> None:
+    def __init__(
+        self,
+        rows: list[IntervalRow],
+        *,
+        default_target: Any | None = None,
+    ) -> None:
         self._rows: list[IntervalRow] = sorted(rows)
         # Validate no overlaps
         for i in range(len(self._rows) - 1):
@@ -413,7 +418,14 @@ class IntervalDispatcher:
                 f"IntervalDispatcher: overlapping rows {a} and {b}"
             )
         self._starts: list[int] = [r.lo for r in self._rows]
-        self._default_target: Any | None = self._compute_default_target()
+        # When the default is known structurally (e.g. an equality-chain
+        # ``StateDispatcherMap`` whose no-match fall-through is the shared
+        # return), trust it; otherwise derive it from the table's gap rows.
+        self._default_target: Any | None = (
+            default_target
+            if default_target is not None
+            else self._compute_default_target()
+        )
 
     def _compute_default_target(self) -> Any | None:
         """The dispatcher's default fall-through target — the block reached when no handler state
@@ -585,6 +597,34 @@ class IntervalDispatcher:
         return {row.target for row in self._rows}
 
 
+def interval_dispatcher_from_state_map(
+    state_to_target: Mapping[int, int],
+    *,
+    default_target: int | None = None,
+) -> IntervalDispatcher:
+    """Build an :class:`IntervalDispatcher` from an exact ``state -> handler`` map.
+
+    Each state value becomes a single-value interval ``[state, state + 1)``
+    routing to its handler block. This adapts a register / equality-chain
+    ``StateDispatcherMap`` (``jz eax, #state, @handler``) into the same
+    interval-set router the comparison-BST path produces, so the §1a back-edge
+    emit (``emit_minimal_unflatten``) is dispatcher-shape-agnostic: it consumes
+    the router without caring whether it came from a comparison tree or an
+    equality chain.
+
+    ``default_target`` (the chain's no-match fall-through / shared return) is
+    passed through so a written state routing there is classified as a return.
+    """
+    rows = [
+        IntervalRow(lo=int(s) & 0xFFFFFFFF, hi=(int(s) & 0xFFFFFFFF) + 1, target=int(t))
+        for s, t in state_to_target.items()
+    ]
+    return IntervalDispatcher(
+        rows,
+        default_target=(int(default_target) if default_target is not None else None),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -602,4 +642,5 @@ __all__ = [
     "coalesce_same_target",
     "compute_gaps",
     "IntervalDispatcher",
+    "interval_dispatcher_from_state_map",
 ]
