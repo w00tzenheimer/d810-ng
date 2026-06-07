@@ -26,6 +26,9 @@ from d810.analyses.control_flow.comparison_dispatcher_model import (
     ComparisonDispatcherModel,
 )
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.analyses.control_flow.interval_map import (
+    interval_dispatcher_from_state_map,
+)
 from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.semantic_transition import resolve_state_transitions
 from d810.analyses.control_flow.transition_builder import (
@@ -186,6 +189,63 @@ class PlanSemanticRegions:
         return PassResult(facts=(regions,), preserved=PreservedAnalyses.all())
 
 
+def _router_handler_coverage(dispatcher, entry: int | None) -> int:
+    """Distinct handler targets a router resolves, EXCLUDING the dispatcher entry.
+
+    A comparison-tree dispatcher that collapsed to a single catch-all routes only
+    to the dispatcher entry (e.g. OLLVM -fla 55-way chain -> ``[0,2^32)->blk2``),
+    so its coverage is 0; a healthy router covers one target per handler. Returns
+    -1 for ``None`` so any real router strictly out-covers the absence of one.
+    """
+    if dispatcher is None:
+        return -1
+    targets = {
+        int(r.target)
+        for r in getattr(dispatcher, "_rows", ())
+        if r.target is not None
+    }
+    if entry is not None:
+        targets.discard(int(entry))
+    return len(targets)
+
+
+def _select_s1a_router(recovery, bst_evidence, dispatcher_entry: int | None):
+    """Pick the interval-set router for the §1a back-edge emit (abstract-domain
+    pattern, shared across dispatcher shapes).
+
+    The pre-mutation comparison-BST evidence (``bst_evidence.dispatcher``) is the
+    default: it carries the wide RANGE rows + the structurally-derived default a
+    signed comparison BST needs (sub_7FFD). But the comparison-tree walk can
+    COLLAPSE to a single catch-all on a wide equality chain -- an OLLVM -fla
+    dispatcher with 55 handlers degrades to ``[0,2^32)->dispatcher_entry`` at
+    GLBOPT1, so the emit resolves nothing. There the recovered exact
+    ``StateDispatcherMap`` is the authoritative router: rebuild it as single-value
+    interval rows (``interval_dispatcher_from_state_map``), passing through the
+    map's resolved default (set for SWITCH_TABLE; None for the equality chain,
+    whose returns the emit detects structurally via uncovered/STOP routing).
+
+    Selection is by HANDLER COVERAGE so the exact map wins ONLY when it strictly
+    resolves more handlers (the collapse case). Ties (hodur_func 13==13) and
+    range-routed BSTs (sub_7FFD 46<76) keep ``bst_evidence.dispatcher`` -- so this
+    never regresses a shape the comparison evidence already routes correctly.
+    """
+    bst_router = (
+        getattr(bst_evidence, "dispatcher", None) if bst_evidence is not None else None
+    )
+    dmap = getattr(recovery, "dispatch_map", None) if recovery is not None else None
+    if dmap is None or not getattr(dmap, "rows", None):
+        return bst_router
+    exact_router = interval_dispatcher_from_state_map(
+        dmap.state_to_handler(),
+        default_target=getattr(dmap, "default_target_block", None),
+    )
+    if _router_handler_coverage(exact_router, dispatcher_entry) > _router_handler_coverage(
+        bst_router, dispatcher_entry
+    ):
+        return exact_router
+    return bst_router
+
+
 class LowerStateMachine:
     name = "lower_state_machine"
 
@@ -205,11 +265,7 @@ class LowerStateMachine:
         # across shared blocks and mis-resolved conditional handlers (e.g.
         # 0x610BB4D9 collapsed to the exit). The rich StateDag metadata can be
         # re-added later if needed; the redirect output does not require it.
-        dispatcher = (
-            getattr(bst_evidence, "dispatcher", None)
-            if bst_evidence is not None
-            else None
-        )
+        dispatcher = _select_s1a_router(recovery, bst_evidence, dispatcher_entry)
         if (
             dispatcher is not None
             and dispatcher_entry is not None
