@@ -1,21 +1,24 @@
 """Direct unflatten emission from the interval-set graph (epic d81-jfg2).
 
 No ``StateDag`` materialization: the interval-set dispatcher (state -> handler)
-plus :func:`recover_handler_transitions` (handler -> folded next-state(s)) *is*
-the state-transition graph.  This module walks that graph and emits the CFG
-redirects that bypass the dispatcher:
+plus :func:`recover_state_write_transitions` (dispatcher back-edge -> folded
+next-state) *is* the state-transition graph.  This module walks that graph and
+emits the CFG redirects that bypass the dispatcher.
 
-  * per handler arm: re-point the handler's exit off the dispatcher onto the
-    routed target handler (own-exit) or, for a shared MBA suffix, the
-    handler-owned predecessor (bypass the shared block);
-  * terminal arms (next-state routes to the exit) -> the dispatcher's default
-    (shared-return) block;
-  * one entry bridge: pre-header -> route(initial_state).
+The transition points are the dispatcher's **predecessors** — every block that
+writes the state variable then re-enters the comparison tree.  For each such
+back-edge ``P`` writing state ``S``, re-point ``P -> dispatcher`` onto
+``route(S)`` (the routed handler), or onto the dispatcher's default
+(shared-return) block when ``S`` routes to the exit/STOP/default.  The function
+prologue's dispatcher edge is bridged to ``route(initial_state)``.
 
-Once every handler arm is re-pointed and the entry is bridged, the dispatcher
-block becomes unreachable and IDA DCEs it (with the state-var writes, whose
-only reader was the dispatcher comparison).  Explicit state-var DSE is therefore
-not emitted here unless a later verification shows residual reads.
+Anchoring on back-edges (not on the dispatcher's routed *targets*) is robust to
+OLLVM handlers that share suffixes or chain through one another's entry blocks:
+those interior fall-throughs are left as natural control flow and only the
+dispatcher back-edge is rewritten.  Once every back-edge is re-pointed, the
+dispatcher block becomes unreachable and IDA DCEs it (with the state-var writes,
+whose only reader was the dispatcher comparison).  Explicit state-var DSE is
+therefore not emitted here unless a later verification shows residual reads.
 
 Portable transforms-layer: consumes a ``FlowGraph`` + ``IntervalDispatcher``;
 emits ``GraphModification`` values compiled to a ``PatchPlan``.
@@ -23,8 +26,8 @@ emits ``GraphModification`` values compiled to a ``PatchPlan``.
 from __future__ import annotations
 
 from d810.analyses.control_flow.minimal_state_recovery import (
-    HandlerTransition,
-    recover_handler_transitions,
+    StateWriteTransition,
+    recover_state_write_transitions,
 )
 from d810.core import logging
 from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
@@ -32,59 +35,35 @@ from d810.transforms.plan import PatchPlan, compile_patch_plan
 
 logger = logging.getLogger("D810.transforms.minimal_unflatten_emit")
 
-__all__ = ["emit_minimal_unflatten", "build_minimal_redirects"]
+__all__ = ["emit_minimal_unflatten", "build_state_write_redirects"]
 
 
-def _redirect_target_edge(
-    flow_graph,
-    arm,
-    dispatcher_entry_serial: int | None,
-) -> tuple[int, int] | None:
-    """Return ``(source_block, old_target)`` for re-pointing *arm* off the dispatcher.
-
-    Own-exit handler (``S -> dispatcher``): re-point ``S``.  Shared MBA suffix
-    (``S`` multi-predecessor): re-point the handler-owned predecessor ``P`` of
-    ``S`` (``P -> S``) so the shared block is bypassed and stays valid for the
-    other handlers until they too bypass it.
-    """
-    path = arm.ordered_path
-    if not path:
-        return None
-    s = int(path[-1])
-    sblk = flow_graph.get_block(s)
-    if sblk is None:
-        return None
-    succs = [int(x) for x in sblk.succs]
-    # The boundary edge we are severing: the dispatcher re-entry if present.
-    if dispatcher_entry_serial is not None and int(dispatcher_entry_serial) in succs:
-        boundary = int(dispatcher_entry_serial)
-    elif succs:
-        boundary = succs[0]
-    else:
-        return None
-    # Shared suffix: bypass it by re-pointing the owned predecessor on the path.
-    if sblk.npred > 1 and len(path) >= 2:
-        return (int(path[-2]), s)
-    return (s, boundary)
-
-
-def build_minimal_redirects(
+def build_state_write_redirects(
     flow_graph,
     dispatcher,
-    transitions: tuple[HandlerTransition, ...],
+    transitions: tuple[StateWriteTransition, ...],
     *,
     dispatcher_entry_serial: int | None,
     pre_header_serial: int | None,
     initial_state: int | None,
 ) -> list[object]:
-    """Build the redirect modifications that linearize the interval-set graph."""
+    """Build the redirect modifications that linearize the interval-set graph.
+
+    One redirect per dispatcher back-edge: ``P -> dispatcher`` becomes
+    ``P -> route(state_written_by_P)`` (or ``-> default`` when the state routes
+    to the exit).  Prologue back-edges are excluded here and handled by the
+    entry bridge so the function entry is never sent to the shared-return block.
+    """
     mods: list[object] = []
     seen: set[tuple[str, int, int, int]] = set()
     default_target = dispatcher.default_target
+    disp = int(dispatcher_entry_serial) if dispatcher_entry_serial is not None else None
 
-    def _add(src: int, old: int, new: int, *, two_way: bool) -> None:
+    def _add(src: int, old: int, new: int | None, *, two_way: bool) -> None:
+        if new is None or int(old) == int(new):
+            return
         key = ("B" if two_way else "G", int(src), int(old), int(new))
-        if key in seen or int(old) == int(new):
+        if key in seen:
             return
         seen.add(key)
         if two_way:
@@ -92,46 +71,43 @@ def build_minimal_redirects(
         else:
             mods.append(RedirectGoto(from_serial=int(src), old_target=int(old), new_target=int(new)))
 
-    for transition in transitions:
-        for arm in transition.arms:
-            edge = _redirect_target_edge(flow_graph, arm, dispatcher_entry_serial)
-            if edge is None:
-                continue
-            src, old = edge
-            if arm.is_return:
-                new = default_target
-            else:
-                new = arm.target_handler
-            if new is None:
-                continue
-            src_block = flow_graph.get_block(int(src))
+    # Prologue dispatcher edges are bridged to route(initial_state); their own
+    # state write (the initial state) would route there anyway, but routing them
+    # via the bridge keeps the function-entry path explicit and avoids ever
+    # redirecting the entry to the shared-return block.
+    prologue_preds: set[int] = set()
+    if disp is not None:
+        prologue_preds = {
+            int(p)
+            for p in _dispatcher_entry_preds(
+                flow_graph, disp, pre_header_hint=pre_header_serial
+            )
+        }
+
+    if disp is not None:
+        for transition in transitions:
+            src = int(transition.write_block)
+            if src in prologue_preds:
+                continue  # handled by the entry bridge below
+            # ``via_block`` set => bypass a shared (pure state-glue) back-edge:
+            # redirect ``src -> via_block`` onto the routed handler.  Otherwise
+            # sever ``src -> dispatcher``.
+            old = int(transition.via_block) if transition.via_block is not None else disp
+            new = default_target if transition.is_return else transition.target_handler
+            src_block = flow_graph.get_block(src)
             if src_block is None:
                 continue
-            _add(src, old, int(new), two_way=(src_block.nsucc == 2))
+            _add(src, old, new, two_way=(src_block.nsucc == 2))
 
-    # Entry bridge: every block that reaches the dispatcher from the function
-    # prologue (i.e. NOT a handler back-edge) sets the initial state and falls
-    # into the dispatcher; re-point each straight at the first handler so the
-    # dispatcher's comparison tree becomes unreachable (and IDA DCEs it). Handler
-    # back-edges are already severed above; shared MBA suffixes are reached only
-    # via handlers, so they are correctly excluded by the entry-reachability set.
-    if initial_state is not None and dispatcher_entry_serial is not None:
+    # Entry bridge: prologue blocks that fall into the dispatcher -> route(initial).
+    if initial_state is not None and disp is not None:
         first = dispatcher.lookup(int(initial_state) & 0xFFFFFFFF)
         if first is not None:
-            for entry_pred in _dispatcher_entry_preds(
-                flow_graph,
-                int(dispatcher_entry_serial),
-                pre_header_hint=pre_header_serial,
-            ):
+            for entry_pred in sorted(prologue_preds):
                 epblk = flow_graph.get_block(int(entry_pred))
                 if epblk is None:
                     continue
-                _add(
-                    int(entry_pred),
-                    int(dispatcher_entry_serial),
-                    int(first),
-                    two_way=(epblk.nsucc == 2),
-                )
+                _add(int(entry_pred), disp, int(first), two_way=(epblk.nsucc == 2))
 
     return mods
 
@@ -189,19 +165,21 @@ def emit_minimal_unflatten(
     pre_header_serial: int | None = None,
     initial_state: int | None = None,
 ) -> PatchPlan:
-    """Recover handler transitions and emit the dispatcher-bypass ``PatchPlan``.
+    """Recover back-edge transitions and emit the dispatcher-bypass ``PatchPlan``.
 
-    The whole unflatten in one pass: ``recover_handler_transitions`` over the
-    interval-set dispatcher, then :func:`build_minimal_redirects`, compiled to a
-    ``PatchPlan``.  No ``StateDag``.
+    The whole unflatten in one pass: ``recover_state_write_transitions`` over the
+    dispatcher's predecessors, then :func:`build_state_write_redirects`, compiled
+    to a ``PatchPlan``.  No ``StateDag``.
     """
-    transitions = recover_handler_transitions(
+    if dispatcher_entry_serial is None:
+        return compile_patch_plan([], flow_graph)
+    transitions = recover_state_write_transitions(
         flow_graph,
         dispatcher,
         int(state_var_stkoff),
-        dispatcher_entry_serial=dispatcher_entry_serial,
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
     )
-    mods = build_minimal_redirects(
+    mods = build_state_write_redirects(
         flow_graph,
         dispatcher,
         transitions,
@@ -210,12 +188,64 @@ def emit_minimal_unflatten(
         initial_state=initial_state,
     )
     if logger.info_on:
-        n_cond = sum(1 for t in transitions for a in t.arms if a.branch_block is not None)
+        n_return = sum(1 for t in transitions if t.is_return)
+        n_unresolved = sum(1 for t in transitions if t.next_state is None)
+        reached, total, unreached = _reachability(
+            flow_graph, dispatcher, mods, int(dispatcher_entry_serial)
+        )
         logger.info(
-            "s1a minimal unflatten: handlers=%d arms=%d conditional_arms=%d redirects=%d",
+            "s1a minimal unflatten: back_edges=%d return_edges=%d unresolved=%d "
+            "redirects=%d reachable_handlers=%d/%d unreached=%s",
             len(transitions),
-            sum(len(t.arms) for t in transitions),
-            n_cond,
+            n_return,
+            n_unresolved,
             len(mods),
+            reached,
+            total,
+            ",".join("blk%d" % b for b in unreached[:20]),
         )
     return compile_patch_plan(list(mods), flow_graph)
+
+
+def _reachability(flow_graph, dispatcher, mods, dispatcher_entry_serial):
+    """Faithful post-redirect reachability: apply the redirects to the CFG, then
+    BFS from the function entry with the (now-bypassed) dispatcher removed.
+
+    A dispatcher target (handler entry) that is NOT reached here will be DCE'd by
+    IDA once the dispatcher is gone -- i.e. its real work is dropped. Returns
+    ``(reached_handler_count, total_handler_count, sorted_unreached_handlers)``.
+    """
+    rewired: dict[int, list[int]] = {}
+    for serial in flow_graph.blocks:
+        blk = flow_graph.get_block(serial)
+        rewired[int(serial)] = [int(s) for s in (blk.succs if blk is not None else ())]
+    for m in mods:
+        src = int(m.from_serial)
+        old = int(m.old_target)
+        new = int(m.new_target)
+        succ = rewired.get(src)
+        if succ and old in succ:
+            succ[succ.index(old)] = new
+
+    disp = int(dispatcher_entry_serial)
+    entry = int(getattr(flow_graph, "entry_serial", 0) or 0)
+    seen: set[int] = set()
+    stack = [entry]
+    while stack:
+        b = stack.pop()
+        if b in seen or b == disp:
+            continue
+        seen.add(b)
+        for s in rewired.get(b, ()):
+            if s not in seen and s != disp:
+                stack.append(s)
+
+    handlers = {
+        int(row.target)
+        for row in getattr(dispatcher, "_rows", ())
+        if row.target is not None
+    }
+    handlers.discard(disp)
+    reached = sorted(h for h in handlers if h in seen)
+    unreached = sorted(h for h in handlers if h not in seen)
+    return len(reached), len(handlers), unreached

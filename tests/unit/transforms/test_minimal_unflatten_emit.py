@@ -4,7 +4,9 @@ from __future__ import annotations
 import pytest
 
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
-from d810.analyses.control_flow.minimal_state_recovery import recover_handler_transitions
+from d810.analyses.control_flow.minimal_state_recovery import (
+    recover_state_write_transitions,
+)
 from d810.analyses.value_flow.state_write import (
     MicrocodeEvalSeams,
     forward_eval_insn as _portable_forward_eval_insn,
@@ -19,7 +21,7 @@ from d810.ir.flowgraph import (
     OperandKind,
 )
 from d810.transforms.graph_modification import RedirectGoto
-from d810.transforms.minimal_unflatten_emit import build_minimal_redirects
+from d810.transforms.minimal_unflatten_emit import build_state_write_redirects
 
 _OP_MOV = 4
 _T_NUM, _T_STK, _T_REG = 2, 4, 1
@@ -93,26 +95,34 @@ def _disp(point_targets, exit_block, hi=0x100000000):
     return IntervalDispatcher(rows)
 
 
-def test_emits_handler_redirect_and_entry_bridge(_seam) -> None:
-    # entry blk0 -> dispatcher blk2; handler blk10 writes 0x20 -> dispatcher;
-    # route(0x10 initial)=blk10, route(0x20)=blk20.
+def test_emits_back_edge_redirect_and_entry_bridge(_seam) -> None:
+    # entry blk0 -> dispatcher blk2; state-write blk10 writes 0x20 -> dispatcher;
+    # route(0x10 initial)=blk10, route(0x20)=blk20.  The transition is anchored on
+    # the back-edge blk10->dispatcher, re-pointed onto route(0x20)=blk20.
     fg = FlowGraph(
         blocks={
             0: _b(0, (2,), ()),                                   # entry -> dispatcher
             2: _b(2, (10, 20), (0, 10, 20)),                      # dispatcher
-            10: _b(10, (2,), (2,), (_mov_state(0x1000, 0x20),)),  # handler -> writes 0x20
+            10: _b(10, (2,), (2,), (_mov_state(0x1000, 0x20),)),  # writes 0x20 -> dispatcher
             20: _b(20, (2,), (2,)),                               # target handler
         },
         entry_serial=0, func_ea=0x1000,
     )
     disp = _disp({0x10: 10, 0x20: 20}, exit_block=99)
-    transitions = recover_handler_transitions(fg, disp, _STATE, dispatcher_entry_serial=2)
-    mods = build_minimal_redirects(
+    transitions = recover_state_write_transitions(
+        fg, disp, _STATE, dispatcher_entry_serial=2
+    )
+    # blk10 is the resolved state-write back-edge -> route(0x20) = blk20
+    by_block = {t.write_block: t for t in transitions}
+    assert by_block[10].next_state == 0x20
+    assert by_block[10].target_handler == 20
+    assert by_block[10].is_return is False
+    mods = build_state_write_redirects(
         fg, disp, transitions,
         dispatcher_entry_serial=2, pre_header_serial=0, initial_state=0x10,
     )
     gotos = {(m.from_serial, m.old_target, m.new_target) for m in mods if isinstance(m, RedirectGoto)}
-    # handler blk10 re-pointed off the dispatcher onto blk20
+    # back-edge blk10 re-pointed off the dispatcher onto blk20
     assert (10, 2, 20) in gotos
     # entry bridge: blk0 -> route(initial 0x10) = blk10
     assert (0, 2, 10) in gotos
