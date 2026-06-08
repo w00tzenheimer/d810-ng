@@ -694,15 +694,13 @@ OLLVM_CASES = [
     DeobfuscationCase(
         function="test_function_ollvm_fla_bcf_sub",
         description="O-LLVM FLA+BCF+SUB combined obfuscation",
-        # Exercise the dedicated OLLVM profile. The readable reference above
-        # documents the target semantics, but this profile still emits partial
-        # recovery today: it collapses the dispatcher substantially while
-        # preserving the password path and terminal store payload evidence.
-        # Do not require terminal-loop removal here until recon has explicit
-        # opaque/BCF branch ownership proving the selector backedge is dead.
-        # IDA may also print complement-mask payloads in canonical algebraic
-        # form, so this gate asserts stable rendered masks rather than requiring
-        # every source literal to survive as text.
+        # Exercise the dedicated OLLVM profile. With fold_writable_constants on,
+        # the opaque globals x=y=0 fold, the BCF guard proves constant-false, and
+        # the dead 0xCD536960/0x259CF55E terminal write is DCE'd -- that second
+        # write is BCF noise the obfuscator inserted, NOT a real password-fail arm
+        # (the true original has a single ``carrier ^ 0x173063C1`` store). So this
+        # gate asserts the real terminal mask and does NOT require the BCF-junk
+        # constants to survive.
         project="default_unflattening_ollvm.json",
         obfuscated_contains=["while"],
         deobfuscated_contains=[
@@ -710,8 +708,6 @@ OLLVM_CASES = [
             "secret",
             "0xFFFFFFBD",
             "0x173063C1",
-            "0xCD536960",
-            "0x259CF55E",
         ],
         deobfuscated_not_contains=[
             "v15 | 1",

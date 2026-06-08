@@ -1,70 +1,72 @@
-// test_function_ollvm_fla_bcf_sub - REFERENCE
+// test_function_ollvm_fla_bcf_sub - REFERENCE (TRUE ORIGINAL)
 //
-// OLLVM obfuscation applied:
-// - FLA: control-flow flattening with a massive nested dispatcher
-// - BCF: bogus control flow and opaque predicates
-// - SUB: instruction substitution and bit-manipulation noise
+// OLLVM obfuscation applied to the binary:
+// - FLA: control-flow flattening with a nested dispatcher
+// - BCF: bogus control flow + opaque predicates over the globals x, y
+// - SUB: instruction substitution / MBA noise
 //
-// This reference is intentionally semantic and readable. It documents the
-// behavior the e2e test should move toward, not the current partial D810 output.
-// Do not use it as an exact AST expected_code oracle until D810 emits a
-// structurally comparable result.
+// This is the actual pre-obfuscation source the binary was built from. It has a
+// SINGLE terminal output write, `*output = local_state ^ 0x173063C1`. The
+// `0xCD536960 / 0x259CF55E` second write seen in the obfuscated decompilation is
+// BCF the obfuscator inserted (guard is constant-false at the uninitialised
+// opaque globals x=y=0) -- it is dead code, NOT a real password-fail arm.
 
-EXPORT void test_function_ollvm_fla_bcf_sub(unsigned int *input, unsigned int *output)
+void test_function_original(unsigned int *input, unsigned int *output)
 {
-    /* ==================== CLEAN UNFLATTENED VERSION ==================== */
-    /* All control-flow flattening, bogus control flow (BCF), opaque predicates,
-       state variable, nested dispatcher loops, and anti-analysis junk removed.
-       Only the real semantic logic remains. */
+    unsigned int local_state;
+    unsigned int ref_input_value;
+    struct timeval time_info;
+    unsigned int nb_seconds;
+    char password[100];
+    unsigned int tmp;
+    unsigned int failed;
+    unsigned int stringCompareResult;
+    unsigned int activationCode;
+    unsigned int i;
+    int tmp___0;
 
-    char password_buffer[100] = {0};
-    int strcmp_result = 0;
-    unsigned int working_value = 0;
-    int password_ok = 0;
-
-    /* === PHASE 1: Password prompt and verification === */
+    password[0] = (char)'\000';
+    tmp = 1U;
+    while (!(tmp >= 100U)) {
+        password[tmp] = (char)0;
+        tmp++;
+    }
+    failed = 0U;
+    gettimeofday(&time_info, (void *)0);
+    nb_seconds = (unsigned int)(time_info.tv_sec & 4294967295L);
+    ref_input_value = ((nb_seconds & 1344344352U) | 2197946369U)
+                    + ((nb_seconds & 1344344352U) ^ 1344887088U);
+    local_state = (unsigned int)((unsigned long)*(input + 0UL) + 650604291UL);
     printf("Please enter password:");
-    scanf("%s", password_buffer);
-
-    strcmp_result = strncmp(password_buffer, "secret", 100);
-    password_ok = (strcmp_result == 0);
-
-    /* === PHASE 2: Process input array into output array === */
-    if (input)
-        working_value = *input;
-
-    working_value = working_value + 5 * working_value;
-    working_value += 66;
-    working_value = (working_value & 0xFFFFFFBD) | (~working_value & 0x42);
-    working_value *= 2;
-
-    if (password_ok)
-    {
-        working_value = (working_value & 0xE8CF9C3E) | (~working_value & 0x173063C1);
-        working_value ^= 0x259CF55E;
-
-        if (output)
-            *output = working_value;
-
-        if (output && output != input)
-            output[1] = 0;
+    scanf("%s", password);
+    activationCode = *(input + 0UL);
+    tmp___0 = strncmp((char const *)(password), "secret", 100U);
+    stringCompareResult = (unsigned int)tmp___0;
+    failed |= (unsigned int)((unsigned long)stringCompareResult != 0UL);
+    failed |= (unsigned int)(activationCode != ref_input_value);
+    if (failed) {
+        *(output + 0) = 0U;
     }
-    else
-    {
-        working_value = (working_value & 0xCD536960) | (~working_value & 0x32AC969F);
-        working_value ^= 0x259CF55E;
-
-        if (output)
-            *output = ~working_value;
+    if (local_state & 1U) {
+        local_state = 5U * local_state + activationCode;
+        switch ((unsigned long)((int)local_state) % 4UL) {
+        case 0UL:
+            local_state ^= 66U;
+            break;
+        case 1UL:
+            local_state += 66U;
+            break;
+        default:
+            local_state -= 66U;
+            break;
+        }
+    } else {
+        i = 0U;
+        while ((unsigned long)i < 100UL) {
+            local_state += (unsigned int)password[i] * ref_input_value;
+            i = (unsigned int)((unsigned long)i + 1UL);
+        }
     }
-
-    /* === PHASE 3: Preserved anti-analysis side effect === */
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-
-    if (input && output && input != output)
-    {
-        output[2] = input[0] + 5 * input[0];
-        output[3] = working_value;
-    }
+    *(output + 0UL) = (unsigned int)((unsigned long)local_state ^ 389047233UL);
+    return;
 }
