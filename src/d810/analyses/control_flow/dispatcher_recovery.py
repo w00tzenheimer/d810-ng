@@ -22,12 +22,19 @@ from d810.analyses.control_flow.reachability import reachable_from
 from d810.analyses.control_flow.dominator import compute_dom_tree
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.analyses.control_flow.dispatcher_resolution import (
+    DispatcherResolution,
+    ResolverCandidate,
     StateDispatcherMap,
     StateDispatcherRow,
+)
+from d810.analyses.control_flow.dispatcher_resolver import (
+    DispatcherResolver,
+    resolve_dispatcher,
 )
 from d810.analyses.control_flow.switch_table_analysis import (
     analyze_switch_table_flow_graph,
 )
+from d810.capabilities.dispatcher import RouterKind
 
 # Matches the live HodurStateMachineDetector threshold (analysis.py MIN_STATE_CONSTANT).
 MIN_STATE_CONSTANT = 0x01000000
@@ -224,27 +231,106 @@ def build_state_dispatcher_map_from_flow_graph(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class EqualityChainDispatcherResolver:
+    """Equality-chain (``CONDITIONAL_CHAIN``) resolver -- the preferred shape.
+
+    ``specificity=10`` (> switch's 5) preserves the historical equality-first
+    precedence of ``build_dispatch_map_any_kind`` under the ranked chain.
+    """
+
+    name: str = "equality_chain"
+    router_kind: RouterKind = RouterKind.EQUALITY_CHAIN
+    specificity: int = 10
+
+    def accepts(self, graph: FlowGraph) -> ResolverCandidate | None:
+        dmap = build_state_dispatcher_map_from_flow_graph(graph)
+        if dmap is None:
+            return None
+        return ResolverCandidate(
+            resolver_name=self.name,
+            router_kind=self.router_kind,
+            confidence=float(len(dmap.rows)),
+            specificity=self.specificity,
+            reasons=("equality-chain", "rows=%d" % len(dmap.rows)),
+        )
+
+    def resolve(
+        self, graph: FlowGraph, candidate: ResolverCandidate
+    ) -> DispatcherResolution | None:
+        dmap = build_state_dispatcher_map_from_flow_graph(graph)
+        if dmap is None:
+            return None
+        return DispatcherResolution(
+            dispatcher_map=dmap,
+            resolver_name=self.name,
+            router_kind=self.router_kind,
+            confidence=candidate.confidence,
+            ranking_reason=candidate.reasons,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SwitchTableDispatcherResolver:
+    """Switch-table / masked (``switch(state & MASK)`` jtbl) resolver.
+
+    Fallback shape (e.g. abc_or_dispatch / OLLVM switch-fla); ``specificity=5``
+    keeps it below the equality-chain resolver in the ranking.
+    """
+
+    name: str = "switch_table"
+    router_kind: RouterKind = RouterKind.SWITCH
+    specificity: int = 5
+
+    def accepts(self, graph: FlowGraph) -> ResolverCandidate | None:
+        result = analyze_switch_table_flow_graph(graph)
+        if result is None:
+            return None
+        dmap = result.state_dispatcher_map
+        return ResolverCandidate(
+            resolver_name=self.name,
+            router_kind=self.router_kind,
+            confidence=float(len(dmap.rows)),
+            specificity=self.specificity,
+            reasons=("switch-table", "rows=%d" % len(dmap.rows)),
+        )
+
+    def resolve(
+        self, graph: FlowGraph, candidate: ResolverCandidate
+    ) -> DispatcherResolution | None:
+        result = analyze_switch_table_flow_graph(graph)
+        if result is None:
+            return None
+        return DispatcherResolution(
+            dispatcher_map=result.state_dispatcher_map,
+            resolver_name=self.name,
+            router_kind=self.router_kind,
+            confidence=candidate.confidence,
+            ranking_reason=candidate.reasons,
+        )
+
+
+def default_dispatcher_resolvers() -> tuple[DispatcherResolver, ...]:
+    """The portable resolver chain shared by every §1a dispatch-map consumer."""
+    return (EqualityChainDispatcherResolver(), SwitchTableDispatcherResolver())
+
+
 def build_dispatch_map_any_kind(graph: FlowGraph) -> StateDispatcherMap | None:
     """Recover a ``StateDispatcherMap`` of ANY supported dispatcher kind.
 
-    Equality-chain (``CONDITIONAL_CHAIN``) is preferred; on no match it falls back
-    to the portable switch-table / masked detector (``switch(state & MASK)`` jtbl,
-    e.g. abc_or_dispatch / OLLVM switch-fla). The switch detector already produces a
-    ``StateDispatcherMap`` (``case_value -> handler``), so we reuse it instead of
-    growing a parallel §1a detector (consolidation; playbook 2026-06-08 step 7,
-    mirrors hodur ``snapshot_builder`` preferring ``switch_table_map``).
+    Delegates to the ranked :func:`resolve_dispatcher` chain over
+    :func:`default_dispatcher_resolvers`. Equality-chain (``CONDITIONAL_CHAIN``,
+    specificity 10) outranks the switch-table fallback (specificity 5), so the
+    historical equality-first precedence is preserved. The two detectors are
+    disjoint in practice (equality -> ``None`` on switch graphs and vice versa),
+    so ranking is behavior-neutral by construction.
 
-    This is the single front-end shared by ``HodurFamily.detect`` (the pipeline gate)
-    and ``recover_dispatcher`` (pass #1) so the two never disagree on which dispatcher
-    shapes are supported.
+    This is the single front-end shared by ``HodurFamily.detect`` (the pipeline
+    gate) and ``recover_dispatcher`` (pass #1) so the two never disagree on which
+    dispatcher shapes are supported.
     """
-    dmap = build_state_dispatcher_map_from_flow_graph(graph)
-    if dmap is not None:
-        return dmap
-    switch_result = analyze_switch_table_flow_graph(graph)
-    if switch_result is not None:
-        return switch_result.state_dispatcher_map
-    return None
+    resolution = resolve_dispatcher(graph, default_dispatcher_resolvers())
+    return resolution.dispatcher_map if resolution is not None else None
 
 
 def recover_dispatcher(
