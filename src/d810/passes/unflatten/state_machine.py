@@ -14,10 +14,13 @@ additive + behavior-neutral (not wired into the maturity hook).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
+from d810.core.typing import ClassVar
 from d810.passes.pass_pipeline import (
     FunctionPipelineContext,
     PassResult,
-    PreservedAnalyses,
+    PreservedAnalyses, PipelinePass,
 )
 
 # --- WORK-LIST: portable extractions composed by the passes ---
@@ -121,34 +124,34 @@ def _publish(ctx: FunctionPipelineContext, name: str, value) -> None:
         ctx.facts.put_analysis(name, value)
 
 
-class RecoverDispatcher:
+class RecoverDispatcher(PipelinePass):
     name = "recover_dispatcher"
 
-    def run(self, ctx: FunctionPipelineContext) -> PassResult:
-        recovery = recover_dispatcher(ctx.graph, ctx.facts)
-        _publish(ctx, self.name, recovery)
+    def run(self, context: FunctionPipelineContext) -> PassResult:
+        recovery = recover_dispatcher(context.graph, context.facts)
+        _publish(context, self.name, recovery)
         # S2: build the consolidated ComparisonDispatcherModel for comparison
         # router kinds, folding in the pristine BST/interval evidence so
         # interval-routed next-states resolve via WrappedInterval.contains. The
         # model is published for RecoverStateTransitions to route through; None
         # for non-comparison kinds (caller falls back to exact-only).
-        model = _build_comparison_model(recovery, _analysis(ctx, "bst_evidence"))
-        _publish(ctx, "dispatcher_model", model)
+        model = _build_comparison_model(recovery, _analysis(context, "bst_evidence"))
+        _publish(context, "dispatcher_model", model)
         return PassResult(facts=(recovery,), preserved=PreservedAnalyses.all())
 
 
-class RecoverStateTransitions:
+class RecoverStateTransitions(PipelinePass):
     name = "recover_state_transitions"
 
-    def run(self, ctx: FunctionPipelineContext) -> PassResult:
-        recovery = _analysis(ctx, "recover_dispatcher")
+    def run(self, context: FunctionPipelineContext) -> PassResult:
+        recovery = _analysis(context, "recover_dispatcher")
         dispatch_map = getattr(recovery, "dispatch_map", None)
         # S2: route through the consolidated ComparisonDispatcherModel (exact ∪
         # interval) published by RecoverDispatcher; absent it (non-comparison
         # kind), resolution falls back to exact-only inside the resolver.
-        model = _analysis(ctx, "dispatcher_model")
+        model = _analysis(context, "dispatcher_model")
         resolutions = resolve_state_transitions(
-            ctx.graph, ctx.facts, dispatch_map=dispatch_map, model=model
+            context.graph, context.facts, dispatch_map=dispatch_map, model=model
         )
         transition_result = transition_result_from_resolutions(
             resolutions, dispatch_map=dispatch_map
@@ -157,10 +160,10 @@ class RecoverStateTransitions:
         # ``capabilities.optional(ValRangeCapability)``). For now this records a read-only
         # confirmation metric proving the live capability executes end-to-end; the substantive
         # transition enrichment lands once #4's protected emission can absorb the richer DAG.
-        valrange = ctx.capabilities.optional(ValRangeCapability)
+        valrange = context.capabilities.optional(ValRangeCapability)
         if valrange is not None and dispatch_map is not None:
             _publish(
-                ctx,
+                context,
                 "valrange_confirmable_count",
                 _count_valrange_confirmable(
                     valrange,
@@ -168,30 +171,30 @@ class RecoverStateTransitions:
                     getattr(recovery, "state_var_stkoff", None),
                 ),
             )
-        _publish(ctx, self.name, resolutions)
-        _publish(ctx, "transition_result", transition_result)
+        _publish(context, self.name, resolutions)
+        _publish(context, "transition_result", transition_result)
         return PassResult(
             facts=(resolutions, transition_result), preserved=PreservedAnalyses.all()
         )
 
 
-class PlanSemanticRegions:
+class PlanSemanticRegions(PipelinePass):
     name = "plan_semantic_regions"
 
-    def run(self, ctx: FunctionPipelineContext) -> PassResult:
-        recovery = _analysis(ctx, "recover_dispatcher")
+    def run(self, context: FunctionPipelineContext) -> PassResult:
+        recovery = _analysis(context, "recover_dispatcher")
         regions = plan_semantic_regions(
-            ctx.graph,
-            ctx.facts,
-            transition_result=_analysis(ctx, "transition_result"),
+            context.graph,
+            context.facts,
+            transition_result=_analysis(context, "transition_result"),
             dispatcher_entry_serial=getattr(recovery, "dispatcher_block_serial", None),
             state_var_stkoff=getattr(recovery, "state_var_stkoff", None),
         )
-        _publish(ctx, self.name, regions)
+        _publish(context, self.name, regions)
         return PassResult(facts=(regions,), preserved=PreservedAnalyses.all())
 
-
-class LowerStateMachine:
+@dataclass
+class LowerStateMachine(PipelinePass):
     """Lower the recovered state machine to dispatcher-bypass redirects (§1a).
 
     The dispatcher router is **injectable** (ticket llr-oq8v): pass a custom
@@ -202,12 +205,8 @@ class LowerStateMachine:
     """
 
     name = "lower_state_machine"
-
-    def __init__(self, *, resolvers=None, configured_kind=None) -> None:
-        self._resolvers = (
-            tuple(resolvers) if resolvers is not None else default_resolvers()
-        )
-        self._configured_kind = configured_kind
+    resolvers: tuple = field(default_factory=default_resolvers)
+    configured_kind: RouterKind | None = None
 
     def _resolve_router(self, recovery, bst_evidence, dispatcher_entry: int | None):
         """Adapt the recovered evidence into a router via the injectable chain.
@@ -237,16 +236,16 @@ class LowerStateMachine:
             dispatcher_entry=dispatcher_entry,
         )
         return select_router(
-            self._resolvers, ctx, configured_kind=self._configured_kind
+            self.resolvers, ctx, configured_kind=self.configured_kind
         )
 
-    def run(self, ctx: FunctionPipelineContext) -> PassResult:
-        recovery = _analysis(ctx, "recover_dispatcher")
-        transition_result = _analysis(ctx, "transition_result")
+    def run(self, context: FunctionPipelineContext) -> PassResult:
+        recovery = _analysis(context, "recover_dispatcher")
+        transition_result = _analysis(context, "transition_result")
         dispatcher_entry = getattr(recovery, "dispatcher_block_serial", None)
         state_var_stkoff = getattr(recovery, "state_var_stkoff", None)
-        live_function = getattr(ctx.source, "live_source", None)
-        bst_evidence = _analysis(ctx, "bst_evidence")
+        live_function = getattr(context.source, "live_source", None)
+        bst_evidence = _analysis(context, "bst_evidence")
 
         # Direct interval-set unflatten (epic d81-jfg2): the interval-set
         # dispatcher (state -> handler) + per-handler next-state recovery IS the
@@ -263,7 +262,7 @@ class LowerStateMachine:
             and state_var_stkoff is not None
         ):
             plan = emit_minimal_unflatten(
-                ctx.graph,
+                context.graph,
                 dispatcher,
                 state_var_stkoff=int(state_var_stkoff),
                 dispatcher_entry_serial=int(dispatcher_entry),
@@ -275,25 +274,25 @@ class LowerStateMachine:
         # Fallback (no interval dispatcher recovered): the committed shallow
         # redirect-only path.
         plan = lower_to_direct_graph(
-            ctx.graph,
-            ctx.facts,
+            context.graph,
+            context.facts,
             transition_result=transition_result,
             dispatch_map=getattr(recovery, "dispatch_map", None),
             dispatcher_entry_serial=dispatcher_entry,
             state_var_stkoff=state_var_stkoff,
-            regions=_analysis(ctx, "plan_semantic_regions"),
+            regions=_analysis(context, "plan_semantic_regions"),
             # Protected emission: the injected use-def safety capability vetoes redirects that would
             # orphan non-state-variable uses (north-star LowerStateMachine.require(UseDefSafety)).
-            use_def_safety=ctx.capabilities.optional(UseDefSafetyCapability),
+            use_def_safety=context.capabilities.optional(UseDefSafetyCapability),
             live_function=live_function,
         )
         return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
 
 
-class CleanupResidualDispatcher:
+class CleanupResidualDispatcher(PipelinePass):
     name = "cleanup_residual_dispatcher"
 
-    def run(self, ctx: FunctionPipelineContext) -> PassResult:
-        candidates = _analysis(ctx, "cleanup_candidates", ()) or ()
-        plan = cleanup_residual_dispatcher(ctx.graph, ctx.facts, candidates=candidates)
+    def run(self, context: FunctionPipelineContext) -> PassResult:
+        candidates = _analysis(context, "cleanup_candidates", ()) or ()
+        plan = cleanup_residual_dispatcher(context.graph, context.facts, candidates=candidates)
         return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
