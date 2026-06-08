@@ -54,6 +54,7 @@ __all__ = [
     "HandlerTransition",
     "recover_handler_transitions",
     "StateWriteTransition",
+    "TransitionProof",
     "recover_state_write_transitions",
     "recover_state_write_transitions_via_fixpoint",
     "recover_state_write_transitions_via_multicell_fixpoint",
@@ -61,6 +62,28 @@ __all__ = [
     "diff_back_edge_transitions",
     "diff_back_edge_transitions_partitioned",
 ]
+
+#: The oracle that resolves a back-edge next-state after the S4 C3 flip: the sound
+#: region-partitioned multi-cell constant fixpoint (run_snapshot_constant_fixpoint).
+_FIXPOINT_ORACLE = "region_partitioned_fixpoint"
+
+
+@dataclass(frozen=True, slots=True)
+class TransitionProof:
+    """Typed provenance for a recovered back-edge transition (ticket d81-t9ok).
+
+    Names the oracle that resolved the next-state and whether the result is trusted,
+    so the fact/proof layer (epic llr-fqam) can rank edges by evidence instead of
+    trusting every emitted edge equally / a provenance allowlist.  ``kind`` is the
+    resolution shape (``global_fold`` / ``region_agreed`` / ``predecessor_partitioned``
+    / ``unresolved``); ``trusted`` is ``False`` for an unresolved (routed-to-return)
+    back-edge a consumer must not rewrite as a handler transition.
+    """
+
+    oracle_kind: str
+    kind: str
+    trusted: bool
+    reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +111,9 @@ class StateWriteTransition:
     via_block: int | None = None  # when set, redirect ``write_block -> via_block``
                                   # (bypass the shared back-edge) instead of
                                   # ``write_block -> dispatcher``
+    proof: "TransitionProof | None" = None  # typed provenance (d81-t9ok); the
+                                            # authoritative fixpoint emitter attaches
+                                            # it, None = unattributed (legacy fold)
 
 
 def _resolve_state_var_alias(
@@ -493,7 +519,12 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
             # Unambiguous global fold (the B1 case): redirect the back-edge itself.
             state = int(value) & 0xFFFFFFFF
             target, is_ret = _classify(state)
-            out.append(StateWriteTransition(pred, state, target, is_ret, arm))
+            out.append(
+                StateWriteTransition(
+                    pred, state, target, is_ret, arm,
+                    proof=TransitionProof(_FIXPOINT_ORACLE, "global_fold", not is_ret),
+                )
+            )
             continue
 
         # Ambiguous: partition by immediate predecessor.  Apply the back-edge
@@ -528,16 +559,29 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
                 ip_arm = _arm(flow_graph.get_block(int(ip)), pred)
                 out.append(
                     StateWriteTransition(
-                        int(ip), state, target, is_ret, ip_arm, via_block=pred
+                        int(ip), state, target, is_ret, ip_arm, via_block=pred,
+                        proof=TransitionProof(
+                            _FIXPOINT_ORACLE, "predecessor_partitioned", not is_ret
+                        ),
                     )
                 )
         elif not ambiguous and len(distinct) == 1:
             # Every edge agreed on one state -- a plain back-edge redirect.
             state = next(iter(distinct))
             target, is_ret = _classify(state)
-            out.append(StateWriteTransition(pred, state, target, is_ret, arm))
+            out.append(
+                StateWriteTransition(
+                    pred, state, target, is_ret, arm,
+                    proof=TransitionProof(_FIXPOINT_ORACLE, "region_agreed", not is_ret),
+                )
+            )
         else:
-            out.append(StateWriteTransition(pred, None, None, True, arm))
+            out.append(
+                StateWriteTransition(
+                    pred, None, None, True, arm,
+                    proof=TransitionProof(_FIXPOINT_ORACLE, "unresolved", False),
+                )
+            )
     return tuple(out)
 
 

@@ -219,6 +219,21 @@ def emit_minimal_unflatten(
         int(state_var_stkoff),
         dispatcher_entry_serial=int(dispatcher_entry_serial),
     )
+    # C3b (ticket llr-1szn / d81-t9ok): each transition carries a typed
+    # ``TransitionProof`` naming the oracle and resolution shape. Observe-only --
+    # the distribution surfaces how many edges resolved by global fold vs the
+    # opaque-split / unresolved residual, feeding the fact/proof layer (llr-fqam)
+    # without changing recovery (the diff compares states, never proof).
+    if logger.info_on:
+        kinds: dict[str, int] = {}
+        for t in transitions:
+            key = t.proof.kind if t.proof is not None else "unattributed"
+            kinds[key] = kinds.get(key, 0) + 1
+        logger.info(
+            "s1a minimal unflatten: %d back-edge transitions, proof kinds=%s",
+            len(transitions),
+            dict(sorted(kinds.items())),
+        )
     # Recover the initial state from the prologue's own state-write fold when the
     # caller could not supply it. The comparison-BST evidence collapses to a
     # single catch-all on a wide equality chain (OLLVM -fla), so

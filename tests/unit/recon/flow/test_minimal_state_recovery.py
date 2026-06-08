@@ -9,6 +9,10 @@ import pytest
 
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.analyses.control_flow.minimal_state_recovery import (
+    StateWriteTransition,
+    TransitionProof,
+    diff_back_edge_transitions,
+    diff_back_edge_transitions_partitioned,
     recover_handler_transitions,
     recover_state_write_transitions,
     recover_state_write_transitions_via_fixpoint,
@@ -364,3 +368,141 @@ def test_b2_partitioned_reproduces_case2_via_block_split(_seam) -> None:
     assert pp_splits[10].is_return is False and pp_splits[10].via_block == 11
     assert pp_splits[60].next_state == 0x33333333 and pp_splits[60].target_handler == 70
     assert pp_splits[60].is_return is False and pp_splits[60].via_block == 11
+
+
+# --- C3b: proof-carrying transitions (ticket llr-1szn / d81-t9ok) ----------
+#
+# After the C3 flip the authoritative emitter
+# (recover_state_write_transitions_via_partitioned_fixpoint) attaches a typed
+# TransitionProof to every back-edge naming the oracle that resolved it and
+# whether the result is trusted.  Proof is *additive* provenance: the diff
+# functions compare only (next_state, target_handler, is_return), so attaching
+# it keeps the shadow-diff at 0 and the Docker golden byte-identical.
+
+
+def test_c3b_global_fold_attaches_trusted_proof(_seam) -> None:
+    """A back-edge that folds unambiguously gets a trusted ``global_fold`` proof."""
+    fg = _multicell_xor_fg()
+    disp = _dispatcher({0x10: 10, 0x1A2893D9: 20}, exit_block=99)
+    by_block = {t.write_block: t for t in
+                recover_state_write_transitions_via_partitioned_fixpoint(
+                    fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    p = by_block[11].proof
+    assert p is not None
+    assert p.oracle_kind == "region_partitioned_fixpoint"
+    assert p.kind == "global_fold"
+    assert p.trusted is True  # routes to handler blk20, not exit
+
+
+def test_c3b_predecessor_partitioned_proof(_seam) -> None:
+    """The Case-2 opaque-XOR split rows carry ``predecessor_partitioned`` proofs."""
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 60, 20, 70), (11,), (_mov(0x2000, _num(0), _reg(0)),)),
+            10: _blk(10, (11,), (2,), (_mov(0x1000, _num(0x12345678), _reg(8)),
+                                       _mov(0x1004, _num(0x081CC5A1), _reg(9)))),
+            60: _blk(60, (11,), (2,), (_mov(0x6000, _num(0x11111111), _reg(8)),
+                                       _mov(0x6004, _num(0x22222222), _reg(9)))),
+            11: _blk(11, (2,), (10, 60), (_xor(0x1100, _reg(8), _reg(9), _stk(_STATE_OFF)),)),
+            20: _blk(20, (2,), (2,), ()),
+            70: _blk(70, (2,), (2,), ()),
+        },
+        entry_serial=2, func_ea=0x1000,
+    )
+    disp = _dispatcher(
+        {0x10: 10, 0x60: 60, 0x1A2893D9: 20, 0x33333333: 70}, exit_block=99
+    )
+    splits = {t.write_block: t for t in
+              recover_state_write_transitions_via_partitioned_fixpoint(
+                  fg, disp, _STATE_OFF, dispatcher_entry_serial=2) if t.via_block == 11}
+    for wb in (10, 60):
+        assert splits[wb].proof is not None
+        assert splits[wb].proof.kind == "predecessor_partitioned"
+        assert splits[wb].proof.trusted is True
+
+
+def test_c3b_region_agreed_proof(_seam) -> None:
+    """Conflicting reg consts that XOR to the same state -> a ``region_agreed`` proof.
+
+    The single-partition meet drops both registers (each disagrees across the two
+    predecessors), so the back-edge does not globally fold; partitioning by
+    predecessor recovers 0xFF on *both* edges, so they agree on one state and emit
+    a plain redirect (not a split) tagged ``region_agreed``.
+    0xF0 ^ 0x0F == 0xFF ; 0x0F ^ 0xF0 == 0xFF
+    """
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 60, 20), (11,), (_mov(0x2000, _num(0), _reg(0)),)),
+            10: _blk(10, (11,), (2,), (_mov(0x1000, _num(0xF0), _reg(8)),
+                                       _mov(0x1004, _num(0x0F), _reg(9)))),
+            60: _blk(60, (11,), (2,), (_mov(0x6000, _num(0x0F), _reg(8)),
+                                       _mov(0x6004, _num(0xF0), _reg(9)))),
+            11: _blk(11, (2,), (10, 60), (_xor(0x1100, _reg(8), _reg(9), _stk(_STATE_OFF)),)),
+            20: _blk(20, (2,), (2,), ()),
+        },
+        entry_serial=2, func_ea=0x1000,
+    )
+    disp = _dispatcher({0x10: 10, 0x60: 60, 0xFF: 20}, exit_block=99)
+    rows = recover_state_write_transitions_via_partitioned_fixpoint(
+        fg, disp, _STATE_OFF, dispatcher_entry_serial=2)
+    by_block = {t.write_block: t for t in rows}
+    # No split emitted: the shared back-edge blk11 redirects once to route(0xFF)=20.
+    assert all(t.via_block is None for t in rows)
+    assert by_block[11].next_state == 0xFF and by_block[11].target_handler == 20
+    assert by_block[11].proof is not None
+    assert by_block[11].proof.kind == "region_agreed"
+    assert by_block[11].proof.trusted is True
+
+
+def test_c3b_unresolved_proof_is_untrusted(_seam) -> None:
+    """A back-edge with no foldable state write -> an UNTRUSTED ``unresolved`` proof."""
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (11,), (11,), ()),     # dispatcher header, no state write
+            11: _blk(11, (2,), (2,), ()),     # back-edge, writes no state
+        },
+        entry_serial=2, func_ea=0x1000,
+    )
+    disp = _dispatcher({}, exit_block=99)
+    by_block = {t.write_block: t for t in
+                recover_state_write_transitions_via_partitioned_fixpoint(
+                    fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    t = by_block[11]
+    assert t.next_state is None and t.is_return is True
+    assert t.proof is not None
+    assert t.proof.kind == "unresolved"
+    assert t.proof.trusted is False
+
+
+def test_c3b_diff_ignores_proof_field(_seam) -> None:
+    """Both diff functions compare states only -- a proof on one side never diverges.
+
+    The C3 flip keeps the legacy fold wired as a standing equivalence guard.  The
+    legacy production rows are unattributed (proof=None) while the authoritative
+    fixpoint rows carry proofs; the diff must still report full agreement.
+    """
+    legacy = (
+        StateWriteTransition(11, 0x1A2893D9, 20, False, None, proof=None),
+        StateWriteTransition(10, 0x33333333, 70, False, None, via_block=11, proof=None),
+    )
+    attributed = (
+        StateWriteTransition(
+            11, 0x1A2893D9, 20, False, None,
+            proof=TransitionProof("region_partitioned_fixpoint", "global_fold", True),
+        ),
+        StateWriteTransition(
+            10, 0x33333333, 70, False, None, via_block=11,
+            proof=TransitionProof(
+                "region_partitioned_fixpoint", "predecessor_partitioned", True
+            ),
+        ),
+    )
+    # Plain (non-split) row matches; the via_block split is bucketed case2_opaque
+    # by the single-partition diff (its key never reaches the inner predecessor).
+    d1 = diff_back_edge_transitions(legacy, attributed)
+    assert d1["matched"] == 1 and d1["case2_opaque"] == 1 and d1["mismatch"] == []
+    # The B2-aware diff keys splits on (write_block, via_block) -> both match.
+    d2 = diff_back_edge_transitions_partitioned(legacy, attributed)
+    assert d2["matched"] == 2 and d2["mismatch"] == []
+    # Symmetric: attributed-vs-legacy is identical (proof is invisible to the diff).
+    assert diff_back_edge_transitions_partitioned(attributed, legacy)["matched"] == 2
