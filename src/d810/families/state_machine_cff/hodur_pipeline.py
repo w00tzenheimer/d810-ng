@@ -12,6 +12,7 @@ maturity hook).
 """
 from __future__ import annotations
 
+from d810.passes.driver import Family
 from d810.passes.pass_pipeline import PassSpec, default, golden, live_mba, no_caps
 from d810.analyses.control_flow.dispatcher_recovery import (
     build_dispatch_map_any_kind,
@@ -25,7 +26,7 @@ from d810.passes.unflatten.state_machine import (
 )
 
 
-class HodurFamily:
+class HodurFamily(Family):
     """State-variable CFF (Hodur) family: detection + pipeline shape. No microcode patching."""
 
     name = "hodur"
