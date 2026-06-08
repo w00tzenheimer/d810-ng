@@ -1,18 +1,12 @@
 """Unit tests for terminal_return_audit -- pure analysis, no IDA dependency."""
 from __future__ import annotations
 
-import pytest
-
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
-from d810.flow.terminal_return import (
-    TerminalReturnAuditReport,
-    TerminalReturnSiteAudit,
-    TerminalReturnSourceKind,
-)
 from d810.analyses.control_flow.terminal_return_audit import (
     build_terminal_return_audit,
     from_dict,
-    to_dict,
+    to_dict, TerminalReturnSourceKind, TerminalReturnSiteAudit,
+    TerminalReturnAuditReport,
 )
 
 # BLT_STOP = 1, BLT_1WAY = 2 (normal fall-through)

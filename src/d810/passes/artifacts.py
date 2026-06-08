@@ -23,11 +23,8 @@ from d810.analyses.control_flow.return_frontier import (
     ReturnSite,
     return_frontier_audit_from_dict,
 )
-from d810.flow.terminal_return import (
-    TerminalReturnAuditReport,
-    TerminalReturnSiteAudit,
-    TerminalReturnSourceKind,
-)
+from d810.analyses.control_flow.terminal_return_audit import \
+    TerminalReturnSourceKind, TerminalReturnSiteAudit, TerminalReturnAuditReport
 from d810.analyses.control_flow.handler_transitions import HandlerTransitionsCollector
 from d810.analyses.control_flow.return_frontier_collector import ReturnFrontierCollector
 from d810.analyses.control_flow.transition_report import (

@@ -18,11 +18,9 @@ from d810.analyses.control_flow.terminal_frontier import (
     TerminalSemanticLoweringFrontier,
     compute_terminal_cfg_suffix_frontier,
 )
-from d810.flow.terminal_return import (
-    TerminalReturnAuditReport,
-    TerminalReturnSourceKind,
-)
-from d810.core.typing import Iterable, Optional
+from d810.analyses.control_flow.terminal_return_audit import \
+    TerminalReturnSourceKind, TerminalReturnAuditReport
+from d810.core.typing import Iterable
 from d810.evaluator.hexrays_microcode.valranges import (
     ValrangeLocation,
     ValrangeLocationKind,
