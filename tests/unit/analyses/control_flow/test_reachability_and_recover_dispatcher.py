@@ -6,11 +6,19 @@ shared primitive, and proves ``recover_dispatcher`` computes reachability over a
 from __future__ import annotations
 
 from d810.analyses.control_flow.reachability import reachable_from
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.analyses.control_flow.dispatcher_recovery import (
     DispatcherRecovery,
     recover_dispatcher,
 )
-from d810.ir.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import (
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
 
 
 def _blk(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
@@ -68,3 +76,74 @@ def test_recover_dispatcher_computes_reachability_over_flowgraph():
 def test_recover_dispatcher_tolerates_null_graph():
     # the pipeline shape test runs passes on a null context
     assert recover_dispatcher(None, None) == DispatcherRecovery()
+
+
+def _table_jump_block(
+    serial: int,
+    *,
+    preds: tuple[int, ...],
+    succs: tuple[int, ...],
+    state_stkoff: int,
+    cases: tuple[tuple[tuple[int, ...], int], ...],
+) -> BlockSnapshot:
+    """A jtbl block dispatching on a masked state var (abc_or_dispatch shape)."""
+    tail = InsnSnapshot(
+        opcode=1,
+        ea=0x1000 + serial,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.SUBINSN, stack_refs=(state_stkoff,)),
+        r=MopSnapshot(kind=OperandKind.CASE_LIST, switch_cases=cases),
+        kind=InsnKind.TABLE_JUMP,
+    )
+    return BlockSnapshot(
+        serial=serial, block_type=0, succs=succs, preds=preds,
+        flags=0, start_ea=0x1000 + serial, insn_snapshots=(tail,),
+    )
+
+
+def test_recover_dispatcher_resolves_switch_table_when_no_equality_chain():
+    # abc_or_dispatch shape: `switch (state & 0xF)` jtbl routing the low nibble
+    # to four handlers. No equality-chain compare exists, so recover_dispatcher
+    # must fall through to the portable switch-table detector.
+    graph = FlowGraph(
+        blocks={
+            0: _blk(0, (1,), ()),
+            1: _table_jump_block(
+                1,
+                preds=(0, 2, 3, 4),
+                succs=(2, 3, 4, 5),
+                state_stkoff=0x40,
+                cases=(((0,), 2), ((1,), 3), ((2,), 4), ((3,), 5)),
+            ),
+            2: _blk(2, (1,), (1,)),
+            3: _blk(3, (1,), (1,)),
+            4: _blk(4, (1,), (1,)),
+            5: _blk(5, (), (1,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    result = recover_dispatcher(graph, facts=None)
+    assert result.dispatch_map is not None
+    assert result.dispatch_map.source is DispatcherType.SWITCH_TABLE
+    assert result.dispatch_map.state_to_handler() == {0: 2, 1: 3, 2: 4, 3: 5}
+    assert result.dispatch_map.state_var_stkoff == 0x40
+    assert result.dispatcher_block_serial == 1
+    assert result.state_var_stkoff == 0x40
+
+
+def test_recover_dispatcher_prefers_equality_chain_over_switch_table():
+    # When an equality-chain dispatcher is present it wins; the switch-table
+    # fallback only fires when build_state_dispatcher_map_from_flow_graph is None.
+    # A graph with no jtbl and no equality compare yields no dispatch_map.
+    graph = FlowGraph(
+        blocks={
+            0: _blk(0, (1,), ()),
+            1: _blk(1, (2,), (0,)),
+            2: _blk(2, (), (1,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    result = recover_dispatcher(graph, facts=None)
+    assert result.dispatch_map is None

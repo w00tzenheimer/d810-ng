@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from d810.passes.pass_pipeline import PassSpec, default, golden, live_mba, no_caps
 from d810.analyses.control_flow.dispatcher_recovery import (
-    build_state_dispatcher_map_from_flow_graph,
+    build_dispatch_map_any_kind,
 )
 from d810.passes.unflatten.state_machine import (
     CleanupResidualDispatcher,
@@ -33,13 +33,15 @@ class HodurFamily:
     def detect(self, graph, capabilities, context=None):
         """Recognize the Hodur state machine over a portable ``FlowGraph``.
 
-        A match is an equality-chain dispatcher with enough state constants — the same portable
-        detector pass #1 uses. The match IS the recovered ``StateDispatcherMap`` (truthy), so the
-        pipeline only runs where a real dispatcher is present.
+        A match is a recovered dispatcher of any supported kind (equality-chain or
+        switch-table / masked) — the SAME front-end pass #1 (``recover_dispatcher``)
+        uses, so the gate never rejects a shape the pipeline could lower. The match
+        IS the recovered ``StateDispatcherMap`` (truthy), so the pipeline only runs
+        where a real dispatcher is present.
         """
         if graph is None or not hasattr(graph, "blocks"):
             return None
-        return build_state_dispatcher_map_from_flow_graph(graph)
+        return build_dispatch_map_any_kind(graph)
 
     def pipeline_for(self, match, context) -> "tuple[PassSpec, ...]":
         return (

@@ -25,6 +25,9 @@ from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
     StateDispatcherRow,
 )
+from d810.analyses.control_flow.switch_table_analysis import (
+    analyze_switch_table_flow_graph,
+)
 
 # Matches the live HodurStateMachineDetector threshold (analysis.py MIN_STATE_CONSTANT).
 MIN_STATE_CONSTANT = 0x01000000
@@ -221,6 +224,29 @@ def build_state_dispatcher_map_from_flow_graph(
     )
 
 
+def build_dispatch_map_any_kind(graph: FlowGraph) -> StateDispatcherMap | None:
+    """Recover a ``StateDispatcherMap`` of ANY supported dispatcher kind.
+
+    Equality-chain (``CONDITIONAL_CHAIN``) is preferred; on no match it falls back
+    to the portable switch-table / masked detector (``switch(state & MASK)`` jtbl,
+    e.g. abc_or_dispatch / OLLVM switch-fla). The switch detector already produces a
+    ``StateDispatcherMap`` (``case_value -> handler``), so we reuse it instead of
+    growing a parallel §1a detector (consolidation; playbook 2026-06-08 step 7,
+    mirrors hodur ``snapshot_builder`` preferring ``switch_table_map``).
+
+    This is the single front-end shared by ``HodurFamily.detect`` (the pipeline gate)
+    and ``recover_dispatcher`` (pass #1) so the two never disagree on which dispatcher
+    shapes are supported.
+    """
+    dmap = build_state_dispatcher_map_from_flow_graph(graph)
+    if dmap is not None:
+        return dmap
+    switch_result = analyze_switch_table_flow_graph(graph)
+    if switch_result is not None:
+        return switch_result.state_dispatcher_map
+    return None
+
+
 def recover_dispatcher(
     graph: FlowGraph | None, facts: ValidatedFactView | None
 ) -> DispatcherRecovery:
@@ -229,7 +255,7 @@ def recover_dispatcher(
         return DispatcherRecovery()
     adjacency = {serial: graph.successors(serial) for serial in graph.blocks}
     reachable = reachable_from(adjacency, graph.block_count, graph.entry_serial)
-    dmap = build_state_dispatcher_map_from_flow_graph(graph)
+    dmap = build_dispatch_map_any_kind(graph)
     if dmap is None:
         return DispatcherRecovery(reachable_block_serials=reachable)
     return DispatcherRecovery(
