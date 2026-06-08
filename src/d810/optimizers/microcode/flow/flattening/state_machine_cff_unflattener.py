@@ -6,10 +6,9 @@ chain-based ``StateMachineCffSpine`` (single detect point = ranked DispatcherRes
 passes selected by resolved dispatcher kind) through ``run_pipeline``. The ONLY live-mba touch
 points are the lifter + ``HexRaysMutationBackend`` (backends/hexrays).
 
-PRODUCTION PATH (M2 cutover, llr-ibpi): §1a-non-HCC is the DEFAULT — ``D810_USE_S1A_PIPELINE``
-defaults on and ``D810_S1A_USE_HCC`` defaults off. The hodur configs route ``StateMachineCffUnflattener``
-through the chain+spine pipeline; full-fleet golden parity verified at 3032/0. Set
-``D810_S1A_USE_HCC=1`` only as a transitional escape hatch (removed once the legacy cluster is gone).
+PRODUCTION PATH (M2 cutover, llr-ibpi): the §1a chain+spine pipeline is the SOLE CFF unflattener.
+The hodur configs route ``StateMachineCffUnflattener``; full-fleet golden parity verified at 3032/0.
+The legacy HCC fork is removed — disable only via ``D810_USE_S1A_PIPELINE=0`` (returns 0, no-op).
 """
 from __future__ import annotations
 
@@ -92,8 +91,8 @@ from d810.hexrays.observability import (
     request_capture_mba_snapshot,
 )
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
-from d810.optimizers.microcode.flow.flattening.hodur.unflattener import (
-    HodurUnflattener,
+from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle import (
+    ComposedUnflatteningRule,
 )
 from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.driver import run_pipeline
@@ -107,31 +106,27 @@ def _s1a_enabled() -> bool:
     return os.environ.get("D810_USE_S1A_PIPELINE", "1").strip() == "1"
 
 
-class StateMachineCffUnflattener(HodurUnflattener):
-    """§1a state-machine-CFF entry. Flag-gated, opt-in.
+class StateMachineCffUnflattener(ComposedUnflatteningRule):
+    """§1a state-machine-CFF entry — the production CFF unflattener (M2 cutover, llr-ibpi).
 
-    By default (``D810_S1A_USE_HCC=1``) this rule IS the proven, framework-driven
-    HandlerChainComposer-owned ``HodurUnflattener`` reconstruction (the ``returns=8``
-    path; standalone ``StateWriteReconstructionStrategy`` is retired -- HCC owns the
-    SWR orchestration).  It subclasses ``HodurUnflattener`` so every lifecycle hook
-    (gating, pass-count, fact runtime) drives the real HCC machinery.  Set
-    ``D810_S1A_USE_HCC=0`` to run the WIP portable §1a pipeline instead.
+    Runs the chain-based ``StateMachineCffSpine`` (ranked DispatcherResolver chain =
+    single detect point; passes selected by the resolved dispatcher kind) over a portable
+    ``FunctionSource`` lifted from the live ``mba``. Standalone (inherits the lifecycle from
+    ``ComposedUnflatteningRule``, NOT ``HodurUnflattener``) — the legacy HCC path is retired.
     """
 
-    DESCRIPTION = "State-machine CFF unflattener (HCC reuse by default; portable §1a pipeline opt-in)"
+    DESCRIPTION = "State-machine CFF unflattener (§1a chain+spine pipeline)"
     DEFAULT_UNFLATTENING_MATURITIES = [ida_hexrays.MMAT_GLBOPT1]
-    # The portable §1a pipeline (D810_S1A_USE_HCC=0) does its own dispatcher detection
-    # (HodurFamily.detect); bypass the legacy flow-context gate so it always runs.
+    # §1a does its own dispatcher detection (the resolver chain); bypass the legacy
+    # flow-context gate so it always runs.
     HAS_OWN_DISPATCHER_COLLECTOR = True
 
     def __init__(self) -> None:
-        super().__init__()  # full HodurUnflattener (HCC) setup
+        super().__init__()  # ComposedUnflatteningRule: flow_context + optblock lifecycle
         self._s1a_done_for_ea: int = -1
-        # M2 cutover (llr-ibpi): portable §1a-non-HCC is the production default.
-        self._use_hcc = os.environ.get("D810_S1A_USE_HCC", "0").strip() == "1"
 
     def optimize(self, blk: "ida_hexrays.mblock_t") -> int:
-        # Bind the live mba FIRST (mirrors HodurUnflattener.optimize): the base
+        # Bind the live mba FIRST: the base
         # ComposedUnflatteningRule only *annotates* ``self.mba`` and the cfg
         # dispatch loop never assigns it, so reading ``self.mba`` before this
         # binding raises AttributeError — which escapes ``func``'s narrow
@@ -146,11 +141,6 @@ class StateMachineCffUnflattener(HodurUnflattener):
         )
         if not _s1a_enabled():
             return 0
-        if self._use_hcc:
-            # Run the proven inherited HCC reconstruction (the returns=8 path). Do NOT
-            # also run the portable §1a pipeline below (double-apply). The §1a pipeline
-            # is the later portable-ization goal, gated behind D810_S1A_USE_HCC=0.
-            return super().optimize(blk)
         mba = self.mba
         func_ea: int = mba.entry_ea
         if func_ea == self._s1a_done_for_ea:
