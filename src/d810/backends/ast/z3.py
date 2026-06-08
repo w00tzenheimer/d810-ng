@@ -297,6 +297,26 @@ class AstNodeZ3Visitor:
             case ida_hexrays.m_sets:
                 is_negative = left < z3.BitVecVal(0, 32)
                 return z3.If(is_negative, z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+            case ida_hexrays.m_seto:
+                # Signed-subtraction overflow flag OF(left - right): set when the
+                # operands differ in sign and the result's sign differs from the
+                # minuend's. Mirrors d810.core.bits.get_sub_of (the Cython
+                # evaluator's m_seto): msb((op1 ^ res) & (op1 ^ op2)). Required to
+                # prove signed-comparison opaque predicates -- Hex-Rays lowers a
+                # signed compare to its raw flags, so (y >=s c) | (y <s c) == 1
+                # reaches the prover as flag ops (<s expands to SF ^ OF). Without
+                # this case the conversion aborts ("Unknown opcode seto") and the
+                # tautology (an OLLVM/Tigress BCF opaque predicate) is never folded.
+                compared = right if right is not None else z3.BitVecVal(0, 32)
+                difference = left - compared
+                overflow_bit = z3.Extract(
+                    31, 31, (left ^ difference) & (left ^ compared)
+                )
+                return z3.If(
+                    overflow_bit == z3.BitVecVal(1, 1),
+                    z3.BitVecVal(1, 32),
+                    z3.BitVecVal(0, 32),
+                )
             case ida_hexrays.m_xdu | ida_hexrays.m_xds:
                 # Extend or keep the same width; in this simplified model we
                 # forward the operand directly.
