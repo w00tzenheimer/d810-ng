@@ -77,6 +77,7 @@ class TestTerminalReturnValueProof:
             notes="test",
         )
         with pytest.raises(AttributeError):
+            # noinspection PyDataclass
             proof.handler_serial = 99  # type: ignore[misc]
 
     def test_fields_accessible(self) -> None:
