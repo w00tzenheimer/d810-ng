@@ -32,10 +32,11 @@ from __future__ import annotations
 
 import enum
 from copy import copy
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from d810.core.typing import TYPE_CHECKING
 
-from d810.flow.terminal_return import TerminalReturnSourceKind
+from d810.analyses.control_flow.terminal_return_audit import \
+    TerminalReturnSourceKind
 from d810.core.logging import getLogger
 from d810.analyses.control_flow.provenance import (
     DagDisagreementRecord,
@@ -510,7 +511,6 @@ def _build_dag_authority(snapshot: AnalysisSnapshot) -> "DagAuthority | None":
     # (planner is imported during d810 startup; dag_authority is a
     # phase-1 artifact that should not be required for engine bootstrap).
     from d810.transforms.dag_authority import (
-        CorridorSpliceData,
         DagAuthority,
     )
     # uee-7wcd: seed function-specific corridor data based on

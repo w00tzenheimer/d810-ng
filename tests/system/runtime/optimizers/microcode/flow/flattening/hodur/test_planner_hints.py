@@ -3,15 +3,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.flow.terminal_return import (
-    TerminalReturnAuditReport,
-    TerminalReturnSiteAudit,
-    TerminalReturnSourceKind,
-)
+from d810.analyses.control_flow.terminal_return_audit import \
+    TerminalReturnSourceKind, TerminalReturnSiteAudit, TerminalReturnAuditReport
 from d810.transforms.graph_modification import RedirectGoto
 from d810.passes.planner import (
-    HintAdjustment,
-    PipelinePolicy,
     PlannerHintSignals,
     UnflatteningPlanner,
     compute_hint_adjustment,
@@ -19,7 +14,6 @@ from d810.passes.planner import (
 )
 from d810.analyses.control_flow.provenance import (
     DecisionPhase,
-    PipelineProvenance,
     PlannerInputs,
 )
 from d810.transforms.plan_fragment import (

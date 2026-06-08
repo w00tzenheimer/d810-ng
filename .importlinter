@@ -47,7 +47,6 @@ layers =
     d810.capabilities
     d810.ir
     d810.core
-    d810.errors
 
 [importlinter:contract:mba-core-no-hexrays]
 name = MBA core must not import hexrays
@@ -77,14 +76,15 @@ forbidden_modules =
     idautils
     idapro
 
-[importlinter:contract:recon-core-no-hexrays]
-# The former recon-core modules were relocated to their canonical homes
-# (d810.passes.* / d810.analyses.control_flow.*) by the recon/cfg
-# dissolution; this contract follows them and keeps the recon analysis
-# core hexrays-agnostic at its new addresses. recon/ is now fully dissolved;
-# the former recon.collectors facade's re-exports are checked at their
-# canonical analyses.control_flow homes below.
-name = Recon core modules must stay hexrays-agnostic
+[importlinter:contract:analyses-and-passes-have-no-hexrays]
+# The analysis-core modules now live in their canonical homes under
+# `d810.passes.*` and `d810.analyses.control_flow.*`.
+# this contract enforces that these analyses/passes modules remain
+# hexrays-agnostic at those addresses.
+#
+# The former `recon.collectors` facade is gone; equivalent re-exports
+# are validated at their canonical analyses.control_flow homes below.
+name = analyses and passes must stay hexrays-agnostic
 type = forbidden
 allow_indirect_imports = True
 source_modules =
@@ -262,8 +262,7 @@ source_modules =
     d810.passes
 forbidden_modules =
     d810.hexrays.mutation
-    # When created, append:
-    #     d810.backends.hexrays.mutation
+    d810.backends.hexrays.mutation
 
 [importlinter:contract:backends-only-vendor-coupling]
 # Non-vendor packages must not import third-party disassembler /
@@ -294,6 +293,7 @@ forbidden_modules =
     claripy
     ailment
     ghidra
+
 # Notes:
 # - d810.hexrays is intentionally NOT in source_modules: it is the
 #   IDA-coupled HIGH layer and may freely use ida_*. (It does not

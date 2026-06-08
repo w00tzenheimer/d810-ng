@@ -18,11 +18,8 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass
 
-from d810.flow.terminal_return import (
-    TerminalReturnAuditReport,
-    TerminalReturnSiteAudit,
-    TerminalReturnSourceKind,
-)
+from d810.analyses.control_flow.terminal_return_audit import \
+    TerminalReturnSourceKind, TerminalReturnSiteAudit, TerminalReturnAuditReport
 from d810.core.logging import getLogger
 from d810.core.typing import NamedTuple, Optional
 

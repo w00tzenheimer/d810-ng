@@ -1,2 +1,0 @@
-"""Shared flow-domain models."""
-
