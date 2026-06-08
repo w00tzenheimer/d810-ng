@@ -10,6 +10,13 @@ import pytest
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.analyses.control_flow.minimal_state_recovery import (
     recover_handler_transitions,
+    recover_state_write_transitions,
+    recover_state_write_transitions_via_fixpoint,
+    recover_state_write_transitions_via_multicell_fixpoint,
+)
+from d810.analyses.control_flow.state_transition_domain import (
+    StateValue,
+    state_value_fixpoint_result,
 )
 from d810.analyses.value_flow.state_write import (
     MicrocodeEvalSeams,
@@ -246,3 +253,64 @@ def test_scan_stops_at_other_handler_entry(_seam) -> None:
     assert edges[10].arms[0].is_return is True
     # blk20 itself resolves its own literal write.
     assert edges[20].arms[0].next_state == 0x20
+
+
+def _multicell_xor_fg() -> FlowGraph:
+    """One region whose back-edge writes ``state = reg8 ^ reg9`` from local consts.
+
+    The dispatcher (blk2) routes state 0x10 -> handler blk10.  blk10 sets
+    reg8/reg9 to constants, its successor blk11 folds ``state = reg8 ^ reg9``
+    and re-enters the dispatcher.  Single region (blk10), so the single-PARTITION
+    multi-cell fold suffices (no cross-region meet).
+    0x12345678 ^ 0x081CC5A1 = 0x1A2893D9.
+    """
+    return FlowGraph(
+        blocks={
+            2: _blk(2, (10, 20), (11,), (_mov(0x2000, _num(0), _reg(0)),)),
+            10: _blk(10, (11,), (2,), (_mov(0x1000, _num(0x12345678), _reg(8)),
+                                       _mov(0x1004, _num(0x081CC5A1), _reg(9)))),
+            11: _blk(11, (2,), (10,), (_xor(0x1100, _reg(8), _reg(9), _stk(_STATE_OFF)),)),
+            20: _blk(20, (2,), (2,), ()),
+        },
+        entry_serial=2, func_ea=0x1000,
+    )
+
+
+def test_b1_multicell_folds_opaque_xor_back_edge(_seam) -> None:
+    """B1: the multi-cell fixpoint folds an opaque ``reg^reg`` back-edge write.
+
+    The single-cell ``StateValue`` shadow has no anchor for blk11 (its write is
+    not a literal), so it emits an unresolved return; the multi-cell variant folds
+    the register constants and resolves it -- matching the production fold.
+    """
+    fg = _multicell_xor_fg()
+    # 0x10 routes to the handler region (blk10); its back-edge folds to 0x1A2893D9.
+    disp = _dispatcher({0x10: 10, 0x1A2893D9: 20}, exit_block=99)
+
+    prod = {t.write_block: t for t in recover_state_write_transitions(
+        fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    assert prod[11].next_state == 0x1A2893D9 and prod[11].target_handler == 20
+
+    # Single-cell shadow: blk11 has no state-write anchor -> unresolved (the residual).
+    fp = state_value_fixpoint_result(
+        nodes=list(fg.blocks),
+        entry_nodes=[2],
+        successors_of=lambda s: [int(x) for x in fg.get_block(s).succs],
+        predecessors_of=lambda s: [int(x) for x in fg.get_block(s).preds],
+        state_writes={},
+        handler_entry_by_state={0x10: 10, 0x1A2893D9: 20},
+        entry_state=StateValue.top(),
+    )
+    single = {t.write_block: t for t in recover_state_write_transitions_via_fixpoint(
+        fg, disp, dispatcher_entry_serial=2, out_states=fp.out_states)}
+    # The single-cell fixpoint only carries the state slot: blk11's opaque XOR
+    # write is not folded, so it passes through blk10's stale entry-assume (0x10)
+    # instead of the real next-state -- DISAGREEING with production.
+    assert single[11].next_state != prod[11].next_state
+
+    # Multi-cell shadow: folds reg8^reg9 -> resolves to the production value.
+    multi = {t.write_block: t for t in recover_state_write_transitions_via_multicell_fixpoint(
+        fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    assert multi[11].next_state == 0x1A2893D9
+    assert multi[11].target_handler == 20
+    assert multi[11].is_return is False

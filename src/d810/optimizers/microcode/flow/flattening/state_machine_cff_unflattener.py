@@ -36,6 +36,7 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     diff_back_edge_transitions,
     recover_state_write_transitions,
     recover_state_write_transitions_via_fixpoint,
+    recover_state_write_transitions_via_multicell_fixpoint,
 )
 from d810.analyses.control_flow.router_resolver import (
     RouterResolutionContext,
@@ -606,6 +607,32 @@ class StateMachineCffUnflattener(HodurUnflattener):
                 )
                 if d["mismatch"]:
                     logger.info("s1a C1 mismatch rows: %s", d["mismatch"][:20])
+
+                # B1 (ticket llr-kz7n): the MULTI-CELL global const-fixpoint shadow —
+                # reuses _transfer_snapshot_constant_block (stk+reg) so opaque
+                # ``state = reg ^ reg`` back-edge writes fold to their const here,
+                # closing the single-region mismatch the single-cell shadow leaves
+                # unresolved.  Region-partitioned (Case-2) residual is B2.
+                shadow_mc = recover_state_write_transitions_via_multicell_fixpoint(
+                    source.flow_graph,
+                    dispatcher,
+                    int(state_var_stkoff),
+                    dispatcher_entry_serial=int(dispatcher_entry),
+                )
+                dmc = diff_back_edge_transitions(prod, shadow_mc)
+                logger.info(
+                    "s1a C1 shadow-diff[B1 multicell]: prod=%d fixpoint=%d matched=%d "
+                    "case2_opaque=%d mismatch=%d",
+                    dmc["prod_edges"],
+                    dmc["fixpoint_edges"],
+                    dmc["matched"],
+                    dmc["case2_opaque"],
+                    len(dmc["mismatch"]),
+                )
+                if dmc["mismatch"]:
+                    logger.info(
+                        "s1a C1 mismatch rows[B1 multicell]: %s", dmc["mismatch"][:20]
+                    )
         except Exception:  # noqa: BLE001 — probe must never break the optimize path
             logger.debug("s1a: fixpoint probe failed", exc_info=True)
 
