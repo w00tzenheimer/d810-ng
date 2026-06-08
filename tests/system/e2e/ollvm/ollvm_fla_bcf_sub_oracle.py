@@ -225,12 +225,23 @@ def evaluate_ollvm_fla_bcf_sub_oracle(
         OllvmFlaBcfSubCheck(
             "terminal_bcf_forms_equivalent",
             (
-                prove_terminal_bcf_forms_equivalent()
-                and "0x173063C1" in code
-                and "0xCD536960" in code
-                and "0x259CF55E" in code
+                # The true original has a SINGLE terminal write, ``carrier ^
+                # 0x173063C1``.  The ``0xCD536960``/``0x259CF55E`` second form is
+                # BCF the obfuscator inserted (its guard is constant-false at the
+                # uninitialised opaque globals x=y=0), so it is dead and may be
+                # legitimately folded away.  Accept EITHER the clean single XOR
+                # (correct, e.g. with fold_writable_constants on) OR the retained
+                # BCF form (which prove_terminal_bcf_forms_equivalent shows is
+                # equivalent).  Do NOT *require* the BCF constants -- that enshrines
+                # obfuscation noise the original never had.
+                "0x173063C1" in code
+                or (
+                    prove_terminal_bcf_forms_equivalent()
+                    and "0xCD536960" in code
+                    and "0x259CF55E" in code
+                )
             ),
-            "retained terminal BCF write forms normalize to carrier ^ 0x173063C1",
+            "terminal write is carrier ^ 0x173063C1 (or the equivalent retained BCF form)",
         ),
     ]
 

@@ -4,7 +4,7 @@
     {
       "name": "FoldReadonlyDataRule",
       "is_activated": true,
-      "config": {}
+      "config": {"fold_writable_constants": true}
     },
     {
       "name": "ConstantSubtreeFoldRule",

@@ -138,6 +138,31 @@ def test_oracle_accepts_counted_do_while_payload_loop() -> None:
     assert result.passed
 
 
+def test_oracle_accepts_folded_single_xor_terminal_write() -> None:
+    # The true original has a SINGLE terminal write, ``carrier ^ 0x173063C1``.
+    # With fold_writable_constants on, the dead BCF second write
+    # (``& 0xCD536960 ... ^ 0x259CF55E``) is correctly DCE'd.  The oracle must
+    # ACCEPT this -- it must not require the obfuscation-noise constants.
+    folded_after = CURRENT_STYLE_AFTER.replace(
+        "\n    **a2 = (v5 ^ ~v5) & 0xCD536960 ^ ~v5 ^ 0x259CF55E;", ""
+    )
+    assert "0xCD536960" not in folded_after
+    assert "0x259CF55E" not in folded_after
+
+    result = evaluate_ollvm_fla_bcf_sub_oracle(
+        folded_after,
+        conn=_diag_db_with_carrier_facts(),
+        func_ea_hex="0x000000018000e360",
+    )
+
+    assert result.passed
+    terminal = next(
+        check for check in result.checks
+        if check.name == "terminal_bcf_forms_equivalent"
+    )
+    assert terminal.passed
+
+
 def test_oracle_rejects_non_counted_dispatcher_while_loop() -> None:
     residual_dispatcher_after = CURRENT_STYLE_AFTER.replace(
         "for (i = 0; i < 0x64; ++i)",
