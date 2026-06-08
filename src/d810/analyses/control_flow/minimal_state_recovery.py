@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core.logging import getLogger
 from d810.analyses.control_flow.state_machine_analysis import (
     _constant_dest_locator_snapshot,
     _eval_insn_view_snapshot,
@@ -43,6 +44,8 @@ from d810.analyses.control_flow.state_machine_analysis import (
     _transfer_snapshot_constant_block,
     run_snapshot_constant_fixpoint,
 )
+
+logger = getLogger(__name__)
 
 # Default bound on the handler-local corridor scan.  Real OLLVM handler bodies
 # (entry -> work -> const-load -> shared MBA suffix -> dispatcher) are short; a
@@ -190,6 +193,33 @@ def _resolve_back_edge_states(
         region_entries.add(int(entry))
     region_entries.discard(disp)
 
+    # Region-entry seed: the dispatch key that routes to each region. A masked /
+    # switch-table dispatcher (``switch(state & MASK)``) reaches handler ``H`` iff
+    # ``state & MASK == key``, and the handler writes ``state = (state & ~MASK) | M``;
+    # folding that write to ``M`` needs the incoming low bits, which ARE that key.
+    # Seeding the state var with it lets the forward fold resolve the masked-OR/XOR
+    # write that an empty seed cannot. Restricted to *point* rows (``hi == lo + 1``,
+    # an exact single-state key) so range-row BST routers (the equality-chain
+    # spine, e.g. sub_7FFD) are untouched; targets with conflicting keys (a handler
+    # shared by several states, whose state-dependent write would need all of them)
+    # are left unseeded.
+    entry_seed: dict[int, int] = {}
+    seed_conflict: set[int] = set()
+    for row in getattr(dispatcher, "_rows", ()):
+        target = getattr(row, "target", None)
+        lo = getattr(row, "lo", None)
+        hi = getattr(row, "hi", None)
+        if target is None or lo is None or hi is None or int(hi) != int(lo) + 1:
+            continue
+        tgt = int(target)
+        key = int(lo) & 0xFFFFFFFF
+        if tgt in entry_seed and entry_seed[tgt] != key:
+            seed_conflict.add(tgt)
+        else:
+            entry_seed[tgt] = key
+    for tgt in seed_conflict:
+        entry_seed.pop(tgt, None)
+
     # back-edge serial -> { immediate predecessor (None at a region head) -> states }.
     # Partitioning by the immediate predecessor recovers opaque ``state =
     # reg_a ^ reg_b`` writes whose register operands are set to *different*
@@ -198,8 +228,9 @@ def _resolve_back_edge_states(
     # to an ambiguous set.
     back_edge_states: dict[int, dict[int | None, set[int]]] = {}
     for start in sorted(region_entries):
+        seed_stk = {soff: entry_seed[start]} if start in entry_seed else {}
         stack: list[tuple[int, dict, dict, frozenset[int], int, int | None]] = [
-            (start, {}, {}, frozenset({start}), 0, None)
+            (start, seed_stk, {}, frozenset({start}), 0, None)
         ]
         while stack:
             blk_serial, in_stk, in_reg, visited, depth, parent = stack.pop()
@@ -489,6 +520,19 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
     default = dispatcher.default_target
     effective_stkoff = _resolve_state_var_alias(flow_graph, disp, int(state_var_stkoff))
     fp = run_snapshot_constant_fixpoint(flow_graph, effective_stkoff)
+    # Seeded per-region fold (additive fallback): the global meet collapses the
+    # state var to bottom at the dispatcher join, so a masked-OR / state-reading
+    # write (``state = (state & ~MASK) | M``, abc_or_dispatch) never folds via the
+    # fixpoint. _resolve_back_edge_states seeds each region's entry with its
+    # dispatch key, which makes that write fold to ``M``. Used ONLY for back-edges
+    # the fixpoint leaves unresolved -- it never overrides a fixpoint result.
+    seeded = _resolve_back_edge_states(
+        flow_graph,
+        dispatcher=dispatcher,
+        state_var_stkoff=effective_stkoff,
+        dispatcher_entry=disp,
+        max_depth=_MAX_CORRIDOR_DEPTH,
+    )
 
     def _classify(state: int) -> tuple[int | None, bool]:
         routed = dispatcher.lookup(state)
@@ -503,6 +547,14 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
     def _arm(block, succ_target: int) -> int | None:
         s = [int(x) for x in block.succs]
         return s.index(succ_target) if block.nsucc > 1 and succ_target in s else None
+
+    if logger.debug_on:
+        logger.debug(
+            "partitioned_fixpoint: disp=%d preds=%s seeded_back_edges=%s",
+            disp,
+            sorted(int(p) for p in disp_block.preds),
+            {k: sorted({s for v in m.values() for s in v}) for k, m in seeded.items()},
+        )
 
     out: list[StateWriteTransition] = []
     for pred in sorted(int(p) for p in disp_block.preds):
@@ -575,6 +627,12 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
                     proof=TransitionProof(_FIXPOINT_ORACLE, "region_agreed", not is_ret),
                 )
             )
+        elif _emit_seeded_back_edge(
+            out, seeded.get(pred, {}), pred, arm, flow_graph, _classify, _arm
+        ):
+            # The fixpoint could not fold this back-edge, but the seeded region
+            # fold (masked-OR / state-reading write) resolved it.
+            continue
         else:
             out.append(
                 StateWriteTransition(
@@ -583,6 +641,53 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
                 )
             )
     return tuple(out)
+
+
+def _emit_seeded_back_edge(
+    out: list,
+    edge_map: dict[int | None, set[int]],
+    pred: int,
+    arm: int | None,
+    flow_graph,
+    classify,
+    arm_of,
+) -> bool:
+    """Append a seeded-fold transition for a back-edge, or return ``False``.
+
+    ``edge_map`` is ``_resolve_back_edge_states[pred]`` (immediate-pred -> states).
+    Mirrors the global/partitioned emit shape: a single agreed state -> a plain
+    back-edge redirect; one distinct state per immediate predecessor -> the
+    ``via_block`` split.  Returns ``True`` when a transition was appended.
+    """
+    all_states = {s for states in edge_map.values() for s in states}
+    if len(all_states) == 1:
+        state = next(iter(all_states))
+        target, is_ret = classify(state)
+        out.append(
+            StateWriteTransition(
+                pred, state, target, is_ret, arm,
+                proof=TransitionProof(_FIXPOINT_ORACLE, "region_seeded", not is_ret),
+            )
+        )
+        return True
+    if all_states and all(
+        ip is not None and len(states) == 1 for ip, states in edge_map.items()
+    ):
+        for ip, states in sorted(edge_map.items()):
+            state = next(iter(states))
+            target, is_ret = classify(state)
+            ip_block = flow_graph.get_block(int(ip))
+            ip_arm = arm_of(ip_block, pred) if ip_block is not None else None
+            out.append(
+                StateWriteTransition(
+                    int(ip), state, target, is_ret, ip_arm, via_block=pred,
+                    proof=TransitionProof(
+                        _FIXPOINT_ORACLE, "region_seeded_partitioned", not is_ret
+                    ),
+                )
+            )
+        return True
+    return False
 
 
 def diff_back_edge_transitions(production, fixpoint) -> dict:

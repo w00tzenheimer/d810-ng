@@ -113,6 +113,18 @@ def _xor(ea: int, l: MopSnapshot, r: MopSnapshot, dst: MopSnapshot) -> InsnSnaps
     return InsnSnapshot(opcode=_OP_XOR, ea=ea, operands=(), l=l, r=r, d=dst, kind=InsnKind.AND)
 
 
+_OP_AND = 21  # m_and (portable evaluator default)
+_OP_OR = 22   # m_or  (portable evaluator default)
+
+
+def _and(ea: int, l: MopSnapshot, r: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
+    return InsnSnapshot(opcode=_OP_AND, ea=ea, operands=(), l=l, r=r, d=dst, kind=InsnKind.AND)
+
+
+def _or(ea: int, l: MopSnapshot, r: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
+    return InsnSnapshot(opcode=_OP_OR, ea=ea, operands=(), l=l, r=r, d=dst, kind=InsnKind.AND)
+
+
 def _blk(serial, succs, preds, insns, *, ea=None, kind=BlockKind.UNKNOWN) -> BlockSnapshot:
     return BlockSnapshot(
         serial=serial, block_type=0, succs=tuple(succs), preds=tuple(preds),
@@ -506,3 +518,109 @@ def test_c3b_diff_ignores_proof_field(_seam) -> None:
     assert d2["matched"] == 2 and d2["mismatch"] == []
     # Symmetric: attributed-vs-legacy is identical (proof is invisible to the diff).
     assert diff_back_edge_transitions_partitioned(attributed, legacy)["matched"] == 2
+
+
+# --- masked-OR / switch-table dispatch (abc_or_dispatch, ticket llr-fzvc) ---
+#
+# A masked dispatcher routes on ``state & MASK`` and each handler advances the
+# state with ``state = (state & ~MASK) | M``.  That write READS the state var, so
+# the global meet (which collapses the state var to bottom at the dispatcher join)
+# cannot fold it.  The seeded region fold carries each region's dispatch key, so
+# the masked-OR resolves to ``M`` and routes correctly.
+
+
+def test_masked_or_back_edge_resolved_via_region_seed(_seam) -> None:
+    """``state = (state & ~0xF) | 1`` folds to 1 only with the dispatch-key seed.
+
+    Two masked-OR handlers (blk10 key 0, blk60 key 2) loop back to the dispatcher
+    writing DIFFERENT nibble values, so the state var meets to bottom at the
+    dispatcher join and the global fold of each state-reading write fails.  The
+    seeded region fold enters each handler with its dispatch key and folds
+    ``(key & ~0xF) | M == M``, routing blk10->route(1)=20 and blk60->route(3)=70.
+    Each handler is its own back-edge, so the resolution is a plain
+    ``region_seeded`` redirect (not a partitioned split).
+    """
+    fg = FlowGraph(
+        blocks={
+            # Dispatcher with two state-write preds; no register pre-zeroing, so
+            # the AND's source (the state var) is genuinely unknown globally.
+            2: _blk(2, (10, 60, 20, 70), (10, 60), ()),
+            10: _blk(10, (2,), (2,), (
+                _and(0x1000, _stk(_STATE_OFF), _num(0xFFFFFFF0), _reg(8)),
+                _or(0x1004, _reg(8), _num(1), _stk(_STATE_OFF)),
+            )),
+            60: _blk(60, (2,), (2,), (
+                _and(0x6000, _stk(_STATE_OFF), _num(0xFFFFFFF0), _reg(8)),
+                _or(0x6004, _reg(8), _num(3), _stk(_STATE_OFF)),
+            )),
+            20: _blk(20, (90,), (2,), ()),
+            70: _blk(70, (91,), (2,), ()),
+            90: _stop(90, (20,)),
+            91: _stop(91, (70,)),
+        },
+        entry_serial=2, func_ea=0x1000,
+    )
+    disp = _dispatcher({0x0: 10, 0x2: 60, 0x1: 20, 0x3: 70}, exit_block=99)
+
+    by_block = {t.write_block: t for t in
+                recover_state_write_transitions_via_partitioned_fixpoint(
+                    fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    assert by_block[10].next_state == 1 and by_block[10].target_handler == 20
+    assert by_block[60].next_state == 3 and by_block[60].target_handler == 70
+    for wb in (10, 60):
+        assert by_block[wb].is_return is False
+        assert by_block[wb].via_block is None
+        assert by_block[wb].proof is not None
+        assert by_block[wb].proof.kind == "region_seeded"
+        assert by_block[wb].proof.trusted is True
+
+    # Without the seed the global/multicell fixpoint cannot fold the state-reading
+    # writes -> the back-edges are unresolved (proving the seed is what resolves them).
+    multi = {t.write_block: t for t in recover_state_write_transitions_via_multicell_fixpoint(
+        fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    assert multi[10].next_state is None and multi[60].next_state is None
+
+
+def test_masked_or_shared_glue_block_partitioned_via_seed(_seam) -> None:
+    """A shared state-glue block (abc_or_dispatch blk8) splits per-edge via the seed.
+
+    blk10 (key 0) and blk60 (key 2) each do their own masked-OR write, then fall
+    into the SHARED no-op glue block blk11 which branches back to the dispatcher
+    (the abc_or_dispatch blk8 funnel).  blk11 is the single back-edge; its
+    incoming state meets to bottom (1 vs 3), so neither the global fold nor the
+    plain per-predecessor partition resolves it (no register pre-zeroing).  The
+    seeded region fold carries each handler's dispatch key, recovers a distinct
+    next-state per immediate predecessor, and emits one ``via_block=11`` redirect
+    each.
+    """
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 60, 20, 70), (11,), ()),
+            10: _blk(10, (11,), (2,), (
+                _and(0x1000, _stk(_STATE_OFF), _num(0xFFFFFFF0), _reg(8)),
+                _or(0x1004, _reg(8), _num(1), _stk(_STATE_OFF)),
+            )),
+            60: _blk(60, (11,), (2,), (
+                _and(0x6000, _stk(_STATE_OFF), _num(0xFFFFFFF0), _reg(8)),
+                _or(0x6004, _reg(8), _num(3), _stk(_STATE_OFF)),
+            )),
+            11: _blk(11, (2,), (10, 60), ()),
+            20: _blk(20, (90,), (2,), ()),
+            70: _blk(70, (91,), (2,), ()),
+            90: _stop(90, (20,)),
+            91: _stop(91, (70,)),
+        },
+        entry_serial=2, func_ea=0x1000,
+    )
+    disp = _dispatcher({0x0: 10, 0x2: 60, 0x1: 20, 0x3: 70}, exit_block=99)
+
+    splits = {t.write_block: t for t in
+              recover_state_write_transitions_via_partitioned_fixpoint(
+                  fg, disp, _STATE_OFF, dispatcher_entry_serial=2) if t.via_block == 11}
+    assert splits[10].next_state == 1 and splits[10].target_handler == 20
+    assert splits[60].next_state == 3 and splits[60].target_handler == 70
+    for wb in (10, 60):
+        assert splits[wb].via_block == 11
+        assert splits[wb].is_return is False
+        assert splits[wb].proof is not None
+        assert splits[wb].proof.kind == "region_seeded_partitioned"
