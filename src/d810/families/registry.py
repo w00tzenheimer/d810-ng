@@ -1,29 +1,37 @@
 """Family selection — the §1a ``select_family`` entry point.
 
-Skeleton registry: returns the first registered family whose ``detect`` matches the portable
-``FlowGraph``. Behavior-neutral until families carry real ``detect`` bodies (seam-pending); the
-default registry is empty so ``select_family`` returns ``None`` (nothing runs) and the live
-``HodurUnflattener`` path is unaffected.
+Profiles are discovered via :class:`d810.core.registry.Registrant`: every
+:class:`StateMachineCffFamily` subclass auto-registers when its module is imported
+(the ``d810.families.state_machine_cff`` package eagerly imports them on load — the
+"scanner loads the project" auto-config), so there is no hand-maintained family list.
+``select_family`` polls the registered profiles and returns the first match. Profiles own
+DISJOINT dispatcher-kind sets, so at most one claims any graph and the result is
+order-independent — no priority/tiebreak. (Transitional caveat: ``HodurFamily.detect``
+still claims every kind for the live hardcoded path, so it overlaps ApproovFamily on
+switch graphs until the cutover narrows it; harmless because ``select_family`` is inert.)
+
+Inert in production: the live maturity hook hardcodes ``HodurFamily()`` and never calls
+``select_family`` (only the §1a driver / unit tests do).
 """
 from __future__ import annotations
 
-from d810.families.state_machine_cff.hodur_pipeline import HodurFamily
-
-# Registered families, highest-priority first. HodurFamily.detect is still inert (returns None),
-# so this list participates structurally without changing behavior.
-_FAMILIES: tuple = (HodurFamily(),)
+# Importing the package runs its __init__, which eagerly imports every profile module so
+# each StateMachineCffFamily subclass auto-registers (registration side effect).
+from d810.families.state_machine_cff import StateMachineCffFamily
 
 
 def registered_families() -> tuple:
-    return _FAMILIES
+    """Return one instance of every registered profile."""
+    return tuple(family() for family in StateMachineCffFamily.all())
 
 
 def select_family(graph, project_config, *, capabilities=frozenset()):
-    """Return the family that recognizes ``graph``, or ``None``.
+    """Return the registered profile that recognizes ``graph``, or ``None``.
 
-    Mirrors §1a ``select_family``. Inert until a family's ``detect`` returns non-None.
+    Mirrors §1a ``select_family``. Profiles own disjoint dispatcher-kind sets, so the
+    first ``detect`` that returns non-None is the unique match (order-independent).
     """
-    for family in _FAMILIES:
+    for family in registered_families():
         if family.detect(graph, capabilities, context=project_config) is not None:
             return family
     return None

@@ -17,7 +17,7 @@ from d810.passes.pass_pipeline import (
     no_caps,
 )
 from d810.transforms.plan import PatchPlan
-from d810.families.state_machine_cff.hodur_pipeline import HodurFamily
+from d810.families.state_machine_cff import HodurFamily
 
 EXPECTED = (
     ("recover_dispatcher", live_mba, default),
