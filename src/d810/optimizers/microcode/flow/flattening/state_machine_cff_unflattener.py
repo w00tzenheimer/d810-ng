@@ -32,9 +32,20 @@ from d810.analyses.control_flow.semantic_transition import \
 from d810.analyses.control_flow.state_machine_analysis import (
     run_snapshot_constant_fixpoint,
 )
+from d810.analyses.control_flow.minimal_state_recovery import (
+    diff_back_edge_transitions,
+    recover_state_write_transitions,
+    recover_state_write_transitions_via_fixpoint,
+)
+from d810.analyses.control_flow.router_resolver import (
+    RouterResolutionContext,
+    default_resolvers,
+    select_router,
+)
 from d810.analyses.control_flow.state_transition_domain import (
     StateValue,
     analyze_state_transitions_concolic,
+    state_value_fixpoint_result,
 )
 from d810.analyses.data_flow.concolic import (
     ConcolicValue,
@@ -541,6 +552,60 @@ class StateMachineCffUnflattener(HodurUnflattener):
                 len(refined_writes),
                 bst_cond_edges,
             )
+
+            # S4 C1 shadow-diff (ticket llr-1szn): emit StateWriteTransition tuples from
+            # the fixpoint's converged states THROUGH the same emission shell, and diff
+            # per-back-edge against the production fold (recover_state_write_transitions).
+            # Proves byte-equivalence where the fixpoint resolves a state + surfaces the
+            # Case-2 opaque-XOR residual the flip (C) is gated on. Diagnostic only.
+            state_var_stkoff = getattr(dmap, "state_var_stkoff", None)
+            # Source the router the SAME way production does (the llr-oq8v resolver
+            # chain): for the collapsed sub_7FFD BST, bst.dispatcher is None and the
+            # exact state->handler map wins -- exactly what emit_minimal_unflatten uses.
+            _dmap_rows = getattr(dmap, "rows", None) if dmap is not None else None
+            dispatcher = select_router(
+                default_resolvers(),
+                RouterResolutionContext(
+                    bst_router=getattr(bst, "dispatcher", None),
+                    state_to_handler=dmap.state_to_handler() if _dmap_rows else None,
+                    default_target=getattr(dmap, "default_target_block", None),
+                    dispatcher_entry=int(dispatcher_entry),
+                ),
+            )
+            if state_var_stkoff is not None and dispatcher is not None:
+                fp_result = state_value_fixpoint_result(
+                    nodes=list(blocks),
+                    entry_nodes=[int(dispatcher_entry)],
+                    successors_of=_succ,
+                    predecessors_of=_pred,
+                    state_writes=refined_writes,
+                    handler_entry_by_state=handler_entry_by_state,
+                    entry_state=StateValue.top(),
+                )
+                prod = recover_state_write_transitions(
+                    source.flow_graph,
+                    dispatcher,
+                    int(state_var_stkoff),
+                    dispatcher_entry_serial=int(dispatcher_entry),
+                )
+                shadow = recover_state_write_transitions_via_fixpoint(
+                    source.flow_graph,
+                    dispatcher,
+                    dispatcher_entry_serial=int(dispatcher_entry),
+                    out_states=fp_result.out_states,
+                )
+                d = diff_back_edge_transitions(prod, shadow)
+                logger.info(
+                    "s1a C1 shadow-diff: prod=%d fixpoint=%d matched=%d "
+                    "case2_opaque=%d mismatch=%d",
+                    d["prod_edges"],
+                    d["fixpoint_edges"],
+                    d["matched"],
+                    d["case2_opaque"],
+                    len(d["mismatch"]),
+                )
+                if d["mismatch"]:
+                    logger.info("s1a C1 mismatch rows: %s", d["mismatch"][:20])
         except Exception:  # noqa: BLE001 — probe must never break the optimize path
             logger.debug("s1a: fixpoint probe failed", exc_info=True)
 

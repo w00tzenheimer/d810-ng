@@ -56,6 +56,7 @@ __all__ = [
     "recover_transition_result",
     "analyze_state_transitions",
     "analyze_state_transitions_concolic",
+    "state_value_fixpoint_result",
 ]
 
 _Succ = Callable[[NodeId], Iterable[NodeId]]
@@ -477,6 +478,50 @@ def _project_partitioned_result(
     )
 
 
+def state_value_fixpoint_result(
+    *,
+    nodes: Iterable[NodeId],
+    entry_nodes: Iterable[NodeId],
+    successors_of: _Succ,
+    predecessors_of: _Succ,
+    state_writes: Mapping[NodeId, StateValue],
+    handler_entry_by_state: Mapping[int, NodeId],
+    entry_state: StateValue | None = None,
+    config: FixpointConfiguration | None = None,
+) -> FixpointResult:
+    """Run the sound #2 ``StateValue`` fixpoint on the concolic domain, projected.
+
+    Builds the dispatch-assume per-block write view, runs
+    :class:`~d810.analyses.data_flow.concolic.ConcolicTransitionDomain` with
+    ``V = StateValue`` (single cell / single partition), and projects the
+    :class:`PartitionedState` result back to a per-block :class:`StateValue`
+    :class:`FixpointResult`.  Shared by :func:`analyze_state_transitions_concolic`
+    (which attributes a ``TransitionResult``) and the C1 shadow-diff (which emits
+    ``StateWriteTransition`` tuples from these ``out_states``).  Ticket llr-1szn.
+    """
+    writes = build_state_writes_with_dispatch_assume(
+        state_writes, handler_entry_by_state
+    )
+    cell = _STATE_VAR_CELL
+    domain = ConcolicTransitionDomain(
+        writes={int(node): {cell: value} for node, value in writes.items()},
+        vops=_StateValueOps(),
+        cells=frozenset({cell}),
+    )
+    boundary = StateValue.top() if entry_state is None else entry_state
+    result = run_fixpoint(
+        domain,
+        nodes=nodes,
+        entry_nodes=entry_nodes,
+        entry_state=PartitionedState.single({cell: boundary}),
+        successors_of=successors_of,
+        predecessors_of=predecessors_of,
+        config=FixpointConfiguration() if config is None else config,
+        raise_on_nonconvergence=True,
+    )
+    return _project_partitioned_result(result)
+
+
 def analyze_state_transitions_concolic(
     *,
     nodes: Iterable[NodeId],
@@ -507,31 +552,17 @@ def analyze_state_transitions_concolic(
     same store can carry a richer per-cell value, but the abstract-only transfer
     here is identical to the legacy path.
     """
-    writes = build_state_writes_with_dispatch_assume(
-        state_writes, handler_entry_by_state
-    )
-    cell = _STATE_VAR_CELL
-    concolic_writes = {
-        int(node): {cell: value} for node, value in writes.items()
-    }
-    domain = ConcolicTransitionDomain(
-        writes=concolic_writes,
-        vops=_StateValueOps(),
-        cells=frozenset({cell}),
-    )
-    boundary = StateValue.top() if entry_state is None else entry_state
-    result = run_fixpoint(
-        domain,
-        nodes=nodes,
-        entry_nodes=entry_nodes,
-        entry_state=PartitionedState.single({cell: boundary}),
-        successors_of=successors_of,
-        predecessors_of=predecessors_of,
-        config=FixpointConfiguration() if config is None else config,
-        raise_on_nonconvergence=True,
-    )
     return recover_transition_result(
-        result=_project_partitioned_result(result),
+        result=state_value_fixpoint_result(
+            nodes=nodes,
+            entry_nodes=entry_nodes,
+            successors_of=successors_of,
+            predecessors_of=predecessors_of,
+            state_writes=state_writes,
+            handler_entry_by_state=handler_entry_by_state,
+            entry_state=entry_state,
+            config=config,
+        ),
         dispatcher_entry=dispatcher_entry,
         handler_entry_by_state=handler_entry_by_state,
         successors_of=successors_of,
