@@ -942,7 +942,7 @@
             "config": {}
         },
         {
-            "name": "HodurUnflattener",
+            "name": "StateMachineCffUnflattener",
             "is_activated": true,
             "config": {}
         },
