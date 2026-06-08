@@ -86,7 +86,7 @@ from d810.evaluator.hexrays_microcode.use_def_dominance import (
 from d810.evaluator.hexrays_microcode.value_range_capability import (
     HexRaysValRangeCapability,
 )
-from d810.families.state_machine_cff import HodurFamily
+from d810.families.state_machine_cff.spine import StateMachineCffSpine
 from d810.hexrays.observability import (
     diagnostics_enabled as _capture_diagnostics_enabled,
     request_capture_mba_snapshot,
@@ -203,7 +203,7 @@ class StateMachineCffUnflattener(HodurUnflattener):
         )
         run_pipeline(
             source=source,
-            family=HodurFamily(),
+            family=StateMachineCffSpine(),
             backend=backend,
             facts=facts,
             project_config=None,

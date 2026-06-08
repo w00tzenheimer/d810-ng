@@ -21,16 +21,10 @@ import os
 from dataclasses import dataclass
 
 from d810.ir.flowgraph import FlowGraph
-from d810.passes.pass_pipeline import PassSpec, default, golden, live_mba, no_caps
+from d810.passes.pass_pipeline import PassSpec
 from d810.analyses.control_flow.dispatcher_recovery import build_state_dispatcher_map_from_flow_graph
-from d810.passes.unflatten.state_machine import (
-    CleanupResidualDispatcher,
-    LowerStateMachine,
-    PlanSemanticRegions,
-    RecoverDispatcher,
-    RecoverStateTransitions,
-)
 from d810.families.state_machine_cff.base import StateMachineCffFamily
+from d810.families.state_machine_cff.pipeline import standard_state_machine_passes
 
 __all__ = ["HodurFamily", "HodurUnflatteningProfile"]
 
@@ -59,13 +53,9 @@ class HodurFamily(StateMachineCffFamily):
         return build_state_dispatcher_map_from_flow_graph(graph)
 
     def pipeline_for(self, match, context) -> "tuple[PassSpec, ...]":
-        return (
-            PassSpec("recover_dispatcher", RecoverDispatcher, live_mba, default),
-            PassSpec("recover_state_transitions", RecoverStateTransitions, live_mba, default),
-            PassSpec("plan_semantic_regions", PlanSemanticRegions, no_caps, default),
-            PassSpec("lower_state_machine", LowerStateMachine, no_caps, golden),
-            PassSpec("cleanup_residual_dispatcher", CleanupResidualDispatcher, no_caps, golden),
-        )
+        # DRY: the canonical five-pass spine lives in ``pipeline``; this family's
+        # equality-chain shape runs it unchanged.
+        return standard_state_machine_passes()
 
 
 @dataclass(frozen=True, slots=True)
