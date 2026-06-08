@@ -42,6 +42,11 @@ from d810.analyses.data_flow import (
     run_fixpoint,
 )
 from d810.analyses.data_flow.abstract_value import TOP, AbstractValue, Const, OneOf
+from d810.analyses.data_flow.concolic import (
+    ConcolicTransitionDomain,
+    LocationRef,
+    PartitionedState,
+)
 from d810.analyses.data_flow.domain import NodeId
 
 __all__ = [
@@ -50,6 +55,7 @@ __all__ = [
     "build_state_writes_with_dispatch_assume",
     "recover_transition_result",
     "analyze_state_transitions",
+    "analyze_state_transitions_concolic",
 ]
 
 _Succ = Callable[[NodeId], Iterable[NodeId]]
@@ -405,6 +411,127 @@ def analyze_state_transitions(
     )
     return recover_transition_result(
         result=result,
+        dispatcher_entry=dispatcher_entry,
+        handler_entry_by_state=handler_entry_by_state,
+        successors_of=successors_of,
+        predecessors_of=predecessors_of,
+        strategy_name=strategy_name,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Concolic re-realization of the same analysis (S4 increment A, ticket llr-1szn)
+# ---------------------------------------------------------------------------
+
+#: The single synthetic state-variable cell the concolic fixpoint tracks. The
+#: state variable is modelled as one ``LocationRef`` so the
+#: :class:`ConcolicTransitionDomain`'s ``LocationRef -> V`` store degenerates to
+#: the single-cell case that exactly reproduces :class:`StateTransitionDomain`.
+#: ``width`` is the u64 mask width state constants already carry (see
+#: :attr:`StateValue._PROJECT_CONST_SIZE`); it never affects the powerset value.
+_STATE_VAR_CELL: "LocationRef" = LocationRef.stack(0, StateValue._PROJECT_CONST_SIZE)
+
+
+class _StateValueOps:
+    """``ValueLatticeOps[StateValue]`` adapter: the powerset cell algebra.
+
+    Injects :class:`StateValue`'s lattice ops into the parametric
+    :class:`ConcolicTransitionDomain` so the SAME fixpoint plumbing carries the
+    powerset cell. ``widen`` mirrors :class:`StateTransitionDomain.widen`
+    (``previous.widen(current)`` -- the finite-height join).
+    """
+
+    def bottom(self) -> StateValue:
+        return StateValue.bottom()
+
+    def join(self, a: StateValue, b: StateValue) -> StateValue:
+        return a.join(b)
+
+    def widen(self, previous: StateValue, current: StateValue) -> StateValue:
+        return previous.widen(current)
+
+    def is_bottom(self, value: StateValue) -> bool:
+        return value.is_bottom
+
+
+def _project_partitioned_result(
+    result: FixpointResult,
+) -> FixpointResult:
+    """Project a ``PartitionedState`` fixpoint result back to a ``StateValue`` one.
+
+    Reads the single state-variable cell out of each in/out
+    :class:`PartitionedState` so the downstream :func:`recover_transition_result`
+    (which reads ``out_states[block]`` as a :class:`StateValue`) consumes it
+    unchanged. A cell unset in a store concretizes to ``⊥`` (the engine seeds
+    every node's state to ``domain.bottom()``, a full ⊥ store).
+    """
+
+    def _cell(state: PartitionedState) -> StateValue:
+        return state.store().get(_STATE_VAR_CELL, StateValue.bottom())
+
+    return FixpointResult(
+        in_states={n: _cell(s) for n, s in result.in_states.items()},
+        out_states={n: _cell(s) for n, s in result.out_states.items()},
+        iterations=result.iterations,
+        converged=result.converged,
+    )
+
+
+def analyze_state_transitions_concolic(
+    *,
+    nodes: Iterable[NodeId],
+    entry_nodes: Iterable[NodeId],
+    successors_of: _Succ,
+    predecessors_of: _Succ,
+    state_writes: Mapping[NodeId, StateValue],
+    dispatcher_entry: NodeId,
+    handler_entry_by_state: Mapping[int, NodeId],
+    entry_state: StateValue | None = None,
+    config: FixpointConfiguration | None = None,
+    strategy_name: str = "state_transition_domain",
+) -> TransitionResult:
+    """Same analysis as :func:`analyze_state_transitions`, via the concolic domain.
+
+    Increment A of S4 (ticket ``llr-1szn``): re-realize the sound #2
+    ``RecoverStateTransitions`` fixpoint on the parametric
+    :class:`~d810.analyses.data_flow.concolic.ConcolicTransitionDomain` with
+    ``V = StateValue`` (the single-cell, single-partition degenerate case),
+    projecting the :class:`PartitionedState` result back to a per-block
+    :class:`StateValue` and reusing the existing
+    :func:`recover_transition_result` attribution. The returned
+    :class:`TransitionResult` is **byte-identical** to
+    :func:`analyze_state_transitions` -- the concolic domain reproduces
+    :class:`StateTransitionDomain` exactly when carrying the powerset value.
+
+    This is the wiring seam for the later concrete refinement (increment B): the
+    same store can carry a richer per-cell value, but the abstract-only transfer
+    here is identical to the legacy path.
+    """
+    writes = build_state_writes_with_dispatch_assume(
+        state_writes, handler_entry_by_state
+    )
+    cell = _STATE_VAR_CELL
+    concolic_writes = {
+        int(node): {cell: value} for node, value in writes.items()
+    }
+    domain = ConcolicTransitionDomain(
+        writes=concolic_writes,
+        vops=_StateValueOps(),
+        cells=frozenset({cell}),
+    )
+    boundary = StateValue.top() if entry_state is None else entry_state
+    result = run_fixpoint(
+        domain,
+        nodes=nodes,
+        entry_nodes=entry_nodes,
+        entry_state=PartitionedState.single({cell: boundary}),
+        successors_of=successors_of,
+        predecessors_of=predecessors_of,
+        config=FixpointConfiguration() if config is None else config,
+        raise_on_nonconvergence=True,
+    )
+    return recover_transition_result(
+        result=_project_partitioned_result(result),
         dispatcher_entry=dispatcher_entry,
         handler_entry_by_state=handler_entry_by_state,
         successors_of=successors_of,

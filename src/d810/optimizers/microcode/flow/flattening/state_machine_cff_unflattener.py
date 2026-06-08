@@ -34,7 +34,7 @@ from d810.analyses.control_flow.state_machine_analysis import (
 )
 from d810.analyses.control_flow.state_transition_domain import (
     StateValue,
-    analyze_state_transitions,
+    analyze_state_transitions_concolic,
 )
 from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
 from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
@@ -479,7 +479,7 @@ class StateMachineCffUnflattener(HodurUnflattener):
                 blk = blocks.get(serial)
                 return [int(x) for x in getattr(blk, "preds", ())] if blk is not None else []
 
-            fixpoint_tr = analyze_state_transitions(
+            fixpoint_tr = analyze_state_transitions_concolic(
                 nodes=list(blocks),
                 entry_nodes=[int(dispatcher_entry)],
                 successors_of=_succ,
