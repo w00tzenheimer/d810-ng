@@ -3,7 +3,7 @@
     "ins_rules": [],
     "blk_rules": [
         {
-            "name": "HodurUnflattener",
+            "name": "StateMachineCffUnflattener",
             "is_activated": true,
             "config": {
                 "max_state_constants": 100,

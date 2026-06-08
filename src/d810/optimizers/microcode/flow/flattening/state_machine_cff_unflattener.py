@@ -1,15 +1,15 @@
 """§1a live entry point — the state-machine-CFF unflattener driven by the north-star call graph.
 
 This is the runtime realization of the §1a pseudocode: at the maturity hook it lifts the live
-``mba`` to a portable ``FunctionSource``, builds an ``AnalysisManager`` (facts), selects the
-``HodurFamily``, and runs ``run_pipeline`` (family -> passes -> transforms -> backend.apply). The
-ONLY live-mba touch points are the lifter + ``HexRaysMutationBackend`` (backends/hexrays).
+``mba`` to a portable ``FunctionSource``, builds an ``AnalysisManager`` (facts), runs the
+chain-based ``StateMachineCffSpine`` (single detect point = ranked DispatcherResolver chain;
+passes selected by resolved dispatcher kind) through ``run_pipeline``. The ONLY live-mba touch
+points are the lifter + ``HexRaysMutationBackend`` (backends/hexrays).
 
-GATED OFF by default behind ``D810_USE_S1A_PIPELINE`` — the legacy ``HodurUnflattener`` remains the
-default path so the golden is unaffected. Turning the flag on routes the hodur family through the
-§1a call graph; until the detection + reconstruction passes are fully ported it is intentionally
-incomplete (``HodurFamily.detect`` is still inert), so this is the harness to iterate to
-equivalence-or-better, not yet a replacement.
+PRODUCTION PATH (M2 cutover, llr-ibpi): §1a-non-HCC is the DEFAULT — ``D810_USE_S1A_PIPELINE``
+defaults on and ``D810_S1A_USE_HCC`` defaults off. The hodur configs route ``StateMachineCffUnflattener``
+through the chain+spine pipeline; full-fleet golden parity verified at 3032/0. Set
+``D810_S1A_USE_HCC=1`` only as a transitional escape hatch (removed once the legacy cluster is gone).
 """
 from __future__ import annotations
 
@@ -103,7 +103,8 @@ logger = logging.getLogger("D810.unflat.s1a", logging.DEBUG)
 
 
 def _s1a_enabled() -> bool:
-    return os.environ.get("D810_USE_S1A_PIPELINE", "0").strip() == "1"
+    # M2 cutover (llr-ibpi): §1a is the production path; defaults ON.
+    return os.environ.get("D810_USE_S1A_PIPELINE", "1").strip() == "1"
 
 
 class StateMachineCffUnflattener(HodurUnflattener):
@@ -126,7 +127,8 @@ class StateMachineCffUnflattener(HodurUnflattener):
     def __init__(self) -> None:
         super().__init__()  # full HodurUnflattener (HCC) setup
         self._s1a_done_for_ea: int = -1
-        self._use_hcc = os.environ.get("D810_S1A_USE_HCC", "1").strip() == "1"
+        # M2 cutover (llr-ibpi): portable §1a-non-HCC is the production default.
+        self._use_hcc = os.environ.get("D810_S1A_USE_HCC", "0").strip() == "1"
 
     def optimize(self, blk: "ida_hexrays.mblock_t") -> int:
         # Bind the live mba FIRST (mirrors HodurUnflattener.optimize): the base
