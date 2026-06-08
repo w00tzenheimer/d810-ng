@@ -41,6 +41,7 @@ from d810.analyses.control_flow.state_machine_analysis import (
     _eval_insn_view_snapshot,
     _is_stop_block,
     _transfer_snapshot_constant_block,
+    run_snapshot_constant_fixpoint,
 )
 
 # Default bound on the handler-local corridor scan.  Real OLLVM handler bodies
@@ -55,6 +56,7 @@ __all__ = [
     "StateWriteTransition",
     "recover_state_write_transitions",
     "recover_state_write_transitions_via_fixpoint",
+    "recover_state_write_transitions_via_multicell_fixpoint",
     "diff_back_edge_transitions",
 ]
 
@@ -357,6 +359,69 @@ def recover_state_write_transitions_via_fixpoint(
         constants = set(getattr(sv, "constants", ())) if usable else set()
         if len(constants) == 1:
             state = next(iter(constants))
+            target, is_ret = _classify(state)
+            out.append(StateWriteTransition(pred, state, target, is_ret, arm))
+        else:
+            out.append(StateWriteTransition(pred, None, None, True, arm))
+    return tuple(out)
+
+
+def recover_state_write_transitions_via_multicell_fixpoint(
+    flow_graph,
+    dispatcher,
+    state_var_stkoff: int,
+    *,
+    dispatcher_entry_serial: int,
+) -> tuple[StateWriteTransition, ...]:
+    """B1 shadow: source each back-edge's next state from the MULTI-CELL fixpoint.
+
+    Step C2/B1 of the S4 flip (ticket llr-kz7n).  The single-cell
+    :func:`recover_state_write_transitions_via_fixpoint` tracks only the state slot
+    and so emits ``(None, None, True)`` for any back-edge whose write is an opaque
+    ``state = reg_a ^ reg_b`` / ``sub`` fold — the register operands it needs are not
+    in its store.  This variant runs the existing global stk+reg exact-constant
+    fixpoint (:func:`run_snapshot_constant_fixpoint`, whose transfer is the SAME
+    :func:`_transfer_snapshot_constant_block` the production fold uses) and reads the
+    folded state-slot value out of each back-edge predecessor's converged ``out``
+    store.  It is still **single-partition** (constants are MET across all incoming
+    edges), so a back-edge whose register operands are set to *different* constants
+    on different region paths still folds to ``⊥`` here and emits an unresolved
+    return — that residual is the predecessor-partitioned (Case-2) case closed by the
+    region-partitioned variant (B2).  Diagnostic only; mutates nothing.
+    """
+    disp = int(dispatcher_entry_serial)
+    disp_block = flow_graph.get_block(disp)
+    if disp_block is None:
+        return ()
+    default = dispatcher.default_target
+
+    # Same effective offset resolution + transfer as the production fold; only the
+    # walk strategy (global fixpoint vs per-region) differs.
+    effective_stkoff = _resolve_state_var_alias(flow_graph, disp, int(state_var_stkoff))
+    fp = run_snapshot_constant_fixpoint(flow_graph, effective_stkoff)
+
+    def _classify(state: int) -> tuple[int | None, bool]:
+        routed = dispatcher.lookup(state)
+        if routed is None:
+            return None, True
+        if default is not None and int(routed) == int(default):
+            return int(routed), True
+        if _is_stop_block(flow_graph.get_block(int(routed))):
+            return int(routed), True
+        return int(routed), False
+
+    out: list[StateWriteTransition] = []
+    for pred in sorted(int(p) for p in disp_block.preds):
+        block = flow_graph.get_block(pred)
+        if block is None:
+            continue
+        succs = tuple(int(s) for s in block.succs)
+        if disp not in succs:
+            continue
+        arm = succs.index(disp) if len(succs) > 1 else None
+        value = fp.out_stk_maps.get(pred, {}).get(effective_stkoff)
+        if value is not None:
+            state = int(value) & 0xFFFFFFFF
             target, is_ret = _classify(state)
             out.append(StateWriteTransition(pred, state, target, is_ret, arm))
         else:
