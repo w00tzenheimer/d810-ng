@@ -5,10 +5,9 @@ Profiles are discovered via :class:`d810.core.registry.Registrant`: every
 (the ``d810.families.state_machine_cff`` package eagerly imports them on load — the
 "scanner loads the project" auto-config), so there is no hand-maintained family list.
 ``select_family`` polls the registered profiles and returns the first match. Profiles own
-DISJOINT dispatcher-kind sets, so at most one claims any graph and the result is
-order-independent — no priority/tiebreak. (Transitional caveat: ``HodurFamily.detect``
-still claims every kind for the live hardcoded path, so it overlaps ApproovFamily on
-switch graphs until the cutover narrows it; harmless because ``select_family`` is inert.)
+DISJOINT dispatcher-kind sets (``HodurFamily`` = ``CONDITIONAL_CHAIN``, ``ApproovFamily`` =
+switch/indirect), so at most one claims any graph and the result is order-independent — no
+priority/tiebreak.
 
 Inert in production: the live maturity hook hardcodes ``HodurFamily()`` and never calls
 ``select_family`` (only the §1a driver / unit tests do).

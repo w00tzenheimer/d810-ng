@@ -6,14 +6,14 @@ mechanism the rule subsystems use, so a profile becomes available simply by bein
 imported when the scanner loads the project (no hand-maintained list).
 
 The live selector (:func:`d810.families.registry.select_family`) polls registered
-profiles and returns the first match. Profiles MUST own DISJOINT dispatcher-kind sets
-(``DispatcherType``), so at most one claims any graph and selection is order-independent
-— no priority/tiebreak. (The transitional exception: ``HodurFamily.detect`` still claims
-every kind for the live hardcoded path; that overlap, and any ambiguity it implies, is
-removed at the cutover when its claim narrows to ``CONDITIONAL_CHAIN``.) Each profile
-implements the §1a Family Protocol — ``detect`` + ``pipeline_for`` — and runs on the ONE
-shared spine (``passes.driver.run_pipeline`` over the five passes). The base adds
-discovery only; it never patches microcode.
+profiles and returns the first match. Profiles own DISJOINT dispatcher-kind sets
+(``DispatcherType``): ``HodurFamily`` owns ``CONDITIONAL_CHAIN``, ``ApproovFamily`` owns
+switch/indirect — so at most one claims any graph and selection is order-independent (no
+priority/tiebreak). The live entry still hardcodes ``HodurFamily()`` and never calls
+``select_family``, so the registry is inert in production until the cutover wires it in.
+Each profile implements the §1a Family Protocol — ``detect`` + ``pipeline_for`` — and runs
+on the ONE shared spine (``passes.driver.run_pipeline`` over the five passes). The base
+adds discovery only; it never patches microcode.
 """
 from __future__ import annotations
 

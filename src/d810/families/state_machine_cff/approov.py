@@ -21,9 +21,10 @@ Because the claims are DISJOINT (switch/indirect here, equality-chain for Hodur)
 
 Additive + inert: ApproovFamily auto-registers (via :class:`StateMachineCffFamily` /
 ``Registrant``) and is enumerated by :func:`d810.families.registry.select_family`, which
-is NOT on the live maturity-hook path (the live entry hardcodes ``HodurFamily()``). The
-symmetric tightening of ``HodurFamily.detect`` to ``CONDITIONAL_CHAIN``-only is DEFERRED
-to the live cutover — doing it now would regress the abc switch case on the live §1a path.
+is NOT on the live maturity-hook path (the live entry hardcodes ``HodurFamily()``).
+``HodurFamily.detect`` already claims ``CONDITIONAL_CHAIN`` only, so the claims are disjoint
+today; the remaining cutover is wiring the live entry to ``select_family`` so abc on
+§1a-portable routes here (production abc is unaffected — it runs via HCC).
 """
 from __future__ import annotations
 

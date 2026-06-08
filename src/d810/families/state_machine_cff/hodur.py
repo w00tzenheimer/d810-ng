@@ -20,8 +20,9 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from d810.ir.flowgraph import FlowGraph
 from d810.passes.pass_pipeline import PassSpec, default, golden, live_mba, no_caps
-from d810.analyses.control_flow.dispatcher_recovery import build_dispatch_map_any_kind
+from d810.analyses.control_flow.dispatcher_recovery import build_state_dispatcher_map_from_flow_graph
 from d810.passes.unflatten.state_machine import (
     CleanupResidualDispatcher,
     LowerStateMachine,
@@ -39,23 +40,23 @@ class HodurFamily(StateMachineCffFamily):
 
     name = "hodur"
 
-    def detect(self, graph, capabilities, context=None):
-        """Recognize the Hodur state machine over a portable ``FlowGraph``.
+    def detect(self, graph: FlowGraph, capabilities, context=None):
+        """Recognize the equality-chain (``CONDITIONAL_CHAIN``) Hodur state machine.
 
-        A match is a recovered dispatcher of any supported kind (equality-chain or
-        switch-table / masked) — the SAME front-end pass #1 (``recover_dispatcher``)
-        uses, so the gate never rejects a shape the pipeline could lower. The match
-        IS the recovered ``StateDispatcherMap`` (truthy), so the pipeline only runs
-        where a real dispatcher is present.
+        Claims ONLY the equality-chain dispatcher shape via
+        ``build_state_dispatcher_map_from_flow_graph`` — DISJOINT from ``ApproovFamily``'s
+        switch/indirect, so at most one profile claims any graph and ``select_family`` is
+        order-independent. The match IS the recovered ``StateDispatcherMap`` (truthy), so
+        the pipeline only runs where a real equality-chain dispatcher is present.
 
-        NOTE: this still claims ANY kind (the live hardcoded path needs it for abc); the
-        cutover narrows it to ``CONDITIONAL_CHAIN`` so its claim is DISJOINT from
-        ``ApproovFamily``'s switch/indirect, making ``select_family`` order-independent.
-        ``select_family`` is inert until then, so the transitional overlap is harmless.
+        (Switch/masked detection briefly lived here as an M1 stopgap so abc could unflatten
+        on §1a-portable; that now belongs to ``ApproovFamily``. The live entry still
+        hardcodes ``HodurFamily()`` and never calls ``select_family``, so abc on the
+        portable path awaits the cutover; production abc is unaffected — it runs via HCC.)
         """
         if graph is None or not hasattr(graph, "blocks"):
             return None
-        return build_dispatch_map_any_kind(graph)
+        return build_state_dispatcher_map_from_flow_graph(graph)
 
     def pipeline_for(self, match, context) -> "tuple[PassSpec, ...]":
         return (
