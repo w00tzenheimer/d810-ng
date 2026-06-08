@@ -26,7 +26,9 @@ emits ``GraphModification`` values compiled to a ``PatchPlan``.
 from __future__ import annotations
 
 from d810.analyses.control_flow.minimal_state_recovery import (
+    HandlerTransition,
     StateWriteTransition,
+    recover_handler_transitions,
     recover_state_write_transitions_via_partitioned_fixpoint,
 )
 from d810.core import logging
@@ -35,7 +37,11 @@ from d810.transforms.plan import PatchPlan, compile_patch_plan
 
 logger = logging.getLogger("D810.transforms.minimal_unflatten_emit")
 
-__all__ = ["emit_minimal_unflatten", "build_state_write_redirects"]
+__all__ = [
+    "emit_minimal_unflatten",
+    "build_state_write_redirects",
+    "build_conditional_arm_redirects",
+]
 
 
 def build_state_write_redirects(
@@ -109,6 +115,134 @@ def build_state_write_redirects(
                     continue
                 _add(int(entry_pred), disp, int(first), two_way=(epblk.nsucc == 2))
 
+    return mods
+
+
+def _existing_redirect_keys(mods: list[object]) -> set[tuple[int, int]]:
+    """``(from_serial, old_target)`` of every redirect already planned.
+
+    Keyed on *source edge* (not target) so the conditional-arm pass never
+    re-points an edge the back-edge model already resolved -- it only fills in
+    edges the back-edge model left pointing at the dispatcher.
+    """
+    keys: set[tuple[int, int]] = set()
+    for m in mods:
+        if isinstance(m, (RedirectGoto, RedirectBranch)):
+            keys.add((int(m.from_serial), int(m.old_target)))
+    return keys
+
+
+def _arm_branch_successor(arm) -> int | None:
+    """The block ``branch_block`` flows to *on this arm's path*.
+
+    For a conditional handler whose two arms share one back-edge write block, the
+    selecting 2-way branch is upstream at ``arm.branch_block`` and the arms differ
+    only in which successor of that branch they take.  ``ordered_path`` is the
+    handler-local block sequence (entry..exit); the block immediately after
+    ``branch_block`` in the path is the successor edge this arm owns.
+    """
+    branch = arm.branch_block
+    path = arm.ordered_path
+    if branch is None or not path:
+        return None
+    try:
+        idx = path.index(int(branch))
+    except ValueError:
+        return None
+    if idx + 1 >= len(path):
+        return None
+    return int(path[idx + 1])
+
+
+def build_conditional_arm_redirects(
+    flow_graph,
+    dispatcher,
+    handler_transitions: tuple[HandlerTransition, ...],
+    *,
+    dispatcher_entry_serial: int | None,
+    existing: set[tuple[int, int]],
+) -> list[object]:
+    """Emit per-arm redirects for conditional handlers, anchored on the branch.
+
+    The back-edge model (:func:`build_state_write_redirects`) anchors on the
+    dispatcher's predecessors and resolves each as a single ``write_block ->
+    route(state)`` edge.  When a handler 2-way-branches to two distinct
+    next-states *through a single shared back-edge write block* (the OLLVM
+    conditional-state shape: ``state = select(cond, A, B)`` lowered as
+    ``branch_block`` selecting two arms that converge on one write block), the
+    global fold of that shared block collapses to the handler's OWN incoming
+    state -> ``route`` is the handler itself -> a self-loop / 2-cycle, dropping
+    BOTH real arms.  The recovered graph then fragments and forward reachability
+    collapses (the ``5/44`` symptom).
+
+    :func:`recover_handler_transitions` carries the full multi-arm model
+    (``HandlerTransition.arms``), each arm naming the selecting ``branch_block``,
+    the path it takes, and its (correctly per-path-folded) ``next_state``.  For a
+    conditional handler this pass redirects the SELECTING BRANCH's two successor
+    edges -- ``branch_block -> arm_succ`` re-pointed onto ``route(arm.next_state)``
+    -- bypassing the shared write block entirely.  Control flow now leaves the
+    handler's branch straight to each correct next handler; the dead shared state
+    write is DCE'd with the dispatcher.
+
+    When a conditional handler's arms instead live on *distinct* write blocks
+    (each its own dispatcher predecessor), the back-edge model already resolves
+    both correctly; the ``existing`` veto (keyed on the source edge) keeps this
+    pass from touching them, so the proven case stays byte-identical.  Strictly
+    additive: only emits edges the back-edge model did not.
+    """
+    disp = int(dispatcher_entry_serial) if dispatcher_entry_serial is not None else None
+    if disp is None:
+        return []
+    default_target = dispatcher.default_target
+    mods: list[object] = []
+    seen: set[tuple[str, int, int, int]] = set()
+
+    def _add(src: int, old: int, new: int | None) -> None:
+        if new is None or int(old) == int(new):
+            return
+        if (int(src), int(old)) in existing:
+            return  # back-edge model owns this source edge
+        src_block = flow_graph.get_block(int(src))
+        if src_block is None:
+            return
+        two_way = src_block.nsucc == 2
+        key = ("B" if two_way else "G", int(src), int(old), int(new))
+        if key in seen:
+            return
+        seen.add(key)
+        if two_way:
+            mods.append(
+                RedirectBranch(from_serial=int(src), old_target=int(old), new_target=int(new))
+            )
+        else:
+            mods.append(
+                RedirectGoto(from_serial=int(src), old_target=int(old), new_target=int(new))
+            )
+
+    for handler in handler_transitions:
+        if not handler.is_conditional:
+            continue
+        write_blocks = {int(a.write_block) for a in handler.arms if a.write_block is not None}
+        shared_write_block = len(write_blocks) == 1
+        for arm in handler.arms:
+            new = default_target if arm.is_return else arm.target_handler
+            if shared_write_block and arm.branch_block is not None:
+                # Both arms converge on one back-edge: anchor on the selecting
+                # branch and redirect its per-arm successor edge, bypassing the
+                # shared (collapsing) write block.
+                old = _arm_branch_successor(arm)
+                if old is not None:
+                    _add(int(arm.branch_block), int(old), new)
+                continue
+            # Distinct write blocks per arm: each is its own dispatcher
+            # predecessor; only fill in arms the back-edge model left unredirected.
+            wb = arm.write_block
+            if wb is None:
+                continue
+            wb_block = flow_graph.get_block(int(wb))
+            if wb_block is None or disp not in tuple(int(s) for s in wb_block.succs):
+                continue
+            _add(int(wb), disp, new)
     return mods
 
 
@@ -283,6 +417,36 @@ def emit_minimal_unflatten(
         pre_header_serial=pre_header_serial,
         initial_state=initial_state,
     )
+    # Conditional/multi-arm transitions (ticket llr-aga1): the back-edge model
+    # above emits one redirect per dispatcher predecessor and collapses a
+    # 2-way-branching handler onto a single next-state, fragmenting the recovered
+    # graph into disconnected cycles (the ``5/44`` reachability symptom). The
+    # per-handler multi-arm model (recover_handler_transitions) recovers BOTH
+    # arms; emit the missing arm redirects additively, vetoed on any source edge
+    # the back-edge model already resolved so the unconditional case stays
+    # byte-identical.
+    handler_transitions = recover_handler_transitions(
+        flow_graph,
+        dispatcher,
+        int(state_var_stkoff),
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
+    )
+    arm_mods = build_conditional_arm_redirects(
+        flow_graph,
+        dispatcher,
+        handler_transitions,
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
+        existing=_existing_redirect_keys(mods),
+    )
+    if arm_mods:
+        mods = list(mods) + arm_mods
+    if logger.info_on:
+        n_cond = sum(1 for h in handler_transitions if h.is_conditional)
+        logger.info(
+            "s1a minimal unflatten: conditional_handlers=%d arm_redirects_added=%d",
+            n_cond,
+            len(arm_mods),
+        )
     if logger.info_on:
         n_return = sum(1 for t in transitions if t.is_return)
         n_unresolved = sum(1 for t in transitions if t.next_state is None)
