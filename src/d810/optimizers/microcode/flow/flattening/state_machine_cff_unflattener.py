@@ -36,8 +36,16 @@ from d810.analyses.control_flow.state_transition_domain import (
     StateValue,
     analyze_state_transitions_concolic,
 )
+from d810.analyses.data_flow.concolic import (
+    ConcolicValue,
+    ConcreteStore,
+    LocationRef,
+    PrecisionStatus,
+    fold_exact,
+)
 from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
 from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
+from d810.backends.hexrays.evidence.emulation import HexRaysBlockEmulator
 from d810.backends.hexrays.lifter import lift_function
 from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
 from d810.capabilities.resolver import CapabilitySet
@@ -373,7 +381,9 @@ class StateMachineCffUnflattener(HodurUnflattener):
             # Inc4 (llr-mmfq): measure the sound #2 StateTransitionDomain fixpoint against the ad-hoc
             # bst-walk + oracle BEFORE swapping it into the DAG. Pure logging, feeds nothing.
             if bst is not None and fact_view is not None:
-                self._s1a_fixpoint_probe(source, bst, fact_view, entry_serial)
+                self._s1a_fixpoint_probe(
+                    source, bst, fact_view, entry_serial, mba=mba, dmap=dmap
+                )
             # Prefer the BST-derived rich transition_result: it backfills handlers reachable only
             # through wide BST range intervals (the range-backed states the exact-only §1a #2 omits),
             # so the diag DAG node/edge counts approach the legacy oracle instead of being capped by
@@ -449,7 +459,9 @@ class StateMachineCffUnflattener(HodurUnflattener):
         except Exception:  # noqa: BLE001 — diagnostics must never break the optimize path
             logger.debug("s1a: snapshot-correlated diagnostics failed", exc_info=True)
 
-    def _s1a_fixpoint_probe(self, source, bst, fact_view, dispatcher_entry: int) -> None:
+    def _s1a_fixpoint_probe(
+        self, source, bst, fact_view, dispatcher_entry: int, *, mba=None, dmap=None
+    ) -> None:
         """DIAG-ONLY: measure the sound #2 ``StateTransitionDomain`` fixpoint (llr-mmfq Inc4).
 
         Builds the value-set ``transition_result`` from the SAME per-block state-write evidence the
@@ -458,6 +470,14 @@ class StateMachineCffUnflattener(HodurUnflattener):
         DAG's CONDITIONAL_TRANSITION source) and the legacy oracle (66). Pure measurement: it feeds
         nothing into the DAG/plan, so production and the diag DAG are untouched. The check confirms
         whether the sound fixpoint constrains the over-count before the Inc5 swap.
+
+        S4 increment B (ticket ``llr-1szn``): the anchor-only ``state_writes`` view marks every
+        MBA / opaque next-state write ⊤ (pass-through), so the back-edge exit of those handlers
+        yields no clean transition -- the under-count. A prove-exact-or-abstain Hex-Rays emulator
+        (:class:`HexRaysBlockEmulator`, stepping the live block) + the concolic refiner
+        (:func:`refine_concrete`/:func:`fold_exact`) folds those writes into concrete next-state
+        constants where provable, surfacing the dropped transitions. Still strictly a probe (this
+        whole method is a try/except diagnostic), so production / the diag DAG are untouched.
         """
         try:
             blocks = source.flow_graph.blocks
@@ -479,32 +499,119 @@ class StateMachineCffUnflattener(HodurUnflattener):
                 blk = blocks.get(serial)
                 return [int(x) for x in getattr(blk, "preds", ())] if blk is not None else []
 
-            fixpoint_tr = analyze_state_transitions_concolic(
-                nodes=list(blocks),
-                entry_nodes=[int(dispatcher_entry)],
-                successors_of=_succ,
-                predecessors_of=_pred,
-                state_writes=state_writes,
+            def _run(writes):
+                tr = analyze_state_transitions_concolic(
+                    nodes=list(blocks),
+                    entry_nodes=[int(dispatcher_entry)],
+                    successors_of=_succ,
+                    predecessors_of=_pred,
+                    state_writes=writes,
+                    dispatcher_entry=int(dispatcher_entry),
+                    handler_entry_by_state=handler_entry_by_state,
+                    entry_state=StateValue.top(),
+                )
+                return tr, sum(1 for t in tr.transitions if t.is_conditional)
+
+            fixpoint_tr, cond_anchor = _run(state_writes)
+
+            # S4 B: concrete-refine the unresolved (⊤ / pass-through) next-state writes.
+            refined_writes, folded = self._refine_state_writes_concolic(
+                base_writes=state_writes,
                 dispatcher_entry=int(dispatcher_entry),
-                handler_entry_by_state=handler_entry_by_state,
-                entry_state=StateValue.top(),
+                predecessors_of=_pred,
+                mba=mba,
+                dmap=dmap,
             )
-            cond = sum(1 for t in fixpoint_tr.transitions if t.is_conditional)
+            cond = cond_anchor
+            if folded:
+                fixpoint_tr, cond = _run(refined_writes)
+
             bst_cond_edges = sum(
                 len(v) for v in (bst.conditional_transitions or {}).values()
             )
             logger.info(
-                "s1a #2 fixpoint-probe: fixpoint cond=%d uncond=%d total=%d handlers=%d "
-                "writes=%d | bst_walk cond_edges=%d | oracle cond=66",
+                "s1a #2 fixpoint-probe: fixpoint cond=%d (anchor-only=%d, concrete-folds=%d) "
+                "uncond=%d total=%d handlers=%d writes=%d | bst_walk cond_edges=%d | oracle cond=66",
                 cond,
+                cond_anchor,
+                folded,
                 len(fixpoint_tr.transitions) - cond,
                 len(fixpoint_tr.transitions),
                 len(handler_entry_by_state),
-                len(state_writes),
+                len(refined_writes),
                 bst_cond_edges,
             )
         except Exception:  # noqa: BLE001 — probe must never break the optimize path
             logger.debug("s1a: fixpoint probe failed", exc_info=True)
+
+    def _refine_state_writes_concolic(
+        self, *, base_writes, dispatcher_entry, predecessors_of, mba, dmap
+    ):
+        """Fold unresolved next-state writes into concrete constants (S4 B, diag-only).
+
+        For each dispatcher back-edge predecessor that has NO resolved anchor (its next-state write
+        is currently ⊤ / pass-through, the under-count source), run a prove-exact-or-abstain
+        Hex-Rays block emulator and the concolic refiner over the live block. A fold is accepted
+        only when :func:`fold_exact` confirms it against the abstract floor (here ⊤, which contains
+        every value -- the emulator's own block-stepper is the soundness gate, never asserting a
+        wrong constant). Returns ``(refined_writes, folded_count)``; on any miss the base view is
+        returned unchanged (graceful degradation == the pure abstract probe).
+
+        Measured on sub_7FFD3338C040 (D810_S1A_USE_HCC=0): 7 unanchored back-edge predecessors are
+        candidates, and the single-block / empty-store emulator folds 0 of them -- it correctly
+        ABSTAINS rather than guess.  Those 7 are the opaque-const ``reg ^ reg`` next-state writers
+        whose operands are program values defined in OTHER blocks; resolving them needs a
+        predecessor-partitioned multi-block fold (the documented T2c disjunctive join), not a
+        single-block constant fold.  This wiring is the sound seam for that later store-seeding;
+        the probe stays a try/except diagnostic, so the count is reported but never authoritative.
+        """
+        state_stkoff = getattr(dmap, "state_var_stkoff", None)
+        if mba is None or state_stkoff is None:
+            return base_writes, 0
+
+        state_cell = LocationRef.stack(int(state_stkoff), 8)
+        emulator = HexRaysBlockEmulator(
+            mba=mba, state_var_stkoff=int(state_stkoff), state_cell=state_cell
+        )
+        refined = dict(base_writes)
+        folded = 0
+        # Candidates: dispatcher back-edge predecessors not already resolved by an anchor.
+        # These are exactly the handler exits whose next-state write the anchor view marks
+        # ⊤ / pass-through (the under-count source the emulator tries to resolve).
+        candidates = {
+            int(p) for p in predecessors_of(int(dispatcher_entry))
+        } - set(base_writes)
+        empty_store = ConcreteStore.of({})
+        for serial in sorted(candidates):
+            live_block = self._live_mblock(mba, serial)
+            if live_block is None:
+                continue
+            outcome = emulator.eval_block(live_block, empty_store)
+            value = ConcolicValue.top(8)
+            folded_value = fold_exact(value, outcome, state_cell)
+            if folded_value.status is not PrecisionStatus.CONCRETE:
+                continue
+            concrete = folded_value.concrete
+            if concrete is None:
+                continue
+            refined[serial] = StateValue.of(int(concrete))
+            folded += 1
+        if logger.debug_on:
+            logger.debug(
+                "s1a #2 concrete-refine: candidates=%d folded=%d", len(candidates), folded
+            )
+        return refined, folded
+
+    @staticmethod
+    def _live_mblock(mba, serial):
+        """Resolve a live ``mblock_t`` by serial, tolerant of API shape; ``None`` on miss."""
+        try:
+            getter = getattr(mba, "get_mblock", None)
+            if getter is not None:
+                return getter(int(serial))
+        except Exception:  # noqa: BLE001 — best-effort live-block resolution
+            return None
+        return None
 
 
 # ---------------------------------------------------------------------------
