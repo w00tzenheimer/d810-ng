@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from d810.analyses.control_flow.minimal_state_recovery import (
     StateWriteTransition,
-    recover_state_write_transitions,
+    recover_state_write_transitions_via_partitioned_fixpoint,
 )
 from d810.core import logging
 from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
@@ -207,7 +207,13 @@ def emit_minimal_unflatten(
     """
     if dispatcher_entry_serial is None:
         return compile_patch_plan([], flow_graph)
-    transitions = recover_state_write_transitions(
+    # S4 C3 flip (ticket llr-1szn): the back-edge next-states now come from the sound
+    # region-partitioned multi-cell fixpoint (run_snapshot_constant_fixpoint, the SAME
+    # _transfer_snapshot_constant_block transfer) instead of the ad-hoc per-region walk
+    # in _resolve_back_edge_states. Proven byte-identical by the C1/B shadow-diff
+    # (diff==0 on hodur 15/15 + sub_7FFD 78/78); the cff probe still diffs the two as a
+    # standing equivalence guard.
+    transitions = recover_state_write_transitions_via_partitioned_fixpoint(
         flow_graph,
         dispatcher,
         int(state_var_stkoff),
