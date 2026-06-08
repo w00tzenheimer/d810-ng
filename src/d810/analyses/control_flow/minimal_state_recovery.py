@@ -54,6 +54,8 @@ __all__ = [
     "recover_handler_transitions",
     "StateWriteTransition",
     "recover_state_write_transitions",
+    "recover_state_write_transitions_via_fixpoint",
+    "diff_back_edge_transitions",
 ]
 
 
@@ -297,6 +299,113 @@ def recover_state_write_transitions(
         out.append(StateWriteTransition(pred, None, None, True, arm))
 
     return tuple(out)
+
+
+def recover_state_write_transitions_via_fixpoint(
+    flow_graph,
+    dispatcher,
+    *,
+    dispatcher_entry_serial: int,
+    out_states,
+) -> tuple[StateWriteTransition, ...]:
+    """Shadow of :func:`recover_state_write_transitions` sourced from the fixpoint.
+
+    Step C1 of the S4 flip (ticket llr-1szn): instead of the ad-hoc per-region fold
+    (:func:`_resolve_back_edge_states`), the next state each dispatcher back-edge writes
+    is read from the sound ``StateValue`` fixpoint's converged ``out_states[pred]``.  The
+    routing (``dispatcher.lookup``), return classification, and ``branch_arm`` are the
+    SAME as the production emitter, so a back-edge whose fixpoint state is a singleton
+    emits a **byte-identical** :class:`StateWriteTransition`.
+
+    It is single-partition, so it cannot emit the Case-2 predecessor-partitioned opaque
+    ``reg ^ reg`` split (the ``via_block`` form): those back-edges fold to ``⊤`` / a
+    multi-set here and emit as an unresolved return.  :func:`diff_back_edge_transitions`
+    surfaces exactly that residual -- the edges the concrete / correlated fold (step C2)
+    must close before the authoritative flip.  Diagnostic only; mutates nothing.
+    """
+    disp = int(dispatcher_entry_serial)
+    disp_block = flow_graph.get_block(disp)
+    if disp_block is None:
+        return ()
+    default = dispatcher.default_target
+
+    def _classify(state: int) -> tuple[int | None, bool]:
+        routed = dispatcher.lookup(state)
+        if routed is None:
+            return None, True
+        if default is not None and int(routed) == int(default):
+            return int(routed), True
+        if _is_stop_block(flow_graph.get_block(int(routed))):
+            return int(routed), True
+        return int(routed), False
+
+    out: list[StateWriteTransition] = []
+    for pred in sorted(int(p) for p in disp_block.preds):
+        block = flow_graph.get_block(pred)
+        if block is None:
+            continue
+        succs = tuple(int(s) for s in block.succs)
+        if disp not in succs:
+            continue
+        arm = succs.index(disp) if len(succs) > 1 else None
+        sv = out_states.get(pred)
+        usable = (
+            sv is not None
+            and not getattr(sv, "is_top", False)
+            and not getattr(sv, "is_bottom", False)
+        )
+        constants = set(getattr(sv, "constants", ())) if usable else set()
+        if len(constants) == 1:
+            state = next(iter(constants))
+            target, is_ret = _classify(state)
+            out.append(StateWriteTransition(pred, state, target, is_ret, arm))
+        else:
+            out.append(StateWriteTransition(pred, None, None, True, arm))
+    return tuple(out)
+
+
+def diff_back_edge_transitions(production, fixpoint) -> dict:
+    """Per-back-edge agreement between the production fold and the fixpoint shadow.
+
+    Keys on ``write_block``.  A production Case-2 split (``via_block`` set) keys on the
+    inner predecessor the single-partition fixpoint never emits, so it is bucketed
+    ``case2_opaque`` (the expected residual, not a regression).  Returns a summary +
+    the mismatching rows (``write_block``, production ``(state, target, is_return)``,
+    fixpoint ``(state, target, is_return)`` or ``None``).
+    """
+    fmap = {t.write_block: t for t in fixpoint}
+    matched = 0
+    case2_opaque = 0
+    mismatch: list = []
+    for t in production:
+        if t.via_block is not None:
+            case2_opaque += 1
+            continue
+        f = fmap.get(t.write_block)
+        if (
+            f is not None
+            and f.next_state == t.next_state
+            and f.target_handler == t.target_handler
+            and f.is_return == t.is_return
+        ):
+            matched += 1
+        else:
+            mismatch.append(
+                (
+                    t.write_block,
+                    (t.next_state, t.target_handler, t.is_return),
+                    None
+                    if f is None
+                    else (f.next_state, f.target_handler, f.is_return),
+                )
+            )
+    return {
+        "prod_edges": len(production),
+        "fixpoint_edges": len(fixpoint),
+        "matched": matched,
+        "case2_opaque": case2_opaque,
+        "mismatch": mismatch,
+    }
 
 
 @dataclass(frozen=True, slots=True)
