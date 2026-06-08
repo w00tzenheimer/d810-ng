@@ -13,6 +13,7 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     recover_state_write_transitions,
     recover_state_write_transitions_via_fixpoint,
     recover_state_write_transitions_via_multicell_fixpoint,
+    recover_state_write_transitions_via_partitioned_fixpoint,
 )
 from d810.analyses.control_flow.state_transition_domain import (
     StateValue,
@@ -314,3 +315,52 @@ def test_b1_multicell_folds_opaque_xor_back_edge(_seam) -> None:
     assert multi[11].next_state == 0x1A2893D9
     assert multi[11].target_handler == 20
     assert multi[11].is_return is False
+
+
+def test_b2_partitioned_reproduces_case2_via_block_split(_seam) -> None:
+    """B2: two regions share an opaque-XOR back-edge -> a predecessor-partitioned split.
+
+    blk10 and blk60 (distinct dispatcher targets) both fall into the SHARED xor
+    back-edge blk11 with different register constants, so blk11 folds to a different
+    next-state per incoming edge -- the single-partition fold MEETs them to ⊥.  The
+    partitioned shadow must emit one ``via_block=11`` redirect per predecessor,
+    byte-identical to the production Case-2 split.
+    0x12345678 ^ 0x081CC5A1 = 0x1A2893D9 ; 0x11111111 ^ 0x22222222 = 0x33333333
+    """
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 60, 20, 70), (11,), (_mov(0x2000, _num(0), _reg(0)),)),
+            10: _blk(10, (11,), (2,), (_mov(0x1000, _num(0x12345678), _reg(8)),
+                                       _mov(0x1004, _num(0x081CC5A1), _reg(9)))),
+            60: _blk(60, (11,), (2,), (_mov(0x6000, _num(0x11111111), _reg(8)),
+                                       _mov(0x6004, _num(0x22222222), _reg(9)))),
+            11: _blk(11, (2,), (10, 60), (_xor(0x1100, _reg(8), _reg(9), _stk(_STATE_OFF)),)),
+            20: _blk(20, (2,), (2,), ()),
+            70: _blk(70, (2,), (2,), ()),
+        },
+        entry_serial=2, func_ea=0x1000,
+    )
+    disp = _dispatcher(
+        {0x10: 10, 0x60: 60, 0x1A2893D9: 20, 0x33333333: 70}, exit_block=99
+    )
+
+    prod = recover_state_write_transitions(
+        fg, disp, _STATE_OFF, dispatcher_entry_serial=2)
+    prod_splits = {t.write_block: t for t in prod if t.via_block == 11}
+    # Production emits the Case-2 split: blk10->20, blk60->70, both via_block=11.
+    assert prod_splits[10].next_state == 0x1A2893D9 and prod_splits[10].target_handler == 20
+    assert prod_splits[60].next_state == 0x33333333 and prod_splits[60].target_handler == 70
+
+    # Single-partition multi-cell MEETs the conflicting reg consts -> blk11 unresolved.
+    multi = {t.write_block: t for t in recover_state_write_transitions_via_multicell_fixpoint(
+        fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    assert multi[11].next_state is None and multi[11].is_return is True
+
+    # Partitioned shadow reproduces the split byte-identically.
+    pp_splits = {t.write_block: t for t in
+                 recover_state_write_transitions_via_partitioned_fixpoint(
+                     fg, disp, _STATE_OFF, dispatcher_entry_serial=2) if t.via_block == 11}
+    assert pp_splits[10].next_state == 0x1A2893D9 and pp_splits[10].target_handler == 20
+    assert pp_splits[10].is_return is False and pp_splits[10].via_block == 11
+    assert pp_splits[60].next_state == 0x33333333 and pp_splits[60].target_handler == 70
+    assert pp_splits[60].is_return is False and pp_splits[60].via_block == 11

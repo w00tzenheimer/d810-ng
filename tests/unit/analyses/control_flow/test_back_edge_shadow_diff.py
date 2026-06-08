@@ -9,6 +9,7 @@ from __future__ import annotations
 from d810.analyses.control_flow.minimal_state_recovery import (
     StateWriteTransition,
     diff_back_edge_transitions,
+    diff_back_edge_transitions_partitioned,
     recover_state_write_transitions_via_fixpoint,
 )
 from d810.analyses.control_flow.state_transition_domain import StateValue
@@ -80,3 +81,21 @@ def test_diff_buckets_match_case2_residual_and_mismatch() -> None:
     assert d["case2_opaque"] == 1            # the via_block split, expected residual
     assert len(d["mismatch"]) == 1
     assert d["mismatch"][0][0] == 5          # write_block 5 is the mismatch
+
+
+def test_partitioned_diff_matches_reproduced_via_block_split() -> None:
+    """B2 diff: a via_block split reproduced by the partitioned shadow counts matched."""
+    swt = StateWriteTransition
+    production = (
+        swt(2, 0x100, 50, False, None),               # plain row -> matched
+        swt(9, 0x300, 70, False, None, via_block=8),  # split, reproduced -> matched
+        swt(9, 0x400, 80, False, None, via_block=8),  # split, NOT reproduced -> case2
+    )
+    fixpoint = (
+        swt(2, 0x100, 50, False, None),
+        swt(9, 0x300, 70, False, None, via_block=8),  # only the first split agrees
+    )
+    d = diff_back_edge_transitions_partitioned(production, fixpoint)
+    assert d["matched"] == 2                 # plain row + the reproduced split
+    assert d["case2_opaque"] == 1            # the unreproduced split stays residual
+    assert len(d["mismatch"]) == 0

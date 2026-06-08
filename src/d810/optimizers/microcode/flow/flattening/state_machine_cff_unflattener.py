@@ -34,9 +34,11 @@ from d810.analyses.control_flow.state_machine_analysis import (
 )
 from d810.analyses.control_flow.minimal_state_recovery import (
     diff_back_edge_transitions,
+    diff_back_edge_transitions_partitioned,
     recover_state_write_transitions,
     recover_state_write_transitions_via_fixpoint,
     recover_state_write_transitions_via_multicell_fixpoint,
+    recover_state_write_transitions_via_partitioned_fixpoint,
 )
 from d810.analyses.control_flow.router_resolver import (
     RouterResolutionContext,
@@ -632,6 +634,32 @@ class StateMachineCffUnflattener(HodurUnflattener):
                 if dmc["mismatch"]:
                     logger.info(
                         "s1a C1 mismatch rows[B1 multicell]: %s", dmc["mismatch"][:20]
+                    )
+
+                # B2 (ticket llr-kz7n): predecessor-PARTITIONED multi-cell fold —
+                # reproduces the production Case-2 ``via_block`` opaque-split rows by
+                # applying the back-edge transfer to each immediate predecessor's
+                # OUT store separately.  Diffed with the via_block-aware diff so the
+                # 16 sub_7FFD case2 residuals are verified edge-for-edge.
+                shadow_pp = recover_state_write_transitions_via_partitioned_fixpoint(
+                    source.flow_graph,
+                    dispatcher,
+                    int(state_var_stkoff),
+                    dispatcher_entry_serial=int(dispatcher_entry),
+                )
+                dpp = diff_back_edge_transitions_partitioned(prod, shadow_pp)
+                logger.info(
+                    "s1a C1 shadow-diff[B2 partitioned]: prod=%d fixpoint=%d matched=%d "
+                    "case2_opaque=%d mismatch=%d",
+                    dpp["prod_edges"],
+                    dpp["fixpoint_edges"],
+                    dpp["matched"],
+                    dpp["case2_opaque"],
+                    len(dpp["mismatch"]),
+                )
+                if dpp["mismatch"]:
+                    logger.info(
+                        "s1a C1 mismatch rows[B2 partitioned]: %s", dpp["mismatch"][:20]
                     )
         except Exception:  # noqa: BLE001 — probe must never break the optimize path
             logger.debug("s1a: fixpoint probe failed", exc_info=True)

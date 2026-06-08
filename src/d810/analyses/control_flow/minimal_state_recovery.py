@@ -57,7 +57,9 @@ __all__ = [
     "recover_state_write_transitions",
     "recover_state_write_transitions_via_fixpoint",
     "recover_state_write_transitions_via_multicell_fixpoint",
+    "recover_state_write_transitions_via_partitioned_fixpoint",
     "diff_back_edge_transitions",
+    "diff_back_edge_transitions_partitioned",
 ]
 
 
@@ -429,6 +431,116 @@ def recover_state_write_transitions_via_multicell_fixpoint(
     return tuple(out)
 
 
+def recover_state_write_transitions_via_partitioned_fixpoint(
+    flow_graph,
+    dispatcher,
+    state_var_stkoff: int,
+    *,
+    dispatcher_entry_serial: int,
+) -> tuple[StateWriteTransition, ...]:
+    """B2 shadow: predecessor-partitioned multi-cell fold -> the Case-2 ``via_block`` split.
+
+    Step C2/B2 of the S4 flip (ticket llr-kz7n).  The single-partition multi-cell
+    fixpoint (:func:`recover_state_write_transitions_via_multicell_fixpoint`) MEETs
+    constants across all incoming edges of a back-edge block, so an opaque
+    ``state = reg_a ^ reg_b`` write whose register operands are set to *different*
+    constants on different region paths folds to ``⊥`` there (the Case-2 residual).
+
+    This variant reads the SAME global stk+reg fixpoint, but when a back-edge does
+    not fold unambiguously it **partitions by immediate predecessor**: it applies the
+    back-edge block's own transfer (:func:`_transfer_snapshot_constant_block`) to each
+    immediate predecessor's converged OUT store *separately*, recovering the per-edge
+    folded state.  When every incoming edge folds to its own single state, it emits
+    the production ``via_block`` split — ``ipred -> route(state)`` bypassing the shared
+    back-edge — mirroring :func:`recover_state_write_transitions`'s Case-2 branch and
+    the per-region / immediate-predecessor keying of :func:`_resolve_back_edge_states`.
+    Diagnostic only; mutates nothing.
+    """
+    disp = int(dispatcher_entry_serial)
+    disp_block = flow_graph.get_block(disp)
+    if disp_block is None:
+        return ()
+    default = dispatcher.default_target
+    effective_stkoff = _resolve_state_var_alias(flow_graph, disp, int(state_var_stkoff))
+    fp = run_snapshot_constant_fixpoint(flow_graph, effective_stkoff)
+
+    def _classify(state: int) -> tuple[int | None, bool]:
+        routed = dispatcher.lookup(state)
+        if routed is None:
+            return None, True
+        if default is not None and int(routed) == int(default):
+            return int(routed), True
+        if _is_stop_block(flow_graph.get_block(int(routed))):
+            return int(routed), True
+        return int(routed), False
+
+    def _arm(block, succ_target: int) -> int | None:
+        s = [int(x) for x in block.succs]
+        return s.index(succ_target) if block.nsucc > 1 and succ_target in s else None
+
+    out: list[StateWriteTransition] = []
+    for pred in sorted(int(p) for p in disp_block.preds):
+        block = flow_graph.get_block(pred)
+        if block is None:
+            continue
+        succs = tuple(int(s) for s in block.succs)
+        if disp not in succs:
+            continue
+        arm = succs.index(disp) if len(succs) > 1 else None
+
+        value = fp.out_stk_maps.get(pred, {}).get(effective_stkoff)
+        if value is not None:
+            # Unambiguous global fold (the B1 case): redirect the back-edge itself.
+            state = int(value) & 0xFFFFFFFF
+            target, is_ret = _classify(state)
+            out.append(StateWriteTransition(pred, state, target, is_ret, arm))
+            continue
+
+        # Ambiguous: partition by immediate predecessor.  Apply the back-edge
+        # block's transfer to each predecessor's OUT store separately and read the
+        # per-edge folded state -- the same partitioning _resolve_back_edge_states
+        # does by walking per region and keying on the immediate predecessor.
+        edge_states: dict[int, int] = {}
+        ambiguous = False
+        for ip in sorted(int(p) for p in block.preds):
+            ip_block = flow_graph.get_block(ip)
+            if ip_block is None:
+                ambiguous = True
+                break
+            out_stk, _ = _transfer_snapshot_constant_block(
+                block,
+                dict(fp.out_stk_maps.get(ip, {})),
+                dict(fp.out_reg_maps.get(ip, {})),
+                effective_stkoff,
+            )
+            ev = out_stk.get(effective_stkoff)
+            if ev is None:
+                ambiguous = True
+                break
+            edge_states[ip] = int(ev) & 0xFFFFFFFF
+
+        distinct = set(edge_states.values())
+        if not ambiguous and edge_states and len(distinct) > 1:
+            # Predecessor-partitioned opaque split: emit one via_block redirect per
+            # incoming edge, exactly like recover_state_write_transitions' Case-2.
+            for ip, state in sorted(edge_states.items()):
+                target, is_ret = _classify(state)
+                ip_arm = _arm(flow_graph.get_block(int(ip)), pred)
+                out.append(
+                    StateWriteTransition(
+                        int(ip), state, target, is_ret, ip_arm, via_block=pred
+                    )
+                )
+        elif not ambiguous and len(distinct) == 1:
+            # Every edge agreed on one state -- a plain back-edge redirect.
+            state = next(iter(distinct))
+            target, is_ret = _classify(state)
+            out.append(StateWriteTransition(pred, state, target, is_ret, arm))
+        else:
+            out.append(StateWriteTransition(pred, None, None, True, arm))
+    return tuple(out)
+
+
 def diff_back_edge_transitions(production, fixpoint) -> dict:
     """Per-back-edge agreement between the production fold and the fixpoint shadow.
 
@@ -454,6 +566,58 @@ def diff_back_edge_transitions(production, fixpoint) -> dict:
             and f.is_return == t.is_return
         ):
             matched += 1
+        else:
+            mismatch.append(
+                (
+                    t.write_block,
+                    (t.next_state, t.target_handler, t.is_return),
+                    None
+                    if f is None
+                    else (f.next_state, f.target_handler, f.is_return),
+                )
+            )
+    return {
+        "prod_edges": len(production),
+        "fixpoint_edges": len(fixpoint),
+        "matched": matched,
+        "case2_opaque": case2_opaque,
+        "mismatch": mismatch,
+    }
+
+
+def diff_back_edge_transitions_partitioned(production, fixpoint) -> dict:
+    """B2-aware per-back-edge agreement: also matches the Case-2 ``via_block`` splits.
+
+    Unlike :func:`diff_back_edge_transitions` (which buckets every production
+    ``via_block`` row as an unverified ``case2_opaque`` residual), this keys split
+    rows on ``(write_block, via_block)`` so the predecessor-partitioned shadow
+    (:func:`recover_state_write_transitions_via_partitioned_fixpoint`) is checked
+    edge-for-edge against production.  A production split that the partitioned shadow
+    reproduces (same ``next_state`` / ``target_handler`` / ``is_return``) counts as
+    ``matched``; one it does not reproduce becomes ``case2_opaque`` (still residual);
+    plain (non-split) rows behave exactly as in the single-partition diff.
+    """
+
+    def _key(t):
+        return (t.write_block, t.via_block)
+
+    fmap = {_key(t): t for t in fixpoint}
+    matched = 0
+    case2_opaque = 0
+    mismatch: list = []
+    for t in production:
+        f = fmap.get(_key(t))
+        agrees = (
+            f is not None
+            and f.next_state == t.next_state
+            and f.target_handler == t.target_handler
+            and f.is_return == t.is_return
+        )
+        if agrees:
+            matched += 1
+        elif t.via_block is not None:
+            # Unreproduced predecessor-partitioned split -> still the Case-2 residual.
+            case2_opaque += 1
         else:
             mismatch.append(
                 (
