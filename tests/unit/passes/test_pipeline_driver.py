@@ -18,8 +18,12 @@ from d810.passes.pass_pipeline import (
 )
 from d810.transforms.plan import PatchPlan
 from d810.passes.driver import CapabilityError, run_pipeline, validate_capabilities
-from d810.families.state_machine_cff.hodur_pipeline import HodurFamily
+from d810.families.state_machine_cff import HodurFamily
+from d810.families.state_machine_cff import approov as approov_pipeline
+from d810.families.state_machine_cff import ApproovFamily
 from d810.families.registry import select_family, registered_families
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 
 # A real 1-block FlowGraph so the (now real) recover_dispatcher pass can run over it.
@@ -67,11 +71,18 @@ class _Backend:
         return "G1"  # fresh snapshot identity
 
 
-class _MatchingHodur(HodurFamily):
-    """HodurFamily but detect() returns a match so the loop body runs."""
+class _MatchingHodur:
+    """A Family-Protocol double (NOT a registered profile — does not subclass the
+    Registrant family, else it would auto-register and pollute select_family) whose
+    detect() returns a match; pipeline_for delegates to the real HodurFamily."""
+
+    name = "matching_hodur"
 
     def detect(self, graph, capabilities, context=None):
         return object()
+
+    def pipeline_for(self, match, context):
+        return HodurFamily().pipeline_for(match, context)
 
 
 def test_run_pipeline_runs_all_five_passes_no_apply_on_empty_plans():
@@ -106,7 +117,10 @@ def test_run_pipeline_applies_nonempty_plan_and_invalidates():
             plan = PatchPlan(planner_modifications=(object(),))
             return PassResult(rewrite_plan=plan)
 
-    class _OneShot(HodurFamily):
+    class _OneShot:
+        # Standalone Family-Protocol double (not a Registrant subclass -> no registration).
+        name = "one_shot"
+
         def detect(self, graph, capabilities, context=None):
             return object()
 
@@ -138,3 +152,66 @@ def test_validate_capabilities_fails_loud_on_missing():
 def test_select_family_registers_hodur_but_is_inert():
     assert any(isinstance(f, HodurFamily) for f in registered_families())
     assert select_family(graph="G0", project_config=None) is None  # detect inert
+
+
+# --- ApproovFamily: the second §1a profile on the shared spine (scaffold) ----------
+class _FakeMap:
+    """Stand-in StateDispatcherMap carrying only the kind discriminator detect reads."""
+
+    def __init__(self, source):
+        self.source = source
+
+
+def test_approov_detect_is_kind_scoped_to_switch_and_indirect(monkeypatch):
+    """detect claims switch/indirect kinds, rejects equality-chain and non-graphs."""
+    fam = ApproovFamily()
+    # Non-graph / missing graph -> inert, before the front-end is consulted.
+    assert fam.detect(None, frozenset()) is None
+    assert fam.detect("G0", frozenset()) is None  # no .blocks
+
+    def _stub(source):
+        return lambda graph: _FakeMap(source)
+
+    # Switch-table and indirect-jump are CLAIMED (truthy map returned).
+    monkeypatch.setattr(approov_pipeline, "build_dispatch_map_any_kind",
+                        _stub(DispatcherType.SWITCH_TABLE))
+    assert fam.detect(_GRAPH, frozenset()) is not None
+    monkeypatch.setattr(approov_pipeline, "build_dispatch_map_any_kind",
+                        _stub(DispatcherType.INDIRECT_JUMP))
+    assert fam.detect(_GRAPH, frozenset()) is not None
+
+    # Equality-chain belongs to HodurFamily -> ApproovFamily must NOT claim it.
+    monkeypatch.setattr(approov_pipeline, "build_dispatch_map_any_kind",
+                        _stub(DispatcherType.CONDITIONAL_CHAIN))
+    assert fam.detect(_GRAPH, frozenset()) is None
+    # Front-end found nothing -> None.
+    monkeypatch.setattr(approov_pipeline, "build_dispatch_map_any_kind", lambda graph: None)
+    assert fam.detect(_GRAPH, frozenset()) is None
+
+
+def test_approov_pipeline_for_emulation_gated_and_switch_pinned():
+    """Same five passes as Hodur, but emulation-required + router pinned to SWITCH."""
+    specs = ApproovFamily().pipeline_for(match=object(), context=None)
+    assert [s.name for s in specs] == [
+        "recover_dispatcher",
+        "recover_state_transitions",
+        "plan_semantic_regions",
+        "lower_state_machine",
+        "cleanup_residual_dispatcher",
+    ]
+    by_name = {s.name: s for s in specs}
+    # Indirect-target folding needs the emulator capability on the two passes that resolve
+    # and lower transitions.
+    assert "emulation" in by_name["recover_state_transitions"].requirements.required
+    assert "emulation" in by_name["lower_state_machine"].requirements.required
+    # The lowering factory pins the SWITCH router shape (injectable LowerStateMachine).
+    lowered = by_name["lower_state_machine"].pass_factory()
+    assert lowered.configured_kind == RouterKind.SWITCH
+
+
+def test_registry_registers_both_profiles():
+    fams = registered_families()
+    assert any(isinstance(f, ApproovFamily) for f in fams)
+    assert any(isinstance(f, HodurFamily) for f in fams)
+    # Selection is order-independent: profiles own disjoint dispatcher kinds, so there is
+    # no priority/tiebreak — registration order does not matter.

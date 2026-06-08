@@ -1,18 +1,70 @@
-"""Hodur family policy: profile dataclass + env-driven strategy selection (LS13 C3).
+"""Hodur family: the §1a Family profile + the legacy strategy-selection policy.
 
-The POLICY half of the former ``optimizers/.../hodur/profile.py`` -- the runtime
-policy dataclass and the pure env-var helpers that select / filter strategy
-classes.  This half is backend-neutral (only ``os`` + ``dataclasses``); the
-strategy *classes* themselves (which import ``ida_hexrays``) and
-``default_hodur_profile()`` stay in ``profile.py``, which re-imports these names
-back (reverse-shim).
+Two backend-neutral Hodur-family concerns live here:
+
+* :class:`HodurFamily` — the §1a ``Family`` profile (``detect`` + ``pipeline_for``):
+  recognizes the state-variable CFF (Hodur) shape over a portable ``FlowGraph`` and
+  declares the five-pass pipeline on the shared spine. Auto-registers via
+  :class:`StateMachineCffFamily` / ``Registrant`` so the scanner discovers it on load.
+* :class:`HodurUnflatteningProfile` — the runtime strategy-ordering policy (the POLICY
+  half of the former ``optimizers/.../hodur/profile.py``) + the env-var helpers that
+  select / filter strategy classes. The strategy *classes* themselves (which import
+  ``ida_hexrays``) and ``default_hodur_profile()`` stay in ``profile.py``, which
+  re-imports these names back (reverse-shim).
+
+Both halves are hexrays-free (the §1a passes/analyses are portable); no microcode
+patching happens here.
 """
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
 
-__all__ = ["HodurUnflatteningProfile"]
+from d810.passes.pass_pipeline import PassSpec, default, golden, live_mba, no_caps
+from d810.analyses.control_flow.dispatcher_recovery import build_dispatch_map_any_kind
+from d810.passes.unflatten.state_machine import (
+    CleanupResidualDispatcher,
+    LowerStateMachine,
+    PlanSemanticRegions,
+    RecoverDispatcher,
+    RecoverStateTransitions,
+)
+from d810.families.state_machine_cff.base import StateMachineCffFamily
+
+__all__ = ["HodurFamily", "HodurUnflatteningProfile"]
+
+
+class HodurFamily(StateMachineCffFamily):
+    """State-variable CFF (Hodur) family: detection + pipeline shape. No microcode patching."""
+
+    name = "hodur"
+
+    def detect(self, graph, capabilities, context=None):
+        """Recognize the Hodur state machine over a portable ``FlowGraph``.
+
+        A match is a recovered dispatcher of any supported kind (equality-chain or
+        switch-table / masked) — the SAME front-end pass #1 (``recover_dispatcher``)
+        uses, so the gate never rejects a shape the pipeline could lower. The match
+        IS the recovered ``StateDispatcherMap`` (truthy), so the pipeline only runs
+        where a real dispatcher is present.
+
+        NOTE: this still claims ANY kind (the live hardcoded path needs it for abc); the
+        cutover narrows it to ``CONDITIONAL_CHAIN`` so its claim is DISJOINT from
+        ``ApproovFamily``'s switch/indirect, making ``select_family`` order-independent.
+        ``select_family`` is inert until then, so the transitional overlap is harmless.
+        """
+        if graph is None or not hasattr(graph, "blocks"):
+            return None
+        return build_dispatch_map_any_kind(graph)
+
+    def pipeline_for(self, match, context) -> "tuple[PassSpec, ...]":
+        return (
+            PassSpec("recover_dispatcher", RecoverDispatcher, live_mba, default),
+            PassSpec("recover_state_transitions", RecoverStateTransitions, live_mba, default),
+            PassSpec("plan_semantic_regions", PlanSemanticRegions, no_caps, default),
+            PassSpec("lower_state_machine", LowerStateMachine, no_caps, golden),
+            PassSpec("cleanup_residual_dispatcher", CleanupResidualDispatcher, no_caps, golden),
+        )
 
 
 @dataclass(frozen=True, slots=True)

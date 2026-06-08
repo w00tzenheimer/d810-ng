@@ -86,7 +86,7 @@ from d810.evaluator.hexrays_microcode.use_def_dominance import (
 from d810.evaluator.hexrays_microcode.value_range_capability import (
     HexRaysValRangeCapability,
 )
-from d810.families.state_machine_cff.hodur_pipeline import HodurFamily
+from d810.families.state_machine_cff import HodurFamily
 from d810.hexrays.observability import (
     diagnostics_enabled as _capture_diagnostics_enabled,
     request_capture_mba_snapshot,
