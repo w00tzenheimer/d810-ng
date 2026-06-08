@@ -23,8 +23,7 @@ from d810.analyses.control_flow.semantic_transition import (
     semantic_transition_from_fact,
 )
 from d810.analyses.control_flow.state_machine import SemanticGraph, StateDagView
-from d810.capabilities.dispatcher import RouterKind, StateMachineSeed
-from d810.families.state_machine_cff.dispatcher_resolver import DispatcherResolver
+from d810.capabilities.dispatcher import RouterKind
 
 
 def _make_dispatcher_map() -> StateDispatcherMap:
@@ -52,17 +51,6 @@ def test_router_kind_is_str_enum() -> None:
     assert {k.value for k in RouterKind} >= {
         "bst", "switch", "equality_chain", "condition_chain", "indirect_table", "unknown",
     }
-
-
-def test_state_machine_seed_any_typed_fields() -> None:
-    seed = StateMachineSeed(
-        function_id=0x180013910,
-        candidate_entries=(6, 7),
-        collector_analysis=None,
-        profile_name="hodur",
-    )
-    assert seed.profile_name == "hodur"
-    assert seed.candidate_entries == (6, 7)
 
 
 # --- C6: ResolverCandidate / DispatcherResolution -------------------------- #
@@ -130,21 +118,7 @@ def test_projection_unknown_successor_is_conservative() -> None:
     assert semantic_transition_from_fact(fact).kind is SemanticTransitionKind.UNKNOWN
 
 
-# --- C8: DispatcherResolver protocol + automaton views --------------------- #
-def test_dispatcher_resolver_is_runtime_checkable() -> None:
-    class _FakeResolver:
-        name = "fake"
-        router_kind = RouterKind.BST
-
-        def accepts(self, seed, entry):  # noqa: ANN001
-            return None
-
-        def resolve(self, seed, candidate):  # noqa: ANN001
-            return None
-
-    assert isinstance(_FakeResolver(), DispatcherResolver)
-
-
+# --- C8: automaton views --------------------------------------------------- #
 def test_semantic_graph_and_dag_view_shapes() -> None:
     g = SemanticGraph(states=(1, 2, 3), edges=((1, 2), (2, 3), (3, 1)), has_cycles=True)
     assert g.has_cycles and len(g.edges) == 3
