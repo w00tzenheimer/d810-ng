@@ -28,9 +28,6 @@ import ida_hexrays
 import idaapi
 import idc
 
-from d810.optimizers.microcode.flow.flattening.hodur.diagnostics import (
-    build_terminal_return_valrange_report_from_store,
-)
 from d810.analyses.control_flow.linearized_state_dag import (
     BoundaryInlineMode,
     LabelRenderMode,
@@ -140,18 +137,9 @@ def _format_stats_block(function_name: str, before: dict, after: dict) -> str:
 
 
 def _print_terminal_return_valranges(mba, func_ea: int) -> None:
-    """Print grouped terminal-return valrange diagnostics if recon artifacts exist."""
+    """Terminal-return valrange diagnostics (legacy report builder removed)."""
     print("\n--- TERMINAL RETURN VALRANGES ---")
-    report = build_terminal_return_valrange_report_from_store(
-        mba=mba,
-        func_ea=func_ea,
-        log_dir=None,
-        maturity=None,
-    )
-    if report is None:
-        print("[no terminal return audit available in recon store]")
-        return
-    print(report.format())
+    print("[terminal return valrange report no longer available]")
 
 
 def _get_default_binary() -> str:
@@ -440,27 +428,23 @@ class TestDumpFunctionPseudocode:
                                 max_preds = blk.npred()
                                 dispatcher_serial = i
                         if dispatcher_serial >= 0:
-                            # Collect Hodur detector context if available
+                            # Detector context (state slot / constants / transitions)
+                            # is no longer threaded from the legacy unflattener; the
+                            # dump primitives self-detect when these are None.
                             hodur_stkoff = None
                             hodur_state_constants = None
                             hodur_transitions = None
-                            try:
-
-                                # Re-enable d810 briefly to get Hodur context
-                                # (best-effort: may not be available at this maturity)
-                                detector = getattr(state, "_hodur_detector", None)
-                                if detector is not None:
-                                    hodur_stkoff = getattr(
-                                        detector, "state_var_stkoff", None
-                                    )
-                                    hodur_state_constants = getattr(
-                                        detector, "state_constants", None
-                                    )
-                                    hodur_transitions = getattr(
-                                        detector, "transitions", None
-                                    )
-                            except Exception:
-                                pass
+                            detector = getattr(state, "_state_machine_detector", None)
+                            if detector is not None:
+                                hodur_stkoff = getattr(
+                                    detector, "state_var_stkoff", None
+                                )
+                                hodur_state_constants = getattr(
+                                    detector, "state_constants", None
+                                )
+                                hodur_transitions = getattr(
+                                    detector, "transitions", None
+                                )
                             tree_str = dump_dispatcher_tree(
                                 mba,
                                 dispatcher_serial,

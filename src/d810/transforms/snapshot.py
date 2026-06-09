@@ -95,7 +95,7 @@ def _safe_len(value: object | None) -> int:
 class AnalysisSnapshot:
     """Immutable analysis result for one maturity pass.
 
-    Built once by HodurUnflattener at the start of optimize().
+    Built once by the state-machine CFF unflattener at the start of optimize().
     Passed to every strategy's plan() method as read-only context.
     """
 

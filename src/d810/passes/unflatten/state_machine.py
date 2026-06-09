@@ -9,7 +9,7 @@ projection — the llr-zeyu polymorphism guard).
 
 These passes are importable + unit-tested NOW (skeleton transforms emit empty plans); they become
 the live call graph once each work-list extraction lands its real body and the driver
-(``run_d810_pipeline``) replaces the ``HodurUnflattener`` orchestration. Until then this module is
+(``run_d810_pipeline``) replaces the legacy state-machine orchestration. Until then this module is
 additive + behavior-neutral (not wired into the maturity hook).
 """
 from __future__ import annotations

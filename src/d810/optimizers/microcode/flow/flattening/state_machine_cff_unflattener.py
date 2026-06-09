@@ -112,7 +112,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
     Runs the chain-based ``StateMachineCffSpine`` (ranked DispatcherResolver chain =
     single detect point; passes selected by the resolved dispatcher kind) over a portable
     ``FunctionSource`` lifted from the live ``mba``. Standalone (inherits the lifecycle from
-    ``ComposedUnflatteningRule``, NOT ``HodurUnflattener``) — the legacy HCC path is retired.
+    ``ComposedUnflatteningRule``) — the legacy HCC path is retired.
     """
 
     DESCRIPTION = "State-machine CFF unflattener (§1a chain+spine pipeline)"
