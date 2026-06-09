@@ -55,6 +55,21 @@ def _parse_json_list(value: object) -> tuple[int, ...]:
     return tuple(int(item) for item in raw)
 
 
+def _parse_ea_hex(value: object) -> int | None:
+    """Parse a ``0x%016x`` diag-DB effective-address column to an int.
+
+    The diag DB stores effective addresses both as a fixed-width hex string and
+    a signed-64 integer column; the synthetic unit-test schema carries only the
+    hex form, so deriving the int from the hex keeps both code paths working.
+    """
+    if value in (None, ""):
+        return None
+    try:
+        return int(str(value), 16)
+    except (TypeError, ValueError):
+        return None
+
+
 def _overlaps(left_start: int, left_size: int, right_start: int, right_size: int) -> bool:
     if left_size <= 0 or right_size <= 0:
         return False
@@ -132,6 +147,8 @@ def load_blocks(conn: sqlite3.Connection, snapshot_id: int) -> dict[int, dict[st
             "preds": _parse_json_list(row[5]),
             "start_ea_hex": row[6],
             "end_ea_hex": row[7],
+            "start_ea_i64": _parse_ea_hex(row[6]),
+            "end_ea_i64": _parse_ea_hex(row[7]),
         }
     return blocks
 
@@ -353,6 +370,128 @@ def _table_initializer_from_call_meta(
     }
 
 
+def _block_writes_constant_state(
+    block_serial: int,
+    instructions_by_block: dict[int, list[dict[str, Any]]],
+    *,
+    state_var_stkoff: int,
+) -> bool:
+    """True if the block contains a constant write to the state variable cell."""
+    for insn in instructions_by_block.get(block_serial, ()):
+        write = _constant_state_write(insn, state_var_stkoff=state_var_stkoff)
+        if write is not None and write.get("kind") == "constant_state_write":
+            return True
+    return False
+
+
+def _block_has_folded_compare_flags(
+    block_serial: int,
+    instructions_by_block: dict[int, list[dict[str, Any]]],
+) -> bool:
+    """True if the block materializes a comparison flag as a literal constant.
+
+    Hex-Rays folds an opaque-looking conditional (``cmp`` on a value it can
+    constant-evaluate at this state) by replacing the flag computation with a
+    literal ``mov #const, zf`` (and friends) and collapsing the ``jcc`` into an
+    unconditional ``goto`` to the proven-taken target.  The materialized
+    constant ``zf`` is the residue of that fold and the structural fingerprint
+    that the block used to be a two-way branch.
+    """
+    for insn in instructions_by_block.get(block_serial, ()):
+        if insn.get("opcode_name") != "op_4":  # m_mov
+            continue
+        dstr = insn.get("dstr", "")
+        if "zf.1" not in dstr:
+            continue
+        text = dstr.strip()
+        if text.startswith("mov") and "#" in text.split(",", 1)[0]:
+            return True
+    return False
+
+
+def _recover_folded_conditional_arms(
+    blocks: dict[int, dict[str, Any]],
+    instructions_by_block: dict[int, list[dict[str, Any]]],
+    *,
+    state_var_stkoff: int,
+    dispatcher_block: int,
+) -> dict[int, int]:
+    """Recover not-taken arms of conditionals Hex-Rays constant-folded away.
+
+    Address-agnostic structural recovery.  A handler whose next-state guard is
+    a runtime comparison (e.g. ``counter < bound``) can be constant-folded by
+    Hex-Rays when it evaluates the guard concretely at the entry state: the
+    ``jcc`` collapses to an unconditional ``goto`` to the proven arm and the
+    fall-through arm is orphaned (no predecessors) yet still present in the
+    microcode.  The transfer walk follows only live successors, so the orphaned
+    arm's distinct next-state is lost and the handler is misclassified as
+    ``direct`` instead of ``conditional``.
+
+    This detects the residual diamond and returns ``{B: O}`` mapping each
+    goto-only block ``B`` to its recovered alternate arm ``O`` so the walk can
+    branch into ``O`` as a second conditional arm.  The match requires:
+
+    * ``B`` is a single-successor (``goto @T``) block carrying a *folded*
+      comparison flag (the constant-``zf`` residue);
+    * the EA-adjacent fall-through block ``O`` (``O.start_ea == B.end_ea``,
+      ``O != T``) is an orphan (no predecessors — its only inbound edge was the
+      conditional's not-taken arm);
+    * ``O`` writes a constant next-state to the state cell;
+    * ``T`` and ``O`` reconverge at a shared immediate successor ``M`` whose
+      predecessors include both ``T`` and ``O`` (a genuine local merge — this
+      excludes adjacent independent handlers that merely both jump to the
+      dispatcher pre-header).
+    """
+    by_start_ea: dict[int, int] = {}
+    for serial, block in blocks.items():
+        start_ea = block.get("start_ea_i64")
+        if start_ea is not None:
+            by_start_ea.setdefault(int(start_ea), int(serial))
+
+    recovered: dict[int, int] = {}
+    for serial, block in blocks.items():
+        succs = [int(s) for s in block.get("succs", ())]
+        if len(succs) != 1:
+            continue
+        taken = succs[0]
+        end_ea = block.get("end_ea_i64")
+        if end_ea is None:
+            continue
+        orphan = by_start_ea.get(int(end_ea))
+        if orphan is None or orphan == taken or orphan == int(serial):
+            continue
+        orphan_block = blocks.get(orphan)
+        taken_block = blocks.get(taken)
+        if orphan_block is None or taken_block is None:
+            continue
+        if [int(p) for p in orphan_block.get("preds", ())]:
+            continue  # the alternate arm must be orphaned by the fold
+        if int(serial) == dispatcher_block or orphan == dispatcher_block:
+            continue
+        if not _block_has_folded_compare_flags(int(serial), instructions_by_block):
+            continue
+        if not _block_writes_constant_state(
+            orphan, instructions_by_block, state_var_stkoff=state_var_stkoff
+        ):
+            continue
+        shared = set(int(s) for s in taken_block.get("succs", ())) & set(
+            int(s) for s in orphan_block.get("succs", ())
+        )
+        merge = next(
+            (
+                m
+                for m in sorted(shared)
+                if {taken, orphan}
+                <= {int(p) for p in blocks.get(m, {}).get("preds", ())}
+            ),
+            None,
+        )
+        if merge is None:
+            continue
+        recovered[int(serial)] = orphan
+    return recovered
+
+
 def _walk_transfer_paths(
     *,
     start_block: int,
@@ -361,11 +500,13 @@ def _walk_transfer_paths(
     instructions_by_block: dict[int, list[dict[str, Any]]],
     state_var_stkoff: int,
     max_depth: int,
+    folded_arms: dict[int, int] | None = None,
 ) -> dict[str, Any]:
     complete_paths: list[dict[str, Any]] = []
     terminal_paths: list[dict[str, Any]] = []
     unresolved_paths: list[dict[str, Any]] = []
     seen: set[tuple[int, int | None, int]] = set()
+    folded_arms = folded_arms or {}
 
     def dfs(
         block_serial: int,
@@ -432,7 +573,13 @@ def _walk_transfer_paths(
             else:
                 current_state = None
 
-        succs = tuple(block.get("succs", ()))
+        succs = list(int(s) for s in block.get("succs", ()))
+        recovered_arm = folded_arms.get(block_serial)
+        if recovered_arm is not None and recovered_arm not in succs:
+            # The original conditional's not-taken arm was constant-folded away
+            # by Hex-Rays (its block orphaned).  Re-explore it so its distinct
+            # next-state surfaces and the handler classifies as conditional.
+            succs.append(int(recovered_arm))
         if not succs:
             terminal_paths.append(
                 {
@@ -608,6 +755,12 @@ def extract_transfer_map(
         instructions_by_block = load_instructions(conn, choice.snapshot_id)
         dispatch_rows = load_dispatch_rows(conn, choice.snapshot_id)
 
+    folded_arms = _recover_folded_conditional_arms(
+        blocks,
+        instructions_by_block,
+        state_var_stkoff=state_var_stkoff,
+        dispatcher_block=choice.dispatcher_entry_block,
+    )
     effective_table_count = int(table_count or len(dispatch_rows))
     transfers: list[dict[str, Any]] = []
     observed_states = {int(row["state"]) for row in dispatch_rows}
@@ -637,6 +790,7 @@ def extract_transfer_map(
             instructions_by_block=instructions_by_block,
             state_var_stkoff=state_var_stkoff,
             max_depth=max_depth,
+            folded_arms=folded_arms,
         )
         complete = walked["complete_paths"]
         terminal = walked["terminal_paths"]
