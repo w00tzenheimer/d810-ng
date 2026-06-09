@@ -91,11 +91,31 @@ class EmulatedDispatcherUnflattener(ComposedUnflatteningRule):
         self._last_detection: EmulatedDispatcherDetection | None = None
         self._last_snapshot = None
         self._last_provenance: PipelineProvenance | None = None
+        self._indirect_profile_active = False
+        self._indirect_goto_table_info: dict = {}
+        self._materialize_indirect_targets = False
+        self._materialized_function_eas: set[int] = set()
 
     def configure(self, kwargs):
         super().configure(kwargs)
         profile_name = str(self.config.get("profile", "") or "").strip().lower()
         self.diagnostics_only = bool(self.config.get("diagnostics_only", False))
+        # Reset prolog-time indirect materialization registration on every
+        # (re)configure so a previously active indirect engine cannot leak its
+        # registration into a different project loaded in the same session.
+        self._indirect_profile_active = False
+        self._materialize_indirect_targets = False
+        self._indirect_goto_table_info = {}
+        try:
+            from d810.hexrays.preanalysis.indirect_jump_labels import (
+                reset_indirect_materialization,
+            )
+
+            reset_indirect_materialization()
+        except Exception:
+            unflat_logger.debug(
+                "indirect materialization reset failed", exc_info=True
+            )
         prefer_switch_transition_facts = bool(
             self.config.get("prefer_switch_transition_facts", False)
         )
@@ -137,13 +157,41 @@ class EmulatedDispatcherUnflattener(ComposedUnflatteningRule):
             "indirect_jump",
             "indirect_jump_table",
         }:
-            if bool(self.config.get("materialize_indirect_targets", False)):
+            self._indirect_profile_active = True
+            self._indirect_goto_table_info = dict(
+                self.config.get("goto_table_info", {}) or {}
+            )
+            self._materialize_indirect_targets = bool(
+                self.config.get("materialize_indirect_targets", False)
+            )
+            self._materialized_function_eas = set()
+            if self._materialize_indirect_targets:
                 try:
                     from d810.hexrays.preanalysis.indirect_jump_labels import (
-                        materialize_indirect_label_targets_from_config,
+                        register_indirect_materialization,
                     )
 
-                    results = materialize_indirect_label_targets_from_config(
+                    register_indirect_materialization(
+                        self._indirect_goto_table_info
+                    )
+                except Exception:
+                    unflat_logger.warning(
+                        "Tigress indirect prolog registration failed",
+                        exc_info=True,
+                    )
+                # Address-agnostic configure-time prepass: discover every
+                # indirect-table dispatcher in the database structurally and
+                # materialize its label bodies BEFORE any function is
+                # decompiled, so the first MBA build of each dispatcher already
+                # contains its handler blocks.  Configured addresses are an
+                # optional override, used only when a config entry still matches
+                # a discovered function EA.
+                try:
+                    from d810.hexrays.preanalysis.indirect_jump_labels import (
+                        materialize_discovered_indirect_label_targets,
+                    )
+
+                    results = materialize_discovered_indirect_label_targets(
                         self.config.get("goto_table_info", {})
                     )
                     for result in results:
@@ -230,11 +278,56 @@ class EmulatedDispatcherUnflattener(ComposedUnflatteningRule):
             ),
         }
 
+    def _materialize_indirect_for_current_function(self) -> None:
+        """Structurally materialize indirect labels for the current function.
+
+        Runs once per function EA when the tigress-indirect profile is active.
+        Config addresses are an optional override; when stale or absent the
+        table layout is discovered from binary structure so the engine fires
+        without per-binary hardcoded addresses.
+        """
+        if not (self._indirect_profile_active and self._materialize_indirect_targets):
+            return
+        function_ea = int(getattr(self.mba, "entry_ea", 0) or 0)
+        if function_ea in self._materialized_function_eas:
+            return
+        self._materialized_function_eas.add(function_ea)
+        try:
+            from d810.hexrays.preanalysis.indirect_jump_labels import (
+                materialize_indirect_label_targets_for_function,
+            )
+
+            result = materialize_indirect_label_targets_for_function(
+                function_ea,
+                self._indirect_goto_table_info,
+            )
+        except Exception:
+            unflat_logger.warning(
+                "Tigress indirect per-function materialization failed for 0x%X",
+                function_ea,
+                exc_info=True,
+            )
+            return
+        if result is None:
+            return
+        unflat_logger.info(
+            "Tigress indirect per-function materialization 0x%X: success=%s "
+            "targets=%d/%d jump_xrefs=%d switch_info=%s reason=%s",
+            result.function_ea,
+            result.success,
+            result.materialized_target_count,
+            result.target_count,
+            result.jump_xref_count,
+            result.switch_info_installed,
+            result.reason,
+        )
+
     def optimize(self, blk: ida_hexrays.mblock_t) -> int:
         self.mba = blk.mba
         if not self.check_if_rule_should_be_used(blk):
             return 0
 
+        self._materialize_indirect_for_current_function()
         self._last_detection = self._family.detect(self.mba)
         self._last_snapshot = self._family.build_snapshot(self.mba, self._last_detection)
         fact_view = None

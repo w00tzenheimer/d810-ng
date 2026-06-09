@@ -15,6 +15,10 @@ from d810.core.logging import getLogger
 
 logger = getLogger("D810.hexrays.preanalysis.indirect_jump_labels")
 
+from d810.hexrays.preanalysis.indirect_jump_discovery import (
+    discover_indirect_jump_table,
+)
+
 
 @dataclass(frozen=True)
 class IndirectLabelMaterializationPlan:
@@ -641,6 +645,144 @@ def materialize_indirect_label_targets(
     )
 
 
+def _config_for_function_ea(
+    goto_table_info: Mapping[str, object],
+    function_ea: int,
+) -> Mapping[str, object] | None:
+    """Return the config entry whose key matches *function_ea*, if any."""
+    key = int(function_ea)
+    for raw_function_ea, raw_config in goto_table_info.items():
+        if not isinstance(raw_config, Mapping):
+            continue
+        parsed = _parse_int(raw_function_ea)
+        if parsed is not None and int(parsed) == key:
+            return raw_config
+    return None
+
+
+def _config_table_valid_for_function(
+    function_ea: int,
+    table_address: int | None,
+    table_count: int | None,
+) -> bool:
+    """True when configured table reads in-function code pointers for *function_ea*."""
+    if not table_address or not table_count:
+        return False
+    try:
+        import ida_bytes  # type: ignore[import-untyped]
+        import ida_funcs  # type: ignore[import-untyped]
+
+        func = ida_funcs.get_func(int(function_ea))
+        if func is None:
+            return False
+        first = int(ida_bytes.get_qword(int(table_address)))
+        return int(func.start_ea) <= first < int(func.end_ea)
+    except Exception:
+        return False
+
+
+def materialize_indirect_label_targets_for_function(
+    function_ea: int,
+    goto_table_info: Mapping[str, object] | None = None,
+) -> IndirectLabelMaterializationResult | None:
+    """Materialize one function's indirect labels, config-or-discovery.
+
+    Resolves the table layout from a matching config entry when present and
+    valid for *function_ea*; otherwise discovers it structurally.  Returns
+    ``None`` when the function is not an indirect-table dispatcher (no
+    register-indirect jump with a resolvable in-function table), keeping the
+    prepass behavior-neutral for every other function.
+    """
+    info = goto_table_info if isinstance(goto_table_info, Mapping) else {}
+    cfg = _config_for_function_ea(info, int(function_ea))
+    cfg_table_address = _parse_int(cfg.get("table_address")) if cfg is not None else None
+    cfg_table_count = (
+        _parse_int(cfg.get("table_nb_elt"), default=0) if cfg is not None else 0
+    )
+    if _config_table_valid_for_function(
+        int(function_ea), cfg_table_address, cfg_table_count
+    ):
+        return materialize_indirect_label_targets(
+            function_ea=int(function_ea),
+            table_address=int(cfg_table_address),
+            table_count=int(cfg_table_count),
+            label_start=_parse_int(cfg.get("label_start")),
+            label_end=_parse_int(
+                cfg.get("label_end"),
+                default=_parse_int(cfg.get("function_end")),
+            ),
+            dispatch_jump_ea=_parse_int(cfg.get("dispatch_jump_ea")),
+            switch_start_ea=_parse_int(cfg.get("switch_start_ea")),
+            install_switch_info=bool(cfg.get("install_switch_info", False)),
+            state_base=_parse_int(cfg.get("state_base"), default=1) or 1,
+            state_var_stkoff=_parse_int(cfg.get("state_var_stkoff")),
+        )
+
+    discovered = discover_indirect_jump_table(int(function_ea))
+    if discovered is None:
+        return None
+    state_base = (_parse_int(cfg.get("state_base"), default=1) or 1) if cfg else 1
+    state_var_stkoff = _parse_int(cfg.get("state_var_stkoff")) if cfg else None
+    install_switch = bool(cfg.get("install_switch_info", False)) if cfg else False
+    return materialize_indirect_label_targets(
+        function_ea=int(discovered.function_ea),
+        table_address=int(discovered.table_address),
+        table_count=int(discovered.table_count),
+        label_start=int(discovered.label_start),
+        label_end=int(discovered.label_end),
+        dispatch_jump_ea=int(discovered.dispatch_jump_ea),
+        switch_start_ea=int(discovered.dispatch_jump_ea),
+        install_switch_info=install_switch,
+        state_base=int(state_base),
+        state_var_stkoff=state_var_stkoff,
+    )
+
+
+def materialize_discovered_indirect_label_targets(
+    goto_table_info: Mapping[str, object] | None = None,
+) -> tuple[IndirectLabelMaterializationResult, ...]:
+    """Discover and materialize every indirect-table dispatcher in the database.
+
+    Address-agnostic configure-time prepass: scans all functions for the
+    register-indirect jump-table signature and materializes the recovered label
+    bodies, so the engine fires without per-binary configured addresses even
+    after a rebuild shifts the binary.  Behavior-neutral for any function that
+    is not a real indirect-table dispatcher (discovery returns ``None``).
+
+    Configured ``goto_table_info`` (if any) supplies per-function state-machine
+    overrides (state base / slot) when a config entry matches a discovered EA.
+    """
+    results: list[IndirectLabelMaterializationResult] = []
+    try:
+        import idautils  # type: ignore[import-untyped]
+    except Exception:
+        logger.debug("idautils unavailable; skipping indirect discovery scan")
+        return ()
+    info = goto_table_info if isinstance(goto_table_info, Mapping) else {}
+    seen: set[int] = set()
+    for function_ea in idautils.Functions():
+        key = int(function_ea)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            result = materialize_indirect_label_targets_for_function(key, info)
+        except Exception:
+            logger.debug(
+                "discovery-scan materialization failed for 0x%X",
+                key,
+                exc_info=True,
+            )
+            continue
+        if result is not None:
+            results.append(result)
+    logger.info(
+        "Tigress indirect discovery scan materialized %d dispatcher(s)",
+        len(results),
+    )
+    return tuple(results)
+
+
 def materialize_indirect_label_targets_from_config(
     goto_table_info: Mapping[str, object],
 ) -> tuple[IndirectLabelMaterializationResult, ...]:
@@ -678,10 +820,87 @@ def materialize_indirect_label_targets_from_config(
     return tuple(results)
 
 
+# --- Pre-decompile materialization registry --------------------------------
+#
+# The indirect engine registers its ``goto_table_info`` here at project-load
+# time; the decompilation ``prolog`` hook then materializes labels for the
+# function being decompiled BEFORE its MBA is built.  Materializing at prolog
+# (rather than mid-optimization) lets the very first MBA build see the computed
+# crefs, so the recovered label bodies are present for lowering in a single
+# ``decompile`` call.  Registration is behavior-neutral: discovery returns
+# ``None`` for any function that is not a real indirect-table dispatcher.
+
+_INDIRECT_MATERIALIZATION_REGISTERED = False
+_INDIRECT_MATERIALIZATION_GOTO_TABLE: dict = {}
+_INDIRECT_MATERIALIZED_FUNCTION_EAS: set[int] = set()
+
+
+def register_indirect_materialization(goto_table_info: Mapping[str, object]) -> None:
+    """Register the indirect engine's table info for prolog-time materialization."""
+    global _INDIRECT_MATERIALIZATION_REGISTERED, _INDIRECT_MATERIALIZATION_GOTO_TABLE
+    _INDIRECT_MATERIALIZATION_REGISTERED = True
+    _INDIRECT_MATERIALIZATION_GOTO_TABLE = dict(goto_table_info or {})
+    _INDIRECT_MATERIALIZED_FUNCTION_EAS.clear()
+
+
+def reset_indirect_materialization() -> None:
+    """Clear the prolog-time materialization registration."""
+    global _INDIRECT_MATERIALIZATION_REGISTERED, _INDIRECT_MATERIALIZATION_GOTO_TABLE
+    _INDIRECT_MATERIALIZATION_REGISTERED = False
+    _INDIRECT_MATERIALIZATION_GOTO_TABLE = {}
+    _INDIRECT_MATERIALIZED_FUNCTION_EAS.clear()
+
+
+def run_indirect_materialization_for_function(
+    function_ea: int,
+) -> IndirectLabelMaterializationResult | None:
+    """Materialize indirect labels for *function_ea* if registered (idempotent).
+
+    Called from the decompilation prolog hook.  Returns ``None`` (no-op) unless
+    the indirect engine is active and the function is a real indirect-table
+    dispatcher.  Each function EA is materialized at most once per registration.
+    """
+    if not _INDIRECT_MATERIALIZATION_REGISTERED:
+        return None
+    key = int(function_ea)
+    if key in _INDIRECT_MATERIALIZED_FUNCTION_EAS:
+        return None
+    _INDIRECT_MATERIALIZED_FUNCTION_EAS.add(key)
+    try:
+        result = materialize_indirect_label_targets_for_function(
+            key,
+            _INDIRECT_MATERIALIZATION_GOTO_TABLE,
+        )
+    except Exception:
+        logger.warning(
+            "prolog-time indirect materialization failed for 0x%X",
+            key,
+            exc_info=True,
+        )
+        return None
+    if result is not None:
+        logger.info(
+            "Tigress indirect prolog materialization 0x%X: success=%s "
+            "targets=%d/%d jump_xrefs=%d reason=%s",
+            result.function_ea,
+            result.success,
+            result.materialized_target_count,
+            result.target_count,
+            result.jump_xref_count,
+            result.reason,
+        )
+    return result
+
+
 __all__ = [
     "IndirectLabelMaterializationPlan",
     "IndirectLabelMaterializationResult",
     "materialize_indirect_label_targets",
+    "materialize_discovered_indirect_label_targets",
+    "materialize_indirect_label_targets_for_function",
+    "register_indirect_materialization",
+    "reset_indirect_materialization",
+    "run_indirect_materialization_for_function",
     "materialize_indirect_label_targets_from_config",
     "plan_indirect_label_materialization",
 ]

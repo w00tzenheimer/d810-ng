@@ -1621,6 +1621,18 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         prologue = f"{fn_name} @ {hex(mba.entry_ea)}"
         main_logger.info("Starting decompilation of function %s", prologue)
         try:
+            from d810.hexrays.preanalysis.indirect_jump_labels import (
+                run_indirect_materialization_for_function,
+            )
+
+            # Pre-decompile: structurally materialize Tigress computed-goto
+            # label bodies for the function being decompiled so the first MBA
+            # build sees the indirect jump targets.  No-op unless the indirect
+            # engine is active and this function is a real indirect dispatcher.
+            run_indirect_materialization_for_function(int(mba.entry_ea))
+        except Exception:
+            pass  # behavior-neutral prepass, never gates decompilation
+        try:
             from d810.core.observability import open_observability_session
             # open_observability_session opens the diag session
             # (idempotent re-installation on re-decompilation) by

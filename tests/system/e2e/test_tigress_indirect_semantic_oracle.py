@@ -108,18 +108,20 @@ class TestTigressIndirectSemanticOracle:
     @pytest.mark.xfail(
         strict=True,
         reason=(
-            "Genuine engine-no-fire (NOT address-agnostic). The tigress indirect engine's "
-            "preanalysis is driven by HARDCODED addresses in "
-            "default_unflattening_tigress_indirect_engine.json (key 0x1800175c0: "
-            "table_address=0x180019f10, dispatch_jump_ea=0x1800177a8, label_end=0x180017d2f). "
-            "The libobfuscated.dll rebuild shifted the binary (~+0x4000), so "
-            "plan_indirect_label_materialization cannot bound the label range -> "
-            "unbounded_label_range -> shape='none' -> EmulatedDispatcherUnflattener never fires "
-            "(block_rules_fired is empty). Real fix = STRUCTURAL jump-table discovery (resolve "
-            "the indirect jmp's table operand + bounds from binary structure, no per-binary "
-            "addresses in config). Lands with the concolic INDIRECT_JUMP work (llr-890r / "
-            "concolic epic llr-7ouc S8). strict=True so this XPASSes (and we drop the marker) "
-            "the moment discovery makes the engine fire."
+            "Address-agnostic STRUCTURAL discovery now lands (llr-890r): the indirect "
+            "engine fires on tigress_flatten_indirect WITHOUT hardcoded addresses "
+            "(operand-decode recovers table=off_18001DF00, count=37, dispatch jmp, "
+            "initial_state=0x22, state_var_stkoff=0x30 from binary structure; engine "
+            "applies 34 REDIRECT_EDGE patches, raw ijmp removed). 11/15 oracle checks "
+            "pass (state_count, initial_state, all_states_present, terminal_states, "
+            "handoff targets, final_output_xor, no_raw_indirect_jump, table_bounds/"
+            "invariant proved). RESIDUAL (4 checks): the deeper computed-target "
+            "resolution still missing -> state 0x9's handler body starts mid-stream at "
+            "0x180013DBA (right after the ijmp) so Hex-Rays folds it (target_block=-1); "
+            "state 0x28 conditional + the password check/zeroing pseudocode are not yet "
+            "reconstructed. That semantic completeness is the separately-scoped "
+            "INDIRECT_JUMP computed-target work (concolic epic llr-7ouc S8). strict=True "
+            "so this XPASSes (and we drop the marker) once full target resolution lands."
         ),
     )
     def test_tigress_indirect_engine_oracle(
