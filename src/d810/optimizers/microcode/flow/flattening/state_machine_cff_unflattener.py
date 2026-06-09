@@ -1,10 +1,11 @@
 """§1a live entry point — the state-machine-CFF unflattener driven by the north-star call graph.
 
 This is the runtime realization of the §1a pseudocode: at the maturity hook it lifts the live
-``mba`` to a portable ``FunctionSource``, builds an ``AnalysisManager`` (facts), runs the
-chain-based ``StateMachineCffSpine`` (single detect point = ranked DispatcherResolver chain;
-passes selected by resolved dispatcher kind) through ``run_pipeline``. The ONLY live-mba touch
-points are the lifter + ``HexRaysMutationBackend`` (backends/hexrays).
+``mba`` to a portable ``FunctionSource``, builds an ``AnalysisManager`` (facts), and routes
+through the registered state-machine-CFF profiles — ``select_family`` polls the
+``StateMachineCffFamily`` registry (``HodurFamily``=equality-chain, ``ApproovFamily``=
+switch/indirect) and the claiming profile's ``pipeline_for`` drives ``run_pipeline``. The ONLY
+live-mba touch points are the lifter + ``HexRaysMutationBackend`` (backends/hexrays).
 
 PRODUCTION PATH (M2 cutover, llr-ibpi): the §1a chain+spine pipeline is the SOLE CFF unflattener.
 The hodur configs route ``StateMachineCffUnflattener``; full-fleet golden parity verified at 3032/0.
@@ -109,8 +110,8 @@ def _s1a_enabled() -> bool:
 class StateMachineCffUnflattener(ComposedUnflatteningRule):
     """§1a state-machine-CFF entry — the production CFF unflattener (M2 cutover, llr-ibpi).
 
-    Runs the chain-based ``StateMachineCffSpine`` (ranked DispatcherResolver chain =
-    single detect point; passes selected by the resolved dispatcher kind) over a portable
+    Routes through ``select_family`` over the registered ``StateMachineCffFamily`` profiles
+    (``HodurFamily``=equality-chain, ``ApproovFamily``=switch/indirect) over a portable
     ``FunctionSource`` lifted from the live ``mba``. Standalone (inherits the lifecycle from
     ``ComposedUnflatteningRule``) — the legacy HCC path is retired.
     """
