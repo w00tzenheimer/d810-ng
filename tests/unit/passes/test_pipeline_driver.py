@@ -189,9 +189,10 @@ def test_approov_detect_is_kind_scoped_to_switch_and_indirect(monkeypatch):
     assert fam.detect(_GRAPH, frozenset()) is None
 
 
-def test_approov_pipeline_for_emulation_gated_and_switch_pinned():
-    """Same five passes as Hodur, but emulation-required + router pinned to SWITCH."""
-    specs = ApproovFamily().pipeline_for(match=object(), context=None)
+def test_approov_pipeline_for_switch_is_standard_no_emulation():
+    """SWITCH_TABLE (the live kind) runs the standard seeded-fold spine — NO emulation
+    (abc_or_dispatch folds masked-OR writes via the partitioned fixpoint)."""
+    specs = ApproovFamily().pipeline_for(_FakeMap(DispatcherType.SWITCH_TABLE), None)
     assert [s.name for s in specs] == [
         "recover_dispatcher",
         "recover_state_transitions",
@@ -200,13 +201,17 @@ def test_approov_pipeline_for_emulation_gated_and_switch_pinned():
         "cleanup_residual_dispatcher",
     ]
     by_name = {s.name: s for s in specs}
-    # Indirect-target folding needs the emulator capability on the two passes that resolve
-    # and lower transitions.
+    assert "emulation" not in by_name["recover_state_transitions"].requirements.required
+    assert "emulation" not in by_name["lower_state_machine"].requirements.required
+
+
+def test_approov_pipeline_for_indirect_is_emulation_gated():
+    """INDIRECT_JUMP needs the emulator + pins RouterKind.INDIRECT_TABLE (M3+, structural)."""
+    specs = ApproovFamily().pipeline_for(_FakeMap(DispatcherType.INDIRECT_JUMP), None)
+    by_name = {s.name: s for s in specs}
     assert "emulation" in by_name["recover_state_transitions"].requirements.required
     assert "emulation" in by_name["lower_state_machine"].requirements.required
-    # The lowering factory pins the SWITCH router shape (injectable LowerStateMachine).
-    lowered = by_name["lower_state_machine"].pass_factory()
-    assert lowered.configured_kind == RouterKind.SWITCH
+    assert by_name["lower_state_machine"].pass_factory().configured_kind == RouterKind.INDIRECT_TABLE
 
 
 def test_registry_registers_both_profiles():

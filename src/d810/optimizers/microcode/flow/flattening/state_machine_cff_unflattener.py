@@ -85,7 +85,7 @@ from d810.evaluator.hexrays_microcode.use_def_dominance import (
 from d810.evaluator.hexrays_microcode.value_range_capability import (
     HexRaysValRangeCapability,
 )
-from d810.families.state_machine_cff.spine import StateMachineCffSpine
+from d810.families.registry import select_family
 from d810.hexrays.observability import (
     diagnostics_enabled as _capture_diagnostics_enabled,
     request_capture_mba_snapshot,
@@ -193,15 +193,23 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 UseDefSafetyCapability: HexRaysUseDefSafetyBackend(),
             }
         )
-        run_pipeline(
-            source=source,
-            family=StateMachineCffSpine(),
-            backend=backend,
-            facts=facts,
-            project_config=None,
-            maturity=mba.maturity,
-            capabilities=capabilities,
+        # Route through the registered profiles (llr-ibpi): select_family polls the
+        # StateMachineCffFamily registry (HodurFamily=equality-chain, ApproovFamily=
+        # switch/indirect) and returns the one whose detect claims this graph; the
+        # selected profile's pipeline_for drives run_pipeline. None -> no dispatcher.
+        family = select_family(
+            source.flow_graph, project_config=None, capabilities=backend.capabilities()
         )
+        if family is not None:
+            run_pipeline(
+                source=source,
+                family=family,
+                backend=backend,
+                facts=facts,
+                project_config=None,
+                maturity=mba.maturity,
+                capabilities=capabilities,
+            )
         # Iteration diagnostics: where does the §1a chain stand for this function?
         rec = facts.get_analysis("recover_dispatcher")
         tr = facts.get_analysis("transition_result")
