@@ -170,3 +170,137 @@ def test_no_dispatcher_graph_returns_none():
 
 def test_resolve_dispatcher_none_graph_returns_none():
     assert resolve_dispatcher(None, default_dispatcher_resolvers()) is None
+
+
+# --- Extra-resolver registry seam (llr-qb33) ---------------------------------
+#
+# The IDA-bound indirect jump-table resolver lives in d810.backends.hexrays and
+# is injected at runtime by the §1a entry. These tests cover the PORTABLE seam in
+# d810.analyses (registry + front-end consultation) with a fake Protocol-shaped
+# resolver, so they stay IDA-free.
+
+from d810.analyses.control_flow.dispatcher_recovery import (  # noqa: E402
+    clear_extra_dispatcher_resolvers,
+    extra_dispatcher_resolvers,
+    register_extra_dispatcher_resolver,
+)
+from d810.analyses.control_flow.dispatcher_resolution import (  # noqa: E402
+    StateDispatcherMap,
+    StateDispatcherRow,
+)
+
+
+def _indirect_dmap() -> StateDispatcherMap:
+    rows = (
+        StateDispatcherRow(
+            state_const=1,
+            target_block=4,
+            dispatcher_block=3,
+            compare_block=None,
+            branch_kind="indirect_jump_table",
+            source=DispatcherType.INDIRECT_JUMP,
+            row_kind="handler",
+        ),
+    )
+    return StateDispatcherMap(
+        rows=rows,
+        dispatcher_entry_block=3,
+        dispatcher_blocks=frozenset({3}),
+        state_var_stkoff=0x30,
+        state_var_lvar_idx=None,
+        source=DispatcherType.INDIRECT_JUMP,
+    )
+
+
+class _FakeIndirectResolver:
+    """Protocol-shaped fake (no IDA): accepts only the ``m_ijmp`` flag graph."""
+
+    name = "indirect_jump_table"
+    router_kind = RouterKind.INDIRECT_TABLE
+    specificity = 12
+
+    def __init__(self, marker: str = "A") -> None:
+        self.marker = marker
+
+    def _is_indirect(self, graph) -> bool:
+        return any(
+            getattr(b.tail, "kind", None) is InsnKind.INDIRECT_JUMP
+            for b in graph.blocks.values()
+        )
+
+    def accepts(self, graph):
+        if not self._is_indirect(graph):
+            return None
+        return ResolverCandidate(
+            resolver_name=self.name,
+            router_kind=self.router_kind,
+            confidence=1.0,
+            specificity=self.specificity,
+            reasons=("indirect-jump-table", self.marker),
+        )
+
+    def resolve(self, graph, candidate):
+        if not self._is_indirect(graph):
+            return None
+        return DispatcherResolution(
+            dispatcher_map=_indirect_dmap(),
+            resolver_name=self.name,
+            router_kind=self.router_kind,
+            confidence=candidate.confidence,
+            ranking_reason=candidate.reasons,
+        )
+
+
+def _indirect_flow_graph() -> FlowGraph:
+    ijmp_tail = _insn(kind=InsnKind.INDIRECT_JUMP)
+    return _flow_graph({
+        0: _block(0, succs=(3,)),
+        3: _block(3, preds=(0,), tail=ijmp_tail),
+        4: _block(4, preds=(3,)),
+    })
+
+
+def test_extra_resolver_recognized_by_front_end():
+    """A registered indirect resolver makes build_dispatch_map_any_kind fire."""
+    clear_extra_dispatcher_resolvers()
+    try:
+        graph = _indirect_flow_graph()
+        # Before registration: portable defaults do NOT recognize m_ijmp.
+        assert build_dispatch_map_any_kind(graph) is None
+
+        register_extra_dispatcher_resolver(_FakeIndirectResolver())
+        dmap = build_dispatch_map_any_kind(graph)
+
+        assert dmap is not None
+        assert dmap.source is DispatcherType.INDIRECT_JUMP
+        assert dmap.state_to_handler() == {1: 4}
+        assert dmap.dispatcher_entry_block == 3
+    finally:
+        clear_extra_dispatcher_resolvers()
+
+
+def test_extra_resolver_registration_idempotent_by_name():
+    """Re-registering the same name REPLACES (no stale-mba leak across runs)."""
+    clear_extra_dispatcher_resolvers()
+    try:
+        register_extra_dispatcher_resolver(_FakeIndirectResolver(marker="A"))
+        register_extra_dispatcher_resolver(_FakeIndirectResolver(marker="B"))
+        registered = extra_dispatcher_resolvers()
+        assert len(registered) == 1
+        assert registered[0].marker == "B"
+    finally:
+        clear_extra_dispatcher_resolvers()
+
+
+def test_extra_resolver_inert_on_non_indirect_graph():
+    """The seam is behaviour-neutral on a switch graph (no over-fire)."""
+    clear_extra_dispatcher_resolvers()
+    try:
+        register_extra_dispatcher_resolver(_FakeIndirectResolver())
+        dmap = build_dispatch_map_any_kind(_switch_flow_graph())
+        # Still resolves the SWITCH map; the indirect resolver abstained.
+        assert dmap is not None
+        assert dmap.source is DispatcherType.SWITCH_TABLE
+        assert dmap.state_to_handler() == {0: 4, 1: 5, 2: 5}
+    finally:
+        clear_extra_dispatcher_resolvers()

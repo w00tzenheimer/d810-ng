@@ -22,7 +22,10 @@ from d810.analyses.control_flow.block_ownership_domain import \
 from d810.analyses.control_flow.dispatcher_discovery_extractors import (
     discover_dispatcher_from_flow_graph,
 )
-from d810.analyses.control_flow.dispatcher_recovery import recover_dispatcher
+from d810.analyses.control_flow.dispatcher_recovery import (
+    recover_dispatcher,
+    register_extra_dispatcher_resolver,
+)
 from d810.analyses.control_flow.linearized_state_dag import (
     build_live_linearized_state_dag_from_graph,
 )
@@ -60,6 +63,9 @@ from d810.analyses.data_flow.concolic import (
 from d810.analyses.data_flow.concolic.emulation import EmulationCapability
 from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
 from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
+from d810.backends.hexrays.evidence.dispatcher.indirect_jump_resolver import (
+    IndirectJumpDispatcherResolver,
+)
 from d810.backends.hexrays.evidence.emulation import HexRaysBlockEmulator
 from d810.backends.hexrays.lifter import lift_function
 from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
@@ -150,6 +156,25 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         self._s1a_done_for_ea = func_ea
 
         source = lift_function(mba, maturity=mba.maturity)
+        # llr-qb33: register the IDA-bound indirect jump-table resolver into the
+        # shared portable front-end (build_dispatch_map_any_kind) BEFORE any
+        # detection (the prelim recover_dispatcher, select_family, run_pipeline)
+        # so the Tigress m_ijmp dispatcher is recognized end-to-end. The resolver
+        # wraps the live mba (binary table reads) so the portable analyses/ chain
+        # stays IDA-free; accepts() self-gates on an actual m_ijmp graph, so this
+        # is inert on every non-indirect function (no golden regression).
+        # Idempotent by name -> rebinds the fresh mba each decompilation.
+        _cfg = getattr(self, "config", None)
+        register_extra_dispatcher_resolver(
+            IndirectJumpDispatcherResolver(
+                mba=mba,
+                goto_table_info=(
+                    _cfg.get("goto_table_info", {}) or {}
+                    if isinstance(_cfg, dict)
+                    else {}
+                ),
+            )
+        )
         # Supply the live validated fact view (state observations) so resolve_state_transitions
         # has the transition evidence; without it the chain produces an empty plan.
         fact_view = None

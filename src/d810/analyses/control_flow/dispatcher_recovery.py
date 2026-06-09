@@ -310,6 +310,51 @@ class SwitchTableDispatcherResolver:
         )
 
 
+# --- Process-scoped extra-resolver registry (llr-qb33) -----------------------
+#
+# The shared front-end ``build_dispatch_map_any_kind`` is called from THREE
+# detection sites over a portable ``FlowGraph`` (``HodurFamily.detect``,
+# ``ApproovFamily.detect`` / ``TigressFamily.detect``, and ``recover_dispatcher``),
+# none of which can carry a live-IDA argument.  Some dispatcher shapes (e.g. the
+# Tigress ``m_ijmp``-through-qword-table indirect dispatcher) can only be
+# *resolved* with binary access (read the qword label table) -- that resolver is
+# IDA-bound and lives in ``d810.backends.hexrays`` to keep this portable module
+# IDA-free (``portable-core-no-ida``).
+#
+# A backend wires its resolver in via :func:`register_extra_dispatcher_resolver`
+# (the entry holds the live ``mba`` and binds it into the resolver instance).  The
+# registry stores ONLY opaque ``DispatcherResolver`` Protocol objects, so this
+# module never imports IDA.  Registered resolvers are appended AFTER the default
+# chain, so their ranked ``(specificity, confidence)`` competes with -- and only
+# wins over -- the portable defaults when they out-rank them.
+_EXTRA_DISPATCHER_RESOLVERS: list[DispatcherResolver] = []
+
+
+def register_extra_dispatcher_resolver(resolver: DispatcherResolver) -> None:
+    """Register a backend-supplied resolver consulted by the shared front-end.
+
+    Idempotent by ``name``: re-registering a resolver of the same ``name``
+    REPLACES the prior instance (so an entry can rebind a fresh live ``mba``
+    each decompilation without leaking stale resolvers across runs).
+    """
+    name = getattr(resolver, "name", None)
+    if name is not None:
+        _EXTRA_DISPATCHER_RESOLVERS[:] = [
+            r for r in _EXTRA_DISPATCHER_RESOLVERS if getattr(r, "name", None) != name
+        ]
+    _EXTRA_DISPATCHER_RESOLVERS.append(resolver)
+
+
+def clear_extra_dispatcher_resolvers() -> None:
+    """Drop all registered extra resolvers (per-run reset / test isolation)."""
+    _EXTRA_DISPATCHER_RESOLVERS.clear()
+
+
+def extra_dispatcher_resolvers() -> tuple[DispatcherResolver, ...]:
+    """Return the currently registered backend resolvers (registration order)."""
+    return tuple(_EXTRA_DISPATCHER_RESOLVERS)
+
+
 def default_dispatcher_resolvers() -> tuple[DispatcherResolver, ...]:
     """The portable resolver chain shared by every §1a dispatch-map consumer."""
     return (EqualityChainDispatcherResolver(), SwitchTableDispatcherResolver())
@@ -328,8 +373,15 @@ def build_dispatch_map_any_kind(graph: FlowGraph) -> StateDispatcherMap | None:
     This is the single front-end shared by ``HodurFamily.detect`` (the pipeline
     gate) and ``recover_dispatcher`` (pass #1) so the two never disagree on which
     dispatcher shapes are supported.
+
+    Backend-registered resolvers (:func:`register_extra_dispatcher_resolver`,
+    e.g. the IDA-bound indirect jump-table resolver) are appended AFTER the
+    portable defaults, so a genuine indirect (``m_ijmp``) dispatcher is recognized
+    here too while every portable consumer stays IDA-free (the registry holds
+    opaque ``DispatcherResolver`` Protocol objects).
     """
-    resolution = resolve_dispatcher(graph, default_dispatcher_resolvers())
+    resolvers = default_dispatcher_resolvers() + extra_dispatcher_resolvers()
+    resolution = resolve_dispatcher(graph, resolvers)
     return resolution.dispatcher_map if resolution is not None else None
 
 
