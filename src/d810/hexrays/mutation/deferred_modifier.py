@@ -207,6 +207,7 @@ from d810.hexrays.mutation.deferred_events import DeferredEvent, EventEmitter
 from d810.hexrays.mutation.cfg_verify import (
     capture_failure_artifact)
 from d810.hexrays.mutation.cfg_mutations import (
+    CPBLK_MINREF,
     copy_block_keep)
 from d810.hexrays.mutation.cfg_mutations import (
     change_0way_block_successor)
@@ -2281,9 +2282,18 @@ class DeferredGraphModifier:
         self,
         ref_blk: ida_hexrays.mblock_t,
         dest_serial: int,
+        *,
+        cpblk_flags: int = CPBLK_MINREF,
     ) -> ida_hexrays.mblock_t | None:
-        """Copy a block while preserving the backend MBL_KEEP behavior."""
-        return copy_block_keep(self.mba, ref_blk, int(dest_serial))
+        """Copy a block while preserving the backend MBL_KEEP behavior.
+
+        Defaults to ``CPBLK_MINREF`` so the copy keeps its terminating
+        ``m_goto`` (see ``copy_block_keep``); IDA's library default would
+        strip it via ``CPBLK_OPTJMP``.
+        """
+        return copy_block_keep(
+            self.mba, ref_blk, int(dest_serial), cpblk_flags=int(cpblk_flags)
+        )
 
     def mark_blocks_dirty_now(
         self,

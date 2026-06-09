@@ -289,7 +289,7 @@ def test_insert_nop_blk_2way_does_not_duplicate_fallthrough_successor(monkeypatc
     blk.nextb = fallthrough
     fallthrough.prevb = blk
 
-    def _copy_block(src_blk, dest_serial):
+    def _copy_block(src_blk, dest_serial, cpblk_flags=3):
         assert dest_serial == src_blk.serial + 1
         nop_blk = _FakeBlock(
             11,
