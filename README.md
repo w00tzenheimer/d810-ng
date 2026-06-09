@@ -311,6 +311,38 @@ The practical rule is:
 3. If it modifies CFGs or instructions, put it in `d810.hexrays.mutation`.
 
 
+### Unflattening Family Selection: Dispatcher Shape, Not Vendor
+
+The §1a control-flow unflattener (`StateMachineCffUnflattener`) does **not** classify functions by *which obfuscator produced them*. It detects the **structure** of the flattening dispatcher and routes accordingly. This matters for contributors: you almost never need to "know the family" to add coverage.
+
+**How routing works.** At `MMAT_GLBOPT1` the rule lifts the function to a portable `FlowGraph`, then `families.registry.select_family(graph, project_config)` polls the registered `StateMachineCffFamily` *profiles* and returns the first whose `detect()` claims the graph. The claiming profile's `pipeline_for()` drives the shared five-pass spine through `run_pipeline`.
+
+**Detection is structural.** Each profile's `detect()` recognizes a dispatcher *shape* — a state variable + a dispatch mechanism + handlers that write the next state — via the ranked `DispatcherResolver` chain (`analyses/control_flow/dispatcher_resolver.py`). None of them check a vendor signature. The profile names are shape labels:
+
+| Profile | Dispatcher shape |
+|-|-|
+| `HodurFamily` | equality-chain (`CONDITIONAL_CHAIN`) |
+| `ApproovFamily` / `TigressFamily` | switch-table / indirect |
+
+So an unknown obfuscator that flattens with, say, an equality-chain dispatcher is handled by `HodurFamily` because it matches the *structure* — not because it is "Hodur."
+
+**What happens with an unknown obfuscator:**
+
+| Case | Behavior |
+|-|-|
+| Unknown vendor, **known shape** (the common case) | Handled by the structural detector; no config or vendor knowledge needed. |
+| Known vendor, want precision | The optional `router_resolution` config override (below) directs selection. |
+| Unknown vendor **and** unknown shape | `profile_classifier` returns `DispatchPattern.UNKNOWN` → conservative handling (attempt redirects only on strong structural signals). With no matching detector, `select_family` returns `None` → no unflatten. |
+
+**Extending it (for contributors):**
+
+1. **New dispatcher shape** — add a `DispatcherResolver` (`accepts` / `resolve`) to the chain. Every consumer (`select_family`, all profiles) picks it up; no vendor tagging anywhere.
+2. **New vendor needing shape-specific recovery** — add a `StateMachineCffFamily` profile under `families/state_machine_cff/<name>.py`: a `detect` (claim by `DispatcherType` + any signature) and a kind-aware `pipeline_for`. Register it via the package `__init__` eager import.
+3. **Config-directed routing** — set `router_resolution` in the `StateMachineCffUnflattener` rule config: `require` (force one profile), `prefer` (bias the order), `deny` (exclude). Absent it, pure shape-detection runs.
+
+> The legacy `EmulatedDispatcherUnflattener` engine (still config-activated for some OLLVM / Tigress profiles) recovers VM / switch dispatchers *statically* through a separate `CFFStrategyFamily` system — it does **not** use the concolic emulator despite the name. It is being subsumed into the §1a profiles above; the concolic `EmulationCapability` handles the genuinely-needs-execution indirect-jump cases.
+
+
 ## Installation
 
 **Only IDA v9 or later is supported with Python 3.10 and higher** (since we need the microcode Python API)
