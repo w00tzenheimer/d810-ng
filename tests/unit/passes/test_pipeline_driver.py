@@ -20,7 +20,9 @@ from d810.transforms.plan import PatchPlan
 from d810.passes.driver import CapabilityError, run_pipeline, validate_capabilities
 from d810.families.state_machine_cff import HodurFamily
 from d810.families.state_machine_cff import approov as approov_pipeline
+from d810.families.state_machine_cff import tigress as tigress_pipeline
 from d810.families.state_machine_cff import ApproovFamily
+from d810.families.state_machine_cff import TigressFamily
 from d810.families.registry import select_family, registered_families
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.capabilities.dispatcher import RouterKind
@@ -220,3 +222,114 @@ def test_registry_registers_both_profiles():
     assert any(isinstance(f, HodurFamily) for f in fams)
     # Selection is order-independent: profiles own disjoint dispatcher kinds, so there is
     # no priority/tiebreak — registration order does not matter.
+
+
+# --- TigressFamily: the third §1a profile on the shared spine (M3 slice 1) ---------
+def test_tigress_detect_is_kind_scoped_to_switch_and_indirect(monkeypatch):
+    """detect claims switch/indirect kinds, rejects equality-chain and non-graphs."""
+    fam = TigressFamily()
+    # Non-graph / missing graph -> inert, before the front-end is consulted.
+    assert fam.detect(None, frozenset()) is None
+    assert fam.detect("G0", frozenset()) is None  # no .blocks
+
+    def _stub(source):
+        return lambda graph: _FakeMap(source)
+
+    # Switch-table and indirect-jump are CLAIMED (truthy map returned).
+    monkeypatch.setattr(tigress_pipeline, "build_dispatch_map_any_kind",
+                        _stub(DispatcherType.SWITCH_TABLE))
+    assert fam.detect(_GRAPH, frozenset()) is not None
+    monkeypatch.setattr(tigress_pipeline, "build_dispatch_map_any_kind",
+                        _stub(DispatcherType.INDIRECT_JUMP))
+    assert fam.detect(_GRAPH, frozenset()) is not None
+
+    # Equality-chain belongs to HodurFamily -> TigressFamily must NOT claim it.
+    monkeypatch.setattr(tigress_pipeline, "build_dispatch_map_any_kind",
+                        _stub(DispatcherType.CONDITIONAL_CHAIN))
+    assert fam.detect(_GRAPH, frozenset()) is None
+    # Front-end found nothing -> None.
+    monkeypatch.setattr(tigress_pipeline, "build_dispatch_map_any_kind", lambda graph: None)
+    assert fam.detect(_GRAPH, frozenset()) is None
+
+
+def test_tigress_pipeline_for_switch_is_standard_no_emulation():
+    """SWITCH_TABLE runs the standard seeded-fold spine — NO emulation."""
+    specs = TigressFamily().pipeline_for(_FakeMap(DispatcherType.SWITCH_TABLE), None)
+    assert [s.name for s in specs] == [
+        "recover_dispatcher",
+        "recover_state_transitions",
+        "plan_semantic_regions",
+        "lower_state_machine",
+        "cleanup_residual_dispatcher",
+    ]
+    by_name = {s.name: s for s in specs}
+    assert "emulation" not in by_name["recover_state_transitions"].requirements.required
+    assert "emulation" not in by_name["lower_state_machine"].requirements.required
+
+
+def test_tigress_pipeline_for_indirect_is_emulation_gated():
+    """INDIRECT_JUMP needs the emulator + pins RouterKind.INDIRECT_TABLE (slice 2)."""
+    specs = TigressFamily().pipeline_for(_FakeMap(DispatcherType.INDIRECT_JUMP), None)
+    by_name = {s.name: s for s in specs}
+    assert "emulation" in by_name["recover_state_transitions"].requirements.required
+    assert "emulation" in by_name["lower_state_machine"].requirements.required
+    assert by_name["lower_state_machine"].pass_factory().configured_kind == RouterKind.INDIRECT_TABLE
+
+
+def test_registry_registers_tigress_profile():
+    assert any(isinstance(f, TigressFamily) for f in registered_families())
+
+
+# --- select_family router_resolution policy (hybrid config override, M3 slice 1) ----
+class _ClaimAny:
+    """A Family-Protocol double (NOT a Registrant subclass -> no auto-registration)
+    that always claims; named so the policy can target it by name."""
+
+    def __init__(self, name):
+        self.name = name
+
+    def detect(self, graph, capabilities, context=None):
+        return object()
+
+    def pipeline_for(self, match, context):
+        return ()
+
+
+def test_select_family_default_empty_policy_is_registration_order(monkeypatch):
+    """No router_resolution -> first registered claimant wins (order preserved)."""
+    a, b = _ClaimAny("alpha"), _ClaimAny("beta")
+    monkeypatch.setattr("d810.families.registry.registered_families", lambda: (a, b))
+    assert select_family("G", project_config=None) is a
+    assert select_family("G", project_config={}) is a
+
+
+def test_select_family_require_restricts_to_named_family(monkeypatch):
+    """require=<name> restricts candidates to exactly that family."""
+    a, b = _ClaimAny("alpha"), _ClaimAny("beta")
+    monkeypatch.setattr("d810.families.registry.registered_families", lambda: (a, b))
+    cfg = {"router_resolution": {"require": "beta"}}
+    assert select_family("G", project_config=cfg) is b
+
+
+def test_select_family_deny_excludes_named_family(monkeypatch):
+    """deny=[<name>] excludes that family from the candidate set."""
+    a, b = _ClaimAny("alpha"), _ClaimAny("beta")
+    monkeypatch.setattr("d810.families.registry.registered_families", lambda: (a, b))
+    cfg = {"router_resolution": {"deny": ["alpha"]}}
+    assert select_family("G", project_config=cfg) is b
+
+
+def test_select_family_prefer_biases_candidate_order(monkeypatch):
+    """prefer={<name>: bias} stable-sorts candidates by descending bias."""
+    a, b = _ClaimAny("alpha"), _ClaimAny("beta")
+    monkeypatch.setattr("d810.families.registry.registered_families", lambda: (a, b))
+    cfg = {"router_resolution": {"prefer": {"beta": 10.0}}}
+    assert select_family("G", project_config=cfg) is b
+
+
+def test_select_family_require_no_match_returns_none(monkeypatch):
+    """require=<name> for an absent / non-claiming family -> None."""
+    a = _ClaimAny("alpha")
+    monkeypatch.setattr("d810.families.registry.registered_families", lambda: (a,))
+    cfg = {"router_resolution": {"require": "tigress"}}
+    assert select_family("G", project_config=cfg) is None
