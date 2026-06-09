@@ -45,6 +45,9 @@ from d810.transforms.minimal_unflatten_emit import emit_minimal_unflatten
 from d810.transforms.dispatcher_cleanup import cleanup_residual_dispatcher
 from d810.capabilities.value_range import ValRangeCapability
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
+from d810.core import logging
+
+logger = logging.getLogger("D810.passes.unflatten.state_machine")
 
 
 def _count_valrange_confirmable(valrange, dispatch_map, state_var_stkoff) -> int:
@@ -122,6 +125,26 @@ def _analysis(ctx: FunctionPipelineContext, name: str, default=None):
 def _publish(ctx: FunctionPipelineContext, name: str, value) -> None:
     if hasattr(ctx.facts, "put_analysis"):
         ctx.facts.put_analysis(name, value)
+
+
+def _resolve_initial_state(bst_evidence, recovery) -> int | None:
+    """Resolve the dispatcher's initial state for the entry bridge.
+
+    The BST/equality-chain evidence carries the prologue's folded initial state
+    for the comparison / switch dispatcher kinds, so it is preferred. For the
+    INDIRECT_JUMP kind ``bst_evidence`` is absent (None ``initial_state``) but the
+    structural indirect-table recovery threads the recovered entry state onto the
+    ``StateDispatcherMap`` (``build_state_dispatcher_map_from_indirect_entries``),
+    so fall back to ``recovery.dispatch_map.initial_state``. Address-agnostic --
+    the value is read from the recovered map, never hardcoded. ``emit_minimal_unflatten``
+    still applies its own prologue-fold fallback when both are None.
+    """
+    bst_initial = getattr(bst_evidence, "initial_state", None)
+    if bst_initial is not None:
+        return int(bst_initial)
+    dmap = getattr(recovery, "dispatch_map", None) if recovery is not None else None
+    map_initial = getattr(dmap, "initial_state", None) if dmap is not None else None
+    return int(map_initial) if map_initial is not None else None
 
 
 class RecoverDispatcher(PipelinePass):
@@ -261,13 +284,26 @@ class LowerStateMachine(PipelinePass):
             and dispatcher_entry is not None
             and state_var_stkoff is not None
         ):
+            # Initial state for the entry bridge: prefer the BST evidence (comparison /
+            # switch kinds), fall back to the recovered StateDispatcherMap.initial_state
+            # for the INDIRECT_JUMP kind where bst_evidence is None (ticket llr-16jl).
+            initial_state = _resolve_initial_state(bst_evidence, recovery)
+            if logger.debug_on:
+                dmap = getattr(recovery, "dispatch_map", None)
+                logger.debug(
+                    "s1a initial_state thread: bst=%s map=%s resolved=%s kind=%s",
+                    getattr(bst_evidence, "initial_state", None),
+                    getattr(dmap, "initial_state", None) if dmap is not None else None,
+                    initial_state,
+                    getattr(dmap, "source", None) if dmap is not None else None,
+                )
             plan = emit_minimal_unflatten(
                 context.graph,
                 dispatcher,
                 state_var_stkoff=int(state_var_stkoff),
                 dispatcher_entry_serial=int(dispatcher_entry),
                 pre_header_serial=getattr(bst_evidence, "pre_header_serial", None),
-                initial_state=getattr(bst_evidence, "initial_state", None),
+                initial_state=initial_state,
             )
             return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
 
