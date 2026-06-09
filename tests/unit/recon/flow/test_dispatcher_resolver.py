@@ -304,3 +304,131 @@ def test_extra_resolver_inert_on_non_indirect_graph():
         assert dmap.state_to_handler() == {0: 4, 1: 5, 2: 5}
     finally:
         clear_extra_dispatcher_resolvers()
+
+
+# --- Portable IndirectJumpDispatcherResolver + capability seam (llr-dczv) -----
+#
+# The resolver moved to d810.analyses.control_flow (IDA-free) and now depends on
+# an injected IndirectJumpTableCapability instead of calling the IDA-bound
+# analysis directly.  These tests exercise the REAL resolver with a fake,
+# in-memory capability (no IDA), covering the new requirement that recognition
+# SURVIVES materialization: after the m_ijmp is removed (direct flow, no tail),
+# accepts() must still fire because the capability returns a non-empty map.
+
+from d810.analyses.control_flow.indirect_jump_resolver import (  # noqa: E402
+    IndirectJumpDispatcherResolver,
+)
+from d810.analyses.control_flow.indirect_jump_table_analysis import (  # noqa: E402
+    IndirectJumpTableResult,
+)
+
+
+class _FakeCapability:
+    """In-memory IndirectJumpTableCapability: returns a fixed result (or None)."""
+
+    def __init__(self, result: IndirectJumpTableResult | None):
+        self._result = result
+        self.calls: list[dict | None] = []
+
+    def analyze_indirect_dispatcher(self, graph, *, goto_table_info=None):
+        self.calls.append(goto_table_info)
+        return self._result
+
+
+def _indirect_result(rows=1, missing=0) -> IndirectJumpTableResult:
+    dmap_rows = tuple(
+        StateDispatcherRow(
+            state_const=i + 1,
+            target_block=4 + i,
+            dispatcher_block=3,
+            compare_block=None,
+            branch_kind="indirect_jump_table",
+            source=DispatcherType.INDIRECT_JUMP,
+            row_kind="handler",
+        )
+        for i in range(rows)
+    )
+    dmap = StateDispatcherMap(
+        rows=dmap_rows,
+        dispatcher_entry_block=3,
+        dispatcher_blocks=frozenset({3}),
+        state_var_stkoff=0x30,
+        state_var_lvar_idx=None,
+        source=DispatcherType.INDIRECT_JUMP,
+    )
+    return IndirectJumpTableResult(
+        state_dispatcher_map=dmap, entries=(), missing_target_count=missing
+    )
+
+
+def _materialized_flow_graph() -> FlowGraph:
+    """A materialized hub: direct flow, NO m_ijmp tail (post-materialization)."""
+    return _flow_graph({
+        0: _block(0, succs=(3,)),
+        3: _block(3, preds=(0,), succs=(4,)),  # plain goto tail, no INDIRECT_JUMP
+        4: _block(4, preds=(3,)),
+    })
+
+
+def test_portable_resolver_accepts_on_m_ijmp_graph():
+    cap = _FakeCapability(_indirect_result(rows=2))
+    resolver = IndirectJumpDispatcherResolver(indirect_tables=cap)
+
+    candidate = resolver.accepts(_indirect_flow_graph())
+
+    assert candidate is not None
+    assert isinstance(candidate, ResolverCandidate)
+    assert candidate.router_kind is RouterKind.INDIRECT_TABLE
+    assert candidate.resolver_name == "indirect_jump_table"
+    assert "m_ijmp" in candidate.reasons
+    assert "rows=2" in candidate.reasons
+
+
+def test_portable_resolver_recognizes_materialized_form():
+    """RECOGNITION SURVIVES MATERIALIZATION: no m_ijmp tail, capability has rows."""
+    cap = _FakeCapability(_indirect_result(rows=3))
+    resolver = IndirectJumpDispatcherResolver(indirect_tables=cap)
+    graph = _materialized_flow_graph()
+
+    # The cheap m_ijmp pre-gate is FALSE on a materialized graph...
+    from d810.analyses.control_flow.indirect_jump_resolver import (
+        _graph_has_indirect_jump,
+    )
+    assert not _graph_has_indirect_jump(graph)
+
+    # ...yet accepts() still fires because the capability returns a non-empty map.
+    candidate = resolver.accepts(graph)
+    assert candidate is not None
+    assert "materialized" in candidate.reasons
+    assert "rows=3" in candidate.reasons
+
+    resolution = resolver.resolve(graph, candidate)
+    assert isinstance(resolution, DispatcherResolution)
+    assert resolution.router_kind is RouterKind.INDIRECT_TABLE
+    assert resolution.dispatcher_map.dispatcher_entry_block == 3
+
+
+def test_portable_resolver_abstains_when_capability_returns_none():
+    cap = _FakeCapability(None)
+    resolver = IndirectJumpDispatcherResolver(indirect_tables=cap)
+
+    # Even on an m_ijmp graph, a None capability result means no rows -> abstain.
+    assert resolver.accepts(_indirect_flow_graph()) is None
+    # And on a materialized graph it abstains too (no over-fire).
+    assert resolver.accepts(_materialized_flow_graph()) is None
+
+
+def test_portable_resolver_passes_goto_table_info_through():
+    cap = _FakeCapability(_indirect_result())
+    resolver = IndirectJumpDispatcherResolver(
+        indirect_tables=cap, goto_table_info={"0x401000": {"table_nb_elt": 3}}
+    )
+    resolver.accepts(_indirect_flow_graph())
+    assert cap.calls and cap.calls[-1] == {"0x401000": {"table_nb_elt": 3}}
+
+
+def test_portable_resolver_satisfies_dispatcher_resolver_protocol():
+    from d810.analyses.control_flow.dispatcher_resolver import DispatcherResolver
+
+    resolver = IndirectJumpDispatcherResolver(indirect_tables=_FakeCapability(None))
+    assert isinstance(resolver, DispatcherResolver)
