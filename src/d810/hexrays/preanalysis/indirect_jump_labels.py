@@ -144,11 +144,36 @@ def _discover_next_function_start(function_ea: int) -> int | None:
 
 
 def _create_target_instructions(targets: Sequence[int]) -> None:
+    """Disassemble each computed-goto label target into an instruction head.
+
+    A Tigress label body that immediately abuts the dispatch ``jmp reg`` (the
+    ``jmp`` has no fall-through, so the byte after it is only reachable through
+    the indirect table) is frequently left as an *undefined data* head by IDA's
+    autoanalysis: the only reference to it is the data qword in the jump table.
+    ``create_insn`` is a no-op on a byte that is already a defined data item, so
+    such a label would never become a code head -- and Hex-Rays would then never
+    give it its own MBA block (the handler ``target_block`` resolves to ``-1``).
+
+    Undefining the data item first lets ``create_insn`` decode the real handler
+    instruction, so the label becomes an instruction/flowchart head that the
+    indirect engine can resolve to a concrete block.  Targets that are already
+    code heads are left untouched.
+    """
+    import ida_bytes  # type: ignore[import-untyped]
     import idaapi  # type: ignore[import-untyped]
 
     for target in sorted({int(target) for target in targets}):
         try:
-            idaapi.create_insn(target)
+            flags = ida_bytes.get_full_flags(int(target))
+            already_code = bool(ida_bytes.is_code(flags))
+            if not already_code:
+                # Undefine a stale data head so the byte can be re-decoded as the
+                # handler's first instruction; address-agnostic (driven by the
+                # discovered table targets, not any hard-coded label EA).
+                ida_bytes.del_items(
+                    int(target), ida_bytes.DELIT_SIMPLE, 1
+                )
+            idaapi.create_insn(int(target))
         except Exception:
             logger.debug("failed creating instruction at 0x%X", target, exc_info=True)
 
@@ -179,15 +204,54 @@ def _find_indirect_jump_ea(start: int, end: int) -> int | None:
 
 
 def _add_jump_target_crefs(dispatch_jump_ea: int | None, targets: Sequence[int]) -> int:
+    """Add surviving code crefs from the dispatch jump to each handler label.
+
+    The dispatch ``jmp reg`` has no fall-through, so a computed-goto label that
+    sits *immediately after* it (``target == dispatch_jump_ea + insn_len``) is
+    the jump's fall-through address.  IDA's autoanalysis treats a near-jump cref
+    to an instruction's own fall-through as a degenerate "jump to next" edge and
+    *deletes it after reanalysis*, even with ``XREF_USER`` -- so the abutting
+    handler would never gain an incoming code reference and Hex-Rays would drop
+    it from the MBA flowgraph (its ``target_block`` resolves to ``-1``).
+
+    For that one fall-through-adjacent target the cref is instead anchored from
+    the instruction *before* the dispatch jump (the table-load), a non-adjacent
+    source whose ``fl_JN`` cref survives reanalysis and makes the handler a real
+    flowchart/MBA block.  All addresses are derived from the discovered dispatch
+    jump and table targets, so this stays fully address-agnostic.
+    """
     if dispatch_jump_ea is None:
         return 0
     try:
+        import ida_bytes  # type: ignore[import-untyped]
+        import idaapi  # type: ignore[import-untyped]
         import ida_xref  # type: ignore[import-untyped]
 
+        dispatch_jump_ea = int(dispatch_jump_ea)
+        badaddr = int(getattr(idaapi, "BADADDR", -1))
+        # Fall-through address of the dispatch jump: the byte immediately after
+        # it.  A handler at exactly this EA needs a non-adjacent cref anchor.
+        fallthrough_ea = int(ida_bytes.next_head(dispatch_jump_ea, badaddr))
+        anchor_ea = int(ida_bytes.prev_head(dispatch_jump_ea, 0))
         count = 0
         for target in sorted({int(target) for target in targets}):
+            source_ea = dispatch_jump_ea
+            if (
+                target == fallthrough_ea
+                and anchor_ea != badaddr
+                and anchor_ea < dispatch_jump_ea
+            ):
+                source_ea = anchor_ea
+                logger.debug(
+                    "indirect handler 0x%X abuts dispatch jump 0x%X; anchoring "
+                    "code cref from preceding instruction 0x%X so it survives "
+                    "reanalysis",
+                    target,
+                    dispatch_jump_ea,
+                    anchor_ea,
+                )
             if ida_xref.add_cref(
-                int(dispatch_jump_ea),
+                source_ea,
                 target,
                 ida_xref.fl_JN | ida_xref.XREF_USER,
             ):
