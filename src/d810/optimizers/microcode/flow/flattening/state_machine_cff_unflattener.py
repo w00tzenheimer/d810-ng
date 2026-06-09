@@ -57,6 +57,7 @@ from d810.analyses.data_flow.concolic import (
     PrecisionStatus,
     fold_exact,
 )
+from d810.analyses.data_flow.concolic.emulation import EmulationCapability
 from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
 from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
 from d810.backends.hexrays.evidence.emulation import HexRaysBlockEmulator
@@ -169,6 +170,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # The LiSA-discovery diff log stays diag-only. Self-gating: no dispatcher -> no evidence ->
         # #4 stays on the committed shallow path (byte-identical).
         bst_evidence = None
+        prelim = None
         try:
             prelim = recover_dispatcher(source.flow_graph, fact_view)
             if getattr(prelim, "dispatcher_block_serial", None) is not None:
@@ -188,18 +190,41 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # Provide the live value-range capability so RecoverStateTransitions can resolve handler
         # transitions the exact equality-chain leaves unresolved (the north-star
         # ``capabilities.optional(ValRangeCapability)``).
-        capabilities = CapabilitySet(
-            {
-                ValRangeCapability: HexRaysValRangeCapability(mba),
-                UseDefSafetyCapability: HexRaysUseDefSafetyBackend(),
-            }
+        cap_instances = {
+            ValRangeCapability: HexRaysValRangeCapability(mba),
+            UseDefSafetyCapability: HexRaysUseDefSafetyBackend(),
+        }
+        # Concolic precision oracle (M3 slice 1, llr-11du): the prove-exact-or-abstain
+        # block emulator switch/indirect next-state folds consume. ADDITIVE — no standard
+        # pass requires "emulation", and the INDIRECT pipeline that reads it never runs in
+        # golden (no live indirect detector). Omitted when the dispatcher state var is
+        # unknown (e.g. no dispatcher), so construction can never crash.
+        state_var_stkoff = (
+            getattr(bst_evidence, "state_var_stkoff", None)
+            if bst_evidence is not None
+            else None
         )
+        if state_var_stkoff is None:
+            state_var_stkoff = getattr(prelim, "state_var_stkoff", None)
+        if state_var_stkoff is not None:
+            state_cell = LocationRef.stack(int(state_var_stkoff), 8)
+            cap_instances[EmulationCapability] = HexRaysBlockEmulator(
+                mba=mba,
+                state_var_stkoff=int(state_var_stkoff),
+                state_cell=state_cell,
+            )
+        capabilities = CapabilitySet(cap_instances)
         # Route through the registered profiles (llr-ibpi): select_family polls the
-        # StateMachineCffFamily registry (HodurFamily=equality-chain, ApproovFamily=
-        # switch/indirect) and returns the one whose detect claims this graph; the
-        # selected profile's pipeline_for drives run_pipeline. None -> no dispatcher.
+        # StateMachineCffFamily registry (HodurFamily=equality-chain, ApproovFamily/
+        # TigressFamily=switch/indirect) and returns the one whose detect claims this
+        # graph; the selected profile's pipeline_for drives run_pipeline. The rule's
+        # JSON config is threaded so a project may override the choice via the
+        # router_resolution policy (llr-11du); empty config preserves registration order.
+        project_config = getattr(self, "config", None)
         family = select_family(
-            source.flow_graph, project_config=None, capabilities=backend.capabilities()
+            source.flow_graph,
+            project_config=project_config,
+            capabilities=backend.capabilities(),
         )
         if family is not None:
             run_pipeline(

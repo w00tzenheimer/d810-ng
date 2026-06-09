@@ -23,7 +23,11 @@ class HexRaysMutationBackend:
         self._translator = translator or IDAIRTranslator()
 
     def capabilities(self) -> frozenset[str]:
-        return frozenset({"live_mba"})
+        # "emulation" advertises the concolic block-emulator the §1a entry registers as
+        # the EmulationCapability (llr-11du). ADDITIVE: no standard pass requires it, so
+        # advertising it is behaviour-neutral; only the INDIRECT pipeline (slice 2) reads
+        # it, and there is no live indirect detector yet.
+        return frozenset({"live_mba", "emulation"})
 
     def apply(
         self,
