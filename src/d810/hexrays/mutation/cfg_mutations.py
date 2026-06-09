@@ -26,19 +26,41 @@ helper_logger = getLogger(__name__)
 # being culled regardless of the new CFG wiring.
 MBL_KEEP = 0x10000
 
+# CPBLK_ -- IDA SDK ``hexrays.hpp`` batch-decompilation bits for ``copy_block``.
+# The library default is ``CPBLK_MINREF | CPBLK_OPTJMP`` (0x3).  ``CPBLK_OPTJMP``
+# silently DELETES the trailing ``m_goto`` of the copy when IDA judges it
+# "useless" -- which it does whenever the copy is appended at ``qty-1``
+# (physically adjacent to ``BLT_STOP``), making a ``goto BLT_STOP`` look like a
+# redundant fall-through.  Later copies then shift ``BLT_STOP`` away, leaving the
+# now-goto-less block falling through to whatever block happens to occupy the
+# next serial -- e.g. a switch arm -- which manifests as a collapsed switch and
+# an infinite ``while(1)`` terminal (tigress_flatten_indirect, ticket llr-307s).
+# D810 reconstructs successors explicitly, so it never wants IDA to optimize the
+# terminating jump away.  Copy with ``CPBLK_MINREF`` only to preserve the goto.
+CPBLK_FAST = 0x0000
+CPBLK_MINREF = 0x0001
+CPBLK_OPTJMP = 0x0002
+
 
 def copy_block_keep(
     mba: "ida_hexrays.mba_t",
     ref_blk: "ida_hexrays.mblock_t",
     dest_serial: int,
+    *,
+    cpblk_flags: int = CPBLK_MINREF,
 ) -> "ida_hexrays.mblock_t":
     """Wrapper around ``mba.copy_block`` that sets ``MBL_KEEP`` on the clone.
 
     Use everywhere D810 clones a block.  Without ``MBL_KEEP`` the clone is
     a candidate for removal by ``mba.optimize_global``'s structural sweep
     (see memory ``ida_optimize_global_cfg_kill``).
+
+    ``cpblk_flags`` defaults to ``CPBLK_MINREF`` (NOT the library default
+    ``CPBLK_MINREF | CPBLK_OPTJMP``): ``CPBLK_OPTJMP`` strips the copy's
+    trailing ``m_goto`` when it looks useless at copy time, which breaks
+    D810's explicit successor reconstruction (see the ``CPBLK_`` note above).
     """
-    new_blk = mba.copy_block(ref_blk, dest_serial)
+    new_blk = mba.copy_block(ref_blk, dest_serial, int(cpblk_flags))
     if new_blk is not None:
         try:
             new_blk.flags |= MBL_KEEP
