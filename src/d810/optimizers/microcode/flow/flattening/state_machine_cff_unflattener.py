@@ -63,8 +63,11 @@ from d810.analyses.data_flow.concolic import (
 from d810.analyses.data_flow.concolic.emulation import EmulationCapability
 from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
 from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
-from d810.backends.hexrays.evidence.dispatcher.indirect_jump_resolver import (
+from d810.analyses.control_flow.indirect_jump_resolver import (
     IndirectJumpDispatcherResolver,
+)
+from d810.backends.hexrays.evidence.dispatcher.indirect_jump_capability import (
+    HexRaysIndirectJumpTableCapability,
 )
 from d810.backends.hexrays.evidence.emulation import HexRaysBlockEmulator
 from d810.backends.hexrays.lifter import lift_function
@@ -133,6 +136,84 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         super().__init__()  # ComposedUnflatteningRule: flow_context + optblock lifecycle
         self._s1a_done_for_ea: int = -1
 
+    def configure(self, kwargs):
+        # Configure-time hook (project load, runs ONCE before any decompilation
+        # prolog). The ComposedUnflatteningRule/FlowOptimizationRule chain sets
+        # ``self.config = kwargs`` here, so this is where the §1a indirect profile
+        # registers pre-decompile materialization of the Tigress computed-goto
+        # label bodies — the emulated engine does the equivalent in its own
+        # ``configure`` (unflattener_emulated_dispatcher_engine.py). ``optimize``
+        # runs per-decompilation AFTER prolog, which is too late to inject crefs
+        # before the first MBA build, so materialization MUST live here (I1.5,
+        # ticket llr-tm3i).
+        super().configure(kwargs)
+        # Always clear any prior registration first so a previously loaded
+        # indirect project cannot leak its prolog-time registration into a
+        # non-indirect project reconfigured in the same IDA session, and so this
+        # method is INERT for hodur/approov/switch and every non-indirect profile.
+        try:
+            from d810.hexrays.preanalysis.indirect_jump_labels import (
+                reset_indirect_materialization,
+            )
+
+            reset_indirect_materialization()
+        except Exception:  # noqa: BLE001 — reset is best-effort
+            logger.debug("s1a: indirect materialization reset failed", exc_info=True)
+        # §1a indirect-profile gate: this rule carries no ``profile`` key (it does
+        # its own family detection), so the indirect config is identified by a
+        # non-empty ``goto_table_info``. ``goto_table_info`` is an OPTIONAL
+        # per-function override; structural discovery
+        # (materialize_discovered_indirect_label_targets) handles tables not in
+        # config, so a partial/empty mapping is fine — but we only arm the prolog
+        # registration + run the prepass when at least one entry is present, to
+        # keep the path strictly inert for non-indirect functions/projects.
+        goto_table_info = dict(self.config.get("goto_table_info", {}) or {})
+        if not goto_table_info:
+            return
+        try:
+            from d810.hexrays.preanalysis.indirect_jump_labels import (
+                materialize_discovered_indirect_label_targets,
+                register_indirect_materialization,
+            )
+        except Exception:  # noqa: BLE001 — preanalysis import is best-effort
+            logger.warning(
+                "s1a: indirect materialization import failed", exc_info=True
+            )
+            return
+        # Arm the per-function prolog hook (run_indirect_materialization_for_function
+        # is a NO-OP unless this registry flag is set) so every decompiled
+        # dispatcher materializes its label bodies before its MBA is built.
+        try:
+            register_indirect_materialization(goto_table_info)
+        except Exception:  # noqa: BLE001 — registration is best-effort
+            logger.warning(
+                "s1a: indirect prolog registration failed", exc_info=True
+            )
+        # Address-agnostic configure-time prepass: discover every indirect-table
+        # dispatcher in the database structurally and materialize its label bodies
+        # NOW, before any function is decompiled. Configured addresses are an
+        # optional override used only when a config entry matches a discovered EA;
+        # discovery returns ``None`` (no-op) for any non-dispatcher function.
+        try:
+            results = materialize_discovered_indirect_label_targets(goto_table_info)
+            for result in results:
+                logger.info(
+                    "Tigress indirect (s1a) preanalysis 0x%X: success=%s "
+                    "materialized=%d/%d jump_xrefs=%d switch_info=%s reason=%s",
+                    result.function_ea,
+                    result.success,
+                    result.materialized_target_count,
+                    result.target_count,
+                    result.jump_xref_count,
+                    result.switch_info_installed,
+                    result.reason,
+                )
+        except Exception:  # noqa: BLE001 — prepass is best-effort
+            logger.warning(
+                "s1a: indirect target materialization prepass failed",
+                exc_info=True,
+            )
+
     def optimize(self, blk: "ida_hexrays.mblock_t") -> int:
         # Bind the live mba FIRST: the base
         # ComposedUnflatteningRule only *annotates* ``self.mba`` and the cfg
@@ -156,18 +237,20 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         self._s1a_done_for_ea = func_ea
 
         source = lift_function(mba, maturity=mba.maturity)
-        # llr-qb33: register the IDA-bound indirect jump-table resolver into the
-        # shared portable front-end (build_dispatch_map_any_kind) BEFORE any
-        # detection (the prelim recover_dispatcher, select_family, run_pipeline)
-        # so the Tigress m_ijmp dispatcher is recognized end-to-end. The resolver
-        # wraps the live mba (binary table reads) so the portable analyses/ chain
-        # stays IDA-free; accepts() self-gates on an actual m_ijmp graph, so this
-        # is inert on every non-indirect function (no golden regression).
+        # llr-dczv: register the PORTABLE indirect jump-table resolver into the
+        # shared front-end (build_dispatch_map_any_kind) BEFORE any detection
+        # (the prelim recover_dispatcher, select_family, run_pipeline) so the
+        # Tigress indirect dispatcher is recognized end-to-end. The resolver is
+        # IDA-free; the live binary table reads live behind the injected
+        # HexRaysIndirectJumpTableCapability (bound to the fresh mba). accepts()
+        # consults the capability even AFTER materialization removes the m_ijmp
+        # (llr-tm3i), and the capability self-gates (None for non-dispatchers),
+        # so this is inert on every non-indirect function (no golden regression).
         # Idempotent by name -> rebinds the fresh mba each decompilation.
         _cfg = getattr(self, "config", None)
         register_extra_dispatcher_resolver(
             IndirectJumpDispatcherResolver(
-                mba=mba,
+                indirect_tables=HexRaysIndirectJumpTableCapability(mba=mba),
                 goto_table_info=(
                     _cfg.get("goto_table_info", {}) or {}
                     if isinstance(_cfg, dict)
