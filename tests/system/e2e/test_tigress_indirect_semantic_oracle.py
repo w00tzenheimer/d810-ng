@@ -105,25 +105,6 @@ class TestTigressIndirectSemanticOracle:
 
     binary_name = _get_default_binary()
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Address-agnostic STRUCTURAL discovery now lands (llr-890r): the indirect "
-            "engine fires on tigress_flatten_indirect WITHOUT hardcoded addresses "
-            "(operand-decode recovers table=off_18001DF00, count=37, dispatch jmp, "
-            "initial_state=0x22, state_var_stkoff=0x30 from binary structure; engine "
-            "applies 34 REDIRECT_EDGE patches, raw ijmp removed). 11/15 oracle checks "
-            "pass (state_count, initial_state, all_states_present, terminal_states, "
-            "handoff targets, final_output_xor, no_raw_indirect_jump, table_bounds/"
-            "invariant proved). RESIDUAL (4 checks): the deeper computed-target "
-            "resolution still missing -> state 0x9's handler body starts mid-stream at "
-            "0x180013DBA (right after the ijmp) so Hex-Rays folds it (target_block=-1); "
-            "state 0x28 conditional + the password check/zeroing pseudocode are not yet "
-            "reconstructed. That semantic completeness is the separately-scoped "
-            "INDIRECT_JUMP computed-target work (concolic epic llr-7ouc S8). strict=True "
-            "so this XPASSes (and we drop the marker) once full target resolution lands."
-        ),
-    )
     def test_tigress_indirect_engine_oracle(
         self,
         libobfuscated_setup,
