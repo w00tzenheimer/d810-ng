@@ -17,6 +17,12 @@ from d810.analyses.control_flow.indirect_jump_table_analysis import (
 
 logger = getLogger("D810.optimizers.indirect_jump_table")
 
+from d810.hexrays.preanalysis.indirect_jump_discovery import (
+    DiscoveredIndirectJumpTable,
+    discover_indirect_jump_table,
+)
+
+
 
 def _parse_int(value: object, *, default: int | None = None) -> int | None:
     if value is None:
@@ -111,18 +117,94 @@ def _observe_state_dispatcher_map(
         )
 
 
+
+def _config_table_targets_in_function(
+    mba: object,
+    table_address: int | None,
+    table_count: int | None,
+) -> bool:
+    """Return True when configured table reads in-function code pointers.
+
+    A rebuild that shifts the binary leaves configured ``table_address`` values
+    pointing at garbage; in that case discovery must take over.  We accept the
+    configured table only when its leading entry is owned by the function being
+    decompiled.
+    """
+    if not table_address or not table_count:
+        return False
+    try:
+        import ida_bytes  # type: ignore[import-untyped]
+        import ida_funcs  # type: ignore[import-untyped]
+
+        func = ida_funcs.get_func(int(getattr(mba, "entry_ea", 0) or 0))
+        if func is None:
+            return False
+        first = int(ida_bytes.get_qword(int(table_address)))
+        return int(func.start_ea) <= first < int(func.end_ea)
+    except Exception:
+        logger.debug("config table validity probe failed", exc_info=True)
+        return False
+
+
+def _resolve_indirect_layout(
+    mba: object,
+    cfg: Mapping[str, object] | None,
+) -> tuple[int | None, int, int | None, DiscoveredIndirectJumpTable | None]:
+    """Resolve effective ``(table_address, table_count, dispatch_jump_ea)``.
+
+    Configured values are an OPTIONAL override: when present *and* still valid
+    for the function being decompiled they win; otherwise the layout is
+    discovered structurally from the indirect jump's table operand.
+    """
+    cfg_table_address = (
+        _parse_int(cfg.get("table_address")) if cfg is not None else None
+    )
+    cfg_table_count = (
+        _parse_int(cfg.get("table_nb_elt"), default=0) if cfg is not None else 0
+    )
+    cfg_dispatch_jump_ea = (
+        _parse_int(cfg.get("dispatch_jump_ea")) if cfg is not None else None
+    )
+    if _config_table_targets_in_function(mba, cfg_table_address, cfg_table_count):
+        return cfg_table_address, int(cfg_table_count or 0), cfg_dispatch_jump_ea, None
+
+    function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+    discovered = discover_indirect_jump_table(function_ea)
+    if discovered is None:
+        # No structural table; fall back to whatever config provided (may be
+        # None -> caller treats as "missing").
+        return cfg_table_address, int(cfg_table_count or 0), cfg_dispatch_jump_ea, None
+    return (
+        discovered.table_address,
+        int(discovered.table_count),
+        discovered.dispatch_jump_ea,
+        discovered,
+    )
+
+
 def analyze_tigress_indirect_dispatcher_from_config(
     mba: object,
     goto_table_info: Mapping[str, object],
 ) -> IndirectJumpTableResult | None:
-    """Decode configured Tigress indirect table rows for the current MBA."""
+    """Decode Tigress indirect table rows for the current MBA.
+
+    Configured ``goto_table_info`` is an OPTIONAL override.  When no config key
+    matches the function being decompiled (or the configured table address is
+    stale after a rebuild), the table layout is recovered structurally from the
+    indirect jump's table operand, so the engine fires address-agnostically.
+    """
     cfg = _config_for_function(mba, goto_table_info)
-    if cfg is None:
-        return None
     # Lift once at the HIGH boundary; the portable EA-lookup helpers consume
     # the FlowGraph snapshot (llr-zeyu upstream-lift).
     flow_graph = lift(mba)
-    dispatch_jump_ea = _parse_int(cfg.get("dispatch_jump_ea"))
+
+    table_address, table_count, dispatch_jump_ea, discovered = (
+        _resolve_indirect_layout(mba, cfg)
+    )
+    if table_address is None or not table_count:
+        logger.debug("Tigress indirect: no configured or discovered table layout")
+        return None
+
     dispatcher_serial = (
         _find_ijmp_dispatcher_serial(mba)
         if dispatch_jump_ea is None else
@@ -130,23 +212,44 @@ def analyze_tigress_indirect_dispatcher_from_config(
     )
     if dispatcher_serial is None:
         dispatcher_serial = _find_ijmp_dispatcher_serial(mba)
-    if dispatcher_serial is None and bool(cfg.get("materialized_targets", False)):
+    if (
+        dispatcher_serial is None
+        and cfg is not None
+        and bool(cfg.get("materialized_targets", False))
+    ):
         dispatcher_serial = _find_materialized_dispatcher_serial(mba)
     if dispatcher_serial is None:
         logger.debug(
-            "Tigress indirect config matched but no dispatcher block was found"
+            "Tigress indirect layout resolved but no dispatcher block was found"
         )
         return None
 
-    table_address = _parse_int(cfg.get("table_address"))
-    table_count = _parse_int(cfg.get("table_nb_elt"), default=0)
-    if table_address is None or not table_count:
-        logger.debug("Tigress indirect config missing table address/count")
-        return None
-
-    initial_state = _parse_int(cfg.get("initial_state"))
-    state_var_stkoff = _parse_int(cfg.get("state_var_stkoff"))
-    state_base = _parse_int(cfg.get("state_base"), default=1) or 1
+    initial_state = _parse_int(cfg.get("initial_state")) if cfg is not None else None
+    state_var_stkoff = (
+        _parse_int(cfg.get("state_var_stkoff")) if cfg is not None else None
+    )
+    state_base = (
+        (_parse_int(cfg.get("state_base"), default=1) or 1)
+        if cfg is not None
+        else 1
+    )
+    # Backfill state-machine parameters from structural discovery when config
+    # omits them (no matching config entry, or partial override).
+    if discovered is not None:
+        if initial_state is None and discovered.initial_state is not None:
+            initial_state = int(discovered.initial_state)
+        if state_var_stkoff is None and discovered.state_var_stkoff is not None:
+            state_var_stkoff = int(discovered.state_var_stkoff)
+    if discovered is not None:
+        logger.info(
+            "Tigress indirect dispatcher discovered structurally for 0x%X: "
+            "table=0x%X count=%d dispatch_jump=0x%X source=%s",
+            int(getattr(mba, "entry_ea", 0) or 0),
+            int(table_address),
+            int(table_count),
+            int(dispatch_jump_ea or 0),
+            discovered.source,
+        )
 
     import ida_bytes  # type: ignore[import-untyped]
 

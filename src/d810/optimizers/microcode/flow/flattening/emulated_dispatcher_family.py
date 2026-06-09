@@ -4461,6 +4461,7 @@ class GenericDispatcherEngineProfile:
     enable_terminal_payload_materialization: bool = False
     enable_phase_reorder: bool = False
     enable_predecessor_dispatcher_target_lowering: bool = False
+    defer_loop_recovery_to_glbopt1: bool = True
     state_dispatcher_map_factory: Callable[
         [object, object, tuple[object, ...]],
         tuple[StateDispatcherMap, ...],
@@ -4722,6 +4723,10 @@ def tigress_indirect_dispatcher_profile(
         lowering_mode="indirect_jump_table_diagnostics",
         provenance_hints=("indirect_jump_table",),
         enable_phase_reorder=enable_phase_reorder,
+        # The computed-goto table structure does not survive to GLBOPT1 (IDA
+        # collapses the on-stack table copy), so loop recovery must lower at the
+        # earliest maturity where the state map is complete, not be deferred.
+        defer_loop_recovery_to_glbopt1=False,
         state_dispatcher_map_factory=_make_tigress_indirect_state_dispatcher_maps(
             goto_table_info or {}
         ),
@@ -8519,7 +8524,8 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
         selected_blockers = fallback_blockers
         selected_partial_rewrite_reasons: tuple[str, ...] = ()
         state_map_loop_recovery_deferred = (
-            self._profile.state_transport == "state_dispatcher_map"
+            self._profile.defer_loop_recovery_to_glbopt1
+            and self._profile.state_transport == "state_dispatcher_map"
             and mba.maturity < ida_hexrays.MMAT_GLBOPT1
             and phase_artifact is not None
             and phase_artifact.semantic_reference_variant == "semantic_reference_like"

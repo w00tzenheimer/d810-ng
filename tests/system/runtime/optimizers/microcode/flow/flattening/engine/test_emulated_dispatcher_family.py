@@ -3195,15 +3195,18 @@ def test_emulated_dispatcher_unflattener_accepts_tigress_indirect_profile() -> N
 def test_tigress_indirect_profile_can_materialize_targets(monkeypatch) -> None:
     calls = []
 
-    def _materialize(config):
+    def _materialize(config=None):
         calls.append(config)
         return ()
 
     import d810.hexrays.preanalysis.indirect_jump_labels as indirect_labels
 
+    # Configure-time materialization is now address-agnostic: it discovers and
+    # materializes every indirect-table dispatcher in the database, taking the
+    # configured ``goto_table_info`` only as a per-function override.
     monkeypatch.setattr(
         indirect_labels,
-        "materialize_indirect_label_targets_from_config",
+        "materialize_discovered_indirect_label_targets",
         _materialize,
     )
 
