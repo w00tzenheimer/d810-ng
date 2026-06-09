@@ -47,6 +47,7 @@ from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.analyses.control_flow.dispatcher_recovery import build_dispatch_map_any_kind
 from d810.families.state_machine_cff.base import StateMachineCffFamily
+from d810.families.state_machine_cff.pipeline import standard_state_machine_passes
 
 # Hard backend requirement: indirect/computed next-state targets need a concrete
 # emulator to fold. The string keys ``CapabilityPolicy.required`` (validated against
@@ -81,24 +82,27 @@ class ApproovFamily(StateMachineCffFamily):
         return dmap
 
     def pipeline_for(self, match, context) -> "tuple[PassSpec, ...]":
-        """Same five passes as Hodur, but emulation-gated and switch-router-pinned.
+        """Kind-aware pipeline.
 
-        ``recover_state_transitions`` and ``lower_state_machine`` require ``"emulation"``
-        (indirect target folding); ``lower_state_machine`` pins ``RouterKind.SWITCH`` so
-        the exact ``state -> handler`` map drives the router regardless of a
-        collapsed/absent comparison BST. ``INDIRECT_TABLE`` would instead inject a custom
-        ``DispatcherRouterResolver`` (consuming ``EmulationCapability``); the
-        ``configured_kind`` pin is the switch-table form.
+        ``SWITCH_TABLE`` runs the standard seeded-fold spine (NO emulation) — proven on
+        abc_or_dispatch, whose masked-OR writes fold via the partitioned fixpoint; this is
+        the only live ApproovFamily kind (the chain has no indirect detector yet).
+
+        ``INDIRECT_JUMP`` needs the concrete emulator to fold computed targets
+        (``EmulationCapability``, M3+) and pins ``RouterKind.INDIRECT_TABLE``; structural
+        until an indirect resolver + emulation backend land.
         """
-        return (
-            PassSpec("recover_dispatcher", RecoverDispatcher, live_mba, default),
-            PassSpec("recover_state_transitions", RecoverStateTransitions, emulation, default),
-            PassSpec("plan_semantic_regions", PlanSemanticRegions, no_caps, default),
-            PassSpec(
-                "lower_state_machine",
-                lambda: LowerStateMachine(configured_kind=RouterKind.SWITCH),
-                emulation,
-                golden,
-            ),
-            PassSpec("cleanup_residual_dispatcher", CleanupResidualDispatcher, no_caps, golden),
-        )
+        if getattr(match, "source", None) == DispatcherType.INDIRECT_JUMP:
+            return (
+                PassSpec("recover_dispatcher", RecoverDispatcher, live_mba, default),
+                PassSpec("recover_state_transitions", RecoverStateTransitions, emulation, default),
+                PassSpec("plan_semantic_regions", PlanSemanticRegions, no_caps, default),
+                PassSpec(
+                    "lower_state_machine",
+                    lambda: LowerStateMachine(configured_kind=RouterKind.INDIRECT_TABLE),
+                    emulation,
+                    golden,
+                ),
+                PassSpec("cleanup_residual_dispatcher", CleanupResidualDispatcher, no_caps, golden),
+            )
+        return standard_state_machine_passes()
