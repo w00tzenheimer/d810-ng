@@ -1,9 +1,7 @@
 """Force-edge structured-region override plan discovery.
 
 Pure classification producer for the structured-region force-edge override
-block originally inlined in
-``d810.optimizers.microcode.flow.flattening.hodur.strategies.reconstruction``
-at lines 1176-1582.
+block originally inlined in the legacy reconstruction strategy.
 
 For each ``(region, force_edge)`` pair the producer selects one of four
 variant branches:

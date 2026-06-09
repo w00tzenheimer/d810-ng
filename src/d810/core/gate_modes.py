@@ -21,7 +21,7 @@ Current mapping of existing entry points
 |                               | COLLECT_ONLY    | maps to GATE_ONLY; False maps to  |
 |                               |                 | COLLECT_ONLY                      |
 +-------------------------------+-----------------+-----------------------------------+
-| HodurUnflattener              | GATE_SELECT     | Full gate accounting + strategy   |
+| StateMachineCffUnflattener    | GATE_SELECT     | Full gate accounting + strategy   |
 |                               |                 | selection (when executor exists)   |
 +-------------------------------+-----------------+-----------------------------------+
 | CF Unflattener                | COLLECT_ONLY    | No flow-context gate; only bulk   |

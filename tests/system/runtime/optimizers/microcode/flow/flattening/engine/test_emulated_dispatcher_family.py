@@ -105,7 +105,8 @@ def _get_default_binary() -> str:
 
 
 def _apply_engine_wrapper_profile(ctx) -> None:
-    ctx.add_rule("HodurUnflattener")
+    # M2 sever (llr-ibpi): the legacy HodurUnflattener is deleted; exercise the
+    # emulated dispatcher engine (the emulator backend) directly.
     ctx.add_rule("EmulatedDispatcherUnflattener")
 
 
@@ -7554,112 +7555,6 @@ class TestEmulatedDispatcherManagedContext:
         )
 
         assert len(group_results) == len(groups)
-
-    def test_approov_multistate_characterization_without_fake_jump_skip(
-        self,
-        libobfuscated_setup,
-        d810_state,
-        pseudocode_to_string,
-        code_comparator,
-        monkeypatch,
-    ) -> None:
-        assert code_comparator is not None, (
-            "libclang required for candidate subset characterization"
-        )
-        func_ea = get_func_ea("approov_multistate")
-        if func_ea == idaapi.BADADDR:
-            pytest.skip("Function 'approov_multistate' not found")
-
-        from d810.ir.flowgraph import FlowGraph
-        from d810.optimizers.microcode.flow.flattening.hodur.family import (
-            HodurStrategyFamily,
-        )
-        from d810.optimizers.microcode.flow.flattening.cleanup_live_evidence import (
-            collect_live_fake_jump_fixes,
-        )
-        from d810.passes.fake_jump import (
-            FAKE_JUMP_FIXES_METADATA_KEY,
-            serialize_fake_jump_fixes,
-        )
-        from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
-            analyze_dispatcher_live,
-            is_dispatcher_block,
-        )
-
-        original_attach_fake_jump = HodurStrategyFamily.attach_fake_jump_fixes_to_flow_graph
-
-        def _attach_fake_jump_without_cleanup_skip(self, mba, flow_graph):
-            updated = original_attach_fake_jump(self, mba, flow_graph)
-            if FAKE_JUMP_FIXES_METADATA_KEY in dict(updated.metadata):
-                return updated
-            try:
-                fixes = collect_live_fake_jump_fixes(
-                    mba,
-                    logger=self._logger,
-                    max_nb_block=100,
-                    max_path=100,
-                    allowed_maturities=(ida_hexrays.MMAT_GLBOPT1,),
-                )
-            except Exception:
-                return updated
-            if not fixes:
-                return updated
-            try:
-                dispatcher_analysis = analyze_dispatcher_live(mba)
-            except Exception:
-                dispatcher_analysis = None
-            if (
-                dispatcher_analysis is not None
-                and dispatcher_analysis.is_conditional_chain
-            ):
-                fixes = tuple(
-                    fix
-                    for fix in fixes
-                    if not is_dispatcher_block(dispatcher_analysis, fix.fake_block)
-                )
-            if not fixes:
-                return updated
-            metadata = dict(updated.metadata)
-            metadata[FAKE_JUMP_FIXES_METADATA_KEY] = serialize_fake_jump_fixes(fixes)
-            return FlowGraph(
-                blocks=updated.blocks,
-                entry_serial=updated.entry_serial,
-                func_ea=updated.func_ea,
-                metadata=metadata,
-            )
-
-        monkeypatch.setattr(
-            HodurStrategyFamily,
-            "attach_fake_jump_fixes_to_flow_graph",
-            _attach_fake_jump_without_cleanup_skip,
-        )
-
-        with d810_state() as state:
-            legacy_code = _decompile_with_project(
-                state,
-                func_ea,
-                "example_libobfuscated.json",
-                pseudocode_to_string,
-                engine_wrappers_only=False,
-            )
-
-        with d810_state() as state:
-            engine_code = _decompile_with_project(
-                state,
-                func_ea,
-                "example_libobfuscated.json",
-                pseudocode_to_string,
-                engine_wrappers_only=True,
-            )
-
-        print(
-            "APPROOV_MULTISTATE_WITHOUT_FAKEJUMP_SKIP",
-            {
-                "legacy_ast": code_comparator.count_ast_statements(legacy_code),
-                "engine_ast": code_comparator.count_ast_statements(engine_code),
-                "equivalent": code_comparator.are_equivalent(engine_code, legacy_code),
-            },
-        )
 
     def test_approov_multistate_characterization_with_fixpred_restored(
         self,

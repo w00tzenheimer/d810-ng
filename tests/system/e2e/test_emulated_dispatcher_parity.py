@@ -28,7 +28,8 @@ def _get_default_binary() -> str:
 
 
 def _apply_engine_wrapper_profile(ctx) -> None:
-    ctx.add_rule("HodurUnflattener")
+    # M2 sever (llr-ibpi): the legacy HodurUnflattener is deleted; exercise the
+    # emulated dispatcher engine (the emulator backend) directly.
     ctx.add_rule("EmulatedDispatcherUnflattener")
 
 
