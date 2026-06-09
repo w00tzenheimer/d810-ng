@@ -105,6 +105,26 @@ class TestTigressIndirectSemanticOracle:
 
     binary_name = _get_default_binary()
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "NOT semantically equivalent to the reference test_function_original (llr-307s). "
+            "The bar for matching this oracle is SEMANTIC EQUIVALENCE to the original C, "
+            "not feature-witness presence. d810's emitted pseudocode currently DIVERGES in "
+            "three ways: (1) the entire `else` branch is missing -- the even-parity "
+            "accumulation loop `while (i<100) local_state += password[i]*ref_input_value` "
+            "(recovered as orphaned state 0x20; the parity `jcc` was Hex-Rays constant-folded, "
+            "orphaning the not-taken arm, so the handler is DCE'd); (2) the `switch (% 4)` "
+            "default arm (-66) is collapsed -- only case 0 (^66) and one +66 arm survive "
+            "emission though all three arms are in the recovered model; (3) `ref_input_value` "
+            "is folded out (gettimeofday entry-state over-concretization). The weak "
+            "feature-witness oracle goes 15/15 anyway because it checks node EXISTENCE not "
+            "REACHABILITY and its conditional_states list omits the parity branch -- that is "
+            "an oracle blind spot, NOT a pass. Fix gap1 (recover the folded-parity orphan arm "
+            "in the engine -> phi the next-state) + gap2 (preserve the 3 switch arms through "
+            "emission) so the OUTPUT matches the reference; only then drop this marker."
+        ),
+    )
     def test_tigress_indirect_engine_oracle(
         self,
         libobfuscated_setup,
