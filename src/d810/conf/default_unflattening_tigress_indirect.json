@@ -1,6 +1,49 @@
 {
-  "description": "Validation profile for the legacy Tigress indirect jump-table unflattener",
-  "ins_rules": [],
-  "blk_rules": [
-  ]
+    "description": "\u00a71a pipeline: StateMachineCffUnflattener over the Tigress indirect jump-table dispatcher (llr-qb33). The IDA-bound IndirectJumpDispatcherResolver is injected into the shared front-end so \u00a71a recognizes the m_ijmp dispatcher; table layout is discovered structurally (goto_table_info is an optional override). Requires D810_USE_S1A_PIPELINE=1.",
+    "ins_rules": [],
+    "blk_rules": [
+        {
+            "name": "StateMachineCffUnflattener",
+            "is_activated": true,
+            "config": {
+                "max_state_constants": 100,
+                "min_state_constant": 16777216,
+                "goto_table_info": {
+                    "0x1800175c0": {
+                        "state_base": 1,
+                        "initial_state": 34,
+                        "state_var_stkoff": "0x30",
+                        "stack_table_offset": "0x70",
+                        "table_address": "0x180019f10",
+                        "table_nb_elt": 37,
+                        "dispatch_jump_ea": "0x1800177a8",
+                        "materialized_targets": true,
+                        "label_end": "0x180017d2f"
+                    }
+                }
+            }
+        },
+        {
+            "name": "JumpFixer",
+            "is_activated": true,
+            "config": {
+                "enabled_rules": [
+                    "CompareConstantRule1",
+                    "CompareConstantRule2",
+                    "CompareConstantRule3",
+                    "JaeRule1",
+                    "JbRule1",
+                    "JnzRule1",
+                    "JnzRule2",
+                    "JnzRule3",
+                    "JnzRule4",
+                    "JnzRule5",
+                    "JnzRule6",
+                    "JnzRule7",
+                    "JnzRule8",
+                    "JmpRuleZ3Const"
+                ]
+            }
+        }
+    ]
 }
