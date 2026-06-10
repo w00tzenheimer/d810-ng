@@ -25,7 +25,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from d810.core.diag import read_diag_db
-from d810.core.diag.models import Block, Instruction, StateDispatcherRow
+from d810.core.diag.models import (
+    Block,
+    CfgProvenance,
+    Instruction,
+    StateDispatcherRow,
+)
 from d810.diagnostics.output import add_output_argument, get_output, write_output
 from d810.core.typing import Any
 
@@ -228,6 +233,46 @@ def load_dispatch_rows(
             }
         )
     return rows
+
+
+def load_lowered_conditionals(
+    conn: sqlite3.Connection,
+) -> dict[int, tuple[int, int]]:
+    """Map a lowered-conditional source block to its (true_arm, false_arm) blocks.
+
+    §1a lowers a proven conditional state-write-to-dispatcher into a direct
+    2-way edge *before* the diagnostic snapshot is captured, so the surviving
+    snapshot shows only a 1-way handler with no constant state write. The
+    deferred modifier persists the lowering provenance to ``cfg_provenance``
+    under action ``LOWER_CONDITIONAL_STATE_TRANSITION`` (diagnostic-only — the
+    CFG rewrite itself is unaffected). This reconstructs, per source block, the
+    two handler blocks that the conditional now branches to, so the transfer
+    map can re-derive the two next-states.
+
+    The lowering provenance is flushed under the post-pipeline snapshot whose
+    block serials match the chosen INDIRECT_JUMP snapshot, so we read across all
+    snapshots and key on the (maturity-local) block serial.
+    """
+    lowered: dict[int, tuple[int, int]] = {}
+    for row in (
+        CfgProvenance.select(
+            CfgProvenance.block_serial,
+            CfgProvenance.extra_json,
+        )
+        .where(CfgProvenance.action == "LOWER_CONDITIONAL_STATE_TRANSITION")
+        .tuples()
+    ):
+        source_block = int(row[0])
+        try:
+            extra = json.loads(row[1] or "{}")
+        except json.JSONDecodeError:
+            continue
+        true_target = extra.get("true_target")
+        false_target = extra.get("false_target")
+        if true_target is None or false_target is None:
+            continue
+        lowered[source_block] = (int(true_target), int(false_target))
+    return lowered
 
 
 def _constant_state_write(
@@ -607,7 +652,15 @@ def extract_transfer_map(
         blocks = load_blocks(conn, choice.snapshot_id)
         instructions_by_block = load_instructions(conn, choice.snapshot_id)
         dispatch_rows = load_dispatch_rows(conn, choice.snapshot_id)
+        lowered_conditionals = load_lowered_conditionals(conn)
 
+    # Map each handler block to the dispatcher state it implements, so a lowered
+    # conditional's true/false ARM blocks can be resolved back to next-states.
+    state_by_target_block = {
+        int(row["target_block"]): int(row["state"])
+        for row in dispatch_rows
+        if int(row["target_block"]) >= 0
+    }
     effective_table_count = int(table_count or len(dispatch_rows))
     transfers: list[dict[str, Any]] = []
     observed_states = {int(row["state"]) for row in dispatch_rows}
@@ -648,9 +701,35 @@ def extract_transfer_map(
                 if path.get("next_state") is not None
             }
         )
+        lowered_via: dict[str, Any] | None = None
+        # A state whose handler reaches the dispatcher with NO constant
+        # state-write is the surviving fallthrough of a conditional that §1a
+        # already lowered into a direct 2-way edge. Re-derive the two
+        # next-states from the lowered-conditional arm blocks (each arm block is
+        # itself a dispatcher handler whose state is known via the dispatch
+        # rows). This records the REAL conditional that the snapshot lost.
+        if not next_states and complete and target_block in lowered_conditionals:
+            true_block, false_block = lowered_conditionals[target_block]
+            arm_states = sorted(
+                {
+                    state_value
+                    for arm_block in (true_block, false_block)
+                    for state_value in (state_by_target_block.get(int(arm_block)),)
+                    if state_value is not None
+                }
+            )
+            if len(arm_states) > 1:
+                next_states = arm_states
+                lowered_via = {
+                    "true_block": int(true_block),
+                    "false_block": int(false_block),
+                    "arm_states": arm_states,
+                }
         observed_states.update(next_states)
         if terminal and not complete and not unresolved:
             kind = "terminal"
+        elif lowered_via is not None and len(next_states) > 1:
+            kind = "conditional"
         elif len(next_states) == 1 and not unresolved:
             kind = "direct"
         elif len(next_states) > 1 and not unresolved:
@@ -667,6 +746,7 @@ def extract_transfer_map(
                 "target_ea": target_ea,
                 "kind": kind,
                 "next_states": next_states,
+                "lowered_conditional": lowered_via,
                 "terminal": bool(terminal),
                 "unresolved": bool(unresolved) or kind == "unresolved",
                 "complete_path_count": len(complete),
