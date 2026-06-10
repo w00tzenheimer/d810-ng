@@ -898,7 +898,7 @@ _INDIRECT_MATERIALIZATION_REGISTERED = False
 _INDIRECT_MATERIALIZATION_GOTO_TABLE: dict = {}
 _INDIRECT_MATERIALIZED_FUNCTION_EAS: set[int] = set()
 # EAs structurally confirmed (by the per-function detector) to be register-indirect
-# computed-goto dispatchers. Populated by the prolog hook; queried by the §1a
+# computed-goto dispatchers. Populated by the prolog hook; queried by the unflatten
 # unflattener as the address-agnostic ``_is_indirect`` maturity-routing signal.
 _INDIRECT_DISPATCHER_FUNCTION_EAS: set[int] = set()
 
@@ -968,7 +968,7 @@ def is_materialized_indirect_dispatcher(function_ea: int) -> bool:
     (register-indirect computed-goto) dispatcher by the prolog-time
     materialization.
 
-    This is the address-agnostic ``_is_indirect`` signal the §1a unflattener
+    This is the address-agnostic ``_is_indirect`` signal the unflatten unflattener
     uses to route recovery to ``MMAT_CALLS`` — no per-binary configured
     addresses, no config profile flag. Returns ``False`` until the prolog hook
     has run for the function, and ``False`` for every non-dispatcher.

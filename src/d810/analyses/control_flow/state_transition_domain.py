@@ -10,7 +10,7 @@ and declares a ``conditional_states`` set whenever the arms reach the dispatcher
 back-edge with different state writes.  That over-generates -- it counts branches
 on non-state conditions, double-counts shared multi-predecessor blocks, and
 cannot prune paths infeasible for the incoming state value (the diag DAG's 82 vs
-oracle-66 ``CONDITIONAL_TRANSITION`` inflation, which makes the §1a bridge
+oracle-66 ``CONDITIONAL_TRANSITION`` inflation, which makes the unflatten bridge
 over-claim the return anchors and pins ``returns`` at 1).
 
 A sound forward value-set fixpoint over the state variable ``s`` eliminates the

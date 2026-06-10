@@ -1,4 +1,4 @@
-"""§1a pass #1: portable equality-chain dispatcher detection over a FlowGraph.
+"""unflatten pass #1: portable equality-chain dispatcher detection over a FlowGraph.
 
 Hand-port of HodurStateMachineDetector — verifies state_const -> handler routing (EQ -> jump
 target, NE -> fall-through), dominant-state-variable selection, and the StateDispatcherMap the

@@ -1,9 +1,9 @@
-"""Hodur family: the §1a ``Family`` profile for equality-chain state-variable CFF.
+"""Hodur family: the unflatten ``Family`` profile for equality-chain state-variable CFF.
 
 :class:`HodurFamily` recognizes the equality-chain (Hodur) dispatcher shape over a
 portable ``FlowGraph`` and declares the five-pass pipeline on the shared spine. It
 auto-registers via :class:`StateMachineCffFamily` / ``Registrant`` so the scanner
-discovers it on load. Hexrays-free (the §1a passes/analyses are portable); no microcode
+discovers it on load. Hexrays-free (the unflatten passes/analyses are portable); no microcode
 patching happens here.
 
 (The former ``HodurUnflatteningProfile`` strategy-ordering policy was retired with the

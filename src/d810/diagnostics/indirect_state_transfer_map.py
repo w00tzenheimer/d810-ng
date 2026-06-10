@@ -240,7 +240,7 @@ def load_lowered_conditionals(
 ) -> dict[int, tuple[int, int]]:
     """Map a lowered-conditional source block to its (true_arm, false_arm) blocks.
 
-    §1a lowers a proven conditional state-write-to-dispatcher into a direct
+    unflatten lowers a proven conditional state-write-to-dispatcher into a direct
     2-way edge *before* the diagnostic snapshot is captured, so the surviving
     snapshot shows only a 1-way handler with no constant state write. The
     deferred modifier persists the lowering provenance to ``cfg_provenance``
@@ -703,7 +703,7 @@ def extract_transfer_map(
         )
         lowered_via: dict[str, Any] | None = None
         # A state whose handler reaches the dispatcher with NO constant
-        # state-write is the surviving fallthrough of a conditional that §1a
+        # state-write is the surviving fallthrough of a conditional that unflatten
         # already lowered into a direct 2-way edge. Re-derive the two
         # next-states from the lowered-conditional arm blocks (each arm block is
         # itself a dispatcher handler whose state is known via the dispatch

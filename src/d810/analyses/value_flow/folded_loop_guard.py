@@ -2,13 +2,13 @@
 
 Hex-Rays folds the constant-trip-count loop guard of a counted accumulation
 loop (``for (i = 0; i < N; i++) acc += f(i)``) to a constant ``je`` and DCEs
-the body arm BEFORE the §1a recovery maturity (MMAT_CALLS for the Tigress
+the body arm BEFORE the unflatten recovery maturity (MMAT_CALLS for the Tigress
 INDIRECT profile).  The induction counter and the numeric bound ``N`` survive
 only at the earlier MMAT_LOCOPT maturity (a dead ``(%counter - #N)`` compare
 and the orphaned body-state write), so this collector observes them there and
 records one ``FoldedLoopGuardFact`` per detected guard.
 
-The fact carries everything the §1a emitter needs to re-materialize the guard
+The fact carries everything the unflatten emitter needs to re-materialize the guard
 as an explicit ``if (counter < N)`` 2-way branch at the later maturity (where
 the live counter stack slot is stable but the comparison and the body arm are
 gone):
@@ -23,7 +23,7 @@ gone):
 Observability-only: the collector never modifies microcode and never feeds
 planning except through the typed fact a consumer chooses to read.  The earlier
 LOCOPT facts carry forward into the CALLS view via the lifecycle's
-maturity-rank filter, so the §1a CALLS run can read this LOCOPT fact directly.
+maturity-rank filter, so the unflatten CALLS run can read this LOCOPT fact directly.
 """
 from __future__ import annotations
 

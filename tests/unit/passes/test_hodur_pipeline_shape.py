@@ -1,4 +1,4 @@
-"""§1a acceptance (structural): HodurFamily.pipeline_for IS the real call graph.
+"""unflatten acceptance (structural): HodurFamily.pipeline_for IS the real call graph.
 
 This is the "does the running code look like the north-star pseudocode" gate at the unit level:
 the family returns the five named PassSpecs in order, each builds a PipelinePass, and every pass

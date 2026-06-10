@@ -212,14 +212,14 @@ def analyze_tigress_indirect_dispatcher_from_config(
     )
     if dispatcher_serial is None:
         dispatcher_serial = _find_ijmp_dispatcher_serial(mba)
-    # After the §1a indirect prepass MATERIALIZES the computed-goto label
+    # After the unflatten indirect prepass MATERIALIZES the computed-goto label
     # bodies (I1.5), the m_ijmp is GONE (direct flow; no m_jtbl either) and the
     # configured ``dispatch_jump_ea`` no longer names a block tail -- so both
     # lookups above return None.  Recognition must still succeed (llr-tm3i):
     # fall back to the materialized hub when materialization happened, which is
     # signalled by EITHER an explicit config flag OR a structural discovery
     # (``discovered is not None`` -- the table was recovered from the binary,
-    # which only the materializing §1a indirect config runs).  This is the
+    # which only the materializing unflatten indirect config runs).  This is the
     # address-agnostic path: a config whose key drifted after a rebuild yields
     # ``cfg is None`` yet still discovers + materializes the table.
     if dispatcher_serial is None and (

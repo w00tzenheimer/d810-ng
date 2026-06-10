@@ -1,8 +1,8 @@
-"""``run_pipeline`` — the §1a driver loop, portable + injected-dependency form.
+"""``run_pipeline`` — the unflatten driver loop, portable + injected-dependency form.
 
 The maturity-hook shell in ``optimizers/`` supplies the live Hex-Rays ``MutationBackend`` and the
 lifted ``FunctionSource``; this function is the portable orchestration from the north-star
-pseudocode (spec §1a):
+pseudocode (spec unflatten):
 
     family.detect -> for spec in family.pipeline_for(match, ctx):
         validate_capabilities; result = spec.pass_factory().run(ctx)
@@ -64,7 +64,7 @@ def run_pipeline(
 ):
     """Run one family's pipeline over one function/maturity. Returns the final graph.
 
-    Mirrors §1a ``run_d810_pipeline`` minus the lift/select bootstrap (the shell does those).
+    Mirrors unflatten ``run_d810_pipeline`` minus the lift/select bootstrap (the shell does those).
     ``capabilities`` is the backend-provided :class:`CapabilitySet` (typed capability instances)
     threaded into every pass's context; ``None`` -> an empty set (passes that only query
     ``optional`` are unaffected).

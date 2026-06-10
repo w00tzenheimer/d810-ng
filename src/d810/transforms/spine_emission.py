@@ -1,8 +1,8 @@
-"""Portable per-edge spine redirect emission — shared by the legacy LFG path and §1a #4.
+"""Portable per-edge spine redirect emission — shared by the legacy LFG path and unflatten #4.
 
 The reconstruction "spine" is the chain of handler-to-handler redirects that reconnects the
 scattered OLLVM handlers into a directly reachable graph with the dispatcher bypassed. Both the
-legacy ``LinearizedFlowGraphStrategy`` (via ``execute_dag_redirect_fallback``) and the §1a
+legacy ``LinearizedFlowGraphStrategy`` (via ``execute_dag_redirect_fallback``) and the unflatten
 ``lower_to_direct_graph`` transform need exactly the same per-edge decision for the *clean spine*
 case: given a semantic transition edge whose ``target_entry_anchor`` is already resolved, emit the
 correct redirect modification.

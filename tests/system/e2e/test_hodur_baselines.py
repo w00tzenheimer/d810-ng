@@ -76,7 +76,7 @@ HODUR_BASELINES = [
     pytest.param(
         "hodur_func",
         "hodur_flag2_s1a.json",
-        # §1a back-edge unflatten (conditional/equality-chain migration, ticket
+        # unflatten back-edge unflatten (conditional/equality-chain migration, ticket
         # llr-28ht). hodur_func is a pure CONDITIONAL_CHAIN dispatcher; its
         # exact state->handler map IS routed through emit_minimal_unflatten just
         # like sub_7FFD. The AST metrics are byte-identical to the legacy
@@ -89,7 +89,7 @@ HODUR_BASELINES = [
     pytest.param(
         "sub_7FFD3338C040",
         "hodur_flag2_s1a.json",
-        # §1a back-edge unflatten on the corrected MASM sample (all 9 work-calls
+        # unflatten back-edge unflatten on the corrected MASM sample (all 9 work-calls
         # preserved, dispatcher removed, semantically == _gitless reference).
         {"statements": 95, "returns": 4, "whiles": 0, "gotos": 4, "ifs": 22},
         id="sub_7FFD3338C040",
@@ -209,7 +209,7 @@ class TestHodurBaselines:
                 capture_post_maturity=idaapi.MMAT_GLBOPT1,
             )
             request.addfinalizer(reset_settings)
-            # §1a back-edge unflatten path (hodur_flag2_s1a.json). Drives both the
+            # unflatten back-edge unflatten path (hodur_flag2_s1a.json). Drives both the
             # comparison-BST sub_7FFD and the equality-chain hodur_func through
             # emit_minimal_unflatten. Replaces the legacy HodurUnflattener (which
             # collapses sub_7FFD to a stub + INTERR 50877 on the corrected MASM
@@ -243,13 +243,13 @@ class TestHodurBaselines:
                 "sub_7FFD3338C040 return-carrier regression: "
                 "the AFTER pseudocode returns a pool-qword/state-guard artifact"
             )
-            # §1a emits ``result = 0x5644...; ...; return result;`` rather than a
+            # unflatten emits ``result = 0x5644...; ...; return result;`` rather than a
             # literal ``return 0x5644...;`` — assert the value is present.
             assert "0x5644FD01B1049C4BLL" in code_after, (
                 "sub_7FFD3338C040 return-carrier regression: "
                 "the AFTER pseudocode no longer returns 0x5644FD01B1049C4B"
             )
-            # The §1a back-edge unflatten does not build the legacy StateDag /
+            # The unflatten back-edge unflatten does not build the legacy StateDag /
             # region-DAG recon, so the region-oracle guardrail is N/A. Guard
             # instead on obfuscation-work preservation: every MEMORY[0x180000000]
             # call must survive (the corrected sample has 9, incl. the recovered
@@ -331,9 +331,9 @@ class TestSub7FFDCorridorPreservationRegression:
         if func_ea == idaapi.BADADDR:
             pytest.skip("sub_7FFD3338C040 not found")
 
-        # §1a back-edge unflatten path: the legacy HodurUnflattener collapses
+        # unflatten back-edge unflatten path: the legacy HodurUnflattener collapses
         # sub_7FFD to a stub + INTERR 50877 on the corrected MASM sample, whereas
-        # §1a preserves the byte-emit cascade (incl. the ``== 0xFFFFFFFFFFFFFF02``
+        # unflatten preserves the byte-emit cascade (incl. the ``== 0xFFFFFFFFFFFFFF02``
         # for-loop guard) and all 9 callees.
         _prev_env = {
             k: os.environ.get(k)
@@ -391,7 +391,7 @@ class TestSub7FFDCorridorPreservationRegression:
             "is missing from AFTER pseudocode — the preserved cascade's "
             "for-loop guard regressed."
         )
-        # The §1a back-edge output writes the zeroing cascade as 8 a5-relative
+        # The unflatten back-edge output writes the zeroing cascade as 8 a5-relative
         # OWORD stores (a5+0x50 .. a5+0xC0) — the same payload the legacy path
         # rendered against the global ``unk_180019E95``, now parameter-relative
         # (matching the _gitless reference).

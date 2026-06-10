@@ -9,7 +9,7 @@ The unifying surface over the three live value-range modules:
   IDA's native ranges are unavailable at the current maturity);
 * the existing ``ValrangeResolutionStrategy`` consumer pattern in
   ``backends/hexrays/evidence/valrange_resolution.py`` (this capability is the
-  factored-out service it -- and the §1a ``RecoverStateTransitions`` domain --
+  factored-out service it -- and the unflatten ``RecoverStateTransitions`` domain --
   call through).
 
 Lives in the evaluator layer (like ``HexRaysUseDefSafetyBackend``) because every

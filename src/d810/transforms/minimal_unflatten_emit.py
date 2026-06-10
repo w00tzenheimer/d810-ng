@@ -395,7 +395,7 @@ def build_folded_loop_guard_lowerings(
     """Lower folded counted-loop guards into explicit ``if (i < N)`` 2-way edges.
 
     Hex-Rays folds the constant-trip-count guard of a counted accumulation loop
-    to a constant branch and DCEs the body arm before the §1a recovery maturity,
+    to a constant branch and DCEs the body arm before the unflatten recovery maturity,
     so the back-edge model recovers the guard handler as a SELF-LOOP (it writes
     its own loop-header state) and the loop renders as an empty ``while (1);``.
     The :class:`FoldedLoopGuardFact` (observed at the earlier LOCOPT maturity and
@@ -514,7 +514,7 @@ def build_folded_loop_guard_lowerings(
                 else f"stkoff=0x{int(counter_stkoff):x}"
             )
             logger.info(
-                "s1a folded-loop-guard: blk[%d]@0x%x if(counter@%s<0x%x) "
+                "unflat folded-loop-guard: blk[%d]@0x%x if(counter@%s<0x%x) "
                 "-> body=blk[%d](0x%x) else exit=blk[%d](0x%x)",
                 guard_serial,
                 int(guard_ea),
@@ -571,7 +571,7 @@ def emit_minimal_unflatten(
             key = t.proof.kind if t.proof is not None else "unattributed"
             kinds[key] = kinds.get(key, 0) + 1
         logger.info(
-            "s1a minimal unflatten: %d back-edge transitions, proof kinds=%s",
+            "unflat minimal unflatten: %d back-edge transitions, proof kinds=%s",
             len(transitions),
             dict(sorted(kinds.items())),
         )
@@ -611,7 +611,7 @@ def emit_minimal_unflatten(
             if not bridged:
                 if logger.info_on:
                     logger.info(
-                        "s1a minimal unflatten: BAILED (no entry bridge: "
+                        "unflat minimal unflatten: BAILED (no entry bridge: "
                         "initial_state=%s) -- leaving function intact",
                         initial_state,
                     )
@@ -652,7 +652,7 @@ def emit_minimal_unflatten(
     if logger.info_on:
         n_cond = sum(1 for h in handler_transitions if h.is_conditional)
         logger.info(
-            "s1a minimal unflatten: conditional_handlers=%d arm_redirects_added=%d",
+            "unflat minimal unflatten: conditional_handlers=%d arm_redirects_added=%d",
             n_cond,
             len(arm_mods),
         )
@@ -690,7 +690,7 @@ def emit_minimal_unflatten(
             flow_graph, dispatcher, mods, int(dispatcher_entry_serial)
         )
         logger.info(
-            "s1a minimal unflatten: back_edges=%d return_edges=%d unresolved=%d "
+            "unflat minimal unflatten: back_edges=%d return_edges=%d unresolved=%d "
             "redirects=%d reachable_handlers=%d/%d unreached=%s",
             len(transitions),
             n_return,

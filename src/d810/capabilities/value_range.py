@@ -20,7 +20,7 @@ This is the unifying surface over the three existing value-range modules:
   ``ValrangeResolutionStrategy`` consumer.
 
 Rather than merging those (two evaluator engines + one backend strategy, at
-different layers), this capability is the single portable contract the §1a
+different layers), this capability is the single portable contract the unflatten
 ``RecoverStateTransitions`` domain consumes via ``capabilities.optional`` to
 resolve transitions the exact equality-chain cannot.
 
@@ -75,7 +75,7 @@ class ValRangeCapability(Protocol):
     """Capability boundary for value-range state resolution.
 
     A concrete backend answers value-range queries about the state variable at a
-    given block, which the §1a transition recovery uses to resolve handler exits
+    given block, which the unflatten transition recovery uses to resolve handler exits
     that the exact equality-chain detector left unresolved (MBA-obfuscated state
     computations, range-routed handlers).  All methods are read-only; ``None``
     means "could not resolve / unknown", never a guessed value.

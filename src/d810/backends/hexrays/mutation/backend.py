@@ -1,10 +1,10 @@
-"""Hex-Rays mutation backend — the §1a ``MutationBackend.apply`` boundary.
+"""Hex-Rays mutation backend — the unflatten ``MutationBackend.apply`` boundary.
 
-The ONLY place a §1a ``PatchPlan`` becomes live ``mba`` edits. ``apply`` lowers the plan through the
+The ONLY place a unflatten ``PatchPlan`` becomes live ``mba`` edits. ``apply`` lowers the plan through the
 existing ``IDAIRTranslator`` (PatchPlan -> DeferredGraphModifier queue) and then RE-LIFTS the
 post-apply ``mba`` to a fresh ``FlowGraph`` snapshot — the new snapshot identity is the sound
 invalidation epoch (Hex-Rays re-runs its own optimizer during/after apply, so the re-lift captures
-the vendor's re-optimization, per §1a / the LLVM AnalysisManager invalidation model).
+the vendor's re-optimization, per unflatten / the LLVM AnalysisManager invalidation model).
 
 Structurally satisfies the ``MutationBackend`` protocol (``passes.pass_pipeline``) without importing
 it (upward edge); duck-typing suffices.
@@ -17,13 +17,13 @@ from d810.transforms.plan import PatchPlan
 
 
 class HexRaysMutationBackend:
-    """Apply §1a PatchPlans to a live ``mba`` and return the re-lifted FlowGraph."""
+    """Apply unflatten PatchPlans to a live ``mba`` and return the re-lifted FlowGraph."""
 
     def __init__(self, translator: IDAIRTranslator | None = None) -> None:
         self._translator = translator or IDAIRTranslator()
 
     def capabilities(self) -> frozenset[str]:
-        # "emulation" advertises the concolic block-emulator the §1a entry registers as
+        # "emulation" advertises the concolic block-emulator the unflatten entry registers as
         # the EmulationCapability (llr-11du). ADDITIVE: no standard pass requires it, so
         # advertising it is behaviour-neutral; only the INDIRECT pipeline (slice 2) reads
         # it, and there is no live indirect detector yet.

@@ -11,14 +11,14 @@ portable resolver cannot do.  This resolver depends ONLY on the portable
 it stays IDA-free (``portable-core-no-ida``).  It is injected into the shared
 front-end at runtime via
 :func:`d810.analyses.control_flow.dispatcher_recovery.register_extra_dispatcher_resolver`
-(the §1a entry constructs it with a ``HexRaysIndirectJumpTableCapability`` bound
+(the unflatten entry constructs it with a ``HexRaysIndirectJumpTableCapability`` bound
 to the live ``mba``).
 
-RECOGNITION SURVIVES MATERIALIZATION (llr-tm3i).  The §1a indirect prepass
+RECOGNITION SURVIVES MATERIALIZATION (llr-tm3i).  The unflatten indirect prepass
 *materializes* the computed-goto label bodies before the MBA is built, which
 REMOVES the ``m_ijmp`` (direct flow; there is no ``m_jtbl`` either).  So a gate
 that REQUIRES an ``m_ijmp`` tail would reject the very dispatcher it just made
-recoverable.  Because this resolver is registered ONLY under the §1a indirect
+recoverable.  Because this resolver is registered ONLY under the unflatten indirect
 config (the registry is config-gated, so it never runs for hodur/approov/switch),
 ``accepts()`` can afford a more lenient gate:
 
@@ -83,7 +83,7 @@ class IndirectJumpDispatcherResolver:
     portable equality-chain (10) / switch-table (5) resolvers if they were to also
     accept -- in practice they return ``None`` on an indirect graph, so ranking is
     behaviour-neutral and the gate keeps this resolver inert elsewhere (it is only
-    registered under the §1a indirect config).
+    registered under the unflatten indirect config).
     """
 
     indirect_tables: IndirectJumpTableCapability

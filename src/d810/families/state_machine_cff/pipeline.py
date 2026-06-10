@@ -1,4 +1,4 @@
-"""Portable §1a pass shape: the canonical five-pass state-machine spine.
+"""Portable unflatten pass shape: the canonical five-pass state-machine spine.
 
 The five-pass spine is dispatcher-shape neutral: every standard kind (equality-chain, BST,
 switch-table) runs the SAME passes, which re-derive their own evidence from ``ctx.graph``.
@@ -23,7 +23,7 @@ __all__ = ["standard_state_machine_passes"]
 
 
 def standard_state_machine_passes() -> tuple[PassSpec, ...]:
-    """Return the canonical five-pass §1a state-machine spine, in order."""
+    """Return the canonical five-pass unflatten state-machine spine, in order."""
     return (
         PassSpec("recover_dispatcher", RecoverDispatcher, live_mba, default),
         PassSpec(

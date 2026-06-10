@@ -1,7 +1,7 @@
 """Pipeline vocabulary — the LLVM new-PassManager shape adapted for a vendor backend.
 
 This is the target call-graph vocabulary the optimizers-thinning end-state is built around
-(see docs/plans/2026-05-31-optimizers-thinning-execution-workflow-spec.md §1a). Families return
+(see docs/plans/2026-05-31-optimizers-thinning-execution-workflow-spec.md unflatten). Families return
 ``PassSpec``s; passes schedule analyses (facts) + transforms (a ``PatchPlan``); a ``MutationBackend``
 applies the plan and returns a fresh ``FlowGraph`` snapshot (the sound invalidation epoch).
 
@@ -143,7 +143,7 @@ class MutationBackend(Protocol):
     ) -> FlowGraph: ...
 
 
-# Convenience singletons for PassSpec authoring (families read like the §1a pseudocode).
+# Convenience singletons for PassSpec authoring (families read like the unflatten pseudocode).
 no_caps = CapabilityPolicy()
 live_mba = CapabilityPolicy(required=frozenset({"live_mba"}))
 default = SafetyPolicy(name="default")

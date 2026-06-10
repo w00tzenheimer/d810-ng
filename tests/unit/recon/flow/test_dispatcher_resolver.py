@@ -175,7 +175,7 @@ def test_resolve_dispatcher_none_graph_returns_none():
 # --- Extra-resolver registry seam (llr-qb33) ---------------------------------
 #
 # The IDA-bound indirect jump-table resolver lives in d810.backends.hexrays and
-# is injected at runtime by the §1a entry. These tests cover the PORTABLE seam in
+# is injected at runtime by the unflatten entry. These tests cover the PORTABLE seam in
 # d810.analyses (registry + front-end consultation) with a fake Protocol-shaped
 # resolver, so they stay IDA-free.
 

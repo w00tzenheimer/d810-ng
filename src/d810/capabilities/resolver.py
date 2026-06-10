@@ -4,7 +4,7 @@ This is the north-star ``capabilities`` object: passes call
 ``capabilities.optional(ValRangeCapability)`` /
 ``capabilities.require(UseDefSafetyCapability)`` to obtain a backend-provided
 capability instance keyed by its Protocol type.  The pipeline shell builds the
-set from the live backend (e.g. the §1a entry registers
+set from the live backend (e.g. the unflatten entry registers
 ``HexRaysValRangeCapability(mba)`` under ``ValRangeCapability``) and threads it
 into :class:`d810.passes.pass_pipeline.FunctionPipelineContext`.
 

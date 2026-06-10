@@ -1,4 +1,4 @@
-"""AnalysisManager — the LLVM new-PassManager ``AnalysisManager`` analog (§1a ``facts``).
+"""AnalysisManager — the LLVM new-PassManager ``AnalysisManager`` analog (unflatten ``facts``).
 
 LLVM: analyses are lazy, cached, and keyed by the IR unit; a transform returns a
 ``PreservedAnalyses`` set that prunes the cache. LiSA: the CFG is the analysis unit and results

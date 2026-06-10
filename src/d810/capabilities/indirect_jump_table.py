@@ -6,7 +6,7 @@ return its exact ``state_const -> handler-block`` rows".
 
 A portable resolver
 (:class:`d810.analyses.control_flow.indirect_jump_resolver.IndirectJumpDispatcherResolver`
--- the §1a indirect spine) depends ONLY on a portable
+-- the unflatten indirect spine) depends ONLY on a portable
 :class:`~d810.ir.flowgraph.FlowGraph` and this Protocol; the live binary read
 (``ida_bytes.get_qword`` over the table, native label-EA -> MBA-block mapping)
 lives in the Hex-Rays implementation

@@ -3,8 +3,8 @@
 The goto-free structurer (:mod:`d810.analyses.control_flow.structurer`) consumes
 a flow-graph of basic blocks (``.blocks`` / ``.entry_serial`` / ``.get_block`` +
 ``.successors`` / ``.predecessors``). Feeding it the raw lifted ``mba`` -- or even
-the §1a *projected* FlowGraph -- structures the **dispatcher**: those graphs keep
-the BST comparison blocks (``if (var_64 <=u 0xNNNN)``) as nodes; the §1a spine
+the unflatten *projected* FlowGraph -- structures the **dispatcher**: those graphs keep
+the BST comparison blocks (``if (var_64 <=u 0xNNNN)``) as nodes; the unflatten spine
 only redirects edges, and the BST blocks die later via the full plan + IDA's DCE.
 
 The recovered :class:`LinearizedStateDag` is the genuinely clean graph: handler

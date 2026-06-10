@@ -1,4 +1,4 @@
-"""ApproovFamily — the second §1a profile: switch/indirect CFF on the shared spine.
+"""ApproovFamily — the second unflatten profile: switch/indirect CFF on the shared spine.
 
 This is a *sibling* of :class:`HodurFamily`, not a fork: it runs the SAME portable
 ``run_pipeline`` driver over the SAME five passes (``RecoverDispatcher`` ->
@@ -24,7 +24,7 @@ Additive + inert: ApproovFamily auto-registers (via :class:`StateMachineCffFamil
 is NOT on the live maturity-hook path (the live entry hardcodes ``HodurFamily()``).
 ``HodurFamily.detect`` already claims ``CONDITIONAL_CHAIN`` only, so the claims are disjoint
 today; the remaining cutover is wiring the live entry to ``select_family`` so abc on
-§1a-portable routes here (production abc is unaffected — it runs via HCC).
+unflatten-portable routes here (production abc is unaffected — it runs via HCC).
 """
 from __future__ import annotations
 

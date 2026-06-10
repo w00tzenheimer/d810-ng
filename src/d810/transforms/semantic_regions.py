@@ -1,4 +1,4 @@
-"""Plan semantic regions over a portable FlowGraph (§1a pass #3) — LLVM RegionInfo style.
+"""Plan semantic regions over a portable FlowGraph (unflatten pass #3) — LLVM RegionInfo style.
 
 This is the ``RegionInfo`` analog: detect maximal **linear** (single-entry / single-exit) handler
 chains in the recon state DAG. A region is ``state_0 -> state_1 -> ... -> state_n`` where each node
@@ -31,7 +31,7 @@ from d810.analyses.control_flow.dag_region_detection import (
     detect_linear_transition_regions,
 )
 
-logger = logging.getLogger("D810.s1a.regions")
+logger = logging.getLogger("D810.unflat.regions")
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +56,7 @@ def plan_semantic_regions(
     """Detect maximal linear handler-chain regions over a portable ``FlowGraph``.
 
     Real composition of the portable DAG builder + region detector. ``transition_result`` and
-    ``dispatcher_entry_serial`` are the §1a analysis dependencies (#2 and #1); while they are
+    ``dispatcher_entry_serial`` are the unflatten analysis dependencies (#2 and #1); while they are
     ``None`` (driver wiring pending) the plan is empty.
     """
     if (
@@ -77,7 +77,7 @@ def plan_semantic_regions(
         tuple(int(node.key.handler_serial) for node in region) for region in regions
     )
     logger.info(
-        "s1a regions: dag_nodes=%d dag_edges=%d regions=%d entry=%s state_var=%s diag=%s",
+        "unflat regions: dag_nodes=%d dag_edges=%d regions=%d entry=%s state_var=%s diag=%s",
         len(dag.nodes),
         len(dag.edges),
         len(linear_regions),
