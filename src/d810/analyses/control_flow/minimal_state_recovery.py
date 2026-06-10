@@ -494,6 +494,7 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
     state_var_stkoff: int,
     *,
     dispatcher_entry_serial: int,
+    recover_terminal_tail: bool = False,
 ) -> tuple[StateWriteTransition, ...]:
     """B2 shadow: predecessor-partitioned multi-cell fold -> the Case-2 ``via_block`` split.
 
@@ -640,7 +641,119 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
                     proof=TransitionProof(_FIXPOINT_ORACLE, "unresolved", False),
                 )
             )
+
+    # Terminal-tail back-edges (Tigress decoy-exit shape): a state-write block
+    # whose successor is a STOP/terminal (or otherwise never re-enters the
+    # dispatcher) names its next state in the written const just as a normal
+    # back-edge does, but it is NOT a dispatcher predecessor, so the loop above
+    # never visits it and its valid transition is dropped (the legacy walk
+    # misclassified it ``successor_kind="exit"``).  The transition is purely
+    # ``block -> route(N)`` via the dispatch map -- walking successors is
+    # unnecessary.  Recover it whenever the block's folded state routes to a real
+    # handler; redirect its existing (terminal) successor edge onto that handler.
+    #
+    # INDIRECT-only (ticket llr-m9r4): this recovery is load-bearing for the
+    # Tigress INDIRECT_JUMP decoy-exit shape (it kills a JUMPOUT) but ADDS
+    # spurious terminal-tail transitions for equality-chain / switch profiles
+    # (hodur, approov), which regressed their goldens.  Gated to the indirect
+    # caller so non-indirect profiles get exactly their pre-change behavior.
+    if recover_terminal_tail:
+        out.extend(
+            _recover_terminal_tail_transitions(
+                flow_graph,
+                fp,
+                effective_stkoff,
+                disp=disp,
+                emitted=out,
+                classify=_classify,
+                arm_of=_arm,
+            )
+        )
     return tuple(out)
+
+
+def _recover_terminal_tail_transitions(
+    flow_graph,
+    fp,
+    effective_stkoff: int,
+    *,
+    disp: int,
+    emitted: list,
+    classify,
+    arm_of,
+) -> list[StateWriteTransition]:
+    """Wire state-write blocks that route via the dispatch map but never re-enter
+    the dispatcher (their successor is a STOP/terminal).
+
+    Driven entirely by the dispatch map: a block whose converged out-state is a
+    valid handler route (not return/default/STOP) is a legitimate transition
+    ``block -> route(N)`` regardless of its ``successor_kind``.  Only blocks that
+    (a) are not already emitted as a source/inner-predecessor, (b) are not
+    dispatcher predecessors, and (c) cannot reach the dispatcher through their
+    successor chain are considered -- so interior fall-throughs into a shared
+    glue back-edge (handled by the predecessor-partitioned ``via_block`` split)
+    are never double-wired.
+    """
+    already: set[int] = {int(t.write_block) for t in emitted}
+    extra: list[StateWriteTransition] = []
+    for serial in sorted(flow_graph.blocks):
+        if serial == disp or int(serial) in already:
+            continue
+        block = flow_graph.get_block(serial)
+        if block is None:
+            continue
+        succs = tuple(int(s) for s in block.succs)
+        if disp in succs:
+            continue  # a real dispatcher predecessor -- handled above
+        value = fp.out_stk_maps.get(serial, {}).get(effective_stkoff)
+        if value is None:
+            continue
+        state = int(value) & 0xFFFFFFFF
+        target, is_ret = classify(state)
+        if is_ret or target is None:
+            continue  # not a real handler route -- leave as natural control flow
+        if _reaches_dispatcher(flow_graph, serial, disp):
+            continue  # interior write feeding a shared back-edge -- already wired
+        # The block's successor is a terminal/non-dispatcher edge.  The emitter
+        # redirects ``write_block -> dispatcher`` for a normal back-edge, but
+        # this block points at its terminal successor, not the dispatcher.  Carry
+        # that successor as ``via_block`` so the emitter re-points the existing
+        # ``block -> successor`` edge onto the routed handler instead.
+        if not succs:
+            continue  # nothing to re-point (a true sink with no out-edge)
+        old = succs[0]
+        arm = arm_of(block, old)
+        extra.append(
+            StateWriteTransition(
+                serial, state, target, False, arm, via_block=old,
+                proof=TransitionProof(_FIXPOINT_ORACLE, "terminal_tail", True),
+            )
+        )
+        already.add(int(serial))
+    return extra
+
+
+def _reaches_dispatcher(flow_graph, start: int, disp: int, *, bound: int = 64) -> bool:
+    """``True`` if the dispatcher is forward-reachable from ``start`` (bounded)."""
+    seen: set[int] = set()
+    stack = [int(start)]
+    steps = 0
+    while stack and steps < bound:
+        steps += 1
+        cur = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        block = flow_graph.get_block(cur)
+        if block is None:
+            continue
+        for s in block.succs:
+            si = int(s)
+            if si == disp:
+                return True
+            if si not in seen:
+                stack.append(si)
+    return False
 
 
 def _emit_seeded_back_edge(

@@ -132,6 +132,27 @@ def _existing_redirect_keys(mods: list[object]) -> set[tuple[int, int]]:
     return keys
 
 
+def _existing_redirect_sources(mods: list[object]) -> set[int]:
+    """``from_serial`` of every redirect already planned by the back-edge model.
+
+    A conditional handler whose two arms reach the dispatcher through *distinct*
+    per-arm glue blocks (each its own dispatcher predecessor) is already fully
+    resolved by the back-edge / predecessor-partitioned model: each glue block is
+    redirected ``glue -> route(arm.next_state)``.  The branch-anchored fall-through
+    redirect this pass would otherwise add for the shared-EXIT case is then both
+    redundant and harmful -- it retargets the selecting branch's *fall-through*
+    edge, which the 2-way ``BLOCK_TARGET_CHANGE`` backend cannot express (it
+    retargets only the conditional jump arm), severing the fall-through arm to the
+    shared return.  Recognising the per-arm glue block as an existing redirect
+    source lets the pass defer to the back-edge model that already wired it.
+    """
+    return {
+        int(m.from_serial)
+        for m in mods
+        if isinstance(m, (RedirectGoto, RedirectBranch))
+    }
+
+
 def _arm_branch_successor(arm) -> int | None:
     """The block ``branch_block`` flows to *on this arm's path*.
 
@@ -161,6 +182,8 @@ def build_conditional_arm_redirects(
     *,
     dispatcher_entry_serial: int | None,
     existing: set[tuple[int, int]],
+    existing_sources: set[int] | None = None,
+    is_indirect: bool = False,
 ) -> list[object]:
     """Emit per-arm redirects for conditional handlers, anchored on the branch.
 
@@ -186,14 +209,27 @@ def build_conditional_arm_redirects(
 
     When a conditional handler's arms instead live on *distinct* write blocks
     (each its own dispatcher predecessor), the back-edge model already resolves
-    both correctly; the ``existing`` veto (keyed on the source edge) keeps this
-    pass from touching them, so the proven case stays byte-identical.  Strictly
-    additive: only emits edges the back-edge model did not.
+    both correctly; two vetoes keep this pass from touching them: the ``existing``
+    veto (keyed on the source edge) skips an edge already redirected, and the
+    ``existing_sources`` veto skips a shared-EXIT branch redirect whose per-arm
+    glue block (``_arm_branch_successor``) is already a back-edge redirect source.
+    The second veto is what keeps the pass from severing a fall-through arm whose
+    glue block the predecessor-partitioned model already wired (Tigress
+    ``local_state & 1``).  Strictly additive: only emits edges the back-edge model
+    did not.
+
+    INDIRECT-only (ticket llr-m9r4): the ``existing_sources`` shared-EXIT veto is
+    gated behind ``is_indirect``.  It recovered the Tigress INDIRECT_JUMP switch
+    but skipped a legitimate redirect on equality-chain / switch profiles (hodur),
+    regressing their goldens.  When ``is_indirect`` is False this pass behaves
+    exactly as before the gap2 change (only the ``existing`` source-edge veto
+    applies inside ``_add``).
     """
     disp = int(dispatcher_entry_serial) if dispatcher_entry_serial is not None else None
     if disp is None:
         return []
     default_target = dispatcher.default_target
+    sources = existing_sources if existing_sources is not None else set()
     mods: list[object] = []
     seen: set[tuple[str, int, int, int]] = set()
 
@@ -227,10 +263,28 @@ def build_conditional_arm_redirects(
         for arm in handler.arms:
             new = default_target if arm.is_return else arm.target_handler
             if shared_write_block and arm.branch_block is not None:
-                # Both arms converge on one back-edge: anchor on the selecting
-                # branch and redirect its per-arm successor edge, bypassing the
-                # shared (collapsing) write block.
+                # Both arms reach the dispatcher through one *shared exit* block
+                # (``arm.write_block`` is the scan boundary, not the state-write
+                # site).  When each arm flows through its OWN per-arm glue block
+                # -- a distinct dispatcher predecessor the back-edge /
+                # predecessor-partitioned model already split (``glue ->
+                # route(next_state)``) -- the branch-anchored redirect is both
+                # redundant and harmful: it retargets the selecting branch's
+                # *fall-through* edge, which ``BLOCK_TARGET_CHANGE`` cannot express
+                # (it retargets only the conditional jump arm), severing the
+                # fall-through arm to the shared return and orphaning the real
+                # next handler (the Tigress ``local_state & 1`` ODD-arm drop).
+                # Defer to the back-edge model whenever it already wired this
+                # arm's glue block.
+                # INDIRECT-only (ticket llr-m9r4): the shared-EXIT ``existing_sources``
+                # veto recovered the Tigress ``local_state & 1`` switch but skipped a
+                # legitimate redirect for equality-chain / switch profiles (hodur),
+                # regressing their goldens.  Gate the shared-EXIT skip to the indirect
+                # caller; non-indirect profiles fall back to the original ``existing``
+                # veto inside ``_add`` exactly as before the gap2 change.
                 old = _arm_branch_successor(arm)
+                if is_indirect and old is not None and int(old) in sources:
+                    continue
                 if old is not None:
                     _add(int(arm.branch_block), int(old), new)
                 continue
@@ -332,6 +386,7 @@ def emit_minimal_unflatten(
     dispatcher_entry_serial: int | None,
     pre_header_serial: int | None = None,
     initial_state: int | None = None,
+    is_indirect: bool = False,
 ) -> PatchPlan:
     """Recover back-edge transitions and emit the dispatcher-bypass ``PatchPlan``.
 
@@ -352,6 +407,7 @@ def emit_minimal_unflatten(
         dispatcher,
         int(state_var_stkoff),
         dispatcher_entry_serial=int(dispatcher_entry_serial),
+        recover_terminal_tail=is_indirect,
     )
     # C3b (ticket llr-1szn / d81-t9ok): each transition carries a typed
     # ``TransitionProof`` naming the oracle and resolution shape. Observe-only --
@@ -437,6 +493,8 @@ def emit_minimal_unflatten(
         handler_transitions,
         dispatcher_entry_serial=int(dispatcher_entry_serial),
         existing=_existing_redirect_keys(mods),
+        existing_sources=_existing_redirect_sources(mods),
+        is_indirect=is_indirect,
     )
     if arm_mods:
         mods = list(mods) + arm_mods

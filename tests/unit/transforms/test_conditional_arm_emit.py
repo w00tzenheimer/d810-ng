@@ -314,9 +314,19 @@ def _shared_write_block_fg() -> FlowGraph:
     )
 
 
-def test_shared_write_block_conditional_redirects_branch(_seam) -> None:
-    """The shared-write-block conditional handler is recovered with two arms and the
-    branch-anchored pass redirects each branch successor edge to its routed handler.
+def test_shared_write_block_conditional_arms_wired_to_routed_handlers(_seam) -> None:
+    """The shared-write-block conditional handler is recovered with two arms and each
+    arm is wired to its routed handler.
+
+    The selecting branch's per-arm glue blocks (blk13 / blk14) are distinct
+    dispatcher predecessors of the shared write block (blk15), so the
+    predecessor-partitioned back-edge model resolves each arm directly --
+    ``13 -> route(0xAA)=40`` and ``14 -> route(0xBB)=50`` via blk15. The
+    branch-anchored arm pass then DEFERS (its glue blocks are already redirect
+    sources): emitting a branch-target-change on the *fall-through* arm there is
+    redundant and, on the real Tigress shape, harmful (``BLOCK_TARGET_CHANGE``
+    cannot retarget a fall-through arm, severing it). The recovered arms must
+    reach their routed handlers regardless of which model wired them.
     """
     fg = _shared_write_block_fg()
     disp = _disp({0x10: 10, 0xAA: 40, 0xBB: 50}, exit_block=99)
@@ -335,11 +345,12 @@ def test_shared_write_block_conditional_redirects_branch(_seam) -> None:
         dispatcher_entry_serial=2, pre_header_serial=1, initial_state=0x10,
     )
     mods = plan.as_graph_modifications()
-    branch_edges = {(m.from_serial, m.old_target, m.new_target) for m in mods
-                    if isinstance(m, (RedirectGoto, RedirectBranch)) and m.from_serial == 10}
-    # branch blk10's two successor edges re-pointed onto the routed handlers
-    assert (10, 13, 40) in branch_edges
-    assert (10, 14, 50) in branch_edges
+    edge_set = {(m.from_serial, m.old_target, m.new_target) for m in mods
+                if isinstance(m, (RedirectGoto, RedirectBranch))}
+    # The predecessor-partitioned back-edge model wires each per-arm glue block
+    # straight onto its routed handler (bypassing the shared write block 15).
+    assert (13, 15, 40) in edge_set
+    assert (14, 15, 50) in edge_set
 
 
 def test_shared_write_block_reachability_no_self_loop(_seam) -> None:
