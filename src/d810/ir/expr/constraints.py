@@ -378,11 +378,14 @@ class EqualityConstraint(ConstraintExpr):
         if expr.is_leaf():
             if expr.name in candidate:
                 value = candidate[expr.name]
-                if hasattr(value, "value"):
-                    return value.value
-                return value
+                raw = value.value if hasattr(value, "value") else value
+                # Canonicalize to unsigned width representation (Z3 BitVec semantics)
+                return raw & mask if isinstance(raw, int) else raw
             if expr.value is not None:
-                return expr.value
+                # Signed DSL literals (e.g. Const("-1", -1)) must be wrapped to
+                # the active width so they compare equal to the unsigned result
+                # of masked bitwise ops (e.g. -1 == 0xFFFFFFFF at 32-bit).
+                return expr.value & mask
             raise ValueError(f"Variable/constant {expr.name} not in candidate")
 
         # Operation node - evaluate recursively
@@ -403,11 +406,11 @@ class EqualityConstraint(ConstraintExpr):
             case "mul":
                 return (left_val * right_val) & mask
             case "and":
-                return left_val & right_val
+                return (left_val & right_val) & mask
             case "or":
-                return left_val | right_val
+                return (left_val | right_val) & mask
             case "xor":
-                return left_val ^ right_val
+                return (left_val ^ right_val) & mask
             case "shl":
                 return (left_val << right_val) & mask
             case "shr":
