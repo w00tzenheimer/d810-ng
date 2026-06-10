@@ -214,22 +214,6 @@ class TestHodurBaselines:
             # emit_minimal_unflatten. Replaces the legacy HodurUnflattener (which
             # collapses sub_7FFD to a stub + INTERR 50877 on the corrected MASM
             # sample) and the emulated dispatcher engine (hodur_func).
-            _prev_env = {
-                k: os.environ.get(k)
-                for k in ("D810_USE_S1A_PIPELINE", "D810_S1A_USE_HCC")
-            }
-            os.environ["D810_USE_S1A_PIPELINE"] = "1"
-            os.environ["D810_S1A_USE_HCC"] = "0"
-
-            def _restore_s1a_env() -> None:
-                for k, v in _prev_env.items():
-                    if v is None:
-                        os.environ.pop(k, None)
-                    else:
-                        os.environ[k] = v
-
-            request.addfinalizer(_restore_s1a_env)
-
         with d810_state() as state:
             with state.for_project(project_config) as ctx:
                 if func_name == "sub_7FFD3338C040":
@@ -353,15 +337,9 @@ class TestSub7FFDCorridorPreservationRegression:
         # for-loop guard) and all 9 callees.
         _prev_env = {
             k: os.environ.get(k)
-            for k in (
-                "D810_HODUR_PRESERVE_TERMINAL_BYTE_CORRIDORS",
-                "D810_USE_S1A_PIPELINE",
-                "D810_S1A_USE_HCC",
-            )
+            for k in ("D810_HODUR_PRESERVE_TERMINAL_BYTE_CORRIDORS",)
         }
         os.environ["D810_HODUR_PRESERVE_TERMINAL_BYTE_CORRIDORS"] = "1"
-        os.environ["D810_USE_S1A_PIPELINE"] = "1"
-        os.environ["D810_S1A_USE_HCC"] = "0"
 
         def _restore_gate() -> None:
             for k, v in _prev_env.items():

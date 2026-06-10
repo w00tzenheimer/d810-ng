@@ -1,5 +1,5 @@
 {
-    "description": "§1a pipeline: StateMachineCffUnflattener (run_pipeline) + JumpFixer ONLY, replacing legacy HodurUnflattener. Requires D810_USE_S1A_PIPELINE=1 to activate the §1a path.",
+    "description": "§1a pipeline: StateMachineCffUnflattener (run_pipeline) + JumpFixer ONLY, replacing legacy HodurUnflattener. §1a is the sole CFF unflattener path (no enable flag).",
     "ins_rules": [],
     "blk_rules": [
         {

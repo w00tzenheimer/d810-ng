@@ -1,5 +1,5 @@
 {
-    "description": "\u00a71a pipeline: StateMachineCffUnflattener over the Tigress indirect jump-table dispatcher (llr-qb33). The IDA-bound IndirectJumpDispatcherResolver is injected into the shared front-end so \u00a71a recognizes the m_ijmp dispatcher; table layout is discovered structurally (goto_table_info is an optional override). Requires D810_USE_S1A_PIPELINE=1.",
+    "description": "\u00a71a pipeline: StateMachineCffUnflattener over the Tigress indirect jump-table dispatcher (llr-qb33). The IDA-bound IndirectJumpDispatcherResolver is injected into the shared front-end so \u00a71a recognizes the m_ijmp dispatcher; table layout is discovered structurally (goto_table_info is an optional override).",
     "ins_rules": [
         {"name": "TigressIncrementRule", "is_activated": true, "config": {}},
         {"name": "TigressXorViaOrMinusAndRule", "is_activated": true, "config": {}},
