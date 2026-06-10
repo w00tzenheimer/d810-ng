@@ -86,6 +86,7 @@ from d810.analyses.control_flow.terminal_tail_priors import (
 )
 from d810.analyses.value_flow.byte_emit_corridor import ByteEmitCorridorFactCollector
 from d810.analyses.value_flow.call_anchor import CallAnchorFactCollector
+from d810.analyses.value_flow.folded_loop_guard import FoldedLoopGuardFactCollector
 from d810.analyses.value_flow.induction_carrier import InductionVariableFactCollector
 from d810.analyses.value_flow.loop_carrier import LoopPredicateValueFactCollector
 from d810.analyses.value_flow.ollvm_semantic_carrier import (
@@ -1292,6 +1293,7 @@ class D810Manager:
             self._recon_runtime.register_fact_collector(ReturnFrontierFactCollector())
             self._recon_runtime.register_fact_collector(StateWriteAnchorFactCollector())
             self._recon_runtime.register_fact_collector(StateTransitionAnchorFactCollector())
+            self._recon_runtime.register_fact_collector(FoldedLoopGuardFactCollector())
             self.instruction_optimizer.configure(
                 recon_phase=self._recon_phase,
                 recon_runtime=self._recon_runtime,

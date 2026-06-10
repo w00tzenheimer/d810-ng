@@ -169,6 +169,22 @@ class ValidatedFactView:
         }
         return tuple(obs for obs in self.observations if obs.fact_id not in stale_ids)
 
+    def folded_loop_guards(self) -> tuple[FactObservation, ...]:
+        """Return active ``FoldedLoopGuardFact`` observations.
+
+        Each records a counted-loop guard whose ``i < N`` comparison and body
+        arm Hex-Rays folded/DCE'd before the recovery maturity; the payload
+        carries the counter stack slot, the numeric bound, and the body/exit
+        state constants so a consumer can re-materialize the explicit 2-way
+        guard at the later maturity (ticket llr-pydd).  Earlier-maturity facts
+        carry forward into the active set via the lifecycle's rank filter.
+        """
+        return tuple(
+            obs
+            for obs in self.active_observations
+            if obs.kind == "FoldedLoopGuardFact"
+        )
+
     def state_transitions_for_source_block(
         self,
         block_serial: int,

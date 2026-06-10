@@ -325,6 +325,7 @@ class LowerStateMachine(PipelinePass):
                 pre_header_serial=getattr(bst_evidence, "pre_header_serial", None),
                 initial_state=initial_state,
                 is_indirect=is_indirect,
+                fact_view=getattr(context, "facts", None),
             )
             return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
 

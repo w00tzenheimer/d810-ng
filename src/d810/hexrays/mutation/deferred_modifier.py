@@ -6332,10 +6332,60 @@ class DeferredGraphModifier:
         )
         return True
 
+    def _materialize_counter_bound_condition(
+        self, condition_operand: object
+    ) -> object | None:
+        """Materialize a ``SyntheticCounterBoundCondition`` into a boolean ``mop_d``.
+
+        Builds a ``setl``/``setb`` sub-instruction over the live stack counter
+        (``make_stkvar``) versus the captured numeric bound, then wraps it as a
+        ``mop_d`` so :meth:`_apply_lower_conditional_state_transition`'s ``m_jnz``
+        jumps to the loop-BODY (true) arm exactly when ``counter <cmp> bound``.
+
+        Recognised by duck-typing (``counter_stkoff`` + ``bound`` attributes) so
+        the portable descriptor never has to be importable from this backend.
+        """
+        counter_stkoff = getattr(condition_operand, "counter_stkoff", None)
+        bound = getattr(condition_operand, "bound", None)
+        if counter_stkoff is None or bound is None:
+            return None
+        size = int(getattr(condition_operand, "counter_size", 4) or 4)
+        signed = bool(getattr(condition_operand, "signed", True))
+        safe_ea = int(getattr(self.mba, "entry_ea", 0) or 0) or 1
+        try:
+            cmp_insn = ida_hexrays.minsn_t(safe_ea)
+            cmp_insn.opcode = (
+                ida_hexrays.m_setl if signed else ida_hexrays.m_setb
+            )
+            cmp_insn.l = ida_hexrays.mop_t()
+            cmp_insn.l.make_stkvar(self.mba, int(counter_stkoff))
+            cmp_insn.l.size = size
+            cmp_insn.r = ida_hexrays.mop_t()
+            cmp_insn.r.make_number(int(bound) & ((1 << (8 * size)) - 1), size, safe_ea)
+            cmp_insn.d = ida_hexrays.mop_t()
+            cmp_insn.d.size = 1
+            wrapped = ida_hexrays.mop_t()
+            wrapped.create_from_insn(cmp_insn)
+        except Exception as exc:  # noqa: BLE001 — synthesis is best-effort
+            logger.warning(
+                "conditional_state_transition: counter-bound synthesis failed: %s",
+                exc,
+            )
+            return None
+        if int(getattr(wrapped, "t", ida_hexrays.mop_z)) == int(ida_hexrays.mop_z):
+            return None
+        return wrapped
+
     def _materialize_condition_mop(self, condition_operand: object | None) -> object | None:
         """Clone a proof-supplied condition operand into an owned ``mop_t``."""
         if condition_operand is None:
             return None
+        if (
+            getattr(condition_operand, "counter_stkoff", None) is not None
+            and getattr(condition_operand, "bound", None) is not None
+            and not callable(getattr(condition_operand, "to_mop", None))
+        ):
+            return self._materialize_counter_bound_condition(condition_operand)
         raw_operand = condition_operand
         to_mop = getattr(raw_operand, "to_mop", None)
         if callable(to_mop):
@@ -6428,6 +6478,21 @@ class DeferredGraphModifier:
         safe_ea = int(rewrite_from_ea)
         if safe_ea == idaapi.BADADDR:
             safe_ea = int(getattr(self.mba, "entry_ea", 0) or 0) or 1
+
+        # Inserting the fall-through helper shifts the serials of every block
+        # after the guard, so hold the targets as mblock OBJECTS and re-read
+        # their serials AFTER the insert.  Hex-Rays verify (INTERR 50860)
+        # requires a 2-way block's fall-through (succset[0]) to be the
+        # PHYSICALLY-next block; ``false_target`` is an arbitrary handler, so
+        # synthesize a fall-through NOP-goto helper directly after the guard
+        # (``copy_block_keep`` inserts before ``serial + 1``) that gotos the
+        # false arm, and wire ``succset = [helper, taken]``.
+        true_blk = self.mba.get_mblock(int(true_target))
+        first_succ = self._build_fallthrough_goto_helper(blk, int(false_target))
+        if first_succ is None or true_blk is None:
+            return False
+        true_serial = int(true_blk.serial)
+
         condition_size = int(getattr(condition_mop, "size", 0) or 1)
         jnz = ida_hexrays.minsn_t(safe_ea)
         jnz.opcode = ida_hexrays.m_jnz
@@ -6436,29 +6501,84 @@ class DeferredGraphModifier:
         jnz.r = ida_hexrays.mop_t()
         jnz.r.make_number(0, condition_size, safe_ea)
         jnz.d = ida_hexrays.mop_t()
-        jnz.d.make_blkref(int(true_target))
+        jnz.d.make_blkref(int(true_serial))
         blk.insert_into_block(jnz, blk.tail)
         blk.flags &= ~ida_hexrays.MBL_GOTO
-        ok = _rewire_edge(
-            blk,
-            [int(old_dispatcher)],
-            [int(false_target), int(true_target)],
-            new_block_type=ida_hexrays.BLT_2WAY,
-            verify=False,
-        )
-        if not ok:
-            return False
+        blk.type = ida_hexrays.BLT_2WAY
+
+        # Drop the stale dispatcher edge and install the layout-valid 2-way set.
+        for s in [int(x) for x in blk.succset]:
+            blk.succset._del(s)
+            sblk = self.mba.get_mblock(s)
+            if sblk is not None:
+                sblk.predset._del(blk.serial)
+                if sblk.serial != self.mba.qty - 1:
+                    sblk.mark_lists_dirty()
+        for new_succ in (int(first_succ), int(true_serial)):
+            blk.succset.push_back(new_succ)
+            nblk = self.mba.get_mblock(new_succ)
+            if nblk is not None and blk.serial not in [int(p) for p in nblk.predset]:
+                nblk.predset.push_back(blk.serial)
+                if nblk.serial != self.mba.qty - 1:
+                    nblk.mark_lists_dirty()
         blk.mark_lists_dirty()
         self.mba.mark_chains_dirty()
         logger.info(
-            "LOWER_CONDITIONAL_STATE_TRANSITION: blk[%d] old=%d false=%d true=%d ea=0x%x",
+            "LOWER_CONDITIONAL_STATE_TRANSITION: blk[%d] old=%d true=%d "
+            "(fallthrough_helper=%d) ea=0x%x",
             blk.serial,
             old_dispatcher,
-            false_target,
-            true_target,
+            true_serial,
+            int(first_succ),
             int(rewrite_from_ea),
         )
         return True
+
+    def _build_fallthrough_goto_helper(
+        self, blk: ida_hexrays.mblock_t, false_target: int
+    ) -> int | None:
+        """Create a 1-way NOP-goto block directly after ``blk`` that gotos
+        ``false_target``, returning its serial (the 2-way fall-through arm).
+
+        Placed physically adjacent to ``blk`` (``copy_block_keep`` inserts before
+        ``blk.serial + 1``) so it becomes ``blk.nextb`` and satisfies the verifier
+        requirement that ``succset[0]`` of a 2-way block equals the fall-through.
+        """
+        mba = blk.mba
+        false_blk = mba.get_mblock(int(false_target))
+        if false_blk is None:
+            return None
+        nop_block = copy_block_keep(mba, blk, blk.serial + 1)
+        if nop_block is None:
+            return None
+        # Strip the cloned body to a single NOP, then append the goto.
+        cur = nop_block.head
+        while cur is not None:
+            nxt = cur.next
+            nop_block.make_nop(cur)
+            cur = nxt
+        nop_block.type = ida_hexrays.BLT_1WAY
+        nop_block.flags &= ~ida_hexrays.MBL_GOTO
+        # Drop every inherited succ/pred from the clone -- they point at blk's
+        # neighbours, not this helper.
+        for s in [int(x) for x in nop_block.succset]:
+            nop_block.succset._del(s)
+            sblk = mba.get_mblock(s)
+            if sblk is not None:
+                sblk.predset._del(nop_block.serial)
+        for p in [int(x) for x in nop_block.predset]:
+            nop_block.predset._del(p)
+        # Re-resolve false_target after the insertion (serials may have shifted).
+        false_serial = int(false_blk.serial)
+        insert_goto_instruction(nop_block, false_serial, nop_previous_instruction=False)
+        nop_block.flags |= ida_hexrays.MBL_GOTO
+        nop_block.succset.push_back(false_serial)
+        if nop_block.serial not in [int(p) for p in false_blk.predset]:
+            false_blk.predset.push_back(nop_block.serial)
+            if false_blk.serial != mba.qty - 1:
+                false_blk.mark_lists_dirty()
+        nop_block.mark_lists_dirty()
+        return int(nop_block.serial)
 
     def _apply_normalize_nway_dispatcher_exit(
         self,
