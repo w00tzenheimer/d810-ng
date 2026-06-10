@@ -3,7 +3,7 @@
 Run after a full diagnostic dump, for example:
 
     ./tools/d810cli.py dump -f tigress_flatten_indirect \
-      -p default_unflattening_tigress_indirect_engine.json \
+      -p default_unflattening_tigress_indirect.json \
       --label tigress_indirect --full-diagnostics
 
 Then:
