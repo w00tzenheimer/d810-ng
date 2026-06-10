@@ -460,8 +460,11 @@ def build_folded_loop_guard_lowerings(
         body_state = payload.get("body_state")
         exit_state = payload.get("exit_state")
         counter_stkoff = payload.get("counter_stkoff")
+        counter_reg = payload.get("counter_reg")
         bound = payload.get("bound")
-        if None in (body_state, exit_state, counter_stkoff, bound):
+        if None in (body_state, exit_state, bound):
+            continue
+        if counter_stkoff is None and counter_reg is None:
             continue
         body_target = dispatcher.lookup(int(body_state) & 0xFFFFFFFF)
         exit_target = dispatcher.lookup(int(exit_state) & 0xFFFFFFFF)
@@ -483,7 +486,10 @@ def build_folded_loop_guard_lowerings(
         if rewrite_ea == 0:
             continue
         condition = SyntheticCounterBoundCondition(
-            counter_stkoff=int(counter_stkoff),
+            counter_stkoff=(
+                int(counter_stkoff) if counter_stkoff is not None else None
+            ),
+            counter_reg=int(counter_reg) if counter_reg is not None else None,
             counter_size=int(payload.get("counter_size", 4) or 4),
             bound=int(bound),
             signed=bool(payload.get("signed", True)),
@@ -502,12 +508,17 @@ def build_folded_loop_guard_lowerings(
         )
         suppressed.add(int(guard_serial))
         if logger.info_on:
+            counter_desc = (
+                f"reg=0x{int(counter_reg):x}"
+                if counter_reg is not None
+                else f"stkoff=0x{int(counter_stkoff):x}"
+            )
             logger.info(
-                "s1a folded-loop-guard: blk[%d]@0x%x if(counter@0x%x<0x%x) "
+                "s1a folded-loop-guard: blk[%d]@0x%x if(counter@%s<0x%x) "
                 "-> body=blk[%d](0x%x) else exit=blk[%d](0x%x)",
                 guard_serial,
                 int(guard_ea),
-                int(counter_stkoff),
+                counter_desc,
                 int(bound),
                 int(body_target),
                 int(body_state) & 0xFFFFFFFF,

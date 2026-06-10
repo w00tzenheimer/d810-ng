@@ -6337,17 +6337,20 @@ class DeferredGraphModifier:
     ) -> object | None:
         """Materialize a ``SyntheticCounterBoundCondition`` into a boolean ``mop_d``.
 
-        Builds a ``setl``/``setb`` sub-instruction over the live stack counter
-        (``make_stkvar``) versus the captured numeric bound, then wraps it as a
-        ``mop_d`` so :meth:`_apply_lower_conditional_state_transition`'s ``m_jnz``
-        jumps to the loop-BODY (true) arm exactly when ``counter <cmp> bound``.
+        Builds a ``setl``/``setb`` sub-instruction over the live counter (a stack
+        slot via ``make_stkvar`` OR a register via ``make_reg``) versus the
+        captured numeric bound, then wraps it as a ``mop_d`` so
+        :meth:`_apply_lower_conditional_state_transition`'s ``m_jnz`` jumps to the
+        loop-BODY (true) arm exactly when ``counter <cmp> bound``.
 
-        Recognised by duck-typing (``counter_stkoff`` + ``bound`` attributes) so
-        the portable descriptor never has to be importable from this backend.
+        Recognised by duck-typing (``bound`` + ``counter_stkoff``/``counter_reg``
+        attributes) so the portable descriptor never has to be importable from
+        this backend.
         """
         counter_stkoff = getattr(condition_operand, "counter_stkoff", None)
+        counter_reg = getattr(condition_operand, "counter_reg", None)
         bound = getattr(condition_operand, "bound", None)
-        if counter_stkoff is None or bound is None:
+        if bound is None or (counter_stkoff is None and counter_reg is None):
             return None
         size = int(getattr(condition_operand, "counter_size", 4) or 4)
         signed = bool(getattr(condition_operand, "signed", True))
@@ -6358,8 +6361,11 @@ class DeferredGraphModifier:
                 ida_hexrays.m_setl if signed else ida_hexrays.m_setb
             )
             cmp_insn.l = ida_hexrays.mop_t()
-            cmp_insn.l.make_stkvar(self.mba, int(counter_stkoff))
-            cmp_insn.l.size = size
+            if counter_reg is not None:
+                cmp_insn.l.make_reg(int(counter_reg), size)
+            else:
+                cmp_insn.l.make_stkvar(self.mba, int(counter_stkoff))
+                cmp_insn.l.size = size
             cmp_insn.r = ida_hexrays.mop_t()
             cmp_insn.r.make_number(int(bound) & ((1 << (8 * size)) - 1), size, safe_ea)
             cmp_insn.d = ida_hexrays.mop_t()
@@ -6381,7 +6387,10 @@ class DeferredGraphModifier:
         if condition_operand is None:
             return None
         if (
-            getattr(condition_operand, "counter_stkoff", None) is not None
+            (
+                getattr(condition_operand, "counter_stkoff", None) is not None
+                or getattr(condition_operand, "counter_reg", None) is not None
+            )
             and getattr(condition_operand, "bound", None) is not None
             and not callable(getattr(condition_operand, "to_mop", None))
         ):

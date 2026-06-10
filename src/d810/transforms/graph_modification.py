@@ -571,15 +571,20 @@ class SyntheticCounterBoundCondition:
     numeric bound survive cross-maturity as facts (``InductionCarrierFact`` +
     the LOCOPT guard comparison text), so proof code captures them as this
     backend-agnostic descriptor and the Hex-Rays backend materializes the
-    boolean ``mop_t`` (a ``setl``/``setb`` sub-instruction over the live stack
-    counter) that :class:`LowerConditionalStateTransition` lowers into a 2-way
-    branch.  ``signed`` selects ``setl`` (signed less) vs ``setb`` (unsigned
-    below); the predicate is non-zero on the loop-BODY (true) arm.
+    boolean ``mop_t`` (a ``setl``/``setb`` sub-instruction over the live counter)
+    that :class:`LowerConditionalStateTransition` lowers into a 2-way branch.
+    ``signed`` selects ``setl`` (signed less) vs ``setb`` (unsigned below); the
+    predicate is non-zero on the loop-BODY (true) arm.
+
+    The counter is carried by identity: exactly one of ``counter_stkoff`` (a
+    stack-slot counter) or ``counter_reg`` (a register-resident counter) is set,
+    so the backend builds the comparison against the matching operand kind.
     """
 
-    counter_stkoff: int
     counter_size: int
     bound: int
+    counter_stkoff: int | None = None
+    counter_reg: int | None = None
     signed: bool = True
 
 
