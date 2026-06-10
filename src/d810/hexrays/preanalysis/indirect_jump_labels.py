@@ -897,6 +897,10 @@ def materialize_indirect_label_targets_from_config(
 _INDIRECT_MATERIALIZATION_REGISTERED = False
 _INDIRECT_MATERIALIZATION_GOTO_TABLE: dict = {}
 _INDIRECT_MATERIALIZED_FUNCTION_EAS: set[int] = set()
+# EAs structurally confirmed (by the per-function detector) to be register-indirect
+# computed-goto dispatchers. Populated by the prolog hook; queried by the §1a
+# unflattener as the address-agnostic ``_is_indirect`` maturity-routing signal.
+_INDIRECT_DISPATCHER_FUNCTION_EAS: set[int] = set()
 
 
 def register_indirect_materialization(goto_table_info: Mapping[str, object]) -> None:
@@ -905,6 +909,7 @@ def register_indirect_materialization(goto_table_info: Mapping[str, object]) -> 
     _INDIRECT_MATERIALIZATION_REGISTERED = True
     _INDIRECT_MATERIALIZATION_GOTO_TABLE = dict(goto_table_info or {})
     _INDIRECT_MATERIALIZED_FUNCTION_EAS.clear()
+    _INDIRECT_DISPATCHER_FUNCTION_EAS.clear()
 
 
 def reset_indirect_materialization() -> None:
@@ -913,6 +918,7 @@ def reset_indirect_materialization() -> None:
     _INDIRECT_MATERIALIZATION_REGISTERED = False
     _INDIRECT_MATERIALIZATION_GOTO_TABLE = {}
     _INDIRECT_MATERIALIZED_FUNCTION_EAS.clear()
+    _INDIRECT_DISPATCHER_FUNCTION_EAS.clear()
 
 
 def run_indirect_materialization_for_function(
@@ -943,6 +949,7 @@ def run_indirect_materialization_for_function(
         )
         return None
     if result is not None:
+        _INDIRECT_DISPATCHER_FUNCTION_EAS.add(key)
         logger.info(
             "Tigress indirect prolog materialization 0x%X: success=%s "
             "targets=%d/%d jump_xrefs=%d reason=%s",
@@ -956,8 +963,22 @@ def run_indirect_materialization_for_function(
     return result
 
 
+def is_materialized_indirect_dispatcher(function_ea: int) -> bool:
+    """True if *function_ea* was structurally confirmed an indirect-table
+    (register-indirect computed-goto) dispatcher by the prolog-time
+    materialization.
+
+    This is the address-agnostic ``_is_indirect`` signal the §1a unflattener
+    uses to route recovery to ``MMAT_CALLS`` — no per-binary configured
+    addresses, no config profile flag. Returns ``False`` until the prolog hook
+    has run for the function, and ``False`` for every non-dispatcher.
+    """
+    return int(function_ea) in _INDIRECT_DISPATCHER_FUNCTION_EAS
+
+
 __all__ = [
     "IndirectLabelMaterializationPlan",
+    "is_materialized_indirect_dispatcher",
     "IndirectLabelMaterializationResult",
     "materialize_indirect_label_targets",
     "materialize_discovered_indirect_label_targets",
