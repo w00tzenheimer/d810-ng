@@ -30,6 +30,14 @@ from d810.mba.rules._base import VerifiableRule
 # MMAT_PREOPTIMIZED=2, MMAT_LOCOPT=3, MMAT_CALLS=4, MMAT_GLBOPT1=5
 _ALL_MATURITIES = [2, 3, 4, 5]
 
+# The sign-bit (FORM3) and multiply (FORM2a) rules drive the hardened def-search /
+# subtree-descent path. A prior matcher attempt segfaulted IDA during PREOPT
+# def-search, and PREOPT also carries documented MBA-bloat risk. Restrict these
+# two families to MMAT_LOCOPT and later so the deep operand-resolution work never
+# runs at the crash maturity (ticket llr-pydd). The first matching maturity that
+# fires wins, so the clean fold still lands before the final pseudocode.
+_LOCOPT_AND_LATER = [3, 4, 5]
+
 # Shared symbolic variables / literal constants.
 x, y = Var("x_0"), Var("x_1")
 a, b = Var("x_0"), Var("x_1")
@@ -197,7 +205,7 @@ class TigressNotEqualSignBitRule(VerifiableRule):
     Z3 proved at 32-bit with the pinned 0x1F shift.
     """
 
-    maturities = _ALL_MATURITIES
+    maturities = _LOCOPT_AND_LATER
     BIT_WIDTH = 32
 
     SH = Const("0x1F", 0x1F)
@@ -219,7 +227,7 @@ class TigressNotEqualSignBitRule64(VerifiableRule):
     Z3 proved at 64-bit with the pinned 0x3F shift.
     """
 
-    maturities = _ALL_MATURITIES
+    maturities = _LOCOPT_AND_LATER
     BIT_WIDTH = 64
 
     SH = Const("0x3F", 0x3F)
@@ -257,7 +265,7 @@ class TigressMultiplyBitPartitionRule(VerifiableRule):
     Tigress instance: ``password[i] * ref_input_value``.
     """
 
-    maturities = _ALL_MATURITIES
+    maturities = _LOCOPT_AND_LATER
 
     SKIP_VERIFICATION = True  # 3 multiplications -> Z3 times out; proven by algebra + 2.5M samples
 
