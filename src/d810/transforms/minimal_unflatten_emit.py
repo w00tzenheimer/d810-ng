@@ -32,7 +32,12 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     recover_state_write_transitions_via_partitioned_fixpoint,
 )
 from d810.core import logging
-from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
+from d810.transforms.graph_modification import (
+    LowerConditionalStateTransition,
+    RedirectBranch,
+    RedirectGoto,
+    SyntheticCounterBoundCondition,
+)
 from d810.transforms.plan import PatchPlan, compile_patch_plan
 
 logger = logging.getLogger("D810.transforms.minimal_unflatten_emit")
@@ -41,6 +46,7 @@ __all__ = [
     "emit_minimal_unflatten",
     "build_state_write_redirects",
     "build_conditional_arm_redirects",
+    "build_folded_loop_guard_lowerings",
 ]
 
 
@@ -378,6 +384,139 @@ def _dispatcher_entry_preds(
     return entries
 
 
+def build_folded_loop_guard_lowerings(
+    flow_graph,
+    dispatcher,
+    transitions,
+    fact_view,
+    *,
+    dispatcher_entry_serial: int,
+):
+    """Lower folded counted-loop guards into explicit ``if (i < N)`` 2-way edges.
+
+    Hex-Rays folds the constant-trip-count guard of a counted accumulation loop
+    to a constant branch and DCEs the body arm before the §1a recovery maturity,
+    so the back-edge model recovers the guard handler as a SELF-LOOP (it writes
+    its own loop-header state) and the loop renders as an empty ``while (1);``.
+    The :class:`FoldedLoopGuardFact` (observed at the earlier LOCOPT maturity and
+    carried forward) names the surviving counter slot, the numeric bound, and the
+    body/exit state constants, so we re-materialize the explicit guard:
+
+        guard:  if (counter < bound) -> route(body_state) else -> route(exit_state)
+
+    Returns ``(lowerings, suppressed_sources)``: the typed lowering steps and the
+    set of guard ``from_serial`` redirects the caller must drop (the spurious
+    self-loop the back-edge model emitted for the same block).  Strictly
+    fact-gated -- emits nothing when no folded guard is observed, so non-loop
+    indirect functions are unaffected.
+    """
+    if fact_view is None:
+        return [], set()
+    guards = getattr(fact_view, "folded_loop_guards", None)
+    if callable(guards):
+        guard_facts = tuple(guards())
+    else:
+        # ``ctx.facts`` is the ``AnalysisManager`` view, which forwards
+        # ``active_observations`` but not the typed accessor. Filter the
+        # carried-forward observations for the folded-guard kind directly.
+        observations = getattr(fact_view, "active_observations", ())
+        guard_facts = tuple(
+            obs
+            for obs in observations
+            if getattr(obs, "kind", None) == "FoldedLoopGuardFact"
+        )
+    if not guard_facts:
+        return [], set()
+
+    disp = int(dispatcher_entry_serial)
+    # Map guard EA -> the live guard handler block (serial is maturity-local, EA
+    # is the stable cross-maturity key).
+    serial_by_ea: dict[int, int] = {}
+    for serial in flow_graph.blocks:
+        blk = flow_graph.get_block(serial)
+        if blk is not None:
+            serial_by_ea[int(getattr(blk, "start_ea", -1))] = int(serial)
+
+    # Self-loop guards the back-edge model produced (write_block routes to
+    # itself) -- the folded-guard symptom we replace.
+    self_loop_guards = {
+        int(t.write_block)
+        for t in transitions
+        if t.target_handler is not None
+        and int(t.target_handler) == int(t.write_block)
+        and not t.is_return
+    }
+
+    lowerings: list[object] = []
+    suppressed: set[int] = set()
+    for fact in guard_facts:
+        payload = fact.payload or {}
+        guard_ea = payload.get("guard_ea")
+        if guard_ea is None:
+            continue
+        guard_serial = serial_by_ea.get(int(guard_ea))
+        if guard_serial is None or guard_serial not in self_loop_guards:
+            continue
+        body_state = payload.get("body_state")
+        exit_state = payload.get("exit_state")
+        counter_stkoff = payload.get("counter_stkoff")
+        bound = payload.get("bound")
+        if None in (body_state, exit_state, counter_stkoff, bound):
+            continue
+        body_target = dispatcher.lookup(int(body_state) & 0xFFFFFFFF)
+        exit_target = dispatcher.lookup(int(exit_state) & 0xFFFFFFFF)
+        if body_target is None or exit_target is None:
+            continue
+        guard_block = flow_graph.get_block(guard_serial)
+        if guard_block is None or guard_block.nsucc != 1:
+            continue
+        if int(guard_block.succs[0]) != disp:
+            continue  # guard must still flow only to the dispatcher
+        # The backend removes instructions from ``rewrite_from_ea`` onward, so it
+        # must be the EA of an actual live instruction in the guard block -- NOT
+        # the block's nominal ``start_ea`` (which preserves the original handler
+        # EA and may precede the first surviving instruction after folding).
+        insns = getattr(guard_block, "insn_snapshots", ()) or ()
+        if not insns:
+            continue
+        rewrite_ea = int(getattr(insns[0], "ea", 0) or 0)
+        if rewrite_ea == 0:
+            continue
+        condition = SyntheticCounterBoundCondition(
+            counter_stkoff=int(counter_stkoff),
+            counter_size=int(payload.get("counter_size", 4) or 4),
+            bound=int(bound),
+            signed=bool(payload.get("signed", True)),
+        )
+        lowerings.append(
+            LowerConditionalStateTransition(
+                source_serial=int(guard_serial),
+                old_dispatcher_serial=disp,
+                rewrite_from_ea=rewrite_ea,
+                condition_operand=condition,
+                false_target_serial=int(exit_target),
+                true_target_serial=int(body_target),
+                proof_id=fact.fact_id,
+                reason="folded_loop_guard",
+            )
+        )
+        suppressed.add(int(guard_serial))
+        if logger.info_on:
+            logger.info(
+                "s1a folded-loop-guard: blk[%d]@0x%x if(counter@0x%x<0x%x) "
+                "-> body=blk[%d](0x%x) else exit=blk[%d](0x%x)",
+                guard_serial,
+                int(guard_ea),
+                int(counter_stkoff),
+                int(bound),
+                int(body_target),
+                int(body_state) & 0xFFFFFFFF,
+                int(exit_target),
+                int(exit_state) & 0xFFFFFFFF,
+            )
+    return lowerings, suppressed
+
+
 def emit_minimal_unflatten(
     flow_graph,
     dispatcher,
@@ -387,6 +526,7 @@ def emit_minimal_unflatten(
     pre_header_serial: int | None = None,
     initial_state: int | None = None,
     is_indirect: bool = False,
+    fact_view=None,
 ) -> PatchPlan:
     """Recover back-edge transitions and emit the dispatcher-bypass ``PatchPlan``.
 
@@ -505,6 +645,33 @@ def emit_minimal_unflatten(
             n_cond,
             len(arm_mods),
         )
+    # Folded counted-loop guards (ticket llr-pydd): a guard the back-edge model
+    # recovered as a SELF-LOOP (write_block routes to itself) is the
+    # constant-folded ``i < N`` accumulation guard whose body arm was DCE'd
+    # before the recovery maturity.  Re-materialize it as an explicit 2-way edge
+    # from the cross-maturity FoldedLoopGuardFact, and DROP the spurious
+    # self-loop redirect the back-edge model emitted for the same source.
+    # INDIRECT-only: the fact is observed for the Tigress shape; the gate keeps
+    # equality-chain / switch goldens byte-identical.
+    if is_indirect:
+        guard_lowerings, suppressed = build_folded_loop_guard_lowerings(
+            flow_graph,
+            dispatcher,
+            transitions,
+            fact_view,
+            dispatcher_entry_serial=int(dispatcher_entry_serial),
+        )
+        if suppressed:
+            mods = [
+                m
+                for m in mods
+                if not (
+                    isinstance(m, (RedirectGoto, RedirectBranch))
+                    and int(m.from_serial) in suppressed
+                )
+            ]
+        if guard_lowerings:
+            mods = list(mods) + guard_lowerings
     if logger.info_on:
         n_return = sum(1 for t in transitions if t.is_return)
         n_unresolved = sum(1 for t in transitions if t.next_state is None)
@@ -538,6 +705,18 @@ def _reachability(flow_graph, dispatcher, mods, dispatcher_entry_serial):
         blk = flow_graph.get_block(serial)
         rewired[int(serial)] = [int(s) for s in (blk.succs if blk is not None else ())]
     for m in mods:
+        # A folded-loop-guard lowering re-points the guard's sole dispatcher edge
+        # onto a 2-way ``false``/``true`` split; model both targets as reachable.
+        if isinstance(m, LowerConditionalStateTransition):
+            succ = rewired.get(int(m.source_serial))
+            if succ is not None:
+                rewired[int(m.source_serial)] = [
+                    int(m.false_target_serial),
+                    int(m.true_target_serial),
+                ]
+            continue
+        if not isinstance(m, (RedirectGoto, RedirectBranch)):
+            continue
         src = int(m.from_serial)
         old = int(m.old_target)
         new = int(m.new_target)

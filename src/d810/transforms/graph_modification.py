@@ -562,6 +562,28 @@ class DuplicateReplayAndRedirect:
 
 
 @dataclass(frozen=True)
+class SyntheticCounterBoundCondition:
+    """Portable descriptor for a synthesized ``counter <cmp> bound`` predicate.
+
+    Some folded loop guards lose their live comparison before the recovery
+    maturity (the Tigress INDIRECT ``i < 100`` accumulation guard is folded to a
+    constant ``je`` and DCE'd before MMAT_CALLS).  The induction counter and the
+    numeric bound survive cross-maturity as facts (``InductionCarrierFact`` +
+    the LOCOPT guard comparison text), so proof code captures them as this
+    backend-agnostic descriptor and the Hex-Rays backend materializes the
+    boolean ``mop_t`` (a ``setl``/``setb`` sub-instruction over the live stack
+    counter) that :class:`LowerConditionalStateTransition` lowers into a 2-way
+    branch.  ``signed`` selects ``setl`` (signed less) vs ``setb`` (unsigned
+    below); the predicate is non-zero on the loop-BODY (true) arm.
+    """
+
+    counter_stkoff: int
+    counter_size: int
+    bound: int
+    signed: bool = True
+
+
+@dataclass(frozen=True)
 class LowerConditionalStateTransition:
     """Replace a dispatcher state write with an explicit conditional edge.
 
@@ -774,6 +796,7 @@ __all__ = [
     "CloneConditionalAsGotoFromBranchArm",
     "DuplicateReplayEntry",
     "DuplicateReplayAndRedirect",
+    "SyntheticCounterBoundCondition",
     "LowerConditionalStateTransition",
     "NormalizeNWayDispatcherExit",
     "BypassDispatcherTrampoline",
