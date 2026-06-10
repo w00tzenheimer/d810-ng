@@ -139,11 +139,21 @@ def _resolve_initial_state(bst_evidence, recovery) -> int | None:
     the value is read from the recovered map, never hardcoded. ``emit_minimal_unflatten``
     still applies its own prologue-fold fallback when both are None.
     """
+    dmap = getattr(recovery, "dispatch_map", None) if recovery is not None else None
+    map_initial = getattr(dmap, "initial_state", None) if dmap is not None else None
+    # INDIRECT_JUMP: the BST/equality-chain analyzer still runs on the indirect
+    # function and emits a SPURIOUS initial_state (e.g. 0x1C, a folded inner
+    # state), so its preference would bridge the entry to the wrong handler and
+    # leave the whole chain unreachable. The structural indirect-table recovery
+    # threads the true prologue entry state onto the map, so it is authoritative
+    # for this kind (ticket llr-m9r4). Address-agnostic -- read from the map.
+    source = getattr(dmap, "source", None) if dmap is not None else None
+    is_indirect = source is not None and "INDIRECT" in str(source).upper()
+    if is_indirect and map_initial is not None:
+        return int(map_initial)
     bst_initial = getattr(bst_evidence, "initial_state", None)
     if bst_initial is not None:
         return int(bst_initial)
-    dmap = getattr(recovery, "dispatch_map", None) if recovery is not None else None
-    map_initial = getattr(dmap, "initial_state", None) if dmap is not None else None
     return int(map_initial) if map_initial is not None else None
 
 
@@ -288,8 +298,18 @@ class LowerStateMachine(PipelinePass):
             # switch kinds), fall back to the recovered StateDispatcherMap.initial_state
             # for the INDIRECT_JUMP kind where bst_evidence is None (ticket llr-16jl).
             initial_state = _resolve_initial_state(bst_evidence, recovery)
+            dmap = getattr(recovery, "dispatch_map", None)
+            # INDIRECT-only emit gates (ticket llr-m9r4): the terminal-tail recovery
+            # and the shared-EXIT redirect veto are load-bearing for the Tigress
+            # INDIRECT_JUMP shape but regress equality-chain / switch goldens
+            # (hodur, approov). Thread the dispatcher kind so only the indirect
+            # profile enables them.
+            is_indirect = (
+                getattr(dmap, "source", None) is DispatcherType.INDIRECT_JUMP
+                if dmap is not None
+                else False
+            )
             if logger.debug_on:
-                dmap = getattr(recovery, "dispatch_map", None)
                 logger.debug(
                     "s1a initial_state thread: bst=%s map=%s resolved=%s kind=%s",
                     getattr(bst_evidence, "initial_state", None),
@@ -304,6 +324,7 @@ class LowerStateMachine(PipelinePass):
                 dispatcher_entry_serial=int(dispatcher_entry),
                 pre_header_serial=getattr(bst_evidence, "pre_header_serial", None),
                 initial_state=initial_state,
+                is_indirect=is_indirect,
             )
             return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
 

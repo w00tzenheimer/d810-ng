@@ -127,7 +127,21 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
     """
 
     DESCRIPTION = "State-machine CFF unflattener (§1a chain+spine pipeline)"
-    DEFAULT_UNFLATTENING_MATURITIES = [ida_hexrays.MMAT_GLBOPT1]
+    # EXPERIMENT (llr-m9r4): Tigress-indirect loses its state-write transitions
+    # to DCE by GLBOPT1 (writes 37@LOCOPT / 36@CALLS / 0@GLBOPT1) even though the
+    # handler blocks survive. Fire at CALLS (transitions + m_ijmp + handler blocks
+    # all live) so recovery can read the transition map; the once-per-function
+    # guard runs the pipeline at the earliest listed maturity.
+    # EXPERIMENT (llr-m9r4): Tigress-indirect loses its state-write transitions
+    # to DCE by GLBOPT1 (writes 37@LOCOPT / 36@CALLS / 0@GLBOPT1) even though the
+    # handler blocks survive. Fire at CALLS (transitions + m_ijmp + handler blocks
+    # all live) so recovery can read the transition map; the once-per-function
+    # guard runs the pipeline at the earliest listed maturity. (LOCOPT recovery
+    # tried for gap1 and reverted: back_edges collapse 36->3, main machine fails.)
+    DEFAULT_UNFLATTENING_MATURITIES = [
+        ida_hexrays.MMAT_CALLS,
+        ida_hexrays.MMAT_GLBOPT1,
+    ]
     # §1a does its own dispatcher detection (the resolver chain); bypass the legacy
     # flow-context gate so it always runs.
     HAS_OWN_DISPATCHER_COLLECTOR = True
@@ -188,7 +202,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         except Exception:  # noqa: BLE001 — registration is best-effort
             logger.warning(
                 "s1a: indirect prolog registration failed", exc_info=True
-            )
+                )
         # Address-agnostic configure-time prepass: discover every indirect-table
         # dispatcher in the database structurally and materialize its label bodies
         # NOW, before any function is decompiled. Configured addresses are an
@@ -231,6 +245,22 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         if not _s1a_enabled():
             return 0
         mba = self.mba
+        # Profile-scoped recovery maturity (llr-m9r4). The Tigress INDIRECT profile
+        # must recover at MMAT_CALLS — its state-write transitions (and the
+        # accumulation-loop guard) are constant-folded / DCE'd by GLBOPT1, so the
+        # transition map reads empty there. Every OTHER profile recovers at
+        # MMAT_GLBOPT1 exactly as before. The rule is registered for both
+        # maturities (DEFAULT_UNFLATTENING_MATURITIES), so this gate routes each
+        # profile to its own maturity and keeps non-indirect output byte-identical
+        # (no golden movement). The indirect profile is identified by a non-empty
+        # ``goto_table_info`` (same key the configure-time materialization gates on).
+        _cfg = getattr(self, "config", None) or {}
+        _is_indirect = bool(_cfg.get("goto_table_info"))
+        _target_maturity = (
+            ida_hexrays.MMAT_CALLS if _is_indirect else ida_hexrays.MMAT_GLBOPT1
+        )
+        if mba.maturity != _target_maturity:
+            return 0
         func_ea: int = mba.entry_ea
         if func_ea == self._s1a_done_for_ea:
             return 0  # one pipeline run per function/maturity
