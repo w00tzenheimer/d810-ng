@@ -1,4 +1,4 @@
-"""Recover the state-machine dispatcher from a portable FlowGraph (§1a pass #1).
+"""Recover the state-machine dispatcher from a portable FlowGraph (unflatten pass #1).
 
 LLVM-analysis / LiSA-CFG style: an analysis pass that reads only the portable ``FlowGraph`` and
 produces an immutable result (``DispatcherRecovery``) — no microcode patching, no live ``mba``.
@@ -8,7 +8,7 @@ same equality-chain detection expressed over ``BlockSnapshot``/``MopSnapshot``. 
 is a conditional jump comparing a state variable to a large constant; the constant routes to the
 handler taken when ``state == const`` (``EQ`` -> jump target, ``NE`` -> fall-through). The dominant
 compared variable (most comparisons) is the state variable, à la the live detector's cache-driven
-selection. Output is a ``StateDispatcherMap`` (``state_const -> handler``) that every downstream §1a
+selection. Output is a ``StateDispatcherMap`` (``state_const -> handler``) that every downstream unflatten
 pass consumes.
 """
 from __future__ import annotations
@@ -356,7 +356,7 @@ def extra_dispatcher_resolvers() -> tuple[DispatcherResolver, ...]:
 
 
 def default_dispatcher_resolvers() -> tuple[DispatcherResolver, ...]:
-    """The portable resolver chain shared by every §1a dispatch-map consumer."""
+    """The portable resolver chain shared by every unflatten dispatch-map consumer."""
     return (EqualityChainDispatcherResolver(), SwitchTableDispatcherResolver())
 
 

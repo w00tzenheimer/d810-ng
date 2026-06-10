@@ -1,15 +1,15 @@
-"""§1a live entry point — the state-machine-CFF unflattener driven by the north-star call graph.
+"""unflatten live entry point — the state-machine-CFF unflattener driven by the north-star call graph.
 
-This is the runtime realization of the §1a pseudocode: at the maturity hook it lifts the live
+This is the runtime realization of the unflatten pseudocode: at the maturity hook it lifts the live
 ``mba`` to a portable ``FunctionSource``, builds an ``AnalysisManager`` (facts), and routes
 through the registered state-machine-CFF profiles — ``select_family`` polls the
 ``StateMachineCffFamily`` registry (``HodurFamily``=equality-chain, ``ApproovFamily``=
 switch/indirect) and the claiming profile's ``pipeline_for`` drives ``run_pipeline``. The ONLY
 live-mba touch points are the lifter + ``HexRaysMutationBackend`` (backends/hexrays).
 
-PRODUCTION PATH (M2 cutover, llr-ibpi): the §1a chain+spine pipeline is the SOLE CFF unflattener.
+PRODUCTION PATH (M2 cutover, llr-ibpi): the unflatten chain+spine pipeline is the SOLE CFF unflattener.
 The hodur configs route ``StateMachineCffUnflattener``; full-fleet golden parity verified at 3032/0.
-The legacy HCC fork is removed and §1a runs unconditionally — there is no enable/disable flag.
+The legacy HCC fork is removed and unflatten runs unconditionally — there is no enable/disable flag.
 """
 from __future__ import annotations
 
@@ -108,11 +108,11 @@ from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.driver import run_pipeline
 from d810.transforms.state_machine_unflatten import lower_to_direct_graph
 
-logger = logging.getLogger("D810.unflat.s1a", logging.DEBUG)
+logger = logging.getLogger("D810.unflat", logging.DEBUG)
 
 
 class StateMachineCffUnflattener(ComposedUnflatteningRule):
-    """§1a state-machine-CFF entry — the production CFF unflattener (M2 cutover, llr-ibpi).
+    """unflatten state-machine-CFF entry — the production CFF unflattener (M2 cutover, llr-ibpi).
 
     Routes through ``select_family`` over the registered ``StateMachineCffFamily`` profiles
     (``HodurFamily``=equality-chain, ``ApproovFamily``=switch/indirect) over a portable
@@ -120,7 +120,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
     ``ComposedUnflatteningRule``) — the legacy HCC path is retired.
     """
 
-    DESCRIPTION = "State-machine CFF unflattener (§1a chain+spine pipeline)"
+    DESCRIPTION = "State-machine CFF unflattener (unflatten chain+spine pipeline)"
     # EXPERIMENT (llr-m9r4): Tigress-indirect loses its state-write transitions
     # to DCE by GLBOPT1 (writes 37@LOCOPT / 36@CALLS / 0@GLBOPT1) even though the
     # handler blocks survive. Fire at CALLS (transitions + m_ijmp + handler blocks
@@ -136,18 +136,18 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         ida_hexrays.MMAT_CALLS,
         ida_hexrays.MMAT_GLBOPT1,
     ]
-    # §1a does its own dispatcher detection (the resolver chain); bypass the legacy
+    # unflatten does its own dispatcher detection (the resolver chain); bypass the legacy
     # flow-context gate so it always runs.
     HAS_OWN_DISPATCHER_COLLECTOR = True
 
     def __init__(self) -> None:
         super().__init__()  # ComposedUnflatteningRule: flow_context + optblock lifecycle
-        self._s1a_done_for_ea: int = -1
+        self._unflat_done_for_ea: int = -1
 
     def configure(self, kwargs):
         # Configure-time hook (project load, runs ONCE before any decompilation
         # prolog). The ComposedUnflatteningRule/FlowOptimizationRule chain sets
-        # ``self.config = kwargs`` here, so this is where the §1a indirect profile
+        # ``self.config = kwargs`` here, so this is where the unflatten indirect profile
         # registers pre-decompile materialization of the Tigress computed-goto
         # label bodies — the emulated engine does the equivalent in its own
         # ``configure`` (unflattener_emulated_dispatcher_engine.py). ``optimize``
@@ -155,7 +155,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # before the first MBA build, so materialization MUST live here (I1.5,
         # ticket llr-tm3i).
         super().configure(kwargs)
-        # §1a runs address-agnostic indirect-jump materialization for EVERY
+        # unflatten runs address-agnostic indirect-jump materialization for EVERY
         # project — no per-binary configured addresses, no profile flag (llr-trxj).
         # The per-function prolog hook (run_indirect_materialization_for_function)
         # STRUCTURALLY detects whether the function being decompiled is a
@@ -175,7 +175,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             )
         except Exception:  # noqa: BLE001 — preanalysis import is best-effort
             logger.warning(
-                "s1a: indirect materialization import failed", exc_info=True
+                "unflat: indirect materialization import failed", exc_info=True
             )
             return
         # Clear any prior registration (fresh start for a reconfigured session),
@@ -187,11 +187,11 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             register_indirect_materialization(override)
         except Exception:  # noqa: BLE001 — registration is best-effort
             logger.warning(
-                "s1a: indirect prolog registration failed", exc_info=True
+                "unflat: indirect prolog registration failed", exc_info=True
             )
         # Configure-time prepass: structurally discover and materialize EVERY
         # indirect-table dispatcher in the database NOW, before any decompile.
-        # This SEEDS the recon facts the §1a LiSA dispatcher discovery consumes —
+        # This SEEDS the recon facts the unflatten LiSA dispatcher discovery consumes —
         # the prolog hook alone materializes only the entry function, which is
         # insufficient for STANDALONE discovery (head=None otherwise, so the test
         # would only pass when a sibling seeded it first; llr-trxj isolation fix).
@@ -200,7 +200,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         try:
             for result in materialize_discovered_indirect_label_targets(override):
                 logger.info(
-                    "Tigress indirect (s1a) preanalysis 0x%X: success=%s "
+                    "Tigress indirect (unflat) preanalysis 0x%X: success=%s "
                     "materialized=%d/%d",
                     result.function_ea,
                     result.success,
@@ -209,7 +209,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 )
         except Exception:  # noqa: BLE001 — prepass is best-effort
             logger.warning(
-                "s1a: indirect target materialization prepass failed", exc_info=True
+                "unflat: indirect target materialization prepass failed", exc_info=True
             )
 
     def optimize(self, blk: "ida_hexrays.mblock_t") -> int:
@@ -221,7 +221,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # line and leaving AFTER == BEFORE (ticket llr-1330).
         self.mba : ida_hexrays.mba_t = blk.mba
         logger.info(
-            "s1a optimize: maturity=%s blk=%s",
+            "unflat optimize: maturity=%s blk=%s",
             maturity_to_string(getattr(self.mba, "maturity", 0)),
             getattr(blk, "serial", "?"),
         )
@@ -248,9 +248,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         if mba.maturity != _target_maturity:
             return 0
         func_ea: int = mba.entry_ea
-        if func_ea == self._s1a_done_for_ea:
+        if func_ea == self._unflat_done_for_ea:
             return 0  # one pipeline run per function/maturity
-        self._s1a_done_for_ea = func_ea
+        self._unflat_done_for_ea = func_ea
 
         source = lift_function(mba, maturity=mba.maturity)
         # llr-dczv: register the PORTABLE indirect jump-table resolver into the
@@ -282,13 +282,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             try:
                 fact_view = flow_ctx.validated_fact_view(mba.maturity)
             except Exception:  # noqa: BLE001 — fact view is best-effort input
-                logger.debug("s1a: validated_fact_view unavailable", exc_info=True)
+                logger.debug("unflat: validated_fact_view unavailable", exc_info=True)
         # Pre-mutation BST/interval evidence: walk the PRISTINE mba here (it still matches
         # source.flow_graph; the pipeline mutates it below) so the value-range dispatcher recovery
         # sees the intact BST. PROMOTED TO PRODUCTION (gap3+gap4, ticket llr-t1s8): #4's
         # LowerStateMachine consumes this through the AnalysisManager to build the BST-enriched DAG
         # whose CONDITIONAL_RETURN edges (interval-map classification, not the bounded mba walk)
-        # materialize terminal returns — the §1a returns=0 -> returns=N fix. analyze_bst_dispatcher
+        # materialize terminal returns — the unflatten returns=0 -> returns=N fix. analyze_bst_dispatcher
         # lives in the hexrays backend (needs the live mba), which the portable LowerStateMachine
         # can't import, so the evidence is computed here in the entry and threaded as an opaque fact.
         # The LiSA-discovery diff log stays diag-only. Self-gating: no dispatcher -> no evidence ->
@@ -306,7 +306,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 if _capture_diagnostics_enabled():
                     self._log_lisa_discovery_diff(source.flow_graph, prelim, bst_evidence)
         except Exception:  # noqa: BLE001 — evidence recovery is best-effort
-            logger.debug("s1a: pre-pipeline BST evidence failed", exc_info=True)
+            logger.debug("unflat: pre-pipeline BST evidence failed", exc_info=True)
         facts = AnalysisManager(source.flow_graph, input_facts=fact_view)
         if bst_evidence is not None:
             facts.put_analysis("bst_evidence", bst_evidence)
@@ -360,13 +360,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 maturity=mba.maturity,
                 capabilities=capabilities,
             )
-        # Iteration diagnostics: where does the §1a chain stand for this function?
+        # Iteration diagnostics: where does the unflatten chain stand for this function?
         rec = facts.get_analysis("recover_dispatcher")
         tr = facts.get_analysis("transition_result")
         regions = facts.get_analysis("plan_semantic_regions")
         valrange_confirmable = facts.get_analysis("valrange_confirmable_count")
         logger.info(
-            "s1a func=0x%x: input_facts=%s map_rows=%d transitions=%d regions=%d valrange_confirmable=%s",
+            "unflat func=0x%x: input_facts=%s map_rows=%d transitions=%d regions=%d valrange_confirmable=%s",
             func_ea,
             fact_view is not None,
             len(rec.dispatch_map.rows) if rec and rec.dispatch_map else 0,
@@ -374,12 +374,12 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             len(regions.linear_regions) if regions else 0,
             valrange_confirmable,
         )
-        # Diag DB: publish the §1a structural analysis so the SQLite diag tables are not blind to
+        # Diag DB: publish the unflatten structural analysis so the SQLite diag tables are not blind to
         # this path (the legacy recon instrumentation does not run under the flag). llr-6dq7.
-        self._publish_s1a_diagnostics(
+        self._publish_unflat_diagnostics(
             mba, source, rec, tr, regions, fact_view, bst_evidence, capabilities
         )
-        # Change accounting is the backend's concern (it lowered the plan); the §1a driver does not
+        # Change accounting is the backend's concern (it lowered the plan); the unflatten driver does not
         # yet surface an applied-count, so report 0 until the reconstruction passes land real plans.
         return 0
 
@@ -400,10 +400,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 initial_state=getattr(bst_evidence, "initial_state", None),
             )
         except Exception:  # noqa: BLE001 — the diff is diagnostics-only
-            logger.debug("s1a: LiSA dispatcher discovery diff failed", exc_info=True)
+            logger.debug("unflat: LiSA dispatcher discovery diff failed", exc_info=True)
             return
         logger.info(
-            "s1a discover(LiSA): exact_handlers=%d range_handlers=%d head=%s | "
+            "unflat discover(LiSA): exact_handlers=%d range_handlers=%d head=%s | "
             "bst handlers=%d state_var=0x%x initial=%s",
             len(view.handler_entry_by_state),
             len(view.handler_range_map),
@@ -417,10 +417,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         self, source, dmap, bst_evidence, dag_tr, func_ea, maturity
     ) -> None:
         """Diag-only: build the portable ``read_dag_from`` read-off and OBSERVE it to
-        the diag DB under a separate snapshot (``s1a_read_dag_lisa``).
+        the diag DB under a separate snapshot (``unflat_read_dag_lisa``).
 
-        The legacy DAG is observed under ``s1a_recover_dispatcher``; the read-off goes
-        to ``s1a_read_dag_lisa``, both into ``dag_nodes`` / ``dag_node_blocks`` /
+        The legacy DAG is observed under ``unflat_recover_dispatcher``; the read-off goes
+        to ``unflat_read_dag_lisa``, both into ``dag_nodes`` / ``dag_node_blocks`` /
         ``dag_local_*``.  The parity diff (node-expansion gap, owner-set partition vs
         the legacy per-handler block assignment, each divergence = one heuristic to
         retire) is then a SQL query across the two snapshot labels -- not a log grep.
@@ -466,11 +466,11 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             )
 
             # Observe the read-off into the diag DB under a SEPARATE snapshot so the
-            # diff vs the legacy DAG (label s1a_recover_dispatcher) is a SQL query over
+            # diff vs the legacy DAG (label unflat_recover_dispatcher) is a SQL query over
             # dag_nodes / dag_node_blocks / dag_local_*, not a log grep.
             my_snap = request_capture_mba_snapshot(
                 blocks=_diag_blocks_from_flow_graph(flow_graph),
-                label="s1a_read_dag_lisa",
+                label="unflat_read_dag_lisa",
                 func_ea=func_ea,
                 maturity=maturity,
                 phase="post_pipeline",
@@ -479,18 +479,18 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 observe_dag(my_snap, _diag_dag_nodes(my_dag), _diag_dag_edges(my_dag))
                 observe_dag_local_facts(my_snap, my_dag)
                 logger.info(
-                    "s1a read_dag(LiSA): observed %d nodes / %d edges to diag snapshot "
-                    "'s1a_read_dag_lisa' (SQL-diff vs 's1a_recover_dispatcher')",
+                    "unflat read_dag(LiSA): observed %d nodes / %d edges to diag snapshot "
+                    "'unflat_read_dag_lisa' (SQL-diff vs 'unflat_recover_dispatcher')",
                     len(my_dag.nodes),
                     len(my_dag.edges),
                 )
         except Exception:  # noqa: BLE001 — diag-only, never break optimize
-            logger.debug("s1a: read_dag dual-build observe failed", exc_info=True)
+            logger.debug("unflat: read_dag dual-build observe failed", exc_info=True)
 
-    def _publish_s1a_diagnostics(
+    def _publish_unflat_diagnostics(
         self, mba, source, rec, tr, regions, fact_view, bst_evidence=None, capabilities=None
     ) -> None:
-        """Populate the structured diag tables for the §1a path (otherwise blind under the flag).
+        """Populate the structured diag tables for the unflatten path (otherwise blind under the flag).
 
         Two tiers:
         * ``state_dispatcher_rows`` -- keyed by func_ea + maturity, no snapshot ref; mirrors the
@@ -517,13 +517,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     rows=dmap.rows,
                 )
             except Exception:  # noqa: BLE001 — diagnostics must never break the optimize path
-                logger.debug("s1a: observe_state_dispatcher_rows failed", exc_info=True)
+                logger.debug("unflat: observe_state_dispatcher_rows failed", exc_info=True)
         if source is None or not _capture_diagnostics_enabled():
             return
         try:
             snap = request_capture_mba_snapshot(
                 blocks=_diag_blocks_from_flow_graph(source.flow_graph),
-                label="s1a_recover_dispatcher",
+                label="unflat_recover_dispatcher",
                 func_ea=func_ea,
                 maturity=maturity,
                 phase="post_pipeline",  # CHECK-constrained set in diag schema
@@ -545,18 +545,18 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             # Inc4 (llr-mmfq): measure the sound #2 StateTransitionDomain fixpoint against the ad-hoc
             # bst-walk + oracle BEFORE swapping it into the DAG. Pure logging, feeds nothing.
             if bst is not None and fact_view is not None:
-                self._s1a_fixpoint_probe(
+                self._unflat_fixpoint_probe(
                     source, bst, fact_view, entry_serial, mba=mba, dmap=dmap
                 )
             # Prefer the BST-derived rich transition_result: it backfills handlers reachable only
-            # through wide BST range intervals (the range-backed states the exact-only §1a #2 omits),
+            # through wide BST range intervals (the range-backed states the exact-only unflatten #2 omits),
             # so the diag DAG node/edge counts approach the legacy oracle instead of being capped by
             # the shallow exact-chain transitions.
             dag_tr = tr
             if bst is not None:
                 try:
                     dag_tr = _convert_bst_to_result(bst)
-                except Exception:  # noqa: BLE001 — fall back to the §1a transition_result
+                except Exception:  # noqa: BLE001 — fall back to the unflatten transition_result
                     dag_tr = tr
             if dag_tr is not None and getattr(dag_tr, "transitions", None):
                 dag = build_live_linearized_state_dag_from_graph(
@@ -621,9 +621,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 )
                 observe_modifications(snap, _diag_modifications(plan))
         except Exception:  # noqa: BLE001 — diagnostics must never break the optimize path
-            logger.debug("s1a: snapshot-correlated diagnostics failed", exc_info=True)
+            logger.debug("unflat: snapshot-correlated diagnostics failed", exc_info=True)
 
-    def _s1a_fixpoint_probe(
+    def _unflat_fixpoint_probe(
         self, source, bst, fact_view, dispatcher_entry: int, *, mba=None, dmap=None
     ) -> None:
         """DIAG-ONLY: measure the sound #2 ``StateTransitionDomain`` fixpoint (llr-mmfq Inc4).
@@ -694,7 +694,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 len(v) for v in (bst.conditional_transitions or {}).values()
             )
             logger.info(
-                "s1a #2 fixpoint-probe: fixpoint cond=%d (anchor-only=%d, concrete-folds=%d) "
+                "unflat #2 fixpoint-probe: fixpoint cond=%d (anchor-only=%d, concrete-folds=%d) "
                 "uncond=%d total=%d handlers=%d writes=%d | bst_walk cond_edges=%d | oracle cond=66",
                 cond,
                 cond_anchor,
@@ -749,7 +749,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 )
                 d = diff_back_edge_transitions(prod, shadow)
                 logger.info(
-                    "s1a C1 shadow-diff: prod=%d fixpoint=%d matched=%d "
+                    "unflat C1 shadow-diff: prod=%d fixpoint=%d matched=%d "
                     "case2_opaque=%d mismatch=%d",
                     d["prod_edges"],
                     d["fixpoint_edges"],
@@ -758,7 +758,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     len(d["mismatch"]),
                 )
                 if d["mismatch"]:
-                    logger.info("s1a C1 mismatch rows: %s", d["mismatch"][:20])
+                    logger.info("unflat C1 mismatch rows: %s", d["mismatch"][:20])
 
                 # B1 (ticket llr-kz7n): the MULTI-CELL global const-fixpoint shadow —
                 # reuses _transfer_snapshot_constant_block (stk+reg) so opaque
@@ -773,7 +773,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 )
                 dmc = diff_back_edge_transitions(prod, shadow_mc)
                 logger.info(
-                    "s1a C1 shadow-diff[B1 multicell]: prod=%d fixpoint=%d matched=%d "
+                    "unflat C1 shadow-diff[B1 multicell]: prod=%d fixpoint=%d matched=%d "
                     "case2_opaque=%d mismatch=%d",
                     dmc["prod_edges"],
                     dmc["fixpoint_edges"],
@@ -783,7 +783,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 )
                 if dmc["mismatch"]:
                     logger.info(
-                        "s1a C1 mismatch rows[B1 multicell]: %s", dmc["mismatch"][:20]
+                        "unflat C1 mismatch rows[B1 multicell]: %s", dmc["mismatch"][:20]
                     )
 
                 # B2 (ticket llr-kz7n): predecessor-PARTITIONED multi-cell fold —
@@ -799,7 +799,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 )
                 dpp = diff_back_edge_transitions_partitioned(prod, shadow_pp)
                 logger.info(
-                    "s1a C1 shadow-diff[B2 partitioned]: prod=%d fixpoint=%d matched=%d "
+                    "unflat C1 shadow-diff[B2 partitioned]: prod=%d fixpoint=%d matched=%d "
                     "case2_opaque=%d mismatch=%d",
                     dpp["prod_edges"],
                     dpp["fixpoint_edges"],
@@ -809,10 +809,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 )
                 if dpp["mismatch"]:
                     logger.info(
-                        "s1a C1 mismatch rows[B2 partitioned]: %s", dpp["mismatch"][:20]
+                        "unflat C1 mismatch rows[B2 partitioned]: %s", dpp["mismatch"][:20]
                     )
         except Exception:  # noqa: BLE001 — probe must never break the optimize path
-            logger.debug("s1a: fixpoint probe failed", exc_info=True)
+            logger.debug("unflat: fixpoint probe failed", exc_info=True)
 
     def _refine_state_writes_concolic(
         self, *, base_writes, dispatcher_entry, predecessors_of, mba, dmap
@@ -868,7 +868,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             folded += 1
         if logger.debug_on:
             logger.debug(
-                "s1a #2 concrete-refine: candidates=%d folded=%d", len(candidates), folded
+                "unflat #2 concrete-refine: candidates=%d folded=%d", len(candidates), folded
             )
         return refined, folded
 
@@ -885,7 +885,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
 
 
 # ---------------------------------------------------------------------------
-# Diag-model converters: §1a structural data -> SQLite diag rows. Diagnostics
+# Diag-model converters: unflatten structural data -> SQLite diag rows. Diagnostics
 # only; the caller gates them behind an installed capture subscriber.
 # ---------------------------------------------------------------------------
 

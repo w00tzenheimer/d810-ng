@@ -1,4 +1,4 @@
-"""Hodur state-machine unflattening passes — the §1a north-star, realized.
+"""Hodur state-machine unflattening passes — the unflatten north-star, realized.
 
 Each pass schedules a portable analysis (facts over a ``FlowGraph``) or a portable transform
 (producing a ``PatchPlan``). The five imports below are the WORK-LIST: each names a portable
@@ -76,7 +76,7 @@ def _count_valrange_confirmable(valrange, dispatch_map, state_var_stkoff) -> int
 
 
 # DispatcherType (recovery taxonomy) -> RouterKind (portable router enum). Only the
-# comparison kinds get a ComparisonDispatcherModel; the §1a equality-chain detector
+# comparison kinds get a ComparisonDispatcherModel; the unflatten equality-chain detector
 # (dispatcher_recovery) yields CONDITIONAL_CHAIN -> CONDITION_CHAIN.
 _DISPATCHER_TYPE_TO_ROUTER_KIND = {
     DispatcherType.SWITCH_TABLE: RouterKind.SWITCH,
@@ -228,7 +228,7 @@ class PlanSemanticRegions(PipelinePass):
 
 @dataclass
 class LowerStateMachine(PipelinePass):
-    """Lower the recovered state machine to dispatcher-bypass redirects (§1a).
+    """Lower the recovered state machine to dispatcher-bypass redirects (unflatten).
 
     The dispatcher router is **injectable** (ticket llr-oq8v): pass a custom
     ``resolvers`` chain and/or a ``configured_kind`` to pin the router shape; both
@@ -311,7 +311,7 @@ class LowerStateMachine(PipelinePass):
             )
             if logger.debug_on:
                 logger.debug(
-                    "s1a initial_state thread: bst=%s map=%s resolved=%s kind=%s",
+                    "unflat initial_state thread: bst=%s map=%s resolved=%s kind=%s",
                     getattr(bst_evidence, "initial_state", None),
                     getattr(dmap, "initial_state", None) if dmap is not None else None,
                     initial_state,

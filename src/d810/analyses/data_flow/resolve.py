@@ -8,7 +8,7 @@ a value returns :data:`~d810.analyses.data_flow.abstract_value.TOP` (``⊤``) to
 ``⊤`` the value is genuinely unknown and ``resolve`` returns ``⊤`` (an explicit,
 surfaced gap — not a silently dropped edge).
 
-The tiers (``docs/plans/dispatcher-model-consolidation.md`` §1a, §S3):
+The tiers (``docs/plans/dispatcher-model-consolidation.md`` unflatten, §S3):
 
 * **T1 — local const-fold.**  Forward constant-propagation over one block,
   folding the state-write RHS through the KnownBits value domain

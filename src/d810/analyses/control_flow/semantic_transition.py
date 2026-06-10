@@ -419,7 +419,7 @@ def resolve_state_transitions(
     model: object | None = None,
     state_var_stkoff: int | None = None,
 ) -> "tuple[StateTransitionResolution, ...]":
-    """§1a pass #2: resolve transition facts through the portable dispatcher map.
+    """unflatten pass #2: resolve transition facts through the portable dispatcher map.
 
     Composes the canonical portable resolver — ``facts_from_validated_view`` projects the
     validated facts into ``(transition_facts, state_write_anchors)``, then

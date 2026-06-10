@@ -454,7 +454,7 @@ class TestIntervalDispatcherFromStateMap:
 
     This is the equality-chain adapter: a register/equality-chain
     ``StateDispatcherMap`` (``jz eax, #state, @handler``) becomes the same
-    interval-set router the comparison-BST path produces, so the §1a back-edge
+    interval-set router the comparison-BST path produces, so the unflatten back-edge
     emit is dispatcher-shape-agnostic.
     """
 

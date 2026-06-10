@@ -18,7 +18,7 @@ terminal is repaired only when its return slot reaches ONLY the entry-default
 state write and the state var is dead there -- the dataflow proof of the leak.
 
 This module is IDA-dependent (unit tests cannot exercise it); validate via the
-docker §1a dump behind the ``D810_USE_STRUCTURER`` flag.
+docker unflatten dump behind the ``D810_USE_STRUCTURER`` flag.
 """
 from __future__ import annotations
 
@@ -92,7 +92,7 @@ def structure_recovered_program_live(
     Args:
         mba: The live ``mba_t`` at the recovery maturity.
         state_var_stkoff: The dispatcher state variable's stack offset (from the
-            §1a recovery's ``state_var_stkoff``).
+            unflatten recovery's ``state_var_stkoff``).
         return_slot_stkoff: The return-slot carrier's stack offset.
         slot_width: Width in bytes of the tracked slots (default 8).
         carrier_expr: The real carrier expression to deliver at leaking aligned
@@ -100,7 +100,7 @@ def structure_recovered_program_live(
         dispatcher_entry_serial: When provided, the **enriched** state-DAG is
             rebuilt live (``_build_live_linearized_state_dag``) -- the same DAG
             the reference-like linearized renderer uses, with the full
-            conditional-transition chain. Preferred over the shallow §1a stash.
+            conditional-transition chain. Preferred over the shallow unflatten stash.
     """
     # Resolve the dispatcher state variable's stack offset. Prefer the value the
     # caller hands in (recon's Hodur detector); when absent, SELF-DETECT on this
@@ -138,7 +138,7 @@ def structure_recovered_program_live(
     # The structurer must run on the recovered state graph (dispatcher-free), not
     # the lifted/projected FlowGraph (which retains the BST comparison blocks).
     # Prefer the ENRICHED DAG rebuilt live (full conditional-transition chain,
-    # same as the linearized renderer); fall back to the §1a shallow stash.
+    # same as the linearized renderer); fall back to the unflatten shallow stash.
     base_graph = get_recovered_flow_graph()
     if base_graph is None:
         base_graph = lift_flow_graph(mba)

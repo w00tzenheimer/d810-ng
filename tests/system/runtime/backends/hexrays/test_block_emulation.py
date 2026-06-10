@@ -6,8 +6,8 @@ seeding (the ``LocationRef -> stk/reg`` projection) and the abstain paths that t
 soundness contract demands -- a ``None`` block, and a block whose instructions
 resolve no state-var write.
 
-A genuinely-folding live block is covered by the §1a Docker probe (the
-``s1a #2 fixpoint-probe`` log line with ``concrete-folds=N``); here we pin the
+A genuinely-folding live block is covered by the unflatten Docker probe (the
+``unflat #2 fixpoint-probe`` log line with ``concrete-folds=N``); here we pin the
 shape of the contract so a regression to a *wrong* ExactResult is caught cheaply.
 """
 from __future__ import annotations
@@ -91,7 +91,7 @@ class TestFoldExactInteroperates:
 
     def test_exact_result_keys_the_state_cell(self) -> None:
         # Directly build the ExactResult shape the emulator emits and confirm
-        # fold_exact accepts it against a TOP floor (the §1a probe's floor).
+        # fold_exact accepts it against a TOP floor (the unflatten probe's floor).
         from d810.analyses.data_flow.concolic import (
             ConcolicValue,
             PrecisionStatus,

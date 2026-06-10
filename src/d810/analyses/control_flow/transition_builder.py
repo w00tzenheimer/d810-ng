@@ -80,9 +80,9 @@ def build_transition_result_from_state_machine(
 
 
 def transition_result_from_resolutions(
-    resolutions, *, strategy_name: str = "s1a", dispatch_map=None
+    resolutions, *, strategy_name: str = "unflat", dispatch_map=None
 ) -> TransitionResult:
-    """Package §1a ``StateTransitionResolution``s into a ``TransitionResult`` (DAG-builder input).
+    """Package unflatten ``StateTransitionResolution``s into a ``TransitionResult`` (DAG-builder input).
 
     Each resolved transition (``source_state -> resolved_next_state`` at ``source_block``) becomes a
     ``StateTransition``. Unresolved rows (no next state) are dropped. Pure data transform.

@@ -1,4 +1,4 @@
-"""TigressFamily — the third §1a profile: switch / indirect-jump CFF on the spine.
+"""TigressFamily — the third unflatten profile: switch / indirect-jump CFF on the spine.
 
 A *sibling* of :class:`HodurFamily` / :class:`ApproovFamily`, not a fork: it runs the
 SAME portable ``run_pipeline`` driver over the SAME five passes. A *profile* only

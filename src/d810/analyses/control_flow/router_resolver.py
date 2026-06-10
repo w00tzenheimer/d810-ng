@@ -1,6 +1,6 @@
 """Injectable dispatcher-router resolution (ticket llr-oq8v / concolic S4).
 
-Replaces the baked-in ``_select_s1a_router`` if/else in ``LowerStateMachine`` with a
+Replaces the baked-in ``_select_unflat_router`` if/else in ``LowerStateMachine`` with a
 **resolver chain**: each provider declares the :class:`RouterKind` it can produce and
 returns ranked :class:`ResolverCandidate` evidence (NOT a bool); :func:`select_router`
 picks a router by **configuration AND/OR detection**:
@@ -168,7 +168,7 @@ class ExactMapRouterResolver:
 
 
 def default_resolvers() -> tuple[DispatcherRouterResolver, ...]:
-    """The §1a provider set: range-bst (default) + exact-map (collapse authority)."""
+    """The unflatten provider set: range-bst (default) + exact-map (collapse authority)."""
     return (BstRangeRouterResolver(), ExactMapRouterResolver())
 
 

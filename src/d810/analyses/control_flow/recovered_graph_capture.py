@@ -1,6 +1,6 @@
-"""Stash the §1a recovered (projected post-edit) FlowGraph for diagnostics.
+"""Stash the unflatten recovered (projected post-edit) FlowGraph for diagnostics.
 
-The §1a reconstruction projects the lifted FlowGraph through its spine
+The unflatten reconstruction projects the lifted FlowGraph through its spine
 modifications (``project_post_state``) to obtain the recovered topology -- the
 dispatcher edges replaced by the reconstructed handler chain. This module keeps
 the most recent projection so the **diagnostic** structurer
@@ -9,7 +9,7 @@ flattened ``lift(mba)``.
 
 Diagnostics only: it never drives planning or mutation. A module-level slot is
 acceptable because it is read solely by the dump path, immediately after the
-live §1a run that set it, for the same function.
+live unflatten run that set it, for the same function.
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ __all__ = [
 
 
 def record_recovered_flow_graph(flow_graph: object) -> None:
-    """Stash the §1a projected/recovered FlowGraph (called from the §1a lower)."""
+    """Stash the unflatten projected/recovered FlowGraph (called from the unflatten lower)."""
     global _LAST_RECOVERED_FLOW_GRAPH
     _LAST_RECOVERED_FLOW_GRAPH = flow_graph
 
@@ -42,7 +42,7 @@ def get_recovered_flow_graph() -> object | None:
 
 
 def record_recovered_state_dag(dag: object) -> None:
-    """Stash the §1a recovered ``LinearizedStateDag`` (the clean handler graph).
+    """Stash the unflatten recovered ``LinearizedStateDag`` (the clean handler graph).
 
     Read by the ``D810_USE_STRUCTURER`` diagnostic structurer so it structures
     the recovered state graph (dispatcher-free) instead of the lifted/projected

@@ -1,4 +1,4 @@
-"""§1a pass #3: plan_semantic_regions composes the portable DAG builder + region detector.
+"""unflatten pass #3: plan_semantic_regions composes the portable DAG builder + region detector.
 
 The real region-detection over a live-built DAG is golden-verified at wiring time; here we lock the
 analysis-dependency contract: without the #1/#2 inputs (dispatcher serial + TransitionResult) the

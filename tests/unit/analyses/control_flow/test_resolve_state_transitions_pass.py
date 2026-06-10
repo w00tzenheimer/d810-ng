@@ -1,4 +1,4 @@
-"""§1a pass #2: resolve_state_transitions composes the canonical portable resolver.
+"""unflatten pass #2: resolve_state_transitions composes the canonical portable resolver.
 
 Locks the composition (facts_from_validated_view -> resolve_state_transitions_with_dispatcher_map)
 and the seam-pending behavior (no dispatcher map -> explicit unresolved, never silent drop).
@@ -30,7 +30,7 @@ def _transition_obs(fact_id, block, state):
 
 
 def test_null_facts_resolve_to_empty():
-    # the §1a pass runs over a null context during shape tests
+    # the unflatten pass runs over a null context during shape tests
     assert resolve_state_transitions(None, None) == ()
     assert resolve_state_transitions(None, _view()) == ()
 

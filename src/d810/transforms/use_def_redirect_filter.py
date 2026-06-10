@@ -28,7 +28,7 @@ def _veto_enabled() -> bool:
     """The use-def severance veto is OFF by default; opt in with
     ``D810_USE_DEF_VETO=1``.
 
-    Empirically (sub_7FFD, §1a and HCC) the veto is not load-bearing: with it
+    Empirically (sub_7FFD, unflatten and HCC) the veto is not load-bearing: with it
     disabled the redirects apply without INTERR, carriers (e.g. ``a5+0xD0``) are
     preserved, and the dispatcher output is no worse — the veto's dominance-only
     check mostly produces *false* severances (see d81-7zf7).  It stays available

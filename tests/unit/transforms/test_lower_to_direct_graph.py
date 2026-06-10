@@ -1,4 +1,4 @@
-"""§1a pass #4: lower_to_direct_graph builds the reconstruction spine from the DAG edges.
+"""unflatten pass #4: lower_to_direct_graph builds the reconstruction spine from the DAG edges.
 
 The portable half — walk the linearized state DAG's transition edges and redirect each handler's
 exit anchor onto its successor's entry (the reachable spine, dispatcher bypassed). The DAG build
@@ -166,7 +166,7 @@ def test_return_wiring_skips_already_claimed_anchor():
 
 def test_convert_to_goto_modification_maps_to_patch_convert_to_goto():
     # The return planner reaches builder.goto_redirect on a 2-way anchor -> ConvertToGoto, which the
-    # §1a wrapper must shadow as PatchConvertToGoto (the backend already applies it for #4b).
+    # unflatten wrapper must shadow as PatchConvertToGoto (the backend already applies it for #4b).
     patch = _patch_from_graph_modification(ConvertToGoto(block_serial=15, goto_target=44))
     assert isinstance(patch, PatchConvertToGoto)
     assert (patch.block_serial, patch.goto_target) == (15, 44)

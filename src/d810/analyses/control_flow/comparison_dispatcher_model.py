@@ -5,7 +5,7 @@ The four comparison dispatcher kinds (``BST`` / ``SWITCH`` / ``EQUALITY_CHAIN`` 
 concrete state value identically: exact row first, then interval rows.  This
 collapses their divergent ``resolve_target`` bodies into ONE ``route``.
 
-The disease (``docs/plans/dispatcher-model-consolidation.md`` §0): the §1a
+The disease (``docs/plans/dispatcher-model-consolidation.md`` §0): the unflatten
 ``RecoverStateTransitions`` resolved next-states through the exact-only
 ``StateDispatcherMap.resolve_target`` (``state_to_handler().get``), so an
 interval-routed next-state (e.g. ``0x79F598F7 ∈ [0x737189d6, 0x7c2c0220] → blk

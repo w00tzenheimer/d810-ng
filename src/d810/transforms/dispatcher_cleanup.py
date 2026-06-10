@@ -1,11 +1,11 @@
-"""Clean up the residual dispatcher after lowering — produce a PatchPlan (§1a pass #5 transform).
+"""Clean up the residual dispatcher after lowering — produce a PatchPlan (unflatten pass #5 transform).
 
 After ``lower_to_direct_graph`` (#4) redirects handlers onto their real successors, the dispatcher
 loop and any self-loop/unresolved remnants are dead. This pass lowers each neutral cleanup candidate
 to a ``GraphModification`` via the already-portable ``build_dispatcher_cleanup_modification`` and
 packs them into a ``PatchPlan`` (the ``planner_modifications`` channel the backend applies).
 
-``candidates`` is the §1a analysis dependency (residual-dispatcher detection); while empty (driver
+``candidates`` is the unflatten analysis dependency (residual-dispatcher detection); while empty (driver
 wiring pending) the plan is empty. Portable composition — no extraction from the live cleanup
 backend needed; the candidate -> modification lowering already lives in ``transforms.cleanup_evidence``.
 """

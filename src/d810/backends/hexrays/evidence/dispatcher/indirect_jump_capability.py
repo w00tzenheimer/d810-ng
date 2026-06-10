@@ -5,7 +5,7 @@ Wraps the IDA-bound table decode
 table via ``ida_bytes`` and maps native label EAs to live MBA blocks) behind the
 portable :class:`~d810.capabilities.indirect_jump_table.IndirectJumpTableCapability`
 Protocol, so the portable resolver in ``d810.analyses.control_flow`` stays
-IDA-free.  Bound to one live ``mba`` (the function being decompiled); the §1a
+IDA-free.  Bound to one live ``mba`` (the function being decompiled); the unflatten
 entry constructs it with the live mba and injects it into
 :class:`d810.analyses.control_flow.indirect_jump_resolver.IndirectJumpDispatcherResolver`.
 

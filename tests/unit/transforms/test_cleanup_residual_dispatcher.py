@@ -1,4 +1,4 @@
-"""§1a pass #5: cleanup_residual_dispatcher composes the portable cleanup-candidate lowering.
+"""unflatten pass #5: cleanup_residual_dispatcher composes the portable cleanup-candidate lowering.
 
 The candidate -> GraphModification lowering is already covered in transforms.cleanup_evidence; here
 we lock the pass contract: no candidates -> empty plan, and candidates flow into planner_modifications.

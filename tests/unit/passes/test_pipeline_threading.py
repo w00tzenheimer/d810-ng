@@ -1,4 +1,4 @@
-"""§1a dependency threading: pass #1's StateDispatcherMap reaches pass #2 via AnalysisManager.
+"""unflatten dependency threading: pass #1's StateDispatcherMap reaches pass #2 via AnalysisManager.
 
 The LLVM ``AnalysisManager.getResult`` edge — RecoverDispatcher publishes its map; RecoverStateTransitions
 pulls it and resolves transitions through it. Without the manager edge, #2 has no map (unresolved).

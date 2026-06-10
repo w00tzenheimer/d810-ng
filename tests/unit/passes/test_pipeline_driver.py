@@ -1,4 +1,4 @@
-"""§1a driver acceptance (structural): run_pipeline IS the north-star loop.
+"""unflatten driver acceptance (structural): run_pipeline IS the north-star loop.
 
 Exercises the portable driver with injected null deps + the real HodurFamily passes:
 detect -> pipeline_for -> validate_capabilities -> pass.run -> (apply on non-empty plan).
@@ -156,7 +156,7 @@ def test_select_family_registers_hodur_but_is_inert():
     assert select_family(graph="G0", project_config=None) is None  # detect inert
 
 
-# --- ApproovFamily: the second §1a profile on the shared spine (scaffold) ----------
+# --- ApproovFamily: the second unflatten profile on the shared spine (scaffold) ----------
 class _FakeMap:
     """Stand-in StateDispatcherMap carrying only the kind discriminator detect reads."""
 
@@ -224,7 +224,7 @@ def test_registry_registers_both_profiles():
     # no priority/tiebreak — registration order does not matter.
 
 
-# --- TigressFamily: the third §1a profile on the shared spine (M3 slice 1) ---------
+# --- TigressFamily: the third unflatten profile on the shared spine (M3 slice 1) ---------
 def test_tigress_detect_is_kind_scoped_to_switch_and_indirect(monkeypatch):
     """detect claims switch/indirect kinds, rejects equality-chain and non-graphs."""
     fam = TigressFamily()

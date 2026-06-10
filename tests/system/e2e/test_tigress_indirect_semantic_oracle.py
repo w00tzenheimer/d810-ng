@@ -139,7 +139,7 @@ class TestTigressIndirectSemanticOracle:
                 state.start_d810()
                 cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
                 assert cfunc is not None, (
-                    f"Decompilation of {func_name} with d810 (§1a) failed"
+                    f"Decompilation of {func_name} with d810 (unflatten) failed"
                 )
                 code_after = pseudocode_to_string(cfunc.get_pseudocode())
                 block_rules_fired = {
@@ -158,20 +158,20 @@ class TestTigressIndirectSemanticOracle:
 
         diag_conn = get_diag_conn(func_ea)
         assert diag_conn is not None, (
-            "tigress_flatten_indirect §1a oracle requires a diag DB"
+            "tigress_flatten_indirect unflatten oracle requires a diag DB"
         )
-        # §1a applies its CFG rewrite through the DEFERRED modifier, so
+        # unflatten applies its CFG rewrite through the DEFERRED modifier, so
         # ``optimize()`` returns 0 and ``cfg_rule_usages`` never records
         # ``StateMachineCffUnflattener`` even though the pipeline ran (unlike the
-        # synchronous emulated engine). The deferred-safe "did §1a unflatten"
+        # synchronous emulated engine). The deferred-safe "did unflatten unflatten"
         # signal is the REDIRECT_EDGE provenance it writes to the diag DB.
         assert _applied_redirect_edges(diag_conn), (
-            "§1a applied no REDIRECT_EDGE provenance (pipeline did not unflatten); "
+            "unflatten applied no REDIRECT_EDGE provenance (pipeline did not unflatten); "
             f"cfg_rule_usages fired={sorted(block_rules_fired)}"
         )
         db_path = _diag_db_path(diag_conn, func_ea=func_ea)
         report = extract_transfer_map(db_path)
-        # §1a may resolve handoffs without REDIRECT_EDGE old_target provenance;
+        # unflatten may resolve handoffs without REDIRECT_EDGE old_target provenance;
         # feed whatever provenance exists (do NOT hard-require it) so the oracle
         # reports the true semantic verdict rather than erroring on plumbing.
         repaired_handoffs = _derive_live_repaired_handoffs(report, diag_conn)
@@ -190,17 +190,17 @@ class TestTigressIndirectSemanticOracle:
 
         artifact_dir = Path(os.environ.get("D810_DUMP_DIR", ".tmp"))
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        (artifact_dir / "tigress_indirect_s1a_after.c").write_text(
+        (artifact_dir / "tigress_indirect_unflat_after.c").write_text(
             code_after, encoding="utf-8"
         )
-        (artifact_dir / "tigress_indirect_s1a_transfer_map.json").write_text(
+        (artifact_dir / "tigress_indirect_unflat_transfer_map.json").write_text(
             json.dumps(report, indent=2, sort_keys=True), encoding="utf-8"
         )
-        (artifact_dir / "tigress_indirect_s1a_oracle.md").write_text(
+        (artifact_dir / "tigress_indirect_unflat_oracle.md").write_text(
             oracle_report, encoding="utf-8"
         )
 
-        print(f"\n=== tigress §1a ORACLE ===\n{oracle_report}")
-        print(f"=== tigress §1a repaired_handoffs: {repaired_handoffs} ===")
+        print(f"\n=== tigress unflatten ORACLE ===\n{oracle_report}")
+        print(f"=== tigress unflatten repaired_handoffs: {repaired_handoffs} ===")
 
         assert result.passed, oracle_report

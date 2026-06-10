@@ -1,4 +1,4 @@
-"""Family selection — the §1a ``select_family`` entry point.
+"""Family selection — the unflatten ``select_family`` entry point.
 
 Profiles are discovered via :class:`d810.core.registry.Registrant`: every
 :class:`StateMachineCffFamily` subclass auto-registers when its module is imported
@@ -16,7 +16,7 @@ selection without a code change. ``project_config["router_resolution"]`` accepts
 (absent / empty policy) preserves registration-order first-match exactly.
 
 Inert in production: the live maturity hook hardcodes ``HodurFamily()`` and never calls
-``select_family`` (only the §1a driver / unit tests do); no golden config sets
+``select_family`` (only the unflatten driver / unit tests do); no golden config sets
 ``router_resolution``.
 """
 from __future__ import annotations
@@ -34,7 +34,7 @@ def registered_families() -> tuple:
 def select_family(graph, project_config, *, capabilities=frozenset()):
     """Return the registered profile that recognizes ``graph``, or ``None``.
 
-    Mirrors §1a ``select_family``: polls the candidate profiles and returns the first
+    Mirrors unflatten ``select_family``: polls the candidate profiles and returns the first
     whose ``detect`` claims ``graph``. With the default (absent / empty)
     ``router_resolution`` policy this is registration-order first-match, unchanged. The
     optional ``project_config["router_resolution"]`` policy filters (``deny`` / ``require``)

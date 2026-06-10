@@ -617,7 +617,7 @@ def interval_dispatcher_from_state_map(
     Each state value becomes a single-value interval ``[state, state + 1)``
     routing to its handler block. This adapts a register / equality-chain
     ``StateDispatcherMap`` (``jz eax, #state, @handler``) into the same
-    interval-set router the comparison-BST path produces, so the §1a back-edge
+    interval-set router the comparison-BST path produces, so the unflatten back-edge
     emit (``emit_minimal_unflatten``) is dispatcher-shape-agnostic: it consumes
     the router without caring whether it came from a comparison tree or an
     equality chain.

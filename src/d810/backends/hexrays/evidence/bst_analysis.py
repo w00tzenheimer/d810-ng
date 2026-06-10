@@ -2147,7 +2147,7 @@ def _interval_dispatcher_from_decision_dag(dag) -> "IntervalDispatcher | None":
     ``DecisionDag.resolve_paths`` partitions the whole state space into disjoint
     ``(IntervalSet domain, leaf)`` cells with per-comparison signedness handled
     correctly (``route_predicate.satisfying_set``). Converting it to the legacy
-    :class:`IntervalDispatcher` shape lets the existing §1a DAG-builder /
+    :class:`IntervalDispatcher` shape lets the existing unflatten DAG-builder /
     handler_range_map consumers route through the one correct router. Returns
     ``None`` when no decision-DAG (with comparison nodes) is available.
     """

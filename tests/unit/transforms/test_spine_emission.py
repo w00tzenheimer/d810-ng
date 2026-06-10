@@ -1,4 +1,4 @@
-"""Portable spine redirect emission shared by the legacy LFG path and §1a #4.
+"""Portable spine redirect emission shared by the legacy LFG path and unflatten #4.
 
 ``emit_spine_modifications`` walks the DAG's transition edges and emits one neutral
 ``GraphModification`` per redirected edge using the canonical nsucc-aware emission planner. These
