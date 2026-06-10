@@ -64,6 +64,23 @@ class _InstructionView:
     src_r_stkoff: int | None
     src_r_value: int | None
     dstr: str
+    # Register identity for operands carried in a register rather than a
+    # stack slot (``mop_r``).  ``None`` when the operand is not a register;
+    # ``stkoff`` is likewise ``None`` for register operands.  Populated from the
+    # snapshot ``MopSnapshot.reg`` field, or a ``*_reg`` attribute on a
+    # diag-style instruction when present.
+    dest_reg: int | None = None
+    src_l_reg: int | None = None
+    src_r_reg: int | None = None
+    # Raw operand SUBTREE snapshots (``MopSnapshot``) for the left/right
+    # operands, retained so operand-tree walkers can inspect a nested
+    # sub-operation (e.g. a ``(%var - #N)`` subtract buried inside an
+    # ``m_xdu`` / ``m_jge`` expression) at ANY depth.  The flat
+    # ``src_l_stkoff`` / ``src_l_value`` fields above only expose the
+    # top-level operand; these carry the full structured subtree.  ``None``
+    # for diag-style instructions that do not provide a snapshot subtree.
+    src_l_mop: "Any | None" = None
+    src_r_mop: "Any | None" = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +154,17 @@ def _stack_offset_from_snapshot(mop: Any) -> int | None:
     return None
 
 
+def _reg_from_snapshot(mop: Any) -> int | None:
+    if getattr(mop, "kind", None) is OperandKind.REGISTER:
+        reg = getattr(mop, "reg", None)
+        return int(reg) if reg is not None else None
+    return None
+
+
+def _reg_from_cfg_insn(value: Any) -> int | None:
+    return int(value) if value is not None else None
+
+
 def _const_value_from_snapshot(mop: Any) -> int | None:
     if getattr(mop, "kind", None) is OperandKind.NUMBER:
         value = getattr(mop, "value", None)
@@ -180,6 +208,11 @@ def _iter_portable_instructions(target: Any) -> Iterable[_InstructionView]:
                     src_r_stkoff=_stack_offset_from_snapshot(right),
                     src_r_value=_const_value_from_snapshot(right),
                     dstr=_display_text_from_cfg_insn(insn),
+                    dest_reg=_reg_from_snapshot(dest),
+                    src_l_reg=_reg_from_snapshot(left),
+                    src_r_reg=_reg_from_snapshot(right),
+                    src_l_mop=left,
+                    src_r_mop=right,
                 )
             continue
         for index, insn in enumerate(getattr(blk, "instructions", ())):
@@ -223,6 +256,11 @@ def _iter_portable_instructions(target: Any) -> Iterable[_InstructionView]:
                 src_r_stkoff=src_r_stkoff,
                 src_r_value=src_r_value,
                 dstr=str(getattr(insn, "dstr", "")),
+                dest_reg=_reg_from_cfg_insn(getattr(insn, "dest_reg", None)),
+                src_l_reg=_reg_from_cfg_insn(getattr(insn, "src_l_reg", None)),
+                src_r_reg=_reg_from_cfg_insn(getattr(insn, "src_r_reg", None)),
+                src_l_mop=getattr(insn, "src_l_mop", None) or getattr(insn, "l", None),
+                src_r_mop=getattr(insn, "src_r_mop", None) or getattr(insn, "r", None),
             )
 
 
@@ -238,15 +276,32 @@ def _iter_instruction_views(target: Any) -> Iterable[_InstructionView]:
 
 
 def _classify_induction_update(insn: _InstructionView) -> _InductionUpdate | None:
-    if insn.dest_stkoff is None:
+    if insn.dest_stkoff is not None:
+        if insn.opcode_name in _ADD_OPCODES:
+            if insn.src_l_stkoff == insn.dest_stkoff and insn.src_r_value is not None:
+                return _InductionUpdate(insn, _signed_step(insn.src_r_value), "right")
+            if insn.src_r_stkoff == insn.dest_stkoff and insn.src_l_value is not None:
+                return _InductionUpdate(insn, _signed_step(insn.src_l_value), "left")
+        if insn.opcode_name in _SUB_OPCODES:
+            if insn.src_l_stkoff == insn.dest_stkoff and insn.src_r_value is not None:
+                return _InductionUpdate(insn, -_signed_step(insn.src_r_value), "right")
+        return None
+    return _classify_register_induction_update(insn)
+
+
+def _classify_register_induction_update(
+    insn: _InstructionView,
+) -> _InductionUpdate | None:
+    """Classify a register self-update ``reg = reg +/- const``."""
+    if insn.dest_reg is None:
         return None
     if insn.opcode_name in _ADD_OPCODES:
-        if insn.src_l_stkoff == insn.dest_stkoff and insn.src_r_value is not None:
+        if insn.src_l_reg == insn.dest_reg and insn.src_r_value is not None:
             return _InductionUpdate(insn, _signed_step(insn.src_r_value), "right")
-        if insn.src_r_stkoff == insn.dest_stkoff and insn.src_l_value is not None:
+        if insn.src_r_reg == insn.dest_reg and insn.src_l_value is not None:
             return _InductionUpdate(insn, _signed_step(insn.src_l_value), "left")
     if insn.opcode_name in _SUB_OPCODES:
-        if insn.src_l_stkoff == insn.dest_stkoff and insn.src_r_value is not None:
+        if insn.src_l_reg == insn.dest_reg and insn.src_r_value is not None:
             return _InductionUpdate(insn, -_signed_step(insn.src_r_value), "right")
     return None
 
