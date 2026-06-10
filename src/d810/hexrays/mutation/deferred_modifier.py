@@ -6497,6 +6497,9 @@ class DeferredGraphModifier:
         # (``copy_block_keep`` inserts before ``serial + 1``) that gotos the
         # false arm, and wire ``succset = [helper, taken]``.
         true_blk = self.mba.get_mblock(int(true_target))
+        # Hold the false-arm handler as an OBJECT too: the helper insert below
+        # shifts serials, so re-read it AFTER for diagnostic provenance.
+        false_blk = self.mba.get_mblock(int(false_target))
         first_succ = self._build_fallthrough_goto_helper(blk, int(false_target))
         if first_succ is None or true_blk is None:
             return False
@@ -6541,6 +6544,42 @@ class DeferredGraphModifier:
             int(first_succ),
             int(rewrite_from_ea),
         )
+        # Diagnostic-only provenance: the lowered 2-way replaces a single
+        # state-write-to-dispatcher edge, so the surviving snapshot shows only a
+        # 1-way handler with no constant state write. Persist the (source,
+        # true_arm, false_arm) lowering so the read-only transfer-map extractor
+        # can re-derive the two next-states for this conditional. The fall-
+        # through HELPER is a synthetic NOP-goto, so record the REAL false-arm
+        # handler block (re-read after the serial-shifting insert), not the
+        # helper. This does NOT change CFG topology — the rewire above did.
+        try:
+            from d810.core.observability_cfg import observe_cfg_provenance_latest
+
+            false_handler_serial = (
+                int(false_blk.serial) if false_blk is not None else int(false_target)
+            )
+            # Late-binding variant: this lowering can fire AFTER the last
+            # captured snapshot, so bind the row to the latest snapshot for the
+            # func directly rather than buffering for a "next snapshot" drain
+            # that may never come.
+            observe_cfg_provenance_latest(
+                func_ea=int(getattr(self.mba, "entry_ea", 0) or 0),
+                pass_name="deferred_modifier",
+                action="LOWER_CONDITIONAL_STATE_TRANSITION",
+                block_serial=int(blk.serial),
+                target_serial=int(true_serial),
+                reason="lower_conditional_state_transition",
+                extra={
+                    "true_target": int(true_serial),
+                    "false_target": false_handler_serial,
+                    "fallthrough_helper": int(first_succ),
+                    "old_dispatcher": int(old_dispatcher),
+                    "rewrite_from_ea": int(rewrite_from_ea),
+                },
+                mba=self.mba,
+            )
+        except Exception:
+            pass
         return True
 
     def _build_fallthrough_goto_helper(

@@ -215,23 +215,6 @@ class TestTigressIndirectSemanticOracle:
 
         assert result.passed, oracle_report
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "S1a StateMachineCffUnflattener path (default_unflattening_tigress_indirect.json) "
-            "is NOT YET fully semantically equivalent to the reference test_function_original. "
-            "Ground truth from the live oracle (2026-06-10): 14/15 checks PASS, exactly ONE "
-            "fails -- conditional_states: REF (0x05,0x1C,0x1D,0x21,0x24) vs D810 "
-            "(0x05,0x1D,0x21,0x24): conditional state 0x1C lost its branch (emitted as an "
-            "unconditional goto rather than a 2-way). Everything else matches -- "
-            "all_states_present, final_output_xor, terminal_states, 0x11+0x16 handoff targets, "
-            "failure_zero_write_present (which the EMULATED engine FAILS, so S1a is strictly "
-            "better: 1 gap vs 2), table bounds+invariant proofs, no_raw_indirect_jump. The 0x1C "
-            "gap is RECOVERABLE (same folded-conditional-arm class the campaign already recovers "
-            "for other arms), NOT inherent -- recover the 0x1C conditional so it lowers as a "
-            "2-way, then drop this marker. (llr-yyti)"
-        ),
-    )
     def test_tigress_indirect_s1a_engine_oracle(
         self,
         libobfuscated_setup,
