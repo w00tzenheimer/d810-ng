@@ -169,6 +169,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # needs help; the shipped indirect config hardcodes NOTHING.
         try:
             from d810.hexrays.preanalysis.indirect_jump_labels import (
+                materialize_discovered_indirect_label_targets,
                 register_indirect_materialization,
                 reset_indirect_materialization,
             )
@@ -180,14 +181,35 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # Clear any prior registration (fresh start for a reconfigured session),
         # then arm the prolog hook unconditionally. Arming only enables the
         # structural per-function detector; it does not itself touch any function.
+        override = dict(self.config.get("goto_table_info", {}) or {})
         try:
             reset_indirect_materialization()
-            register_indirect_materialization(
-                dict(self.config.get("goto_table_info", {}) or {})
-            )
+            register_indirect_materialization(override)
         except Exception:  # noqa: BLE001 — registration is best-effort
             logger.warning(
                 "s1a: indirect prolog registration failed", exc_info=True
+            )
+        # Configure-time prepass: structurally discover and materialize EVERY
+        # indirect-table dispatcher in the database NOW, before any decompile.
+        # This SEEDS the recon facts the §1a LiSA dispatcher discovery consumes —
+        # the prolog hook alone materializes only the entry function, which is
+        # insufficient for STANDALONE discovery (head=None otherwise, so the test
+        # would only pass when a sibling seeded it first; llr-trxj isolation fix).
+        # Address-agnostic + behavior-neutral for non-dispatcher functions
+        # (discovery returns None), so it stays inert for hodur/approov/switch.
+        try:
+            for result in materialize_discovered_indirect_label_targets(override):
+                logger.info(
+                    "Tigress indirect (s1a) preanalysis 0x%X: success=%s "
+                    "materialized=%d/%d",
+                    result.function_ea,
+                    result.success,
+                    result.materialized_target_count,
+                    result.target_count,
+                )
+        except Exception:  # noqa: BLE001 — prepass is best-effort
+            logger.warning(
+                "s1a: indirect target materialization prepass failed", exc_info=True
             )
 
     def optimize(self, blk: "ida_hexrays.mblock_t") -> int:
