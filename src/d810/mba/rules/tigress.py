@@ -10,6 +10,7 @@ never hardcoded to the specific Tigress values.
 Verification (all proven before landing):
 
 * ``TigressIncrementRule`` -- Z3 proved (32 & 64 bit) under its constraints.
+* ``TigressXorViaOrMinusAndRule`` -- Z3 proved (32 & 64 bit), unconstrained.
 * ``TigressAddViaXorOrRule`` -- Z3 proved (32 & 64 bit) under its constraint.
 * ``TigressXorViaSubOrRule`` -- Z3 proved (32 & 64 bit) under its constraint.
 * ``TigressNotEqualSignBitRule`` -- Z3 proved (32 & 64 bit); relational result.
@@ -77,6 +78,33 @@ class TigressIncrementRule(VerifiableRule):
 
     DESCRIPTION = "Fold (x ^ ~k) + ((2*x) | 2k) + 1 to x + k (increment idiom)"
     REFERENCE = "Tigress indirect residual; llr-m9r4 FORM1"
+
+
+# ============================================================================
+# FORM 6 -- XOR-VIA-OR-MINUS-AND  (AndOr-xor identity)
+# ============================================================================
+
+
+class TigressXorViaOrMinusAndRule(VerifiableRule):
+    """Simplify: (x | M) - (x & M) => x ^ M
+
+    The classic AndOr-xor identity: for every bit, ``(or) - (and)`` is exactly
+    the set of bits where ``x`` and ``M`` differ, i.e. ``x ^ M``. Holds for ALL
+    ``x`` and ``M`` (no constraint); ``M`` is a free leaf so it covers both a
+    runtime operand and a literal constant (e.g. the Tigress ``0x42``).
+
+    Tigress instance: ``(v10 | 0x42) - (v10 & 0x42)`` -> ``v10 ^ 0x42``.
+
+    Z3 proved (32 & 64 bit), unconstrained.
+    """
+
+    maturities = _ALL_MATURITIES
+
+    PATTERN = (x | y) - (x & y)
+    REPLACEMENT = x ^ y
+
+    DESCRIPTION = "Fold (x | M) - (x & M) to x ^ M (AndOr-xor identity)"
+    REFERENCE = "Tigress indirect residual; llr-wna1 FORM6"
 
 
 # ============================================================================

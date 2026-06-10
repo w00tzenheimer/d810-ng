@@ -26,6 +26,8 @@ import d810.mba.rules.tigress as T
 _Z3_VERIFIABLE = [
     (T.TigressIncrementRule, 32),
     (T.TigressIncrementRule, 64),
+    (T.TigressXorViaOrMinusAndRule, 32),
+    (T.TigressXorViaOrMinusAndRule, 64),
     (T.TigressAddViaXorOrRule, 32),
     (T.TigressAddViaXorOrRule, 64),
     (T.TigressXorViaSubOrRule, 32),
@@ -178,6 +180,18 @@ def test_increment_pattern_shape():
     assert _op(inner.right.left) == "mul"    # 2 * x
     r = T.TigressIncrementRule._dsl_replacement
     assert _op(r) == "add" and r.left.name == "x_0" and r.right.name == "k_res"
+
+
+def test_xor_via_or_minus_and_pattern_shape():
+    """PATTERN == (x | M) - (x & M) ; REPLACEMENT == x ^ M."""
+    p = T.TigressXorViaOrMinusAndRule._dsl_pattern
+    assert _op(p) == "sub"
+    assert _op(p.left) == "or"                    # x | M
+    assert _op(p.right) == "and"                  # x & M
+    assert p.left.left.name == "x_0" and p.left.right.name == "x_1"
+    assert p.right.left.name == "x_0" and p.right.right.name == "x_1"
+    r = T.TigressXorViaOrMinusAndRule._dsl_replacement
+    assert _op(r) == "xor" and r.left.name == "x_0" and r.right.name == "x_1"
 
 
 def test_add_via_xor_or_pattern_shape():
