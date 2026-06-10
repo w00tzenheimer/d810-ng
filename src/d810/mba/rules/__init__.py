@@ -38,6 +38,7 @@ from . import (
     or_,
     predicates,
     sub,
+    tigress,
     xor,
 )
 
@@ -65,5 +66,6 @@ __all__ = [
     "or_",
     "predicates",
     "sub",
+    "tigress",
     "xor",
 ]
