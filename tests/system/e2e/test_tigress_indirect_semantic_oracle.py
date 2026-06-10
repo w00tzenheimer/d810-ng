@@ -101,134 +101,24 @@ def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_fun
 
 
 class TestTigressIndirectSemanticOracle:
-    """Exercise the default behavior-affecting indirect engine config live."""
+    """Live semantic-equivalence gate for the StateMachineCffUnflattener path."""
 
     binary_name = _get_default_binary()
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "EMULATED-ENGINE path (default_unflattening_tigress_indirect_engine.json, "
-            "EmulatedDispatcherUnflattener) is NOT yet semantically equivalent to the "
-            "reference test_function_original. The bar is SEMANTIC EQUIVALENCE, not "
-            "feature-witness presence. Ground truth from the live oracle (2026-06-10): "
-            "exactly TWO checks fail, 13 pass -- "
-            "(1) conditional_states: REF (0x05,0x1C,0x1D,0x21,0x24) vs D810 "
-            "(0x05,0x1D,0x21,0x24) -- conditional state 0x1C lost its branch (emitted "
-            "unconditional); (2) failure_zero_write_present: REF True vs D810 False -- "
-            "the failure-path zero-write (`*output = 0`) is absent from emitted pseudocode. "
-            "all_states_present / final_output_xor / terminal_states / 0x11+0x16 handoff "
-            "targets / table bounds+invariant proofs all PASS, so the earlier prose "
-            "('missing else/parity loop at orphaned 0x20', 'collapsed -66 switch arm', "
-            "'ref_input_value folded out') was STALE -- no such check fails today. Fix the "
-            "0x1C branch recovery + emit the failure zero-write in the emulated engine, "
-            "then drop this marker. NOTE: this gates the EMULATED engine ONLY; the "
-            "S1a StateMachineCffUnflattener path is gated separately by "
-            "test_tigress_indirect_s1a_engine_oracle. (llr-307s, llr-yyti)"
-        ),
-    )
-    def test_tigress_indirect_engine_oracle(
+    def test_tigress_indirect_oracle(
         self,
         libobfuscated_setup,
         d810_state,
         pseudocode_to_string,
         request,
     ):
-        func_name = "tigress_flatten_indirect"
-        func_ea = _get_func_ea(func_name)
-        if func_ea == idaapi.BADADDR:
-            pytest.skip(f"{func_name} not found")
+        """Ground-truth gate for the StateMachineCffUnflattener (state-machine CFF)
+        path over the Tigress indirect jump-table dispatcher.
 
-        from d810.core.settings import configure_settings, reset_settings
-
-        configure_settings(
-            diag_snapshots=True,
-            capture_post_maturity=idaapi.MMAT_GLBOPT1,
-        )
-        request.addfinalizer(reset_settings)
-
-        with d810_state() as state:
-            with state.for_project("default_unflattening_tigress_indirect_engine.json"):
-                state.stats.reset()
-                state.start_d810()
-                cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
-                assert cfunc is not None, (
-                    f"Decompilation of {func_name} with d810 failed"
-                )
-                code_after = pseudocode_to_string(cfunc.get_pseudocode())
-                block_rules_fired = {
-                    name
-                    for name, counts in state.stats.cfg_rule_usages.items()
-                    if any(count > 0 for count in counts)
-                }
-
-        assert "EmulatedDispatcherUnflattener" in block_rules_fired
-
-        from d810.core.diag import get_diag_conn
-        from d810.diagnostics.indirect_state_transfer_map import extract_transfer_map
-        from tests.system.e2e.tigress.tigress_indirect_semantic_oracle import (
-            evaluate_tigress_indirect_semantic_oracle,
-            inputs_from_transfer_report,
-            render_tigress_indirect_semantic_oracle_report,
-        )
-
-        diag_conn = get_diag_conn(func_ea)
-        assert diag_conn is not None, (
-            "tigress_flatten_indirect oracle requires a diag DB"
-        )
-        db_path = _diag_db_path(diag_conn, func_ea=func_ea)
-        report = extract_transfer_map(db_path)
-        repaired_handoffs = _derive_live_repaired_handoffs(report, diag_conn)
-        assert repaired_handoffs, (
-            "tigress_flatten_indirect oracle expected live terminal-stub "
-            "handoff repair evidence in cfg_provenance"
-        )
-        inputs = inputs_from_transfer_report(
-            report,
-            initial_state=0x22,
-            repaired_handoffs=repaired_handoffs,
-            pseudocode=code_after,
-            func_name=func_name,
-        )
-        result = evaluate_tigress_indirect_semantic_oracle(inputs)
-        oracle_report = render_tigress_indirect_semantic_oracle_report(
-            result,
-            func_name=func_name,
-        )
-
-        artifact_dir = Path(os.environ.get("D810_DUMP_DIR", ".tmp"))
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        pseudocode_path = artifact_dir / "tigress_indirect_after.c"
-        pseudocode_path.write_text(code_after, encoding="utf-8")
-        transfer_map_path = artifact_dir / "tigress_indirect_transfer_map.json"
-        transfer_map_path.write_text(
-            json.dumps(report, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
-        report_path = artifact_dir / "tigress_indirect_oracle.md"
-        report_path.write_text(oracle_report, encoding="utf-8")
-
-        print(f"\n=== tigress_flatten_indirect ORACLE: {report_path} ===")
-        print(f"=== tigress_flatten_indirect AFTER: {pseudocode_path} ===")
-        print(f"=== tigress_flatten_indirect TRANSFER MAP: {transfer_map_path} ===")
-        print(oracle_report)
-
-        assert result.passed, oracle_report
-
-    def test_tigress_indirect_s1a_engine_oracle(
-        self,
-        libobfuscated_setup,
-        d810_state,
-        pseudocode_to_string,
-        request,
-    ):
-        """Ground-truth gate for the §1a StateMachineCffUnflattener path.
-
-        Sibling of ``test_tigress_indirect_engine_oracle`` but exercises the §1a
-        config (``default_unflattening_tigress_indirect.json``) instead of the
-        emulated engine. §1a runs unconditionally (no enable flag). Reuses the
-        same semantic oracle so both paths are measured against identical REF
-        witnesses (llr-yyti).
+        Exercises ``default_unflattening_tigress_indirect.json`` — the sole,
+        unconditional CFF unflattener — and asserts the emitted pseudocode is
+        semantically equivalent to the reference ``test_function_original`` via
+        the shared indirect oracle (llr-yyti).
         """
         func_name = "tigress_flatten_indirect"
         func_ea = _get_func_ea(func_name)
