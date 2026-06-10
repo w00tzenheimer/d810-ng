@@ -9,12 +9,11 @@ live-mba touch points are the lifter + ``HexRaysMutationBackend`` (backends/hexr
 
 PRODUCTION PATH (M2 cutover, llr-ibpi): the §1a chain+spine pipeline is the SOLE CFF unflattener.
 The hodur configs route ``StateMachineCffUnflattener``; full-fleet golden parity verified at 3032/0.
-The legacy HCC fork is removed — disable only via ``D810_USE_S1A_PIPELINE=0`` (returns 0, no-op).
+The legacy HCC fork is removed and §1a runs unconditionally — there is no enable/disable flag.
 """
 from __future__ import annotations
 
 import json
-import os
 
 import ida_hexrays
 from d810.analyses.control_flow.block_ownership_domain import \
@@ -110,11 +109,6 @@ from d810.passes.driver import run_pipeline
 from d810.transforms.state_machine_unflatten import lower_to_direct_graph
 
 logger = logging.getLogger("D810.unflat.s1a", logging.DEBUG)
-
-
-def _s1a_enabled() -> bool:
-    # M2 cutover (llr-ibpi): §1a is the production path; defaults ON.
-    return os.environ.get("D810_USE_S1A_PIPELINE", "1").strip() == "1"
 
 
 class StateMachineCffUnflattener(ComposedUnflatteningRule):
@@ -237,13 +231,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # line and leaving AFTER == BEFORE (ticket llr-1330).
         self.mba : ida_hexrays.mba_t = blk.mba
         logger.info(
-            "s1a optimize: enabled=%s maturity=%s blk=%s",
-            _s1a_enabled(),
+            "s1a optimize: maturity=%s blk=%s",
             maturity_to_string(getattr(self.mba, "maturity", 0)),
             getattr(blk, "serial", "?"),
         )
-        if not _s1a_enabled():
-            return 0
         mba = self.mba
         # Profile-scoped recovery maturity (llr-m9r4). The Tigress INDIRECT profile
         # must recover at MMAT_CALLS — its state-write transitions (and the
@@ -841,7 +832,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         wrong constant). Returns ``(refined_writes, folded_count)``; on any miss the base view is
         returned unchanged (graceful degradation == the pure abstract probe).
 
-        Measured on sub_7FFD3338C040 (D810_S1A_USE_HCC=0): 7 unanchored back-edge predecessors are
+        Measured on sub_7FFD3338C040: 7 unanchored back-edge predecessors are
         candidates, and the single-block / empty-store emulator folds 0 of them -- it correctly
         ABSTAINS rather than guess.  Those 7 are the opaque-const ``reg ^ reg`` next-state writers
         whose operands are program values defined in OTHER blocks; resolving them needs a
