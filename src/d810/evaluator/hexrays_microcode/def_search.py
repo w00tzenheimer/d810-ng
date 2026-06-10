@@ -36,6 +36,17 @@ logger = getLogger(__name__)
 # Set D810_PATTERN_USE_NATIVE_DEF_SEARCH=0 to disable and fall back to MopTracker only.
 _USE_NATIVE_DEF_SEARCH = os.environ.get("D810_PATTERN_USE_NATIVE_DEF_SEARCH", "1") != "0"
 
+# Crash-safety budgets (ticket llr-pydd): a prior matcher attempt segfaulted IDA
+# during PREOPT def-search via unbounded recursion / null deref. These hard caps
+# bound the recursive resolver so it can never recurse infinitely or deref null,
+# even on cyclic / degenerate microcode. The node budget is a per-call ceiling on
+# the total number of leaf resolutions any single ``recursively_resolve_ast`` call
+# may attempt (independent of the structural ``max_depth``).
+_RESOLVE_NODE_BUDGET = 4096
+# Hard upper bound on single-predecessor chain walks (defensive; the loop itself
+# already caps at _MAX_PRED_DEPTH, this guards against a malformed CFG cycle).
+_MAX_PRED_DEPTH = 8
+
 _SNAPSHOT_TYPES_REQUIRING_OWNED_MOP = {
     ida_hexrays.mop_d,
     ida_hexrays.mop_f,
@@ -280,7 +291,8 @@ def resolve_mop_via_predecessors(
     Returns:
         The AST of the defining instruction, or None if resolution failed.
     """
-    _MAX_PRED_DEPTH = 8
+    if blk is None or mop is None:
+        return None
     mop = _materialize_mop_for_tracking(mop, "resolve_mop_via_predecessors")
     if mop is None:
         return None
@@ -300,9 +312,26 @@ def resolve_mop_via_predecessors(
             )
         return ast
 
-    # Walk single-predecessor chain.
+    # Walk single-predecessor chain. Cycle detection (visited serials) guards
+    # against a malformed CFG where the single-pred chain loops back on itself,
+    # which would otherwise spin until the depth cap (crash-safety, llr-pydd).
     cur_blk = blk
+    visited_serials: set[int] = set()
     for _ in range(_MAX_PRED_DEPTH):
+        if cur_blk is None:
+            return None
+        try:
+            cur_serial = int(cur_blk.serial)
+        except Exception:
+            return None
+        if cur_serial in visited_serials:
+            if logger.debug_on:
+                logger.debug(
+                    "resolve_mop_via_predecessors: cycle at block %d, stopping",
+                    cur_serial,
+                )
+            return None
+        visited_serials.add(cur_serial)
         # Bail out if there is not exactly one predecessor (ambiguous path).
         if cur_blk.npred() != 1:
             if logger.debug_on:
@@ -523,11 +552,25 @@ def recursively_resolve_ast(
     if cache is None:
         cache = {}
 
+    # Crash-safety: per-call node budget (independent of structural max_depth).
+    # The budget is threaded through the cache dict under a private key so the
+    # public signature stays unchanged. It bounds total leaf-resolution attempts
+    # so a degenerate / cyclic def chain cannot exhaust the stack (llr-pydd).
+    budget = cache.get("__resolve_budget__")
+    if budget is None:
+        budget = [_RESOLVE_NODE_BUDGET]
+        cache["__resolve_budget__"] = budget
+
     if depth >= max_depth:
         return ast
 
     if ast is None:
         return None
+
+    if budget[0] <= 0:
+        if logger.debug_on:
+            logger.debug("recursively_resolve_ast: node budget exhausted, stopping")
+        return ast
 
     # If it's a leaf with a register/stack mop or memory load, try to resolve it
     if ast.is_leaf():
@@ -541,12 +584,14 @@ def recursively_resolve_ast(
                 if nested is not None and nested.opcode == ida_hexrays.m_ldx:
                     is_resolvable = True
 
-            if is_resolvable:
+            if is_resolvable and ins is not None:
                 mop_key = get_mop_key(ast_leaf.mop)
                 cache_key = (mop_key, ins.ea)
                 if cache_key in cache:
                     return cache[cache_key]
 
+                # Charge the budget once per attempted leaf resolution.
+                budget[0] -= 1
                 resolved = resolve_mop_to_ast(ast_leaf.mop, blk, ins)
                 if resolved is not None and resolved is not ast:
                     # Update search context for children: search from the defining instruction
