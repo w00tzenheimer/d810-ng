@@ -141,9 +141,59 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
     # flow-context gate so it always runs.
     HAS_OWN_DISPATCHER_COLLECTOR = True
 
+    #: Hard safety bound on unflatten rounds per function/maturity. A single
+    #: spine-redirect pass leaves the dispatcher's comparison ENTRY block reachable;
+    #: IDA's optblock loop re-invokes ``optimize`` many times per GLBOPT1 phase, and
+    #: each re-invocation re-lifts the post-redirect graph and lets the recovery
+    #: discover + redirect the residual dispatcher once IDA's own optimize_global has
+    #: collapsed it to a single recoverable edge (approov_real_pattern converges this
+    #: way). The loop TERMINATES the moment recovery finds no dispatcher (the graph is
+    #: fully unflattened), so this cap is only a backstop against a pathological
+    #: non-converging graph -- it is generously above the observed convergence depth
+    #: (~19 IDA-interleaved re-invocations for approov_real_pattern) (ticket llr-3gn4).
+    _MAX_UNFLATTEN_ROUNDS: int = 64
+
     def __init__(self) -> None:
         super().__init__()  # ComposedUnflatteningRule: flow_context + optblock lifecycle
-        self._unflat_done_for_ea: int = -1
+        #: ``func_ea -> rounds already run``. Replaces the one-shot ``done`` flag with
+        #: a bounded re-run counter (ticket llr-3gn4); an ea reaching the cap, or a
+        #: round that applies nothing, is marked terminal via ``_unflat_done_eas``.
+        self._unflat_round_count: dict[int, int] = {}
+        #: EAs whose unflatten has converged (a round applied 0 mods) or hit the cap.
+        self._unflat_done_eas: set[int] = set()
+
+    def _should_run_unflatten_round(self, func_ea: int, *, is_indirect: bool) -> bool:
+        """Bounded re-run gate (ticket llr-3gn4): may the unflatten run on ``func_ea`` now?
+
+        The equality-chain / switch profile re-runs (bounded by ``_MAX_UNFLATTEN_ROUNDS``)
+        so a residual dispatcher a single spine pass leaves behind is recovered + redirected
+        on a later round, letting IDA's optimize_global converge to the dispatcher-free graph
+        (approov_real_pattern needs the 2nd round's blk3-entry redirect). The INDIRECT_JUMP
+        profile keeps the historical one-shot contract — its recover_terminal_tail /
+        folded-loop-guard lowering is tuned for a single pass and re-running drops semantic
+        body (the Tigress oracle's password check / XOR output / failure-zero write).
+
+        Mutates the per-ea round bookkeeping when it returns ``True``: increments the round
+        count, and on the round cap marks the ea terminal. ``mark_ea_converged`` (called from
+        ``optimize`` once recovery reports no dispatcher) is the other terminal path.
+
+        Returns ``True`` to proceed with a round, ``False`` to no-op (already converged,
+        capped, or indirect-and-already-ran-once).
+        """
+        if func_ea in self._unflat_done_eas:
+            return False
+        rounds = self._unflat_round_count.get(func_ea, 0)
+        if is_indirect and rounds >= 1:
+            return False  # INDIRECT keeps the historical one-shot contract
+        if rounds >= self._MAX_UNFLATTEN_ROUNDS:
+            self._unflat_done_eas.add(func_ea)
+            return False
+        self._unflat_round_count[func_ea] = rounds + 1
+        return True
+
+    def _mark_ea_converged(self, func_ea: int) -> None:
+        """Mark ``func_ea`` terminal — recovery found no dispatcher (graph fully unflattened)."""
+        self._unflat_done_eas.add(func_ea)
 
     def configure(self, kwargs):
         # Configure-time hook (project load, runs ONCE before any decompilation
@@ -249,9 +299,16 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         if mba.maturity != _target_maturity:
             return 0
         func_ea: int = mba.entry_ea
-        if func_ea == self._unflat_done_for_ea:
-            return 0  # one pipeline run per function/maturity
-        self._unflat_done_for_ea = func_ea
+        # Bounded re-run (ticket llr-3gn4): re-running the unflatten on the re-lifted
+        # post-redirect graph discovers + redirects a residual dispatcher a single pass
+        # leaves behind, so IDA's optimize_global converges to the dispatcher-free graph.
+        # An ea is terminal once recovery finds no dispatcher (the common clean case,
+        # identical to the old one-shot behaviour) or the round cap is reached. Self-
+        # terminating: a fully-unflattened graph yields no dispatcher, so the next round
+        # emits no plan and marks the ea done. GATED to the NON-indirect profile — see
+        # :meth:`_should_run_unflatten_round`.
+        if not self._should_run_unflatten_round(func_ea, is_indirect=_is_indirect):
+            return 0
 
         source = lift_function(mba, maturity=mba.maturity)
         # llr-dczv: register the PORTABLE indirect jump-table resolver into the
@@ -390,8 +447,27 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         self._publish_unflat_diagnostics(
             mba, source, rec, tr, regions, fact_view, bst_evidence, capabilities
         )
-        # Change accounting is the backend's concern (it lowered the plan); the unflatten driver does not
-        # yet surface an applied-count, so report 0 until the reconstruction passes land real plans.
+        # Termination (ticket llr-3gn4): mark the ea done the moment recovery finds NO
+        # dispatcher -- the graph is fully unflattened, so re-running would only re-lift and
+        # re-detect nothing. This is the common case on the very first round for every
+        # already-clean function (hodur / sub_7FFD / the 4 clean approov fns), so they run
+        # exactly once exactly as before. A round that still SEES a dispatcher but emits no
+        # redirect is NOT terminal: approov_real_pattern's residual blk3 entry only becomes
+        # recoverable after IDA's interleaved optimize_global collapses it, several
+        # re-invocations later -- stopping early there leaves the state machine flattened.
+        dispatcher_present = (
+            rec is not None
+            and getattr(rec, "dispatcher_block_serial", None) is not None
+        )
+        if not dispatcher_present:
+            self._mark_ea_converged(func_ea)
+        # Report 0 to IDA's optblock callback (historical contract): convergence is driven by
+        # IDA's own optblock re-invocation cadence (it re-calls ``optimize`` per block per
+        # GLBOPT1 round) interleaved with its optimize_global cleanup, which the bounded re-run
+        # rides. Reporting the real change count instead makes IDA front-load an extra
+        # optimize_global that partially collapses the residual dispatcher BEFORE the next
+        # round can recover + redirect it, so the convergence redirect is never emitted and the
+        # dispatcher survives (verified: returning the count regressed approov_real_pattern).
         return 0
 
     def _log_lisa_discovery_diff(self, flow_graph, prelim, bst_evidence) -> None:
