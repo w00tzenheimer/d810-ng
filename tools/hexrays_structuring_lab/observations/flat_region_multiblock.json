@@ -1,0 +1,46 @@
+{
+  "case_id": "flat_region_multiblock",
+  "binary": "restructuring_lab.dll",
+  "function": "lab_flat_region",
+  "roadmap_item": "L7",
+  "phase": "L7 (multi-block subgraph / shared region insert)",
+  "verifies_clean": true,
+  "interr": null,
+  "region_shape": "A 2-block shared continuation: region HEAD (r-=0x22 + an internal if(token&2) branch) -> region TAIL (r^=0x33), reached from two paths A and B. A single ENTRY handler routes to A or B with clean immediate state writes (no reg-resident selector), so L7 isolates the multi-block region and does NOT drag in L2. The internal branch makes the region irreducibly 2 blocks (a straight sequence would merge in the render).",
+  "glbopt1_structure": {
+    "qty": 18,
+    "state_slot": "%var_8.4",
+    "dispatcher_chain": [2, 3, 4, 5, 6],
+    "entry_handler": 8,
+    "A": 11,
+    "B": 12,
+    "region_head_K2": 13,
+    "region_tail_RT": 16,
+    "terminal": 7,
+    "writers": {"KENTRY": [1], "K0": [9], "K1": [10], "K2": [11, 12], "RT": [14], "TERM": [15, 16]},
+    "routing": {"KENTRY": 8, "K0": 11, "K1": 12, "K2": 13, "RT": 16},
+    "shared": "region head (K2) is written by BOTH A(11) and B(12) -> 2 preds = SHARED region"
+  },
+  "phase1_join_preserve": {
+    "decision": "RECOMMENDED / correct deobfuscation -- a join, not duplication (no bloat).",
+    "plan": [[1, 8], [9, 11], [10, 12], [11, 13], [12, 13], [14, 16], [15, 7], [16, 7]],
+    "mechanism": "the general unflatten rule (region-aware const set incl KENTRY+RT): redirect every genuine dispatcher-returning state-writer to its routed handler; TERM-writers -> terminal. The region head naturally becomes a JOIN (its 2 writers A,B both route to it); its internal branch is preserved because only its ARMS (not the head) are redirected.",
+    "inserts_applied": 8,
+    "render": "if(token&1) r+=0x11 else r^=0x55; r-=0x22 (shared join, ONCE); if(token&2) r^=0x33; return. The region head `- 0x22` appears EXACTLY ONCE (assert count==1) -- a true shared join.",
+    "test": "test_region_renders_join_optblock"
+  },
+  "phase2_deshare_duplicate": {
+    "decision": "per the L7 spec -- duplicate the 2-block region into each path.",
+    "mechanism": "TWO PASSES via optblock re-entry. Pass 0: drain the entry (KENTRY/K0/K1 writers -> their handlers) AND clone the region HEAD (conditional) per path A,B via queue_create_conditional_redirect(ref=head, conditional_target=tail, fallthrough=term) -- jcc SENSE resolved by checking which head arm writes RT (taken_to_tail); here taken arm 15 writes TERM not RT, so cond_t=term / fallthrough=tail (swapped). Pass 1: the now-multi-pred TAIL is de-shared P3-style (per-pred state-free create_and_redirect copy). Tail re-identified across the serial-shifting pass-0 by instruction-EA overlap.",
+    "inserts_applied": {"pass0": 5, "pass1": 3},
+    "render": "if(token&1){ r+=0x11; r-=0x22; if(token&2) r^=0x33; } else { r^=0x55; r-=0x22; if(token&2) r^=0x33; } return. The region (head+internal-branch+tail) is DUPLICATED into both arms. The head `-0x22` folds in the token&1 arm (token+0x18-0x22 = token-0xA), so witness the un-folding internal `token & 2` branch + `^0x33` tail appearing TWICE.",
+    "test": "test_region_deshare_duplicate_optblock"
+  },
+  "key_findings": [
+    "Multi-block region with an internal branch CAN'T be a single-block P3 de-share or a single create_and_redirect -- the internal jcc must be cloned (create_conditional_redirect) and the tail de-shared separately.",
+    "De-share of a 2-block region = clone the conditional HEAD per path (create_conditional_redirect) THEN de-share the now-multi-pred TAIL P3-style. Two optblock passes avoid cross-insert serial prediction; re-identify the tail by instruction-EA overlap after the pass-0 serial shift.",
+    "create_conditional_redirect jcc SENSE: wire conditional_target to whichever outcome the ref block's jz-taken (tail.d.b) leads to; detect by which head arm writes the tail state (RT). Here the taken arm wrote TERM, so cond/fallthrough were swapped.",
+    "Join-preservation (phase 1) is the correct bloat-free reconstruction; duplication (phase 2) is the niche capability. Both proven."
+  ],
+  "test_summary": "tests/system/runtime/hexrays/test_insert_unflatten_mini.py::TestInsertUnflattenRegion (dump + join + de-share); 17 passed / 1 xfailed across the lab file."
+}
