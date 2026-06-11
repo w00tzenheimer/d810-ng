@@ -159,6 +159,41 @@ def _routes_to_function_return(flow_graph, start: int, *, disp: int, bound: int 
     return False
 
 
+def _return_redirect_target(
+    flow_graph, target_handler: int | None, *, default_target: int | None
+) -> int | None:
+    """Pick the redirect target for a ``is_return`` back-edge.
+
+    A return transition is ``_classify``'d True in three cases (see
+    :func:`recover_state_write_transitions`):
+
+    * the routed target IS the dispatcher's ``default_target`` (catch-all),
+    * the routed target is an actual STOP/return block, or
+    * the state is unresolved (``target_handler is None``).
+
+    The historical emit collapsed all three onto ``default_target`` — correct for
+    the hodur / approov shape where the catch-all default IS the function's
+    return/STOP block.  But an OLLVM ``-fla`` chain routes its EXIT state via an
+    EXPLICIT map row to a STOP block (``0xBFF7ACB5 -> 126``) while ``default_target``
+    is a SEPARATE catch-all that loops back to the dispatcher; collapsing onto that
+    catch-all stranded the terminal output write inside a ``while(1)`` (no exit
+    edge, ``returns=0``).  When the routed ``target_handler`` is itself a STOP block
+    DISTINCT from ``default_target``, redirect the back-edge straight onto that STOP
+    so the function actually returns (ticket llr-gpt3).
+
+    Behaviour-neutral for the existing corpus: when ``target_handler`` is None /
+    equals ``default_target`` / is not a STOP block, this returns ``default_target``
+    exactly as before.
+    """
+    if (
+        target_handler is not None
+        and (default_target is None or int(target_handler) != int(default_target))
+        and _is_stop_block(flow_graph.get_block(int(target_handler)))
+    ):
+        return int(target_handler)
+    return default_target
+
+
 def build_state_write_redirects(
     flow_graph,
     dispatcher,
@@ -244,7 +279,15 @@ def build_state_write_redirects(
             # redirect ``src -> via_block`` onto the routed handler.  Otherwise
             # sever ``src -> dispatcher``.
             old = int(vb) if vb is not None else disp
-            new = default_target if transition.is_return else transition.target_handler
+            new = (
+                _return_redirect_target(
+                    flow_graph,
+                    transition.target_handler,
+                    default_target=default_target,
+                )
+                if transition.is_return
+                else transition.target_handler
+            )
             # Carrier RETURN arm: the shared block ``vb`` carries the function's
             # return value (a live non-state write) and THIS arm's route reaches the
             # actual return.  Keep ``src -> vb`` intact (so the carrier executes) and

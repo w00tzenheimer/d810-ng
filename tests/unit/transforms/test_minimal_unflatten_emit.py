@@ -15,6 +15,7 @@ from d810.analyses.value_flow.state_write import (
 )
 from d810.capabilities.providers import BstWalkerProvider, register_bst_walkers
 from d810.ir.flowgraph import (
+    BlockKind,
     BlockSnapshot,
     FlowGraph,
     InsnKind,
@@ -289,6 +290,84 @@ def test_carrier_return_arm_flows_through_shared_block(_seam) -> None:
     assert not [
         m for m in mods if isinstance(m, RedirectGoto) and m.from_serial == 9
     ]
+
+
+def test_explicit_stop_row_routes_to_stop_not_catchall(_seam) -> None:
+    # OLLVM -fla EXIT shape (ticket llr-gpt3): the EXIT state (0x30) is an EXPLICIT
+    # map row routing to a STOP block (blk99), while the dispatcher's catch-all
+    # default (blk20) loops back to the dispatcher (NOT a STOP).  The terminal
+    # handler blk10 writes the EXIT state, so its back-edge must redirect onto the
+    # STOP (blk99) -- routing it to the catch-all default (blk20) strands the
+    # output write in a non-returning while(1).
+    # blk99 must be a real STOP (BLT_STOP); a bare 0-succ block is ZERO_WAY, not
+    # STOP, and _is_stop_block keys on the STOP kind/type.
+    stop99 = BlockSnapshot(
+        serial=99, block_type=1, succs=(), preds=(2,), flags=0,
+        start_ea=0x1000 + 99 * 0x40, insn_snapshots=(), kind=BlockKind.STOP,
+    )
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),                                   # entry
+            1: _b(1, (2,), (0,), (_mov_state(0x900, 0x10),)),     # prologue -> 0x10
+            2: _b(2, (10, 20, 99), (1, 10, 20)),                  # dispatcher
+            10: _b(10, (2,), (2,), (_mov_state(0x1000, 0x30),)),  # terminal: writes EXIT 0x30
+            20: _b(20, (2,), (2,)),                               # catch-all default (loops back)
+            99: stop99,                                           # STOP / return
+        },
+        entry_serial=0, func_ea=0x1000,
+    )
+    # Explicit rows: 0x10 -> blk10 (terminal handler), 0x30 -> blk99 (STOP).
+    # Catch-all default = blk20 (the loop-back catch-all, NOT a STOP).
+    disp = _disp({0x10: 10, 0x30: 99}, exit_block=20)
+    transitions = recover_state_write_transitions(
+        fg, disp, _STATE, dispatcher_entry_serial=2
+    )
+    by_block = {t.write_block: t for t in transitions}
+    # blk10 folds to EXIT state 0x30, routed to STOP blk99 -> classified is_return.
+    assert by_block[10].next_state == 0x30
+    assert by_block[10].target_handler == 99
+    assert by_block[10].is_return is True
+    mods = build_state_write_redirects(
+        fg, disp, transitions,
+        dispatcher_entry_serial=2, pre_header_serial=1, initial_state=0x10,
+    )
+    gotos = {(m.from_serial, m.new_target) for m in mods if isinstance(m, RedirectGoto)}
+    # FIX: the terminal back-edge redirects onto the STOP (blk99), NOT the catch-all
+    # default (blk20) -- so the function actually returns.
+    assert (10, 99) in gotos
+    assert (10, 20) not in gotos
+
+
+def test_return_redirect_falls_back_to_default_when_not_stop(_seam) -> None:
+    # CONTROL (hodur / approov shape): when the return routes to the catch-all
+    # default which IS the function's exit, the back-edge must still redirect onto
+    # default_target exactly as before (byte-identical legacy path).  Here the EXIT
+    # arm's state 0x30 has no explicit row -> routes to the catch-all default = the
+    # STOP blk99; target_handler == default, so the fix returns default unchanged.
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            1: _b(1, (2,), (0,), (_mov_state(0x900, 0x10),)),
+            2: _b(2, (10, 99), (1, 10)),
+            10: _b(10, (2,), (2,), (_mov_state(0x1000, 0x30),)),  # writes UNMAPPED 0x30
+            99: _exit_block(99, (2,)),                            # catch-all default = STOP
+        },
+        entry_serial=0, func_ea=0x1000,
+    )
+    # 0x30 has NO explicit row -> routes to default = exit_block = blk99 (STOP).
+    disp = _disp({0x10: 10}, exit_block=99)
+    transitions = recover_state_write_transitions(
+        fg, disp, _STATE, dispatcher_entry_serial=2
+    )
+    by_block = {t.write_block: t for t in transitions}
+    assert by_block[10].is_return is True
+    mods = build_state_write_redirects(
+        fg, disp, transitions,
+        dispatcher_entry_serial=2, pre_header_serial=1, initial_state=0x10,
+    )
+    gotos = {(m.from_serial, m.new_target) for m in mods if isinstance(m, RedirectGoto)}
+    # default_target IS the STOP -> redirect onto it (unchanged legacy behaviour).
+    assert (10, 99) in gotos
 
 
 def test_pure_glue_via_block_still_bypassed(_seam) -> None:
