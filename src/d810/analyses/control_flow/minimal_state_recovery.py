@@ -688,6 +688,217 @@ def recover_state_write_transitions_via_multicell_fixpoint(
     return tuple(out)
 
 
+@dataclass(frozen=True, slots=True)
+class _ResolverContext:
+    """The per-function inputs the ranked next-state providers share (ticket llr-xauw).
+
+    Bundles the converged fixpoint, the seeded region fold, the optional concrete
+    leg, and the ``classify`` / ``arm_of`` closures so each provider is a small
+    function of ``(ctx, pred, block, arm)`` -- the single ``resolve_next_state``
+    sink walks them in rank order.  Pure data; ``classify``/``arm_of`` are the same
+    closures the emit loop built, so every emitted transition is byte-identical.
+    """
+
+    flow_graph: object
+    fp: object
+    read_key: int
+    effective_stkoff: int
+    state_var_gaddr: int | None
+    foldable_global_reads: object | None
+    seeded: dict
+    emu: object | None
+    live_block_for: object | None
+    state_cell: object | None
+    classify: object
+    arm_of: object
+
+
+def _provider_global_fold(ctx: _ResolverContext, pred, block, arm):
+    """[floor] Unambiguous global/const fold from the converged fixpoint (B1 case).
+
+    When the fixpoint already folded the back-edge predecessor's state slot to a
+    single value, redirect the back-edge itself.  ``None`` -> defer to the next
+    provider (the abstract per-edge fold partitions by immediate predecessor).
+    """
+    value = ctx.fp.out_stk_maps.get(pred, {}).get(ctx.read_key)
+    if value is None:
+        return None
+    state = int(value) & 0xFFFFFFFF
+    target, is_ret = ctx.classify(state)
+    return [
+        StateWriteTransition(
+            pred, state, target, is_ret, arm,
+            proof=TransitionProof(_FIXPOINT_ORACLE, "global_fold", not is_ret),
+        )
+    ]
+
+
+def _abstract_partition_states(ctx: _ResolverContext, block):
+    """Per-immediate-predecessor abstract fold of a back-edge, or ``(None, True)``.
+
+    Applies the back-edge block's transfer to each immediate predecessor's converged
+    OUT store separately -- the same partitioning :func:`_resolve_back_edge_states`
+    does by walking per region.  Returns ``(edge_states, ambiguous)``: ``ambiguous``
+    is ``True`` (and ``edge_states`` partial) the moment any incoming edge cannot
+    fold (``⊥``), the exact gap the concrete leg / seeded fold fill.
+    """
+    edge_states: dict[int, int] = {}
+    for ip in sorted(int(p) for p in block.preds):
+        ip_block = ctx.flow_graph.get_block(ip)
+        if ip_block is None:
+            return edge_states, True
+        out_stk, _ = _transfer_snapshot_constant_block(
+            block,
+            dict(ctx.fp.out_stk_maps.get(ip, {})),
+            dict(ctx.fp.out_reg_maps.get(ip, {})),
+            ctx.effective_stkoff,
+            state_var_gaddr=ctx.state_var_gaddr,
+            foldable_global_reads=ctx.foldable_global_reads,
+        )
+        ev = out_stk.get(ctx.read_key)
+        if ev is None:
+            return edge_states, True
+        edge_states[int(ip)] = int(ev) & 0xFFFFFFFF
+    return edge_states, False
+
+
+def _provider_predecessor_partitioned(ctx, pred, block, arm, edge_states, ambiguous):
+    """[floor] Predecessor-partitioned opaque split / region-agreed plain redirect.
+
+    Reads the abstract per-edge fold (``edge_states``).  A distinct state per
+    immediate predecessor -> one ``via_block`` redirect each (the opaque
+    ``reg ^ reg`` split, ``predecessor_partitioned``); every edge agreeing on one
+    state -> a plain back-edge redirect (``region_agreed``).  ``None`` -> defer.
+    """
+    if ambiguous:
+        return None
+    distinct = set(edge_states.values())
+    if edge_states and len(distinct) > 1:
+        out: list[StateWriteTransition] = []
+        for ip, state in sorted(edge_states.items()):
+            target, is_ret = ctx.classify(state)
+            ip_arm = ctx.arm_of(ctx.flow_graph.get_block(int(ip)), pred)
+            out.append(
+                StateWriteTransition(
+                    int(ip), state, target, is_ret, ip_arm, via_block=pred,
+                    proof=TransitionProof(
+                        _FIXPOINT_ORACLE, "predecessor_partitioned", not is_ret
+                    ),
+                )
+            )
+        return out
+    if len(distinct) == 1:
+        state = next(iter(distinct))
+        target, is_ret = ctx.classify(state)
+        return [
+            StateWriteTransition(
+                pred, state, target, is_ret, arm,
+                proof=TransitionProof(_FIXPOINT_ORACLE, "region_agreed", not is_ret),
+            )
+        ]
+    return None
+
+
+def _provider_emulation(ctx, pred, block, arm, ambiguous):
+    """[refine] The reduced-product CONCRETE leg -- ⊥-only, fold_exact-gated.
+
+    Consulted ONLY where the abstract per-edge fold landed at ``⊥`` (``ambiguous``):
+    seeds the prove-exact-or-abstain emulator per immediate predecessor from its
+    converged OUT store, steps the live back-edge block, and ``fold_exact``-validates
+    each result.  ``None`` -> abstain (defer to the seeded fold) -- a partial
+    emulation never half-resolves a back-edge.  Never reached for an
+    abstract-resolved edge, so it can only forfeit precision, never corrupt.
+    """
+    if not ambiguous:
+        return None
+    if ctx.emu is None or ctx.live_block_for is None or ctx.state_cell is None:
+        return None
+    emu_states = _emulate_partition_states(
+        ctx.emu, ctx.live_block_for, ctx.state_cell, ctx.fp, block, pred
+    )
+    if emu_states is None:
+        return None
+    out: list[StateWriteTransition] = []
+    _emit_partition_transitions(
+        out, emu_states, pred, arm, ctx.flow_graph, ctx.classify, ctx.arm_of,
+        oracle_kind=_EMULATION_ORACLE,
+        single_kind="concrete_fold",
+        split_kind="concrete_fold_partitioned",
+    )
+    return out
+
+
+def _provider_region_seeded(ctx, pred, block, arm):
+    """[floor] The seeded per-region fold (masked-OR / state-reading write).
+
+    The global meet collapses the state var to ⊥ at the dispatcher join, so a
+    ``state = (state & ~MASK) | M`` write never folds via the fixpoint; seeding each
+    region's entry with its dispatch key makes it fold to ``M``.  ``None`` -> defer
+    to the unresolved sink.
+    """
+    out: list[StateWriteTransition] = []
+    if _emit_seeded_back_edge(
+        out, ctx.seeded.get(pred, {}), pred, arm, ctx.flow_graph, ctx.classify, ctx.arm_of
+    ):
+        return out
+    return None
+
+
+def _resolve_next_state(ctx: _ResolverContext, pred, block, arm):
+    """Single resolution sink: walk the ranked providers, return the emitted edges.
+
+    Priority (the proof is the only differentiator -- PART A, ticket llr-xauw):
+
+      [floor]  global_fold -> predecessor_partitioned / region_agreed
+      [refine] emulation_oracle  (⊥-only; seeded ConcreteStore; fold_exact-gated)
+      [floor]  region_seeded
+      [future] (clean extension point for symbolic/solver providers)
+      else     -> unresolved (routed to the shared return)
+
+    The first provider to return a non-``None`` list wins; the abstract per-edge
+    fold is computed once and shared by the partitioned + emulation providers (the
+    concrete leg fires only where the abstract fold is ⊥).  Behaviour and proofs are
+    byte-identical to the previous if/elif chain.
+    """
+    # [floor] unambiguous global/const fold (the B1 case).
+    edges = _provider_global_fold(ctx, pred, block, arm)
+    if edges is not None:
+        return edges
+
+    # The abstract per-edge fold, computed once: it gates BOTH the predecessor-
+    # partitioned floor provider (non-⊥) and the emulation refine provider (⊥).
+    edge_states, ambiguous = _abstract_partition_states(ctx, block)
+
+    # [floor] predecessor-partitioned split / region-agreed plain redirect.
+    edges = _provider_predecessor_partitioned(
+        ctx, pred, block, arm, edge_states, ambiguous
+    )
+    if edges is not None:
+        return edges
+
+    # [refine] the reduced-product CONCRETE leg -- BEFORE the seeded fold can mask a
+    # ⊥ with a stale dispatch-key self-loop.
+    edges = _provider_emulation(ctx, pred, block, arm, ambiguous)
+    if edges is not None:
+        return edges
+
+    # [floor] the seeded per-region fold (masked-OR / state-reading write).
+    edges = _provider_region_seeded(ctx, pred, block, arm)
+    if edges is not None:
+        return edges
+
+    # [future] symbolic / solver providers slot in here, ranked below the floor and
+    # the concrete leg, above the unresolved sink.
+
+    # else -> unresolved: route the back-edge to the shared return.
+    return [
+        StateWriteTransition(
+            pred, None, None, True, arm,
+            proof=TransitionProof(_FIXPOINT_ORACLE, "unresolved", False),
+        )
+    ]
+
+
 def recover_state_write_transitions_via_partitioned_fixpoint(
     flow_graph,
     dispatcher,
@@ -807,6 +1018,26 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
             {k: sorted({s for v in m.values() for s in v}) for k, m in seeded.items()},
         )
 
+    # PART A (ticket llr-xauw): one resolution sink.  Every back-edge flows through
+    # ``_resolve_next_state``, which tries the ranked PROVIDERS in priority order --
+    # each stamps its own ``TransitionProof`` so the ``proof`` field (not a parallel
+    # emit branch) is the only differentiator between resolution methods.  The
+    # ordering and per-provider behaviour are byte-identical to the previous
+    # if/elif chain; only the emit site collapses to a single ``out.extend``.
+    resolver_ctx = _ResolverContext(
+        flow_graph=flow_graph,
+        fp=fp,
+        read_key=read_key,
+        effective_stkoff=effective_stkoff,
+        state_var_gaddr=state_var_gaddr,
+        foldable_global_reads=foldable_global_reads,
+        seeded=seeded,
+        emu=emu,
+        live_block_for=live_block_for,
+        state_cell=state_cell,
+        classify=_classify,
+        arm_of=_arm,
+    )
     out: list[StateWriteTransition] = []
     for pred in sorted(int(p) for p in disp_block.preds):
         block = flow_graph.get_block(pred)
@@ -816,107 +1047,7 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
         if disp not in succs:
             continue
         arm = succs.index(disp) if len(succs) > 1 else None
-
-        value = fp.out_stk_maps.get(pred, {}).get(read_key)
-        if value is not None:
-            # Unambiguous global fold (the B1 case): redirect the back-edge itself.
-            state = int(value) & 0xFFFFFFFF
-            target, is_ret = _classify(state)
-            out.append(
-                StateWriteTransition(
-                    pred, state, target, is_ret, arm,
-                    proof=TransitionProof(_FIXPOINT_ORACLE, "global_fold", not is_ret),
-                )
-            )
-            continue
-
-        # Ambiguous: partition by immediate predecessor.  Apply the back-edge
-        # block's transfer to each predecessor's OUT store separately and read the
-        # per-edge folded state -- the same partitioning _resolve_back_edge_states
-        # does by walking per region and keying on the immediate predecessor.
-        edge_states: dict[int, int] = {}
-        ambiguous = False
-        for ip in sorted(int(p) for p in block.preds):
-            ip_block = flow_graph.get_block(ip)
-            if ip_block is None:
-                ambiguous = True
-                break
-            out_stk, _ = _transfer_snapshot_constant_block(
-                block,
-                dict(fp.out_stk_maps.get(ip, {})),
-                dict(fp.out_reg_maps.get(ip, {})),
-                effective_stkoff,
-                state_var_gaddr=state_var_gaddr,
-                foldable_global_reads=foldable_global_reads,
-            )
-            ev = out_stk.get(read_key)
-            if ev is None:
-                ambiguous = True
-                break
-            edge_states[ip] = int(ev) & 0xFFFFFFFF
-
-        # Reduced-product CONCRETE leg (ticket llr-xauw): the abstract per-edge fold
-        # is ⊥ for an opaque ``reg ^ reg`` next-state writer whose operands live in
-        # OTHER blocks (the OLLVM -fla data-dependent transition).  BEFORE the seeded
-        # region fold can mask that ⊥ with a stale dispatch-key self-loop, consult the
-        # prove-exact-or-abstain emulator, SEEDED per immediate predecessor from its
-        # converged OUT store and stepping the live back-edge block.  ALL incoming
-        # edges must resolve (fold_exact-validated) or the consult abstains wholesale
-        # -> today's seeded/unresolved logic runs UNCHANGED (golden-safe: a wrong or
-        # absent emulation can only forfeit precision, never corrupt; and an edge the
-        # abstract fold already resolved (``ev`` not None) is never consulted).
-        emu_states: dict[int, int] | None = None
-        if ambiguous and emu is not None and live_block_for is not None and state_cell is not None:
-            emu_states = _emulate_partition_states(
-                emu, live_block_for, state_cell, fp, block, pred
-            )
-
-        distinct = set(edge_states.values())
-        if emu_states is not None and ambiguous:
-            # The concrete leg resolved every ⊥ edge the abstract fold missed.
-            _emit_partition_transitions(
-                out, emu_states, pred, arm, flow_graph, _classify, _arm,
-                oracle_kind=_EMULATION_ORACLE,
-                single_kind="concrete_fold",
-                split_kind="concrete_fold_partitioned",
-            )
-        elif not ambiguous and edge_states and len(distinct) > 1:
-            # Predecessor-partitioned opaque split: emit one via_block redirect per
-            # incoming edge, exactly like recover_state_write_transitions' Case-2.
-            for ip, state in sorted(edge_states.items()):
-                target, is_ret = _classify(state)
-                ip_arm = _arm(flow_graph.get_block(int(ip)), pred)
-                out.append(
-                    StateWriteTransition(
-                        int(ip), state, target, is_ret, ip_arm, via_block=pred,
-                        proof=TransitionProof(
-                            _FIXPOINT_ORACLE, "predecessor_partitioned", not is_ret
-                        ),
-                    )
-                )
-        elif not ambiguous and len(distinct) == 1:
-            # Every edge agreed on one state -- a plain back-edge redirect.
-            state = next(iter(distinct))
-            target, is_ret = _classify(state)
-            out.append(
-                StateWriteTransition(
-                    pred, state, target, is_ret, arm,
-                    proof=TransitionProof(_FIXPOINT_ORACLE, "region_agreed", not is_ret),
-                )
-            )
-        elif _emit_seeded_back_edge(
-            out, seeded.get(pred, {}), pred, arm, flow_graph, _classify, _arm
-        ):
-            # The fixpoint could not fold this back-edge, but the seeded region
-            # fold (masked-OR / state-reading write) resolved it.
-            continue
-        else:
-            out.append(
-                StateWriteTransition(
-                    pred, None, None, True, arm,
-                    proof=TransitionProof(_FIXPOINT_ORACLE, "unresolved", False),
-                )
-            )
+        out.extend(_resolve_next_state(resolver_ctx, pred, block, arm))
 
     # Terminal-tail back-edges (Tigress decoy-exit shape): a state-write block
     # whose successor is a STOP/terminal (or otherwise never re-enters the
