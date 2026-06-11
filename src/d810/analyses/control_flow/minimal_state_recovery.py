@@ -50,6 +50,14 @@ from d810.analyses.control_flow.state_machine_analysis import (
 from d810.analyses.value_flow.global_init_fold import (
     compute_initializer_stable_global_reads,
 )
+from d810.analyses.data_flow.concolic import (
+    ConcolicValue,
+    ConcreteStore,
+    EmulationCapability,
+    LocationRef,
+    PrecisionStatus,
+    fold_exact,
+)
 from d810.capabilities.providers import get_bst_walkers
 
 logger = getLogger(__name__)
@@ -77,6 +85,63 @@ __all__ = [
 #: The oracle that resolves a back-edge next-state after the S4 C3 flip: the sound
 #: region-partitioned multi-cell constant fixpoint (run_snapshot_constant_fixpoint).
 _FIXPOINT_ORACLE = "region_partitioned_fixpoint"
+
+#: The reduced-product CONCRETE leg (ticket llr-xauw): a prove-exact-or-abstain
+#: ``EmulationCapability`` consulted ONLY where the abstract fixpoint fold left a
+#: back-edge next-state at ``⊥`` (read_key miss).  Its ``ExactResult`` is still
+#: cross-checked against the abstract floor by ``fold_exact`` before it is trusted,
+#: so a wrong emulation forfeits precision, never correctness.  It NEVER overrides a
+#: fixpoint-resolved transition -- it only fills genuine ⊥ gaps.
+_EMULATION_ORACLE = "emulation_concrete_leg"
+
+
+def _seed_concrete_store(
+    out_stk: dict[int, int], out_reg: dict[int, int]
+) -> ConcreteStore:
+    """Project a fixpoint OUT store (stkoff/regid -> int) into a ``ConcreteStore``.
+
+    The seeded store the concrete leg evaluates the back-edge block over: every
+    converged stack/register constant at the immediate predecessor's exit becomes a
+    resolved ``LocationRef`` cell, so an opaque ``state = reg_a ^ reg_b`` write whose
+    operands are program values defined upstream resolves (the abstract meet
+    collapses them to ⊥; the concrete leg reads them from the predecessor OUT).
+    Width 8 mirrors the u64-masked state lattice; the backend's ``_seed_maps`` only
+    reads STACK / REGISTER cells.
+    """
+    cells: dict[LocationRef, int] = {}
+    for off, val in out_stk.items():
+        cells[LocationRef.stack(int(off), 8)] = int(val)
+    for reg, val in out_reg.items():
+        cells[LocationRef.reg(int(reg), 8)] = int(val)
+    return ConcreteStore.of(cells)
+
+
+def _emulate_unresolved_state(
+    emu: EmulationCapability,
+    live_block: object,
+    seeded_store: ConcreteStore,
+    state_cell: LocationRef,
+) -> int | None:
+    """Consult the concrete leg for a single ⊥ back-edge, or ``None`` on abstain.
+
+    Steps ``live_block`` over ``seeded_store`` via the injected
+    :class:`EmulationCapability`, then ``fold_exact``-validates the outcome against an
+    unconstrained abstract floor (``⊤`` -- the unresolved edge carries no abstract
+    information, so the floor contains every value; the emulator's own block-stepper
+    is the soundness gate).  Returns the proven concrete next-state (width-masked) or
+    ``None`` when the emulator abstains / the fold is dropped.
+    """
+    if live_block is None:
+        return None
+    try:
+        outcome = emu.eval_block(live_block, seeded_store)
+    except Exception:  # noqa: BLE001 — an emulator failure means "cannot prove" -> abstain
+        logger.debug("emulation concrete leg raised; abstaining", exc_info=True)
+        return None
+    folded = fold_exact(ConcolicValue.top(8), outcome, state_cell)
+    if folded.status is not PrecisionStatus.CONCRETE or folded.concrete is None:
+        return None
+    return int(folded.concrete) & 0xFFFFFFFF
 
 
 @dataclass(frozen=True, slots=True)
@@ -631,6 +696,8 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
     dispatcher_entry_serial: int,
     recover_terminal_tail: bool = False,
     initial_state: int | None = None,
+    emu: "EmulationCapability | None" = None,
+    live_block_for: "object | None" = None,
 ) -> tuple[StateWriteTransition, ...]:
     """B2 shadow: predecessor-partitioned multi-cell fold -> the Case-2 ``via_block`` split.
 
@@ -649,7 +716,19 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
     back-edge — mirroring :func:`recover_state_write_transitions`'s Case-2 branch and
     the per-region / immediate-predecessor keying of :func:`_resolve_back_edge_states`.
     Diagnostic only; mutates nothing.
+
+    Reduced-product CONCRETE leg (ticket llr-xauw): ``emu`` is an optional
+    prove-exact-or-abstain :class:`EmulationCapability`; ``live_block_for`` maps a
+    block serial to the live backend block the emulator steps.  Both default to
+    ``None`` -> EXACTLY the abstract-only behaviour above (no change).  When supplied,
+    a back-edge whose abstract per-edge fold lands at ``⊥`` (the opaque
+    ``reg ^ reg``-next-state writers whose operands live in OTHER blocks) is consulted
+    against the concrete leg, SEEDED from the immediate predecessor's converged OUT
+    store; a fold that ``fold_exact``-validates emits a RESOLVED transition tagged
+    ``_EMULATION_ORACLE``.  The consult fires ONLY at the genuine ⊥ gap -- it never
+    overrides a fixpoint-resolved transition.
     """
+    state_cell = LocationRef.stack(int(state_var_stkoff), 8) if emu is not None else None
     disp = int(dispatcher_entry_serial)
     disp_block = flow_graph.get_block(disp)
     if disp_block is None:
@@ -776,8 +855,32 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
                 break
             edge_states[ip] = int(ev) & 0xFFFFFFFF
 
+        # Reduced-product CONCRETE leg (ticket llr-xauw): the abstract per-edge fold
+        # is ⊥ for an opaque ``reg ^ reg`` next-state writer whose operands live in
+        # OTHER blocks (the OLLVM -fla data-dependent transition).  BEFORE the seeded
+        # region fold can mask that ⊥ with a stale dispatch-key self-loop, consult the
+        # prove-exact-or-abstain emulator, SEEDED per immediate predecessor from its
+        # converged OUT store and stepping the live back-edge block.  ALL incoming
+        # edges must resolve (fold_exact-validated) or the consult abstains wholesale
+        # -> today's seeded/unresolved logic runs UNCHANGED (golden-safe: a wrong or
+        # absent emulation can only forfeit precision, never corrupt; and an edge the
+        # abstract fold already resolved (``ev`` not None) is never consulted).
+        emu_states: dict[int, int] | None = None
+        if ambiguous and emu is not None and live_block_for is not None and state_cell is not None:
+            emu_states = _emulate_partition_states(
+                emu, live_block_for, state_cell, fp, block, pred
+            )
+
         distinct = set(edge_states.values())
-        if not ambiguous and edge_states and len(distinct) > 1:
+        if emu_states is not None and ambiguous:
+            # The concrete leg resolved every ⊥ edge the abstract fold missed.
+            _emit_partition_transitions(
+                out, emu_states, pred, arm, flow_graph, _classify, _arm,
+                oracle_kind=_EMULATION_ORACLE,
+                single_kind="concrete_fold",
+                split_kind="concrete_fold_partitioned",
+            )
+        elif not ambiguous and edge_states and len(distinct) > 1:
             # Predecessor-partitioned opaque split: emit one via_block redirect per
             # incoming edge, exactly like recover_state_write_transitions' Case-2.
             for ip, state in sorted(edge_states.items()):
@@ -974,6 +1077,79 @@ def _emit_seeded_back_edge(
             )
         return True
     return False
+
+
+def _emulate_partition_states(emu, live_block_for, state_cell, fp, block, pred):
+    """Per-immediate-predecessor concrete next-states for a ⊥ back-edge, or ``None``.
+
+    The reduced-product CONCRETE leg (ticket llr-xauw).  For each immediate
+    predecessor ``ip`` of the back-edge ``block``, the prove-exact-or-abstain
+    emulator steps the live back-edge block (resolved by serial through
+    ``live_block_for``) SEEDED from ``ip``'s converged OUT store;
+    :func:`_emulate_unresolved_state` ``fold_exact``-validates each result before it
+    is trusted.  Returns ``{ip -> state}`` only when EVERY incoming edge resolves;
+    ``None`` on the first abstain (the caller then falls through to the unchanged
+    seeded/unresolved logic -- a partial emulation never half-resolves a back-edge).
+    """
+    edge_states: dict[int, int] = {}
+    for ip in sorted(int(p) for p in block.preds):
+        concrete = _emulate_unresolved_state(
+            emu,
+            live_block_for(int(pred)),
+            _seed_concrete_store(
+                dict(fp.out_stk_maps.get(ip, {})),
+                dict(fp.out_reg_maps.get(ip, {})),
+            ),
+            state_cell,
+        )
+        if concrete is None:
+            return None  # any ⊥ residual -> abstain wholesale (stay seeded/unresolved)
+        edge_states[int(ip)] = int(concrete) & 0xFFFFFFFF
+    return edge_states or None
+
+
+def _emit_partition_transitions(
+    out: list,
+    edge_states: dict[int, int],
+    pred: int,
+    arm: int | None,
+    flow_graph,
+    classify,
+    arm_of,
+    *,
+    oracle_kind: str,
+    single_kind: str,
+    split_kind: str,
+) -> None:
+    """Emit the back-edge redirect(s) for a per-predecessor state map.
+
+    Mirrors the global/seeded emit shape: every incoming edge agreeing on one state
+    -> a plain ``pred -> route(state)`` redirect; a distinct state per immediate
+    predecessor -> one ``via_block=pred`` split each.  ``oracle_kind``/``single_kind``
+    /``split_kind`` stamp the :class:`TransitionProof` so the proof distribution
+    distinguishes the concrete leg from the abstract oracle.
+    """
+    distinct = set(edge_states.values())
+    if len(distinct) == 1:
+        state = next(iter(distinct))
+        target, is_ret = classify(state)
+        out.append(
+            StateWriteTransition(
+                pred, state, target, is_ret, arm,
+                proof=TransitionProof(oracle_kind, single_kind, not is_ret),
+            )
+        )
+        return
+    for ip, state in sorted(edge_states.items()):
+        target, is_ret = classify(state)
+        ip_block = flow_graph.get_block(int(ip))
+        ip_arm = arm_of(ip_block, pred) if ip_block is not None else None
+        out.append(
+            StateWriteTransition(
+                int(ip), state, target, is_ret, ip_arm, via_block=pred,
+                proof=TransitionProof(oracle_kind, split_kind, not is_ret),
+            )
+        )
 
 
 def diff_back_edge_transitions(production, fixpoint) -> dict:
