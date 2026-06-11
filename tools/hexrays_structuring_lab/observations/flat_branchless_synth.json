@@ -1,0 +1,29 @@
+{
+  "case_id": "flat_branchless_synth",
+  "binary": "restructuring_lab.dll",
+  "function": "lab_flat_branchless",
+  "roadmap_item": "L8",
+  "phase": "L8 (conditional synthesis from a branchless select / P2b)",
+  "verifies_clean": true,
+  "mods_applied": 4,
+  "interr": null,
+  "branchless_shape": "The mask select `state = (K1 & -(token&1)) | (K2 & ~-(token&1))` survives to GLBOPT1 as a SINGLE m_or in H0 (no jcc): `%var_8.4 = ((xdu(cl&1)-1) & 0x3C8960A9) | (-(xdu(cl&1)) & 0xB92456DE)` -- i.e. (token&1) ? K1 : K2. cl = ecx{1} = the entry-version token low byte.",
+  "predicate_recovery": "_find_low_bit_predicate DFS-walks the m_or operand tree for an `m_and _, #1` sub-instruction and returns a CLONED mop_d wrapping it. This is the live (token&1) predicate -- recovered from the surviving MBA, not reconstructed by hand. Robust: ecx (token) is untouched by H0's stack-var arithmetic, so the cloned cl-based condition stays valid after the m_or is removed.",
+  "synthesis": "queue_lower_conditional_state_transition(source=H0, old_dispatcher=disp, rewrite_from_ea=<m_or ea>, condition_operand=<recovered (token&1) mop>, true=H1, false=H2). The backend strips from the m_or EA to end-of-block (the state-write + goto), builds `m_jnz cond, 0 -> H1`, and inserts a fall-through NOP-goto helper to H2 (INTERR 50860 needs the 2-way fall-through to be the physically-next block). _materialize_condition_mop accepts a raw mop_t via assign() -- not only the SyntheticCounterBoundCondition descriptor.",
+  "glbopt1_structure": {
+    "qty": 10,
+    "state_slot": "%var_8.4",
+    "H0_K0_handler": 6,
+    "H1_K1_handler": 7,
+    "H2_K2_handler": 8,
+    "entry_writer": 1,
+    "dispatcher": 2,
+    "terminal": 5,
+    "or_ea": "0x18001..."
+  },
+  "plan": "entry(1)->H0(6) ; H1(7)->term(5) ; H2(8)->term(5) ; LOWER H0 -> if(token&1) goto H1 else goto H2",
+  "live_render": "PASS via optblock_t (GLBOPT1). Renders a real synthesized if/else: `g_hexrays_lab_sink = token+0x11; if ((token&1)!=0){ v2=(token+0x11)^0x22; sink=v2; } else { v2=token-0x22; sink=...; } return v2;`. No state var, no dispatcher loop, mba.verify() clean.",
+  "folding_note": "The else arm's `r -= 0x33` folds with H0's `r += 0x11` into `token - 0x22` (0x11-0x33 = -0x22), so the render shows `- 0x22`, not a literal 0x33 -- same Hex-Rays constant-folding the P2a cond test hit. Assert the if/else STRUCTURE + `& 1` predicate + folded `- 0x22`, not the raw 0x33.",
+  "general_rule": "When the flattener picks the next state branchlessly (mask/cmov, no jcc to preserve like P2a), recover the predicate from the surviving MBA and SYNTHESIZE the 2-way via LowerConditionalStateTransition. This is the complement of P2a (preserve an existing jcc): here the jcc is BUILT from a recovered condition operand. The full L12 MBA-recovery machinery was NOT needed -- a targeted (x&1) tree-walk sufficed for this select; richer selects may need the abstract-domain predicate recovery.",
+  "test": "tests/system/runtime/hexrays/test_insert_unflatten_mini.py::TestInsertUnflattenBranchless (test_dump_branchless_structure + test_branchless_synthesizes_if_else); 14 passed / 1 xfailed across the lab file."
+}
