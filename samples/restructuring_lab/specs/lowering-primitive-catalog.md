@@ -31,8 +31,10 @@ the lowering.
 |-|-|-|
 | primitive | shapes | status |
 | `DispatchDrain` -- redirect each routed state-writer to its handler | mini (linear), loop (back-edge emergent), cond (preserved handler branch), region (shared join); + jtbl via a separate `mcases_t` front-end | DONE -- 5 shapes, 2 front-ends, all == oracle |
-| `ConditionalSynthesize` -- build a 2-way from a recovered predicate | branchless select (no jcc) | TODO (L8 logic; composes with DispatchDrain) |
-| `RegionDeshare` -- clone conditional head + de-share tail | region duplicate (P3 = degenerate single-block case) | TODO (L7 phase-2 logic; oracle = duplicated sibling) |
+| `ConditionalSynthesize` -- build a 2-way from a recovered predicate | branchless select (no jcc) | DONE -- composes with DispatchDrain; == `lab_ref_cond` |
+| `RegionDeshare` -- clone conditional head + de-share tail (2-pass) | region duplicate (P3 = degenerate single-block case) | DONE -- == `lab_ref_region_deshare` |
+
+**Catalog complete: 3 primitives, 7 shapes, all == compiled-source oracle (7 passed).**
 
 `DispatchDrain` is ONE primitive whether the routing came from a `jz`-chain or a jump
 table -- `recover_dispatch_jzchain` and `recover_dispatch_jtbl` are two front-ends
@@ -56,17 +58,21 @@ handler operation. (`semantic_signature` in the catalog module.)
 
 ## Done
 
-- `DispatchDrain` primitive + `recover_dispatch_jzchain` + `recover_dispatch_jtbl`,
-  proven == the `lab_ref_*` oracle for mini / loop / cond / region / jtbl (5 passed).
+- `DispatchDrain` + `recover_dispatch_jzchain` + `recover_dispatch_jtbl`, == oracle for
+  mini / loop / cond / region-join / jtbl.
+- `ConditionalSynthesize` (`recover_branchless` + `lower_conditional_synthesize`) ==
+  `lab_ref_cond`; composes synthesize + drain.
+- `RegionDeshare` (`apply_region_deshare_and_render`, 2-pass) == `lab_ref_region_deshare`.
 - Oracle harness: `apply_lowering_and_render` (optblock-stage recover+lower+render),
   `render_reference` (baseline sibling), `semantic_signature` (the comparator).
+- `semantic_signature` refinement: a DSE-collapse of dead intermediate sink stores
+  before op extraction (so a store Hex-Rays eliminated in the sibling doesn't add a
+  phantom op), and compound-assign (`a ^= 0x33`) op capture.
 
 ## Next
 
-- `ConditionalSynthesize` (branchless) -- extract the L8 predicate-recovery + lower
-  (`queue_lower_conditional_state_transition`); composes with `DispatchDrain` for the
-  rest of the dispatcher. Oracle = `lab_ref_cond`.
-- `RegionDeshare` (region duplicate) -- extract the L7 phase-2 two-pass; oracle = a new
-  `lab_ref_region_deshare` sibling (the region duplicated per path).
-- Then retire the shape-centric assertions in `test_insert_unflatten_mini.py` in favour
-  of the primitive + oracle (the catalog subsumes them).
+- Retire the shape-centric assertions in `test_insert_unflatten_mini.py` in favour of
+  the primitive + oracle (the catalog subsumes them).
+- Optionally promote the catalog out of `tests/` into the real lowering layer
+  (`graph_modification.py` typed ops) so the production unflattener calls the same
+  proven primitives.

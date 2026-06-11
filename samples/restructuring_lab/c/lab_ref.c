@@ -68,3 +68,20 @@ EXPORT D810_NOINLINE int lab_ref_region(int token)
     if (token & 2) { r ^= 0x33; g_hexrays_lab_sink = r; }
     return r;
 }
+
+/* oracle for lab_flat_region DE-SHARED: the region (head + tail) DUPLICATED into
+ * each path -- the RegionDeshare primitive's expected lowering. */
+EXPORT D810_NOINLINE int lab_ref_region_deshare(int token)
+{
+    int r = token + 0x07;
+    if (token & 1) {
+        r += 0x11; g_hexrays_lab_sink = r;
+        r -= 0x22; g_hexrays_lab_sink = r;
+        if (token & 2) { r ^= 0x33; g_hexrays_lab_sink = r; }
+    } else {
+        r ^= 0x55; g_hexrays_lab_sink = r;
+        r -= 0x22; g_hexrays_lab_sink = r;
+        if (token & 2) { r ^= 0x33; g_hexrays_lab_sink = r; }
+    }
+    return r;
+}
