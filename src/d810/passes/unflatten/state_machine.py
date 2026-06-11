@@ -48,6 +48,7 @@ from d810.transforms.minimal_unflatten_emit import emit_minimal_unflatten
 from d810.transforms.dispatcher_cleanup import cleanup_residual_dispatcher
 from d810.capabilities.value_range import ValRangeCapability
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
+from d810.analyses.data_flow.concolic import EmulationCapability
 from d810.core import logging
 
 logger = logging.getLogger("D810.passes.unflatten.state_machine")
@@ -128,6 +129,30 @@ def _analysis(ctx: FunctionPipelineContext, name: str, default=None):
 def _publish(ctx: FunctionPipelineContext, name: str, value) -> None:
     if hasattr(ctx.facts, "put_analysis"):
         ctx.facts.put_analysis(name, value)
+
+
+def _make_live_block_for(live_function):
+    """Build a ``serial -> live block`` resolver over the backend mba, or ``None``.
+
+    The reduced-product CONCRETE leg (ticket llr-xauw) steps a LIVE backend block;
+    this adapts the opaque ``live_source`` (a Hex-Rays ``mba_t``) into the
+    serial-keyed resolver :func:`emit_minimal_unflatten` threads to the fixpoint.
+    Tolerant of API shape and best-effort: returns ``None`` (-> abstract-only) when
+    no live function / ``get_mblock`` is available.
+    """
+    if live_function is None:
+        return None
+    getter = getattr(live_function, "get_mblock", None)
+    if getter is None:
+        return None
+
+    def _live_block_for(serial: int):
+        try:
+            return getter(int(serial))
+        except Exception:  # noqa: BLE001 — best-effort live-block resolution -> abstain
+            return None
+
+    return _live_block_for
 
 
 def _resolve_initial_state(bst_evidence, recovery) -> int | None:
@@ -325,6 +350,13 @@ class LowerStateMachine(PipelinePass):
                     initial_state,
                     getattr(dmap, "source", None) if dmap is not None else None,
                 )
+            # Reduced-product CONCRETE leg (ticket llr-xauw): the optional
+            # prove-exact-or-abstain block emulator, consulted only where the abstract
+            # fixpoint fold left a back-edge next-state at ⊥ (the opaque reg^reg writers
+            # whose operands live in other blocks). ``emu is None`` -> abstract-only,
+            # byte-identical with the prior behaviour; the consult NEVER overrides a
+            # fixpoint-resolved transition.
+            emu = context.capabilities.optional(EmulationCapability)
             plan = emit_minimal_unflatten(
                 context.graph,
                 dispatcher,
@@ -334,6 +366,8 @@ class LowerStateMachine(PipelinePass):
                 initial_state=initial_state,
                 is_indirect=is_indirect,
                 fact_view=getattr(context, "facts", None),
+                emu=emu,
+                live_block_for=_make_live_block_for(live_function),
             )
             return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
 

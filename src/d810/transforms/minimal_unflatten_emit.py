@@ -734,12 +734,19 @@ def emit_minimal_unflatten(
     initial_state: int | None = None,
     is_indirect: bool = False,
     fact_view=None,
+    emu=None,
+    live_block_for=None,
 ) -> PatchPlan:
     """Recover back-edge transitions and emit the dispatcher-bypass ``PatchPlan``.
 
     The whole unflatten in one pass: ``recover_state_write_transitions`` over the
     dispatcher's predecessors, then :func:`build_state_write_redirects`, compiled
     to a ``PatchPlan``.  No ``StateDag``.
+
+    ``emu`` / ``live_block_for`` (ticket llr-xauw) inject the optional reduced-product
+    CONCRETE leg into the partitioned fixpoint: an ``EmulationCapability`` consulted
+    only where the abstract fold left a back-edge next-state at ``⊥``, plus the
+    serial->live-block resolver it steps.  Both ``None`` -> abstract-only (unchanged).
     """
     if dispatcher_entry_serial is None:
         return compile_patch_plan([], flow_graph)
@@ -748,7 +755,9 @@ def emit_minimal_unflatten(
     # _transfer_snapshot_constant_block transfer) instead of the ad-hoc per-region walk
     # in _resolve_back_edge_states. Proven byte-identical by the C1/B shadow-diff
     # (diff==0 on hodur 15/15 + sub_7FFD 78/78); the cff probe still diffs the two as a
-    # standing equivalence guard.
+    # standing equivalence guard.  The reduced-product CONCRETE leg (llr-xauw) is
+    # consulted ONLY at the residual ⊥ back-edges, so an abstract-resolved transition
+    # is byte-identical with and without ``emu``.
     transitions = recover_state_write_transitions_via_partitioned_fixpoint(
         flow_graph,
         dispatcher,
@@ -756,6 +765,8 @@ def emit_minimal_unflatten(
         dispatcher_entry_serial=int(dispatcher_entry_serial),
         recover_terminal_tail=is_indirect,
         initial_state=initial_state,
+        emu=emu,
+        live_block_for=live_block_for,
     )
     # C3b (ticket llr-1szn / d81-t9ok): each transition carries a typed
     # ``TransitionProof`` naming the oracle and resolution shape. Observe-only --
