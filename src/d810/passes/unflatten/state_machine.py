@@ -357,6 +357,11 @@ class LowerStateMachine(PipelinePass):
             # byte-identical with the prior behaviour; the consult NEVER overrides a
             # fixpoint-resolved transition.
             emu = context.capabilities.optional(EmulationCapability)
+            # Use-def severance veto (ticket llr-wlzb): the same UseDefSafetyCapability
+            # the fallback lower_to_direct_graph path consults, now threaded into the
+            # PRIMARY emit path so a redirect that orphans a non-state carrier (the
+            # OLLVM ``var_18 = var_378`` accumulator copies) is dropped. Gated
+            # D810_USE_DEF_VETO (default OFF) inside the filter -> byte-identical default.
             plan = emit_minimal_unflatten(
                 context.graph,
                 dispatcher,
@@ -368,6 +373,8 @@ class LowerStateMachine(PipelinePass):
                 fact_view=getattr(context, "facts", None),
                 emu=emu,
                 live_block_for=_make_live_block_for(live_function),
+                use_def_safety=context.capabilities.optional(UseDefSafetyCapability),
+                live_function=live_function,
             )
             return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
 

@@ -41,6 +41,7 @@ from d810.transforms.graph_modification import (
     SyntheticCounterBoundCondition,
 )
 from d810.transforms.plan import PatchPlan, compile_patch_plan
+from d810.transforms.use_def_redirect_filter import filter_use_def_severing_redirects
 
 logger = logging.getLogger("D810.transforms.minimal_unflatten_emit")
 
@@ -779,6 +780,8 @@ def emit_minimal_unflatten(
     fact_view=None,
     emu=None,
     live_block_for=None,
+    use_def_safety=None,
+    live_function=None,
 ) -> PatchPlan:
     """Recover back-edge transitions and emit the dispatcher-bypass ``PatchPlan``.
 
@@ -790,6 +793,15 @@ def emit_minimal_unflatten(
     CONCRETE leg into the partitioned fixpoint: an ``EmulationCapability`` consulted
     only where the abstract fold left a back-edge next-state at ``⊥``, plus the
     serial->live-block resolver it steps.  Both ``None`` -> abstract-only (unchanged).
+
+    ``use_def_safety`` / ``live_function`` (ticket llr-wlzb) inject the optional
+    use-def severance veto: a redirect that would orphan a NON-state-variable use
+    (the OLLVM handler-body accumulator carriers ``var_18 = var_378`` /
+    ``var_84 = var_378`` whose downstream readers are the terminal store and the loop
+    guard) is dropped, leaving that back-edge on the dispatcher so IDA's reaching-def
+    analysis cannot backfill the live carrier from the prologue and DCE the body.
+    Gated by ``D810_USE_DEF_VETO`` (default OFF -> byte-identical); the state variable
+    itself is intentionally severed (that is the unflattening) and never vetoed.
     """
     if dispatcher_entry_serial is None:
         return compile_patch_plan([], flow_graph)
@@ -944,6 +956,23 @@ def emit_minimal_unflatten(
             ]
         if guard_lowerings:
             mods = list(mods) + guard_lowerings
+    # Use-def severance veto (ticket llr-wlzb): drop any redirect that would orphan a
+    # NON-state-variable use. For the OLLVM shadow shape the accumulator reaches the
+    # terminal/guard only through carrier copies (``var_18 = var_378`` /
+    # ``var_84 = var_378``); bypassing those blocks lets IDA backfill the slot from the
+    # prologue (0 / failed-flag) and DCE the whole ``var_378`` computation (207->17).
+    # Vetoing such a redirect keeps that back-edge on the dispatcher (engine-style
+    # residual) so the carrier stays on-path. Gated ``D810_USE_DEF_VETO`` (default OFF
+    # -> byte-identical); the state variable's own severance is the unflattening and is
+    # never vetoed.
+    if use_def_safety is not None and live_function is not None:
+        mods = filter_use_def_severing_redirects(
+            mods,
+            use_def_safety=use_def_safety,
+            live_function=live_function,
+            pre_cfg=flow_graph,
+            state_var_stkoff=int(state_var_stkoff),
+        )
     if logger.info_on:
         n_return = sum(1 for t in transitions if t.is_return)
         n_unresolved = sum(1 for t in transitions if t.next_state is None)
