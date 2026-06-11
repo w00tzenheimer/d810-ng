@@ -36,7 +36,64 @@ def _veto_enabled() -> bool:
     must be blocked."""
     return os.environ.get("D810_USE_DEF_VETO", "0").strip() == "1"
 
-__all__ = ["filter_use_def_severing_redirects"]
+
+def severance_bail_enabled() -> bool:
+    """Conservative-bail mode (ticket llr-wlzb), OFF by default.
+
+    When ``D810_S1A_SEVERANCE_BAIL=1`` and the use-def check finds a redirect that
+    would orphan a non-state carrier, ``emit_minimal_unflatten`` abandons the whole
+    unflatten (emits an empty plan) rather than gutting the function — leaving the
+    dispatcher as a residual loop so the shared instruction rules still clean the
+    MBA/BCF noise.  This mirrors what the emulated engine does on the OLLVM
+    pointer-indirected-accumulator shape: it barely touches the state machine
+    (``edits_applied=1``) and lets the ins_rules produce the correct ~99-line partial.
+    """
+    return os.environ.get("D810_S1A_SEVERANCE_BAIL", "0").strip() == "1"
+
+
+def count_use_def_severances(
+    mods,
+    *,
+    use_def_safety,
+    live_function,
+    pre_cfg,
+    state_var_stkoff=None,
+):
+    """Count redirects that would orphan a NON-state-variable use (ungated).
+
+    Unlike :func:`filter_use_def_severing_redirects` (which only acts when
+    ``D810_USE_DEF_VETO`` is set), this always computes the count when the capability
+    + live function are available.  The conservative-bail mode uses it to decide
+    whether §1a should abstain from unflattening this shape entirely.  The state
+    variable's own severance is the intended unflattening and is not counted.
+    """
+    if use_def_safety is None or live_function is None:
+        return 0
+    severed = 0
+    for mod in mods:
+        if not isinstance(mod, (RedirectGoto, RedirectBranch)):
+            continue
+        try:
+            violations = use_def_safety.redirect_use_def_violations(
+                to_redirect_intent(mod), live_function, pre_cfg
+            )
+        except Exception:  # noqa: BLE001 — a failed safety check counts as no severance
+            continue
+        real = [
+            v
+            for v in violations
+            if state_var_stkoff is None or int(v.var_stkoff) != int(state_var_stkoff)
+        ]
+        if real:
+            severed += 1
+    return severed
+
+
+__all__ = [
+    "filter_use_def_severing_redirects",
+    "count_use_def_severances",
+    "severance_bail_enabled",
+]
 
 
 def filter_use_def_severing_redirects(
