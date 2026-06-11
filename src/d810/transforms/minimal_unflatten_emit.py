@@ -41,7 +41,11 @@ from d810.transforms.graph_modification import (
     SyntheticCounterBoundCondition,
 )
 from d810.transforms.plan import PatchPlan, compile_patch_plan
-from d810.transforms.use_def_redirect_filter import filter_use_def_severing_redirects
+from d810.transforms.use_def_redirect_filter import (
+    count_use_def_severances,
+    filter_use_def_severing_redirects,
+    severance_bail_enabled,
+)
 
 logger = logging.getLogger("D810.transforms.minimal_unflatten_emit")
 
@@ -966,6 +970,29 @@ def emit_minimal_unflatten(
     # -> byte-identical); the state variable's own severance is the unflattening and is
     # never vetoed.
     if use_def_safety is not None and live_function is not None:
+        # Conservative bail (ticket llr-wlzb): on a shape where unflattening would
+        # orphan a non-state carrier (the OLLVM pointer-indirected accumulator whose
+        # setup/math handlers get severed), abandon the whole unflatten and leave the
+        # dispatcher as a residual loop. The shared instruction rules still fold the
+        # MBA/BCF noise, so the result is the engine-equivalent correct partial rather
+        # than a gutted function. Gated D810_S1A_SEVERANCE_BAIL (default OFF).
+        if severance_bail_enabled():
+            severed = count_use_def_severances(
+                mods,
+                use_def_safety=use_def_safety,
+                live_function=live_function,
+                pre_cfg=flow_graph,
+                state_var_stkoff=int(state_var_stkoff),
+            )
+            if severed:
+                if logger.info_on:
+                    logger.info(
+                        "unflat minimal unflatten: conservative BAIL on %d carrier "
+                        "severance(s) -> empty plan (leave SM residual, "
+                        "engine-equivalent)",
+                        severed,
+                    )
+                return compile_patch_plan([], flow_graph)
         mods = filter_use_def_severing_redirects(
             mods,
             use_def_safety=use_def_safety,
