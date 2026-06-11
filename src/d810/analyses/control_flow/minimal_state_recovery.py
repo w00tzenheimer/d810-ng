@@ -40,6 +40,9 @@ from d810.core.logging import getLogger
 from d810.analyses.control_flow.state_machine_analysis import (
     _constant_dest_locator_snapshot,
     _eval_insn_view_snapshot,
+    _is_call_insn,
+    _is_goto_insn,
+    _is_nop_insn,
     _is_stop_block,
     _transfer_snapshot_constant_block,
     run_snapshot_constant_fixpoint,
@@ -58,6 +61,7 @@ __all__ = [
     "recover_handler_transitions",
     "StateWriteTransition",
     "TransitionProof",
+    "block_has_live_carrier_write",
     "recover_state_write_transitions",
     "recover_state_write_transitions_via_fixpoint",
     "recover_state_write_transitions_via_multicell_fixpoint",
@@ -158,6 +162,43 @@ def _resolve_state_var_alias(
         if lloc is not None and lloc[0] == "stk" and lloc[1] != soff:
             source = int(lloc[1])  # last copy into state_var wins
     return source
+
+
+def block_has_live_carrier_write(block, state_var_stkoff: int) -> bool:
+    """``True`` if *block* writes a non-state value (a "carrier") besides the
+    state-var write / control flow.
+
+    A predecessor-partitioned back-edge ``via_block`` is normally pure state-glue:
+    its only effect is the dispatcher-state write that the unflatten emitter folds
+    away, so the emitter bypasses it (``ip -> route(state)``) and lets the orphaned
+    block DCE.  But a conditional handler whose two arms write the next state in
+    separate blocks and then *converge* on one shared block can carry a LIVE
+    non-state assignment on that shared block (the Approov ``v4 = a1`` carrier that
+    executes on BOTH arms before re-entering the dispatcher).  Bypassing such a
+    block drops the carrier and corrupts the recovered value.
+
+    Detected conservatively: the block holds at least one instruction that is not a
+    goto / nop, whose destination is a stack/register/lvar slot *other than* the
+    state-var slot (a side-effecting data write the bypass would silently drop), or
+    a call (whose side effects must not be skipped).  Pure state-glue blocks (only
+    the state write + goto, or only a widen of the state slot) return ``False`` and
+    keep the existing bypass behaviour byte-identical.
+    """
+    soff = int(state_var_stkoff)
+    for insn in getattr(block, "insn_snapshots", ()):
+        if _is_goto_insn(insn) or _is_nop_insn(insn):
+            continue
+        if _is_call_insn(insn):
+            return True
+        view = _eval_insn_view_snapshot(insn)
+        dloc = _constant_dest_locator_snapshot(getattr(view, "d", None))
+        if dloc is None:
+            continue  # no resolvable data destination (control flow / unknown)
+        kind, ident = dloc
+        if kind == "stk" and int(ident) == soff:
+            continue  # the state-var write itself -- folded/bypassed as glue
+        return True  # a write to some other slot -> a live carrier
+    return False
 
 
 def _resolve_back_edge_states(

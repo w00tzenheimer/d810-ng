@@ -28,9 +28,11 @@ from __future__ import annotations
 from d810.analyses.control_flow.minimal_state_recovery import (
     HandlerTransition,
     StateWriteTransition,
+    block_has_live_carrier_write,
     recover_handler_transitions,
     recover_state_write_transitions_via_partitioned_fixpoint,
 )
+from d810.analyses.control_flow.state_machine_analysis import _is_stop_block
 from d810.core import logging
 from d810.transforms.graph_modification import (
     LowerConditionalStateTransition,
@@ -50,6 +52,113 @@ __all__ = [
 ]
 
 
+def _carrier_return_via_routes(
+    flow_graph,
+    transitions: tuple[StateWriteTransition, ...],
+    *,
+    disp: int,
+    state_var_stkoff: int | None,
+    default_target: int | None,
+) -> dict[int, int]:
+    """Map each carrier-bearing shared ``via_block`` -> its single exit route.
+
+    A predecessor-partitioned ``via_block`` is normally pure state-glue and the
+    emitter bypasses it; but a conditional handler whose arms converge on one
+    shared block can carry a LIVE non-state assignment (the Approov ``v4 = a1``
+    carrier).  That carrier is the function's RETURN value -- live only on the arm
+    whose state routes to the exit -- so the return must flow THROUGH the carrier
+    block.  This identifies, for each such block, the single exit route to which it
+    should be redirected (keeping the return arm's edge into it intact while the
+    loop-continue arms bypass).
+
+    A via_block qualifies only when: it is the canonical shared-glue shape (single
+    successor == dispatcher), it carries a live non-state write, AND exactly one
+    distinct exit route is needed across its return arms.  When no return arm
+    exists, or the return arms route to two different exits, the block is omitted
+    and falls back to the plain bypass (byte-identical to the pre-change path).
+    Returns ``{}`` when ``state_var_stkoff`` is unknown.
+    """
+    if state_var_stkoff is None:
+        return {}
+    # via_block -> set of distinct return routes its live-carrier arms need.  The
+    # carrier is the function's RETURN value, so the arm that must keep it is the
+    # one whose route reaches an ACTUAL function return (a STOP terminal) -- NOT the
+    # one whose ``is_return`` flag is set merely because it routes to the
+    # dispatcher's default/gap target (which loops back; the Approov 0xF6A1E handler
+    # doubles as the gap target so is_return is True there but it does not return).
+    # ``_routes_to_function_return`` is the precise discriminator.
+    candidate: dict[int, set[int]] = {}
+    blocked: set[int] = set()
+    for transition in transitions:
+        vb = transition.via_block
+        if vb is None:
+            continue
+        vbi = int(vb)
+        if vbi in blocked:
+            continue
+        route = transition.target_handler
+        if route is None and transition.is_return:
+            route = default_target
+        if route is None:
+            continue  # unresolved arm -- leave to the bypass
+        if not _routes_to_function_return(flow_graph, int(route), disp=int(disp)):
+            continue  # a continue / default-gap arm, not a real return -- skip
+        vb_block = flow_graph.get_block(vbi)
+        if vb_block is None:
+            blocked.add(vbi)
+            candidate.pop(vbi, None)
+            continue
+        if tuple(int(s) for s in vb_block.succs) != (int(disp),):
+            blocked.add(vbi)
+            candidate.pop(vbi, None)
+            continue
+        if not block_has_live_carrier_write(vb_block, int(state_var_stkoff)):
+            blocked.add(vbi)
+            candidate.pop(vbi, None)
+            continue
+        candidate.setdefault(vbi, set()).add(int(route))
+    return {
+        vbi: next(iter(routes))
+        for vbi, routes in candidate.items()
+        if vbi not in blocked and len(routes) == 1
+    }
+
+
+def _routes_to_function_return(flow_graph, start: int, *, disp: int, bound: int = 16) -> bool:
+    """``True`` if ``start`` reaches a STOP/return terminal without re-entering the
+    dispatcher (a bounded forward walk).
+
+    Distinguishes a real exit handler (reaches a function return) from the
+    dispatcher's default/gap target, which routes back through the dispatcher and
+    so loops rather than returning.  Used to pick the carrier-return arm: the
+    carrier is the return value, so it must flow through the block whose route
+    actually terminates the function.
+    """
+    seen: set[int] = set()
+    stack = [int(start)]
+    steps = 0
+    while stack and steps < bound:
+        steps += 1
+        cur = stack.pop()
+        if cur in seen or cur == disp:
+            continue
+        seen.add(cur)
+        block = flow_graph.get_block(cur)
+        if block is None:
+            continue
+        succs = tuple(int(s) for s in block.succs)
+        if not succs or _is_stop_block(block):
+            return True  # a terminal/return reached
+        for s in succs:
+            if s == disp:
+                # this path loops back to the dispatcher -- not a return path, but
+                # other successors may still terminate, so keep scanning them.
+                continue
+            if s not in seen:
+                stack.append(s)
+    return False
+
+
 def build_state_write_redirects(
     flow_graph,
     dispatcher,
@@ -58,6 +167,7 @@ def build_state_write_redirects(
     dispatcher_entry_serial: int | None,
     pre_header_serial: int | None,
     initial_state: int | None,
+    state_var_stkoff: int | None = None,
 ) -> list[object]:
     """Build the redirect modifications that linearize the interval-set graph.
 
@@ -96,16 +206,68 @@ def build_state_write_redirects(
             )
         }
 
+    # A predecessor-partitioned ``via_block`` is normally pure state-glue: the
+    # emitter bypasses it (``src -> via_block`` re-pointed onto the routed handler)
+    # and lets the orphaned block DCE.  But a conditional handler whose two arms
+    # write the next state in separate blocks then *converge* on one shared block
+    # can carry a LIVE non-state write on that shared block (the Approov ``v4 = a1``
+    # carrier).  That carrier is the function's RETURN value: it is live only on the
+    # arm whose state routes to the exit (the loop-continue arm overwrites it on the
+    # next handler), and bypassing the shared block drops it, so the recovered
+    # function returns the wrong value.  Keep the carrier on the RETURN path by
+    # redirecting the shared block ITSELF onto the exit route (control still flows
+    # ``return_pred -> via_block(carrier) -> exit``), while the loop-continue
+    # predecessors bypass normally (their carrier copy is dead).  ``return_via``
+    # maps a carrier via_block -> the single exit route its return arm needs; an
+    # ambiguous via_block (no return arm, or two distinct return routes) is left to
+    # the plain bypass exactly as before.
+    return_via = (
+        _carrier_return_via_routes(
+            flow_graph,
+            transitions,
+            disp=disp,
+            state_var_stkoff=state_var_stkoff,
+            default_target=default_target,
+        )
+        if disp is not None
+        else {}
+    )
+    emitted_via_self: set[int] = set()
+
     if disp is not None:
         for transition in transitions:
             src = int(transition.write_block)
             if src in prologue_preds:
                 continue  # handled by the entry bridge below
+            vb = transition.via_block
             # ``via_block`` set => bypass a shared (pure state-glue) back-edge:
             # redirect ``src -> via_block`` onto the routed handler.  Otherwise
             # sever ``src -> dispatcher``.
-            old = int(transition.via_block) if transition.via_block is not None else disp
+            old = int(vb) if vb is not None else disp
             new = default_target if transition.is_return else transition.target_handler
+            # Carrier RETURN arm: the shared block ``vb`` carries the function's
+            # return value (a live non-state write) and THIS arm's route reaches the
+            # actual return.  Keep ``src -> vb`` intact (so the carrier executes) and
+            # redirect ``vb``'s own dispatcher edge onto the return route once; the
+            # other (loop-continue) arms bypass ``vb`` normally below.  Identified by
+            # route equality with ``return_via`` rather than ``is_return`` (the real
+            # return arm's routed handler is a work block whose is_return is False).
+            if (
+                vb is not None
+                and int(vb) in return_via
+                and new is not None
+                and int(new) == int(return_via[int(vb)])
+            ):
+                vbi = int(vb)
+                if vbi not in emitted_via_self:
+                    emitted_via_self.add(vbi)
+                    vb_block = flow_graph.get_block(vbi)
+                    if vb_block is not None:
+                        _add(
+                            vbi, disp, int(return_via[vbi]),
+                            two_way=(vb_block.nsucc == 2),
+                        )
+                continue  # the return_pred -> via_block edge stays intact
             src_block = flow_graph.get_block(src)
             if src_block is None:
                 continue
@@ -190,6 +352,7 @@ def build_conditional_arm_redirects(
     existing: set[tuple[int, int]],
     existing_sources: set[int] | None = None,
     is_indirect: bool = False,
+    carrier_via_blocks: set[int] | None = None,
 ) -> list[object]:
     """Emit per-arm redirects for conditional handlers, anchored on the branch.
 
@@ -230,14 +393,41 @@ def build_conditional_arm_redirects(
     regressing their goldens.  When ``is_indirect`` is False this pass behaves
     exactly as before the gap2 change (only the ``existing`` source-edge veto
     applies inside ``_add``).
+
+    Carrier veto (ticket llr-mra1): when an arm's successor feeds a shared
+    *carrier* via_block -- a block holding the function's live return value that
+    the back-edge model keeps on the return path (see
+    :func:`_carrier_return_via_routes`) -- ``_succ_reaches_carrier`` defers this
+    branch-anchored redirect so the carrier is not bypassed.  ``carrier_via_blocks``
+    is empty for every non-carrier shape, leaving those byte-identical.
     """
     disp = int(dispatcher_entry_serial) if dispatcher_entry_serial is not None else None
     if disp is None:
         return []
     default_target = dispatcher.default_target
     sources = existing_sources if existing_sources is not None else set()
+    carriers = {int(b) for b in (carrier_via_blocks or ())}
     mods: list[object] = []
     seen: set[tuple[str, int, int, int]] = set()
+
+    def _succ_reaches_carrier(succ: int) -> bool:
+        """``True`` if the arm successor is a 1-way feeder into a carrier via_block.
+
+        The carrier-preserving back-edge model owns the ``feeder -> via_block``
+        edges of a shared carrier block: it keeps the return arm's edge intact (so
+        the carrier write -- the function's return value -- executes) and bypasses
+        the loop-continue feeders.  The branch-anchored redirect here would instead
+        re-point the SELECTING branch straight past the feeder AND the carrier
+        block, dropping the carrier on the return path -- so defer to the back-edge
+        model whenever this arm's successor feeds a carrier via_block.
+        """
+        if not carriers:
+            return False
+        s_block = flow_graph.get_block(int(succ))
+        if s_block is None:
+            return False
+        s_succs = tuple(int(x) for x in s_block.succs)
+        return s_block.nsucc == 1 and s_succs and int(s_succs[0]) in carriers
 
     def _add(src: int, old: int, new: int | None) -> None:
         if new is None or int(old) == int(new):
@@ -290,6 +480,12 @@ def build_conditional_arm_redirects(
                 # veto inside ``_add`` exactly as before the gap2 change.
                 old = _arm_branch_successor(arm)
                 if is_indirect and old is not None and int(old) in sources:
+                    continue
+                # Carrier-preserving back-edge split owns this arm: its successor
+                # feeds a shared via_block that carries a live non-state write the
+                # split clones.  A branch-anchored redirect here would bypass that
+                # carrier block -- defer to the split.
+                if old is not None and _succ_reaches_carrier(int(old)):
                     continue
                 if old is not None:
                     _add(int(arm.branch_block), int(old), new)
@@ -623,6 +819,7 @@ def emit_minimal_unflatten(
         dispatcher_entry_serial=dispatcher_entry_serial,
         pre_header_serial=pre_header_serial,
         initial_state=initial_state,
+        state_var_stkoff=int(state_var_stkoff),
     )
     # Conditional/multi-arm transitions (ticket llr-aga1): the back-edge model
     # above emits one redirect per dispatcher predecessor and collapses a
@@ -646,6 +843,15 @@ def emit_minimal_unflatten(
         existing=_existing_redirect_keys(mods),
         existing_sources=_existing_redirect_sources(mods),
         is_indirect=is_indirect,
+        carrier_via_blocks=set(
+            _carrier_return_via_routes(
+                flow_graph,
+                transitions,
+                disp=int(dispatcher_entry_serial),
+                state_var_stkoff=int(state_var_stkoff),
+                default_target=dispatcher.default_target,
+            )
+        ),
     )
     if arm_mods:
         mods = list(mods) + arm_mods
