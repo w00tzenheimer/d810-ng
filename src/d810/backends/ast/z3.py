@@ -569,7 +569,17 @@ class Z3MopProver:
             return cached
         exprs = mop_list_to_z3_expression_list([mop1, mop2])
         if len(exprs) != 2:
-            return True
+            # SOUNDNESS (ticket llr-mra1): proving inequality requires an actual Z3
+            # proof. When an operand fails AST conversion -- e.g. a memory load
+            # ``[ds:p].1`` (m_ldx is an unsupported root opcode for the AST builder) --
+            # we have NO information, so we must abstain (False = "not provably
+            # unequal"), mirroring are_equal's symmetric failure return. Returning
+            # True here was an UNSOUND default: it let ``Z3setzRuleGeneric`` fold
+            # ``setz(*p, 0) -> 0`` for an unconstrained dereference (claiming
+            # ``*p != 0`` always), deleting the real runtime two-way branch -- the
+            # Approov ``if (*v6)`` loop-exit, collapsing the function to an infinite
+            # loop. An unconvertible operand is unknown, never provably-unequal.
+            return False
         z3_mop1, z3_mop2 = exprs
         _solver = solver if solver is not None else get_solver()
         _solver.push()
