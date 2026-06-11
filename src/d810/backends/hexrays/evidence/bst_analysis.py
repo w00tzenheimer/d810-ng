@@ -1077,13 +1077,17 @@ def _forward_eval_insn(
     mba: Optional[object] = None,
     state_var_lvar_idx: Optional[int] = None,
     diag_lines: Optional[List[str]] = None,
+    state_var_gaddr: Optional[int] = None,
+    foldable_global_reads: Optional[Dict[int, Dict[int, int]]] = None,
 ) -> Optional[int]:
     """Evaluate one instruction, updating stk_map/reg_map in-place.
 
     Thin wrapper over the portable core in
     ``d810.analyses.value_flow.state_write`` (LS6 S5).  Returns the resolved
     constant if this instruction writes the state variable; otherwise returns
-    None and updates the maps.
+    None and updates the maps.  ``state_var_gaddr`` / ``foldable_global_reads``
+    enable a *global* dispatcher state variable with reaching-defs-sound
+    static-initializer folding of data-dependent global reads.
     """
     _init_constants()
     return state_write.forward_eval_insn(
@@ -1095,6 +1099,8 @@ def _forward_eval_insn(
         mba=mba,
         state_var_lvar_idx=state_var_lvar_idx,
         diag_lines=diag_lines,
+        state_var_gaddr=state_var_gaddr,
+        foldable_global_reads=foldable_global_reads,
     )
 
 
@@ -2292,6 +2298,7 @@ def build_bst_walker_provider() -> BstWalkerProvider:
         resolve_via_bst_walk=resolve_via_bst_walk,
         get_block=_get_block,
         block_successors=_block_successors,
+        fetch_idb_value=_fetch_idb_value,
     )
 
 

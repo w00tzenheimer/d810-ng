@@ -62,6 +62,14 @@ class BstWalkerProvider:
     # the IR converged.
     get_block: Callable[..., Any]
     block_successors: Callable[..., Any]
+    # Unconditional IDB scalar read ``(addr, size) -> int | None`` (loader-supplied
+    # ``.data`` / ``.bss`` initializer).  Distinct from the *gated* stable-global
+    # seam inside ``forward_eval_insn``: this returns the static initializer for
+    # ANY address; soundness is enforced by the reaching-defs caller
+    # (``global_init_fold``), not by a read-only / never-written gate.  Optional
+    # (``None`` -> initializer folding disabled) so existing provider/test
+    # fixtures construct unchanged.
+    fetch_idb_value: Optional[Callable[[int, int], Any]] = None
 
 
 @dataclass(frozen=True)

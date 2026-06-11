@@ -47,6 +47,10 @@ from d810.analyses.control_flow.state_machine_analysis import (
     _transfer_snapshot_constant_block,
     run_snapshot_constant_fixpoint,
 )
+from d810.analyses.value_flow.global_init_fold import (
+    compute_initializer_stable_global_reads,
+)
+from d810.capabilities.providers import get_bst_walkers
 
 logger = getLogger(__name__)
 
@@ -164,6 +168,86 @@ def _resolve_state_var_alias(
     return source
 
 
+def _operand_gaddr(mop) -> int | None:
+    """Return the global address an operand names (mop_v), or ``None``."""
+    if mop is None:
+        return None
+    g = getattr(mop, "gaddr", None)
+    if g is None:
+        g = getattr(mop, "g", None)
+    try:
+        return int(g) if g else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _detect_global_state_var(flow_graph, dispatcher_entry_serial: int) -> int | None:
+    """Return the global address the dispatcher compares as its state var, or ``None``.
+
+    Hex-Rays can forward-substitute a ``state = global`` copy into the dispatcher
+    so the loop header compares a *global* directly (Approov
+    ``approov_vm_dispatcher`` at GLBOPT1: ``jz $qword_180021320, #0xF6A1F``).  The
+    stack state-var detection then picks a now-dead decoy slot and every back-edge
+    is unresolved.  When the dispatcher-entry compare reads a global, that global
+    IS the effective state variable; return its address so the recovery folds the
+    handlers' next-state writes to it.  Returns ``None`` for the ordinary
+    stack/register state var (no behaviour change).
+    """
+    blk = flow_graph.get_block(int(dispatcher_entry_serial))
+    if blk is None:
+        return None
+    for insn in getattr(blk, "insn_snapshots", ()):
+        view = _eval_insn_view_snapshot(insn)
+        # The dispatcher head compares the state var: its LEFT operand (or a
+        # nested compared subexpression) names the global.
+        for slot in ("l", "r"):
+            mop = getattr(view, slot, None)
+            g = _operand_gaddr(mop)
+            if g is not None:
+                return g
+            for sub in ("sub_l", "sub_r"):
+                g = _operand_gaddr(getattr(mop, sub, None))
+                if g is not None:
+                    return g
+    return None
+
+
+def _compute_foldable_global_reads(
+    flow_graph, dispatcher_entry_serial: int, initial_handler_serial: int | None
+):
+    """Reaching-defs-sound ``{read_ea: {gaddr: init}}`` for data-dependent globals.
+
+    Computed over EVERY global the function reads: a handler can compute its next
+    state from a writable global it later mutates (Approov: ``state = (qword |=
+    0xF6A20)``), and the read folds to the global's static ``.data`` initializer
+    ONLY where reaching-defs proves no store reaches it.
+
+    The reaching-defs is anchored at the INITIAL handler (the dispatcher's target
+    for the entry state), with the dispatcher entry as a *barrier* whose incoming
+    edges are cut.  A flattened handler routes back through the dispatcher by the
+    state value, so on the raw CFG the initial handler's own back-edge would make
+    its first read look store-reachable via an infeasible self-loop.  Anchoring at
+    the initial handler + cutting the dispatcher gives the real straight-line
+    execution prefix: the initial handler runs first, before any handler store, so
+    its global read is store-free; every other handler is reached only through the
+    (cut) dispatcher and is therefore NOT folded (its store-freeness is unproven --
+    a prior handler may have mutated the global).  Sound per read site, strictly
+    narrower than blanket ``fold_writable_constants``.  Empty when no initial
+    handler is known or no IDB read seam.
+    """
+    if initial_handler_serial is None:
+        return {}
+    fetch = getattr(get_bst_walkers(), "fetch_idb_value", None)
+    if fetch is None:
+        return {}
+    return compute_initializer_stable_global_reads(
+        flow_graph,
+        fetch,
+        barrier_serials={int(dispatcher_entry_serial)},
+        entry_override=int(initial_handler_serial),
+    )
+
+
 def block_has_live_carrier_write(block, state_var_stkoff: int) -> bool:
     """``True`` if *block* writes a non-state value (a "carrier") besides the
     state-var write / control flow.
@@ -208,6 +292,8 @@ def _resolve_back_edge_states(
     state_var_stkoff: int,
     dispatcher_entry: int,
     max_depth: int,
+    state_var_gaddr: int | None = None,
+    foldable_global_reads: object | None = None,
 ) -> dict[int, set[int]]:
     """Per-region forward const-fold -> the state each back-edge writes.
 
@@ -220,10 +306,16 @@ def _resolve_back_edge_states(
     state value at that block is recorded for that back-edge.  A back-edge that
     folds to two distinct states across different region paths is a
     predecessor-partitioned (opaque-split) write and is reported as ambiguous.
+
+    ``state_var_gaddr`` / ``foldable_global_reads`` enable a *global* state
+    variable (see :func:`recover_state_write_transitions_via_partitioned_fixpoint`):
+    next-state writes/reads of that global are tracked/folded, and the recorded
+    state is read from the gaddr key instead of the stack offset.
     """
 
     disp = int(dispatcher_entry)
     soff = int(state_var_stkoff)
+    read_key = int(state_var_gaddr) if state_var_gaddr is not None else soff
     region_entries: set[int] = {
         int(row.target)
         for row in getattr(dispatcher, "_rows", ())
@@ -279,7 +371,9 @@ def _resolve_back_edge_states(
             if block is None:
                 continue
             out_stk, out_reg = _transfer_snapshot_constant_block(
-                block, dict(in_stk), dict(in_reg), soff
+                block, dict(in_stk), dict(in_reg), soff,
+                state_var_gaddr=state_var_gaddr,
+                foldable_global_reads=foldable_global_reads,
             )
             succs = tuple(int(s) for s in block.succs)
             if disp in succs:
@@ -287,7 +381,7 @@ def _resolve_back_edge_states(
                 # back-edge (the region's transition point).  Record the folded
                 # state keyed by the edge we arrived on, and STOP: do not walk
                 # past it into the *next* region.
-                value = out_stk.get(soff)
+                value = out_stk.get(read_key)
                 if value is not None:
                     back_edge_states.setdefault(blk_serial, {}).setdefault(
                         parent, set()
@@ -536,6 +630,7 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
     *,
     dispatcher_entry_serial: int,
     recover_terminal_tail: bool = False,
+    initial_state: int | None = None,
 ) -> tuple[StateWriteTransition, ...]:
     """B2 shadow: predecessor-partitioned multi-cell fold -> the Case-2 ``via_block`` split.
 
@@ -561,7 +656,40 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
         return ()
     default = dispatcher.default_target
     effective_stkoff = _resolve_state_var_alias(flow_graph, disp, int(state_var_stkoff))
-    fp = run_snapshot_constant_fixpoint(flow_graph, effective_stkoff)
+    # A handler can write its NEXT state through a global it reads (Approov:
+    # ``state = (qword |= 0xF6A20)`` where ``qword`` is a zero-initialised ``.data``
+    # global).  ``state_var_gaddr`` flags the rarer case where a global IS the
+    # dispatcher state variable (Hex-Rays forward-substituted the ``state = global``
+    # copy into the header); ``None`` for the ordinary stack/register state var.
+    # ``foldable_global_reads`` folds reaching-defs-stable global reads to their
+    # static initializer -- anchored at the INITIAL handler (the dispatcher target
+    # for the entry state), which runs before any handler store -- so the
+    # data-dependent next-state resolves.  None/empty -> unchanged behaviour.
+    state_var_gaddr = _detect_global_state_var(flow_graph, disp)
+    initial_handler = (
+        dispatcher.lookup(int(initial_state) & 0xFFFFFFFF)
+        if initial_state is not None
+        else None
+    )
+    foldable_global_reads = _compute_foldable_global_reads(
+        flow_graph, disp, initial_handler
+    )
+    read_key = int(state_var_gaddr) if state_var_gaddr is not None else effective_stkoff
+    if foldable_global_reads and logger.debug_on:
+        logger.debug(
+            "partitioned_fixpoint: global init folds (init_handler=%s) %s",
+            initial_handler,
+            {
+                hex(ea): {hex(g): hex(v) for g, v in m.items()}
+                for ea, m in foldable_global_reads.items()
+            },
+        )
+    fp = run_snapshot_constant_fixpoint(
+        flow_graph,
+        effective_stkoff,
+        state_var_gaddr=state_var_gaddr,
+        foldable_global_reads=foldable_global_reads,
+    )
     # Seeded per-region fold (additive fallback): the global meet collapses the
     # state var to bottom at the dispatcher join, so a masked-OR / state-reading
     # write (``state = (state & ~MASK) | M``, abc_or_dispatch) never folds via the
@@ -574,6 +702,8 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
         state_var_stkoff=effective_stkoff,
         dispatcher_entry=disp,
         max_depth=_MAX_CORRIDOR_DEPTH,
+        state_var_gaddr=state_var_gaddr,
+        foldable_global_reads=foldable_global_reads,
     )
 
     def _classify(state: int) -> tuple[int | None, bool]:
@@ -608,7 +738,7 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
             continue
         arm = succs.index(disp) if len(succs) > 1 else None
 
-        value = fp.out_stk_maps.get(pred, {}).get(effective_stkoff)
+        value = fp.out_stk_maps.get(pred, {}).get(read_key)
         if value is not None:
             # Unambiguous global fold (the B1 case): redirect the back-edge itself.
             state = int(value) & 0xFFFFFFFF
@@ -637,8 +767,10 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
                 dict(fp.out_stk_maps.get(ip, {})),
                 dict(fp.out_reg_maps.get(ip, {})),
                 effective_stkoff,
+                state_var_gaddr=state_var_gaddr,
+                foldable_global_reads=foldable_global_reads,
             )
-            ev = out_stk.get(effective_stkoff)
+            ev = out_stk.get(read_key)
             if ev is None:
                 ambiguous = True
                 break
