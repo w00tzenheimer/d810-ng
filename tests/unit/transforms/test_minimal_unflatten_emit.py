@@ -6,6 +6,7 @@ import pytest
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.analyses.control_flow.minimal_state_recovery import (
     _resolve_state_var_alias,
+    block_has_live_carrier_write,
     recover_state_write_transitions,
 )
 from d810.analyses.value_flow.state_write import (
@@ -31,6 +32,7 @@ from d810.transforms.minimal_unflatten_emit import (
 _OP_MOV = 4
 _T_NUM, _T_STK, _T_REG = 2, 4, 1
 _STATE = 0x64
+_CARRIER_OFF = 0x70  # a non-state stack slot (the Approov ``v4`` carrier)
 
 
 def _seams() -> MicrocodeEvalSeams:
@@ -214,3 +216,112 @@ def test_state_var_alias_unchanged_without_header_copy(_seam) -> None:
         entry_serial=0, func_ea=0x1000,
     )
     assert _resolve_state_var_alias(fg, 2, _STATE) == _STATE
+
+
+def _mov_carrier(ea, src_off, dst_off=_CARRIER_OFF):
+    # pure stack->stack copy to a NON-state slot: the carrier write ``v4 = src``.
+    return _mov_stk(ea, src_off, dst_off)
+
+
+def test_block_has_live_carrier_write_detects_non_state_write() -> None:
+    # A block whose only data write is the state-var write is pure glue.
+    glue = _b(10, (2,), (8, 9), (_mov_state(0x1000, 0x20),))
+    assert block_has_live_carrier_write(glue, _STATE) is False
+    # A block that also writes a non-state slot carries a live carrier.
+    carrier = _b(
+        10, (2,), (8, 9),
+        (_mov_state(0x1000, 0x20), _mov_carrier(0x1004, 0x80)),
+    )
+    assert block_has_live_carrier_write(carrier, _STATE) is True
+    # A block with only a carrier write (no state write) still counts.
+    carrier_only = _b(11, (2,), (8,), (_mov_carrier(0x1008, 0x80),))
+    assert block_has_live_carrier_write(carrier_only, _STATE) is True
+
+
+def _exit_block(serial, preds):
+    # A 0-successor STOP/exit block (the function return).
+    return BlockSnapshot(
+        serial=serial, block_type=2, succs=(), preds=tuple(preds),
+        flags=0, start_ea=0x1000 + serial * 0x40, insn_snapshots=(),
+    )
+
+
+def test_carrier_return_arm_flows_through_shared_block(_seam) -> None:
+    # The Approov conditional-handler shape: a 2-way branch (blk7) selects two arms
+    # that CONVERGE on a shared block (blk10) carrying a LIVE non-state write (the
+    # ``v4 = a1`` carrier = the return value).  Arm A (blk8) writes a CONTINUE state
+    # (0x20, a real handler that re-enters the loop and overwrites the carrier); arm
+    # B (blk9) writes the EXIT state (0x30, routing to the return).  The carrier is
+    # live ONLY on the exit arm, so the recovery must keep the exit arm flowing
+    # THROUGH blk10 (carrier preserved -> ``return v4``) while the continue arm
+    # bypasses blk10 (its carrier copy is dead).
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),                                       # entry
+            1: _b(1, (3,), (0,), (_mov_state(0x900, 0x10),)),         # prologue -> 0x10
+            3: _b(3, (7, 20, 99), (1, 10), ()),                       # dispatcher
+            7: _b(7, (8, 9), (3,)),                                   # selecting 2-way
+            8: _b(8, (10,), (7,), (_mov_state(0x1000, 0x20),)),       # CONTINUE arm -> 0x20
+            9: _b(9, (10,), (7,), (_mov_state(0x1010, 0x30),)),       # EXIT arm -> 0x30
+            10: _b(10, (3,), (8, 9), (_mov_carrier(0x1020, 0x80),)),  # shared carrier
+            20: _b(20, (3,), (3,)),                                   # continue handler
+            99: _exit_block(99, (3,)),                                # return/exit
+        },
+        entry_serial=0, func_ea=0x1000,
+    )
+    # 0x30 has no handler row -> routes to the exit (default) = a return.
+    disp = _disp({0x10: 7, 0x20: 20}, exit_block=99)
+    plan = emit_minimal_unflatten(
+        fg, disp, state_var_stkoff=_STATE, dispatcher_entry_serial=3, initial_state=0x10
+    )
+    mods = plan.as_graph_modifications()
+    gotos = {
+        (m.from_serial, m.old_target, m.new_target)
+        for m in mods
+        if isinstance(m, RedirectGoto)
+    }
+    # The CONTINUE arm bypasses the carrier block: blk8 -> route(0x20)=blk20.
+    assert (8, 10, 20) in gotos
+    # The carrier block ITSELF is redirected onto the exit route (blk99): the exit
+    # arm's edge blk9 -> blk10 stays intact, so ``blk9 -> blk10(carrier) -> exit``.
+    assert (10, 3, 99) in gotos
+    # The exit arm (blk9) is NOT bypassed -- it must flow through the carrier block.
+    assert not [
+        m for m in mods if isinstance(m, RedirectGoto) and m.from_serial == 9
+    ]
+
+
+def test_pure_glue_via_block_still_bypassed(_seam) -> None:
+    # CONTROL: when the shared back-edge block carries ONLY the state-glue (no live
+    # carrier write), the predecessor-partitioned model must still BYPASS it exactly
+    # as before -- the carrier-preservation must not fire (byte-identical old path).
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (3,), (0,), (_mov_state(0x900, 0x10),)),
+            3: _b(3, (7, 20, 99), (1, 10), ()),
+            7: _b(7, (8, 9), (3,)),
+            8: _b(8, (10,), (7,), (_mov_state(0x1000, 0x20),)),
+            9: _b(9, (10,), (7,), (_mov_state(0x1010, 0x30),)),
+            10: _b(10, (3,), (8, 9), ()),                            # PURE glue
+            20: _b(20, (3,), (3,)),
+            99: _exit_block(99, (3,)),
+        },
+        entry_serial=0, func_ea=0x1000,
+    )
+    disp = _disp({0x10: 7, 0x20: 20}, exit_block=99)
+    plan = emit_minimal_unflatten(
+        fg, disp, state_var_stkoff=_STATE, dispatcher_entry_serial=3, initial_state=0x10
+    )
+    mods = plan.as_graph_modifications()
+    gotos = {
+        (m.from_serial, m.new_target)
+        for m in mods
+        if isinstance(m, RedirectGoto)
+    }
+    # Pure glue: blk8 bypasses to route(0x20)=blk20, blk9 bypasses to the exit
+    # (blk99); the shared block is never kept on the path.
+    assert (8, 20) in gotos
+    assert (9, 99) in gotos
+    # The carrier-return path is NOT used (no ``blk10 -> exit`` self-redirect).
+    assert (10, 99) not in gotos
