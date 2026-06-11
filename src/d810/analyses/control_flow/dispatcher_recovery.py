@@ -13,9 +13,9 @@ pass consumes.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from d810.ir.flowgraph import FlowGraph, OperandKind
+from d810.ir.flowgraph import FlowGraph, InsnKind, OperandKind
 from d810.ir.semantics import PredicateKind
 from d810.analyses.value_flow.model import ValidatedFactView
 from d810.analyses.control_flow.reachability import reachable_from
@@ -253,6 +253,98 @@ def build_state_dispatcher_map_from_flow_graph(
     )
 
 
+def _read_state_init_const(blk, state_var_stkoff: int) -> int | None:
+    """Read the constant a block initializes the state variable to, portably.
+
+    Mirrors the live ``_extract_state_from_block`` (bst_analysis) over portable
+    ``InsnSnapshot``s: a state-var initialization is a ``mov #const -> stkoff``
+    (``InsnKind.MOV``, dest is the state slot, source is a number) or the
+    equivalent ``store #const -> &stkoff`` (``InsnKind.STORE``, the GLBOPT m_stx
+    form where the value being stored is the *left* operand and the destination
+    address resolves to the state slot's stkoff). Returns the constant or None.
+    """
+    if blk is None:
+        return None
+    for insn in blk.insn_snapshots:
+        if insn.kind is InsnKind.MOV:
+            dst, src = insn.d, insn.l
+            if (
+                dst is not None
+                and getattr(dst, "stkoff", None) is not None
+                and int(dst.stkoff) == int(state_var_stkoff)
+                and src is not None
+                and getattr(src, "value", None) is not None
+            ):
+                return int(src.value) & 0xFFFFFFFFFFFFFFFF
+        elif insn.kind is InsnKind.STORE:
+            # m_stx <value>, <addr>: value = left, destination address = right.
+            val, addr = insn.l, insn.r
+            addr_off = None
+            if addr is not None:
+                addr_off = getattr(addr, "stkoff", None)
+                if addr_off is None and getattr(addr, "stack_refs", None):
+                    addr_off = addr.stack_refs[0]
+            if (
+                addr_off is not None
+                and int(addr_off) == int(state_var_stkoff)
+                and val is not None
+                and getattr(val, "value", None) is not None
+            ):
+                return int(val.value) & 0xFFFFFFFFFFFFFFFF
+    return None
+
+
+def recover_entry_dominated_initial_state(
+    graph: FlowGraph, dmap: StateDispatcherMap
+) -> int | None:
+    """Recover the dispatcher's true initial state via entry-dominance (Approach B).
+
+    The live ``_find_pre_header`` "fewest-npred" heuristic is backwards for
+    equality chains: it can pick an ``m_goto`` back-edge predecessor over the
+    real ``m_mov`` prologue, yielding a spurious mid-chain ``initial_state``.
+
+    The entry-dominance test is exact: from the function entry, forward-traverse
+    the CFG treating the dispatcher entry block as a CUT (never traverse *out*
+    of it). A predecessor of the dispatcher entry is the true pre-header iff it
+    is reachable from entry WITHOUT passing through the dispatcher. Back-edges
+    are reachable only THROUGH the dispatcher, so they are excluded. When exactly
+    one predecessor qualifies and it initializes the state variable to a
+    constant, return that constant; otherwise return ``None`` (caller keeps the
+    existing behaviour). Address-agnostic: the value is read from the recovered
+    block, never hardcoded.
+    """
+    entry_block = dmap.dispatcher_entry_block
+    state_var_stkoff = dmap.state_var_stkoff
+    if entry_block is None or state_var_stkoff is None:
+        return None
+    dispatcher_blk = graph.blocks.get(int(entry_block))
+    if dispatcher_blk is None:
+        return None
+
+    # Forward reachability from entry with the dispatcher entry as a cut: visit
+    # it but never expand its successors, so anything reachable only via the
+    # dispatcher loop (the back-edges) stays unreached.
+    reachable: set[int] = set()
+    stack = [int(graph.entry_serial)]
+    while stack:
+        serial = stack.pop()
+        if serial in reachable or serial not in graph.blocks:
+            continue
+        reachable.add(serial)
+        if serial == int(entry_block):
+            continue  # CUT: do not traverse out of the dispatcher entry
+        stack.extend(int(s) for s in graph.blocks[serial].succs)
+
+    qualifying = [
+        int(pred)
+        for pred in dispatcher_blk.preds
+        if int(pred) != int(entry_block) and int(pred) in reachable
+    ]
+    if len(qualifying) != 1:
+        return None
+    return _read_state_init_const(graph.blocks.get(qualifying[0]), int(state_var_stkoff))
+
+
 @dataclass(frozen=True, slots=True)
 class EqualityChainDispatcherResolver:
     """Equality-chain (``CONDITIONAL_CHAIN``) resolver -- the preferred shape.
@@ -447,6 +539,16 @@ def recover_dispatcher(
     dmap = build_dispatch_map_any_kind(graph, min_state_constant=min_state_constant)
     if dmap is None:
         return DispatcherRecovery(reachable_block_serials=reachable)
+    # Equality-chain / switch dispatchers do not thread an ``initial_state`` (the
+    # live BST evidence supplies a SPURIOUS mid-chain value via the backwards
+    # ``_find_pre_header`` heuristic). Recover the true prologue state by
+    # entry-dominance and thread it onto the map so the §1a entry bridge prefers
+    # it over the spurious BST value. INDIRECT maps already carry their own
+    # recovered ``initial_state`` and are left untouched (ticket llr-mra1).
+    if dmap.source is not DispatcherType.INDIRECT_JUMP and dmap.initial_state is None:
+        recovered_initial = recover_entry_dominated_initial_state(graph, dmap)
+        if recovered_initial is not None:
+            dmap = replace(dmap, initial_state=recovered_initial)
     return DispatcherRecovery(
         reachable_block_serials=reachable,
         dispatcher_block_serial=dmap.dispatcher_entry_block,

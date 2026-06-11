@@ -18,11 +18,13 @@ from d810.ir.semantics import PredicateKind
 from d810.analyses.control_flow.dispatcher_recovery import (
     build_state_dispatcher_map_from_flow_graph,
     recover_dispatcher,
+    recover_entry_dominated_initial_state,
 )
 
 C1 = 0x10000001
 C2 = 0x10000002
 STATE_OFF = 0x3C
+INIT_STATE = 0xF6A1F  # the true prologue initial state (approov-shaped)
 
 
 def _ne_check(const: int, target: int) -> InsnSnapshot:
@@ -127,3 +129,74 @@ def test_recover_dispatcher_surfaces_map_and_state_var():
     assert result.dispatch_map.resolve_target(C1) == 1
     # reachability still computed alongside
     assert {0, 1, 2, 3, 4} == set(result.reachable_block_serials)
+
+
+def _state_init_mov(const: int) -> InsnSnapshot:
+    """mov #const -> state_var (the prologue's initial-state write)."""
+    l = MopSnapshot(kind=OperandKind.NUMBER, value=const, size=4)
+    d = MopSnapshot(kind=OperandKind.STACK, stkoff=STATE_OFF, size=4)
+    return InsnSnapshot(
+        opcode=2, ea=0x2000, operands=(l, d), l=l, d=d, kind=InsnKind.MOV,
+    )
+
+
+def _prologue_loop_head_graph() -> FlowGraph:
+    # Approov-shaped: a dispatcher LOOP HEAD (blk 10) with TWO predecessors --
+    # the entry-reachable PROLOGUE (blk 5, writes the TRUE initial state) and a
+    # back-edge handler (blk 1, writes a DECOY next-state const). Entry-dominance
+    # must pick the prologue's INIT_STATE, never the back-edge's decoy.
+    #   0 entry -> 5
+    #   5 prologue (mov #INIT -> state) -> 10
+    #   10 loop head -> 11               preds = {5, 1, 3}
+    #   11 jnz state,C1,12  -> (1, 12)
+    #   12 jnz state,C2,13  -> (3, 13)
+    #   1 handler (mov #DECOY -> state) -> 10   (back-edge)
+    #   3 handler -> 10                          (back-edge)
+    #   13 exit
+    decoy = _state_init_mov(0x10000099)
+    return FlowGraph(
+        blocks={
+            0: _blk(0, (5,), ()),
+            5: _blk(5, (10,), (0,), _state_init_mov(INIT_STATE)),
+            10: _blk(10, (11,), (5, 1, 3)),
+            11: _blk(11, (1, 12), (10,), _ne_check(C1, 12)),
+            12: _blk(12, (3, 13), (11,), _ne_check(C2, 13)),
+            1: _blk(1, (10,), (11,), decoy),
+            3: _blk(3, (10,), (12,)),
+            13: _blk(13, (), (12,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+
+def test_entry_dominance_recovers_prologue_initial_state_not_back_edge():
+    g = _prologue_loop_head_graph()
+    dmap = build_state_dispatcher_map_from_flow_graph(g)
+    assert dmap is not None
+    assert dmap.dispatcher_entry_block == 10
+    # The entry-dominated pre-header is the prologue (blk 5), reachable WITHOUT
+    # traversing the dispatcher; the back-edge handlers (1, 3) are excluded.
+    assert recover_entry_dominated_initial_state(g, dmap) == INIT_STATE
+
+
+def test_recover_dispatcher_threads_entry_dominated_initial_state():
+    result = recover_dispatcher(_prologue_loop_head_graph(), facts=None)
+    assert result.dispatch_map is not None
+    # recover_dispatcher threads the corrected initial state onto the map so the
+    # §1a entry bridge prefers it over the spurious BST mid-chain value.
+    assert result.dispatch_map.initial_state == INIT_STATE
+
+
+def test_entry_dominance_bails_when_ambiguous():
+    # Two entry-reachable predecessors of the dispatcher entry -> ambiguous (>1
+    # candidate) -> fall back to the existing behaviour (None), no correction.
+    g = _prologue_loop_head_graph()
+    blocks = dict(g.blocks)
+    # Make blk 3 an entry-reachable second pre-header (also a direct succ of entry).
+    blocks[0] = _blk(0, (5, 3), ())
+    blocks[3] = _blk(3, (10,), (12, 0))
+    g2 = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
+    dmap = build_state_dispatcher_map_from_flow_graph(g2)
+    assert dmap is not None
+    assert recover_entry_dominated_initial_state(g2, dmap) is None

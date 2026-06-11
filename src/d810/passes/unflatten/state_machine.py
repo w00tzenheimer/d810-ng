@@ -133,31 +133,30 @@ def _publish(ctx: FunctionPipelineContext, name: str, value) -> None:
 def _resolve_initial_state(bst_evidence, recovery) -> int | None:
     """Resolve the dispatcher's initial state for the entry bridge.
 
-    The BST/equality-chain evidence carries the prologue's folded initial state
-    for the comparison / switch dispatcher kinds, so it is preferred. For the
-    INDIRECT_JUMP kind ``bst_evidence`` is absent (None ``initial_state``) but the
-    structural indirect-table recovery threads the recovered entry state onto the
-    ``StateDispatcherMap`` (``build_state_dispatcher_map_from_indirect_entries``),
-    so fall back to ``recovery.dispatch_map.initial_state``. Address-agnostic --
-    the value is read from the recovered map, never hardcoded. ``emit_minimal_unflatten``
-    still applies its own prologue-fold fallback when both are None.
+    The recovered ``StateDispatcherMap.initial_state`` is preferred whenever it is
+    present, because ``recover_dispatcher`` now threads the TRUE prologue state
+    onto the map -- via the structural indirect-table recovery for INDIRECT_JUMP
+    (ticket llr-m9r4) AND via entry-dominance for equality-chain / switch kinds
+    (ticket llr-mra1). The latter corrects the SPURIOUS mid-chain value the live
+    BST evidence supplies through the backwards ``_find_pre_header`` "fewest-npred"
+    heuristic (which can pick an ``m_goto`` back-edge over the real ``m_mov``
+    prologue). The BST value is only used as a fall-back when no map value was
+    recovered. Address-agnostic -- every value is read from a recovered structure,
+    never hardcoded. ``emit_minimal_unflatten`` still applies its own prologue-fold
+    fallback when both are None.
     """
     dmap = getattr(recovery, "dispatch_map", None) if recovery is not None else None
     map_initial = getattr(dmap, "initial_state", None) if dmap is not None else None
-    # INDIRECT_JUMP: the BST/equality-chain analyzer still runs on the indirect
-    # function and emits a SPURIOUS initial_state (e.g. 0x1C, a folded inner
-    # state), so its preference would bridge the entry to the wrong handler and
-    # leave the whole chain unreachable. The structural indirect-table recovery
-    # threads the true prologue entry state onto the map, so it is authoritative
-    # for this kind (ticket llr-m9r4). Address-agnostic -- read from the map.
-    source = getattr(dmap, "source", None) if dmap is not None else None
-    is_indirect = source is not None and "INDIRECT" in str(source).upper()
-    if is_indirect and map_initial is not None:
+    # Prefer the recovered map's initial_state. For INDIRECT_JUMP the BST analyzer
+    # emits a spurious folded inner state; for equality-chain the BST emits a
+    # spurious mid-chain state -- in both cases the map carries the structurally
+    # recovered true prologue state, so it wins when present.
+    if map_initial is not None:
         return int(map_initial)
     bst_initial = getattr(bst_evidence, "initial_state", None)
     if bst_initial is not None:
         return int(bst_initial)
-    return int(map_initial) if map_initial is not None else None
+    return None
 
 
 class RecoverDispatcher(PipelinePass):
