@@ -13,7 +13,10 @@ from __future__ import annotations
 
 from d810.ir.flowgraph import FlowGraph
 from d810.passes.pass_pipeline import PassSpec
-from d810.analyses.control_flow.dispatcher_recovery import build_state_dispatcher_map_from_flow_graph
+from d810.analyses.control_flow.dispatcher_recovery import (
+    build_state_dispatcher_map_from_flow_graph,
+    min_state_constant_from_config,
+)
 from d810.families.state_machine_cff.base import StateMachineCffFamily
 from d810.families.state_machine_cff.pipeline import standard_state_machine_passes
 
@@ -36,7 +39,13 @@ class HodurFamily(StateMachineCffFamily):
         """
         if graph is None or not hasattr(graph, "blocks"):
             return None
-        return build_state_dispatcher_map_from_flow_graph(graph)
+        # Thread the project config's min_state_constant (select_family passes the rule
+        # config as ``context``) so detection uses the SAME threshold as recovery -- a
+        # lowered threshold admits sub-default equality-chains (approov ~0xF6A1F).
+        min_state_constant = min_state_constant_from_config(context)
+        return build_state_dispatcher_map_from_flow_graph(
+            graph, min_state_constant=min_state_constant
+        )
 
     def pipeline_for(self, match, context) -> "tuple[PassSpec, ...]":
         # DRY: the canonical five-pass spine lives in ``pipeline``; this family's

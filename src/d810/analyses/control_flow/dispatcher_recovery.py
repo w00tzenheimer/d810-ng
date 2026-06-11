@@ -43,6 +43,28 @@ MIN_STATE_CONSTANT = 0x01000000
 _EQUALITY_PREDICATES = (PredicateKind.EQ, PredicateKind.NE)
 
 
+def min_state_constant_from_config(project_config) -> int:
+    """Read ``min_state_constant`` from the unflatten rule's JSON config.
+
+    ``project_config`` is the ``StateMachineCffUnflattener`` blk_rule ``config`` dict
+    (e.g. ``{"min_state_constant": 16777216, ...}``) threaded by both detection
+    (``HodurFamily.detect`` via ``select_family(context=...)``) and the recovery pass
+    (``FunctionPipelineContext.project_config``). Both sites read the SAME value via this
+    helper so detection and recovery never diverge on the threshold (a known bug class).
+    Falls back to :data:`MIN_STATE_CONSTANT` when the field (or the config) is absent so
+    every existing caller keeps the module default (hodur/sub_7FFD/tigress goldens).
+    """
+    if not isinstance(project_config, dict):
+        return MIN_STATE_CONSTANT
+    value = project_config.get("min_state_constant")
+    if value is None:
+        return MIN_STATE_CONSTANT
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return MIN_STATE_CONSTANT
+
+
 @dataclass(frozen=True, slots=True)
 class DispatcherRecovery:
     """Portable result of dispatcher recovery over a FlowGraph."""
@@ -242,9 +264,15 @@ class EqualityChainDispatcherResolver:
     name: str = "equality_chain"
     router_kind: RouterKind = RouterKind.EQUALITY_CHAIN
     specificity: int = 10
+    # Threaded from the unflatten rule config (min_state_constant_from_config) so a
+    # project can admit sub-default state constants (approov ~0xF6A1F); defaults to
+    # the module threshold so existing callers stay byte-identical.
+    min_state_constant: int = MIN_STATE_CONSTANT
 
     def accepts(self, graph: FlowGraph) -> ResolverCandidate | None:
-        dmap = build_state_dispatcher_map_from_flow_graph(graph)
+        dmap = build_state_dispatcher_map_from_flow_graph(
+            graph, min_state_constant=self.min_state_constant
+        )
         if dmap is None:
             return None
         return ResolverCandidate(
@@ -258,7 +286,9 @@ class EqualityChainDispatcherResolver:
     def resolve(
         self, graph: FlowGraph, candidate: ResolverCandidate
     ) -> DispatcherResolution | None:
-        dmap = build_state_dispatcher_map_from_flow_graph(graph)
+        dmap = build_state_dispatcher_map_from_flow_graph(
+            graph, min_state_constant=self.min_state_constant
+        )
         if dmap is None:
             return None
         return DispatcherResolution(
@@ -355,12 +385,23 @@ def extra_dispatcher_resolvers() -> tuple[DispatcherResolver, ...]:
     return tuple(_EXTRA_DISPATCHER_RESOLVERS)
 
 
-def default_dispatcher_resolvers() -> tuple[DispatcherResolver, ...]:
-    """The portable resolver chain shared by every unflatten dispatch-map consumer."""
-    return (EqualityChainDispatcherResolver(), SwitchTableDispatcherResolver())
+def default_dispatcher_resolvers(
+    *, min_state_constant: int = MIN_STATE_CONSTANT
+) -> tuple[DispatcherResolver, ...]:
+    """The portable resolver chain shared by every unflatten dispatch-map consumer.
+
+    ``min_state_constant`` is threaded into the equality-chain resolver so a project
+    config can admit sub-default state constants; defaults to :data:`MIN_STATE_CONSTANT`.
+    """
+    return (
+        EqualityChainDispatcherResolver(min_state_constant=min_state_constant),
+        SwitchTableDispatcherResolver(),
+    )
 
 
-def build_dispatch_map_any_kind(graph: FlowGraph) -> StateDispatcherMap | None:
+def build_dispatch_map_any_kind(
+    graph: FlowGraph, *, min_state_constant: int = MIN_STATE_CONSTANT
+) -> StateDispatcherMap | None:
     """Recover a ``StateDispatcherMap`` of ANY supported dispatcher kind.
 
     Delegates to the ranked :func:`resolve_dispatcher` chain over
@@ -380,20 +421,30 @@ def build_dispatch_map_any_kind(graph: FlowGraph) -> StateDispatcherMap | None:
     here too while every portable consumer stays IDA-free (the registry holds
     opaque ``DispatcherResolver`` Protocol objects).
     """
-    resolvers = default_dispatcher_resolvers() + extra_dispatcher_resolvers()
+    resolvers = (
+        default_dispatcher_resolvers(min_state_constant=min_state_constant)
+        + extra_dispatcher_resolvers()
+    )
     resolution = resolve_dispatcher(graph, resolvers)
     return resolution.dispatcher_map if resolution is not None else None
 
 
 def recover_dispatcher(
-    graph: FlowGraph | None, facts: ValidatedFactView | None
+    graph: FlowGraph | None,
+    facts: ValidatedFactView | None,
+    *,
+    min_state_constant: int = MIN_STATE_CONSTANT,
 ) -> DispatcherRecovery:
-    """Recover dispatcher structure + the exact state->handler map over a portable ``FlowGraph``."""
+    """Recover dispatcher structure + the exact state->handler map over a portable ``FlowGraph``.
+
+    ``min_state_constant`` is threaded into the equality-chain detection so a project config
+    can recover sub-default state constants; defaults to :data:`MIN_STATE_CONSTANT`.
+    """
     if graph is None:
         return DispatcherRecovery()
     adjacency = {serial: graph.successors(serial) for serial in graph.blocks}
     reachable = reachable_from(adjacency, graph.block_count, graph.entry_serial)
-    dmap = build_dispatch_map_any_kind(graph)
+    dmap = build_dispatch_map_any_kind(graph, min_state_constant=min_state_constant)
     if dmap is None:
         return DispatcherRecovery(reachable_block_serials=reachable)
     return DispatcherRecovery(

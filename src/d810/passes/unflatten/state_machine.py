@@ -24,7 +24,10 @@ from d810.passes.pass_pipeline import (
 )
 
 # --- WORK-LIST: portable extractions composed by the passes ---
-from d810.analyses.control_flow.dispatcher_recovery import recover_dispatcher
+from d810.analyses.control_flow.dispatcher_recovery import (
+    min_state_constant_from_config,
+    recover_dispatcher,
+)
 from d810.analyses.control_flow.comparison_dispatcher_model import (
     ComparisonDispatcherModel,
 )
@@ -161,7 +164,13 @@ class RecoverDispatcher(PipelinePass):
     name = "recover_dispatcher"
 
     def run(self, context: FunctionPipelineContext) -> PassResult:
-        recovery = recover_dispatcher(context.graph, context.facts)
+        # Thread the project config's min_state_constant so recovery uses the SAME
+        # threshold the family's detect did (detect/recover divergence is a known bug
+        # class). Defaults to the module MIN_STATE_CONSTANT when absent.
+        min_state_constant = min_state_constant_from_config(context.project_config)
+        recovery = recover_dispatcher(
+            context.graph, context.facts, min_state_constant=min_state_constant
+        )
         _publish(context, self.name, recovery)
         # S2: build the consolidated ComparisonDispatcherModel for comparison
         # router kinds, folding in the pristine BST/interval evidence so

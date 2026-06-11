@@ -22,6 +22,7 @@ from d810.analyses.control_flow.dispatcher_discovery_extractors import (
     discover_dispatcher_from_flow_graph,
 )
 from d810.analyses.control_flow.dispatcher_recovery import (
+    min_state_constant_from_config,
     recover_dispatcher,
     register_extra_dispatcher_resolver,
 )
@@ -295,8 +296,18 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # #4 stays on the committed shallow path (byte-identical).
         bst_evidence = None
         prelim = None
+        # Thread the rule's min_state_constant into the prelim recovery so the BST
+        # evidence (and select_family below) agree on the threshold; defaults to the
+        # module MIN_STATE_CONSTANT when the config omits it (golden byte-identical).
+        prelim_min_state_constant = min_state_constant_from_config(
+            getattr(self, "config", None)
+        )
         try:
-            prelim = recover_dispatcher(source.flow_graph, fact_view)
+            prelim = recover_dispatcher(
+                source.flow_graph,
+                fact_view,
+                min_state_constant=prelim_min_state_constant,
+            )
             if getattr(prelim, "dispatcher_block_serial", None) is not None:
                 bst_evidence = analyze_bst_dispatcher(
                     mba,
@@ -356,7 +367,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 family=family,
                 backend=backend,
                 facts=facts,
-                project_config=None,
+                project_config=project_config,
                 maturity=mba.maturity,
                 capabilities=capabilities,
             )

@@ -70,7 +70,7 @@ def run_pipeline(
     ``optional`` are unaffected).
     """
     graph = source.flow_graph
-    match = family.detect(graph, backend.capabilities(), context=None)
+    match = family.detect(graph, backend.capabilities(), context=project_config)
     if match is None:
         return graph
 
