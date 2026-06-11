@@ -791,8 +791,19 @@ def _transfer_snapshot_constant_block(
     in_stk_map: dict[int, int],
     in_reg_map: dict[int, int],
     state_var_stkoff: int,
+    *,
+    state_var_gaddr: int | None = None,
+    foldable_global_reads: object | None = None,
 ) -> tuple[dict[int, int], dict[int, int]]:
-    """Propagate exact stack/register constants through one snapshot block."""
+    """Propagate exact stack/register constants through one snapshot block.
+
+    ``state_var_gaddr`` / ``foldable_global_reads`` (see
+    :mod:`d810.analyses.value_flow.global_init_fold`) enable a *global*
+    dispatcher state variable: a write to that global is tracked as a state-var
+    write (keyed by gaddr in ``stk_map``) and a reaching-defs-stable global read
+    folds to its static ``.data`` initializer.  Both default off -> identical
+    behaviour for the stack-resident state-var path.
+    """
 
     stk_map = dict(in_stk_map)
     reg_map = dict(in_reg_map)
@@ -813,6 +824,8 @@ def _transfer_snapshot_constant_block(
             state_var_stkoff,
             mba=None,
             state_var_lvar_idx=None,
+            state_var_gaddr=state_var_gaddr,
+            foldable_global_reads=foldable_global_reads,
         )
         if resolved is None:
             if dest_locator is None:
@@ -830,12 +843,18 @@ def run_snapshot_constant_fixpoint(
     state_var_stkoff: int,
     *,
     max_iterations: int = 1000,
+    state_var_gaddr: int | None = None,
+    foldable_global_reads: object | None = None,
 ) -> SnapshotConstantFixpointResult:
     """Compute conservative exact constants at each snapshot block boundary.
 
     The domain is two exact-constant maps keyed by stack offset and register id.
     Meet semantics are intersection-on-equality: a fact survives only when every
     predecessor proves the same constant.
+
+    ``state_var_gaddr`` / ``foldable_global_reads`` thread a *global* dispatcher
+    state variable (gaddr-keyed in the stack map) and reaching-defs-sound
+    static-initializer global reads through the per-block transfer.
     """
 
     block_serials = tuple(sorted(flow_graph.blocks))
@@ -877,6 +896,8 @@ def run_snapshot_constant_fixpoint(
             in_stk,
             in_reg,
             state_var_stkoff,
+            state_var_gaddr=state_var_gaddr,
+            foldable_global_reads=foldable_global_reads,
         )
 
         if (

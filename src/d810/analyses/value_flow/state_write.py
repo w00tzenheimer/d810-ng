@@ -71,12 +71,23 @@ def resolve_mop_from_maps(
     mba: Optional[object] = None,
     state_var_lvar_idx: Optional[int] = None,
     diag_lines: Optional[List[str]] = None,
+    state_var_gaddr: Optional[int] = None,
+    foldable_global_reads: Optional[Dict[int, Dict[int, int]]] = None,
+    read_ea: Optional[int] = None,
 ) -> Optional[int]:
     """Resolve a microcode operand to a concrete value using accumulated forward-eval maps.
 
     Handles: mop_n (literal), mop_S (stk_map via .s.off), mop_r (reg_map),
     mop_l (stk_map via lvar stkoff), mop_v (stable global), mop_d (recursive
     binop eval).
+
+    ``state_var_gaddr`` names a *global* dispatcher state variable: a read of
+    that global resolves through ``stk_map`` (keyed by gaddr) like a stack slot,
+    so the handler's own next-state write folds.  ``foldable_global_reads`` maps
+    ``read_ea -> {gaddr: initializer}`` (reaching-defs-sound, see
+    :mod:`d810.analyses.value_flow.global_init_fold`): a global read at
+    ``read_ea`` whose gaddr is listed folds to its static ``.data`` initializer
+    -- the only value that can be live there because no store reaches it.
     """
     if mop is None:
         return None
@@ -116,9 +127,27 @@ def resolve_mop_from_maps(
                 pass
     elif mop_type_name == "mop_v":
         try:
-            addr = int(getattr(mop, "g", 0) or 0)
+            addr = int(getattr(mop, "g", 0) or getattr(mop, "gaddr", 0) or 0)
             size = int(getattr(mop, "size", 0) or 0)
-            result = seams.fetch_stable_global_value(addr, size)
+            # 1) A value written to this global EARLIER in the same forward scan
+            #    (tracked in stk_map under the gaddr key) -- in-block global
+            #    dataflow, e.g. ``qword |= M`` then ``state = qword``.
+            if addr and addr in stk_map:
+                result = stk_map[addr]
+            # 2) Reaching-defs-sound static-initializer fold: a global read that
+            #    no store can reach resolves to its loader-supplied initializer.
+            elif (
+                foldable_global_reads is not None
+                and read_ea is not None
+                and addr
+            ):
+                init = foldable_global_reads.get(int(read_ea), {}).get(addr)
+                if init is not None:
+                    result = int(init)
+                else:
+                    result = seams.fetch_stable_global_value(addr, size)
+            else:
+                result = seams.fetch_stable_global_value(addr, size)
         except Exception:
             result = None
     elif mop_type_name == "mop_d":
@@ -135,6 +164,9 @@ def resolve_mop_from_maps(
                 mba=mba,
                 state_var_lvar_idx=state_var_lvar_idx,
                 diag_lines=diag_lines,
+                state_var_gaddr=state_var_gaddr,
+                foldable_global_reads=foldable_global_reads,
+                read_ea=read_ea,
             )
             if r_mop is not None and getattr(r_mop, "t", None) != 0:
                 rv = resolve_mop_from_maps(
@@ -145,6 +177,9 @@ def resolve_mop_from_maps(
                     mba=mba,
                     state_var_lvar_idx=state_var_lvar_idx,
                     diag_lines=diag_lines,
+                    state_var_gaddr=state_var_gaddr,
+                    foldable_global_reads=foldable_global_reads,
+                    read_ea=read_ea,
                 )
             else:
                 rv = None
@@ -203,11 +238,18 @@ def forward_eval_insn(
     mba: Optional[object] = None,
     state_var_lvar_idx: Optional[int] = None,
     diag_lines: Optional[List[str]] = None,
+    state_var_gaddr: Optional[int] = None,
+    foldable_global_reads: Optional[Dict[int, Dict[int, int]]] = None,
 ) -> Optional[int]:
     """Evaluate one instruction, updating stk_map/reg_map in-place.
 
     Returns the resolved constant if this instruction writes the state
     variable; otherwise returns None and updates the maps.
+
+    ``state_var_gaddr`` / ``foldable_global_reads`` enable a *global* dispatcher
+    state variable (see :func:`resolve_mop_from_maps`): a write to that global is
+    treated as the state-var write, and a reaching-defs-stable global read folds
+    to its static initializer.
     """
     if insn is None:
         return None
@@ -215,6 +257,14 @@ def forward_eval_insn(
     op = getattr(insn, "opcode", None)
     if op is None:
         return None
+
+    read_ea: Optional[int] = None
+    try:
+        ea_val = getattr(insn, "ea", None)
+        if ea_val is not None:
+            read_ea = int(ea_val)
+    except (TypeError, ValueError):
+        read_ea = None
 
     m_mov_op = seams.opcode_value("m_mov", None)
     m_add = seams.opcode_value("m_add", 28)
@@ -230,11 +280,23 @@ def forward_eval_insn(
     mop_S_type = seams.mop_type_value("mop_S", None)
     mop_r_type = seams.mop_type_value("mop_r", 1)
     mop_l_type = seams.mop_type_value("mop_l", 9)
+    mop_v_type = seams.mop_type_value("mop_v", None)
 
     def _store_to_dest(dest: object, val: int) -> bool:
         """Store val into the appropriate map based on dest type. Returns True if state var."""
         dest_t = getattr(dest, "t", None)
         is_state = False
+        # A write to a GLOBAL: record it in stk_map under its gaddr key so a
+        # later read of the same global in this forward scan resolves to it
+        # (in-block global dataflow: ``qword |= M`` then ``state = qword``).  It
+        # is the state-var write only when this global IS the state variable.
+        if mop_v_type is not None and dest_t == mop_v_type:
+            gaddr = int(getattr(dest, "g", 0) or getattr(dest, "gaddr", 0) or 0)
+            if gaddr:
+                stk_map[gaddr] = val
+                if state_var_gaddr is not None and gaddr == int(state_var_gaddr):
+                    is_state = True
+            return is_state
         if mop_S_type is not None and dest_t == mop_S_type:
             off = getattr(dest, "s", None)
             if off is not None:
@@ -271,26 +333,31 @@ def forward_eval_insn(
         return None
 
     val: Optional[int] = None
+    _glb = dict(
+        state_var_gaddr=state_var_gaddr,
+        foldable_global_reads=foldable_global_reads,
+        read_ea=read_ea,
+    )
 
     if op == m_mov_op:
         src = getattr(insn, "l", None)
         val = resolve_mop_from_maps(
             src, stk_map, reg_map, seams=seams, mba=mba,
-            state_var_lvar_idx=state_var_lvar_idx, diag_lines=diag_lines,
+            state_var_lvar_idx=state_var_lvar_idx, diag_lines=diag_lines, **_glb,
         )
     elif m_xdu_op is not None and op == m_xdu_op:
         # Zero-extend: value stays the same, just widens the register
         src = getattr(insn, "l", None)
         val = resolve_mop_from_maps(
             src, stk_map, reg_map, seams=seams, mba=mba,
-            state_var_lvar_idx=state_var_lvar_idx, diag_lines=diag_lines,
+            state_var_lvar_idx=state_var_lvar_idx, diag_lines=diag_lines, **_glb,
         )
     elif m_xds_op is not None and op == m_xds_op:
         # Sign-extend: check high bit of source width, extend if set
         src = getattr(insn, "l", None)
         src_val = resolve_mop_from_maps(
             src, stk_map, reg_map, seams=seams, mba=mba,
-            state_var_lvar_idx=state_var_lvar_idx, diag_lines=diag_lines,
+            state_var_lvar_idx=state_var_lvar_idx, diag_lines=diag_lines, **_glb,
         )
         if src_val is not None:
             src_size = getattr(src, "size", 4)  # source operand size in bytes
@@ -305,10 +372,12 @@ def forward_eval_insn(
         l_mop = getattr(insn, "l", None)
         r_mop = getattr(insn, "r", None)
         lv = resolve_mop_from_maps(
-            l_mop, stk_map, reg_map, seams=seams, mba=mba, state_var_lvar_idx=state_var_lvar_idx
+            l_mop, stk_map, reg_map, seams=seams, mba=mba,
+            state_var_lvar_idx=state_var_lvar_idx, **_glb,
         )
         rv = resolve_mop_from_maps(
-            r_mop, stk_map, reg_map, seams=seams, mba=mba, state_var_lvar_idx=state_var_lvar_idx
+            r_mop, stk_map, reg_map, seams=seams, mba=mba,
+            state_var_lvar_idx=state_var_lvar_idx, **_glb,
         )
         if lv is not None and rv is not None:
             if op == m_xor:

@@ -78,4 +78,5 @@ class TestBstWalkerProvider:
             "resolve_via_bst_walk",
             "get_block",
             "block_successors",
+            "fetch_idb_value",
         }

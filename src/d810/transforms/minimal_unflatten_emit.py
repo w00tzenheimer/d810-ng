@@ -755,6 +755,7 @@ def emit_minimal_unflatten(
         int(state_var_stkoff),
         dispatcher_entry_serial=int(dispatcher_entry_serial),
         recover_terminal_tail=is_indirect,
+        initial_state=initial_state,
     )
     # C3b (ticket llr-1szn / d81-t9ok): each transition carries a typed
     # ``TransitionProof`` naming the oracle and resolution shape. Observe-only --
