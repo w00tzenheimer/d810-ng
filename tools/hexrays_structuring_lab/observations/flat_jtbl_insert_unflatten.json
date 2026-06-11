@@ -1,0 +1,28 @@
+{
+  "case_id": "flat_jtbl_insert_unflatten",
+  "binary": "restructuring_lab.dll",
+  "function": "lab_flat_jtbl",
+  "roadmap_item": "L6",
+  "phase": "L6 (jump-table / m_jtbl dispatch)",
+  "verifies_clean": true,
+  "inserts_applied": 6,
+  "interr": null,
+  "compiled_cfg_gate": "test_dump_jtbl_structure asserts an m_jtbl block exists at GLBOPT1 with a readable mcases_t (>=4 case->target pairs) -- i.e. the dense small keys (0..4) actually compiled to a JUMP TABLE, not a jz-chain. This IS the L6 cfg-validation gate.",
+  "jtbl_emission": "clang -O0 mingw emits m_jtbl for >=4 DENSE small keys (case 0..4). Large sparse 32-bit states (the other lab fixtures) stay a jz if-chain -- density+count, not magnitude, drives table lowering.",
+  "glbopt1_structure": {
+    "qty": 11,
+    "jtbl_block": 2,
+    "jtbl_block_type": "BLT_NWAY (5)",
+    "jtbl_index": "%var_8.4{3}",
+    "mcases_routing": {"0": 3, "1": 4, "2": 5, "3": 6, "4": 7},
+    "default_out_of_range_target": 8,
+    "terminal_return_block": 8,
+    "redispatch_join": 9,
+    "note": "handlers blk3..7 each goto the re-dispatch join blk9 -> jtbl blk2; the entry blk1 gotos blk2 directly. So old_target is PER-WRITER (entry old=2, handlers old=9), NOT a single dispatcher head."
+  },
+  "plan": [[1, 3, 2], [3, 4, 9], [4, 5, 9], [5, 6, 9], [6, 7, 9], [7, 8, 9]],
+  "extractor": "_jtbl_routing reads tail.r.c (mop_c -> mcases_t): for each target index, cases.targets[j] + cases.values[j] -> {case_value: target_serial}. No state-constant floor / guessing -- the case->target map is built into the jump table. state slot = the jtbl index operand (tail.l), SSA {ver} suffix stripped to match writers' version-free dest.",
+  "live_render": "PASS via optblock_t (GLBOPT1, return change-count). The m_jtbl switch is fully DRAINED into a straight-line chain: g_hexrays_lab_sink = token+0x11; ...^0x22; ...-0x33; ...+0x44; ...^0x55; return. No switch, no jtbl, no state var, mba.verify() clean.",
+  "general_rule": "Deobfuscation DRAINS a switch dispatcher, it does NOT insert one. Reading mcases_t gives case->handler directly; redirecting each state-writer to its routed handler (per-writer old_target = the writer's own single successor) collapses the jump table to the linear handler chain it hid. d810's existing m_jtbl ops (NormalizeNWayDispatcherExit / CanonicalizeJumpTableCaseOverlap) only normalize an existing table -- none INSERT one.",
+  "test": "tests/system/runtime/hexrays/test_insert_unflatten_mini.py::TestInsertUnflattenJtbl (test_dump_jtbl_structure + test_jtbl_renders_linear_optblock); 14 passed / 1 xfailed across the lab file."
+}

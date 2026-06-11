@@ -928,3 +928,387 @@ class TestInsertUnflattenLoop:
         # Body + exit work present (the volatile sink forces materialization).
         assert "0X22" in up, f"body XOR work missing:\n{text}"
         assert "0X33" in up, f"exit subtract work missing:\n{text}"
+
+
+# ---------------------------------------------------------------------------
+# L6: jump-table (m_jtbl) dispatch. The dispatcher is compiled to a jump table
+# rather than a jz-chain; the routing extractor reads the mcases_t case/target
+# pairs directly, so no state-constant guessing is needed.
+# ---------------------------------------------------------------------------
+JTBL_FUNCTION = "lab_flat_jtbl"
+
+
+def _find_jtbl(mba):
+    """Return (serial, mcases_t) of the m_jtbl dispatcher block, else (-1, None)."""
+    for i in range(mba.qty):
+        blk = mba.get_mblock(i)
+        tail = blk.tail if blk else None
+        if (tail is not None and int(tail.opcode) == ida_hexrays.m_jtbl
+                and tail.r is not None and tail.r.t == ida_hexrays.mop_c):
+            return blk.serial, tail.r.c
+    return -1, None
+
+
+def _jtbl_routing(mba):
+    """Read the m_jtbl mcases_t -> ({case_value: target_serial}, jtbl_serial).
+    The case->target map is built into the jump table -- no state-const floor."""
+    serial, cases = _find_jtbl(mba)
+    routing: dict[int, int] = {}
+    if cases is not None:
+        for j in range(cases.size()):
+            tgt = int(cases.targets[j])
+            vv = cases.values[j]
+            n = vv.size() if hasattr(vv, "size") else len(vv)
+            for k in range(n):
+                routing[int(vv[k]) & 0xFFFFFFFF] = tgt
+    return routing, serial
+
+
+def _writers_of_values(mba, slot, values):
+    """value -> [serials] of blocks writing an immediate in `values` to `slot`."""
+    out: dict[int, list[int]] = {}
+    for i in range(mba.qty):
+        blk = mba.get_mblock(i)
+        ins = blk.head if blk else None
+        while ins is not None:
+            if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
+                    and ins.l.t == ida_hexrays.mop_n and ins.d is not None
+                    and ins.d.dstr() == slot):
+                v = int(ins.l.nnn.value) & 0xFFFFFFFF
+                if v in values:
+                    out.setdefault(v, []).append(blk.serial)
+            ins = ins.next
+    return out
+
+
+def _jtbl_state_slot(mba, case_values):
+    """The slot most often written with the jtbl's case values = the state var."""
+    counts: dict[str, int] = {}
+    for i in range(mba.qty):
+        blk = mba.get_mblock(i)
+        ins = blk.head if blk else None
+        while ins is not None:
+            if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
+                    and ins.l.t == ida_hexrays.mop_n and ins.d is not None
+                    and (int(ins.l.nnn.value) & 0xFFFFFFFF) in case_values):
+                counts[ins.d.dstr()] = counts.get(ins.d.dstr(), 0) + 1
+            ins = ins.next
+    return max(counts, key=counts.get) if counts else None
+
+
+def _build_jtbl_unflatten_plan(mba):
+    """Drain an m_jtbl dispatcher: redirect each state-writer to the handler its
+    written case-value routes to (out-of-range writers -> the jtbl default/return
+    successor). ``old_target`` is PER-WRITER (the writer's own single successor),
+    because the entry gotos the jtbl block while handlers goto a re-dispatch join.
+    Returns (plan, jserial, info) with plan = [(source, final, old_target), ...]."""
+    routing, jserial = _jtbl_routing(mba)
+    if jserial < 0:
+        return [], -1, None
+    jblk = mba.get_mblock(jserial)
+    jsuccs = set(int(s) for s in jblk.succset)
+    default_pool = jsuccs - set(routing.values())
+    default_target = min(default_pool) if default_pool else _terminal_serial(mba)
+    # state slot = what the jtbl indexes on (strip the SSA {ver} suffix so it
+    # matches the writers' version-free dest dstr).
+    slot = re.sub(r"\{[^}]*\}", "", jblk.tail.l.dstr())
+    writers: dict[int, list[int]] = {}
+    for i in range(mba.qty):
+        blk = mba.get_mblock(i)
+        ins = blk.head if blk else None
+        while ins is not None:
+            if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
+                    and ins.l.t == ida_hexrays.mop_n and ins.d is not None
+                    and re.sub(r"\{[^}]*\}", "", ins.d.dstr()) == slot):
+                writers.setdefault(int(ins.l.nnn.value) & 0xFFFFFFFF, []).append(
+                    blk.serial)
+            ins = ins.next
+    plan = []
+    for val, wblocks in writers.items():
+        target = routing.get(val, default_target)
+        for w in wblocks:
+            wsuccs = [int(s) for s in mba.get_mblock(w).succset]
+            old = wsuccs[0] if len(wsuccs) == 1 else jserial
+            plan.append((w, target, old))
+    return plan, jserial, (slot, routing, default_target, writers)
+
+
+class TestInsertUnflattenJtbl:
+    """L6: a flattened dispatcher compiled to an m_jtbl jump table. The
+    jtbl-reading routing extractor drains the switch into a linear chain."""
+
+    binary_name = "restructuring_lab.dll"
+
+    def test_dump_jtbl_structure(self, ida_database, configure_hexrays):
+        """Diagnostic: confirm the fixture compiled to m_jtbl (not a jz-chain) and
+        the mcases_t case->target map is readable at GLBOPT1."""
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+        ea = get_func_ea(JTBL_FUNCTION)
+        for label, mat in [("CALLS", ida_hexrays.MMAT_CALLS),
+                           ("GLBOPT1", ida_hexrays.MMAT_GLBOPT1)]:
+            mba = gen_microcode_at_maturity(ea, mat)
+            if mba is None:
+                print(f"\n=== {label}: None ==="); continue
+            jserial, cases = _find_jtbl(mba)
+            jidx = None
+            if jserial >= 0:
+                jt = mba.get_mblock(jserial).tail
+                jidx = jt.l.dstr() if jt is not None and jt.l is not None else None
+            print(f"\n=== {label} qty={mba.qty} jtbl_block={jserial} jtbl_index={jidx!r} ===")
+            for i in range(mba.qty):
+                blk = mba.get_mblock(i)
+                if blk is None:
+                    continue
+                succs = [int(s) for s in blk.succset]
+                preds = [int(p) for p in blk.predset]
+                tail = blk.tail
+                top = int(tail.opcode) if tail is not None else -1
+                tag = " JTBL" if top == ida_hexrays.m_jtbl else ""
+                print(f"  blk[{i}] type={int(blk.type)} preds={preds} "
+                      f"succs={succs} tail_op={top}{tag}")
+            routing, _ = _jtbl_routing(mba)
+            print(f"  jtbl routing (case->target): "
+                  f"{ {hex(k): v for k, v in routing.items()} }")
+        mba = gen_microcode_at_maturity(ea, ida_hexrays.MMAT_GLBOPT1)
+        routing, jserial = _jtbl_routing(mba)
+        assert jserial >= 0, "no m_jtbl at GLBOPT1 (fixture compiled to a jz-chain?)"
+        assert len(routing) >= 4, f"jtbl routing too small: {routing}"
+
+    def test_jtbl_renders_linear_optblock(self, ida_database, configure_hexrays):
+        """Drain the m_jtbl dispatcher into a linear chain via the optblock-stage
+        insert (routing read from mcases_t). The render drops the switch."""
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+        ea = get_func_ea(JTBL_FUNCTION)
+
+        class _JtblOptblock(ida_hexrays.optblock_t):
+            def __init__(self):
+                super().__init__()
+                self.done = False
+                self.applied = 0
+                self.plan = None
+                self.error = None
+
+            def func(self, blk):
+                try:
+                    mba = blk.mba
+                    if (self.done or mba is None
+                            or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)):
+                        return 0
+                    plan, jserial, info = _build_jtbl_unflatten_plan(mba)
+                    if jserial < 0 or len(plan) < 4:
+                        return 0
+                    self.plan = plan
+                    self.done = True
+                    mod = DeferredGraphModifier(mba)
+                    for src, final, old in plan:
+                        mod.queue_create_and_redirect(
+                            src, final, [], old_target_serial=old)
+                    mod.coalesce()
+                    self.applied = mod.apply(run_optimize_local=True)
+                    return self.applied
+                except Exception as exc:  # noqa: BLE001
+                    self.error = repr(exc)
+                    return 0
+
+        opt = _JtblOptblock()
+        opt.install()
+        hf = ida_hexrays.hexrays_failure_t()
+        try:
+            ida_hexrays.mark_cfunc_dirty(ea)
+            cfunc = ida_hexrays.decompile(ea, hf)
+        finally:
+            opt.remove()
+        print(f"\n=== jtbl render (plan={opt.plan} applied={opt.applied} "
+              f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ===")
+        if cfunc is not None:
+            print(str(cfunc))
+        print("=== end jtbl render ===")
+        assert opt.applied >= 5, f"applied={opt.applied} err={opt.error}"
+        assert cfunc is not None, f"decompile failed: {hf.code} {hf.desc()!r}"
+        text = str(cfunc)
+        up = text.upper()
+        # Switch drained: no jump-table dispatcher in the render.
+        assert "SWITCH" not in up, f"jtbl switch survived:\n{text}"
+        # The five handlers' work survives (volatile sink forces materialization).
+        for w in ("0X11", "0X22", "0X33", "0X44", "0X55"):
+            assert w in up, f"handler work {w} missing after drain:\n{text}"
+
+
+# ---------------------------------------------------------------------------
+# L8: branchless next-state select (no jcc to preserve). The select survives to
+# GLBOPT1 as a single m_or `(token&1) ? K1 : K2`; we recover the predicate
+# (token&1) live from the m_or tree and SYNTHESIZE the if/else via
+# queue_lower_conditional_state_transition (builds m_jnz cond, 0 -> true arm).
+# ---------------------------------------------------------------------------
+BRANCHLESS_FUNCTION = "lab_flat_branchless"
+
+
+def _find_low_bit_predicate(mop):
+    """DFS a mop tree for an `& #1` sub-instruction (the low-bit predicate) and
+    return a CLONED mop wrapping it (its value is 0/1, nonzero iff the masked
+    operand is odd). Used to recover `(token & 1)` from the branchless m_or
+    select so it can be reused as a synthesized jcnd condition."""
+    if mop is None:
+        return None
+    if int(getattr(mop, "t", -1)) == ida_hexrays.mop_d and mop.d is not None:
+        ins = mop.d
+        if (int(ins.opcode) == ida_hexrays.m_and and ins.r is not None
+                and ins.r.t == ida_hexrays.mop_n
+                and (int(ins.r.nnn.value) & 0xFFFFFFFF) == 1):
+            cloned = ida_hexrays.mop_t()
+            cloned.assign(mop)
+            return cloned
+        for sub in (ins.l, ins.r, ins.d):
+            got = _find_low_bit_predicate(sub)
+            if got is not None:
+                return got
+    return None
+
+
+class TestInsertUnflattenBranchless:
+    """L8: a flattened CONDITIONAL transition encoded branchlessly (mask select)."""
+
+    binary_name = "restructuring_lab.dll"
+
+    def test_dump_branchless_structure(self, ida_database, configure_hexrays):
+        """Diagnostic: dump H0's full instruction list to see how the branchless
+        next-state select (mask MBA) survives to GLBOPT1 -- folded to a
+        conditional, or still raw MBA that must be recovered + synthesized."""
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+        ea = get_func_ea(BRANCHLESS_FUNCTION)
+        mba = gen_microcode_at_maturity(ea, ida_hexrays.MMAT_GLBOPT1)
+        assert mba is not None
+        sd = _state_slot(mba)
+        writers = _state_writers(mba, sd)
+        routing = _dispatcher_routing(mba, sd)
+        term = _terminal_serial(mba)
+        print(f"\n=== lab_flat_branchless GLBOPT1 qty={mba.qty} state_slot={sd!r} ===")
+        print(f"  writers={ {hex(k): v for k, v in writers.items()} }")
+        print(f"  routing={ {hex(k): v for k, v in routing.items()} } term={term}")
+        for i in range(mba.qty):
+            blk = mba.get_mblock(i)
+            if blk is None:
+                continue
+            succs = [int(s) for s in blk.succset]
+            preds = [int(p) for p in blk.predset]
+            tail = blk.tail
+            top = int(tail.opcode) if tail is not None else -1
+            two = "(2WAY)" if blk.type == ida_hexrays.BLT_2WAY else ""
+            print(f"  blk[{i}] type={int(blk.type)}{two} preds={preds} "
+                  f"succs={succs} tail_op={top}")
+            ins = blk.head
+            while ins is not None:
+                print(f"        op={int(ins.opcode):>2}  {ins.dstr()}")
+                ins = ins.next
+        assert sd is not None
+
+    def test_branchless_synthesizes_if_else(self, ida_database, configure_hexrays):
+        """Recover (token&1) from H0's branchless m_or select and SYNTHESIZE the
+        if/else at the optblock stage: lower H0 into a 2-way (jnz cond,0) on the
+        recovered predicate + redirect entry->H0 and H1/H2->terminal to drain the
+        dispatcher. Renders a real if/else on (token&1), no state var."""
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+        ea = get_func_ea(BRANCHLESS_FUNCTION)
+
+        class _BranchlessOptblock(ida_hexrays.optblock_t):
+            def __init__(self):
+                super().__init__()
+                self.done = False
+                self.applied = 0
+                self.error = None
+                self.dbg = None
+
+            def func(self, blk):
+                try:
+                    mba = blk.mba
+                    if (self.done or mba is None
+                            or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)):
+                        return 0
+                    sd = _state_slot(mba)
+                    writers = _state_writers(mba, sd)
+                    routing = _dispatcher_routing(mba, sd)
+                    term = _terminal_serial(mba)
+                    if not (STATE_K0 in routing and STATE_K1 in routing
+                            and STATE_K2 in routing and term >= 0
+                            and STATE_K0 in writers):
+                        return 0
+                    h0 = routing[STATE_K0]
+                    h1 = routing[STATE_K1]
+                    h2 = routing[STATE_K2]
+                    entry = writers[STATE_K0][0]
+                    h0blk = mba.get_mblock(h0)
+                    if h0blk.nsucc() != 1:
+                        return 0
+                    disp = int(h0blk.succset[0])
+                    # Recover the predicate (token&1) live from H0's m_or select,
+                    # and the EA where the branchless state-write begins.
+                    or_ea = None
+                    cond = None
+                    ins = h0blk.head
+                    while ins is not None:
+                        if (int(ins.opcode) == ida_hexrays.m_or and ins.d is not None
+                                and re.sub(r"\{[^}]*\}", "", ins.d.dstr()) == sd):
+                            or_ea = int(ins.ea)
+                            for sub in (ins.l, ins.r):
+                                cond = cond or _find_low_bit_predicate(sub)
+                        ins = ins.next
+                    self.dbg = (sd, h0, h1, h2, entry, disp, term,
+                                or_ea, cond is not None)
+                    if or_ea is None or cond is None:
+                        return 0
+                    self.done = True
+                    mod = DeferredGraphModifier(mba)
+                    # Drain the dispatcher: entry routes to H0, the two arms exit.
+                    mod.queue_create_and_redirect(entry, h0, [], old_target_serial=disp)
+                    mod.queue_create_and_redirect(h1, term, [], old_target_serial=disp)
+                    mod.queue_create_and_redirect(h2, term, [], old_target_serial=disp)
+                    # Synthesize H0's branch: if (token&1) -> H1 else -> H2.
+                    mod.queue_lower_conditional_state_transition(
+                        source_serial=h0,
+                        old_dispatcher_serial=disp,
+                        rewrite_from_ea=or_ea,
+                        condition_operand=cond,
+                        false_target_serial=h2,
+                        true_target_serial=h1,
+                    )
+                    mod.coalesce()
+                    self.applied = mod.apply(run_optimize_local=True)
+                    return self.applied
+                except Exception as exc:  # noqa: BLE001
+                    self.error = repr(exc)
+                    return 0
+
+        opt = _BranchlessOptblock()
+        opt.install()
+        hf = ida_hexrays.hexrays_failure_t()
+        try:
+            ida_hexrays.mark_cfunc_dirty(ea)
+            cfunc = ida_hexrays.decompile(ea, hf)
+        finally:
+            opt.remove()
+        print(f"\n=== branchless synth (applied={opt.applied} dbg={opt.dbg} "
+              f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ===")
+        if cfunc is not None:
+            print(str(cfunc))
+        print("=== end branchless synth ===")
+        assert opt.applied >= 4, f"applied={opt.applied} err={opt.error} dbg={opt.dbg}"
+        assert cfunc is not None, f"decompile failed: {hf.code} {hf.desc()!r}"
+        text = str(cfunc)
+        up = text.upper()
+        # Branch synthesized from the recovered predicate.
+        assert "IF (" in up, f"no synthesized if branch:\n{text}"
+        assert "ELSE" in up, f"no else arm:\n{text}"
+        assert "& 1" in text, f"recovered (token&1) predicate missing:\n{text}"
+        # Dispatcher drained: no state-routing constants survive.
+        assert f"{STATE_K1:X}" not in up, f"K1 dispatcher const survived:\n{text}"
+        assert f"{STATE_K2:X}" not in up, f"K2 dispatcher const survived:\n{text}"
+        # Both arms' work present (volatile sink materializes them). H0's +0x11 +
+        # the taken arm's XOR survive verbatim; the else arm's -0x33 folds with
+        # H0's +0x11 into `- 0x22` (0x11-0x33 = -0x22), so witness the folded form.
+        assert "^ 0x22" in text, f"taken-arm XOR missing:\n{text}"
+        assert re.search(r"-\s*0x22", text), f"else-arm (folded -0x33) missing:\n{text}"
+        assert "WHILE" not in up and "FOR (" not in up, f"dispatcher loop survived:\n{text}"
