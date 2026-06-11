@@ -1312,3 +1312,426 @@ class TestInsertUnflattenBranchless:
         assert "^ 0x22" in text, f"taken-arm XOR missing:\n{text}"
         assert re.search(r"-\s*0x22", text), f"else-arm (folded -0x33) missing:\n{text}"
         assert "WHILE" not in up and "FOR (" not in up, f"dispatcher loop survived:\n{text}"
+
+
+# ---------------------------------------------------------------------------
+# L7: multi-block subgraph (region) insert. The shared continuation is a 2-block
+# REGION (head + tail, internal branch) reached from two paths; de-sharing /
+# reconstruction must preserve the region's internal structure.
+# ---------------------------------------------------------------------------
+REGION_FUNCTION = "lab_flat_region"
+STATE_RT = 0x7D4E1F3A      # region tail state (extra, beyond the K0/K1/K2/TERM set)
+STATE_KENTRY = 0xDEADBEEF  # single entry-handler state (routes to A or B)
+REGION_CONSTS = frozenset(
+    {STATE_KENTRY, STATE_K0, STATE_K1, STATE_K2, STATE_RT, STATE_TERM})
+
+
+def _region_state_slot(mba):
+    """State slot for the region fixture (its const set includes RT); prefer the
+    slot that receives STATE_TERM, tie-break by write count."""
+    writes: dict[str, list[int]] = {}
+    for i in range(mba.qty):
+        blk = mba.get_mblock(i)
+        ins = blk.head if blk else None
+        while ins is not None:
+            if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
+                    and ins.l.t == ida_hexrays.mop_n
+                    and (int(ins.l.nnn.value) & 0xFFFFFFFF) in REGION_CONSTS
+                    and ins.d is not None):
+                writes.setdefault(ins.d.dstr(), []).append(
+                    int(ins.l.nnn.value) & 0xFFFFFFFF)
+            ins = ins.next
+    if not writes:
+        return None
+    term_slots = {d: v for d, v in writes.items() if STATE_TERM in v}
+    pool = term_slots or writes
+    return max(pool, key=lambda d: len(pool[d]))
+
+
+def _region_routing(mba, slot):
+    """Decode m_jz/m_jnz dispatcher compares whose immediate is a REGION const ->
+    {state_const: handler_serial}."""
+    routing: dict[int, int] = {}
+    for i in range(mba.qty):
+        blk = mba.get_mblock(i)
+        if blk is None or blk.type != ida_hexrays.BLT_2WAY:
+            continue
+        tail = blk.tail
+        if tail is None or int(tail.opcode) not in (ida_hexrays.m_jz, ida_hexrays.m_jnz):
+            continue
+        imm = None
+        for op in (tail.l, tail.r):
+            if op is not None and op.t == ida_hexrays.mop_n:
+                v = int(op.nnn.value) & 0xFFFFFFFF
+                if v in REGION_CONSTS:
+                    imm = v
+        if imm is None:
+            continue
+        tgt = int(tail.d.b) if (tail.d is not None and tail.d.t == ida_hexrays.mop_b) else None
+        succs = [int(s) for s in blk.succset]
+        other = [s for s in succs if s != tgt]
+        handler = tgt if int(tail.opcode) == ida_hexrays.m_jz else (other[0] if other else None)
+        if handler is not None:
+            routing[imm] = handler
+    return routing
+
+
+def _region_writers(mba, slot):
+    """const -> [serials] of blocks writing a REGION const to the slot."""
+    writers: dict[int, list[int]] = {}
+    for i in range(mba.qty):
+        blk = mba.get_mblock(i)
+        ins = blk.head if blk else None
+        while ins is not None:
+            if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
+                    and ins.l.t == ida_hexrays.mop_n and ins.d is not None
+                    and ins.d.dstr() == slot):
+                v = int(ins.l.nnn.value) & 0xFFFFFFFF
+                if v in REGION_CONSTS:
+                    writers.setdefault(v, []).append(blk.serial)
+            ins = ins.next
+    return writers
+
+
+def _build_region_join_plan(mba):
+    """Join-preserving general unflatten for the region fixture (region-aware
+    const set incl KENTRY + RT). Same rule as `_build_unflatten_plan`: redirect
+    every genuine dispatcher-returning state-writer to its routed handler
+    (TERM-writers -> terminal). The shared region head naturally becomes a JOIN
+    -- its two writers (A, B) both route to it -- and its internal branch is
+    preserved because only its ARMS (not the head) are redirected."""
+    slot = _region_state_slot(mba)
+    routing = _region_routing(mba, slot)
+    terminal = _terminal_serial(mba)
+    writers = _region_writers(mba, slot)
+    succ_counter: Counter = Counter()
+    for blist in writers.values():
+        for b in blist:
+            for s in mba.get_mblock(b).succset:
+                succ_counter[int(s)] += 1
+    disp = succ_counter.most_common(1)[0][0] if succ_counter else -1
+    plan = []
+    for k, blist in writers.items():
+        target = routing.get(k)
+        if target is None and k == STATE_TERM:
+            target = terminal
+        if target is None or target < 0:
+            continue
+        for w in blist:
+            if disp in [int(s) for s in mba.get_mblock(w).succset]:
+                plan.append((w, target, disp))
+    return plan, disp, (slot, writers, routing, terminal)
+
+
+class TestInsertUnflattenRegion:
+    """L7: a 2-block shared region (head + tail with an internal branch) reached
+    from two paths -- the multi-block analog of P3's single-block de-share."""
+
+    binary_name = "restructuring_lab.dll"
+
+    def test_dump_region_structure(self, ida_database, configure_hexrays):
+        """Diagnostic: map the region fixture -- the two entry paths, the shared
+        region head (>=2 preds via its writers) and its internal branch to the
+        region tail."""
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+        ea = get_func_ea(REGION_FUNCTION)
+        mba = gen_microcode_at_maturity(ea, ida_hexrays.MMAT_GLBOPT1)
+        assert mba is not None
+        sd = _region_state_slot(mba)
+        routing = _region_routing(mba, sd)
+        # per-state writers (which blocks write each region const to the slot)
+        writers: dict[int, list[int]] = {}
+        for i in range(mba.qty):
+            blk = mba.get_mblock(i)
+            ins = blk.head if blk else None
+            while ins is not None:
+                if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
+                        and ins.l.t == ida_hexrays.mop_n and ins.d is not None
+                        and ins.d.dstr() == sd):
+                    v = int(ins.l.nnn.value) & 0xFFFFFFFF
+                    if v in REGION_CONSTS:
+                        writers.setdefault(v, []).append(blk.serial)
+                ins = ins.next
+        print(f"\n=== lab_flat_region GLBOPT1 qty={mba.qty} state_slot={sd!r} ===")
+        for i in range(mba.qty):
+            blk = mba.get_mblock(i)
+            if blk is None:
+                continue
+            succs = [int(s) for s in blk.succset]
+            preds = [int(p) for p in blk.predset]
+            tail = blk.tail
+            top = int(tail.opcode) if tail is not None else -1
+            sw = None
+            ins = blk.head
+            while ins is not None:
+                if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
+                        and ins.l.t == ida_hexrays.mop_n and ins.d is not None
+                        and ins.d.dstr() == sd):
+                    v = int(ins.l.nnn.value) & 0xFFFFFFFF
+                    if v in REGION_CONSTS:
+                        sw = hex(v)
+                ins = ins.next
+            two = "(2WAY)" if blk.type == ida_hexrays.BLT_2WAY else ""
+            print(f"  blk[{i}] type={int(blk.type)}{two} preds={preds} "
+                  f"succs={succs} tail_op={top}"
+                  f"{' STATE_WRITE=' + sw if sw else ''}")
+        print(f"  writers={ {hex(k): v for k, v in writers.items()} }")
+        print(f"  routing={ {hex(k): v for k, v in routing.items()} }")
+        rh = routing.get(STATE_K2)   # region head
+        rt = routing.get(STATE_RT)   # region tail
+        print(f"  region_head(K2)={rh} region_tail(RT)={rt}")
+        if rh is not None:
+            rhblk = mba.get_mblock(rh)
+            print(f"  region_head succs={[int(s) for s in rhblk.succset]} "
+                  f"type={int(rhblk.type)} (internal branch if 2WAY)")
+        # Both A and B write the region-head state K2 (the region is SHARED).
+        assert len(writers.get(STATE_K2, [])) >= 2, (
+            f"region head not shared (K2 writers): {writers}")
+        # The region is 2 blocks: head routes to a distinct tail (RT).
+        assert STATE_RT in routing, f"no region tail in routing: {routing}"
+        assert rh is not None and rt is not None and rh != rt, (rh, rt)
+
+    def test_region_renders_join_optblock(self, ida_database, configure_hexrays):
+        """Phase 1 (join-preserving): the general unflatten plan reconstructs the
+        multi-block shared region as a JOIN -- region head reached from both A and
+        B, its internal branch to the tail preserved. No duplication (the correct,
+        bloat-free deobfuscation)."""
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+        ea = get_func_ea(REGION_FUNCTION)
+
+        class _RegionJoinOptblock(ida_hexrays.optblock_t):
+            def __init__(self):
+                super().__init__()
+                self.done = False
+                self.applied = 0
+                self.plan = None
+                self.error = None
+
+            def func(self, blk):
+                try:
+                    mba = blk.mba
+                    if (self.done or mba is None
+                            or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)):
+                        return 0
+                    plan, disp, info = _build_region_join_plan(mba)
+                    _slot, writers, routing, term = info
+                    # Act once the machine is fully mapped: the region head (K2) is
+                    # shared (2 writers), the tail (RT) routes, terminal resolved.
+                    if not (len(writers.get(STATE_K2, [])) >= 2
+                            and STATE_RT in routing and STATE_K2 in routing
+                            and term >= 0 and disp >= 0 and len(plan) >= 6):
+                        return 0
+                    self.plan = plan
+                    self.done = True
+                    mod = DeferredGraphModifier(mba)
+                    for src, final, old in plan:
+                        mod.queue_create_and_redirect(
+                            src, final, [], old_target_serial=old)
+                    mod.coalesce()
+                    self.applied = mod.apply(run_optimize_local=True)
+                    return self.applied
+                except Exception as exc:  # noqa: BLE001
+                    self.error = repr(exc)
+                    return 0
+
+        opt = _RegionJoinOptblock()
+        opt.install()
+        hf = ida_hexrays.hexrays_failure_t()
+        try:
+            ida_hexrays.mark_cfunc_dirty(ea)
+            cfunc = ida_hexrays.decompile(ea, hf)
+        finally:
+            opt.remove()
+        print(f"\n=== region join render (plan={opt.plan} applied={opt.applied} "
+              f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ===")
+        if cfunc is not None:
+            print(str(cfunc))
+        print("=== end region join render ===")
+        assert opt.applied >= 6, f"applied={opt.applied} err={opt.error}"
+        assert cfunc is not None, f"decompile failed: {hf.code} {hf.desc()!r}"
+        text = str(cfunc)
+        up = text.upper()
+        # Dispatcher drained: no region state constants survive.
+        for k in (STATE_KENTRY, STATE_K0, STATE_K1, STATE_K2, STATE_RT):
+            assert f"{k:X}" not in up, f"state const {k:#x} survived:\n{text}"
+        # Two nested conditionals: the entry A/B branch + the region's internal
+        # (token&2) branch. The region head is a JOIN (rendered once, not per arm).
+        assert up.count("IF (") >= 2, f"expected entry + region branches:\n{text}"
+        assert "& 1" in text, f"entry (token&1) branch missing:\n{text}"
+        assert "& 2" in text, f"region internal (token&2) branch missing:\n{text}"
+        # The region head's work (-0x22) appears ONCE (shared join, not duplicated).
+        assert text.count("- 0x22") == 1, (
+            f"region head not a single shared join (expected 1 `- 0x22`):\n{text}")
+        assert "WHILE" not in up and "FOR (" not in up, f"loop survived:\n{text}"
+
+    def test_region_deshare_duplicate_optblock(self, ida_database, configure_hexrays):
+        """Phase 2 (de-share / duplicate): give EACH path its own copy of the
+        2-block region. Two passes: (0) drain entry + clone the region HEAD
+        (conditional) per path via create_conditional_redirect, taken -> the
+        (still-shared) tail, else -> exit; (1) de-share the now-multi-pred TAIL
+        P3-style (per-pred state-free copy). Render duplicates the region per arm."""
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+        ea = get_func_ea(REGION_FUNCTION)
+
+        class _RegionDeshareOptblock(ida_hexrays.optblock_t):
+            def __init__(self):
+                super().__init__()
+                self.phase = 0
+                self.applied0 = 0
+                self.applied1 = 0
+                self.error = None
+                self.dbg0 = None
+                self.dbg1 = None
+                self.tail_eas = None
+
+            def _writes(self, mba, serial, value, slot):
+                blk = mba.get_mblock(serial)
+                ins = blk.head if blk else None
+                while ins is not None:
+                    if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
+                            and ins.l.t == ida_hexrays.mop_n and ins.d is not None
+                            and ins.d.dstr() == slot
+                            and (int(ins.l.nnn.value) & 0xFFFFFFFF) == value):
+                        return True
+                    ins = ins.next
+                return False
+
+            def func(self, blk):
+                try:
+                    mba = blk.mba
+                    if mba is None or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1):
+                        return 0
+                    if self.phase == 0:
+                        slot = _region_state_slot(mba)
+                        routing = _region_routing(mba, slot)
+                        writers = _region_writers(mba, slot)
+                        term = _terminal_serial(mba)
+                        head = routing.get(STATE_K2)
+                        tail = routing.get(STATE_RT)
+                        paths = list(writers.get(STATE_K2, []))      # [A, B]
+                        ent_h = routing.get(STATE_KENTRY)            # entry handler
+                        if not (head and tail and ent_h and len(paths) >= 2
+                                and term >= 0):
+                            return 0
+                        hblk = mba.get_mblock(head)
+                        if hblk.type != ida_hexrays.BLT_2WAY or hblk.tail is None:
+                            return 0
+                        succ_counter: Counter = Counter()
+                        for blist in writers.values():
+                            for b in blist:
+                                for s in mba.get_mblock(b).succset:
+                                    succ_counter[int(s)] += 1
+                        disp = succ_counter.most_common(1)[0][0]
+                        # Which arm of the head jcc leads to the tail (writes RT)?
+                        taken = int(hblk.tail.d.b) if (hblk.tail.d is not None
+                                  and hblk.tail.d.t == ida_hexrays.mop_b) else -1
+                        taken_to_tail = self._writes(mba, taken, STATE_RT, slot)
+                        cond_t, ft = (tail, term) if taken_to_tail else (term, tail)
+                        # Record the tail's instruction EAs to re-find it in pass 1.
+                        tb = mba.get_mblock(tail)
+                        eas = []
+                        ins = tb.head
+                        while ins is not None:
+                            eas.append(int(ins.ea))
+                            ins = ins.next
+                        self.tail_eas = eas
+                        self.dbg0 = dict(slot=slot, head=head, tail=tail, paths=paths,
+                                         ent_h=ent_h, disp=disp, term=term,
+                                         taken=taken, taken_to_tail=taken_to_tail,
+                                         cond_t=cond_t, ft=ft,
+                                         ent_writers={hex(k): v for k, v in writers.items()})
+                        self.phase = 1
+                        mod = DeferredGraphModifier(mba)
+                        # Drain the entry: entry-state writer -> entry handler, and
+                        # the entry handler's arms -> A / B.
+                        for k in (STATE_KENTRY, STATE_K0, STATE_K1):
+                            tgt = routing.get(k)
+                            if tgt is None:
+                                continue
+                            for w in writers.get(k, []):
+                                if disp in [int(s) for s in mba.get_mblock(w).succset]:
+                                    mod.queue_create_and_redirect(
+                                        w, tgt, [], old_target_serial=disp)
+                        # Clone the region HEAD (conditional) per path A, B.
+                        for P in paths[:2]:
+                            mod.queue_create_conditional_redirect(
+                                source_blk_serial=P, ref_blk_serial=head,
+                                conditional_target_serial=cond_t,
+                                fallthrough_target_serial=ft,
+                                old_target_serial=disp)
+                        mod.coalesce()
+                        self.applied0 = mod.apply(run_optimize_local=True)
+                        return self.applied0
+                    if self.phase == 1:
+                        self.phase = 2
+                        # Re-find the tail by EA overlap (serials shifted).
+                        best, best_ov = -1, 0
+                        for i in range(mba.qty):
+                            b = mba.get_mblock(i)
+                            ins = b.head if b else None
+                            ov = 0
+                            while ins is not None:
+                                if int(ins.ea) in (self.tail_eas or ()):
+                                    ov += 1
+                                ins = ins.next
+                            if ov > best_ov:
+                                best, best_ov = i, ov
+                        term = _terminal_serial(mba)
+                        if best < 0 or term < 0:
+                            self.dbg1 = ("no tail re-found", best, best_ov)
+                            return 0
+                        tblk = mba.get_mblock(best)
+                        preds = [int(p) for p in tblk.predset]
+                        payload = _capture_state_free(tblk)
+                        self.dbg1 = dict(tail=best, ov=best_ov, preds=preds,
+                                         payload=[x.dstr() for x in payload], term=term)
+                        if len(preds) < 2:
+                            return 0
+                        mod = DeferredGraphModifier(mba)
+                        for P in preds:
+                            mod.queue_create_and_redirect(
+                                P, term, list(payload), old_target_serial=best)
+                        mod.coalesce()
+                        self.applied1 = mod.apply(run_optimize_local=True)
+                        return self.applied1
+                    return 0
+                except Exception as exc:  # noqa: BLE001
+                    self.error = repr(exc)
+                    return 0
+
+        opt = _RegionDeshareOptblock()
+        opt.install()
+        hf = ida_hexrays.hexrays_failure_t()
+        try:
+            ida_hexrays.mark_cfunc_dirty(ea)
+            cfunc = ida_hexrays.decompile(ea, hf)
+        finally:
+            opt.remove()
+        print(f"\n=== region de-share (applied0={opt.applied0} applied1={opt.applied1} "
+              f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ===")
+        print(f"  dbg0={opt.dbg0}")
+        print(f"  dbg1={opt.dbg1}")
+        if cfunc is not None:
+            print(str(cfunc))
+        print("=== end region de-share ===")
+        # First-run diagnostic asserts (loosen/tighten after observing the render).
+        assert opt.error is None, f"optblock error: {opt.error}"
+        assert cfunc is not None, f"decompile failed: {hf.code} {hf.desc()!r}"
+        text = str(cfunc)
+        up = text.upper()
+        # Per-path duplication: outer entry branch + the region's internal
+        # (token&2) branch DUPLICATED into both arms. (The head's `-0x22` folds in
+        # the token&1 arm -- token+0x18-0x22 = token-0xA -- so witness the region's
+        # internal branch + tail work, which don't fold, appearing TWICE.)
+        assert "& 1" in text, f"entry (token&1) branch missing:\n{text}"
+        assert len(re.findall(r"token & 2", text)) >= 2, (
+            f"region internal branch not duplicated per path (expected >=2):\n{text}")
+        # The region tail work (^0x33) duplicated into both paths.
+        assert up.count("0X33") >= 2, f"tail not de-shared (expected >=2 0x33):\n{text}"
+        # No state constants survive, no dispatcher loop.
+        for k in (STATE_KENTRY, STATE_K0, STATE_K1, STATE_K2, STATE_RT):
+            assert f"{k:X}" not in up, f"state const {k:#x} survived:\n{text}"
+        assert "WHILE" not in up and "FOR (" not in up, f"loop survived:\n{text}"
