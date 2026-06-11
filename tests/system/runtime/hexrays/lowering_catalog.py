@@ -234,6 +234,99 @@ def lower_dispatch_drain(mod: DeferredGraphModifier, plan: DispatchDrainPlan) ->
     return len(plan.redirects)
 
 
+# ---- ConditionalSynthesize: build a 2-way from a recovered predicate ----
+@dataclass(frozen=True)
+class ConditionalSynthPlan:
+    """Synthesize a branch where the flattener encoded the next-state choice
+    BRANCHLESSLY (a mask select, no jcc). ``condition`` is the recovered predicate
+    mop; the handler ``source`` is lowered into ``if (condition) -> true_target
+    else -> false_target``. ``drain`` carries the DispatchDrain redirects for the
+    rest of the dispatcher -- so this plan COMPOSES the synthesize + drain
+    primitives."""
+
+    source: int
+    old_dispatcher: int
+    rewrite_ea: int
+    condition: object
+    true_target: int
+    false_target: int
+    drain: tuple = ()
+
+
+def _find_low_bit_predicate(mop):
+    """DFS a mop tree for an ``& #1`` sub-instruction (the low-bit predicate) and
+    return a CLONED mop wrapping it -- recovering ``(token & 1)`` live from the
+    branchless m_or select so it can be reused as the synthesized jcnd condition."""
+    if mop is None:
+        return None
+    if int(getattr(mop, "t", -1)) == ida_hexrays.mop_d and mop.d is not None:
+        ins = mop.d
+        if (int(ins.opcode) == ida_hexrays.m_and and ins.r is not None
+                and ins.r.t == ida_hexrays.mop_n
+                and (int(ins.r.nnn.value) & 0xFFFFFFFF) == 1):
+            cloned = ida_hexrays.mop_t()
+            cloned.assign(mop)
+            return cloned
+        for sub in (ins.l, ins.r, ins.d):
+            got = _find_low_bit_predicate(sub)
+            if got is not None:
+                return got
+    return None
+
+
+def recover_branchless(mba, consts=LAB_STATE_CONSTS):
+    """Front-end: recover a ConditionalSynthPlan from a branchless next-state
+    select. The select survives to GLBOPT1 as one ``m_or`` in the K0 handler;
+    recover the ``(token&1)`` predicate live from it, plus the drain for the
+    entry + the two arms."""
+    slot = _state_slot(mba, consts)
+    if slot is None:
+        return None
+    writers = _state_writers(mba, slot, consts)
+    routing = _jz_routing(mba, consts)
+    term = _terminal(mba)
+    if not (STATE_K0 in routing and STATE_K1 in routing and STATE_K2 in routing
+            and term >= 0 and STATE_K0 in writers):
+        return None
+    h0, h1, h2 = routing[STATE_K0], routing[STATE_K1], routing[STATE_K2]
+    entry = writers[STATE_K0][0]
+    h0blk = mba.get_mblock(h0)
+    if h0blk.nsucc() != 1:
+        return None
+    disp = int(h0blk.succset[0])
+    or_ea, cond = None, None
+    ins = h0blk.head
+    while ins is not None:
+        if (int(ins.opcode) == ida_hexrays.m_or and ins.d is not None
+                and re.sub(r"\{[^}]*\}", "", ins.d.dstr()) == slot):
+            or_ea = int(ins.ea)
+            for sub in (ins.l, ins.r):
+                cond = cond or _find_low_bit_predicate(sub)
+        ins = ins.next
+    if or_ea is None or cond is None:
+        return None
+    drain = ((entry, h0, disp), (h1, term, disp), (h2, term, disp))
+    return ConditionalSynthPlan(h0, disp, or_ea, cond, h1, h2, drain)
+
+
+def lower_conditional_synthesize(mod: DeferredGraphModifier,
+                                 plan: ConditionalSynthPlan) -> int:
+    """LOWERING PRIMITIVE. Build the 2-way from the recovered predicate
+    (``queue_lower_conditional_state_transition`` -> ``m_jnz cond,0 -> true``),
+    and drain the rest of the dispatcher. Composes synthesize + DispatchDrain."""
+    for src, tgt, old in plan.drain:
+        mod.queue_create_and_redirect(src, tgt, [], old_target_serial=old)
+    mod.queue_lower_conditional_state_transition(
+        source_serial=plan.source,
+        old_dispatcher_serial=plan.old_dispatcher,
+        rewrite_from_ea=plan.rewrite_ea,
+        condition_operand=plan.condition,
+        false_target_serial=plan.false_target,
+        true_target_serial=plan.true_target,
+    )
+    return len(plan.drain) + 1
+
+
 # =====================================================================
 # Oracle harness: prove a lowering lowers to the EXPECTED (compiled-source) render.
 # =====================================================================
@@ -354,12 +447,13 @@ def _skeleton(body: str) -> str:
     return " ".join(out)
 
 
-_OP_RE = re.compile(r"([-+^&|*]|<<|>>)\s*(0x[0-9a-fA-F]+|\d+)")
+_OP_RE = re.compile(r"([-+^&|*]|<<|>>)=?\s*(0x[0-9a-fA-F]+|\d+)")
 
 
 def _ops(body: str) -> frozenset:
     """The SET of arithmetic operations ``(operator, constant)`` -- the handler
-    work, independent of how many times / where Hex-Rays materializes it."""
+    work, independent of how many times / where Hex-Rays materializes it. Captures
+    both binary (`a + 0x11`) and compound-assign (`a ^= 0x33`) forms."""
     return frozenset((op, int(v, 0)) for op, v in _OP_RE.findall(body))
 
 
@@ -371,7 +465,19 @@ def semantic_signature(text: str):
     lo, hi = text.find("{"), text.rfind("}")
     body = text[lo + 1:hi] if (lo >= 0 and hi > lo) else text
     body = _COMMENT_RE.sub("", body)
-    return (_skeleton(body), _ops(body))
+    skel = _skeleton(body)
+    # DSE: drop dead intermediate sink stores (a sink store is dead if a later
+    # sink store follows with only local-var assignments between -- no sink read).
+    # Otherwise a store Hex-Rays eliminated in the sibling adds a phantom op (its
+    # intermediate value) that the surviving-store side doesn't have.
+    dse = _WS_RE.sub(" ", body)
+    prev = None
+    while prev != dse:
+        prev = dse
+        dse = re.sub(
+            re.escape(_SINK) + r" = [^;]*;\s*(?=(?:[av]\d+ = [^;]*;\s*)*"
+            + re.escape(_SINK) + r" = )", "", dse)
+    return (skel, _ops(dse))
 
 
 def render_reference(ea) -> str:
@@ -416,3 +522,150 @@ def apply_lowering_and_render(flat_ea, recover_fn, lower_fn=lower_dispatch_drain
         opt.remove()
     text = str(cfunc) if cfunc is not None else ""
     return text, box["applied"], box["error"]
+
+
+# =====================================================================
+# RegionDeshare: duplicate a multi-block region (head + tail, internal branch)
+# per path. Inherently TWO passes (clone the conditional head, then de-share the
+# now-multi-pred tail), so it has its own driver rather than the single-pass
+# recover/lower split. P3 (single-block de-share) is the degenerate case.
+# =====================================================================
+_CONTROL_OPS = frozenset({
+    ida_hexrays.m_goto, ida_hexrays.m_jcnd,
+    ida_hexrays.m_jnz, ida_hexrays.m_jz,
+    ida_hexrays.m_jae, ida_hexrays.m_jb, ida_hexrays.m_ja, ida_hexrays.m_jbe,
+    ida_hexrays.m_jg, ida_hexrays.m_jge, ida_hexrays.m_jl, ida_hexrays.m_jle,
+})
+
+
+def _capture_state_free(blk):
+    """blk's live instructions with ALL state-const writes (any slot) and ALL
+    control-flow removed -- the state-free payload to copy into private blocks."""
+    insns = []
+    ins = blk.head
+    while ins is not None:
+        op = int(ins.opcode)
+        is_state_write = (op == ida_hexrays.m_mov and ins.l is not None
+                          and ins.l.t == ida_hexrays.mop_n
+                          and (int(ins.l.nnn.value) & 0xFFFFFFFF) in LAB_STATE_CONSTS)
+        if not is_state_write and op not in _CONTROL_OPS:
+            insns.append(ins)
+        ins = ins.next
+    return insns
+
+
+def _block_writes_value(mba, serial, value, slot):
+    blk = mba.get_mblock(serial)
+    ins = blk.head if blk else None
+    while ins is not None:
+        if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
+                and ins.l.t == ida_hexrays.mop_n and ins.d is not None
+                and ins.d.dstr() == slot
+                and (int(ins.l.nnn.value) & 0xFFFFFFFF) == value):
+            return True
+        ins = ins.next
+    return False
+
+
+def apply_region_deshare_and_render(flat_ea):
+    """RegionDeshare lowering primitive (2-pass). Pass 0: drain the entry AND
+    clone the region HEAD (conditional) per path via create_conditional_redirect
+    (jcc sense resolved by which head arm writes the tail state RT). Pass 1:
+    de-share the now-multi-pred TAIL P3-style (re-found across the pass-0 serial
+    shift by instruction-EA overlap). Returns (render, applied0, applied1, error)."""
+    box = {"phase": 0, "a0": 0, "a1": 0, "error": None, "tail_eas": None}
+
+    class _Opt(ida_hexrays.optblock_t):
+        def func(self, blk):
+            try:
+                mba = blk.mba
+                if mba is None or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1):
+                    return 0
+                if box["phase"] == 0:
+                    slot = _state_slot(mba)
+                    if slot is None:
+                        return 0
+                    writers = _state_writers(mba, slot)
+                    routing = _jz_routing(mba)
+                    term = _terminal(mba)
+                    head = routing.get(STATE_K2)
+                    tail = routing.get(STATE_RT)
+                    paths = list(writers.get(STATE_K2, []))
+                    ent_h = routing.get(STATE_KENTRY)
+                    if not (head and tail and ent_h and len(paths) >= 2 and term >= 0):
+                        return 0
+                    hblk = mba.get_mblock(head)
+                    if hblk.type != ida_hexrays.BLT_2WAY or hblk.tail is None:
+                        return 0
+                    disp = _mode_dispatcher(mba, writers)
+                    taken = int(hblk.tail.d.b) if (hblk.tail.d is not None
+                              and hblk.tail.d.t == ida_hexrays.mop_b) else -1
+                    taken_to_tail = _block_writes_value(mba, taken, STATE_RT, slot)
+                    cond_t, ft = (tail, term) if taken_to_tail else (term, tail)
+                    tb = mba.get_mblock(tail)
+                    eas, ins = [], tb.head
+                    while ins is not None:
+                        eas.append(int(ins.ea))
+                        ins = ins.next
+                    box["tail_eas"] = eas
+                    box["phase"] = 1
+                    mod = DeferredGraphModifier(mba)
+                    for k in (STATE_KENTRY, STATE_K0, STATE_K1):
+                        tgt = routing.get(k)
+                        if tgt is None:
+                            continue
+                        for w in writers.get(k, []):
+                            if disp in [int(s) for s in mba.get_mblock(w).succset]:
+                                mod.queue_create_and_redirect(
+                                    w, tgt, [], old_target_serial=disp)
+                    for P in paths[:2]:
+                        mod.queue_create_conditional_redirect(
+                            source_blk_serial=P, ref_blk_serial=head,
+                            conditional_target_serial=cond_t,
+                            fallthrough_target_serial=ft,
+                            old_target_serial=disp)
+                    mod.coalesce()
+                    box["a0"] = mod.apply(run_optimize_local=True)
+                    return box["a0"]
+                if box["phase"] == 1:
+                    box["phase"] = 2
+                    best, best_ov = -1, 0
+                    for i in range(mba.qty):
+                        b = mba.get_mblock(i)
+                        ins, ov = (b.head if b else None), 0
+                        while ins is not None:
+                            if int(ins.ea) in (box["tail_eas"] or ()):
+                                ov += 1
+                            ins = ins.next
+                        if ov > best_ov:
+                            best, best_ov = i, ov
+                    term = _terminal(mba)
+                    if best < 0 or term < 0:
+                        return 0
+                    tblk = mba.get_mblock(best)
+                    preds = [int(p) for p in tblk.predset]
+                    payload = _capture_state_free(tblk)
+                    if len(preds) < 2:
+                        return 0
+                    mod = DeferredGraphModifier(mba)
+                    for P in preds:
+                        mod.queue_create_and_redirect(
+                            P, term, list(payload), old_target_serial=best)
+                    mod.coalesce()
+                    box["a1"] = mod.apply(run_optimize_local=True)
+                    return box["a1"]
+                return 0
+            except Exception as exc:  # noqa: BLE001
+                box["error"] = repr(exc)
+                return 0
+
+    opt = _Opt()
+    opt.install()
+    hf = ida_hexrays.hexrays_failure_t()
+    try:
+        ida_hexrays.mark_cfunc_dirty(flat_ea)
+        cfunc = ida_hexrays.decompile(flat_ea, hf)
+    finally:
+        opt.remove()
+    text = str(cfunc) if cfunc is not None else ""
+    return text, box["a0"], box["a1"], box["error"]
