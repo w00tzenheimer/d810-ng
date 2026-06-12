@@ -9,6 +9,7 @@ from d810.transforms.reconstruction_bridge_planning import (
     ReconstructionPreheaderBridgeResult,
     collect_reconstruction_claims,
     collect_suppressed_bridge_pairs,
+    _resolve_exact_then_interval,
     plan_fixpoint_feeder_modifications,
     plan_reconstruction_bridge_modifications,
     plan_reconstruction_feeder_modifications,
@@ -43,6 +44,8 @@ def _fixpoint_claimed_sources(
     state_var_stkoff: int | None,
     claimed_sources: set[int],
     planned_modifications: list,
+    exact_dispatcher_map=None,
+    pinned_claimed_sources: set[int] | None = None,
 ) -> set[int]:
     """Return the source claims that should block fixpoint feeder rewrites.
 
@@ -68,7 +71,12 @@ def _fixpoint_claimed_sources(
     bst_set = {int(dispatcher_serial)}
     bst_set.update(int(block) for block in bst_node_blocks)
 
+    pinned_sources = {
+        int(source) for source in (pinned_claimed_sources or set())
+    }
     for source in tuple(sorted(fixpoint_claimed)):
+        if source in pinned_sources:
+            continue
         projected_block = (
             projected_flow_graph.get_block(source)
             if projected_flow_graph is not None
@@ -84,7 +92,11 @@ def _fixpoint_claimed_sources(
         state_val = out_map.get(state_var_stkoff)
         if state_val is None:
             continue
-        resolved = dispatcher.lookup(state_val)
+        resolved = _resolve_exact_then_interval(
+            int(state_val),
+            exact_dispatcher_map=exact_dispatcher_map,
+            dispatcher=dispatcher,
+        )
         if resolved is None or int(resolved) in bst_set or int(resolved) == source:
             continue
 
@@ -108,7 +120,11 @@ def _fixpoint_claimed_sources(
         state_val = out_map.get(state_var_stkoff)
         if state_val is None:
             continue
-        resolved = dispatcher.lookup(state_val)
+        resolved = _resolve_exact_then_interval(
+            int(state_val),
+            exact_dispatcher_map=exact_dispatcher_map,
+            dispatcher=dispatcher,
+        )
         if resolved is None or int(resolved) in bst_set:
             continue
 
@@ -141,6 +157,7 @@ def plan_reconstruction_postprocess_modifications(
     common_return_corridor: set[int],
     node_by_key,
     fixpoint_redirect_veto=None,
+    exact_dispatcher_map=None,
 ) -> ReconstructionPostprocessPlanningResult:
     bst_set = {int(dispatcher_serial)}
     bst_set.update(int(block) for block in bst_node_blocks)
@@ -162,7 +179,32 @@ def plan_reconstruction_postprocess_modifications(
         planned_modifications,
         owned_blocks=owned_blocks,
     )
+    base_claimed_sources = set(claimed_sources)
+    base_claimed_targets = set(claimed_targets)
     suppressed_bridge_pairs = collect_suppressed_bridge_pairs(rejected_metadata)
+
+    # Return anchors must be planned before bridge/feeder/fixpoint phases flood
+    # the shared source-claim set.  Otherwise the real terminal route is skipped
+    # as ``anchor_claimed`` and the reconstructed CFG has no exit.
+    early_return_plan = plan_reconstruction_return_modifications(
+        dag=dag,
+        flow_graph=flow_graph,
+        builder=builder,
+        claimed_sources=set(),
+        dispatcher_serial=dispatcher_serial,
+        bst_node_blocks=bst_set,
+        common_return_corridor=common_return_corridor,
+        artifact_return_blocks=artifact_return_blocks,
+        node_by_key=node_by_key,
+    )
+    return_claimed_sources, _return_claimed_targets = collect_mod_claims(
+        list(early_return_plan.modifications)
+    )
+    pinned_return_claimed_sources = set(early_return_plan.claimed_sources)
+    claimed_sources = (
+        base_claimed_sources - set(return_claimed_sources)
+    ) | set(early_return_plan.claimed_sources)
+    claimed_targets = set(base_claimed_targets)
 
     bridge_plan = plan_reconstruction_bridge_modifications(
         dag=dag,
@@ -210,6 +252,8 @@ def plan_reconstruction_postprocess_modifications(
         state_var_stkoff=state_var_stkoff,
         claimed_sources=set(mod_claimed_sources) | set(claimed_sources),
         planned_modifications=post_feeder_modifications,
+        exact_dispatcher_map=exact_dispatcher_map,
+        pinned_claimed_sources=pinned_return_claimed_sources,
     )
 
     fixpoint_feeder_plan = plan_fixpoint_feeder_modifications(
@@ -221,22 +265,15 @@ def plan_reconstruction_postprocess_modifications(
         constant_result=constant_result,
         state_var_stkoff=state_var_stkoff,
         dispatcher=dispatcher,
+        exact_dispatcher_map=exact_dispatcher_map,
         redirect_veto=fixpoint_redirect_veto,
     )
     claimed_sources = set(fixpoint_feeder_plan.claimed_sources)
 
-    return_plan = plan_reconstruction_return_modifications(
-        dag=dag,
-        flow_graph=flow_graph,
-        builder=builder,
-        claimed_sources=claimed_sources,
-        dispatcher_serial=dispatcher_serial,
-        bst_node_blocks=bst_set,
-        common_return_corridor=common_return_corridor,
-        artifact_return_blocks=artifact_return_blocks,
-        node_by_key=node_by_key,
-    )
-    claimed_sources = set(return_plan.claimed_sources)
+    # The anchors were already wired and claimed up front; re-running the planner
+    # now would re-skip them as ``anchor_claimed``.
+    return_plan = early_return_plan
+    claimed_sources |= set(early_return_plan.claimed_sources)
 
     return ReconstructionPostprocessPlanningResult(
         preheader_bridge=preheader_bridge,

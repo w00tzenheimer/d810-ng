@@ -8,7 +8,7 @@
 # The executor may SKIP a fragment only via:
 #   - Safeguard gate failure (insufficient modifications for handler count)
 #   - Backend precondition filter (individual edge-split failures)
-#   - Preflight rejection (structural legality, terminal cycles)
+#   - Preflight rejection (structural legality, terminal cycles, entry collapse)
 #   - Transaction engine failure (lowering/apply errors)
 #   - Semantic gate failure (reachability, handler reachability, conflicts)
 #
@@ -38,9 +38,13 @@ from d810.transforms.edit_simulator import (
 )
 from d810.analyses.control_flow.graph_checks import (
     SemanticGate,
+    check_entry_reachability_counts_not_collapsed,
+    check_entry_reachability_not_collapsed,
+    check_terminal_reachability_preserved,
     check_edge_split_structural_legality,
     detect_terminal_cycles,
     prove_terminal_sink,
+    reachable_from_adjacency,
 )
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.loop_bound_writer_guard import (
@@ -110,6 +114,35 @@ executor_logger = logging.getLogger("D810.unflat.hodur.executor")
 # from `d810.hexrays.observability`) keeps the call sites stable across
 # that move.
 from d810.hexrays.observability import mba_to_block_snapshots as _mba_to_block_snapshots
+
+
+def _optional_int(value: object) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _max_optional_int(*values: int | None) -> int | None:
+    present = [int(value) for value in values if value is not None]
+    if not present:
+        return None
+    return max(present)
+
+
+def _reachable_count_from_block_snapshots(
+    blocks: object,
+    entry_serial: int,
+) -> int:
+    adj: dict[int, list[int]] = {}
+    for block in blocks or ():
+        try:
+            serial = int(getattr(block, "serial"))
+        except (TypeError, ValueError):
+            continue
+        succs = getattr(block, "succs", ()) or ()
+        adj[serial] = [int(succ) for succ in succs]
+    return len(reachable_from_adjacency(adj, int(entry_serial)))
 
 
 def _preflight_priority(mod: GraphModification) -> int:
@@ -270,8 +303,13 @@ class TransactionalExecutor:
             # Update cumulative CFG after successful application
             if result.success and result.edits_applied > 0:
                 try:
-                    # Lift post-apply state and use it as the new cumulative base
-                    post_cfg = self.translator.lift(self.mba)
+                    # Reuse the post-apply CFG already lifted by execute_stage.
+                    # A second backend lift can perturb Hex-Rays' live MBA at
+                    # cleanup maturities, so only fall back to lifting when the
+                    # stage did not provide a snapshot.
+                    post_cfg = result.metadata.get("_post_cfg")
+                    if not isinstance(post_cfg, FlowGraph):
+                        post_cfg = self.translator.lift(self.mba)
                     cumulative_cfg = post_cfg
                     executor_logger.info(
                         "Cumulative CFG updated after stage %s: %d blocks",
@@ -321,6 +359,18 @@ class TransactionalExecutor:
             execution_policy = ExecutionPolicy.STRICT
 
         pre_cfg = self.translator.lift(self.mba)
+        live_mba_pre_reachable_count: int | None = None
+        if fragment.strategy_name == "fake_jump":
+            try:
+                live_mba_pre_reachable_count = _reachable_count_from_block_snapshots(
+                    _mba_to_block_snapshots(self.mba),
+                    pre_cfg.entry_serial,
+                )
+            except Exception:
+                executor_logger.debug(
+                    "Failed to compute live MBA pre-reachability for fake_jump",
+                    exc_info=True,
+                )
 
         # Loop-counter writeback-tail guard.  Any RedirectGoto whose
         # ``old_target`` is the writeback-tail block of a loop-carried
@@ -527,6 +577,7 @@ class TransactionalExecutor:
             pre_cfg,
             modifications,
             patch_plan_preview,
+            live_mba_pre_reachable_count=live_mba_pre_reachable_count,
         )
         if cycle_removed:
             gate_accounting = gate_accounting.with_cycle_filter(cycle_removed)
@@ -687,6 +738,49 @@ class TransactionalExecutor:
             handler_reachability,
         )
 
+        terminal_reachability = check_terminal_reachability_preserved(
+            pre_cfg,
+            post_cfg=post_cfg,
+        )
+        entry_reachability = None
+        if fragment.strategy_name == "fake_jump":
+            entry_reachability = check_entry_reachability_not_collapsed(
+                pre_cfg,
+                post_cfg=post_cfg,
+            )
+            planner_entry_count = _optional_int(
+                fragment.metadata.get("planner_entry_reachable_count")
+            )
+            baseline_entry_count = _max_optional_int(
+                planner_entry_count,
+                live_mba_pre_reachable_count,
+            )
+            if baseline_entry_count is not None:
+                entry_reachability = check_entry_reachability_counts_not_collapsed(
+                    pre_reachable_count=baseline_entry_count,
+                    post_reachable_count=entry_reachability.post_reachable_count,
+                    min_retained_ratio=entry_reachability.min_retained_ratio,
+                )
+        if not terminal_reachability.passed:
+            executor_logger.warning(
+                "Stage %s orphaned terminal route(s): pre_terminals=%s "
+                "post_terminals=%s pre_reachable=%d post_reachable=%d",
+                fragment.strategy_name,
+                sorted(terminal_reachability.pre_reachable_terminals),
+                sorted(terminal_reachability.post_reachable_terminals),
+                terminal_reachability.pre_reachable_count,
+                terminal_reachability.post_reachable_count,
+            )
+        if entry_reachability is not None and not entry_reachability.passed:
+            executor_logger.warning(
+                "Stage fake_jump collapsed entry reachability: "
+                "pre_reachable=%d post_reachable=%d retained=%.2f min=%.2f",
+                entry_reachability.pre_reachable_count,
+                entry_reachability.post_reachable_count,
+                entry_reachability.retained_ratio,
+                entry_reachability.min_retained_ratio,
+            )
+
         adj = post_cfg.as_adjacency_dict()
         terminal_exits: set[int] = set(
             fragment.metadata.get("terminal_exit_blocks", set())
@@ -719,6 +813,10 @@ class TransactionalExecutor:
             result.metadata["cycle_filter"] = cycle_removed
         if backend_removed:
             result.metadata["backend_filter"] = backend_removed
+        result.metadata["terminal_reachability"] = terminal_reachability
+        result.metadata["_post_cfg"] = post_cfg
+        if entry_reachability is not None:
+            result.metadata["entry_reachability"] = entry_reachability
 
         # --- Terminal return audit (diagnostic, never gates success) ---
         self._run_terminal_return_audit(fragment, pre_cfg, result)
@@ -735,6 +833,44 @@ class TransactionalExecutor:
                 ),
             )
         )
+        gate_accounting = gate_accounting.add(
+            GateDecision(
+                gate_name="terminal_reachability",
+                verdict=(
+                    GateVerdict.PASSED
+                    if terminal_reachability.passed
+                    else GateVerdict.FAILED
+                ),
+                reason=(
+                    "pre_terminals=%s post_terminals=%s"
+                    % (
+                        sorted(terminal_reachability.pre_reachable_terminals),
+                        sorted(terminal_reachability.post_reachable_terminals),
+                    )
+                ),
+            )
+        )
+        gate_ok = gate_ok and terminal_reachability.passed
+        if entry_reachability is not None:
+            gate_accounting = gate_accounting.add(
+                GateDecision(
+                    gate_name="fake_jump_entry_reachability",
+                    verdict=(
+                        GateVerdict.PASSED
+                        if entry_reachability.passed
+                        else GateVerdict.FAILED
+                    ),
+                    reason=(
+                        "pre_reachable=%d post_reachable=%d retained=%.2f"
+                        % (
+                            entry_reachability.pre_reachable_count,
+                            entry_reachability.post_reachable_count,
+                            entry_reachability.retained_ratio,
+                        )
+                    ),
+                )
+            )
+            gate_ok = gate_ok and entry_reachability.passed
 
         if isinstance(self.gate, VerificationGate):
             flow_ok = self.gate.check_flow_graph(
@@ -761,7 +897,13 @@ class TransactionalExecutor:
         if not gate_ok:
             result.rollback_needed = True
             result.success = False
-            result.error = "semantic gate failed"
+            result.error = (
+                "terminal reachability gate failed"
+                if not terminal_reachability.passed
+                else "fake_jump entry reachability gate failed"
+                if entry_reachability is not None and not entry_reachability.passed
+                else "semantic gate failed"
+            )
             result.failure_phase = "semantic_gate"
             executor_logger.warning(
                 "Stage %s failed semantic gate: terminal_cycles=%d, conflict_count=%d",
@@ -1043,6 +1185,8 @@ class TransactionalExecutor:
         pre_cfg: FlowGraph,
         modifications: list[GraphModification],
         patch_plan: PatchPlan,
+        *,
+        live_mba_pre_reachable_count: int | None = None,
     ) -> tuple[list[GraphModification], PatchPlan, StageResult | None, int]:
         """Run preflight checks and cycle filtering.
 
@@ -1089,6 +1233,80 @@ class TransactionalExecutor:
             len(simulated_edits),
             kind_summary,
         )
+        terminal_reachability = check_terminal_reachability_preserved(
+            pre_cfg,
+            post_adj=sim_adj,
+        )
+        if not terminal_reachability.passed:
+            executor_logger.warning(
+                "Preflight REJECT: terminal route reachability regressed: "
+                "pre_terminals=%s post_terminals=%s pre_reachable=%d "
+                "post_reachable=%d",
+                sorted(terminal_reachability.pre_reachable_terminals),
+                sorted(terminal_reachability.post_reachable_terminals),
+                terminal_reachability.pre_reachable_count,
+                terminal_reachability.post_reachable_count,
+            )
+            result = StageResult(
+                strategy_name=fragment.strategy_name,
+                success=False,
+                error=f"semantic preflight: {terminal_reachability.reason}",
+                failure_phase="preflight",
+            )
+            result.metadata["terminal_reachability"] = terminal_reachability
+            return modifications, patch_plan, result, 0
+
+        if fragment.strategy_name == "fake_jump":
+            entry_reachability = check_entry_reachability_not_collapsed(
+                pre_cfg,
+                post_adj=sim_adj,
+            )
+            planner_entry_count = _optional_int(
+                fragment.metadata.get("planner_entry_reachable_count")
+            )
+            baseline_entry_count = _max_optional_int(
+                planner_entry_count,
+                live_mba_pre_reachable_count,
+            )
+            if baseline_entry_count is not None:
+                planner_entry_serial = _optional_int(
+                    fragment.metadata.get("planner_entry_serial")
+                )
+                if planner_entry_serial is None:
+                    planner_entry_serial = pre_cfg.entry_serial
+                post_reachable_count = len(
+                    reachable_from_adjacency(sim_adj, planner_entry_serial)
+                )
+                entry_reachability = check_entry_reachability_counts_not_collapsed(
+                    pre_reachable_count=baseline_entry_count,
+                    post_reachable_count=post_reachable_count,
+                    min_retained_ratio=entry_reachability.min_retained_ratio,
+                )
+            executor_logger.info(
+                "Preflight fake_jump entry reachability: planner_pre=%s "
+                "live_mba_pre=%s post=%d retained=%.2f",
+                planner_entry_count,
+                live_mba_pre_reachable_count,
+                entry_reachability.post_reachable_count,
+                entry_reachability.retained_ratio,
+            )
+            if not entry_reachability.passed:
+                executor_logger.warning(
+                    "Preflight REJECT: fake_jump would collapse entry reachability: "
+                    "pre_reachable=%d post_reachable=%d retained=%.2f min=%.2f",
+                    entry_reachability.pre_reachable_count,
+                    entry_reachability.post_reachable_count,
+                    entry_reachability.retained_ratio,
+                    entry_reachability.min_retained_ratio,
+                )
+                result = StageResult(
+                    strategy_name=fragment.strategy_name,
+                    success=False,
+                    error="semantic preflight: fake_jump entry reachability collapse",
+                    failure_phase="preflight",
+                )
+                result.metadata["entry_reachability"] = entry_reachability
+                return modifications, patch_plan, result, 0
 
         terminal_exits = set(fragment.metadata.get("terminal_exit_blocks", set()))
         handler_entries = set(fragment.metadata.get("handler_entry_serials", set()))

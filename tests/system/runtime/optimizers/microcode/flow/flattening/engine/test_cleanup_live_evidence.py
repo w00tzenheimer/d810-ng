@@ -125,15 +125,27 @@ def test_fake_jump_resolves_direct_branch_arm_assignment(monkeypatch) -> None:
     fake_block = _FakeBlock(28, (29, 31), (26,), fake_tail)
     fallthrough = _FakeBlock(
         29,
-        (),
+        (40,),
         (28,),
         _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=29)),
     )
     taken = _FakeBlock(
         31,
-        (),
+        (40,),
         (28,),
         _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=31)),
+    )
+    join = _FakeBlock(
+        40,
+        (41,),
+        (29, 31),
+        _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=41)),
+    )
+    exit_block = _FakeBlock(
+        41,
+        (41,),
+        (40,),
+        _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=41)),
     )
     fake_block.nextb = fallthrough
 
@@ -156,7 +168,7 @@ def test_fake_jump_resolves_direct_branch_arm_assignment(monkeypatch) -> None:
         (26,),
         _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=28)),
     )
-    _FakeMba(branch_pred, sibling, fake_block, fallthrough, taken)
+    _FakeMba(branch_pred, sibling, fake_block, fallthrough, taken, join, exit_block)
 
     class _MixedTracker:
         def __init__(self, *_args, **_kwargs) -> None:
@@ -182,6 +194,77 @@ def test_fake_jump_resolves_direct_branch_arm_assignment(monkeypatch) -> None:
     assert collect_live_fake_jump_block_fixes(fake_block) == (
         FakeJumpPredFix(fake_block=28, pred_block=26, new_target=29),
     )
+
+
+def test_fake_jump_preserves_dynamic_loop_carrier_guard(monkeypatch) -> None:
+    counter = _reg("counter")
+
+    guard_tail = _FakeInsn(
+        ida_hexrays.m_jb,
+        left=counter,
+        right=_num(0x64),
+        dest=SimpleNamespace(b=103),
+    )
+    guard = _FakeBlock(113, (114, 103), (37,), guard_tail)
+    fallthrough = _FakeBlock(
+        114,
+        (120,),
+        (113,),
+        _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=114)),
+    )
+    body = _FakeBlock(
+        103,
+        (120,),
+        (113,),
+        _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=103)),
+    )
+    join = _FakeBlock(
+        120,
+        (121,),
+        (103, 114),
+        _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=121)),
+    )
+    exit_block = _FakeBlock(
+        121,
+        (121,),
+        (120,),
+        _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=121)),
+    )
+    guard.nextb = fallthrough
+
+    dynamic_counter_update = _FakeInsn(
+        ida_hexrays.m_add,
+        left=counter,
+        right=_num(1),
+        dest=counter,
+    )
+    latch_tail = _FakeInsn(
+        ida_hexrays.m_goto,
+        dest=SimpleNamespace(b=113),
+        prev=dynamic_counter_update,
+    )
+    latch = _FakeBlock(37, (113,), (), latch_tail)
+    _FakeMba(latch, guard, fallthrough, body, join, exit_block)
+
+    class _ResolvedTracker:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def reset(self) -> None:
+            pass
+
+        def search_backward(self, *_args, **_kwargs) -> list[object]:
+            return [SimpleNamespace(is_resolved=lambda: True)]
+
+    monkeypatch.setattr(live_evidence_module.ida_hexrays, "mop_t", lambda mop: mop)
+    monkeypatch.setattr(live_evidence_module, "MopTracker", _ResolvedTracker)
+    monkeypatch.setattr(
+        live_evidence_module,
+        "get_all_possibles_values",
+        lambda _histories, _mops: [(1,)],
+    )
+
+    assert collect_live_fake_jump_block_fixes(guard) == ()
 
 
 def test_copied_carrier_jz_self_loop_produces_entry_redirect() -> None:

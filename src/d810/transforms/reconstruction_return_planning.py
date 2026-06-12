@@ -30,6 +30,18 @@ def _edge_kind_name(edge) -> str:
     return getattr(getattr(edge, "kind", None), "name", str(getattr(edge, "kind", None)))
 
 
+def _is_terminal_stop(flow_graph, serial: int) -> bool:
+    block = flow_graph.get_block(serial)
+    return block is not None and int(block.nsucc) == 0
+
+
+def _path_position(ordered: tuple[int, ...], serial: int) -> int | None:
+    try:
+        return ordered.index(int(serial))
+    except ValueError:
+        return None
+
+
 def plan_reconstruction_return_modifications(
     *,
     dag,
@@ -120,6 +132,17 @@ def plan_reconstruction_return_modifications(
                     old_target = int(from_block.succs[0])
                     if old_target == expected_next:
                         continue
+                    if _is_terminal_stop(flow_graph, old_target):
+                        log_entries.append(
+                            ReconstructionReturnLogEntry(
+                                source_block=from_serial,
+                                branch_arm=None,
+                                target_block=old_target,
+                                tag="terminal_stop_preserved",
+                            )
+                        )
+                        fallback_emitted = True
+                        break
                     return_mods.append(
                         builder.goto_redirect(
                             source_block=from_serial,
@@ -149,6 +172,17 @@ def plan_reconstruction_return_modifications(
                             continue
                         arm_target = int(from_block.succs[arm])
                         if arm_target == expected_next:
+                            fallback_emitted = True
+                            break
+                        if _is_terminal_stop(flow_graph, arm_target):
+                            log_entries.append(
+                                ReconstructionReturnLogEntry(
+                                    source_block=from_serial,
+                                    branch_arm=arm,
+                                    target_block=arm_target,
+                                    tag="terminal_stop_preserved",
+                                )
+                            )
                             fallback_emitted = True
                             break
                         return_mods.append(
@@ -211,6 +245,16 @@ def plan_reconstruction_return_modifications(
             old_target = int(anchor_block.succs[0])
             if old_target == suffix_entry_serial:
                 continue
+            if _is_terminal_stop(flow_graph, old_target):
+                log_entries.append(
+                    ReconstructionReturnLogEntry(
+                        source_block=anchor_serial,
+                        branch_arm=None,
+                        target_block=old_target,
+                        tag="terminal_stop_preserved",
+                    )
+                )
+                continue
             return_mods.append(
                 builder.goto_redirect(
                     source_block=anchor_serial,
@@ -236,6 +280,26 @@ def plan_reconstruction_return_modifications(
                 if anchor_serial == src_serial and src_arm is not None
                 else [0, 1]
             )
+            terminal_arm: int | None = None
+            terminal_target: int | None = None
+            for arm in check_arms:
+                if arm >= anchor_block.nsucc:
+                    continue
+                arm_target = int(anchor_block.succs[arm])
+                if _is_terminal_stop(flow_graph, arm_target):
+                    terminal_arm = arm
+                    terminal_target = arm_target
+                    break
+            if terminal_arm is not None and terminal_target is not None:
+                log_entries.append(
+                    ReconstructionReturnLogEntry(
+                        source_block=anchor_serial,
+                        branch_arm=terminal_arm,
+                        target_block=terminal_target,
+                        tag="terminal_stop_preserved",
+                    )
+                )
+                continue
             wired = False
             for arm in check_arms:
                 if arm >= anchor_block.nsucc:
@@ -252,6 +316,21 @@ def plan_reconstruction_return_modifications(
                         and arm_target in artifact_return_blocks
                         and arm_target not in claimed_sources
                     ):
+                        suffix_idx = _path_position(ordered, suffix_entry_serial)
+                        artifact_idx = _path_position(ordered, arm_target)
+                        if (
+                            suffix_idx is None
+                            or artifact_idx is None
+                            or suffix_idx <= artifact_idx
+                        ):
+                            skipped_entries.append(
+                                ReconstructionReturnSkipEntry(
+                                    source_block=arm_target,
+                                    reason="artifact_suffix_not_forward",
+                                )
+                            )
+                            wired = True
+                            break
                         artifact_old = int(artifact_blk.succs[0])
                         return_mods.append(
                             builder.goto_redirect(

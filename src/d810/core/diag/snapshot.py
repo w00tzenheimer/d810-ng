@@ -818,6 +818,56 @@ def snapshot_state_dispatcher_rows(
     conn.commit()
 
 
+def _load_bst_interval_rows(
+    conn: sqlite3.Connection, snapshot_id: int
+) -> list[tuple[int, int, int]]:
+    """Load ``(lo, hi_exclusive, target)`` BST interval rows for *snapshot_id*.
+
+    Returns the persisted ``bst_interval_dispatcher_rows`` (ticket llr-mra1) so
+    :func:`_route_via_interval_rows` can resolve an interior state the exact
+    ``state_dispatcher_rows`` map omits.  Empty when the table is absent (older
+    DBs) or the snapshot carries no interval evidence.
+    """
+    try:
+        rows = conn.execute(
+            """
+            SELECT lo_i64, hi_i64, target_block
+            FROM bst_interval_dispatcher_rows
+            WHERE snapshot_id=?
+            ORDER BY row_index
+            """,
+            (int(snapshot_id),),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    out: list[tuple[int, int, int]] = []
+    for lo, hi, target in rows:
+        if lo is None or hi is None or target is None:
+            continue
+        out.append((int(lo) & _MASK64, int(hi) & _MASK64, int(target)))
+    return out
+
+
+def _route_via_interval_rows(
+    interval_rows: list[tuple[int, int, int]],
+    state: int,
+    dispatcher_blocks: set[int],
+) -> int | None:
+    """Route *state* through the covering ``[lo, hi)`` BST range (ticket llr-mra1).
+
+    Returns the first interval row's target whose half-open ``[lo, hi)`` covers
+    *state* and whose target is a real handler (not a dispatcher/compare block);
+    ``None`` on a miss.  Mirrors ``IntervalDispatcher.lookup`` semantics so the
+    diagnostic resolver agrees with the live interval-aware emission router.
+    """
+    for lo, hi, target in interval_rows:
+        if lo <= state < hi:
+            if int(target) in dispatcher_blocks:
+                return None
+            return int(target)
+    return None
+
+
 def snapshot_state_transition_dispatch_resolutions_from_latest_facts(
     conn: sqlite3.Connection,
     snapshot_id: int,
@@ -882,6 +932,15 @@ def snapshot_state_transition_dispatch_resolutions_from_latest_facts(
     if not state_to_target:
         return 0
 
+    # Interval-interior fallback (ticket llr-mra1): a comparison BST routes a
+    # whole [lo, hi) span to one handler, so an interior state (e.g. Approov's
+    # 0xF6A1E in [0, 0xF6A1F) -> blk9) has NO exact ``state_dispatcher_rows``
+    # entry and resolves ``state_not_in_dispatcher_map`` even though the BST
+    # covers it.  Load the persisted ``bst_interval_dispatcher_rows`` so the
+    # diagnostic resolver can route an exact-row MISS through the covering range
+    # -- additive: it only fills states the exact map lacks but the BST covers.
+    interval_rows = _load_bst_interval_rows(conn, int(snapshot_id))
+
     write_lookup = _state_write_lookup_for_snapshot(conn, fact_snapshot_id)
     rows = []
     for fact_id, payload_json in conn.execute(
@@ -915,6 +974,15 @@ def snapshot_state_transition_dispatch_resolutions_from_latest_facts(
             )
         else:
             target_block = state_to_target.get(source_const & _MASK64)
+            resolved_via_interval = False
+            if target_block is None and interval_rows:
+                # Exact-row miss: route the interior state through the covering
+                # BST range (ticket llr-mra1).  ``resolved_exact_state`` becomes
+                # ``resolved_interval_state`` so the provenance is visible.
+                target_block = _route_via_interval_rows(
+                    interval_rows, source_const & _MASK64, dispatcher_blocks
+                )
+                resolved_via_interval = target_block is not None
             if target_block is None:
                 reason = "state_not_in_dispatcher_map"
             elif target_block in dispatcher_blocks:
@@ -927,7 +995,11 @@ def snapshot_state_transition_dispatch_resolutions_from_latest_facts(
                 if next_const is not None:
                     next_const &= _MASK64
                     next_const_hex = f"0x{next_const:016x}"
-                reason = "resolved_exact_state"
+                reason = (
+                    "resolved_interval_state"
+                    if resolved_via_interval
+                    else "resolved_exact_state"
+                )
         rows.append({
             "fact_id": str(fact_id),
             "source_block_serial": int(source_block),

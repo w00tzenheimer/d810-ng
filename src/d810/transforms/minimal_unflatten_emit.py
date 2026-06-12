@@ -25,6 +25,9 @@ emits ``GraphModification`` values compiled to a ``PatchPlan``.
 """
 from __future__ import annotations
 
+import re
+import hashlib
+
 from d810.analyses.control_flow.minimal_state_recovery import (
     HandlerTransition,
     StateWriteTransition,
@@ -38,7 +41,10 @@ from d810.transforms.graph_modification import (
     LowerConditionalStateTransition,
     RedirectBranch,
     RedirectGoto,
+    RetargetOutputStore,
+    ScalarizeLocalAliasAccess,
     SyntheticCounterBoundCondition,
+    ZeroStateWrite,
 )
 from d810.transforms.plan import PatchPlan, compile_patch_plan
 from d810.transforms.use_def_redirect_filter import (
@@ -54,6 +60,10 @@ __all__ = [
     "build_state_write_redirects",
     "build_conditional_arm_redirects",
     "build_folded_loop_guard_lowerings",
+    "build_ollvm_local_alias_scalarizations",
+    "build_ollvm_output_store_retargets",
+    "build_ollvm_loop_carrier_latch_redirects",
+    "build_ollvm_loop_carrier_guard_lowerings",
 ]
 
 
@@ -369,6 +379,960 @@ def _existing_redirect_sources(mods: list[object]) -> set[int]:
     }
 
 
+def _int_or_none(value: object) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        if isinstance(value, str):
+            try:
+                return int(value, 0)
+            except ValueError:
+                return None
+        return None
+
+
+def _block_contains_ea(block, ea: int) -> bool:
+    for insn in getattr(block, "insn_snapshots", ()) or ():
+        if _int_or_none(getattr(insn, "ea", None)) == int(ea):
+            return True
+    return False
+
+
+def _blocks_containing_ea(flow_graph, ea: int) -> set[int]:
+    matches: set[int] = set()
+    for serial in flow_graph.blocks:
+        block = flow_graph.get_block(serial)
+        if block is not None and _block_contains_ea(block, int(ea)):
+            matches.add(int(serial))
+    return matches
+
+
+def _active_fact_observations(fact_view) -> tuple[object, ...]:
+    if fact_view is None:
+        return ()
+    observations = getattr(fact_view, "active_observations", ())
+    if callable(observations):
+        observations = observations()
+    return tuple(observations or ())
+
+
+_LOCAL_TOKEN_RE = re.compile(r"%var_([0-9A-Fa-f]+)")
+
+
+def _canonical_local_token(value: object) -> str | None:
+    text = str(value or "")
+    match = _LOCAL_TOKEN_RE.search(text)
+    if match is None:
+        return None
+    try:
+        return f"%var_{int(match.group(1), 16):X}"
+    except ValueError:
+        return None
+
+
+def _stack_token_for_stkoff(stkoff: object) -> str | None:
+    try:
+        return f"%var_{int(stkoff):X}"
+    except (TypeError, ValueError):
+        return None
+
+
+def _mop_stack_token(mop) -> str | None:
+    token = _stack_token_for_stkoff(getattr(mop, "stkoff", None))
+    if token is not None:
+        return token
+    return _canonical_local_token(getattr(mop, "dstr", ""))
+
+
+def _mop_display_token(mop) -> str | None:
+    return _canonical_local_token(getattr(mop, "dstr", ""))
+
+
+def _mop_size(mop) -> int:
+    try:
+        return int(getattr(mop, "size", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _mop_references_alias_load(mop, alias_token: str) -> int:
+    if mop is None:
+        return 0
+    if getattr(mop, "sub_kind", None) is not None:
+        sub_kind = getattr(mop, "sub_kind", None)
+        sub_r = getattr(mop, "sub_r", None)
+        if str(getattr(sub_kind, "value", sub_kind)) == "load" and _mop_stack_token(sub_r) == alias_token:
+            return _mop_size(mop)
+        for child in (getattr(mop, "sub_l", None), sub_r):
+            size = _mop_references_alias_load(child, alias_token)
+            if size > 0:
+                return size
+    return 0
+
+
+def _insn_references_alias(insn, alias_token: str) -> bool:
+    for operand in (getattr(insn, "l", None), getattr(insn, "r", None), getattr(insn, "d", None)):
+        if _mop_stack_token(operand) == alias_token:
+            return True
+        refs = getattr(operand, "stack_refs", ()) or ()
+        for ref in refs:
+            if _stack_token_for_stkoff(ref) == alias_token:
+                return True
+    text = str(getattr(insn, "display_text", "") or "")
+    return alias_token in text
+
+
+def _alias_access_value_size(insn, alias_token: str) -> int:
+    kind = getattr(insn, "kind", None)
+    if str(getattr(kind, "value", kind)) == "load":
+        if _mop_stack_token(getattr(insn, "r", None)) == alias_token:
+            return _mop_size(getattr(insn, "d", None))
+    if str(getattr(kind, "value", kind)) == "store":
+        if _mop_stack_token(getattr(insn, "d", None)) == alias_token:
+            return _mop_size(getattr(insn, "l", None))
+    for operand in (getattr(insn, "l", None), getattr(insn, "r", None), getattr(insn, "d", None)):
+        size = _mop_references_alias_load(operand, alias_token)
+        if size > 0:
+            return size
+    text = str(getattr(insn, "display_text", "") or "")
+    if alias_token not in text:
+        return 0
+    load_match = re.search(
+        r"\[ds[^\]:]*:\s*"
+        + re.escape(alias_token)
+        + r"(?:\.\d+)?(?:\{[^}]*\})?\]\.(\d+)",
+        text,
+    )
+    if load_match is not None:
+        return int(load_match.group(1), 10)
+    stripped = text.strip()
+    if stripped.startswith("ldx"):
+        dest_size = _mop_size(getattr(insn, "d", None))
+        if dest_size > 0:
+            return dest_size
+    if stripped.startswith("stx"):
+        source_size = _mop_size(getattr(insn, "l", None))
+        if source_size > 0:
+            return source_size
+    return 0
+
+
+def _instruction_text_digest(text: str) -> str | None:
+    if not text:
+        return None
+    return hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def _ollvm_role_tokens(fact_view, role: str) -> set[str]:
+    tokens: set[str] = set()
+    for obs in _active_fact_observations(fact_view):
+        if getattr(obs, "kind", None) != "OllvmValueFlowEvidence":
+            continue
+        payload = getattr(obs, "payload", None) or {}
+        if payload.get("role") != role:
+            continue
+        token = _canonical_local_token(payload.get("carrier_token"))
+        if token is not None:
+            tokens.add(token)
+    return tokens
+
+
+def _ollvm_scalar_working_base_tokens(fact_view) -> set[str]:
+    bases: set[str] = set()
+    for obs in _active_fact_observations(fact_view):
+        if getattr(obs, "kind", None) != "OllvmValueFlowEvidence":
+            continue
+        payload = getattr(obs, "payload", None) or {}
+        if payload.get("role") != "ACCUMULATOR_CARRIER":
+            continue
+        for key in ("multiply_add_base_token", "local_base_token"):
+            base = _canonical_local_token(payload.get(key))
+            if base is not None:
+                bases.add(base)
+    return bases
+
+
+def _ollvm_local_alias_scalarization_specs(fact_view) -> dict[str, str]:
+    """Return ``alias -> scalar base`` for OLLVM local carrier scalarization.
+
+    The physical ``local_base_token`` groups aliases that point into the same
+    local working storage.  For local-pointer facts whose physical base is also
+    an accumulator carrier base, the safe decompiler move is to scalarize the
+    memory-through-pointer access onto the alias token itself.  That preserves
+    the logical carriers (index, multiplier, accumulator) as distinct locals
+    instead of collapsing every access onto the shared physical base.
+    """
+    scalar_bases = _ollvm_scalar_working_base_tokens(fact_view)
+    if not scalar_bases:
+        return {}
+    specs: dict[str, str] = {}
+    for obs in _active_fact_observations(fact_view):
+        if getattr(obs, "kind", None) != "OllvmValueFlowEvidence":
+            continue
+        payload = getattr(obs, "payload", None) or {}
+        role = payload.get("role")
+        alias = _canonical_local_token(payload.get("carrier_token"))
+        if alias is None:
+            continue
+        if role == "LOCAL_WORKING_POINTER":
+            local_base = _canonical_local_token(payload.get("local_base_token"))
+            if local_base in scalar_bases:
+                specs[alias] = alias
+        elif role == "LOOP_INDEX_CARRIER":
+            local_base = _canonical_local_token(payload.get("local_base_token"))
+            if local_base in scalar_bases:
+                specs.setdefault(alias, alias)
+        elif role == "ACCUMULATOR_CARRIER":
+            base = _canonical_local_token(
+                payload.get("multiply_add_base_token") or payload.get("local_base_token")
+            )
+            if base in scalar_bases:
+                specs.setdefault(alias, alias)
+    return specs
+
+
+def _is_ollvm_local_alias_setup_move(insn, alias_specs: dict[str, str]) -> bool:
+    text = str(getattr(insn, "display_text", "") or "")
+    if "&(" not in text:
+        return False
+    dest = _mop_stack_token(getattr(insn, "d", None))
+    if dest in alias_specs:
+        return True
+    return any(alias in text for alias in alias_specs)
+
+
+def _ollvm_non_scalar_local_pointer_tokens(fact_view) -> set[str]:
+    scalar_bases = _ollvm_scalar_working_base_tokens(fact_view)
+    tokens: set[str] = set()
+    for obs in _active_fact_observations(fact_view):
+        if getattr(obs, "kind", None) != "OllvmValueFlowEvidence":
+            continue
+        payload = getattr(obs, "payload", None) or {}
+        if payload.get("role") != "LOCAL_WORKING_POINTER":
+            continue
+        local_base = _canonical_local_token(payload.get("local_base_token"))
+        if local_base in scalar_bases:
+            continue
+        token = _canonical_local_token(payload.get("carrier_token"))
+        if token is not None:
+            tokens.add(token)
+    return tokens
+
+
+def _ollvm_payload_alias_scalarization_blocks(flow_graph, fact_view) -> set[int]:
+    accumulator_tokens = _ollvm_role_tokens(fact_view, "ACCUMULATOR_CARRIER")
+    loop_index_tokens = _ollvm_role_tokens(fact_view, "LOOP_INDEX_CARRIER")
+    if not accumulator_tokens or not loop_index_tokens:
+        return set()
+    payload_blocks: set[int] = set()
+    for serial in flow_graph.blocks:
+        block = flow_graph.get_block(serial)
+        if block is None:
+            continue
+        text = "\n".join(
+            str(getattr(insn, "display_text", "") or "")
+            for insn in getattr(block, "insn_snapshots", ()) or ()
+        )
+        if "xds" not in text:
+            continue
+        if not any(token in text for token in accumulator_tokens):
+            continue
+        if not any(token in text for token in loop_index_tokens):
+            continue
+        payload_blocks.add(int(serial))
+    return payload_blocks
+
+
+def _is_ollvm_loop_index_init(insn, alias_token: str, loop_index_tokens: set[str]) -> bool:
+    if alias_token not in loop_index_tokens:
+        return False
+    text = str(getattr(insn, "display_text", "") or "").strip()
+    if not text.startswith("stx"):
+        return False
+    if "#0" not in text:
+        return False
+    return _insn_references_alias(insn, alias_token)
+
+
+def build_ollvm_local_alias_scalarizations(flow_graph, fact_view) -> list[object]:
+    """Emit scalarization steps for fact-backed OLLVM local carrier aliases."""
+    alias_specs = _ollvm_local_alias_scalarization_specs(fact_view)
+    if not alias_specs:
+        return []
+    payload_blocks = _ollvm_payload_alias_scalarization_blocks(flow_graph, fact_view)
+    loop_index_tokens = _ollvm_role_tokens(fact_view, "LOOP_INDEX_CARRIER")
+
+    grouped: dict[tuple[int, int, int], list[tuple[str, int, str]]] = {}
+    for serial in flow_graph.blocks:
+        block = flow_graph.get_block(serial)
+        if block is None:
+            continue
+        for insn in getattr(block, "insn_snapshots", ()) or ():
+            if _is_ollvm_local_alias_setup_move(insn, alias_specs):
+                continue
+            try:
+                host_ea = int(getattr(insn, "ea", 0) or 0)
+                host_opcode = int(getattr(insn, "opcode", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if host_ea == 0:
+                continue
+            for alias, base in sorted(alias_specs.items()):
+                if not _insn_references_alias(insn, alias):
+                    continue
+                if int(serial) not in payload_blocks and not _is_ollvm_loop_index_init(
+                    insn,
+                    alias,
+                    loop_index_tokens,
+                ):
+                    continue
+                value_size = _alias_access_value_size(insn, alias)
+                if value_size <= 0:
+                    continue
+                grouped.setdefault((int(serial), host_ea, host_opcode), []).append(
+                    (alias, int(value_size), base)
+                )
+
+    mods: list[object] = []
+    emitted: set[tuple[int, int, int, str]] = set()
+    for (serial, host_ea, host_opcode), alias_entries in sorted(grouped.items()):
+        block = flow_graph.get_block(serial)
+        insn = None
+        if block is not None:
+            for candidate in getattr(block, "insn_snapshots", ()) or ():
+                if (
+                    _int_or_none(getattr(candidate, "ea", None)) == host_ea
+                    and _int_or_none(getattr(candidate, "opcode", None)) == host_opcode
+                ):
+                    insn = candidate
+                    break
+        text = str(getattr(insn, "display_text", "") or "") if insn is not None else ""
+        text_sha1 = _instruction_text_digest(text) if len(alias_entries) == 1 else None
+        for alias, value_size, base in alias_entries:
+            key = (serial, host_ea, host_opcode, alias)
+            if key in emitted:
+                continue
+            emitted.add(key)
+            mods.append(
+                ScalarizeLocalAliasAccess(
+                    block_serial=serial,
+                    host_ea=host_ea,
+                    host_opcode=host_opcode,
+                    alias_token=alias,
+                    base_token=base,
+                    host_text_sha1=text_sha1,
+                    value_size=value_size,
+                    reason="ollvm_local_alias_scalarization",
+                )
+            )
+    if mods and logger.info_on:
+        aliases = ",".join(sorted({m.alias_token for m in mods}))
+        logger.info(
+            "unflat minimal unflatten: ollvm local alias scalarizations=%d aliases=%s",
+            len(mods),
+            aliases,
+        )
+    return mods
+
+
+def _local_token_sort_key(token: str) -> tuple[int, str]:
+    match = _LOCAL_TOKEN_RE.search(str(token))
+    if match is None:
+        return (1 << 62, str(token))
+    try:
+        return (int(match.group(1), 16), str(token))
+    except ValueError:
+        return (1 << 62, str(token))
+
+
+def _ollvm_output_store_candidates(fact_view) -> tuple[tuple[int, str], ...]:
+    candidates: set[tuple[int, str]] = set()
+    for obs in _active_fact_observations(fact_view):
+        if getattr(obs, "kind", None) != "OllvmValueFlowEvidence":
+            continue
+        payload = getattr(obs, "payload", None) or {}
+        if payload.get("store_kind") != "masked_output_transform":
+            continue
+        if payload.get("role") not in {
+            "ARG_OUTPUT_STORE_CANDIDATE",
+            "LOCAL_WORKING_STORE_CANDIDATE",
+            "INDIRECT_STORE_CANDIDATE",
+        }:
+            continue
+        alias = _canonical_local_token(payload.get("carrier_token"))
+        if alias is None:
+            continue
+        ea = _int_or_none(payload.get("instruction_ea"))
+        if ea is None:
+            ea = _int_or_none(getattr(obs, "source_ea", None))
+        if ea is None:
+            continue
+        candidates.add((int(ea), alias))
+    return tuple(sorted(candidates))
+
+
+def build_ollvm_output_store_retargets(flow_graph, fact_view) -> list[object]:
+    """Retarget fact-backed OLLVM terminal stores to the observed output pointer."""
+    output_tokens = sorted(
+        _ollvm_role_tokens(fact_view, "ARG_OUTPUT_POINTER"),
+        key=_local_token_sort_key,
+    )
+    if not output_tokens:
+        return []
+    output_token = output_tokens[0]
+    candidates = _ollvm_output_store_candidates(fact_view)
+    if not candidates:
+        return []
+    emitted: set[tuple[int, int, str, str]] = set()
+    mods: list[object] = []
+    for host_ea, alias in candidates:
+        if alias == output_token:
+            continue
+        for serial in sorted(_blocks_containing_ea(flow_graph, host_ea)):
+            block = flow_graph.get_block(serial)
+            if block is None:
+                continue
+            for insn in getattr(block, "insn_snapshots", ()) or ():
+                if _int_or_none(getattr(insn, "ea", None)) != int(host_ea):
+                    continue
+                text = str(getattr(insn, "display_text", "") or "")
+                if alias not in text or output_token in text:
+                    continue
+                if not any(
+                    marker in text
+                    for marker in (
+                        "#0x173063C1",
+                        "#0xCD536960",
+                        "#0x259CF55E",
+                    )
+                ):
+                    continue
+                host_opcode = _int_or_none(getattr(insn, "opcode", None))
+                if host_opcode is None:
+                    continue
+                source_size = _mop_size(getattr(insn, "l", None))
+                key = (int(serial), int(host_ea), alias, output_token)
+                if key in emitted:
+                    continue
+                emitted.add(key)
+                mods.append(RetargetOutputStore(
+                    block_serial=int(serial),
+                    host_ea=int(host_ea),
+                    host_opcode=int(host_opcode),
+                    alias_token=alias,
+                    output_token=output_token,
+                    host_text_sha1=_instruction_text_digest(text),
+                    value_size=source_size or None,
+                    reason="ollvm_output_store_retarget",
+                ))
+    if mods and logger.info_on:
+        logger.info(
+            "unflat minimal unflatten: ollvm output store retargets=%d output=%s",
+            len(mods),
+            output_token,
+        )
+    return mods
+
+
+def _ollvm_loop_carrier_route_blocks(
+    flow_graph,
+    dispatcher,
+    transitions: tuple[StateWriteTransition, ...],
+    fact_view,
+) -> set[int]:
+    """Return routed loop predicate blocks backed by OLLVM loop-index evidence.
+
+    OLLVM facts record the surviving ``LOOP_INDEX_CARRIER`` as raw
+    ``OllvmValueFlowEvidence`` rather than the Hodur-specific ``LoopCarrierFact``.
+    The fact's block serial is maturity-local, so use the stable instruction EA
+    first and only then fall back to the serial when it still names the live block.
+
+    The returned blocks are the route targets of state-write transitions that
+    contain the loop-index evidence.  This lets diagnostics report the loop route
+    explicitly while the back-edge redirects remain the ownership mechanism.
+    """
+    if fact_view is None:
+        return set()
+
+    evidence_blocks: set[int] = set()
+    for obs in _active_fact_observations(fact_view):
+        if getattr(obs, "kind", None) != "OllvmValueFlowEvidence":
+            continue
+        payload = getattr(obs, "payload", None) or {}
+        if payload.get("role") != "LOOP_INDEX_CARRIER":
+            continue
+        ea = (
+            _int_or_none(payload.get("instruction_ea"))
+            or _int_or_none(payload.get("instruction_ea_hex"))
+            or _int_or_none(getattr(obs, "source_ea", None))
+        )
+        if ea is not None:
+            evidence_blocks.update(_blocks_containing_ea(flow_graph, int(ea)))
+        source_block = _int_or_none(
+            payload.get("source_block", getattr(obs, "source_block", None))
+        )
+        if source_block is None:
+            continue
+        block = flow_graph.get_block(int(source_block))
+        if block is None:
+            continue
+        if ea is None or _block_contains_ea(block, int(ea)):
+            evidence_blocks.add(int(source_block))
+
+    if not evidence_blocks:
+        return set()
+
+    routed: set[int] = set()
+    for transition in transitions:
+        if int(transition.write_block) not in evidence_blocks:
+            continue
+        if transition.next_state is None:
+            continue
+        target = dispatcher.lookup(int(transition.next_state) & 0xFFFFFFFF)
+        if target is not None:
+            routed.add(int(target))
+    return routed
+
+
+def _parse_ollvm_counter_bound(payload: dict) -> tuple[int, int, int] | None:
+    """Extract ``(fallback_token_value, counter_size, bound)`` from evidence text."""
+    text = str(payload.get("instruction_dstr") or "")
+    match = re.search(
+        r"\[ds(?:\.\d+)?:%var_([0-9A-Fa-f]+)(?:\.8)?\]\.(\d+)"
+        r"\s*,\s*#0x([0-9A-Fa-f]+)",
+        text,
+    )
+    if match is None:
+        return None
+    return (
+        int(match.group(1), 16),
+        int(match.group(2), 10),
+        int(match.group(3), 16),
+    )
+
+
+def _mop_stack_refs(mop) -> set[int]:
+    if mop is None:
+        return set()
+    refs: set[int] = set()
+    stkoff = _int_or_none(getattr(mop, "stkoff", None))
+    if stkoff is not None:
+        refs.add(int(stkoff))
+    for ref in getattr(mop, "stack_refs", ()) or ():
+        ref_i = _int_or_none(ref)
+        if ref_i is not None:
+            refs.add(int(ref_i))
+    for child_name in ("sub_l", "sub_r", "sub_d"):
+        refs.update(_mop_stack_refs(getattr(mop, child_name, None)))
+    return refs
+
+
+def _mop_number_value(mop) -> int | None:
+    if mop is None:
+        return None
+    value = getattr(mop, "nnn_value", None)
+    if value is None:
+        value = getattr(mop, "value", None)
+    return _int_or_none(value)
+
+
+def _mop_stack_refs_for_display_alias(mop, alias_token: str) -> set[int]:
+    if mop is None:
+        return set()
+    refs: set[int] = set()
+    dstr = str(getattr(mop, "dstr", "") or "")
+    display_token = _mop_display_token(mop)
+    if display_token == alias_token or (dstr and alias_token in dstr):
+        refs.update(_mop_stack_refs(mop))
+    for child_name in ("sub_l", "sub_r", "sub_d"):
+        refs.update(
+            _mop_stack_refs_for_display_alias(
+                getattr(mop, child_name, None),
+                alias_token,
+            )
+        )
+    return refs
+
+
+def _insn_stack_refs_for_display_alias(insn, alias_token: str) -> set[int]:
+    text = str(getattr(insn, "display_text", "") or "")
+    if alias_token not in text:
+        return set()
+    refs: set[int] = set()
+    for operand in (getattr(insn, "l", None), getattr(insn, "r", None), getattr(insn, "d", None)):
+        refs.update(_mop_stack_refs_for_display_alias(operand, alias_token))
+    if refs:
+        return refs
+    # Portable unit snapshots do not always carry operand dstrs.  For a rendered
+    # condition such as ``setb [ds:%var_398].4, #0x64, ...``, the left operand is
+    # a nested load and its flattened stack_refs identify the true backend slot.
+    for operand in (getattr(insn, "l", None), getattr(insn, "r", None)):
+        if getattr(operand, "sub_kind", None) is not None:
+            refs.update(_mop_stack_refs(operand))
+    return refs
+
+
+def _resolve_ollvm_counter_stkoff(
+    flow_graph,
+    obs,
+    alias_token: str | None,
+    fallback_stkoff: int,
+) -> int:
+    if alias_token is None:
+        return int(fallback_stkoff)
+    payload = getattr(obs, "payload", None) or {}
+    evidence_ea = (
+        _int_or_none(payload.get("instruction_ea"))
+        or _int_or_none(payload.get("instruction_ea_hex"))
+        or _int_or_none(getattr(obs, "source_ea", None))
+    )
+    candidate_refs: set[int] = set()
+    for serial in _source_blocks_for_evidence(flow_graph, obs):
+        block = flow_graph.get_block(serial)
+        if block is None:
+            continue
+        for insn in getattr(block, "insn_snapshots", ()) or ():
+            insn_ea = _int_or_none(getattr(insn, "ea", None))
+            text = str(getattr(insn, "display_text", "") or "")
+            if evidence_ea is not None and insn_ea != int(evidence_ea):
+                continue
+            if alias_token not in text:
+                continue
+            candidate_refs.update(_insn_stack_refs_for_display_alias(insn, alias_token))
+    if len(candidate_refs) == 1:
+        return next(iter(candidate_refs))
+    return int(fallback_stkoff)
+
+
+def _ollvm_loop_index_evidence(fact_view) -> tuple[object, ...]:
+    observations: list[object] = []
+    for obs in _active_fact_observations(fact_view):
+        if getattr(obs, "kind", None) != "OllvmValueFlowEvidence":
+            continue
+        payload = getattr(obs, "payload", None) or {}
+        if payload.get("role") == "LOOP_INDEX_CARRIER":
+            observations.append(obs)
+    return tuple(observations)
+
+
+def _source_blocks_for_evidence(flow_graph, obs) -> set[int]:
+    payload = getattr(obs, "payload", None) or {}
+    evidence_blocks: set[int] = set()
+    ea = (
+        _int_or_none(payload.get("instruction_ea"))
+        or _int_or_none(payload.get("instruction_ea_hex"))
+        or _int_or_none(getattr(obs, "source_ea", None))
+    )
+    if ea is not None:
+        evidence_blocks.update(_blocks_containing_ea(flow_graph, int(ea)))
+    source_block = _int_or_none(
+        payload.get("source_block", getattr(obs, "source_block", None))
+    )
+    if source_block is not None:
+        block = flow_graph.get_block(int(source_block))
+        if block is not None and (ea is None or _block_contains_ea(block, int(ea))):
+            evidence_blocks.add(int(source_block))
+    return evidence_blocks
+
+
+def _state_write_ea_for_transition(
+    block,
+    *,
+    state_var_stkoff: int,
+    next_state: int | None,
+) -> int | None:
+    if next_state is None:
+        return None
+    for insn in reversed(tuple(getattr(block, "insn_snapshots", ()) or ())):
+        ea = _int_or_none(getattr(insn, "ea", None))
+        if ea is None or int(ea) == 0:
+            continue
+        if int(state_var_stkoff) not in _mop_stack_refs(getattr(insn, "d", None)):
+            continue
+        value = _mop_number_value(getattr(insn, "l", None))
+        if value is None:
+            continue
+        if (int(value) & 0xFFFFFFFF) == (int(next_state) & 0xFFFFFFFF):
+            return int(ea)
+    return None
+
+
+def _route_chain_reaches(
+    flow_graph,
+    transitions: tuple[StateWriteTransition, ...],
+    start: int | None,
+    targets: set[int],
+    *,
+    dispatcher_entry_serial: int,
+) -> bool:
+    if start is None or not targets:
+        return False
+    disp = int(dispatcher_entry_serial)
+    target_by_write = {
+        int(t.write_block): int(t.target_handler)
+        for t in transitions
+        if t.target_handler is not None and not t.is_return
+    }
+    seen: set[int] = set()
+    stack = [int(start)]
+    limit = max(8, len(getattr(flow_graph, "blocks", ()) or ()) + len(transitions) + 4)
+    while stack and len(seen) < limit:
+        cur = int(stack.pop())
+        if cur == disp or cur in seen:
+            continue
+        if cur in targets:
+            return True
+        seen.add(cur)
+        next_route = target_by_write.get(cur)
+        if next_route is not None and int(next_route) not in seen:
+            stack.append(int(next_route))
+            continue
+        block = flow_graph.get_block(cur)
+        if block is None:
+            continue
+        for succ in getattr(block, "succs", ()) or ():
+            succ_i = int(succ)
+            if succ_i != disp and succ_i not in seen:
+                stack.append(succ_i)
+    return False
+
+
+def build_ollvm_loop_carrier_latch_redirects(
+    flow_graph,
+    transitions: tuple[StateWriteTransition, ...],
+    fact_view,
+    *,
+    dispatcher_entry_serial: int,
+    state_var_stkoff: int | None = None,
+) -> tuple[list[object], set[int]]:
+    """Route OLLVM loop payload latches directly through the predicate producer.
+
+    The generic back-edge emitter sends ``payload -> route(written_state)``.  In
+    the OLLVM counted-loop shape, that routed state is often a dispatcher spine
+    that eventually reaches the predicate producer.  Leaving the payload on the
+    generic spine lets later simplification collapse the path back into the body
+    and strand the synthetic guard.  The microcode evidence already names both the
+    payload carrier block and the predicate producer; when the payload's routed
+    chain reaches that producer, replace only that payload back-edge with
+    ``payload -> producer``.
+    """
+    if fact_view is None:
+        return [], set()
+    disp = int(dispatcher_entry_serial)
+    payload_blocks = _ollvm_payload_alias_scalarization_blocks(flow_graph, fact_view)
+    if not payload_blocks:
+        return [], set()
+
+    producer_blocks: set[int] = set()
+    for obs in _ollvm_loop_index_evidence(fact_view):
+        for serial in _source_blocks_for_evidence(flow_graph, obs):
+            block = flow_graph.get_block(serial)
+            if block is None:
+                continue
+            if tuple(int(s) for s in getattr(block, "succs", ()) or ()) == (disp,):
+                producer_blocks.add(int(serial))
+    if not producer_blocks:
+        return [], set()
+
+    mods: list[object] = []
+    suppressed: set[int] = set()
+    seen: set[tuple[str, int, int, int]] = set()
+    for transition in transitions:
+        src = int(transition.write_block)
+        if src not in payload_blocks or src in producer_blocks:
+            continue
+        src_block = flow_graph.get_block(src)
+        if src_block is None:
+            continue
+        succs = tuple(int(s) for s in getattr(src_block, "succs", ()) or ())
+        old = int(transition.via_block) if transition.via_block is not None else disp
+        routed = _int_or_none(transition.target_handler)
+        if routed is None:
+            continue
+        reaches_producer = _route_chain_reaches(
+            flow_graph,
+            transitions,
+            int(routed),
+            producer_blocks,
+            dispatcher_entry_serial=disp,
+        )
+        reaches_payload = _route_chain_reaches(
+            flow_graph,
+            transitions,
+            int(routed),
+            payload_blocks,
+            dispatcher_entry_serial=disp,
+        )
+        if not reaches_producer and not reaches_payload:
+            continue
+        if old not in succs:
+            if len(succs) == 1:
+                old = int(succs[0])
+            elif int(routed) in succs:
+                old = int(routed)
+            else:
+                continue
+        if old not in succs:
+            continue
+        new = min(producer_blocks)
+        if int(old) == int(new):
+            continue
+        two_way = src_block.nsucc == 2
+        key = ("B" if two_way else "G", src, old, int(new))
+        if key in seen:
+            continue
+        seen.add(key)
+        suppressed.add(src)
+        if two_way:
+            mods.append(RedirectBranch(from_serial=src, old_target=old, new_target=int(new)))
+        else:
+            mods.append(RedirectGoto(from_serial=src, old_target=old, new_target=int(new)))
+        if state_var_stkoff is not None:
+            write_ea = _state_write_ea_for_transition(
+                src_block,
+                state_var_stkoff=int(state_var_stkoff),
+                next_state=transition.next_state,
+            )
+            if write_ea is not None:
+                mods.append(ZeroStateWrite(block_serial=src, insn_ea=int(write_ea)))
+        if logger.info_on:
+            logger.info(
+                "unflat ollvm-loop-latch: payload=blk[%d] route=blk[%d] -> producer=blk[%d]",
+                src,
+                int(routed),
+                int(new),
+            )
+    return mods, suppressed
+
+
+def _first_insn_ea(block) -> int | None:
+    for insn in getattr(block, "insn_snapshots", ()) or ():
+        ea = _int_or_none(getattr(insn, "ea", None))
+        if ea is not None and int(ea) != 0:
+            return int(ea)
+    return None
+
+
+def build_ollvm_loop_carrier_guard_lowerings(
+    flow_graph,
+    dispatcher,
+    transitions: tuple[StateWriteTransition, ...],
+    handler_transitions: tuple[HandlerTransition, ...],
+    fact_view,
+    *,
+    dispatcher_entry_serial: int,
+):
+    """Lower OLLVM's split counted-loop guard from raw value-flow evidence.
+
+    OLLVM records the loop predicate as ``OllvmValueFlowEvidence`` on the
+    predicate-producing back-edge block, while the selector state it writes routes
+    to a separate two-way guard block.  Redirecting through the selector as a DAG
+    spine can sever the predicate/body corridor.  Instead, emit one conditional
+    lowering at the actual predicate producer:
+
+        producer(counter < bound, state=selector) -> true: body, false: exit
+
+    Returns ``(lowerings, suppressed_sources)``.  The source producer redirect and
+    the selector's sibling branch redirects are suppressed because the synthesized
+    lowering owns that whole loop edge.
+    """
+    if fact_view is None:
+        return [], set()
+    disp = int(dispatcher_entry_serial)
+    handlers = {int(h.handler): h for h in handler_transitions}
+    lowerings: list[object] = []
+    suppressed: set[int] = set()
+    emitted_sources: set[int] = set()
+
+    for obs in _ollvm_loop_index_evidence(fact_view):
+        payload = getattr(obs, "payload", None) or {}
+        parsed = _parse_ollvm_counter_bound(payload)
+        if parsed is None:
+            continue
+        counter_stkoff, counter_size, bound = parsed
+        counter_alias = _canonical_local_token(payload.get("carrier_token"))
+        counter_stkoff = _resolve_ollvm_counter_stkoff(
+            flow_graph,
+            obs,
+            counter_alias,
+            int(counter_stkoff),
+        )
+        evidence_blocks = _source_blocks_for_evidence(flow_graph, obs)
+        if not evidence_blocks:
+            continue
+        for transition in transitions:
+            source = int(transition.write_block)
+            if source in emitted_sources or source not in evidence_blocks:
+                continue
+            if transition.next_state is None:
+                continue
+            selector = dispatcher.lookup(int(transition.next_state) & 0xFFFFFFFF)
+            if selector is None:
+                continue
+            selector = int(selector)
+            selector_block = flow_graph.get_block(selector)
+            source_block = flow_graph.get_block(source)
+            if selector_block is None or source_block is None:
+                continue
+            if tuple(int(s) for s in source_block.succs) != (disp,):
+                continue
+            selector_succs = tuple(int(s) for s in selector_block.succs)
+            if len(selector_succs) != 2:
+                continue
+            handler = handlers.get(selector)
+            if handler is None or not handler.is_conditional:
+                continue
+            arm_targets: dict[int, int] = {}
+            for arm in handler.arms:
+                if arm.branch_block is None or int(arm.branch_block) != selector:
+                    continue
+                old = _arm_branch_successor(arm)
+                if old is None:
+                    continue
+                new = dispatcher.default_target if arm.is_return else arm.target_handler
+                if new is not None:
+                    arm_targets[int(old)] = int(new)
+            true_target = arm_targets.get(selector_succs[0])
+            false_target = arm_targets.get(selector_succs[1])
+            if true_target is None or false_target is None:
+                continue
+            rewrite_ea = _first_insn_ea(source_block)
+            if rewrite_ea is None:
+                continue
+            lowerings.append(
+                LowerConditionalStateTransition(
+                    source_serial=source,
+                    old_dispatcher_serial=disp,
+                    rewrite_from_ea=int(rewrite_ea),
+                    condition_operand=SyntheticCounterBoundCondition(
+                        counter_stkoff=int(counter_stkoff),
+                        counter_reg=None,
+                        counter_size=int(counter_size),
+                        bound=int(bound),
+                        signed=False,
+                    ),
+                    false_target_serial=int(false_target),
+                    true_target_serial=int(true_target),
+                    proof_id=getattr(obs, "fact_id", None),
+                    reason="ollvm_loop_carrier_guard",
+                )
+            )
+            suppressed.update({source, selector})
+            emitted_sources.add(source)
+            if logger.info_on:
+                logger.info(
+                    "unflat ollvm-loop-guard: producer=blk[%d] selector=blk[%d] "
+                    "if(counter@stkoff=0x%x<0x%x) -> body=blk[%d] else exit=blk[%d]",
+                    source,
+                    selector,
+                    int(counter_stkoff),
+                    int(bound),
+                    int(true_target),
+                    int(false_target),
+                )
+    return lowerings, suppressed
+
+
 def _arm_branch_successor(arm) -> int | None:
     """The block ``branch_block`` flows to *on this arm's path*.
 
@@ -448,6 +1412,7 @@ def build_conditional_arm_redirects(
     :func:`_carrier_return_via_routes`) -- ``_succ_reaches_carrier`` defers this
     branch-anchored redirect so the carrier is not bypassed.  ``carrier_via_blocks``
     is empty for every non-carrier shape, leaving those byte-identical.
+
     """
     disp = int(dispatcher_entry_serial) if dispatcher_entry_serial is not None else None
     if disp is None:
@@ -534,6 +1499,18 @@ def build_conditional_arm_redirects(
                 # split clones.  A branch-anchored redirect here would bypass that
                 # carrier block -- defer to the split.
                 if old is not None and _succ_reaches_carrier(int(old)):
+                    continue
+                # Edge-specific shared-write split: the back-edge model already
+                # rewired this arm successor into the arm's shared write block
+                # (``old -> arm.write_block``).  A branch redirect from the
+                # selector to ``old`` would be redundant, and can target the
+                # fall-through edge that the backend cannot express as a branch
+                # target change.  Keep the actual write-anchor route instead.
+                if (
+                    old is not None
+                    and arm.write_block is not None
+                    and (int(old), int(arm.write_block)) in existing
+                ):
                     continue
                 if old is not None:
                     _add(int(arm.branch_block), int(old), new)
@@ -906,6 +1883,35 @@ def emit_minimal_unflatten(
         int(state_var_stkoff),
         dispatcher_entry_serial=int(dispatcher_entry_serial),
     )
+    loop_carrier_route_blocks = _ollvm_loop_carrier_route_blocks(
+        flow_graph,
+        dispatcher,
+        transitions,
+        fact_view,
+    )
+    if loop_carrier_route_blocks and logger.info_on:
+        logger.info(
+            "unflat minimal unflatten: loop_carrier_routes=%s",
+            ",".join("blk%d" % b for b in sorted(loop_carrier_route_blocks)),
+        )
+    ollvm_latch_redirects, ollvm_latch_suppressed = build_ollvm_loop_carrier_latch_redirects(
+        flow_graph,
+        transitions,
+        fact_view,
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
+        state_var_stkoff=int(state_var_stkoff),
+    )
+    if ollvm_latch_suppressed:
+        mods = [
+            m
+            for m in mods
+            if not (
+                isinstance(m, (RedirectGoto, RedirectBranch))
+                and int(m.from_serial) in ollvm_latch_suppressed
+            )
+        ]
+    if ollvm_latch_redirects:
+        mods = list(mods) + ollvm_latch_redirects
     arm_mods = build_conditional_arm_redirects(
         flow_graph,
         dispatcher,
@@ -924,14 +1930,74 @@ def emit_minimal_unflatten(
             )
         ),
     )
+    ollvm_guard_lowerings, ollvm_suppressed = build_ollvm_loop_carrier_guard_lowerings(
+        flow_graph,
+        dispatcher,
+        transitions,
+        handler_transitions,
+        fact_view,
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
+    )
+    if ollvm_suppressed:
+        mods = [
+            m
+            for m in mods
+            if not (
+                isinstance(m, (RedirectGoto, RedirectBranch))
+                and int(m.from_serial) in ollvm_suppressed
+            )
+        ]
+        arm_mods = [
+            m
+            for m in arm_mods
+            if not (
+                isinstance(m, (RedirectGoto, RedirectBranch))
+                and int(m.from_serial) in ollvm_suppressed
+            )
+        ]
     if arm_mods:
         mods = list(mods) + arm_mods
+    if ollvm_guard_lowerings:
+        mods = list(mods) + ollvm_guard_lowerings
+    ollvm_output_store_retargets = build_ollvm_output_store_retargets(
+        flow_graph,
+        fact_view,
+    )
+    if ollvm_suppressed:
+        ollvm_output_store_retargets = [
+            m
+            for m in ollvm_output_store_retargets
+            if not (
+                isinstance(m, RetargetOutputStore)
+                and int(m.block_serial) in ollvm_suppressed
+            )
+        ]
+    if ollvm_output_store_retargets:
+        mods = list(mods) + ollvm_output_store_retargets
+    ollvm_alias_scalarizations = build_ollvm_local_alias_scalarizations(
+        flow_graph,
+        fact_view,
+    )
+    if ollvm_suppressed:
+        ollvm_alias_scalarizations = [
+            m
+            for m in ollvm_alias_scalarizations
+            if not (
+                isinstance(m, ScalarizeLocalAliasAccess)
+                and int(m.block_serial) in ollvm_suppressed
+            )
+        ]
+    if ollvm_alias_scalarizations:
+        mods = list(mods) + ollvm_alias_scalarizations
     if logger.info_on:
         n_cond = sum(1 for h in handler_transitions if h.is_conditional)
         logger.info(
-            "unflat minimal unflatten: conditional_handlers=%d arm_redirects_added=%d",
+            "unflat minimal unflatten: conditional_handlers=%d arm_redirects_added=%d "
+            "ollvm_loop_guards=%d suppressed=%d",
             n_cond,
             len(arm_mods),
+            len(ollvm_guard_lowerings),
+            len(ollvm_suppressed),
         )
     # Folded counted-loop guards (ticket llr-pydd): a guard the back-edge model
     # recovered as a SELF-LOOP (write_block routes to itself) is the

@@ -39,6 +39,8 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     ExecutedPipeline,
     PlannedPipeline,
 )
+from d810.analyses.value_flow.observation import FactObservation
+from d810.analyses.value_flow.projection import LIFECYCLE_PRODUCTION_PROVEN
 from d810.transforms.plan_fragment import StageResult
 from d810.transforms.snapshot import (
     AnalysisSnapshot,
@@ -3167,6 +3169,280 @@ def test_post_execute_cleanup_uses_profile_carrier_facts_without_ollvm_name_gate
     assert ("output", facts) in seen
     assert ("alias", facts) in seen
     assert ("same", facts) in seen
+
+
+def test_post_execute_cleanup_runs_local_carrier_repairs_at_glbopt1(
+    monkeypatch,
+) -> None:
+    facts = (SimpleNamespace(fact_id="carrier:glbopt1"),)
+    seen: list[tuple[str, tuple[object, ...]]] = []
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=GenericDispatcherEngineProfile(
+            name="carrier_fixture",
+            collector_factory=_Collector,
+            state_transport="fixture_transport",
+            lowering_mode="fixture_lowering",
+            post_execute_carrier_fact_factory=lambda _mba: facts,
+        )
+    )
+    mba = SimpleNamespace(
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        mark_chains_dirty=lambda: seen.append(("mark", ())),
+        optimize_local=lambda _arg: seen.append(("optimize", ())),
+    )
+    snapshot = AnalysisSnapshot(
+        mba=mba,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        flow_graph=FlowGraph(
+            blocks=_flow_graph_with_edge().blocks,
+            entry_serial=0,
+            func_ea=0x401000,
+            metadata={EMULATED_DISPATCHER_MODIFICATIONS_KEY: ()},
+        ),
+        state_summary=StateModelSummary(
+            state_constants=frozenset(),
+            handler_count=1,
+            transition_count=0,
+        ),
+    )
+
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_apply_carrier_output_alias_repair",
+        lambda _mba, _logger, carrier_facts: (
+            seen.append(("output", tuple(carrier_facts))) or 1
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_apply_local_alias_mem2reg",
+        lambda _mba, _logger, carrier_facts: (
+            seen.append(("alias", tuple(carrier_facts))) or 1
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_apply_same_carrier_alias_repairs",
+        lambda _mba, _logger, carrier_facts: (
+            seen.append(("same", tuple(carrier_facts))) or 1
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_apply_semantic_carrier_promotions",
+        lambda _mba, _logger, carrier_facts: (
+            seen.append(("semantic", tuple(carrier_facts))) or 1
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module.DeferredGraphModifier,
+        "run_deep_cleaning",
+        lambda _self, **_kwargs: seen.append(("deep_clean", ())) or 0,
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "safe_verify",
+        lambda _mba, _context, logger_func=None: seen.append(("verify", ())),
+    )
+
+    assert family.post_execute_cleanup(mba, snapshot=snapshot, total_changes=1) == 3
+    assert ("output", facts) not in seen
+    assert ("alias", facts) in seen
+    assert ("same", facts) in seen
+    assert ("semantic", facts) in seen
+
+
+def test_post_execute_cleanup_projects_diagnostic_carrier_facts_at_glbopt1(
+    monkeypatch,
+) -> None:
+    text = "mov    &(%var_18).8, %var_378.8"
+    raw_fact = FactObservation(
+        fact_id="ollvm-local-pointer",
+        kind="OllvmValueFlowEvidence",
+        semantic_key="ollvm_carrier:LOCAL_WORKING_POINTER:%var_378",
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+        confidence=0.9,
+        source_block=7,
+        source_ea=0x18000F0D6,
+        payload={
+            "carrier_token": "%var_378",
+            "instruction_dstr": text,
+            "instruction_ea": 0x18000F0D6,
+            "instruction_index": 0,
+            "instruction_opcode_name": "mov",
+            "local_base_token": "%var_18",
+            "role": "LOCAL_WORKING_POINTER",
+            "source_block": 7,
+        },
+        evidence=(text,),
+    )
+    fact_view = SimpleNamespace(active_observations=(raw_fact,))
+    seen: list[tuple[str, tuple[object, ...]]] = []
+
+    family = EmulatedDispatcherStrategyFamily(
+        profile=GenericDispatcherEngineProfile(
+            name="carrier_fixture",
+            collector_factory=_Collector,
+            state_transport="fixture_transport",
+            lowering_mode="fixture_lowering",
+            post_execute_carrier_fact_factory=lambda _mba: (),
+        )
+    )
+    mba = SimpleNamespace(
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        mark_chains_dirty=lambda: seen.append(("mark", ())),
+        optimize_local=lambda _arg: seen.append(("optimize", ())),
+    )
+    snapshot = AnalysisSnapshot(
+        mba=mba,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+        diagnostic_fact_view=fact_view,
+        flow_graph=FlowGraph(
+            blocks=_flow_graph_with_edge().blocks,
+            entry_serial=0,
+            func_ea=0x401000,
+            metadata={EMULATED_DISPATCHER_MODIFICATIONS_KEY: ()},
+        ),
+        state_summary=StateModelSummary(
+            state_constants=frozenset(),
+            handler_count=1,
+            transition_count=0,
+        ),
+    )
+
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_apply_local_alias_mem2reg",
+        lambda _mba, _logger, carrier_facts: (
+            seen.append(("alias", tuple(carrier_facts))) or 1
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_apply_same_carrier_alias_repairs",
+        lambda _mba, _logger, carrier_facts: (
+            seen.append(("same", tuple(carrier_facts))) or 0
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "_apply_semantic_carrier_promotions",
+        lambda _mba, _logger, carrier_facts: (
+            seen.append(("semantic", tuple(carrier_facts))) or 0
+        ),
+    )
+    monkeypatch.setattr(
+        emulated_family_module.DeferredGraphModifier,
+        "run_deep_cleaning",
+        lambda _self, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        emulated_family_module,
+        "safe_verify",
+        lambda *_args, **_kwargs: None,
+    )
+
+    assert family.post_execute_cleanup(mba, snapshot=snapshot, total_changes=1) == 1
+    alias_facts = dict(seen)["alias"]
+    assert any(getattr(fact, "kind", None) == "ScalarReplacementFact" for fact in alias_facts)
+
+
+def test_ollvm_local_pointer_scalarization_keeps_logical_carrier_identity() -> None:
+    def _scalar_fact(
+        *,
+        fact_id: str,
+        token: str,
+        proof_family: str,
+        base_token: str,
+        source_ea: int,
+    ) -> FactObservation:
+        return FactObservation(
+            fact_id=fact_id,
+            kind="ScalarReplacementFact",
+            semantic_key=f"local_storage_scalarization:token:{token}",
+            maturity="MMAT_GLBOPT1",
+            phase="pre_d810",
+            confidence=0.9,
+            source_block=44,
+            source_ea=source_ea,
+            payload={
+                "lifecycle_status": LIFECYCLE_PRODUCTION_PROVEN,
+                "storage_identity": token,
+                "anchor_locator": {
+                    "requires_live_revalidation": True,
+                    "source_block": 44,
+                    "instruction_ea": source_ea,
+                    "instruction_index": 0,
+                    "instruction_opcode_name": "m_mov",
+                    "instruction_text_sha1": "hash",
+                    "carrier_token": token,
+                },
+                "storage_overlap_proof": {
+                    "fully_included": True,
+                    "partial_overlap": False,
+                    "carrier_token": token,
+                    "base_token": base_token,
+                },
+                "details": {
+                    "proof_family": proof_family,
+                    "local_base_token": base_token,
+                },
+            },
+            evidence=(),
+        )
+
+    facts = (
+        _scalar_fact(
+            fact_id="accumulator-expression",
+            token="%var_378",
+            proof_family="local_expression_storage_scalarization",
+            base_token="%var_18",
+            source_ea=0x18000EC46,
+        ),
+        _scalar_fact(
+            fact_id="loop-index-pointer",
+            token="%var_398",
+            proof_family="local_pointer_storage_scalarization",
+            base_token="%var_18",
+            source_ea=0x18000F135,
+        ),
+        _scalar_fact(
+            fact_id="password-buffer-pointer",
+            token="%var_388",
+            proof_family="local_pointer_storage_scalarization",
+            base_token="%var_98",
+            source_ea=0x18000F0FA,
+        ),
+    )
+
+    specs = emulated_family_module._ollvm_local_alias_scalarization_specs(facts)
+
+    assert specs["%var_378"].base_token == "%var_18"
+    assert specs["%var_398"].base_token == "%var_398"
+    assert "%var_388" not in specs
+
+
+def test_ollvm_anchor_lookup_falls_back_to_ea_after_serial_shift() -> None:
+    text = "mov    &(%var_18).8, %var_378.8"
+    insn = SimpleNamespace(ea=0x18000F0D6, next=None, dstr=lambda: text)
+
+    def _get_mblock(serial: int):
+        return SimpleNamespace(head=insn) if serial == 3 else None
+
+    mba = SimpleNamespace(qty=4, get_mblock=_get_mblock)
+    locator = {
+        "requires_live_revalidation": True,
+        "source_block": 99,
+        "instruction_ea": 0x18000F0D6,
+        "instruction_index": 7,
+        "instruction_opcode_name": "m_mov",
+        "instruction_text_sha1": emulated_family_module._ollvm_instruction_text_digest(text),
+        "carrier_token": "%var_378",
+    }
+
+    assert emulated_family_module._ollvm_fact_anchor_is_live(mba, locator) is True
 
 
 def test_emulated_dispatcher_unflattener_accepts_tigress_switch_profile() -> None:

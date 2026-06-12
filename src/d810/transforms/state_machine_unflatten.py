@@ -57,6 +57,7 @@ from d810.transforms.reconstruction_postprocess_planning import (
 from d810.transforms.semantic_regions import SemanticRegionPlan
 from d810.transforms.spine_emission import emit_spine_modifications
 from d810.transforms.use_def_redirect_filter import filter_use_def_severing_redirects
+from d810.transforms.mod_claims import collect_mod_claims
 from d810.analyses.control_flow.reconstruction_discovery import (
     classify_artifact_return_blocks,
 )
@@ -353,7 +354,8 @@ def _reconstruction_postprocess_mods(
     state_var_stkoff,
     constant_result=None,
     projected_flow_graph=None,
-) -> tuple[object, ...]:
+    exact_dispatcher_map=None,
+) -> tuple[tuple[object, ...], int, int]:
     """Run the portable reconstruction postprocess -> the rich neutral mod set (the returns=8 chain).
 
     Translates ``StateWriteReconstructionStrategy``'s postprocess: the already-portable
@@ -410,6 +412,7 @@ def _reconstruction_postprocess_mods(
         artifact_return_blocks=set(int(b) for b in artifact_return_blocks),
         common_return_corridor=set(int(b) for b in common_return_corridor),
         node_by_key=node_by_key,
+        exact_dispatcher_map=exact_dispatcher_map,
     )
     mods: list = []
     if result.preheader_bridge.modification is not None:
@@ -418,6 +421,16 @@ def _reconstruction_postprocess_mods(
     mods.extend(result.feeder_plan.modifications)
     mods.extend(result.fixpoint_feeder_plan.modifications)
     mods.extend(result.return_plan.modifications)
+    effective_spine_mods = tuple(spine_mods)
+    return_claimed_sources, _return_claimed_targets = collect_mod_claims(
+        list(result.return_plan.modifications)
+    )
+    if return_claimed_sources:
+        effective_spine_mods = tuple(
+            mod
+            for mod in spine_mods
+            if not (collect_mod_claims([mod])[0] & return_claimed_sources)
+        )
     if logger.info_on:
         skip_reasons: dict[str, int] = {}
         for entry in result.return_plan.skipped_entries:
@@ -433,7 +446,12 @@ def _reconstruction_postprocess_mods(
             len(owned_blocks),
             skip_reasons,
         )
-    return tuple(mods)
+    postprocess_mods = tuple(mods)
+    return (
+        (*effective_spine_mods, *postprocess_mods),
+        len(effective_spine_mods),
+        len(postprocess_mods),
+    )
 
 
 def lower_to_direct_graph(
@@ -529,7 +547,7 @@ def lower_to_direct_graph(
             live_function=live_function,
             state_var_stkoff=state_var_stkoff,
         )
-        postprocess_mods = _reconstruction_postprocess_mods(
+        planner_mods, spine_count, postprocess_count = _reconstruction_postprocess_mods(
             dag,
             graph,
             int(dispatcher_entry_serial),
@@ -541,13 +559,13 @@ def lower_to_direct_graph(
             state_var_stkoff=state_var_stkoff,
             constant_result=constant_result,
             projected_flow_graph=projected_flow_graph,
+            exact_dispatcher_map=dispatch_map,
         )
-        planner_mods = (*spine_mods, *postprocess_mods)
         if logger.info_on:
             logger.info(
                 "unflat #4 full-reconstruction: spine=%d postprocess=%d total=%d",
-                len(spine_mods),
-                len(postprocess_mods),
+                spine_count,
+                postprocess_count,
                 len(planner_mods),
             )
         # Compile the neutral GraphModification mods into applicable PatchPlan steps

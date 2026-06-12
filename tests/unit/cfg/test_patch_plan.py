@@ -29,6 +29,7 @@ from d810.transforms.graph_modification import (
     PhaseCycleLowering,
     RedirectGoto,
     RemoveEdge,
+    RetargetOutputStore,
     ScalarizeLocalAliasAccess,
 )
 from d810.transforms.materialization_payload import (
@@ -57,6 +58,7 @@ from d810.transforms.plan import (
     PatchPlan,
     PatchRedirectGoto,
     PatchRemoveEdge,
+    PatchRetargetOutputStore,
     PatchScalarizeLocalAliasAccess,
     VirtualBlockId,
     compile_patch_plan,
@@ -1225,16 +1227,25 @@ def test_compile_patch_plan_round_trips_legacy_flow_primitives():
             host_text_sha1="abc123",
             value_size=8,
         ),
+        RetargetOutputStore(
+            block_serial=15,
+            host_ea=0x401050,
+            host_opcode=124,
+            alias_token="var_370",
+            output_token="var_30",
+            host_text_sha1="def456",
+            value_size=4,
+        ),
         PhaseCycleLowering(
-            header_entries=(15,),
-            header_target=16,
-            body_entries=(17,),
-            body_target=15,
-            next_phase_entries=(18,),
-            next_phase_target=19,
-            terminal_entries=(20,),
-            terminal_target=21,
-            state_roles=(("header", 15),),
+            header_entries=(16,),
+            header_target=17,
+            body_entries=(18,),
+            body_target=16,
+            next_phase_entries=(19,),
+            next_phase_target=20,
+            terminal_entries=(21,),
+            terminal_target=22,
+            state_roles=(("header", 16),),
         ),
     ]
 
@@ -1245,5 +1256,6 @@ def test_compile_patch_plan_round_trips_legacy_flow_primitives():
     assert isinstance(plan.steps[2], PatchBypassDispatcherTrampoline)
     assert isinstance(plan.steps[3], PatchCanonicalizeJumpTableCaseOverlap)
     assert isinstance(plan.steps[4], PatchScalarizeLocalAliasAccess)
-    assert isinstance(plan.steps[5], PatchPhaseCycleLowering)
+    assert isinstance(plan.steps[5], PatchRetargetOutputStore)
+    assert isinstance(plan.steps[6], PatchPhaseCycleLowering)
     assert plan.as_graph_modifications() == modifications

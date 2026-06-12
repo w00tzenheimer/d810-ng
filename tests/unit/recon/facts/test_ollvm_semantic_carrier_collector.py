@@ -101,6 +101,44 @@ def test_records_argument_and_password_call_carriers() -> None:
     assert by_role["PASSWORD_BUFFER"].payload["carrier_token"] == "%var_98"
 
 
+def test_records_native_imagebase_password_compare_carriers() -> None:
+    facts = _collect(_target(
+        _block(
+            1,
+            _insn(
+                index=0,
+                opcode_name="op_56",
+                dstr=(
+                    "call   $printf <...:\"const char *const Format\" "
+                    "&($aPleaseEnterPassword).8> => int .0"
+                ),
+            ),
+            _insn(
+                index=1,
+                opcode_name="op_4",
+                dstr=(
+                    "mov    call $__ImageBase<std:\"HINSTANCE hinstDLL\" "
+                    "&(%var_98{40}).8,\"DWORD fdwReason\" "
+                    "low.4(&($hinstDLL@3).8),\"LPVOID lpReserved\" #0x64.8> "
+                    "=> BOOL .4, %var_58.4{61}"
+                ),
+            ),
+        )
+    ))
+
+    by_role = {fact.payload["role"]: fact for fact in facts}
+    assert by_role["PASSWORD_BUFFER"].payload["carrier_token"] == "%var_98"
+    assert by_role["PASSWORD_COMPARE_RESULT"].payload["carrier_token"] == "%var_58"
+    assert (
+        by_role["PASSWORD_COMPARE_RESULT"].payload["call_kind"]
+        == "native_imagebase_strncmp_like"
+    )
+    assert (
+        by_role["PASSWORD_COMPARE_RESULT"].payload["password_buffer_token"]
+        == "%var_98"
+    )
+
+
 def test_distinguishes_loop_index_from_accumulator() -> None:
     facts = _collect(_target(
         _block(

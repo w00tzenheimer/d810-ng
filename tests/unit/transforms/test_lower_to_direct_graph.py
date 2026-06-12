@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import d810.transforms.state_machine_unflatten as smu
 from d810.analyses.control_flow.transition_builder import StateTransition, TransitionResult
 from d810.analyses.control_flow.linearized_state_dag import (
     RedirectSourceKind,
@@ -20,7 +21,7 @@ from d810.transforms.state_machine_unflatten import (
     _spine_redirects_from_dag,
     lower_to_direct_graph,
 )
-from d810.transforms.graph_modification import ConvertToGoto
+from d810.transforms.graph_modification import ConvertToGoto, RedirectGoto
 from d810.transforms.plan import (
     PatchConvertToGoto,
     PatchPlan,
@@ -162,6 +163,46 @@ def test_return_wiring_skips_already_claimed_anchor():
         claimed_sources={30},
     )
     assert steps == ()
+
+
+def test_postprocess_merge_drops_spine_mods_claimed_by_return_plan(monkeypatch):
+    spine_conflict = RedirectGoto(from_serial=10, old_target=6, new_target=30)
+    spine_keep = RedirectGoto(from_serial=11, old_target=6, new_target=40)
+    return_mod = RedirectGoto(from_serial=10, old_target=6, new_target=20)
+    graph = _graph_with_lookup({10: (1, (6,)), 11: (1, (6,))})
+
+    monkeypatch.setattr(smu, "record_recovered_flow_graph", lambda graph: None)
+    monkeypatch.setattr(
+        smu,
+        "plan_reconstruction_postprocess_modifications",
+        lambda **kwargs: SimpleNamespace(
+            preheader_bridge=SimpleNamespace(modification=None),
+            bridge_plan=SimpleNamespace(modifications=(), log_entries=()),
+            feeder_plan=SimpleNamespace(modifications=(), log_entries=()),
+            fixpoint_feeder_plan=SimpleNamespace(modifications=(), log_entries=()),
+            return_plan=SimpleNamespace(
+                modifications=(return_mod,),
+                skipped_entries=(),
+            ),
+        ),
+    )
+
+    mods, spine_count, postprocess_count = smu._reconstruction_postprocess_mods(
+        SimpleNamespace(nodes=()),
+        graph,
+        6,
+        spine_mods=(spine_conflict, spine_keep),
+        bst_node_blocks=set(),
+        dispatcher=None,
+        common_return_corridor=set(),
+        artifact_return_blocks=set(),
+        state_var_stkoff=None,
+        projected_flow_graph=graph,
+    )
+
+    assert mods == (spine_keep, return_mod)
+    assert spine_count == 1
+    assert postprocess_count == 1
 
 
 def test_convert_to_goto_modification_maps_to_patch_convert_to_goto():

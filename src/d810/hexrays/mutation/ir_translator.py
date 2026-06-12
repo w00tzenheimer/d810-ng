@@ -66,6 +66,7 @@ from d810.transforms.plan import (
     PatchRedirectBranch,
     PatchRedirectGoto,
     PatchRemoveEdge,
+    PatchRetargetOutputStore,
     PatchScalarizeLocalAliasAccess,
     PatchStep,
 )
@@ -1022,6 +1023,7 @@ class IDAIRTranslator:
                     | PatchBypassDispatcherTrampoline()
                     | PatchCanonicalizeJumpTableCaseOverlap()
                     | PatchScalarizeLocalAliasAccess()
+                    | PatchRetargetOutputStore()
                     | PatchPhaseCycleLowering()
                 ):
                     continue
@@ -1226,6 +1228,29 @@ class IDAIRTranslator:
                     value_size=value_size,
                     description=(
                         f"scalarize local alias {alias}->{base} at "
+                        f"{hex(host_ea)} in block {serial}"
+                    ),
+                )
+
+            case PatchRetargetOutputStore(
+                block_serial=serial,
+                host_ea=host_ea,
+                host_opcode=opcode,
+                alias_token=alias,
+                output_token=output,
+                host_text_sha1=host_text_sha1,
+                value_size=value_size,
+            ):
+                modifier.queue_retarget_output_store(
+                    serial,
+                    host_ea,
+                    opcode,
+                    alias,
+                    output,
+                    host_text_sha1=host_text_sha1,
+                    value_size=value_size,
+                    description=(
+                        f"retarget output store {alias}->{output} at "
                         f"{hex(host_ea)} in block {serial}"
                     ),
                 )

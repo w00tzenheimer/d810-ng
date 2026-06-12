@@ -58,6 +58,8 @@ def collect_live_fake_jump_block_fixes(
         return ()
     if blk.nextb is None:
         return ()
+    if _live_block_has_terminal_successor(blk):
+        return ()
 
     if logger is not None:
         logger.info(
@@ -72,6 +74,15 @@ def collect_live_fake_jump_block_fixes(
     for pred_serial in list(blk.predset):
         pred_blk = blk.mba.get_mblock(pred_serial)
         if pred_blk is None or pred_blk.tail is None:
+            continue
+        if _last_assignment_to_mop_is_nonconstant(pred_blk, op_compared):
+            if logger is not None:
+                logger.info(
+                    "Pred %s updates compared operand for candidate fake jump %s "
+                    "with a non-constant value; preserving carrier guard",
+                    pred_blk.serial,
+                    blk.serial,
+                )
             continue
 
         branch_arm_target = _resolve_fake_jump_branch_arm_target(
@@ -213,6 +224,37 @@ def _live_block_successors(blk: object) -> tuple[int, ...]:
     return tuple(successors)
 
 
+def _live_successor_count(blk: object) -> int:
+    if blk is None:
+        return 0
+    nsucc = getattr(blk, "nsucc", None)
+    if callable(nsucc):
+        try:
+            return int(nsucc())
+        except (AttributeError, TypeError, ValueError):
+            return 0
+    if nsucc is not None:
+        try:
+            return int(nsucc)
+        except (TypeError, ValueError):
+            return 0
+    return len(_live_block_successors(blk))
+
+
+def _live_block_has_terminal_successor(blk: object) -> bool:
+    mba = getattr(blk, "mba", None)
+    if mba is None:
+        return False
+    getter = getattr(mba, "get_mblock", None)
+    if not callable(getter):
+        return False
+    for succ in _live_block_successors(blk):
+        succ_blk = getter(int(succ))
+        if succ_blk is not None and _live_successor_count(succ_blk) == 0:
+            return True
+    return False
+
+
 def _resolve_fake_jump_branch_arm_target(
     blk: object,
     pred_blk: object,
@@ -331,6 +373,34 @@ def _find_live_state_assignment(blk: object, state_mop: object) -> int | None:
                     return insn.l.signed_value()
         insn = insn.prev
     return None
+
+
+def _last_assignment_to_mop_is_nonconstant(blk: object, mop: object) -> bool:
+    """Return True when ``blk``'s last write to ``mop`` is not a constant move.
+
+    Fake-jump cleanup may bypass a conditional when each predecessor gives the
+    compared operand a known constant.  That is not valid for loop latches whose
+    predecessor computes the compared operand dynamically, e.g. ``i = i + 1``
+    followed by ``jb i, bound``.  In that shape the branch is the loop-carrier
+    guard and must remain in the CFG.
+    """
+    if blk is None or mop is None:
+        return False
+    insn = getattr(blk, "tail", None)
+    while insn is not None:
+        dest = getattr(insn, "d", None)
+        equal_mops = getattr(dest, "equal_mops", None)
+        if (
+            dest is not None
+            and callable(equal_mops)
+            and equal_mops(mop, ida_hexrays.EQ_IGNSIZE)
+        ):
+            return not (
+                getattr(insn, "opcode", None) == ida_hexrays.m_mov
+                and getattr(getattr(insn, "l", None), "t", None) == ida_hexrays.mop_n
+            )
+        insn = getattr(insn, "prev", None)
+    return False
 
 
 def _iter_pre_tail_instructions(blk: object) -> tuple[object, ...]:

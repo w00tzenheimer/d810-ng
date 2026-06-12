@@ -5,6 +5,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from d810.analyses.control_flow.edit_simulation import SimulatedEdit, simulate_edits
+from d810.ir.flowgraph import BlockKind, FlowGraph, InsnKind
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,202 @@ class StructuralCheckResult:
     passed: bool
     reason: str = ""
     diagnostics: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TerminalReachabilityResult:
+    """Result of checking that a reachable terminal route stays reachable."""
+
+    passed: bool
+    pre_reachable_terminals: frozenset[int]
+    post_reachable_terminals: frozenset[int]
+    pre_reachable_count: int
+    post_reachable_count: int
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class EntryReachabilityResult:
+    """Result of checking that a rewrite does not collapse entry reachability."""
+
+    passed: bool
+    pre_reachable_count: int
+    post_reachable_count: int
+    retained_ratio: float
+    min_pre_reachable: int
+    min_retained_ratio: float
+    reason: str = ""
+
+
+def reachable_from_adjacency(
+    adj: dict[int, list[int]] | dict[int, tuple[int, ...]],
+    entry_serial: int,
+) -> frozenset[int]:
+    """Return nodes reachable from *entry_serial* in an adjacency map."""
+    if entry_serial not in adj:
+        return frozenset()
+
+    visited: set[int] = set()
+    queue: deque[int] = deque([int(entry_serial)])
+    while queue:
+        serial = queue.popleft()
+        if serial in visited or serial not in adj:
+            continue
+        visited.add(serial)
+        queue.extend(int(succ) for succ in adj.get(serial, ()))
+    return frozenset(visited)
+
+
+_BADADDR_64 = 0xFFFFFFFFFFFFFFFF
+
+
+def _is_explicit_terminal_block(block: object) -> bool:
+    if getattr(block, "kind", None) is BlockKind.STOP:
+        return True
+    if getattr(block, "tail_kind", None) is InsnKind.RET:
+        return True
+    try:
+        start_ea = int(getattr(block, "start_ea", -1) or -1)
+    except (TypeError, ValueError):
+        start_ea = -1
+    succs = getattr(block, "succs", ()) or ()
+    return start_ea == _BADADDR_64 and len(succs) == 0
+
+
+def _terminal_block_serials(cfg: FlowGraph) -> frozenset[int]:
+    return frozenset(
+        int(serial)
+        for serial, block in cfg.blocks.items()
+        if _is_explicit_terminal_block(block)
+    )
+
+
+def reachable_terminal_blocks(cfg: FlowGraph) -> frozenset[int]:
+    """Return explicit terminal blocks reachable from the CFG entry."""
+    reachable = reachable_from_adjacency(cfg.as_adjacency_dict(), cfg.entry_serial)
+    return frozenset(_terminal_block_serials(cfg) & reachable)
+
+
+def reachable_terminal_blocks_from_adjacency(
+    cfg: FlowGraph,
+    adj: dict[int, list[int]] | dict[int, tuple[int, ...]],
+) -> frozenset[int]:
+    """Return CFG terminal blocks reachable in an alternate adjacency map."""
+    reachable = reachable_from_adjacency(adj, cfg.entry_serial)
+    return frozenset(_terminal_block_serials(cfg) & reachable)
+
+
+def check_terminal_reachability_preserved(
+    pre_cfg: FlowGraph,
+    *,
+    post_cfg: FlowGraph | None = None,
+    post_adj: dict[int, list[int]] | dict[int, tuple[int, ...]] | None = None,
+) -> TerminalReachabilityResult:
+    """Require a reachable terminal route before a rewrite to remain reachable.
+
+    General block reachability stays diagnostic-only for cleanup stages.  This
+    check is narrower: if the pre-state has a reachable explicit terminal block,
+    a simulated or live post-state may not make all terminal blocks unreachable.
+    """
+    if (post_cfg is None) == (post_adj is None):
+        raise ValueError("provide exactly one of post_cfg or post_adj")
+
+    pre_reachable = reachable_from_adjacency(
+        pre_cfg.as_adjacency_dict(),
+        pre_cfg.entry_serial,
+    )
+    pre_terminals = frozenset(_terminal_block_serials(pre_cfg) & pre_reachable)
+
+    if post_cfg is not None:
+        post_reachable = reachable_from_adjacency(
+            post_cfg.as_adjacency_dict(),
+            post_cfg.entry_serial,
+        )
+        post_terminals = frozenset(_terminal_block_serials(post_cfg) & post_reachable)
+    else:
+        post_reachable = reachable_from_adjacency(post_adj or {}, pre_cfg.entry_serial)
+        post_terminals = frozenset(_terminal_block_serials(pre_cfg) & post_reachable)
+
+    if pre_terminals and not post_terminals:
+        return TerminalReachabilityResult(
+            passed=False,
+            pre_reachable_terminals=pre_terminals,
+            post_reachable_terminals=post_terminals,
+            pre_reachable_count=len(pre_reachable),
+            post_reachable_count=len(post_reachable),
+            reason="all reachable terminal routes became unreachable",
+        )
+    return TerminalReachabilityResult(
+        passed=True,
+        pre_reachable_terminals=pre_terminals,
+        post_reachable_terminals=post_terminals,
+        pre_reachable_count=len(pre_reachable),
+        post_reachable_count=len(post_reachable),
+    )
+
+
+def check_entry_reachability_not_collapsed(
+    pre_cfg: FlowGraph,
+    *,
+    post_cfg: FlowGraph | None = None,
+    post_adj: dict[int, list[int]] | dict[int, tuple[int, ...]] | None = None,
+    min_pre_reachable: int = 20,
+    min_retained_ratio: float = 0.5,
+) -> EntryReachabilityResult:
+    """Reject rewrites that collapse a broad entry component into a tiny island."""
+    if (post_cfg is None) == (post_adj is None):
+        raise ValueError("provide exactly one of post_cfg or post_adj")
+
+    pre_reachable = reachable_from_adjacency(
+        pre_cfg.as_adjacency_dict(),
+        pre_cfg.entry_serial,
+    )
+    if post_cfg is not None:
+        post_reachable = reachable_from_adjacency(
+            post_cfg.as_adjacency_dict(),
+            post_cfg.entry_serial,
+        )
+    else:
+        post_reachable = reachable_from_adjacency(post_adj or {}, pre_cfg.entry_serial)
+
+    return check_entry_reachability_counts_not_collapsed(
+        pre_reachable_count=len(pre_reachable),
+        post_reachable_count=len(post_reachable),
+        min_pre_reachable=min_pre_reachable,
+        min_retained_ratio=min_retained_ratio,
+    )
+
+
+def check_entry_reachability_counts_not_collapsed(
+    *,
+    pre_reachable_count: int,
+    post_reachable_count: int,
+    min_pre_reachable: int = 20,
+    min_retained_ratio: float = 0.5,
+) -> EntryReachabilityResult:
+    """Evaluate entry reachability preservation from already-computed counts."""
+    pre_count = int(pre_reachable_count)
+    post_count = int(post_reachable_count)
+    retained_ratio = (post_count / pre_count) if pre_count else 1.0
+
+    if pre_count >= min_pre_reachable and retained_ratio < min_retained_ratio:
+        return EntryReachabilityResult(
+            passed=False,
+            pre_reachable_count=pre_count,
+            post_reachable_count=post_count,
+            retained_ratio=retained_ratio,
+            min_pre_reachable=min_pre_reachable,
+            min_retained_ratio=min_retained_ratio,
+            reason="entry reachability collapsed",
+        )
+    return EntryReachabilityResult(
+        passed=True,
+        pre_reachable_count=pre_count,
+        post_reachable_count=post_count,
+        retained_ratio=retained_ratio,
+        min_pre_reachable=min_pre_reachable,
+        min_retained_ratio=min_retained_ratio,
+    )
 
 
 def check_edge_split_structural_legality(

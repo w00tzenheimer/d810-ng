@@ -18,6 +18,8 @@ XOR_MASK_COMPLEMENT = 0xE8CF9C3E
 FINAL_SELECT_MASK = 0xCD536960
 FINAL_XOR = 0x259CF55E
 FINAL_COMPLEMENT_MASK = 0x32AC969F
+COUNTED_LOOP_BOUND_PATTERN = r"(?:0x64|100)"
+LVALUE_PATTERN = r"(?:LODWORD\([^)]+\)|[A-Za-z_]\w*(?:\[[^\]]+\])?)"
 
 
 @dataclass(frozen=True)
@@ -94,14 +96,100 @@ def prove_terminal_bcf_forms_equivalent() -> bool:
     return _mask32(FINAL_SELECT_MASK ^ FINAL_XOR) == XOR_MASK_COMPLEMENT
 
 
-def _has_counted_loop(code: str) -> bool:
-    return bool(
-        re.search(
-            r"for\s*\([^;]*=\s*0\s*;\s*[^;]*<\s*0x64\s*;\s*\+\+[^)]*\)",
-            code,
-            re.MULTILINE,
-        )
-    )
+def _canonical_expr(expr: str) -> str:
+    return re.sub(r"\s+", "", expr)
+
+
+def _strip_dump_line_prefixes(code: str) -> str:
+    return re.sub(r"(?m)^\s*\d+:\s?", "", code)
+
+
+def _index_aliases(body: str, index_expr: str) -> set[str]:
+    aliases = {_canonical_expr(index_expr)}
+    changed = True
+    while changed:
+        changed = False
+        for match in re.finditer(
+            rf"\b([A-Za-z_]\w*)\s*=\s*({LVALUE_PATTERN})(?:\s*\+\+)?\s*;",
+            body,
+        ):
+            lhs = _canonical_expr(match.group(1))
+            rhs = _canonical_expr(match.group(2))
+            if rhs in aliases and lhs not in aliases:
+                aliases.add(lhs)
+                changed = True
+    return aliases
+
+
+def _rhs_has_password_indexed_multiply(rhs: str, index_aliases: set[str]) -> bool:
+    if "char" not in rhs or "*" not in rhs:
+        return False
+    compact = _canonical_expr(rhs)
+    if not any(
+        f"+{alias}" in compact or f"[{alias}]" in compact
+        for alias in index_aliases
+    ):
+        return False
+    if "*" not in rhs:
+        return False
+    multiplier_text = rhs.rsplit("*", 1)[-1].strip()
+    multiplier = re.match(LVALUE_PATTERN, multiplier_text)
+    if multiplier is None:
+        return True
+    return _canonical_expr(multiplier.group(0)) not in index_aliases
+
+
+def _loop_body_has_payload_update(body: str, index_expr: str) -> bool:
+    index_aliases = _index_aliases(body, index_expr)
+    canonical_index = _canonical_expr(index_expr)
+    for match in re.finditer(
+        rf"(?P<lhs>{LVALUE_PATTERN})\s*\+=\s*(?P<rhs>[^;]+);",
+        body,
+        re.MULTILINE,
+    ):
+        lhs = _canonical_expr(match.group("lhs"))
+        if lhs == canonical_index or lhs in index_aliases:
+            continue
+        if _rhs_has_password_indexed_multiply(match.group("rhs"), index_aliases):
+            return True
+    for match in re.finditer(
+        rf"(?P<lhs>{LVALUE_PATTERN})\s*=\s*(?P<rhs>[^;]+);",
+        body,
+        re.MULTILINE,
+    ):
+        lhs = _canonical_expr(match.group("lhs"))
+        if lhs == canonical_index or lhs in index_aliases:
+            continue
+        if _rhs_has_password_indexed_multiply(match.group("rhs"), index_aliases):
+            return True
+    return False
+
+
+def _has_rendered_payload_loop(code: str) -> bool:
+    for match in re.finditer(
+        rf"for\s*\(\s*(?P<idx>[A-Za-z_]\w*)\s*=\s*0\s*;"
+        rf"\s*(?P=idx)\s*<\s*{COUNTED_LOOP_BOUND_PATTERN}\s*;"
+        rf"\s*(?:\+\+\s*(?P=idx)|(?P=idx)\s*\+\+)\s*\)"
+        rf"\s*(?:\{{(?P<braced>.*?)\}}|(?P<single>[^;\n]+;))",
+        code,
+        re.MULTILINE | re.DOTALL,
+    ):
+        body = match.group("braced") or match.group("single") or ""
+        if _loop_body_has_payload_update(body, match.group("idx")):
+            return True
+
+    for match in re.finditer(
+        rf"do\s*(?:\{{(?P<braced>.*?)\}}|(?P<single>[^;]+;))\s*"
+        rf"while\s*\(\s*(?P<idx>{LVALUE_PATTERN})\s*<\s*"
+        rf"{COUNTED_LOOP_BOUND_PATTERN}\s*\)",
+        code,
+        re.MULTILINE | re.DOTALL,
+    ):
+        body = match.group("braced") or match.group("single") or ""
+        if _loop_body_has_payload_update(body, match.group("idx")):
+            return True
+
+    return False
 
 
 def _has_self_feeding_increment_loop(code: str) -> bool:
@@ -131,7 +219,28 @@ def _looks_like_uninitialized_return_artifact(code: str) -> bool:
 
 
 def _looks_like_output_sink(code: str) -> bool:
-    return "**a2" in code or "*output" in code or "output[" in code
+    if "**a2" in code or "*output" in code or "output[" in code:
+        return True
+    output_aliases = {
+        match.group(1)
+        for match in re.finditer(r"\b([A-Za-z_]\w*)\s*=\s*a2\s*;", code)
+    }
+    return any(re.search(rf"\*{re.escape(alias)}\s*=", code) for alias in output_aliases)
+
+
+def _has_prompt_and_secret_compare(code: str) -> bool:
+    if "Please enter password:" not in code:
+        return False
+    if "secret" in code:
+        return True
+    return bool(
+        re.search(
+            rf"_ImageBase\s*\([^;]*(?:hinstDLL\.unused\s*\+\s*3|hinstDLL@3)"
+            rf"[^;]*(?:{COUNTED_LOOP_BOUND_PATTERN})",
+            code,
+            re.MULTILINE | re.DOTALL,
+        )
+    )
 
 
 def _query_ollvm_carrier_facts(
@@ -203,11 +312,15 @@ def evaluate_ollvm_fla_bcf_sub_oracle(
 ) -> OllvmFlaBcfSubOracleResult:
     """Evaluate semantic equivalence facts for the current OLLVM output."""
 
+    code = _strip_dump_line_prefixes(code)
     checks: list[OllvmFlaBcfSubCheck] = [
         OllvmFlaBcfSubCheck(
             "prompt_and_secret_compare",
-            "Please enter password:" in code and "secret" in code,
-            "pseudocode retains prompt/read and the hardcoded password literal",
+            _has_prompt_and_secret_compare(code),
+            (
+                "pseudocode retains prompt/read and the hardcoded password "
+                "literal or native global-string compare"
+            ),
         ),
         OllvmFlaBcfSubCheck(
             "dispatcher_loop_removed",
@@ -247,7 +360,6 @@ def evaluate_ollvm_fla_bcf_sub_oracle(
 
     fact_summary = None
     output_fact_present = False
-    fact_backed_loop_split = False
     if conn is not None:
         fact_summary = _query_ollvm_carrier_facts(conn, func_ea_hex=func_ea_hex)
         required_roles = (
@@ -292,23 +404,16 @@ def evaluate_ollvm_fla_bcf_sub_oracle(
             ),
             "diag facts prove the 5*x+x add operand aliases the same accumulator carrier",
         ))
-        loop_tokens = set(fact_summary.role_tokens.get("LOOP_INDEX_CARRIER", ()))
-        accumulator_tokens = set(fact_summary.role_tokens.get("ACCUMULATOR_CARRIER", ()))
-        fact_backed_loop_split = (
-            bool(loop_tokens)
-            and bool(accumulator_tokens)
-            and loop_tokens.isdisjoint(accumulator_tokens)
-            and fact_summary.alias_multiply_add_proof_count > 0
-        )
-
-    rendered_loop_clean = _has_counted_loop(code) and not _has_self_feeding_increment_loop(code)
+    rendered_loop_clean = (
+        _has_rendered_payload_loop(code)
+        and not _has_self_feeding_increment_loop(code)
+    )
     checks.append(OllvmFlaBcfSubCheck(
         "clean_counted_loop",
-        rendered_loop_clean or fact_backed_loop_split,
+        rendered_loop_clean,
         (
-            "rendered loop is a normal 0..0x64 traversal, or diag facts prove "
-            "the loop-index/accumulator carrier split when IDA renders a "
-            "self-feeding presentation artifact"
+            "rendered loop is a normal 0..0x64 traversal with a password-indexed "
+            "multiply-add into a distinct accumulator carrier"
         ),
     ))
 
