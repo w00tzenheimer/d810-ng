@@ -714,9 +714,9 @@ OLLVM_CASES = [
             "v19 | 1",
         ],
         must_change=True,
-        # From results.toml: PatternOptimizer (71), ChainOptimizer (5), many rules
-        # Only require the core unflattening rule - other rules vary by environment
-        required_rules=["EmulatedDispatcherUnflattener"],
+        # The OLLVM profile now routes this case through the cleanup family; the
+        # semantic oracle owns correctness while this DSL gate keeps rule coverage.
+        required_rules=["SimpleFlatteningCleanupUnflattener"],
         expected_rules=[
             "JumpFixer",
             "ArithmeticChain",

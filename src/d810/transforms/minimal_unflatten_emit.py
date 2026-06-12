@@ -13,12 +13,12 @@ back-edge ``P`` writing state ``S``, re-point ``P -> dispatcher`` onto
 prologue's dispatcher edge is bridged to ``route(initial_state)``.
 
 Anchoring on back-edges (not on the dispatcher's routed *targets*) is robust to
-OLLVM handlers that share suffixes or chain through one another's entry blocks:
-those interior fall-throughs are left as natural control flow and only the
-dispatcher back-edge is rewritten.  Once every back-edge is re-pointed, the
-dispatcher block becomes unreachable and IDA DCEs it (with the state-var writes,
-whose only reader was the dispatcher comparison).  Explicit state-var DSE is
-therefore not emitted here unless a later verification shows residual reads.
+handlers that share suffixes or chain through one another's entry blocks: those
+interior fall-throughs are left as natural control flow and only the dispatcher
+back-edge is rewritten.  Once every back-edge is re-pointed, the dispatcher block
+becomes unreachable and IDA DCEs it (with the state-var writes, whose only reader
+was the dispatcher comparison).  Explicit state-var DSE is therefore not emitted
+here unless a later verification shows residual reads.
 
 Portable transforms-layer: consumes a ``FlowGraph`` + ``IntervalDispatcher``;
 emits ``GraphModification`` values compiled to a ``PatchPlan``.
@@ -37,6 +37,14 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     recover_state_write_transitions_via_partitioned_fixpoint,
 )
 from d810.analyses.control_flow.state_machine_analysis import _is_stop_block
+from d810.analyses.value_flow import (
+    LOOP_PREDICATE_VALUE_FACT_TYPE,
+    OBSERVABLE_OUTPUT_FACT_TYPE,
+    POINTS_TO_FACT_TYPE,
+    SCALAR_REPLACEMENT_FACT_TYPE,
+    SYMBOLIC_EXPRESSION_FACT_TYPE,
+    project_value_flow_facts,
+)
 from d810.core import logging
 from d810.transforms.graph_modification import (
     LowerConditionalStateTransition,
@@ -63,11 +71,11 @@ __all__ = [
     "build_conditional_arm_redirects",
     "build_folded_loop_guard_lowerings",
     "build_folded_loop_guard_transitions",
-    "build_ollvm_local_alias_scalarizations",
-    "build_ollvm_output_store_retargets",
-    "build_ollvm_loop_carrier_latch_redirects",
-    "build_ollvm_loop_carrier_guard_lowerings",
-    "build_ollvm_loop_carrier_guard_transitions",
+    "build_local_alias_scalarizations",
+    "build_output_store_retargets",
+    "build_loop_carrier_latch_redirects",
+    "build_loop_carrier_guard_lowerings",
+    "build_loop_carrier_guard_transitions",
     "lower_conditional_transition_candidates",
 ]
 
@@ -241,7 +249,7 @@ def _return_redirect_target(
 
     The historical emit collapsed all three onto ``default_target`` — correct for
     the hodur / approov shape where the catch-all default IS the function's
-    return/STOP block.  But an OLLVM ``-fla`` chain routes its EXIT state via an
+    return/STOP block.  But a flattened chain can route its EXIT state via an
     EXPLICIT map row to a STOP block (``0xBFF7ACB5 -> 126``) while ``default_target``
     is a SEPARATE catch-all that loops back to the dispatcher; collapsing onto that
     catch-all stranded the terminal output write inside a ``while(1)`` (no exit
@@ -576,75 +584,190 @@ def _instruction_text_digest(text: str) -> str | None:
     return hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
-def _ollvm_role_tokens(fact_view, role: str) -> set[str]:
+def _value_flow_fact_observations(fact_view) -> tuple[object, ...]:
+    """Return canonical value-flow facts projected from active observations."""
+
+    return tuple(project_value_flow_facts(_active_fact_observations(fact_view)))
+
+
+def _facts_of_kind(fact_view, kind: str) -> tuple[object, ...]:
+    return tuple(
+        fact
+        for fact in _value_flow_fact_observations(fact_view)
+        if getattr(fact, "kind", None) == kind
+    )
+
+
+def _fact_payload(fact) -> dict:
+    payload = getattr(fact, "payload", None)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _fact_details(fact) -> dict:
+    details = _fact_payload(fact).get("details")
+    return details if isinstance(details, dict) else {}
+
+
+def _fact_anchor_locator(fact) -> dict:
+    anchor = _fact_payload(fact).get("anchor_locator")
+    return anchor if isinstance(anchor, dict) else {}
+
+
+def _fact_source_identity(fact) -> dict:
+    source_identity = _fact_payload(fact).get("source_identity")
+    return source_identity if isinstance(source_identity, dict) else {}
+
+
+def _fact_proof_family(fact) -> str:
+    return str(_fact_details(fact).get("proof_family") or "")
+
+
+def _fact_storage_token(fact) -> str | None:
+    payload = _fact_payload(fact)
+    details = _fact_details(fact)
+    anchor = _fact_anchor_locator(fact)
+    for value in (
+        payload.get("storage_identity"),
+        details.get("carrier_token"),
+        anchor.get("carrier_token"),
+    ):
+        token = _canonical_local_token(value)
+        if token is not None:
+            return token
+    return None
+
+
+def _fact_source_ea(fact) -> int | None:
+    payload = _fact_payload(fact)
+    anchor = _fact_anchor_locator(fact)
+    source_identity = _fact_source_identity(fact)
+    for value in (
+        payload.get("instruction_ea"),
+        payload.get("instruction_ea_hex"),
+        payload.get("source_ea"),
+        payload.get("source_ea_hex"),
+        anchor.get("instruction_ea"),
+        anchor.get("instruction_ea_hex"),
+        source_identity.get("source_ea"),
+        source_identity.get("source_ea_hex"),
+        getattr(fact, "source_ea", None),
+    ):
+        ea = _int_or_none(value)
+        if ea is not None:
+            return int(ea)
+    return None
+
+
+def _fact_source_block(fact) -> int | None:
+    payload = _fact_payload(fact)
+    anchor = _fact_anchor_locator(fact)
+    source_identity = _fact_source_identity(fact)
+    for value in (
+        payload.get("source_block"),
+        anchor.get("source_block"),
+        source_identity.get("source_block"),
+        getattr(fact, "source_block", None),
+    ):
+        block = _int_or_none(value)
+        if block is not None:
+            return int(block)
+    return None
+
+
+def _fact_instruction_text(fact) -> str:
+    details = _fact_details(fact)
+    anchor = _fact_anchor_locator(fact)
+    text = str(details.get("instruction_dstr") or anchor.get("instruction_dstr") or "")
+    if text:
+        return text
+    evidence = tuple(getattr(fact, "evidence", ()) or ())
+    return str(evidence[0]) if evidence else ""
+
+
+def _fact_tokens_by_kind_and_proof(
+    fact_view,
+    kind: str,
+    proof_families: frozenset[str],
+) -> set[str]:
     tokens: set[str] = set()
-    for obs in _active_fact_observations(fact_view):
-        if getattr(obs, "kind", None) != "OllvmValueFlowEvidence":
+    for fact in _facts_of_kind(fact_view, kind):
+        if proof_families and _fact_proof_family(fact) not in proof_families:
             continue
-        payload = getattr(obs, "payload", None) or {}
-        if payload.get("role") != role:
-            continue
-        token = _canonical_local_token(payload.get("carrier_token"))
+        token = _fact_storage_token(fact)
         if token is not None:
             tokens.add(token)
     return tokens
 
 
-def _ollvm_scalar_working_base_tokens(fact_view) -> set[str]:
+def _semantic_expression_tokens(fact_view) -> set[str]:
+    return _fact_tokens_by_kind_and_proof(
+        fact_view,
+        SYMBOLIC_EXPRESSION_FACT_TYPE,
+        frozenset({"local_alias_expression_carrier"}),
+    )
+
+
+def _loop_predicate_tokens(fact_view) -> set[str]:
+    return _fact_tokens_by_kind_and_proof(
+        fact_view,
+        LOOP_PREDICATE_VALUE_FACT_TYPE,
+        frozenset({"local_loop_predicate_carrier", "loop_predicate_carrier"}),
+    )
+
+
+def _scalar_working_base_tokens(fact_view) -> set[str]:
     bases: set[str] = set()
-    for obs in _active_fact_observations(fact_view):
-        if getattr(obs, "kind", None) != "OllvmValueFlowEvidence":
+    for fact in _facts_of_kind(fact_view, SCALAR_REPLACEMENT_FACT_TYPE):
+        if _fact_proof_family(fact) != "local_expression_storage_scalarization":
             continue
-        payload = getattr(obs, "payload", None) or {}
-        if payload.get("role") != "ACCUMULATOR_CARRIER":
-            continue
+        details = _fact_details(fact)
+        overlap = _fact_payload(fact).get("storage_overlap_proof")
+        if not isinstance(overlap, dict):
+            overlap = {}
         for key in ("multiply_add_base_token", "local_base_token"):
-            base = _canonical_local_token(payload.get(key))
+            base = _canonical_local_token(details.get(key))
             if base is not None:
                 bases.add(base)
+        base = _canonical_local_token(overlap.get("base_token"))
+        if base is not None:
+            bases.add(base)
     return bases
 
 
-def _ollvm_local_alias_scalarization_specs(fact_view) -> dict[str, str]:
-    """Return ``alias -> scalar base`` for OLLVM local carrier scalarization.
+def _local_alias_scalarization_specs(fact_view) -> dict[str, str]:
+    """Return ``alias -> scalar base`` for local carrier scalarization.
 
     The physical ``local_base_token`` groups aliases that point into the same
-    local working storage.  For local-pointer facts whose physical base is also
-    an accumulator carrier base, the safe decompiler move is to scalarize the
+    local working storage. For local-pointer facts whose physical base is also
+    a semantic-expression carrier base, the safe decompiler move is to scalarize the
     memory-through-pointer access onto the alias token itself.  That preserves
     the logical carriers (index, multiplier, accumulator) as distinct locals
     instead of collapsing every access onto the shared physical base.
     """
-    scalar_bases = _ollvm_scalar_working_base_tokens(fact_view)
+    scalar_bases = _scalar_working_base_tokens(fact_view)
     if not scalar_bases:
         return {}
     specs: dict[str, str] = {}
-    for obs in _active_fact_observations(fact_view):
-        if getattr(obs, "kind", None) != "OllvmValueFlowEvidence":
+    for fact in _facts_of_kind(fact_view, SCALAR_REPLACEMENT_FACT_TYPE):
+        proof_family = _fact_proof_family(fact)
+        if proof_family not in {
+            "local_pointer_storage_scalarization",
+            "local_expression_storage_scalarization",
+        }:
             continue
-        payload = getattr(obs, "payload", None) or {}
-        role = payload.get("role")
-        alias = _canonical_local_token(payload.get("carrier_token"))
+        details = _fact_details(fact)
+        alias = _fact_storage_token(fact)
         if alias is None:
             continue
-        if role == "LOCAL_WORKING_POINTER":
-            local_base = _canonical_local_token(payload.get("local_base_token"))
-            if local_base in scalar_bases:
-                specs[alias] = alias
-        elif role == "LOOP_INDEX_CARRIER":
-            local_base = _canonical_local_token(payload.get("local_base_token"))
-            if local_base in scalar_bases:
-                specs.setdefault(alias, alias)
-        elif role == "ACCUMULATOR_CARRIER":
-            base = _canonical_local_token(
-                payload.get("multiply_add_base_token") or payload.get("local_base_token")
-            )
-            if base in scalar_bases:
-                specs.setdefault(alias, alias)
+        base = _canonical_local_token(
+            details.get("local_base_token") or details.get("multiply_add_base_token")
+        )
+        if base in scalar_bases:
+            specs.setdefault(alias, alias)
     return specs
 
 
-def _is_ollvm_local_alias_setup_move(insn, alias_specs: dict[str, str]) -> bool:
+def _is_local_alias_setup_move(insn, alias_specs: dict[str, str]) -> bool:
     text = str(getattr(insn, "display_text", "") or "")
     if "&(" not in text:
         return False
@@ -654,28 +777,10 @@ def _is_ollvm_local_alias_setup_move(insn, alias_specs: dict[str, str]) -> bool:
     return any(alias in text for alias in alias_specs)
 
 
-def _ollvm_non_scalar_local_pointer_tokens(fact_view) -> set[str]:
-    scalar_bases = _ollvm_scalar_working_base_tokens(fact_view)
-    tokens: set[str] = set()
-    for obs in _active_fact_observations(fact_view):
-        if getattr(obs, "kind", None) != "OllvmValueFlowEvidence":
-            continue
-        payload = getattr(obs, "payload", None) or {}
-        if payload.get("role") != "LOCAL_WORKING_POINTER":
-            continue
-        local_base = _canonical_local_token(payload.get("local_base_token"))
-        if local_base in scalar_bases:
-            continue
-        token = _canonical_local_token(payload.get("carrier_token"))
-        if token is not None:
-            tokens.add(token)
-    return tokens
-
-
-def _ollvm_payload_alias_scalarization_blocks(flow_graph, fact_view) -> set[int]:
-    accumulator_tokens = _ollvm_role_tokens(fact_view, "ACCUMULATOR_CARRIER")
-    loop_index_tokens = _ollvm_role_tokens(fact_view, "LOOP_INDEX_CARRIER")
-    if not accumulator_tokens or not loop_index_tokens:
+def _payload_alias_scalarization_blocks(flow_graph, fact_view) -> set[int]:
+    expression_tokens = _semantic_expression_tokens(fact_view)
+    loop_tokens = _loop_predicate_tokens(fact_view)
+    if not expression_tokens or not loop_tokens:
         return set()
     payload_blocks: set[int] = set()
     for serial in flow_graph.blocks:
@@ -688,16 +793,16 @@ def _ollvm_payload_alias_scalarization_blocks(flow_graph, fact_view) -> set[int]
         )
         if "xds" not in text:
             continue
-        if not any(token in text for token in accumulator_tokens):
+        if not any(token in text for token in expression_tokens):
             continue
-        if not any(token in text for token in loop_index_tokens):
+        if not any(token in text for token in loop_tokens):
             continue
         payload_blocks.add(int(serial))
     return payload_blocks
 
 
-def _is_ollvm_loop_index_init(insn, alias_token: str, loop_index_tokens: set[str]) -> bool:
-    if alias_token not in loop_index_tokens:
+def _is_loop_predicate_init(insn, alias_token: str, loop_tokens: set[str]) -> bool:
+    if alias_token not in loop_tokens:
         return False
     text = str(getattr(insn, "display_text", "") or "").strip()
     if not text.startswith("stx"):
@@ -707,13 +812,13 @@ def _is_ollvm_loop_index_init(insn, alias_token: str, loop_index_tokens: set[str
     return _insn_references_alias(insn, alias_token)
 
 
-def build_ollvm_local_alias_scalarizations(flow_graph, fact_view) -> list[object]:
-    """Emit scalarization steps for fact-backed OLLVM local carrier aliases."""
-    alias_specs = _ollvm_local_alias_scalarization_specs(fact_view)
+def build_local_alias_scalarizations(flow_graph, fact_view) -> list[object]:
+    """Emit scalarization steps for fact-backed local carrier aliases."""
+    alias_specs = _local_alias_scalarization_specs(fact_view)
     if not alias_specs:
         return []
-    payload_blocks = _ollvm_payload_alias_scalarization_blocks(flow_graph, fact_view)
-    loop_index_tokens = _ollvm_role_tokens(fact_view, "LOOP_INDEX_CARRIER")
+    payload_blocks = _payload_alias_scalarization_blocks(flow_graph, fact_view)
+    loop_tokens = _loop_predicate_tokens(fact_view)
 
     grouped: dict[tuple[int, int, int], list[tuple[str, int, str]]] = {}
     for serial in flow_graph.blocks:
@@ -721,7 +826,7 @@ def build_ollvm_local_alias_scalarizations(flow_graph, fact_view) -> list[object
         if block is None:
             continue
         for insn in getattr(block, "insn_snapshots", ()) or ():
-            if _is_ollvm_local_alias_setup_move(insn, alias_specs):
+            if _is_local_alias_setup_move(insn, alias_specs):
                 continue
             try:
                 host_ea = int(getattr(insn, "ea", 0) or 0)
@@ -733,10 +838,10 @@ def build_ollvm_local_alias_scalarizations(flow_graph, fact_view) -> list[object
             for alias, base in sorted(alias_specs.items()):
                 if not _insn_references_alias(insn, alias):
                     continue
-                if int(serial) not in payload_blocks and not _is_ollvm_loop_index_init(
+                if int(serial) not in payload_blocks and not _is_loop_predicate_init(
                     insn,
                     alias,
-                    loop_index_tokens,
+                    loop_tokens,
                 ):
                     continue
                 value_size = _alias_access_value_size(insn, alias)
@@ -775,13 +880,13 @@ def build_ollvm_local_alias_scalarizations(flow_graph, fact_view) -> list[object
                     base_token=base,
                     host_text_sha1=text_sha1,
                     value_size=value_size,
-                    reason="ollvm_local_alias_scalarization",
+                    reason="local_alias_scalarization",
                 )
             )
     if mods and logger.info_on:
         aliases = ",".join(sorted({m.alias_token for m in mods}))
         logger.info(
-            "unflat minimal unflatten: ollvm local alias scalarizations=%d aliases=%s",
+            "unflat minimal unflatten: local alias scalarizations=%d aliases=%s",
             len(mods),
             aliases,
         )
@@ -798,42 +903,42 @@ def _local_token_sort_key(token: str) -> tuple[int, str]:
         return (1 << 62, str(token))
 
 
-def _ollvm_output_store_candidates(fact_view) -> tuple[tuple[int, str], ...]:
+def _output_pointer_tokens(fact_view) -> set[str]:
+    return _fact_tokens_by_kind_and_proof(
+        fact_view,
+        POINTS_TO_FACT_TYPE,
+        frozenset({"argument_output_pointer_identity"}),
+    )
+
+
+def _output_store_candidates(fact_view) -> tuple[tuple[int, str], ...]:
     candidates: set[tuple[int, str]] = set()
-    for obs in _active_fact_observations(fact_view):
-        if getattr(obs, "kind", None) != "OllvmValueFlowEvidence":
+    for fact in _facts_of_kind(fact_view, OBSERVABLE_OUTPUT_FACT_TYPE):
+        payload = _fact_payload(fact)
+        if payload.get("observable_effect") != "output_store":
             continue
-        payload = getattr(obs, "payload", None) or {}
-        if payload.get("store_kind") != "masked_output_transform":
+        if _fact_proof_family(fact) != "observable_output_store_carrier":
             continue
-        if payload.get("role") not in {
-            "ARG_OUTPUT_STORE_CANDIDATE",
-            "LOCAL_WORKING_STORE_CANDIDATE",
-            "INDIRECT_STORE_CANDIDATE",
-        }:
-            continue
-        alias = _canonical_local_token(payload.get("carrier_token"))
+        alias = _fact_storage_token(fact)
         if alias is None:
             continue
-        ea = _int_or_none(payload.get("instruction_ea"))
-        if ea is None:
-            ea = _int_or_none(getattr(obs, "source_ea", None))
+        ea = _fact_source_ea(fact)
         if ea is None:
             continue
         candidates.add((int(ea), alias))
     return tuple(sorted(candidates))
 
 
-def build_ollvm_output_store_retargets(flow_graph, fact_view) -> list[object]:
-    """Retarget fact-backed OLLVM terminal stores to the observed output pointer."""
+def build_output_store_retargets(flow_graph, fact_view) -> list[object]:
+    """Retarget fact-backed terminal stores to the observed output pointer."""
     output_tokens = sorted(
-        _ollvm_role_tokens(fact_view, "ARG_OUTPUT_POINTER"),
+        _output_pointer_tokens(fact_view),
         key=_local_token_sort_key,
     )
     if not output_tokens:
         return []
     output_token = output_tokens[0]
-    candidates = _ollvm_output_store_candidates(fact_view)
+    candidates = _output_store_candidates(fact_view)
     if not candidates:
         return []
     emitted: set[tuple[int, int, str, str]] = set()
@@ -876,29 +981,28 @@ def build_ollvm_output_store_retargets(flow_graph, fact_view) -> list[object]:
                     output_token=output_token,
                     host_text_sha1=_instruction_text_digest(text),
                     value_size=source_size or None,
-                    reason="ollvm_output_store_retarget",
+                    reason="output_store_retarget",
                 ))
     if mods and logger.info_on:
         logger.info(
-            "unflat minimal unflatten: ollvm output store retargets=%d output=%s",
+            "unflat minimal unflatten: output store retargets=%d output=%s",
             len(mods),
             output_token,
         )
     return mods
 
 
-def _ollvm_loop_carrier_route_blocks(
+def _loop_carrier_route_blocks(
     flow_graph,
     dispatcher,
     transitions: tuple[StateWriteTransition, ...],
     fact_view,
 ) -> set[int]:
-    """Return routed loop predicate blocks backed by OLLVM loop-index evidence.
+    """Return routed loop predicate blocks backed by canonical loop evidence.
 
-    OLLVM facts record the surviving ``LOOP_INDEX_CARRIER`` as raw
-    ``OllvmValueFlowEvidence`` rather than the Hodur-specific ``LoopCarrierFact``.
-    The fact's block serial is maturity-local, so use the stable instruction EA
-    first and only then fall back to the serial when it still names the live block.
+    Producer facts may come from different profiles and maturities. Use the
+    projected ``LoopPredicateValueFact`` source identity and stable instruction
+    EA first, then fall back to the serial when it still names the live block.
 
     The returned blocks are the route targets of state-write transitions that
     contain the loop-index evidence.  This lets diagnostics report the loop route
@@ -908,22 +1012,11 @@ def _ollvm_loop_carrier_route_blocks(
         return set()
 
     evidence_blocks: set[int] = set()
-    for obs in _active_fact_observations(fact_view):
-        if getattr(obs, "kind", None) != "OllvmValueFlowEvidence":
-            continue
-        payload = getattr(obs, "payload", None) or {}
-        if payload.get("role") != "LOOP_INDEX_CARRIER":
-            continue
-        ea = (
-            _int_or_none(payload.get("instruction_ea"))
-            or _int_or_none(payload.get("instruction_ea_hex"))
-            or _int_or_none(getattr(obs, "source_ea", None))
-        )
+    for fact in _loop_predicate_value_facts(fact_view):
+        ea = _fact_source_ea(fact)
         if ea is not None:
             evidence_blocks.update(_blocks_containing_ea(flow_graph, int(ea)))
-        source_block = _int_or_none(
-            payload.get("source_block", getattr(obs, "source_block", None))
-        )
+        source_block = _fact_source_block(fact)
         if source_block is None:
             continue
         block = flow_graph.get_block(int(source_block))
@@ -947,9 +1040,9 @@ def _ollvm_loop_carrier_route_blocks(
     return routed
 
 
-def _parse_ollvm_counter_bound(payload: dict) -> tuple[int, int, int] | None:
+def _parse_counter_bound_from_fact(fact) -> tuple[int, int, int] | None:
     """Extract ``(fallback_token_value, counter_size, bound)`` from evidence text."""
-    text = str(payload.get("instruction_dstr") or "")
+    text = _fact_instruction_text(fact)
     match = re.search(
         r"\[ds(?:\.\d+)?:%var_([0-9A-Fa-f]+)(?:\.8)?\]\.(\d+)"
         r"\s*,\s*#0x([0-9A-Fa-f]+)",
@@ -1025,22 +1118,17 @@ def _insn_stack_refs_for_display_alias(insn, alias_token: str) -> set[int]:
     return refs
 
 
-def _resolve_ollvm_counter_stkoff(
+def _resolve_counter_stkoff(
     flow_graph,
-    obs,
+    fact,
     alias_token: str | None,
     fallback_stkoff: int,
 ) -> int:
     if alias_token is None:
         return int(fallback_stkoff)
-    payload = getattr(obs, "payload", None) or {}
-    evidence_ea = (
-        _int_or_none(payload.get("instruction_ea"))
-        or _int_or_none(payload.get("instruction_ea_hex"))
-        or _int_or_none(getattr(obs, "source_ea", None))
-    )
+    evidence_ea = _fact_source_ea(fact)
     candidate_refs: set[int] = set()
-    for serial in _source_blocks_for_evidence(flow_graph, obs):
+    for serial in _source_blocks_for_evidence(flow_graph, fact):
         block = flow_graph.get_block(serial)
         if block is None:
             continue
@@ -1057,30 +1145,16 @@ def _resolve_ollvm_counter_stkoff(
     return int(fallback_stkoff)
 
 
-def _ollvm_loop_index_evidence(fact_view) -> tuple[object, ...]:
-    observations: list[object] = []
-    for obs in _active_fact_observations(fact_view):
-        if getattr(obs, "kind", None) != "OllvmValueFlowEvidence":
-            continue
-        payload = getattr(obs, "payload", None) or {}
-        if payload.get("role") == "LOOP_INDEX_CARRIER":
-            observations.append(obs)
-    return tuple(observations)
+def _loop_predicate_value_facts(fact_view) -> tuple[object, ...]:
+    return _facts_of_kind(fact_view, LOOP_PREDICATE_VALUE_FACT_TYPE)
 
 
 def _source_blocks_for_evidence(flow_graph, obs) -> set[int]:
-    payload = getattr(obs, "payload", None) or {}
     evidence_blocks: set[int] = set()
-    ea = (
-        _int_or_none(payload.get("instruction_ea"))
-        or _int_or_none(payload.get("instruction_ea_hex"))
-        or _int_or_none(getattr(obs, "source_ea", None))
-    )
+    ea = _fact_source_ea(obs)
     if ea is not None:
         evidence_blocks.update(_blocks_containing_ea(flow_graph, int(ea)))
-    source_block = _int_or_none(
-        payload.get("source_block", getattr(obs, "source_block", None))
-    )
+    source_block = _fact_source_block(obs)
     if source_block is not None:
         block = flow_graph.get_block(int(source_block))
         if block is not None and (ea is None or _block_contains_ea(block, int(ea))):
@@ -1150,7 +1224,7 @@ def _route_chain_reaches(
     return False
 
 
-def build_ollvm_loop_carrier_latch_redirects(
+def build_loop_carrier_latch_redirects(
     flow_graph,
     transitions: tuple[StateWriteTransition, ...],
     fact_view,
@@ -1158,27 +1232,27 @@ def build_ollvm_loop_carrier_latch_redirects(
     dispatcher_entry_serial: int,
     state_var_stkoff: int | None = None,
 ) -> tuple[list[object], set[int]]:
-    """Route OLLVM loop payload latches directly through the predicate producer.
+    """Route loop payload latches directly through the predicate producer.
 
     The generic back-edge emitter sends ``payload -> route(written_state)``.  In
-    the OLLVM counted-loop shape, that routed state is often a dispatcher spine
-    that eventually reaches the predicate producer.  Leaving the payload on the
-    generic spine lets later simplification collapse the path back into the body
-    and strand the synthetic guard.  The microcode evidence already names both the
-    payload carrier block and the predicate producer; when the payload's routed
-    chain reaches that producer, replace only that payload back-edge with
+    a split counted-loop shape, that routed state is often a dispatcher spine that
+    eventually reaches the predicate producer.  Leaving the payload on the generic
+    spine lets later simplification collapse the path back into the body and
+    strand the synthetic guard.  The value-flow facts already name both the payload
+    carrier block and the predicate producer; when the payload's routed chain
+    reaches that producer, replace only that payload back-edge with
     ``payload -> producer``.
     """
     if fact_view is None:
         return [], set()
     disp = int(dispatcher_entry_serial)
-    payload_blocks = _ollvm_payload_alias_scalarization_blocks(flow_graph, fact_view)
+    payload_blocks = _payload_alias_scalarization_blocks(flow_graph, fact_view)
     if not payload_blocks:
         return [], set()
 
     producer_blocks: set[int] = set()
-    for obs in _ollvm_loop_index_evidence(fact_view):
-        for serial in _source_blocks_for_evidence(flow_graph, obs):
+    for fact in _loop_predicate_value_facts(fact_view):
+        for serial in _source_blocks_for_evidence(flow_graph, fact):
             block = flow_graph.get_block(serial)
             if block is None:
                 continue
@@ -1250,7 +1324,7 @@ def build_ollvm_loop_carrier_latch_redirects(
                 mods.append(ZeroStateWrite(block_serial=src, insn_ea=int(write_ea)))
         if logger.info_on:
             logger.info(
-                "unflat ollvm-loop-latch: payload=blk[%d] route=blk[%d] -> producer=blk[%d]",
+                "unflat loop-latch: payload=blk[%d] route=blk[%d] -> producer=blk[%d]",
                 src,
                 int(routed),
                 int(new),
@@ -1266,7 +1340,7 @@ def _first_insn_ea(block) -> int | None:
     return None
 
 
-def build_ollvm_loop_carrier_guard_transitions(
+def build_loop_carrier_guard_transitions(
     flow_graph,
     dispatcher,
     transitions: tuple[StateWriteTransition, ...],
@@ -1275,9 +1349,9 @@ def build_ollvm_loop_carrier_guard_transitions(
     *,
     dispatcher_entry_serial: int,
 ):
-    """Recover OLLVM's split counted-loop guard as conditional state edges.
+    """Recover split counted-loop guards as conditional state edges.
 
-    OLLVM records the loop predicate as ``OllvmValueFlowEvidence`` on the
+    A profile-specific collector can record the loop predicate on the
     predicate-producing back-edge block, while the selector state it writes routes
     to a separate two-way guard block.  Redirecting through the selector as a DAG
     spine can sever the predicate/body corridor.  Instead, recover one first-class
@@ -1295,20 +1369,19 @@ def build_ollvm_loop_carrier_guard_transitions(
     candidates: list[ConditionalStateTransitionCandidate] = []
     emitted_sources: set[int] = set()
 
-    for obs in _ollvm_loop_index_evidence(fact_view):
-        payload = getattr(obs, "payload", None) or {}
-        parsed = _parse_ollvm_counter_bound(payload)
+    for fact in _loop_predicate_value_facts(fact_view):
+        parsed = _parse_counter_bound_from_fact(fact)
         if parsed is None:
             continue
         counter_stkoff, counter_size, bound = parsed
-        counter_alias = _canonical_local_token(payload.get("carrier_token"))
-        counter_stkoff = _resolve_ollvm_counter_stkoff(
+        counter_alias = _fact_storage_token(fact)
+        counter_stkoff = _resolve_counter_stkoff(
             flow_graph,
-            obs,
+            fact,
             counter_alias,
             int(counter_stkoff),
         )
-        evidence_blocks = _source_blocks_for_evidence(flow_graph, obs)
+        evidence_blocks = _source_blocks_for_evidence(flow_graph, fact)
         if not evidence_blocks:
             continue
         for transition in transitions:
@@ -1364,15 +1437,15 @@ def build_ollvm_loop_carrier_guard_transitions(
                     ),
                     false_target_serial=int(false_target),
                     true_target_serial=int(true_target),
-                    proof_id=getattr(obs, "fact_id", None),
-                    reason="ollvm_loop_carrier_guard",
+                    proof_id=getattr(fact, "fact_id", None),
+                    reason="loop_carrier_guard",
                     suppressed_redirect_sources=frozenset((source, selector)),
                 )
             )
             emitted_sources.add(source)
             if logger.info_on:
                 logger.info(
-                    "unflat conditional-transition: reason=ollvm_loop_carrier_guard "
+                    "unflat conditional-transition: reason=loop_carrier_guard "
                     "producer=blk[%d] selector=blk[%d] "
                     "if(counter@stkoff=0x%x<0x%x) -> body=blk[%d] else exit=blk[%d]",
                     source,
@@ -1385,7 +1458,7 @@ def build_ollvm_loop_carrier_guard_transitions(
     return candidates
 
 
-def build_ollvm_loop_carrier_guard_lowerings(
+def build_loop_carrier_guard_lowerings(
     flow_graph,
     dispatcher,
     transitions: tuple[StateWriteTransition, ...],
@@ -1394,9 +1467,9 @@ def build_ollvm_loop_carrier_guard_lowerings(
     *,
     dispatcher_entry_serial: int,
 ):
-    """Compatibility wrapper: recover then lower OLLVM conditional transitions."""
+    """Compatibility wrapper: recover then lower loop-carrier transitions."""
     return lower_conditional_transition_candidates(
-        build_ollvm_loop_carrier_guard_transitions(
+        build_loop_carrier_guard_transitions(
             flow_graph,
             dispatcher,
             transitions,
@@ -1445,7 +1518,7 @@ def build_conditional_arm_redirects(
     The back-edge model (:func:`build_state_write_redirects`) anchors on the
     dispatcher's predecessors and resolves each as a single ``write_block ->
     route(state)`` edge.  When a handler 2-way-branches to two distinct
-    next-states *through a single shared back-edge write block* (the OLLVM
+    next-states *through a single shared back-edge write block* (the flattened
     conditional-state shape: ``state = select(cond, A, B)`` lowered as
     ``branch_block`` selecting two arms that converge on one write block), the
     global fold of that shared block collapses to the handler's OWN incoming
@@ -1871,7 +1944,7 @@ def emit_minimal_unflatten(
 
     ``use_def_safety`` / ``live_function`` (ticket llr-wlzb) inject the optional
     use-def severance veto: a redirect that would orphan a NON-state-variable use
-    (the OLLVM handler-body accumulator carriers ``var_18 = var_378`` /
+    (handler-body accumulator carriers such as ``var_18 = var_378`` /
     ``var_84 = var_378`` whose downstream readers are the terminal store and the loop
     guard) is dropped, leaving that back-edge on the dispatcher so IDA's reaching-def
     analysis cannot backfill the live carrier from the prologue and DCE the body.
@@ -1915,7 +1988,7 @@ def emit_minimal_unflatten(
         )
     # Recover the initial state from the prologue's own state-write fold when the
     # caller could not supply it. The comparison-BST evidence collapses to a
-    # single catch-all on a wide equality chain (OLLVM -fla), so
+    # single catch-all on a wide equality chain, so
     # ``bst_evidence.initial_state`` is None -- but the prologue is a dispatcher
     # predecessor too, so its folded next-state (already in ``transitions``) IS
     # the initial state. Without it the entry bridge is skipped and removing the
@@ -1932,11 +2005,11 @@ def emit_minimal_unflatten(
     # to ``route(initial_state)``. When a prologue exists but that bridge cannot
     # be established -- the initial state was not recovered, or it routes nowhere
     # -- bail and leave the function intact rather than gut it. This fires when
-    # state-var detection picked a current-state SHADOW slot (OLLVM -fla writes
-    # the next state to one stack slot and a copy of the current state to
-    # another; choosing the shadow makes every handler self-loop and hides the
-    # prologue's real initial-state write). Better a flattened function than a
-    # destroyed one. See ticket for the state-var disambiguation fix.
+    # state-var detection picked a current-state SHADOW slot: some flatteners write
+    # the next state to one stack slot and a copy of the current state to another;
+    # choosing the shadow makes every handler self-loop and hides the prologue's
+    # real initial-state write. Better a flattened function than a destroyed one.
+    # See ticket for the state-var disambiguation fix.
     if dispatcher_entry_serial is not None:
         prologue_preds = _dispatcher_entry_preds(
             flow_graph, int(dispatcher_entry_serial), pre_header_hint=pre_header_serial
@@ -1977,7 +2050,7 @@ def emit_minimal_unflatten(
         int(state_var_stkoff),
         dispatcher_entry_serial=int(dispatcher_entry_serial),
     )
-    loop_carrier_route_blocks = _ollvm_loop_carrier_route_blocks(
+    loop_carrier_route_blocks = _loop_carrier_route_blocks(
         flow_graph,
         dispatcher,
         transitions,
@@ -1988,24 +2061,24 @@ def emit_minimal_unflatten(
             "unflat minimal unflatten: loop_carrier_routes=%s",
             ",".join("blk%d" % b for b in sorted(loop_carrier_route_blocks)),
         )
-    ollvm_latch_redirects, ollvm_latch_suppressed = build_ollvm_loop_carrier_latch_redirects(
+    latch_redirects, latch_suppressed = build_loop_carrier_latch_redirects(
         flow_graph,
         transitions,
         fact_view,
         dispatcher_entry_serial=int(dispatcher_entry_serial),
         state_var_stkoff=int(state_var_stkoff),
     )
-    if ollvm_latch_suppressed:
+    if latch_suppressed:
         mods = [
             m
             for m in mods
             if not (
                 isinstance(m, (RedirectGoto, RedirectBranch))
-                and int(m.from_serial) in ollvm_latch_suppressed
+                and int(m.from_serial) in latch_suppressed
             )
         ]
-    if ollvm_latch_redirects:
-        mods = list(mods) + ollvm_latch_redirects
+    if latch_redirects:
+        mods = list(mods) + latch_redirects
     arm_mods = build_conditional_arm_redirects(
         flow_graph,
         dispatcher,
@@ -2024,7 +2097,7 @@ def emit_minimal_unflatten(
             )
         ),
     )
-    ollvm_guard_candidates = build_ollvm_loop_carrier_guard_transitions(
+    guard_candidates = build_loop_carrier_guard_transitions(
         flow_graph,
         dispatcher,
         transitions,
@@ -2032,16 +2105,16 @@ def emit_minimal_unflatten(
         fact_view,
         dispatcher_entry_serial=int(dispatcher_entry_serial),
     )
-    ollvm_guard_lowerings, ollvm_suppressed = lower_conditional_transition_candidates(
-        ollvm_guard_candidates
+    guard_lowerings, guard_suppressed = lower_conditional_transition_candidates(
+        guard_candidates
     )
-    if ollvm_suppressed:
+    if guard_suppressed:
         mods = [
             m
             for m in mods
             if not (
                 isinstance(m, (RedirectGoto, RedirectBranch))
-                and int(m.from_serial) in ollvm_suppressed
+                and int(m.from_serial) in guard_suppressed
             )
         ]
         arm_mods = [
@@ -2049,52 +2122,52 @@ def emit_minimal_unflatten(
             for m in arm_mods
             if not (
                 isinstance(m, (RedirectGoto, RedirectBranch))
-                and int(m.from_serial) in ollvm_suppressed
+                and int(m.from_serial) in guard_suppressed
             )
         ]
     if arm_mods:
         mods = list(mods) + arm_mods
-    if ollvm_guard_lowerings:
-        mods = list(mods) + ollvm_guard_lowerings
-    ollvm_output_store_retargets = build_ollvm_output_store_retargets(
+    if guard_lowerings:
+        mods = list(mods) + guard_lowerings
+    output_store_retargets = build_output_store_retargets(
         flow_graph,
         fact_view,
     )
-    if ollvm_suppressed:
-        ollvm_output_store_retargets = [
+    if guard_suppressed:
+        output_store_retargets = [
             m
-            for m in ollvm_output_store_retargets
+            for m in output_store_retargets
             if not (
                 isinstance(m, RetargetOutputStore)
-                and int(m.block_serial) in ollvm_suppressed
+                and int(m.block_serial) in guard_suppressed
             )
         ]
-    if ollvm_output_store_retargets:
-        mods = list(mods) + ollvm_output_store_retargets
-    ollvm_alias_scalarizations = build_ollvm_local_alias_scalarizations(
+    if output_store_retargets:
+        mods = list(mods) + output_store_retargets
+    alias_scalarizations = build_local_alias_scalarizations(
         flow_graph,
         fact_view,
     )
-    if ollvm_suppressed:
-        ollvm_alias_scalarizations = [
+    if guard_suppressed:
+        alias_scalarizations = [
             m
-            for m in ollvm_alias_scalarizations
+            for m in alias_scalarizations
             if not (
                 isinstance(m, ScalarizeLocalAliasAccess)
-                and int(m.block_serial) in ollvm_suppressed
+                and int(m.block_serial) in guard_suppressed
             )
         ]
-    if ollvm_alias_scalarizations:
-        mods = list(mods) + ollvm_alias_scalarizations
+    if alias_scalarizations:
+        mods = list(mods) + alias_scalarizations
     if logger.info_on:
         n_cond = sum(1 for h in handler_transitions if h.is_conditional)
         logger.info(
             "unflat minimal unflatten: conditional_handlers=%d arm_redirects_added=%d "
-            "ollvm_loop_guards=%d suppressed=%d",
+            "loop_guards=%d suppressed=%d",
             n_cond,
             len(arm_mods),
-            len(ollvm_guard_lowerings),
-            len(ollvm_suppressed),
+            len(guard_lowerings),
+            len(guard_suppressed),
         )
     # Folded counted-loop guards (ticket llr-pydd): a guard the back-edge model
     # recovered as a SELF-LOOP (write_block routes to itself) is the
@@ -2127,7 +2200,7 @@ def emit_minimal_unflatten(
         if guard_lowerings:
             mods = list(mods) + guard_lowerings
     # Use-def severance veto (ticket llr-wlzb): drop any redirect that would orphan a
-    # NON-state-variable use. For the OLLVM shadow shape the accumulator reaches the
+    # NON-state-variable use. For the shadow-carrier shape the accumulator reaches the
     # terminal/guard only through carrier copies (``var_18 = var_378`` /
     # ``var_84 = var_378``); bypassing those blocks lets IDA backfill the slot from the
     # prologue (0 / failed-flag) and DCE the whole ``var_378`` computation (207->17).
@@ -2137,7 +2210,7 @@ def emit_minimal_unflatten(
     # never vetoed.
     if use_def_safety is not None and live_function is not None:
         # Conservative bail (ticket llr-wlzb): on a shape where unflattening would
-        # orphan a non-state carrier (the OLLVM pointer-indirected accumulator whose
+        # orphan a non-state carrier (the pointer-indirected accumulator whose
         # setup/math handlers get severed), abandon the whole unflatten and leave the
         # dispatcher as a residual loop. The shared instruction rules still fold the
         # MBA/BCF noise, so the result is the engine-equivalent correct partial rather

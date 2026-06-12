@@ -45,11 +45,11 @@ from d810.transforms.graph_modification import (
 from d810.transforms.minimal_unflatten_emit import (
     ConditionalStateTransitionCandidate,
     _existing_redirect_keys,
-    _ollvm_loop_carrier_route_blocks,
-    build_ollvm_local_alias_scalarizations,
-    build_ollvm_loop_carrier_guard_transitions,
-    build_ollvm_loop_carrier_latch_redirects,
-    build_ollvm_output_store_retargets,
+    _loop_carrier_route_blocks,
+    build_local_alias_scalarizations,
+    build_loop_carrier_guard_transitions,
+    build_loop_carrier_latch_redirects,
+    build_output_store_retargets,
     build_conditional_arm_redirects,
     build_folded_loop_guard_transitions,
     build_state_write_redirects,
@@ -594,6 +594,7 @@ def _ollvm_loop_index_fact(*, source_block: int, source_ea: int) -> FactObservat
             "role": "LOOP_INDEX_CARRIER",
             "carrier_token": "%var_398",
             "source_block": source_block,
+            "instruction_index": 4,
             "instruction_ea": source_ea,
             "instruction_dstr": "setb [ds:%var_398].4, #0x64.4, %var_3A1.1",
         },
@@ -650,6 +651,7 @@ def _ollvm_local_pointer_fact(
             "carrier_token": token,
             "local_base_token": local_base,
             "source_block": source_block,
+            "instruction_index": 1,
             "instruction_ea": source_ea,
             "instruction_dstr": f"mov &({local_base}).8, {token}.8",
         },
@@ -679,6 +681,7 @@ def _ollvm_accumulator_fact(
             "multiply_add_base_token": multiply_add_base,
             "multiply_add_same_base_alias_tokens": ("%var_390",),
             "source_block": 34,
+            "instruction_index": 3,
             "instruction_ea": 0x3408,
             "instruction_dstr": (
                 "stx ([ds:%var_378].4+(xds([ds:(%var_388+xdu(edx))])*ecx)), "
@@ -710,6 +713,7 @@ def _ollvm_output_pointer_fact(
             "role": "ARG_OUTPUT_POINTER",
             "carrier_token": token,
             "source_block": source_block,
+            "instruction_index": 0,
             "instruction_ea": source_ea,
             "instruction_dstr": f"mov rdx.8, {token}.8",
         },
@@ -739,6 +743,7 @@ def _ollvm_masked_output_store_fact(
             "carrier_token": alias,
             "local_base_token": "%var_18",
             "source_block": source_block,
+            "instruction_index": 2,
             "instruction_ea": source_ea,
             "instruction_dstr": (
                 "stx ((bnot([ds:%var_378].4) & #0x173063C1.4) | "
@@ -787,7 +792,7 @@ def test_ollvm_output_store_retarget_matches_by_ea_when_fact_block_drifts() -> N
         ),
     ))
 
-    mods = build_ollvm_output_store_retargets(fg, facts)
+    mods = build_output_store_retargets(fg, facts)
 
     assert len(mods) == 1
     mod = mods[0]
@@ -799,7 +804,7 @@ def test_ollvm_output_store_retarget_matches_by_ea_when_fact_block_drifts() -> N
     assert mod.output_token == "%var_30"
     assert mod.host_text_sha1
     assert mod.value_size == 4
-    assert mod.reason == "ollvm_output_store_retarget"
+    assert mod.reason == "output_store_retarget"
 
 
 def test_ollvm_output_store_retarget_requires_output_pointer_fact() -> None:
@@ -828,7 +833,7 @@ def test_ollvm_output_store_retarget_requires_output_pointer_fact() -> None:
         func_ea=0x1000,
     )
 
-    mods = build_ollvm_output_store_retargets(
+    mods = build_output_store_retargets(
         fg,
         _FactView((_ollvm_masked_output_store_fact("%var_370", source_ea=store_ea),)),
     )
@@ -850,7 +855,7 @@ def test_ollvm_loop_index_evidence_marks_routed_predicate_block(_seam) -> None:
         ),
     )
 
-    routed = _ollvm_loop_carrier_route_blocks(
+    routed = _loop_carrier_route_blocks(
         fg,
         disp,
         transitions,
@@ -914,7 +919,7 @@ def test_ollvm_loop_index_evidence_lowers_producer_to_body_exit(_seam) -> None:
         fg, disp, _STATE, dispatcher_entry_serial=2
     )
 
-    candidates = build_ollvm_loop_carrier_guard_transitions(
+    candidates = build_loop_carrier_guard_transitions(
         fg,
         disp,
         transitions,
@@ -927,7 +932,7 @@ def test_ollvm_loop_index_evidence_lowers_producer_to_body_exit(_seam) -> None:
     candidate = candidates[0]
     assert isinstance(candidate, ConditionalStateTransitionCandidate)
     assert candidate.edge_kind == "CONDITIONAL_TRANSITION"
-    assert candidate.reason == "ollvm_loop_carrier_guard"
+    assert candidate.reason == "loop_carrier_guard"
     assert candidate.suppressed_redirect_sources == frozenset({10, 30})
     lowerings, suppressed = lower_conditional_transition_candidates(candidates)
 
@@ -1092,7 +1097,7 @@ def test_ollvm_payload_latch_redirects_to_predicate_producer() -> None:
         _ollvm_local_pointer_fact("%var_388", local_base="%var_98"),
     ))
 
-    mods, suppressed = build_ollvm_loop_carrier_latch_redirects(
+    mods, suppressed = build_loop_carrier_latch_redirects(
         fg,
         transitions,
         facts,
@@ -1188,7 +1193,7 @@ def test_ollvm_payload_latch_redirects_existing_body_route_to_predicate_producer
         _ollvm_local_pointer_fact("%var_388", local_base="%var_98"),
     ))
 
-    mods, suppressed = build_ollvm_loop_carrier_latch_redirects(
+    mods, suppressed = build_loop_carrier_latch_redirects(
         fg,
         transitions,
         facts,
@@ -1273,7 +1278,7 @@ def test_ollvm_local_alias_scalarization_preserves_loop_carriers() -> None:
         _ollvm_local_pointer_fact("%var_388", local_base="%var_98"),
     ))
 
-    mods = build_ollvm_local_alias_scalarizations(fg, facts)
+    mods = build_local_alias_scalarizations(fg, facts)
 
     aliases = {(m.alias_token, m.base_token) for m in mods}
     assert ("%var_378", "%var_378") in aliases
@@ -1363,14 +1368,14 @@ def test_ollvm_payload_detection_accepts_native_input_symbol_rendering() -> None
         _ollvm_local_pointer_fact("%var_388", local_base="%var_98"),
     ))
 
-    latch_mods, suppressed = build_ollvm_loop_carrier_latch_redirects(
+    latch_mods, suppressed = build_loop_carrier_latch_redirects(
         fg,
         transitions,
         facts,
         dispatcher_entry_serial=2,
         state_var_stkoff=_STATE,
     )
-    scalar_mods = build_ollvm_local_alias_scalarizations(fg, facts)
+    scalar_mods = build_local_alias_scalarizations(fg, facts)
 
     redirect = next(m for m in latch_mods if isinstance(m, RedirectGoto))
     zero = next(m for m in latch_mods if isinstance(m, ZeroStateWrite))
