@@ -43,15 +43,18 @@ from d810.transforms.graph_modification import (
     ZeroStateWrite,
 )
 from d810.transforms.minimal_unflatten_emit import (
+    ConditionalStateTransitionCandidate,
     _existing_redirect_keys,
     _ollvm_loop_carrier_route_blocks,
     build_ollvm_local_alias_scalarizations,
-    build_ollvm_loop_carrier_guard_lowerings,
+    build_ollvm_loop_carrier_guard_transitions,
     build_ollvm_loop_carrier_latch_redirects,
     build_ollvm_output_store_retargets,
     build_conditional_arm_redirects,
+    build_folded_loop_guard_transitions,
     build_state_write_redirects,
     emit_minimal_unflatten,
+    lower_conditional_transition_candidates,
 )
 
 from d810.analyses.control_flow.minimal_state_recovery import (
@@ -598,6 +601,32 @@ def _ollvm_loop_index_fact(*, source_block: int, source_ea: int) -> FactObservat
     )
 
 
+def _folded_loop_guard_fact(*, guard_block: int, body_state: int, exit_state: int) -> FactObservation:
+    guard_ea = 0x1000 + guard_block * 0x40
+    return FactObservation(
+        fact_id="folded-loop-guard",
+        kind="FoldedLoopGuardFact",
+        semantic_key=f"folded_loop_guard:guard_ea=0x{guard_ea:x}",
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.84,
+        source_block=guard_block,
+        source_ea=guard_ea,
+        block_fingerprint=f"folded_guard:blk[{guard_block}]",
+        mop_signature="folded_loop_guard:counter@0xa0",
+        payload={
+            "guard_ea": guard_ea,
+            "body_state": body_state,
+            "exit_state": exit_state,
+            "counter_stkoff": 0xA0,
+            "counter_size": 4,
+            "bound": 0x64,
+            "signed": False,
+        },
+        evidence=("setb [ds:%var_398].4, #0x64.4, %var_3A1.1",),
+    )
+
+
 def _ollvm_local_pointer_fact(
     token: str,
     *,
@@ -885,7 +914,7 @@ def test_ollvm_loop_index_evidence_lowers_producer_to_body_exit(_seam) -> None:
         fg, disp, _STATE, dispatcher_entry_serial=2
     )
 
-    lowerings, suppressed = build_ollvm_loop_carrier_guard_lowerings(
+    candidates = build_ollvm_loop_carrier_guard_transitions(
         fg,
         disp,
         transitions,
@@ -893,6 +922,14 @@ def test_ollvm_loop_index_evidence_lowers_producer_to_body_exit(_seam) -> None:
         _FactView((_ollvm_loop_index_fact(source_block=30, source_ea=0x3000),)),
         dispatcher_entry_serial=2,
     )
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert isinstance(candidate, ConditionalStateTransitionCandidate)
+    assert candidate.edge_kind == "CONDITIONAL_TRANSITION"
+    assert candidate.reason == "ollvm_loop_carrier_guard"
+    assert candidate.suppressed_redirect_sources == frozenset({10, 30})
+    lowerings, suppressed = lower_conditional_transition_candidates(candidates)
 
     assert suppressed == {10, 30}
     assert len(lowerings) == 1
@@ -904,6 +941,67 @@ def test_ollvm_loop_index_evidence_lowers_producer_to_body_exit(_seam) -> None:
     assert lowering.false_target_serial == 50
     assert isinstance(lowering.condition_operand, SyntheticCounterBoundCondition)
     assert lowering.condition_operand.counter_stkoff == 0xA0
+    assert lowering.condition_operand.bound == 0x64
+    assert lowering.condition_operand.signed is False
+
+
+def test_folded_loop_guard_evidence_builds_conditional_transition_candidate() -> None:
+    fg = FlowGraph(
+        blocks={
+            2: _b(2, (30, 40, 50), (30, 40, 50)),
+            30: _b(
+                30,
+                (2,),
+                (2,),
+                (
+                    _setb_counter(
+                        0x3000,
+                        0xA0,
+                        "setb [ds:%var_398.8].4, #0x64.4, %var_3A1.1",
+                    ),
+                    _mov_state(0x3004, 0xAA),
+                ),
+            ),
+            40: _b(40, (2,), (2,), (_mov_state(0x4000, 0xBB),)),
+            50: _b(50, (2,), (2,), (_mov_state(0x5000, 0xCC),)),
+        },
+        entry_serial=30,
+        func_ea=0x1000,
+    )
+    disp = _disp({0xBB: 40, 0xCC: 50}, exit_block=99)
+    transitions = (
+        StateWriteTransition(
+            write_block=30,
+            next_state=0xAA,
+            target_handler=30,
+            is_return=False,
+            branch_arm=None,
+        ),
+    )
+
+    candidates = build_folded_loop_guard_transitions(
+        fg,
+        disp,
+        transitions,
+        _FactView((_folded_loop_guard_fact(guard_block=30, body_state=0xBB, exit_state=0xCC),)),
+        dispatcher_entry_serial=2,
+    )
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.edge_kind == "CONDITIONAL_TRANSITION"
+    assert candidate.reason == "folded_loop_guard"
+    assert candidate.source_serial == 30
+    assert candidate.rewrite_from_ea == 0x3000
+    assert candidate.true_target_serial == 40
+    assert candidate.false_target_serial == 50
+    assert candidate.suppressed_redirect_sources == frozenset({30})
+    lowerings, suppressed = lower_conditional_transition_candidates(candidates)
+    assert suppressed == {30}
+    assert len(lowerings) == 1
+    lowering = lowerings[0]
+    assert isinstance(lowering, LowerConditionalStateTransition)
+    assert isinstance(lowering.condition_operand, SyntheticCounterBoundCondition)
     assert lowering.condition_operand.bound == 0x64
     assert lowering.condition_operand.signed is False
 
