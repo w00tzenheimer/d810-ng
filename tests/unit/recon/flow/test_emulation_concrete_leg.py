@@ -203,7 +203,7 @@ def test_emulation_fills_bottom_back_edge(_seam) -> None:
     assert t.is_return is False
     assert t.proof is not None
     assert t.proof.oracle_kind == "emulation_concrete_leg"
-    assert t.proof.kind == "concrete_fold"
+    assert t.proof.kind == "back_edge_concrete_fold"
     assert t.proof.trusted is True
     # The consult stepped the back-edge block (serial 11), seeded from ip 10.
     assert ("live", 11) in emu.consulted
@@ -282,3 +282,65 @@ def test_fold_exact_drops_claim_outside_abstract_floor() -> None:
     ok = fold_exact(top, ExactResult({state_cell: 0xABCD}), state_cell)
     assert ok.status is PrecisionStatus.CONCRETE
     assert ok.concrete == 0xABCD
+
+
+def test_proof_distribution_preserves_oracle_and_kind(_seam) -> None:
+    """The proof distribution names the SOURCE (oracle) and the SITE (kind) apart.
+
+    Slice 1 (ticket llr-a93i): promoting the emulator to first-class evidence turns
+    on being able to SEE its buckets emerge in the same distribution as the abstract
+    providers.  A bare ``kind`` histogram cannot distinguish an abstract fold from a
+    concrete one; keying ``(oracle_kind, kind)`` proves the concrete leg's
+    ``(emulation_concrete_leg, back_edge_concrete_fold)`` bucket is observable and
+    distinct from every ``region_partitioned_fixpoint`` bucket -- in the SAME
+    transition tuple every other provider writes to.
+    """
+    fg = _opaque_back_edge_fg()
+    disp = _dispatcher({0x10: 10, 0xABCD: 20}, exit_block=99)
+    emu = _FakeEmulator(LocationRef.stack(_STATE_OFF, 8), 0xABCD)
+    transitions = recover_state_write_transitions_via_partitioned_fixpoint(
+        fg, disp, _STATE_OFF, dispatcher_entry_serial=2,
+        emu=emu, live_block_for=lambda s: ("live", int(s)),
+    )
+    buckets: dict[tuple[str, str], int] = {}
+    for t in transitions:
+        assert t.proof is not None  # every recovered edge is attributed
+        buckets[(t.proof.oracle_kind, t.proof.kind)] = (
+            buckets.get((t.proof.oracle_kind, t.proof.kind), 0) + 1
+        )
+    # The concrete leg's bucket is present and carries BOTH halves separately.
+    assert ("emulation_concrete_leg", "back_edge_concrete_fold") in buckets
+    # Its oracle is never confused with the abstract floor's oracle.
+    assert all(
+        oracle != "emulation_concrete_leg" or kind == "back_edge_concrete_fold"
+        for (oracle, kind) in buckets
+    )
+
+
+def test_emulator_abstain_leaves_back_edge_unresolved(_seam) -> None:
+    """When the emulator ABSTAINS on a ⊥ back-edge, the edge stays unresolved.
+
+    Disagreement/abstain handling (Slice 1): an emulator that cannot prove the
+    next-state must not half-resolve the edge -- recovery falls through to the
+    unresolved sink (routed to the shared return), never inventing a value.  A
+    consumer keys on ``trusted=False`` to refuse rewriting it as a handler edge.
+    """
+    fg = _opaque_back_edge_fg()
+    disp = _dispatcher({0x10: 10, 0xABCD: 20}, exit_block=99)
+
+    class _AbstainingEmulator:
+        def eval_insn(self, insn, store):
+            return Abstain("never")
+
+        def eval_block(self, block, store):
+            return Abstain("cannot prove")
+
+    by_block = {t.write_block: t for t in
+                recover_state_write_transitions_via_partitioned_fixpoint(
+                    fg, disp, _STATE_OFF, dispatcher_entry_serial=2,
+                    emu=_AbstainingEmulator(),
+                    live_block_for=lambda s: ("live", int(s)))}
+    t = by_block[11]
+    assert t.next_state != 0xABCD  # nothing invented
+    # The edge is either unresolved (untrusted) or a non-emulation abstract fold.
+    assert t.proof is None or t.proof.oracle_kind != "emulation_concrete_leg"

@@ -1,18 +1,19 @@
 """``HexRaysBlockEmulator`` prove-exact-or-abstain contract (S4 B, llr-1szn).
 
 Runtime test (imports the live Hex-Rays evidence backend, so it cannot be a unit
-test). Exercises the emulator's portable seams without a live function: store
-seeding (the ``LocationRef -> stk/reg`` projection) and the abstain paths that the
-soundness contract demands -- a ``None`` block, and a block whose instructions
-resolve no state-var write.
+test). Exercises the abstain paths the soundness contract demands -- a ``None``
+block, and a block whose instructions resolve no state-var write.
 
-A genuinely-folding live block is covered by the unflatten Docker probe (the
-``unflat #2 fixpoint-probe`` log line with ``concrete-folds=N``); here we pin the
-shape of the contract so a regression to a *wrong* ExactResult is caught cheaply.
+``eval_block`` now resolves the block's first state-var write through the Hex-Rays
+microcode interpreter over the DEF-USE chain history (ticket llr-a93i), not the
+old ``store`` -> stk/reg projection (``store`` is advisory; the live history is
+authoritative). A genuinely-folding live block is covered by the unflatten Docker
+probe (the ``emu-consult: ... folded=True`` log line); here we pin the abstain
+shape so a regression to a *wrong* ExactResult is caught cheaply.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from d810.analyses.data_flow.concolic import Abstain, ConcreteStore, ExactResult
 from d810.analyses.data_flow.concolic.refs import LocationRef
@@ -43,25 +44,6 @@ def _emulator() -> HexRaysBlockEmulator:
     return HexRaysBlockEmulator(
         mba=None, state_var_stkoff=_STATE_STKOFF, state_cell=_STATE_CELL
     )
-
-
-class TestStoreSeeding:
-    """The concrete store's stack/register cells project into the stepper maps."""
-
-    def test_stack_and_register_cells_project(self) -> None:
-        store = ConcreteStore.of(
-            {
-                LocationRef.stack(0x10, 8): 0x1234,
-                LocationRef.reg(8, 8): 0x5678,
-            }
-        )
-        stk_map, reg_map = _emulator()._seed_maps(store)
-        assert stk_map == {0x10: 0x1234}
-        assert reg_map == {8: 0x5678}
-
-    def test_empty_store_seeds_empty_maps(self) -> None:
-        stk_map, reg_map = _emulator()._seed_maps(ConcreteStore.of({}))
-        assert stk_map == {} and reg_map == {}
 
 
 class TestAbstainContract:

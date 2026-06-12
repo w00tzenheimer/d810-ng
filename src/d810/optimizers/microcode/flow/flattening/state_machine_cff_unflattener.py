@@ -96,7 +96,9 @@ from d810.evaluator.hexrays_microcode.use_def_dominance import (
 from d810.evaluator.hexrays_microcode.value_range_capability import (
     HexRaysValRangeCapability,
 )
-from d810.families.registry import select_family
+from d810.families.registry import registered_families, select_family
+from d810.hexrays.ir_maturity import ir_maturity_to_ida
+from d810.ir.maturity import IRMaturity
 from d810.hexrays.observability import (
     diagnostics_enabled as _capture_diagnostics_enabled,
     request_capture_mba_snapshot,
@@ -133,6 +135,20 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
     # all live) so recovery can read the transition map; the once-per-function
     # guard runs the pipeline at the earliest listed maturity. (LOCOPT recovery
     # tried for gap1 and reverted: back_edges collapse 36->3, main machine fails.)
+    # Per-family recovery maturity (ticket llr-a93i): each ``StateMachineCffFamily``
+    # DECLARES the maturities its shape is recoverable at (``recovery_maturities``); the
+    # rule is registered at the UNION below and, after ``select_family`` picks a profile,
+    # recovers only at one of THAT profile's declared maturities. This is the seam for
+    # per-shape maturity routing -- e.g. a CALLS fallback for the pre-fold folded
+    # equality-chains -- WITHOUT forcing every family to every maturity.
+    #
+    # Current declarations all resolve to MMAT_GLBOPT1 (the golden-tuned non-indirect
+    # stage), so behaviour is the historical baseline. MMAT_CALLS stays registered for the
+    # INDIRECT one-shot path (routed structurally below). LISTING a pre-fold MMAT_CALLS as
+    # a co-equal stage for an equality-chain was tried and REVERTED: with per-(ea,maturity)
+    # convergence a function recoverable at BOTH stages commits at the EARLIER one and
+    # moves its tuned golden (regressed test_function_ollvm_fla_bcf_sub). MMAT_LOCOPT is
+    # never registered -- pre-CALLS a 36-back-edge machine collapses to 3 and mis-recovers.
     DEFAULT_UNFLATTENING_MATURITIES = [
         ida_hexrays.MMAT_CALLS,
         ida_hexrays.MMAT_GLBOPT1,
@@ -155,14 +171,21 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
 
     def __init__(self) -> None:
         super().__init__()  # ComposedUnflatteningRule: flow_context + optblock lifecycle
-        #: ``func_ea -> rounds already run``. Replaces the one-shot ``done`` flag with
-        #: a bounded re-run counter (ticket llr-3gn4); an ea reaching the cap, or a
-        #: round that applies nothing, is marked terminal via ``_unflat_done_eas``.
-        self._unflat_round_count: dict[int, int] = {}
-        #: EAs whose unflatten has converged (a round applied 0 mods) or hit the cap.
+        #: ``(func_ea, maturity) -> rounds already run``. Bounded re-run counter
+        #: (ticket llr-3gn4), now keyed per-(ea,maturity) for multi-maturity recovery
+        #: (ticket llr-a93i): each maturity gets its own round budget, so a maturity
+        #: that loops to the cap stops only ITSELF -- the other maturities still get
+        #: their full budget.  Convergence (the function is fully unflattened) is the
+        #: separate per-ea ``_unflat_done_eas`` terminal, which DOES stop every maturity.
+        self._unflat_round_count: dict[tuple[int, int], int] = {}
+        #: EAs whose unflatten has converged (recovery found no dispatcher to lower).
+        #: Per-ea (not per-maturity): once a function is fully unflattened at ANY
+        #: maturity, no later maturity should reprocess it.
         self._unflat_done_eas: set[int] = set()
 
-    def _should_run_unflatten_round(self, func_ea: int, *, is_indirect: bool) -> bool:
+    def _should_run_unflatten_round(
+        self, func_ea: int, *, is_indirect: bool, maturity: int
+    ) -> bool:
         """Bounded re-run gate (ticket llr-3gn4): may the unflatten run on ``func_ea`` now?
 
         The equality-chain / switch profile re-runs (bounded by ``_MAX_UNFLATTEN_ROUNDS``)
@@ -182,18 +205,85 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         """
         if func_ea in self._unflat_done_eas:
             return False
-        rounds = self._unflat_round_count.get(func_ea, 0)
+        key = (int(func_ea), int(maturity))
+        rounds = self._unflat_round_count.get(key, 0)
         if is_indirect and rounds >= 1:
             return False  # INDIRECT keeps the historical one-shot contract
         if rounds >= self._MAX_UNFLATTEN_ROUNDS:
-            self._unflat_done_eas.add(func_ea)
+            # This (ea, maturity) hit the cap -- stop re-running it here, but DON'T mark
+            # the whole ea done: a later maturity may still recover a dispatcher this
+            # one could not (the folded equality-chain recovers earlier; a 36-back-edge
+            # machine recovers later).  Per-ea convergence is reserved for an actual
+            # fully-unflattened graph (``_mark_ea_converged``).
             return False
-        self._unflat_round_count[func_ea] = rounds + 1
+        self._unflat_round_count[key] = rounds + 1
         return True
 
     def _mark_ea_converged(self, func_ea: int) -> None:
         """Mark ``func_ea`` terminal — recovery found no dispatcher (graph fully unflattened)."""
         self._unflat_done_eas.add(func_ea)
+
+    def _family_recovery_maturities(self, family) -> "frozenset[int]":
+        """Resolve a profile's portable ``recovery_maturities`` (:class:`IRMaturity`) to
+        ``ida_hexrays.MMAT_*`` constants — the FINE per-family maturity gate (ticket
+        llr-a93i), via the backend adapter :func:`ir_maturity_to_ida`.
+
+        Falls back to the base default (``GLOBAL_ANALYZED`` == ``MMAT_GLBOPT1``, the
+        historical non-indirect stage) when a profile omits the attribute; an IRMaturity
+        with no Hex-Rays mapping is skipped so a level this backend does not model is simply
+        never gated in.
+        """
+        levels = (
+            getattr(family, "recovery_maturities", None) or (IRMaturity.GLOBAL_ANALYZED,)
+        )
+        out: set[int] = set()
+        for level in levels:
+            try:
+                out.add(ir_maturity_to_ida(level))
+            except (ValueError, KeyError):
+                continue
+        return frozenset(out)
+
+    def _config_recovery_maturities(self) -> "frozenset[int]":
+        """Per-PROJECT recovery-maturity override (ticket llr-a93i).
+
+        A project config may pin the recovery stage for its selected profile via
+        ``recovery_maturity`` (an :class:`IRMaturity` NAME like ``"CALL_MODELED"`` or its
+        value ``"ir.call.modeled"``). This is the config-driven knob that the per-shape
+        config separation makes clean: the F6xxx project (folded sub-threshold
+        equality-chains -- ``example_libobfuscated``/approov/tigress) recovers at
+        ``CALL_MODELED`` (pre-fold, where its dispatcher is still intact), while ollvm's
+        project keeps the default ``GLOBAL_ANALYZED`` stage its golden is tuned to --
+        without a global maturity change or a cross-maturity fallback. Returns the override
+        as ``{ida maturity}`` when set+valid, else empty (the family default applies).
+        """
+        cfg = getattr(self, "config", None)
+        if not isinstance(cfg, dict):
+            return frozenset()
+        raw = cfg.get("recovery_maturity")
+        if not raw:
+            return frozenset()
+        try:
+            level = IRMaturity[raw] if raw in IRMaturity.__members__ else IRMaturity(raw)
+            return frozenset({ir_maturity_to_ida(level)})
+        except (KeyError, ValueError):
+            return frozenset()
+
+    def _union_recovery_maturities(self) -> "frozenset[int]":
+        """Union of every registered profile's resolved ``recovery_maturities`` — the
+        coarse early gate for the NON-indirect path (ticket llr-a93i). The rule does the
+        (lift + prelim + select_family) work at a maturity ONLY if some profile declares
+        it, so a function is not re-recovered at a stage no profile wants; the fine
+        per-family gate then defers to the SELECTED profile's specific stage. Cached: the
+        profile registry is fixed once the family modules import-register.
+        """
+        cache = getattr(self, "_union_maturities_cache", None)
+        if cache is None:
+            cache = frozenset().union(
+                *(self._family_recovery_maturities(f) for f in registered_families())
+            ) or frozenset({ida_hexrays.MMAT_GLBOPT1})
+            self._union_maturities_cache = cache
+        return cache
 
     def configure(self, kwargs):
         # Configure-time hook (project load, runs ONCE before any decompilation
@@ -277,26 +367,42 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             getattr(blk, "serial", "?"),
         )
         mba = self.mba
-        # Profile-scoped recovery maturity (llr-m9r4). The Tigress INDIRECT profile
-        # must recover at MMAT_CALLS — its state-write transitions (and the
+        # Profile-scoped recovery maturity (llr-m9r4 + llr-a93i). The Tigress INDIRECT
+        # profile recovers ONLY at MMAT_CALLS — its state-write transitions (and the
         # accumulation-loop guard) are constant-folded / DCE'd by GLBOPT1, so the
-        # transition map reads empty there. Every OTHER profile recovers at
-        # MMAT_GLBOPT1 exactly as before. The rule is registered for both
-        # maturities (DEFAULT_UNFLATTENING_MATURITIES), so this gate routes each
-        # profile to its own maturity and keeps non-indirect output byte-identical
-        # (no golden movement). The indirect profile is detected STRUCTURALLY
-        # (llr-trxj): the prolog hook materialized this function iff it is a
-        # register-indirect computed-goto dispatcher, and recorded its EA — no
-        # config key, no hardcoded addresses. (Matches the existing local-import
-        # pattern for this IDA-bound preanalysis module elsewhere in configure().)
+        # transition map reads empty there, and its terminal-tail / folded-loop-guard
+        # lowering is tuned for a single CALLS pass (re-running drops semantic body).
+        # The NON-indirect profile recovers at EVERY maturity from LOCOPT through GLBOPT2
+        # (ticket llr-a93i): Hex-Rays folds the small equality-chains into structured
+        # loops before GLBOPT1, so a GLBOPT1-only recovery misses them (map_rows=0) — the
+        # same shapes the legacy EmulatedDispatcherUnflattener caught at MMAT_CALLS. Each
+        # function commits at the earliest maturity whose dispatcher is intact + soundly
+        # bridged; per-(ea,maturity) round budgeting + per-ea convergence keep an
+        # already-unflattened function from being reprocessed later. The indirect profile
+        # is detected STRUCTURALLY (llr-trxj): the prolog hook materialized this function
+        # iff it is a register-indirect computed-goto dispatcher, and recorded its EA — no
+        # config key, no hardcoded addresses. (Matches the existing local-import pattern
+        # for this IDA-bound preanalysis module elsewhere in configure().)
         from d810.hexrays.preanalysis.indirect_jump_labels import (
             is_materialized_indirect_dispatcher,
         )
         _is_indirect = is_materialized_indirect_dispatcher(int(mba.entry_ea))
-        _target_maturity = (
-            ida_hexrays.MMAT_CALLS if _is_indirect else ida_hexrays.MMAT_GLBOPT1
-        )
-        if mba.maturity != _target_maturity:
+        # INDIRECT keeps the historical one-shot MMAT_CALLS contract (its
+        # terminal-tail / folded-loop-guard lowering is tuned for a single CALLS
+        # pass).  The NON-indirect profile now recovers at EVERY maturity from LOCOPT
+        # through GLBOPT2 (ticket llr-a93i) so folded equality-chains recover at the
+        # pre-fold stage where their dispatcher is still alive.
+        if _is_indirect:
+            if mba.maturity != ida_hexrays.MMAT_CALLS:
+                return 0
+        elif int(mba.maturity) not in (
+            self._union_recovery_maturities() | self._config_recovery_maturities()
+        ):
+            # No registered profile (nor a per-project ``recovery_maturity`` override)
+            # recovers a non-indirect shape at this maturity; bail BEFORE the expensive
+            # lift/prelim/select_family so a stage nothing wants costs nothing (ticket
+            # llr-a93i). The fine per-family gate below still defers a profile that wants a
+            # DIFFERENT stage within the union/override.
             return 0
         func_ea: int = mba.entry_ea
         # Bounded re-run (ticket llr-3gn4): re-running the unflatten on the re-lifted
@@ -307,7 +413,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # terminating: a fully-unflattened graph yields no dispatcher, so the next round
         # emits no plan and marks the ea done. GATED to the NON-indirect profile — see
         # :meth:`_should_run_unflatten_round`.
-        if not self._should_run_unflatten_round(func_ea, is_indirect=_is_indirect):
+        if not self._should_run_unflatten_round(
+            func_ea, is_indirect=_is_indirect, maturity=int(mba.maturity)
+        ):
             return 0
 
         source = lift_function(mba, maturity=mba.maturity)
@@ -418,6 +526,33 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             project_config=project_config,
             capabilities=backend.capabilities(),
         )
+        # Fine per-family maturity gate (ticket llr-a93i): a profile recovers ONLY at one
+        # of its declared ``recovery_maturities``. When a family claims this graph but not
+        # at the CURRENT maturity, skip (return 0) and wait for the stage it wants -- the
+        # dispatcher is not converged, so a later maturity still recovers it. INDIRECT
+        # bypasses this gate: it is routed to MMAT_CALLS structurally above, independent of
+        # the selected family's declaration.
+        # A per-project ``recovery_maturity`` override (config-driven, ticket llr-a93i)
+        # REPLACES the selected profile's declared maturities for this project; absent it,
+        # the profile's own ``recovery_maturities`` apply.
+        _target_maturities = (
+            self._config_recovery_maturities()
+            or self._family_recovery_maturities(family)
+        )
+        if (
+            family is not None
+            and not _is_indirect
+            and int(mba.maturity) not in _target_maturities
+        ):
+            if logger.debug_on:
+                logger.debug(
+                    "unflat: family=%s defers func=0x%x at %s (wants %s)",
+                    getattr(family, "name", "?"),
+                    int(mba.entry_ea),
+                    maturity_to_string(int(mba.maturity)),
+                    sorted(maturity_to_string(m) for m in _target_maturities),
+                )
+            return 0
         if family is not None:
             run_pipeline(
                 source=source,
@@ -448,13 +583,19 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             mba, source, rec, tr, regions, fact_view, bst_evidence, capabilities
         )
         # Termination (ticket llr-3gn4): mark the ea done the moment recovery finds NO
-        # dispatcher -- the graph is fully unflattened, so re-running would only re-lift and
-        # re-detect nothing. This is the common case on the very first round for every
-        # already-clean function (hodur / sub_7FFD / the 4 clean approov fns), so they run
-        # exactly once exactly as before. A round that still SEES a dispatcher but emits no
-        # redirect is NOT terminal: approov_real_pattern's residual blk3 entry only becomes
-        # recoverable after IDA's interleaved optimize_global collapses it, several
-        # re-invocations later -- stopping early there leaves the state machine flattened.
+        # dispatcher to lower -- the graph is clean or fully unflattened, so re-running
+        # would only re-lift and re-detect nothing. The common case on the very first round
+        # for every already-clean function (hodur / sub_7FFD / the 4 clean approov fns), so
+        # they run once. A round that still SEES a dispatcher but emits no redirect is NOT
+        # terminal: approov_real_pattern's residual blk3 entry only becomes recoverable
+        # after IDA's interleaved optimize_global collapses it several re-invocations later.
+        #
+        # NOTE (ticket llr-a93i): this keys on the pipeline ``rec`` (a profile claimed and
+        # recovered a dispatcher). With the current GLBOPT1-only family declarations that is
+        # baseline behaviour. A future per-family CALLS FALLBACK (where a profile recovers
+        # at more than one maturity) must make this maturity-aware -- converge only once the
+        # function is unflattened or its LAST declared maturity is exhausted -- so an early
+        # maturity that declines does not foreclose a later one.
         dispatcher_present = (
             rec is not None
             and getattr(rec, "dispatcher_block_serial", None) is not None

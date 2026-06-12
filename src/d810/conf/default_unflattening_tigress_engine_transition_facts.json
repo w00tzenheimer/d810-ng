@@ -32,7 +32,7 @@
       "config": {}
     },
     {
-      "name": "EmulatedDispatcherUnflattener",
+      "name": "StateMachineCffUnflattener",
       "is_activated": true,
       "config": {
         "maturities": ["MMAT_GLBOPT1"],

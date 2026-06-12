@@ -1977,9 +1977,17 @@ def emit_minimal_unflatten(
     # opaque-split / unresolved residual, feeding the fact/proof layer (llr-fqam)
     # without changing recovery (the diff compares states, never proof).
     if logger.info_on:
+        # Preserve the ORACLE and the KIND separately (ticket llr-a93i): a bare
+        # ``kind`` histogram cannot tell an abstract ``global_fold`` from a future
+        # concrete one, and the whole promotion turns on seeing the concrete leg's
+        # ``emulation_concrete_leg`` buckets emerge.  Key ``oracle:kind`` so the
+        # distribution names the evidence source AND the resolution site.
         kinds: dict[str, int] = {}
         for t in transitions:
-            key = t.proof.kind if t.proof is not None else "unattributed"
+            if t.proof is not None:
+                key = f"{t.proof.oracle_kind}:{t.proof.kind}"
+            else:
+                key = "unattributed"
             kinds[key] = kinds.get(key, 0) + 1
         logger.info(
             "unflat minimal unflatten: %d back-edge transitions, proof kinds=%s",

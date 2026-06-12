@@ -3,7 +3,7 @@
   "ins_rules": [],
   "blk_rules": [
     {
-      "name": "EmulatedDispatcherUnflattener",
+      "name": "StateMachineCffUnflattener",
       "is_activated": true,
       "config": {
         "profile": "tigress_switch"

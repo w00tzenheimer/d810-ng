@@ -13,6 +13,7 @@ Placement Rule: never mock IDA in unit tests).
 """
 from __future__ import annotations
 
+import ida_hexrays
 import pytest
 
 from d810.optimizers.microcode.flow.flattening.state_machine_cff_unflattener import (
@@ -21,6 +22,10 @@ from d810.optimizers.microcode.flow.flattening.state_machine_cff_unflattener imp
 
 
 _EA = 0x1800017F0
+#: Two distinct recovery maturities -- the gate now budgets re-runs per-(ea,maturity)
+#: (ticket llr-a93i), so a cap at one maturity must leave the other's budget intact.
+_MAT = ida_hexrays.MMAT_GLBOPT1
+_MAT2 = ida_hexrays.MMAT_CALLS
 
 
 def _fresh_rule() -> StateMachineCffUnflattener:
@@ -38,35 +43,44 @@ class TestUnflattenBoundedRerunGate:
         rule = _fresh_rule()
         # First two rounds proceed (each emits the spine then the residual-dispatcher
         # redirect on the re-lifted graph).
-        assert rule._should_run_unflatten_round(_EA, is_indirect=False) is True
-        assert rule._should_run_unflatten_round(_EA, is_indirect=False) is True
-        # Recovery finds no dispatcher -> converged -> terminal.
+        assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT) is True
+        assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT) is True
+        # Recovery finds no dispatcher -> converged -> terminal (every maturity).
         rule._mark_ea_converged(_EA)
-        assert rule._should_run_unflatten_round(_EA, is_indirect=False) is False
+        assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT) is False
 
     def test_indirect_is_one_shot(self) -> None:
         """The INDIRECT_JUMP profile runs exactly once (no re-run, no body drop)."""
         rule = _fresh_rule()
-        assert rule._should_run_unflatten_round(_EA, is_indirect=True) is True
+        assert rule._should_run_unflatten_round(_EA, is_indirect=True, maturity=_MAT) is True
         # Second invocation is refused even though the ea was never marked converged.
-        assert rule._should_run_unflatten_round(_EA, is_indirect=True) is False
+        assert rule._should_run_unflatten_round(_EA, is_indirect=True, maturity=_MAT) is False
 
-    def test_non_indirect_round_cap_is_terminal(self) -> None:
-        """A non-converging non-indirect graph stops at the hard round cap (no infinite loop)."""
+    def test_non_indirect_round_cap_stops_only_that_maturity(self) -> None:
+        """The hard round cap stops a single (ea, maturity) -- not the whole function.
+
+        Per-(ea,maturity) budgeting (ticket llr-a93i): a maturity that loops to the cap
+        without converging must NOT mark the ea globally done, or a later maturity would
+        never get to recover a dispatcher this one could not (the folded equality-chain
+        recovers early; a 36-back-edge machine recovers later).
+        """
         rule = _fresh_rule()
         cap = StateMachineCffUnflattener._MAX_UNFLATTEN_ROUNDS
         for _ in range(cap):
-            assert rule._should_run_unflatten_round(_EA, is_indirect=False) is True
-        # Cap reached -> refused and marked terminal.
-        assert rule._should_run_unflatten_round(_EA, is_indirect=False) is False
-        assert _EA in rule._unflat_done_eas
+            assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT) is True
+        # Cap reached for _MAT -> refused there, but the ea is NOT globally terminal.
+        assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT) is False
+        assert _EA not in rule._unflat_done_eas
+        # A DIFFERENT maturity still gets its own full budget.
+        assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT2) is True
 
-    def test_converged_ea_stays_terminal(self) -> None:
-        """Once marked converged, an ea never runs again (idempotent terminal)."""
+    def test_converged_ea_stays_terminal_across_maturities(self) -> None:
+        """Once marked converged, an ea never runs again at ANY maturity (idempotent)."""
         rule = _fresh_rule()
         rule._mark_ea_converged(_EA)
-        assert rule._should_run_unflatten_round(_EA, is_indirect=False) is False
-        assert rule._should_run_unflatten_round(_EA, is_indirect=True) is False
+        assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT) is False
+        assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT2) is False
+        assert rule._should_run_unflatten_round(_EA, is_indirect=True, maturity=_MAT) is False
 
     def test_distinct_eas_are_independent(self) -> None:
         """Re-run bookkeeping is per function ea, not global."""
@@ -74,8 +88,8 @@ class TestUnflattenBoundedRerunGate:
         other = _EA + 0x1000
         rule._mark_ea_converged(_EA)
         # The converged ea is terminal but a different function still runs.
-        assert rule._should_run_unflatten_round(_EA, is_indirect=False) is False
-        assert rule._should_run_unflatten_round(other, is_indirect=False) is True
+        assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT) is False
+        assert rule._should_run_unflatten_round(other, is_indirect=False, maturity=_MAT) is True
 
 
 if __name__ == "__main__":
