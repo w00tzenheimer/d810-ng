@@ -25,6 +25,7 @@ emits ``GraphModification`` values compiled to a ``PatchPlan``.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
 import hashlib
 
@@ -56,15 +57,67 @@ from d810.transforms.use_def_redirect_filter import (
 logger = logging.getLogger("D810.transforms.minimal_unflatten_emit")
 
 __all__ = [
+    "ConditionalStateTransitionCandidate",
     "emit_minimal_unflatten",
     "build_state_write_redirects",
     "build_conditional_arm_redirects",
     "build_folded_loop_guard_lowerings",
+    "build_folded_loop_guard_transitions",
     "build_ollvm_local_alias_scalarizations",
     "build_ollvm_output_store_retargets",
     "build_ollvm_loop_carrier_latch_redirects",
     "build_ollvm_loop_carrier_guard_lowerings",
+    "build_ollvm_loop_carrier_guard_transitions",
+    "lower_conditional_transition_candidates",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionalStateTransitionCandidate:
+    """One first-class conditional state edge in the interval-spine model.
+
+    ``minimal_unflatten_emit`` deliberately avoids materializing the historical
+    StateDag, but it still needs the same semantic vocabulary: a source block owns
+    a ``CONDITIONAL_TRANSITION`` whose true/false arms route to two state-machine
+    successors.  Producers recover evidence; this DTO is the boundary between
+    evidence recovery and backend mutation lowering.
+    """
+
+    source_serial: int
+    old_dispatcher_serial: int
+    rewrite_from_ea: int
+    condition_operand: object
+    false_target_serial: int
+    true_target_serial: int
+    proof_id: str | None = None
+    reason: str = "conditional_state_transition"
+    suppressed_redirect_sources: frozenset[int] = frozenset()
+    edge_kind: str = "CONDITIONAL_TRANSITION"
+
+
+def lower_conditional_transition_candidates(
+    candidates: tuple[ConditionalStateTransitionCandidate, ...] | list[ConditionalStateTransitionCandidate],
+) -> tuple[list[object], set[int]]:
+    """Lower semantic conditional transitions to backend mutation primitives."""
+    lowerings: list[object] = []
+    suppressed: set[int] = set()
+    for candidate in candidates:
+        if candidate.edge_kind != "CONDITIONAL_TRANSITION":
+            continue
+        lowerings.append(
+            LowerConditionalStateTransition(
+                source_serial=int(candidate.source_serial),
+                old_dispatcher_serial=int(candidate.old_dispatcher_serial),
+                rewrite_from_ea=int(candidate.rewrite_from_ea),
+                condition_operand=candidate.condition_operand,
+                false_target_serial=int(candidate.false_target_serial),
+                true_target_serial=int(candidate.true_target_serial),
+                proof_id=candidate.proof_id,
+                reason=candidate.reason,
+            )
+        )
+        suppressed.update(int(src) for src in candidate.suppressed_redirect_sources)
+    return lowerings, suppressed
 
 
 def _carrier_return_via_routes(
@@ -1213,7 +1266,7 @@ def _first_insn_ea(block) -> int | None:
     return None
 
 
-def build_ollvm_loop_carrier_guard_lowerings(
+def build_ollvm_loop_carrier_guard_transitions(
     flow_graph,
     dispatcher,
     transitions: tuple[StateWriteTransition, ...],
@@ -1222,26 +1275,24 @@ def build_ollvm_loop_carrier_guard_lowerings(
     *,
     dispatcher_entry_serial: int,
 ):
-    """Lower OLLVM's split counted-loop guard from raw value-flow evidence.
+    """Recover OLLVM's split counted-loop guard as conditional state edges.
 
     OLLVM records the loop predicate as ``OllvmValueFlowEvidence`` on the
     predicate-producing back-edge block, while the selector state it writes routes
     to a separate two-way guard block.  Redirecting through the selector as a DAG
-    spine can sever the predicate/body corridor.  Instead, emit one conditional
-    lowering at the actual predicate producer:
+    spine can sever the predicate/body corridor.  Instead, recover one first-class
+    conditional transition at the actual predicate producer:
 
         producer(counter < bound, state=selector) -> true: body, false: exit
 
-    Returns ``(lowerings, suppressed_sources)``.  The source producer redirect and
-    the selector's sibling branch redirects are suppressed because the synthesized
-    lowering owns that whole loop edge.
+    The source producer redirect and the selector's sibling branch redirects are
+    suppressed because the synthesized conditional edge owns that whole loop edge.
     """
     if fact_view is None:
-        return [], set()
+        return []
     disp = int(dispatcher_entry_serial)
     handlers = {int(h.handler): h for h in handler_transitions}
-    lowerings: list[object] = []
-    suppressed: set[int] = set()
+    candidates: list[ConditionalStateTransitionCandidate] = []
     emitted_sources: set[int] = set()
 
     for obs in _ollvm_loop_index_evidence(fact_view):
@@ -1299,8 +1350,8 @@ def build_ollvm_loop_carrier_guard_lowerings(
             rewrite_ea = _first_insn_ea(source_block)
             if rewrite_ea is None:
                 continue
-            lowerings.append(
-                LowerConditionalStateTransition(
+            candidates.append(
+                ConditionalStateTransitionCandidate(
                     source_serial=source,
                     old_dispatcher_serial=disp,
                     rewrite_from_ea=int(rewrite_ea),
@@ -1315,13 +1366,14 @@ def build_ollvm_loop_carrier_guard_lowerings(
                     true_target_serial=int(true_target),
                     proof_id=getattr(obs, "fact_id", None),
                     reason="ollvm_loop_carrier_guard",
+                    suppressed_redirect_sources=frozenset((source, selector)),
                 )
             )
-            suppressed.update({source, selector})
             emitted_sources.add(source)
             if logger.info_on:
                 logger.info(
-                    "unflat ollvm-loop-guard: producer=blk[%d] selector=blk[%d] "
+                    "unflat conditional-transition: reason=ollvm_loop_carrier_guard "
+                    "producer=blk[%d] selector=blk[%d] "
                     "if(counter@stkoff=0x%x<0x%x) -> body=blk[%d] else exit=blk[%d]",
                     source,
                     selector,
@@ -1330,7 +1382,29 @@ def build_ollvm_loop_carrier_guard_lowerings(
                     int(true_target),
                     int(false_target),
                 )
-    return lowerings, suppressed
+    return candidates
+
+
+def build_ollvm_loop_carrier_guard_lowerings(
+    flow_graph,
+    dispatcher,
+    transitions: tuple[StateWriteTransition, ...],
+    handler_transitions: tuple[HandlerTransition, ...],
+    fact_view,
+    *,
+    dispatcher_entry_serial: int,
+):
+    """Compatibility wrapper: recover then lower OLLVM conditional transitions."""
+    return lower_conditional_transition_candidates(
+        build_ollvm_loop_carrier_guard_transitions(
+            flow_graph,
+            dispatcher,
+            transitions,
+            handler_transitions,
+            fact_view,
+            dispatcher_entry_serial=dispatcher_entry_serial,
+        )
+    )
 
 
 def _arm_branch_successor(arm) -> int | None:
@@ -1605,7 +1679,7 @@ def _dispatcher_entry_preds(
     return entries
 
 
-def build_folded_loop_guard_lowerings(
+def build_folded_loop_guard_transitions(
     flow_graph,
     dispatcher,
     transitions,
@@ -1613,7 +1687,7 @@ def build_folded_loop_guard_lowerings(
     *,
     dispatcher_entry_serial: int,
 ):
-    """Lower folded counted-loop guards into explicit ``if (i < N)`` 2-way edges.
+    """Recover folded counted-loop guards as conditional state edges.
 
     Hex-Rays folds the constant-trip-count guard of a counted accumulation loop
     to a constant branch and DCEs the body arm before the unflatten recovery maturity,
@@ -1625,14 +1699,14 @@ def build_folded_loop_guard_lowerings(
 
         guard:  if (counter < bound) -> route(body_state) else -> route(exit_state)
 
-    Returns ``(lowerings, suppressed_sources)``: the typed lowering steps and the
-    set of guard ``from_serial`` redirects the caller must drop (the spurious
-    self-loop the back-edge model emitted for the same block).  Strictly
+    Returns semantic ``CONDITIONAL_TRANSITION`` candidates.  Each candidate carries
+    the guard ``from_serial`` redirect the caller must drop (the spurious self-loop
+    the back-edge model emitted for the same block).  Strictly
     fact-gated -- emits nothing when no folded guard is observed, so non-loop
     indirect functions are unaffected.
     """
     if fact_view is None:
-        return [], set()
+        return []
     guards = getattr(fact_view, "folded_loop_guards", None)
     if callable(guards):
         guard_facts = tuple(guards())
@@ -1647,7 +1721,7 @@ def build_folded_loop_guard_lowerings(
             if getattr(obs, "kind", None) == "FoldedLoopGuardFact"
         )
     if not guard_facts:
-        return [], set()
+        return []
 
     disp = int(dispatcher_entry_serial)
     # Map guard EA -> the live guard handler block (serial is maturity-local, EA
@@ -1668,8 +1742,7 @@ def build_folded_loop_guard_lowerings(
         and not t.is_return
     }
 
-    lowerings: list[object] = []
-    suppressed: set[int] = set()
+    candidates: list[ConditionalStateTransitionCandidate] = []
     for fact in guard_facts:
         payload = fact.payload or {}
         guard_ea = payload.get("guard_ea")
@@ -1715,8 +1788,8 @@ def build_folded_loop_guard_lowerings(
             bound=int(bound),
             signed=bool(payload.get("signed", True)),
         )
-        lowerings.append(
-            LowerConditionalStateTransition(
+        candidates.append(
+            ConditionalStateTransitionCandidate(
                 source_serial=int(guard_serial),
                 old_dispatcher_serial=disp,
                 rewrite_from_ea=rewrite_ea,
@@ -1725,9 +1798,9 @@ def build_folded_loop_guard_lowerings(
                 true_target_serial=int(body_target),
                 proof_id=fact.fact_id,
                 reason="folded_loop_guard",
+                suppressed_redirect_sources=frozenset((int(guard_serial),)),
             )
         )
-        suppressed.add(int(guard_serial))
         if logger.info_on:
             counter_desc = (
                 f"reg=0x{int(counter_reg):x}"
@@ -1735,7 +1808,8 @@ def build_folded_loop_guard_lowerings(
                 else f"stkoff=0x{int(counter_stkoff):x}"
             )
             logger.info(
-                "unflat folded-loop-guard: blk[%d]@0x%x if(counter@%s<0x%x) "
+                "unflat conditional-transition: reason=folded_loop_guard "
+                "blk[%d]@0x%x if(counter@%s<0x%x) "
                 "-> body=blk[%d](0x%x) else exit=blk[%d](0x%x)",
                 guard_serial,
                 int(guard_ea),
@@ -1746,7 +1820,27 @@ def build_folded_loop_guard_lowerings(
                 int(exit_target),
                 int(exit_state) & 0xFFFFFFFF,
             )
-    return lowerings, suppressed
+    return candidates
+
+
+def build_folded_loop_guard_lowerings(
+    flow_graph,
+    dispatcher,
+    transitions,
+    fact_view,
+    *,
+    dispatcher_entry_serial: int,
+):
+    """Compatibility wrapper: recover then lower folded guard transitions."""
+    return lower_conditional_transition_candidates(
+        build_folded_loop_guard_transitions(
+            flow_graph,
+            dispatcher,
+            transitions,
+            fact_view,
+            dispatcher_entry_serial=dispatcher_entry_serial,
+        )
+    )
 
 
 def emit_minimal_unflatten(
@@ -1930,13 +2024,16 @@ def emit_minimal_unflatten(
             )
         ),
     )
-    ollvm_guard_lowerings, ollvm_suppressed = build_ollvm_loop_carrier_guard_lowerings(
+    ollvm_guard_candidates = build_ollvm_loop_carrier_guard_transitions(
         flow_graph,
         dispatcher,
         transitions,
         handler_transitions,
         fact_view,
         dispatcher_entry_serial=int(dispatcher_entry_serial),
+    )
+    ollvm_guard_lowerings, ollvm_suppressed = lower_conditional_transition_candidates(
+        ollvm_guard_candidates
     )
     if ollvm_suppressed:
         mods = [
@@ -2008,12 +2105,15 @@ def emit_minimal_unflatten(
     # INDIRECT-only: the fact is observed for the Tigress shape; the gate keeps
     # equality-chain / switch goldens byte-identical.
     if is_indirect:
-        guard_lowerings, suppressed = build_folded_loop_guard_lowerings(
+        guard_candidates = build_folded_loop_guard_transitions(
             flow_graph,
             dispatcher,
             transitions,
             fact_view,
             dispatcher_entry_serial=int(dispatcher_entry_serial),
+        )
+        guard_lowerings, suppressed = lower_conditional_transition_candidates(
+            guard_candidates
         )
         if suppressed:
             mods = [
