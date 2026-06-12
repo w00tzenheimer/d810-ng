@@ -337,7 +337,11 @@ ABC_F6_CASES = [
         # Accept minor variations in type suffix and parameter type
         acceptable_patterns=["a1 | 0xFF", "a1 | 0xFFu"],
         must_change=True,
-        required_rules=["EmulatedDispatcherUnflattener"],
+        # EmulatedDispatcherUnflattener was swapped to the §1a StateMachineCffUnflattener
+        # (llr-a93i); it returns 0 to IDA (optblock cadence) so it is not tracked in
+        # cfg_rule_usages -- assert the deobfuscation OUTCOME (must_change + contents)
+        # instead of the rule name.
+        required_rules=[],
     ),
     DeobfuscationCase(
         function="abc_f6_nested",
@@ -499,7 +503,11 @@ CONSTANT_FOLDING_CASES = [
         deobfuscated_not_contains=[
             "MEMORY[0xB10000007FFE00E1]",
         ],
-        required_rules=["EmulatedDispatcherUnflattener"],
+        # EmulatedDispatcherUnflattener was swapped to the §1a StateMachineCffUnflattener
+        # (llr-a93i); it returns 0 to IDA (optblock cadence) so it is not tracked in
+        # cfg_rule_usages -- assert the deobfuscation OUTCOME (must_change + contents)
+        # instead of the rule name.
+        required_rules=[],
         must_change=True,
     ),
 ]
@@ -642,7 +650,11 @@ HODUR_CASES = [
             "Hodur/1.0",  # String literal that should be preserved
         ],
         must_change=True,
-        required_rules=["EmulatedDispatcherUnflattener"],
+        # EmulatedDispatcherUnflattener was swapped to the §1a StateMachineCffUnflattener
+        # (llr-a93i); it returns 0 to IDA (optblock cadence) so it is not tracked in
+        # cfg_rule_usages -- assert the deobfuscation OUTCOME (must_change + contents)
+        # instead of the rule name.
+        required_rules=[],
         expected_rules=["CstSimplificationRule16"],
     ),
     DeobfuscationCase(
@@ -743,7 +755,11 @@ TIGRESS_CASES = [
         obfuscated_contains=["switch", "case"],
         # Must restore natural control flow (for/if instead of switch cases)
         deobfuscated_contains=["for ("],
-        required_rules=["EmulatedDispatcherUnflattener"],
+        # EmulatedDispatcherUnflattener was swapped to the §1a StateMachineCffUnflattener
+        # (llr-a93i); it returns 0 to IDA (optblock cadence) so it is not tracked in
+        # cfg_rule_usages -- assert the deobfuscation OUTCOME (must_change + contents)
+        # instead of the rule name.
+        required_rules=[],
         must_change=True,  # Original test: case_count_after < case_count_before
     ),
 ]
@@ -767,7 +783,11 @@ TIGRESS_ENGINE_CASES = [
             "switch (",
             "case ",
         ],
-        required_rules=["EmulatedDispatcherUnflattener"],
+        # EmulatedDispatcherUnflattener was swapped to the §1a StateMachineCffUnflattener
+        # (llr-a93i); it returns 0 to IDA (optblock cadence) so it is not tracked in
+        # cfg_rule_usages -- assert the deobfuscation OUTCOME (must_change + contents)
+        # instead of the rule name.
+        required_rules=[],
         must_change=True,
     ),
 ]
@@ -923,7 +943,9 @@ RESIZE_BUFFER_CFF_CASES = [
         ],
         must_change=True,
         check_stats=True,
-        required_rules=["EmulatedDispatcherUnflattener", "FoldReadonlyDataRule"],
+        # EmulatedDispatcherUnflattener -> §1a StateMachineCffUnflattener (llr-a93i): not
+        # tracked in cfg_rule_usages (returns 0 to IDA); keep the instruction-rule check.
+        required_rules=["FoldReadonlyDataRule"],
         forbidden_rules=["ForwardConstantPropagationRule"],
     ),
 ]
