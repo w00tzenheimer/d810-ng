@@ -126,7 +126,15 @@ def test_oracle_accepts_current_style_after_with_fact_backing() -> None:
 def test_oracle_accepts_counted_do_while_payload_loop() -> None:
     do_while_after = CURRENT_STYLE_AFTER.replace(
         "for (i = 0; i < 0x64; ++i)\n            v5 += *((char *)v8 + i) * LODWORD(v28[0]);",
-        "do\n        {\n            v5 += *((char *)v8 + i) * LODWORD(v28[0]);\n        }\n        while ( LODWORD(v28[0]) < 0x64 );",
+        (
+            "i = 0;\n"
+            "        do\n"
+            "        {\n"
+            "            v5 += *((char *)v8 + i) * LODWORD(v28[0]);\n"
+            "            ++i;\n"
+            "        }\n"
+            "        while ( i < 0x64 );"
+        ),
     )
 
     result = evaluate_ollvm_fla_bcf_sub_oracle(
@@ -163,6 +171,131 @@ def test_oracle_accepts_folded_single_xor_terminal_write() -> None:
     assert terminal.passed
 
 
+def test_oracle_accepts_output_sink_through_a2_local_alias() -> None:
+    alias_after = CURRENT_STYLE_AFTER.replace(
+        "unsigned int **a2)",
+        "int *a2)",
+    ).replace(
+        "    __int64 result;\n",
+        "    __int64 result;\n    int *v25;\n",
+    ).replace(
+        "    MEMORY[0x180000000](v8, 0, 0x64);\n",
+        "    v25 = a2;\n    MEMORY[0x180000000](v8, 0, 0x64);\n",
+    ).replace(
+        "    **a2 = v5 ^ 0x173063C1;",
+        "    *v25 = v5 ^ 0x173063C1;",
+    ).replace(
+        "\n    **a2 = (v5 ^ ~v5) & 0xCD536960 ^ ~v5 ^ 0x259CF55E;",
+        "",
+    )
+
+    result = evaluate_ollvm_fla_bcf_sub_oracle(
+        alias_after,
+        conn=_diag_db_with_carrier_facts(),
+        func_ea_hex="0x000000018000e360",
+    )
+
+    assert result.passed
+
+
+def test_oracle_accepts_native_global_string_compare_rendering() -> None:
+    native_after = """
+__int64 __fastcall test_function_ollvm_fla_bcf_sub(__int64 a1, int *a2)
+{
+    unsigned int v2;
+    __int64 result;
+    unsigned int i;
+    _DWORD *v7;
+    struct HINSTANCE__ v8[3];
+    int *v27;
+    _QWORD v29[2];
+
+    v27 = a2;
+    v7 = v29;
+    _ImageBase(v8, 0, (LPVOID)0x64);
+    printf("Please enter password:");
+    _ImageBase((HINSTANCE)&hinstDLL, (DWORD)v8, v29);
+    _ImageBase(v8, (DWORD)&hinstDLL.unused + 3, (LPVOID)0x64);
+    for ( i = 0; i < 0x64; ++i )
+    {
+        v2 = i;
+        LODWORD(v7) = (_DWORD)v7 + *((char *)&v8[0].unused + v2) * (unsigned int)v29;
+    }
+    *v27 = (~*v7 ^ *v7) & 0x173063C1 ^ *v7;
+    return result;
+}
+"""
+
+    result = evaluate_ollvm_fla_bcf_sub_oracle(
+        native_after,
+        conn=_diag_db_with_carrier_facts(),
+        func_ea_hex="0x000000018000e360",
+    )
+
+    assert result.passed
+
+
+def test_oracle_accepts_assignment_form_payload_loop_update() -> None:
+    assignment_after = CURRENT_STYLE_AFTER.replace(
+        "            v5 += *((char *)v8 + i) * LODWORD(v28[0]);",
+        (
+            "        {\n"
+            "            v2 = i;\n"
+            "            LODWORD(v5) = (_DWORD)v5 + *((char *)v8 + v2) * (unsigned int)v28;\n"
+            "        }"
+        ),
+    )
+
+    result = evaluate_ollvm_fla_bcf_sub_oracle(
+        assignment_after,
+        conn=_diag_db_with_carrier_facts(),
+        func_ea_hex="0x000000018000e360",
+    )
+
+    assert result.passed
+
+
+def test_oracle_accepts_numbered_dump_payload_loop_output_alias() -> None:
+    dump_after = """
+__int64 __fastcall test_function_ollvm_fla_bcf_sub(__int64 a1, int *a2)
+{
+    __int64 result;
+    unsigned int i;
+    int v2;
+    _DWORD *v5;
+    _BYTE v6[100];
+    int *v25;
+    _QWORD v27[2];
+
+    v25 = a2;
+    v5 = v27;
+    MEMORY[0x180000000](v6, 0, 0x64);
+    printf("Please enter password:");
+    MEMORY[0x180000000]("%s", (const char *)v6);
+    MEMORY[0x180000000](v6, "secret", 0x64);
+    for ( i = 0; i < 0x64; ++i )
+    {
+        v2 = i;
+        LODWORD(v5) = (_DWORD)v5 + *((char *)v6 + v2) * (unsigned int)v27;
+    }
+    *v25 = (~*v5 ^ *v5) & 0x173063C1 ^ *v5;
+    return result;
+}
+""".strip("\n")
+    numbered_after = "\n".join(
+        f"{202300 + index}: {line}"
+        for index, line in enumerate(dump_after.splitlines())
+    )
+
+    result = evaluate_ollvm_fla_bcf_sub_oracle(
+        numbered_after,
+        conn=_diag_db_with_carrier_facts(),
+        func_ea_hex="0x000000018000e360",
+    )
+
+    assert result.passed
+
+
 def test_oracle_rejects_non_counted_dispatcher_while_loop() -> None:
     residual_dispatcher_after = CURRENT_STYLE_AFTER.replace(
         "for (i = 0; i < 0x64; ++i)",
@@ -181,7 +314,7 @@ def test_oracle_rejects_non_counted_dispatcher_while_loop() -> None:
     )
 
 
-def test_oracle_accepts_self_feeding_loop_only_with_fact_backed_carrier_split() -> None:
+def test_oracle_rejects_self_feeding_loop_even_with_fact_backed_carrier_split() -> None:
     bad_code = CURRENT_STYLE_AFTER.replace(
         "for (i = 0; i < 0x64; ++i)",
         "for (i = 0; i < 0x64; i += *((char *)v8 + i) * v5)",
@@ -193,23 +326,57 @@ def test_oracle_accepts_self_feeding_loop_only_with_fact_backed_carrier_split() 
         func_ea_hex="0x000000018000e360",
     )
 
-    assert result.passed
-
-    conn = _diag_db_with_carrier_facts()
-    conn.execute(
-        "UPDATE fact_observations SET payload = replace("
-        "payload, '\"role\": \"LOOP_INDEX_CARRIER\"', "
-        "'\"role\": \"ACCUMULATOR_CARRIER\"')"
+    assert not result.passed
+    assert any(
+        blocker.name == "clean_counted_loop" for blocker in result.blockers
     )
-    missing_split = evaluate_ollvm_fla_bcf_sub_oracle(
+
+
+def test_oracle_rejects_current_self_feeding_do_while_loop() -> None:
+    bad_code = CURRENT_STYLE_AFTER.replace(
+        "for (i = 0; i < 0x64; ++i)\n            v5 += *((char *)v8 + i) * LODWORD(v28[0]);",
+        (
+            "LODWORD(v29[0]) = 0;\n"
+            "        do\n"
+            "        {\n"
+            "            v2 = v29[0];\n"
+            "            v3 = LODWORD(v29[0])++;\n"
+            "            LODWORD(v29[0]) += *((char *)&v8[0].unused + v3) * v2;\n"
+            "        }\n"
+            "        while ( LODWORD(v29[0]) < 0x64 );"
+        ),
+    )
+
+    result = evaluate_ollvm_fla_bcf_sub_oracle(
         bad_code,
-        conn=conn,
+        conn=_diag_db_with_carrier_facts(),
         func_ea_hex="0x000000018000e360",
     )
 
-    assert not missing_split.passed
+    assert not result.passed
     assert any(
-        blocker.name == "clean_counted_loop" for blocker in missing_split.blockers
+        blocker.name == "clean_counted_loop" for blocker in result.blockers
+    )
+
+
+def test_oracle_rejects_empty_parity_do_while_loop() -> None:
+    bad_code = CURRENT_STYLE_AFTER.replace(
+        "for (i = 0; i < 0x64; ++i)\n            v5 += *((char *)v8 + i) * LODWORD(v28[0]);",
+        "do\n            v4[3] = 0x50B4560;\n        while ( (v5 & 1) != 0 );",
+    )
+
+    result = evaluate_ollvm_fla_bcf_sub_oracle(
+        bad_code,
+        conn=_diag_db_with_carrier_facts(),
+        func_ea_hex="0x000000018000e360",
+    )
+
+    assert not result.passed
+    assert any(
+        blocker.name == "dispatcher_loop_removed" for blocker in result.blockers
+    )
+    assert any(
+        blocker.name == "clean_counted_loop" for blocker in result.blockers
     )
 
 

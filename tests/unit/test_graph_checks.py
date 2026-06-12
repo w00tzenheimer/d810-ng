@@ -7,12 +7,17 @@ from d810.transforms.edit_simulator import SimulatedEdit, simulate_edits
 from d810.analyses.control_flow.graph_checks import (
     TerminalCycle,
     TerminalSinkResult,
+    check_entry_reachability_counts_not_collapsed,
+    check_entry_reachability_not_collapsed,
+    check_terminal_reachability_preserved,
     detect_terminal_cycles,
     prove_terminal_sink,
+    reachable_terminal_blocks,
     SemanticCheckResult,
     SemanticGate,
     check_edge_split_structural_legality,
 )
+from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph
 
 
 def _make_adj(edges: list[tuple[int, int]]) -> dict[int, list[int]]:
@@ -22,6 +27,58 @@ def _make_adj(edges: list[tuple[int, int]]) -> dict[int, list[int]]:
         adj.setdefault(u, []).append(v)
         adj.setdefault(v, [])  # ensure all nodes present
     return adj
+
+
+def _make_block(
+    serial: int,
+    succs: tuple[int, ...],
+    preds: tuple[int, ...],
+    *,
+    kind: BlockKind | None = None,
+    start_ea: int | None = None,
+) -> BlockSnapshot:
+    return BlockSnapshot(
+        serial=serial,
+        block_type=0,
+        succs=succs,
+        preds=preds,
+        flags=0,
+        start_ea=0x1000 + serial if start_ea is None else start_ea,
+        insn_snapshots=(),
+        kind=kind or (
+            BlockKind.TWO_WAY
+            if len(succs) == 2
+            else BlockKind.ONE_WAY
+            if len(succs) == 1
+            else BlockKind.ZERO_WAY
+        ),
+    )
+
+
+def _make_cfg(
+    edges: list[tuple[int, int]],
+    *,
+    stop_serials: tuple[int, ...] = (),
+    entry_serial: int = 0,
+) -> FlowGraph:
+    succs: dict[int, list[int]] = {}
+    preds: dict[int, list[int]] = {}
+    nodes = {entry_serial, *stop_serials}
+    for src, dst in edges:
+        nodes.add(src)
+        nodes.add(dst)
+        succs.setdefault(src, []).append(dst)
+        preds.setdefault(dst, []).append(src)
+    blocks = {
+        serial: _make_block(
+            serial,
+            tuple(succs.get(serial, ())),
+            tuple(preds.get(serial, ())),
+            kind=BlockKind.STOP if serial in stop_serials else None,
+        )
+        for serial in nodes
+    }
+    return FlowGraph(blocks=blocks, entry_serial=entry_serial, func_ea=0x1000)
 
 
 class TestDetectTerminalCycles:
@@ -196,6 +253,114 @@ class TestSemanticGate:
         gate = SemanticGate()
         result = _fake_result(reachability_after=0.1)
         assert gate.check(result)
+
+
+class TestTerminalReachabilityPreservation:
+    def test_reports_reachable_terminal_blocks(self):
+        cfg = _make_cfg([(0, 1), (1, 2)], stop_serials=(2,))
+
+        assert reachable_terminal_blocks(cfg) == frozenset({2})
+
+    def test_reports_badaddr_zero_successor_terminal_blocks(self):
+        blocks = {
+            0: _make_block(0, (1,), ()),
+            1: _make_block(
+                1,
+                (),
+                (0,),
+                kind=BlockKind.ZERO_WAY,
+                start_ea=0xFFFFFFFFFFFFFFFF,
+            ),
+        }
+        cfg = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
+
+        assert reachable_terminal_blocks(cfg) == frozenset({1})
+
+    def test_preserves_reachable_terminal_in_alternate_adjacency(self):
+        cfg = _make_cfg([(0, 1), (1, 2)], stop_serials=(2,))
+        post_adj = {0: [1], 1: [2], 2: []}
+
+        result = check_terminal_reachability_preserved(cfg, post_adj=post_adj)
+
+        assert result.passed
+        assert result.pre_reachable_terminals == frozenset({2})
+        assert result.post_reachable_terminals == frozenset({2})
+
+    def test_rejects_when_all_reachable_terminals_become_unreachable(self):
+        cfg = _make_cfg([(0, 1), (1, 2), (0, 3)], stop_serials=(2,))
+        post_adj = {0: [3], 1: [2], 2: [], 3: [3]}
+
+        result = check_terminal_reachability_preserved(cfg, post_adj=post_adj)
+
+        assert not result.passed
+        assert result.pre_reachable_terminals == frozenset({2})
+        assert result.post_reachable_terminals == frozenset()
+        assert result.reason == "all reachable terminal routes became unreachable"
+
+    def test_allows_no_preexisting_reachable_terminal(self):
+        cfg = _make_cfg([(0, 1), (2, 3)], stop_serials=(3,))
+        post_adj = {0: [1], 1: [1], 2: [3], 3: []}
+
+        result = check_terminal_reachability_preserved(cfg, post_adj=post_adj)
+
+        assert result.passed
+        assert result.pre_reachable_terminals == frozenset()
+
+    def test_checks_live_post_cfg_terminal_serials(self):
+        pre_cfg = _make_cfg([(0, 1), (1, 2)], stop_serials=(2,))
+        post_cfg = _make_cfg([(0, 4), (4, 5)], stop_serials=(5,))
+
+        result = check_terminal_reachability_preserved(pre_cfg, post_cfg=post_cfg)
+
+        assert result.passed
+        assert result.post_reachable_terminals == frozenset({5})
+
+
+class TestEntryReachabilityPreservation:
+    def test_rejects_broad_entry_component_collapse(self):
+        cfg = _make_cfg([(i, i + 1) for i in range(25)])
+        post_adj = {i: [] for i in range(26)}
+        post_adj[0] = [1]
+        post_adj[1] = [2]
+        post_adj[2] = [1]
+
+        result = check_entry_reachability_not_collapsed(cfg, post_adj=post_adj)
+
+        assert not result.passed
+        assert result.pre_reachable_count == 26
+        assert result.post_reachable_count == 3
+        assert result.reason == "entry reachability collapsed"
+
+    def test_rejects_from_precomputed_planner_counts(self):
+        result = check_entry_reachability_counts_not_collapsed(
+            pre_reachable_count=98,
+            post_reachable_count=7,
+        )
+
+        assert not result.passed
+        assert result.retained_ratio == 7 / 98
+
+    def test_allows_small_component_even_when_ratio_is_low(self):
+        cfg = _make_cfg([(0, 1), (1, 2), (2, 3)])
+        post_adj = {0: [1], 1: [], 2: [], 3: []}
+
+        result = check_entry_reachability_not_collapsed(cfg, post_adj=post_adj)
+
+        assert result.passed
+        assert result.pre_reachable_count == 4
+        assert result.post_reachable_count == 2
+
+    def test_allows_broad_component_above_retained_ratio(self):
+        cfg = _make_cfg([(i, i + 1) for i in range(25)])
+        post_adj = {i: [] for i in range(26)}
+        for i in range(13):
+            post_adj[i] = [i + 1]
+
+        result = check_entry_reachability_not_collapsed(cfg, post_adj=post_adj)
+
+        assert result.passed
+        assert result.pre_reachable_count == 26
+        assert result.post_reachable_count == 14
 
 
 class TestPreflightCycleRejection:

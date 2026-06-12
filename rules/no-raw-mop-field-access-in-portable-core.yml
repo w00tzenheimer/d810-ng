@@ -1,0 +1,77 @@
+# Forbids reading RAW Hex-Rays ``mop_t`` union-member fields in the
+# portable-core layers.
+#
+# Sibling to the two existing portable-core gates, closing the channel
+# they leave open:
+#   * ``no-live-ida-in-portable-core``        gates vendor *imports*.
+#   * ``no-live-object-access-in-portable-core`` gates live ``mblock_t`` /
+#     ``mba_t`` *method-form* duck-typing (``blk.nsucc()``) -- but it
+#     DELIBERATELY exempts ``getattr(...)`` because ~21 getattr reads are
+#     legitimate portable ``BlockSnapshot`` field reads.  That exemption
+#     leaves the OPERAND channel open: ``getattr(mop, "nnn")`` reads a live
+#     ``mop_t`` union member that the portable ``MopSnapshot`` lifts away.
+#   * ``no-vendor-identifier-in-portable-core`` gates vendor IDENTIFIER refs
+#     (``ihr.m_add``, ``MMAT_*``) -- not raw operand fields.
+#
+# WHY THESE PATTERNS ARE UNAMBIGUOUS (live mop_t vs portable MopSnapshot):
+#   live mop_t union member      portable MopSnapshot field (lifted)
+#   ---------------------------  -----------------------------------
+#   mop.nnn        (mnumber_t)   mop.value
+#   mop.s.off      (mop_addr_t)  mop.stkoff
+#   mop.l.off/.idx (lvar_ref_t)  mop.lvar_off
+#   mop.g          (global ea)   mop.gaddr
+# The portable snapshot does NOT expose ``.nnn`` / ``.s.off`` / ``.l.off`` /
+# ``.l.idx`` -- those names exist ONLY on a live ``mop_t``, so matching them
+# is unambiguous.  We do NOT match ``mop.t`` / ``mop.size`` / ``mop.reg`` /
+# ``mop.stkoff`` / ``mop.value`` (the portable snapshot mirrors those), nor
+# ``insn.l`` / ``insn.r`` / ``insn.d`` (portable InsnSnapshot operand slots).
+#
+# The fix is CONVERTER COMPLETION (ticket llr-0s2n / S4): the Hex-Rays
+# lifter in ``d810/backends/hexrays/`` lifts these fields into the portable
+# Operand/Operation, and portable consumers read the lifted field.
+#
+# Severity is WARNING during the S4 burn-down; flip to ERROR once the
+# count reaches zero (mirrors how no-live-object-access reached F2).
+
+id: no-raw-mop-field-access-in-portable-core
+language: python
+severity: warning
+
+files:
+  - "src/d810/support/**/*.py"
+  - "src/d810/ir/**/*.py"
+  - "src/d810/capabilities/**/*.py"
+  - "src/d810/analyses/**/*.py"
+  - "src/d810/transforms/**/*.py"
+  - "src/d810/passes/**/*.py"
+  - "src/d810/families/**/*.py"
+ignores:
+  # The vendor lifter is the legitimate location for raw mop_t reads.
+  - "src/d810/backends/**/*.py"
+  - "tests/**"
+
+message: |
+  Portable-core read a RAW Hex-Rays mop_t union member (.nnn / .s.off /
+  .l.off / .l.idx / getattr(mop, "nnn"|"s"|"g")). These exist only on a
+  live mop_t; the portable MopSnapshot lifts them to .value / .stkoff /
+  .lvar_off / .gaddr.
+
+  Lift the field in d810/backends/hexrays/ and read the portable field:
+      mop.value     # not mop.nnn / mop.nnn.value
+      mop.stkoff    # not mop.s.off
+      mop.lvar_off  # not mop.l.off / mop.l.idx
+      mop.gaddr     # not mop.g
+
+rule:
+  any:
+    # raw mnumber_t
+    - pattern: getattr($X, "nnn", $$$)
+    - pattern: getattr($X, "nnn")
+    - pattern: $X.nnn
+    # raw mop_addr_t / lvar_ref_t struct chains (portable snapshot has no .off/.idx)
+    - pattern: $X.s.off
+    - pattern: $X.l.off
+    - pattern: $X.l.idx
+    # raw union members via getattr string
+    - pattern: getattr($X, "s", $$$)
+    - pattern: getattr($X, "g", $$$)

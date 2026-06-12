@@ -65,6 +65,7 @@ from d810.transforms.graph_modification import (
     ReorderBlocks,
     RedirectBranch,
     RedirectGoto,
+    RetargetOutputStore,
     RemoveEdge,
     ScalarizeLocalAliasAccess,
 )
@@ -297,6 +298,28 @@ class PatchScalarizeLocalAliasAccess:
             host_opcode=self.host_opcode,
             alias_token=self.alias_token,
             base_token=self.base_token,
+            host_text_sha1=self.host_text_sha1,
+            value_size=self.value_size,
+        )
+
+
+@dataclass(frozen=True)
+class PatchRetargetOutputStore:
+    block_serial: int
+    host_ea: int
+    host_opcode: int
+    alias_token: str
+    output_token: str
+    host_text_sha1: str | None = None
+    value_size: int | None = None
+
+    def to_graph_modification(self) -> RetargetOutputStore:
+        return RetargetOutputStore(
+            block_serial=self.block_serial,
+            host_ea=self.host_ea,
+            host_opcode=self.host_opcode,
+            alias_token=self.alias_token,
+            output_token=self.output_token,
             host_text_sha1=self.host_text_sha1,
             value_size=self.value_size,
         )
@@ -667,6 +690,7 @@ PatchOperation = Union[
     PatchBypassDispatcherTrampoline,
     PatchCanonicalizeJumpTableCaseOverlap,
     PatchScalarizeLocalAliasAccess,
+    PatchRetargetOutputStore,
     PatchPhaseCycleLowering,
     PatchEdgeSplitTrampoline,
     PatchEdgeSplitCorridor,
@@ -1719,6 +1743,7 @@ def _finalize_step(
             | PatchBypassDispatcherTrampoline()
             | PatchCanonicalizeJumpTableCaseOverlap()
             | PatchScalarizeLocalAliasAccess()
+            | PatchRetargetOutputStore()
             | PatchPhaseCycleLowering()
         ):
             return step
@@ -2294,6 +2319,25 @@ def compile_patch_plan(
                     value_size=value_size,
                 ))
 
+            case RetargetOutputStore(
+                block_serial=serial,
+                host_ea=host_ea,
+                host_opcode=opcode,
+                alias_token=alias,
+                output_token=output,
+                host_text_sha1=host_text_sha1,
+                value_size=value_size,
+            ):
+                raw_steps.append(PatchRetargetOutputStore(
+                    block_serial=serial,
+                    host_ea=host_ea,
+                    host_opcode=opcode,
+                    alias_token=alias,
+                    output_token=output,
+                    host_text_sha1=host_text_sha1,
+                    value_size=value_size,
+                ))
+
             case PhaseCycleLowering(
                 header_entries=header_entries,
                 header_target=header_target,
@@ -2747,6 +2791,7 @@ __all__ = [
     "PatchBypassDispatcherTrampoline",
     "PatchCanonicalizeJumpTableCaseOverlap",
     "PatchScalarizeLocalAliasAccess",
+    "PatchRetargetOutputStore",
     "PatchPhaseCycleLowering",
     "PatchEdgeSplitTrampoline",
     "PatchEdgeSplitCorridor",

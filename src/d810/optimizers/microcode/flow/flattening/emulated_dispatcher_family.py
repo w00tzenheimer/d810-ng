@@ -159,6 +159,7 @@ from d810.analyses.value_flow import (
     OBSERVABLE_MEMORY_DEF_FACT_TYPE,
     SCALAR_PROMOTION_FACT_TYPE,
     SCALAR_REPLACEMENT_FACT_TYPE,
+    project_value_flow_facts,
     production_value_flow_fact,
 )
 from d810.analyses.control_flow.residual_alias_discovery import (
@@ -2394,50 +2395,84 @@ def _ollvm_live_instruction_at_locator(
     mba: object,
     locator: dict[str, object],
 ) -> object | None:
-    try:
-        block_serial = int(locator.get("source_block"))  # type: ignore[arg-type]
-    except Exception:
-        return None
-    try:
-        blk = mba.get_mblock(block_serial)
-    except Exception:
-        return None
-    if blk is None:
-        return None
     expected_ea = locator.get("instruction_ea")
     expected_index = locator.get("instruction_index")
     expected_hash = str(locator.get("instruction_text_sha1") or "")
     expected_token = _ollvm_canonical_var_token(str(locator.get("carrier_token") or ""))
     expected_opcode_name = str(locator.get("instruction_opcode_name") or "")
-    insn = getattr(blk, "head", None)
-    index = 0
-    while insn is not None:
+    try:
+        block_serial = int(locator.get("source_block"))  # type: ignore[arg-type]
+    except Exception:
+        block_serial = None
+
+    def _matches(insn: object, index: int, *, require_index: bool) -> bool:
         ea_matches = True
         if expected_ea is not None:
             try:
                 ea_matches = int(getattr(insn, "ea", 0) or 0) == int(expected_ea)
             except Exception:
                 ea_matches = False
+        if not ea_matches:
+            return False
         index_matches = True
-        if expected_index is not None:
+        if require_index and expected_index is not None:
             try:
                 index_matches = int(index) == int(expected_index)
             except Exception:
                 index_matches = False
-        if ea_matches and index_matches:
-            text = _ollvm_insn_text(insn)
-            if expected_hash and _ollvm_instruction_text_digest(text) != expected_hash:
-                return None
-            if expected_token is not None and expected_token not in _ollvm_var_tokens_from_text(text):
-                return None
-            if expected_opcode_name and expected_opcode_name.startswith("m_"):
-                # Keep this a text-level check because unit and IDA runtime
-                # environments represent opcode names differently.
-                if not text.lstrip().startswith(expected_opcode_name[2:]):
-                    return None
-            return insn
-        insn = getattr(insn, "next", None)
-        index += 1
+        if not index_matches:
+            return False
+        text = _ollvm_insn_text(insn)
+        if expected_hash and _ollvm_instruction_text_digest(text) != expected_hash:
+            return False
+        if expected_token is not None and expected_token not in _ollvm_var_tokens_from_text(text):
+            return False
+        if expected_opcode_name and expected_opcode_name.startswith("m_"):
+            # Keep this a text-level check because unit and IDA runtime
+            # environments represent opcode names differently.
+            if not text.lstrip().startswith(expected_opcode_name[2:]):
+                return False
+        return True
+
+    def _scan_block(blk: object | None, *, require_index: bool) -> object | None:
+        insn = getattr(blk, "head", None) if blk is not None else None
+        index = 0
+        while insn is not None:
+            if _matches(insn, index, require_index=require_index):
+                return insn
+            insn = getattr(insn, "next", None)
+            index += 1
+        return None
+
+    if block_serial is not None:
+        try:
+            blk = mba.get_mblock(block_serial)
+        except Exception:
+            blk = None
+        matched = _scan_block(blk, require_index=True)
+        if matched is not None:
+            return matched
+
+    # CFG rewrites can shift serials before post-execute carrier cleanup runs.
+    # Fall back to the stable EA/text/token identity, ignoring the stale
+    # maturity-local instruction index when the original source block no longer
+    # names the live anchor.
+    if expected_ea is None:
+        return None
+    try:
+        qty = int(getattr(mba, "qty", 0) or 0)
+    except Exception:
+        qty = 0
+    for serial in range(qty):
+        if block_serial is not None and int(serial) == int(block_serial):
+            continue
+        try:
+            blk = mba.get_mblock(serial)
+        except Exception:
+            continue
+        matched = _scan_block(blk, require_index=False)
+        if matched is not None:
+            return matched
     return None
 
 
@@ -2516,11 +2551,34 @@ class _OllvmLocalAliasScalarizationSpec:
     overlap_proof: dict[str, object]
 
 
+def _ollvm_scalar_working_base_tokens(
+    carrier_facts: tuple[object, ...],
+) -> frozenset[str]:
+    bases: set[str] = set()
+    for fact in carrier_facts:
+        if not production_value_flow_fact(fact, SCALAR_REPLACEMENT_FACT_TYPE):
+            continue
+        payload = getattr(fact, "payload", None)
+        if not isinstance(payload, dict):
+            continue
+        details = payload.get("details")
+        if not isinstance(details, dict):
+            continue
+        if details.get("proof_family") != "local_expression_storage_scalarization":
+            continue
+        for key in ("local_base_token", "multiply_add_base_token"):
+            base = _ollvm_canonical_var_token(str(details.get(key) or ""))
+            if base is not None:
+                bases.add(base)
+    return frozenset(sorted(bases))
+
+
 def _ollvm_local_alias_scalarization_specs(
     carrier_facts: tuple[object, ...],
     mba: object | None = None,
 ) -> dict[str, _OllvmLocalAliasScalarizationSpec]:
     specs: dict[str, _OllvmLocalAliasScalarizationSpec] = {}
+    scalar_working_bases = _ollvm_scalar_working_base_tokens(carrier_facts)
     for fact in carrier_facts:
         if not production_value_flow_fact(fact, SCALAR_REPLACEMENT_FACT_TYPE):
             continue
@@ -2530,7 +2588,11 @@ def _ollvm_local_alias_scalarization_specs(
         details = payload.get("details")
         if not isinstance(details, dict):
             details = {}
-        if details.get("proof_family") != "local_expression_storage_scalarization":
+        proof_family = str(details.get("proof_family") or "")
+        if proof_family not in {
+            "local_expression_storage_scalarization",
+            "local_pointer_storage_scalarization",
+        }:
             continue
         anchor_locator = payload.get("anchor_locator")
         overlap_proof = payload.get("storage_overlap_proof")
@@ -2543,15 +2605,23 @@ def _ollvm_local_alias_scalarization_specs(
         alias_token = _ollvm_canonical_var_token(
             str(payload.get("storage_identity") or "")
         )
-        base_token = _ollvm_canonical_var_token(
+        physical_base_token = _ollvm_canonical_var_token(
             str(details.get("local_base_token") or "")
         )
-        if base_token is None:
-            base_token = _ollvm_canonical_var_token(
+        if physical_base_token is None:
+            physical_base_token = _ollvm_canonical_var_token(
                 str(details.get("multiply_add_base_token") or "")
             )
-        if alias_token is None or base_token is None or alias_token == base_token:
+        if alias_token is None:
             continue
+        if proof_family == "local_pointer_storage_scalarization":
+            if physical_base_token not in scalar_working_bases:
+                continue
+            base_token = alias_token
+        else:
+            base_token = physical_base_token
+            if base_token is None or alias_token == base_token:
+                continue
         specs[alias_token] = _OllvmLocalAliasScalarizationSpec(
             alias_token=alias_token,
             base_token=base_token,
@@ -2574,6 +2644,33 @@ def _ollvm_local_alias_fact_ids(
             or production_value_flow_fact(fact, SCALAR_REPLACEMENT_FACT_TYPE)
         )
     }
+
+
+def _dedupe_carrier_facts(*fact_groups: tuple[object, ...]) -> tuple[object, ...]:
+    deduped: list[object] = []
+    seen: set[str] = set()
+    for facts in fact_groups:
+        for fact in facts:
+            fact_id = str(getattr(fact, "fact_id", "") or "")
+            key = fact_id or f"{getattr(fact, 'kind', '')}:{id(fact)}"
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(fact)
+    return tuple(deduped)
+
+
+def _projected_carrier_facts_from_fact_view(
+    fact_view: object | None,
+) -> tuple[object, ...]:
+    if fact_view is None:
+        return ()
+    observations = getattr(fact_view, "active_observations", ())
+    if callable(observations):
+        observations = observations()
+    if not observations:
+        return ()
+    return project_value_flow_facts(tuple(observations))
 
 
 def _ollvm_mop_size(mop: object | None) -> int:
@@ -3031,6 +3128,36 @@ def _apply_local_alias_mem2reg(
     if mba is None:
         return 0
     alias_specs = _ollvm_local_alias_scalarization_specs(carrier_facts, mba=mba)
+    log_debug = getattr(logger, "debug", None)
+    if callable(log_debug):
+        scalar_fact_count = sum(
+            1
+            for fact in carrier_facts
+            if production_value_flow_fact(fact, SCALAR_REPLACEMENT_FACT_TYPE)
+        )
+        local_pointer_count = sum(
+            1
+            for fact in carrier_facts
+            if (
+                production_value_flow_fact(fact, SCALAR_REPLACEMENT_FACT_TYPE)
+                and isinstance(getattr(fact, "payload", None), dict)
+                and isinstance(getattr(fact, "payload", {}).get("details"), dict)
+                and getattr(fact, "payload", {}).get("details", {}).get("proof_family")
+                == "local_pointer_storage_scalarization"
+            )
+        )
+        log_debug(
+            "OLLVM local carrier alias mem2reg facts=%d scalar_facts=%d "
+            "local_pointer_facts=%d scalar_bases=%s specs=%s",
+            len(carrier_facts),
+            scalar_fact_count,
+            local_pointer_count,
+            ",".join(sorted(_ollvm_scalar_working_base_tokens(carrier_facts))),
+            ",".join(
+                f"{alias}->{spec.base_token}"
+                for alias, spec in sorted(alias_specs.items())
+            ),
+        )
     if not alias_specs:
         return 0
     queued = 0
@@ -3098,6 +3225,12 @@ def _apply_local_alias_mem2reg(
                 fact_ids.add(alias_spec.fact_id)
             insn = getattr(insn, "next", None)
     if not queued:
+        if callable(log_debug):
+            log_debug(
+                "OLLVM local carrier alias mem2reg found specs but queued no "
+                "edits aliases=%s",
+                ",".join(sorted(alias_specs)),
+            )
         return 0
     try:
         applied = int(modifier.apply(
@@ -9027,7 +9160,12 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             return 0
 
         semantic_carrier_changes = 0
-        carrier_facts = self._profile.collect_post_execute_carrier_facts(mba)
+        carrier_facts = _dedupe_carrier_facts(
+            self._profile.collect_post_execute_carrier_facts(mba),
+            _projected_carrier_facts_from_fact_view(
+                getattr(snapshot, "diagnostic_fact_view", None)
+            ),
+        )
         if (
             int(getattr(mba, "maturity", -1) or -1) == int(ida_hexrays.MMAT_CALLS)
             and carrier_facts
@@ -9051,6 +9189,16 @@ class EmulatedDispatcherStrategyFamily(CFFStrategyFamily):
             int(getattr(mba, "maturity", -1) or -1) >= int(ida_hexrays.MMAT_GLBOPT1)
             and carrier_facts
         ):
+            semantic_carrier_changes += _apply_local_alias_mem2reg(
+                mba,
+                self._logger,
+                carrier_facts,
+            )
+            semantic_carrier_changes += _apply_same_carrier_alias_repairs(
+                mba,
+                self._logger,
+                carrier_facts,
+            )
             semantic_carrier_changes = _apply_semantic_carrier_promotions(
                 mba,
                 self._logger,

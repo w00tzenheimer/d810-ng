@@ -849,7 +849,7 @@ def _resolve_next_state(ctx: _ResolverContext, pred, block, arm):
 
     Priority (the proof is the only differentiator -- PART A, ticket llr-xauw):
 
-      [floor]  global_fold -> predecessor_partitioned / region_agreed
+      [floor]  predecessor_partitioned split -> global_fold -> region_agreed
       [refine] emulation_oracle  (⊥-only; seeded ConcreteStore; fold_exact-gated)
       [floor]  region_seeded
       [future] (clean extension point for symbolic/solver providers)
@@ -857,19 +857,34 @@ def _resolve_next_state(ctx: _ResolverContext, pred, block, arm):
 
     The first provider to return a non-``None`` list wins; the abstract per-edge
     fold is computed once and shared by the partitioned + emulation providers (the
-    concrete leg fires only where the abstract fold is ⊥).  Behaviour and proofs are
-    byte-identical to the previous if/elif chain.
+    concrete leg fires only where the abstract fold is ⊥).
+
+    A distinct predecessor-partitioned split is ranked before ``global_fold`` because
+    a shared merge block may do ``state = temp`` after each incoming edge assigns a
+    different constant to ``temp``.  The global meet can fail to resolve that temp
+    and leave the incoming dispatcher state in the state slot, producing a stale
+    self-loop route.  When every immediate predecessor independently folds to a
+    concrete next-state, those edge-local writes are the real transition anchors.
     """
+    # The abstract per-edge fold, computed once: it gates BOTH the predecessor-
+    # partitioned floor provider (non-⊥) and the emulation refine provider (⊥).
+    edge_states, ambiguous = _abstract_partition_states(ctx, block)
+
+    # [floor] predecessor-partitioned split.  Prefer this over a stale global_fold
+    # when a shared state-write merge has one concrete next-state per incoming edge.
+    if not ambiguous and len(set(edge_states.values())) > 1:
+        edges = _provider_predecessor_partitioned(
+            ctx, pred, block, arm, edge_states, ambiguous
+        )
+        if edges is not None:
+            return edges
+
     # [floor] unambiguous global/const fold (the B1 case).
     edges = _provider_global_fold(ctx, pred, block, arm)
     if edges is not None:
         return edges
 
-    # The abstract per-edge fold, computed once: it gates BOTH the predecessor-
-    # partitioned floor provider (non-⊥) and the emulation refine provider (⊥).
-    edge_states, ambiguous = _abstract_partition_states(ctx, block)
-
-    # [floor] predecessor-partitioned split / region-agreed plain redirect.
+    # [floor] region-agreed plain redirect from the per-edge fold.
     edges = _provider_predecessor_partitioned(
         ctx, pred, block, arm, edge_states, ambiguous
     )

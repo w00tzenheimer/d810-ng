@@ -55,7 +55,7 @@ class TestOllvmFlaBcfSubOracle:
 
         configure_settings(
             diag_snapshots=True,
-            capture_post_maturity=idaapi.MMAT_GLBOPT1,
+            capture_post_maturity=idaapi.MMAT_GLBOPT2,
         )
         request.addfinalizer(reset_settings)
 

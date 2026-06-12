@@ -490,6 +490,120 @@ def test_ollvm_local_alias_mem2reg_uses_transactional_verified_apply(monkeypatch
     assert queued_kwargs["value_size"] == 4
 
 
+def test_ollvm_local_pointer_mem2reg_queues_logical_self_storage(monkeypatch):
+    from d810.optimizers.microcode.flow.flattening import (
+        emulated_dispatcher_family as edf,
+    )
+    from d810.analyses.value_flow import (
+        LIFECYCLE_PRODUCTION_PROVEN,
+        SCALAR_REPLACEMENT_FACT_TYPE,
+    )
+
+    class _Mop:
+        def __init__(self, text: str):
+            self._text = text
+            self.size = 4
+
+        def dstr(self) -> str:
+            return self._text
+
+    insn = SimpleNamespace(
+        opcode=ida_hexrays.m_ldx,
+        ea=0x180010000,
+        r=_Mop("[ds.2:%var_398.8].4"),
+        d=_Mop("%var_420.4"),
+        next=None,
+    )
+    insn.dstr = lambda: "ldx [ds.2:%var_398.8].4, %var_420.4"
+    block = _FakeBlock(0)
+    block.head = insn
+    block.make_lists_ready = lambda: None  # type: ignore[attr-defined]
+    mba = _FakeMBA()
+    mba.blocks = {0: block}
+    mba.qty = 1
+
+    created_modifiers = []
+
+    class _FakeModifier:
+        def __init__(self, _mba):
+            self.queued = []
+            self.apply_kwargs = {}
+            self.verify_failed = False
+            created_modifiers.append(self)
+
+        def queue_scalarize_local_alias_access(self, *args, **kwargs):
+            self.queued.append((args, kwargs))
+
+        def apply(self, **kwargs):
+            self.apply_kwargs = dict(kwargs)
+            return len(self.queued)
+
+    seed_expression_fact = SimpleNamespace(
+        kind=SCALAR_REPLACEMENT_FACT_TYPE,
+        fact_id="accumulator-expression",
+        payload={
+            "lifecycle_status": LIFECYCLE_PRODUCTION_PROVEN,
+            "storage_identity": "%var_378",
+            "details": {
+                "proof_family": "local_expression_storage_scalarization",
+                "multiply_add_base_token": "%var_18",
+            },
+        },
+    )
+    pointer_fact = SimpleNamespace(
+        kind=SCALAR_REPLACEMENT_FACT_TYPE,
+        fact_id="loop-index-pointer",
+        payload={
+            "lifecycle_status": LIFECYCLE_PRODUCTION_PROVEN,
+            "storage_identity": "%var_398",
+            "anchor_locator": {
+                "requires_live_revalidation": True,
+                "source_block": 0,
+                "instruction_ea": 0x180010000,
+                "instruction_index": 0,
+                "instruction_opcode_name": "m_ldx",
+                "instruction_text_sha1": hashlib.sha1(
+                    insn.dstr().encode("utf-8")
+                ).hexdigest()[:16],
+                "carrier_token": "%var_398",
+            },
+            "storage_overlap_proof": {
+                "fully_included": True,
+                "partial_overlap": False,
+                "carrier_token": "%var_398",
+                "base_token": "%var_18",
+                "requires_live_mlist_revalidation": True,
+            },
+            "details": {
+                "proof_family": "local_pointer_storage_scalarization",
+                "local_base_token": "%var_18",
+            },
+        },
+    )
+
+    monkeypatch.setattr(edf, "DeferredGraphModifier", _FakeModifier)
+    monkeypatch.setattr(edf, "_verify_ollvm_carrier_mutation", lambda *_a, **_k: None)
+
+    applied = edf._apply_local_alias_mem2reg(
+        mba,
+        SimpleNamespace(info=lambda *_a, **_k: None, warning=lambda *_a, **_k: None),
+        (seed_expression_fact, pointer_fact),
+    )
+
+    assert applied == 1
+    assert len(created_modifiers) == 1
+    assert len(created_modifiers[0].queued) == 1
+    queued_args, queued_kwargs = created_modifiers[0].queued[0]
+    assert queued_args[:5] == (
+        0,
+        0x180010000,
+        ida_hexrays.m_ldx,
+        "%var_398",
+        "%var_398",
+    )
+    assert queued_kwargs["value_size"] == 4
+
+
 def test_scalarize_local_alias_access_revalidates_live_host_text_hash() -> None:
     mba = _FakeMBA()
     modifier = dm.DeferredGraphModifier(mba)
@@ -511,6 +625,68 @@ def test_scalarize_local_alias_access_revalidates_live_host_text_hash() -> None:
         "definitely-wrong",
         4,
     ) is False
+
+
+def test_retarget_output_store_rewrites_only_store_address_operand(monkeypatch) -> None:
+    class _Mop:
+        def __init__(self, text: str, size: int = 8):
+            self._text = text
+            self.size = size
+
+        def dstr(self) -> str:
+            return self._text
+
+        def assign(self, other) -> None:
+            self._text = other.dstr()
+            self.size = getattr(other, "size", self.size)
+
+    def _copy_mop(mop):
+        return _Mop(mop.dstr(), getattr(mop, "size", 0))
+
+    monkeypatch.setattr(dm, "_copy_mop_for_alias_scalarization", _copy_mop)
+
+    mba = _FakeMBA()
+    entry = _FakeBlock(0)
+    entry.head = SimpleNamespace(
+        opcode=ida_hexrays.m_mov,
+        ea=0x18000E7A9,
+        d=_Mop("%var_30.8"),
+        l=_Mop("rdx.8"),
+        r=_Mop("", 0),
+        next=None,
+        dstr=lambda: "mov rdx.8, %var_30.8",
+    )
+    target = _Mop("[ds.2:%var_370.8].8")
+    value = _Mop("((bnot([ds.2:%var_378.8].4) & #0x173063C1.4))", 4)
+    host = SimpleNamespace(
+        opcode=ida_hexrays.m_stx,
+        ea=0x18000FA83,
+        d=target,
+        l=value,
+        r=_Mop("ds.2", 2),
+        next=None,
+        dstr=lambda: (
+            "stx ((bnot([ds.2:%var_378.8].4) & #0x173063C1.4)), "
+            "ds.2, [ds.2:%var_370.8].8"
+        ),
+    )
+    store_block = _FakeBlock(1)
+    store_block.head = host
+    mba.blocks = {0: entry, 1: store_block}
+    mba.qty = 2
+    modifier = dm.DeferredGraphModifier(mba)
+
+    assert modifier._apply_retarget_output_store(
+        store_block,
+        0x18000FA83,
+        ida_hexrays.m_stx,
+        "%var_370",
+        "%var_30",
+        None,
+        4,
+    ) is True
+    assert target.dstr() == "%var_30.8"
+    assert value.dstr().startswith("((bnot")
 
 
 def test_scalarize_local_alias_access_coalesce_keeps_distinct_live_anchors() -> None:

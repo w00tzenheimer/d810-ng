@@ -23,6 +23,7 @@ from d810.transforms.plan_fragment import (
 from d810.analyses.control_flow.conditional_jump_eval import (
     conditional_jump_outcome_for_values,
 )
+from d810.analyses.control_flow.graph_checks import reachable_from_adjacency
 
 if TYPE_CHECKING:
     from d810.transforms.snapshot import (
@@ -296,6 +297,51 @@ def _clone_branch_arm(pred_block: object, fake_block: int) -> int | None:
     return None
 
 
+def _successor_count(block: object | None) -> int:
+    if block is None:
+        return 0
+    nsucc = getattr(block, "nsucc", None)
+    if callable(nsucc):
+        try:
+            return int(nsucc())
+        except (TypeError, ValueError):
+            return 0
+    if nsucc is not None:
+        try:
+            return int(nsucc)
+        except (TypeError, ValueError):
+            return 0
+    return len(tuple(getattr(block, "succs", ()) or ()))
+
+
+def _block_successors(block: object | None) -> tuple[int, ...]:
+    if block is None:
+        return ()
+    succs = getattr(block, "succs", ()) or ()
+    try:
+        return tuple(int(succ) for succ in succs)
+    except (TypeError, ValueError):
+        return ()
+
+
+def _lookup_block(cfg: object, serial: int) -> object | None:
+    getter = getattr(cfg, "get_block", None)
+    if callable(getter):
+        return getter(int(serial))
+    blocks = getattr(cfg, "blocks", None)
+    if isinstance(blocks, Mapping):
+        return blocks.get(int(serial))
+    return None
+
+
+def _has_terminal_successor(cfg: object, block: object) -> bool:
+    for succ in _block_successors(block):
+        succ_block = _lookup_block(cfg, int(succ))
+        if succ_block is not None and _successor_count(succ_block) == 0:
+            return True
+    return False
+
+
 def _coerce_fake_jump_fixes(raw: object) -> dict[int, dict[int, int]]:
     if not isinstance(raw, Mapping):
         return {}
@@ -420,6 +466,8 @@ def _is_valid_fake_jump_fix(cfg: FlowGraph, fix: FakeJumpPredFix) -> bool:
 
     if fake_block is None or pred_block is None or target_block is None:
         return False
+    if _has_terminal_successor(cfg, fake_block):
+        return False
     if fix.pred_block == cfg.entry_serial:
         return False
     if fix.new_target == fix.pred_block:
@@ -488,6 +536,8 @@ def _is_valid_payload_fake_jump_fix(
 ) -> bool:
     fake_block = cfg.get_block(fix.fake_block)
     if fake_block is None or fake_block.nsucc != 2:
+        return False
+    if _has_terminal_successor(cfg, fake_block):
         return False
     if int(fix.original_target) not in fake_block.succs:
         return False
@@ -656,6 +706,17 @@ def _build_ownership(modifications: Sequence[GraphModification]) -> OwnershipSco
     )
 
 
+def _entry_reachable_count(flow_graph: FlowGraph | None) -> int:
+    if flow_graph is None:
+        return 0
+    return len(
+        reachable_from_adjacency(
+            flow_graph.as_adjacency_dict(),
+            flow_graph.entry_serial,
+        )
+    )
+
+
 class FakeJumpStrategy:
     """Engine strategy wrapper for validated per-predecessor fake-jump redirects."""
 
@@ -705,6 +766,14 @@ class FakeJumpStrategy:
                 FAKE_JUMP_FIXES_METADATA_KEY: _serialize_fake_jump_fixes(fixes),
                 PAYLOAD_FAKE_JUMP_FIXES_METADATA_KEY: (
                     serialize_payload_fake_jump_fixes(payload_fixes)
+                ),
+                "planner_entry_reachable_count": _entry_reachable_count(
+                    snapshot.flow_graph
+                ),
+                "planner_entry_serial": (
+                    int(snapshot.flow_graph.entry_serial)
+                    if snapshot.flow_graph is not None
+                    else 0
                 ),
                 "safeguard_min_required": 1,
             },

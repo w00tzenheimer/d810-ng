@@ -11,16 +11,33 @@ it (upward edge); duck-typing suffices.
 """
 from __future__ import annotations
 
+from d810.analyses.control_flow.graph_checks import (
+    check_entry_reachability_not_collapsed,
+    check_terminal_reachability_preserved,
+)
+from d810.analyses.control_flow.edit_simulation import simulate_edits
+from d810.core.logging import getLogger
+from d810.core.typing import TYPE_CHECKING
 from d810.ir.flowgraph import FlowGraph
-from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.transforms.plan import PatchPlan
+from d810.transforms.edit_simulator import patch_plan_to_simulated_edits
+
+
+logger = getLogger(__name__)
+
+if TYPE_CHECKING:
+    from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 
 
 class HexRaysMutationBackend:
     """Apply unflatten PatchPlans to a live ``mba`` and return the re-lifted FlowGraph."""
 
-    def __init__(self, translator: IDAIRTranslator | None = None) -> None:
-        self._translator = translator or IDAIRTranslator()
+    def __init__(self, translator: "IDAIRTranslator | None" = None) -> None:
+        if translator is None:
+            from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+
+            translator = IDAIRTranslator()
+        self._translator = translator
 
     def capabilities(self) -> frozenset[str]:
         # "emulation" advertises the concolic block-emulator the unflatten entry registers as
@@ -36,5 +53,36 @@ class HexRaysMutationBackend:
         safety_policy: object = None,
     ) -> FlowGraph:
         """Lower the plan to live edits, then re-lift to a fresh snapshot (the new epoch)."""
+        pre_cfg = self._translator.lift(live_source)
+        simulation = simulate_edits(
+            pre_cfg.as_adjacency_dict(),
+            patch_plan_to_simulated_edits(rewrite_plan),
+        )
+        terminal_reachability = check_terminal_reachability_preserved(
+            pre_cfg,
+            post_adj=simulation.adj,
+        )
+        entry_reachability = check_entry_reachability_not_collapsed(
+            pre_cfg,
+            post_adj=simulation.adj,
+        )
+        if not terminal_reachability.passed or not entry_reachability.passed:
+            logger.warning(
+                "Rejecting Hex-Rays mutation plan: terminal_ok=%s entry_ok=%s "
+                "pre_reach=%d post_reach=%d pre_terminals=%s post_terminals=%s "
+                "entry_retained=%.2f reason=%s/%s steps=%d",
+                terminal_reachability.passed,
+                entry_reachability.passed,
+                terminal_reachability.pre_reachable_count,
+                terminal_reachability.post_reachable_count,
+                sorted(terminal_reachability.pre_reachable_terminals),
+                sorted(terminal_reachability.post_reachable_terminals),
+                entry_reachability.retained_ratio,
+                terminal_reachability.reason,
+                entry_reachability.reason,
+                len(rewrite_plan.steps),
+            )
+            return pre_cfg
+
         self._translator.lower(rewrite_plan, live_source)
         return self._translator.lift(live_source)

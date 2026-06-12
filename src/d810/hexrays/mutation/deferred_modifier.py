@@ -444,6 +444,22 @@ def _copy_mop_for_alias_scalarization(mop: object | None) -> object | None:
         return None
 
 
+def _apply_alias_scalarization_size_hint(
+    mop: object | None,
+    size_hint: int | None,
+) -> object | None:
+    if mop is None:
+        return None
+    try:
+        hint = int(size_hint or 0)
+    except Exception:
+        hint = 0
+    if hint > 0:
+        with contextlib.suppress(Exception):
+            mop.size = hint
+    return mop
+
+
 def _trace_conditional_redirect_step(
     label: str,
     mba: ida_hexrays.mba_t,
@@ -521,6 +537,7 @@ class ModificationType(Enum):
     INSN_ZERO_STATE_WRITE = auto()    # Zero source operand of state variable write
     INSN_PROMOTE_OPERAND_TO_SCALAR = auto()  # Hoist a fused mop_d sub-instruction to a fresh kreg
     INSN_SCALARIZE_LOCAL_ALIAS_ACCESS = auto()  # Rewrite proven local pointer alias ldx/stx through its base local
+    INSN_RETARGET_OUTPUT_STORE = auto()  # Rewrite a proven output-store address to the output pointer carrier
     LOWER_CONDITIONAL_STATE_TRANSITION = auto()  # Replace state-write-to-dispatcher with a proven 2-way edge
     NORMALIZE_NWAY_DISPATCHER_EXIT = auto()  # Downgrade degenerate NWAY dispatcher exit to 1-way
     BYPASS_DISPATCHER_TRAMPOLINE = auto()  # Redirect an edge away from a dispatcher trampoline
@@ -616,6 +633,7 @@ _STAGED_ATOMIC_CLASS_MAP: "dict[ModificationType, StagedAtomicClassification]" =
     ModificationType.INSN_ZERO_STATE_WRITE: StagedAtomicClassification.INSTRUCTION_ONLY,
     ModificationType.INSN_PROMOTE_OPERAND_TO_SCALAR: StagedAtomicClassification.INSTRUCTION_ONLY,
     ModificationType.INSN_SCALARIZE_LOCAL_ALIAS_ACCESS: StagedAtomicClassification.INSTRUCTION_ONLY,
+    ModificationType.INSN_RETARGET_OUTPUT_STORE: StagedAtomicClassification.INSTRUCTION_ONLY,
     ModificationType.BLOCK_NOP_INSNS: StagedAtomicClassification.INSTRUCTION_ONLY,
     # Destructive-expressible: mutate an existing block's tail/succset in-place.
     # Lowered to copy-and-swap under staged_atomic.
@@ -1572,6 +1590,46 @@ class DeferredGraphModifier:
         logger.debug(
             "Queued scalarize_local_alias_access: block %d, host_ea=%s, alias=%s, base=%s",
             block_serial, hex(host_ea), alias_token, base_token,
+        )
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
+    def queue_retarget_output_store(
+        self,
+        block_serial: int,
+        host_ea: int,
+        host_opcode: int,
+        alias_token: str,
+        output_token: str,
+        host_text_sha1: str | None = None,
+        value_size: int | None = None,
+        description: str = "",
+    ) -> None:
+        """Queue retargeting of a proven output-store address to the output pointer."""
+        alias_token = _canonical_local_var_token(alias_token) or ""
+        output_token = _canonical_local_var_token(output_token) or ""
+        if not alias_token or not output_token:
+            raise ValueError(
+                "alias_token and output_token must be non-empty local tokens"
+            )
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.INSN_RETARGET_OUTPUT_STORE,
+            block_serial=block_serial,
+            insn_ea=host_ea,
+            host_opcode=host_opcode,
+            alias_token=alias_token,
+            base_token=output_token,
+            host_text_sha1=str(host_text_sha1 or "") or None,
+            value_size=int(value_size or 0) or None,
+            priority=845,
+            description=description or (
+                f"retarget output store {alias_token}->{output_token} at "
+                f"{hex(host_ea)} in block {block_serial}"
+            ),
+        ))
+        logger.debug(
+            "Queued retarget_output_store: block %d, host_ea=%s, alias=%s, output=%s",
+            block_serial, hex(host_ea), alias_token, output_token,
         )
         if self.event_emitter is not None:
             self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
@@ -2811,6 +2869,17 @@ class DeferredGraphModifier:
             ):
                 key = (mod.mod_type, mod.src_block, mod.old_target, mod.via_pred, mod.new_target)
             elif mod.mod_type == ModificationType.INSN_SCALARIZE_LOCAL_ALIAS_ACCESS:
+                key = (
+                    mod.mod_type,
+                    mod.block_serial,
+                    mod.insn_ea,
+                    mod.host_opcode,
+                    mod.alias_token,
+                    mod.base_token,
+                    mod.host_text_sha1,
+                    mod.value_size,
+                )
+            elif mod.mod_type == ModificationType.INSN_RETARGET_OUTPUT_STORE:
                 key = (
                     mod.mod_type,
                     mod.block_serial,
@@ -5651,6 +5720,17 @@ class DeferredGraphModifier:
                 mod.value_size,
             )
 
+        elif mod.mod_type == ModificationType.INSN_RETARGET_OUTPUT_STORE:
+            return self._apply_retarget_output_store(
+                blk,
+                mod.insn_ea,
+                mod.host_opcode,
+                mod.alias_token,
+                mod.base_token,
+                mod.host_text_sha1,
+                mod.value_size,
+            )
+
         elif mod.mod_type == ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION:
             return self._apply_lower_conditional_state_transition(
                 blk,
@@ -6190,6 +6270,10 @@ class DeferredGraphModifier:
                         return 0
                 if alias_token == base_token:
                     base_mop = _copy_mop_for_alias_scalarization(source)
+                    base_mop = _apply_alias_scalarization_size_hint(
+                        base_mop,
+                        int(getattr(mop, "size", 0) or 0),
+                    )
                 else:
                     base_mop = self._local_alias_base_mop(
                         alias_token,
@@ -6267,6 +6351,10 @@ class DeferredGraphModifier:
                         return False
                 if alias == base:
                     base_mop = _copy_mop_for_alias_scalarization(source)
+                    base_mop = _apply_alias_scalarization_size_hint(
+                        base_mop,
+                        int(getattr(dest, "size", 0) or 0),
+                    )
                 else:
                     base_mop = self._local_alias_base_mop(
                         alias,
@@ -6297,6 +6385,10 @@ class DeferredGraphModifier:
                         return False
                 if alias == base:
                     base_mop = _copy_mop_for_alias_scalarization(target)
+                    base_mop = _apply_alias_scalarization_size_hint(
+                        base_mop,
+                        int(getattr(source, "size", 0) or 0),
+                    )
                 else:
                     base_mop = self._local_alias_base_mop(
                         alias,
@@ -6329,6 +6421,106 @@ class DeferredGraphModifier:
         logger.info(
             "SCALARIZE_LOCAL_ALIAS_ACCESS: blk[%d]@0x%x alias=%s base=%s rewrites=%d",
             blk.serial, int(host_ea or 0), alias, base, changed,
+        )
+        return True
+
+    def _find_local_token_value_mop(
+        self,
+        local_token: str,
+    ) -> object | None:
+        token = _canonical_local_var_token(local_token)
+        if token is None:
+            return None
+        qty = int(getattr(self.mba, "qty", 0) or 0)
+        for serial in range(qty):
+            try:
+                blk = self.mba.get_mblock(serial)
+            except Exception:
+                continue
+            if blk is None:
+                continue
+            insn = getattr(blk, "head", None)
+            while insn is not None:
+                for side in ("d", "l", "r"):
+                    mop = getattr(insn, side, None)
+                    if _mop_local_var_token(mop) != token:
+                        continue
+                    text = _mop_text(mop)
+                    if "&(" in text or "[" in text:
+                        continue
+                    copied = _copy_mop_for_alias_scalarization(mop)
+                    if copied is not None:
+                        return copied
+                insn = getattr(insn, "next", None)
+        return None
+
+    def _apply_retarget_output_store(
+        self,
+        blk: ida_hexrays.mblock_t,
+        host_ea: int | None,
+        host_opcode: int | None,
+        alias_token: str | None,
+        output_token: str | None,
+        host_text_sha1: str | None = None,
+        value_size: int | None = None,
+    ) -> bool:
+        alias = _canonical_local_var_token(alias_token)
+        output = _canonical_local_var_token(output_token)
+        if alias is None or output is None:
+            logger.warning(
+                "retarget_output_store: invalid alias/output %r -> %r",
+                alias_token, output_token,
+            )
+            return False
+        host = blk.head
+        while host is not None:
+            if host.ea == host_ea and (
+                host_opcode is None or host.opcode == host_opcode
+            ):
+                break
+            host = host.next
+        if host is None:
+            logger.warning(
+                "retarget_output_store: host insn at EA %s not found in block %d",
+                hex(host_ea or 0), blk.serial,
+            )
+            return False
+        if host_text_sha1:
+            current_hash = _instruction_text_digest(_insn_text(host))
+            if current_hash != host_text_sha1:
+                logger.warning(
+                    "retarget_output_store: live host text hash mismatch "
+                    "at blk[%d]@%s expected=%s actual=%s",
+                    blk.serial, hex(host_ea or 0), host_text_sha1, current_hash,
+                )
+                return False
+        if int(getattr(host, "opcode", -1)) != int(ida_hexrays.m_stx):
+            return False
+        target = getattr(host, "d", None)
+        source = getattr(host, "l", None)
+        if _mop_local_var_token(target) != alias:
+            return False
+        if value_size is not None and value_size > 0:
+            try:
+                if int(getattr(source, "size", 0) or 0) != int(value_size):
+                    return False
+            except Exception:
+                return False
+        output_mop = self._find_local_token_value_mop(output)
+        if output_mop is None:
+            logger.warning(
+                "retarget_output_store: output token %s not found in live MBA",
+                output,
+            )
+            return False
+        try:
+            target.assign(output_mop)
+        except Exception:
+            return False
+        blk.mark_lists_dirty()
+        logger.info(
+            "RETARGET_OUTPUT_STORE: blk[%d]@0x%x alias=%s output=%s",
+            blk.serial, int(host_ea or 0), alias, output,
         )
         return True
 

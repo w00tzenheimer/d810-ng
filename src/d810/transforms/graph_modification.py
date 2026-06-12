@@ -653,6 +653,20 @@ class ScalarizeLocalAliasAccess:
 
 
 @dataclass(frozen=True)
+class RetargetOutputStore:
+    """Rewrite a proven output-store address from a local alias to the output pointer."""
+
+    block_serial: int
+    host_ea: int
+    host_opcode: int
+    alias_token: str
+    output_token: str
+    host_text_sha1: str | None = None
+    value_size: int | None = None
+    reason: str = "output_store_retarget"
+
+
+@dataclass(frozen=True)
 class PhaseCycleLowering:
     """Lower a resolved dispatcher phase as an explicit loop-shaped cluster.
 
@@ -726,6 +740,7 @@ GraphModification = Union[
     BypassDispatcherTrampoline,
     CanonicalizeJumpTableCaseOverlap,
     ScalarizeLocalAliasAccess,
+    RetargetOutputStore,
     PhaseCycleLowering,
     InsertBlock,
     RemoveEdge,
@@ -807,6 +822,7 @@ __all__ = [
     "BypassDispatcherTrampoline",
     "CanonicalizeJumpTableCaseOverlap",
     "ScalarizeLocalAliasAccess",
+    "RetargetOutputStore",
     "PhaseCycleLowering",
     "InsertBlock",
     "RemoveEdge",

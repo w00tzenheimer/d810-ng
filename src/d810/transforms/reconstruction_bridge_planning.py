@@ -74,6 +74,25 @@ class ReconstructionFixpointFeederPlanResult:
     claimed_sources: frozenset[int]
 
 
+def _resolve_exact_then_interval(
+    state_value: int,
+    *,
+    exact_dispatcher_map=None,
+    dispatcher=None,
+) -> int | None:
+    """Resolve a concrete state through exact rows before interval fallback."""
+    normalized = int(state_value) & 0xFFFFFFFF
+    exact_resolver = getattr(exact_dispatcher_map, "resolve_target", None)
+    if callable(exact_resolver):
+        exact = exact_resolver(normalized)
+        if exact is not None:
+            return int(exact)
+    if dispatcher is None:
+        return None
+    resolved = dispatcher.lookup(normalized)
+    return int(resolved) if resolved is not None else None
+
+
 def _edge_kind_name(edge) -> str:
     return getattr(getattr(edge, "kind", None), "name", str(getattr(edge, "kind", None)))
 
@@ -537,6 +556,7 @@ def plan_fixpoint_feeder_modifications(
     constant_result,
     state_var_stkoff: int | None,
     dispatcher,
+    exact_dispatcher_map=None,
     redirect_veto=None,
 ) -> ReconstructionFixpointFeederPlanResult:
     feeder_mods: list = []
@@ -568,7 +588,11 @@ def plan_fixpoint_feeder_modifications(
         state_val = out_map.get(state_var_stkoff)
         if state_val is None:
             continue
-        resolved = dispatcher.lookup(state_val)
+        resolved = _resolve_exact_then_interval(
+            int(state_val),
+            exact_dispatcher_map=exact_dispatcher_map,
+            dispatcher=dispatcher,
+        )
         if resolved is None or int(resolved) in bst_set:
             continue
         modification = builder.goto_redirect(

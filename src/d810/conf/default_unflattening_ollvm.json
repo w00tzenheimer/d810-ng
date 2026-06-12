@@ -1,5 +1,5 @@
 {
-  "description": "Unflattening O-LLVM with control flow flattening",
+  "description": "Unflattening O-LLVM with StateMachineCff carrier-preserving control flow reconstruction",
   "ins_rules": [
     {
       "name": "FoldReadonlyDataRule",
@@ -929,11 +929,13 @@
       }
     },
     {
-      "name": "EmulatedDispatcherUnflattener",
+      "name": "StateMachineCffUnflattener",
       "is_activated": true,
       "config": {
-        "profile": "state_dispatcher_map",
-        "enable_terminal_payload_materialization": true
+        "max_state_constants": 100,
+        "min_state_constant": 16777216,
+        "enable_transition_validator": true,
+        "enable_transition_uddu_validator": true
       }
     },
     {

@@ -121,6 +121,23 @@ def _call_dest_token(text: str) -> str | None:
     return _canonical_token(match.group("dst"))
 
 
+def _looks_like_native_secret_compare_call(text: str) -> bool:
+    """Native IDA can render ``strncmp(buffer, "secret", 100)`` as ``__ImageBase``.
+
+    On macOS-hosted IDA the string literal may appear as ``$hinstDLL@3`` instead
+    of ``$aSecret`` while the call still carries the same semantic shape:
+    password-buffer address, global string address, and bound ``0x64``.
+    """
+    return (
+        "call" in text
+        and "$__ImageBase" in text
+        and "$hinstDLL@3" in text
+        and "#0x64" in text
+        and _first_addr_token(text) is not None
+        and _call_dest_token(text) is not None
+    )
+
+
 def _store_target_token(text: str) -> str | None:
     if ", ds" not in text:
         return None
@@ -260,6 +277,30 @@ def _iter_carrier_hits(instructions: tuple[_InstructionView, ...]) -> Iterable[_
                     details={
                         "call_kind": "strncmp_like",
                         "password_buffer_token": buffer_token,
+                    },
+                )
+
+        if _looks_like_native_secret_compare_call(dstr):
+            token = _call_dest_token(dstr)
+            buffer_token = _first_addr_token(dstr)
+            if buffer_token is not None:
+                yield _CarrierHit(
+                    role="PASSWORD_BUFFER",
+                    token=buffer_token,
+                    insn=insn,
+                    confidence=0.82,
+                    details={"call_kind": "native_imagebase_strncmp_like"},
+                )
+            if token is not None:
+                yield _CarrierHit(
+                    role="PASSWORD_COMPARE_RESULT",
+                    token=token,
+                    insn=insn,
+                    confidence=0.86,
+                    details={
+                        "call_kind": "native_imagebase_strncmp_like",
+                        "password_buffer_token": buffer_token,
+                        "password_literal_token": "$hinstDLL@3",
                     },
                 )
 
