@@ -448,6 +448,13 @@ class InductionVariableFactCollector:
             update = _classify_induction_update(insn)
             if update is None:
                 continue
+            # The fact is keyed by the induction destination's stack offset; an update
+            # whose destination has no stack offset (e.g. a register-only carrier) has no
+            # ``stkoff`` key and is skipped rather than crashing ``int(None)`` in
+            # ``semantic_key`` below (ticket llr-a93i; the baseline
+            # InductionVariableFactCollector failures).
+            if insn.dest_stkoff is None:
+                continue
             dest_size = int(insn.dest_size or 0)
             dedupe = (
                 update.insn.block_serial,
