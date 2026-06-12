@@ -94,6 +94,26 @@ _FIXPOINT_ORACLE = "region_partitioned_fixpoint"
 #: fixpoint-resolved transition -- it only fills genuine ⊥ gaps.
 _EMULATION_ORACLE = "emulation_concrete_leg"
 
+#: Proof KINDS for the reduced-product CONCRETE leg (ticket llr-a93i): one per
+#: recovery SITE the prove-exact-or-abstain emulator can serve, so the proof
+#: distribution names WHERE the concrete oracle fired -- initial-state vs back-edge
+#: vs conditional-arm -- not merely THAT it fired.  All four share the
+#: ``_EMULATION_ORACLE`` oracle (the oracle is the evidence SOURCE; the kind is the
+#: recovery SITE), and every one is ``fold_exact``-gated before it is trusted.
+#:
+#: * ``initial_state_concrete_fold``   -- the prologue/entry-init state write folded
+#:   by the emulator seeded from entry constants + static-initializer facts (Slice 2).
+#: * ``back_edge_concrete_fold``       -- a single dispatcher back-edge's next-state,
+#:   every incoming edge agreeing on one concrete value (Slice 3).
+#: * ``concrete_fold_partitioned``     -- the per-immediate-predecessor split of a
+#:   back-edge (one distinct concrete next-state per incoming edge).
+#: * ``conditional_arm_concrete_fold`` -- a runtime-guarded branch arm of a handler,
+#:   folded as one conditional transition per arm (Slice 4).
+_KIND_INITIAL_STATE_CONCRETE_FOLD = "initial_state_concrete_fold"
+_KIND_BACK_EDGE_CONCRETE_FOLD = "back_edge_concrete_fold"
+_KIND_CONCRETE_FOLD_PARTITIONED = "concrete_fold_partitioned"
+_KIND_CONDITIONAL_ARM_CONCRETE_FOLD = "conditional_arm_concrete_fold"
+
 
 def _seed_concrete_store(
     out_stk: dict[int, int], out_reg: dict[int, int]
@@ -132,14 +152,37 @@ def _emulate_unresolved_state(
     ``None`` when the emulator abstains / the fold is dropped.
     """
     if live_block is None:
+        if logger.info_on:
+            logger.info("emu-consult: no live block -> abstain")
         return None
     try:
         outcome = emu.eval_block(live_block, seeded_store)
     except Exception:  # noqa: BLE001 — an emulator failure means "cannot prove" -> abstain
         logger.debug("emulation concrete leg raised; abstaining", exc_info=True)
+        if logger.info_on:
+            logger.info(
+                "emu-consult: blk=%s store_cells=%d -> RAISED (abstain)",
+                getattr(live_block, "serial", "?"), len(getattr(seeded_store, "cells", {})),
+            )
         return None
     folded = fold_exact(ConcolicValue.top(8), outcome, state_cell)
-    if folded.status is not PrecisionStatus.CONCRETE or folded.concrete is None:
+    resolved = folded.status is PrecisionStatus.CONCRETE and folded.concrete is not None
+    # Observability (ticket llr-a93i, Slice 3): record every concrete-leg consult --
+    # candidate block, seed richness, the emulator's outcome ADT, and whether
+    # ``fold_exact`` accepted it -- so "does the real HexRaysBlockEmulator ever fold a
+    # production back-edge?" is answerable from the log, not inferred from a 0-count in
+    # the proof histogram.
+    if logger.info_on:
+        logger.info(
+            "emu-consult: blk=%s store_cells=%d outcome=%s reason=%r folded=%s%s",
+            getattr(live_block, "serial", "?"),
+            len(getattr(seeded_store, "cells", {})),
+            type(outcome).__name__,
+            getattr(outcome, "reason", ""),
+            resolved,
+            (" value=0x%x" % (int(folded.concrete) & 0xFFFFFFFF)) if resolved else "",
+        )
+    if not resolved:
         return None
     return int(folded.concrete) & 0xFFFFFFFF
 
@@ -822,8 +865,8 @@ def _provider_emulation(ctx, pred, block, arm, ambiguous):
     _emit_partition_transitions(
         out, emu_states, pred, arm, ctx.flow_graph, ctx.classify, ctx.arm_of,
         oracle_kind=_EMULATION_ORACLE,
-        single_kind="concrete_fold",
-        split_kind="concrete_fold_partitioned",
+        single_kind=_KIND_BACK_EDGE_CONCRETE_FOLD,
+        split_kind=_KIND_CONCRETE_FOLD_PARTITIONED,
     )
     return out
 

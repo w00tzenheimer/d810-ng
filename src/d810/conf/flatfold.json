@@ -1152,7 +1152,7 @@
       }
     },
     {
-      "name": "EmulatedDispatcherUnflattener",
+      "name": "StateMachineCffUnflattener",
       "is_activated": true,
       "config": {
         "profile": "state_dispatcher_map"

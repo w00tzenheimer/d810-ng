@@ -26,8 +26,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import ida_hexrays
+
 from d810.core.logging import getLogger
-from d810.core.typing import Dict, Optional
+from d810.core.typing import Optional
 
 from d810.analyses.data_flow.concolic.emulation import (
     Abstain,
@@ -37,8 +39,11 @@ from d810.analyses.data_flow.concolic.emulation import (
     InsnRef,
     Unsupported,
 )
-from d810.analyses.data_flow.concolic.refs import LocationKind, LocationRef
-from d810.backends.hexrays.evidence import bst_analysis
+from d810.analyses.data_flow.concolic.refs import LocationRef
+from d810.evaluator.hexrays_microcode.emulator import (
+    MicroCodeEnvironment,
+    MicroCodeInterpreter,
+)
 
 logger = getLogger(__name__)
 
@@ -80,53 +85,81 @@ class HexRaysBlockEmulator:
     def eval_block(self, block: object, store: ConcreteStore) -> EmulationOutcome:
         """Prove the concrete state-var constant ``block`` writes, or abstain.
 
-        Seeds the forward stack/register maps from ``store`` (only cells whose
-        :class:`LocationRef` is a concrete stack slot / register are usable), then
-        steps every instruction of the live block accumulating the maps.  The
-        first resolved state-var write is the exact next-state constant.
+        Resolves the block's FIRST state-variable write by stepping the live block
+        with the Hex-Rays microcode interpreter over a fresh environment.  The
+        interpreter resolves each unresolved operand through its DEF-USE chain
+        history (the "historical environment") -- so an opaque ``state = reg_a ^
+        reg_b`` whose operands are defined in OTHER blocks folds from those blocks'
+        definitions (ticket llr-a93i).  This is the fix for the empty-seed catch-22:
+        the abstract fixpoint's predecessor-OUT seed is empty at exactly the ``⊥``
+        back-edge the concrete leg is consulted on, so the old store-seeded
+        block-stepper could never fold; the live UD-chain history can.  ``store`` is
+        now advisory -- the live history is authoritative, so an empty store no
+        longer forces an abstain.
+
+        NEVER a wrong fold: the interpreter yields ``None`` for an operand whose
+        reaching definition is not a unique constant, so a multi-path-ambiguous
+        next-state abstains rather than guessing.
         """
         if block is None:
             return Abstain("no live block")
-        stk_map, reg_map = self._seed_maps(store)
-        resolved: Optional[int] = None
+        write_insn = self._find_first_state_write(block)
+        if write_insn is None or getattr(write_insn, "d", None) is None:
+            return Abstain("no state-var write in block")
         try:
+            interpreter = MicroCodeInterpreter(symbolic_mode=False)
+            env = MicroCodeEnvironment()
+            resolved: Optional[int] = None
             insn = getattr(block, "head", None)
             while insn is not None:
-                value = bst_analysis._forward_eval_insn(
-                    insn,
-                    stk_map,
-                    reg_map,
-                    self.state_var_stkoff,
-                    mba=self.mba,
-                    state_var_lvar_idx=self.state_var_lvar_idx,
+                ok = interpreter.eval_instruction(
+                    block, insn, environment=env, raise_exception=False
                 )
-                if value is not None and resolved is None:
-                    resolved = int(value)
+                if insn.ea == write_insn.ea and insn.opcode == write_insn.opcode:
+                    if ok:
+                        value = env.lookup(write_insn.d, raise_exception=False)
+                        if value is None:
+                            value = interpreter.eval_mop(
+                                write_insn.d, environment=env, raise_exception=False
+                            )
+                        if value is not None:
+                            resolved = int(value)
+                    break
                 insn = getattr(insn, "next", None)
-        except Exception:  # noqa: BLE001 — a stepper failure means "cannot prove" -> abstain
-            logger.debug("HexRaysBlockEmulator: block-step raised; abstaining", exc_info=True)
-            return Abstain("block-step raised")
+        except Exception:  # noqa: BLE001 — interpreter failure means "cannot prove" -> abstain
+            logger.debug(
+                "HexRaysBlockEmulator: history eval raised; abstaining", exc_info=True
+            )
+            return Abstain("history eval raised")
         if resolved is None:
-            return Abstain("no resolvable state-var write in block")
+            return Abstain("emulator+history could not resolve state-var write")
         return ExactResult({self.state_cell: int(resolved) & 0xFFFFFFFFFFFFFFFF})
 
     # -- internal ----------------------------------------------------------
-    def _seed_maps(
-        self, store: ConcreteStore
-    ) -> "tuple[Dict[int, int], Dict[int, int]]":
-        """Project the concrete store's resolved cells into stack/register maps.
+    def _find_first_state_write(self, block: object):
+        """The first instruction in ``block`` whose destination IS the state var.
 
-        Only :class:`LocationKind.STACK` / :class:`LocationKind.REGISTER` cells
-        carry into the block-stepper's ``stk_map`` / ``reg_map``; the stepper
-        treats an absent slot as unknown (which is the sound abstain trigger).
+        Matches a direct write to the dispatcher state slot (``mop_S`` at
+        ``state_var_stkoff``) or the state lvar (``mop_l`` at
+        ``state_var_lvar_idx``).  Returns the ``minsn_t`` or ``None``.  (The
+        ``m_stx`` store form is not matched here -- it abstains, which is sound.)
         """
-        stk_map: Dict[int, int] = {}
-        reg_map: Dict[int, int] = {}
-        for loc, value in store.cells.items():
-            if value is None:
-                continue
-            if loc.kind is LocationKind.STACK:
-                stk_map[int(loc.key)] = int(value)
-            elif loc.kind is LocationKind.REGISTER:
-                reg_map[int(loc.key)] = int(value)
-        return stk_map, reg_map
+        insn = getattr(block, "head", None)
+        while insn is not None:
+            d = getattr(insn, "d", None)
+            if d is not None and self._mop_is_state_var(d):
+                return insn
+            insn = getattr(insn, "next", None)
+        return None
+
+    def _mop_is_state_var(self, mop: object) -> bool:
+        """True when ``mop`` denotes the dispatcher state variable (stack or lvar)."""
+        try:
+            t = mop.t
+            if t == ida_hexrays.mop_S:
+                return int(mop.s.off) == int(self.state_var_stkoff)
+            if t == ida_hexrays.mop_l and self.state_var_lvar_idx is not None:
+                return int(mop.l.idx) == int(self.state_var_lvar_idx)
+        except Exception:  # noqa: BLE001 — defensive mop access -> treat as not-the-state-var
+            return False
+        return False

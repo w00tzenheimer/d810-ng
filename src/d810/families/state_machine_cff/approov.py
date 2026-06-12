@@ -47,6 +47,7 @@ from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.analyses.control_flow.dispatcher_recovery import build_dispatch_map_any_kind
 from d810.families.state_machine_cff.base import StateMachineCffFamily
+from d810.ir.maturity import IRMaturity
 from d810.families.state_machine_cff.pipeline import standard_state_machine_passes
 
 # Hard backend requirement: indirect/computed next-state targets need a concrete
@@ -64,6 +65,13 @@ class ApproovFamily(StateMachineCffFamily):
     """Switch/indirect CFF (Approov) family: detection + pipeline shape. No microcode patching."""
 
     name = "approov"
+
+    #: Switch-table dispatchers survive flat through global analysis (the backend keeps the
+    #: jump table), so ``GLOBAL_ANALYZED`` (Hex-Rays ``MMAT_GLBOPT1``) is the recovery point
+    #: — the goldens are tuned to it (ticket llr-a93i). The INDIRECT_JUMP case is routed to
+    #: ``CALL_MODELED`` (``MMAT_CALLS``) by the rule's structural ``_is_indirect`` gate, not
+    #: by this declaration.
+    recovery_maturities = (IRMaturity.GLOBAL_ANALYZED,)
 
     def detect(self, graph, capabilities, context=None):
         """Claim ONLY switch/indirect dispatchers over a portable ``FlowGraph``.

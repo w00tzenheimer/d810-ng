@@ -20,6 +20,7 @@ from __future__ import annotations
 import abc
 
 from d810.core.registry import Registrant
+from d810.ir.maturity import IRMaturity
 
 
 class StateMachineCffFamily(Registrant):
@@ -35,6 +36,21 @@ class StateMachineCffFamily(Registrant):
 
     #: Display / selection name (the unflatten Family Protocol attribute).
     name: str = "state_machine_cff"
+
+    #: The backend-agnostic IR maturities (:class:`d810.ir.maturity.IRMaturity` — NO IDA
+    #: import here; the IDA-bound unflatten rule resolves them to ``ida_hexrays.MMAT_*`` via
+    #: :mod:`d810.hexrays.ir_maturity`) at which THIS profile's dispatcher shape is
+    #: recoverable. The rule is registered at the UNION of every profile's maturities and,
+    #: once ``select_family`` picks a profile, only recovers at one of ITS declared
+    #: maturities — so each family "registers to run at its desired maturity level" (ticket
+    #: llr-a93i) instead of a single global stage, and the declaration is portable across IR
+    #: backends (Hex-Rays / Ghidra / Binary Ninja). Default is ``GLOBAL_ANALYZED`` (Hex-Rays
+    #: ``MMAT_GLBOPT1`` — the historical non-indirect recovery stage where global dataflow
+    #: facts are available). A profile whose shape the backend folds earlier MAY also list
+    #: ``CALL_MODELED`` (``MMAT_CALLS``) to recover pre-fold; ``LOCAL_OPTIMIZED``
+    #: (``MMAT_LOCOPT``) is avoided because pre-call-modeling the multi-back-edge machines
+    #: collapse (36→3 back-edges) and mis-recover.
+    recovery_maturities: "tuple[IRMaturity, ...]" = (IRMaturity.GLOBAL_ANALYZED,)
 
     @abc.abstractmethod
     def detect(self, graph, capabilities, context=None):
