@@ -399,6 +399,37 @@ def test_local_working_pointer_emits_may_alias_evidence() -> None:
     assert SCALAR_REPLACEMENT_FACT_TYPE in kinds
 
 
+def test_output_pointer_emits_points_to_fact_family() -> None:
+    output_pointer = _fact(
+        fact_id="ollvm-output-pointer",
+        kind="OllvmValueFlowEvidence",
+        payload={
+            "role": "ARG_OUTPUT_POINTER",
+            "carrier_token": "%var_30",
+            "instruction_index": 2,
+            "instruction_ea": 0x18000F010,
+            "instruction_dstr": "mov arg_output, %var_30.8",
+        },
+        source_block=8,
+        source_ea=0x18000F010,
+    )
+
+    projected = [
+        fact
+        for fact in project_value_flow_facts((output_pointer,))
+        if fact.kind == POINTS_TO_FACT_TYPE
+    ]
+
+    assert len(projected) == 1
+    assert projected[0].payload["storage_identity"] == "%var_30"
+    assert projected[0].payload["expression_class"] == "argument_output_pointer"
+    assert projected[0].payload["observable_effect"] == "output_buffer_pointer"
+    assert projected[0].payload["details"]["proof_family"] == (
+        "argument_output_pointer_identity"
+    )
+    assert projected[0].payload["anchor_locator"]["carrier_token"] == "%var_30"
+
+
 def test_accumulator_without_local_base_does_not_emit_scalarization_authority() -> None:
     accumulator = _fact(
         fact_id="ollvm-accumulator-no-base",

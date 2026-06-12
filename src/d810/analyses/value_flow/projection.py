@@ -501,6 +501,19 @@ def _project_ollvm_oracle_fact(
             ),
         )
 
+    if role == "ARG_OUTPUT_POINTER":
+        return (_ollvm_exact_fact(
+            observation,
+            exact=exact,
+            kind=POINTS_TO_FACT_TYPE,
+            semantic_key=f"output_pointer:token:{token}",
+            expression_class="argument_output_pointer",
+            observable_effect="output_buffer_pointer",
+            proof_family="argument_output_pointer_identity",
+            producer_ids=producer_ids,
+            role=role,
+        ),)
+
     if role == "INDIRECT_STORE_CANDIDATE":
         return (_ollvm_exact_fact(
             observation,
