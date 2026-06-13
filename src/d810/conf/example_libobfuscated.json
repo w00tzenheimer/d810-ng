@@ -972,10 +972,12 @@
       }
     },
     {
-      "name": "EmulatedDispatcherUnflattener",
+      "name": "StateMachineCffUnflattener",
       "is_activated": true,
       "config": {
-        "profile": "state_dispatcher_map"
+        "profile": "state_dispatcher_map",
+        "min_state_constant": 65536,
+        "recovery_engine": "reduced_product"
       }
     },
     {
