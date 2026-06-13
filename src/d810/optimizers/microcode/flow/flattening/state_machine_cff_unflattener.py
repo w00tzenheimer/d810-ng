@@ -116,9 +116,54 @@ from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle impor
 )
 from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.driver import run_pipeline
+from d810.families.state_machine_cff.pipeline import standard_state_machine_passes
 from d810.transforms.state_machine_unflatten import lower_to_direct_graph
 
 logger = logging.getLogger("D810.unflat", logging.DEBUG)
+
+
+class _ReducedProductBypassFamily:
+    """Synthetic ``Family`` for the reduced-product family-gate bypass (ticket llr-iy9i).
+
+    The static ``select_family`` poll declines a non-identity-selector machine -- the
+    XOR-masked ``switch((state ^ KEY) & MASK)`` (``abc_xor_dispatch``) -- because
+    ``build_dispatch_map_any_kind`` finds no compare/switch SHAPE, so no registered
+    profile (Hodur=equality-chain, Approov/Tigress=switch/indirect) claims the graph and
+    the pipeline never runs. But the reduced-product ``RecoverDispatcher`` routes through
+    ``recover_machine``, whose concolic engine SELF-ANCHORS such machines
+    (``discover_anchors`` dominant-self-update fallback) and executes them -- the proven
+    old-engine recovery. This synthetic family lets the SAME canonical five-pass spine run
+    when no static family claimed the graph, so the concolic engine is reached.
+
+    Structurally satisfies the ``Family`` Protocol (``detect`` + ``pipeline_for``) but is
+    NOT a ``StateMachineCffFamily`` subclass -- it does NOT auto-register, so ``select_family``
+    never returns it and every non-reduced_product config is byte-identical. It is
+    instantiated DIRECTLY, only on the reduced_product path, only after ``select_family``
+    returns ``None``.
+    """
+
+    name = "reduced_product_bypass"
+    #: Recover at ``GLOBAL_ANALYZED`` (``MMAT_GLBOPT1``) -- the non-indirect stage the fine
+    #: per-family maturity gate admits (matches the registered profiles' default). The XOR
+    #: machine (abc_xor_dispatch) self-anchors + recovers here via the concolic engine.
+    #: (A CALL_MODELED pre-fold stage was tried for the folded conditional-chain machines
+    #: hardened_cond_chain_simple / unwrap_loops and REVERTED: those have only ONE
+    #: ``state OP #const`` block at BOTH CALLS and GLBOPT1 -- their transitions are
+    #: ``mov #const`` binary-search writes, which the concolic ``_discover`` cannot anchor at
+    #: any maturity, so the extra stage helped nothing and only added cost/risk.)
+    recovery_maturities = (IRMaturity.GLOBAL_ANALYZED,)
+
+    def detect(self, graph, capabilities, context=None):
+        """Claim every graph (truthy) -- the static poll already declined, so this is the
+        deliberate reduced_product fallthrough. ``run_pipeline`` re-runs ``detect`` and
+        bails on ``None``; returning a non-None sentinel lets the spine run."""
+        return self
+
+    def pipeline_for(self, match, context):
+        """Run the canonical five-pass spine -- ``RecoverDispatcher`` takes the
+        reduced-product branch (recover_machine -> concolic) because the project config
+        sets ``recovery_engine == "reduced_product"``."""
+        return standard_state_machine_passes()
 
 
 class StateMachineCffUnflattener(ComposedUnflatteningRule):
@@ -581,6 +626,29 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             project_config=project_config,
             capabilities=backend.capabilities(),
         )
+        # Reduced-product family-gate bypass (ticket llr-iy9i): the static select_family
+        # poll declines a non-identity-selector machine (XOR-masked
+        # ``switch((state^KEY)&MASK)`` -- abc_xor_dispatch) because no compare/switch SHAPE
+        # is found, so without this the pipeline (and thus RecoverDispatcher ->
+        # recover_machine -> the SELF-ANCHORING concolic engine) never runs for it. When the
+        # project config opts into the reduced-product engine, fall through to the canonical
+        # five-pass spine via a synthetic bypass family so the concolic engine is reached
+        # (it self-anchors via discover_anchors' dominant-self-update fallback -- the proven
+        # old-engine recovery). SCOPED to recovery_engine == "reduced_product" ONLY: this
+        # synthetic family is instantiated directly (never auto-registered), so every other
+        # config (hodur/approov/tigress/ollvm -- which sets no such key) is byte-identical.
+        if family is None and (
+            isinstance(project_config, dict)
+            and project_config.get("recovery_engine") == "reduced_product"
+        ):
+            if logger.debug_on:
+                logger.debug(
+                    "unflat: reduced_product family-gate bypass for func=0x%x at %s "
+                    "(static select_family declined)",
+                    int(mba.entry_ea),
+                    maturity_to_string(int(mba.maturity)),
+                )
+            family = _ReducedProductBypassFamily()
         # Fine per-family maturity gate (ticket llr-a93i): a profile recovers ONLY at one
         # of its declared ``recovery_maturities``. When a family claims this graph but not
         # at the CURRENT maturity, skip (return 0) and wait for the stage it wants -- the
