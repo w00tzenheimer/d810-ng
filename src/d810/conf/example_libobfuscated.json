@@ -977,7 +977,8 @@
       "config": {
         "profile": "state_dispatcher_map",
         "min_state_constant": 65536,
-        "recovery_maturity": "CALL_MODELED"
+        "recovery_maturity": "CALL_MODELED",
+        "emulation_dispatcher": true
       }
     },
     {

@@ -70,6 +70,9 @@ from d810.backends.hexrays.evidence.dispatcher.indirect_jump_capability import (
     HexRaysIndirectJumpTableCapability,
 )
 from d810.backends.hexrays.evidence.emulation import HexRaysBlockEmulator
+from d810.backends.hexrays.evidence.emulation_dispatcher_resolver import (
+    EmulationDispatcherResolver,
+)
 from d810.backends.hexrays.lifter import lift_function
 from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
 from d810.capabilities.resolver import CapabilitySet
@@ -438,6 +441,26 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     if isinstance(_cfg, dict)
                     else {}
                 ),
+            )
+        )
+        # llr-a93i Slice 5: register the emulation-based resolver. It recovers
+        # non-identity-selector machines (XOR-masked ``switch((state^KEY)&MASK)``) that the
+        # static equality-chain/switch resolvers structurally cannot (their case labels are
+        # sub-threshold byte projections; the compared operand is a computed ``m_xor`` tree). It
+        # ranks at the LOWEST specificity, so a static win always wins and the expensive
+        # emulation walk runs only when both static resolvers return map_rows=0.
+        #
+        # Registered UNCONDITIONALLY every decompile (like the indirect resolver above) so its
+        # bound ``mba`` is always FRESH -- a stale ``mba`` left in the process-global registry by
+        # a prior opted-in function would otherwise segfault when a later, non-opted-in function
+        # consults the chain (idempotent-by-name replaces the prior instance). The per-project
+        # opt-in is carried by ``enabled`` instead: when the config omits
+        # ``"emulation_dispatcher"`` the resolver's ``accepts`` returns ``None`` immediately, so
+        # it is completely inert and golden configs are byte-identical.
+        register_extra_dispatcher_resolver(
+            EmulationDispatcherResolver(
+                mba=mba,
+                enabled=bool(isinstance(_cfg, dict) and _cfg.get("emulation_dispatcher")),
             )
         )
         # Supply the live validated fact view (state observations) so resolve_state_transitions
