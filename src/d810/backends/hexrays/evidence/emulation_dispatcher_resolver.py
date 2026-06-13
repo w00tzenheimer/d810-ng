@@ -73,6 +73,27 @@ _SELF_UPDATE_OPS: dict[int, str] = {
     ida_hexrays.m_sub: "-",
 }
 
+#: Conditional-jump opcodes a flattened dispatcher uses to compare the state var against a
+#: constant -- the equality cascade (``jz``/``jnz``) AND the binary-search BST
+#: (``ja``/``jae``/``jb``/...). The slot compared against a const in >=2 such blocks is the
+#: dispatcher's state variable (the ABSOLUTE-mov / computed-write machines -- unwrap_loops,
+#: hardened_cond_chain_simple -- whose state slot is NEVER ``state OP #const``, so the
+#: dominant-self-update heuristic mis-IDs the accumulator; ticket llr-iy9i round 4).
+_COMPARE_OPS: frozenset[int] = frozenset(
+    {
+        ida_hexrays.m_jz,
+        ida_hexrays.m_jnz,
+        ida_hexrays.m_ja,
+        ida_hexrays.m_jae,
+        ida_hexrays.m_jb,
+        ida_hexrays.m_jbe,
+        ida_hexrays.m_jg,
+        ida_hexrays.m_jge,
+        ida_hexrays.m_jl,
+        ida_hexrays.m_jle,
+    }
+)
+
 #: A function is only a candidate state machine if its dominant state slot is self-updated in
 #: at least this many distinct blocks (one per real handler transition); fewer is an ordinary
 #: loop or accumulator, not a flattened machine.
@@ -244,27 +265,39 @@ class EmulationDispatcherResolver:
     def _discover(self, graph: FlowGraph) -> _Discovery | None:
         """Find the state var (dominant self-update slot), entry loop head, and initial state."""
         per_block = self._self_update_blocks()
-        if not per_block:
-            return None
-        # Dominant state slot = the one self-updated in the MOST blocks (one block per handler
-        # transition); shape-invariant (true for equality, switch, and XOR-masked machines).
-        stkoff = max(per_block, key=lambda k: len(per_block[k][0]))
-        handler_blocks, var_size, state_mop = per_block[stkoff]
-        logger.info(
-            "emulation_dispatcher: discovery func=0x%x maturity=%s dom_stkoff=0x%x "
-            "handler_blocks=%d var_size=%d",
-            int(getattr(self.mba, "entry_ea", 0)),
-            maturity_to_string(int(getattr(self.mba, "maturity", -1))),
-            int(stkoff),
-            len(handler_blocks),
-            int(var_size),
-        )
-        if len(handler_blocks) < _MIN_HANDLER_BLOCKS or state_mop is None:
+        # Dominant self-update slot = the one self-updated in the MOST blocks (one block per
+        # handler transition); shape-invariant for the equality / switch / XOR-masked machines
+        # whose transitions ARE ``state OP #const`` (high_fan_in, switch_case_ollvm, abc_xor).
+        stkoff = max(per_block, key=lambda k: len(per_block[k][0])) if per_block else None
+        handler_blocks: set[int] = set()
+        var_size = 4
+        state_mop: ida_hexrays.mop_t | None = None
+        if stkoff is not None:
+            handler_blocks, var_size, state_mop = per_block[stkoff]
             logger.info(
-                "emulation_dispatcher: reject -- too few handler blocks (%d)",
+                "emulation_dispatcher: discovery func=0x%x maturity=%s dom_stkoff=0x%x "
+                "handler_blocks=%d var_size=%d",
+                int(getattr(self.mba, "entry_ea", 0)),
+                maturity_to_string(int(getattr(self.mba, "maturity", -1))),
+                int(stkoff),
+                len(handler_blocks),
+                int(var_size),
+            )
+        if len(handler_blocks) < _MIN_HANDLER_BLOCKS or state_mop is None:
+            # ADDITIVE fallback (ticket llr-iy9i round 4): the self-update heuristic found
+            # too few ``state OP #const`` blocks -- the machine's transitions are ABSOLUTE
+            # writes (``mov #const -> state`` / a folded ``add (global^K)+K -> state``), so
+            # the dominant-self-update slot is an accumulator, not the state var. Anchor on
+            # the slot the DISPATCHER COMPARES against constants instead (the one thing that
+            # is shape-invariant for an absolute-write machine). Gated to ``<2`` self-update
+            # blocks, so the three already-passing self-update machines (4-5 blocks each)
+            # keep their EXACT current anchor untouched.
+            logger.info(
+                "emulation_dispatcher: too few self-update blocks (%d) -- "
+                "trying compared-slot fallback",
                 len(handler_blocks),
             )
-            return None
+            return self._discover_by_compared_slot(graph)
 
         entry = self._find_entry(handler_blocks)
         if entry is None:
@@ -293,6 +326,224 @@ class EmulationDispatcherResolver:
             entry=int(entry),
             initial_state=int(initial_state),
         )
+
+    def _discover_by_compared_slot(self, graph: FlowGraph) -> _Discovery | None:
+        """Fallback discovery for ABSOLUTE-write machines (ticket llr-iy9i round 4).
+
+        The state var is the slot the dispatcher COMPARES against constants -- read in a
+        conditional jump (``jz``/``jnz``/``ja``/...) whose other operand is a ``#const`` -- in
+        ``>=2`` blocks (the equality cascade or the binary-search BST), AND written in ``>=2``
+        blocks (one per handler's next-state transition). The intersection is the soundness
+        guard the ticket requires: a slot that is BOTH the dispatcher's compared operand AND
+        multiply-written is the state variable, never an accidental twice-assigned local.
+
+        The transition writes need NOT be ``mov #const``: ``unwrap_loops`` writes the next
+        state with ``mov #const -> i``; ``hardened_cond_chain_simple`` writes it with a folded
+        ``add (global ^ K) + K -> i`` (an absolute write whose value the concrete leg folds via
+        the IDB-read globals). Both are absolute next-states the concolic walk handles.
+
+        Entry = the compared block with the highest in-degree -- the dispatcher loop head all
+        handlers branch back to (``blk2`` in both samples). Initial state = the folded value the
+        prologue / pre-header writes into the slot (constant ``mov`` OR a foldable computed
+        write), recovered by emulating that single write in isolation.
+        """
+        compared = self._compared_state_slots()
+        if not compared:
+            return None
+        # Candidate slots: compared against a const in >=2 cond-jump blocks AND written in >=2
+        # blocks. Tie-break by the MOST compared blocks (the dispatcher reads its state var the
+        # most), then by the most write blocks.
+        candidates = [
+            off
+            for off, blks in compared.items()
+            if len(blks) >= _MIN_HANDLER_BLOCKS
+            and self._written_block_count(off) >= _MIN_HANDLER_BLOCKS
+        ]
+        if not candidates:
+            logger.info(
+                "emulation_dispatcher: compared-slot fallback found no candidate "
+                "(compared=%s)",
+                {hex(k): len(v) for k, v in compared.items()},
+            )
+            return None
+        stkoff = max(
+            candidates,
+            key=lambda off: (len(compared[off]), self._written_block_count(off)),
+        )
+        state_mop, var_size = self._representative_mop_at(stkoff)
+        if state_mop is None:
+            return None
+        # Entry = highest-in-degree compared block (the dispatcher loop head handlers return to).
+        entry = max(
+            compared[stkoff],
+            key=lambda s: self.mba.get_mblock(int(s)).npred(),
+        )
+        initial_state = self._recover_initial_state_folded(graph, entry, stkoff)
+        if initial_state is None:
+            logger.info(
+                "emulation_dispatcher: compared-slot fallback -- no initial state "
+                "(entry=%d stkoff=0x%x)",
+                int(entry),
+                int(stkoff),
+            )
+            return None
+        logger.info(
+            "emulation_dispatcher: compared-slot fallback discovered entry=%d stkoff=0x%x "
+            "init=0x%x compared_blocks=%d write_blocks=%d",
+            int(entry),
+            int(stkoff),
+            int(initial_state),
+            len(compared[stkoff]),
+            self._written_block_count(stkoff),
+        )
+        return _Discovery(
+            stkoff=int(stkoff),
+            var_size=int(var_size or 4),
+            state_mop=state_mop,
+            entry=int(entry),
+            initial_state=int(initial_state),
+        )
+
+    def _compared_state_slots(self) -> dict[int, set[int]]:
+        """Map each stack slot to the blocks that compare it against a ``#const`` in a jump.
+
+        A flattened dispatcher routes by comparing the state var against constant labels --
+        ``jz/jnz state, #const`` (equality cascade) or ``ja/jae/jb/... state, #const`` (the
+        binary-search BST). One operand is the stack slot, the other a ``mop_n`` constant; a
+        single ``xdu``/``xds``/``low`` widening wrapper on the compared slot is peeled (the BST
+        reads ``xdu.4(state.1)``). Slots compared in only one block are not dispatcher state
+        vars (an ordinary ``if`` test).
+        """
+        out: dict[int, set[int]] = {}
+        for blk in self._blocks():
+            insn = blk.head
+            while insn is not None:
+                if insn.opcode in _COMPARE_OPS:
+                    l = self._peel_widen(insn.l)
+                    r = self._peel_widen(insn.r)
+                    for a, c in ((l, r), (r, l)):
+                        if (
+                            a is not None
+                            and a.t == ida_hexrays.mop_S
+                            and a.s is not None
+                            and c is not None
+                            and c.t == ida_hexrays.mop_n
+                        ):
+                            out.setdefault(int(a.s.off), set()).add(int(blk.serial))
+                insn = insn.next
+        return out
+
+    def _written_block_count(self, stkoff: int) -> int:
+        """Count distinct blocks that WRITE ``stkoff`` (any instruction's dest).
+
+        Counts ABSOLUTE writes too (``mov #const``, a folded ``add (global^K)+K``), not only
+        ``state OP #const`` -- the absolute-write machine's transitions. One write block per
+        handler transition, so ``>=2`` confirms a multi-state machine.
+        """
+        seen: set[int] = set()
+        for blk in self._blocks():
+            insn = blk.head
+            while insn is not None:
+                d = insn.d
+                if (
+                    d is not None
+                    and d.t == ida_hexrays.mop_S
+                    and d.s is not None
+                    and int(d.s.off) == int(stkoff)
+                ):
+                    seen.add(int(blk.serial))
+                    break
+                insn = insn.next
+        return len(seen)
+
+    @staticmethod
+    def _peel_widen(mop: ida_hexrays.mop_t | None) -> ida_hexrays.mop_t | None:
+        """Peel a single ``xdu``/``xds``/``low`` wrapper (the BST reads ``xdu.4(state.1)``)."""
+        if mop is not None and mop.t == ida_hexrays.mop_d and mop.d is not None:
+            inner = mop.d
+            if (
+                inner.opcode in (ida_hexrays.m_xdu, ida_hexrays.m_xds, ida_hexrays.m_low)
+                and inner.l is not None
+            ):
+                return inner.l
+        return mop
+
+    def _representative_mop_at(
+        self, stkoff: int
+    ) -> tuple[ida_hexrays.mop_t | None, int]:
+        """Find any ``mop_S`` operand at ``stkoff`` (a dest preferred -- its size is the slot
+        width) for seeding the emulator, plus its size."""
+        fallback: tuple[ida_hexrays.mop_t | None, int] = (None, 4)
+        for blk in self._blocks():
+            insn = blk.head
+            while insn is not None:
+                for mop in (insn.d, insn.l, insn.r):
+                    if (
+                        mop is not None
+                        and mop.t == ida_hexrays.mop_S
+                        and mop.s is not None
+                        and int(mop.s.off) == int(stkoff)
+                    ):
+                        if mop is insn.d:
+                            return mop, int(mop.size)
+                        if fallback[0] is None:
+                            fallback = (mop, int(mop.size))
+                insn = insn.next
+        return fallback
+
+    def _recover_initial_state_folded(
+        self, graph: FlowGraph, entry: int, stkoff: int
+    ) -> int | None:
+        """Initial state = the folded value the prologue writes into the state slot.
+
+        Prefer the portable constant-``mov`` recovery (``_recover_initial_state``); when that
+        abstains (``hardened_cond_chain_simple`` writes its initial state with a computed
+        ``add (global ^ K) + K -> state`` the ``mov #const`` scan does not see), fall back to
+        EMULATING the single state-slot write of each pre-header block (the blocks reachable
+        from the function entry without passing through the dispatcher) in isolation. A single
+        agreed folded value is the initial state; ambiguity / no fold -> abstain.
+        """
+        via_const = self._recover_initial_state(graph, entry, stkoff)
+        if via_const is not None:
+            return int(via_const)
+        # Pre-header set: forward-reachable from the function entry with the dispatcher entry as
+        # a cut (handler back-edges reach the join only THROUGH the dispatcher).
+        entry_serial = int(getattr(graph, "entry_serial", 0))
+        reach: set[int] = set()
+        stack = [entry_serial]
+        while stack:
+            s = stack.pop()
+            if s in reach:
+                continue
+            reach.add(s)
+            if s == int(entry):
+                continue  # cut at the dispatcher entry
+            blk = self.mba.get_mblock(s)
+            if blk is None:
+                continue
+            for i in range(blk.nsucc()):
+                stack.append(int(blk.succ(i)))
+        # Nearest pre-header that writes the state slot, folded in isolation.
+        consts: set[int] = set()
+        seen: set[int] = set()
+        queue = [int(entry)]
+        while queue:
+            s = queue.pop(0)
+            blk = self.mba.get_mblock(s)
+            if blk is None:
+                continue
+            for i in range(blk.npred()):
+                p = int(blk.pred(i))
+                if p == int(entry) or p not in reach or p in seen:
+                    continue
+                seen.add(p)
+                folded = self._fold_state_write_in_block(p, stkoff)
+                if folded is not None:
+                    consts.add(int(folded))
+                queue.append(p)
+        if len(consts) == 1:
+            return next(iter(consts))
+        return None
 
     def _self_update_blocks(
         self,
@@ -526,6 +777,52 @@ class EmulationDispatcherResolver:
                 found = int(insn.l.nnn.value)
             insn = insn.next
         return found
+
+    def _fold_state_write_in_block(
+        self, blk_serial: int, stkoff: int
+    ) -> int | None:
+        """Fold a block's LAST write to ``stkoff`` to a concrete constant, or ``None``.
+
+        Evaluates ONLY the state-slot-writing instruction with a FRESH, empty environment
+        (ticket llr-iy9i round 4): an absolute next-state write -- ``mov #const -> state`` or a
+        folded ``add (global ^ K) + K -> state`` whose operands are constants + IDB-read globals
+        -- is self-contained, so an empty seed folds it. Instructions that read live
+        accumulator state (``add var_8, #7 -> var_8``) are NOT state-slot writes and are
+        skipped. ``mask_subreg_reads`` mirrors the dispatcher stepper. Returns the folded value
+        masked to the write width, or ``None`` when the emulator cannot prove a constant (e.g.
+        the write genuinely depends on the incoming state).
+        """
+        blk = self.mba.get_mblock(int(blk_serial))
+        if blk is None:
+            return None
+        result: int | None = None
+        insn = blk.head
+        while insn is not None:
+            d = insn.d
+            if (
+                d is not None
+                and d.t == ida_hexrays.mop_S
+                and d.s is not None
+                and int(d.s.off) == int(stkoff)
+            ):
+                try:
+                    interp = MicroCodeInterpreter(
+                        symbolic_mode=False, mask_subreg_reads=True
+                    )
+                    env = MicroCodeEnvironment()
+                    if interp.eval_instruction(blk, insn, env, raise_exception=False):
+                        rec = env.lookup(d, raise_exception=False)
+                        if rec is not None:
+                            width = int(d.size) or 4
+                            result = int(rec) & ((1 << (width * 8)) - 1)
+                        else:
+                            result = None
+                    else:
+                        result = None
+                except Exception:  # noqa: BLE001 — fold failure -> not a constant write
+                    result = None
+            insn = insn.next
+        return result
 
     @staticmethod
     def _apply_op(state: int, opcode: int, const: int, mask: int) -> int:

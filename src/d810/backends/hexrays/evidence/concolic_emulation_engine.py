@@ -69,6 +69,11 @@ logger = getLogger("D810.analyses.concolic_emulation_engine")
 
 __all__ = ["RecoveryCaps", "ConcolicProvenance", "ConcolicEmulationEngine"]
 
+#: Bound on the dead-store liveness DFS (``_reaches_entry_unrewritten``): a flattened handler
+#: region is O(handlers) blocks, so this matches the region-scan bound -- far past any real
+#: obfuscated handler body (ticket llr-iy9i round 4).
+_DEAD_STORE_SCAN_BOUND = 64
+
 
 @dataclass(frozen=True, slots=True)
 class RecoveryCaps:
@@ -375,19 +380,30 @@ class ConcolicEmulationEngine:
             blk = self.mba.get_mblock(serial)
             if blk is None:
                 continue
-            arms.extend(self._block_state_arms(host, blk, disc.stkoff))
             if blk.tail is not None and blk.tail.opcode == ida_hexrays.m_ret:
                 reaches_ret = True
-            # A block that WRITES the state slot is the handler's terminal block: the
-            # next state has been committed and control flows back toward the
-            # dispatcher. Do NOT expand its successors -- they belong to the dispatcher
-            # loop-back join (a block ALL handlers funnel through), not to this
-            # handler. Without this bound the region BFS spills across the join into
-            # sibling handlers / the exit path, and the reg-indirect arm scan below
-            # would harvest unrelated ``mov #const -> reg`` writes (every handler would
-            # collapse to the same arm set). The state-write block is still scanned for
-            # its own arms above; we only stop EXPANDING past it.
-            if host._writes_stkoff(blk, int(disc.stkoff)):
+            # A block that WRITES the state slot with a LIVE write is the handler's
+            # terminal block: the next state has been committed and control flows back
+            # toward the dispatcher. Record its arm(s) and do NOT expand its successors --
+            # they belong to the dispatcher loop-back join (a block ALL handlers funnel
+            # through), not to this handler. Without this bound the region BFS spills
+            # across the join into sibling handlers / the exit path, and the reg-indirect
+            # arm scan below would harvest unrelated ``mov #const -> reg`` writes.
+            #
+            # DEAD-STORE skip (ticket llr-iy9i round 4): an absolute-write machine
+            # (``unwrap_loops``) emits a DECOY ``mov #0 -> state`` in the conditional
+            # handler head that is OVERWRITTEN on every path before re-entering the
+            # dispatcher (the real next states are written by the two arm blocks the
+            # call-branch selects). Counting the decoy as the committed transition yields
+            # a spurious self-loop and a 1-row walk. When the block's state write is dead
+            # (overwritten on ALL paths to the dispatcher/exit), treat the block as a
+            # pass-through: skip its decoy arm and KEEP EXPANDING into the arm blocks that
+            # write the live next states. The forward-fold transition recovery
+            # (minimal_state_recovery) is dead-store-correct for the same reason.
+            if host._writes_stkoff(blk, int(disc.stkoff)) and not self._state_write_is_dead(
+                serial, int(disc.stkoff), int(disc.entry)
+            ):
+                arms.extend(self._block_state_arms(host, blk, disc.stkoff))
                 continue
             for i in range(blk.nsucc()):
                 succ = int(blk.succ(i))
@@ -414,6 +430,70 @@ class ConcolicEmulationEngine:
         )
         cache[handler] = facts
         return facts
+
+    def _state_write_is_dead(self, serial: int, stkoff: int, entry: int) -> bool:
+        """``True`` iff block ``serial``'s state-slot write is PROVABLY OVERWRITTEN on every
+        outgoing path before it can be used (so it is a dead decoy, not a committed transition).
+
+        A write is dropped ONLY with positive proof of deadness -- a conservative under-approx
+        so a real transition is never silently lost. ``serial``'s write is LIVE if EITHER:
+
+        * ``serial`` has NO successors -- a terminal transition write (the unit-test model and a
+          handler whose loop-back is not modeled); or
+        * SOME outgoing path reaches a USE -- the dispatcher compare at ``entry`` OR a
+          successor-less dead-end -- with NO intervening state-slot write (the value survives).
+
+        It is DEAD only when ``serial`` has successors AND every outgoing path rewrites the
+        state before reaching any such use (``unwrap_loops``'s decoy ``mov #0 -> i`` head, whose
+        two call-branch arms both overwrite ``i`` before the ``goto`` back to the dispatcher).
+        """
+        blk = self.mba.get_mblock(int(serial))
+        if blk is None or blk.nsucc() == 0:
+            return False  # terminal transition write -> live (never dropped)
+        host = EmulationDispatcherResolver(mba=self.mba)
+        for i in range(blk.nsucc()):
+            succ = int(blk.succ(i))
+            if succ == int(entry):
+                return False  # serial -> entry directly: the write is read at the compare
+            if self._write_reaches_use_unrewritten(succ, stkoff, int(entry), host):
+                return False
+        return True
+
+    def _write_reaches_use_unrewritten(
+        self,
+        start: int,
+        stkoff: int,
+        entry: int,
+        host: EmulationDispatcherResolver,
+    ) -> bool:
+        """``True`` if a path ``start -> ...`` reaches a USE of the state value with NO
+        intervening state-slot write -- i.e. the incoming value SURVIVES (so the upstream write
+        is live).
+
+        A USE is the dispatcher compare at ``entry`` OR a successor-less dead-end (a block that
+        may read/return the value). Bounded DFS; a block that writes the state slot stops that
+        path (the value is overwritten there, so it does not carry past). Conservative: any
+        unre-written path to a use proves liveness, so a real transition is never dropped.
+        """
+        seen: set[int] = set()
+        stack = [int(start)]
+        while stack and len(seen) < _DEAD_STORE_SCAN_BOUND:
+            cur = stack.pop()
+            if cur == int(entry):
+                return True  # reached the dispatcher compare unre-written -> live
+            if cur in seen:
+                continue
+            seen.add(cur)
+            blk = self.mba.get_mblock(cur)
+            if blk is None:
+                continue
+            if host._writes_stkoff(blk, int(stkoff)):
+                continue  # the value is overwritten here -> this path does not carry it
+            if blk.nsucc() == 0:
+                return True  # successor-less dead-end reached unre-written -> live
+            for i in range(blk.nsucc()):
+                stack.append(int(blk.succ(i)))
+        return False
 
     def _reg_indirect_state_arms(
         self, region_blocks: set[int], stkoff: int
@@ -478,6 +558,14 @@ class ConcolicEmulationEngine:
         -> ``(None, const)`` (the identity-switch next-state write the self-update
         scan misses). At most one ``mov`` arm per block (the last write wins, matching
         ``_mov_const_to_stkoff``), so a single-arm block stays a single arm.
+
+        ABSOLUTE COMPUTED write fallback (ticket llr-iy9i round 4): a binary-search BST
+        machine (``hardened_cond_chain_simple``) writes its next state with a folded
+        ``add (global ^ K) + K -> state`` -- neither ``state OP #const`` nor ``mov #const``.
+        When neither direct form is found, fold the block's state-slot write to a constant in
+        isolation (``_fold_state_write_in_block`` reads the IDB globals); a proven constant is
+        an absolute ``(None, const)`` arm. A write the emulator cannot prove constant yields no
+        arm (sound abstain), exactly like an unrecognized transition.
         """
         out: list[tuple[int | None, int | None]] = []
         insn = blk.head
@@ -492,6 +580,10 @@ class ConcolicEmulationEngine:
             mov_const = host._mov_const_to_stkoff(blk, int(stkoff))
             if mov_const is not None:
                 out.append((None, int(mov_const)))
+        if not out and host._writes_stkoff(blk, int(stkoff)):
+            folded = host._fold_state_write_in_block(int(blk.serial), int(stkoff))
+            if folded is not None:
+                out.append((None, int(folded)))
         return out
 
     def _discovery_from_anchors(
