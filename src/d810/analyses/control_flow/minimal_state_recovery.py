@@ -1585,8 +1585,23 @@ def _scan_handler(
             results.append((running_state, branch, path))
             continue
 
-        # A 2-way block whose arms continue is a state-selecting branch.
-        new_branch = branch if len(succs) < 2 else blk_serial
+        # A 2-way block whose arms continue is a state-selecting branch -- EXCEPT a
+        # 2-way that branches straight to the dispatcher entry (one successor IS the
+        # dispatcher back-edge).  That block is the loop-back / pre-header join every
+        # handler funnels through, not a state selector; attributing the branch there
+        # points the conditional-arm redirect at the dispatcher pre-header instead of
+        # the real in-handler selector (the identity-switch ``state = cond ? a : b``
+        # shape, where the selector is upstream and the arms reconverge before looping
+        # back). Keeping the prior branch in that case leaves the attribution on the
+        # true upstream selector. Narrow exclusion (dispatcher-edge only) so the
+        # equality-chain conditional handlers (hodur) keep their existing attribution.
+        branches_to_dispatcher = (
+            dispatcher_entry_serial is not None
+            and int(dispatcher_entry_serial) in succs
+        )
+        new_branch = (
+            blk_serial if (len(succs) >= 2 and not branches_to_dispatcher) else branch
+        )
         for s in onward:
             stack.append(
                 (s, nstk, nreg, new_branch, visited | {s}, depth + 1, path + (s,))

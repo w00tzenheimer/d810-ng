@@ -378,10 +378,32 @@ class ConcolicEmulationEngine:
             arms.extend(self._block_state_arms(host, blk, disc.stkoff))
             if blk.tail is not None and blk.tail.opcode == ida_hexrays.m_ret:
                 reaches_ret = True
+            # A block that WRITES the state slot is the handler's terminal block: the
+            # next state has been committed and control flows back toward the
+            # dispatcher. Do NOT expand its successors -- they belong to the dispatcher
+            # loop-back join (a block ALL handlers funnel through), not to this
+            # handler. Without this bound the region BFS spills across the join into
+            # sibling handlers / the exit path, and the reg-indirect arm scan below
+            # would harvest unrelated ``mov #const -> reg`` writes (every handler would
+            # collapse to the same arm set). The state-write block is still scanned for
+            # its own arms above; we only stop EXPANDING past it.
+            if host._writes_stkoff(blk, int(disc.stkoff)):
+                continue
             for i in range(blk.nsucc()):
                 succ = int(blk.succ(i))
                 if succ != disc.entry and succ not in seen:
                     stack.append(succ)
+
+        # Region-level fallback for a CONDITIONAL handler that assigns the next state
+        # INDIRECTLY: ``mov #c1 -> reg`` / ``mov #c2 -> reg`` on the two arms, then a
+        # single ``mov reg -> state`` at the join (bug class: the per-block scan above
+        # only sees the join's ``mov reg -> state``, whose source is a register, not a
+        # constant -- so it records no arm). Resolve the state-write's source register
+        # to the constants assigned to it across the region; each distinct constant is
+        # one arm. Only applied when the direct scan found NOTHING, so it never changes
+        # a linear/self-update handler.
+        if not arms:
+            arms = self._reg_indirect_state_arms(seen, int(disc.stkoff))
 
         complete = len(arms) <= 2
         facts = _ForkRegionFacts(
@@ -392,6 +414,56 @@ class ConcolicEmulationEngine:
         )
         cache[handler] = facts
         return facts
+
+    def _reg_indirect_state_arms(
+        self, region_blocks: set[int], stkoff: int
+    ) -> list[tuple[int | None, int | None]]:
+        """Arms from an indirect ``mov #const -> reg`` ... ``mov reg -> state`` handler.
+
+        A conditional handler often lowers ``state = cond ? c1 : c2`` as two arm
+        blocks each doing ``mov #ci -> reg`` and a join block doing ``mov reg ->
+        state``.  The direct per-block scan misses this (the state write's source is a
+        register).  Here we (1) find the register feeding a ``mov reg -> state`` write
+        anywhere in the region, then (2) collect every ``mov #const -> reg`` for THAT
+        register across the region.  Each distinct constant is a ``(None, const)`` arm
+        -- the same shape as a direct ``mov #const -> state``.  Returns at most the
+        distinct constants found (the caller's completeness check rejects > 2).
+        """
+        state_src_regs: set[int] = set()
+        reg_consts: dict[int, set[int]] = {}
+        for s in region_blocks:
+            blk = self.mba.get_mblock(int(s))
+            if blk is None:
+                continue
+            insn = blk.head
+            while insn is not None:
+                d = insn.d
+                if insn.opcode == ida_hexrays.m_mov and d is not None:
+                    # mov reg -> state : record the source register feeding the state.
+                    if (
+                        d.t == ida_hexrays.mop_S
+                        and d.s is not None
+                        and int(d.s.off) == int(stkoff)
+                        and insn.l is not None
+                        and insn.l.t == ida_hexrays.mop_r
+                    ):
+                        state_src_regs.add(int(insn.l.r))
+                    # mov #const -> reg : record the constant assigned to the register.
+                    elif (
+                        d.t == ida_hexrays.mop_r
+                        and insn.l is not None
+                        and insn.l.t == ida_hexrays.mop_n
+                    ):
+                        reg_consts.setdefault(int(d.r), set()).add(
+                            int(insn.l.nnn.value)
+                        )
+                insn = insn.next
+        consts: list[int] = []
+        for reg in state_src_regs:
+            for c in sorted(reg_consts.get(reg, ())):
+                if c not in consts:
+                    consts.append(int(c))
+        return [(None, int(c)) for c in consts]
 
     @staticmethod
     def _block_state_arms(
@@ -447,6 +519,15 @@ class ConcolicEmulationEngine:
             host = EmulationDispatcherResolver(mba=self.mba)
             initial = host._recover_initial_state(graph, entry, int(stkoff))
         if initial is None:
+            # The Slice 5 recovery only inspects DIRECT predecessors of the dispatcher
+            # entry. An identity ``switch(state)`` machine commonly initializes the
+            # state slot in a prologue block one or more hops ABOVE the entry's
+            # immediate predecessor (entry's pred is a join the handlers also loop back
+            # through), so the direct-predecessor scan misses it. Walk the pre-header
+            # chain -- the blocks reachable from the function entry WITHOUT passing
+            # through the dispatcher -- for the ``mov #const -> stkoff`` initializer.
+            initial = self._recover_initial_state_preheader(graph, entry, int(stkoff))
+        if initial is None:
             return None
         return _Discovery(
             stkoff=int(stkoff),
@@ -455,6 +536,60 @@ class ConcolicEmulationEngine:
             entry=int(entry),
             initial_state=int(initial),
         )
+
+    def _recover_initial_state_preheader(
+        self, graph: FlowGraph, entry: int, stkoff: int
+    ) -> int | None:
+        """Initial state from the pre-header chain ``mov #const -> stkoff`` initializer.
+
+        The dispatcher's true prologue initialization may sit several blocks above the
+        entry's immediate predecessor (the immediate predecessor is a JOIN the handler
+        back-edges also reach). The exact pre-header test is entry-dominance: a block
+        is a pre-header iff it is reachable from the function entry WITHOUT passing
+        through the dispatcher (back-edges reach the join only THROUGH the dispatcher,
+        so they are excluded). We BFS BACK from the dispatcher entry over predecessors
+        restricted to that pre-header set and return the constant the NEAREST
+        pre-header block initializes the state slot to (``_mov_const_to_stkoff``). When
+        more than one distinct constant is found the prologue is ambiguous -> abstain.
+        """
+        host = EmulationDispatcherResolver(mba=self.mba)
+        entry_serial = int(getattr(graph, "entry_serial", 0))
+        # Forward reachability with the dispatcher entry as a CUT.
+        reach: set[int] = set()
+        stack = [entry_serial]
+        while stack:
+            s = stack.pop()
+            if s in reach:
+                continue
+            reach.add(s)
+            if s == int(entry):
+                continue  # CUT: do not traverse out of the dispatcher entry
+            blk = self.mba.get_mblock(s)
+            if blk is None:
+                continue
+            for i in range(blk.nsucc()):
+                stack.append(int(blk.succ(i)))
+        # BFS back from the entry over pre-header predecessors; nearest init wins.
+        consts: list[int] = []
+        seen: set[int] = set()
+        queue = [int(entry)]
+        while queue:
+            s = queue.pop(0)
+            blk = self.mba.get_mblock(s)
+            if blk is None:
+                continue
+            for i in range(blk.npred()):
+                p = int(blk.pred(i))
+                if p == int(entry) or p not in reach or p in seen:
+                    continue
+                seen.add(p)
+                const = host._mov_const_to_stkoff(self.mba.get_mblock(p), int(stkoff))
+                if const is not None and const not in consts:
+                    consts.append(int(const))
+                queue.append(p)
+        if len(consts) == 1:
+            return int(consts[0])
+        return None
 
     def _representative_state_mop(
         self, stkoff: int

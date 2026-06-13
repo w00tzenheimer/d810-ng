@@ -549,15 +549,23 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # emulation resolver also gets the concolic engine here. Registered
         # unconditionally so a later non-opted-in function never sees a stale ``mba``;
         # the orchestrator only consults this capability on the reduced_product path.
+        # The concolic leg is the reduced_product path's recovery mechanism, so it
+        # must be live whenever that engine is selected -- not only behind the older
+        # ``emulation_dispatcher`` resolver opt-in. Enable on EITHER signal: the
+        # explicit emulation-resolver opt-in OR ``recovery_engine == reduced_product``
+        # (the orchestrator consults this capability only on that path, so enabling it
+        # here is inert for every other project).
+        _concolic_on = isinstance(_cfg, dict) and (
+            bool(_cfg.get("emulation_dispatcher"))
+            or _cfg.get("recovery_engine") == "reduced_product"
+        )
         cap_instances[MachineRecoveryEnginesCapability] = (
             HexRaysMachineRecoveryEnginesCapability(
                 mba=mba,
                 min_state_constant=min_state_constant_from_config(
                     getattr(self, "config", None)
                 ),
-                concolic_enabled=bool(
-                    isinstance(_cfg, dict) and _cfg.get("emulation_dispatcher")
-                ),
+                concolic_enabled=bool(_concolic_on),
             )
         )
         capabilities = CapabilitySet(cap_instances)
