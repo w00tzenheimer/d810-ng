@@ -238,6 +238,14 @@ class RecoverDispatcher(PipelinePass):
         # projected map equals today's map.
         cfg = context.project_config
         engine = cfg.get("recovery_engine") if isinstance(cfg, dict) else None
+        if logger.debug_on:
+            logger.debug(
+                "recover_dispatcher pass: engine=%r cfg_is_dict=%s has_engines_cap=%s",
+                engine,
+                isinstance(cfg, dict),
+                context.capabilities.optional(MachineRecoveryEnginesCapability)
+                is not None,
+            )
         if engine == "reduced_product":
             # Thread the live-mba recovery engines (deffai spine + concolic) the
             # backend injected (ticket llr-iy9i). Absent the capability the
