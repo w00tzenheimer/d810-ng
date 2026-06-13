@@ -36,6 +36,9 @@ from d810.backends.hexrays.evidence.concolic_emulation_engine import (
     ConcolicEmulationEngine,
 )
 from d810.backends.hexrays.evidence.dispatcher_anchor_discovery import discover_anchors
+from d810.backends.hexrays.evidence.emulation_dispatcher_resolver import (
+    EmulationDispatcherResolver,
+)
 from d810.backends.hexrays.evidence.deffai_spine_engine import DeffaiSpineEngine
 from d810.core.logging import getLogger
 from d810.ir.flowgraph import FlowGraph
@@ -125,17 +128,65 @@ class HexRaysMachineRecoveryEnginesCapability:
             sel_anchors = discover_anchors(self.mba, graph, prelim)
             if sel_anchors is None:
                 sel_anchors = anchors
+            if logger.debug_on and sel_anchors is not None:
+                logger.debug(
+                    "machine_engines: concolic consult entry=%s stkoff=%s lvar=%s "
+                    "init=%s (prelim_rows=%s)",
+                    sel_anchors.dispatcher_entry_block,
+                    sel_anchors.state_var_stkoff,
+                    sel_anchors.state_var_lvar_idx,
+                    sel_anchors.initial_states,
+                    len(prelim.rows) if prelim is not None else None,
+                )
             if sel_anchors is None:
                 return None
             engine = ConcolicEmulationEngine(mba=self.mba, enabled=True)
             machine = engine.recover(graph, sel_anchors)
-            if machine is not None and logger.info_on:
-                logger.info(
-                    "machine_engines: concolic recovered %d rows / %d transitions",
-                    len(machine.rows),
-                    len(machine.transitions),
+            if machine is None:
+                # The selector anchor (discover_anchors Strategy 1, e.g. the jtbl
+                # selector slot) can land on a value the walk cannot seed (the
+                # switched temp, not the state accumulator). Retry with the proven
+                # dominant-self-update anchor (the old engine's _discover), which is
+                # the anchor the legacy EmulatedDispatcherUnflattener used.
+                dom = self._dominant_self_update_anchors(graph)
+                if dom is not None and dom != sel_anchors:
+                    if logger.debug_on:
+                        logger.debug(
+                            "machine_engines: selector anchor abstained; retry "
+                            "dominant entry=%s stkoff=%s init=%s",
+                            dom.dispatcher_entry_block,
+                            dom.state_var_stkoff,
+                            dom.initial_states,
+                        )
+                    machine = engine.recover(graph, dom)
+            if logger.debug_on:
+                logger.debug(
+                    "machine_engines: concolic result rows=%s transitions=%s",
+                    len(machine.rows) if machine is not None else None,
+                    len(machine.transitions) if machine is not None else None,
                 )
             return machine
         except Exception:  # noqa: BLE001 -- live emulation is best-effort -> abstain
-            logger.debug("machine_engines: concolic recovery failed", exc_info=True)
+            logger.debug("machine_engines: concolic recovery raised", exc_info=True)
             return None
+
+    def _dominant_self_update_anchors(
+        self, graph: FlowGraph
+    ) -> DispatcherAnchors | None:
+        """Anchors from the old engine's dominant-self-update discovery, or ``None``.
+
+        The proven Slice-5 ``_discover`` that the legacy
+        ``EmulatedDispatcherUnflattener`` anchored on (the accumulator slot + the
+        compare-loop entry).  Used as the concolic retry anchor when the
+        selector-slot anchor abstains.
+        """
+        disc = EmulationDispatcherResolver(mba=self.mba)._discover(graph)
+        if disc is None:
+            return None
+        return DispatcherAnchors(
+            dispatcher_entry_block=int(disc.entry),
+            state_var_stkoff=int(disc.stkoff),
+            state_var_lvar_idx=None,
+            initial_states=(int(disc.initial_state),),
+            live_mba=self.mba,
+        )
