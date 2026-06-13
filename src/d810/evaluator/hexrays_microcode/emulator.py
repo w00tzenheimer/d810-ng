@@ -376,6 +376,7 @@ class MicroCodeInterpreter(object):
         symbolic_mode=False,
         const_in_states=None,
         strategies: list[MopResolutionStrategy] | None = None,
+        mask_subreg_reads: bool = False,
     ):
         self.global_environment = (
             MicroCodeEnvironment() if global_environment is None else global_environment
@@ -384,6 +385,11 @@ class MicroCodeInterpreter(object):
         self.synthetic_call = SyntheticCallReturnCache()
         # Enable symbolic fallback for unresolved variables
         self.symbolic_mode: bool = symbolic_mode
+        # Opt-in: mask environment-resolved reads to the READ operand's size, so a
+        # sub-register read (``var_C.1``) of a wider stored value (``var_C.4``) yields the
+        # low byte. DEFAULT OFF so every existing consumer is byte-identical; only the
+        # emulation dispatcher resolver (XOR-masked selectors) enables it (ticket llr-a93i).
+        self.mask_subreg_reads: bool = mask_subreg_reads
         # Cache for def-use chain resolutions during the current emulation pass
         self._def_use_cache: dict[tuple, int | None] = {}
         # Resolution strategies (tried in order after env lookup, before def-use chains)
@@ -1140,6 +1146,17 @@ class MicroCodeInterpreter(object):
             # First, try the environment (values assigned during this emulation run)
             value = environment.lookup(mop, raise_exception=False)
             if value is not None:
+                # Opt-in masking to the READ size: ``environment.lookup`` matches by
+                # location (``equal_mops_ignore_size``), so a sub-register read (e.g.
+                # ``var_C.1``) of a wider stored value (``var_C.4``) must be truncated to
+                # its own width, exactly as the binary-op paths mask by operand size.
+                # Without it, ``xdu.4(var_C.1)`` of a seeded ``0x123456EF`` yields the full
+                # value instead of the low byte ``0xEF`` and an XOR-masked dispatcher
+                # selector mis-routes (ticket llr-a93i). Gated OFF by default so every other
+                # consumer (tigress/hodur/sub_7FFD transition-fact emulation) is byte-
+                # identical; only the emulation dispatcher resolver opts in.
+                if self.mask_subreg_reads:
+                    return value & AND_TABLE.get(mop.size, AND_TABLE[8])
                 return value
 
             # Segment registers are constants on x86-64 flat model

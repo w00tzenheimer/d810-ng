@@ -13,7 +13,9 @@ from __future__ import annotations
 
 from d810.ir.flowgraph import FlowGraph
 from d810.passes.pass_pipeline import PassSpec
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.analyses.control_flow.dispatcher_recovery import (
+    build_dispatch_map_any_kind,
     build_state_dispatcher_map_from_flow_graph,
     min_state_constant_from_config,
 )
@@ -63,9 +65,28 @@ class HodurFamily(StateMachineCffFamily):
         # config as ``context``) so detection uses the SAME threshold as recovery -- a
         # lowered threshold admits sub-default equality-chains (approov ~0xF6A1F).
         min_state_constant = min_state_constant_from_config(context)
-        return build_state_dispatcher_map_from_flow_graph(
+        dmap = build_state_dispatcher_map_from_flow_graph(
             graph, min_state_constant=min_state_constant
         )
+        if dmap is not None:
+            return dmap
+        # Fallback (ticket llr-a93i, Slice 5): a NON-identity-selector machine -- XOR-masked
+        # ``switch((state^KEY)&MASK)`` -- is invisible to the equality-chain detector (its case
+        # labels are sub-threshold byte projections; the compared operand is a computed m_xor
+        # tree). A backend EMULATION resolver reconstructs the exact CONDITIONAL_CHAIN table by
+        # executing the machine. CONFIG-GATED on the SAME opt-in knob that registers that
+        # resolver, so for every other project this method is byte-identical to the pre-Slice-5
+        # behaviour -- it does not even make the extra ``build_dispatch_map_any_kind`` call (the
+        # one that would otherwise re-run the indirect resolver). Consult the shared front-end
+        # ONLY on an equality-chain MISS and claim ONLY its CONDITIONAL_CHAIN result
+        # (SWITCH/INDIRECT remain ApproovFamily/TigressFamily's). ollvm/hodur hit the equality
+        # detector above and never reach here, so their goldens are unaffected.
+        if not (isinstance(context, dict) and context.get("emulation_dispatcher")):
+            return None
+        fallback = build_dispatch_map_any_kind(graph, min_state_constant=min_state_constant)
+        if fallback is not None and fallback.source is DispatcherType.CONDITIONAL_CHAIN:
+            return fallback
+        return None
 
     def pipeline_for(self, match, context) -> "tuple[PassSpec, ...]":
         # DRY: the canonical five-pass spine lives in ``pipeline``; this family's
