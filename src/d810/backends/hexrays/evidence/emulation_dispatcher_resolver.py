@@ -306,12 +306,20 @@ class EmulationDispatcherResolver:
 
         initial_state = self._recover_initial_state(graph, entry, stkoff)
         if initial_state is None:
+            # NESTED-MACHINE fallback (ticket llr-6rwk round 5): the dominant self-update slot
+            # whose init is UNRECOVERABLE is the inner-dispatcher state var of a nested machine
+            # -- its prologue write is gated BEHIND the outer dispatcher, so entry-dominance
+            # recovery can't reach a prologue constant. Don't reject; fall through to the
+            # compared-slot discovery, which finds the OUTER (prologue-initialized) dispatcher.
+            # The flat self-update machines (high_fan_in / switch_case_ollvm / abc_xor) recover
+            # a valid init here and return below, so they never reach this fall-through.
             logger.info(
-                "emulation_dispatcher: reject -- no initial state (entry=%d stkoff=0x%x)",
-                int(entry),
+                "emulation_dispatcher: dominant slot 0x%x init unrecoverable "
+                "(entry=%d); trying compared-slot fallback",
                 int(stkoff),
+                int(entry),
             )
-            return None
+            return self._discover_by_compared_slot(graph)
         logger.info(
             "emulation_dispatcher: discovered entry=%d stkoff=0x%x init=0x%x handler_blocks=%d",
             int(entry),
@@ -366,43 +374,59 @@ class EmulationDispatcherResolver:
                 {hex(k): len(v) for k, v in compared.items()},
             )
             return None
-        stkoff = max(
+        # Rank candidates by (compared_blocks, write_blocks) DESCENDING and return the FIRST
+        # whose initial state is recoverable (ticket llr-6rwk round 5). A single max()+single
+        # init-test rejects a nested machine when the top-ranked (inner) slot's init is gated
+        # behind the outer dispatcher; iterating lets the OUTER (prologue-initialized) slot --
+        # next in rank -- supply the recoverable anchor. For the flat compared-slot machines
+        # (unwrap_loops / hardened_cond_chain_simple) the top-ranked candidate already recovers,
+        # so the iteration returns the SAME slot first -- their anchor is untouched.
+        ranked = sorted(
             candidates,
             key=lambda off: (len(compared[off]), self._written_block_count(off)),
+            reverse=True,
         )
-        state_mop, var_size = self._representative_mop_at(stkoff)
-        if state_mop is None:
-            return None
-        # Entry = highest-in-degree compared block (the dispatcher loop head handlers return to).
-        entry = max(
-            compared[stkoff],
-            key=lambda s: self.mba.get_mblock(int(s)).npred(),
-        )
-        initial_state = self._recover_initial_state_folded(graph, entry, stkoff)
-        if initial_state is None:
+        for stkoff in ranked:
+            state_mop, var_size = self._representative_mop_at(stkoff)
+            if state_mop is None:
+                continue
+            # Entry = highest-in-degree compared block (the dispatcher loop head handlers
+            # return to), recomputed per candidate slot.
+            entry = max(
+                compared[stkoff],
+                key=lambda s: self.mba.get_mblock(int(s)).npred(),
+            )
+            initial_state = self._recover_initial_state_folded(graph, entry, stkoff)
+            if initial_state is None:
+                logger.info(
+                    "emulation_dispatcher: compared-slot candidate stkoff=0x%x init "
+                    "unrecoverable (entry=%d); trying next-ranked",
+                    int(stkoff),
+                    int(entry),
+                )
+                continue
             logger.info(
-                "emulation_dispatcher: compared-slot fallback -- no initial state "
-                "(entry=%d stkoff=0x%x)",
+                "emulation_dispatcher: compared-slot fallback discovered entry=%d "
+                "stkoff=0x%x init=0x%x compared_blocks=%d write_blocks=%d",
                 int(entry),
                 int(stkoff),
+                int(initial_state),
+                len(compared[stkoff]),
+                self._written_block_count(stkoff),
             )
-            return None
+            return _Discovery(
+                stkoff=int(stkoff),
+                var_size=int(var_size or 4),
+                state_mop=state_mop,
+                entry=int(entry),
+                initial_state=int(initial_state),
+            )
         logger.info(
-            "emulation_dispatcher: compared-slot fallback discovered entry=%d stkoff=0x%x "
-            "init=0x%x compared_blocks=%d write_blocks=%d",
-            int(entry),
-            int(stkoff),
-            int(initial_state),
-            len(compared[stkoff]),
-            self._written_block_count(stkoff),
+            "emulation_dispatcher: compared-slot fallback -- no candidate yielded a "
+            "recoverable initial state (candidates=%s)",
+            [hex(c) for c in ranked],
         )
-        return _Discovery(
-            stkoff=int(stkoff),
-            var_size=int(var_size or 4),
-            state_mop=state_mop,
-            entry=int(entry),
-            initial_state=int(initial_state),
-        )
+        return None
 
     def _compared_state_slots(self) -> dict[int, set[int]]:
         """Map each stack slot to the blocks that compare it against a ``#const`` in a jump.
