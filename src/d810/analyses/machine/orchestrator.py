@@ -55,7 +55,7 @@ from d810.analyses.machine.refinement_gate import (
     TopCell,
 )
 from d810.analyses.machine.cross_validate import cross_validate
-from d810.analyses.machine.engine_rank import rank_machines
+from d810.analyses.machine.engine_rank import SOUND_RANK, rank_machines, specificity
 from d810.analyses.machine.k_escalation import KBudget, should_escalate
 
 logger = getLogger(__name__)
@@ -147,6 +147,46 @@ def _anchors_from_recovery(recovery, graph: FlowGraph) -> DispatcherAnchors:
     )
 
 
+def _cap_spine_engine(engines: object) -> SpineEngine | None:
+    """Best-effort ``engines.spine_engine()`` -> a SpineEngine or None."""
+    fn = getattr(engines, "spine_engine", None)
+    if fn is None:
+        return None
+    try:
+        return fn()
+    except Exception:  # noqa: BLE001 -- capability is best-effort -> abstain
+        logger.debug("recover_machine: spine_engine() raised", exc_info=True)
+        return None
+
+
+def _cap_concolic_machine(
+    engines: object, graph: FlowGraph, anchors: DispatcherAnchors
+) -> RecoveredMachine | None:
+    """Best-effort ``engines.concolic_machine(graph, anchors)`` -> machine or None."""
+    fn = getattr(engines, "concolic_machine", None)
+    if fn is None:
+        return None
+    try:
+        return fn(graph, anchors)
+    except Exception:  # noqa: BLE001 -- live emulation is best-effort -> abstain
+        logger.debug("recover_machine: concolic_machine() raised", exc_info=True)
+        return None
+
+
+def _cap_concolic_resolver(
+    engines: object, graph: FlowGraph, anchors: DispatcherAnchors
+) -> ConcolicResolver | None:
+    """Best-effort ``engines.concolic_resolver(graph, anchors)`` -> resolver or None."""
+    fn = getattr(engines, "concolic_resolver", None)
+    if fn is None:
+        return None
+    try:
+        return fn(graph, anchors)
+    except Exception:  # noqa: BLE001 -- capability is best-effort -> abstain
+        logger.debug("recover_machine: concolic_resolver() raised", exc_info=True)
+        return None
+
+
 def _top_cells(machine: RecoveredMachine) -> tuple[MachineTransition, ...]:
     """The ⊤/unresolved forking transitions (empty ``next_states``)."""
     return tuple(
@@ -160,6 +200,32 @@ def _replace_transition(
     """Return ``machine`` with ``old`` swapped for ``new`` in ``transitions``."""
     new_transitions = tuple(new if t is old else t for t in machine.transitions)
     return replace(machine, transitions=new_transitions)
+
+
+def _select_best(candidates: list[RecoveredMachine]) -> RecoveredMachine | None:
+    """Pick the RICHEST recovery, breaking ties by soundness then confidence.
+
+    Ranks by ``(specificity, sound_rank, confidence)`` -- specificity FIRST so the
+    fullest recovered table wins regardless of engine.  This differs from
+    :func:`rank_machines` (soundness-first) deliberately: at the production seam the
+    goal is the best UNFLATTEN, and the concolic engine is prove-exact-or-abstain
+    (it rejects truncated / sub-threshold walks, concolic_emulation_engine.py:507),
+    so its rows are validated.  When the concolic abstains or recovers fewer rows
+    than the static §1a equality-chain lift, the static lift (more specific OR equal
+    + higher soundness rank) is kept -- so the §1a floor is never regressed.  A full
+    tie keeps the first candidate (the reduced product / concolic is appended before
+    the static lift), preserving the EXACT_BOUNDED machine on an exact tie.
+    """
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda m: (
+            specificity(m),
+            SOUND_RANK.get(m.soundness, 0),
+            float(m.confidence),
+        ),
+    )
 
 
 def run_spine_with_escalation(
@@ -219,7 +285,10 @@ def compose_reduced_product(
     budget = budget or KBudget()
     spine = run_spine_with_escalation(spine_engine, graph, anchors, caps, budget)
     if spine is None:
-        return None
+        # The sound spine abstained entirely. The reduced product cannot form, but a
+        # FULL concolic machine (EXACT_BOUNDED, the proven old-engine recovery behind
+        # the contract) still beats no recovery, so let it compete (design §6 step 6).
+        return rank_machines([concolic_machine]) if concolic_machine is not None else None
 
     gate = CompletenessGate(mode=gate_mode)
     refined = spine.machine
@@ -244,8 +313,16 @@ def compose_reduced_product(
     result = cross_validate(refined, concolic_machine)
     refined = result.machine
 
-    # Ranking (§6/§7): the reduced product competes with a FULL StaticShape machine.
-    return rank_machines([refined])
+    # Ranking (§6/§7): the reduced product competes with the FULL concolic machine.
+    # ``rank_machines`` is soundness ≻ specificity ≻ confidence, so the sound spine
+    # wins UNLESS the concolic machine is strictly more specific at no less soundness
+    # -- i.e. the spine resolved nothing usable (all ⊤) but the concolic executed the
+    # dispatcher to a full table. This is the safety net that restores the cases the
+    # AI spine cannot yet shape into the contract while it is being built out.
+    candidates = [refined]
+    if concolic_machine is not None:
+        candidates.append(concolic_machine)
+    return rank_machines(candidates)
 
 
 def recover_machine(
@@ -253,6 +330,7 @@ def recover_machine(
     caps: object | None = None,
     *,
     project_config: dict | None = None,
+    engines: object | None = None,
     spine_engine: SpineEngine | None = None,
     concolic_resolver: ConcolicResolver | None = None,
     concolic_machine: RecoveredMachine | None = None,
@@ -262,11 +340,14 @@ def recover_machine(
     Returns the merged machine, or ``None`` when no engine recovers a dispatcher
     (the caller then takes the legacy single-engine path).
 
-    The heavy engines are injectable for testing.  When ``spine_engine`` is absent,
-    the orchestrator falls back to the engine registry (StaticShape pattern result)
-    so the opt-in path is always defined even before the AI/concolic engines wire in
-    at the backend seam -- it returns the registry's best machine (PATTERN), which
-    ``to_state_dispatcher_map`` projects to exactly today's map (no regression).
+    The heavy engines reach the orchestrator two ways: directly (``spine_engine`` /
+    ``concolic_resolver`` / ``concolic_machine`` -- the unit-test injection seam) OR
+    via the backend-provided ``engines`` capability
+    (:class:`~d810.capabilities.machine_engines.MachineRecoveryEnginesCapability`),
+    from which the orchestrator derives the spine + concolic against its OWN shared
+    anchors (so anchoring never diverges).  Absent both, the orchestrator composes
+    over the enriched-anchor static §1a candidate only -- byte-equivalent to the
+    legacy path (no regression).
     """
     if graph is None:
         return None
@@ -280,6 +361,18 @@ def recover_machine(
     if getattr(recovery, "dispatcher_block_serial", None) is None:
         return None  # no dispatcher -> caller falls back
     anchors = _anchors_from_recovery(recovery, graph)
+
+    # ── derive engines from the backend capability (if not injected directly) ──
+    if engines is not None:
+        if spine_engine is None:
+            spine_engine = _cap_spine_engine(engines)
+        if concolic_machine is None:
+            concolic_machine = _cap_concolic_machine(engines, graph, anchors)
+        if concolic_resolver is None:
+            concolic_resolver = _cap_concolic_resolver(engines, graph, anchors)
+
+    # Candidates compete via ``rank_machines`` (soundness ≻ specificity ≻ conf).
+    candidates: list[RecoveredMachine] = []
 
     # ── reduced product when a spine engine is available ───────────────────
     if spine_engine is not None:
@@ -296,21 +389,41 @@ def recover_machine(
             budget=budget,
         )
         if product is not None:
-            return product
+            candidates.append(product)
+    elif concolic_machine is not None:
+        # No spine, but the concolic engine recovered a FULL machine (EXACT_BOUNDED,
+        # the proven old-engine recovery behind the contract). It competes directly.
+        candidates.append(concolic_machine)
 
-    # ── fallback: engine registry (StaticShape PATTERN) ────────────────────
-    # No spine available (or it abstained): return the registry's best machine so
-    # the opt-in path degrades to today's pattern recovery (byte-identical map via
-    # to_state_dispatcher_map). This keeps the green floor intact when the heavy
-    # engines are not wired.
-    engines = default_engines(min_state_constant=min_const)
-    machine = recover_machine_via_engines(graph, engines, anchors=anchors)
-    if machine is None:
-        # Last resort: lift the anchoring recovery's own map (it found a dispatcher).
-        dmap = getattr(recovery, "dispatch_map", None)
-        if dmap is None:
-            return None
-        return RecoveredMachine.from_state_dispatcher_map(
-            dmap, soundness=Soundness.PATTERN, provenance=("reduced_product_anchor",)
+    # ── enriched-anchor static lift (byte-equivalent §1a; the sound floor) ──
+    # The anchoring ``recovery`` is exactly what the legacy
+    # ``recover_dispatcher(graph, facts)`` path produced -- it has the entry-dominance
+    # ``initial_state`` threaded (dispatcher_recovery.py:548-551) that the bare
+    # engine-registry / StaticShape path LOSES (it lifts the raw resolver map with
+    # ``initial_state=None``). Lifting ``recovery.dispatch_map`` makes the no-spine
+    # opt-in path byte-equivalent to the §1a legacy path: ``to_state_dispatcher_map()``
+    # of this lift == ``recovery.dispatch_map`` field-for-field, including the
+    # recovered prologue ``initial_state`` and ``state_var_stkoff`` the entry bridge
+    # needs (root-cause #1: SEAM REGRESSION).
+    dmap = getattr(recovery, "dispatch_map", None)
+    if dmap is not None:
+        candidates.append(
+            RecoveredMachine.from_state_dispatcher_map(
+                dmap,
+                soundness=Soundness.PATTERN,
+                provenance=("reduced_product_anchor",),
+            )
         )
-    return machine
+    else:
+        engine_machine = recover_machine_via_engines(
+            graph, default_engines(min_state_constant=min_const), anchors=anchors
+        )
+        if engine_machine is not None:
+            candidates.append(engine_machine)
+
+    # Rank: EXACT_BOUNDED concolic outranks the PATTERN static lift, so when the
+    # concolic engine executed the dispatcher to a fuller table (the cases the static
+    # equality-chain shape cannot resolve), it wins; otherwise the static §1a lift is
+    # the floor. ``_select_best`` guards against an EXACT_BOUNDED machine that is
+    # strictly LESS specific than the PATTERN floor (never regress the §1a recovery).
+    return _select_best(candidates)

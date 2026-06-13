@@ -51,6 +51,7 @@ from d810.transforms.minimal_unflatten_emit import emit_minimal_unflatten
 from d810.transforms.dispatcher_cleanup import cleanup_residual_dispatcher
 from d810.capabilities.value_range import ValRangeCapability
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
+from d810.capabilities.machine_engines import MachineRecoveryEnginesCapability
 from d810.analyses.data_flow.concolic import EmulationCapability
 from d810.core import logging
 
@@ -238,10 +239,19 @@ class RecoverDispatcher(PipelinePass):
         cfg = context.project_config
         engine = cfg.get("recovery_engine") if isinstance(cfg, dict) else None
         if engine == "reduced_product":
+            # Thread the live-mba recovery engines (deffai spine + concolic) the
+            # backend injected (ticket llr-iy9i). Absent the capability the
+            # orchestrator composes over the static §1a candidate only (no
+            # regression); present, the concolic engine (the proven old-engine
+            # recovery) and the AI spine compete + refine.
+            engines_cap = context.capabilities.optional(
+                MachineRecoveryEnginesCapability
+            )
             machine = recover_machine(
                 context.graph,
                 context.capabilities,
                 project_config=cfg if isinstance(cfg, dict) else None,
+                engines=engines_cap,
             )
             recovery = _recovery_from_machine(
                 machine, context.graph, min_state_constant
