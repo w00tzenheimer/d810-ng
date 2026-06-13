@@ -51,6 +51,7 @@ from d810.analyses.value_flow.global_init_fold import (
     compute_initializer_stable_global_reads,
 )
 from d810.analyses.data_flow.concolic import (
+    AbstractEvidence,
     ConcolicValue,
     ConcreteStore,
     EmulationCapability,
@@ -141,16 +142,44 @@ def _emulate_unresolved_state(
     live_block: object,
     seeded_store: ConcreteStore,
     state_cell: LocationRef,
+    *,
+    spine_floor: "AbstractEvidence | None" = None,
+    strict_floor: bool = False,
 ) -> int | None:
     """Consult the concrete leg for a single ⊥ back-edge, or ``None`` on abstain.
 
     Steps ``live_block`` over ``seeded_store`` via the injected
-    :class:`EmulationCapability`, then ``fold_exact``-validates the outcome against an
-    unconstrained abstract floor (``⊤`` -- the unresolved edge carries no abstract
-    information, so the floor contains every value; the emulator's own block-stepper
-    is the soundness gate).  Returns the proven concrete next-state (width-masked) or
-    ``None`` when the emulator abstains / the fold is dropped.
+    :class:`EmulationCapability`, then ``fold_exact``-validates the outcome against the
+    abstract floor ``spine_floor``.  Returns the proven concrete next-state
+    (width-masked) or ``None`` when the emulator abstains / the fold is dropped.
+
+    The floor seam (ticket llr-1d8u / P4):
+
+    * ``spine_floor=None`` (DEFAULT) -> floor = ``AbstractEvidence.top(8)``, which is
+      byte-identical to the historical ``ConcolicValue.top(8).abstract`` floor the
+      ``llr-xauw`` reduced-product CONCRETE leg used.  ``AbstractEvidence.top()``
+      ``contains`` every value, so soundness rests on the emulator's own
+      prove-exact-or-abstain block-stepper -- the unchanged legacy behaviour.
+    * ``spine_floor`` non-``⊤`` -> the AI spine's per-context ``σ#_in(c)`` projection.
+      ``fold_exact`` then does REAL work: an ``ExactResult`` whose value the floor does
+      NOT contain (an unsound/over-eager emulator) is dropped, so the concrete claim is
+      validated against a non-trivial sound floor (the §7 (b) gate).
+    * ``strict_floor=True`` (the P4 reduced-product caller) -> early-return ``None``
+      ("stay ⊤") when the floor is ``⊤``.  This closes the Z3-proven VACUOUS gate: a
+      ⊤ floor admits every value, so refining a ⊤ cell on its strength is unsound;
+      the reduced-product path must therefore have a non-trivial floor or stay ⊤.
+      The DEFAULT (``strict_floor=False``) NEVER early-returns, so every existing
+      caller is behaviour-identical.
     """
+    floor = spine_floor if spine_floor is not None else AbstractEvidence.top(8)
+    if strict_floor and floor.is_top():
+        # Reduced-product gate (b): a ⊤ floor cannot establish completeness
+        # (γ(⊤) is everything), so refining on its strength is the vacuous/unsound
+        # gate the Z3 proof flagged. Stay ⊤. (truth reduced_product_cff_refinement/
+        # is_sound_iff; ticket llr-1d8u §0.1.)
+        if logger.info_on:
+            logger.info("emu-consult: ⊤ floor under strict_floor -> stay ⊤ (abstain)")
+        return None
     if live_block is None:
         if logger.info_on:
             logger.info("emu-consult: no live block -> abstain")
@@ -165,7 +194,11 @@ def _emulate_unresolved_state(
                 getattr(live_block, "serial", "?"), len(getattr(seeded_store, "cells", {})),
             )
         return None
-    folded = fold_exact(ConcolicValue.top(8), outcome, state_cell)
+    folded = fold_exact(
+        ConcolicValue(None, None, floor, floor.width, PrecisionStatus.ABSTRACT),
+        outcome,
+        state_cell,
+    )
     resolved = folded.status is PrecisionStatus.CONCRETE and folded.concrete is not None
     # Observability (ticket llr-a93i, Slice 3): record every concrete-leg consult --
     # candidate block, seed richness, the emulator's outcome ADT, and whether
