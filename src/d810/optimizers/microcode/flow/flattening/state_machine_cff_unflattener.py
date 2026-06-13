@@ -73,6 +73,10 @@ from d810.backends.hexrays.evidence.emulation import HexRaysBlockEmulator
 from d810.backends.hexrays.evidence.emulation_dispatcher_resolver import (
     EmulationDispatcherResolver,
 )
+from d810.backends.hexrays.evidence.machine_engines_capability import (
+    HexRaysMachineRecoveryEnginesCapability,
+)
+from d810.capabilities.machine_engines import MachineRecoveryEnginesCapability
 from d810.backends.hexrays.lifter import lift_function
 from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
 from d810.capabilities.resolver import CapabilitySet
@@ -536,6 +540,26 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 state_var_stkoff=int(state_var_stkoff),
                 state_cell=state_cell,
             )
+        # Reduced-product recovery engines (ticket llr-iy9i): the live-mba spine
+        # (DEFFAI) + concolic (the old-engine recovery behind the contract) the
+        # ``RecoverDispatcher`` pass composes when the project config sets
+        # ``recovery_engine == "reduced_product"``. Bound to a FRESH ``mba`` each
+        # decompile (staleness rule). ``concolic_enabled`` carries the existing
+        # ``emulation_dispatcher`` opt-in so a project that already enables the
+        # emulation resolver also gets the concolic engine here. Registered
+        # unconditionally so a later non-opted-in function never sees a stale ``mba``;
+        # the orchestrator only consults this capability on the reduced_product path.
+        cap_instances[MachineRecoveryEnginesCapability] = (
+            HexRaysMachineRecoveryEnginesCapability(
+                mba=mba,
+                min_state_constant=min_state_constant_from_config(
+                    getattr(self, "config", None)
+                ),
+                concolic_enabled=bool(
+                    isinstance(_cfg, dict) and _cfg.get("emulation_dispatcher")
+                ),
+            )
+        )
         capabilities = CapabilitySet(cap_instances)
         # Route through the registered profiles (llr-ibpi): select_family polls the
         # StateMachineCffFamily registry (HodurFamily=equality-chain, ApproovFamily/
