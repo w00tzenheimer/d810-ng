@@ -25,9 +25,12 @@ from d810.passes.pass_pipeline import (
 
 # --- WORK-LIST: portable extractions composed by the passes ---
 from d810.analyses.control_flow.dispatcher_recovery import (
+    DispatcherRecovery,
     min_state_constant_from_config,
     recover_dispatcher,
 )
+from d810.analyses.control_flow.reachability import reachable_from
+from d810.analyses.machine import recover_machine
 from d810.analyses.control_flow.comparison_dispatcher_model import (
     ComparisonDispatcherModel,
 )
@@ -184,6 +187,37 @@ def _resolve_initial_state(bst_evidence, recovery) -> int | None:
     return None
 
 
+def _recovery_from_machine(machine, graph, min_state_constant: int) -> DispatcherRecovery:
+    """Adapt a P1 ``RecoveredMachine`` back into the existing ``DispatcherRecovery``.
+
+    The reduced-product orchestrator (ticket llr-1d8u) returns the engine-neutral
+    ``RecoveredMachine``; the downstream passes (``RecoverStateTransitions``,
+    ``PlanSemanticRegions``, ``LowerStateMachine``, ``emit_minimal_unflatten``)
+    consume a ``DispatcherRecovery`` whose ``dispatch_map`` is a
+    ``StateDispatcherMap``. ``machine.to_state_dispatcher_map()`` is the EXACT
+    inverse of the lift, so the projection yields the SAME map shape the emit path
+    consumes -- the richer forking/context data is carried separately (published as
+    ``recovered_machine``) and ignored by the emit. ``None`` machine -> an empty
+    recovery (caller's downstream sees "no dispatcher", same as a clean function).
+    """
+    if graph is None:
+        return DispatcherRecovery()
+    adjacency = {serial: graph.successors(serial) for serial in graph.blocks}
+    reachable = reachable_from(adjacency, graph.block_count, graph.entry_serial)
+    if machine is None:
+        return DispatcherRecovery(reachable_block_serials=reachable)
+    dmap = machine.to_state_dispatcher_map()
+    if dmap is None:
+        return DispatcherRecovery(reachable_block_serials=reachable)
+    return DispatcherRecovery(
+        reachable_block_serials=reachable,
+        dispatcher_block_serial=dmap.dispatcher_entry_block,
+        bst_block_serials=tuple(sorted(dmap.dispatcher_blocks)),
+        state_var_stkoff=dmap.state_var_stkoff,
+        dispatch_map=dmap,
+    )
+
+
 class RecoverDispatcher(PipelinePass):
     name = "recover_dispatcher"
 
@@ -192,9 +226,31 @@ class RecoverDispatcher(PipelinePass):
         # threshold the family's detect did (detect/recover divergence is a known bug
         # class). Defaults to the module MIN_STATE_CONSTANT when absent.
         min_state_constant = min_state_constant_from_config(context.project_config)
-        recovery = recover_dispatcher(
-            context.graph, context.facts, min_state_constant=min_state_constant
-        )
+        # Opt-in reduced-product engine (ticket llr-1d8u): when the project config
+        # sets ``recovery_engine == "reduced_product"`` route dispatcher recovery
+        # through the multi-engine orchestrator (sound AI spine + fold_exact-gated
+        # concolic refinement of ⊤ cells). Absent the key, this branch is skipped
+        # and ``RecoverDispatcher.run`` is byte-identical to the legacy single-engine
+        # path -- no golden config sets the key, so the baseline is preserved by
+        # construction (A4). The orchestrator REUSES ``recover_dispatcher`` for
+        # anchoring, so even when only the StaticShape pattern resolves, the
+        # projected map equals today's map.
+        cfg = context.project_config
+        engine = cfg.get("recovery_engine") if isinstance(cfg, dict) else None
+        if engine == "reduced_product":
+            machine = recover_machine(
+                context.graph,
+                context.capabilities,
+                project_config=cfg if isinstance(cfg, dict) else None,
+            )
+            recovery = _recovery_from_machine(
+                machine, context.graph, min_state_constant
+            )
+            _publish(context, "recovered_machine", machine)
+        else:
+            recovery = recover_dispatcher(
+                context.graph, context.facts, min_state_constant=min_state_constant
+            )
         _publish(context, self.name, recovery)
         # S2: build the consolidated ComparisonDispatcherModel for comparison
         # router kinds, folding in the pristine BST/interval evidence so
