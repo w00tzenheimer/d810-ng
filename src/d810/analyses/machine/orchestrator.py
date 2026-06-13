@@ -358,9 +358,23 @@ def recover_machine(
     )
     # ── (1) SHARED ANCHORING ───────────────────────────────────────────────
     recovery = recover_dispatcher(graph, None, min_state_constant=min_const)
-    if getattr(recovery, "dispatcher_block_serial", None) is None:
-        return None  # no dispatcher -> caller falls back
-    anchors = _anchors_from_recovery(recovery, graph)
+    has_static_dispatcher = (
+        getattr(recovery, "dispatcher_block_serial", None) is not None
+    )
+    # The static ``recover_dispatcher`` only recognizes a dispatcher by its compare
+    # SHAPE (equality-chain / switch-table). A non-identity-selector machine -- the
+    # XOR-masked ``switch((state ^ KEY) & MASK)`` (abc_xor_dispatch) -- has no static
+    # shape, so it returns no dispatcher; but the concolic engine SELF-ANCHORS (its
+    # ``discover_anchors`` falls back to the dominant-self-update slot the legacy
+    # ``EmulatedDispatcherUnflattener`` used) and can still execute it. So do NOT bail
+    # here when static anchoring fails -- consult the concolic engine first with empty
+    # anchors (it ignores them and self-anchors), and only return None if it too
+    # abstains. ``has_static_dispatcher`` gates the static §1a lift below.
+    anchors = (
+        _anchors_from_recovery(recovery, graph)
+        if has_static_dispatcher
+        else DispatcherAnchors(dispatcher_entry_block=None)
+    )
 
     # ── derive engines from the backend capability (if not injected directly) ──
     if engines is not None:
@@ -370,6 +384,10 @@ def recover_machine(
             concolic_machine = _cap_concolic_machine(engines, graph, anchors)
         if concolic_resolver is None:
             concolic_resolver = _cap_concolic_resolver(engines, graph, anchors)
+
+    # No static dispatcher AND the concolic engine abstained -> nothing to recover.
+    if not has_static_dispatcher and concolic_machine is None:
+        return None  # caller falls back to the legacy single-engine path
 
     # Candidates compete via ``rank_machines`` (soundness ≻ specificity ≻ conf).
     candidates: list[RecoveredMachine] = []
