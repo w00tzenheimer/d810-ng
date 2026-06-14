@@ -1071,6 +1071,17 @@ def check_ins_mop_size_are_ok(ins: ida_hexrays.minsn_t) -> bool:
         return True
 
     if ins.opcode in CHECK_OPCODES:
+        # Every CHECK_OPCODE (set*/cf*/of* family) is a binary op: a missing
+        # (mop_z) operand is malformed microcode that trips Hex-Rays verify
+        # (INTERR 50815). A comparison replacement template (e.g. the Tigress
+        # ``(x != y)`` sign-bit fold) instantiated on a *nested value* position
+        # can drop its right operand, yielding ``setnz l`` with no ``r``; reject
+        # it here before commit instead of letting optimize_global crash on it.
+        # (llr-kdaf)
+        if ins.l is None or ins.l.t == ida_hexrays.mop_z:
+            return False
+        if ins.r is None or ins.r.t == ida_hexrays.mop_z:
+            return False
         if (ins.l.t == ida_hexrays.mop_d) and (not check_ins_mop_size_are_ok(ins.l.d)):
             return False
         if (ins.r.t == ida_hexrays.mop_d) and (not check_ins_mop_size_are_ok(ins.r.d)):
