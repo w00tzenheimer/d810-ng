@@ -375,14 +375,45 @@ def _find_live_state_assignment(blk: object, state_mop: object) -> int | None:
     return None
 
 
+def _mop_subtree_reads(node: object, mop: object, depth: int = 0) -> bool:
+    """Return True when source operand ``node`` reads ``mop`` (descending nested insns).
+
+    Walks the ``l``/``r``/``d`` operand tree of a source expression, descending into
+    nested ``mop_d`` sub-instructions, so an induction update like
+    ``i = (i + 1)`` (where ``i`` hides inside a sub-add) is still detected.
+    """
+    if node is None or mop is None or depth > 8:
+        return False
+    equal_mops = getattr(node, "equal_mops", None)
+    if callable(equal_mops):
+        try:
+            if equal_mops(mop, ida_hexrays.EQ_IGNSIZE):
+                return True
+        except (TypeError, ValueError):
+            pass
+    sub = getattr(node, "d", None)
+    if sub is not None and sub is not node:
+        for slot in ("l", "r", "d"):
+            if _mop_subtree_reads(getattr(sub, slot, None), mop, depth + 1):
+                return True
+    return False
+
+
 def _last_assignment_to_mop_is_nonconstant(blk: object, mop: object) -> bool:
-    """Return True when ``blk``'s last write to ``mop`` is not a constant move.
+    """Return True when ``blk``'s last write to ``mop`` is a dynamic *carrier* update.
 
     Fake-jump cleanup may bypass a conditional when each predecessor gives the
     compared operand a known constant.  That is not valid for loop latches whose
-    predecessor computes the compared operand dynamically, e.g. ``i = i + 1``
-    followed by ``jb i, bound``.  In that shape the branch is the loop-carrier
-    guard and must remain in the CFG.
+    predecessor computes the compared operand dynamically *from itself*, e.g.
+    ``i = i + 1`` followed by ``jb i, bound``.  In that shape the branch is the
+    loop-carrier guard and must remain in the CFG.
+
+    The guard fires only for a **self-referential** non-constant write — one whose
+    source reads the compared operand back (a genuine induction/accumulation).  A
+    plain copy/widen of the operand from another register/temporary
+    (``mov``/``xdu`` of a different mop), as emitted by OLLVM dispatcher state
+    shuffling, is *not* a carrier update: it falls through to the deterministic
+    MopTracker resolution, which independently proves whether the jump is fake.
     """
     if blk is None or mop is None:
         return False
@@ -395,10 +426,17 @@ def _last_assignment_to_mop_is_nonconstant(blk: object, mop: object) -> bool:
             and callable(equal_mops)
             and equal_mops(mop, ida_hexrays.EQ_IGNSIZE)
         ):
-            return not (
+            is_const_mov = (
                 getattr(insn, "opcode", None) == ida_hexrays.m_mov
                 and getattr(getattr(insn, "l", None), "t", None) == ida_hexrays.mop_n
             )
+            if is_const_mov:
+                return False
+            # Non-constant write: only a self-referential update (the operand
+            # reappears in the source) is a real loop carrier worth preserving.
+            return _mop_subtree_reads(
+                getattr(insn, "l", None), mop
+            ) or _mop_subtree_reads(getattr(insn, "r", None), mop)
         insn = getattr(insn, "prev", None)
     return False
 
