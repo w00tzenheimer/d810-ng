@@ -116,6 +116,24 @@ def _wide_chunk_offset(
     return None
 
 
+def _assemble_wide_chunks(
+    chunks: dict[int, tuple[int, int]],
+    size: int,
+    bits: int,
+) -> int | None:
+    """Combine contiguous constant chunks into a single masked integer."""
+    covered = 0
+    while covered < size and covered in chunks:
+        covered += chunks[covered][1]
+    if covered < size:
+        return None
+    result = 0
+    for chunk_offset, (value, chunk_size) in chunks.items():
+        mask = (1 << (chunk_size * 8)) - 1
+        result |= (value & mask) << (chunk_offset * 8)
+    return result & _get_mask(bits)
+
+
 def _resolve_wide_constant_mop(
     mop: "ida_hexrays.mop_t",
     bits: int,
@@ -131,6 +149,9 @@ def _resolve_wide_constant_mop(
     if mop.t not in (ida_hexrays.mop_r, ida_hexrays.mop_l, ida_hexrays.mop_S):
         return None
 
+    # Backward scan over the use site's predecessor chain.  This is the common
+    # path when *ins* is a top-level block instruction whose ``prev`` links
+    # reach the constant chunk stores.
     chunks: dict[int, tuple[int, int]] = {}
     cur = ins.prev
     while cur is not None:
@@ -142,17 +163,31 @@ def _resolve_wide_constant_mop(
                 return None
             chunks[offset] = (int(value), int(dst.size))
 
-        covered = 0
-        while covered < size and covered in chunks:
-            covered += chunks[covered][1]
-        if covered >= size:
-            result = 0
-            for chunk_offset, (value, chunk_size) in chunks.items():
-                mask = (1 << (chunk_size * 8)) - 1
-                result |= (value & mask) << (chunk_offset * 8)
-            return result & _get_mask(bits)
+        result = _assemble_wide_chunks(chunks, size, bits)
+        if result is not None:
+            return result
 
         cur = cur.prev
+
+    # Fallback: *ins* is a nested sub-instruction (``prev`` is None), so the
+    # backward chain never reaches the wide-constant stores even though they
+    # live as top-level instructions in the same block.  Walk the block's
+    # top-level instruction list forward, taking the first constant store per
+    # chunk offset (straight-line build of the wide value before its use).
+    if not chunks and getattr(ins, "prev", None) is None:
+        forward: dict[int, tuple[int, int]] = {}
+        cur = blk.head
+        while cur is not None:
+            dst = getattr(cur, "d", None)
+            offset = _wide_chunk_offset(mop, dst)
+            if offset is not None and offset not in forward:
+                value = _constant_mov_value(cur)
+                if value is not None:
+                    forward[offset] = (int(value), int(dst.size))
+                    result = _assemble_wide_chunks(forward, size, bits)
+                    if result is not None:
+                        return result
+            cur = cur.next
 
     return None
 
