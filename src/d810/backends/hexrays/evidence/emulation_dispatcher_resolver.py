@@ -52,6 +52,7 @@ from d810.analyses.control_flow.dispatcher_resolution import (
 )
 from d810.analyses.control_flow.emulated_state_walk import walk_emulated_state_machine
 from d810.capabilities.dispatcher import RouterKind
+from d810.capabilities.providers import get_bst_walkers
 from d810.evaluator.hexrays_microcode.emulator import (
     MicroCodeEnvironment,
     MicroCodeInterpreter,
@@ -803,7 +804,10 @@ class EmulationDispatcherResolver:
         return found
 
     def _fold_state_write_in_block(
-        self, blk_serial: int, stkoff: int
+        self,
+        blk_serial: int,
+        stkoff: int,
+        foldable_global_reads: dict[int, dict[int, int]] | None = None,
     ) -> int | None:
         """Fold a block's LAST write to ``stkoff`` to a concrete constant, or ``None``.
 
@@ -815,10 +819,31 @@ class EmulationDispatcherResolver:
         skipped. ``mask_subreg_reads`` mirrors the dispatcher stepper. Returns the folded value
         masked to the write width, or ``None`` when the emulator cannot prove a constant (e.g.
         the write genuinely depends on the incoming state).
+
+        GLOBAL-CARRIED next-state (ticket llr-k8oa): when ``foldable_global_reads`` is
+        supplied, the next state may be carried THROUGH a writable global within the same
+        block -- Approov's ``approov_vm_dispatcher`` state ``0xF6A1F`` does
+        ``approov_qword |= 0xF6A20`` then ``state = (int)approov_qword``.  The
+        single-instruction emulator above abstains on that ``mov global -> state``: it reads
+        ``approov_qword`` (a writable ``.data`` global) with a fresh env, so the read is
+        "not defined".  Stepping the WHOLE block via the proven legacy forward-fold
+        (``get_bst_walkers().forward_eval_insn``) folds it: the global read resolves to its
+        reaching-defs-stable ``.data`` initializer (``foldable_global_reads``), the in-block
+        ``|=`` write is tracked under the gaddr key, and the subsequent ``state = global``
+        read folds to the committed value.  This is exactly the in-block global dataflow the
+        legacy ``minimal_state_recovery`` path uses, so a global-carried machine the static
+        §1a recovers post-hoc now also recovers under the concolic engine.  ``None`` (sound
+        abstain) whenever no constant is proven, identical to the direct path.
         """
         blk = self.mba.get_mblock(int(blk_serial))
         if blk is None:
             return None
+        if foldable_global_reads is not None:
+            folded = self._fold_state_write_whole_block(
+                blk, int(stkoff), foldable_global_reads
+            )
+            if folded is not None:
+                return folded
         result: int | None = None
         insn = blk.head
         while insn is not None:
@@ -847,6 +872,51 @@ class EmulationDispatcherResolver:
                     result = None
             insn = insn.next
         return result
+
+    def _fold_state_write_whole_block(
+        self,
+        blk: ida_hexrays.mblock_t,
+        stkoff: int,
+        foldable_global_reads: dict[int, dict[int, int]],
+    ) -> int | None:
+        """Forward-fold the WHOLE block, returning the constant written to ``stkoff``.
+
+        Reuses the proven legacy stepper (``get_bst_walkers().forward_eval_insn``), which
+        carries exact stack / register / global constants instruction-by-instruction in a
+        per-block map.  A write to a writable global is recorded under its gaddr key, so a
+        later read of that global in the SAME block (``state = (int)approov_qword`` after
+        ``approov_qword |= 0xF6A20``) resolves to the committed value; a read of a global
+        proven store-free folds to its ``.data`` initializer via ``foldable_global_reads``.
+        Returns the LAST constant the stepper resolves for the ``stkoff`` state-slot write,
+        or ``None`` when no constant is proven (sound abstain).  Any stepper failure or a
+        missing walker provider also abstains -- never a wrong fold.
+        """
+        try:
+            forward_eval_insn = get_bst_walkers().forward_eval_insn
+        except Exception:  # noqa: BLE001 — no provider registered -> fall back to direct fold
+            return None
+        stk_map: dict[int, int] = {}
+        reg_map: dict[int, int] = {}
+        result: int | None = None
+        insn = blk.head
+        while insn is not None:
+            try:
+                val = forward_eval_insn(
+                    insn,
+                    stk_map,
+                    reg_map,
+                    int(stkoff),
+                    mba=self.mba,
+                    foldable_global_reads=foldable_global_reads,
+                )
+            except Exception:  # noqa: BLE001 — stepper failure -> abstain on this fold
+                return None
+            if val is not None:
+                result = int(val)
+            insn = insn.next
+        if result is None:
+            return None
+        return int(result) & 0xFFFFFFFFFFFFFFFF
 
     @staticmethod
     def _apply_op(state: int, opcode: int, const: int, mask: int) -> int:

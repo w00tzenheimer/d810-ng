@@ -57,6 +57,11 @@ from d810.analyses.control_flow.recovered_machine import (
     RecoveredMachine,
     Soundness,
 )
+from d810.analyses.control_flow.minimal_state_recovery import _resolve_state_var_alias
+from d810.analyses.value_flow.global_init_fold import (
+    compute_initializer_stable_global_reads,
+)
+from d810.capabilities.providers import get_bst_walkers
 from d810.backends.hexrays.evidence.emulation_dispatcher_resolver import (
     _SELF_UPDATE_OPS,
     EmulationDispatcherResolver,
@@ -153,6 +158,14 @@ class ConcolicEmulationEngine:
     enabled: bool = True
     name: str = "concolic_emulation"
 
+    # Per-recover global-carried next-state context (ticket llr-k8oa), set in
+    # ``recover``: the live FlowGraph + dispatcher entry the reaching-defs barrier
+    # needs, plus a per-handler ``foldable_global_reads`` cache.  ``None`` outside a
+    # recover; reset every call so a re-bound ``mba`` never reads a stale graph.
+    _fgr_graph: object | None = None
+    _fgr_entry: int | None = None
+    _fgr_cache: dict = None  # type: ignore[assignment]
+
     # -- MachineRecoveryEngine ----------------------------------------------------
     def recover(
         self,
@@ -178,6 +191,11 @@ class ConcolicEmulationEngine:
         disc = self._discovery_from_anchors(graph, anchors)
         if disc is None:
             return None
+
+        # Per-recover global-carried next-state context (ticket llr-k8oa).
+        self._fgr_graph = graph
+        self._fgr_entry = int(disc.entry)
+        self._fgr_cache = {}
 
         prov = ConcolicProvenance()
         region_cache: dict[int, _ForkRegionFacts] = {}
@@ -403,7 +421,16 @@ class ConcolicEmulationEngine:
             if host._writes_stkoff(blk, int(disc.stkoff)) and not self._state_write_is_dead(
                 serial, int(disc.stkoff), int(disc.entry)
             ):
-                arms.extend(self._block_state_arms(host, blk, disc.stkoff))
+                arms.extend(
+                    self._block_state_arms(
+                        host,
+                        blk,
+                        disc.stkoff,
+                        foldable_global_reads=self._foldable_global_reads_for_handler(
+                            int(handler)
+                        ),
+                    )
+                )
                 continue
             for i in range(blk.nsucc()):
                 succ = int(blk.succ(i))
@@ -550,6 +577,7 @@ class ConcolicEmulationEngine:
         host: EmulationDispatcherResolver,
         blk: ida_hexrays.mblock_t,
         stkoff: int,
+        foldable_global_reads: dict[int, dict[int, int]] | None = None,
     ) -> list[tuple[int | None, int | None]]:
         """The state-slot transitions one block writes.
 
@@ -566,6 +594,14 @@ class ConcolicEmulationEngine:
         isolation (``_fold_state_write_in_block`` reads the IDB globals); a proven constant is
         an absolute ``(None, const)`` arm. A write the emulator cannot prove constant yields no
         arm (sound abstain), exactly like an unrecognized transition.
+
+        GLOBAL-CARRIED next-state (ticket llr-k8oa): ``foldable_global_reads`` (when
+        supplied) lets the absolute fold step the WHOLE block so a next state carried
+        through a writable global -- Approov ``approov_qword |= 0xF6A20`` then
+        ``state = (int)approov_qword`` -- folds to its committed constant (the
+        in-block global dataflow the legacy path uses).  A direct ``mov #const`` /
+        ``state OP #const`` arm is still preferred; the whole-block fold only adds the
+        global-carried arm the single-instruction fold abstains on.
         """
         out: list[tuple[int | None, int | None]] = []
         insn = blk.head
@@ -581,10 +617,55 @@ class ConcolicEmulationEngine:
             if mov_const is not None:
                 out.append((None, int(mov_const)))
         if not out and host._writes_stkoff(blk, int(stkoff)):
-            folded = host._fold_state_write_in_block(int(blk.serial), int(stkoff))
+            folded = host._fold_state_write_in_block(
+                int(blk.serial),
+                int(stkoff),
+                foldable_global_reads=foldable_global_reads,
+            )
             if folded is not None:
                 out.append((None, int(folded)))
         return out
+
+    def _foldable_global_reads_for_handler(
+        self, handler: int
+    ) -> dict[int, dict[int, int]] | None:
+        """Reaching-defs-sound ``{read_ea: {gaddr: init}}`` for THIS handler region.
+
+        The global-carried next-state fold (ticket llr-k8oa) needs the set of global
+        reads that fold to their ``.data`` initializer within the handler being
+        summarized.  Anchored at the handler entry with the dispatcher entry as a
+        reaching-defs BARRIER (its incoming edges cut): the handler runs straight-line
+        from its entry before any sibling handler's store, so its read of a writable
+        global is store-free and folds to the loader-supplied initializer -- exactly the
+        per-read soundness ``global_init_fold`` proves and the legacy
+        ``minimal_state_recovery`` path relies on.  Cached per handler.  ``None`` when no
+        recover context / no walker provider (the fold then degrades to the direct,
+        single-instruction path -- no global-carried recovery, but never a wrong fold).
+        """
+        if self._fgr_graph is None or self._fgr_entry is None:
+            return None
+        if self._fgr_cache is None:
+            self._fgr_cache = {}
+        cached = self._fgr_cache.get(int(handler))
+        if cached is not None:
+            return cached
+        try:
+            fetch = get_bst_walkers().fetch_idb_value
+        except Exception:  # noqa: BLE001 — no provider -> no global fold (direct path only)
+            self._fgr_cache[int(handler)] = {}
+            return {}
+        try:
+            fgr = compute_initializer_stable_global_reads(
+                self._fgr_graph,
+                fetch,
+                barrier_serials={int(self._fgr_entry)},
+                entry_override=int(handler),
+            )
+        except Exception:  # noqa: BLE001 — fold-set computation is best-effort -> abstain
+            fgr = {}
+        fgr = dict(fgr) if fgr else {}
+        self._fgr_cache[int(handler)] = fgr
+        return fgr
 
     def _discovery_from_anchors(
         self, graph: FlowGraph, anchors: DispatcherAnchors
@@ -601,6 +682,30 @@ class ConcolicEmulationEngine:
         stkoff = anchors.state_var_stkoff
         if stkoff is None:
             return None
+        # Read/write slot split (ticket llr-k8oa): the anchored slot is the slot the
+        # dispatcher COMPARES, which a ``-fla`` lowering keeps as a header copy of the
+        # slot the handlers actually WRITE the next state to (Approov / OLLVM:
+        # ``compared = next_write`` at the loop head, e.g. ``var_C = var_8``).  The
+        # initial-state init and every handler next-state write target the SOURCE slot,
+        # so anchoring on the compared copy makes init recovery + the handler write scan
+        # miss them (the engine abstains).  Follow the dispatcher-header copy back to the
+        # write-source slot -- the same canonical resolution the legacy
+        # ``minimal_state_recovery`` path applies (``_resolve_state_var_alias``).  A clean
+        # machine with no header copy resolves to itself (unchanged).
+        try:
+            resolved = int(_resolve_state_var_alias(graph, entry, int(stkoff)))
+        except Exception:  # noqa: BLE001 — alias probe is best-effort -> keep the anchor
+            resolved = int(stkoff)
+        if resolved != int(stkoff):
+            if logger.debug_on:
+                logger.debug(
+                    "concolic_emulation: anchor slot 0x%x is a header copy of write-source "
+                    "slot 0x%x (entry=%d) -- retargeting",
+                    int(stkoff),
+                    resolved,
+                    entry,
+                )
+            stkoff = resolved
         state_mop, var_size = self._representative_state_mop(int(stkoff))
         if state_mop is None:
             return None
