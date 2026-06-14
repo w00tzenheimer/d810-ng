@@ -311,6 +311,13 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             optimization_performed = self.optimize(blk, ins)
 
             if not optimization_performed:
+                # ``minsn_t.for_all_insns`` does not populate the visitor's
+                # ``blk`` member (only the ``mba``/``mblock_t`` overloads do), so
+                # nested sub-instructions would otherwise be optimized with no
+                # block context.  Rules that resolve operands via block-local
+                # def-use scans (e.g. wide constant reconstruction for the
+                # magic-modulo rule) need the owning block, so set it explicitly.
+                self.instruction_visitor.blk = blk
                 optimization_performed = ins.for_all_insns(self.instruction_visitor)
 
             if optimization_performed:

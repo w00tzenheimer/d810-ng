@@ -170,7 +170,14 @@ def _candidate_widths_match(
     zext_size = spec.zext_bits // 8
     high_size = spec.high_bits // 8
 
-    if _size_bytes(getattr(candidate, "dst_mop", None)) != x_size:
+    # Validate the result width of the matched subtraction.  In the live IDA
+    # adapter path the matched pattern node carries no ``dst_mop`` (only the
+    # enclosing instruction does), so fall back to the node's own size
+    # (``size``/``dest_size``) when ``dst_mop`` is absent.
+    result_size = _size_bytes(getattr(candidate, "dst_mop", None))
+    if result_size is None:
+        result_size = _size_bytes(candidate)
+    if result_size != x_size:
         return False
 
     divisor_mul = _child(candidate, "right")
