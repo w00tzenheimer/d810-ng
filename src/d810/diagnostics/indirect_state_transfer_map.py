@@ -254,6 +254,15 @@ def load_lowered_conditionals(
     snapshots and key on the (maturity-local) block serial.
     """
     lowered: dict[int, tuple[int, int]] = {}
+    # Legacy / hand-rolled diag DBs (opened via the non-mutating read_diag_db,
+    # which never create_tables) may predate the cfg_provenance table. Probe
+    # sqlite_master explicitly via the same connection rather than swallowing a
+    # broad exception, so a genuinely malformed query still surfaces.
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cfg_provenance'"
+    ).fetchone()
+    if table_exists is None:
+        return lowered
     for row in (
         CfgProvenance.select(
             CfgProvenance.block_serial,
