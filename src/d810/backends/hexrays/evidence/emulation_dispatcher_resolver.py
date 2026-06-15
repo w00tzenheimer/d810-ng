@@ -40,6 +40,7 @@ from dataclasses import dataclass
 import ida_hexrays
 
 from d810.core.logging import getLogger
+from d810.core.observability_labels import live_block_label
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.analyses.control_flow.dispatcher_recovery import (
     recover_entry_dominated_initial_state,
@@ -245,9 +246,9 @@ class EmulationDispatcherResolver:
         )
         logger.info(
             "emulation_dispatcher: recovered %d rows by emulation "
-            "(entry=%d stkoff=0x%x init=0x%x terminals=%d unresolved=%d dispatch_blocks=%d)",
+            "(entry=%s stkoff=0x%x init=0x%x terminals=%d unresolved=%d dispatch_blocks=%d)",
             len(rows),
-            disc.entry,
+            live_block_label(graph, disc.entry),
             disc.stkoff,
             disc.initial_state,
             len(result.terminal_states),
