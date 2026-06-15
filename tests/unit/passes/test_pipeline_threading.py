@@ -54,6 +54,8 @@ def _chain_graph():
 def _obs():
     return SimpleNamespace(
         kind="StateTransitionAnchorFact", fact_id="f1",
+        maturity="GLBOPT1", phase="recon", confidence=1.0, evidence=(),
+        source_block=0, source_ea=0x1000,
         payload={"source_block_serial": 0, "source_state_const": C1, "successor_kind": "branch"})
 
 
