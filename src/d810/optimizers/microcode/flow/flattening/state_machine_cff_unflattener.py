@@ -342,8 +342,8 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # prolog). The ComposedUnflatteningRule/FlowOptimizationRule chain sets
         # ``self.config = kwargs`` here, so this is where the unflatten indirect profile
         # registers pre-decompile materialization of the Tigress computed-goto
-        # label bodies — the emulated engine does the equivalent in its own
-        # ``configure`` (unflattener_emulated_dispatcher_engine.py). ``optimize``
+        # label bodies — the (now-retired) emulated dispatcher engine did the
+        # equivalent in its own ``configure``. ``optimize``
         # runs per-decompilation AFTER prolog, which is too late to inject crefs
         # before the first MBA build, so materialization MUST live here (I1.5,
         # ticket llr-tm3i).

@@ -425,8 +425,8 @@ def resolve_state_transitions(
     validated facts into ``(transition_facts, state_write_anchors)``, then
     ``resolve_state_transitions_with_dispatcher_map`` resolves each transition. LiSA-style: this is
     the transfer step over the state-machine graph. ``dispatch_map`` is the seam input produced by
-    ``recover_dispatcher``; while it is ``None`` (state-machine detection not yet ported out of the
-    live ``emulated_dispatcher_family``), transitions resolve to an explicit ``unresolved`` kind
+    ``recover_dispatcher``; while it is ``None`` (state-machine detection not yet ported into this
+    portable resolver), transitions resolve to an explicit ``unresolved`` kind
     rather than silently dropping. ``graph``/``facts`` are duck-typed (FlowGraph / ValidatedFactView).
     """
     transition_facts, state_write_anchors = facts_from_validated_view(facts)
