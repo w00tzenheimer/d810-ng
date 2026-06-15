@@ -41,7 +41,24 @@ from d810.backends.hexrays.evidence.emulation_dispatcher_resolver import (
 )
 from d810.backends.hexrays.evidence.deffai_spine_engine import DeffaiSpineEngine
 from d810.core.logging import getLogger
+from d810.core.observability_labels import live_block_label
 from d810.ir.flowgraph import FlowGraph
+
+
+def _hex_tuple(xs) -> str:
+    """Format an iterable of ints as a ``(0x.., 0x..)`` tuple literal (diag only)."""
+    if not xs:
+        return "()"
+    return "(" + ", ".join(f"0x{int(x):x}" for x in xs) + ")"
+
+
+def _hex_or_none(x) -> str:
+    """Hex-format an int, or ``"None"`` for a missing value (diag only).
+
+    ``DispatcherAnchors.state_var_stkoff`` is ``int | None``; a bare ``0x%x``
+    format raises ``TypeError`` on ``None`` (a partial/abstaining anchor).
+    """
+    return "None" if x is None else f"0x{int(x):x}"
 
 logger = getLogger("D810.backends.machine_engines_capability")
 
@@ -132,10 +149,10 @@ class HexRaysMachineRecoveryEnginesCapability:
                 logger.debug(
                     "machine_engines: concolic consult entry=%s stkoff=%s lvar=%s "
                     "init=%s (prelim_rows=%s)",
-                    sel_anchors.dispatcher_entry_block,
-                    sel_anchors.state_var_stkoff,
+                    live_block_label(graph, sel_anchors.dispatcher_entry_block),
+                    _hex_or_none(sel_anchors.state_var_stkoff),
                     sel_anchors.state_var_lvar_idx,
-                    sel_anchors.initial_states,
+                    _hex_tuple(sel_anchors.initial_states),
                     len(prelim.rows) if prelim is not None else None,
                 )
             if sel_anchors is None:
@@ -154,9 +171,9 @@ class HexRaysMachineRecoveryEnginesCapability:
                         logger.debug(
                             "machine_engines: selector anchor abstained; retry "
                             "dominant entry=%s stkoff=%s init=%s",
-                            dom.dispatcher_entry_block,
-                            dom.state_var_stkoff,
-                            dom.initial_states,
+                            live_block_label(graph, dom.dispatcher_entry_block),
+                            _hex_or_none(dom.state_var_stkoff),
+                            _hex_tuple(dom.initial_states),
                         )
                     machine = engine.recover(graph, dom)
             if logger.debug_on:

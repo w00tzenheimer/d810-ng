@@ -68,6 +68,7 @@ from d810.backends.hexrays.evidence.emulation_dispatcher_resolver import (
     _Discovery,
 )
 from d810.core.logging import getLogger
+from d810.core.observability_labels import live_block_label
 from d810.ir.flowgraph import FlowGraph
 
 logger = getLogger("D810.analyses.concolic_emulation_engine")
@@ -872,10 +873,10 @@ class ConcolicEmulationEngine:
         )
         logger.info(
             "concolic_emulation: recovered %d rows / %d transitions by emulation "
-            "(entry=%d stkoff=0x%x init=0x%x visited=%d unresolved=%d terminal=%d)",
+            "(entry=%s stkoff=0x%x init=0x%x visited=%d unresolved=%d terminal=%d)",
             len(rows),
             len(machine_transitions),
-            disc.entry,
+            live_block_label(self._fgr_graph, disc.entry),
             disc.stkoff,
             disc.initial_state,
             prov.visited_state_count,
