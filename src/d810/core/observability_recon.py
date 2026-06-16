@@ -29,7 +29,9 @@ from d810.core.observability import (
 # don't have to know where they live.
 from d810.core.observability_events import (
     BranchOwnershipProofsObserved as BranchOwnershipProofsObserved,
+    BranchWitnessDecisionsObserved as BranchWitnessDecisionsObserved,
     BstIntervalDispatcherObserved as BstIntervalDispatcherObserved,
+    CorridorShortcutDecisionsObserved as CorridorShortcutDecisionsObserved,
     DagFrontierClosureDiagnosticsObserved as DagFrontierClosureDiagnosticsObserved,
     DagLocalFactsObserved as DagLocalFactsObserved,
     DagObserved as DagObserved,
@@ -159,6 +161,30 @@ def observe_branch_ownership_proofs(
     ))
 
 
+def observe_branch_witness_decisions(
+    *,
+    func_ea: int,
+    rows,
+) -> None:
+    """Publish branch-witness projection decision rows."""
+    _emit(BranchWitnessDecisionsObserved(
+        func_ea=int(func_ea),
+        rows=tuple(rows),
+    ))
+
+
+def observe_corridor_shortcut_decisions(
+    *,
+    func_ea: int,
+    rows,
+) -> None:
+    """Publish corridor shortcut/liveness decision rows."""
+    _emit(CorridorShortcutDecisionsObserved(
+        func_ea=int(func_ea),
+        rows=tuple(rows),
+    ))
+
+
 def observe_dag_local_facts(snapshot: SnapshotRef, dag: Any) -> None:
     """Publish a :class:`DagLocalFactsObserved` event."""
     _emit(DagLocalFactsObserved(snapshot=snapshot, dag=dag))
@@ -278,6 +304,8 @@ def diagnostics_enabled() -> bool:
             StateTransitionDispatchResolutionsObserved,
             SwitchCaseTransitionFactsObserved,
             BranchOwnershipProofsObserved,
+            BranchWitnessDecisionsObserved,
+            CorridorShortcutDecisionsObserved,
         )
     )
 
@@ -286,6 +314,8 @@ __all__ = [
     # Event dataclasses
     "BstIntervalDispatcherObserved",
     "BranchOwnershipProofsObserved",
+    "BranchWitnessDecisionsObserved",
+    "CorridorShortcutDecisionsObserved",
     "DagFrontierClosureDiagnosticsObserved",
     "DagLocalFactsObserved",
     "DagObserved",
@@ -312,6 +342,8 @@ __all__ = [
     "observe_state_transition_dispatch_resolutions",
     "observe_switch_case_transition_facts",
     "observe_branch_ownership_proofs",
+    "observe_branch_witness_decisions",
+    "observe_corridor_shortcut_decisions",
     "observe_dag_frontier_closure_diagnostics",
     "observe_dag_local_facts",
     "observe_fact_conflict",

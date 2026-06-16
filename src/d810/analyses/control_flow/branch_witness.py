@@ -11,9 +11,9 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from enum import Enum
 
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.core import logging
 from d810.core.typing import Any, Protocol
+from d810.ir.flowgraph import FlowGraph
 
 logger = logging.getLogger("D810.analyses.control_flow.branch_witness")
 
@@ -43,6 +43,7 @@ class ExactBranchWitness:
     rejected_successors: tuple[int, ...]
     target_block: int
     proof_kind: BranchWitnessProofKind
+    compare_const: int | None = None
     evidence: str = "validated_against_current_cfg"
 
 
@@ -109,7 +110,7 @@ class EmulationBranchWitnessCapability(Protocol):
 
     def exact_branch_witness(
         self,
-        flow_graph: object,
+        flow_graph: FlowGraph,
         compare_block: int,
         state: int,
         state_var_stkoff: int | None,
@@ -283,6 +284,7 @@ def static_witness_for_state(
         rejected_successors=rejected,
         target_block=selected,
         proof_kind=BranchWitnessProofKind.STATIC_EQUALITY_CHAIN,
+        compare_const=row_const & 0xFFFFFFFF,
         evidence=str(row.evidence),
     )
 
@@ -298,6 +300,7 @@ def _witnesses_conflict(
         "selected_successor",
         "rejected_successors",
         "target_block",
+        "compare_const",
     )
     for field in fields:
         if getattr(static, field) != getattr(emulated, field):
@@ -419,97 +422,6 @@ def resolve_exact_branch_witness(
     return tuple(replace(witness, target_block=endpoint_i) for witness in path)
 
 
-def branch_witness_map_from_dispatcher_map(
-    flow_graph: object,
-    dispatch_map: object,
-    *,
-    states: tuple[int, ...] | None = None,
-) -> BranchWitnessMap | None:
-    """Build per-compare witness rows from CFG arms and dispatcher metadata.
-
-    This is a compatibility/test adapter, not a production witness provider.
-    Production projection must consume explicit per-compare witness rows; endpoint
-    ``StateDispatcherMap`` rows are not strong enough to authorize CFG rewrites.
-    """
-    if getattr(dispatch_map, "source", None) is not DispatcherType.CONDITIONAL_CHAIN:
-        return None
-    entry = _int_or_none(getattr(dispatch_map, "dispatcher_entry_block", None))
-    if entry is None:
-        return None
-    dispatcher_blocks = frozenset(
-        int(b) for b in getattr(dispatch_map, "dispatcher_blocks", ()) if b is not None
-    )
-    if not dispatcher_blocks:
-        return None
-    if states is None:
-        states = tuple(
-            int(getattr(row, "state_const"))
-            for row in getattr(dispatch_map, "rows", ())
-            if _int_or_none(getattr(row, "state_const", None)) is not None
-        )
-    if not states:
-        return None
-
-    rows: list[BranchWitnessRow] = []
-    seen: set[tuple[int, int]] = set()
-    for state in states:
-        state_u = int(state) & 0xFFFFFFFF
-        current = entry
-        visited: set[int] = set()
-        while current in dispatcher_blocks:
-            if current in visited:
-                break
-            visited.add(current)
-            block = flow_graph.get_block(current)
-            if block is None:
-                break
-            tail = getattr(block, "tail", None)
-            if tail is None or not getattr(tail, "is_conditional_jump", False):
-                break
-            predicate = _predicate_value(getattr(tail, "branch_predicate", None))
-            if not _is_known_predicate(predicate):
-                break
-            compare_const, _state_op = _block_compare_operands(block)
-            if compare_const is None:
-                break
-            taken, fallthrough = _compare_successors(block)
-            if taken is None or fallthrough is None:
-                break
-            evaluated = _evaluate_branch(
-                predicate, state_u, int(compare_const), int(taken), int(fallthrough)
-            )
-            if evaluated is None:
-                break
-            selected, rejected = evaluated
-            key = (state_u, int(current))
-            if key not in seen:
-                seen.add(key)
-                rows.append(
-                    BranchWitnessRow(
-                        state=state_u,
-                        compare_block=int(current),
-                        predicate=predicate,
-                        compare_const=int(compare_const) & 0xFFFFFFFF,
-                        selected_successor=int(selected),
-                        rejected_successors=tuple(int(r) for r in rejected),
-                        source=getattr(dispatch_map, "source", None),
-                    )
-                )
-            if int(selected) not in dispatcher_blocks:
-                break
-            current = int(selected)
-
-    if not rows:
-        return None
-    return BranchWitnessMap(
-        rows=tuple(rows),
-        dispatcher_entry_block=int(entry),
-        dispatcher_blocks=dispatcher_blocks,
-        state_var_stkoff=_int_or_none(getattr(dispatch_map, "state_var_stkoff", None)),
-        source=getattr(dispatch_map, "source", None),
-    )
-
-
 __all__ = [
     "BranchWitnessAbstain",
     "BranchWitnessConflict",
@@ -518,7 +430,6 @@ __all__ = [
     "BranchWitnessRow",
     "EmulationBranchWitnessCapability",
     "ExactBranchWitness",
-    "branch_witness_map_from_dispatcher_map",
     "resolve_exact_branch_witness",
     "static_witness_for_state",
 ]

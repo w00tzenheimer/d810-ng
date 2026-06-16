@@ -120,6 +120,22 @@ class BranchOwnershipProofsObserved:
 
 
 @dataclass(frozen=True)
+class BranchWitnessDecisionsObserved:
+    """Recon observed branch-witness projection decisions."""
+
+    func_ea: int
+    rows: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
+class CorridorShortcutDecisionsObserved:
+    """Recon observed corridor shortcut/liveness decisions."""
+
+    func_ea: int
+    rows: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
 class DagLocalFactsObserved:
     """Recon observed node-local DAG facts for a LinearizedStateDag.
 
@@ -299,7 +315,9 @@ __all__ = [
     "CaptureMbaSnapshotRequested",
     # Recon
     "BranchOwnershipProofsObserved",
+    "BranchWitnessDecisionsObserved",
     "BstIntervalDispatcherObserved",
+    "CorridorShortcutDecisionsObserved",
     "DagFrontierClosureDiagnosticsObserved",
     "DagLocalFactsObserved",
     "DagObserved",

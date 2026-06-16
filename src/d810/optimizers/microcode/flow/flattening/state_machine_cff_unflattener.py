@@ -361,6 +361,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # (state base/slot/table geometry) for binaries where structural discovery
         # needs help; the shipped indirect config hardcodes NOTHING.
         try:
+            from d810.core.project import register_project_reload_cleanup
             from d810.hexrays.preanalysis.indirect_jump_labels import (
                 materialize_discovered_indirect_label_targets,
                 register_indirect_materialization,
@@ -376,6 +377,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # structural per-function detector; it does not itself touch any function.
         override = dict(self.config.get("goto_table_info", {}) or {})
         try:
+            register_project_reload_cleanup(
+                "hexrays.indirect_jump_label_materialization",
+                reset_indirect_materialization,
+            )
             reset_indirect_materialization()
             register_indirect_materialization(override)
         except Exception:  # noqa: BLE001 — registration is best-effort

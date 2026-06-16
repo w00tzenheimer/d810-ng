@@ -27,7 +27,7 @@ from d810.core.logging import clear_logs, configure_loggers, getLogger
 from d810.core.persistence import ActiveRuleInferenceConfig, create_optimization_storage
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.platform import resolve_arch_config
-from d810.core.project import ProjectContext, ProjectManager
+from d810.core.project import ProjectContext, ProjectManager, emit_project_reloading
 from d810.core.registry import EventEmitter, SingletonMeta
 from d810.core.rule_scope import (
     FunctionRuleOverlay,
@@ -121,24 +121,6 @@ if TYPE_CHECKING:
 D810_LOG_DIR_NAME = "d810_logs"
 
 logger = getLogger("D810")
-
-
-def _reset_indirect_materialization_registration() -> None:
-    """Clear profile-scoped pre-decompile indirect materialization state.
-
-    The Tigress indirect unflattener arms this registry from its rule
-    ``configure()`` hook.  Loading a different project must clear any prior
-    registration before configuring the new active rules, otherwise the global
-    Hex-Rays prolog hook can keep materializing indirect labels for projects
-    that did not opt into the unflattener.
-    """
-    try:
-        from d810.hexrays.preanalysis.indirect_jump_labels import (
-            reset_indirect_materialization,
-        )
-    except Exception:  # noqa: BLE001 - optional Hex-Rays preanalysis surface
-        return
-    reset_indirect_materialization()
 
 
 def maybe_run_tail_distinct(mba: typing.Any) -> None:
@@ -1937,11 +1919,20 @@ class D810State(metaclass=SingletonMeta):
         self.project_manager.delete(config)
 
     def load_project(self, project_index: int) -> ProjectConfiguration:
+        old_project_name = (
+            self.current_project.path.name
+            if getattr(self, "current_project", None) is not None
+            else None
+        )
+        next_project = self.project_manager.get(project_index)
+        emit_project_reloading(
+            old_project_name=old_project_name,
+            new_project_name=next_project.path.name,
+        )
         self.current_project_index = project_index
-        self.current_project = self.project_manager.get(project_index)
+        self.current_project = next_project
         self.current_ins_rules = []
         self.current_blk_rules = []
-        _reset_indirect_materialization_registration()
 
         for rule in self.known_ins_rules:
             for rule_conf in self.current_project.ins_rules:

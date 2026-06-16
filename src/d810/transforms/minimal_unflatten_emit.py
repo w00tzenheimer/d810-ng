@@ -30,10 +30,14 @@ import re
 import hashlib
 
 from d810.analyses.control_flow.branch_witness import (
-    BranchWitnessRow,
+    BranchWitnessAbstain,
+    BranchWitnessConflict,
     ExactBranchWitness,
     resolve_exact_branch_witness,
-    static_witness_for_state,
+)
+from d810.analyses.control_flow.branch_witness_provider import (
+    block_has_unresolved_indirect_state_store,
+    indirect_state_store_branch_witness,
 )
 from d810.analyses.control_flow.minimal_state_recovery import (
     HandlerTransition,
@@ -52,10 +56,14 @@ from d810.analyses.value_flow import (
     project_value_flow_facts,
 )
 from d810.core import logging
+from d810.core.observability_recon import (
+    observe_branch_witness_decisions,
+    observe_corridor_shortcut_decisions,
+)
+from d810.ir.block_identity import block_label
 from d810.transforms.corridor_liveness_policy import (
-    block_defined_variables,
+    corridor_blocks_live_violations,
     evaluate_corridor_shortcut,
-    live_in_variables,
 )
 from d810.transforms.graph_modification import (
     ConvertToGoto,
@@ -292,33 +300,83 @@ def _apply_entry_bridge(
     prologue_preds: set[int],
     state_var_stkoff: int | None,
     branch_witness_map: object | None,
+    branch_witness_emu: object | None,
+    entry_bridge_corridor_blocks: tuple[int, ...],
     entry_bridge_requires_witness: bool,
     _add,
 ) -> None:
     """Apply entry-bridge redirects, gated on exact branch witness resolution.
 
-    When a ``BranchWitnessMap`` is available for equality-chain validation,
-    resolve the exact branch witness path for ``initial_state_u`` and apply
-    corridor liveness before shortcutting.  Abstain / conflict / unsafe corridor
-    preserves CFG (no redirects emitted).  Without a branch witness map, falls
-    back to the legacy endpoint-truth shortcut (unchanged behaviour for BST /
-    switch shapes).
+    When a ``BranchWitnessMap`` is available, resolve the exact branch witness
+    path for ``initial_state_u`` and apply corridor liveness before shortcutting.
+    Abstain / conflict / unsafe corridor preserves CFG (no redirects emitted).
+    Witness-required entry bridges fall back to corridor liveness when no
+    provider supplied a map: live stack/register definitions preserve CFG;
+    live-safe corridors keep legacy endpoint shortcutting.
     """
     if branch_witness_map is None:
-        if entry_bridge_requires_witness and _entry_bridge_has_live_register_def(
-            flow_graph, int(disp), int(first), state_var_stkoff
-        ):
+        if entry_bridge_requires_witness:
+            corridor_blocks = tuple(
+                sorted({int(block) for block in entry_bridge_corridor_blocks})
+            ) or (int(disp),)
+            unsafe = corridor_blocks_live_violations(
+                flow_graph,
+                corridor_blocks,
+                int(first),
+                state_var_stkoff,
+                source_blocks=tuple(sorted(int(p) for p in prologue_preds)),
+                old_target=int(disp),
+            )
+            reason = (
+                "no_provider_corridor_liveness_unsafe"
+                if unsafe
+                else "no_provider_corridor_live_safe_endpoint"
+            )
+            _observe_branch_witness_result(
+                flow_graph,
+                state=initial_state_u,
+                dispatcher_entry_block=disp,
+                witness_result=BranchWitnessAbstain(reason),
+            )
+            _observe_corridor_shortcut_decision(
+                flow_graph,
+                source_blocks=prologue_preds,
+                old_target=disp,
+                shortcut_target=first,
+                witness_result=BranchWitnessAbstain(reason),
+                decision_reason=reason,
+                decision_allowed=not unsafe,
+                corridor_blocks=corridor_blocks,
+                live_definitions=tuple(sorted(unsafe)),
+            )
+            if not unsafe:
+                if logger.info_on:
+                    logger.info(
+                        "unflat entry bridge: LEGACY_ENDPOINT state=0x%X "
+                        "reason=%s target=%s corridor=%s",
+                        initial_state_u,
+                        reason,
+                        _format_block_label(flow_graph, first),
+                        _format_block_labels(flow_graph, corridor_blocks),
+                    )
+                for entry_pred in sorted(prologue_preds):
+                    epblk = flow_graph.get_block(int(entry_pred))
+                    if epblk is None:
+                        continue
+                    _add(int(entry_pred), disp, int(first), two_way=(epblk.nsucc == 2))
+                return
             if logger.info_on:
                 logger.info(
                     "unflat entry bridge: PRESERVED state=0x%X "
-                    "reason=live_register_corridor_no_witness target=blk[%d] "
-                    "corridor=[%d]",
+                    "reason=%s target=%s corridor=%s live=%s",
                     initial_state_u,
-                    int(first),
-                    int(disp),
+                    reason,
+                    _format_block_label(flow_graph, first),
+                    _format_block_labels(flow_graph, corridor_blocks),
+                    sorted(unsafe),
                 )
             return
-        # No equality-chain rows: legacy endpoint-truth shortcut.
+        # No witness required: legacy endpoint-truth shortcut.
         for entry_pred in sorted(prologue_preds):
             epblk = flow_graph.get_block(int(entry_pred))
             if epblk is None:
@@ -329,19 +387,37 @@ def _apply_entry_bridge(
     witness = resolve_exact_branch_witness(
         flow_graph, dispatcher, initial_state_u,
         state_var_stkoff, branch_witness_map=branch_witness_map,
+        emu=branch_witness_emu,
+    )
+    _observe_branch_witness_result(
+        flow_graph,
+        state=initial_state_u,
+        dispatcher_entry_block=disp,
+        witness_result=witness,
     )
     decision = evaluate_corridor_shortcut(
         flow_graph, witness, int(first), state_var_stkoff
+    )
+    _observe_corridor_shortcut_decision(
+        flow_graph,
+        source_blocks=prologue_preds,
+        old_target=disp,
+        shortcut_target=first,
+        witness_result=witness,
+        decision_reason=decision.reason,
+        decision_allowed=decision.allowed,
+        corridor_blocks=decision.corridor_blocks,
+        live_definitions=decision.live_definitions,
     )
     if not decision.allowed:
         if logger.info_on:
             logger.info(
                 "unflat entry bridge: PRESERVED state=0x%X reason=%s "
-                "target=blk[%d] corridor=%s",
+                "target=%s corridor=%s",
                 initial_state_u,
                 decision.reason,
-                int(first),
-                list(decision.corridor_blocks),
+                _format_block_label(flow_graph, first),
+                _format_block_labels(flow_graph, decision.corridor_blocks),
             )
         return  # preserve CFG
     for entry_pred in sorted(prologue_preds):
@@ -351,192 +427,111 @@ def _apply_entry_bridge(
         _add(int(entry_pred), disp, int(first), two_way=(epblk.nsucc == 2))
 
 
-def _entry_bridge_has_live_register_def(
-    flow_graph,
-    disp: int,
-    first: int,
-    state_var_stkoff: int | None,
-) -> bool:
-    """Return whether shortcutting over ``disp`` skips a live register def."""
-    block = flow_graph.get_block(int(disp))
-    if block is None:
-        return False
-    live_in = live_in_variables(flow_graph, state_var_stkoff)
-    target_live = live_in.get(int(first), set())
-    if not target_live:
-        return False
-    defs = block_defined_variables(block, state_var_stkoff)
-    return any(kind == "reg" for kind, _value in (defs & target_live))
+def _flow_graph_func_ea(flow_graph: object) -> int | None:
+    func_ea = getattr(flow_graph, "func_ea", None)
+    return _int_or_none(func_ea)
 
 
-def _mop_references_stack(mop: object, stkoff: int) -> bool:
-    if mop is None:
-        return False
-    direct = _int_or_none(getattr(mop, "stkoff", None))
-    if direct is not None and int(direct) == int(stkoff):
-        return True
-    for ref in getattr(mop, "stack_refs", ()) or ():
-        ref_i = _int_or_none(ref)
-        if ref_i is not None and int(ref_i) == int(stkoff):
-            return True
-    for attr in ("sub_l", "sub_r", "sub_operand"):
-        if _mop_references_stack(getattr(mop, attr, None), stkoff):
-            return True
-    sub_insn = getattr(mop, "sub_instruction", None)
-    if sub_insn is not None:
-        return any(
-            _mop_references_stack(getattr(sub_insn, attr, None), stkoff)
-            for attr in ("l", "r", "d")
-        )
-    return False
+def _format_block_label(flow_graph: object, serial: object | None) -> str:
+    try:
+        return block_label(flow_graph, None if serial is None else int(serial))  # type: ignore[arg-type]
+    except Exception:
+        return "blk[?]@?" if serial is None else f"blk[{serial}]@?"
 
 
-def _mop_const_value(mop: object) -> int | None:
-    if mop is None:
-        return None
-    kind = getattr(getattr(mop, "kind", None), "value", getattr(mop, "kind", None))
-    if kind == "number" or getattr(mop, "value", None) is not None:
-        return _int_or_none(getattr(mop, "value", None))
-    return None
+def _format_block_labels(flow_graph: object, serials: object) -> list[str]:
+    return [_format_block_label(flow_graph, serial) for serial in serials]  # type: ignore[union-attr]
 
 
-def _insn_references_stack(insn: object, stkoff: int) -> bool:
-    return any(
-        _mop_references_stack(getattr(insn, attr, None), stkoff)
-        for attr in ("l", "r", "d")
-    )
+def _observe_branch_witness_result(
+    flow_graph: object,
+    *,
+    state: int,
+    dispatcher_entry_block: int | None,
+    witness_result: object,
+) -> None:
+    func_ea = _flow_graph_func_ea(flow_graph)
+    if func_ea is None:
+        return
+    rows: list[dict[str, object]] = []
+    if isinstance(witness_result, tuple):
+        for witness in witness_result:
+            rows.append({
+                "state": int(getattr(witness, "state")),
+                "dispatcher_entry_block": dispatcher_entry_block,
+                "compare_block": int(getattr(witness, "compare_block")),
+                "predicate": getattr(witness, "predicate", None),
+                "compare_const": getattr(witness, "compare_const", None),
+                "selected_successor": int(getattr(witness, "selected_successor")),
+                "rejected_successors": tuple(
+                    int(s) for s in getattr(witness, "rejected_successors", ())
+                ),
+                "target_block": int(getattr(witness, "target_block")),
+                "proof_kind": getattr(witness, "proof_kind", None),
+                "outcome": "accepted",
+                "reason": None,
+                "evidence": getattr(witness, "evidence", None),
+            })
+    elif isinstance(witness_result, BranchWitnessAbstain):
+        rows.append({
+            "state": int(state),
+            "dispatcher_entry_block": dispatcher_entry_block,
+            "outcome": "abstained",
+            "reason": witness_result.reason,
+        })
+    elif isinstance(witness_result, BranchWitnessConflict):
+        rows.append({
+            "state": int(state),
+            "dispatcher_entry_block": dispatcher_entry_block,
+            "outcome": "conflict",
+            "reason": ";".join(str(r) for r in witness_result.reasons),
+        })
+    if rows:
+        observe_branch_witness_decisions(func_ea=func_ea, rows=tuple(rows))
 
 
-def _is_indirect_store(insn: object) -> bool:
-    kind = getattr(getattr(insn, "kind", None), "value", getattr(insn, "kind", None))
-    opcode_name = str(getattr(insn, "opcode_name", "") or "").lower()
-    text = str(getattr(insn, "display_text", "") or getattr(insn, "dstr", "") or "")
-    is_store = kind == "store" or opcode_name in {"m_stx", "op_1", "store"} or text.lstrip().startswith("stx ")
-    if not is_store:
-        return False
-    dest = getattr(insn, "d", None)
-    return _int_or_none(getattr(dest, "reg", None)) is not None
-
-
-def _branch_predicate_value(value: object) -> str:
-    return str(getattr(value, "value", value))
-
-
-def _conditional_successors(block: object) -> tuple[int | None, int | None]:
-    succs = tuple(int(s) for s in getattr(block, "succs", ()))
-    if len(succs) != 2:
-        return None, None
-    tail = getattr(block, "tail", None)
-    if tail is not None:
-        dest = getattr(tail, "d", None)
-        jump_target = _int_or_none(getattr(dest, "block_ref", None))
-        if jump_target is not None and jump_target in succs:
-            taken = int(jump_target)
-            fallthrough = next(s for s in succs if s != taken)
-            return taken, fallthrough
-    return int(succs[1]), int(succs[0])
-
-
-def _local_compare_witness_row(
-    block: object,
-    block_serial: int,
-    state_value: int,
-    compare_const: int,
-) -> BranchWitnessRow | None:
-    tail = getattr(block, "tail", None)
-    if tail is None or not getattr(tail, "is_conditional_jump", False):
-        return None
-    predicate = _branch_predicate_value(getattr(tail, "branch_predicate", None))
-    if predicate not in {"eq", "ne"}:
-        return None
-    taken, fallthrough = _conditional_successors(block)
-    if taken is None or fallthrough is None:
-        return None
-    state_u = int(state_value) & 0xFFFFFFFF
-    const_u = int(compare_const) & 0xFFFFFFFF
-    if predicate == "eq":
-        selected = int(taken) if state_u == const_u else int(fallthrough)
-    else:
-        selected = int(taken) if state_u != const_u else int(fallthrough)
-    rejected = int(fallthrough) if selected == int(taken) else int(taken)
-    return BranchWitnessRow(
-        state=state_u,
-        compare_block=int(block_serial),
-        predicate=predicate,
-        compare_const=const_u,
-        selected_successor=int(selected),
-        rejected_successors=(int(rejected),),
-        evidence="local_indirect_state_store_compare",
-    )
-
-
-def _block_has_unresolved_indirect_state_store(block: object, state_var_stkoff: int | None) -> bool:
-    """Conservative guard for pointer-indirected state stores before dispatch."""
-    if state_var_stkoff is None:
-        return False
-    tail = getattr(block, "tail", None)
-    if tail is None or not _insn_references_stack(tail, int(state_var_stkoff)):
-        return False
-    for insn in tuple(getattr(block, "insn_snapshots", ()) or ())[:-1]:
-        if _is_indirect_store(insn):
-            return True
-    return False
-
-
-def _indirect_state_store_branch_witness(
-    flow_graph,
-    block: object,
-    block_serial: int,
-    state_var_stkoff: int | None,
-    branch_witness_map: object | None,
-) -> ExactBranchWitness | None:
-    """Prove the selected successor after an indirect concrete state store.
-
-    OLLVM often lowers ``state = terminal`` through a pointer chosen in the
-    selected handler corridor, then immediately compares the canonical state
-    stack slot.  Endpoint rows are unsafe here; the only admissible redirect is
-    a per-compare witness for the concrete value written in this same block.
-    """
-    if state_var_stkoff is None:
-        return None
-    tail = getattr(block, "tail", None)
-    if tail is None or not _insn_references_stack(tail, int(state_var_stkoff)):
-        return None
-    compare_const = None
-    for operand in (getattr(tail, "l", None), getattr(tail, "r", None)):
-        compare_const = _mop_const_value(operand)
-        if compare_const is not None:
-            break
-    if compare_const is None:
-        return None
-
-    stored_consts: set[int] = set()
-    for insn in tuple(getattr(block, "insn_snapshots", ()) or ())[:-1]:
-        if not _is_indirect_store(insn):
-            continue
-        value = _mop_const_value(getattr(insn, "l", None))
-        if value is not None:
-            stored_consts.add(int(value) & 0xFFFFFFFF)
-    compare_u = int(compare_const) & 0xFFFFFFFF
-    if compare_u not in stored_consts:
-        return None
-
-    row = None
-    row_for = getattr(branch_witness_map, "row_for_state_compare", None)
-    if callable(row_for):
-        row = row_for(compare_u, int(block_serial))
-    if row is None:
-        row = _local_compare_witness_row(
-            block, int(block_serial), compare_u, compare_u
-        )
-        if row is None:
-            return None
-    witness = static_witness_for_state(
-        flow_graph, row, compare_u, int(state_var_stkoff)
-    )
-    if isinstance(witness, ExactBranchWitness):
-        return witness
-    return None
+def _observe_corridor_shortcut_decision(
+    flow_graph: object,
+    *,
+    source_blocks: set[int],
+    old_target: int,
+    shortcut_target: int,
+    witness_result: object,
+    decision_reason: str,
+    decision_allowed: bool,
+    corridor_blocks: tuple[int, ...] = (),
+    live_definitions: tuple[tuple[str, int], ...] = (),
+) -> None:
+    func_ea = _flow_graph_func_ea(flow_graph)
+    if func_ea is None:
+        return
+    rejected_successors: list[int] = []
+    witness_compare_blocks: list[int] = []
+    if isinstance(witness_result, tuple):
+        for witness in witness_result:
+            witness_compare_blocks.append(int(getattr(witness, "compare_block")))
+            rejected_successors.extend(
+                int(s) for s in getattr(witness, "rejected_successors", ())
+            )
+    rows = [
+        {
+            "source_block": int(source_block),
+            "old_target": int(old_target),
+            "shortcut_target": int(shortcut_target),
+            "witness_compare_blocks": tuple(witness_compare_blocks),
+            "corridor_blocks": tuple(int(b) for b in corridor_blocks),
+            "rejected_successors": tuple(rejected_successors),
+            "outcome": "allowed" if decision_allowed else "rejected",
+            "reason": decision_reason,
+            "live_definitions": tuple(
+                {"kind": kind, "value": int(value)}
+                for kind, value in live_definitions
+            ),
+        }
+        for source_block in sorted(source_blocks)
+    ]
+    if rows:
+        observe_corridor_shortcut_decisions(func_ea=func_ea, rows=tuple(rows))
 
 
 def build_state_write_redirects(
@@ -549,6 +544,8 @@ def build_state_write_redirects(
     initial_state: int | None,
     state_var_stkoff: int | None = None,
     branch_witness_map: object | None = None,
+    branch_witness_emu: object | None = None,
+    entry_bridge_corridor_blocks: tuple[int, ...] = (),
     entry_bridge_requires_witness: bool = False,
 ) -> list[object]:
     """Build the redirect modifications that linearize the interval-set graph.
@@ -680,11 +677,11 @@ def build_state_write_redirects(
                 continue
             if (
                 vb is None
-                and _block_has_unresolved_indirect_state_store(
+                and block_has_unresolved_indirect_state_store(
                     src_block, state_var_stkoff
                 )
             ):
-                witness = _indirect_state_store_branch_witness(
+                witness = indirect_state_store_branch_witness(
                     flow_graph,
                     src_block,
                     src,
@@ -695,20 +692,24 @@ def build_state_write_redirects(
                     _add_exact_witness(src, old, witness)
                     if logger.info_on:
                         logger.info(
-                            "unflat back-edge: EXACT_WITNESS blk[%d] "
-                            "state=0x%X target=blk[%d] rejected=%s",
-                            src,
+                            "unflat back-edge: EXACT_WITNESS source=%s "
+                            "state=0x%X target=%s rejected=%s",
+                            _format_block_label(flow_graph, src),
                             int(witness.state),
-                            int(witness.selected_successor),
-                            list(witness.rejected_successors),
+                            _format_block_label(
+                                flow_graph, witness.selected_successor
+                            ),
+                            _format_block_labels(
+                                flow_graph, witness.rejected_successors
+                            ),
                         )
                     continue
                 if logger.info_on:
                     logger.info(
-                        "unflat back-edge: PRESERVED blk[%d] "
-                        "reason=unresolved_indirect_state_store target=blk[%s]",
-                        src,
-                        "None" if new is None else int(new),
+                        "unflat back-edge: PRESERVED source=%s "
+                        "reason=unresolved_indirect_state_store target=%s",
+                        _format_block_label(flow_graph, src),
+                        _format_block_label(flow_graph, new),
                     )
                 continue
             _add(src, old, new, two_way=(src_block.nsucc == 2))
@@ -725,6 +726,8 @@ def build_state_write_redirects(
             _apply_entry_bridge(
                 flow_graph, dispatcher, disp, first, int(initial_state) & 0xFFFFFFFF,
                 prologue_preds, state_var_stkoff, branch_witness_map,
+                branch_witness_emu,
+                entry_bridge_corridor_blocks,
                 entry_bridge_requires_witness, _add,
             )
 
@@ -1650,10 +1653,10 @@ def build_loop_carrier_latch_redirects(
                 mods.append(ZeroStateWrite(block_serial=src, insn_ea=int(write_ea)))
         if logger.info_on:
             logger.info(
-                "unflat loop-latch: payload=blk[%d] route=blk[%d] -> producer=blk[%d]",
-                src,
-                int(routed),
-                int(new),
+                "unflat loop-latch: payload=%s route=%s -> producer=%s",
+                _format_block_label(flow_graph, src),
+                _format_block_label(flow_graph, routed),
+                _format_block_label(flow_graph, new),
             )
     return mods, suppressed
 
@@ -1772,14 +1775,14 @@ def build_loop_carrier_guard_transitions(
             if logger.info_on:
                 logger.info(
                     "unflat conditional-transition: reason=loop_carrier_guard "
-                    "producer=blk[%d] selector=blk[%d] "
-                    "if(counter@stkoff=0x%x<0x%x) -> body=blk[%d] else exit=blk[%d]",
-                    source,
-                    selector,
+                    "producer=%s selector=%s "
+                    "if(counter@stkoff=0x%x<0x%x) -> body=%s else exit=%s",
+                    _format_block_label(flow_graph, source),
+                    _format_block_label(flow_graph, selector),
                     int(counter_stkoff),
                     int(bound),
-                    int(true_target),
-                    int(false_target),
+                    _format_block_label(flow_graph, true_target),
+                    _format_block_label(flow_graph, false_target),
                 )
     return candidates
 
@@ -2208,15 +2211,14 @@ def build_folded_loop_guard_transitions(
             )
             logger.info(
                 "unflat conditional-transition: reason=folded_loop_guard "
-                "blk[%d]@0x%x if(counter@%s<0x%x) "
-                "-> body=blk[%d](0x%x) else exit=blk[%d](0x%x)",
-                guard_serial,
-                int(guard_ea),
+                "guard=%s if(counter@%s<0x%x) "
+                "-> body=%s(state=0x%x) else exit=%s(state=0x%x)",
+                _format_block_label(flow_graph, guard_serial),
                 counter_desc,
                 int(bound),
-                int(body_target),
+                _format_block_label(flow_graph, body_target),
                 int(body_state) & 0xFFFFFFFF,
-                int(exit_target),
+                _format_block_label(flow_graph, exit_target),
                 int(exit_state) & 0xFFFFFFFF,
             )
     return candidates
@@ -2257,6 +2259,8 @@ def emit_minimal_unflatten(
     use_def_safety=None,
     live_function=None,
     branch_witness_map: object | None = None,
+    branch_witness_emu: object | None = None,
+    entry_bridge_corridor_blocks: tuple[int, ...] = (),
     entry_bridge_requires_witness: bool = False,
 ) -> PatchPlan:
     """Recover back-edge transitions and emit the dispatcher-bypass ``PatchPlan``.
@@ -2372,6 +2376,8 @@ def emit_minimal_unflatten(
         initial_state=initial_state,
         state_var_stkoff=int(state_var_stkoff),
         branch_witness_map=branch_witness_map,
+        branch_witness_emu=branch_witness_emu,
+        entry_bridge_corridor_blocks=entry_bridge_corridor_blocks,
         entry_bridge_requires_witness=entry_bridge_requires_witness,
     )
     # Conditional/multi-arm transitions (ticket llr-aga1): the back-edge model

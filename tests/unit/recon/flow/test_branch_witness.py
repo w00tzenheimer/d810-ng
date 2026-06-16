@@ -10,9 +10,11 @@ from d810.analyses.control_flow.branch_witness import (
     BranchWitnessProofKind,
     BranchWitnessRow,
     ExactBranchWitness,
-    branch_witness_map_from_dispatcher_map,
     static_witness_for_state,
     resolve_exact_branch_witness,
+)
+from d810.analyses.control_flow.branch_witness_provider import (
+    build_static_equality_chain_witness_map,
 )
 from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
@@ -340,7 +342,7 @@ class TestResolveExactBranchWitness:
             state_var_lvar_idx=None,
             source=DispatcherType.CONDITIONAL_CHAIN,
         )
-        branch_witness_map = branch_witness_map_from_dispatcher_map(
+        branch_witness_map = build_static_equality_chain_witness_map(
             fg, dispatch_map, states=(0x10,)
         )
         assert isinstance(branch_witness_map, BranchWitnessMap)
@@ -381,7 +383,7 @@ class TestResolveExactBranchWitness:
             source=DispatcherType.INDIRECT_JUMP,
         )
 
-        assert branch_witness_map_from_dispatcher_map(fg, dispatch_map) is None
+        assert build_static_equality_chain_witness_map(fg, dispatch_map) is None
 
     def test_emulation_without_branch_witness_map_abstains(self):
         """Emulation fallback still needs branch-witness compare-block context."""

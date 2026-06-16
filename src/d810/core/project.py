@@ -1,15 +1,104 @@
 from __future__ import annotations
 
 import dataclasses
+import enum
 import functools
 import threading
 
 from d810.core import typing
 
 from .config import D810Configuration, ProjectConfiguration
+from .events import EventEmitter
 from .logging import getLogger
 
 logger = getLogger(__name__)
+
+
+class ProjectLifecycleEvent(enum.Enum):
+    """Lifecycle events emitted around project configuration."""
+
+    PROJECT_RELOADING = "project_reloading"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ProjectLifecyclePayload:
+    """Payload for project lifecycle notifications."""
+
+    reason: ProjectLifecycleEvent
+    old_project_name: str | None = None
+    new_project_name: str | None = None
+
+
+_project_lifecycle_emitter: EventEmitter[ProjectLifecycleEvent] = EventEmitter()
+_project_reload_cleanup_handlers: dict[str, typing.Callable[[], None]] = {}
+
+
+def subscribe_project_lifecycle(
+    event: ProjectLifecycleEvent,
+    handler: typing.Callable[[ProjectLifecyclePayload], None],
+):
+    """Subscribe to project lifecycle events."""
+
+    return _project_lifecycle_emitter.on(event, handler)
+
+
+def unsubscribe_project_lifecycle(
+    event: ProjectLifecycleEvent,
+    handler: typing.Callable[[ProjectLifecyclePayload], None],
+) -> None:
+    """Remove a project lifecycle subscription."""
+
+    _project_lifecycle_emitter.remove(event, handler)
+
+
+def register_project_reload_cleanup(
+    name: str,
+    handler: typing.Callable[[], None],
+) -> None:
+    """Register a named cleanup hook for project reload.
+
+    Registrations are keyed so repeated rule configuration replaces the same
+    hook instead of accumulating duplicates.
+    """
+
+    _project_reload_cleanup_handlers[str(name)] = handler
+
+
+def unregister_project_reload_cleanup(name: str) -> None:
+    """Remove a named project reload cleanup hook."""
+
+    _project_reload_cleanup_handlers.pop(str(name), None)
+
+
+def _run_project_reload_cleanups() -> None:
+    for name, handler in tuple(_project_reload_cleanup_handlers.items()):
+        try:
+            handler()
+        except Exception:  # noqa: BLE001 - lifecycle cleanup must not stop loading
+            logger.warning("project reload cleanup failed: %s", name, exc_info=True)
+
+
+def emit_project_reloading(
+    *,
+    old_project_name: str | None,
+    new_project_name: str | None,
+) -> None:
+    """Emit the pre-configuration project reload event and run cleanups."""
+
+    payload = ProjectLifecyclePayload(
+        reason=ProjectLifecycleEvent.PROJECT_RELOADING,
+        old_project_name=old_project_name,
+        new_project_name=new_project_name,
+    )
+    _run_project_reload_cleanups()
+    _project_lifecycle_emitter.emit(ProjectLifecycleEvent.PROJECT_RELOADING, payload)
+
+
+def clear_project_lifecycle_for_tests() -> None:
+    """Clear lifecycle subscriptions and cleanup hooks for unit tests."""
+
+    _project_reload_cleanup_handlers.clear()
+    _project_lifecycle_emitter.clear()
 
 
 @dataclasses.dataclass

@@ -459,6 +459,59 @@ class BranchOwnershipProof(BaseModel):
         )
 
 
+class BranchWitnessDecision(BaseModel):
+    snapshot = _snapshot_fk()
+    row_index = IntegerField()
+    state_hex = TextField(null=True)
+    state_i64 = IntegerField(null=True)
+    dispatcher_entry_block = IntegerField(null=True)
+    compare_block = IntegerField(null=True)
+    predicate = TextField(null=True)
+    compare_const_hex = TextField(null=True)
+    compare_const_i64 = IntegerField(null=True)
+    selected_successor = IntegerField(null=True)
+    rejected_successors_json = TextField(default="[]")
+    target_block = IntegerField(null=True)
+    proof_kind = TextField(null=True)
+    outcome = TextField()
+    reason = TextField(null=True)
+    evidence = TextField(null=True)
+    payload_json = TextField(default="{}")
+
+    class Meta:
+        table_name = "branch_witness_decisions"
+        primary_key = CompositeKey("snapshot", "row_index")
+        indexes = (
+            (("snapshot", "state_i64"), False),
+            (("snapshot", "outcome"), False),
+            (("snapshot", "compare_block"), False),
+        )
+
+
+class CorridorShortcutDecision(BaseModel):
+    snapshot = _snapshot_fk()
+    row_index = IntegerField()
+    source_block = IntegerField(null=True)
+    old_target = IntegerField(null=True)
+    shortcut_target = IntegerField(null=True)
+    witness_compare_blocks_json = TextField(default="[]")
+    corridor_blocks_json = TextField(default="[]")
+    rejected_successors_json = TextField(default="[]")
+    outcome = TextField()
+    reason = TextField(null=True)
+    live_definitions_json = TextField(default="[]")
+    payload_json = TextField(default="{}")
+
+    class Meta:
+        table_name = "corridor_shortcut_decisions"
+        primary_key = CompositeKey("snapshot", "row_index")
+        indexes = (
+            (("snapshot", "source_block"), False),
+            (("snapshot", "shortcut_target"), False),
+            (("snapshot", "outcome"), False),
+        )
+
+
 class StateCfgEdgeAlternateCorrelation(BaseModel):
     snapshot = _snapshot_fk()
     collapsed_edge_id = IntegerField()
@@ -824,6 +877,8 @@ MODELS = (
     StateTransitionDispatchResolution,
     SwitchCaseTransitionFact,
     BranchOwnershipProof,
+    BranchWitnessDecision,
+    CorridorShortcutDecision,
     StateCfgEdgeAlternateCorrelation,
     StateCfgEdgeAlternateSelection,
     Modification,
