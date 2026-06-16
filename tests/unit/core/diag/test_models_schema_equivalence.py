@@ -269,6 +269,39 @@ EXPECTED_TABLE_INFO = {
         ("evidence_json", "TEXT", 1, 0),
         ("payload_json", "TEXT", 1, 0),
     ],
+    "branch_witness_decisions": [
+        ("snapshot_id", "INTEGER", 1, 1),
+        ("row_index", "INTEGER", 1, 2),
+        ("state_hex", "TEXT", 0, 0),
+        ("state_i64", "INTEGER", 0, 0),
+        ("dispatcher_entry_block", "INTEGER", 0, 0),
+        ("compare_block", "INTEGER", 0, 0),
+        ("predicate", "TEXT", 0, 0),
+        ("compare_const_hex", "TEXT", 0, 0),
+        ("compare_const_i64", "INTEGER", 0, 0),
+        ("selected_successor", "INTEGER", 0, 0),
+        ("rejected_successors_json", "TEXT", 1, 0),
+        ("target_block", "INTEGER", 0, 0),
+        ("proof_kind", "TEXT", 0, 0),
+        ("outcome", "TEXT", 1, 0),
+        ("reason", "TEXT", 0, 0),
+        ("evidence", "TEXT", 0, 0),
+        ("payload_json", "TEXT", 1, 0),
+    ],
+    "corridor_shortcut_decisions": [
+        ("snapshot_id", "INTEGER", 1, 1),
+        ("row_index", "INTEGER", 1, 2),
+        ("source_block", "INTEGER", 0, 0),
+        ("old_target", "INTEGER", 0, 0),
+        ("shortcut_target", "INTEGER", 0, 0),
+        ("witness_compare_blocks_json", "TEXT", 1, 0),
+        ("corridor_blocks_json", "TEXT", 1, 0),
+        ("rejected_successors_json", "TEXT", 1, 0),
+        ("outcome", "TEXT", 1, 0),
+        ("reason", "TEXT", 0, 0),
+        ("live_definitions_json", "TEXT", 1, 0),
+        ("payload_json", "TEXT", 1, 0),
+    ],
     "state_cfg_edge_alternate_correlations": [
         ("snapshot_id", "INTEGER", 1, 1),
         ("collapsed_edge_id", "INTEGER", 1, 2),
@@ -554,6 +587,18 @@ EXPECTED_INDEXES = {
         ("c", ("snapshot_id", "source_block", "branch_arm")),
         ("pk", ("snapshot_id", "row_index")),
     ],
+    "branch_witness_decisions": [
+        ("c", ("snapshot_id", "compare_block")),
+        ("c", ("snapshot_id", "outcome")),
+        ("c", ("snapshot_id", "state_i64")),
+        ("pk", ("snapshot_id", "row_index")),
+    ],
+    "corridor_shortcut_decisions": [
+        ("c", ("snapshot_id", "outcome")),
+        ("c", ("snapshot_id", "shortcut_target")),
+        ("c", ("snapshot_id", "source_block")),
+        ("pk", ("snapshot_id", "row_index")),
+    ],
     "state_cfg_edge_alternate_correlations": [
         ("c", ("snapshot_id", "collapsed_edge_id")),
         ("pk", ("snapshot_id", "collapsed_edge_id", "alternate_edge_id")),
@@ -684,5 +729,5 @@ class TestModeledSchemaEquivalence:
             assert notnull == 1 and pristine_notnull == 0, (table, col)
 
     def test_modeled_count(self) -> None:
-        # Phase A models the 30 non-slice-1, non-view tables.
-        assert len(EXPECTED_TABLE_INFO) == 30
+        # Phase A models the non-slice-1, non-view tables.
+        assert len(EXPECTED_TABLE_INFO) == 32

@@ -27,7 +27,7 @@ from d810.core.logging import clear_logs, configure_loggers, getLogger
 from d810.core.persistence import ActiveRuleInferenceConfig, create_optimization_storage
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.platform import resolve_arch_config
-from d810.core.project import ProjectContext, ProjectManager
+from d810.core.project import ProjectContext, ProjectManager, emit_project_reloading
 from d810.core.registry import EventEmitter, SingletonMeta
 from d810.core.rule_scope import (
     FunctionRuleOverlay,
@@ -1919,8 +1919,18 @@ class D810State(metaclass=SingletonMeta):
         self.project_manager.delete(config)
 
     def load_project(self, project_index: int) -> ProjectConfiguration:
+        old_project_name = (
+            self.current_project.path.name
+            if getattr(self, "current_project", None) is not None
+            else None
+        )
+        next_project = self.project_manager.get(project_index)
+        emit_project_reloading(
+            old_project_name=old_project_name,
+            new_project_name=next_project.path.name,
+        )
         self.current_project_index = project_index
-        self.current_project = self.project_manager.get(project_index)
+        self.current_project = next_project
         self.current_ins_rules = []
         self.current_blk_rules = []
 

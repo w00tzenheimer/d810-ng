@@ -3,8 +3,21 @@ from __future__ import annotations
 
 import pytest
 
+from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.analyses.control_flow.branch_witness import (
+    BranchWitnessMap,
+    BranchWitnessRow,
+)
+from d810.analyses.control_flow.branch_witness_provider import (
+    build_static_equality_chain_witness_map,
+)
+from d810.analyses.control_flow.dispatcher_resolution import (
+    StateDispatcherMap,
+    StateDispatcherRow,
+)
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.analyses.control_flow.minimal_state_recovery import (
+    StateWriteTransition,
     _resolve_state_var_alias,
     block_has_live_carrier_write,
     recover_state_write_transitions,
@@ -22,8 +35,9 @@ from d810.ir.flowgraph import (
     InsnSnapshot,
     MopSnapshot,
     OperandKind,
+    PredicateKind,
 )
-from d810.transforms.graph_modification import RedirectGoto
+from d810.transforms.graph_modification import ConvertToGoto, RedirectBranch, RedirectGoto
 from d810.transforms.minimal_unflatten_emit import (
     _recover_initial_state,
     build_state_write_redirects,
@@ -94,6 +108,40 @@ def _mov_stk(ea, src_off, dst_off):
     )
 
 
+def _mov_reg(ea, const, dst_reg):
+    return InsnSnapshot(
+        opcode=_OP_MOV, ea=ea, operands=(),
+        l=MopSnapshot(t=_T_NUM, size=8, value=const, kind=OperandKind.NUMBER),
+        d=MopSnapshot(t=_T_REG, size=8, reg=dst_reg, kind=OperandKind.REGISTER),
+        kind=InsnKind.MOV,
+    )
+
+
+def _use_nested_reg(ea, reg):
+    """A nested sub-instruction use, shaped like an indirect-call operand."""
+    return InsnSnapshot(
+        opcode=_OP_MOV, ea=ea, operands=(),
+        l=MopSnapshot(
+            t=4,
+            size=8,
+            kind=OperandKind.SUBINSN,
+            sub_l=MopSnapshot(t=_T_REG, size=8, reg=reg, kind=OperandKind.REGISTER),
+        ),
+        d=MopSnapshot(t=_T_REG, size=8, reg=0, kind=OperandKind.REGISTER),
+        kind=InsnKind.MOV,
+    )
+
+
+def _stx_reg(ea, value, ptr_reg):
+    return InsnSnapshot(
+        opcode=1, ea=ea, operands=(),
+        l=MopSnapshot(t=_T_NUM, size=8, value=value, kind=OperandKind.NUMBER),
+        r=MopSnapshot(t=_T_REG, size=2, reg=256, kind=OperandKind.REGISTER),
+        d=MopSnapshot(t=_T_REG, size=8, reg=ptr_reg, kind=OperandKind.REGISTER),
+        kind=InsnKind.STORE,
+    )
+
+
 def _b(serial, succs, preds, insns=()):
     return BlockSnapshot(
         serial=serial, block_type=0, succs=tuple(succs), preds=tuple(preds),
@@ -111,6 +159,64 @@ def _disp(point_targets, exit_block, hi=0x100000000):
     if cur < hi:
         rows.append(IntervalRow(lo=cur, hi=hi, target=exit_block))
     return IntervalDispatcher(rows)
+
+
+def _eq_block(serial, const, taken, fallthrough, preds=(), insns=()):
+    """Equality-chain compare block: ``jz state == const -> taken; fallthrough``."""
+    tail = InsnSnapshot(
+        opcode=100, ea=0x1000 + serial * 0x40, operands=(),
+        l=MopSnapshot(t=_T_STK, size=4, stkoff=_STATE, kind=OperandKind.STACK),
+        r=MopSnapshot(t=_T_NUM, size=4, value=const, kind=OperandKind.NUMBER),
+        d=MopSnapshot(t=0, size=0, block_ref=taken, kind=OperandKind.BLOCK),
+        kind=InsnKind.COND_JUMP,
+        branch_predicate=PredicateKind.EQ,
+        is_conditional_jump=True,
+    )
+    return BlockSnapshot(
+        serial=serial, block_type=4, succs=(fallthrough, taken),
+        preds=tuple(preds), flags=0, start_ea=0x1000 + serial * 0x40,
+        insn_snapshots=(*insns, tail),
+    )
+
+
+def _use_stk(ea, stkoff):
+    """A statement that uses a stack slot: ``return use(stkoff)`` proxy via mov."""
+    return InsnSnapshot(
+        opcode=_OP_MOV, ea=ea, operands=(),
+        l=MopSnapshot(t=_T_STK, size=4, stkoff=stkoff, kind=OperandKind.STACK),
+        d=MopSnapshot(t=_T_REG, size=4, reg=0, kind=OperandKind.REGISTER),
+        kind=InsnKind.MOV,
+    )
+
+
+def _equality_dispatcher(point_targets, entry_block, compare_blocks):
+    """Build IntervalDispatcher + StateDispatcherMap for equality-chain rows."""
+    rows = tuple(
+        StateDispatcherRow(
+            state_const=st,
+            target_block=target,
+            dispatcher_block=entry_block,
+            compare_block=cmp_block,
+            branch_kind="eq",
+            source=DispatcherType.CONDITIONAL_CHAIN,
+        )
+        for st, target, cmp_block in zip(
+            sorted(point_targets), [point_targets[st] for st in sorted(point_targets)], compare_blocks
+        )
+    )
+    dispatch_map = StateDispatcherMap(
+        rows=rows,
+        dispatcher_entry_block=entry_block,
+        dispatcher_blocks=frozenset(compare_blocks),
+        state_var_stkoff=_STATE,
+        state_var_lvar_idx=None,
+        source=DispatcherType.CONDITIONAL_CHAIN,
+    )
+    interval_rows = [
+        IntervalRow(lo=st & 0xFFFFFFFF, hi=(st & 0xFFFFFFFF) + 1, target=target)
+        for st, target in point_targets.items()
+    ]
+    return IntervalDispatcher(interval_rows), dispatch_map
 
 
 def test_emits_back_edge_redirect_and_entry_bridge(_seam) -> None:
@@ -404,3 +510,367 @@ def test_pure_glue_via_block_still_bypassed(_seam) -> None:
     assert (9, 99) in gotos
     # The carrier-return path is NOT used (no ``blk10 -> exit`` self-redirect).
     assert (10, 99) not in gotos
+
+
+def test_witness_entry_bridge_shortcuts_safe_corridor(_seam) -> None:
+    """Equality-chain entry bridge with a pure corridor is shortcut."""
+    # blk0 -> blk2(dispatcher entry) -> blk4(eq 0x10) -> blk10(handler)
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _eq_block(2, 0x10, taken=10, fallthrough=99, preds=(0,)),
+            10: _b(10, (99,), (2,)),
+            99: _exit_block(99, (10,)),
+        },
+        entry_serial=0, func_ea=0x1000,
+    )
+    disp, dmap = _equality_dispatcher({0x10: 10}, entry_block=2, compare_blocks=(2,))
+    branch_witness_map = build_static_equality_chain_witness_map(fg, dmap)
+    plan = emit_minimal_unflatten(
+        fg, disp, state_var_stkoff=_STATE, dispatcher_entry_serial=2,
+        initial_state=0x10, branch_witness_map=branch_witness_map,
+    )
+    gotos = {(m.from_serial, m.old_target, m.new_target) for m in plan.as_graph_modifications() if isinstance(m, RedirectGoto)}
+    assert (0, 2, 10) in gotos
+
+
+def test_witness_entry_bridge_preserves_live_stack_corridor(_seam) -> None:
+    """Equality-chain entry bridge with a live stack definition is preserved."""
+    # blk0 -> blk2(dispatcher entry) -> blk4(eq 0x10). blk4 defines a non-state
+    # stack slot 0x70. blk10(handler) uses 0x70. Shortcut blk0 -> blk10 would
+    # bypass the definition, so the entry bridge must be preserved.
+    _LIVE_OFF = 0x70
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _eq_block(
+                2, 0x10, taken=10, fallthrough=99, preds=(0,),
+                insns=(_mov_stk(0x1080, _STATE, _LIVE_OFF),),  # live def of 0x70
+            ),
+            10: _b(10, (99,), (2,), (_use_stk(0x10C0, _LIVE_OFF),)),  # use of 0x70
+            99: _exit_block(99, (10,)),
+        },
+        entry_serial=0, func_ea=0x1000,
+    )
+    disp, dmap = _equality_dispatcher({0x10: 10}, entry_block=2, compare_blocks=(2,))
+    branch_witness_map = build_static_equality_chain_witness_map(fg, dmap)
+    plan = emit_minimal_unflatten(
+        fg, disp, state_var_stkoff=_STATE, dispatcher_entry_serial=2,
+        initial_state=0x10, branch_witness_map=branch_witness_map,
+    )
+    gotos = {(m.from_serial, m.old_target, m.new_target) for m in plan.as_graph_modifications() if isinstance(m, RedirectGoto)}
+    branches = {(m.from_serial, m.old_target, m.new_target) for m in plan.as_graph_modifications() if isinstance(m, RedirectBranch)}
+    # Entry bridge must NOT shortcut because blk2 defines live 0x70.
+    assert (0, 2, 10) not in gotos
+    # Feasibility is still useful to prove which arm is live, but unsafe
+    # corridors must preserve the current CFG instead of mutating branch arms.
+    assert (2, 99, 10) not in branches
+
+
+def test_witness_entry_bridge_preserves_nested_register_use(_seam) -> None:
+    """Nested sub-instruction uses, like ``icall rax``, keep register defs live."""
+    _RAX = 8
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _eq_block(
+                2, 0x10, taken=10, fallthrough=99, preds=(0,),
+                insns=(_mov_reg(0x1080, 0x1234, _RAX),),
+            ),
+            10: _b(10, (99,), (2,), (_use_nested_reg(0x10C0, _RAX),)),
+            99: _exit_block(99, (10,)),
+        },
+        entry_serial=0, func_ea=0x1000,
+    )
+    disp, dmap = _equality_dispatcher({0x10: 10}, entry_block=2, compare_blocks=(2,))
+    branch_witness_map = build_static_equality_chain_witness_map(fg, dmap)
+    plan = emit_minimal_unflatten(
+        fg, disp, state_var_stkoff=_STATE, dispatcher_entry_serial=2,
+        initial_state=0x10, branch_witness_map=branch_witness_map,
+    )
+    gotos = {(m.from_serial, m.old_target, m.new_target) for m in plan.as_graph_modifications() if isinstance(m, RedirectGoto)}
+    branches = {(m.from_serial, m.old_target, m.new_target) for m in plan.as_graph_modifications() if isinstance(m, RedirectBranch)}
+    assert (0, 2, 10) not in gotos
+    assert (2, 99, 10) not in branches
+
+
+def test_entry_bridge_requires_witness_shortcuts_live_safe_without_provider(_seam) -> None:
+    """Missing witness rows keep legacy shortcutting when the corridor is live-safe."""
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _eq_block(2, 0x10, taken=10, fallthrough=99, preds=(0,)),
+            10: _b(10, (99,), (2,)),
+            99: _exit_block(99, (10,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 10}, exit_block=99)
+    plan = emit_minimal_unflatten(
+        fg,
+        disp,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        branch_witness_map=None,
+        entry_bridge_requires_witness=True,
+    )
+    gotos = {
+        (m.from_serial, m.old_target, m.new_target)
+        for m in plan.as_graph_modifications()
+        if isinstance(m, RedirectGoto)
+    }
+    assert (0, 2, 10) in gotos
+
+
+def test_entry_bridge_requires_witness_preserves_live_no_provider_corridor(_seam) -> None:
+    """No-provider fallback preserves a live register def in the dispatcher entry."""
+    _RAX = 8
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _eq_block(
+                2, 0x10, taken=10, fallthrough=99, preds=(0,),
+                insns=(_mov_reg(0x1080, 0x1234, _RAX),),
+            ),
+            10: _b(10, (99,), (2,), (_use_nested_reg(0x10C0, _RAX),)),
+            99: _exit_block(99, (10,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 10}, exit_block=99)
+    plan = emit_minimal_unflatten(
+        fg,
+        disp,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        branch_witness_map=None,
+        entry_bridge_requires_witness=True,
+    )
+    gotos = {
+        (m.from_serial, m.old_target, m.new_target)
+        for m in plan.as_graph_modifications()
+        if isinstance(m, RedirectGoto)
+    }
+    assert (0, 2, 10) not in gotos
+
+
+def test_entry_bridge_requires_witness_preserves_live_no_provider_stack_corridor(_seam) -> None:
+    """No-provider fallback uses all supplied corridor blocks, not just old target."""
+    _LIVE_OFF = 0x70
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (4,), (0,)),
+            4: _b(4, (10,), (2,), (_mov_stk(0x1080, _STATE, _LIVE_OFF),)),
+            10: _b(10, (99,), (4,), (_use_stk(0x10C0, _LIVE_OFF),)),
+            99: _exit_block(99, (10,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 10}, exit_block=99)
+    plan = emit_minimal_unflatten(
+        fg,
+        disp,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        branch_witness_map=None,
+        entry_bridge_corridor_blocks=(2, 4),
+        entry_bridge_requires_witness=True,
+    )
+    gotos = {
+        (m.from_serial, m.old_target, m.new_target)
+        for m in plan.as_graph_modifications()
+        if isinstance(m, RedirectGoto)
+    }
+    assert (0, 2, 10) not in gotos
+
+
+def test_conditional_entry_bridge_without_policy_uses_legacy_shortcut(_seam) -> None:
+    """Conditional-looking CFG alone does not force witness-mode projection."""
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _eq_block(2, 0x10, taken=10, fallthrough=99, preds=(0,)),
+            10: _b(10, (99,), (2,)),
+            99: _exit_block(99, (10,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 10}, exit_block=99)
+    plan = emit_minimal_unflatten(
+        fg,
+        disp,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        branch_witness_map=None,
+    )
+    gotos = {
+        (m.from_serial, m.old_target, m.new_target)
+        for m in plan.as_graph_modifications()
+        if isinstance(m, RedirectGoto)
+    }
+    assert (0, 2, 10) in gotos
+
+
+def test_witness_entry_bridge_shortcuts_dead_non_state_corridor(_seam) -> None:
+    """A non-state definition with no live use can be bypassed."""
+    _DEAD_OFF = 0x71
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _eq_block(
+                2, 0x10, taken=10, fallthrough=99, preds=(0,),
+                insns=(_mov_stk(0x1080, _STATE, _DEAD_OFF),),  # dead def
+            ),
+            10: _b(10, (99,), (2,)),  # no use of _DEAD_OFF
+            99: _exit_block(99, (10,)),
+        },
+        entry_serial=0, func_ea=0x1000,
+    )
+    disp, dmap = _equality_dispatcher({0x10: 10}, entry_block=2, compare_blocks=(2,))
+    branch_witness_map = build_static_equality_chain_witness_map(fg, dmap)
+    plan = emit_minimal_unflatten(
+        fg, disp, state_var_stkoff=_STATE, dispatcher_entry_serial=2,
+        initial_state=0x10, branch_witness_map=branch_witness_map,
+    )
+    gotos = {(m.from_serial, m.old_target, m.new_target) for m in plan.as_graph_modifications() if isinstance(m, RedirectGoto)}
+    assert (0, 2, 10) in gotos
+
+
+def test_witness_entry_bridge_shortcuts_state_only_corridor(_seam) -> None:
+    """State-variable definitions are intentionally severed by unflattening."""
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _eq_block(
+                2, 0x10, taken=10, fallthrough=99, preds=(0,),
+                insns=(_mov_state(0x1080, 0x10),),  # state-var def
+            ),
+            10: _b(10, (99,), (2,)),
+            99: _exit_block(99, (10,)),
+        },
+        entry_serial=0, func_ea=0x1000,
+    )
+    disp, dmap = _equality_dispatcher({0x10: 10}, entry_block=2, compare_blocks=(2,))
+    branch_witness_map = build_static_equality_chain_witness_map(fg, dmap)
+    plan = emit_minimal_unflatten(
+        fg, disp, state_var_stkoff=_STATE, dispatcher_entry_serial=2,
+        initial_state=0x10, branch_witness_map=branch_witness_map,
+    )
+    gotos = {(m.from_serial, m.old_target, m.new_target) for m in plan.as_graph_modifications() if isinstance(m, RedirectGoto)}
+    assert (0, 2, 10) in gotos
+
+
+def test_back_edge_preserves_unresolved_indirect_state_store(_seam) -> None:
+    """Do not route a dispatcher back-edge past a pointer-indirected state store."""
+    tail = InsnSnapshot(
+        opcode=43, ea=0x1200, operands=(),
+        l=MopSnapshot(t=_T_STK, size=8, stkoff=_STATE, kind=OperandKind.STACK),
+        r=MopSnapshot(t=_T_NUM, size=8, value=0x20, kind=OperandKind.NUMBER),
+        d=MopSnapshot(t=0, size=0, block_ref=2, kind=OperandKind.BLOCK),
+        kind=InsnKind.COND_JUMP,
+        branch_predicate=PredicateKind.NE,
+        is_conditional_jump=True,
+    )
+    fg = FlowGraph(
+        blocks={
+            2: _eq_block(2, 0x10, taken=10, fallthrough=99, preds=(8,)),
+            8: _b(8, (9, 2), (6, 7), (_stx_reg(0x1180, 0x20, 32), tail)),
+            9: _exit_block(9, (8,)),
+            10: _b(10, (8,), (2,)),
+            99: _exit_block(99, (2,)),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 10}, exit_block=99)
+    transitions = (
+        StateWriteTransition(
+            write_block=8,
+            next_state=0x10,
+            target_handler=10,
+            is_return=False,
+            branch_arm=1,
+        ),
+    )
+    mods = build_state_write_redirects(
+        fg,
+        disp,
+        transitions,
+        dispatcher_entry_serial=2,
+        pre_header_serial=None,
+        initial_state=None,
+        state_var_stkoff=_STATE,
+    )
+    branches = {
+        (m.from_serial, m.old_target, m.new_target)
+        for m in mods
+        if isinstance(m, RedirectBranch)
+    }
+    assert (8, 2, 10) not in branches
+
+
+def test_back_edge_uses_exact_witness_for_terminal_indirect_state_store(_seam) -> None:
+    """A terminal indirect state store may redirect through a local branch witness."""
+    terminal = 0xDD1FF05BF465445C
+    tail = InsnSnapshot(
+        opcode=43, ea=0x1200, operands=(),
+        l=MopSnapshot(t=_T_STK, size=8, stkoff=_STATE, kind=OperandKind.STACK),
+        r=MopSnapshot(t=_T_NUM, size=8, value=terminal, kind=OperandKind.NUMBER),
+        d=MopSnapshot(t=0, size=0, block_ref=2, kind=OperandKind.BLOCK),
+        kind=InsnKind.COND_JUMP,
+        branch_predicate=PredicateKind.NE,
+        is_conditional_jump=True,
+    )
+    fg = FlowGraph(
+        blocks={
+            2: _eq_block(2, 0x10, taken=10, fallthrough=99, preds=(8,)),
+            8: _b(8, (9, 2), (7,), (_stx_reg(0x1180, terminal, 32), tail)),
+            9: _exit_block(9, (8,)),
+            10: _b(10, (8,), (2,)),
+            99: _exit_block(99, (2,)),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 10}, exit_block=99)
+    transitions = (
+        StateWriteTransition(
+            write_block=8,
+            next_state=0x10,
+            target_handler=10,
+            is_return=False,
+            branch_arm=1,
+        ),
+    )
+    mods = build_state_write_redirects(
+        fg,
+        disp,
+        transitions,
+        dispatcher_entry_serial=2,
+        pre_header_serial=None,
+        initial_state=None,
+        state_var_stkoff=_STATE,
+        branch_witness_map=None,
+    )
+    converts = {
+        (m.block_serial, m.goto_target)
+        for m in mods
+        if isinstance(m, ConvertToGoto)
+    }
+    branches = {
+        (m.from_serial, m.old_target, m.new_target)
+        for m in mods
+        if isinstance(m, RedirectBranch)
+    }
+    assert (8, 9) in converts
+    assert (8, 2, 9) not in branches
+    assert (8, 2, 10) not in branches

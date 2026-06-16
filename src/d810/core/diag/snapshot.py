@@ -16,9 +16,11 @@ from d810.core.diag.models import (
     Block,
     BlockClassification,
     BlockObservation,
+    BranchWitnessDecision,
     BranchOwnershipProof,
     BstIntervalDispatcherRow,
     CfgProvenance,
+    CorridorShortcutDecision,
     FactConflict,
     FactConsumer,
     FactMapping,
@@ -815,6 +817,110 @@ def snapshot_state_dispatcher_rows(
         resolution_kind="state_dispatcher_row",
         resolution_maturity=maturity,
     )
+    conn.commit()
+
+
+def _next_row_index(model, snapshot_id: int) -> int:
+    current = (
+        model.select(model.row_index)
+        .where(model.snapshot == int(snapshot_id))
+        .order_by(model.row_index.desc())
+        .first()
+    )
+    return int(current.row_index) + 1 if current is not None else 0
+
+
+def _string_value(value: object | None) -> str | None:
+    if value is None:
+        return None
+    enum_value = getattr(value, "value", value)
+    return str(enum_value)
+
+
+def snapshot_branch_witness_decisions(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    rows: Iterable[Mapping[str, Any] | object],
+) -> None:
+    """Persist branch-witness exact/abstain/conflict decisions."""
+
+    db_rows = []
+    db = _diag_db()
+    with diag_models_on(db), db.atomic():
+        next_index = _next_row_index(BranchWitnessDecision, int(snapshot_id))
+        for offset, row in enumerate(rows):
+            state = _mapping_value(row, "state")
+            compare_const = _mapping_value(row, "compare_const")
+            state_hex, state_i64 = _dual(
+                None if state is None else int(state)
+            )
+            const_hex, const_i64 = _dual(
+                None if compare_const is None else int(compare_const)
+            )
+            db_rows.append({
+                "snapshot": int(snapshot_id),
+                "row_index": next_index + offset,
+                "state_hex": state_hex,
+                "state_i64": state_i64,
+                "dispatcher_entry_block": _mapping_value(
+                    row, "dispatcher_entry_block"
+                ),
+                "compare_block": _mapping_value(row, "compare_block"),
+                "predicate": _mapping_value(row, "predicate"),
+                "compare_const_hex": const_hex,
+                "compare_const_i64": const_i64,
+                "selected_successor": _mapping_value(row, "selected_successor"),
+                "rejected_successors_json": _json_text(
+                    _mapping_value(row, "rejected_successors"), []
+                ),
+                "target_block": _mapping_value(row, "target_block"),
+                "proof_kind": _string_value(_mapping_value(row, "proof_kind")),
+                "outcome": str(_mapping_value(row, "outcome", "unknown")),
+                "reason": _mapping_value(row, "reason"),
+                "evidence": _mapping_value(row, "evidence"),
+                "payload_json": _json_text(_mapping_value(row, "payload"), {}),
+            })
+        if db_rows:
+            BranchWitnessDecision.insert_many(db_rows).execute()
+    conn.commit()
+
+
+def snapshot_corridor_shortcut_decisions(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    rows: Iterable[Mapping[str, Any] | object],
+) -> None:
+    """Persist corridor shortcut liveness/projection decisions."""
+
+    db_rows = []
+    db = _diag_db()
+    with diag_models_on(db), db.atomic():
+        next_index = _next_row_index(CorridorShortcutDecision, int(snapshot_id))
+        for offset, row in enumerate(rows):
+            db_rows.append({
+                "snapshot": int(snapshot_id),
+                "row_index": next_index + offset,
+                "source_block": _mapping_value(row, "source_block"),
+                "old_target": _mapping_value(row, "old_target"),
+                "shortcut_target": _mapping_value(row, "shortcut_target"),
+                "witness_compare_blocks_json": _json_text(
+                    _mapping_value(row, "witness_compare_blocks"), []
+                ),
+                "corridor_blocks_json": _json_text(
+                    _mapping_value(row, "corridor_blocks"), []
+                ),
+                "rejected_successors_json": _json_text(
+                    _mapping_value(row, "rejected_successors"), []
+                ),
+                "outcome": str(_mapping_value(row, "outcome", "unknown")),
+                "reason": _mapping_value(row, "reason"),
+                "live_definitions_json": _json_text(
+                    _mapping_value(row, "live_definitions"), []
+                ),
+                "payload_json": _json_text(_mapping_value(row, "payload"), {}),
+            })
+        if db_rows:
+            CorridorShortcutDecision.insert_many(db_rows).execute()
     conn.commit()
 
 
