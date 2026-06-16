@@ -20,20 +20,19 @@ Two distinct deobfuscation facts have to be recovered for the full golden:
    this once the masked constant constant-folds to ``0xAAAAAAAB``.  This is
    covered as a hard assertion below (``% 3`` present, no ``while`` loop).
 
-2. **rand() devirtualisation** — the call target is an obfuscated indirect
-   call ``icall (*off_18210A360 + 0x64E2C558D421136)`` that resolves to
-   ``rand``.  After unflattening this computation is split across multiple
-   predecessor blocks (a join point), so the existing block-local
-   ``IndirectCallResolver`` / ``FoldReadonlyDataRule`` cannot fold it.  This
-   remaining gap is captured as an ``xfail`` so it is tracked without blocking
-   the magic-modulo regression guard.
+2. **rand() devirtualisation** — the branch-witness/liveness policy must keep
+   the live corridor through ``rax = &rand`` while still collapsing the terminal
+   dispatcher back-edge.  The full ``rand() % 3u`` golden is now a hard
+   assertion below.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
+import sqlite3
 import tempfile
 from pathlib import Path
 
@@ -161,6 +160,24 @@ def _print_pseudocode_dump(label: str, rendered: str | None) -> None:
     print(f"=== RANDMOD {label} PSEUDOCODE END ===", flush=True)
 
 
+def _randmod_diag_paths() -> set[Path]:
+    diag_dir = Path.home() / ".idapro" / "logs" / "d810_logs"
+    return set(diag_dir.glob(f"{RANDMOD_FALLBACK_EA:016x}_*.diag.sqlite3"))
+
+
+def _new_randmod_diag_path(before: set[Path]) -> Path | None:
+    new_paths = _randmod_diag_paths() - before
+    if not new_paths:
+        return None
+    return max(new_paths, key=lambda path: path.stat().st_mtime)
+
+
+def _diag_rows(diag_path: Path, sql: str) -> list[sqlite3.Row]:
+    with sqlite3.connect(diag_path) as conn:
+        conn.row_factory = sqlite3.Row
+        return list(conn.execute(sql))
+
+
 @pytest.fixture(scope="module")
 def randmod_database():
     _randmod_enabled()
@@ -223,7 +240,9 @@ def randmod_rendered(randmod_database, configure_hexrays, d810_state, pseudocode
             state.stats.reset()
             state.start_d810()
             print(f"[randmod] decompiling with {project_name}", flush=True)
+            diag_before = _randmod_diag_paths()
             cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
+            diag_path = _new_randmod_diag_path(diag_before)
             print(f"[randmod] decompile result: {cfunc is not None}", flush=True)
             fired_rules = set(state.stats.get_fired_rule_names())
 
@@ -235,7 +254,7 @@ def randmod_rendered(randmod_database, configure_hexrays, d810_state, pseudocode
     assert rendered.strip(), (
         f"{RANDMOD_FUNCTION} produced empty pseudocode under {project_name}"
     )
-    return {"rendered": rendered, "fired_rules": fired_rules}
+    return {"rendered": rendered, "fired_rules": fired_rules, "diag_path": diag_path}
 
 
 @pytest.mark.e2e
@@ -258,7 +277,7 @@ class TestOllvmRandModSub1815C8C30:
         )
 
         # The remainder is recovered as a genuine modulo by 3.
-        assert re.search(r"%\s*3\b", rendered), (
+        assert re.search(r"%\s*3[uU]?\b", rendered), (
             f"{RANDMOD_FUNCTION} did not recover '% 3':\n{rendered}"
         )
 
@@ -276,23 +295,94 @@ class TestOllvmRandModSub1815C8C30:
             f"regressed. Fired rules: {sorted(fired_rules)}"
         )
 
-    @pytest.mark.xfail(
-        reason=(
-            "rand() devirtualisation: the icall target "
-            "(*off_18210A360 + 0x64E2C558D421136 -> rand) is computed across "
-            "multiple predecessor blocks after unflattening, so the block-local "
-            "IndirectCallResolver / FoldReadonlyDataRule cannot fold it. "
-            "Requires cross-block constant propagation of the readonly pointer "
-            "into the call target (tracked, out of the additive magic-modulo scope)."
-        ),
-        strict=True,
-    )
+    def test_entry_projection_preserves_rand_call_corridor(self, randmod_rendered) -> None:
+        """Entry bridge must not shortcut over the live rand()-call corridor.
+
+        The recovered function must include the real ``rand`` call (or the
+        current devirtualization stub ``v0()``) and the magic-modulo result.
+        The important regression guard is that projection did not emit an
+        invalid ``blk1 -> blk5`` provenance shortcut across the live ``rax``
+        definition in the dispatcher witness corridor.
+        """
+        rendered = randmod_rendered["rendered"]
+
+        # Golden/acceptable shape still contains rand (or its devirtualization
+        # stub) and the modulo.
+        has_rand = re.search(r"\brand\s*\(\s*\)", rendered) is not None
+        has_v0_stub = re.search(r"\bv\d+\s*\(\s*\)", rendered) is not None
+        assert has_rand or has_v0_stub, (
+            f"{RANDMOD_FUNCTION} lost the call target entirely:\n{rendered}"
+        )
+        assert re.search(r"%\s*3[uU]?\b", rendered), (
+            f"{RANDMOD_FUNCTION} did not recover '% 3':\n{rendered}"
+        )
+
+        diag_path = randmod_rendered["diag_path"]
+        if diag_path is None:
+            pytest.skip("randmod diagnostic DB was not captured")
+
+        corridor_rows = _diag_rows(
+            diag_path,
+            """
+            SELECT s.maturity, s.phase, i.block_serial, i.insn_index, i.dstr
+            FROM instructions i
+            JOIN snapshots s ON s.id = i.snapshot_id
+            WHERE s.maturity IN ('MMAT_CALLS', 'MMAT_GLBOPT1')
+              AND s.phase = 'pre_d810'
+              AND i.block_serial IN (2, 3, 8)
+            ORDER BY s.id, i.block_serial, i.insn_index
+            """,
+        )
+        assert any(
+            row["block_serial"] == 2 and "&($rand).8, rax.8" in row["dstr"]
+            for row in corridor_rows
+        ), f"{diag_path} does not show blk2 defining rax = &rand"
+        assert any(
+            row["block_serial"] == 3
+            and "&($sub_18010A890).8, rax.8" in row["dstr"]
+            for row in corridor_rows
+        ), f"{diag_path} does not show blk3 defining the rejected call target"
+        assert any(
+            row["block_serial"] == 8 and "icall cs.2,rax.8" in row["dstr"]
+            for row in corridor_rows
+        ), f"{diag_path} does not show blk8 consuming rax in the indirect call"
+
+        bad_entry_projection = _diag_rows(
+            diag_path,
+            """
+            SELECT c.snapshot_id, c.seq, c.reason, c.extra_json
+            FROM cfg_provenance c
+            WHERE c.action = 'REDIRECT_EDGE'
+              AND c.block_serial = 1
+              AND c.target_serial = 5
+            """,
+        )
+        assert not bad_entry_projection, (
+            f"{diag_path} contains the invalid blk1 -> blk5 projection: "
+            f"{[dict(row) for row in bad_entry_projection]}"
+        )
+
+        terminal_projection = _diag_rows(
+            diag_path,
+            """
+            SELECT c.snapshot_id, c.seq, c.reason, c.extra_json
+            FROM cfg_provenance c
+            WHERE c.action = 'REDIRECT_EDGE'
+              AND c.block_serial = 8
+              AND c.target_serial = 9
+              AND c.reason = 'make_2way_block_goto'
+            """,
+        )
+        assert terminal_projection, (
+            f"{diag_path} does not contain the exact terminal blk8 -> blk9 rewrite"
+        )
+        assert any(
+            json.loads(row["extra_json"]).get("old_succs") == [9, 2]
+            for row in terminal_projection
+        ), f"{diag_path} terminal rewrite did not preserve old blk8 successors"
+
     def test_rand_devirtualized_full_golden(self, randmod_rendered) -> None:
         """Full golden: ``return rand() % 3u;`` with a real ``rand`` call.
-
-        Currently xfail — the call target renders as an uninitialized function
-        pointer (``v0()``) instead of ``rand`` because the target computation
-        is split across CFG join points after unflattening.
         """
         rendered = randmod_rendered["rendered"]
 

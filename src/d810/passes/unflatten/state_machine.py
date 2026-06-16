@@ -188,6 +188,21 @@ def _resolve_initial_state(bst_evidence, recovery) -> int | None:
     return None
 
 
+def _entry_bridge_requires_witness(bst_evidence, dmap) -> bool:
+    """Return whether entry shortcutting needs an exact branch witness.
+
+    Equality-chain maps are obvious comparison dispatchers.  The OLLVM BST path
+    can instead route through ``bst_evidence.dispatcher`` with only interval rows
+    in the selected router; in that shape, endpoint truth is still not an exact
+    branch-arm proof, so entry projection must preserve unless a witness proves
+    the selected corridor is safe.
+    """
+    if getattr(dmap, "source", None) is DispatcherType.CONDITIONAL_CHAIN:
+        return True
+    bst_nodes = getattr(bst_evidence, "bst_node_blocks", ()) if bst_evidence is not None else ()
+    return bool(tuple(bst_nodes or ()))
+
+
 def _recovery_from_machine(machine, graph, min_state_constant: int) -> DispatcherRecovery:
     """Adapt a P1 ``RecoveredMachine`` back into the existing ``DispatcherRecovery``.
 
@@ -436,6 +451,15 @@ class LowerStateMachine(PipelinePass):
             # PRIMARY emit path so a redirect that orphans a non-state carrier (the
             # OLLVM ``var_18 = var_378`` accumulator copies) is dropped. Gated
             # D810_USE_DEF_VETO (default OFF) inside the filter -> byte-identical default.
+            dmap = getattr(recovery, "dispatch_map", None) if recovery is not None else None
+            # Explicit per-compare branch-witness rows are intentionally not
+            # derived from endpoint-style StateDispatcherMap rows here.  Until a
+            # dedicated witness provider exists, witness-required entry bridges
+            # preserve and non-required profiles keep legacy endpoint shortcutting.
+            branch_witness_map = None
+            entry_bridge_requires_witness = _entry_bridge_requires_witness(
+                bst_evidence, dmap
+            )
             plan = emit_minimal_unflatten(
                 context.graph,
                 dispatcher,
@@ -449,6 +473,8 @@ class LowerStateMachine(PipelinePass):
                 live_block_for=_make_live_block_for(live_function),
                 use_def_safety=context.capabilities.optional(UseDefSafetyCapability),
                 live_function=live_function,
+                branch_witness_map=branch_witness_map,
+                entry_bridge_requires_witness=entry_bridge_requires_witness,
             )
             return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
 
