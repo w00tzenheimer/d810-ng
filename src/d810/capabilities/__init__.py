@@ -16,6 +16,7 @@ no stable portable home, and tightens once that home exists.
 """
 from __future__ import annotations
 
+from .branch_witness import BranchWitnessCapability
 from .constant_fixpoint import ConstantFixpointBackend, ConstantFixpointCapability
 from .recurrence import ExternalRecurrenceCapability, RecurrenceAnalysis
 from .source_lifter import (
@@ -30,6 +31,7 @@ from .value_range import ValRange, ValRangeCapability
 
 __all__ = [
     "CapabilityNotProvided",
+    "BranchWitnessCapability",
     "CapabilitySet",
     "ConstantFixpointBackend",  # back-compat alias of ConstantFixpointCapability
     "ConstantFixpointCapability",
