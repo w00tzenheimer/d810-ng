@@ -7,7 +7,9 @@ from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.analyses.control_flow.branch_witness import (
     BranchWitnessMap,
     BranchWitnessRow,
-    branch_witness_map_from_dispatcher_map,
+)
+from d810.analyses.control_flow.branch_witness_provider import (
+    build_static_equality_chain_witness_map,
 )
 from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
@@ -523,7 +525,7 @@ def test_witness_entry_bridge_shortcuts_safe_corridor(_seam) -> None:
         entry_serial=0, func_ea=0x1000,
     )
     disp, dmap = _equality_dispatcher({0x10: 10}, entry_block=2, compare_blocks=(2,))
-    branch_witness_map = branch_witness_map_from_dispatcher_map(fg, dmap)
+    branch_witness_map = build_static_equality_chain_witness_map(fg, dmap)
     plan = emit_minimal_unflatten(
         fg, disp, state_var_stkoff=_STATE, dispatcher_entry_serial=2,
         initial_state=0x10, branch_witness_map=branch_witness_map,
@@ -551,7 +553,7 @@ def test_witness_entry_bridge_preserves_live_stack_corridor(_seam) -> None:
         entry_serial=0, func_ea=0x1000,
     )
     disp, dmap = _equality_dispatcher({0x10: 10}, entry_block=2, compare_blocks=(2,))
-    branch_witness_map = branch_witness_map_from_dispatcher_map(fg, dmap)
+    branch_witness_map = build_static_equality_chain_witness_map(fg, dmap)
     plan = emit_minimal_unflatten(
         fg, disp, state_var_stkoff=_STATE, dispatcher_entry_serial=2,
         initial_state=0x10, branch_witness_map=branch_witness_map,
@@ -581,7 +583,7 @@ def test_witness_entry_bridge_preserves_nested_register_use(_seam) -> None:
         entry_serial=0, func_ea=0x1000,
     )
     disp, dmap = _equality_dispatcher({0x10: 10}, entry_block=2, compare_blocks=(2,))
-    branch_witness_map = branch_witness_map_from_dispatcher_map(fg, dmap)
+    branch_witness_map = build_static_equality_chain_witness_map(fg, dmap)
     plan = emit_minimal_unflatten(
         fg, disp, state_var_stkoff=_STATE, dispatcher_entry_serial=2,
         initial_state=0x10, branch_witness_map=branch_witness_map,
@@ -592,8 +594,8 @@ def test_witness_entry_bridge_preserves_nested_register_use(_seam) -> None:
     assert (2, 99, 10) not in branches
 
 
-def test_entry_bridge_requires_witness_uses_legacy_when_no_live_corridor(_seam) -> None:
-    """Missing witness rows do not block legacy shortcutting when liveness is safe."""
+def test_entry_bridge_requires_witness_shortcuts_live_safe_without_provider(_seam) -> None:
+    """Missing witness rows keep legacy shortcutting when the corridor is live-safe."""
     fg = FlowGraph(
         blocks={
             0: _b(0, (2,), ()),
@@ -656,6 +658,39 @@ def test_entry_bridge_requires_witness_preserves_live_no_provider_corridor(_seam
     assert (0, 2, 10) not in gotos
 
 
+def test_entry_bridge_requires_witness_preserves_live_no_provider_stack_corridor(_seam) -> None:
+    """No-provider fallback uses all supplied corridor blocks, not just old target."""
+    _LIVE_OFF = 0x70
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (4,), (0,)),
+            4: _b(4, (10,), (2,), (_mov_stk(0x1080, _STATE, _LIVE_OFF),)),
+            10: _b(10, (99,), (4,), (_use_stk(0x10C0, _LIVE_OFF),)),
+            99: _exit_block(99, (10,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 10}, exit_block=99)
+    plan = emit_minimal_unflatten(
+        fg,
+        disp,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        branch_witness_map=None,
+        entry_bridge_corridor_blocks=(2, 4),
+        entry_bridge_requires_witness=True,
+    )
+    gotos = {
+        (m.from_serial, m.old_target, m.new_target)
+        for m in plan.as_graph_modifications()
+        if isinstance(m, RedirectGoto)
+    }
+    assert (0, 2, 10) not in gotos
+
+
 def test_conditional_entry_bridge_without_policy_uses_legacy_shortcut(_seam) -> None:
     """Conditional-looking CFG alone does not force witness-mode projection."""
     fg = FlowGraph(
@@ -701,7 +736,7 @@ def test_witness_entry_bridge_shortcuts_dead_non_state_corridor(_seam) -> None:
         entry_serial=0, func_ea=0x1000,
     )
     disp, dmap = _equality_dispatcher({0x10: 10}, entry_block=2, compare_blocks=(2,))
-    branch_witness_map = branch_witness_map_from_dispatcher_map(fg, dmap)
+    branch_witness_map = build_static_equality_chain_witness_map(fg, dmap)
     plan = emit_minimal_unflatten(
         fg, disp, state_var_stkoff=_STATE, dispatcher_entry_serial=2,
         initial_state=0x10, branch_witness_map=branch_witness_map,
@@ -725,7 +760,7 @@ def test_witness_entry_bridge_shortcuts_state_only_corridor(_seam) -> None:
         entry_serial=0, func_ea=0x1000,
     )
     disp, dmap = _equality_dispatcher({0x10: 10}, entry_block=2, compare_blocks=(2,))
-    branch_witness_map = branch_witness_map_from_dispatcher_map(fg, dmap)
+    branch_witness_map = build_static_equality_chain_witness_map(fg, dmap)
     plan = emit_minimal_unflatten(
         fg, disp, state_var_stkoff=_STATE, dispatcher_entry_serial=2,
         initial_state=0x10, branch_witness_map=branch_witness_map,

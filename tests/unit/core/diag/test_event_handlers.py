@@ -8,6 +8,7 @@ the :class:`CaptureMbaSnapshotRequested` handler.
 from __future__ import annotations
 from d810.core.diag import create_diag_database
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -41,7 +42,9 @@ from d810.core.observability_models import (
     Modification,
 )
 from d810.core.observability_recon import (
+    observe_branch_witness_decisions,
     observe_branch_ownership_proofs,
+    observe_corridor_shortcut_decisions,
     observe_dag,
     observe_modifications,
     observe_reachability,
@@ -358,6 +361,93 @@ def test_branch_ownership_proofs_write_under_snapshot(fake_conn):
         "FROM branch_ownership_proofs"
     ).fetchone()
     assert row == ("OBFUSCATION_RESIDUE_ARM", 1, 76, "explicit_opaque_provenance")
+
+
+def test_branch_witness_decisions_buffer_until_snapshot(fake_conn):
+    observe_branch_witness_decisions(
+        func_ea=0x401000,
+        rows=[
+            {
+                "state": 0x10,
+                "dispatcher_entry_block": 1,
+                "compare_block": 2,
+                "predicate": "eq",
+                "compare_const": 0x10,
+                "selected_successor": 4,
+                "rejected_successors": (3,),
+                "target_block": 4,
+                "proof_kind": "static_equality_chain",
+                "outcome": "accepted",
+                "evidence": "validated_against_current_cfg",
+            }
+        ],
+    )
+
+    pre_rows = fake_conn.execute(
+        "SELECT COUNT(*) FROM branch_witness_decisions"
+    ).fetchone()
+    assert pre_rows[0] == 0
+
+    request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="L",
+        func_ea=0x401000,
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+    )
+
+    row = fake_conn.execute(
+        "SELECT state_hex, compare_block, selected_successor, "
+        "rejected_successors_json, outcome, evidence "
+        "FROM branch_witness_decisions"
+    ).fetchone()
+    assert row[:3] == ("0x0000000000000010", 2, 4)
+    assert json.loads(row[3]) == [3]
+    assert row[4:] == ("accepted", "validated_against_current_cfg")
+
+
+def test_corridor_shortcut_decisions_buffer_until_snapshot(fake_conn):
+    observe_corridor_shortcut_decisions(
+        func_ea=0x401000,
+        rows=[
+            {
+                "source_block": 0,
+                "old_target": 2,
+                "shortcut_target": 5,
+                "witness_compare_blocks": (2,),
+                "corridor_blocks": (2,),
+                "rejected_successors": (3,),
+                "outcome": "rejected",
+                "reason": "corridor_liveness_unsafe",
+                "live_definitions": ({"kind": "reg", "value": 8},),
+            }
+        ],
+    )
+
+    pre_rows = fake_conn.execute(
+        "SELECT COUNT(*) FROM corridor_shortcut_decisions"
+    ).fetchone()
+    assert pre_rows[0] == 0
+
+    request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="L",
+        func_ea=0x401000,
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+    )
+
+    row = fake_conn.execute(
+        "SELECT source_block, shortcut_target, witness_compare_blocks_json, "
+        "corridor_blocks_json, rejected_successors_json, outcome, reason, "
+        "live_definitions_json FROM corridor_shortcut_decisions"
+    ).fetchone()
+    assert row[:2] == (0, 5)
+    assert json.loads(row[2]) == [2]
+    assert json.loads(row[3]) == [2]
+    assert json.loads(row[4]) == [3]
+    assert row[5:7] == ("rejected", "corridor_liveness_unsafe")
+    assert json.loads(row[7]) == [{"kind": "reg", "value": 8}]
 
 
 def test_capture_handler_short_circuits_when_no_conn():

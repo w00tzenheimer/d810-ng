@@ -36,8 +36,10 @@ from d810.core import logging as _d810_logging
 from d810.core.diag import active_diag_db, diag_models_on, get_diag_conn
 from d810.core.diag.models import CfgProvenance, FactConsumer, Snapshot
 from d810.core.diag.snapshot import (
+    snapshot_branch_witness_decisions,
     snapshot_branch_ownership_proofs,
     snapshot_bst_interval_dispatcher_rows,
+    snapshot_corridor_shortcut_decisions,
     snapshot_dag_frontier_closure_diagnostics,
     snapshot_dag,
     snapshot_dag_local_facts,
@@ -62,10 +64,12 @@ from d810.core.observability import (
 )
 from d810.core.observability_events import (
     BranchOwnershipProofsObserved,
+    BranchWitnessDecisionsObserved,
     BstIntervalDispatcherObserved,
     CaptureMbaSnapshotRequested,
     CfgProvenanceForLatestSnapshot,
     CfgProvenanceObserved,
+    CorridorShortcutDecisionsObserved,
     DagFrontierClosureDiagnosticsObserved,
     DagLocalFactsObserved,
     DagObserved,
@@ -108,6 +112,10 @@ _pending_bst_intervals: list[BstIntervalDispatcherObserved] = []
 
 _state_dispatcher_lock = threading.Lock()
 _pending_state_dispatcher_rows: list[StateDispatcherRowsObserved] = []
+_branch_witness_lock = threading.Lock()
+_pending_branch_witness_decisions: list[BranchWitnessDecisionsObserved] = []
+_corridor_shortcut_lock = threading.Lock()
+_pending_corridor_shortcut_decisions: list[CorridorShortcutDecisionsObserved] = []
 
 
 def _resolve_snapshot_id(snap: SnapshotRef) -> int | None:
@@ -186,6 +194,8 @@ def _handle_capture_mba(ev: CaptureMbaSnapshotRequested) -> None:
     _flush_pending_provenance(conn, snap_id)
     _flush_pending_bst_intervals(conn, snap_id, snap.func_ea)
     _flush_pending_state_dispatcher_rows(conn, snap_id, snap.func_ea)
+    _flush_pending_branch_witness_decisions(conn, snap_id, snap.func_ea)
+    _flush_pending_corridor_shortcut_decisions(conn, snap_id, snap.func_ea)
     # Block-lineage drain is fired by snapshot_mba via
     # BlockLineageDrainRequested(conn, snap_id); cfg.block_lineage's
     # subscriber writes the rows. No explicit invocation here.
@@ -357,6 +367,88 @@ def _handle_branch_ownership_proofs(ev: BranchOwnershipProofsObserved) -> None:
     if conn is None or snap_id is None:
         return
     snapshot_branch_ownership_proofs(conn, snap_id, ev.rows)
+
+
+def _handle_branch_witness_decisions(
+    ev: BranchWitnessDecisionsObserved,
+) -> None:
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is None or not ev.rows:
+        return
+    snap_id = _latest_snapshot_id_for_func(ev.func_ea)
+    if snap_id is None:
+        _buffer_branch_witness_decisions(ev)
+        return
+    snapshot_branch_witness_decisions(conn, snap_id, ev.rows)
+
+
+def _buffer_branch_witness_decisions(ev: BranchWitnessDecisionsObserved) -> None:
+    with _branch_witness_lock:
+        _pending_branch_witness_decisions.append(ev)
+
+
+def _flush_pending_branch_witness_decisions(
+    conn: sqlite3.Connection,
+    snap_id: int,
+    func_ea: int,
+) -> None:
+    with _branch_witness_lock:
+        matching = [
+            ev for ev in _pending_branch_witness_decisions
+            if int(ev.func_ea) == int(func_ea)
+        ]
+        if matching:
+            _pending_branch_witness_decisions[:] = [
+                ev for ev in _pending_branch_witness_decisions
+                if int(ev.func_ea) != int(func_ea)
+            ]
+    for ev in matching:
+        snapshot_branch_witness_decisions(conn, int(snap_id), ev.rows)
+
+
+def _handle_corridor_shortcut_decisions(
+    ev: CorridorShortcutDecisionsObserved,
+) -> None:
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is None or not ev.rows:
+        return
+    snap_id = _latest_snapshot_id_for_func(ev.func_ea)
+    if snap_id is None:
+        _buffer_corridor_shortcut_decisions(ev)
+        return
+    snapshot_corridor_shortcut_decisions(conn, snap_id, ev.rows)
+
+
+def _buffer_corridor_shortcut_decisions(
+    ev: CorridorShortcutDecisionsObserved,
+) -> None:
+    with _corridor_shortcut_lock:
+        _pending_corridor_shortcut_decisions.append(ev)
+
+
+def _flush_pending_corridor_shortcut_decisions(
+    conn: sqlite3.Connection,
+    snap_id: int,
+    func_ea: int,
+) -> None:
+    with _corridor_shortcut_lock:
+        matching = [
+            ev for ev in _pending_corridor_shortcut_decisions
+            if int(ev.func_ea) == int(func_ea)
+        ]
+        if matching:
+            _pending_corridor_shortcut_decisions[:] = [
+                ev for ev in _pending_corridor_shortcut_decisions
+                if int(ev.func_ea) != int(func_ea)
+            ]
+    for ev in matching:
+        snapshot_corridor_shortcut_decisions(conn, int(snap_id), ev.rows)
 
 
 def _handle_dag_local_facts(ev: DagLocalFactsObserved) -> None:
@@ -618,6 +710,8 @@ _HANDLERS: tuple[tuple[type, object], ...] = (
     ),
     (SwitchCaseTransitionFactsObserved, _handle_switch_case_transition_facts),
     (BranchOwnershipProofsObserved, _handle_branch_ownership_proofs),
+    (BranchWitnessDecisionsObserved, _handle_branch_witness_decisions),
+    (CorridorShortcutDecisionsObserved, _handle_corridor_shortcut_decisions),
     (DagObserved, _handle_dag),
     (
         DagFrontierClosureDiagnosticsObserved,
@@ -680,6 +774,10 @@ def _uninstall_locked() -> None:
         _pending_bst_intervals.clear()
     with _state_dispatcher_lock:
         _pending_state_dispatcher_rows.clear()
+    with _branch_witness_lock:
+        _pending_branch_witness_decisions.clear()
+    with _corridor_shortcut_lock:
+        _pending_corridor_shortcut_decisions.clear()
 
 
 def is_installed() -> bool:

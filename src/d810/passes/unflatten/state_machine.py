@@ -35,6 +35,9 @@ from d810.analyses.control_flow.comparison_dispatcher_model import (
     ComparisonDispatcherModel,
 )
 from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.analyses.control_flow.branch_witness_provider import (
+    build_static_equality_chain_witness_map,
+)
 from d810.analyses.control_flow.router_resolver import (
     RouterResolutionContext,
     default_resolvers,
@@ -49,6 +52,7 @@ from d810.transforms.semantic_regions import plan_semantic_regions
 from d810.transforms.state_machine_unflatten import lower_to_direct_graph
 from d810.transforms.minimal_unflatten_emit import emit_minimal_unflatten
 from d810.transforms.dispatcher_cleanup import cleanup_residual_dispatcher
+from d810.capabilities.branch_witness import BranchWitnessCapability
 from d810.capabilities.value_range import ValRangeCapability
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
 from d810.capabilities.machine_engines import MachineRecoveryEnginesCapability
@@ -100,6 +104,19 @@ _COMPARISON_ROUTER_KINDS = frozenset(
         RouterKind.SWITCH,
         RouterKind.EQUALITY_CHAIN,
         RouterKind.CONDITION_CHAIN,
+    }
+)
+
+_STATIC_BRANCH_KINDS = frozenset(
+    {
+        "eq",
+        "ne",
+        "jz",
+        "jnz",
+        "jz_taken",
+        "jz_fallthrough",
+        "jnz_taken",
+        "jnz_fallthrough",
     }
 )
 
@@ -191,16 +208,25 @@ def _resolve_initial_state(bst_evidence, recovery) -> int | None:
 def _entry_bridge_requires_witness(bst_evidence, dmap) -> bool:
     """Return whether entry shortcutting needs an exact branch witness.
 
-    Equality-chain maps are obvious comparison dispatchers.  The OLLVM BST path
-    can instead route through ``bst_evidence.dispatcher`` with only interval rows
-    in the selected router; in that shape, endpoint truth is still not an exact
-    branch-arm proof, so entry projection must preserve unless a witness proves
-    the selected corridor is safe.
+    Conditional-chain maps are the only shape with production per-compare
+    witness plumbing today.  Emulated conditional-chain rows are still endpoint
+    rows, not proof, so they must go through the same witness/liveness policy:
+    static witness if the current CFG can prove it, otherwise the no-provider
+    corridor-liveness fallback.  Other comparison shapes, including
+    BST/interval routing, stay on the legacy endpoint shortcut path until they
+    grow explicit witness providers of their own.
     """
+    del bst_evidence
     if getattr(dmap, "source", None) is DispatcherType.CONDITIONAL_CHAIN:
-        return True
-    bst_nodes = getattr(bst_evidence, "bst_node_blocks", ()) if bst_evidence is not None else ()
-    return bool(tuple(bst_nodes or ()))
+        rows = tuple(getattr(dmap, "rows", ()) or ())
+        branch_kinds = {str(getattr(row, "branch_kind", "")) for row in rows}
+        return bool(branch_kinds & _STATIC_BRANCH_KINDS) or "emulated" in branch_kinds
+    return False
+
+
+def _has_emulated_endpoint_rows(dmap) -> bool:
+    rows = tuple(getattr(dmap, "rows", ()) or ())
+    return any(str(getattr(row, "branch_kind", "")) == "emulated" for row in rows)
 
 
 def _recovery_from_machine(machine, graph, min_state_constant: int) -> DispatcherRecovery:
@@ -446,19 +472,34 @@ class LowerStateMachine(PipelinePass):
             # byte-identical with the prior behaviour; the consult NEVER overrides a
             # fixpoint-resolved transition.
             emu = context.capabilities.optional(EmulationCapability)
+            branch_witness_emu = context.capabilities.optional(BranchWitnessCapability)
             # Use-def severance veto (ticket llr-wlzb): the same UseDefSafetyCapability
             # the fallback lower_to_direct_graph path consults, now threaded into the
             # PRIMARY emit path so a redirect that orphans a non-state carrier (the
             # OLLVM ``var_18 = var_378`` accumulator copies) is dropped. Gated
             # D810_USE_DEF_VETO (default OFF) inside the filter -> byte-identical default.
             dmap = getattr(recovery, "dispatch_map", None) if recovery is not None else None
-            # Explicit per-compare branch-witness rows are intentionally not
-            # derived from endpoint-style StateDispatcherMap rows here.  Until a
-            # dedicated witness provider exists, witness-required entry bridges
-            # preserve and non-required profiles keep legacy endpoint shortcutting.
-            branch_witness_map = None
             entry_bridge_requires_witness = _entry_bridge_requires_witness(
                 bst_evidence, dmap
+            )
+            branch_witness_map = (
+                build_static_equality_chain_witness_map(context.graph, dmap)
+                if (
+                    dmap is not None
+                    and entry_bridge_requires_witness
+                    and not _has_emulated_endpoint_rows(dmap)
+                )
+                else None
+            )
+            entry_bridge_corridor_blocks = (
+                tuple(
+                    sorted(
+                        int(block)
+                        for block in getattr(dmap, "dispatcher_blocks", ()) or ()
+                    )
+                )
+                if dmap is not None and entry_bridge_requires_witness
+                else ()
             )
             plan = emit_minimal_unflatten(
                 context.graph,
@@ -474,6 +515,8 @@ class LowerStateMachine(PipelinePass):
                 use_def_safety=context.capabilities.optional(UseDefSafetyCapability),
                 live_function=live_function,
                 branch_witness_map=branch_witness_map,
+                branch_witness_emu=branch_witness_emu,
+                entry_bridge_corridor_blocks=entry_bridge_corridor_blocks,
                 entry_bridge_requires_witness=entry_bridge_requires_witness,
             )
             return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())

@@ -23,7 +23,9 @@ from d810.core.diag.snapshot import (
     _dual,
     _safe_int,
     dag_node_diagnostic_state,
+    snapshot_branch_witness_decisions,
     snapshot_branch_ownership_proofs,
+    snapshot_corridor_shortcut_decisions,
     snapshot_dag,
     snapshot_dag_local_facts,
     snapshot_fact_conflicts,
@@ -304,6 +306,101 @@ def test_snapshot_branch_ownership_proofs_round_trip() -> None:
         "0x0000000000000020",
         "explicit_opaque_provenance",
     )
+
+
+def test_snapshot_branch_witness_decisions_round_trip() -> None:
+    conn = create_diag_database(":memory:").connection()
+    conn.execute(
+        "INSERT INTO snapshots VALUES "
+        "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', "
+        "'unknown', 0, 0.0)"
+    )
+
+    snapshot_branch_witness_decisions(
+        conn,
+        1,
+        [
+            {
+                "state": 0x10,
+                "dispatcher_entry_block": 1,
+                "compare_block": 2,
+                "predicate": "eq",
+                "compare_const": 0x10,
+                "selected_successor": 4,
+                "rejected_successors": (3,),
+                "target_block": 4,
+                "proof_kind": "static_equality_chain",
+                "outcome": "accepted",
+                "evidence": "validated_against_current_cfg",
+                "payload": {"source": "unit"},
+            }
+        ],
+    )
+
+    row = conn.execute(
+        "SELECT state_hex, dispatcher_entry_block, compare_block, predicate, "
+        "compare_const_hex, selected_successor, rejected_successors_json, "
+        "target_block, proof_kind, outcome, evidence, payload_json "
+        "FROM branch_witness_decisions"
+    ).fetchone()
+    assert row[:6] == (
+        "0x0000000000000010",
+        1,
+        2,
+        "eq",
+        "0x0000000000000010",
+        4,
+    )
+    assert json.loads(row[6]) == [3]
+    assert row[7:11] == (
+        4,
+        "static_equality_chain",
+        "accepted",
+        "validated_against_current_cfg",
+    )
+    assert json.loads(row[11]) == {"source": "unit"}
+
+
+def test_snapshot_corridor_shortcut_decisions_round_trip() -> None:
+    conn = create_diag_database(":memory:").connection()
+    conn.execute(
+        "INSERT INTO snapshots VALUES "
+        "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', "
+        "'unknown', 0, 0.0)"
+    )
+
+    snapshot_corridor_shortcut_decisions(
+        conn,
+        1,
+        [
+            {
+                "source_block": 0,
+                "old_target": 2,
+                "shortcut_target": 5,
+                "witness_compare_blocks": (2, 4),
+                "corridor_blocks": (2, 4),
+                "rejected_successors": (3,),
+                "outcome": "rejected",
+                "reason": "corridor_liveness_unsafe",
+                "live_definitions": ({"kind": "reg", "value": 8},),
+                "payload": {"source": "unit"},
+            }
+        ],
+    )
+
+    row = conn.execute(
+        "SELECT source_block, old_target, shortcut_target, "
+        "witness_compare_blocks_json, corridor_blocks_json, "
+        "rejected_successors_json, outcome, reason, live_definitions_json, "
+        "payload_json FROM corridor_shortcut_decisions"
+    ).fetchone()
+    assert row[:3] == (0, 2, 5)
+    assert json.loads(row[3]) == [2, 4]
+    assert json.loads(row[4]) == [2, 4]
+    assert json.loads(row[5]) == [3]
+    assert row[6:8] == ("rejected", "corridor_liveness_unsafe")
+    assert json.loads(row[8]) == [{"kind": "reg", "value": 8}]
+    assert json.loads(row[9]) == {"source": "unit"}
 
 
 @pytest.fixture()
