@@ -13,7 +13,7 @@ def test_entry_bridge_requires_witness_for_conditional_chain_map() -> None:
         rows=(SimpleNamespace(branch_kind="eq"),),
     )
 
-    assert _entry_bridge_requires_witness(None, dmap) is True
+    assert _entry_bridge_requires_witness(dmap) is True
 
 
 def test_entry_bridge_does_not_require_static_witness_for_handler_map_rows() -> None:
@@ -22,7 +22,7 @@ def test_entry_bridge_does_not_require_static_witness_for_handler_map_rows() -> 
         rows=(SimpleNamespace(branch_kind="handler_state_map"),),
     )
 
-    assert _entry_bridge_requires_witness(None, dmap) is False
+    assert _entry_bridge_requires_witness(dmap) is False
 
 
 def test_entry_bridge_requires_liveness_policy_for_emulated_chain() -> None:
@@ -34,7 +34,7 @@ def test_entry_bridge_requires_liveness_policy_for_emulated_chain() -> None:
         ),
     )
 
-    assert _entry_bridge_requires_witness(None, dmap) is True
+    assert _entry_bridge_requires_witness(dmap) is True
 
 
 def test_entry_bridge_requires_liveness_policy_for_mixed_emulated_rows() -> None:
@@ -46,7 +46,7 @@ def test_entry_bridge_requires_liveness_policy_for_mixed_emulated_rows() -> None
         ),
     )
 
-    assert _entry_bridge_requires_witness(None, dmap) is True
+    assert _entry_bridge_requires_witness(dmap) is True
     assert _has_emulated_endpoint_rows(dmap) is True
 
 
@@ -59,15 +59,13 @@ def test_entry_bridge_static_rows_are_not_emulated_endpoint_rows() -> None:
     assert _has_emulated_endpoint_rows(dmap) is False
 
 
-def test_entry_bridge_does_not_require_witness_for_bst_evidence_without_provider() -> None:
+def test_entry_bridge_does_not_require_witness_for_unknown_router_without_provider() -> None:
     dmap = SimpleNamespace(router_kind=RouterKind.UNKNOWN)
-    bst_evidence = SimpleNamespace(bst_node_blocks=(2, 4, 6, 8))
 
-    assert _entry_bridge_requires_witness(bst_evidence, dmap) is False
+    assert _entry_bridge_requires_witness(dmap) is False
 
 
 def test_entry_bridge_legacy_allowed_without_comparison_evidence() -> None:
     dmap = SimpleNamespace(router_kind=RouterKind.SWITCH)
-    bst_evidence = SimpleNamespace(bst_node_blocks=())
 
-    assert _entry_bridge_requires_witness(bst_evidence, dmap) is False
+    assert _entry_bridge_requires_witness(dmap) is False

@@ -5704,7 +5704,7 @@ def test_live_builder_prefers_exact_cover_fallback_anchor_over_bridge_row(
     assert edge.target_entry_anchor == 212
 
 
-def test_live_builder_prefers_dispatcher_body_anchor_over_bst_range_root(
+def test_live_builder_prefers_body_anchor_over_condition_chain_range_root(
     monkeypatch,
 ) -> None:
     from d810.analyses.control_flow import linearized_state_dag as dag_mod

@@ -852,7 +852,7 @@ def _build_comparison_model_from_bst(
         initial_state=bst_result.initial_state,
     )
     return ComparisonDispatcherModel.from_recovery(
-        dispatch_map, bst_evidence=bst_result, block_ea=block_ea
+        dispatch_map, range_evidence=bst_result, block_ea=block_ea
     )
 
 

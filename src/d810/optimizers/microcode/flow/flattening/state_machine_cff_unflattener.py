@@ -839,7 +839,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             logger.debug("unflat: read_dag dual-build observe failed", exc_info=True)
 
     def _publish_unflat_diagnostics(
-        self, mba, source, rec, tr, regions, fact_view, bst_evidence=None, capabilities=None
+        self, mba, source, rec, tr, regions, fact_view, range_evidence=None, capabilities=None
     ) -> None:
         """Populate the structured diag tables for the unflatten path (otherwise blind under the flag).
 
@@ -892,7 +892,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             # state) recovered before the pipeline mutated the mba (passed in). DIAG-ONLY: validates
             # evidence-recovery WITHOUT touching production lowering, so a still-naive emission cannot
             # collapse the live output (llr-gp9d/mmfq/opck).
-            bst = bst_evidence
+            bst = range_evidence
             # Inc4 (llr-mmfq): measure the sound #2 StateTransitionDomain fixpoint against the ad-hoc
             # bst-walk + oracle BEFORE swapping it into the DAG. Pure logging, feeds nothing.
             if bst is not None and fact_view is not None:
@@ -1070,7 +1070,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             dispatcher = select_router(
                 default_resolvers(),
                 RouterResolutionContext(
-                    bst_router=getattr(bst, "dispatcher", None),
+                    condition_chain_router=getattr(bst, "dispatcher", None),
                     state_to_handler=dmap.state_to_handler() if _dmap_rows else None,
                     default_target=getattr(dmap, "default_target_block", None),
                     dispatcher_entry=int(dispatcher_entry),

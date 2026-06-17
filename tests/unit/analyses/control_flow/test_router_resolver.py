@@ -1,15 +1,15 @@
 """Injectable dispatcher RouterResolver — configured AND/OR detected (ticket llr-oq8v).
 
 The router kind is a first-class property: detection ranks providers by handler
-coverage (bst default; exact map wins on a strict bst collapse), and a configured
-RouterKind pins a provider regardless of coverage (falling back to detection only
-when the pinned kind is unavailable).
+coverage (condition-chain range default; exact map wins on strict range collapse),
+and a configured RouterKind pins a provider regardless of coverage (falling back
+to detection only when the pinned kind is unavailable).
 """
 from __future__ import annotations
 
 from d810.analyses.control_flow.interval_map import interval_dispatcher_from_state_map
 from d810.analyses.control_flow.router_resolver import (
-    BstRangeRouterResolver,
+    ConditionChainRangeRouterResolver,
     ExactMapRouterResolver,
     RouterResolutionContext,
     default_resolvers,
@@ -40,80 +40,96 @@ def test_coverage_counts_distinct_handler_targets() -> None:
 
 
 # -- detection (no configured_kind) --------------------------------------------
-def test_detection_exact_wins_on_bst_collapse() -> None:
-    bst = _router({1: ENTRY, 5: ENTRY, 9: ENTRY})  # coverage 0 (collapsed)
+def test_detection_exact_wins_on_condition_chain_range_collapse() -> None:
+    range_router = _router({1: ENTRY, 5: ENTRY, 9: ENTRY})  # coverage 0 (collapsed)
     ctx = RouterResolutionContext(
-        bst_router=bst, state_to_handler={1: 10, 5: 20, 9: 30}, dispatcher_entry=ENTRY
+        condition_chain_router=range_router,
+        state_to_handler={1: 10, 5: 20, 9: 30},
+        dispatcher_entry=ENTRY,
     )
     chosen = select_router(default_resolvers(), ctx)
-    assert chosen is not bst and handler_coverage(chosen, ENTRY) == 3
+    assert chosen is not range_router and handler_coverage(chosen, ENTRY) == 3
 
 
-def test_detection_bst_wins_when_it_outcovers() -> None:
-    bst = _router({1: 10, 3: 30, 5: 50, 7: 70})  # coverage 4
+def test_detection_condition_chain_range_wins_when_it_outcovers() -> None:
+    range_router = _router({1: 10, 3: 30, 5: 50, 7: 70})  # coverage 4
     ctx = RouterResolutionContext(
-        bst_router=bst, state_to_handler={1: 10, 3: 30}, dispatcher_entry=ENTRY
+        condition_chain_router=range_router,
+        state_to_handler={1: 10, 3: 30},
+        dispatcher_entry=ENTRY,
     )
-    assert select_router(default_resolvers(), ctx) is bst
+    assert select_router(default_resolvers(), ctx) is range_router
 
 
-def test_detection_tie_keeps_bst() -> None:
-    bst = _router({1: 10, 3: 30})  # coverage 2 == exact coverage 2 -> bst priority wins
+def test_detection_tie_keeps_condition_chain_range() -> None:
+    range_router = _router({1: 10, 3: 30})  # coverage 2 == exact coverage 2
     ctx = RouterResolutionContext(
-        bst_router=bst, state_to_handler={1: 10, 3: 30}, dispatcher_entry=ENTRY
+        condition_chain_router=range_router,
+        state_to_handler={1: 10, 3: 30},
+        dispatcher_entry=ENTRY,
     )
-    assert select_router(default_resolvers(), ctx) is bst
+    assert select_router(default_resolvers(), ctx) is range_router
 
 
-def test_detection_exact_only_when_no_bst() -> None:
+def test_detection_exact_only_when_no_condition_chain_range() -> None:
     ctx = RouterResolutionContext(
-        bst_router=None, state_to_handler={1: 10, 3: 30}, dispatcher_entry=ENTRY
+        condition_chain_router=None,
+        state_to_handler={1: 10, 3: 30},
+        dispatcher_entry=ENTRY,
     )
     chosen = select_router(default_resolvers(), ctx)
     assert chosen is not None and handler_coverage(chosen, ENTRY) == 2
 
 
 # -- configuration (pin a RouterKind) ------------------------------------------
-def test_configured_kind_forces_exact_over_a_winning_bst() -> None:
-    bst = _router({1: 10, 3: 30, 5: 50, 7: 70})  # coverage 4 (would win detection)
+def test_configured_kind_forces_exact_over_winning_range_router() -> None:
+    range_router = _router({1: 10, 3: 30, 5: 50, 7: 70})  # coverage 4
     ctx = RouterResolutionContext(
-        bst_router=bst, state_to_handler={1: 10, 3: 30}, dispatcher_entry=ENTRY
+        condition_chain_router=range_router,
+        state_to_handler={1: 10, 3: 30},
+        dispatcher_entry=ENTRY,
     )
     chosen = select_router(default_resolvers(), ctx, configured_kind=RouterKind.EQUALITY_CHAIN)
-    assert chosen is not bst and handler_coverage(chosen, ENTRY) == 2
+    assert chosen is not range_router and handler_coverage(chosen, ENTRY) == 2
 
 
 def test_configured_kind_does_not_force_collapsed_condition_chain_over_exact() -> None:
-    bst = _router({1: ENTRY, 5: ENTRY})  # coverage 0 (would lose detection)
+    range_router = _router({1: ENTRY, 5: ENTRY})  # coverage 0 (would lose detection)
     ctx = RouterResolutionContext(
-        bst_router=bst, state_to_handler={1: 10, 5: 20, 9: 30}, dispatcher_entry=ENTRY
+        condition_chain_router=range_router,
+        state_to_handler={1: 10, 5: 20, 9: 30},
+        dispatcher_entry=ENTRY,
     )
     chosen = select_router(
         default_resolvers(), ctx, configured_kind=RouterKind.CONDITION_CHAIN
     )
-    assert chosen is not bst and handler_coverage(chosen, ENTRY) == 3
+    assert chosen is not range_router and handler_coverage(chosen, ENTRY) == 3
 
 
 def test_configured_kind_prefers_noncollapsed_condition_chain() -> None:
-    bst = _router({1: 10, 5: ENTRY})  # coverage 1 (usable range evidence)
+    range_router = _router({1: 10, 5: ENTRY})  # coverage 1 (usable range evidence)
     ctx = RouterResolutionContext(
-        bst_router=bst, state_to_handler={1: 10, 5: 20, 9: 30}, dispatcher_entry=ENTRY
+        condition_chain_router=range_router,
+        state_to_handler={1: 10, 5: 20, 9: 30},
+        dispatcher_entry=ENTRY,
     )
     assert (
         select_router(default_resolvers(), ctx, configured_kind=RouterKind.CONDITION_CHAIN)
-        is bst
+        is range_router
     )
 
 
 def test_configured_kind_absent_falls_back_to_detection() -> None:
     # exact map has no default -> it is EQUALITY_CHAIN, so a SWITCH pin is unavailable;
-    # selection falls back to detection (bst collapsed -> exact wins).
-    bst = _router({1: ENTRY, 5: ENTRY})
+    # selection falls back to detection (range router collapsed -> exact wins).
+    range_router = _router({1: ENTRY, 5: ENTRY})
     ctx = RouterResolutionContext(
-        bst_router=bst, state_to_handler={1: 10, 5: 20, 9: 30}, dispatcher_entry=ENTRY
+        condition_chain_router=range_router,
+        state_to_handler={1: 10, 5: 20, 9: 30},
+        dispatcher_entry=ENTRY,
     )
     chosen = select_router(default_resolvers(), ctx, configured_kind=RouterKind.SWITCH)
-    assert chosen is not bst and handler_coverage(chosen, ENTRY) == 3
+    assert chosen is not range_router and handler_coverage(chosen, ENTRY) == 3
 
 
 # -- candidate router_kind + abstention ----------------------------------------
@@ -131,15 +147,15 @@ def test_exact_kind_is_switch_with_default_else_equality_chain() -> None:
 
 def test_providers_abstain_when_inputs_missing() -> None:
     empty = RouterResolutionContext()
-    assert BstRangeRouterResolver().applies_to(empty) is None
+    assert ConditionChainRangeRouterResolver().applies_to(empty) is None
     assert ExactMapRouterResolver().applies_to(empty) is None
     assert select_router(default_resolvers(), empty) is None  # nobody applies -> None
 
 
-def test_bst_candidate_is_ranked_evidence_not_a_bool() -> None:
-    bst = _router({1: 10, 3: 30})
-    cand = BstRangeRouterResolver().applies_to(
-        RouterResolutionContext(bst_router=bst, dispatcher_entry=ENTRY)
+def test_condition_chain_candidate_is_ranked_evidence_not_a_bool() -> None:
+    range_router = _router({1: 10, 3: 30})
+    cand = ConditionChainRangeRouterResolver().applies_to(
+        RouterResolutionContext(condition_chain_router=range_router, dispatcher_entry=ENTRY)
     )
     assert cand.router_kind is RouterKind.CONDITION_CHAIN
     assert cand.confidence == 2.0  # coverage as the ranking signal
