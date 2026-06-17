@@ -60,13 +60,13 @@ from d810.analyses.value_flow import (
 from d810.core import logging
 from d810.core.observability_recon import (
     observe_branch_witness_decisions,
-    observe_corridor_shortcut_decisions,
+    observe_exit_path_shortcut_decisions,
 )
 from d810.ir.block_identity import block_label
 from d810.ir.semantics import PredicateKind
-from d810.transforms.corridor_liveness_policy import (
-    corridor_blocks_live_violations,
-    evaluate_corridor_shortcut,
+from d810.transforms.exit_path_liveness_policy import (
+    exit_path_blocks_live_violations,
+    evaluate_exit_path_shortcut,
 )
 from d810.transforms.graph_modification import (
     ConvertToGoto,
@@ -79,8 +79,8 @@ from d810.transforms.graph_modification import (
     ZeroStateWrite,
 )
 from d810.transforms.plan import PatchPlan, compile_patch_plan
-from d810.transforms.terminal_corridor_emission import (
-    plan_state_terminal_corridor_lowerings,
+from d810.transforms.exit_path_effect_emission import (
+    plan_state_exit_path_effect_lowerings,
 )
 from d810.transforms.use_def_redirect_filter import (
     count_use_def_severances,
@@ -311,36 +311,36 @@ def _apply_entry_bridge(
     state_var_stkoff: int | None,
     branch_witness_map: object | None,
     branch_witness_emu: object | None,
-    entry_bridge_corridor_blocks: tuple[int, ...],
+    entry_bridge_exit_path_blocks: tuple[int, ...],
     entry_bridge_requires_witness: bool,
     _add,
 ) -> None:
     """Apply entry-bridge redirects, gated on exact branch witness resolution.
 
     When a ``BranchWitnessMap`` is available, resolve the exact branch witness
-    path for ``initial_state_u`` and apply corridor liveness before shortcutting.
-    Abstain / conflict / unsafe corridor preserves CFG (no redirects emitted).
-    Witness-required entry bridges fall back to corridor liveness when no
+    path for ``initial_state_u`` and apply exit-path liveness before shortcutting.
+    Abstain / conflict / unsafe exit path preserves CFG (no redirects emitted).
+    Witness-required entry bridges fall back to exit-path liveness when no
     provider supplied a map: live stack/register definitions preserve CFG;
-    live-safe corridors keep legacy endpoint shortcutting.
+    live-safe exit paths keep legacy endpoint shortcutting.
     """
     if branch_witness_map is None:
         if entry_bridge_requires_witness:
-            corridor_blocks = tuple(
-                sorted({int(block) for block in entry_bridge_corridor_blocks})
+            exit_path_blocks = tuple(
+                sorted({int(block) for block in entry_bridge_exit_path_blocks})
             ) or (int(disp),)
-            unsafe = corridor_blocks_live_violations(
+            unsafe = exit_path_blocks_live_violations(
                 flow_graph,
-                corridor_blocks,
+                exit_path_blocks,
                 int(first),
                 state_var_stkoff,
                 source_blocks=tuple(sorted(int(p) for p in prologue_preds)),
                 old_target=int(disp),
             )
             reason = (
-                "no_provider_corridor_liveness_unsafe"
+                "no_provider_exit_path_liveness_unsafe"
                 if unsafe
-                else "no_provider_corridor_live_safe_endpoint"
+                else "no_provider_exit_path_live_safe_endpoint"
             )
             _observe_branch_witness_result(
                 flow_graph,
@@ -348,7 +348,7 @@ def _apply_entry_bridge(
                 dispatcher_entry_block=disp,
                 witness_result=BranchWitnessAbstain(reason),
             )
-            _observe_corridor_shortcut_decision(
+            _observe_exit_path_shortcut_decision(
                 flow_graph,
                 source_blocks=prologue_preds,
                 old_target=disp,
@@ -356,18 +356,18 @@ def _apply_entry_bridge(
                 witness_result=BranchWitnessAbstain(reason),
                 decision_reason=reason,
                 decision_allowed=not unsafe,
-                corridor_blocks=corridor_blocks,
+                exit_path_blocks=exit_path_blocks,
                 live_definitions=tuple(sorted(unsafe)),
             )
             if not unsafe:
                 if logger.info_on:
                     logger.info(
                         "unflat entry bridge: LEGACY_ENDPOINT state=0x%X "
-                        "reason=%s target=%s corridor=%s",
+                        "reason=%s target=%s exit_path=%s",
                         initial_state_u,
                         reason,
                         _format_block_label(flow_graph, first),
-                        _format_block_labels(flow_graph, corridor_blocks),
+                        _format_block_labels(flow_graph, exit_path_blocks),
                     )
                 for entry_pred in sorted(prologue_preds):
                     epblk = flow_graph.get_block(int(entry_pred))
@@ -378,11 +378,11 @@ def _apply_entry_bridge(
             if logger.info_on:
                 logger.info(
                     "unflat entry bridge: PRESERVED state=0x%X "
-                    "reason=%s target=%s corridor=%s live=%s",
+                    "reason=%s target=%s exit_path=%s live=%s",
                     initial_state_u,
                     reason,
                     _format_block_label(flow_graph, first),
-                    _format_block_labels(flow_graph, corridor_blocks),
+                    _format_block_labels(flow_graph, exit_path_blocks),
                     sorted(unsafe),
                 )
             return
@@ -405,10 +405,10 @@ def _apply_entry_bridge(
         dispatcher_entry_block=disp,
         witness_result=witness,
     )
-    decision = evaluate_corridor_shortcut(
+    decision = evaluate_exit_path_shortcut(
         flow_graph, witness, int(first), state_var_stkoff
     )
-    _observe_corridor_shortcut_decision(
+    _observe_exit_path_shortcut_decision(
         flow_graph,
         source_blocks=prologue_preds,
         old_target=disp,
@@ -416,18 +416,18 @@ def _apply_entry_bridge(
         witness_result=witness,
         decision_reason=decision.reason,
         decision_allowed=decision.allowed,
-        corridor_blocks=decision.corridor_blocks,
+        exit_path_blocks=decision.exit_path_blocks,
         live_definitions=decision.live_definitions,
     )
     if not decision.allowed:
         if logger.info_on:
             logger.info(
                 "unflat entry bridge: PRESERVED state=0x%X reason=%s "
-                "target=%s corridor=%s",
+                "target=%s exit_path=%s",
                 initial_state_u,
                 decision.reason,
                 _format_block_label(flow_graph, first),
-                _format_block_labels(flow_graph, decision.corridor_blocks),
+                _format_block_labels(flow_graph, decision.exit_path_blocks),
             )
         return  # preserve CFG
     for entry_pred in sorted(prologue_preds):
@@ -500,7 +500,7 @@ def _observe_branch_witness_result(
         observe_branch_witness_decisions(func_ea=func_ea, rows=tuple(rows))
 
 
-def _observe_corridor_shortcut_decision(
+def _observe_exit_path_shortcut_decision(
     flow_graph: object,
     *,
     source_blocks: set[int],
@@ -509,7 +509,7 @@ def _observe_corridor_shortcut_decision(
     witness_result: object,
     decision_reason: str,
     decision_allowed: bool,
-    corridor_blocks: tuple[int, ...] = (),
+    exit_path_blocks: tuple[int, ...] = (),
     live_definitions: tuple[tuple[str, int], ...] = (),
 ) -> None:
     func_ea = _flow_graph_func_ea(flow_graph)
@@ -529,7 +529,7 @@ def _observe_corridor_shortcut_decision(
             "old_target": int(old_target),
             "shortcut_target": int(shortcut_target),
             "witness_compare_blocks": tuple(witness_compare_blocks),
-            "corridor_blocks": tuple(int(b) for b in corridor_blocks),
+            "exit_path_blocks": tuple(int(b) for b in exit_path_blocks),
             "rejected_successors": tuple(rejected_successors),
             "outcome": "allowed" if decision_allowed else "rejected",
             "reason": decision_reason,
@@ -541,7 +541,7 @@ def _observe_corridor_shortcut_decision(
         for source_block in sorted(source_blocks)
     ]
     if rows:
-        observe_corridor_shortcut_decisions(func_ea=func_ea, rows=tuple(rows))
+        observe_exit_path_shortcut_decisions(func_ea=func_ea, rows=tuple(rows))
 
 
 def _state_predicate_successor_for_value(
@@ -642,7 +642,7 @@ def build_state_write_redirects(
     state_var_stkoff: int | None = None,
     branch_witness_map: object | None = None,
     branch_witness_emu: object | None = None,
-    entry_bridge_corridor_blocks: tuple[int, ...] = (),
+    entry_bridge_exit_path_blocks: tuple[int, ...] = (),
     entry_bridge_requires_witness: bool = False,
 ) -> list[object]:
     """Build the redirect modifications that linearize the interval-set graph.
@@ -851,8 +851,8 @@ def build_state_write_redirects(
     # Entry bridge: prologue blocks that fall into the dispatcher -> route(initial).
     # When an exact branch witness map is available, projection MUST consume
     # that witness, not endpoint truth: validate the branch arms against the
-    # current CFG and only shortcut when corridor liveness is safe.  Abstain /
-    # conflict / unsafe corridor preserves the original prologue -> dispatcher
+    # current CFG and only shortcut when exit-path liveness is safe.  Abstain /
+    # conflict / unsafe exit path preserves the original prologue -> dispatcher
     # edges.
     if initial_state is not None and disp is not None:
         first = dispatcher.lookup(int(initial_state) & 0xFFFFFFFF)
@@ -861,7 +861,7 @@ def build_state_write_redirects(
                 flow_graph, dispatcher, disp, first, int(initial_state) & 0xFFFFFFFF,
                 prologue_preds, state_var_stkoff, branch_witness_map,
                 branch_witness_emu,
-                entry_bridge_corridor_blocks,
+                entry_bridge_exit_path_blocks,
                 entry_bridge_requires_witness, _add,
             )
 
@@ -1821,7 +1821,7 @@ def build_loop_carrier_guard_transitions(
     A profile-specific collector can record the loop predicate on the
     predicate-producing back-edge block, while the selector state it writes routes
     to a separate two-way guard block.  Redirecting through the selector as a DAG
-    spine can sever the predicate/body corridor.  Instead, recover one first-class
+    spine can sever the predicate/body exit_path.  Instead, recover one first-class
     conditional transition at the actual predicate producer:
 
         producer(counter < bound, state=selector) -> true: body, false: exit
@@ -2415,9 +2415,9 @@ def emit_minimal_unflatten(
     live_function=None,
     branch_witness_map: object | None = None,
     branch_witness_emu: object | None = None,
-    entry_bridge_corridor_blocks: tuple[int, ...] = (),
+    entry_bridge_exit_path_blocks: tuple[int, ...] = (),
     entry_bridge_requires_witness: bool = False,
-    terminal_corridor_recovery: bool = False,
+    exit_path_effect_recovery: bool = False,
 ) -> PatchPlan:
     """Recover back-edge transitions and emit the dispatcher-bypass ``PatchPlan``.
 
@@ -2536,7 +2536,7 @@ def emit_minimal_unflatten(
         state_var_stkoff=int(state_var_stkoff),
         branch_witness_map=branch_witness_map,
         branch_witness_emu=branch_witness_emu,
-        entry_bridge_corridor_blocks=entry_bridge_corridor_blocks,
+        entry_bridge_exit_path_blocks=entry_bridge_exit_path_blocks,
         entry_bridge_requires_witness=entry_bridge_requires_witness,
     )
     # Conditional/multi-arm transitions (ticket llr-aga1): the back-edge model
@@ -2742,16 +2742,16 @@ def emit_minimal_unflatten(
             pre_cfg=flow_graph,
             state_var_stkoff=int(state_var_stkoff),
         )
-    if terminal_corridor_recovery:
-        corridor_plan = plan_state_terminal_corridor_lowerings(
+    if exit_path_effect_recovery:
+        exit_path_effect_plan = plan_state_exit_path_effect_lowerings(
             flow_graph=flow_graph,
             modifications=tuple(mods),
             dispatcher_entry_serial=int(dispatcher_entry_serial),
             state_var_stkoff=int(state_var_stkoff),
         )
-        if corridor_plan.modifications:
+        if exit_path_effect_plan.modifications:
             terminal_anchors = {
-                int(site.anchor_serial) for site in corridor_plan.supported_sites
+                int(site.anchor_serial) for site in exit_path_effect_plan.supported_sites
             }
             mods = [
                 mod
@@ -2762,13 +2762,13 @@ def emit_minimal_unflatten(
                     and int(mod.old_target) == int(dispatcher_entry_serial)
                 )
             ]
-            mods = list(mods) + list(corridor_plan.modifications)
+            mods = list(mods) + list(exit_path_effect_plan.modifications)
             if logger.info_on:
                 logger.info(
-                    "unflat minimal unflatten: terminal_corridor_dtl sites=%d "
-                    "corridors=%d anchors=%s",
-                    len(corridor_plan.supported_sites),
-                    len(corridor_plan.corridors),
+                    "unflat minimal unflatten: exit_path_effect_lowering sites=%d "
+                    "exit_path_effect_summaries=%d anchors=%s",
+                    len(exit_path_effect_plan.supported_sites),
+                    len(exit_path_effect_plan.exit_path_effect_summaries),
                     ",".join(str(anchor) for anchor in sorted(terminal_anchors)),
                 )
     if logger.info_on:

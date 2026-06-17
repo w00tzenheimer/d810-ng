@@ -2,12 +2,12 @@
 
 This adapter lives in the optimizer layer (permitted to import
 ``d810.hexrays`` and the live evaluator), so the pure recon
-``terminal_corridor_discovery`` never imports Hex-Rays to answer the one
+``exit_path_effect_discovery`` never imports Hex-Rays to answer the one
 genuinely-live question it delegates: "what constant did this indirect
 state-variable write resolve to?"
 
 The two ``_resolve_*`` helpers were moved here verbatim from
-``d810.analyses.control_flow.terminal_corridor_discovery``; their logic is
+``d810.analyses.control_flow.exit_path_effect_discovery``; their logic is
 unchanged.
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ from d810.analyses.control_flow.state_machine_analysis import (
     CarrierResolutionResult,
     ResolutionMethod,
 )
-from d810.analyses.control_flow.terminal_corridor_discovery import CarrierSourceKind
+from d810.analyses.control_flow.exit_path_effect_discovery import CarrierSourceKind
 
 
 def _resolve_indirect_state_write_via_mba(

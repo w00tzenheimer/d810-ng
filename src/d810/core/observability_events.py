@@ -128,8 +128,8 @@ class BranchWitnessDecisionsObserved:
 
 
 @dataclass(frozen=True)
-class CorridorShortcutDecisionsObserved:
-    """Recon observed corridor shortcut/liveness decisions."""
+class ExitPathShortcutDecisionsObserved:
+    """Recon observed exit-path shortcut/liveness decisions."""
 
     func_ea: int
     rows: tuple[Any, ...]
@@ -317,7 +317,7 @@ __all__ = [
     "BranchOwnershipProofsObserved",
     "BranchWitnessDecisionsObserved",
     "BstIntervalDispatcherObserved",
-    "CorridorShortcutDecisionsObserved",
+    "ExitPathShortcutDecisionsObserved",
     "DagFrontierClosureDiagnosticsObserved",
     "DagLocalFactsObserved",
     "DagObserved",

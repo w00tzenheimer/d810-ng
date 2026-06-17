@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.transforms.graph_modification import (
-    DirectTerminalLoweringGroup,
-    DirectTerminalLoweringKind,
-    DirectTerminalLoweringSite,
+    ExitPathLoweringGroup,
+    ExitPathLoweringKind,
+    ExitPathLoweringSite,
     PrivateTerminalSuffixGroup,
     RedirectBranch,
     RedirectGoto,
@@ -591,14 +591,14 @@ def test_protected_non_carrier_return_writer_fact_does_not_duplicate_existing_lo
         writer_block=41,
         walk_path=(219, 218, 41),
     )
-    existing = DirectTerminalLoweringGroup(
+    existing = ExitPathLoweringGroup(
         shared_entry_serial=218,
         return_block_serial=219,
         suffix_serials=(218, 219),
         sites=(
-            DirectTerminalLoweringSite(
+            ExitPathLoweringSite(
                 anchor_serial=41,
-                kind=DirectTerminalLoweringKind.CLONE_MATERIALIZER,
+                kind=ExitPathLoweringKind.CLONE_MATERIALIZER,
                 materializer_serials=(27, 218),
             ),
         ),

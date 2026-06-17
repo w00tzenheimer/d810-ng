@@ -298,7 +298,7 @@ def _terminal_return_audit_to_dict(audit: TerminalReturnAuditReport) -> dict:
                 "exit_serial": s.exit_serial,
                 "source_kind": s.source_kind.value,
                 "return_block_serial": s.return_block_serial,
-                "corridor_length": s.corridor_length,
+                "exit_path_length": s.exit_path_length,
                 "has_rax_write": s.has_rax_write,
                 "notes": s.notes,
             }
@@ -315,7 +315,7 @@ def _terminal_return_audit_from_dict(d: dict) -> TerminalReturnAuditReport:
             exit_serial=s.get("exit_serial"),
             source_kind=TerminalReturnSourceKind(s["source_kind"]),
             return_block_serial=s.get("return_block_serial"),
-            corridor_length=s.get("corridor_length", 0),
+            exit_path_length=s.get("exit_path_length", 0),
             has_rax_write=s.get("has_rax_write"),
             notes=s.get("notes", ""),
         )

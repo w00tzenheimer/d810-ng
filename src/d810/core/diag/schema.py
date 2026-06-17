@@ -60,7 +60,6 @@ _LEGACY_DAG_TABLE_RENAMES = {
     "dag_edge_alternate_selections": "state_cfg_edge_alternate_selections",
 }
 
-
 def _migrate_legacy_dag_tables(db: SqliteDatabase) -> None:
     """Rename pre-existing ``dag_*`` base tables to ``state_cfg_*`` (idempotent).
 

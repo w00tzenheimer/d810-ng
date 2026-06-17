@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 from d810.transforms.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
-    DirectTerminalLoweringGroup,
-    DirectTerminalLoweringSite,
+    ExitPathLoweringGroup,
+    ExitPathLoweringSite,
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     GraphModification,
@@ -366,15 +366,15 @@ class ModificationBuilder:
 
     def direct_terminal_lowering(
         self,
-        sites: list[DirectTerminalLoweringSite],
+        sites: list[ExitPathLoweringSite],
         shared_entry_serial: int,
         return_block_serial: int,
         suffix_serials: tuple[int, ...],
         *,
-        reason: str = "terminal_return_direct_lowering",
-    ) -> DirectTerminalLoweringGroup:
-        """Emit a DirectTerminalLoweringGroup for multiple anchor sites."""
-        return DirectTerminalLoweringGroup(
+        reason: str = "exit_path_return_direct_lowering",
+    ) -> ExitPathLoweringGroup:
+        """Emit a ExitPathLoweringGroup for multiple anchor sites."""
+        return ExitPathLoweringGroup(
             shared_entry_serial=shared_entry_serial,
             return_block_serial=return_block_serial,
             suffix_serials=suffix_serials,

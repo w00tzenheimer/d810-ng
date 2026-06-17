@@ -5,12 +5,12 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.analyses.control_flow.terminal_frontier import TerminalLoweringAction
-from d810.analyses.control_flow.terminal_corridor_discovery import (
+from d810.analyses.control_flow.exit_path_effect_discovery import (
     CarrierSourceKind,
-    CorridorRecommendation,
+    ExitPathRecommendation,
     ForwardFrontierEntry,
-    discover_shared_corridor,
-    discover_terminal_corridor_group,
+    discover_shared_exit_path,
+    discover_exit_path_effect_group,
 )
 
 
@@ -65,7 +65,7 @@ class _FakeFlowGraph:
         return tuple(block.preds) if block is not None else ()
 
 
-def test_discover_shared_corridor_reports_linear_clonable_corridor():
+def test_discover_shared_exit_path_reports_linear_clonable_path():
     flow_graph = _FakeFlowGraph(
         (
             _FakeBlock(20, (30,), (10, 11)),
@@ -76,7 +76,7 @@ def test_discover_shared_corridor_reports_linear_clonable_corridor():
     entries = (
         ForwardFrontierEntry(
             handler_entry=10,
-            terminal_path=(10,),
+            exit_path=(10,),
             forward_candidate=10,
             candidate_succ=20,
             shared_entry=20,
@@ -88,7 +88,7 @@ def test_discover_shared_corridor_reports_linear_clonable_corridor():
         ),
         ForwardFrontierEntry(
             handler_entry=11,
-            terminal_path=(11,),
+            exit_path=(11,),
             forward_candidate=11,
             candidate_succ=20,
             shared_entry=20,
@@ -100,7 +100,7 @@ def test_discover_shared_corridor_reports_linear_clonable_corridor():
         ),
     )
 
-    corridor = discover_shared_corridor(
+    exit_path = discover_shared_exit_path(
         flow_graph,
         20,
         (30, 40),
@@ -108,12 +108,12 @@ def test_discover_shared_corridor_reports_linear_clonable_corridor():
         entries,
     )
 
-    assert corridor.corridor_blocks == (20,)
-    assert corridor.clonable is True
-    assert corridor.recommendation == CorridorRecommendation.PRIVATE_TERMINAL_CORRIDOR
+    assert exit_path.exit_path_blocks == (20,)
+    assert exit_path.clonable is True
+    assert exit_path.recommendation == ExitPathRecommendation.PRIVATE_EXIT_PATH_EFFECT
 
 
-def test_discover_terminal_corridor_group_collects_shared_frontier():
+def test_discover_exit_path_effect_group_collects_shared_frontier():
     flow_graph = _FakeFlowGraph(
         (
             _FakeBlock(2, (10,), (), block_type=4),
@@ -143,7 +143,7 @@ def test_discover_terminal_corridor_group_collects_shared_frontier():
         flow_graph=flow_graph,
     )
 
-    result = discover_terminal_corridor_group(
+    result = discover_exit_path_effect_group(
         snapshot,
         anchor_note="unit-test-anchor",
     )
@@ -159,7 +159,7 @@ def test_discover_terminal_corridor_group_collects_shared_frontier():
     )
 
 
-def test_discover_terminal_corridor_group_rejects_missing_dispatcher_evidence():
+def test_discover_exit_path_effect_group_rejects_missing_dispatcher_evidence():
     flow_graph = _FakeFlowGraph(
         (
             _FakeBlock(10, (20,), ()),
@@ -188,7 +188,7 @@ def test_discover_terminal_corridor_group_rejects_missing_dispatcher_evidence():
         flow_graph=flow_graph,
     )
 
-    result = discover_terminal_corridor_group(
+    result = discover_exit_path_effect_group(
         snapshot,
         anchor_note="unit-test-anchor",
     )
@@ -197,7 +197,7 @@ def test_discover_terminal_corridor_group_rejects_missing_dispatcher_evidence():
     assert result.failure_reason == "missing_bst_result"
 
 
-def test_discover_terminal_corridor_group_excludes_dispatcher_block_set():
+def test_discover_exit_path_effect_group_excludes_dispatcher_block_set():
     flow_graph = _FakeFlowGraph(
         (
             _FakeBlock(2, (10,), (), block_type=4),
@@ -228,7 +228,7 @@ def test_discover_terminal_corridor_group_excludes_dispatcher_block_set():
         flow_graph=flow_graph,
     )
 
-    result = discover_terminal_corridor_group(
+    result = discover_exit_path_effect_group(
         snapshot,
         anchor_note="unit-test-anchor",
     )

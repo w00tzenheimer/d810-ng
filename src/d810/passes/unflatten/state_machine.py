@@ -214,7 +214,7 @@ def _entry_bridge_requires_witness(bst_evidence, dmap) -> bool:
     witness plumbing today.  Emulated conditional-chain rows are still endpoint
     rows, not proof, so they must go through the same witness/liveness policy:
     static witness if the current CFG can prove it, otherwise the no-provider
-    corridor-liveness fallback.  Other comparison shapes, including
+    exit-path liveness fallback.  Other comparison shapes, including
     BST/interval routing, stay on the legacy endpoint shortcut path until they
     grow explicit witness providers of their own.
     """
@@ -493,7 +493,7 @@ class LowerStateMachine(PipelinePass):
                 )
                 else None
             )
-            entry_bridge_corridor_blocks = (
+            entry_bridge_exit_path_blocks = (
                 tuple(
                     sorted(
                         int(block)
@@ -518,11 +518,11 @@ class LowerStateMachine(PipelinePass):
                 live_function=live_function,
                 branch_witness_map=branch_witness_map,
                 branch_witness_emu=branch_witness_emu,
-                entry_bridge_corridor_blocks=entry_bridge_corridor_blocks,
+                entry_bridge_exit_path_blocks=entry_bridge_exit_path_blocks,
                 entry_bridge_requires_witness=entry_bridge_requires_witness,
-                terminal_corridor_recovery=(
+                exit_path_effect_recovery=(
                     isinstance(context.project_config, dict)
-                    and bool(context.project_config.get("terminal_corridor_recovery"))
+                    and bool(context.project_config.get("exit_path_effect_recovery"))
                 ),
             )
             _publish(context, LOWER_STATE_MACHINE_PLAN_METADATA, plan.metadata_dict())

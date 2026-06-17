@@ -320,7 +320,7 @@ def test_emits_back_edge_redirect_and_entry_bridge(_seam) -> None:
     assert (0, 2, 10) in gotos
 
 
-def test_entry_bridge_shortcuts_pure_state_only_witness_corridor(_seam) -> None:
+def test_entry_bridge_shortcuts_pure_state_only_witness_exit_path(_seam) -> None:
     fg = FlowGraph(
         blocks={
             0: _b(0, (1,), ()),
@@ -345,7 +345,7 @@ def test_entry_bridge_shortcuts_pure_state_only_witness_corridor(_seam) -> None:
         pre_header_serial=1,
         initial_state=0x10,
         state_var_stkoff=_STATE,
-        entry_bridge_corridor_blocks=(2, 4),
+        entry_bridge_exit_path_blocks=(2, 4),
         entry_bridge_requires_witness=True,
     )
 
@@ -353,7 +353,7 @@ def test_entry_bridge_shortcuts_pure_state_only_witness_corridor(_seam) -> None:
     assert (1, 2, 5) in gotos
 
 
-def test_entry_bridge_preserves_witness_corridor_with_live_stack_def(_seam) -> None:
+def test_entry_bridge_preserves_witness_exit_path_with_live_stack_def(_seam) -> None:
     non_state = 0x88
     fg = FlowGraph(
         blocks={
@@ -379,7 +379,7 @@ def test_entry_bridge_preserves_witness_corridor_with_live_stack_def(_seam) -> N
         pre_header_serial=1,
         initial_state=0x10,
         state_var_stkoff=_STATE,
-        entry_bridge_corridor_blocks=(2, 4),
+        entry_bridge_exit_path_blocks=(2, 4),
         entry_bridge_requires_witness=True,
     )
 
@@ -412,7 +412,7 @@ def test_entry_bridge_shortcuts_skipped_dead_non_state_def(_seam) -> None:
         pre_header_serial=1,
         initial_state=0x10,
         state_var_stkoff=_STATE,
-        entry_bridge_corridor_blocks=(2, 4),
+        entry_bridge_exit_path_blocks=(2, 4),
         entry_bridge_requires_witness=True,
     )
 
@@ -446,7 +446,7 @@ def test_entry_bridge_shortcuts_dispatcher_local_non_state_temp(_seam) -> None:
         pre_header_serial=1,
         initial_state=0x10,
         state_var_stkoff=_STATE,
-        entry_bridge_corridor_blocks=(2, 4),
+        entry_bridge_exit_path_blocks=(2, 4),
         entry_bridge_requires_witness=True,
     )
 
@@ -454,7 +454,7 @@ def test_entry_bridge_shortcuts_dispatcher_local_non_state_temp(_seam) -> None:
     assert (1, 2, 5) in gotos
 
 
-def test_entry_bridge_preserves_witness_corridor_with_live_call_target_reg(_seam) -> None:
+def test_entry_bridge_preserves_witness_exit_path_with_live_call_target_reg(_seam) -> None:
     fg = FlowGraph(
         blocks={
             0: _b(0, (1,), ()),
@@ -479,7 +479,7 @@ def test_entry_bridge_preserves_witness_corridor_with_live_call_target_reg(_seam
         pre_header_serial=1,
         initial_state=0x10,
         state_var_stkoff=_STATE,
-        entry_bridge_corridor_blocks=(2, 4),
+        entry_bridge_exit_path_blocks=(2, 4),
         entry_bridge_requires_witness=True,
     )
 
@@ -809,8 +809,8 @@ def test_terminal_stack_alias_via_block_keeps_carrier_guard(_seam) -> None:
     assert (8, 2, 9) not in branches
 
 
-def test_witness_entry_bridge_shortcuts_safe_corridor(_seam) -> None:
-    """Equality-chain entry bridge with a pure corridor is shortcut."""
+def test_witness_entry_bridge_shortcuts_safe_exit_path(_seam) -> None:
+    """Equality-chain entry bridge with a pure exit_path is shortcut."""
     # blk0 -> blk2(dispatcher entry) -> blk4(eq 0x10) -> blk10(handler)
     fg = FlowGraph(
         blocks={
@@ -831,7 +831,7 @@ def test_witness_entry_bridge_shortcuts_safe_corridor(_seam) -> None:
     assert (0, 2, 10) in gotos
 
 
-def test_witness_entry_bridge_preserves_live_stack_corridor(_seam) -> None:
+def test_witness_entry_bridge_preserves_live_stack_exit_path(_seam) -> None:
     """Equality-chain entry bridge with a live stack definition is preserved."""
     # blk0 -> blk2(dispatcher entry) -> blk4(eq 0x10). blk4 defines a non-state
     # stack slot 0x70. blk10(handler) uses 0x70. Shortcut blk0 -> blk10 would
@@ -860,7 +860,7 @@ def test_witness_entry_bridge_preserves_live_stack_corridor(_seam) -> None:
     # Entry bridge must NOT shortcut because blk2 defines live 0x70.
     assert (0, 2, 10) not in gotos
     # Feasibility is still useful to prove which arm is live, but unsafe
-    # corridors must preserve the current CFG instead of mutating branch arms.
+    # exit_path_effect_summaries must preserve the current CFG instead of mutating branch arms.
     assert (2, 99, 10) not in branches
 
 
@@ -892,7 +892,7 @@ def test_witness_entry_bridge_preserves_nested_register_use(_seam) -> None:
 
 
 def test_entry_bridge_requires_witness_shortcuts_live_safe_without_provider(_seam) -> None:
-    """Missing witness rows keep legacy shortcutting when the corridor is live-safe."""
+    """Missing witness rows keep legacy shortcutting when the exit_path is live-safe."""
     fg = FlowGraph(
         blocks={
             0: _b(0, (2,), ()),
@@ -921,7 +921,7 @@ def test_entry_bridge_requires_witness_shortcuts_live_safe_without_provider(_sea
     assert (0, 2, 10) in gotos
 
 
-def test_entry_bridge_requires_witness_preserves_live_no_provider_corridor(_seam) -> None:
+def test_entry_bridge_requires_witness_preserves_live_no_provider_exit_path(_seam) -> None:
     """No-provider fallback preserves a live register def in the dispatcher entry."""
     _RAX = 8
     fg = FlowGraph(
@@ -955,8 +955,8 @@ def test_entry_bridge_requires_witness_preserves_live_no_provider_corridor(_seam
     assert (0, 2, 10) not in gotos
 
 
-def test_entry_bridge_requires_witness_preserves_live_no_provider_stack_corridor(_seam) -> None:
-    """No-provider fallback uses all supplied corridor blocks, not just old target."""
+def test_entry_bridge_requires_witness_preserves_live_no_provider_stack_exit_path(_seam) -> None:
+    """No-provider fallback uses all supplied exit_path blocks, not just old target."""
     _LIVE_OFF = 0x70
     fg = FlowGraph(
         blocks={
@@ -977,7 +977,7 @@ def test_entry_bridge_requires_witness_preserves_live_no_provider_stack_corridor
         dispatcher_entry_serial=2,
         initial_state=0x10,
         branch_witness_map=None,
-        entry_bridge_corridor_blocks=(2, 4),
+        entry_bridge_exit_path_blocks=(2, 4),
         entry_bridge_requires_witness=True,
     )
     gotos = {
@@ -1017,7 +1017,7 @@ def test_conditional_entry_bridge_without_policy_uses_legacy_shortcut(_seam) -> 
     assert (0, 2, 10) in gotos
 
 
-def test_witness_entry_bridge_shortcuts_dead_non_state_corridor(_seam) -> None:
+def test_witness_entry_bridge_shortcuts_dead_non_state_exit_path(_seam) -> None:
     """A non-state definition with no live use can be bypassed."""
     _DEAD_OFF = 0x71
     fg = FlowGraph(
@@ -1042,7 +1042,7 @@ def test_witness_entry_bridge_shortcuts_dead_non_state_corridor(_seam) -> None:
     assert (0, 2, 10) in gotos
 
 
-def test_witness_entry_bridge_shortcuts_state_only_corridor(_seam) -> None:
+def test_witness_entry_bridge_shortcuts_state_only_exit_path(_seam) -> None:
     """State-variable definitions are intentionally severed by unflattening."""
     fg = FlowGraph(
         blocks={

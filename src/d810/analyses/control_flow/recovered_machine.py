@@ -27,8 +27,8 @@ __all__ = [
     "Soundness",
     "MachineRow",
     "MachineTransition",
-    "TerminalCorridorEffect",
-    "TerminalCorridor",
+    "ExitPathEffect",
+    "ExitPathEffectSummary",
     "RecoveredMachine",
 ]
 
@@ -94,8 +94,8 @@ class MachineTransition:
 
 
 @dataclass(frozen=True, slots=True)
-class TerminalCorridorEffect:
-    """One payload/state effect proven along a terminal corridor.
+class ExitPathEffect:
+    """One payload/state effect proven along an exit path.
 
     This is deliberately small and backend-neutral: Hex-Rays evidence can name a
     call target, stack slot, or symbolic expression without forcing the common
@@ -110,18 +110,18 @@ class TerminalCorridorEffect:
 
 
 @dataclass(frozen=True, slots=True)
-class TerminalCorridor:
+class ExitPathEffectSummary:
     """Proof-carrying deterministic route from an initial state to a terminal.
 
     ``symbolic_inputs`` are payload symbols such as ``R = rand()``.  They may flow
     into effects, but they must not control branch choices; otherwise the
-    corridor is an observed path, not a complete proof.
+    exit path is an observed path, not a complete proof.
     """
 
     initial_state: int
     terminal_state: int
     path_blocks: tuple[int, ...]
-    effects: tuple[TerminalCorridorEffect, ...] = ()
+    effects: tuple[ExitPathEffect, ...] = ()
     terminal_block: int | None = None
     symbolic_inputs: tuple[str, ...] = ()
     branch_dependency_symbols: tuple[str, ...] = ()
@@ -161,7 +161,7 @@ class RecoveredMachine:
 
     rows: tuple[MachineRow, ...]
     transitions: tuple[MachineTransition, ...] = ()
-    terminal_corridors: tuple[TerminalCorridor, ...] = ()
+    exit_path_effect_summaries: tuple[ExitPathEffectSummary, ...] = ()
     contexts: tuple[tuple[int, ...], ...] = ()
     initial_states: tuple[int, ...] = ()
     state_var_stkoff: int | None = None
@@ -273,12 +273,12 @@ class RecoveredMachine:
         ``replace(dmap, initial_state=...)``)."""
         return replace(self, initial_states=(int(state),))
 
-    def with_terminal_corridor(
-        self, corridor: TerminalCorridor
+    def with_exit_path_effect_summary(
+        self, exit_path: ExitPathEffectSummary
     ) -> "RecoveredMachine":
-        """Return a copy carrying one additional proven terminal corridor."""
+        """Return a copy carrying one additional proven exit-path effect summary."""
 
         return replace(
             self,
-            terminal_corridors=self.terminal_corridors + (corridor,),
+            exit_path_effect_summaries=self.exit_path_effect_summaries + (exit_path,),
         )

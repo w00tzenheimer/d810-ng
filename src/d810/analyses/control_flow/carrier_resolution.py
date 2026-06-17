@@ -1,4 +1,4 @@
-"""Portable carrier-resolution boundary for terminal-corridor discovery.
+"""Portable carrier-resolution boundary for exit-path effect discovery.
 
 Recon (this layer) computes carrier classification from portable
 ``FlowGraph`` snapshots alone.  When a state-variable write is indirect

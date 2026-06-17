@@ -59,9 +59,9 @@ from d810.transforms.graph_modification import (
     PromoteOperandToScalar,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
-    DirectTerminalLoweringKind,
-    DirectTerminalLoweringGroup,
-    DirectTerminalLoweringSite,
+    ExitPathLoweringKind,
+    ExitPathLoweringGroup,
+    ExitPathLoweringSite,
     ReorderBlocks,
     RedirectBranch,
     RedirectGoto,
@@ -617,13 +617,13 @@ class PatchPrivateTerminalSuffixGroup:
 
 
 @dataclass(frozen=True)
-class PatchDirectTerminalLoweringGroup:
+class PatchExitPathLoweringGroup:
     """Grouped direct terminal lowering for multiple anchors sharing the same suffix."""
 
     shared_entry_serial: int
     return_block_serial: int
     suffix_serials: tuple[int, ...]
-    sites: tuple[DirectTerminalLoweringSite, ...]
+    sites: tuple[ExitPathLoweringSite, ...]
     per_site_clone_assigned_serials: dict[int, tuple[int, ...]]
 
 
@@ -656,7 +656,7 @@ BlockCreatingGraphModification = Union[
     InsertBlock,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
-    DirectTerminalLoweringGroup,
+    ExitPathLoweringGroup,
 ]
 
 
@@ -702,7 +702,7 @@ PatchOperation = Union[
     PatchCloneConditionalAsGotoFromBranchArm,
     PatchPrivateTerminalSuffix,
     PatchPrivateTerminalSuffixGroup,
-    PatchDirectTerminalLoweringGroup,
+    PatchExitPathLoweringGroup,
     PatchReorderBlocks,
 ]
 
@@ -857,8 +857,8 @@ class _PendingPrivateTerminalSuffixGroup:
 
 
 @dataclass(frozen=True)
-class _PendingDirectTerminalLoweringGroup:
-    modification: DirectTerminalLoweringGroup
+class _PendingExitPathLoweringGroup:
+    modification: ExitPathLoweringGroup
     per_site_clone_block_ids: dict[int, tuple[VirtualBlockId, ...]]
 
 
@@ -886,7 +886,7 @@ def is_block_creating_modification(modification: GraphModification) -> bool:
             InsertBlock,
             PrivateTerminalSuffix,
             PrivateTerminalSuffixGroup,
-            DirectTerminalLoweringGroup,
+            ExitPathLoweringGroup,
         ),
     )
 
@@ -1713,7 +1713,7 @@ def _compile_duplicate_replay_and_redirect_step(
 
 
 def _finalize_step(
-    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingEdgeSplitCorridor | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingDuplicateReplayAndRedirect | _PendingCloneConditionalAsGoto | _PendingCloneConditionalAsGotoFromBranchArm | _PendingPrivateTerminalSuffix | _PendingPrivateTerminalSuffixGroup | _PendingDirectTerminalLoweringGroup | _PendingReorderBlocks,
+    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingEdgeSplitCorridor | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingDuplicateReplayAndRedirect | _PendingCloneConditionalAsGoto | _PendingCloneConditionalAsGotoFromBranchArm | _PendingPrivateTerminalSuffix | _PendingPrivateTerminalSuffixGroup | _PendingExitPathLoweringGroup | _PendingReorderBlocks,
     relocation_map: PatchRelocationMap,
 ) -> PatchStep:
     match step:
@@ -2097,8 +2097,8 @@ def _finalize_step(
                 per_anchor_clone_assigned_serials=tuple(per_anchor_assigned),
             )
 
-        case _PendingDirectTerminalLoweringGroup(
-            modification=DirectTerminalLoweringGroup(
+        case _PendingExitPathLoweringGroup(
+            modification=ExitPathLoweringGroup(
                 shared_entry_serial=shared_entry,
                 return_block_serial=return_block,
                 suffix_serials=suffix,
@@ -2115,7 +2115,7 @@ def _finalize_step(
                         raise ValueError(f"Missing assigned serial for {clone_id}")
                     assigned.append(serial)
                 per_site_assigned[int(anchor)] = tuple(assigned)
-            return PatchDirectTerminalLoweringGroup(
+            return PatchExitPathLoweringGroup(
                 shared_entry_serial=shared_entry,
                 return_block_serial=return_block,
                 suffix_serials=suffix,
@@ -2213,7 +2213,7 @@ def compile_patch_plan(
         | _PendingCloneConditionalAsGotoFromBranchArm
         | _PendingPrivateTerminalSuffix
         | _PendingPrivateTerminalSuffixGroup
-        | _PendingDirectTerminalLoweringGroup
+        | _PendingExitPathLoweringGroup
         | _PendingReorderBlocks
     ] = []
     new_blocks: list[PatchBlockSpec] = []
@@ -2658,18 +2658,18 @@ def compile_patch_plan(
                     )
                 )
 
-            case DirectTerminalLoweringGroup(
+            case ExitPathLoweringGroup(
                 shared_entry_serial=shared_entry,
                 suffix_serials=suffix,
                 sites=sites,
             ):
                 if not suffix:
                     raise ValueError(
-                        "DirectTerminalLoweringGroup requires non-empty suffix_serials"
+                        "ExitPathLoweringGroup requires non-empty suffix_serials"
                     )
                 per_site_clone_ids: dict[int, tuple[VirtualBlockId, ...]] = {}
                 for site in sites:
-                    if site.kind is DirectTerminalLoweringKind.RETURN_CONST:
+                    if site.kind is ExitPathLoweringKind.RETURN_CONST:
                         per_site_clone_ids[int(site.anchor_serial)] = ()
                         continue
                     clone_sources = tuple(
@@ -2679,7 +2679,7 @@ def compile_patch_plan(
                         clone_sources = tuple(int(serial) for serial in suffix[:-1])
                     if not clone_sources:
                         raise ValueError(
-                            "DirectTerminalLoweringGroup requires materializer "
+                            "ExitPathLoweringGroup requires materializer "
                             "blocks or a non-terminal suffix"
                         )
                     site_clone_ids: list[VirtualBlockId] = []
@@ -2715,7 +2715,7 @@ def compile_patch_plan(
                         )
                     per_site_clone_ids[int(site.anchor_serial)] = tuple(site_clone_ids)
                 raw_steps.append(
-                    _PendingDirectTerminalLoweringGroup(
+                    _PendingExitPathLoweringGroup(
                         modification=modification,
                         per_site_clone_block_ids=per_site_clone_ids,
                     )
@@ -2818,7 +2818,7 @@ __all__ = [
     "PatchCloneConditionalAsGoto",
     "PatchPrivateTerminalSuffix",
     "PatchPrivateTerminalSuffixGroup",
-    "PatchDirectTerminalLoweringGroup",
+    "PatchExitPathLoweringGroup",
     "PatchReorderBlocks",
     "LegacyBlockOperation",
     "PatchOperation",

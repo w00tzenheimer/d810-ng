@@ -581,7 +581,7 @@ class StagedAtomicClassification(Enum):
       most, rewires the *one* predecessor it logically owns.  It never
       destroys pre-existing block topology until the tail redirect step,
       which itself is guarded and can fail cleanly.  Existing handlers such
-      as ``PrivateTerminalSuffixGroup`` and ``DirectTerminalLoweringGroup``
+      as ``PrivateTerminalSuffixGroup`` and ``ExitPathLoweringGroup``
       already follow this pattern.  Apply these directly through the normal
       ``_apply_single`` dispatcher during the commit phase.
 
@@ -9013,14 +9013,14 @@ class DeferredGraphModifier:
         6. (skipped — no STOP relocation needed)
         """
         from d810.transforms.graph_modification import (
-            DirectTerminalLoweringKind,
-            DirectTerminalLoweringSite,
+            ExitPathLoweringKind,
+            ExitPathLoweringSite,
         )
 
         if mba is None:
             return False
 
-        sites: tuple[DirectTerminalLoweringSite, ...] = mod.sites or ()
+        sites: tuple[ExitPathLoweringSite, ...] = mod.sites or ()
         suffix_serials: tuple[int, ...] = mod.suffix_serials or ()
         shared_entry_serial: int = mod.new_target
 
@@ -9197,7 +9197,7 @@ class DeferredGraphModifier:
                 # the typed CFG contract, which allocates no clones for this
                 # lowering kind.
                 # For RETURN_FROM_SLOT/REG (v2 fallback): use interior suffix serials
-                if site.kind == DirectTerminalLoweringKind.RETURN_CONST:
+                if site.kind == ExitPathLoweringKind.RETURN_CONST:
                     if site.const_value is None:
                         logger.warning(
                             "direct_terminal_lowering_group: RETURN_CONST site "
@@ -9244,7 +9244,7 @@ class DeferredGraphModifier:
                     per_site_first_clone.append(mba.qty - 1)
                     continue
                 elif (
-                    site.kind == DirectTerminalLoweringKind.CLONE_MATERIALIZER
+                    site.kind == ExitPathLoweringKind.CLONE_MATERIALIZER
                     and site.materializer_serials
                 ):
                     clone_source_serials = site.materializer_serials
@@ -9293,7 +9293,7 @@ class DeferredGraphModifier:
                     template_blk = site_templates[idx]
 
                     # Clone instructions. Trailing gotos are re-inserted by the
-                    # clone helper; a proven terminal corridor may also drop the
+                    # clone helper; a proven exit path may also drop the
                     # final conditional state guard and wire the clone straight
                     # to BLT_STOP.
                     instructions_to_copy = []

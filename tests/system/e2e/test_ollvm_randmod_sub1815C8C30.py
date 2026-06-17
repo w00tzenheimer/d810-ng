@@ -297,14 +297,14 @@ class TestOllvmRandModSub1815C8C30:
             f"regressed. Fired rules: {sorted(fired_rules)}"
         )
 
-    def test_entry_projection_preserves_rand_call_corridor(self, randmod_rendered) -> None:
-        """Entry bridge must not shortcut over the live rand()-call corridor.
+    def test_entry_projection_preserves_rand_call_exit_path(self, randmod_rendered) -> None:
+        """Entry bridge must not shortcut over the live rand()-call exit path.
 
         The recovered function must include the real ``rand`` call (or the
         current devirtualization stub ``v0()``) and the magic-modulo result.
         The important regression guard is that projection did not emit an
         invalid ``blk1 -> blk5`` provenance shortcut across the live ``rax``
-        definition in the dispatcher witness corridor.
+        definition in the dispatcher witness exit path.
         """
         rendered = randmod_rendered["rendered"]
 
@@ -323,7 +323,7 @@ class TestOllvmRandModSub1815C8C30:
         if diag_path is None:
             pytest.skip("randmod diagnostic DB was not captured")
 
-        corridor_rows = _diag_rows(
+        exit_path_rows = _diag_rows(
             diag_path,
             """
             SELECT s.maturity, s.phase, i.block_serial, i.insn_index, i.dstr
@@ -337,17 +337,38 @@ class TestOllvmRandModSub1815C8C30:
         )
         assert any(
             row["block_serial"] == 2 and "&($rand).8, rax.8" in row["dstr"]
-            for row in corridor_rows
+            for row in exit_path_rows
         ), f"{diag_path} does not show blk2 defining rax = &rand"
         assert any(
             row["block_serial"] == 3
             and "&($sub_18010A890).8, rax.8" in row["dstr"]
-            for row in corridor_rows
+            for row in exit_path_rows
         ), f"{diag_path} does not show blk3 defining the rejected call target"
         assert any(
             row["block_serial"] == 8 and "icall cs.2,rax.8" in row["dstr"]
-            for row in corridor_rows
+            for row in exit_path_rows
         ), f"{diag_path} does not show blk8 consuming rax in the indirect call"
+
+        liveness_rows = _diag_rows(
+            diag_path,
+            """
+            SELECT source_block, old_target, shortcut_target, outcome, reason,
+                   exit_path_blocks_json, live_definitions_json
+            FROM exit_path_shortcut_decisions
+            WHERE source_block = 1
+              AND old_target = 2
+              AND shortcut_target = 5
+            """,
+        )
+        assert any(
+            row["outcome"] == "rejected"
+            and row["reason"] == "exit_path_liveness_unsafe"
+            and json.loads(row["exit_path_blocks_json"]) == [2, 4]
+            and json.loads(row["live_definitions_json"]) == [
+                {"kind": "reg", "value": 8}
+            ]
+            for row in liveness_rows
+        ), f"{diag_path} does not explain the rejected blk1 -> blk5 exit-path shortcut"
 
         bad_entry_projection = _diag_rows(
             diag_path,
@@ -387,7 +408,7 @@ class TestOllvmRandModSub1815C8C30:
         """Full golden: ``return rand() % 3u;`` with a real ``rand`` call.
 
         Regression guard for witness-preserving entry projection: the call
-        target definition on the dispatcher corridor must survive to the call.
+        target definition on the dispatcher exit path must survive to the call.
         """
         rendered = randmod_rendered["rendered"]
 

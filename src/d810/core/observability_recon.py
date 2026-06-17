@@ -31,7 +31,7 @@ from d810.core.observability_events import (
     BranchOwnershipProofsObserved as BranchOwnershipProofsObserved,
     BranchWitnessDecisionsObserved as BranchWitnessDecisionsObserved,
     BstIntervalDispatcherObserved as BstIntervalDispatcherObserved,
-    CorridorShortcutDecisionsObserved as CorridorShortcutDecisionsObserved,
+    ExitPathShortcutDecisionsObserved as ExitPathShortcutDecisionsObserved,
     DagFrontierClosureDiagnosticsObserved as DagFrontierClosureDiagnosticsObserved,
     DagLocalFactsObserved as DagLocalFactsObserved,
     DagObserved as DagObserved,
@@ -173,13 +173,13 @@ def observe_branch_witness_decisions(
     ))
 
 
-def observe_corridor_shortcut_decisions(
+def observe_exit_path_shortcut_decisions(
     *,
     func_ea: int,
     rows,
 ) -> None:
-    """Publish corridor shortcut/liveness decision rows."""
-    _emit(CorridorShortcutDecisionsObserved(
+    """Publish exit-path shortcut/liveness decision rows."""
+    _emit(ExitPathShortcutDecisionsObserved(
         func_ea=int(func_ea),
         rows=tuple(rows),
     ))
@@ -305,7 +305,7 @@ def diagnostics_enabled() -> bool:
             SwitchCaseTransitionFactsObserved,
             BranchOwnershipProofsObserved,
             BranchWitnessDecisionsObserved,
-            CorridorShortcutDecisionsObserved,
+            ExitPathShortcutDecisionsObserved,
         )
     )
 
@@ -315,7 +315,7 @@ __all__ = [
     "BstIntervalDispatcherObserved",
     "BranchOwnershipProofsObserved",
     "BranchWitnessDecisionsObserved",
-    "CorridorShortcutDecisionsObserved",
+    "ExitPathShortcutDecisionsObserved",
     "DagFrontierClosureDiagnosticsObserved",
     "DagLocalFactsObserved",
     "DagObserved",
@@ -343,7 +343,7 @@ __all__ = [
     "observe_switch_case_transition_facts",
     "observe_branch_ownership_proofs",
     "observe_branch_witness_decisions",
-    "observe_corridor_shortcut_decisions",
+    "observe_exit_path_shortcut_decisions",
     "observe_dag_frontier_closure_diagnostics",
     "observe_dag_local_facts",
     "observe_fact_conflict",

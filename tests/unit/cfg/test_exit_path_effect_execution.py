@@ -11,15 +11,15 @@ from d810.ir.flowgraph import (
 from d810.ir.semantics import PredicateKind
 from d810.transforms.graph_modification import (
     ConvertToGoto,
-    DirectTerminalLoweringGroup,
+    ExitPathLoweringGroup,
     PrivateTerminalSuffixGroup,
     RedirectGoto,
 )
 from d810.transforms.modification_builder import ModificationBuilder
-from d810.transforms.terminal_corridor_emission import (
+from d810.transforms.exit_path_effect_emission import (
     plan_direct_terminal_lowering_execution,
     plan_private_terminal_suffix_execution,
-    plan_state_terminal_corridor_lowerings,
+    plan_state_exit_path_effect_lowerings,
 )
 
 
@@ -169,7 +169,7 @@ def _block(
     )
 
 
-def test_state_terminal_corridor_lowering_replaces_dispatcher_redirect():
+def test_state_exit_path_effect_lowering_replaces_dispatcher_redirect():
     state_stkoff = 0x58
     result_stkoff = 0x4C
     terminal_state = 0xDD1FF05BF465445C
@@ -200,7 +200,7 @@ def test_state_terminal_corridor_lowering_replaces_dispatcher_redirect():
         func_ea=0x401000,
     )
 
-    plan = plan_state_terminal_corridor_lowerings(
+    plan = plan_state_exit_path_effect_lowerings(
         flow_graph=flow_graph,
         modifications=(
             RedirectGoto(
@@ -215,18 +215,18 @@ def test_state_terminal_corridor_lowering_replaces_dispatcher_redirect():
 
     assert len(plan.modifications) == 1
     (modification,) = plan.modifications
-    assert isinstance(modification, DirectTerminalLoweringGroup)
+    assert isinstance(modification, ExitPathLoweringGroup)
     assert modification.shared_entry_serial == dispatcher
     assert modification.return_block_serial == stop
     assert modification.suffix_serials == (stop,)
     assert modification.sites[0].anchor_serial == anchor
     assert modification.sites[0].materializer_serials == (4, 5, 6, terminal)
     assert modification.sites[0].skip_terminal_control_tail is True
-    assert plan.corridors[0].path_blocks == (4, 5, 6, anchor, terminal)
-    assert plan.corridors[0].terminal_state == terminal_state
+    assert plan.exit_path_effect_summaries[0].path_blocks == (4, 5, 6, anchor, terminal)
+    assert plan.exit_path_effect_summaries[0].terminal_state == terminal_state
 
 
-def test_state_terminal_corridor_lowering_proves_nested_join_alias_materializer():
+def test_state_exit_path_effect_lowering_proves_nested_join_alias_materializer():
     state_stkoff = 0x58
     result_stkoff = 0x4C
     terminal_state = 0xDD1FF05BF465445C
@@ -257,7 +257,7 @@ def test_state_terminal_corridor_lowering_proves_nested_join_alias_materializer(
         func_ea=0x401000,
     )
 
-    plan = plan_state_terminal_corridor_lowerings(
+    plan = plan_state_exit_path_effect_lowerings(
         flow_graph=flow_graph,
         modifications=(
             RedirectGoto(
@@ -272,12 +272,12 @@ def test_state_terminal_corridor_lowering_proves_nested_join_alias_materializer(
 
     assert len(plan.modifications) == 1
     (modification,) = plan.modifications
-    assert isinstance(modification, DirectTerminalLoweringGroup)
+    assert isinstance(modification, ExitPathLoweringGroup)
     assert modification.sites[0].materializer_serials == (4, 5, 6, terminal)
-    assert plan.corridors[0].path_blocks == (4, 5, 6, anchor, terminal)
+    assert plan.exit_path_effect_summaries[0].path_blocks == (4, 5, 6, anchor, terminal)
 
 
-def test_state_terminal_corridor_lowering_rejects_non_state_terminal_guard():
+def test_state_exit_path_effect_lowering_rejects_non_state_terminal_guard():
     state_stkoff = 0x58
     result_stkoff = 0x4C
     terminal_state = 0xDD1FF05BF465445C
@@ -311,7 +311,7 @@ def test_state_terminal_corridor_lowering_rejects_non_state_terminal_guard():
         func_ea=0x401000,
     )
 
-    plan = plan_state_terminal_corridor_lowerings(
+    plan = plan_state_exit_path_effect_lowerings(
         flow_graph=flow_graph,
         modifications=(RedirectGoto(from_serial=7, old_target=dispatcher, new_target=8),),
         dispatcher_entry_serial=dispatcher,

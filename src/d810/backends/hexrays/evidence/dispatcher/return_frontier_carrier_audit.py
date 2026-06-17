@@ -670,11 +670,11 @@ def audit_return_frontier_carriers(
     mop_r = getattr(ida_hexrays, "mop_r", -1)
 
     # Build the corridor block set for fast membership tests.
-    corridor_blocks: set[int] = set()
+    exit_path_blocks: set[int] = set()
     for chain in side_effect_corridors:
         for b in chain:
             try:
-                corridor_blocks.add(int(b))
+                exit_path_blocks.add(int(b))
             except (TypeError, ValueError):
                 pass
 
@@ -710,7 +710,7 @@ def audit_return_frontier_carriers(
             continue
 
         block_serial_int = _safe_int(getattr(blk, "serial", -1), -1)
-        in_corridor = block_serial_int in corridor_blocks
+        in_corridor = block_serial_int in exit_path_blocks
 
         # Auto-detect the return slot stkoff from the BLT_STOP block's
         # trampoline copy (``mov %var_X.8, rax.8``) if not explicitly

@@ -20,8 +20,8 @@ from d810.analyses.control_flow.recovered_machine import (
     MachineTransition,
     RecoveredMachine,
     Soundness,
-    TerminalCorridor,
-    TerminalCorridorEffect,
+    ExitPathEffectSummary,
+    ExitPathEffect,
 )
 from d810.analyses.data_flow.concolic import AbstractEvidence
 from d810.analyses.machine.orchestrator import compose_reduced_product
@@ -67,13 +67,13 @@ def _spine_machine(transitions, rows=()):
     )
 
 
-def _terminal_corridor() -> TerminalCorridor:
-    return TerminalCorridor(
+def _exit_path_effect_summary() -> ExitPathEffectSummary:
+    return ExitPathEffectSummary(
         initial_state=7,
         terminal_state=9,
         path_blocks=(1, 2, 4, 8),
         effects=(
-            TerminalCorridorEffect(
+            ExitPathEffect(
                 kind="store",
                 target="result_slot",
                 expression="R % 3u",
@@ -111,11 +111,11 @@ def test_complete_V_refines_top_cell():
     assert fork.next_states == (3, 4)  # refined ⊤ -> V
 
 
-def test_complete_terminal_corridor_is_carried_into_machine():
+def test_complete_exit_path_effect_summary_is_carried_into_machine():
     top = MachineTransition(src_state=7, context=(), next_states=())
     machine = _spine_machine((top,), rows=(MachineRow(1, 101, 1),))
     spine = _FakeSpine(_FakeSpineResult(machine, top_density=0.0, floors={}))
-    corridor = _terminal_corridor()
+    exit_path = _exit_path_effect_summary()
 
     def resolver(src, ctx):
         if (src, ctx) == (7, ()):
@@ -123,7 +123,7 @@ def test_complete_terminal_corridor_is_carried_into_machine():
                 next_states=frozenset({9}),
                 enumerated_inputs_complete=True,
                 deterministic=True,
-                terminal_corridor=corridor,
+                exit_path_effect_summary=exit_path,
             )
         return None
 
@@ -134,7 +134,7 @@ def test_complete_terminal_corridor_is_carried_into_machine():
     )
 
     assert out is not None
-    assert out.terminal_corridors == (corridor,)
+    assert out.exit_path_effect_summaries == (exit_path,)
     fork = next(t for t in out.transitions if t.src_state == 7)
     assert fork.next_states == (9,)
 

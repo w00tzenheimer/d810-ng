@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from d810.core.typing import Callable
 from d810.transforms.edit_simulator import project_post_state
 from d810.transforms.graph_modification import (
-    DirectTerminalLoweringGroup,
-    DirectTerminalLoweringKind,
-    DirectTerminalLoweringSite,
+    ExitPathLoweringGroup,
+    ExitPathLoweringKind,
+    ExitPathLoweringSite,
 )
 from d810.transforms.plan import compile_patch_plan
 
@@ -182,7 +182,7 @@ def build_terminal_family_split_proposals(
 def _direct_lowering_site_anchors(modifications: list[object]) -> frozenset[int]:
     anchors: set[int] = set()
     for mod in modifications:
-        if not isinstance(mod, DirectTerminalLoweringGroup):
+        if not isinstance(mod, ExitPathLoweringGroup):
             continue
         for site in mod.sites:
             anchors.add(int(site.anchor_serial))
@@ -312,15 +312,15 @@ def build_terminal_family_direct_const_lowering_modification(
     selected_candidates: tuple[object, ...],
     suffix_serials: tuple[int, ...],
 ):
-    sites: list[DirectTerminalLoweringSite] = []
+    sites: list[ExitPathLoweringSite] = []
     for anchor, candidate in zip(selected_anchors, selected_candidates):
         const_value = _candidate_literal_return_const(candidate)
         if const_value is None:
             continue
         sites.append(
-            DirectTerminalLoweringSite(
+            ExitPathLoweringSite(
                 anchor_serial=int(anchor),
-                kind=DirectTerminalLoweringKind.RETURN_CONST,
+                kind=ExitPathLoweringKind.RETURN_CONST,
                 const_value=const_value,
             )
         )

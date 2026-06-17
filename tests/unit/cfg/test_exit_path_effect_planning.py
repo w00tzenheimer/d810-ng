@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.analyses.control_flow.terminal_frontier import TerminalLoweringAction
-from d810.transforms.terminal_corridor_planning import (
+from d810.transforms.exit_path_effect_planning import (
     CarrierBucket,
     compute_suffix_group_decision,
     select_direct_terminal_lowering_anchors,
@@ -25,12 +25,12 @@ def _entry(
     )
 
 
-def _corridor_info(*, clonable: bool = True):
+def _exit_path_info(*, clonable: bool = True):
     return SimpleNamespace(
         shared_entry=20,
         return_block=30,
         suffix_serials=(31, 30),
-        corridor_length=2,
+        exit_path_length=2,
         clonable=clonable,
     )
 
@@ -41,7 +41,7 @@ def test_suffix_group_decision_emits_for_suffix_ambiguous_group():
             _entry(10, "expr"),
             _entry(11, "cursor_or_ptr"),
         ),
-        corridor_info=_corridor_info(),
+        exit_path_info=_exit_path_info(),
         semantic_action=TerminalLoweringAction.PRIVATE_TERMINAL_SUFFIX,
     )
 
@@ -56,7 +56,7 @@ def test_suffix_group_decision_marks_state_const_groups_for_dtl():
             _entry(10, "state_const", requires_dtl=True),
             _entry(11, "expr"),
         ),
-        corridor_info=_corridor_info(),
+        exit_path_info=_exit_path_info(),
         semantic_action=TerminalLoweringAction.PRIVATE_TERMINAL_SUFFIX,
     )
 

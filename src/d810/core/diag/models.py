@@ -6,7 +6,7 @@ DDL in ``schema._SCHEMA_SQL``. peewee owns the diag connection (see
 ``core/diag/__init__``); query call-sites stay raw SQL on ``db.connection()``.
 
 Modeling rules (must hold for every Model so positional INSERTs and the
-``dag_*`` views keep working):
+``dag_*`` / legacy exit-path views keep working):
 
 * Fields declared in **exact DDL column order**.
 * ``CompositeKey(...)`` suppresses peewee's implicit ``id`` auto-PK for tables
@@ -488,14 +488,14 @@ class BranchWitnessDecision(BaseModel):
         )
 
 
-class CorridorShortcutDecision(BaseModel):
+class ExitPathShortcutDecision(BaseModel):
     snapshot = _snapshot_fk()
     row_index = IntegerField()
     source_block = IntegerField(null=True)
     old_target = IntegerField(null=True)
     shortcut_target = IntegerField(null=True)
     witness_compare_blocks_json = TextField(default="[]")
-    corridor_blocks_json = TextField(default="[]")
+    exit_path_blocks_json = TextField(default="[]")
     rejected_successors_json = TextField(default="[]")
     outcome = TextField()
     reason = TextField(null=True)
@@ -503,7 +503,7 @@ class CorridorShortcutDecision(BaseModel):
     payload_json = TextField(default="{}")
 
     class Meta:
-        table_name = "corridor_shortcut_decisions"
+        table_name = "exit_path_shortcut_decisions"
         primary_key = CompositeKey("snapshot", "row_index")
         indexes = (
             (("snapshot", "source_block"), False),
@@ -878,7 +878,7 @@ MODELS = (
     SwitchCaseTransitionFact,
     BranchOwnershipProof,
     BranchWitnessDecision,
-    CorridorShortcutDecision,
+    ExitPathShortcutDecision,
     StateCfgEdgeAlternateCorrelation,
     StateCfgEdgeAlternateSelection,
     Modification,

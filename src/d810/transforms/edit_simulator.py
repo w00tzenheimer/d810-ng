@@ -23,7 +23,7 @@ from d810.transforms.graph_modification import (
     CloneConditionalAsGotoFromBranchArm,
     ConvertToGoto,
     CreateConditionalRedirect,
-    DirectTerminalLoweringKind,
+    ExitPathLoweringKind,
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     GraphModification,
@@ -39,7 +39,7 @@ from d810.transforms.plan import (
     PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchDuplicateBlock,
-    PatchDirectTerminalLoweringGroup,
+    PatchExitPathLoweringGroup,
     PatchEdgeSplitCorridor,
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
@@ -87,7 +87,7 @@ def _tail_opcode_for_existing_block(
             ):
                 tail_kind = InsnKind.GOTO
                 break
-            case PatchDirectTerminalLoweringGroup(sites=sites) if any(
+            case PatchExitPathLoweringGroup(sites=sites) if any(
                 int(site.anchor_serial) == int(block.serial) for site in sites
             ):
                 tail_kind = InsnKind.GOTO
@@ -836,7 +836,7 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                         )
                     )
 
-            case PatchDirectTerminalLoweringGroup(
+            case PatchExitPathLoweringGroup(
                 shared_entry_serial=shared_entry,
                 return_block_serial=return_block,
                 suffix_serials=suffix,
@@ -845,7 +845,7 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
             ):
                 for site in sites:
                     anchor = int(site.anchor_serial)
-                    if site.kind is DirectTerminalLoweringKind.RETURN_CONST:
+                    if site.kind is ExitPathLoweringKind.RETURN_CONST:
                         simulated.append(
                             SimulatedEdit(
                                 kind="direct_terminal_lowering_anchor",

@@ -36,7 +36,7 @@ from d810.core.logging import getLogger
 from d810.analyses.control_flow.recovered_machine import (
     MachineTransition,
     Soundness,
-    TerminalCorridor,
+    ExitPathEffectSummary,
 )
 from d810.analyses.data_flow.concolic import (
     AbstractEvidence,
@@ -95,7 +95,7 @@ class ConcolicCellValue:
     state_loc: LocationRef | None = None
     enumerated_inputs_complete: bool = False
     deterministic: bool = False
-    terminal_corridor: TerminalCorridor | None = None
+    exit_path_effect_summary: ExitPathEffectSummary | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +112,7 @@ class TopCell:
     transition: MachineTransition
     floor: AbstractEvidence | None
     is_top: bool = True
-    terminal_corridor: TerminalCorridor | None = None
+    exit_path_effect_summary: ExitPathEffectSummary | None = None
 
 
 def gamma_members(floor: AbstractEvidence, *, cap: int = GAMMA_ENUM_CAP) -> frozenset[int] | None:
@@ -307,19 +307,19 @@ class CompletenessGate:
         if not cv.next_states:
             return cell
         corridor = None
-        if cv.terminal_corridor is not None:
-            corridor = self.accept_terminal_corridor(cv.terminal_corridor)
+        if cv.exit_path_effect_summary is not None:
+            corridor = self.accept_exit_path_effect_summary(cv.exit_path_effect_summary)
             if corridor is None:
                 return cell
         # f deterministic + inputs fully enumerated => V = image(f) = C (§7 (a)).
-        return self._accept(cell, cv.next_states, floor=None, terminal_corridor=corridor)
+        return self._accept(cell, cv.next_states, floor=None, exit_path_effect_summary=corridor)
 
-    def accept_terminal_corridor(
-        self, corridor: TerminalCorridor
-    ) -> TerminalCorridor | None:
-        """Accept a terminal corridor only when it proves Gate A obligations.
+    def accept_exit_path_effect_summary(
+        self, corridor: ExitPathEffectSummary
+    ) -> ExitPathEffectSummary | None:
+        """Accept an exit-path effect summary only when it proves Gate A obligations.
 
-        This keeps terminal-corridor recovery proof-carrying: symbolic payloads
+        This keeps exit-path effect recovery proof-carrying: symbolic payloads
         such as a fresh external-call value are allowed in effects, but not in
         branch choices.
         """
@@ -327,7 +327,7 @@ class CompletenessGate:
         if not corridor.is_complete_deterministic_proof:
             if logger.info_on:
                 logger.info(
-                    "gate(a): terminal corridor rejected "
+                    "gate(a): exit-path effect summary rejected "
                     "(complete=%s deterministic=%s terminal=%s sym_branch=%s)",
                     corridor.enumerated_inputs_complete,
                     corridor.deterministic,
@@ -344,7 +344,7 @@ class CompletenessGate:
         v: frozenset[int],
         *,
         floor: AbstractEvidence | None = ...,  # type: ignore[assignment]
-        terminal_corridor: TerminalCorridor | None = None,
+        exit_path_effect_summary: ExitPathEffectSummary | None = None,
     ) -> TopCell:
         """Build the refined (non-⊤) cell with ``next_states = V``.
 
@@ -364,5 +364,5 @@ class CompletenessGate:
             transition=new_tr,
             floor=new_floor,
             is_top=False,
-            terminal_corridor=terminal_corridor,
+            exit_path_effect_summary=exit_path_effect_summary,
         )

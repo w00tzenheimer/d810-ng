@@ -8,7 +8,7 @@ from d810.ir.flowgraph import FlowGraph
 from d810.transforms.graph_modification import (
     CreateConditionalRedirect,
     ConvertToGoto,
-    DirectTerminalLoweringGroup,
+    ExitPathLoweringGroup,
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     GraphModification,
@@ -266,7 +266,7 @@ def _coerce_selected_emulated_dispatcher_modifications(
         DuplicateBlock,
         PrivateTerminalSuffix,
         PrivateTerminalSuffixGroup,
-        DirectTerminalLoweringGroup,
+        ExitPathLoweringGroup,
         ReorderBlocks,
     )
     items: list[GraphModification] = []
@@ -398,7 +398,7 @@ def _is_valid_emulated_dispatcher_modification(
         return True
     if isinstance(mod, (PrivateTerminalSuffix, PrivateTerminalSuffixGroup)):
         return True
-    if isinstance(mod, DirectTerminalLoweringGroup):
+    if isinstance(mod, ExitPathLoweringGroup):
         return True
     if isinstance(mod, ReorderBlocks):
         mentioned = set(mod.dfs_block_order) | set(mod.non_2way_serials) | set(mod.two_way_serials)

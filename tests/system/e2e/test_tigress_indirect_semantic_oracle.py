@@ -74,16 +74,16 @@ def _derive_live_repaired_handoffs(report: dict, diag_conn) -> dict[int, int]:
     handoffs: dict[int, int] = {}
     for transfer in report.get("transfers", ()):
         state = int(transfer["state"])
-        for terminal_path in transfer.get("terminal_paths", ()):
-            next_state = terminal_path.get("last_state")
+        for exit_path in transfer.get("terminal_paths", ()):
+            next_state = exit_path.get("last_state")
             if next_state is None:
                 continue
             next_state = int(next_state)
             target_block = target_block_by_state.get(next_state)
             if target_block is None:
                 continue
-            path = tuple(int(block) for block in terminal_path.get("path", ()))
-            writes = tuple(terminal_path.get("writes", ()))
+            path = tuple(int(block) for block in exit_path.get("path", ()))
+            writes = tuple(exit_path.get("writes", ()))
             if len(path) < 2 or not writes:
                 continue
             old_target = int(path[-1])
