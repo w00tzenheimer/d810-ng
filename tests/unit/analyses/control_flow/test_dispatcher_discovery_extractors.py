@@ -12,7 +12,7 @@ from d810.ir.flowgraph import (
 from d810.ir.semantics import PredicateKind
 from d810.analyses.control_flow.state_transition_domain import StateValue
 from d810.analyses.control_flow.dispatcher_discovery_extractors import (
-    extract_bst_comparisons,
+    extract_state_arm_comparisons,
     extract_state_writes,
 )
 
@@ -66,7 +66,7 @@ def _graph() -> FlowGraph:
 
 
 def test_extracts_comparisons_with_eq_ne_targets():
-    comps = extract_bst_comparisons(_graph(), state_var_stkoff=STATE_OFF)
+    comps = extract_state_arm_comparisons(_graph(), state_var_stkoff=STATE_OFF)
     assert set(comps) == {1, 2}
     # NE check: the EQUAL arm is the fall-through, the not-equal arm is the jump target.
     assert comps[1].const == C1 and comps[1].eq_target == 11 and comps[1].ne_target == 2
@@ -74,7 +74,7 @@ def test_extracts_comparisons_with_eq_ne_targets():
 
 
 def test_state_var_filter_excludes_other_offsets():
-    assert extract_bst_comparisons(_graph(), state_var_stkoff=0x999) == {}
+    assert extract_state_arm_comparisons(_graph(), state_var_stkoff=0x999) == {}
 
 
 def test_extracts_constant_state_write():

@@ -25,7 +25,7 @@ from d810.analyses.control_flow.dispatcher_discovery_fixpoint import (
 )
 
 __all__ = [
-    "extract_bst_comparisons",
+    "extract_state_arm_comparisons",
     "extract_state_writes",
     "discover_dispatcher_from_flow_graph",
 ]
@@ -56,7 +56,7 @@ def _state_offset(operand) -> int | None:
     return None
 
 
-def extract_bst_comparisons(
+def extract_state_arm_comparisons(
     graph: FlowGraph,
     *,
     state_var_stkoff: int | None = None,
@@ -138,7 +138,9 @@ def discover_dispatcher_from_flow_graph(
     the loop header stays ``⊤`` (P2).  When unknown, ``⊤`` is used and the head will read back as
     ``None`` -- set ``require_resolved_head`` to fail loud on that.
     """
-    comparisons = extract_bst_comparisons(graph, state_var_stkoff=state_var_stkoff)
+    comparisons = extract_state_arm_comparisons(
+        graph, state_var_stkoff=state_var_stkoff
+    )
     state_writes = extract_state_writes(graph, state_var_stkoff=state_var_stkoff)
     blocks = graph.blocks
     return discover_dispatcher(
