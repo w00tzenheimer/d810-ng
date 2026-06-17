@@ -39,7 +39,7 @@ from d810.core.diag.snapshot import (
     snapshot_branch_witness_decisions,
     snapshot_branch_ownership_proofs,
     snapshot_bst_interval_dispatcher_rows,
-    snapshot_corridor_shortcut_decisions,
+    snapshot_exit_path_shortcut_decisions,
     snapshot_dag_frontier_closure_diagnostics,
     snapshot_dag,
     snapshot_dag_local_facts,
@@ -69,7 +69,7 @@ from d810.core.observability_events import (
     CaptureMbaSnapshotRequested,
     CfgProvenanceForLatestSnapshot,
     CfgProvenanceObserved,
-    CorridorShortcutDecisionsObserved,
+    ExitPathShortcutDecisionsObserved,
     DagFrontierClosureDiagnosticsObserved,
     DagLocalFactsObserved,
     DagObserved,
@@ -114,8 +114,8 @@ _state_dispatcher_lock = threading.Lock()
 _pending_state_dispatcher_rows: list[StateDispatcherRowsObserved] = []
 _branch_witness_lock = threading.Lock()
 _pending_branch_witness_decisions: list[BranchWitnessDecisionsObserved] = []
-_corridor_shortcut_lock = threading.Lock()
-_pending_corridor_shortcut_decisions: list[CorridorShortcutDecisionsObserved] = []
+_exit_path_shortcut_lock = threading.Lock()
+_pending_exit_path_shortcut_decisions: list[ExitPathShortcutDecisionsObserved] = []
 
 
 def _resolve_snapshot_id(snap: SnapshotRef) -> int | None:
@@ -195,7 +195,7 @@ def _handle_capture_mba(ev: CaptureMbaSnapshotRequested) -> None:
     _flush_pending_bst_intervals(conn, snap_id, snap.func_ea)
     _flush_pending_state_dispatcher_rows(conn, snap_id, snap.func_ea)
     _flush_pending_branch_witness_decisions(conn, snap_id, snap.func_ea)
-    _flush_pending_corridor_shortcut_decisions(conn, snap_id, snap.func_ea)
+    _flush_pending_exit_path_shortcut_decisions(conn, snap_id, snap.func_ea)
     # Block-lineage drain is fired by snapshot_mba via
     # BlockLineageDrainRequested(conn, snap_id); cfg.block_lineage's
     # subscriber writes the rows. No explicit invocation here.
@@ -409,8 +409,8 @@ def _flush_pending_branch_witness_decisions(
         snapshot_branch_witness_decisions(conn, int(snap_id), ev.rows)
 
 
-def _handle_corridor_shortcut_decisions(
-    ev: CorridorShortcutDecisionsObserved,
+def _handle_exit_path_shortcut_decisions(
+    ev: ExitPathShortcutDecisionsObserved,
 ) -> None:
     try:
         conn = get_diag_conn(int(ev.func_ea))
@@ -420,35 +420,35 @@ def _handle_corridor_shortcut_decisions(
         return
     snap_id = _latest_snapshot_id_for_func(ev.func_ea)
     if snap_id is None:
-        _buffer_corridor_shortcut_decisions(ev)
+        _buffer_exit_path_shortcut_decisions(ev)
         return
-    snapshot_corridor_shortcut_decisions(conn, snap_id, ev.rows)
+    snapshot_exit_path_shortcut_decisions(conn, snap_id, ev.rows)
 
 
-def _buffer_corridor_shortcut_decisions(
-    ev: CorridorShortcutDecisionsObserved,
+def _buffer_exit_path_shortcut_decisions(
+    ev: ExitPathShortcutDecisionsObserved,
 ) -> None:
-    with _corridor_shortcut_lock:
-        _pending_corridor_shortcut_decisions.append(ev)
+    with _exit_path_shortcut_lock:
+        _pending_exit_path_shortcut_decisions.append(ev)
 
 
-def _flush_pending_corridor_shortcut_decisions(
+def _flush_pending_exit_path_shortcut_decisions(
     conn: sqlite3.Connection,
     snap_id: int,
     func_ea: int,
 ) -> None:
-    with _corridor_shortcut_lock:
+    with _exit_path_shortcut_lock:
         matching = [
-            ev for ev in _pending_corridor_shortcut_decisions
+            ev for ev in _pending_exit_path_shortcut_decisions
             if int(ev.func_ea) == int(func_ea)
         ]
         if matching:
-            _pending_corridor_shortcut_decisions[:] = [
-                ev for ev in _pending_corridor_shortcut_decisions
+            _pending_exit_path_shortcut_decisions[:] = [
+                ev for ev in _pending_exit_path_shortcut_decisions
                 if int(ev.func_ea) != int(func_ea)
             ]
     for ev in matching:
-        snapshot_corridor_shortcut_decisions(conn, int(snap_id), ev.rows)
+        snapshot_exit_path_shortcut_decisions(conn, int(snap_id), ev.rows)
 
 
 def _handle_dag_local_facts(ev: DagLocalFactsObserved) -> None:
@@ -711,7 +711,7 @@ _HANDLERS: tuple[tuple[type, object], ...] = (
     (SwitchCaseTransitionFactsObserved, _handle_switch_case_transition_facts),
     (BranchOwnershipProofsObserved, _handle_branch_ownership_proofs),
     (BranchWitnessDecisionsObserved, _handle_branch_witness_decisions),
-    (CorridorShortcutDecisionsObserved, _handle_corridor_shortcut_decisions),
+    (ExitPathShortcutDecisionsObserved, _handle_exit_path_shortcut_decisions),
     (DagObserved, _handle_dag),
     (
         DagFrontierClosureDiagnosticsObserved,
@@ -776,8 +776,8 @@ def _uninstall_locked() -> None:
         _pending_state_dispatcher_rows.clear()
     with _branch_witness_lock:
         _pending_branch_witness_decisions.clear()
-    with _corridor_shortcut_lock:
-        _pending_corridor_shortcut_decisions.clear()
+    with _exit_path_shortcut_lock:
+        _pending_exit_path_shortcut_decisions.clear()
 
 
 def is_installed() -> bool:

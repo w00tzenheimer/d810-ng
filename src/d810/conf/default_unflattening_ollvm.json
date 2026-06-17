@@ -936,7 +936,7 @@
         "min_state_constant": 16777216,
         "enable_transition_validator": true,
         "enable_transition_uddu_validator": true,
-        "terminal_corridor_recovery": true
+        "exit_path_effect_recovery": true
       }
     },
     {

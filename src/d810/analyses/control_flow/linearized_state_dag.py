@@ -1214,7 +1214,7 @@ def detect_state_dag_terminal_byte_corridors(
         # this, the detector greedily includes dispatcher-routing
         # state chains whose owned blocks contain m_stx state-writes
         # — those are exactly the corridors HCC is supposed to
-        # rewrite, NOT preserve.  The byte-emitter terminal corridor
+        # rewrite, NOT preserve.  The byte-emitter exit path
         # must lead to a function-exit block.
         sink_handler = chain_handlers[-1]
         sink_node = nodes_by_handler.get(sink_handler)
@@ -2938,30 +2938,30 @@ def _compute_alias_label_override(
         alias_terminal_path = tuple(outgoing_edge.ordered_path)
         alias_exit_block = alias_terminal_path[-1] if alias_terminal_path else None
         for terminal_edge in source_terminal_edges:
-            terminal_path = tuple(terminal_edge.ordered_path)
+            exit_path = tuple(terminal_edge.ordered_path)
             if (
                 alias_exit_block is not None
-                and terminal_path
-                and terminal_path[-1] != alias_exit_block
+                and exit_path
+                and exit_path[-1] != alias_exit_block
             ):
                 continue
 
             common_len = 0
-            for lhs, rhs in zip(incoming_edge.ordered_path, terminal_path):
+            for lhs, rhs in zip(incoming_edge.ordered_path, exit_path):
                 if lhs != rhs:
                     break
                 common_len += 1
             if (
                 common_len == 0
-                and terminal_path
-                and terminal_path[0] == incoming_edge.source_key.handler_serial
+                and exit_path
+                and exit_path[0] == incoming_edge.source_key.handler_serial
             ):
                 common_len = 1
 
             candidate_anchor = next(
                 (
                     block_serial
-                    for block_serial in terminal_path[common_len:]
+                    for block_serial in exit_path[common_len:]
                     if block_serial not in bst_blocks
                 ),
                 None,
@@ -2970,7 +2970,7 @@ def _compute_alias_label_override(
                 candidate_anchor = next(
                     (
                         block_serial
-                        for block_serial in terminal_path
+                        for block_serial in exit_path
                         if block_serial not in bst_blocks
                     ),
                     None,

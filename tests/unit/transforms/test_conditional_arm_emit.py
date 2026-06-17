@@ -389,7 +389,7 @@ def test_conflicting_one_way_arm_redirects_are_suppressed(_seam) -> None:
     Hodur-style terminal candidates can recover multiple conditional arms whose
     write boundary is the same dispatcher predecessor.  Emitting both creates
     conflicting ``goto source -> target`` rewrites and lets the deferred modifier
-    pick one arm arbitrarily, which can erase effect-bearing terminal corridors.
+    pick one arm arbitrarily, which can erase effect-bearing exit paths.
     """
     fg = FlowGraph(
         blocks={

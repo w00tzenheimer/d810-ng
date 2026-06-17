@@ -25,7 +25,7 @@ from d810.core.diag.snapshot import (
     dag_node_diagnostic_state,
     snapshot_branch_witness_decisions,
     snapshot_branch_ownership_proofs,
-    snapshot_corridor_shortcut_decisions,
+    snapshot_exit_path_shortcut_decisions,
     snapshot_dag,
     snapshot_dag_local_facts,
     snapshot_fact_conflicts,
@@ -361,7 +361,7 @@ def test_snapshot_branch_witness_decisions_round_trip() -> None:
     assert json.loads(row[11]) == {"source": "unit"}
 
 
-def test_snapshot_corridor_shortcut_decisions_round_trip() -> None:
+def test_snapshot_exit_path_shortcut_decisions_round_trip() -> None:
     conn = create_diag_database(":memory:").connection()
     conn.execute(
         "INSERT INTO snapshots VALUES "
@@ -369,7 +369,7 @@ def test_snapshot_corridor_shortcut_decisions_round_trip() -> None:
         "'unknown', 0, 0.0)"
     )
 
-    snapshot_corridor_shortcut_decisions(
+    snapshot_exit_path_shortcut_decisions(
         conn,
         1,
         [
@@ -378,10 +378,10 @@ def test_snapshot_corridor_shortcut_decisions_round_trip() -> None:
                 "old_target": 2,
                 "shortcut_target": 5,
                 "witness_compare_blocks": (2, 4),
-                "corridor_blocks": (2, 4),
+                "exit_path_blocks": (2, 4),
                 "rejected_successors": (3,),
                 "outcome": "rejected",
-                "reason": "corridor_liveness_unsafe",
+                "reason": "exit_path_liveness_unsafe",
                 "live_definitions": ({"kind": "reg", "value": 8},),
                 "payload": {"source": "unit"},
             }
@@ -390,17 +390,22 @@ def test_snapshot_corridor_shortcut_decisions_round_trip() -> None:
 
     row = conn.execute(
         "SELECT source_block, old_target, shortcut_target, "
-        "witness_compare_blocks_json, corridor_blocks_json, "
+        "witness_compare_blocks_json, exit_path_blocks_json, "
         "rejected_successors_json, outcome, reason, live_definitions_json, "
-        "payload_json FROM corridor_shortcut_decisions"
+        "payload_json FROM exit_path_shortcut_decisions"
     ).fetchone()
     assert row[:3] == (0, 2, 5)
     assert json.loads(row[3]) == [2, 4]
     assert json.loads(row[4]) == [2, 4]
     assert json.loads(row[5]) == [3]
-    assert row[6:8] == ("rejected", "corridor_liveness_unsafe")
+    assert row[6:8] == ("rejected", "exit_path_liveness_unsafe")
     assert json.loads(row[8]) == [{"kind": "reg", "value": 8}]
     assert json.loads(row[9]) == {"source": "unit"}
+
+    legacy_table = conn.execute(
+        "SELECT name FROM sqlite_master WHERE name = 'corridor_shortcut_decisions'"
+    ).fetchone()
+    assert legacy_table is None
 
 
 @pytest.fixture()

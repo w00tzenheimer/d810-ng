@@ -294,7 +294,7 @@ def _source_mod_type_for_step(step: object) -> str | None:
         "PatchDuplicateBlock": "DuplicateBlock",
         "PatchPrivateTerminalSuffix": "PrivateTerminalSuffix",
         "PatchPrivateTerminalSuffixGroup": "PrivateTerminalSuffixGroup",
-        "PatchDirectTerminalLoweringGroup": "DirectTerminalLoweringGroup",
+        "PatchExitPathLoweringGroup": "ExitPathLoweringGroup",
         "PatchReorderBlocks": "ReorderBlocks",
     }.get(name)
 
@@ -338,7 +338,7 @@ def _infer_source_mod_type(spec: object) -> str | None:
     if kind.startswith("private_terminal_suffix"):
         return "PrivateTerminalSuffix"
     if kind.startswith("direct_terminal"):
-        return "DirectTerminalLoweringGroup"
+        return "ExitPathLoweringGroup"
     if kind.startswith("reorder_block"):
         return "ReorderBlocks"
     return None

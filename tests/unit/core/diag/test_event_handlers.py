@@ -44,7 +44,7 @@ from d810.core.observability_models import (
 from d810.core.observability_recon import (
     observe_branch_witness_decisions,
     observe_branch_ownership_proofs,
-    observe_corridor_shortcut_decisions,
+    observe_exit_path_shortcut_decisions,
     observe_dag,
     observe_modifications,
     observe_reachability,
@@ -406,8 +406,8 @@ def test_branch_witness_decisions_buffer_until_snapshot(fake_conn):
     assert row[4:] == ("accepted", "validated_against_current_cfg")
 
 
-def test_corridor_shortcut_decisions_buffer_until_snapshot(fake_conn):
-    observe_corridor_shortcut_decisions(
+def test_exit_path_shortcut_decisions_buffer_until_snapshot(fake_conn):
+    observe_exit_path_shortcut_decisions(
         func_ea=0x401000,
         rows=[
             {
@@ -415,17 +415,17 @@ def test_corridor_shortcut_decisions_buffer_until_snapshot(fake_conn):
                 "old_target": 2,
                 "shortcut_target": 5,
                 "witness_compare_blocks": (2,),
-                "corridor_blocks": (2,),
+                "exit_path_blocks": (2,),
                 "rejected_successors": (3,),
                 "outcome": "rejected",
-                "reason": "corridor_liveness_unsafe",
+                "reason": "exit_path_liveness_unsafe",
                 "live_definitions": ({"kind": "reg", "value": 8},),
             }
         ],
     )
 
     pre_rows = fake_conn.execute(
-        "SELECT COUNT(*) FROM corridor_shortcut_decisions"
+        "SELECT COUNT(*) FROM exit_path_shortcut_decisions"
     ).fetchone()
     assert pre_rows[0] == 0
 
@@ -439,14 +439,14 @@ def test_corridor_shortcut_decisions_buffer_until_snapshot(fake_conn):
 
     row = fake_conn.execute(
         "SELECT source_block, shortcut_target, witness_compare_blocks_json, "
-        "corridor_blocks_json, rejected_successors_json, outcome, reason, "
-        "live_definitions_json FROM corridor_shortcut_decisions"
+        "exit_path_blocks_json, rejected_successors_json, outcome, reason, "
+        "live_definitions_json FROM exit_path_shortcut_decisions"
     ).fetchone()
     assert row[:2] == (0, 5)
     assert json.loads(row[2]) == [2]
     assert json.loads(row[3]) == [2]
     assert json.loads(row[4]) == [3]
-    assert row[5:7] == ("rejected", "corridor_liveness_unsafe")
+    assert row[5:7] == ("rejected", "exit_path_liveness_unsafe")
     assert json.loads(row[7]) == [{"kind": "reg", "value": 8}]
 
 

@@ -40,7 +40,7 @@ class TerminalReturnSiteAudit:
     exit_serial: int | None
     source_kind: TerminalReturnSourceKind
     return_block_serial: int | None = None
-    corridor_length: int = 0
+    exit_path_length: int = 0
     has_rax_write: bool | None = None
     notes: str = ""
 
@@ -58,7 +58,7 @@ def _classify_exit(
         max_depth: Maximum BFS depth to prevent runaway walks.
 
     Returns:
-        A tuple of (source_kind, return_block_serial, corridor_length, path_serials).
+        A tuple of (source_kind, return_block_serial, exit_path_length, path_serials).
         *path_serials* contains the block serials visited on the path from
         exit_serial to the return block (inclusive of both endpoints).
     """
@@ -221,7 +221,7 @@ def build_terminal_return_audit(
                     exit_serial=exit_serial,
                     source_kind=source_kind,
                     return_block_serial=return_serial,
-                    corridor_length=corridor_len,
+                    exit_path_length=corridor_len,
                     has_rax_write=has_rax_write,
                     notes="; ".join(notes_parts),
                 )
@@ -261,7 +261,7 @@ def to_dict(report: TerminalReturnAuditReport) -> dict:
                 "exit_serial": s.exit_serial,
                 "source_kind": s.source_kind.value,
                 "return_block_serial": s.return_block_serial,
-                "corridor_length": s.corridor_length,
+                "exit_path_length": s.exit_path_length,
                 "has_rax_write": s.has_rax_write,
                 "notes": s.notes,
             }
@@ -285,7 +285,7 @@ def from_dict(data: dict) -> TerminalReturnAuditReport:
             exit_serial=s["exit_serial"],
             source_kind=TerminalReturnSourceKind(s["source_kind"]),
             return_block_serial=s["return_block_serial"],
-            corridor_length=s["corridor_length"],
+            exit_path_length=s["exit_path_length"],
             has_rax_write=s["has_rax_write"],
             notes=s["notes"],
         )

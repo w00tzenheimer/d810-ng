@@ -695,7 +695,7 @@ class PhaseCycleLowering:
     reason: str = "dispatcher_phase_cycle"
 
 
-class DirectTerminalLoweringKind(str, enum.Enum):
+class ExitPathLoweringKind(str, enum.Enum):
     """Kind of direct terminal lowering to apply per anchor."""
     RETURN_CONST = "return_const"
     RETURN_FROM_SLOT = "return_from_slot"
@@ -704,10 +704,10 @@ class DirectTerminalLoweringKind(str, enum.Enum):
 
 
 @dataclass(frozen=True)
-class DirectTerminalLoweringSite:
+class ExitPathLoweringSite:
     """Per-anchor lowering specification."""
     anchor_serial: int
-    kind: DirectTerminalLoweringKind
+    kind: ExitPathLoweringKind
     const_value: int | None = None
     source_stkoff: int | None = None
     source_mreg: int | None = None
@@ -716,13 +716,13 @@ class DirectTerminalLoweringSite:
 
 
 @dataclass(frozen=True)
-class DirectTerminalLoweringGroup:
+class ExitPathLoweringGroup:
     """Grouped direct terminal lowering for multiple anchors sharing the same suffix."""
     shared_entry_serial: int
     return_block_serial: int
     suffix_serials: tuple[int, ...]
-    sites: tuple[DirectTerminalLoweringSite, ...]
-    reason: str = "terminal_return_direct_lowering"
+    sites: tuple[ExitPathLoweringSite, ...]
+    reason: str = "exit_path_return_direct_lowering"
 
 
 # Union type for type discrimination via isinstance() or match statement
@@ -750,7 +750,7 @@ GraphModification = Union[
     PromoteOperandToScalar,
     PrivateTerminalSuffix,
     PrivateTerminalSuffixGroup,
-    DirectTerminalLoweringGroup,
+    ExitPathLoweringGroup,
     ReorderBlocks,
 ]
 
@@ -832,9 +832,9 @@ __all__ = [
     "PromoteOperandToScalar",
     "PrivateTerminalSuffix",
     "PrivateTerminalSuffixGroup",
-    "DirectTerminalLoweringKind",
-    "DirectTerminalLoweringSite",
-    "DirectTerminalLoweringGroup",
+    "ExitPathLoweringKind",
+    "ExitPathLoweringSite",
+    "ExitPathLoweringGroup",
     "ReorderBlocks",
     "GraphModification",
     "to_redirect_intent",

@@ -43,7 +43,7 @@ def _make_cfg(blocks: list[BlockSnapshot], entry: int = 0) -> FlowGraph:
 
 
 class TestDirectReturnClassification:
-    """Handler exit IS the BLT_STOP block -> DIRECT_RETURN, corridor_length=0."""
+    """Handler exit IS the BLT_STOP block -> DIRECT_RETURN, exit_path_length=0."""
 
     def test_direct_return_classification(self) -> None:
         # Block 0 (entry) -> Block 10 (handler) -> Block 20 (exit = BLT_STOP)
@@ -67,7 +67,7 @@ class TestDirectReturnClassification:
         assert site.exit_serial == 20
         assert site.source_kind == TerminalReturnSourceKind.DIRECT_RETURN
         assert site.return_block_serial == 20
-        assert site.corridor_length == 0
+        assert site.exit_path_length == 0
 
 
 class TestEpilogueCorridorClassification:
@@ -94,7 +94,7 @@ class TestEpilogueCorridorClassification:
         site = report.sites[0]
         assert site.source_kind == TerminalReturnSourceKind.EPILOGUE_CORRIDOR
         assert site.return_block_serial == 12
-        assert site.corridor_length == 2  # 10 -> 11 -> 12 = 2 hops
+        assert site.exit_path_length == 2  # 10 -> 11 -> 12 = 2 hops
 
 
 class TestSharedEpilogueClassification:
@@ -123,7 +123,7 @@ class TestSharedEpilogueClassification:
         site = report.sites[0]
         assert site.source_kind == TerminalReturnSourceKind.SHARED_EPILOGUE
         assert site.return_block_serial == 30
-        assert site.corridor_length == 1
+        assert site.exit_path_length == 1
 
 
 class TestUnreachableClassification:
@@ -149,7 +149,7 @@ class TestUnreachableClassification:
         site = report.sites[0]
         assert site.source_kind == TerminalReturnSourceKind.UNREACHABLE
         assert site.return_block_serial is None
-        assert site.corridor_length == 0
+        assert site.exit_path_length == 0
 
     def test_unreachable_none_exit(self) -> None:
         """Exit serial is None -> UNREACHABLE."""
@@ -199,12 +199,12 @@ class TestSummaryFormat:
                 TerminalReturnSiteAudit(
                     handler_serial=3, exit_serial=4,
                     source_kind=TerminalReturnSourceKind.EPILOGUE_CORRIDOR,
-                    return_block_serial=5, corridor_length=2,
+                    return_block_serial=5, exit_path_length=2,
                 ),
                 TerminalReturnSiteAudit(
                     handler_serial=6, exit_serial=7,
                     source_kind=TerminalReturnSourceKind.SHARED_EPILOGUE,
-                    return_block_serial=8, corridor_length=1,
+                    return_block_serial=8, exit_path_length=1,
                 ),
                 TerminalReturnSiteAudit(
                     handler_serial=9, exit_serial=None,
@@ -237,19 +237,19 @@ class TestRoundtripSerialization:
                 TerminalReturnSiteAudit(
                     handler_serial=1, exit_serial=2,
                     source_kind=TerminalReturnSourceKind.DIRECT_RETURN,
-                    return_block_serial=2, corridor_length=0,
+                    return_block_serial=2, exit_path_length=0,
                     has_rax_write=True, notes="clean return",
                 ),
                 TerminalReturnSiteAudit(
                     handler_serial=3, exit_serial=4,
                     source_kind=TerminalReturnSourceKind.EPILOGUE_CORRIDOR,
-                    return_block_serial=5, corridor_length=3,
+                    return_block_serial=5, exit_path_length=3,
                     has_rax_write=False, notes="",
                 ),
                 TerminalReturnSiteAudit(
                     handler_serial=6, exit_serial=None,
                     source_kind=TerminalReturnSourceKind.UNREACHABLE,
-                    return_block_serial=None, corridor_length=0,
+                    return_block_serial=None, exit_path_length=0,
                     has_rax_write=None, notes="no path to BLT_STOP from exit",
                 ),
             ),
@@ -268,7 +268,7 @@ class TestRoundtripSerialization:
             assert rest_site.exit_serial == orig_site.exit_serial
             assert rest_site.source_kind == orig_site.source_kind
             assert rest_site.return_block_serial == orig_site.return_block_serial
-            assert rest_site.corridor_length == orig_site.corridor_length
+            assert rest_site.exit_path_length == orig_site.exit_path_length
             assert rest_site.has_rax_write == orig_site.has_rax_write
             assert rest_site.notes == orig_site.notes
 
@@ -332,7 +332,7 @@ class TestSharedMergeAtExitBlock:
         site = report.sites[0]
         assert site.source_kind == TerminalReturnSourceKind.SHARED_EPILOGUE
         assert site.return_block_serial == 22
-        assert site.corridor_length == 2
+        assert site.exit_path_length == 2
 
 
 class TestRaxWriteDetection:
@@ -564,5 +564,5 @@ class TestMultipleTerminalHandlers:
         site_by_handler = {s.handler_serial: s for s in report.sites}
         assert site_by_handler[10].source_kind == TerminalReturnSourceKind.DIRECT_RETURN
         assert site_by_handler[30].source_kind == TerminalReturnSourceKind.EPILOGUE_CORRIDOR
-        assert site_by_handler[30].corridor_length == 2  # 40 -> 50 -> 60
+        assert site_by_handler[30].exit_path_length == 2  # 40 -> 50 -> 60
         assert site_by_handler[70].source_kind == TerminalReturnSourceKind.UNREACHABLE

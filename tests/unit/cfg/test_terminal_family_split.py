@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import d810.transforms.terminal_family_split as split_mod
 from d810.transforms.graph_modification import (
-    DirectTerminalLoweringGroup,
-    DirectTerminalLoweringKind,
+    ExitPathLoweringGroup,
+    ExitPathLoweringKind,
 )
 from d810.transforms.terminal_family_split import (
     TerminalFamilySplitCandidate,
@@ -80,7 +80,7 @@ class _DummyBuilder:
         suffix_serials: tuple[int, ...],
         reason: str,
     ):
-        return DirectTerminalLoweringGroup(
+        return ExitPathLoweringGroup(
             sites=tuple(sites),
             shared_entry_serial=int(shared_entry_serial),
             return_block_serial=int(return_block_serial),
@@ -291,11 +291,11 @@ class TestBuildTerminalFamilyDirectConstLoweringModification:
             suffix_serials=(218, 219),
         )
 
-        assert isinstance(modification, DirectTerminalLoweringGroup)
+        assert isinstance(modification, ExitPathLoweringGroup)
         assert modification.reason == "terminal_family_direct_const_lowering"
         assert len(modification.sites) == 1
         assert modification.sites[0].anchor_serial == 27
-        assert modification.sites[0].kind is DirectTerminalLoweringKind.RETURN_CONST
+        assert modification.sites[0].kind is ExitPathLoweringKind.RETURN_CONST
         assert modification.sites[0].const_value == 0x5644FD01B1049C4B
 
     def test_skips_non_literal_materializer_signature(self):

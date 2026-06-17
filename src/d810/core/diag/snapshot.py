@@ -20,7 +20,7 @@ from d810.core.diag.models import (
     BranchOwnershipProof,
     BstIntervalDispatcherRow,
     CfgProvenance,
-    CorridorShortcutDecision,
+    ExitPathShortcutDecision,
     FactConflict,
     FactConsumer,
     FactMapping,
@@ -885,17 +885,17 @@ def snapshot_branch_witness_decisions(
     conn.commit()
 
 
-def snapshot_corridor_shortcut_decisions(
+def snapshot_exit_path_shortcut_decisions(
     conn: sqlite3.Connection,
     snapshot_id: int,
     rows: Iterable[Mapping[str, Any] | object],
 ) -> None:
-    """Persist corridor shortcut liveness/projection decisions."""
+    """Persist exit-path shortcut liveness/projection decisions."""
 
     db_rows = []
     db = _diag_db()
     with diag_models_on(db), db.atomic():
-        next_index = _next_row_index(CorridorShortcutDecision, int(snapshot_id))
+        next_index = _next_row_index(ExitPathShortcutDecision, int(snapshot_id))
         for offset, row in enumerate(rows):
             db_rows.append({
                 "snapshot": int(snapshot_id),
@@ -906,8 +906,8 @@ def snapshot_corridor_shortcut_decisions(
                 "witness_compare_blocks_json": _json_text(
                     _mapping_value(row, "witness_compare_blocks"), []
                 ),
-                "corridor_blocks_json": _json_text(
-                    _mapping_value(row, "corridor_blocks"), []
+                "exit_path_blocks_json": _json_text(
+                    _mapping_value(row, "exit_path_blocks"), []
                 ),
                 "rejected_successors_json": _json_text(
                     _mapping_value(row, "rejected_successors"), []
@@ -920,7 +920,7 @@ def snapshot_corridor_shortcut_decisions(
                 "payload_json": _json_text(_mapping_value(row, "payload"), {}),
             })
         if db_rows:
-            CorridorShortcutDecision.insert_many(db_rows).execute()
+            ExitPathShortcutDecision.insert_many(db_rows).execute()
     conn.commit()
 
 

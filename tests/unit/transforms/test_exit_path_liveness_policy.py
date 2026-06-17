@@ -7,8 +7,8 @@ from d810.ir.flowgraph import (
     OperandKind,
     PredicateKind,
 )
-from d810.transforms.corridor_liveness_policy import (
-    corridor_blocks_live_violations,
+from d810.transforms.exit_path_liveness_policy import (
+    exit_path_blocks_live_violations,
 )
 
 
@@ -103,7 +103,7 @@ def _nested_entry_graph(*, proven_value: int) -> FlowGraph:
 def test_no_provider_liveness_allows_redundant_constant_write_on_proven_edge() -> None:
     fg = _nested_entry_graph(proven_value=1)
 
-    assert corridor_blocks_live_violations(
+    assert exit_path_blocks_live_violations(
         fg,
         (9,),
         13,
@@ -116,7 +116,7 @@ def test_no_provider_liveness_allows_redundant_constant_write_on_proven_edge() -
 def test_no_provider_liveness_keeps_unproven_live_definition_unsafe() -> None:
     fg = _nested_entry_graph(proven_value=2)
 
-    assert corridor_blocks_live_violations(
+    assert exit_path_blocks_live_violations(
         fg,
         (9,),
         13,
@@ -129,4 +129,4 @@ def test_no_provider_liveness_keeps_unproven_live_definition_unsafe() -> None:
 def test_no_provider_liveness_requires_edge_context_for_redundant_write() -> None:
     fg = _nested_entry_graph(proven_value=1)
 
-    assert corridor_blocks_live_violations(fg, (9,), 13, _STATE) == {("stk", _LIVE)}
+    assert exit_path_blocks_live_violations(fg, (9,), 13, _STATE) == {("stk", _LIVE)}

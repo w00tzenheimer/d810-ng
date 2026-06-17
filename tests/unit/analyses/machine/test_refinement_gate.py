@@ -18,8 +18,8 @@ from d810.analyses.abstract_domains.wrapped_interval import WrappedInterval
 from d810.analyses.control_flow.recovered_machine import (
     MachineTransition,
     Soundness,
-    TerminalCorridor,
-    TerminalCorridorEffect,
+    ExitPathEffectSummary,
+    ExitPathEffect,
 )
 from d810.analyses.data_flow.concolic import AbstractEvidence
 from d810.analyses.data_flow.concolic.emulation import ExactResult
@@ -57,7 +57,7 @@ def _state_loc() -> LocationRef:
     return LocationRef.stack(0x3C, 8)
 
 
-def _symbolic_payload_corridor(**overrides) -> TerminalCorridor:
+def _symbolic_payload_exit_path_effect_summary(**overrides) -> ExitPathEffectSummary:
     values = {
         "initial_state": 0x1111,
         "terminal_state": 0x2222,
@@ -69,17 +69,17 @@ def _symbolic_payload_corridor(**overrides) -> TerminalCorridor:
         "deterministic": True,
         "terminal_reachable": True,
         "effects": (
-            TerminalCorridorEffect(
+            ExitPathEffect(
                 kind="call_payload",
                 target="rand",
                 value="R",
             ),
-            TerminalCorridorEffect(
+            ExitPathEffect(
                 kind="store",
                 target="result_slot",
                 expression="R % 3u",
             ),
-            TerminalCorridorEffect(
+            ExitPathEffect(
                 kind="store",
                 target="state_slot",
                 value=0x2222,
@@ -88,7 +88,7 @@ def _symbolic_payload_corridor(**overrides) -> TerminalCorridor:
         "provenance": ("unit",),
     }
     values.update(overrides)
-    return TerminalCorridor(**values)
+    return ExitPathEffectSummary(**values)
 
 
 # ── gamma_members soundness ────────────────────────────────────────────────
@@ -306,48 +306,48 @@ def test_gate_a_accepts_complete_deterministic():
     assert out.floor is None  # gate (a) carries no floor
 
 
-def test_gate_a_accepts_complete_terminal_corridor():
-    """A deterministic terminal corridor can carry symbolic payload effects."""
+def test_gate_a_accepts_complete_exit_path_effect_summary():
+    """A deterministic exit path can carry symbolic payload effects."""
     gate = CompletenessGate(GateMode.DETERMINISTIC_F)
     cell = _top_cell(None)
-    corridor = _symbolic_payload_corridor()
+    exit_path = _symbolic_payload_exit_path_effect_summary()
     cv = ConcolicCellValue(
         next_states=frozenset({0x2222}),
         enumerated_inputs_complete=True,
         deterministic=True,
-        terminal_corridor=corridor,
+        exit_path_effect_summary=exit_path,
     )
     out = gate.refine_top_cell(cell=cell, concolic_value=cv)
 
     assert out.is_top is False
     assert out.transition.next_states == (0x2222,)
-    assert out.terminal_corridor == corridor
+    assert out.exit_path_effect_summary == exit_path
 
 
-def test_gate_a_rejects_terminal_corridor_when_symbol_controls_branch():
+def test_gate_a_rejects_exit_path_effect_summary_when_symbol_controls_branch():
     gate = CompletenessGate(GateMode.DETERMINISTIC_F)
     cell = _top_cell(None)
     cv = ConcolicCellValue(
         next_states=frozenset({0x2222}),
         enumerated_inputs_complete=True,
         deterministic=True,
-        terminal_corridor=_symbolic_payload_corridor(branch_dependency_symbols=("R",)),
+        exit_path_effect_summary=_symbolic_payload_exit_path_effect_summary(branch_dependency_symbols=("R",)),
     )
 
     out = gate.refine_top_cell(cell=cell, concolic_value=cv)
 
     assert out.is_top is True
-    assert out.terminal_corridor is None
+    assert out.exit_path_effect_summary is None
 
 
-def test_gate_a_rejects_incomplete_terminal_corridor():
+def test_gate_a_rejects_incomplete_exit_path_effect_summary():
     gate = CompletenessGate(GateMode.DETERMINISTIC_F)
     cell = _top_cell(None)
     cv = ConcolicCellValue(
         next_states=frozenset({0x2222}),
         enumerated_inputs_complete=True,
         deterministic=True,
-        terminal_corridor=_symbolic_payload_corridor(enumerated_inputs_complete=False),
+        exit_path_effect_summary=_symbolic_payload_exit_path_effect_summary(enumerated_inputs_complete=False),
     )
 
     out = gate.refine_top_cell(cell=cell, concolic_value=cv)

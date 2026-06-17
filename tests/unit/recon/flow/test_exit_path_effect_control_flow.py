@@ -1,4 +1,4 @@
-"""Focused unit cover for ``_is_corridor_control_flow_insn`` (E2d/terminal-corridor).
+"""Focused unit cover for ``_is_exit_path_control_flow_insn`` (E2d/exit-path effect).
 
 Pins the *exact* corridor control-flow set {m_goto, m_jnz, m_ijmp, m_jtbl}
 expressed in portable kinds, so the parity is protected without distorting
@@ -16,8 +16,8 @@ from __future__ import annotations
 import pytest
 
 from d810.ir.flowgraph import PredicateKind, InsnKind, InsnSnapshot
-from d810.analyses.control_flow.terminal_corridor_discovery import (
-    _is_corridor_control_flow_insn,
+from d810.analyses.control_flow.exit_path_effect_discovery import (
+    _is_exit_path_control_flow_insn,
 )
 
 
@@ -53,11 +53,11 @@ def test_corridor_control_flow_membership(
     expected: bool,
     label: str,
 ) -> None:
-    assert _is_corridor_control_flow_insn(_insn(kind, predicate)) is expected, label
+    assert _is_exit_path_control_flow_insn(_insn(kind, predicate)) is expected, label
 
 
 def test_equality_jump_without_predicate_is_rejected() -> None:
     """An EQUALITY_JUMP whose predicate was never populated must NOT be
     accepted -- only ``NOT_EQUAL`` (m_jnz) qualifies, never a bare/None
     predicate (which would let m_jz-shaped snapshots slip through)."""
-    assert _is_corridor_control_flow_insn(_insn(InsnKind.EQUALITY_JUMP, None)) is False
+    assert _is_exit_path_control_flow_insn(_insn(InsnKind.EQUALITY_JUMP, None)) is False

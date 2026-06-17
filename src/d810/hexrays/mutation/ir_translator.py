@@ -61,7 +61,7 @@ from d810.transforms.plan import (
     PatchPlan,
     PatchPrivateTerminalSuffix,
     PatchPrivateTerminalSuffixGroup,
-    PatchDirectTerminalLoweringGroup,
+    PatchExitPathLoweringGroup,
     PatchReorderBlocks,
     PatchRedirectBranch,
     PatchRedirectGoto,
@@ -1058,7 +1058,7 @@ class IDAIRTranslator:
                     continue
                 case PatchPrivateTerminalSuffixGroup():
                     continue
-                case PatchDirectTerminalLoweringGroup():
+                case PatchExitPathLoweringGroup():
                     continue
                 case PatchReorderBlocks():
                     continue
@@ -1519,7 +1519,7 @@ class IDAIRTranslator:
                     per_anchor_clone_expected_serials=per_anchor_serials,
                 )
 
-            case PatchDirectTerminalLoweringGroup(
+            case PatchExitPathLoweringGroup(
                 shared_entry_serial=shared_entry,
                 return_block_serial=return_block,
                 suffix_serials=suffix_serials,

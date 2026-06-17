@@ -3,15 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.analyses.control_flow.recovered_machine import (
-    TerminalCorridor,
-    TerminalCorridorEffect,
+    ExitPathEffectSummary,
+    ExitPathEffect,
 )
 from d810.ir.flowgraph import InsnKind, OperandKind
 from d810.ir.semantics import PredicateKind
 from d810.transforms.graph_modification import (
-    DirectTerminalLoweringKind,
-    DirectTerminalLoweringGroup,
-    DirectTerminalLoweringSite,
+    ExitPathLoweringKind,
+    ExitPathLoweringGroup,
+    ExitPathLoweringSite,
     RedirectGoto,
 )
 
@@ -25,13 +25,13 @@ class PrivateTerminalSuffixExecutionPlan:
 
 
 @dataclass(frozen=True, slots=True)
-class DirectTerminalLoweringExecutionPlan:
+class ExitPathLoweringExecutionPlan:
     modifications: tuple[object, ...]
     owned_blocks: frozenset[int]
     owned_edges: frozenset[tuple[int, int]]
-    sites: tuple[DirectTerminalLoweringSite, ...]
-    supported_sites: tuple[DirectTerminalLoweringSite, ...]
-    corridors: tuple[TerminalCorridor, ...] = ()
+    sites: tuple[ExitPathLoweringSite, ...]
+    supported_sites: tuple[ExitPathLoweringSite, ...]
+    exit_path_effect_summaries: tuple[ExitPathEffectSummary, ...] = ()
 
 
 def plan_private_terminal_suffix_execution(
@@ -96,7 +96,7 @@ def _prove_and_classify_anchor(
     shared_entry_serial: int,
     return_block_serial: int,
     suffix_serials: tuple[int, ...],
-) -> DirectTerminalLoweringSite | None:
+) -> ExitPathLoweringSite | None:
     get_block = getattr(flow_graph, "get_block", None)
     anchor_blk = get_block(anchor_serial) if callable(get_block) else None
     if anchor_blk is None or getattr(anchor_blk, "nsucc", 0) != 1:
@@ -111,9 +111,9 @@ def _prove_and_classify_anchor(
     if not interior_serials:
         return None
 
-    return DirectTerminalLoweringSite(
+    return ExitPathLoweringSite(
         anchor_serial=int(anchor_serial),
-        kind=DirectTerminalLoweringKind.CLONE_MATERIALIZER,
+        kind=ExitPathLoweringKind.CLONE_MATERIALIZER,
         materializer_serials=interior_serials,
     )
 
@@ -126,8 +126,8 @@ def plan_direct_terminal_lowering_execution(
     shared_entry_serial: int,
     return_block_serial: int,
     suffix_serials: tuple[int, ...],
-) -> DirectTerminalLoweringExecutionPlan:
-    sites: list[DirectTerminalLoweringSite] = []
+) -> ExitPathLoweringExecutionPlan:
+    sites: list[ExitPathLoweringSite] = []
     for anchor_serial in anchors:
         site = _prove_and_classify_anchor(
             flow_graph=flow_graph,
@@ -144,8 +144,8 @@ def plan_direct_terminal_lowering_execution(
         for site in sites
         if site.kind
         in (
-            DirectTerminalLoweringKind.RETURN_CONST,
-            DirectTerminalLoweringKind.CLONE_MATERIALIZER,
+            ExitPathLoweringKind.RETURN_CONST,
+            ExitPathLoweringKind.CLONE_MATERIALIZER,
         )
     )
 
@@ -165,7 +165,7 @@ def plan_direct_terminal_lowering_execution(
     owned_blocks.add(int(shared_entry_serial))
     owned_blocks.add(int(return_block_serial))
 
-    return DirectTerminalLoweringExecutionPlan(
+    return ExitPathLoweringExecutionPlan(
         modifications=modifications,
         owned_blocks=frozenset(owned_blocks),
         owned_edges=frozenset(
@@ -209,7 +209,7 @@ def _number_value(operand: object | None) -> int | None:
     return None
 
 
-def _collect_linear_predecessor_corridor(
+def _collect_linear_predecessor_exit_path(
     flow_graph: object,
     *,
     anchor_serial: int,
@@ -240,7 +240,7 @@ def _collect_linear_predecessor_corridor(
             break
         if len(preds) != 1:
             candidates = tuple(
-                _collect_linear_predecessor_corridor(
+                _collect_linear_predecessor_exit_path(
                     flow_graph,
                     anchor_serial=int(pred),
                     stop_at_serial=int(stop_at_serial),
@@ -454,13 +454,13 @@ def _return_block_for_terminal(
     return int(expected)
 
 
-def _prove_terminal_corridor_site(
+def _prove_exit_path_effect_site(
     flow_graph: object,
     redirect: RedirectGoto,
     *,
     dispatcher_entry_serial: int,
     state_var_stkoff: int,
-) -> tuple[DirectTerminalLoweringSite, TerminalCorridor, int] | None:
+) -> tuple[ExitPathLoweringSite, ExitPathEffectSummary, int] | None:
     get_block = getattr(flow_graph, "get_block", None)
     if not callable(get_block):
         return None
@@ -472,7 +472,7 @@ def _prove_terminal_corridor_site(
     if len(succs) != 2 or int(dispatcher_entry_serial) not in succs:
         return None
 
-    path_blocks = _collect_linear_predecessor_corridor(
+    path_blocks = _collect_linear_predecessor_exit_path(
         flow_graph,
         anchor_serial=int(redirect.from_serial),
         stop_at_serial=int(dispatcher_entry_serial),
@@ -511,19 +511,19 @@ def _prove_terminal_corridor_site(
     if return_block is None:
         return None
     effects = (
-        TerminalCorridorEffect(
+        ExitPathEffect(
             kind="store",
             target="state_slot",
             value=int(state_store_value),
             payload={"stkoff": int(state_var_stkoff)},
         ),
-        TerminalCorridorEffect(
+        ExitPathEffect(
             kind="store",
             target="result_slot",
             payload={"stkoffs": tuple(sorted(set(result_store_offsets)))},
         ),
     )
-    corridor = TerminalCorridor(
+    exit_path = ExitPathEffectSummary(
         initial_state=0,
         terminal_state=int(state_store_value),
         path_blocks=path_blocks + (terminal_serial,),
@@ -532,11 +532,11 @@ def _prove_terminal_corridor_site(
         enumerated_inputs_complete=True,
         deterministic=True,
         terminal_reachable=True,
-        provenance=("ollvm_terminal_corridor", "state_store_branch_to_stop"),
+        provenance=("exit_path_effect_summary", "state_store_branch_to_stop"),
     )
-    site = DirectTerminalLoweringSite(
+    site = ExitPathLoweringSite(
         anchor_serial=int(redirect.from_serial),
-        kind=DirectTerminalLoweringKind.CLONE_MATERIALIZER,
+        kind=ExitPathLoweringKind.CLONE_MATERIALIZER,
         materializer_serials=tuple(
             int(serial)
             for serial in path_blocks + (terminal_serial,)
@@ -544,16 +544,16 @@ def _prove_terminal_corridor_site(
         ),
         skip_terminal_control_tail=True,
     )
-    return site, corridor, int(return_block)
+    return site, exit_path, int(return_block)
 
 
-def plan_state_terminal_corridor_lowerings(
+def plan_state_exit_path_effect_lowerings(
     *,
     flow_graph: object,
     modifications: tuple[object, ...],
     dispatcher_entry_serial: int,
     state_var_stkoff: int,
-) -> DirectTerminalLoweringExecutionPlan:
+) -> ExitPathLoweringExecutionPlan:
     """Replace proven dispatcher redirects with direct terminal materializers.
 
     A site is accepted only when the redirected target stores the dispatcher state
@@ -563,15 +563,15 @@ def plan_state_terminal_corridor_lowerings(
     replaced with a DTL group that clones only the materializer body.
     """
 
-    supported: list[DirectTerminalLoweringSite] = []
-    corridors: list[TerminalCorridor] = []
+    supported: list[ExitPathLoweringSite] = []
+    exit_path_effect_summaries: list[ExitPathEffectSummary] = []
     return_blocks: set[int] = set()
     for mod in modifications:
         if not isinstance(mod, RedirectGoto):
             continue
         if int(mod.old_target) != int(dispatcher_entry_serial):
             continue
-        proof = _prove_terminal_corridor_site(
+        proof = _prove_exit_path_effect_site(
             flow_graph,
             mod,
             dispatcher_entry_serial=int(dispatcher_entry_serial),
@@ -579,25 +579,25 @@ def plan_state_terminal_corridor_lowerings(
         )
         if proof is None:
             continue
-        site, corridor, return_block = proof
+        site, exit_path, return_block = proof
         supported.append(site)
-        corridors.append(corridor)
+        exit_path_effect_summaries.append(exit_path)
         return_blocks.add(int(return_block))
 
     modifications_out: tuple[object, ...] = ()
     if supported and len(return_blocks) == 1:
         (return_block,) = tuple(return_blocks)
         modifications_out = (
-            DirectTerminalLoweringGroup(
+            ExitPathLoweringGroup(
                 shared_entry_serial=int(dispatcher_entry_serial),
                 return_block_serial=int(return_block),
                 suffix_serials=(int(return_block),),
                 sites=tuple(supported),
-                reason="ollvm_terminal_corridor_direct_lowering",
+                reason="exit_path_effect_direct_lowering",
             ),
         )
 
-    return DirectTerminalLoweringExecutionPlan(
+    return ExitPathLoweringExecutionPlan(
         modifications=modifications_out,
         owned_blocks=frozenset(
             int(site.anchor_serial) for site in supported
@@ -608,14 +608,14 @@ def plan_state_terminal_corridor_lowerings(
         ),
         sites=tuple(supported),
         supported_sites=tuple(supported),
-        corridors=tuple(corridors),
+        exit_path_effect_summaries=tuple(exit_path_effect_summaries),
     )
 
 
 __all__ = [
-    "DirectTerminalLoweringExecutionPlan",
+    "ExitPathLoweringExecutionPlan",
     "PrivateTerminalSuffixExecutionPlan",
     "plan_direct_terminal_lowering_execution",
     "plan_private_terminal_suffix_execution",
-    "plan_state_terminal_corridor_lowerings",
+    "plan_state_exit_path_effect_lowerings",
 ]

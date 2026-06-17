@@ -23,9 +23,9 @@ from d810.ir.flowgraph import (
 from d810.transforms.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
-    DirectTerminalLoweringGroup,
-    DirectTerminalLoweringKind,
-    DirectTerminalLoweringSite,
+    ExitPathLoweringGroup,
+    ExitPathLoweringKind,
+    ExitPathLoweringSite,
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     InsertBlock,
@@ -678,14 +678,14 @@ class TestModificationProjection:
 
         patch_plan = compile_patch_plan(
             [
-                DirectTerminalLoweringGroup(
+                ExitPathLoweringGroup(
                     shared_entry_serial=218,
                     return_block_serial=219,
                     suffix_serials=(218, 219),
                     sites=(
-                        DirectTerminalLoweringSite(
+                        ExitPathLoweringSite(
                             anchor_serial=207,
-                            kind=DirectTerminalLoweringKind.CLONE_MATERIALIZER,
+                            kind=ExitPathLoweringKind.CLONE_MATERIALIZER,
                             materializer_serials=(27, 218),
                         ),
                     ),
@@ -745,14 +745,14 @@ class TestModificationProjection:
 
         patch_plan = compile_patch_plan(
             [
-                DirectTerminalLoweringGroup(
+                ExitPathLoweringGroup(
                     shared_entry_serial=218,
                     return_block_serial=219,
                     suffix_serials=(218, 219),
                     sites=(
-                        DirectTerminalLoweringSite(
+                        ExitPathLoweringSite(
                             anchor_serial=27,
-                            kind=DirectTerminalLoweringKind.RETURN_CONST,
+                            kind=ExitPathLoweringKind.RETURN_CONST,
                             const_value=0x5644FD01B1049C4B,
                         ),
                     ),

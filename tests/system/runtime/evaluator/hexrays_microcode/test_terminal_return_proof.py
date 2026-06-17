@@ -154,7 +154,7 @@ class TestTopologyLayer:
             exit_serial=11,
             source_kind=source_kind,
             return_block_serial=12,
-            corridor_length=0,
+            exit_path_length=0,
             has_rax_write=has_rax_write,
         )
         return TerminalReturnAuditReport(

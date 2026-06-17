@@ -340,7 +340,7 @@ def test_partitioned_fixpoint_resolves_stack_address_alias_state_store(_seam) ->
 
 def test_partitioned_fixpoint_resolves_joined_stack_address_alias_state_store(_seam) -> None:
     # Both incoming edges to blk12 prove r3 == &state_var before the shared store.
-    # This is the terminal-corridor shape from sub_1815C8C30: the state store is
+    # This is the exit-path effect shape from sub_1815C8C30: the state store is
     # not in the alias-defining block, and the shared store block has more than
     # one non-dispatch predecessor.
     fg = FlowGraph(

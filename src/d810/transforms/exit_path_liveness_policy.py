@@ -1,7 +1,7 @@
-"""Corridor liveness policy — decide whether shortcutting over witness blocks is legal.
+"""Exit-path liveness policy — decide whether shortcutting over witness blocks is legal.
 
 Branch witnesses prove which dispatcher arm is feasible.  This module decides
-whether bypassing the selected witness corridor would sever a live non-state
+whether bypassing the selected witness exit path would sever a live non-state
 use-def chain.  The state variable itself is intentionally severed by the
 unflattening and is ignored.
 """
@@ -17,16 +17,16 @@ from d810.core import logging
 from d810.ir.block_identity import block_label
 from d810.ir.flowgraph import InsnKind, PredicateKind
 
-logger = logging.getLogger("D810.transforms.corridor_liveness_policy")
+logger = logging.getLogger("D810.transforms.exit_path_liveness_policy")
 
 
 @dataclass(frozen=True, slots=True)
-class CorridorShortcutDecision:
-    """Decision for shortcutting over an exact branch-witness corridor."""
+class ExitPathShortcutDecision:
+    """Decision for shortcutting over an exact branch-witness exit path."""
 
     allowed: bool
     reason: str
-    corridor_blocks: tuple[int, ...] = ()
+    exit_path_blocks: tuple[int, ...] = ()
     live_definitions: tuple[tuple[str, int], ...] = ()
 
 
@@ -127,9 +127,9 @@ def _edge_proves_constant(
 ) -> bool:
     """Return whether ``source_block -> selected_successor`` already proves ``key == value``.
 
-    This keeps no-provider liveness from rejecting nested dispatcher corridors
+    This keeps no-provider liveness from rejecting nested dispatcher exit paths
     whose selected incoming edge has already established the same outer-state
-    constant that the skipped corridor block redundantly writes.
+    constant that the skipped exit-path block redundantly writes.
     """
     block = flow_graph.get_block(int(source_block))
     if block is None or int(selected_successor) not in tuple(
@@ -138,7 +138,7 @@ def _edge_proves_constant(
         return False
 
     # A one-way predecessor can prove the value if it assigns that exact constant
-    # before entering the corridor.
+    # before entering the exit path.
     if int(getattr(block, "nsucc", len(getattr(block, "succs", ())) or 0)) == 1:
         values, all_constant = _constant_defs_for_key(block, key)
         return all_constant and values == {int(value)}
@@ -172,13 +172,13 @@ def _edge_proves_constant(
 
 def _value_preserving_live_definitions(
     flow_graph: object,
-    corridor_blocks: tuple[int, ...],
+    exit_path_blocks: tuple[int, ...],
     unsafe: set[tuple[str, int]],
     *,
     source_blocks: tuple[int, ...],
     old_target: int | None,
 ) -> set[tuple[str, int]]:
-    """Live corridor definitions that are safe because skipped writes are redundant."""
+    """Live exit-path definitions that are safe because skipped writes are redundant."""
     if old_target is None or not source_blocks:
         return set()
     preserving: set[tuple[str, int]] = set()
@@ -186,7 +186,7 @@ def _value_preserving_live_definitions(
         values: set[int] = set()
         all_constant = True
         saw_definition = False
-        for serial in corridor_blocks:
+        for serial in exit_path_blocks:
             block = flow_graph.get_block(int(serial))
             if block is None:
                 continue
@@ -290,15 +290,15 @@ def live_in_variables(
     return _compute_liveness(flow_graph, state_var_stkoff)
 
 
-def corridor_shortcut_live_violations(
+def exit_path_shortcut_live_violations(
     flow_graph: object,
     witness_path: tuple[object, ...],
     shortcut_target: int,
     state_var_stkoff: int | None,
 ) -> set[tuple[str, int]]:
-    """Return live non-state definitions bypassed by shortcutting a corridor.
+    """Return live non-state definitions bypassed by shortcutting an exit path.
 
-    A non-state variable defined in the witness corridor is unsafe to bypass if
+    A non-state variable defined in the witness exit path is unsafe to bypass if
     it is live at the entry of ``shortcut_target``.  The state variable is the
     unflattening target and is never counted.
     """
@@ -307,7 +307,7 @@ def corridor_shortcut_live_violations(
     if not target_live:
         return set()
 
-    corridor_defs: set[tuple[str, int]] = set()
+    exit_path_defs: set[tuple[str, int]] = set()
     for witness in witness_path:
         compare_serial = _int_or_none(getattr(witness, "compare_block", None))
         if compare_serial is None:
@@ -316,13 +316,13 @@ def corridor_shortcut_live_violations(
         if block is None:
             continue
         _gen, kill = _block_gen_kill(block, state_var_stkoff)
-        corridor_defs |= kill
+        exit_path_defs |= kill
 
-    unsafe = corridor_defs & target_live
+    unsafe = exit_path_defs & target_live
     if unsafe and logger.debug_on:
         logger.debug(
-            "corridor liveness rejects shortcut to %s: live variables %s "
-            "defined in corridor %s",
+            "exit-path liveness rejects shortcut to %s: live variables %s "
+            "defined in exit path %s",
             _format_block_label(flow_graph, shortcut_target),
             sorted(unsafe),
             [
@@ -333,9 +333,9 @@ def corridor_shortcut_live_violations(
     return set(unsafe)
 
 
-def corridor_blocks_live_violations(
+def exit_path_blocks_live_violations(
     flow_graph: object,
-    corridor_blocks: tuple[int, ...],
+    exit_path_blocks: tuple[int, ...],
     shortcut_target: int,
     state_var_stkoff: int | None,
     *,
@@ -345,7 +345,7 @@ def corridor_blocks_live_violations(
     """Return live non-state definitions bypassed by shortcutting blocks.
 
     This is the no-provider fallback for profiles that can identify the
-    dispatcher corridor but cannot yet prove an exact selected/rejected branch
+    dispatcher exit path but cannot yet prove an exact selected/rejected branch
     witness.  It does not prove feasibility; it only decides whether the legacy
     endpoint shortcut would skip a live stack/register definition.
     """
@@ -354,33 +354,33 @@ def corridor_blocks_live_violations(
     if not target_live:
         return set()
 
-    corridor_defs: set[tuple[str, int]] = set()
-    for serial in corridor_blocks:
+    exit_path_defs: set[tuple[str, int]] = set()
+    for serial in exit_path_blocks:
         block = flow_graph.get_block(int(serial))
         if block is None:
             continue
         _gen, kill = _block_gen_kill(block, state_var_stkoff)
-        corridor_defs |= kill
-    unsafe = corridor_defs & target_live
+        exit_path_defs |= kill
+    unsafe = exit_path_defs & target_live
     unsafe -= _value_preserving_live_definitions(
         flow_graph,
-        tuple(int(block) for block in corridor_blocks),
+        tuple(int(block) for block in exit_path_blocks),
         unsafe,
         source_blocks=tuple(int(block) for block in source_blocks),
         old_target=old_target,
     )
     if unsafe and logger.debug_on:
         logger.debug(
-            "corridor liveness rejects no-provider shortcut to %s: "
-            "live variables %s defined in corridor %s",
+            "exit-path liveness rejects no-provider shortcut to %s: "
+            "live variables %s defined in exit path %s",
             _format_block_label(flow_graph, shortcut_target),
             sorted(unsafe),
-            [_format_block_label(flow_graph, b) for b in corridor_blocks],
+            [_format_block_label(flow_graph, b) for b in exit_path_blocks],
         )
     return set(unsafe)
 
 
-def corridor_shortcut_is_live_safe(
+def exit_path_shortcut_is_live_safe(
     flow_graph: object,
     witness_path: tuple[object, ...],
     shortcut_target: int,
@@ -388,17 +388,17 @@ def corridor_shortcut_is_live_safe(
 ) -> bool:
     """Return ``True`` if bypassing ``witness_path`` blocks is use-def safe."""
 
-    return not corridor_shortcut_live_violations(
+    return not exit_path_shortcut_live_violations(
         flow_graph, witness_path, shortcut_target, state_var_stkoff
     )
 
 
-def evaluate_corridor_shortcut(
+def evaluate_exit_path_shortcut(
     flow_graph: object,
     witness_result: object,
     shortcut_target: int,
     state_var_stkoff: int | None,
-) -> CorridorShortcutDecision:
+) -> ExitPathShortcutDecision:
     """Apply shortcut legality after branch feasibility has been proven.
 
     Branch-witness resolution is the feasibility policy.  This function consumes
@@ -406,52 +406,52 @@ def evaluate_corridor_shortcut(
     second, independent gate.
     """
     if isinstance(witness_result, BranchWitnessAbstain):
-        return CorridorShortcutDecision(
+        return ExitPathShortcutDecision(
             allowed=False,
             reason=f"witness_abstain:{witness_result.reason}",
         )
     if isinstance(witness_result, BranchWitnessConflict):
-        return CorridorShortcutDecision(
+        return ExitPathShortcutDecision(
             allowed=False,
             reason="witness_conflict",
         )
 
     witness_path = tuple(witness_result) if witness_result is not None else ()
-    corridor_blocks = tuple(
+    exit_path_blocks = tuple(
         int(compare_block)
         for witness in witness_path
         for compare_block in (_int_or_none(getattr(witness, "compare_block", None)),)
         if compare_block is not None
     )
     if not witness_path:
-        return CorridorShortcutDecision(
+        return ExitPathShortcutDecision(
             allowed=False,
             reason="empty_witness_path",
-            corridor_blocks=corridor_blocks,
+            exit_path_blocks=exit_path_blocks,
         )
-    unsafe = corridor_shortcut_live_violations(
+    unsafe = exit_path_shortcut_live_violations(
         flow_graph, witness_path, int(shortcut_target), state_var_stkoff
     )
     if unsafe:
-        return CorridorShortcutDecision(
+        return ExitPathShortcutDecision(
             allowed=False,
-            reason="corridor_liveness_unsafe",
-            corridor_blocks=corridor_blocks,
+            reason="exit_path_liveness_unsafe",
+            exit_path_blocks=exit_path_blocks,
             live_definitions=tuple(sorted(unsafe)),
         )
-    return CorridorShortcutDecision(
+    return ExitPathShortcutDecision(
         allowed=True,
         reason="exact_witness_live_safe",
-        corridor_blocks=corridor_blocks,
+        exit_path_blocks=exit_path_blocks,
     )
 
 
 __all__ = [
-    "CorridorShortcutDecision",
+    "ExitPathShortcutDecision",
     "block_defined_variables",
-    "corridor_blocks_live_violations",
-    "corridor_shortcut_live_violations",
-    "corridor_shortcut_is_live_safe",
-    "evaluate_corridor_shortcut",
+    "exit_path_blocks_live_violations",
+    "exit_path_shortcut_live_violations",
+    "exit_path_shortcut_is_live_safe",
+    "evaluate_exit_path_shortcut",
     "live_in_variables",
 ]

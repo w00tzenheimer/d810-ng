@@ -16,7 +16,7 @@ class CarrierBucket(str, enum.Enum):
 
 @dataclass(frozen=True, slots=True)
 class SuffixGroupDecision:
-    """Per-suffix-group grouped terminal-corridor decision."""
+    """Per-suffix-group grouped exit-path effect decision."""
 
     shared_entry: int
     return_block: int
@@ -28,7 +28,7 @@ class SuffixGroupDecision:
     carrier_bucket: CarrierBucket
     proof_resolved_count: int
     proof_unresolved_count: int
-    corridor_length: int
+    exit_path_length: int
     clonable: bool
     should_emit: bool
     rejection_reasons: tuple[str, ...]
@@ -50,7 +50,7 @@ def classify_carrier_bucket(carrier_kinds: tuple[str, ...]) -> CarrierBucket:
 def compute_suffix_group_decision(
     *,
     forward_entries,
-    corridor_info,
+    exit_path_info,
     semantic_action: TerminalLoweringAction,
 ) -> SuffixGroupDecision:
     handler_entries = tuple(sorted({int(entry.handler_entry) for entry in forward_entries}))
@@ -79,8 +79,8 @@ def compute_suffix_group_decision(
             "semantic_action=%s (need PRIVATE_TERMINAL_SUFFIX)"
             % semantic_action.value
         )
-    if not corridor_info.clonable:
-        rejection_reasons.append("corridor not clonable")
+    if not exit_path_info.clonable:
+        rejection_reasons.append("exit_path not clonable")
     if handler_count < 2:
         rejection_reasons.append("handler_count=%d < 2" % handler_count)
     if proof_resolved > 0:
@@ -103,9 +103,9 @@ def compute_suffix_group_decision(
     )
 
     return SuffixGroupDecision(
-        shared_entry=int(corridor_info.shared_entry),
-        return_block=int(corridor_info.return_block),
-        suffix_serials=tuple(int(serial) for serial in corridor_info.suffix_serials),
+        shared_entry=int(exit_path_info.shared_entry),
+        return_block=int(exit_path_info.return_block),
+        suffix_serials=tuple(int(serial) for serial in exit_path_info.suffix_serials),
         handler_entries=handler_entries,
         handler_count=handler_count,
         carrier_source_kinds=carrier_kinds,
@@ -113,8 +113,8 @@ def compute_suffix_group_decision(
         carrier_bucket=carrier_bucket,
         proof_resolved_count=proof_resolved,
         proof_unresolved_count=proof_unresolved,
-        corridor_length=int(corridor_info.corridor_length),
-        clonable=bool(corridor_info.clonable),
+        exit_path_length=int(exit_path_info.exit_path_length),
+        clonable=bool(exit_path_info.clonable),
         should_emit=len(rejection_reasons) == 0,
         rejection_reasons=tuple(rejection_reasons),
         dtl_anchor_serials=dtl_anchors,
