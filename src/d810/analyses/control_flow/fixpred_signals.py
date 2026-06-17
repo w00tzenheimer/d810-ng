@@ -21,7 +21,7 @@ Metrics produced:
     - ``predecessor_nway_ratio``: fraction of sampled predecessors that are BLT_NWAY
     - ``state_variable_present``: 1 if a state variable was detected, else 0
     - ``dispatcher_state_constant_total``: unique state constants observed
-    - ``dispatcher_type``: canonical dispatcher type string
+    - ``router_kind``: canonical router kind string
 
 Candidates:
     - ``"fixpred_high_fanin_dispatcher"`` for each dispatcher when max fan-in >= 3
@@ -56,8 +56,8 @@ def _ratio(numerator: int, denominator: int) -> float:
     return float(numerator) / float(denominator)
 
 
-def _canonical_dispatcher_type(raw: object) -> str:
-    """Normalize a raw dispatcher type string to a canonical form."""
+def _canonical_router_kind(raw: object) -> str:
+    """Normalize a raw router kind string to a canonical form."""
     text = str(raw or "").strip().upper()
     if text.endswith("CONDITION_CHAIN"):
         return "CONDITION_CHAIN"
@@ -208,9 +208,7 @@ def _portable_signals(
         ),
         "state_variable_present": int(bool(state_var_present)),
         "dispatcher_state_constant_total": int(state_constant_total),
-        "dispatcher_type": _canonical_dispatcher_type(
-            metadata.get("dispatcher_type", "UNKNOWN")
-        ),
+        "router_kind": _canonical_router_kind(metadata.get("router_kind", "UNKNOWN")),
     }
 
     candidates = tuple(

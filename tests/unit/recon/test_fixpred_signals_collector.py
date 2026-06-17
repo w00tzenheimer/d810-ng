@@ -11,7 +11,7 @@ import pytest
 
 from d810.analyses.control_flow.fixpred_signals import (
     FixPredSignalsCollector,
-    _canonical_dispatcher_type,
+    _canonical_router_kind,
     _ratio,
 )
 
@@ -85,20 +85,20 @@ class TestHelpers:
     def test_ratio_negative_denominator(self) -> None:
         assert _ratio(5, -1) == 0.0
 
-    def test_canonical_dispatcher_type_conditional(self) -> None:
-        assert _canonical_dispatcher_type("CONDITION_CHAIN") == "CONDITION_CHAIN"
-        assert _canonical_dispatcher_type("foo_CONDITION_CHAIN") == "CONDITION_CHAIN"
+    def test_canonical_router_kind_conditional(self) -> None:
+        assert _canonical_router_kind("CONDITION_CHAIN") == "CONDITION_CHAIN"
+        assert _canonical_router_kind("foo_CONDITION_CHAIN") == "CONDITION_CHAIN"
 
-    def test_canonical_dispatcher_type_switch(self) -> None:
-        assert _canonical_dispatcher_type("SWITCH") == "SWITCH"
+    def test_canonical_router_kind_switch(self) -> None:
+        assert _canonical_router_kind("SWITCH") == "SWITCH"
 
-    def test_canonical_dispatcher_type_indirect(self) -> None:
-        assert _canonical_dispatcher_type("INDIRECT_TABLE") == "INDIRECT_TABLE"
+    def test_canonical_router_kind_indirect(self) -> None:
+        assert _canonical_router_kind("INDIRECT_TABLE") == "INDIRECT_TABLE"
 
-    def test_canonical_dispatcher_type_unknown(self) -> None:
-        assert _canonical_dispatcher_type("something_else") == "UNKNOWN"
-        assert _canonical_dispatcher_type(None) == "UNKNOWN"
-        assert _canonical_dispatcher_type("") == "UNKNOWN"
+    def test_canonical_router_kind_unknown(self) -> None:
+        assert _canonical_router_kind("something_else") == "UNKNOWN"
+        assert _canonical_router_kind(None) == "UNKNOWN"
+        assert _canonical_router_kind("") == "UNKNOWN"
 
 
 # ---------------------------------------------------------------------------
@@ -280,8 +280,29 @@ class TestPortableSignals:
         assert result.metrics["ambiguous_dispatcher_count"] == 1
         assert result.metrics["ambiguous_dispatcher_ratio"] == pytest.approx(1.0)
 
-    def test_dispatcher_type_from_metadata(self) -> None:
-        """Dispatcher type is read from metadata."""
+    def test_router_kind_from_metadata(self) -> None:
+        """Router kind is read from metadata."""
+        blocks = {
+            0: _make_block(0, block_type=4, preds=(1, 2), succs=(3, 4)),
+            1: _make_block(1, block_type=3, preds=(), succs=(0,)),
+            2: _make_block(2, block_type=3, preds=(), succs=(0,)),
+            3: _make_block(3, block_type=3, preds=(0,), succs=()),
+            4: _make_block(4, block_type=3, preds=(0,), succs=()),
+        }
+        target = _make_target(
+            blocks,
+            metadata={
+                "dispatchers": [0],
+                "router_kind": "CONDITION_CHAIN",
+            },
+        )
+        collector = FixPredSignalsCollector()
+        result = collector.collect(target, func_ea=0x401000, maturity=3)
+
+        assert result.metrics["router_kind"] == "CONDITION_CHAIN"
+
+    def test_legacy_dispatcher_type_metadata_is_not_router_kind(self) -> None:
+        """Legacy dispatcher_type metadata is not a canonical router-kind input."""
         blocks = {
             0: _make_block(0, block_type=4, preds=(1, 2), succs=(3, 4)),
             1: _make_block(1, block_type=3, preds=(), succs=(0,)),
@@ -299,7 +320,7 @@ class TestPortableSignals:
         collector = FixPredSignalsCollector()
         result = collector.collect(target, func_ea=0x401000, maturity=3)
 
-        assert result.metrics["dispatcher_type"] == "CONDITION_CHAIN"
+        assert result.metrics["router_kind"] == "UNKNOWN"
 
     def test_result_metrics_are_readonly(self) -> None:
         """ReconResult.metrics must be a read-only mapping."""
@@ -340,6 +361,6 @@ class TestPortableSignals:
             "predecessor_nway_ratio",
             "state_variable_present",
             "dispatcher_state_constant_total",
-            "dispatcher_type",
+            "router_kind",
         }
         assert set(result.metrics.keys()) == expected_keys
