@@ -83,12 +83,26 @@ def test_configured_kind_forces_exact_over_a_winning_bst() -> None:
     assert chosen is not bst and handler_coverage(chosen, ENTRY) == 2
 
 
-def test_configured_kind_forces_condition_chain_over_a_winning_exact() -> None:
+def test_configured_kind_does_not_force_collapsed_condition_chain_over_exact() -> None:
     bst = _router({1: ENTRY, 5: ENTRY})  # coverage 0 (would lose detection)
     ctx = RouterResolutionContext(
         bst_router=bst, state_to_handler={1: 10, 5: 20, 9: 30}, dispatcher_entry=ENTRY
     )
-    assert select_router(default_resolvers(), ctx, configured_kind=RouterKind.CONDITION_CHAIN) is bst
+    chosen = select_router(
+        default_resolvers(), ctx, configured_kind=RouterKind.CONDITION_CHAIN
+    )
+    assert chosen is not bst and handler_coverage(chosen, ENTRY) == 3
+
+
+def test_configured_kind_prefers_noncollapsed_condition_chain() -> None:
+    bst = _router({1: 10, 5: ENTRY})  # coverage 1 (usable range evidence)
+    ctx = RouterResolutionContext(
+        bst_router=bst, state_to_handler={1: 10, 5: 20, 9: 30}, dispatcher_entry=ENTRY
+    )
+    assert (
+        select_router(default_resolvers(), ctx, configured_kind=RouterKind.CONDITION_CHAIN)
+        is bst
+    )
 
 
 def test_configured_kind_absent_falls_back_to_detection() -> None:
