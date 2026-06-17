@@ -95,23 +95,23 @@ class TestResolveTarget:
         assert m.resolve_target(0x500) is None
 
 
-class TestFromBstResult:
-    """Bridge from BSTAnalysisResult."""
+class TestFromConditionChainResult:
+    """Bridge from ConditionChainAnalysisResult."""
 
     def test_round_trip_fields(self):
-        from d810.analyses.control_flow.bst_model import BSTAnalysisResult, BSTNodeMap
+        from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult, ConditionChainNodeMap
 
-        node_map = BSTNodeMap()
+        node_map = ConditionChainNodeMap()
         node_map.add(5)
         node_map.add(6)
-        bst = BSTAnalysisResult(
+        condition_chain = ConditionChainAnalysisResult(
             handler_state_map={10: 0xAABB, 11: 0xCCDD},
             handler_range_map={12: (0x1000, 0x2000)},
-            bst_node_blocks=node_map,
+            condition_chain_blocks=node_map,
             initial_state=0xAABB,
         )
-        m = DispatcherHandlerMap.from_bst_result(
-            bst, dispatcher_serial=5, state_var_stkoff=0x3C,
+        m = DispatcherHandlerMap.from_condition_chain_result(
+            condition_chain, dispatcher_serial=5, state_var_stkoff=0x3C,
         )
         assert m.handler_state_map == {10: 0xAABB, 11: 0xCCDD}
         assert m.handler_range_map == {12: (0x1000, 0x2000)}
@@ -122,11 +122,11 @@ class TestFromBstResult:
         assert m.initial_state == 0xAABB
 
 
-class TestToBstResult:
-    """Synthesize BSTAnalysisResult for downstream consumers."""
+class TestToConditionChainResult:
+    """Synthesize ConditionChainAnalysisResult for downstream consumers."""
 
-    def test_synthetic_bst_has_handler_state_map(self):
-        from d810.analyses.control_flow.bst_model import BSTAnalysisResult
+    def test_synthetic_condition_chain_has_handler_state_map(self):
+        from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult
 
         m = DispatcherHandlerMap(
             handler_state_map={10: 0, 11: 1, 12: 2},
@@ -136,12 +136,12 @@ class TestToBstResult:
             router_kind=RouterKind.SWITCH,
             initial_state=0,
         )
-        bst = m.to_bst_result()
-        assert isinstance(bst, BSTAnalysisResult)
-        assert bst.handler_state_map == {10: 0, 11: 1, 12: 2}
-        assert bst.initial_state == 0
+        condition_chain = m.to_condition_chain_result()
+        assert isinstance(condition_chain, ConditionChainAnalysisResult)
+        assert condition_chain.handler_state_map == {10: 0, 11: 1, 12: 2}
+        assert condition_chain.initial_state == 0
 
-    def test_synthetic_bst_node_blocks_iterable(self):
+    def test_synthetic_condition_chain_blocks_iterable(self):
         m = DispatcherHandlerMap(
             handler_state_map={10: 0},
             dispatcher_serial=5,
@@ -149,10 +149,10 @@ class TestToBstResult:
             state_var_stkoff=0x3C,
             router_kind=RouterKind.SWITCH,
         )
-        bst = m.to_bst_result()
-        assert set(bst.bst_node_blocks) == {5, 6}
+        condition_chain = m.to_condition_chain_result()
+        assert set(condition_chain.condition_chain_blocks) == {5, 6}
 
-    def test_synthetic_bst_defaults(self):
+    def test_synthetic_condition_chain_defaults(self):
         m = DispatcherHandlerMap(
             handler_state_map={10: 0},
             dispatcher_serial=5,
@@ -160,8 +160,8 @@ class TestToBstResult:
             state_var_stkoff=0x3C,
             router_kind=RouterKind.SWITCH,
         )
-        bst = m.to_bst_result()
-        assert bst.transitions == {}
-        assert bst.conditional_transitions == {}
-        assert bst.exits == set()
-        assert bst.dispatcher is None
+        condition_chain = m.to_condition_chain_result()
+        assert condition_chain.transitions == {}
+        assert condition_chain.conditional_transitions == {}
+        assert condition_chain.exits == set()
+        assert condition_chain.dispatcher is None

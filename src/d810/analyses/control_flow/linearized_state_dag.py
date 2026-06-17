@@ -6523,7 +6523,7 @@ def build_linearized_state_dag_from_graph(
             # [0x737189d6, 0x7c2c0220] → blk 52``) is unrepresented in the
             # exact index even though a RANGE_BACKED node for the covering
             # interval already exists.  Resolve it through the SAME interval
-            # logic the comparison dispatcher / ``resolve_target_via_bst`` use
+            # logic the comparison dispatcher / ``resolve_target_via_condition_chain`` use
             # (``route_via_interval_sets``: exact -> interval -> default with the
             # ``>= 0xFFFF0000`` degenerate-span guard) so a mid-interval value
             # reconnects to its RANGE_BACKED node instead of dropping the edge.

@@ -159,8 +159,8 @@ def test_select_family_registers_hodur_but_is_inert():
 class _FakeMap:
     """Stand-in StateDispatcherMap carrying only the kind discriminator detect reads."""
 
-    def __init__(self, source):
-        self.source = source
+    def __init__(self, router_kind):
+        self.router_kind = router_kind
 
 
 def test_approov_detect_is_kind_scoped_to_switch_and_indirect(monkeypatch):

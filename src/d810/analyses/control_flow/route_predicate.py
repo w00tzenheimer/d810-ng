@@ -1,6 +1,6 @@
-"""Range-partitioned decision-DAG route oracle for dispatcher BSTs (portable).
+"""Range-partitioned decision-DAG route oracle for condition-chain dispatchers.
 
-Given a dispatcher's binary-search-tree of state-variable comparisons, this
+Given a dispatcher's chain/tree of state-variable comparisons, this
 resolves which handler a concrete state routes to (:meth:`DecisionDag.route`) AND
 partitions the entire state space into ``(domain, path, target)`` triples
 (:meth:`DecisionDag.resolve_paths`) -- a sound/complete ``RoutePredicateEvaluator``.
@@ -21,11 +21,11 @@ SIGNEDNESS is per-comparison, encoded in the opcode (``ja/jb/jae/jbe`` unsigned,
 silently drops ``0xFFFFFFFF`` on an unsigned ``> 0x7FFFFFFF``). A signed test is
 translated into its equivalent unsigned interval set via the sign-bit-XOR
 reduction (``s <_signed c  <=>  (s ^ 2**(w-1)) <_unsigned (c ^ 2**(w-1))``), so
-signed and unsigned comparisons in the same BST compose soundly.
+signed and unsigned comparisons in the same route compose soundly.
 
-Pure: no IDA. Extraction of the BST node shape from live microcode lives in
+Pure: no IDA. Extraction of the backend comparison shape from live microcode lives in
 ``backends/hexrays/evidence/bst_analysis``; this module only consumes the
-``BstComparison`` records.
+``RouteComparison`` records.
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ from d810.analyses.abstract_domains.interval_set import Interval, IntervalSet
 
 __all__ = [
     "satisfying_set",
-    "BstComparison",
+    "RouteComparison",
     "ResolvedPath",
     "DecisionDag",
     "UNSIGNED_OPS",
@@ -121,8 +121,8 @@ def _evaluate(op: str, state: int, const: int, width: int) -> bool:
 
 
 @dataclass(frozen=True)
-class BstComparison:
-    """One BST decision node: ``state OP const`` -> *true_target* else *false_target*.
+class RouteComparison:
+    """One route decision node: ``state OP const`` -> *true_target* else *false_target*.
 
     ``true_target`` is the block taken when the comparison holds (the ``@N`` jump
     in the microcode); ``false_target`` is the fallthrough. A block serial that is
@@ -146,15 +146,15 @@ class ResolvedPath:
 
 
 class DecisionDag:
-    """A dispatcher BST over a ``width``-bit state variable.
+    """A dispatcher decision DAG over a ``width``-bit state variable.
 
-    *nodes* maps a comparison block serial to its :class:`BstComparison`; any
+    *nodes* maps a comparison block serial to its :class:`RouteComparison`; any
     serial referenced as a target but absent from *nodes* is a leaf handler.
     """
 
-    def __init__(self, width: int, nodes: Mapping[int, BstComparison], root: int):
+    def __init__(self, width: int, nodes: Mapping[int, RouteComparison], root: int):
         self.width = int(width)
-        self.nodes: dict[int, BstComparison] = dict(nodes)
+        self.nodes: dict[int, RouteComparison] = dict(nodes)
         self.root = int(root)
 
     def route(self, state: int) -> int:

@@ -50,7 +50,7 @@ def _view():
     return DispatcherView(
         handler_entry_by_state={K1: 10, K2: 20},
         handler_range_map={20: (K2, K3)},
-        bst_node_blocks=frozenset({2}),
+        condition_chain_blocks=frozenset({2}),
         dispatcher_entry=1,
         result=None,
     )
@@ -144,7 +144,7 @@ def test_state_level_expansion_from_transition_handlers():
     view = DispatcherView(
         handler_entry_by_state={K1: 10},
         handler_range_map={},
-        bst_node_blocks=frozenset({2}),
+        condition_chain_blocks=frozenset({2}),
         dispatcher_entry=1,
         result=None,
     )
@@ -229,7 +229,7 @@ def test_conditional_arms_from_same_branch_get_distinct_branch_arms():
     view = DispatcherView(
         handler_entry_by_state={K1: 10, K2: 20, K4: 40},
         handler_range_map={},
-        bst_node_blocks=frozenset({2}),
+        condition_chain_blocks=frozenset({2}),
         dispatcher_entry=1,
         result=None,
     )

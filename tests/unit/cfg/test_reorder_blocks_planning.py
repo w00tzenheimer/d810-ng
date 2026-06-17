@@ -44,10 +44,10 @@ def test_compute_reorder_blocks_orders_handlers_and_splits_two_way():
             SimpleNamespace(from_block=11, to_state=3, is_conditional=True),
         ),
     )
-    bst_result = SimpleNamespace(
+    condition_chain_result = SimpleNamespace(
         handler_state_map={200: 2, 300: 3},
         handler_range_map={},
-        bst_node_blocks=frozenset(),
+        condition_chain_blocks=frozenset(),
     )
     snapshot = SimpleNamespace(
         state_machine=state_machine,
@@ -64,8 +64,8 @@ def test_compute_reorder_blocks_orders_handlers_and_splits_two_way():
     result = compute_reorder_blocks(
         snapshot,
         resolve_target_entry=lambda state: {2: 200, 3: 300}.get(state),
-        handler_entry_state_map=bst_result.handler_state_map,
-        dispatcher_blocks=bst_result.bst_node_blocks,
+        handler_entry_state_map=condition_chain_result.handler_state_map,
+        dispatcher_blocks=condition_chain_result.condition_chain_blocks,
     )
     assert result is not None
     assert result.dfs_block_order == (10, 11, 20, 30)

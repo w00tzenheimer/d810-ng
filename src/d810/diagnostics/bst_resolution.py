@@ -27,7 +27,7 @@ Resolution rules
 * When ``successor_kind`` is ``direct`` / ``transit`` / ``loop`` /
   ``exit`` / ``unresolved``, no BST resolution is performed and the
   reason column records why.
-* The resolver mirrors :func:`d810.analyses.control_flow.bst_model.resolve_target_via_bst`
+* The resolver mirrors :func:`d810.analyses.control_flow.condition_chain_model.resolve_target_via_condition_chain`
   semantics for the interval lookup.
 
 The ``bst_resolution_maturity`` column records which maturity provided
@@ -170,7 +170,7 @@ def resolve_via_intervals(
     """Single-hop interval lookup.
 
     Mirrors the semantics of
-    :func:`d810.analyses.control_flow.bst_model.resolve_target_via_bst` for the
+    :func:`d810.analyses.control_flow.condition_chain_model.resolve_target_via_condition_chain` for the
     interval dispatcher fast path: linear scan over half-open
     ``[lo, hi)`` intervals.  Returns the target block serial or
     ``None`` when no interval matches.

@@ -8,7 +8,7 @@ from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
 from d810.analyses.control_flow.transition_builder import (
     TransitionBuilderStrategy,
     TransitionResult,
-    _convert_bst_to_result,
+    _convert_condition_chain_to_result,
     _get_state_var_stkoff,
 )
 
@@ -50,7 +50,7 @@ class BSTWalkerStrategy:
 
         if not bst.handler_state_map:
             return None
-        return _convert_bst_to_result(bst)
+        return _convert_condition_chain_to_result(bst)
 
 
 class BFSWithMopTrackerStrategy:

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from d810.core.typing import Any, Optional
 
-from d810.analyses.control_flow.bst_model import BSTNodeMap
+from d810.analyses.control_flow.condition_chain_model import ConditionChainNodeMap
 from d810.capabilities.providers import get_bst_walkers
 from d810.analyses.control_flow.transition_analysis import (
     DispatcherTransitionAnalysis,
@@ -76,7 +76,7 @@ def analyze_bst_dispatcher(
     handler_state_map: dict[int, int] = {}
     handler_serials: set[int] = set()
     handler_range_map: dict[int, tuple[Optional[int], Optional[int]]] = {}
-    bst_node_blocks: BSTNodeMap = BSTNodeMap()
+    bst_node_blocks: ConditionChainNodeMap = ConditionChainNodeMap()
     _dump_dispatcher_node(
         mba,
         dispatcher_entry_serial,

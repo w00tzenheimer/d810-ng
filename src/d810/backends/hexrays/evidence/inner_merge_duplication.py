@@ -247,7 +247,7 @@ class InnerMergeDuplicationStrategy:
         # ---- Build infrastructure exclusion set ----
         sm_blocks = collect_state_machine_blocks(state_machine)
         bst_node_blocks: set[int] = set(
-            getattr(bst_result, "bst_node_blocks", set()) or set()
+            getattr(bst_result, "condition_chain_blocks", set()) or set()
         )
         bst_node_blocks.add(dispatcher_serial)
 

@@ -1,7 +1,7 @@
 """FlowGraph -> (comparisons, state_writes) extractors for the LiSA dispatcher discovery.
 
 The two pieces of evidence :func:`discover_dispatcher` consumes, read straight off the portable
-``FlowGraph`` (no IDA): the per-block state comparisons (:class:`BstComparison`) and the per-block
+``FlowGraph`` (no IDA): the per-block state comparisons (:class:`StateArmComparison`) and the per-block
 state-write value (:class:`StateValue`).  Both are minimal -- a comparison is "this block branches on
 ``s`` vs a large constant", a state write is "this block stores ``K`` (or an unresolved value -> ``⊤``)
 to the state slot".  Neither is a shape: no recursion, no handler-chain assumption.
@@ -19,7 +19,7 @@ from d810.ir.flowgraph import FlowGraph, OperandKind
 from d810.ir.semantics import PredicateKind
 from d810.analyses.control_flow.state_transition_domain import StateValue
 from d810.analyses.control_flow.dispatcher_discovery_fixpoint import (
-    BstComparison,
+    StateArmComparison,
     DispatcherView,
     discover_dispatcher,
 )
@@ -61,13 +61,13 @@ def extract_bst_comparisons(
     *,
     state_var_stkoff: int | None = None,
     min_state_constant: int = MIN_STATE_CONSTANT,
-) -> dict[int, BstComparison]:
-    """Every block whose tail branches on ``s == const`` -> a :class:`BstComparison`.
+) -> dict[int, StateArmComparison]:
+    """Every block whose tail branches on ``s == const`` -> a :class:`StateArmComparison`.
 
     When ``state_var_stkoff`` is given, only comparisons against that variable are kept (the
     dominant-state-var filter); otherwise every equality-vs-large-constant branch qualifies.
     """
-    comparisons: dict[int, BstComparison] = {}
+    comparisons: dict[int, StateArmComparison] = {}
     for serial, blk in graph.blocks.items():
         tail = blk.tail
         if tail is None or not tail.is_conditional_jump:
@@ -92,7 +92,7 @@ def extract_bst_comparisons(
             eq_target, ne_target = int(taken), int(fallthrough)
         else:
             eq_target, ne_target = int(fallthrough), int(taken)
-        comparisons[int(serial)] = BstComparison(
+        comparisons[int(serial)] = StateArmComparison(
             block=int(serial), const=int(const), eq_target=eq_target, ne_target=ne_target
         )
     return comparisons

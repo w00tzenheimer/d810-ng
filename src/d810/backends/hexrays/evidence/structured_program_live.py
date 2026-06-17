@@ -33,7 +33,7 @@ from d810.backends.hexrays.evidence.bst_analysis import (
     _detect_state_var_stkoff,
     analyze_bst_dispatcher,
 )
-from d810.analyses.control_flow.bst_model import resolve_target_via_bst
+from d810.analyses.control_flow.condition_chain_model import resolve_target_via_condition_chain
 from d810.backends.hexrays.evidence.microcode_dump import (
     _build_block_payload_by_serial,
     _build_live_linearized_state_dag,
@@ -249,12 +249,12 @@ def structure_recovered_program_live(
                     logger.info("structurer: sibling-arm prune skipped (%s)", exc)
 
             # EQUIVALENCE PROBE: compare the decision-DAG against the LEGACY
-            # interval/exact/range router body (resolve_target_via_bst with its
+            # interval/exact/range router body (resolve_target_via_condition_chain with its
             # decision_dag forced off).  This is the keystone for the §7 router
             # consolidation: it proves the decision-DAG subsumes the legacy logic
             # so the legacy body can be safely retired.  NOTE: the legacy
             # comparison REQUIRES forcing ``bst_result.decision_dag = None`` --
-            # otherwise resolve_target_via_bst routes through the dag and the
+            # otherwise resolve_target_via_condition_chain routes through the dag and the
             # probe degenerates to a tautological dag-vs-dag check.  Multiple
             # sample points per cell (interval endpoints) catch within-cell
             # divergence.  Gated diagnostic; never touches the golden.
@@ -280,13 +280,13 @@ def structure_recovered_program_live(
                             for pt in {int(iv.low), int(iv.high)}:
                                 samples += 1
                                 dag_tgt = int(probe_dag.route(pt))
-                                legacy = resolve_target_via_bst(bst_result, pt)
+                                legacy = resolve_target_via_condition_chain(bst_result, pt)
                                 legacy_i = int(legacy) if legacy is not None else None
                                 if legacy_i != dag_tgt:
                                     diverged.append((pt, dag_tgt, legacy_i))
                     logger.info(
                         "EQUIVALENCE PROBE: %d cells, %d sample points, %d diverge "
-                        "(decision-DAG.route vs LEGACY resolve_target_via_bst)",
+                        "(decision-DAG.route vs LEGACY resolve_target_via_condition_chain)",
                         len(cells),
                         samples,
                         len(diverged),

@@ -25,7 +25,7 @@ from d810.transforms.plan_fragment import (
     OwnershipScope,
     PlanFragment,
 )
-from d810.analyses.control_flow.bst_model import resolve_target_via_bst
+from d810.analyses.control_flow.condition_chain_model import resolve_target_via_condition_chain
 if TYPE_CHECKING:
     from d810.transforms.graph_modification import ReorderBlocks
     from d810.transforms.snapshot import (
@@ -114,7 +114,7 @@ class TopologicalSortStrategy:
             return None
         return plan_reorder_blocks(
             snapshot,
-            resolve_target_entry=lambda state: resolve_target_via_bst(
+            resolve_target_entry=lambda state: resolve_target_via_condition_chain(
                 bst_result,
                 state,
             ),
@@ -123,7 +123,7 @@ class TopologicalSortStrategy:
             ),
             dispatcher_blocks=frozenset(
                 int(block)
-                for block in (getattr(bst_result, "bst_node_blocks", ()) or ())
+                for block in (getattr(bst_result, "condition_chain_blocks", ()) or ())
             ),
         )
 

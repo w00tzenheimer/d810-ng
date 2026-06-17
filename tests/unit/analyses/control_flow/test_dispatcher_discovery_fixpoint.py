@@ -1,13 +1,13 @@
-"""The LiSA dispatcher discovery: a value-set fixpoint replaces the BST walk (no IDA).
+"""The LiSA dispatcher discovery: a value-set fixpoint replaces the condition-chain walk.
 
 Models a 3-state OLLVM equality-chain dispatcher and shows the dispatcher structure
 (handler map, range-routed intermediate, loop header, transitions) falls out of the fixpoint.
 
 CFG (state var ``s``, K1<K2<K3):
     0 entry -> 1
-    1  if s==K1 -> 10 (h1) else 2        # BST comparison
-    2  if s==K2 -> 20 (h2) else 3        # BST comparison
-    3  if s==K3 -> 30 (h3) else 99       # BST comparison
+    1  if s==K1 -> 10 (h1) else 2        # state comparison
+    2  if s==K2 -> 20 (h2) else 3        # state comparison
+    3  if s==K3 -> 30 (h3) else 99       # state comparison
     10 h1: s = K2 -> 1                    # transition K1->K2 (back-edge)
     20 h2: s = K3 -> 1                    # transition K2->K3 (back-edge)
     30 h3: (no write) -> 99              # terminal: K3 returns
@@ -20,7 +20,7 @@ from d810.analyses.control_flow.state_transition_domain import (
     recover_transition_result,
 )
 from d810.analyses.control_flow.dispatcher_discovery_fixpoint import (
-    BstComparison,
+    StateArmComparison,
     assume_state,
     discover_dispatcher,
 )
@@ -35,9 +35,9 @@ for _p, _ss in _SUCC.items():
 
 _STATE_WRITES = {10: StateValue.of(K2), 20: StateValue.of(K3)}
 _COMPARISONS = {
-    1: BstComparison(block=1, const=K1, eq_target=10, ne_target=2),
-    2: BstComparison(block=2, const=K2, eq_target=20, ne_target=3),
-    3: BstComparison(block=3, const=K3, eq_target=30, ne_target=99),
+    1: StateArmComparison(block=1, const=K1, eq_target=10, ne_target=2),
+    2: StateArmComparison(block=2, const=K2, eq_target=20, ne_target=3),
+    3: StateArmComparison(block=3, const=K3, eq_target=30, ne_target=99),
 }
 
 
@@ -73,7 +73,7 @@ def test_assume_infeasible_arm_is_bottom():
     assert assume_state(StateValue.of(K3), _COMPARISONS[1], 10).is_bottom
 
 
-# --- discovery (the BST walk replaced) --------------------------------------
+# --- discovery (the condition-chain walk replaced) --------------------------
 
 
 def test_discovers_handler_entry_by_state():
@@ -93,8 +93,8 @@ def test_equality_chain_has_no_range_handlers():
     assert _discover().handler_range_map == {}
 
 
-def test_bst_node_blocks_are_the_comparisons():
-    assert _discover().bst_node_blocks == frozenset({1, 2, 3})
+def test_condition_chain_blocks_are_the_comparisons():
+    assert _discover().condition_chain_blocks == frozenset({1, 2, 3})
 
 
 # --- transitions recovered from the same fixpoint ---------------------------
@@ -131,7 +131,7 @@ for _p, _ss in _R_SUCC.items():
     for _s in _ss:
         _R_PRED[_s].append(_p)
 _R_WRITES = {10: StateValue.of(K2), 20: StateValue.of(K3)}
-_R_COMPARISONS = {1: BstComparison(block=1, const=K1, eq_target=10, ne_target=2)}
+_R_COMPARISONS = {1: StateArmComparison(block=1, const=K1, eq_target=10, ne_target=2)}
 
 
 def _discover_range():
@@ -178,8 +178,8 @@ for _p, _ss in _SH_SUCC.items():
     for _s in _ss:
         _SH_PRED[_s].append(_p)
 _SH_COMPARISONS = {
-    1: BstComparison(block=1, const=K1, eq_target=10, ne_target=2),
-    2: BstComparison(block=2, const=K2, eq_target=20, ne_target=99),
+    1: StateArmComparison(block=1, const=K1, eq_target=10, ne_target=2),
+    2: StateArmComparison(block=2, const=K2, eq_target=20, ne_target=99),
 }
 
 

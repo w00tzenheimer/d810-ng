@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.analyses.control_flow.bst_model import resolve_target_via_bst
+from d810.analyses.control_flow.condition_chain_model import resolve_target_via_condition_chain
 from d810.capabilities.providers import get_bst_walkers
 from d810.analyses.control_flow.state_machine_analysis import evaluate_handler_paths
 from d810.analyses.control_flow.transition_builder import _get_state_var_stkoff
@@ -123,7 +123,7 @@ def collect_exit_transition_candidates(
         handler_transitions = [t for t in transitions if t.from_state == state_val]
         all_self_loop = True
         for transition in handler_transitions:
-            target = resolve_target_via_bst(bst_result, transition.to_state)
+            target = resolve_target_via_condition_chain(bst_result, transition.to_state)
             if target is None or transition.from_block != target:
                 all_self_loop = False
                 break
@@ -230,7 +230,7 @@ def collect_exit_transition_candidates(
                     pass
 
         for write_blk, exit_state_value in found_writes:
-            target_entry = resolve_target_via_bst(bst_result, exit_state_value)
+            target_entry = resolve_target_via_condition_chain(bst_result, exit_state_value)
             if target_entry is None or write_blk == target_entry:
                 continue
             candidates.append(
@@ -305,7 +305,7 @@ def collect_bst_default_transition_candidates(
 
             final_state = path_result.final_state & 0xFFFFFFFF
             from_block = path_result.exit_block
-            target_entry = resolve_target_via_bst(bst_result, final_state)
+            target_entry = resolve_target_via_condition_chain(bst_result, final_state)
             if target_entry is None or from_block == target_entry:
                 continue
             candidates.append(
@@ -368,7 +368,7 @@ def collect_valrange_exit_transition_candidates(
             if resolved_value is None:
                 continue
 
-            target_entry = resolve_target_via_bst(bst_result, resolved_value)
+            target_entry = resolve_target_via_condition_chain(bst_result, resolved_value)
             if target_entry is None:
                 continue
 

@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from d810.analyses.control_flow.bst_model import BSTAnalysisResult
+from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult
 from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap, StateDispatcherRow
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
@@ -57,7 +57,7 @@ def test_resolves_predecessor_target_from_exact_dispatcher_row() -> None:
 
 
 def test_resolves_predecessor_target_from_interval_dispatcher_row() -> None:
-    bst_result = BSTAnalysisResult(
+    bst_result = ConditionChainAnalysisResult(
         dispatcher=IntervalDispatcher(
             [
                 IntervalRow(lo=0x100, hi=0x120, target=11),

@@ -38,9 +38,9 @@ from d810.core.typing import (
     Set,
     Tuple,
 )
-from d810.analyses.control_flow.bst_model import BSTAnalysisResult
-from d810.analyses.control_flow.bst_model import BSTNodeMap
-from d810.analyses.control_flow.bst_model import resolve_target_via_bst
+from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult
+from d810.analyses.control_flow.condition_chain_model import ConditionChainNodeMap
+from d810.analyses.control_flow.condition_chain_model import resolve_target_via_condition_chain
 from d810.backends.hexrays.evidence.decision_dag_extract import extract_decision_dag
 from d810.analyses.control_flow.interval_map import Node, NodeKind, emit_dispatch_intervals, IntervalDispatcher
 
@@ -321,7 +321,7 @@ def _dump_dispatcher_node(
     handler_serials: Optional[set] = None,
     handler_range_map: Optional[Dict[int, Tuple[Optional[int], Optional[int]]]] = None,
     chain_depth: int = 0,
-    bst_node_blocks: Optional[BSTNodeMap] = None,
+    bst_node_blocks: Optional[ConditionChainNodeMap] = None,
     allow_revisit: bool = False,
     parent_serial: Optional[int] = None,
     branch: str = "",
@@ -1717,7 +1717,7 @@ def analyze_bst_dispatcher(
     state_var_stkoff: Optional[int] = None,
     state_var_lvar_idx: Optional[int] = None,
     max_depth: int = 20,
-) -> BSTAnalysisResult:
+) -> ConditionChainAnalysisResult:
     """Analyze a BST-style dispatcher and return a structured result.
 
     Performs two analysis phases:
@@ -1740,11 +1740,11 @@ def analyze_bst_dispatcher(
         max_depth: Maximum BST recursion depth (guard against malformed CFGs).
 
     Returns:
-        A populated :class:`BSTAnalysisResult`.
+        A populated :class:`ConditionChainAnalysisResult`.
     """
     _init_constants()
 
-    result = BSTAnalysisResult()
+    result = ConditionChainAnalysisResult()
 
     # Auto-detect stkoff / lvar_idx when not provided
     if state_var_stkoff is None:
@@ -1757,7 +1757,7 @@ def analyze_bst_dispatcher(
                 state_var_lvar_idx = detected_lvar_idx
 
     # Path B: build the decision-DAG route oracle for this dispatcher and attach
-    # it so resolve_target_via_bst routes through it (golden-neutral
+    # it so resolve_target_via_condition_chain routes through it (golden-neutral
     # consolidation; the decision-DAG walks the real BST comparison tree, verified
     # 0 divergence vs the legacy interval/exact/range router on sub_7FFD).
     # Best-effort: any failure leaves decision_dag=None -> legacy routing remains.
@@ -1794,7 +1794,7 @@ def analyze_bst_dispatcher(
     handler_state_map: Dict[int, int] = {}
     handler_serials: set = set()
     handler_range_map: Dict[int, Tuple[Optional[int], Optional[int]]] = {}
-    bst_node_blocks: BSTNodeMap = BSTNodeMap()
+    bst_node_blocks: ConditionChainNodeMap = ConditionChainNodeMap()
 
     _dump_dispatcher_node(
         mba,
@@ -1837,7 +1837,7 @@ def analyze_bst_dispatcher(
                 _added_bst,
                 len(bst_node_blocks),
             )
-    result.bst_node_blocks = bst_node_blocks
+    result.condition_chain_blocks = bst_node_blocks
 
     # Phase 1b: Build interval dispatcher. Prefer the signedness-aware DecisionDag
     # (route_predicate IntervalSet) partition -- it is the single correct router and

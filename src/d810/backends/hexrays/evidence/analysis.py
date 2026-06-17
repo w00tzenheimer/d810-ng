@@ -48,7 +48,7 @@ from d810.hexrays.utils.hexrays_helpers import (
 from d810.backends.hexrays.evidence.datamodel import (
     DispatcherStateMachine,
 )
-from d810.analyses.control_flow.bst_model import BSTAnalysisResult
+from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult
 from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
     DispatcherAnalysis,
     analyze_dispatcher_live,
@@ -164,7 +164,7 @@ class HodurStateMachineDetector:
         self.state_machine: DispatcherStateMachine | None = None
         self.use_cache = use_cache
         self._dispatcher_analysis: DispatcherAnalysis | None = None
-        self.bst_result: BSTAnalysisResult | None = None
+        self.bst_result: ConditionChainAnalysisResult | None = None
         self.min_state_constant = min_state_constant
         self.min_state_constants = min_state_constants
         self.max_state_constants = max_state_constants
@@ -1470,7 +1470,7 @@ class HodurStateMachineDetector:
     def _discover_transitions_via_ud_chains(
         self,
         mba: "ida_hexrays.mba_t",
-        bst_result: BSTAnalysisResult | None = None,
+        bst_result: ConditionChainAnalysisResult | None = None,
     ) -> "list[StateTransition]":
         """Discover uncovered handler transitions via UD chain analysis.
 
@@ -1481,7 +1481,7 @@ class HodurStateMachineDetector:
 
         When *bst_result* is provided and the BFS predecessor walk fails to
         resolve ``from_state``, a BST provenance fallback is attempted via
-        :meth:`BSTNodeMap.resolve_state_for_block`.
+        :meth:`ConditionChainNodeMap.resolve_state_for_block`.
 
         Returns a list of newly discovered :class:`StateTransition` objects.
         """
@@ -1647,7 +1647,7 @@ class HodurStateMachineDetector:
 
                         if pred_from is None and bst_result is not None:
                             # BFS backward walk through BST provenance (depth 4)
-                            pp_bst_node_map = bst_result.bst_node_blocks
+                            pp_bst_node_map = bst_result.condition_chain_blocks
                             pp_bst_hsm = bst_result.handler_state_map
                             pp_bst_frontier: set[int] = {pred_serial}
                             pp_visited_bst: set[int] = set()
@@ -1790,7 +1790,7 @@ class HodurStateMachineDetector:
 
             if from_state is None and bst_result is not None:
                 # BFS backward walk through BST provenance (depth 4)
-                bst_node_map = bst_result.bst_node_blocks
+                bst_node_map = bst_result.condition_chain_blocks
                 bst_hsm = bst_result.handler_state_map
                 bst_frontier: set[int] = {def_site.block_serial}
                 visited_bst: set[int] = set()

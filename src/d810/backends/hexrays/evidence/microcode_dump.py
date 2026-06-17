@@ -130,7 +130,7 @@ from d810.analyses.data_flow.resolve import (
     ResolvePoint,
     resolve as resolve_ladder,
 )
-from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
+from d810.analyses.control_flow.transition_builder import _convert_condition_chain_to_result
 from d810.analyses.control_flow.transition_report import (
     TransitionKind,
     build_dispatcher_transition_report,
@@ -735,7 +735,7 @@ def dump_dispatcher_tree(
                 state_var_lvar_idx=state_var_lvar_idx,
                 max_depth=max_depth,
             )
-            transition_result = _convert_bst_to_result(bst_result)
+            transition_result = _convert_condition_chain_to_result(bst_result)
             flow_graph = IDAIRTranslator().lift(mba)
             known_states = set(
                 int(value) for value in bst_result.handler_state_map.values()
@@ -759,7 +759,7 @@ def dump_dispatcher_tree(
                 pre_header_serial=bst_result.pre_header_serial,
                 initial_state=bst_result.initial_state,
                 handler_range_map=bst_result.handler_range_map,
-                bst_node_blocks=tuple(sorted(bst_result.bst_node_blocks)),
+                bst_node_blocks=tuple(sorted(bst_result.condition_chain_blocks)),
             )
         except Exception:
             logger.warning("Failed to build recovered transition report", exc_info=True)
@@ -844,7 +844,7 @@ def _build_comparison_model_from_bst(
     dispatch_map = StateDispatcherMap(
         rows=tuple(rows),
         dispatcher_entry_block=int(dispatcher_entry_serial),
-        dispatcher_blocks=frozenset(int(s) for s in bst_result.bst_node_blocks)
+        dispatcher_blocks=frozenset(int(s) for s in bst_result.condition_chain_blocks)
         | {int(dispatcher_entry_serial)},
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=state_var_lvar_idx,
@@ -1130,7 +1130,7 @@ def _build_live_linearized_state_dag(
         state_var_lvar_idx=state_var_lvar_idx,
         max_depth=max_depth,
     )
-    transition_result = _convert_bst_to_result(bst_result)
+    transition_result = _convert_condition_chain_to_result(bst_result)
     flow_graph = IDAIRTranslator().lift(mba)
     known_states = set(int(value) for value in bst_result.handler_state_map.values())
     if bst_result.initial_state is not None:
@@ -1152,7 +1152,7 @@ def _build_live_linearized_state_dag(
         pre_header_serial=bst_result.pre_header_serial,
         initial_state=bst_result.initial_state,
         handler_range_map=bst_result.handler_range_map,
-        bst_node_blocks=tuple(sorted(bst_result.bst_node_blocks)),
+        bst_node_blocks=tuple(sorted(bst_result.condition_chain_blocks)),
         dispatcher=bst_result.dispatcher,
         mba=mba,
         prefer_local_corridors=True,
@@ -1298,7 +1298,7 @@ def resolve_dispatcher_context_for_linearized_program(
             total_handlers,
             1 if result.initial_state is not None else 0,
             1 if result.pre_header_serial is not None else 0,
-            len(result.bst_node_blocks),
+            len(result.condition_chain_blocks),
         )
         if best is None or score > best[0]:
             best = (score, detected, serial)

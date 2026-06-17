@@ -43,7 +43,7 @@ def collect_live_residual_dispatcher_preds(
         return active_collector(
             flow_graph,
             snapshot.bst_dispatcher_serial,
-            bst_node_blocks=set(bst_result.bst_node_blocks),
+            bst_node_blocks=set(bst_result.condition_chain_blocks),
         )
     except Exception:
         if logger is not None:

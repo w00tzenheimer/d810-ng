@@ -2,7 +2,7 @@
 
 Walks the dispatcher comparison tree from its entry, collecting every
 state-variable comparison (range ``ja/jbe/jb/jae`` AND equality ``jz/jnz``) as a
-:class:`~d810.analyses.control_flow.route_predicate.BstComparison`. Comparisons
+:class:`~d810.analyses.control_flow.route_predicate.RouteComparison`. Comparisons
 whose operands are NOT the state variable (a handler's own internal branch, e.g.
 ``jl var_1C8, #0x80``) are leaves -- the dispatch has finished there.
 
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import ida_hexrays
 
-from d810.analyses.control_flow.route_predicate import BstComparison, DecisionDag
+from d810.analyses.control_flow.route_predicate import RouteComparison, DecisionDag
 from d810.core.typing import Optional
 
 __all__ = ["extract_decision_dag"]
@@ -226,7 +226,7 @@ def extract_decision_dag(
         mba, int(dispatcher_entry_serial), op_map, int(state_var_stkoff),
         state_var_lvar_idx, mask, state_var_reg=state_var_reg,
     )
-    nodes: dict[int, BstComparison] = {}
+    nodes: dict[int, RouteComparison] = {}
     visited: set[int] = set()
     stack = [root]
     while stack:
@@ -252,7 +252,7 @@ def extract_decision_dag(
         )
         if false_target is None:
             continue
-        nodes[serial] = BstComparison(
+        nodes[serial] = RouteComparison(
             serial=serial,
             op=op,
             const=int(const),

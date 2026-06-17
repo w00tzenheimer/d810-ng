@@ -1,13 +1,13 @@
-"""Dispatcher discovery as a value-set fixpoint — the LiSA rewrite of analyze_bst_dispatcher.
+"""Dispatcher discovery as a value-set fixpoint.
 
 ``backends/hexrays/evidence/bst_analysis.py::analyze_bst_dispatcher`` discovers the dispatcher by a
 procedural two-phase live walk: recurse the ``jz/jnz/jbe/ja`` comparison tree from the dispatcher
 root collecting ``(const -> handler)`` leaves, then a second per-handler walk for the next-state
-write.  It hard-codes the BST topology, the comparison opcodes and the handler-chain shape.
+write.  It hard-codes the comparison topology, the comparison opcodes and the handler-chain shape.
 
 This module does it the LiSA / abstract-interpretation way instead: a single forward value-set
 fixpoint over the state variable, where **the dispatcher structure falls out of the abstract state**.
-The "BST" is not a tree to walk -- it is a sequence of per-edge ``assume``s.  Each state comparison
+The condition chain is not a tree to walk -- it is a sequence of per-edge ``assume``s.  Each state comparison
 ``if s == K`` refines the value-set along its arms (``⊓ {K}`` on the equal arm, ``∖ {K}`` on the
 not-equal arm).  After the fixpoint:
 
@@ -15,12 +15,12 @@ not-equal arm).  After the fixpoint:
   supplied);
 * a block whose entry value-set is a multi-constant set is range-routed (``RANGE_BACKED``);
 * the dispatcher loop header is the block whose entry value-set is the broadest join (all states);
-* the comparison blocks are the BST nodes.
+* the comparison blocks are the condition-chain nodes.
 
 Only two pieces of structural evidence cross the boundary, both portable and minimal: the per-block
 state-write view (``state_writes``: ``StateValue`` a block strong-updates to -- a constant, or ``⊤``
 for an MBA-obfuscated write the :class:`ValRangeCapability` could not fold) and the per-block state
-comparisons (:class:`BstComparison`).  Neither is a "shape": no recursion, no opcode matching, no
+comparisons (:class:`StateArmComparison`).  Neither is a "shape": no recursion, no opcode matching, no
 handler-chain assumption.  The result is portable-core (no IDA) and reuses the same
 :func:`d810.analyses.data_flow.run_fixpoint` engine as every other dataflow analysis.
 """
@@ -38,7 +38,7 @@ from d810.analyses.control_flow.state_transition_domain import (
 )
 
 __all__ = [
-    "BstComparison",
+    "StateArmComparison",
     "DispatcherView",
     "assume_state",
     "read_dispatcher_from",
@@ -49,8 +49,8 @@ _Succ = Callable[[NodeId], Iterable[NodeId]]
 
 
 @dataclass(frozen=True, slots=True)
-class BstComparison:
-    """A block that branches on ``state`` vs a constant (one BST comparison node).
+class StateArmComparison:
+    """A block that branches on ``state`` vs a constant.
 
     Resolved from the block's conditional-jump tail (predicate + the large-constant operand): the
     same recognition ``build_state_dispatcher_map_from_flow_graph`` already does, reduced to "which
@@ -65,7 +65,7 @@ class BstComparison:
 
 
 def assume_state(
-    state: StateValue, comparison: BstComparison | None, to_node: NodeId
+    state: StateValue, comparison: StateArmComparison | None, to_node: NodeId
 ) -> StateValue:
     """The per-edge ``assume`` for a state comparison (the LiSA ``edge_refine``).
 
@@ -87,20 +87,20 @@ class DispatcherView:
     """The dispatcher structure read off a converged state-value fixpoint.
 
     Every field is a *view* over the fixpoint result, not a separately-walked structure:
-    ``analyze_bst_dispatcher``'s ``handler_state_map`` / ``handler_range_map`` / ``bst_node_blocks`` /
+    ``handler_state_map`` / ``handler_range_map`` / ``condition_chain_blocks`` /
     ``dispatcher_entry`` become projections of ``in_states``.
     """
 
     handler_entry_by_state: Mapping[int, NodeId]
     handler_range_map: Mapping[NodeId, tuple[int, int]]
-    bst_node_blocks: frozenset[NodeId]
+    condition_chain_blocks: frozenset[NodeId]
     dispatcher_entry: NodeId | None
     result: FixpointResult = field(repr=False, default=None)
 
 
 def read_dispatcher_from(
     result: FixpointResult,
-    comparisons: Mapping[NodeId, BstComparison],
+    comparisons: Mapping[NodeId, StateArmComparison],
 ) -> DispatcherView:
     """Project the dispatcher structure out of a converged fixpoint.
 
@@ -110,16 +110,17 @@ def read_dispatcher_from(
       dispatcher wins is left to the caller; here we keep the lowest serial deterministically.
     * ``handler_range_map[b]`` = ``(min, max)`` for a block whose entry value-set is a concrete
       multi-constant set (range-routed -- ``RANGE_BACKED``).
-    * ``bst_node_blocks`` = the comparison blocks.
+    * ``condition_chain_blocks`` = the comparison blocks.
     * ``dispatcher_entry`` = the block whose entry value-set has the most constants (the loop header
       where every handler's next-state joins).  ``None`` if no block carries a multi-state set.
     """
-    bst_blocks = frozenset(int(b) for b in comparisons)
+    condition_chain_blocks = frozenset(int(b) for b in comparisons)
     in_states = result.in_states
 
     # Handler entry for K = the comparison's equal arm, kept only when the fixpoint proves it
     # FEASIBLE (its in-state is not ⊥). An infeasible arm means K never reaches here -- a dead
-    # dispatcher edge the procedural BST walk would still emit. Deterministic on ties (lowest serial).
+    # dispatcher edge the procedural condition-chain walk would still emit.
+    # Deterministic on ties (lowest serial).
     handler_entry_by_state: dict[int, NodeId] = {}
     for comp in comparisons.values():
         eq_in = in_states.get(int(comp.eq_target))
@@ -144,13 +145,13 @@ def read_dispatcher_from(
     for block, in_state in in_states.items():
         block = int(block)
         # P3: a comparison block carries a multi-const set *because* it is mid-discrimination -- it is
-        # a BST node, not a range-routed handler. Only NON-comparison blocks reached for a genuine
+        # a condition-chain node, not a range-routed handler. Only NON-comparison blocks reached for a genuine
         # multi-state range (a switch / interval handler with no final ``==`` check) are RANGE_BACKED.
         if (
             in_state.is_top
             or in_state.is_bottom
             or block == widest_block
-            or block in bst_blocks
+            or block in condition_chain_blocks
         ):
             continue
         if len(in_state.constants) > 1:
@@ -159,7 +160,7 @@ def read_dispatcher_from(
 
     # P1: promote each genuine range-routed handler into ``handler_entry_by_state``
     # keyed by a representative state, so the exact-only ``recover_transition_result``
-    # consumer sees it.  This mirrors ``_convert_bst_to_result``'s IntervalDispatcher
+    # consumer sees it.  This mirrors ``_convert_condition_chain_to_result``'s IntervalDispatcher
     # backfill (transition_builder.py) but reads the routing off the fixpoint instead
     # of ``dispatcher._rows``, with two skips:
     #   * the default / catch-all arm -- a range block that is some comparison's
@@ -170,7 +171,8 @@ def read_dispatcher_from(
     #     with no such fresh state is a shared/merge block reachable on exact-handler
     #     paths, not a distinct handler, so promoting it would only clobber an exact
     #     entry without adding a handler.  (On real sub_7FFD both "range handlers"
-    #     are shadows -- the value-set fixpoint is strictly more precise than the BST
+    #     are shadows -- the value-set fixpoint is strictly more precise than the
+    #     procedural condition-chain walk
     #     walk's count here, so the precise handler count stays at the 45 exact.)
     # Deterministic: lowest block serial wins on ties; lowest fresh state is the key.
     ne_targets = {int(comp.ne_target) for comp in comparisons.values()}
@@ -189,7 +191,7 @@ def read_dispatcher_from(
     return DispatcherView(
         handler_entry_by_state=handler_entry_by_state,
         handler_range_map=handler_range_map,
-        bst_node_blocks=bst_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         dispatcher_entry=widest_block,
         result=result,
     )
@@ -202,14 +204,14 @@ def discover_dispatcher(
     successors_of: _Succ,
     predecessors_of: _Succ,
     state_writes: Mapping[NodeId, StateValue],
-    comparisons: Mapping[NodeId, BstComparison],
+    comparisons: Mapping[NodeId, StateArmComparison],
     entry_state: StateValue,
     config: FixpointConfiguration | None = None,
     require_resolved_head: bool = False,
 ) -> DispatcherView:
     """Discover the dispatcher by a forward value-set fixpoint with per-edge ``assume``.
 
-    Replaces ``analyze_bst_dispatcher``'s BST + handler walk: propagate the state value-set from the
+    Replaces the procedural condition-chain + handler walk: propagate the state value-set from the
     function entry, strong-updating at state writes and refining at every comparison edge, then read
     the dispatcher structure off the result.  ``transition`` recovery is the existing
     :func:`state_transition_domain.recover_transition_result` fed this view's ``handler_entry_by_state``.
