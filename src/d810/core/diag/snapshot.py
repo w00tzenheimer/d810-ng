@@ -762,8 +762,12 @@ def snapshot_state_dispatcher_rows(
         )
         row_compare_block = _mapping_value(row, "compare_block")
         dispatcher_kind_value = _mapping_value(
-            row, "dispatcher_kind",
-            _mapping_value(row, "source", dispatcher_kind),
+            row, "router_kind",
+            _mapping_value(
+                row,
+                "dispatcher_kind",
+                _mapping_value(row, "source", dispatcher_kind),
+            ),
         )
         if hasattr(dispatcher_kind_value, "name"):
             dispatcher_kind_value = dispatcher_kind_value.name
