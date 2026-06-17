@@ -25,7 +25,7 @@ def _dispatch_map(states: tuple[int, ...] = TIGRESS_VISIBLE_STATES) -> StateDisp
                 dispatcher_block=50,
                 compare_block=50,
                 branch_kind="switch_case",
-                source=RouterKind.SWITCH,
+                router_kind=RouterKind.SWITCH,
             )
             for state in states
         ),
@@ -33,7 +33,7 @@ def _dispatch_map(states: tuple[int, ...] = TIGRESS_VISIBLE_STATES) -> StateDisp
         dispatcher_blocks=frozenset({50}),
         state_var_stkoff=0x30,
         state_var_lvar_idx=None,
-        source=RouterKind.SWITCH,
+        router_kind=RouterKind.SWITCH,
     )
 
 
@@ -165,7 +165,7 @@ def test_alias_self_loop_and_default_rows_are_diagnostics() -> None:
         dispatcher_blocks=frozenset({5}),
         state_var_stkoff=0x30,
         state_var_lvar_idx=None,
-        source=RouterKind.SWITCH,
+        router_kind=RouterKind.SWITCH,
         default_target_block=99,
         default_row_kind="dispatcher_default",
     )

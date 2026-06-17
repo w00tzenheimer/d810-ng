@@ -107,7 +107,7 @@ def _observe_state_dispatcher_map(
             func_ea=int(getattr(mba, "entry_ea", 0) or 0),
             maturity=_maturity_label(mba),
             dispatcher_entry_block=dispatch_map.dispatcher_entry_block,
-            dispatcher_kind=dispatch_map.source.name,
+            dispatcher_kind=dispatch_map.router_kind.name,
             rows=dispatch_map.rows,
         )
     except Exception:

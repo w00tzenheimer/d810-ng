@@ -87,7 +87,7 @@ def build_state_dispatcher_map_from_cases(
                 dispatcher_block=int(dispatcher_serial),
                 compare_block=int(dispatcher_serial),
                 branch_kind=branch_kind,
-                source=RouterKind.SWITCH,
+                router_kind=RouterKind.SWITCH,
                 confidence=1.0,
                 row_kind=row_kind,
             )
@@ -98,7 +98,7 @@ def build_state_dispatcher_map_from_cases(
         dispatcher_blocks=dispatcher_blocks,
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=None,
-        source=RouterKind.SWITCH,
+        router_kind=RouterKind.SWITCH,
         initial_state=initial_state,
         default_target_block=default_target,
         default_row_kind=default_kind,
@@ -258,7 +258,7 @@ def _observe_state_dispatcher_map(
             func_ea=int(flow_graph.func_ea),
             maturity=_maturity_label(flow_graph),
             dispatcher_entry_block=dispatch_map.dispatcher_entry_block,
-            dispatcher_kind=dispatch_map.source.name,
+            dispatcher_kind=dispatch_map.router_kind.name,
             rows=dispatch_map.rows,
         )
     except Exception:

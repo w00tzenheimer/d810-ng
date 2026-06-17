@@ -24,7 +24,7 @@ class StateDispatcherRow:
     dispatcher_block: int
     compare_block: int | None
     branch_kind: str
-    source: RouterKind
+    router_kind: RouterKind
     confidence: float = 1.0
     row_kind: str = "handler"
     payload: dict[str, object] = field(default_factory=dict)
@@ -49,7 +49,7 @@ class StateDispatcherMap:
     dispatcher_blocks: frozenset[int]
     state_var_stkoff: int | None
     state_var_lvar_idx: int | None
-    source: RouterKind
+    router_kind: RouterKind
     initial_state: int | None = None
     default_target_block: int | None = None
     default_row_kind: str | None = None

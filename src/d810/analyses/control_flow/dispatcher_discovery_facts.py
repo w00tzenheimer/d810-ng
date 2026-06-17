@@ -265,7 +265,7 @@ def collect_state_dispatcher_discovery_facts(
         )
 
     entry = int(state_dispatcher_map.dispatcher_entry_block)
-    source = _source_name(state_dispatcher_map.source)
+    source = _source_name(state_dispatcher_map.router_kind)
     dispatcher_blocks = tuple(sorted(int(block) for block in state_dispatcher_map.dispatcher_blocks))
     handler_targets = tuple(
         sorted(

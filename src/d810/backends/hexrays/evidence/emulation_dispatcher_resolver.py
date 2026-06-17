@@ -230,7 +230,7 @@ class EmulationDispatcherResolver:
                 dispatcher_block=int(disc.entry),
                 compare_block=int(disc.entry),
                 branch_kind="emulated",
-                source=RouterKind.CONDITION_CHAIN,
+                router_kind=RouterKind.CONDITION_CHAIN,
             )
             for row in result.rows
         )
@@ -240,7 +240,7 @@ class EmulationDispatcherResolver:
             dispatcher_blocks=dispatcher_blocks,
             state_var_stkoff=int(disc.stkoff),
             state_var_lvar_idx=None,
-            source=RouterKind.CONDITION_CHAIN,
+            router_kind=RouterKind.CONDITION_CHAIN,
             initial_state=int(disc.initial_state),
         )
         logger.info(
@@ -652,7 +652,7 @@ class EmulationDispatcherResolver:
             dispatcher_blocks=frozenset(),
             state_var_stkoff=int(stkoff),
             state_var_lvar_idx=None,
-            source=RouterKind.CONDITION_CHAIN,
+            router_kind=RouterKind.CONDITION_CHAIN,
         )
         try:
             via_dominance = recover_entry_dominated_initial_state(graph, minimal)

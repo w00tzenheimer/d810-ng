@@ -63,7 +63,7 @@ class BranchWitnessRow:
     compare_const: int
     selected_successor: int
     rejected_successors: tuple[int, ...]
-    source: object | None = None
+    router_kind: object | None = None
     evidence: str = "validated_against_current_cfg"
 
 
@@ -75,7 +75,7 @@ class BranchWitnessMap:
     dispatcher_entry_block: int
     dispatcher_blocks: frozenset[int]
     state_var_stkoff: int | None
-    source: object | None = None
+    router_kind: object | None = None
 
     def row_for_state_compare(
         self, state: int, compare_block: int

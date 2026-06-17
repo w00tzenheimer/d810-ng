@@ -114,7 +114,7 @@ def _equality_chain_map() -> StateDispatcherMap:
             dispatcher_block=2,
             compare_block=2,
             branch_kind="eq",
-            source=RouterKind.CONDITION_CHAIN,
+            router_kind=RouterKind.CONDITION_CHAIN,
             confidence=2.0,
             row_kind="handler",
             payload={"note": "first"},
@@ -125,7 +125,7 @@ def _equality_chain_map() -> StateDispatcherMap:
             dispatcher_block=3,
             compare_block=3,
             branch_kind="eq",
-            source=RouterKind.CONDITION_CHAIN,
+            router_kind=RouterKind.CONDITION_CHAIN,
             row_kind="handler",
         ),
     )
@@ -135,7 +135,7 @@ def _equality_chain_map() -> StateDispatcherMap:
         dispatcher_blocks=frozenset({2, 3}),
         state_var_stkoff=0x3C,
         state_var_lvar_idx=None,
-        source=RouterKind.CONDITION_CHAIN,
+        router_kind=RouterKind.CONDITION_CHAIN,
     )
 
 
@@ -147,7 +147,7 @@ def test_round_trip_identity_equality_chain():
 def test_round_trip_identity_switch_table():
     m = build_dispatch_map_any_kind(_switch_flow_graph())
     assert m is not None
-    assert m.source is RouterKind.SWITCH
+    assert m.router_kind is RouterKind.SWITCH
     assert RecoveredMachine.from_state_dispatcher_map(m).to_state_dispatcher_map() == m
 
 
@@ -196,7 +196,7 @@ def test_row_fields_byte_identical():
         assert restored.dispatcher_block == original.dispatcher_block
         assert restored.compare_block == original.compare_block
         assert restored.branch_kind == original.branch_kind
-        assert restored.source is original.source
+        assert restored.router_kind is original.router_kind
         assert restored.confidence == original.confidence
         assert restored.row_kind == original.row_kind
         assert restored.payload == original.payload

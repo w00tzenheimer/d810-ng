@@ -252,7 +252,7 @@ class TestResolveExactBranchWitness:
             dispatcher_entry_block=2,
             dispatcher_blocks=frozenset((2, 4)),
             state_var_stkoff=_STATE,
-            source=RouterKind.CONDITION_CHAIN,
+            router_kind=RouterKind.CONDITION_CHAIN,
         )
         # Dispatch map: blk2 and blk4 are dispatcher blocks.
         result = resolve_exact_branch_witness(
@@ -308,7 +308,7 @@ class TestResolveExactBranchWitness:
         branch_witness_map = BranchWitnessMap(
             rows=rows, dispatcher_entry_block=2, dispatcher_blocks=frozenset((2,)),
             state_var_stkoff=_STATE,
-            source=RouterKind.CONDITION_CHAIN,
+            router_kind=RouterKind.CONDITION_CHAIN,
         )
         result = resolve_exact_branch_witness(
             fg, dispatcher, 0x10, _STATE,
@@ -333,14 +333,14 @@ class TestResolveExactBranchWitness:
                     dispatcher_block=2,
                     compare_block=2,
                     branch_kind="eq",
-                    source=RouterKind.CONDITION_CHAIN,
+                    router_kind=RouterKind.CONDITION_CHAIN,
                 ),
             ),
             dispatcher_entry_block=2,
             dispatcher_blocks=frozenset((2,)),
             state_var_stkoff=_STATE,
             state_var_lvar_idx=None,
-            source=RouterKind.CONDITION_CHAIN,
+            router_kind=RouterKind.CONDITION_CHAIN,
         )
         branch_witness_map = build_static_equality_chain_witness_map(
             fg, dispatch_map, states=(0x10,)
@@ -373,14 +373,14 @@ class TestResolveExactBranchWitness:
                     dispatcher_block=2,
                     compare_block=None,
                     branch_kind="indirect_jump_table",
-                    source=RouterKind.INDIRECT_TABLE,
+                    router_kind=RouterKind.INDIRECT_TABLE,
                 ),
             ),
             dispatcher_entry_block=2,
             dispatcher_blocks=frozenset((2,)),
             state_var_stkoff=_STATE,
             state_var_lvar_idx=None,
-            source=RouterKind.INDIRECT_TABLE,
+            router_kind=RouterKind.INDIRECT_TABLE,
         )
 
         assert build_static_equality_chain_witness_map(fg, dispatch_map) is None
@@ -427,7 +427,7 @@ class TestResolveExactBranchWitness:
             dispatcher_entry_block=2,
             dispatcher_blocks=frozenset((2,)),
             state_var_stkoff=_STATE,
-            source=RouterKind.CONDITION_CHAIN,
+            router_kind=RouterKind.CONDITION_CHAIN,
         )
 
         class _DisagreeingEmu:

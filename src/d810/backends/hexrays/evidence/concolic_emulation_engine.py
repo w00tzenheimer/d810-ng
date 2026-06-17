@@ -856,7 +856,7 @@ class ConcolicEmulationEngine:
                 dispatcher_block=int(disc.entry),
                 compare_block=int(disc.entry),
                 branch_kind="emulated",
-                source=RouterKind.CONDITION_CHAIN,
+                router_kind=RouterKind.CONDITION_CHAIN,
             )
             for state_const, target_block in rows_map.items()
         )
@@ -892,7 +892,7 @@ class ConcolicEmulationEngine:
             state_var_lvar_idx=anchors.state_var_lvar_idx,
             dispatcher_entry_block=int(disc.entry),
             dispatcher_blocks=dispatcher_blocks,
-            source=RouterKind.CONDITION_CHAIN,
+            router_kind=RouterKind.CONDITION_CHAIN,
             soundness=Soundness.EXACT_BOUNDED,
             confidence=float(len(rows)),
             provenance=prov.as_tuple(),

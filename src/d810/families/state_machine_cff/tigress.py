@@ -8,7 +8,7 @@ per-pass capability requirements + router-shape pin).
 Tigress emits two CFF shapes this profile owns: a switch-table dispatcher (``SWITCH``)
 and a computed indirect-jump dispatcher (``INDIRECT_TABLE``). Detection is scoped over the
 SHARED front-end ``build_dispatch_map_any_kind`` so the families never grow parallel
-detectors; the claim is then narrowed by ``StateDispatcherMap.source`` to this kind set.
+detectors; the claim is then narrowed by ``StateDispatcherMap.router_kind`` to this kind set.
 
 Behaviour-neutral foundation (M3 slice 1, ``llr-11du``): TigressFamily auto-registers (via
 :class:`StateMachineCffFamily` / ``Registrant``) AFTER ``ApproovFamily``, so for the live
@@ -72,13 +72,13 @@ class TigressFamily(StateMachineCffFamily):
 
         Reuses the shared front-end ``build_dispatch_map_any_kind`` (so detect and the
         pipeline's pass #1 never disagree on which shapes are supported), then narrows by
-        ``StateDispatcherMap.source`` to this profile's kind set. Returns the recovered
+        ``StateDispatcherMap.router_kind`` to this profile's kind set. Returns the recovered
         map (truthy) on a match, else ``None``.
         """
         if graph is None or not hasattr(graph, "blocks"):
             return None
         dmap = build_dispatch_map_any_kind(graph)
-        if dmap is None or dmap.source not in _TIGRESS_KINDS:
+        if dmap is None or dmap.router_kind not in _TIGRESS_KINDS:
             return None
         return dmap
 
@@ -91,7 +91,7 @@ class TigressFamily(StateMachineCffFamily):
         (``EmulationCapability``) and pins ``RouterKind.INDIRECT_TABLE``; structural
         until the indirect resolver + emulation backend land (slice 2, ``llr-890r``).
         """
-        if getattr(match, "source", None) == RouterKind.INDIRECT_TABLE:
+        if getattr(match, "router_kind", None) == RouterKind.INDIRECT_TABLE:
             return (
                 PassSpec("recover_dispatcher", RecoverDispatcher, live_mba, default),
                 PassSpec(

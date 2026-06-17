@@ -201,7 +201,7 @@ def build_state_dispatcher_map_from_flow_graph(
                     dispatcher_block=int(serial),
                     compare_block=int(serial),
                     branch_kind=pred.value,
-                    source=RouterKind.CONDITION_CHAIN,
+                    router_kind=RouterKind.CONDITION_CHAIN,
                 ),
                 state_op,
             )
@@ -248,7 +248,7 @@ def build_state_dispatcher_map_from_flow_graph(
         dispatcher_blocks=chain_blocks,
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=None,
-        source=RouterKind.CONDITION_CHAIN,
+        router_kind=RouterKind.CONDITION_CHAIN,
     )
 
 
@@ -544,7 +544,7 @@ def recover_dispatcher(
     # entry-dominance and thread it onto the map so the §1a entry bridge prefers
     # it over the spurious BST value. INDIRECT maps already carry their own
     # recovered ``initial_state`` and are left untouched (ticket llr-mra1).
-    if dmap.source is not RouterKind.INDIRECT_TABLE and dmap.initial_state is None:
+    if dmap.router_kind is not RouterKind.INDIRECT_TABLE and dmap.initial_state is None:
         recovered_initial = recover_entry_dominated_initial_state(graph, dmap)
         if recovered_initial is not None:
             dmap = replace(dmap, initial_state=recovered_initial)

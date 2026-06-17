@@ -35,7 +35,7 @@ def build_static_equality_chain_witness_map(
     states and dispatcher metadata; row target blocks are deliberately ignored.
     """
 
-    if getattr(dispatch_map, "source", None) is not RouterKind.CONDITION_CHAIN:
+    if getattr(dispatch_map, "router_kind", None) is not RouterKind.CONDITION_CHAIN:
         return None
     entry = _int_or_none(getattr(dispatch_map, "dispatcher_entry_block", None))
     if entry is None:
@@ -96,7 +96,7 @@ def build_static_equality_chain_witness_map(
                         compare_const=int(compare_const) & 0xFFFFFFFF,
                         selected_successor=int(selected),
                         rejected_successors=tuple(int(r) for r in rejected),
-                        source=getattr(dispatch_map, "source", None),
+                        router_kind=getattr(dispatch_map, "router_kind", None),
                     )
                 )
             if int(selected) not in dispatcher_blocks:
@@ -110,7 +110,7 @@ def build_static_equality_chain_witness_map(
         dispatcher_entry_block=int(entry),
         dispatcher_blocks=dispatcher_blocks,
         state_var_stkoff=_int_or_none(getattr(dispatch_map, "state_var_stkoff", None)),
-        source=getattr(dispatch_map, "source", None),
+        router_kind=getattr(dispatch_map, "router_kind", None),
     )
 
 

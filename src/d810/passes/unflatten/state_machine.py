@@ -120,7 +120,7 @@ def _build_comparison_model(recovery, bst_evidence):
     dispatch_map = getattr(recovery, "dispatch_map", None)
     if dispatch_map is None:
         return None
-    router_kind = getattr(dispatch_map, "source", RouterKind.UNKNOWN)
+    router_kind = getattr(dispatch_map, "router_kind", RouterKind.UNKNOWN)
     if router_kind not in _COMPARISON_ROUTER_KINDS:
         return None
     return ComparisonDispatcherModel.from_recovery(
@@ -206,7 +206,7 @@ def _entry_bridge_requires_witness(bst_evidence, dmap) -> bool:
     grow explicit witness providers of their own.
     """
     del bst_evidence
-    if getattr(dmap, "source", None) is RouterKind.CONDITION_CHAIN:
+    if getattr(dmap, "router_kind", None) is RouterKind.CONDITION_CHAIN:
         rows = tuple(getattr(dmap, "rows", ()) or ())
         branch_kinds = {str(getattr(row, "branch_kind", "")) for row in rows}
         return bool(branch_kinds & _STATIC_BRANCH_KINDS) or "emulated" in branch_kinds
@@ -442,7 +442,7 @@ class LowerStateMachine(PipelinePass):
             # (hodur, approov). Thread the dispatcher kind so only the indirect
             # profile enables them.
             is_indirect = (
-                getattr(dmap, "source", None) is RouterKind.INDIRECT_TABLE
+                getattr(dmap, "router_kind", None) is RouterKind.INDIRECT_TABLE
                 if dmap is not None
                 else False
             )
@@ -452,7 +452,7 @@ class LowerStateMachine(PipelinePass):
                     getattr(bst_evidence, "initial_state", None),
                     getattr(dmap, "initial_state", None) if dmap is not None else None,
                     initial_state,
-                    getattr(dmap, "source", None) if dmap is not None else None,
+                    getattr(dmap, "router_kind", None) if dmap is not None else None,
                 )
             # Reduced-product CONCRETE leg (ticket llr-xauw): the optional
             # prove-exact-or-abstain block emulator, consulted only where the abstract
