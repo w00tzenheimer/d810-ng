@@ -40,24 +40,37 @@ def test_return_slot_and_return_value_collectors_are_canonical_exports() -> None
     assert ReturnValueFactCollector.fact_kinds == frozenset({RETURN_VALUE_FACT_TYPE})
 
 
-def test_ollvm_value_flow_evidence_collector_is_canonical_export() -> None:
-    from d810.analyses.value_flow.ollvm_semantic_carrier import (
-        OllvmValueFlowEvidenceCollector,
+def test_ollvm_value_flow_evidence_collector_is_profile_local() -> None:
+    from d810.families.state_machine_cff.ollvm_carrier_profile import (
+        OllvmCarrierRawEvidenceCollector,
     )
 
-    assert collectors.OllvmValueFlowEvidenceCollector is OllvmValueFlowEvidenceCollector
+    assert not hasattr(collectors, "OllvmValueFlowEvidenceCollector")
+    assert not hasattr(collectors, "OllvmCarrierRawEvidenceCollector")
     assert not hasattr(collectors, "OllvmSemanticCarrierFactCollector")
     assert (
-        OllvmValueFlowEvidenceCollector.fact_kinds
+        OllvmCarrierRawEvidenceCollector.fact_kinds
         == frozenset({"OllvmValueFlowEvidence"})
     )
 
 
 def test_collector_module_all_exposes_only_canonical_names() -> None:
-    from d810.analyses.value_flow import loop_carrier, ollvm_semantic_carrier, return_carrier
+    from d810.analyses.value_flow import loop_carrier, return_carrier
+    from d810.families.state_machine_cff import ollvm_carrier_profile
 
     assert loop_carrier.__all__ == ["LoopPredicateValueFactCollector"]
-    assert ollvm_semantic_carrier.__all__ == ["OllvmValueFlowEvidenceCollector"]
+    assert ollvm_carrier_profile.__all__ == [
+        "OLLVM_CARRIER_PROFILE_MODULE",
+        "OLLVM_CARRIER_PROFILE_NAME",
+        "OllvmCarrierBranchOwnershipOracle",
+        "OllvmCarrierProfileFactCollector",
+        "OllvmCarrierRawEvidenceCollector",
+        "collect_ollvm_branch_ownership_refiners",
+        "collect_ollvm_post_execute_carrier_facts",
+        "collect_ollvm_profile_fact_observations",
+        "collect_ollvm_raw_semantic_carrier_facts",
+        "project_ollvm_value_flow_evidence",
+    ]
     assert return_carrier.__all__ == [
         "ReturnSlotFactCollector",
         "ReturnValueFactCollector",

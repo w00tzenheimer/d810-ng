@@ -6,6 +6,10 @@ from types import SimpleNamespace
 
 import d810.analyses.control_flow.branch_ownership_oracle as oracle_mod
 from d810.analyses.value_flow.model import FactObservation
+from d810.families.state_machine_cff.ollvm_carrier_profile import (
+    OllvmCarrierBranchOwnershipOracle,
+    project_ollvm_value_flow_evidence,
+)
 from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipProof,
     BranchOwnershipProofKind,
@@ -13,7 +17,6 @@ from d810.analyses.control_flow.branch_ownership import (
 )
 from d810.analyses.control_flow.branch_ownership_oracle import (
     MopTrackerBranchOwnershipOracle,
-    OllvmCarrierBranchOwnershipOracle,
     PredicateOwnershipKind,
     PredicateOwnershipResult,
     Z3BranchOwnershipOracle,
@@ -166,6 +169,38 @@ def _carrier_fact(
     block: int,
     text: str,
 ):
+    raw = FactObservation(
+        fact_id=f"ollvm:{role}:{token}:blk={block}",
+        kind="OllvmValueFlowEvidence",
+        semantic_key=f"ollvm_carrier:{role}:{token}",
+        maturity="MMAT_CALLS",
+        phase="pre_d810",
+        confidence=0.8,
+        source_block=block,
+        source_ea=0x180000000 + block,
+        block_fingerprint=f"blk[{block}].0:m_setb",
+        mop_signature=f"ollvm_carrier:{role}:{token}",
+        payload={
+            "role": role,
+            "carrier_token": token,
+            "source_block": block,
+            "instruction_index": 0,
+            "instruction_ea": 0x180000000 + block,
+            "instruction_dstr": text,
+        },
+        evidence=(text,),
+    )
+    (projected,) = project_ollvm_value_flow_evidence((raw,))
+    return projected
+
+
+def _raw_carrier_fact(
+    *,
+    role: str,
+    token: str,
+    block: int,
+    text: str,
+) -> FactObservation:
     return FactObservation(
         fact_id=f"ollvm:{role}:{token}:blk={block}",
         kind="OllvmValueFlowEvidence",
@@ -929,6 +964,46 @@ def test_ollvm_carrier_oracle_marks_password_compare_predicate_semantic():
     assert proofs[0].evidence["carrier_kind"] == "call_result"
     assert proofs[0].evidence["expression_class"] == "call_result"
     assert proofs[0].evidence["predicate_tokens"] == ("%var_18",)
+
+
+def test_ollvm_carrier_oracle_ignores_raw_profile_evidence():
+    compare = (
+        "low    call $0x180000000<fast:_QWORD &(%var_98).8,"
+        "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, %var_58.4"
+    )
+    derive = "or     %var_58.4, #1.4, %var_18.4"
+    tail = SimpleNamespace(
+        opcode="m_jnz",
+        text="jnz    %var_18.4, #0.4, @9",
+    )
+    mba = _FakeMba({
+        5: _FakeBlock(
+            tail,
+            head=_chain(
+                _insn("m_call", text=compare),
+                _insn("m_or", text=derive),
+            ),
+        ),
+    })
+    oracle = OllvmCarrierBranchOwnershipOracle(
+        mba=mba,
+        carrier_facts=(
+            _raw_carrier_fact(
+                role="PASSWORD_COMPARE_RESULT",
+                token="%var_58",
+                block=5,
+                text=compare,
+            ),
+        ),
+    )
+
+    proofs = collect_branch_ownership_proofs(
+        dag=SimpleNamespace(edges=(_edge(branch_arm=0, target_state=0x20),)),
+        proof_refiner=oracle.refine,
+    )
+
+    assert proofs[0].proof_kind == BranchOwnershipProofKind.UNRESOLVED
+    assert proofs[0].trusted is False
 
 
 def test_ollvm_carrier_oracle_marks_loop_index_predicate_semantic():

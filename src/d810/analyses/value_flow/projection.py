@@ -10,7 +10,6 @@ validated at the mutation boundary from the exact source identity stored here.
 from __future__ import annotations
 
 import hashlib
-import re
 
 from d810.core.typing import Any, Iterable
 from d810.analyses.value_flow.observation import FactObservation, JsonMapping, canonical_json
@@ -71,9 +70,6 @@ _SOURCE_PROVEN_KINDS = frozenset({
     "CallAnchorFact",
 })
 
-_TOKEN_WIDTH_RE = re.compile(r"(?P<token>(?:%var_[0-9A-Fa-f]+|v\d+))\.(?P<size>\d+)")
-
-
 def project_value_flow_facts(
     observations: Iterable[FactObservation],
 ) -> tuple[FactObservation, ...]:
@@ -83,9 +79,6 @@ def project_value_flow_facts(
     for observation in observations:
         if observation.kind in VALUE_FLOW_FACT_TYPES:
             projected.append(observation)
-            continue
-        if observation.kind == "OllvmValueFlowEvidence":
-            projected.extend(_project_ollvm_oracle_fact(observation))
             continue
         projected.extend(_project_source_fact(observation))
     return tuple(projected)
@@ -415,451 +408,6 @@ def _project_source_fact(observation: FactObservation) -> tuple[FactObservation,
     return ()
 
 
-def _project_ollvm_oracle_fact(
-    observation: FactObservation,
-) -> tuple[FactObservation, ...]:
-    payload = observation.payload
-    role = str(payload.get("role") or "")
-    token = _canonical_token(str(payload.get("carrier_token") or ""))
-    producer_ids = _producer_fact_ids(observation)
-    if token is None:
-        return ()
-    exact = _ollvm_exact_source_identity(observation, token=token)
-    if exact is None:
-        return ()
-
-    if role in {
-        "ARG_OUTPUT_STORE_CANDIDATE",
-        "LOCAL_WORKING_STORE_CANDIDATE",
-    }:
-        extra_details = _ollvm_local_scalarization_details(payload)
-        return (
-            _ollvm_exact_fact(
-                observation,
-                exact=exact,
-                kind=OBSERVABLE_MEMORY_DEF_FACT_TYPE,
-                semantic_key=f"observable_store:token:{token}",
-                expression_class="output_store_carrier_proof",
-                observable_effect="output_store",
-                proof_family="observable_output_store_carrier",
-                producer_ids=producer_ids,
-                role=role,
-                extra_details=extra_details,
-            ),
-            _ollvm_exact_fact(
-                observation,
-                exact=exact,
-                kind=SCALAR_PROMOTION_FACT_TYPE,
-                semantic_key=f"carrier_store_promotion:token:{token}",
-                expression_class="carrier_store_promotion_proof",
-                observable_effect="output_store",
-                proof_family="observable_output_store_carrier_promotion",
-                producer_ids=producer_ids,
-                role=role,
-                extra_details=extra_details,
-            ),
-            _ollvm_exact_fact(
-                observation,
-                exact=exact,
-                kind=OBSERVABLE_OUTPUT_FACT_TYPE,
-                semantic_key=f"observable_output:token:{token}",
-                expression_class="output_store_carrier_proof",
-                observable_effect="output_store",
-                proof_family="observable_output_store_carrier",
-                producer_ids=producer_ids,
-                role=role,
-                extra_details=extra_details,
-            ),
-        )
-
-    if role == "LOCAL_WORKING_POINTER":
-        local_details = _ollvm_local_scalarization_details(payload)
-        return (
-            _ollvm_exact_fact(
-                observation,
-                exact=exact,
-                kind=SCALAR_REPLACEMENT_FACT_TYPE,
-                semantic_key=f"local_storage_scalarization:token:{token}",
-                expression_class="local_storage_scalarization_proof",
-                observable_effect="none",
-                proof_family="local_pointer_storage_scalarization",
-                producer_ids=producer_ids,
-                role=role,
-                extra_details=local_details,
-            ),
-            _ollvm_exact_fact(
-                observation,
-                exact=exact,
-                kind=MAY_ALIAS_FACT_TYPE,
-                semantic_key=f"may_alias:token:{token}",
-                expression_class="local_pointer_alias_set",
-                observable_effect="none",
-                proof_family="local_pointer_alias_evidence",
-                producer_ids=producer_ids,
-                role=role,
-                extra_details=local_details,
-            ),
-        )
-
-    if role == "ARG_OUTPUT_POINTER":
-        return (_ollvm_exact_fact(
-            observation,
-            exact=exact,
-            kind=POINTS_TO_FACT_TYPE,
-            semantic_key=f"output_pointer:token:{token}",
-            expression_class="argument_output_pointer",
-            observable_effect="output_buffer_pointer",
-            proof_family="argument_output_pointer_identity",
-            producer_ids=producer_ids,
-            role=role,
-        ),)
-
-    if role == "INDIRECT_STORE_CANDIDATE":
-        return (_ollvm_exact_fact(
-            observation,
-            exact=exact,
-            kind=SCALAR_PROMOTION_FACT_TYPE,
-            semantic_key=f"carrier_store_promotion:token:{token}",
-            expression_class="carrier_store_promotion_proof",
-            observable_effect="output_store",
-            proof_family="observable_carrier_store",
-            producer_ids=producer_ids,
-            role=role,
-        ),)
-
-    if role == "LOOP_INDEX_CARRIER":
-        return (_ollvm_exact_fact(
-            observation,
-            exact=exact,
-            kind=LOOP_PREDICATE_VALUE_FACT_TYPE,
-            semantic_key=f"loop_predicate:token:{token}",
-            expression_class="loop_predicate_carrier_proof",
-            observable_effect="none",
-            proof_family="local_loop_predicate_carrier",
-            producer_ids=producer_ids,
-            role=role,
-            extra_details=_ollvm_local_scalarization_details(payload),
-        ),)
-
-    if role == "PASSWORD_COMPARE_RESULT":
-        return (_ollvm_exact_fact(
-            observation,
-            exact=exact,
-            kind=CALL_RETURN_VALUE_FACT_TYPE,
-            semantic_key=f"call_result:token:{token}",
-            expression_class="call_result",
-            observable_effect="branch_predicate",
-            proof_family="call_result_predicate_carrier",
-            producer_ids=producer_ids,
-            role=role,
-        ),)
-
-    if role == "ACCUMULATOR_CARRIER":
-        facts = []
-        local_details = _ollvm_local_scalarization_details(payload)
-        # Local scalarization is a mutation-authorizing proof.  It requires a
-        # concrete local-base relation so the consumer can revalidate the live
-        # anchor before queueing any rewrite.  Other accumulator facts stay
-        # diagnostic/semantic even when the local-base proof is absent.
-        if (
-            local_details.get("local_base_token") is not None
-            or local_details.get("multiply_add_base_token") is not None
-        ):
-            facts.append(_ollvm_exact_fact(
-                observation,
-                exact=exact,
-                kind=SCALAR_REPLACEMENT_FACT_TYPE,
-                semantic_key=f"local_storage_scalarization:token:{token}",
-                expression_class="local_storage_scalarization_proof",
-                observable_effect="none",
-                proof_family="local_expression_storage_scalarization",
-                producer_ids=producer_ids,
-                role=role,
-                extra_details=local_details,
-            ))
-        facts.extend([
-            _ollvm_exact_fact(
-                observation,
-                exact=exact,
-                kind=SYMBOLIC_EXPRESSION_FACT_TYPE,
-                semantic_key=f"expression_carrier:token:{token}",
-                expression_class="semantic_expression_carrier_proof",
-                observable_effect="none",
-                proof_family="local_alias_expression_carrier",
-                producer_ids=producer_ids,
-                role=role,
-            ),
-            _ollvm_exact_fact(
-                observation,
-                exact=exact,
-                kind=SCALAR_PROMOTION_FACT_TYPE,
-                semantic_key=f"carrier_store_promotion:token:{token}",
-                expression_class="carrier_store_promotion_proof",
-                observable_effect="carrier_store",
-                proof_family="semantic_expression_store_promotion",
-                producer_ids=producer_ids,
-                role=role,
-            ),
-        ])
-        alias = _ollvm_same_carrier_alias_fact(
-            observation,
-            exact=exact,
-            token=token,
-            producer_ids=producer_ids,
-            role=role,
-        )
-        if alias is not None:
-            facts.append(alias)
-        return tuple(facts)
-
-    return ()
-
-
-def _ollvm_exact_fact(
-    observation: FactObservation,
-    *,
-    exact: JsonMapping,
-    kind: str,
-    semantic_key: str,
-    expression_class: str,
-    observable_effect: str,
-    proof_family: str,
-    producer_ids: tuple[str, ...],
-    role: str,
-    extra_details: JsonMapping | None = None,
-) -> FactObservation:
-    token = str(exact["carrier_token"])
-    source_block = int(exact["source_block"])
-    source_ea = int(exact["instruction_ea"])
-    instruction_index = int(exact["instruction_index"])
-    source_identity = {
-        **_source_identity(observation, producer_ids=producer_ids),
-        "source_block": source_block,
-        "source_ea": source_ea,
-        "source_ea_hex": _hex(source_ea),
-        "instruction_index": instruction_index,
-    }
-    details = {
-        "source_ontology": observation.kind,
-        "source_role": role,
-        "fixture_specific": True,
-        "proof_family": proof_family,
-        "proof_basis": [
-            "exact_source_block",
-            "exact_instruction_ea",
-            "exact_instruction_index",
-            "exact_instruction_text",
-            "carrier_token_identity",
-        ],
-        "producer_payload_role": role,
-        "carrier_token": token,
-        "instruction_dstr": str(observation.payload.get("instruction_dstr") or ""),
-    }
-    if extra_details:
-        details.update(extra_details)
-    anchor_locator = _ollvm_anchor_locator(observation, exact=exact, token=token)
-    overlap_proof = _ollvm_overlap_proof(
-        payload=observation.payload,
-        token=token,
-        role=role,
-        details=details,
-    )
-    return _make_fact(
-        observation,
-        kind=kind,
-        semantic_key=semantic_key,
-        storage_kind="token",
-        storage_identity=token,
-        source_block=source_block,
-        source_ea=source_ea,
-        instruction_index=instruction_index,
-        expression_class=expression_class,
-        observable_effect=observable_effect,
-        producer_fact_ids=producer_ids,
-        producer_kinds=(observation.kind,),
-        source_identity=source_identity,
-        details=details,
-        anchor_locator=anchor_locator,
-        storage_overlap_proof=overlap_proof,
-    )
-
-
-def _ollvm_same_carrier_alias_fact(
-    observation: FactObservation,
-    *,
-    exact: JsonMapping,
-    token: str,
-    producer_ids: tuple[str, ...],
-    role: str,
-) -> FactObservation | None:
-    payload = observation.payload
-    if role != "ACCUMULATOR_CARRIER":
-        return None
-    if payload.get("same_carrier_alias_proof") is not True:
-        return None
-    alias_tokens = tuple(
-        sorted(
-            alias
-            for alias in (
-                _canonical_token(str(raw_alias))
-                for raw_alias in (
-                    payload.get("multiply_add_same_base_alias_tokens") or ()
-                )
-            )
-            if alias is not None
-        )
-    )
-    carrier_token = _canonical_token(token)
-    if carrier_token is None or not alias_tokens:
-        return None
-    source_block = int(exact["source_block"])
-    source_ea = int(exact["instruction_ea"])
-    instruction_index = int(exact["instruction_index"])
-    source_identity = {
-        **_source_identity(observation, producer_ids=producer_ids),
-        "source_block": source_block,
-        "source_ea": source_ea,
-        "source_ea_hex": _hex(source_ea),
-        "instruction_index": instruction_index,
-    }
-    details = {
-        "source_ontology": observation.kind,
-        "source_role": role,
-        "carrier_token": carrier_token,
-        "alias_tokens": list(alias_tokens),
-        "proof_family": "same_carrier_alias_identity",
-        "instruction_dstr": str(payload.get("instruction_dstr") or ""),
-    }
-    return _make_fact(
-        observation,
-        kind=MUST_ALIAS_FACT_TYPE,
-        semantic_key=f"same_carrier_alias:{carrier_token}:{','.join(alias_tokens)}",
-        storage_kind="token_pair",
-        storage_identity=f"{carrier_token}->{','.join(alias_tokens)}",
-        source_block=source_block,
-        source_ea=source_ea,
-        instruction_index=instruction_index,
-        expression_class="same_carrier_alias",
-        observable_effect="none",
-        producer_fact_ids=producer_ids,
-        producer_kinds=(observation.kind,),
-        source_identity=source_identity,
-        details=details,
-        anchor_locator=_ollvm_anchor_locator(
-            observation,
-            exact=exact,
-            token=carrier_token,
-        ),
-        storage_overlap_proof=_ollvm_overlap_proof(
-            payload=payload,
-            token=carrier_token,
-            role=role,
-            details=details,
-        ),
-    )
-
-
-def _ollvm_local_scalarization_details(payload: JsonMapping) -> JsonMapping:
-    """Return serializable alias-to-base details for local storage facts."""
-
-    details: dict[str, object] = {}
-    local_base = _canonical_token(str(payload.get("local_base_token") or ""))
-    multiply_base = _canonical_token(str(payload.get("multiply_add_base_token") or ""))
-    if local_base is not None:
-        details["local_base_token"] = local_base
-    if multiply_base is not None:
-        details["multiply_add_base_token"] = multiply_base
-    aliases = tuple(
-        alias for alias in (
-            _canonical_token(str(raw_alias))
-            for raw_alias in (payload.get("multiply_add_same_base_alias_tokens") or ())
-        )
-        if alias is not None
-    )
-    if aliases:
-        details["same_base_alias_tokens"] = aliases
-    return details
-
-
-def _instruction_text_digest(text: str) -> str:
-    return hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()[:16]
-
-
-def _token_widths(text: str) -> dict[str, int]:
-    widths: dict[str, int] = {}
-    for match in _TOKEN_WIDTH_RE.finditer(text):
-        token = _canonical_token(match.group("token"))
-        if token is None:
-            continue
-        try:
-            size = int(match.group("size"))
-        except Exception:
-            continue
-        previous = widths.get(token)
-        if previous is None or size > previous:
-            widths[token] = size
-    return widths
-
-
-def _ollvm_anchor_locator(
-    observation: FactObservation,
-    *,
-    exact: JsonMapping,
-    token: str,
-) -> JsonMapping:
-    text = str(observation.payload.get("instruction_dstr") or "")
-    opcode_name = str(observation.payload.get("instruction_opcode_name") or "")
-    return {
-        "requires_live_revalidation": True,
-        "source_block": int(exact["source_block"]),
-        "instruction_ea": int(exact["instruction_ea"]),
-        "instruction_ea_hex": _hex(int(exact["instruction_ea"])),
-        "instruction_index": int(exact["instruction_index"]),
-        "instruction_opcode_name": opcode_name,
-        "instruction_text_sha1": _instruction_text_digest(text),
-        "instruction_dstr": text,
-        "carrier_token": _canonical_token(token),
-        "token_widths": _token_widths(text),
-    }
-
-
-def _ollvm_overlap_proof(
-    *,
-    payload: JsonMapping,
-    token: str,
-    role: str,
-    details: JsonMapping,
-) -> JsonMapping:
-    token = _canonical_token(token) or str(token)
-    text = str(payload.get("instruction_dstr") or "")
-    token_widths = _token_widths(text)
-    local_base = _canonical_token(str(details.get("local_base_token") or ""))
-    multiply_base = _canonical_token(str(details.get("multiply_add_base_token") or ""))
-    alias_tokens = tuple(
-        alias for alias in (
-            _canonical_token(str(raw_alias))
-            for raw_alias in (details.get("alias_tokens") or details.get("same_base_alias_tokens") or ())
-        )
-        if alias is not None
-    )
-    proof_basis = "exact_token_and_width_signature"
-    if local_base is not None or multiply_base is not None or alias_tokens:
-        proof_basis = "same_local_pointer_base"
-    return {
-        "proof_status": "producer_checked",
-        "proof_basis": proof_basis,
-        "carrier_token": token,
-        "base_token": local_base or multiply_base,
-        "alias_tokens": list(alias_tokens),
-        "token_widths": token_widths,
-        "carrier_width_bytes": token_widths.get(token),
-        "fully_included": True,
-        "partial_overlap": False,
-        "requires_live_mlist_revalidation": True,
-        "source_role": role,
-    }
-
-
 def _make_fact(
     observation: FactObservation,
     *,
@@ -931,31 +479,6 @@ def _make_fact(
     )
 
 
-def _ollvm_exact_source_identity(
-    observation: FactObservation,
-    *,
-    token: str,
-) -> JsonMapping | None:
-    payload = observation.payload
-    source_block = payload.get("source_block", observation.source_block)
-    instruction_ea = payload.get("instruction_ea", observation.source_ea)
-    instruction_index = payload.get("instruction_index")
-    instruction_dstr = str(payload.get("instruction_dstr") or "")
-    if source_block is None or instruction_ea is None or instruction_index is None:
-        return None
-    if not instruction_dstr:
-        return None
-    canonical = _canonical_token(token)
-    if canonical is None or canonical not in _tokens(instruction_dstr):
-        return None
-    return {
-        "carrier_token": canonical,
-        "source_block": int(source_block),
-        "instruction_ea": int(instruction_ea),
-        "instruction_index": int(instruction_index),
-    }
-
-
 def _source_identity(
     observation: FactObservation,
     *,
@@ -978,6 +501,11 @@ def _producer_fact_ids(
     ids = [str(observation.fact_id)]
     ids.extend(str(item) for item in extra_ids if item)
     return tuple(dict.fromkeys(ids))
+
+
+make_projected_value_flow_fact = _make_fact
+value_flow_source_identity = _source_identity
+value_flow_producer_fact_ids = _producer_fact_ids
 
 
 def _storage_from_first_int(
@@ -1028,34 +556,13 @@ def _string_list(value: object) -> tuple[str, ...]:
         return (str(value),)
 
 
-def _canonical_token(value: object) -> str | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    if not text.startswith("%"):
-        return text
-    name = text.split(".", 1)[0]
-    return name.upper().replace("%VAR_", "%var_")
-
-
-_VAR_TOKEN_RE = re.compile(r"(?:%var_[0-9A-Fa-f]+|v\d+)")
-
-
-def _tokens(text: str) -> frozenset[str]:
-    return frozenset(
-        canonical
-        for canonical in (
-            _canonical_token(match.group(0))
-            for match in _VAR_TOKEN_RE.finditer(text)
-        )
-        if canonical is not None
-    )
-
-
 def _hex(value: int | None) -> str | None:
     if value is None:
         return None
     return f"0x{int(value):016x}"
+
+
+value_flow_hex = _hex
 
 
 __all__ = [
@@ -1082,6 +589,10 @@ __all__ = [
     "MATERIALIZATION_POINT_FACT_TYPE",
     "exact_source_identity",
     "is_value_flow_fact",
+    "make_projected_value_flow_fact",
     "production_value_flow_fact",
     "project_value_flow_facts",
+    "value_flow_hex",
+    "value_flow_producer_fact_ids",
+    "value_flow_source_identity",
 ]

@@ -2379,6 +2379,10 @@ def _microcode_constants(mba: Any = None) -> MicrocodeConstants:
         mop_S=int(ida_hexrays.mop_S),
         mop_r=int(ida_hexrays.mop_r),
         mop_b=int(ida_hexrays.mop_b),
+        m_stx=int(ida_hexrays.m_stx),
+        m_call=int(ida_hexrays.m_call),
+        m_icall=int(ida_hexrays.m_icall),
+        m_jcnd=int(ida_hexrays.m_jcnd),
     )
 
 

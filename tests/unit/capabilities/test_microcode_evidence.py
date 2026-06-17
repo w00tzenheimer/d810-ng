@@ -28,6 +28,10 @@ _FAKE_CONSTANTS = P.MicrocodeConstants(
     mop_S=16,
     mop_r=17,
     mop_b=18,
+    m_stx=19,
+    m_call=20,
+    m_icall=21,
+    m_jcnd=22,
 )
 
 
@@ -82,6 +86,10 @@ def test_register_and_get_roundtrip():
     assert constants is _FAKE_CONSTANTS
     assert constants.m_jnz == 4
     assert constants.mop_S == 16
+    assert constants.m_stx == 19
+    assert constants.m_call == 20
+    assert constants.m_icall == 21
+    assert constants.m_jcnd == 22
     assert got.find_counter_hoist_candidates(fake) == [(7, "l", 0x1234, 99)]
     assert got.get_block_by_serial(fake, 5) == ("blk", 5)
     block = SimpleNamespace(flags=0x1, start=0x1800)

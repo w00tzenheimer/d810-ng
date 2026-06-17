@@ -16,9 +16,6 @@ from d810.analyses.value_flow.call_anchor import CallAnchorFactCollector
 from d810.analyses.value_flow.loop_carrier import (
     LoopPredicateValueFactCollector,
 )
-from d810.analyses.value_flow.ollvm_semantic_carrier import (
-    OllvmValueFlowEvidenceCollector,
-)
 from d810.analyses.value_flow.return_carrier import (
     ReturnSlotFactCollector,
     ReturnValueFactCollector,
@@ -40,7 +37,6 @@ __all__ = [
     "CallAnchorFactCollector",
     "InductionVariableFactCollector",
     "LoopPredicateValueFactCollector",
-    "OllvmValueFlowEvidenceCollector",
     "ReturnFrontierFactCollector",
     "ReturnSlotFactCollector",
     "ReturnValueFactCollector",

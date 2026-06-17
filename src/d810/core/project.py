@@ -31,6 +31,7 @@ class ProjectLifecyclePayload:
 
 _project_lifecycle_emitter: EventEmitter[ProjectLifecycleEvent] = EventEmitter()
 _project_reload_cleanup_handlers: dict[str, typing.Callable[[], None]] = {}
+_recon_fact_collector_registration_handlers: dict[str, typing.Callable[..., None]] = {}
 
 
 def subscribe_project_lifecycle(
@@ -70,6 +71,45 @@ def unregister_project_reload_cleanup(name: str) -> None:
     _project_reload_cleanup_handlers.pop(str(name), None)
 
 
+def register_recon_fact_collector_registration_handler(
+    name: str,
+    handler: typing.Callable[..., None],
+) -> None:
+    """Register a named project-profile fact collector callback.
+
+    Profile modules use this callback seam to opt their own raw evidence
+    collectors into a project without making :mod:`d810.manager` import profile
+    code directly.  Registrations are keyed for idempotent module reloads.
+    """
+
+    _recon_fact_collector_registration_handlers[str(name)] = handler
+
+
+def unregister_recon_fact_collector_registration_handler(name: str) -> None:
+    """Remove a named project-profile fact collector callback."""
+
+    _recon_fact_collector_registration_handlers.pop(str(name), None)
+
+
+def emit_recon_fact_collector_registration(
+    *,
+    runtime: object,
+    project_config: dict[str, typing.Any] | None = None,
+) -> None:
+    """Emit the project-profile fact collector registration callback."""
+
+    cfg = dict(project_config or {})
+    for name, handler in tuple(_recon_fact_collector_registration_handlers.items()):
+        try:
+            handler(runtime=runtime, project_config=cfg)
+        except Exception:  # noqa: BLE001 - profile registration must not stop loading
+            logger.warning(
+                "recon fact collector registration failed: %s",
+                name,
+                exc_info=True,
+            )
+
+
 def _run_project_reload_cleanups() -> None:
     for name, handler in tuple(_project_reload_cleanup_handlers.items()):
         try:
@@ -98,6 +138,7 @@ def clear_project_lifecycle_for_tests() -> None:
     """Clear lifecycle subscriptions and cleanup hooks for unit tests."""
 
     _project_reload_cleanup_handlers.clear()
+    _recon_fact_collector_registration_handlers.clear()
     _project_lifecycle_emitter.clear()
 
 

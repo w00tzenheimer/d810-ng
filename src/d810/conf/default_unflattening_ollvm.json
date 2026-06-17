@@ -980,5 +980,10 @@
         ]
       }
     }
-  ]
+  ],
+  "additional_configuration": {
+    "recon_fact_profile_modules": [
+      "d810.families.state_machine_cff.ollvm_carrier_profile"
+    ]
+  }
 }

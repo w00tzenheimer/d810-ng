@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import importlib
 import inspect
 import json
 import os
@@ -27,7 +28,12 @@ from d810.core.logging import clear_logs, configure_loggers, getLogger
 from d810.core.persistence import ActiveRuleInferenceConfig, create_optimization_storage
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.platform import resolve_arch_config
-from d810.core.project import ProjectContext, ProjectManager, emit_project_reloading
+from d810.core.project import (
+    ProjectContext,
+    ProjectManager,
+    emit_project_reloading,
+    emit_recon_fact_collector_registration,
+)
 from d810.core.registry import EventEmitter, SingletonMeta
 from d810.core.rule_scope import (
     FunctionRuleOverlay,
@@ -89,9 +95,6 @@ from d810.analyses.value_flow.call_anchor import CallAnchorFactCollector
 from d810.analyses.value_flow.folded_loop_guard import FoldedLoopGuardFactCollector
 from d810.analyses.value_flow.induction_carrier import InductionVariableFactCollector
 from d810.analyses.value_flow.loop_carrier import LoopPredicateValueFactCollector
-from d810.analyses.value_flow.ollvm_semantic_carrier import (
-    OllvmValueFlowEvidenceCollector,
-)
 from d810.analyses.value_flow.return_carrier import ReturnSlotFactCollector
 from d810.analyses.value_flow.return_frontier import ReturnFrontierFactCollector
 from d810.analyses.value_flow.state_write_anchor import StateWriteAnchorFactCollector
@@ -460,6 +463,37 @@ class D810Manager:
         self._load_function_analysis_priors_from_config(
             kwargs.get("function_analysis_priors", {})
         )
+
+    @staticmethod
+    def _coerce_module_names(value: typing.Any) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, str):
+            items = (value,)
+        else:
+            try:
+                items = tuple(value)
+            except TypeError:
+                items = (value,)
+        return tuple(
+            dict.fromkeys(
+                str(item).strip()
+                for item in items
+                if str(item).strip()
+            )
+        )
+
+    def _load_recon_fact_profile_modules(self) -> None:
+        for module_name in self._coerce_module_names(
+            self.config.get("recon_fact_profile_modules")
+        ):
+            try:
+                importlib.import_module(module_name)
+            except Exception:
+                logger.exception(
+                    "Recon fact profile module load failed: %s",
+                    module_name,
+                )
 
     @staticmethod
     def _coerce_prior_constants(value: typing.Any) -> tuple[object, ...]:
@@ -1284,7 +1318,6 @@ class D810Manager:
                 logger.exception("Hex-Rays live SourceLifter registration failed")
             self._recon_runtime.register_fact_collector(InductionVariableFactCollector())
             self._recon_runtime.register_fact_collector(LoopPredicateValueFactCollector())
-            self._recon_runtime.register_fact_collector(OllvmValueFlowEvidenceCollector())
             self._recon_runtime.register_fact_collector(ReturnSlotFactCollector())
             self._recon_runtime.register_fact_collector(TerminalByteEmitterFactCollector())
             self._recon_runtime.register_fact_collector(ByteEmitCorridorFactCollector())
@@ -1294,6 +1327,11 @@ class D810Manager:
             self._recon_runtime.register_fact_collector(StateWriteAnchorFactCollector())
             self._recon_runtime.register_fact_collector(StateTransitionAnchorFactCollector())
             self._recon_runtime.register_fact_collector(FoldedLoopGuardFactCollector())
+            self._load_recon_fact_profile_modules()
+            emit_recon_fact_collector_registration(
+                runtime=self._recon_runtime,
+                project_config=dict(self.config),
+            )
             self.instruction_optimizer.configure(
                 recon_phase=self._recon_phase,
                 recon_runtime=self._recon_runtime,
