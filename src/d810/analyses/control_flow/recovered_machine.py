@@ -27,6 +27,8 @@ __all__ = [
     "Soundness",
     "MachineRow",
     "MachineTransition",
+    "TerminalCorridorEffect",
+    "TerminalCorridor",
     "RecoveredMachine",
 ]
 
@@ -92,6 +94,62 @@ class MachineTransition:
 
 
 @dataclass(frozen=True, slots=True)
+class TerminalCorridorEffect:
+    """One payload/state effect proven along a terminal corridor.
+
+    This is deliberately small and backend-neutral: Hex-Rays evidence can name a
+    call target, stack slot, or symbolic expression without forcing the common
+    contract to import microcode or ctree types.
+    """
+
+    kind: str
+    target: str | int | None = None
+    value: str | int | None = None
+    expression: str | None = None
+    payload: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalCorridor:
+    """Proof-carrying deterministic route from an initial state to a terminal.
+
+    ``symbolic_inputs`` are payload symbols such as ``R = rand()``.  They may flow
+    into effects, but they must not control branch choices; otherwise the
+    corridor is an observed path, not a complete proof.
+    """
+
+    initial_state: int
+    terminal_state: int
+    path_blocks: tuple[int, ...]
+    effects: tuple[TerminalCorridorEffect, ...] = ()
+    terminal_block: int | None = None
+    symbolic_inputs: tuple[str, ...] = ()
+    branch_dependency_symbols: tuple[str, ...] = ()
+    enumerated_inputs_complete: bool = False
+    deterministic: bool = False
+    terminal_reachable: bool = False
+    provenance: tuple[str, ...] = ()
+
+    @property
+    def symbolic_branch_dependencies(self) -> frozenset[str]:
+        """Payload symbols that would make branch choices input-dependent."""
+
+        return frozenset(self.symbolic_inputs) & frozenset(
+            self.branch_dependency_symbols
+        )
+
+    @property
+    def is_complete_deterministic_proof(self) -> bool:
+        return (
+            bool(self.path_blocks)
+            and self.enumerated_inputs_complete
+            and self.deterministic
+            and self.terminal_reachable
+            and not self.symbolic_branch_dependencies
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class RecoveredMachine:
     """Engine-neutral recovered CFF state machine (the common contract).
 
@@ -103,6 +161,7 @@ class RecoveredMachine:
 
     rows: tuple[MachineRow, ...]
     transitions: tuple[MachineTransition, ...] = ()
+    terminal_corridors: tuple[TerminalCorridor, ...] = ()
     contexts: tuple[tuple[int, ...], ...] = ()
     initial_states: tuple[int, ...] = ()
     state_var_stkoff: int | None = None
@@ -213,3 +272,13 @@ class RecoveredMachine:
         """Return a copy threading a single initial state (mirrors dispatcher_recovery.py:551
         ``replace(dmap, initial_state=...)``)."""
         return replace(self, initial_states=(int(state),))
+
+    def with_terminal_corridor(
+        self, corridor: TerminalCorridor
+    ) -> "RecoveredMachine":
+        """Return a copy carrying one additional proven terminal corridor."""
+
+        return replace(
+            self,
+            terminal_corridors=self.terminal_corridors + (corridor,),
+        )

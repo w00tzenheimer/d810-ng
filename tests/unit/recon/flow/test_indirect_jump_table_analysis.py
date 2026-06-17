@@ -57,6 +57,8 @@ def test_indirect_jump_table_rows_preserve_unmaterialized_targets() -> None:
     assert missing.branch_kind == "indirect_jump_table_missing_target"
     assert missing.payload["target_ea_hex"] == "0x0000000180017af6"
     assert missing.payload["target_materialized"] is False
+    assert dispatch_map.resolve_target(1) == 7
+    assert dispatch_map.resolve_target(2) is None
 
 
 def test_indirect_jump_target_block_can_match_instruction_ea() -> None:

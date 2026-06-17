@@ -18,6 +18,7 @@ from d810.analyses.control_flow.dispatcher_resolution import (
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.analyses.control_flow.minimal_state_recovery import (
     StateWriteTransition,
+    TransitionProof,
     _resolve_state_var_alias,
     block_has_live_carrier_write,
     recover_state_write_transitions,
@@ -142,6 +143,73 @@ def _stx_reg(ea, value, ptr_reg):
     )
 
 
+def _mov_reg_const(ea, reg, value=0x1234):
+    return InsnSnapshot(
+        opcode=_OP_MOV,
+        ea=ea,
+        operands=(),
+        l=MopSnapshot(t=_T_NUM, size=8, value=value, kind=OperandKind.NUMBER),
+        d=MopSnapshot(t=_T_REG, size=8, reg=reg, kind=OperandKind.REGISTER),
+        kind=InsnKind.MOV,
+    )
+
+
+def _mov_reg_from_stack(ea, reg, stkoff):
+    return InsnSnapshot(
+        opcode=_OP_MOV,
+        ea=ea,
+        operands=(),
+        l=MopSnapshot(t=_T_STK, size=8, stkoff=stkoff, kind=OperandKind.STACK),
+        d=MopSnapshot(t=_T_REG, size=8, reg=reg, kind=OperandKind.REGISTER),
+        kind=InsnKind.MOV,
+    )
+
+
+def _mov_stack_from_reg(ea, stkoff, reg):
+    return InsnSnapshot(
+        opcode=_OP_MOV,
+        ea=ea,
+        operands=(),
+        l=MopSnapshot(t=_T_REG, size=8, reg=reg, kind=OperandKind.REGISTER),
+        d=MopSnapshot(t=_T_STK, size=8, stkoff=stkoff, kind=OperandKind.STACK),
+        kind=InsnKind.MOV,
+    )
+
+
+def _mov_stack_const(ea, stkoff, value=0x1234):
+    return InsnSnapshot(
+        opcode=_OP_MOV,
+        ea=ea,
+        operands=(),
+        l=MopSnapshot(t=_T_NUM, size=8, value=value, kind=OperandKind.NUMBER),
+        d=MopSnapshot(t=_T_STK, size=8, stkoff=stkoff, kind=OperandKind.STACK),
+        kind=InsnKind.MOV,
+    )
+
+
+def _call_reg(ea, reg):
+    return InsnSnapshot(
+        opcode=0x44,
+        ea=ea,
+        operands=(),
+        l=MopSnapshot(t=_T_REG, size=8, reg=reg, kind=OperandKind.REGISTER),
+        kind=InsnKind.CALL,
+    )
+
+
+def _state_ne_tail(ea, const):
+    return InsnSnapshot(
+        opcode=0x33,
+        ea=ea,
+        operands=(),
+        l=MopSnapshot(t=_T_STK, size=8, stkoff=_STATE, kind=OperandKind.STACK),
+        r=MopSnapshot(t=_T_NUM, size=8, value=const, kind=OperandKind.NUMBER),
+        kind=InsnKind.COND_JUMP,
+        branch_predicate=PredicateKind.NE,
+        is_conditional_jump=True,
+    )
+
+
 def _b(serial, succs, preds, insns=()):
     return BlockSnapshot(
         serial=serial, block_type=0, succs=tuple(succs), preds=tuple(preds),
@@ -250,6 +318,173 @@ def test_emits_back_edge_redirect_and_entry_bridge(_seam) -> None:
     assert (10, 2, 20) in gotos
     # entry bridge: blk0 -> route(initial 0x10) = blk10
     assert (0, 2, 10) in gotos
+
+
+def test_entry_bridge_shortcuts_pure_state_only_witness_corridor(_seam) -> None:
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,), (_mov_state(0x900, 0x10),)),
+            2: _b(2, (4, 3), (1,), (_state_ne_tail(0x1000, 0x10),)),
+            3: _b(3, (4,), (2,)),
+            4: _b(4, (5, 6), (2, 3), (_state_ne_tail(0x1010, 0x10),)),
+            5: _b(5, (7,), (4,)),
+            6: _b(6, (7,), (4,)),
+            7: _exit_block(7, (5, 6)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 5}, exit_block=7)
+
+    mods = build_state_write_redirects(
+        fg,
+        disp,
+        (),
+        dispatcher_entry_serial=2,
+        pre_header_serial=1,
+        initial_state=0x10,
+        state_var_stkoff=_STATE,
+        entry_bridge_corridor_blocks=(2, 4),
+        entry_bridge_requires_witness=True,
+    )
+
+    gotos = {(m.from_serial, m.old_target, m.new_target) for m in mods if isinstance(m, RedirectGoto)}
+    assert (1, 2, 5) in gotos
+
+
+def test_entry_bridge_preserves_witness_corridor_with_live_stack_def(_seam) -> None:
+    non_state = 0x88
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,), (_mov_state(0x900, 0x10),)),
+            2: _b(2, (4, 3), (1,), (_mov_stack_const(0x1000, non_state), _state_ne_tail(0x1004, 0x10))),
+            3: _b(3, (4,), (2,)),
+            4: _b(4, (5,), (2, 3), (_state_ne_tail(0x1010, 0x10),)),
+            5: _b(5, (8,), (4,)),
+            8: _b(8, (9,), (5,), (_mov_reg_from_stack(0x1080, 1, non_state),)),
+            9: _exit_block(9, (8,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 5}, exit_block=9)
+
+    mods = build_state_write_redirects(
+        fg,
+        disp,
+        (),
+        dispatcher_entry_serial=2,
+        pre_header_serial=1,
+        initial_state=0x10,
+        state_var_stkoff=_STATE,
+        entry_bridge_corridor_blocks=(2, 4),
+        entry_bridge_requires_witness=True,
+    )
+
+    gotos = {(m.from_serial, m.old_target, m.new_target) for m in mods if isinstance(m, RedirectGoto)}
+    assert (1, 2, 5) not in gotos
+
+
+def test_entry_bridge_shortcuts_skipped_dead_non_state_def(_seam) -> None:
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,), (_mov_state(0x900, 0x10),)),
+            2: _b(2, (4, 3), (1,), (_mov_reg_const(0x1000, 2), _state_ne_tail(0x1004, 0x10))),
+            3: _b(3, (4,), (2,)),
+            4: _b(4, (5,), (2, 3), (_state_ne_tail(0x1010, 0x10),)),
+            5: _b(5, (8,), (4,), (_mov_reg_const(0x1050, 2),)),
+            8: _b(8, (9,), (5,), (_call_reg(0x1080, 2),)),
+            9: _exit_block(9, (8,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 5}, exit_block=9)
+
+    mods = build_state_write_redirects(
+        fg,
+        disp,
+        (),
+        dispatcher_entry_serial=2,
+        pre_header_serial=1,
+        initial_state=0x10,
+        state_var_stkoff=_STATE,
+        entry_bridge_corridor_blocks=(2, 4),
+        entry_bridge_requires_witness=True,
+    )
+
+    gotos = {(m.from_serial, m.old_target, m.new_target) for m in mods if isinstance(m, RedirectGoto)}
+    assert (1, 2, 5) in gotos
+
+
+def test_entry_bridge_shortcuts_dispatcher_local_non_state_temp(_seam) -> None:
+    temp_stack = 0x88
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,), (_mov_state(0x900, 0x10),)),
+            2: _b(2, (4, 3), (1,), (_mov_reg_const(0x1000, 2), _state_ne_tail(0x1004, 0x10))),
+            3: _b(3, (4,), (2,)),
+            4: _b(4, (5, 6), (2, 3), (_mov_stack_from_reg(0x1010, temp_stack, 2), _state_ne_tail(0x1014, 0x10))),
+            5: _b(5, (7,), (4,)),
+            6: _b(6, (7,), (4,)),
+            7: _exit_block(7, (5, 6)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 5}, exit_block=7)
+
+    mods = build_state_write_redirects(
+        fg,
+        disp,
+        (),
+        dispatcher_entry_serial=2,
+        pre_header_serial=1,
+        initial_state=0x10,
+        state_var_stkoff=_STATE,
+        entry_bridge_corridor_blocks=(2, 4),
+        entry_bridge_requires_witness=True,
+    )
+
+    gotos = {(m.from_serial, m.old_target, m.new_target) for m in mods if isinstance(m, RedirectGoto)}
+    assert (1, 2, 5) in gotos
+
+
+def test_entry_bridge_preserves_witness_corridor_with_live_call_target_reg(_seam) -> None:
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,), (_mov_state(0x900, 0x10),)),
+            2: _b(2, (4, 3), (1,), (_mov_reg_const(0x1000, 0), _state_ne_tail(0x1004, 0x10))),
+            3: _b(3, (4,), (2,), (_mov_reg_const(0x1008, 0, value=0x5555),)),
+            4: _b(4, (5,), (2, 3), (_state_ne_tail(0x1010, 0x10),)),
+            5: _b(5, (8,), (4,)),
+            8: _b(8, (9,), (5,), (_call_reg(0x1080, 0),)),
+            9: _exit_block(9, (8,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 5}, exit_block=9)
+
+    mods = build_state_write_redirects(
+        fg,
+        disp,
+        (),
+        dispatcher_entry_serial=2,
+        pre_header_serial=1,
+        initial_state=0x10,
+        state_var_stkoff=_STATE,
+        entry_bridge_corridor_blocks=(2, 4),
+        entry_bridge_requires_witness=True,
+    )
+
+    gotos = {(m.from_serial, m.old_target, m.new_target) for m in mods if isinstance(m, RedirectGoto)}
+    assert (1, 2, 5) not in gotos
 
 
 def test_recovers_initial_state_from_prologue(_seam) -> None:
@@ -510,6 +745,68 @@ def test_pure_glue_via_block_still_bypassed(_seam) -> None:
     assert (9, 99) in gotos
     # The carrier-return path is NOT used (no ``blk10 -> exit`` self-redirect).
     assert (10, 99) not in gotos
+
+
+def test_terminal_stack_alias_via_block_keeps_carrier_guard(_seam) -> None:
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (6,), ()),
+            2: _b(2, (3, 5), (8,)),
+            6: _b(6, (7, 8), (0,), (_state_ne_tail(0x1600, 0x10),)),
+            7: _b(7, (8,), (6,)),
+            8: _b(8, (9, 2), (6, 7)),
+            9: _b(9, (10,), (8,)),
+            10: _exit_block(10, (9,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 7, 0x20: 9}, exit_block=3)
+    transitions = (
+        StateWriteTransition(
+            7,
+            0x20,
+            9,
+            False,
+            None,
+            via_block=8,
+            proof=TransitionProof(
+                "region_partitioned_fixpoint",
+                "stack_address_alias_terminal_guard_partitioned",
+                True,
+            ),
+        ),
+    )
+    mods = build_state_write_redirects(
+        fg,
+        disp,
+        transitions,
+        dispatcher_entry_serial=2,
+        pre_header_serial=None,
+        initial_state=0x10,
+        state_var_stkoff=_STATE,
+    )
+
+    gotos = {
+        (m.from_serial, m.old_target, m.new_target)
+        for m in mods
+        if isinstance(m, RedirectGoto)
+    }
+    branches = {
+        (m.from_serial, m.old_target, m.new_target)
+        for m in mods
+        if isinstance(m, RedirectBranch)
+    }
+    converts = {
+        (m.block_serial, m.goto_target)
+        for m in mods
+        if isinstance(m, ConvertToGoto)
+    }
+    assert (7, 8, 9) not in gotos
+    assert (6, 7) in converts
+    assert (8, 9) in converts
+    assert (6, 8, 7) not in branches
+    assert (8, 2, 9) not in branches
 
 
 def test_witness_entry_bridge_shortcuts_safe_corridor(_seam) -> None:

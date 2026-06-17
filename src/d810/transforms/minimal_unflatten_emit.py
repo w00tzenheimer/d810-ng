@@ -45,6 +45,8 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     block_has_live_carrier_write,
     recover_handler_transitions,
     recover_state_write_transitions_via_partitioned_fixpoint,
+    transition_uses_terminal_stack_alias_guard,
+    transitions_use_terminal_stack_alias_guard,
 )
 from d810.analyses.control_flow.state_machine_analysis import _is_stop_block
 from d810.analyses.value_flow import (
@@ -61,6 +63,7 @@ from d810.core.observability_recon import (
     observe_corridor_shortcut_decisions,
 )
 from d810.ir.block_identity import block_label
+from d810.ir.semantics import PredicateKind
 from d810.transforms.corridor_liveness_policy import (
     corridor_blocks_live_violations,
     evaluate_corridor_shortcut,
@@ -76,6 +79,9 @@ from d810.transforms.graph_modification import (
     ZeroStateWrite,
 )
 from d810.transforms.plan import PatchPlan, compile_patch_plan
+from d810.transforms.terminal_corridor_emission import (
+    plan_state_terminal_corridor_lowerings,
+)
 from d810.transforms.use_def_redirect_filter import (
     count_use_def_severances,
     filter_use_def_severing_redirects,
@@ -84,6 +90,8 @@ from d810.transforms.use_def_redirect_filter import (
 
 logger = logging.getLogger("D810.transforms.minimal_unflatten_emit")
 
+TERMINAL_CARRIER_CONVERGENCE_METADATA = "terminal_carrier_convergence"
+TERMINAL_CARRIER_CONVERGENCE_REASON_METADATA = "terminal_carrier_convergence_reason"
 
 __all__ = [
     "ConditionalStateTransitionCandidate",
@@ -98,6 +106,8 @@ __all__ = [
     "build_loop_carrier_guard_lowerings",
     "build_loop_carrier_guard_transitions",
     "lower_conditional_transition_candidates",
+    "TERMINAL_CARRIER_CONVERGENCE_METADATA",
+    "TERMINAL_CARRIER_CONVERGENCE_REASON_METADATA",
 ]
 
 
@@ -534,6 +544,93 @@ def _observe_corridor_shortcut_decision(
         observe_corridor_shortcut_decisions(func_ea=func_ea, rows=tuple(rows))
 
 
+def _state_predicate_successor_for_value(
+    block: object,
+    *,
+    state_var_stkoff: int,
+    value: int,
+) -> int | None:
+    """Return the successor selected when a state-slot predicate sees ``value``."""
+
+    succs = tuple(int(s) for s in getattr(block, "succs", ()) or ())
+    if len(succs) != 2:
+        return None
+    insns = tuple(getattr(block, "insn_snapshots", ()) or ())
+    if not insns:
+        return None
+    tail = insns[-1]
+    if not getattr(tail, "is_conditional_jump", False):
+        return None
+    left = getattr(tail, "l", None)
+    right = getattr(tail, "r", None)
+    left_state = int(state_var_stkoff) in _mop_stack_refs(left)
+    right_state = int(state_var_stkoff) in _mop_stack_refs(right)
+    left_value = _mop_number_value(left)
+    right_value = _mop_number_value(right)
+    compares_value = (
+        (left_state and right_value is not None and int(right_value) == int(value))
+        or (right_state and left_value is not None and int(left_value) == int(value))
+    )
+    if not compares_value:
+        return None
+    predicate = getattr(tail, "branch_predicate", None)
+    if predicate is PredicateKind.EQ:
+        return succs[1]
+    if predicate is PredicateKind.NE:
+        return succs[0]
+    return None
+
+
+def _terminal_alias_materializer_parent_redirects(
+    flow_graph,
+    transition: StateWriteTransition,
+    *,
+    initial_state: int | None,
+    state_var_stkoff: int | None,
+) -> tuple[tuple[int, int, int], ...]:
+    """Retarget infeasible sibling edges through the proven alias materializer.
+
+    A terminal stack-alias proof means ``src -> via`` is the path that sets the
+    terminal state-store pointer to the dispatcher state slot before ``via`` stores
+    the terminal state and result carrier.  In the nested OLLVM join shape the
+    parent is a two-way state predicate with successors ``{src, via}``; for the
+    current dispatcher state, only the ``src`` arm is feasible, while the sibling
+    ``via`` arm keeps the shared dispatcher fallback alive and structures as a
+    residual loop.  When the parent predicate structurally selects ``src`` for the
+    recovered initial state, fold the sibling arm back through ``src``.
+    """
+
+    if initial_state is None or state_var_stkoff is None:
+        return ()
+    if not transition_uses_terminal_stack_alias_guard(transition):
+        return ()
+    vb = transition.via_block
+    if vb is None:
+        return ()
+    src = int(transition.write_block)
+    via = int(vb)
+    src_block = flow_graph.get_block(src)
+    if src_block is None or tuple(int(s) for s in src_block.succs) != (via,):
+        return ()
+    out: list[tuple[int, int, int]] = []
+    for parent_serial in tuple(int(p) for p in getattr(src_block, "preds", ()) or ()):
+        parent = flow_graph.get_block(parent_serial)
+        if parent is None or int(getattr(parent, "nsucc", 0)) != 2:
+            continue
+        succs = tuple(int(s) for s in getattr(parent, "succs", ()) or ())
+        if set(succs) != {src, via}:
+            continue
+        selected = _state_predicate_successor_for_value(
+            parent,
+            state_var_stkoff=int(state_var_stkoff),
+            value=int(initial_state),
+        )
+        if selected != src:
+            continue
+        out.append((parent_serial, via, src))
+    return tuple(out)
+
+
 def build_state_write_redirects(
     flow_graph,
     dispatcher,
@@ -557,6 +654,7 @@ def build_state_write_redirects(
     """
     mods: list[object] = []
     seen: set[tuple[str, int, int, int]] = set()
+    seen_convert: set[tuple[int, int]] = set()
     default_target = dispatcher.default_target
     disp = int(dispatcher_entry_serial) if dispatcher_entry_serial is not None else None
 
@@ -588,6 +686,15 @@ def build_state_write_redirects(
             mods.append(ConvertToGoto(block_serial=int(src), goto_target=new))
             return
         _add(src, old, new, two_way=(src_block.nsucc == 2))
+
+    def _convert(src: int, target: int | None) -> None:
+        if target is None:
+            return
+        key = (int(src), int(target))
+        if key in seen_convert:
+            return
+        seen_convert.add(key)
+        mods.append(ConvertToGoto(block_serial=int(src), goto_target=int(target)))
 
     # Prologue dispatcher edges are bridged to route(initial_state); their own
     # state write (the initial state) would route there anyway, but routing them
@@ -649,6 +756,33 @@ def build_state_write_redirects(
                 if transition.is_return
                 else transition.target_handler
             )
+            # Terminal stack-alias split: ``src -> vb`` reaches a shared block that
+            # writes the non-state result carrier, writes the terminal dispatcher
+            # state, then conditionally returns or re-enters the dispatcher. Keep
+            # ``src -> vb`` intact so the carrier executes, and redirect only the
+            # via block's dispatcher edge onto the proven terminal successor.
+            if (
+                vb is not None
+                and new is not None
+                and transition_uses_terminal_stack_alias_guard(transition)
+            ):
+                for parent, old_sibling, alias_src in _terminal_alias_materializer_parent_redirects(
+                    flow_graph,
+                    transition,
+                    initial_state=initial_state,
+                    state_var_stkoff=state_var_stkoff,
+                ):
+                    _convert(parent, alias_src)
+                vbi = int(vb)
+                if vbi not in emitted_via_self:
+                    emitted_via_self.add(vbi)
+                    vb_block = flow_graph.get_block(vbi)
+                    if vb_block is not None:
+                        if int(getattr(vb_block, "nsucc", 0)) == 2:
+                            _convert(vbi, int(new))
+                        else:
+                            _add(vbi, disp, int(new), two_way=False)
+                continue
             # Carrier RETURN arm: the shared block ``vb`` carries the function's
             # return value (a live non-state write) and THIS arm's route reaches the
             # actual return.  Keep ``src -> vb`` intact (so the carrier executes) and
@@ -766,6 +900,10 @@ def _existing_redirect_sources(mods: list[object]) -> set[int]:
         int(m.from_serial)
         for m in mods
         if isinstance(m, (RedirectGoto, RedirectBranch))
+    } | {
+        int(m.block_serial)
+        for m in mods
+        if isinstance(m, ConvertToGoto)
     }
 
 
@@ -1897,7 +2035,9 @@ def build_conditional_arm_redirects(
     sources = existing_sources if existing_sources is not None else set()
     carriers = {int(b) for b in (carrier_via_blocks or ())}
     mods: list[object] = []
-    seen: set[tuple[str, int, int, int]] = set()
+    candidate_order: list[tuple[str, int, int]] = []
+    candidate_new_targets: dict[tuple[str, int, int], set[int]] = {}
+    candidate_mods: dict[tuple[str, int, int], object] = {}
 
     def _succ_reaches_carrier(succ: int) -> bool:
         """``True`` if the arm successor is a 1-way feeder into a carrier via_block.
@@ -1927,18 +2067,18 @@ def build_conditional_arm_redirects(
         if src_block is None:
             return
         two_way = src_block.nsucc == 2
-        key = ("B" if two_way else "G", int(src), int(old), int(new))
-        if key in seen:
+        edge_key = ("B" if two_way else "G", int(src), int(old))
+        new_targets = candidate_new_targets.setdefault(edge_key, set())
+        if int(new) in new_targets:
             return
-        seen.add(key)
+        if not new_targets:
+            candidate_order.append(edge_key)
+        new_targets.add(int(new))
         if two_way:
-            mods.append(
-                RedirectBranch(from_serial=int(src), old_target=int(old), new_target=int(new))
-            )
+            mod = RedirectBranch(from_serial=int(src), old_target=int(old), new_target=int(new))
         else:
-            mods.append(
-                RedirectGoto(from_serial=int(src), old_target=int(old), new_target=int(new))
-            )
+            mod = RedirectGoto(from_serial=int(src), old_target=int(old), new_target=int(new))
+        candidate_mods[edge_key] = mod
 
     for handler in handler_transitions:
         if not handler.is_conditional:
@@ -2000,6 +2140,21 @@ def build_conditional_arm_redirects(
             if wb_block is None or disp not in tuple(int(s) for s in wb_block.succs):
                 continue
             _add(int(wb), disp, new)
+    for edge_key in candidate_order:
+        targets = candidate_new_targets.get(edge_key, set())
+        if len(targets) != 1:
+            kind, src, old = edge_key
+            logger.debug(
+                "suppressing conflicting conditional arm redirects: kind=%s src=%s old=%s targets=%s",
+                kind,
+                src,
+                old,
+                sorted(targets),
+            )
+            continue
+        mod = candidate_mods.get(edge_key)
+        if mod is not None:
+            mods.append(mod)
     return mods
 
 
@@ -2262,6 +2417,7 @@ def emit_minimal_unflatten(
     branch_witness_emu: object | None = None,
     entry_bridge_corridor_blocks: tuple[int, ...] = (),
     entry_bridge_requires_witness: bool = False,
+    terminal_corridor_recovery: bool = False,
 ) -> PatchPlan:
     """Recover back-edge transitions and emit the dispatcher-bypass ``PatchPlan``.
 
@@ -2302,6 +2458,9 @@ def emit_minimal_unflatten(
         initial_state=initial_state,
         emu=emu,
         live_block_for=live_block_for,
+    )
+    terminal_carrier_convergence = transitions_use_terminal_stack_alias_guard(
+        transitions
     )
     # C3b (ticket llr-1szn / d81-t9ok): each transition carries a typed
     # ``TransitionProof`` naming the oracle and resolution shape. Observe-only --
@@ -2583,6 +2742,35 @@ def emit_minimal_unflatten(
             pre_cfg=flow_graph,
             state_var_stkoff=int(state_var_stkoff),
         )
+    if terminal_corridor_recovery:
+        corridor_plan = plan_state_terminal_corridor_lowerings(
+            flow_graph=flow_graph,
+            modifications=tuple(mods),
+            dispatcher_entry_serial=int(dispatcher_entry_serial),
+            state_var_stkoff=int(state_var_stkoff),
+        )
+        if corridor_plan.modifications:
+            terminal_anchors = {
+                int(site.anchor_serial) for site in corridor_plan.supported_sites
+            }
+            mods = [
+                mod
+                for mod in mods
+                if not (
+                    isinstance(mod, RedirectGoto)
+                    and int(mod.from_serial) in terminal_anchors
+                    and int(mod.old_target) == int(dispatcher_entry_serial)
+                )
+            ]
+            mods = list(mods) + list(corridor_plan.modifications)
+            if logger.info_on:
+                logger.info(
+                    "unflat minimal unflatten: terminal_corridor_dtl sites=%d "
+                    "corridors=%d anchors=%s",
+                    len(corridor_plan.supported_sites),
+                    len(corridor_plan.corridors),
+                    ",".join(str(anchor) for anchor in sorted(terminal_anchors)),
+                )
     if logger.info_on:
         n_return = sum(1 for t in transitions if t.is_return)
         n_unresolved = sum(1 for t in transitions if t.next_state is None)
@@ -2600,7 +2788,17 @@ def emit_minimal_unflatten(
             total,
             ",".join("blk%d" % b for b in unreached[:20]),
         )
-    return compile_patch_plan(list(mods), flow_graph)
+    plan = compile_patch_plan(list(mods), flow_graph)
+    if terminal_carrier_convergence:
+        plan = plan.with_metadata(
+            **{
+                TERMINAL_CARRIER_CONVERGENCE_METADATA: True,
+                TERMINAL_CARRIER_CONVERGENCE_REASON_METADATA: (
+                    "region_partitioned_fixpoint:stack_address_alias_terminal_guard"
+                ),
+            }
+        )
+    return plan
 
 
 def _reachability(flow_graph, dispatcher, mods, dispatcher_entry_serial):
@@ -2625,6 +2823,9 @@ def _reachability(flow_graph, dispatcher, mods, dispatcher_entry_serial):
                     int(m.false_target_serial),
                     int(m.true_target_serial),
                 ]
+            continue
+        if isinstance(m, ConvertToGoto):
+            rewired[int(m.block_serial)] = [int(m.goto_target)]
             continue
         if not isinstance(m, (RedirectGoto, RedirectBranch)):
             continue

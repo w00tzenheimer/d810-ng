@@ -15,7 +15,12 @@ import pytest
 
 from d810.analyses.abstract_domains.known_bits import KnownBits
 from d810.analyses.abstract_domains.wrapped_interval import WrappedInterval
-from d810.analyses.control_flow.recovered_machine import MachineTransition, Soundness
+from d810.analyses.control_flow.recovered_machine import (
+    MachineTransition,
+    Soundness,
+    TerminalCorridor,
+    TerminalCorridorEffect,
+)
 from d810.analyses.data_flow.concolic import AbstractEvidence
 from d810.analyses.data_flow.concolic.emulation import ExactResult
 from d810.analyses.data_flow.concolic.refs import LocationRef
@@ -50,6 +55,40 @@ def _top_cell(floor, src_state: int = 7) -> TopCell:
 
 def _state_loc() -> LocationRef:
     return LocationRef.stack(0x3C, 8)
+
+
+def _symbolic_payload_corridor(**overrides) -> TerminalCorridor:
+    values = {
+        "initial_state": 0x1111,
+        "terminal_state": 0x2222,
+        "path_blocks": (1, 2, 4, 5, 6, 7, 8, 9),
+        "terminal_block": 9,
+        "symbolic_inputs": ("R",),
+        "branch_dependency_symbols": (),
+        "enumerated_inputs_complete": True,
+        "deterministic": True,
+        "terminal_reachable": True,
+        "effects": (
+            TerminalCorridorEffect(
+                kind="call_payload",
+                target="rand",
+                value="R",
+            ),
+            TerminalCorridorEffect(
+                kind="store",
+                target="result_slot",
+                expression="R % 3u",
+            ),
+            TerminalCorridorEffect(
+                kind="store",
+                target="state_slot",
+                value=0x2222,
+            ),
+        ),
+        "provenance": ("unit",),
+    }
+    values.update(overrides)
+    return TerminalCorridor(**values)
 
 
 # ── gamma_members soundness ────────────────────────────────────────────────
@@ -265,6 +304,55 @@ def test_gate_a_accepts_complete_deterministic():
     assert out.is_top is False
     assert set(out.transition.next_states) == {3, 4}
     assert out.floor is None  # gate (a) carries no floor
+
+
+def test_gate_a_accepts_complete_terminal_corridor():
+    """A deterministic terminal corridor can carry symbolic payload effects."""
+    gate = CompletenessGate(GateMode.DETERMINISTIC_F)
+    cell = _top_cell(None)
+    corridor = _symbolic_payload_corridor()
+    cv = ConcolicCellValue(
+        next_states=frozenset({0x2222}),
+        enumerated_inputs_complete=True,
+        deterministic=True,
+        terminal_corridor=corridor,
+    )
+    out = gate.refine_top_cell(cell=cell, concolic_value=cv)
+
+    assert out.is_top is False
+    assert out.transition.next_states == (0x2222,)
+    assert out.terminal_corridor == corridor
+
+
+def test_gate_a_rejects_terminal_corridor_when_symbol_controls_branch():
+    gate = CompletenessGate(GateMode.DETERMINISTIC_F)
+    cell = _top_cell(None)
+    cv = ConcolicCellValue(
+        next_states=frozenset({0x2222}),
+        enumerated_inputs_complete=True,
+        deterministic=True,
+        terminal_corridor=_symbolic_payload_corridor(branch_dependency_symbols=("R",)),
+    )
+
+    out = gate.refine_top_cell(cell=cell, concolic_value=cv)
+
+    assert out.is_top is True
+    assert out.terminal_corridor is None
+
+
+def test_gate_a_rejects_incomplete_terminal_corridor():
+    gate = CompletenessGate(GateMode.DETERMINISTIC_F)
+    cell = _top_cell(None)
+    cv = ConcolicCellValue(
+        next_states=frozenset({0x2222}),
+        enumerated_inputs_complete=True,
+        deterministic=True,
+        terminal_corridor=_symbolic_payload_corridor(enumerated_inputs_complete=False),
+    )
+
+    out = gate.refine_top_cell(cell=cell, concolic_value=cv)
+
+    assert out.is_top is True
 
 
 if __name__ == "__main__":

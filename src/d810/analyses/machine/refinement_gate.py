@@ -33,7 +33,11 @@ import enum
 from dataclasses import dataclass, field, replace
 
 from d810.core.logging import getLogger
-from d810.analyses.control_flow.recovered_machine import MachineTransition, Soundness
+from d810.analyses.control_flow.recovered_machine import (
+    MachineTransition,
+    Soundness,
+    TerminalCorridor,
+)
 from d810.analyses.data_flow.concolic import (
     AbstractEvidence,
     ConcolicValue,
@@ -91,6 +95,7 @@ class ConcolicCellValue:
     state_loc: LocationRef | None = None
     enumerated_inputs_complete: bool = False
     deterministic: bool = False
+    terminal_corridor: TerminalCorridor | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +112,7 @@ class TopCell:
     transition: MachineTransition
     floor: AbstractEvidence | None
     is_top: bool = True
+    terminal_corridor: TerminalCorridor | None = None
 
 
 def gamma_members(floor: AbstractEvidence, *, cap: int = GAMMA_ENUM_CAP) -> frozenset[int] | None:
@@ -300,8 +306,36 @@ class CompletenessGate:
             return cell  # cannot prove image(f)=C -> stay ⊤
         if not cv.next_states:
             return cell
+        corridor = None
+        if cv.terminal_corridor is not None:
+            corridor = self.accept_terminal_corridor(cv.terminal_corridor)
+            if corridor is None:
+                return cell
         # f deterministic + inputs fully enumerated => V = image(f) = C (§7 (a)).
-        return self._accept(cell, cv.next_states, floor=None)
+        return self._accept(cell, cv.next_states, floor=None, terminal_corridor=corridor)
+
+    def accept_terminal_corridor(
+        self, corridor: TerminalCorridor
+    ) -> TerminalCorridor | None:
+        """Accept a terminal corridor only when it proves Gate A obligations.
+
+        This keeps terminal-corridor recovery proof-carrying: symbolic payloads
+        such as a fresh external-call value are allowed in effects, but not in
+        branch choices.
+        """
+
+        if not corridor.is_complete_deterministic_proof:
+            if logger.info_on:
+                logger.info(
+                    "gate(a): terminal corridor rejected "
+                    "(complete=%s deterministic=%s terminal=%s sym_branch=%s)",
+                    corridor.enumerated_inputs_complete,
+                    corridor.deterministic,
+                    corridor.terminal_reachable,
+                    sorted(corridor.symbolic_branch_dependencies),
+                )
+            return None
+        return corridor
 
     # -- accept helper ------------------------------------------------------
     def _accept(
@@ -310,6 +344,7 @@ class CompletenessGate:
         v: frozenset[int],
         *,
         floor: AbstractEvidence | None = ...,  # type: ignore[assignment]
+        terminal_corridor: TerminalCorridor | None = None,
     ) -> TopCell:
         """Build the refined (non-⊤) cell with ``next_states = V``.
 
@@ -325,4 +360,9 @@ class CompletenessGate:
                 "gate: REFINE ⊤ -> V=%s (src_state=%s)",
                 sorted(v), cell.transition.src_state,
             )
-        return TopCell(transition=new_tr, floor=new_floor, is_top=False)
+        return TopCell(
+            transition=new_tr,
+            floor=new_floor,
+            is_top=False,
+            terminal_corridor=terminal_corridor,
+        )

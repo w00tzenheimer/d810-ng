@@ -787,6 +787,8 @@ def materialize_indirect_label_targets_for_function(
         return None
     state_base = (_parse_int(cfg.get("state_base"), default=1) or 1) if cfg else 1
     state_var_stkoff = _parse_int(cfg.get("state_var_stkoff")) if cfg else None
+    if state_var_stkoff is None and discovered.state_var_stkoff is not None:
+        state_var_stkoff = int(discovered.state_var_stkoff)
     install_switch = bool(cfg.get("install_switch_info", False)) if cfg else False
     return materialize_indirect_label_targets(
         function_ea=int(discovered.function_ea),
@@ -884,41 +886,69 @@ def materialize_indirect_label_targets_from_config(
     return tuple(results)
 
 
-# --- Pre-decompile materialization registry --------------------------------
+# --- Flowchart-stage materialization registry -------------------------------
 #
 # The indirect engine registers its ``goto_table_info`` here at project-load
-# time; the decompilation ``prolog`` hook then materializes labels for the
-# function being decompiled BEFORE its MBA is built.  Materializing at prolog
-# (rather than mid-optimization) lets the very first MBA build see the computed
-# crefs, so the recovered label bodies are present for lowering in a single
-# ``decompile`` call.  Registration is behavior-neutral: discovery returns
-# ``None`` for any function that is not a real indirect-table dispatcher.
+# time; the generic Hex-Rays flowchart preanalysis event materializes labels for
+# the function being decompiled and requests a one-shot Hex-Rays redo.  That
+# keeps the work current-function scoped while letting the rebuilt MBA see the
+# computed crefs.  Registration is behavior-neutral: discovery returns ``None``
+# for any function that is not a real indirect-table dispatcher.
 
 _INDIRECT_MATERIALIZATION_REGISTERED = False
 _INDIRECT_MATERIALIZATION_GOTO_TABLE: dict = {}
 _INDIRECT_MATERIALIZED_FUNCTION_EAS: set[int] = set()
+_INDIRECT_MATERIALIZATION_HANDLER = "hexrays.indirect_jump_label_materialization"
 # EAs structurally confirmed (by the per-function detector) to be register-indirect
-# computed-goto dispatchers. Populated by the prolog hook; queried by the unflatten
-# unflattener as the address-agnostic ``_is_indirect`` maturity-routing signal.
+# computed-goto dispatchers. Populated by the flowchart event subscriber; queried
+# by the unflatten unflattener as the address-agnostic ``_is_indirect`` signal.
 _INDIRECT_DISPATCHER_FUNCTION_EAS: set[int] = set()
 
 
+def _on_flowchart_preanalysis(*, function_ea: int, mba: object, decision: dict) -> None:
+    result = run_indirect_materialization_for_function(int(function_ea))
+    if result is None or not result.success:
+        return
+    from d810.hexrays.preanalysis.flowchart_preanalysis import request_hexrays_redo
+
+    request_hexrays_redo(
+        decision,
+        "indirect_jump_label_materialized",
+        function_ea=result.function_ea,
+        target_count=result.target_count,
+        materialized_target_count=result.materialized_target_count,
+    )
+
+
 def register_indirect_materialization(goto_table_info: Mapping[str, object]) -> None:
-    """Register the indirect engine's table info for prolog-time materialization."""
+    """Register table info for flowchart-stage current-function materialization."""
     global _INDIRECT_MATERIALIZATION_REGISTERED, _INDIRECT_MATERIALIZATION_GOTO_TABLE
+    from d810.hexrays.preanalysis.flowchart_preanalysis import (
+        register_flowchart_preanalysis_handler,
+    )
+
     _INDIRECT_MATERIALIZATION_REGISTERED = True
     _INDIRECT_MATERIALIZATION_GOTO_TABLE = dict(goto_table_info or {})
     _INDIRECT_MATERIALIZED_FUNCTION_EAS.clear()
     _INDIRECT_DISPATCHER_FUNCTION_EAS.clear()
+    register_flowchart_preanalysis_handler(
+        _INDIRECT_MATERIALIZATION_HANDLER,
+        _on_flowchart_preanalysis,
+    )
 
 
 def reset_indirect_materialization() -> None:
-    """Clear the prolog-time materialization registration."""
+    """Clear the flowchart-stage materialization registration."""
     global _INDIRECT_MATERIALIZATION_REGISTERED, _INDIRECT_MATERIALIZATION_GOTO_TABLE
+    from d810.hexrays.preanalysis.flowchart_preanalysis import (
+        unregister_flowchart_preanalysis_handler,
+    )
+
     _INDIRECT_MATERIALIZATION_REGISTERED = False
     _INDIRECT_MATERIALIZATION_GOTO_TABLE = {}
     _INDIRECT_MATERIALIZED_FUNCTION_EAS.clear()
     _INDIRECT_DISPATCHER_FUNCTION_EAS.clear()
+    unregister_flowchart_preanalysis_handler(_INDIRECT_MATERIALIZATION_HANDLER)
 
 
 def run_indirect_materialization_for_function(
@@ -926,9 +956,10 @@ def run_indirect_materialization_for_function(
 ) -> IndirectLabelMaterializationResult | None:
     """Materialize indirect labels for *function_ea* if registered (idempotent).
 
-    Called from the decompilation prolog hook.  Returns ``None`` (no-op) unless
-    the indirect engine is active and the function is a real indirect-table
-    dispatcher.  Each function EA is materialized at most once per registration.
+    Called from the flowchart preanalysis event subscriber.  Returns ``None``
+    (no-op) unless the indirect engine is active and the function is a real
+    indirect-table dispatcher.  Each function EA is materialized at most once per
+    registration.
     """
     if not _INDIRECT_MATERIALIZATION_REGISTERED:
         return None
@@ -943,7 +974,7 @@ def run_indirect_materialization_for_function(
         )
     except Exception:
         logger.warning(
-            "prolog-time indirect materialization failed for 0x%X",
+            "flowchart-stage indirect materialization failed for 0x%X",
             key,
             exc_info=True,
         )
@@ -951,7 +982,7 @@ def run_indirect_materialization_for_function(
     if result is not None:
         _INDIRECT_DISPATCHER_FUNCTION_EAS.add(key)
         logger.info(
-            "Tigress indirect prolog materialization 0x%X: success=%s "
+            "Tigress indirect flowchart materialization 0x%X: success=%s "
             "targets=%d/%d jump_xrefs=%d reason=%s",
             result.function_ea,
             result.success,
@@ -965,13 +996,13 @@ def run_indirect_materialization_for_function(
 
 def is_materialized_indirect_dispatcher(function_ea: int) -> bool:
     """True if *function_ea* was structurally confirmed an indirect-table
-    (register-indirect computed-goto) dispatcher by the prolog-time
+    (register-indirect computed-goto) dispatcher by the flowchart-stage
     materialization.
 
     This is the address-agnostic ``_is_indirect`` signal the unflatten unflattener
     uses to route recovery to ``MMAT_CALLS`` — no per-binary configured
-    addresses, no config profile flag. Returns ``False`` until the prolog hook
-    has run for the function, and ``False`` for every non-dispatcher.
+    addresses, no config profile flag. Returns ``False`` until the flowchart
+    event has run for the function, and ``False`` for every non-dispatcher.
     """
     return int(function_ea) in _INDIRECT_DISPATCHER_FUNCTION_EAS
 

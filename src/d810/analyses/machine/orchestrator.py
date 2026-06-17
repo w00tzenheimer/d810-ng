@@ -292,6 +292,7 @@ def compose_reduced_product(
 
     gate = CompletenessGate(mode=gate_mode)
     refined = spine.machine
+    accepted_corridors = []
     for cell_tr in _top_cells(refined):
         cv = (
             concolic_resolver(int(cell_tr.src_state), tuple(cell_tr.context))
@@ -308,6 +309,10 @@ def compose_reduced_product(
         if not new_cell.is_top:
             # The gate established completeness + soundness -> adopt the refined edge.
             refined = _replace_transition(refined, cell_tr, new_cell.transition)
+            if new_cell.terminal_corridor is not None:
+                accepted_corridors.append(new_cell.terminal_corridor)
+    for corridor in accepted_corridors:
+        refined = refined.with_terminal_corridor(corridor)
 
     # Cross-validation (§6.4): agreement raises confidence; disagreement keeps AI.
     result = cross_validate(refined, concolic_machine)

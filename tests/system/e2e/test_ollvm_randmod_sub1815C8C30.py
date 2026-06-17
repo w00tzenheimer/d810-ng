@@ -20,10 +20,12 @@ Two distinct deobfuscation facts have to be recovered for the full golden:
    this once the masked constant constant-folds to ``0xAAAAAAAB``.  This is
    covered as a hard assertion below (``% 3`` present, no ``while`` loop).
 
-2. **rand() devirtualisation** — the branch-witness/liveness policy must keep
-   the live corridor through ``rax = &rand`` while still collapsing the terminal
-   dispatcher back-edge.  The full ``rand() % 3u`` golden is now a hard
-   assertion below.
+2. **rand() devirtualisation** — the call target is an obfuscated indirect
+   call ``icall (*off_18210A360 + 0x64E2C558D421136)`` that resolves to
+   ``rand``.  The branch-witness/liveness policy must preserve the dispatcher
+   witness corridor that materializes the call target before the terminal
+   indirect call, while still collapsing the terminal dispatcher back-edge.  The
+   full ``rand() % 3u`` golden is now a hard assertion below.
 """
 
 from __future__ import annotations
@@ -383,6 +385,9 @@ class TestOllvmRandModSub1815C8C30:
 
     def test_rand_devirtualized_full_golden(self, randmod_rendered) -> None:
         """Full golden: ``return rand() % 3u;`` with a real ``rand`` call.
+
+        Regression guard for witness-preserving entry projection: the call
+        target definition on the dispatcher corridor must survive to the call.
         """
         rendered = randmod_rendered["rendered"]
 

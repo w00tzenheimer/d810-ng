@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.ir.flowgraph import InsnKind
+from d810.analyses.control_flow.recovered_machine import (
+    TerminalCorridor,
+    TerminalCorridorEffect,
+)
+from d810.ir.flowgraph import InsnKind, OperandKind
+from d810.ir.semantics import PredicateKind
 from d810.transforms.graph_modification import (
     DirectTerminalLoweringKind,
+    DirectTerminalLoweringGroup,
     DirectTerminalLoweringSite,
+    RedirectGoto,
 )
 
 
@@ -24,6 +31,7 @@ class DirectTerminalLoweringExecutionPlan:
     owned_edges: frozenset[tuple[int, int]]
     sites: tuple[DirectTerminalLoweringSite, ...]
     supported_sites: tuple[DirectTerminalLoweringSite, ...]
+    corridors: tuple[TerminalCorridor, ...] = ()
 
 
 def plan_private_terminal_suffix_execution(
@@ -168,9 +176,446 @@ def plan_direct_terminal_lowering_execution(
     )
 
 
+def _stack_offset_from_address(operand: object | None) -> int | None:
+    if operand is None:
+        return None
+    if getattr(operand, "kind", None) is OperandKind.STACK:
+        off = getattr(operand, "stkoff", None)
+        return int(off) if off is not None else None
+    if getattr(operand, "kind", None) is OperandKind.ADDRESS:
+        inner = getattr(operand, "sub_l", None)
+        if inner is not None:
+            return _stack_offset_from_address(inner)
+        refs = tuple(getattr(operand, "stack_refs", ()) or ())
+        if len(refs) == 1:
+            return int(refs[0])
+    refs = tuple(getattr(operand, "stack_refs", ()) or ())
+    if len(refs) == 1:
+        return int(refs[0])
+    return None
+
+
+def _reg_of(operand: object | None) -> int | None:
+    if operand is not None and getattr(operand, "kind", None) is OperandKind.REGISTER:
+        reg = getattr(operand, "reg", None)
+        return int(reg) if reg is not None else None
+    return None
+
+
+def _number_value(operand: object | None) -> int | None:
+    if operand is not None and getattr(operand, "kind", None) is OperandKind.NUMBER:
+        value = getattr(operand, "value", None)
+        return int(value) if value is not None else None
+    return None
+
+
+def _collect_linear_predecessor_corridor(
+    flow_graph: object,
+    *,
+    anchor_serial: int,
+    stop_at_serial: int,
+    max_blocks: int = 16,
+) -> tuple[int, ...]:
+    """Return the unique non-dispatch predecessor chain ending at ``anchor``."""
+
+    path: list[int] = []
+    current = int(anchor_serial)
+    seen: set[int] = set()
+    get_block = getattr(flow_graph, "get_block", None)
+    if not callable(get_block):
+        return (current,)
+
+    while current not in seen and len(path) < max_blocks:
+        seen.add(current)
+        path.append(current)
+        block = get_block(current)
+        if block is None:
+            break
+        preds = [
+            int(pred)
+            for pred in tuple(getattr(block, "preds", ()) or ())
+            if int(pred) != int(stop_at_serial)
+        ]
+        if not preds:
+            break
+        if len(preds) != 1:
+            candidates = tuple(
+                _collect_linear_predecessor_corridor(
+                    flow_graph,
+                    anchor_serial=int(pred),
+                    stop_at_serial=int(stop_at_serial),
+                    max_blocks=max_blocks - len(path),
+                )
+                for pred in preds
+            )
+            prefix = max(candidates, key=len, default=())
+            return tuple(prefix + tuple(reversed(path)))
+        current = preds[0]
+    return tuple(reversed(path))
+
+
+def _alias_map_for_path(flow_graph: object, path_blocks: tuple[int, ...]) -> dict[int, int]:
+    aliases: dict[int, int] = {}
+    get_block = getattr(flow_graph, "get_block", None)
+    if not callable(get_block):
+        return aliases
+    for serial in path_blocks:
+        block = get_block(int(serial))
+        if block is None:
+            continue
+        for insn in tuple(getattr(block, "insn_snapshots", ()) or ()):
+            if getattr(insn, "kind", None) is not InsnKind.MOV:
+                continue
+            dst_reg = _reg_of(getattr(insn, "d", None))
+            if dst_reg is None:
+                continue
+            address = _stack_offset_from_address(getattr(insn, "l", None))
+            if address is None:
+                aliases.pop(dst_reg, None)
+            else:
+                aliases[dst_reg] = int(address)
+    return aliases
+
+
+def _store_target_offset(insn: object, aliases: dict[int, int]) -> int | None:
+    target = getattr(insn, "d", None)
+    offset = _stack_offset_from_address(target)
+    if offset is not None:
+        return int(offset)
+    reg = _reg_of(target)
+    if reg is not None:
+        return aliases.get(reg)
+    return None
+
+
+def _alias_offset_after_block_for_reg(
+    flow_graph: object,
+    *,
+    serial: int,
+    target_reg: int,
+    dispatcher_entry: int,
+    visited: frozenset[tuple[str, int, int]] = frozenset(),
+    max_blocks: int = 16,
+) -> int | None:
+    get_block = getattr(flow_graph, "get_block", None)
+    if not callable(get_block):
+        return None
+    key = ("after", int(serial), int(target_reg))
+    if key in visited or len(visited) >= max_blocks:
+        return None
+    block = get_block(int(serial))
+    if block is None:
+        return None
+
+    aliases: dict[int, int] = {}
+    entry_offset = _alias_offset_at_block_entry_for_reg(
+        flow_graph,
+        block=block,
+        target_reg=int(target_reg),
+        dispatcher_entry=int(dispatcher_entry),
+        visited=visited | {key},
+        max_blocks=max_blocks,
+    )
+    if entry_offset is not None:
+        aliases[int(target_reg)] = int(entry_offset)
+
+    for insn in tuple(getattr(block, "insn_snapshots", ()) or ()):
+        if getattr(insn, "kind", None) is not InsnKind.MOV:
+            continue
+        if _reg_of(getattr(insn, "d", None)) != int(target_reg):
+            continue
+        offset = _stack_offset_from_address(getattr(insn, "l", None))
+        if offset is None:
+            aliases.pop(int(target_reg), None)
+        else:
+            aliases[int(target_reg)] = int(offset)
+    return aliases.get(int(target_reg))
+
+
+def _alias_offset_at_block_entry_for_reg(
+    flow_graph: object,
+    *,
+    block: object,
+    target_reg: int,
+    dispatcher_entry: int,
+    visited: frozenset[tuple[str, int, int]] = frozenset(),
+    max_blocks: int = 16,
+) -> int | None:
+    block_serial = getattr(block, "serial", None)
+    if block_serial is None:
+        return None
+    key = ("entry", int(block_serial), int(target_reg))
+    if key in visited or len(visited) >= max_blocks:
+        return None
+    pred_serials = [
+        int(pred)
+        for pred in tuple(getattr(block, "preds", ()) or ())
+        if int(pred) != int(dispatcher_entry)
+    ]
+    if not pred_serials:
+        return None
+
+    offsets: list[int] = []
+    for pred_serial in pred_serials:
+        offset = _alias_offset_after_block_for_reg(
+            flow_graph,
+            serial=int(pred_serial),
+            target_reg=int(target_reg),
+            dispatcher_entry=int(dispatcher_entry),
+            visited=visited | {key},
+            max_blocks=max_blocks,
+        )
+        if offset is None:
+            return None
+        offsets.append(int(offset))
+    if offsets and len(set(offsets)) == 1:
+        return offsets[0]
+    return None
+
+
+def _incoming_alias_offset_for_reg(
+    flow_graph: object,
+    *,
+    block: object,
+    target_reg: int,
+    dispatcher_entry: int,
+) -> int | None:
+    block_serial = getattr(block, "serial", None)
+    if block_serial is not None:
+        same_block = _alias_map_for_path(flow_graph, (int(block_serial),)).get(
+            int(target_reg)
+        )
+        if same_block is not None:
+            return int(same_block)
+    return _alias_offset_at_block_entry_for_reg(
+        flow_graph,
+        block=block,
+        target_reg=int(target_reg),
+        dispatcher_entry=int(dispatcher_entry),
+    )
+
+
+def _expected_terminal_successor(
+    tail: object,
+    *,
+    terminal_state: int,
+    state_var_stkoff: int,
+    succs: tuple[int, ...],
+) -> int | None:
+    if len(succs) != 2 or not getattr(tail, "is_conditional_jump", False):
+        return None
+    left = getattr(tail, "l", None)
+    right = getattr(tail, "r", None)
+    left_state = int(state_var_stkoff) in tuple(getattr(left, "stack_refs", ()) or ())
+    right_state = int(state_var_stkoff) in tuple(getattr(right, "stack_refs", ()) or ())
+    left_value = _number_value(left)
+    right_value = _number_value(right)
+    compares_terminal = (
+        (left_state and right_value == int(terminal_state))
+        or (right_state and left_value == int(terminal_state))
+    )
+    if not compares_terminal:
+        return None
+    predicate = getattr(tail, "branch_predicate", None)
+    if predicate is PredicateKind.EQ:
+        return int(succs[1])
+    if predicate is PredicateKind.NE:
+        return int(succs[0])
+    return None
+
+
+def _return_block_for_terminal(
+    flow_graph: object,
+    *,
+    terminal_block_serial: int,
+    dispatcher_entry_serial: int,
+    terminal_state: int,
+    state_var_stkoff: int,
+) -> int | None:
+    get_block = getattr(flow_graph, "get_block", None)
+    block = get_block(int(terminal_block_serial)) if callable(get_block) else None
+    if block is None:
+        return None
+    succs = tuple(int(succ) for succ in getattr(block, "succs", ()) or ())
+    if int(dispatcher_entry_serial) not in succs:
+        return None
+    tail = getattr(block, "tail", None)
+    expected = _expected_terminal_successor(
+        tail,
+        terminal_state=int(terminal_state),
+        state_var_stkoff=int(state_var_stkoff),
+        succs=succs,
+    )
+    if expected is None:
+        return None
+    return_block = get_block(expected) if callable(get_block) else None
+    if return_block is None or getattr(return_block, "nsucc", len(getattr(return_block, "succs", ()))) != 0:
+        return None
+    return int(expected)
+
+
+def _prove_terminal_corridor_site(
+    flow_graph: object,
+    redirect: RedirectGoto,
+    *,
+    dispatcher_entry_serial: int,
+    state_var_stkoff: int,
+) -> tuple[DirectTerminalLoweringSite, TerminalCorridor, int] | None:
+    get_block = getattr(flow_graph, "get_block", None)
+    if not callable(get_block):
+        return None
+    terminal_serial = int(redirect.new_target)
+    terminal_block = get_block(terminal_serial)
+    if terminal_block is None:
+        return None
+    succs = tuple(int(succ) for succ in getattr(terminal_block, "succs", ()) or ())
+    if len(succs) != 2 or int(dispatcher_entry_serial) not in succs:
+        return None
+
+    path_blocks = _collect_linear_predecessor_corridor(
+        flow_graph,
+        anchor_serial=int(redirect.from_serial),
+        stop_at_serial=int(dispatcher_entry_serial),
+    )
+    aliases = _alias_map_for_path(flow_graph, path_blocks)
+    state_store_value: int | None = None
+    result_store_offsets: list[int] = []
+    for insn in tuple(getattr(terminal_block, "insn_snapshots", ()) or ()):
+        if getattr(insn, "kind", None) is not InsnKind.STORE:
+            continue
+        target = _store_target_offset(insn, aliases)
+        if target is None:
+            target_reg = _reg_of(getattr(insn, "d", None))
+            if target_reg is not None:
+                target = _incoming_alias_offset_for_reg(
+                    flow_graph,
+                    block=terminal_block,
+                    target_reg=int(target_reg),
+                    dispatcher_entry=int(dispatcher_entry_serial),
+                )
+        if target is None:
+            continue
+        if int(target) == int(state_var_stkoff):
+            state_store_value = _number_value(getattr(insn, "l", None))
+        else:
+            result_store_offsets.append(int(target))
+    if state_store_value is None or not result_store_offsets:
+        return None
+    return_block = _return_block_for_terminal(
+        flow_graph,
+        terminal_block_serial=terminal_serial,
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
+        terminal_state=int(state_store_value),
+        state_var_stkoff=int(state_var_stkoff),
+    )
+    if return_block is None:
+        return None
+    effects = (
+        TerminalCorridorEffect(
+            kind="store",
+            target="state_slot",
+            value=int(state_store_value),
+            payload={"stkoff": int(state_var_stkoff)},
+        ),
+        TerminalCorridorEffect(
+            kind="store",
+            target="result_slot",
+            payload={"stkoffs": tuple(sorted(set(result_store_offsets)))},
+        ),
+    )
+    corridor = TerminalCorridor(
+        initial_state=0,
+        terminal_state=int(state_store_value),
+        path_blocks=path_blocks + (terminal_serial,),
+        terminal_block=terminal_serial,
+        effects=effects,
+        enumerated_inputs_complete=True,
+        deterministic=True,
+        terminal_reachable=True,
+        provenance=("ollvm_terminal_corridor", "state_store_branch_to_stop"),
+    )
+    site = DirectTerminalLoweringSite(
+        anchor_serial=int(redirect.from_serial),
+        kind=DirectTerminalLoweringKind.CLONE_MATERIALIZER,
+        materializer_serials=tuple(
+            int(serial)
+            for serial in path_blocks + (terminal_serial,)
+            if int(serial) != int(redirect.from_serial)
+        ),
+        skip_terminal_control_tail=True,
+    )
+    return site, corridor, int(return_block)
+
+
+def plan_state_terminal_corridor_lowerings(
+    *,
+    flow_graph: object,
+    modifications: tuple[object, ...],
+    dispatcher_entry_serial: int,
+    state_var_stkoff: int,
+) -> DirectTerminalLoweringExecutionPlan:
+    """Replace proven dispatcher redirects with direct terminal materializers.
+
+    A site is accepted only when the redirected target stores the dispatcher state
+    slot to the terminal constant, stores a non-state result slot, and its own
+    state comparison routes that constant to the function STOP block.  The
+    ordinary ``RedirectGoto`` for that anchor is then removed by the caller and
+    replaced with a DTL group that clones only the materializer body.
+    """
+
+    supported: list[DirectTerminalLoweringSite] = []
+    corridors: list[TerminalCorridor] = []
+    return_blocks: set[int] = set()
+    for mod in modifications:
+        if not isinstance(mod, RedirectGoto):
+            continue
+        if int(mod.old_target) != int(dispatcher_entry_serial):
+            continue
+        proof = _prove_terminal_corridor_site(
+            flow_graph,
+            mod,
+            dispatcher_entry_serial=int(dispatcher_entry_serial),
+            state_var_stkoff=int(state_var_stkoff),
+        )
+        if proof is None:
+            continue
+        site, corridor, return_block = proof
+        supported.append(site)
+        corridors.append(corridor)
+        return_blocks.add(int(return_block))
+
+    modifications_out: tuple[object, ...] = ()
+    if supported and len(return_blocks) == 1:
+        (return_block,) = tuple(return_blocks)
+        modifications_out = (
+            DirectTerminalLoweringGroup(
+                shared_entry_serial=int(dispatcher_entry_serial),
+                return_block_serial=int(return_block),
+                suffix_serials=(int(return_block),),
+                sites=tuple(supported),
+                reason="ollvm_terminal_corridor_direct_lowering",
+            ),
+        )
+
+    return DirectTerminalLoweringExecutionPlan(
+        modifications=modifications_out,
+        owned_blocks=frozenset(
+            int(site.anchor_serial) for site in supported
+        ),
+        owned_edges=frozenset(
+            (int(site.anchor_serial), int(dispatcher_entry_serial))
+            for site in supported
+        ),
+        sites=tuple(supported),
+        supported_sites=tuple(supported),
+        corridors=tuple(corridors),
+    )
+
+
 __all__ = [
     "DirectTerminalLoweringExecutionPlan",
     "PrivateTerminalSuffixExecutionPlan",
     "plan_direct_terminal_lowering_execution",
     "plan_private_terminal_suffix_execution",
+    "plan_state_terminal_corridor_lowerings",
 ]
