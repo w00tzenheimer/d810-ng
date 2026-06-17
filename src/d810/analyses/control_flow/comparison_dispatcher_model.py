@@ -1,6 +1,6 @@
 """The shared comparison ``DispatcherModel`` (S2 — the 28-orphan fix).
 
-The four comparison dispatcher kinds (``BST`` / ``SWITCH`` / ``EQUALITY_CHAIN`` /
+The comparison dispatcher kinds (``SWITCH`` / ``EQUALITY_CHAIN`` /
 ``CONDITION_CHAIN``) differ only in *recovery*; once recovered they route a
 concrete state value identically: exact row first, then interval rows.  This
 collapses their divergent ``resolve_target`` bodies into ONE ``route``.
@@ -16,7 +16,7 @@ interval rows via :meth:`WrappedInterval.contains`, reconnecting them.
 The interval body intentionally MIRRORS the existing
 :func:`d810.analyses.control_flow.bst_model.resolve_target_via_bst` (exact map
 first, then ``handler_range_map`` lo/hi with the ``>= 0xFFFF0000`` degenerate-arc
-guard, then default), so the comparison model and the BST resolver agree.
+guard, then default), so the comparison model and the range resolver agree.
 
 Pure analyses-layer: no IDA, no Hex-Rays.  Structural match for the
 ``transforms.state_machine_unflatten.DispatcherModel`` Protocol (it does NOT
@@ -114,18 +114,18 @@ def _target_intervals_from_decision_dag(dag: object) -> "dict[int, IntervalSet]"
     return partition
 
 
-def _build_target_intervals(bst_evidence: object | None) -> "dict[int, IntervalSet]":
+def _build_target_intervals(range_evidence: object | None) -> "dict[int, IntervalSet]":
     """Complete per-handler partition for the :class:`ComparisonDispatcherModel`.
 
     Prefers the signedness-aware :class:`DecisionDag` (``route_predicate``
     :class:`IntervalSet`) when the recovery attached one with comparison nodes;
     falls back to the legacy unsigned :class:`IntervalDispatcher`
-    (``bst_evidence.dispatcher``) only when no decision-DAG is available.
+    (``range_evidence.dispatcher``) only when no decision-DAG is available.
     """
-    dag = getattr(bst_evidence, "decision_dag", None)
+    dag = getattr(range_evidence, "decision_dag", None)
     if dag is not None and getattr(dag, "nodes", None):
         return _target_intervals_from_decision_dag(dag)
-    return build_partition_from_dispatcher(getattr(bst_evidence, "dispatcher", None))
+    return build_partition_from_dispatcher(getattr(range_evidence, "dispatcher", None))
 
 
 def _range_to_intervals(
@@ -231,13 +231,13 @@ def route_via_interval_sets(
 
 @dataclass(frozen=True, slots=True)
 class ComparisonDispatcherModel:
-    """One ``route`` body shared by the four comparison dispatcher kinds.
+    """One ``route`` body shared by comparison dispatcher kinds.
 
     Args:
         dispatch_map: exact ``state_const -> handler`` rows (the substance kept
             from :class:`StateDispatcherMap`).
         handler_range_map: optional ``handler_serial -> (lo, hi)`` inclusive
-            interval rows (the BST/interval evidence).  Mirrors
+            interval rows (the range/interval evidence).  Mirrors
             ``BSTAnalysisResult.handler_range_map``.
         default_target_block: optional catch-all handler when nothing else
             matches (the dispatcher's default arm).
@@ -343,22 +343,22 @@ class ComparisonDispatcherModel:
         cls,
         dispatch_map: StateDispatcherMap,
         *,
-        bst_evidence: object | None = None,
+        range_evidence: object | None = None,
         block_ea: Mapping[int, int] | None = None,
     ) -> "ComparisonDispatcherModel":
-        """Build from a :class:`StateDispatcherMap` plus optional BST/interval evidence.
+        """Build from a :class:`StateDispatcherMap` plus optional range evidence.
 
-        ``bst_evidence`` is duck-typed on ``BSTAnalysisResult`` (``handler_range_map``
+        ``range_evidence`` is duck-typed on ``BSTAnalysisResult`` (``handler_range_map``
         / ``default_block_serial``) so this stays portable (no live-IDA import).
         Absent the evidence the model is exact-only — byte-identical to the old
         ``resolve_target`` behaviour, so legacy callers see no change.
         """
         handler_range_map: Mapping[int, tuple[Optional[int], Optional[int]]] = (
-            getattr(bst_evidence, "handler_range_map", None) or {}
+            getattr(range_evidence, "handler_range_map", None) or {}
         )
         default_target = (
-            getattr(bst_evidence, "default_block_serial", None)
-            if bst_evidence is not None
+            getattr(range_evidence, "default_block_serial", None)
+            if range_evidence is not None
             else dispatch_map.default_target_block
         )
         return cls(
@@ -366,5 +366,5 @@ class ComparisonDispatcherModel:
             handler_range_map=dict(handler_range_map),
             default_target_block=default_target,
             block_ea=dict(block_ea or {}),
-            target_intervals=_build_target_intervals(bst_evidence),
+            target_intervals=_build_target_intervals(range_evidence),
         )

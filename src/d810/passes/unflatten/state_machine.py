@@ -111,7 +111,7 @@ _STATIC_BRANCH_KINDS = frozenset(
 )
 
 
-def _build_comparison_model(recovery, bst_evidence):
+def _build_comparison_model(recovery, range_evidence):
     """Build a ``ComparisonDispatcherModel`` when the kind is a comparison router.
 
     Returns ``None`` for non-comparison kinds (INDIRECT_TABLE / UNKNOWN) or when no
@@ -124,7 +124,7 @@ def _build_comparison_model(recovery, bst_evidence):
     if router_kind not in _COMPARISON_ROUTER_KINDS:
         return None
     return ComparisonDispatcherModel.from_recovery(
-        dispatch_map, bst_evidence=bst_evidence
+        dispatch_map, range_evidence=range_evidence
     )
 
 
@@ -165,7 +165,7 @@ def _make_live_block_for(live_function):
     return _live_block_for
 
 
-def _resolve_initial_state(bst_evidence, recovery) -> int | None:
+def _resolve_initial_state(range_evidence, recovery) -> int | None:
     """Resolve the dispatcher's initial state for the entry bridge.
 
     The recovered ``StateDispatcherMap.initial_state`` is preferred whenever it is
@@ -173,28 +173,28 @@ def _resolve_initial_state(bst_evidence, recovery) -> int | None:
     onto the map -- via the structural indirect-table recovery for INDIRECT_TABLE
     (ticket llr-m9r4) AND via entry-dominance for equality-chain / switch kinds
     (ticket llr-mra1). The latter corrects the SPURIOUS mid-chain value the live
-    BST evidence supplies through the backwards ``_find_pre_header`` "fewest-npred"
+    range evidence supplies through the backwards ``_find_pre_header`` "fewest-npred"
     heuristic (which can pick an ``m_goto`` back-edge over the real ``m_mov``
-    prologue). The BST value is only used as a fall-back when no map value was
+    prologue). The range value is only used as a fall-back when no map value was
     recovered. Address-agnostic -- every value is read from a recovered structure,
     never hardcoded. ``emit_minimal_unflatten`` still applies its own prologue-fold
     fallback when both are None.
     """
     dmap = getattr(recovery, "dispatch_map", None) if recovery is not None else None
     map_initial = getattr(dmap, "initial_state", None) if dmap is not None else None
-    # Prefer the recovered map's initial_state. For INDIRECT_TABLE the BST analyzer
-    # emits a spurious folded inner state; for equality-chain the BST emits a
+    # Prefer the recovered map's initial_state. For INDIRECT_TABLE the range analyzer
+    # emits a spurious folded inner state; for equality-chain it emits a
     # spurious mid-chain state -- in both cases the map carries the structurally
     # recovered true prologue state, so it wins when present.
     if map_initial is not None:
         return int(map_initial)
-    bst_initial = getattr(bst_evidence, "initial_state", None)
-    if bst_initial is not None:
-        return int(bst_initial)
+    range_initial = getattr(range_evidence, "initial_state", None)
+    if range_initial is not None:
+        return int(range_initial)
     return None
 
 
-def _entry_bridge_requires_witness(bst_evidence, dmap) -> bool:
+def _entry_bridge_requires_witness(dmap) -> bool:
     """Return whether entry shortcutting needs an exact branch witness.
 
     Conditional-chain maps are the only shape with production per-compare
@@ -202,10 +202,9 @@ def _entry_bridge_requires_witness(bst_evidence, dmap) -> bool:
     rows, not proof, so they must go through the same witness/liveness policy:
     static witness if the current CFG can prove it, otherwise the no-provider
     exit-path liveness fallback.  Other comparison shapes, including
-    BST/interval routing, stay on the legacy endpoint shortcut path until they
+    range/interval routing, stay on the legacy endpoint shortcut path until they
     grow explicit witness providers of their own.
     """
-    del bst_evidence
     if getattr(dmap, "router_kind", None) is RouterKind.CONDITION_CHAIN:
         rows = tuple(getattr(dmap, "rows", ()) or ())
         branch_kinds = {str(getattr(row, "branch_kind", "")) for row in rows}
@@ -301,7 +300,7 @@ class RecoverDispatcher(PipelinePass):
             )
         _publish(context, self.name, recovery)
         # S2: build the consolidated ComparisonDispatcherModel for comparison
-        # router kinds, folding in the pristine BST/interval evidence so
+        # router kinds, folding in the pristine range/interval evidence so
         # interval-routed next-states resolve via WrappedInterval.contains. The
         # model is published for RecoverStateTransitions to route through; None
         # for non-comparison kinds (caller falls back to exact-only).
@@ -369,7 +368,7 @@ class LowerStateMachine(PipelinePass):
 
     The dispatcher router is **injectable** (ticket llr-oq8v): pass a custom
     ``resolvers`` chain and/or a ``configured_kind`` to pin the router shape; both
-    default to the standard range-bst + exact-map detection chain, so the argless
+    default to the standard condition-chain range + exact-map detection chain, so the argless
     factory the pass driver invokes (``spec.pass_factory()``) is unchanged. To pin a
     kind per family, register ``lambda: LowerStateMachine(configured_kind=...)``.
     """
@@ -378,13 +377,13 @@ class LowerStateMachine(PipelinePass):
     resolvers: tuple = field(default_factory=default_resolvers)
     configured_kind: RouterKind | None = None
 
-    def _resolve_router(self, recovery, bst_evidence, dispatcher_entry: int | None):
+    def _resolve_router(self, recovery, range_evidence, dispatcher_entry: int | None):
         """Adapt the recovered evidence into a router via the injectable chain.
 
         Router kind is configured AND/OR detected: ``self._configured_kind`` pins a
         provider, else detection ranks by handler coverage (the pre-mutation
-        comparison-BST is the default; the recovered exact ``state -> handler`` map
-        wins only when it strictly out-covers a COLLAPSED bst, e.g. an OLLVM -fla
+        condition-chain range evidence is the default; the recovered exact ``state -> handler`` map
+        wins only when it strictly out-covers a COLLAPSED range router, e.g. an OLLVM -fla
         equality chain degraded to ``[0,2^32)->dispatcher_entry``). The provider
         chain + ranking live in
         :mod:`d810.analyses.control_flow.router_resolver`.
@@ -392,9 +391,9 @@ class LowerStateMachine(PipelinePass):
         dmap = getattr(recovery, "dispatch_map", None) if recovery is not None else None
         has_rows = dmap is not None and getattr(dmap, "rows", None)
         ctx = RouterResolutionContext(
-            bst_router=(
-                getattr(bst_evidence, "dispatcher", None)
-                if bst_evidence is not None
+            condition_chain_router=(
+                getattr(range_evidence, "dispatcher", None)
+                if range_evidence is not None
                 else None
             ),
             state_to_handler=dmap.state_to_handler() if has_rows else None,
@@ -415,7 +414,7 @@ class LowerStateMachine(PipelinePass):
         dispatcher_entry = getattr(recovery, "dispatcher_block_serial", None)
         state_var_stkoff = getattr(recovery, "state_var_stkoff", None)
         live_function = getattr(context.source, "live_source", None)
-        bst_evidence = _analysis(context, "bst_evidence")
+        range_evidence = _analysis(context, "bst_evidence")
 
         # Direct interval-set unflatten (epic d81-jfg2): the interval-set
         # dispatcher (state -> handler) + per-handler next-state recovery IS the
@@ -425,16 +424,16 @@ class LowerStateMachine(PipelinePass):
         # across shared blocks and mis-resolved conditional handlers (e.g.
         # 0x610BB4D9 collapsed to the exit). The rich StateDag metadata can be
         # re-added later if needed; the redirect output does not require it.
-        dispatcher = self._resolve_router(recovery, bst_evidence, dispatcher_entry)
+        dispatcher = self._resolve_router(recovery, range_evidence, dispatcher_entry)
         if (
             dispatcher is not None
             and dispatcher_entry is not None
             and state_var_stkoff is not None
         ):
-            # Initial state for the entry bridge: prefer the BST evidence (comparison /
+            # Initial state for the entry bridge: prefer the range evidence (comparison /
             # switch kinds), fall back to the recovered StateDispatcherMap.initial_state
-            # for the INDIRECT_TABLE kind where bst_evidence is None (ticket llr-16jl).
-            initial_state = _resolve_initial_state(bst_evidence, recovery)
+            # for the INDIRECT_TABLE kind where range evidence is None (ticket llr-16jl).
+            initial_state = _resolve_initial_state(range_evidence, recovery)
             dmap = getattr(recovery, "dispatch_map", None)
             # INDIRECT-only emit gates (ticket llr-m9r4): the terminal-tail recovery
             # and the shared-EXIT redirect veto are load-bearing for the Tigress
@@ -448,8 +447,8 @@ class LowerStateMachine(PipelinePass):
             )
             if logger.debug_on:
                 logger.debug(
-                    "unflat initial_state thread: bst=%s map=%s resolved=%s kind=%s",
-                    getattr(bst_evidence, "initial_state", None),
+                    "unflat initial_state thread: range=%s map=%s resolved=%s kind=%s",
+                    getattr(range_evidence, "initial_state", None),
                     getattr(dmap, "initial_state", None) if dmap is not None else None,
                     initial_state,
                     getattr(dmap, "router_kind", None) if dmap is not None else None,
@@ -468,9 +467,7 @@ class LowerStateMachine(PipelinePass):
             # OLLVM ``var_18 = var_378`` accumulator copies) is dropped. Gated
             # D810_USE_DEF_VETO (default OFF) inside the filter -> byte-identical default.
             dmap = getattr(recovery, "dispatch_map", None) if recovery is not None else None
-            entry_bridge_requires_witness = _entry_bridge_requires_witness(
-                bst_evidence, dmap
-            )
+            entry_bridge_requires_witness = _entry_bridge_requires_witness(dmap)
             branch_witness_map = (
                 build_static_equality_chain_witness_map(context.graph, dmap)
                 if (
@@ -495,7 +492,7 @@ class LowerStateMachine(PipelinePass):
                 dispatcher,
                 state_var_stkoff=int(state_var_stkoff),
                 dispatcher_entry_serial=int(dispatcher_entry),
-                pre_header_serial=getattr(bst_evidence, "pre_header_serial", None),
+                pre_header_serial=getattr(range_evidence, "pre_header_serial", None),
                 initial_state=initial_state,
                 is_indirect=is_indirect,
                 fact_view=getattr(context, "facts", None),

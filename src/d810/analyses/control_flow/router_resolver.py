@@ -15,9 +15,10 @@ produces ranked evidence, ``resolve`` materialises the chosen router.  New provi
 (switch-table, the authoritative concolic fixpoint) drop in without touching the
 selector.
 
-Default detection (no ``configured_kind``) reproduces the old coverage rule -- bst is
-the default, the exact map wins only when it strictly out-covers bst -- so wiring it in
-is behaviour-neutral on the current corpus; ``configured_kind`` is the new override.
+Default detection (no ``configured_kind``) reproduces the old coverage rule -- range
+condition-chain evidence is the default, and the exact map wins only when it strictly
+out-covers that range evidence -- so wiring it in is behaviour-neutral on the current
+corpus; ``configured_kind`` is the new override.
 
 Portable: operates on already-recovered router objects + the exact ``state -> handler``
 map; no IDA, no z3.
@@ -35,7 +36,7 @@ from d810.capabilities.dispatcher import RouterKind
 __all__ = [
     "RouterResolutionContext",
     "DispatcherRouterResolver",
-    "BstRangeRouterResolver",
+    "ConditionChainRangeRouterResolver",
     "ExactMapRouterResolver",
     "handler_coverage",
     "select_router",
@@ -43,9 +44,9 @@ __all__ = [
 ]
 
 #: Per-provider tie-break priority (the ``specificity`` of the candidate).  Higher =
-#: preferred when handler coverage is equal.  bst > exact reproduces the old rule's
-#: "ties keep bst_evidence.dispatcher".
-_PRIORITY_BST = 10
+#: preferred when handler coverage is equal.  condition-chain range > exact
+#: reproduces the old rule's "ties keep the interval dispatcher".
+_PRIORITY_CONDITION_CHAIN_RANGE = 10
 _PRIORITY_EXACT = 5
 
 
@@ -53,12 +54,12 @@ _PRIORITY_EXACT = 5
 class RouterResolutionContext:
     """The already-recovered inputs a router resolver ranks over (portable).
 
-    ``bst_router`` is the pre-mutation comparison-BST dispatcher object (or ``None``);
-    ``state_to_handler`` / ``default_target`` are the exact recovered map; all serials
-    are plain ints so this stays IDA-free.
+    ``condition_chain_router`` is the pre-mutation range/interval dispatcher object
+    (or ``None``); ``state_to_handler`` / ``default_target`` are the exact recovered
+    map; all serials are plain ints so this stays IDA-free.
     """
 
-    bst_router: object | None = None
+    condition_chain_router: object | None = None
     state_to_handler: Mapping[int, int] | None = None
     default_target: int | None = None
     dispatcher_entry: int | None = None
@@ -111,34 +112,34 @@ class DispatcherRouterResolver(Protocol):
 
 
 @dataclass(frozen=True)
-class BstRangeRouterResolver:
-    """The pre-mutation comparison-BST dispatcher (carries wide RANGE rows + default)."""
+class ConditionChainRangeRouterResolver:
+    """The pre-mutation condition-chain router (carries wide RANGE rows + default)."""
 
-    name: str = "bst_range"
+    name: str = "condition_chain_range"
 
     def applies_to(self, ctx: RouterResolutionContext) -> ResolverCandidate | None:
-        if ctx.bst_router is None:
+        if ctx.condition_chain_router is None:
             return None
-        cov = handler_coverage(ctx.bst_router, ctx.dispatcher_entry)
+        cov = handler_coverage(ctx.condition_chain_router, ctx.dispatcher_entry)
         return ResolverCandidate(
             resolver_name=self.name,
             router_kind=RouterKind.CONDITION_CHAIN,
             confidence=float(cov),
-            specificity=_PRIORITY_BST,
-            reasons=("range-bst evidence", f"coverage={cov}"),
+            specificity=_PRIORITY_CONDITION_CHAIN_RANGE,
+            reasons=("condition-chain range evidence", f"coverage={cov}"),
         )
 
     def resolve(self, ctx: RouterResolutionContext) -> object | None:
-        return ctx.bst_router
+        return ctx.condition_chain_router
 
 
 @dataclass(frozen=True)
 class ExactMapRouterResolver:
     """The recovered exact ``state -> handler`` map as single-value interval rows.
 
-    Authoritative when the comparison tree COLLAPSED (e.g. an OLLVM -fla equality
+    Authoritative when the condition-chain range evidence COLLAPSED (e.g. an OLLVM -fla equality
     chain degrading to ``[0,2^32)->entry``): there the exact map strictly out-covers
-    the collapsed bst.  ``RouterKind`` is ``SWITCH`` when a default is present (switch
+    the collapsed range router.  ``RouterKind`` is ``SWITCH`` when a default is present (switch
     table) else ``EQUALITY_CHAIN``.
     """
 
@@ -168,8 +169,8 @@ class ExactMapRouterResolver:
 
 
 def default_resolvers() -> tuple[DispatcherRouterResolver, ...]:
-    """The unflatten provider set: range-bst (default) + exact-map (collapse authority)."""
-    return (BstRangeRouterResolver(), ExactMapRouterResolver())
+    """The unflatten provider set: condition-chain range + exact-map authority."""
+    return (ConditionChainRangeRouterResolver(), ExactMapRouterResolver())
 
 
 def select_router(

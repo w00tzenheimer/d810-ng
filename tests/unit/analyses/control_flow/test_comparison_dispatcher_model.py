@@ -159,14 +159,14 @@ def test_model_resolve_target_unwraps_block():
     assert model.resolve_target(_HI + 1) is None
 
 
-def test_from_recovery_threads_bst_evidence():
+def test_from_recovery_threads_range_evidence():
     class _Evidence:
         handler_range_map = {_BLK52: (_LO, _HI)}
         default_block_serial = None
 
     recovery_map = _map(rows=[_row(0xAA, 7)])
     model = ComparisonDispatcherModel.from_recovery(
-        recovery_map, bst_evidence=_Evidence()
+        recovery_map, range_evidence=_Evidence()
     )
     # exact row still works
     assert model.resolve_target(0xAA) == 7
@@ -176,7 +176,7 @@ def test_from_recovery_threads_bst_evidence():
 
 def test_from_recovery_exact_only_without_evidence_matches_legacy():
     recovery_map = _map(rows=[_row(0xAA, 7)])
-    model = ComparisonDispatcherModel.from_recovery(recovery_map, bst_evidence=None)
+    model = ComparisonDispatcherModel.from_recovery(recovery_map, range_evidence=None)
     # byte-identical to the exact-only StateDispatcherMap.resolve_target
     assert model.resolve_target(0xAA) == recovery_map.resolve_target(0xAA) == 7
     assert model.resolve_target(_STATE) is None
@@ -261,7 +261,7 @@ def test_from_recovery_multi_interval_handler_resolves_every_range():
             self.dispatcher = self.dispatcher_attr
 
     model = ComparisonDispatcherModel.from_recovery(
-        _map(), bst_evidence=_Evidence()
+        _map(), range_evidence=_Evidence()
     )
     # Range A (the one the lossy map kept) AND range B (the one it dropped)
     # both resolve to blk 52 -- the multi-interval completeness fix.
