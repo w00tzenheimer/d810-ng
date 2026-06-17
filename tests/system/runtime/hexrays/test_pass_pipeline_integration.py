@@ -1,50 +1,35 @@
-"""Unit tests for PassPipeline feature-flag integration.
+"""Tests for PassPipeline feature-flag integration.
 
 Tests verify:
-- PassPipeline is constructed with the correct 4 cleanup transform when flag is enabled
+- PassPipeline is constructed with the safe cleanup transforms when enabled
 - PassPipeline is NOT constructed when flag is disabled (zero overhead)
 - HexraysDecompilationHook source accepts pass_pipeline kwarg defaulting to None
-- _build_pass_pipeline() returns the right pass types
+- the portable spec and Hex-Rays adapter return the right pass types
 
 These tests avoid importing IDA-dependent modules (ida_hexrays, d810.manager,
-d810.hexrays.hooks.hexrays_hooks). Construction logic is tested through a standalone
-factory that mirrors what D810Manager._build_pass_pipeline() does.
+d810.hexrays.hooks.hexrays_hooks).
 """
 from __future__ import annotations
 
-import pytest
-
 from d810.passes.pipeline import FlowGraphTransformPipeline
-from d810.transforms.simplify_identical_branch import SimplifyIdenticalBranchPass
-from d810.transforms.dead_block_elimination import DeadBlockEliminationPass
+from d810.passes.pass_pipeline_factory import (
+    build_pass_pipeline_spec,
+    pass_pipeline_spec_from_config,
+)
+from d810.manager.hexrays_pass_pipeline import build_hexrays_flowgraph_pipeline
 from d810.hexrays.mutation.transform.goto_chain_removal import GotoChainRemovalPass
-from d810.hexrays.mutation.transform.block_merge import BlockMergeTransform
-from d810.transforms.opaque_jump_fixer import OpaqueJumpFixerPass
-from d810.transforms.fake_jump_fixer import FakeJumpFixerPass
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+from d810.transforms.simplify_identical_branch import SimplifyIdenticalBranchPass
 
 
 # ---------------------------------------------------------------------------
-# Factory: mirrors D810Manager._build_pass_pipeline() without IDA imports
+# Factory: Hex-Rays adapter from portable spec
 # ---------------------------------------------------------------------------
 
 def build_cleanup_pipeline() -> FlowGraphTransformPipeline:
-    """Construct the PassPipeline with the 4 cleanup transform.
-
-    This is the same logic as D810Manager._build_pass_pipeline(), extracted
-    here so unit tests can exercise it without importing ida_hexrays.
-
-    OpaqueJumpFixerPass and FakeJumpFixerPass are intentionally excluded:
-    they require pre-computed fix dicts from the legacy analysis side.
-    """
-    backend = IDAIRTranslator()
-    passes = [
-        SimplifyIdenticalBranchPass(),
-        DeadBlockEliminationPass(),
-        GotoChainRemovalPass(),
-        BlockMergeTransform(),
-    ]
-    return FlowGraphTransformPipeline(backend, passes)
+    """Construct the Hex-Rays PassPipeline from the portable cleanup spec."""
+    spec = build_pass_pipeline_spec(include_default_cleanup=True)
+    return build_hexrays_flowgraph_pipeline(spec)
 
 
 # ---------------------------------------------------------------------------
@@ -53,17 +38,17 @@ def build_cleanup_pipeline() -> FlowGraphTransformPipeline:
 
 
 class TestBuildPassPipeline:
-    """Tests for the PassPipeline factory (mirrors D810Manager._build_pass_pipeline)."""
+    """Tests for the PassPipeline factory."""
 
     def test_returns_pass_pipeline_instance(self):
         """Factory returns a PassPipeline."""
         pipeline = build_cleanup_pipeline()
         assert isinstance(pipeline, FlowGraphTransformPipeline)
 
-    def test_pipeline_has_four_passes(self):
-        """PassPipeline should contain exactly 4 cleanup transform."""
+    def test_pipeline_has_two_passes(self):
+        """PassPipeline should contain exactly 2 safe cleanup transforms."""
         pipeline = build_cleanup_pipeline()
-        assert len(pipeline.passes) == 4
+        assert len(pipeline.passes) == 2
 
     def test_pipeline_contains_simplify_identical_branch(self):
         """SimplifyIdenticalBranchPass must be included."""
@@ -71,35 +56,11 @@ class TestBuildPassPipeline:
         pass_types = [type(p) for p in pipeline.passes]
         assert SimplifyIdenticalBranchPass in pass_types
 
-    def test_pipeline_contains_dead_block_elimination(self):
-        """DeadBlockEliminationPass must be included."""
-        pipeline = build_cleanup_pipeline()
-        pass_types = [type(p) for p in pipeline.passes]
-        assert DeadBlockEliminationPass in pass_types
-
     def test_pipeline_contains_goto_chain_removal(self):
         """GotoChainRemovalPass must be included."""
         pipeline = build_cleanup_pipeline()
         pass_types = [type(p) for p in pipeline.passes]
         assert GotoChainRemovalPass in pass_types
-
-    def test_pipeline_contains_block_merge(self):
-        """BlockMergeTransform must be included."""
-        pipeline = build_cleanup_pipeline()
-        pass_types = [type(p) for p in pipeline.passes]
-        assert BlockMergeTransform in pass_types
-
-    def test_pipeline_excludes_opaque_jump_fixer(self):
-        """OpaqueJumpFixerPass must NOT be included (requires pre-computed fixes)."""
-        pipeline = build_cleanup_pipeline()
-        pass_types = [type(p) for p in pipeline.passes]
-        assert OpaqueJumpFixerPass not in pass_types
-
-    def test_pipeline_excludes_fake_jump_fixer(self):
-        """FakeJumpFixerPass must NOT be included (requires pre-computed fixes)."""
-        pipeline = build_cleanup_pipeline()
-        pass_types = [type(p) for p in pipeline.passes]
-        assert FakeJumpFixerPass not in pass_types
 
     def test_backend_is_ir_translator(self):
         """PassPipeline should use IDAIRTranslator."""
@@ -107,13 +68,11 @@ class TestBuildPassPipeline:
         assert isinstance(pipeline.backend, IDAIRTranslator)
 
     def test_pipeline_repr_contains_pass_names(self):
-        """PassPipeline repr should name all 4 transform."""
+        """PassPipeline repr should name both safe cleanup transforms."""
         pipeline = build_cleanup_pipeline()
         r = repr(pipeline)
         assert "simplify_identical_branch" in r
-        assert "dead_block_elimination" in r
         assert "goto_chain_removal" in r
-        assert "block_merge" in r
 
     def test_pass_order_is_stable(self):
         """Passes should appear in a deterministic order across calls."""
@@ -145,26 +104,12 @@ class TestFeatureFlagDisabled:
     def test_gate_logic_does_not_call_factory_when_disabled(self):
         """Simulate the D810Manager.start() gate: factory not called when flag is False."""
         config = {"enable_pass_pipeline": False}
-        build_called = []
-
-        def _fake_build():
-            build_called.append(True)
-            return build_cleanup_pipeline()
-
-        _pass_pipeline = None
-        if config.get("enable_pass_pipeline", False):
-            _pass_pipeline = _fake_build()
-
-        assert not build_called, "_build_pass_pipeline must not be called when flag is False"
-        assert _pass_pipeline is None
+        assert pass_pipeline_spec_from_config(config, environ={}) is None
 
     def test_gate_logic_yields_none_when_disabled(self):
         """Gate yields None pipeline when flag is False, matching D810Manager.start()."""
         config = {"enable_pass_pipeline": False}
-        _pass_pipeline = None
-        if config.get("enable_pass_pipeline", False):
-            _pass_pipeline = build_cleanup_pipeline()
-        assert _pass_pipeline is None
+        assert pass_pipeline_spec_from_config(config, environ={}) is None
 
 
 # ---------------------------------------------------------------------------
@@ -183,20 +128,20 @@ class TestFeatureFlagEnabled:
     def test_gate_logic_calls_factory_when_enabled(self):
         """Simulate the D810Manager.start() gate: factory IS called when flag is True."""
         config = {"enable_pass_pipeline": True}
-        _pass_pipeline = None
-        if config.get("enable_pass_pipeline", False):
-            _pass_pipeline = build_cleanup_pipeline()
+        spec = pass_pipeline_spec_from_config(config, environ={})
+        assert spec is not None
+        _pass_pipeline = build_hexrays_flowgraph_pipeline(spec)
         assert _pass_pipeline is not None
         assert isinstance(_pass_pipeline, FlowGraphTransformPipeline)
 
-    def test_gate_logic_yields_pipeline_with_four_passes(self):
-        """Gate yields a pipeline with 4 transform when flag is True."""
+    def test_gate_logic_yields_pipeline_with_two_passes(self):
+        """Gate yields a pipeline with 2 transforms when flag is True."""
         config = {"enable_pass_pipeline": True}
-        _pass_pipeline = None
-        if config.get("enable_pass_pipeline", False):
-            _pass_pipeline = build_cleanup_pipeline()
+        spec = pass_pipeline_spec_from_config(config, environ={})
+        assert spec is not None
+        _pass_pipeline = build_hexrays_flowgraph_pipeline(spec)
         assert _pass_pipeline is not None
-        assert len(_pass_pipeline.passes) == 4
+        assert len(_pass_pipeline.passes) == 2
 
 
 # ---------------------------------------------------------------------------

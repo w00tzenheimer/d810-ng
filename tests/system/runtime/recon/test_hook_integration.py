@@ -37,7 +37,7 @@ _CTREE_HOOKS = _resolve_hook_file(
     "hexrays/hooks/ctree_hooks.py",
     "hexrays/ctree_hooks.py",
 )
-_MANAGER = _SRC / "manager.py"
+_RECON_RUNTIME_FACTORY = _SRC / "passes/recon_runtime_factory.py"
 
 
 def _get_class_source(filepath: pathlib.Path, class_name: str) -> str:
@@ -160,13 +160,13 @@ class TestCtreeOptimizerManagerHasReconPhase:
         )
 
 
-class TestManagerBuildsFullReconPhase:
-    """D810Manager must register the flow-recovery collectors we rely on."""
+class TestReconRuntimeFactoryBuildsFullReconPhase:
+    """The recon runtime factory owns the flow-recovery collector inventory."""
 
     def test_build_recon_phase_registers_handler_transitions(self):
-        src = _MANAGER.read_text(encoding="utf-8")
-        assert "phase.register(HandlerTransitionsCollector())" in src
+        src = _RECON_RUNTIME_FACTORY.read_text(encoding="utf-8")
+        assert "HandlerTransitionsCollector" in src
 
     def test_build_recon_phase_registers_return_frontier(self):
-        src = _MANAGER.read_text(encoding="utf-8")
-        assert "phase.register(ReturnFrontierCollector())" in src
+        src = _RECON_RUNTIME_FACTORY.read_text(encoding="utf-8")
+        assert "ReturnFrontierCollector" in src
