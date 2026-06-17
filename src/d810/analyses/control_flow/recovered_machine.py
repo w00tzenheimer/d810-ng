@@ -63,7 +63,7 @@ class MachineRow:
     dispatcher_block: int
     compare_block: int | None = None
     branch_kind: str = ""
-    source: RouterKind = RouterKind.UNKNOWN
+    router_kind: RouterKind = RouterKind.UNKNOWN
     confidence: float = 1.0
     row_kind: str = "handler"
     context: tuple[int, ...] = ()
@@ -155,8 +155,9 @@ class RecoveredMachine:
 
     ``rows`` are the resolved ``state -> handler`` edges; ``transitions`` are the
     forking edges; ``contexts`` is the tuple of k-tuples in play (k=1 today, so a
-    tuple of 1-tuples or ``()``). ``source`` + ``soundness`` + ``confidence`` +
-    ``provenance`` are the policy/diagnostic envelope the P4 orchestrator ranks on.
+    tuple of 1-tuples or ``()``). ``router_kind`` + ``soundness`` +
+    ``confidence`` + ``provenance`` are the policy/diagnostic envelope the P4
+    orchestrator ranks on.
     """
 
     rows: tuple[MachineRow, ...]
@@ -168,7 +169,7 @@ class RecoveredMachine:
     state_var_lvar_idx: int | None = None
     dispatcher_entry_block: int | None = None
     dispatcher_blocks: frozenset[int] = frozenset()
-    source: RouterKind = RouterKind.UNKNOWN
+    router_kind: RouterKind = RouterKind.UNKNOWN
     soundness: Soundness = Soundness.PATTERN
     confidence: float = 1.0
     provenance: tuple[str, ...] = ()
@@ -200,7 +201,7 @@ class RecoveredMachine:
                 dispatcher_block=r.dispatcher_block,
                 compare_block=r.compare_block,
                 branch_kind=r.branch_kind,
-                source=r.source,
+                router_kind=r.router_kind,
                 confidence=r.confidence,
                 row_kind=r.row_kind,
                 context=(),                # k=1 raw state
@@ -220,7 +221,7 @@ class RecoveredMachine:
             state_var_lvar_idx=dmap.state_var_lvar_idx,
             dispatcher_entry_block=dmap.dispatcher_entry_block,
             dispatcher_blocks=dmap.dispatcher_blocks,
-            source=dmap.source,
+            router_kind=dmap.router_kind,
             soundness=soundness,
             confidence=confidence,
             provenance=provenance,
@@ -244,7 +245,7 @@ class RecoveredMachine:
                 dispatcher_block=r.dispatcher_block,
                 compare_block=r.compare_block,
                 branch_kind=r.branch_kind,
-                source=r.source,
+                router_kind=r.router_kind,
                 confidence=r.confidence,
                 row_kind=r.row_kind,
                 payload=dict(r.payload),
@@ -262,7 +263,7 @@ class RecoveredMachine:
             dispatcher_blocks=self.dispatcher_blocks,
             state_var_stkoff=self.state_var_stkoff,
             state_var_lvar_idx=self.state_var_lvar_idx,
-            source=self.source,
+            router_kind=self.router_kind,
             initial_state=initial_state,
             default_target_block=self.default_target_block,
             default_row_kind=self.default_row_kind,

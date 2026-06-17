@@ -32,7 +32,7 @@ def _make_dispatcher_map() -> StateDispatcherMap:
         dispatcher_block=1,
         compare_block=2,
         branch_kind="jz",
-        source=RouterKind.CONDITION_CHAIN,
+        router_kind=RouterKind.CONDITION_CHAIN,
     )
     return StateDispatcherMap(
         rows=(row,),
@@ -40,7 +40,7 @@ def _make_dispatcher_map() -> StateDispatcherMap:
         dispatcher_blocks=frozenset({1}),
         state_var_stkoff=0x3C,
         state_var_lvar_idx=None,
-        source=RouterKind.CONDITION_CHAIN,
+        router_kind=RouterKind.CONDITION_CHAIN,
     )
 
 

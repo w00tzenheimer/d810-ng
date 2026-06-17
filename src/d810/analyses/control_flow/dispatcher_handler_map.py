@@ -17,14 +17,15 @@ class DispatcherHandlerMap:
     ``handler_state_map`` keys are block serials where handler bodies begin.
     ``state_var_stkoff`` identifies which stack variable carries the dispatcher state.
     ``dispatcher_blocks`` includes the dispatcher entry and all routing blocks.
-    ``source`` distinguishes origin for diagnostics; downstream ignores it.
+    ``router_kind`` identifies the router shape; downstream ignores it unless it
+    needs profile-specific routing.
     """
 
     handler_state_map: dict[int, int]  # handler_serial -> state_const
     dispatcher_serial: int
     dispatcher_blocks: frozenset[int]
     state_var_stkoff: int | None
-    source: RouterKind
+    router_kind: RouterKind
     initial_state: int | None = None
     handler_range_map: dict[int, tuple[int | None, int | None]] = field(
         default_factory=dict
@@ -76,7 +77,7 @@ class DispatcherHandlerMap:
             dispatcher_serial=dispatcher_serial,
             dispatcher_blocks=frozenset(bst_result.bst_node_blocks),
             state_var_stkoff=state_var_stkoff,
-            source=RouterKind.CONDITION_CHAIN,
+            router_kind=RouterKind.CONDITION_CHAIN,
             initial_state=bst_result.initial_state,
             handler_range_map=dict(bst_result.handler_range_map),
         )
@@ -92,7 +93,7 @@ class DispatcherHandlerMap:
             dispatcher_serial=int(dispatch_map.dispatcher_entry_block),
             dispatcher_blocks=frozenset(dispatch_map.dispatcher_blocks),
             state_var_stkoff=dispatch_map.state_var_stkoff,
-            source=dispatch_map.source,
+            router_kind=dispatch_map.router_kind,
             initial_state=dispatch_map.initial_state,
             handler_range_map={},
         )

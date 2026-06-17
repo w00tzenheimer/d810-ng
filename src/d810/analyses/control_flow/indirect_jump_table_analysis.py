@@ -64,7 +64,7 @@ def build_state_dispatcher_map_from_indirect_entries(
                 dispatcher_block=int(dispatcher_serial),
                 compare_block=None,
                 branch_kind=branch_kind,
-                source=RouterKind.INDIRECT_TABLE,
+                router_kind=RouterKind.INDIRECT_TABLE,
                 confidence=1.0,
                 row_kind=row_kind,
                 payload={
@@ -88,7 +88,7 @@ def build_state_dispatcher_map_from_indirect_entries(
         dispatcher_blocks=frozenset(int(block) for block in dispatcher_blocks),
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=None,
-        source=RouterKind.INDIRECT_TABLE,
+        router_kind=RouterKind.INDIRECT_TABLE,
         initial_state=initial_state,
         default_target_block=None,
         default_row_kind=None,

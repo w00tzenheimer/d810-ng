@@ -20,14 +20,14 @@ def test_resolves_predecessor_target_from_exact_dispatcher_row() -> None:
                 dispatcher_block=2,
                 compare_block=3,
                 branch_kind="jz_taken",
-                source=RouterKind.CONDITION_CHAIN,
+                router_kind=RouterKind.CONDITION_CHAIN,
             ),
         ),
         dispatcher_entry_block=2,
         dispatcher_blocks=frozenset({2, 3}),
         state_var_stkoff=0x30,
         state_var_lvar_idx=None,
-        source=RouterKind.CONDITION_CHAIN,
+        router_kind=RouterKind.CONDITION_CHAIN,
     )
 
     fact = resolve_predecessor_dispatcher_target(
@@ -90,14 +90,14 @@ def test_collects_transition_target_facts_with_transition_provenance() -> None:
                 dispatcher_block=4,
                 compare_block=4,
                 branch_kind="jz_taken",
-                source=RouterKind.CONDITION_CHAIN,
+                router_kind=RouterKind.CONDITION_CHAIN,
             ),
         ),
         dispatcher_entry_block=4,
         dispatcher_blocks=frozenset({4}),
         state_var_stkoff=0x28,
         state_var_lvar_idx=None,
-        source=RouterKind.CONDITION_CHAIN,
+        router_kind=RouterKind.CONDITION_CHAIN,
     )
     result = TransitionResult(
         transitions=[
@@ -139,14 +139,14 @@ def test_collects_report_target_facts_for_resolved_handler_edges() -> None:
                 dispatcher_block=4,
                 compare_block=4,
                 branch_kind="fallthrough",
-                source=RouterKind.CONDITION_CHAIN,
+                router_kind=RouterKind.CONDITION_CHAIN,
             ),
         ),
         dispatcher_entry_block=4,
         dispatcher_blocks=frozenset({4}),
         state_var_stkoff=0x28,
         state_var_lvar_idx=None,
-        source=RouterKind.CONDITION_CHAIN,
+        router_kind=RouterKind.CONDITION_CHAIN,
     )
     report = SimpleNamespace(
         rows=(
@@ -185,14 +185,14 @@ def test_collects_state_dag_target_facts_for_resolved_edges() -> None:
                 dispatcher_block=4,
                 compare_block=4,
                 branch_kind="fallthrough",
-                source=RouterKind.CONDITION_CHAIN,
+                router_kind=RouterKind.CONDITION_CHAIN,
             ),
         ),
         dispatcher_entry_block=4,
         dispatcher_blocks=frozenset({4}),
         state_var_stkoff=0x28,
         state_var_lvar_idx=None,
-        source=RouterKind.CONDITION_CHAIN,
+        router_kind=RouterKind.CONDITION_CHAIN,
     )
     dag = SimpleNamespace(
         edges=(

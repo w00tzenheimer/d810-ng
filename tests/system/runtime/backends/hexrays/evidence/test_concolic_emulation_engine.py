@@ -149,7 +149,7 @@ class TestSelectorAnchoring:
             dispatcher_blocks=frozenset(),
             state_var_stkoff=OFF_RESULT,  # the WRONG slot the bug would pick
             state_var_lvar_idx=None,
-            source=RouterKind.SWITCH,
+            router_kind=RouterKind.SWITCH,
             initial_state=0,
         )
         anchors = discover_anchors(mba, graph=None, prelim=prelim)
@@ -169,7 +169,7 @@ class TestSelectorAnchoring:
             dispatcher_blocks=frozenset(),
             state_var_stkoff=OFF_STATE,
             state_var_lvar_idx=None,
-            source=RouterKind.CONDITION_CHAIN,
+            router_kind=RouterKind.CONDITION_CHAIN,
             initial_state=0,
         )
         anchors = discover_anchors(mba, graph=None, prelim=prelim)

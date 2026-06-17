@@ -37,7 +37,7 @@ def _map(rows=(), *, entry=2, blocks=frozenset({2}), stkoff=0x3C):
         dispatcher_blocks=frozenset(blocks),
         state_var_stkoff=stkoff,
         state_var_lvar_idx=None,
-        source=RouterKind.CONDITION_CHAIN,
+        router_kind=RouterKind.CONDITION_CHAIN,
     )
 
 
@@ -48,7 +48,7 @@ def _row(state_const, target, *, block=2):
         dispatcher_block=block,
         compare_block=block,
         branch_kind="eq",
-        source=RouterKind.CONDITION_CHAIN,
+        router_kind=RouterKind.CONDITION_CHAIN,
     )
 
 

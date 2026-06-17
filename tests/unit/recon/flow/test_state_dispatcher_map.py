@@ -17,7 +17,7 @@ def _map() -> StateDispatcherMap:
                 dispatcher_block=2,
                 compare_block=2,
                 branch_kind="jz_taken",
-                source=RouterKind.CONDITION_CHAIN,
+                router_kind=RouterKind.CONDITION_CHAIN,
             ),
             StateDispatcherRow(
                 state_const=0x20,
@@ -25,14 +25,14 @@ def _map() -> StateDispatcherMap:
                 dispatcher_block=2,
                 compare_block=3,
                 branch_kind="jnz_fallthrough",
-                source=RouterKind.CONDITION_CHAIN,
+                router_kind=RouterKind.CONDITION_CHAIN,
             ),
         ),
         dispatcher_entry_block=2,
         dispatcher_blocks=frozenset({2, 3}),
         state_var_stkoff=0x3C,
         state_var_lvar_idx=None,
-        source=RouterKind.CONDITION_CHAIN,
+        router_kind=RouterKind.CONDITION_CHAIN,
         initial_state=0x10,
     )
 
@@ -54,5 +54,5 @@ def test_to_dispatcher_handler_map() -> None:
     assert handler_map.dispatcher_serial == 2
     assert handler_map.dispatcher_blocks == frozenset({2, 3})
     assert handler_map.state_var_stkoff == 0x3C
-    assert handler_map.source == RouterKind.CONDITION_CHAIN
+    assert handler_map.router_kind == RouterKind.CONDITION_CHAIN
     assert handler_map.resolve_target(0x10) == 7

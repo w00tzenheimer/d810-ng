@@ -84,7 +84,7 @@ class HodurFamily(StateMachineCffFamily):
         if not (isinstance(context, dict) and context.get("emulation_dispatcher")):
             return None
         fallback = build_dispatch_map_any_kind(graph, min_state_constant=min_state_constant)
-        if fallback is not None and fallback.source is RouterKind.CONDITION_CHAIN:
+        if fallback is not None and fallback.router_kind is RouterKind.CONDITION_CHAIN:
             return fallback
         return None
 

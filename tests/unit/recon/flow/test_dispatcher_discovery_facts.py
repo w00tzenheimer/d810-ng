@@ -27,7 +27,7 @@ def _dispatch_map(
                 dispatcher_block=2,
                 compare_block=2,
                 branch_kind="switch_case",
-                source=RouterKind.SWITCH,
+                router_kind=RouterKind.SWITCH,
             ),
             StateDispatcherRow(
                 state_const=0x20,
@@ -35,7 +35,7 @@ def _dispatch_map(
                 dispatcher_block=2,
                 compare_block=2,
                 branch_kind="switch_case",
-                source=RouterKind.SWITCH,
+                router_kind=RouterKind.SWITCH,
                 row_kind="dispatcher_self_loop",
             ),
         ),
@@ -43,7 +43,7 @@ def _dispatch_map(
         dispatcher_blocks=frozenset({2}),
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=None,
-        source=RouterKind.SWITCH,
+        router_kind=RouterKind.SWITCH,
         initial_state=initial_state,
     )
 

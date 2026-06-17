@@ -266,7 +266,7 @@ def _equality_dispatcher(point_targets, entry_block, compare_blocks):
             dispatcher_block=entry_block,
             compare_block=cmp_block,
             branch_kind="eq",
-            source=RouterKind.CONDITION_CHAIN,
+            router_kind=RouterKind.CONDITION_CHAIN,
         )
         for st, target, cmp_block in zip(
             sorted(point_targets), [point_targets[st] for st in sorted(point_targets)], compare_blocks
@@ -278,7 +278,7 @@ def _equality_dispatcher(point_targets, entry_block, compare_blocks):
         dispatcher_blocks=frozenset(compare_blocks),
         state_var_stkoff=_STATE,
         state_var_lvar_idx=None,
-        source=RouterKind.CONDITION_CHAIN,
+        router_kind=RouterKind.CONDITION_CHAIN,
     )
     interval_rows = [
         IntervalRow(lo=st & 0xFFFFFFFF, hi=(st & 0xFFFFFFFF) + 1, target=target)

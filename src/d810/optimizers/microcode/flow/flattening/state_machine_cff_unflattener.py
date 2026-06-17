@@ -864,7 +864,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     func_ea=func_ea,
                     maturity=maturity,
                     dispatcher_entry_block=int(dmap.dispatcher_entry_block),
-                    dispatcher_kind=dmap.source.name,
+                    dispatcher_kind=dmap.router_kind.name,
                     rows=dmap.rows,
                 )
             except Exception:  # noqa: BLE001 — diagnostics must never break the optimize path

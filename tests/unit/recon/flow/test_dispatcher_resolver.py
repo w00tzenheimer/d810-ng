@@ -153,7 +153,7 @@ def test_build_dispatch_map_any_kind_is_behavior_neutral_on_switch():
     dmap = build_dispatch_map_any_kind(graph)
 
     assert dmap is not None
-    assert dmap.source is RouterKind.SWITCH
+    assert dmap.router_kind is RouterKind.SWITCH
     assert dmap.state_to_handler() == {0: 4, 1: 5, 2: 5}
     assert dmap.dispatcher_entry_block == 3
     assert dmap.dispatcher_blocks == frozenset({2, 3})
@@ -197,7 +197,7 @@ def _indirect_dmap() -> StateDispatcherMap:
             dispatcher_block=3,
             compare_block=None,
             branch_kind="indirect_jump_table",
-            source=RouterKind.INDIRECT_TABLE,
+            router_kind=RouterKind.INDIRECT_TABLE,
             row_kind="handler",
         ),
     )
@@ -207,7 +207,7 @@ def _indirect_dmap() -> StateDispatcherMap:
         dispatcher_blocks=frozenset({3}),
         state_var_stkoff=0x30,
         state_var_lvar_idx=None,
-        source=RouterKind.INDIRECT_TABLE,
+        router_kind=RouterKind.INDIRECT_TABLE,
     )
 
 
@@ -271,7 +271,7 @@ def test_extra_resolver_recognized_by_front_end():
         dmap = build_dispatch_map_any_kind(graph)
 
         assert dmap is not None
-        assert dmap.source is RouterKind.INDIRECT_TABLE
+        assert dmap.router_kind is RouterKind.INDIRECT_TABLE
         assert dmap.state_to_handler() == {1: 4}
         assert dmap.dispatcher_entry_block == 3
     finally:
@@ -299,7 +299,7 @@ def test_extra_resolver_inert_on_non_indirect_graph():
         dmap = build_dispatch_map_any_kind(_switch_flow_graph())
         # Still resolves the SWITCH map; the indirect resolver abstained.
         assert dmap is not None
-        assert dmap.source is RouterKind.SWITCH
+        assert dmap.router_kind is RouterKind.SWITCH
         assert dmap.state_to_handler() == {0: 4, 1: 5, 2: 5}
     finally:
         clear_extra_dispatcher_resolvers()
@@ -342,7 +342,7 @@ def _indirect_result(rows=1, missing=0) -> IndirectJumpTableResult:
             dispatcher_block=3,
             compare_block=None,
             branch_kind="indirect_jump_table",
-            source=RouterKind.INDIRECT_TABLE,
+            router_kind=RouterKind.INDIRECT_TABLE,
             row_kind="handler",
         )
         for i in range(rows)
@@ -353,7 +353,7 @@ def _indirect_result(rows=1, missing=0) -> IndirectJumpTableResult:
         dispatcher_blocks=frozenset({3}),
         state_var_stkoff=0x30,
         state_var_lvar_idx=None,
-        source=RouterKind.INDIRECT_TABLE,
+        router_kind=RouterKind.INDIRECT_TABLE,
     )
     return IndirectJumpTableResult(
         state_dispatcher_map=dmap, entries=(), missing_target_count=missing

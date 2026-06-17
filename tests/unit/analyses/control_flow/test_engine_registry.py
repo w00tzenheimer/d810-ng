@@ -97,7 +97,7 @@ class _FakeEngine:
     def recover(self, graph, anchors=None, caps=None) -> RecoveredMachine:
         return RecoveredMachine(
             rows=(MachineRow(state_const=1, target_block=2, dispatcher_block=0),),
-            source=RouterKind.UNKNOWN,
+            router_kind=RouterKind.UNKNOWN,
             soundness=self._soundness,
             confidence=self._confidence,
             provenance=(self.name,),

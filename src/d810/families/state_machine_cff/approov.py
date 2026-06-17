@@ -77,14 +77,14 @@ class ApproovFamily(StateMachineCffFamily):
 
         Reuses the shared front-end ``build_dispatch_map_any_kind`` (so detect and the
         pipeline's pass #1 never disagree on which shapes are supported), then narrows by
-        ``StateDispatcherMap.source`` to this profile's kind set. Returns the recovered
+        ``StateDispatcherMap.router_kind`` to this profile's kind set. Returns the recovered
         map (truthy) on a match, else ``None`` so the pipeline only runs where a real
         switch/indirect dispatcher is present.
         """
         if graph is None or not hasattr(graph, "blocks"):
             return None
         dmap = build_dispatch_map_any_kind(graph)
-        if dmap is None or dmap.source not in _APPROOV_KINDS:
+        if dmap is None or dmap.router_kind not in _APPROOV_KINDS:
             return None
         return dmap
 
@@ -99,7 +99,7 @@ class ApproovFamily(StateMachineCffFamily):
         (``EmulationCapability``, M3+) and pins ``RouterKind.INDIRECT_TABLE``; structural
         until an indirect resolver + emulation backend land.
         """
-        if getattr(match, "source", None) == RouterKind.INDIRECT_TABLE:
+        if getattr(match, "router_kind", None) == RouterKind.INDIRECT_TABLE:
             return (
                 PassSpec("recover_dispatcher", RecoverDispatcher, live_mba, default),
                 PassSpec("recover_state_transitions", RecoverStateTransitions, emulation, default),

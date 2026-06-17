@@ -166,7 +166,7 @@ def extract_state_dispatcher_map_from_mba(
                 dispatcher_block=int(entry),
                 compare_block=int(serial),
                 branch_kind=branch_kind,
-                source=RouterKind.CONDITION_CHAIN,
+                router_kind=RouterKind.CONDITION_CHAIN,
                 confidence=1.0,
             )
         )
@@ -190,7 +190,7 @@ def extract_state_dispatcher_map_from_mba(
         state_var_lvar_idx=(
             state_var.identifier if state_var.kind == "lvar" else None
         ),
-        source=RouterKind.CONDITION_CHAIN,
+        router_kind=RouterKind.CONDITION_CHAIN,
     )
     return dispatch_map
 

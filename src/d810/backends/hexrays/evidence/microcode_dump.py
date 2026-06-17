@@ -835,7 +835,7 @@ def _build_comparison_model_from_bst(
                 dispatcher_block=int(dispatcher_entry_serial),
                 compare_block=None,
                 branch_kind="bst",
-                source=RouterKind.CONDITION_CHAIN,
+                router_kind=RouterKind.CONDITION_CHAIN,
             )
         )
         ea = _block_start_ea(mba, handler_serial)
@@ -848,7 +848,7 @@ def _build_comparison_model_from_bst(
         | {int(dispatcher_entry_serial)},
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=state_var_lvar_idx,
-        source=RouterKind.CONDITION_CHAIN,
+        router_kind=RouterKind.CONDITION_CHAIN,
         initial_state=bst_result.initial_state,
     )
     return ComparisonDispatcherModel.from_recovery(
