@@ -408,7 +408,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 _emit_flowgraph_ready_event(self.event_emitter, mba)
             # ``run_microcode_collectors(mba, ...)`` is now invoked by
             # the ``FLOWGRAPH_READY`` subscriber on ``D810`` (see
-            # ``manager._collect_recon_on_flowgraph_ready``).  The
+            # ``manager.flowgraph_ready.FlowGraphReadySubscriber``).  The
             # event fires immediately above and ``ReconPhase`` dedupes
             # by ``(func_ea, maturity)``, so adding back a direct
             # call here would double-collect.
@@ -1115,7 +1115,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             )
             # ``run_microcode_collectors(mba, ...)`` is now invoked by
             # the ``FLOWGRAPH_READY`` subscriber on ``D810`` (see
-            # ``manager._collect_recon_on_flowgraph_ready``).  The
+            # ``manager.flowgraph_ready.FlowGraphReadySubscriber``).  The
             # event fires immediately above and ``ReconPhase`` dedupes
             # by ``(func_ea, maturity)``, so a direct call here would
             # double-collect.
@@ -1552,7 +1552,7 @@ def _emit_flowgraph_ready_event(
     every recon-collection lifecycle point.
 
     E4a (now): the ``FLOWGRAPH_READY`` subscriber on ``D810`` (see
-    ``manager._collect_recon_on_flowgraph_ready``) is the sole
+    ``manager.flowgraph_ready.FlowGraphReadySubscriber``) is the sole
     invoker of ``ReconPhase.run_microcode_collectors`` for the
     microcode path.  The legacy live-mba direct calls that used to
     live in this same module are gone.

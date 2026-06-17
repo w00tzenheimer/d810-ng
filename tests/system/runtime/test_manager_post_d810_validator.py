@@ -5,7 +5,7 @@ from d810.core.diag import create_diag_database
 
 import sqlite3
 
-from d810.manager import detect_post_d810_handoff_violations
+from d810.diagnostics.post_d810_handoff import detect_post_d810_handoff_violations
 
 
 FUNC_EA_I64 = 0x180012B60

@@ -43,6 +43,7 @@ from d810.core.events import EventEmitter
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.analyses.control_flow.models import ReconResult
 from d810.passes.phase import ReconPhase
+from d810.manager.flowgraph_ready import FlowGraphReadySubscriber
 
 
 class _Event(enum.Enum):
@@ -160,40 +161,13 @@ class TestFlowGraphReadySubscriberDedup:
         phase: ReconPhase | None = None,
         *,
         fact_runtime: _CapturingFactRuntime | None = None,
-    ):
-        """E4a subscriber shape (mirrors
-        ``manager._collect_recon_on_flowgraph_ready`` without
-        importing ``manager.py`` -- which would pull IDA into the
-        unit graph)."""
-        def handler(
-            *,
-            flow_graph,
-            func_ea,
-            maturity,
-            maturity_name,
-            snapshot=None,
-        ):
-            provider_phase = ProviderPhaseSnapshot(
-                provider_name="hexrays_microcode",
-                provider_level=int(maturity),
-                friendly_provider_level=str(maturity_name),
-            )
-            if phase is not None:
-                phase.run_microcode_collectors(
-                    flow_graph,
-                    func_ea=int(func_ea),
-                    provider_phase=provider_phase,
-                )
-            if fact_runtime is not None and snapshot is not None:
-                fact_runtime.capture_maturity_facts(
-                    flow_graph,
-                    func_ea=int(func_ea),
-                    provider_phase=provider_phase,
-                    phase="pre_d810",
-                    snapshot=snapshot,
-                )
-
-        return handler
+    ) -> FlowGraphReadySubscriber:
+        """Build the real subscriber without importing ``manager.py``."""
+        return FlowGraphReadySubscriber(
+            recon_phase=phase,
+            recon_runtime=fact_runtime,
+            provider_name="hexrays_microcode",
+        )
 
     def test_two_events_same_func_maturity_yields_one_collect(
         self, monkeypatch
@@ -298,11 +272,13 @@ class TestFlowGraphReadySubscriberDedup:
             0x140003000,
         }
 
-    def test_fact_capture_waits_for_snapshot_event(self) -> None:
-        """Pre-D810 fact capture uses the block-manager event because
-        only that producer carries the diagnostic snapshot.  A
-        preceding instruction-manager event for the same maturity has
-        no snapshot and must not consume the fact-capture path."""
+    def test_fact_capture_runs_without_snapshot_and_forwards_later_snapshot(self) -> None:
+        """Pre-D810 fact capture is production behavior, not diag-only.
+
+        The no-snapshot event must still invoke capture. A later snapshot
+        event for the same maturity is forwarded too so the runtime can attach
+        observations to diagnostics without owning live Hex-Rays objects.
+        """
         fact_runtime = _CapturingFactRuntime()
         emitter: EventEmitter[_Event] = EventEmitter()
         emitter.on(
@@ -320,7 +296,8 @@ class TestFlowGraphReadySubscriberDedup:
             maturity=14,
             maturity_name="MMAT_GLBOPT1",
         )
-        assert fact_runtime.calls == []
+        assert len(fact_runtime.calls) == 1
+        assert fact_runtime.calls[0]["snapshot"] is None
 
         emitter.emit(
             _Event.FLOWGRAPH_READY,
@@ -331,8 +308,8 @@ class TestFlowGraphReadySubscriberDedup:
             snapshot=snapshot,
         )
 
-        assert len(fact_runtime.calls) == 1
-        call = fact_runtime.calls[0]
+        assert len(fact_runtime.calls) == 2
+        call = fact_runtime.calls[1]
         assert call["target"] is fg
         assert call["func_ea"] == 0x140002000
         assert call["phase"] == "pre_d810"
@@ -386,7 +363,7 @@ class TestNoDirectReconCallsInManagerGates:
                 f"``run_microcode_collectors`` ({shape!r}).  "
                 "E4a moved this to the ``FLOWGRAPH_READY`` subscriber "
                 "on ``D810`` (see "
-                "``manager._collect_recon_on_flowgraph_ready``).  "
+                "``manager.flowgraph_ready.FlowGraphReadySubscriber``).  "
                 "A direct call here would double-collect because the "
                 "subscriber already fires per maturity transition."
             )
@@ -416,8 +393,8 @@ class TestNoDirectReconCallsInManagerGates:
             "hexrays_hooks.py must not call "
             "self._recon_runtime.capture_maturity_facts(...) directly. "
             "Pre-D810 fact capture is owned by "
-            "manager._collect_recon_on_flowgraph_ready so the target is the "
-            "portable FlowGraph, not the live mba_t."
+            "manager.flowgraph_ready.FlowGraphReadySubscriber so the target "
+            "is the portable FlowGraph, not the live mba_t."
         )
 
     def test_post_d810_fact_capture_does_not_fallback_to_live_mba(
@@ -425,20 +402,21 @@ class TestNoDirectReconCallsInManagerGates:
     ) -> None:
         """E4b contract: post-D810 facts must use the Hex-Rays adapter,
         not send live ``mba_t`` into the fact runtime on adapter failure."""
-        manager_path = (
+        post_d810_runtime_path = (
             Path(__file__).resolve().parents[3]
             / "src"
             / "d810"
-            / "manager.py"
+            / "manager"
+            / "post_d810_runtime.py"
         )
-        assert manager_path.exists(), (
-            f"Resolved manager.py path {manager_path} does not exist -- "
-            "check parents[N] offset"
+        assert post_d810_runtime_path.exists(), (
+            f"Resolved post_d810_runtime.py path {post_d810_runtime_path} "
+            "does not exist -- check parents[N] offset"
         )
 
-        src = manager_path.read_text()
+        src = post_d810_runtime_path.read_text()
         assert "falling back to live mba" not in src
         assert "target = mba\n" not in src
         assert "target = mba_to_fact_target(mba)" in src
         assert "skipping fact capture" in src
-        assert "return\n            self._recon_runtime.capture_maturity_facts(" in src
+        assert "self.recon_runtime.capture_maturity_facts(" in src
