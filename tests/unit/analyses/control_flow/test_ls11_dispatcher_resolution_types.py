@@ -47,10 +47,10 @@ def _make_dispatcher_map() -> StateDispatcherMap:
 
 # --- C5: capabilities.dispatcher ------------------------------------------- #
 def test_router_kind_is_str_enum() -> None:
-    assert RouterKind.BST.value == "bst"
     assert {k.value for k in RouterKind} >= {
-        "bst", "switch", "equality_chain", "condition_chain", "indirect_table", "unknown",
+        "switch", "equality_chain", "condition_chain", "indirect_table", "unknown",
     }
+    assert "bst" not in {k.value for k in RouterKind}
 
 
 # --- C6: ResolverCandidate / DispatcherResolution -------------------------- #

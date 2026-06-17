@@ -122,7 +122,7 @@ class BstRangeRouterResolver:
         cov = handler_coverage(ctx.bst_router, ctx.dispatcher_entry)
         return ResolverCandidate(
             resolver_name=self.name,
-            router_kind=RouterKind.BST,
+            router_kind=RouterKind.CONDITION_CHAIN,
             confidence=float(cov),
             specificity=_PRIORITY_BST,
             reasons=("range-bst evidence", f"coverage={cov}"),

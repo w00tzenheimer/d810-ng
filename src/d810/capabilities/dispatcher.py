@@ -13,7 +13,6 @@ __all__ = ["RouterKind"]
 
 
 class RouterKind(str, enum.Enum):
-    BST = "bst"
     SWITCH = "switch"
     EQUALITY_CHAIN = "equality_chain"
     CONDITION_CHAIN = "condition_chain"
