@@ -83,12 +83,12 @@ def test_configured_kind_forces_exact_over_a_winning_bst() -> None:
     assert chosen is not bst and handler_coverage(chosen, ENTRY) == 2
 
 
-def test_configured_kind_forces_bst_over_a_winning_exact() -> None:
+def test_configured_kind_forces_condition_chain_over_a_winning_exact() -> None:
     bst = _router({1: ENTRY, 5: ENTRY})  # coverage 0 (would lose detection)
     ctx = RouterResolutionContext(
         bst_router=bst, state_to_handler={1: 10, 5: 20, 9: 30}, dispatcher_entry=ENTRY
     )
-    assert select_router(default_resolvers(), ctx, configured_kind=RouterKind.BST) is bst
+    assert select_router(default_resolvers(), ctx, configured_kind=RouterKind.CONDITION_CHAIN) is bst
 
 
 def test_configured_kind_absent_falls_back_to_detection() -> None:
@@ -127,5 +127,5 @@ def test_bst_candidate_is_ranked_evidence_not_a_bool() -> None:
     cand = BstRangeRouterResolver().applies_to(
         RouterResolutionContext(bst_router=bst, dispatcher_entry=ENTRY)
     )
-    assert cand.router_kind is RouterKind.BST
+    assert cand.router_kind is RouterKind.CONDITION_CHAIN
     assert cand.confidence == 2.0  # coverage as the ranking signal

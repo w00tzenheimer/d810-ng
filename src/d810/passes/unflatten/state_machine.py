@@ -102,7 +102,6 @@ _DISPATCHER_TYPE_TO_ROUTER_KIND = {
 # RouterKinds whose route() is the shared comparison body (exact ∪ interval).
 _COMPARISON_ROUTER_KINDS = frozenset(
     {
-        RouterKind.BST,
         RouterKind.SWITCH,
         RouterKind.EQUALITY_CHAIN,
         RouterKind.CONDITION_CHAIN,
