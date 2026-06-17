@@ -47,7 +47,7 @@ def _report() -> DispatcherTransitionReport:
         initial_state=0x1000,
         handler_state_map={10: 0x1000},
         handler_range_map={},
-        bst_node_blocks=(2, 3),
+        condition_chain_blocks=(2, 3),
         rows=(row,),
         summary=TransitionSummary(
             handlers_total=1,

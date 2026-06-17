@@ -2486,9 +2486,9 @@ def emit_minimal_unflatten(
             dict(sorted(kinds.items())),
         )
     # Recover the initial state from the prologue's own state-write fold when the
-    # caller could not supply it. The comparison-BST evidence collapses to a
+    # caller could not supply it. The comparison-range evidence collapses to a
     # single catch-all on a wide equality chain, so
-    # ``bst_evidence.initial_state`` is None -- but the prologue is a dispatcher
+    # ``range_evidence.initial_state`` is None -- but the prologue is a dispatcher
     # predecessor too, so its folded next-state (already in ``transitions``) IS
     # the initial state. Without it the entry bridge is skipped and removing the
     # dispatcher orphans every handler.

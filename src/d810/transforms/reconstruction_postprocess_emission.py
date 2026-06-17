@@ -43,8 +43,8 @@ class ReconstructionPostprocessExecutionResult:
     projected_flow_graph: object
     residual_dispatcher_preds: tuple[int, ...]
     initial_residual_dispatcher_preds: tuple[int, ...]
-    allow_post_apply_bst_cleanup: bool
-    post_apply_bst_cleanup_reason: str | None
+    allow_post_apply_condition_chain_cleanup: bool
+    post_apply_condition_chain_cleanup_reason: str | None
     entry_island_rescue_run: object | None = None
     late_entry_island_rescue_run: object | None = None
     late_island_rescue_result: object | None = None
@@ -185,8 +185,8 @@ def emit_residual_alias_overrides(
 
     node_by_key = _build_node_by_key(dag)
     shared_suffix_blocks = _collect_shared_suffix_blocks(dag)
-    bst_node_blocks = set(int(serial) for serial in getattr(dag, "bst_node_blocks", ()) or ())
-    bst_node_blocks.add(int(dispatcher_serial))
+    condition_chain_blocks = set(int(serial) for serial in getattr(dag, "condition_chain_blocks", ()) or ())
+    condition_chain_blocks.add(int(dispatcher_serial))
 
     discovery = discover_overrides_fn(
         dag=dag,
@@ -203,7 +203,7 @@ def emit_residual_alias_overrides(
         residual_dispatcher_preds=residual_dispatcher_preds,
         node_by_key=node_by_key,
         shared_suffix_blocks=shared_suffix_blocks,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     return emit_residual_alias_modifications(
         discovery=discovery,
@@ -225,7 +225,7 @@ def execute_reconstruction_postprocess(
     builder,
     dispatcher_region: set[int],
     dispatcher_serial: int,
-    bst_result,
+    range_evidence,
     state_machine,
     state_var_stkoff: int | None,
     constant_result,
@@ -251,8 +251,8 @@ def execute_reconstruction_postprocess(
     projected_flow_graph = flow_graph
     residual_dispatcher_preds: tuple[int, ...] = ()
     initial_residual_dispatcher_preds: tuple[int, ...] = ()
-    allow_post_apply_bst_cleanup = True
-    post_apply_bst_cleanup_reason: str | None = None
+    allow_post_apply_condition_chain_cleanup = True
+    post_apply_condition_chain_cleanup_reason: str | None = None
     entry_island_rescue_run = None
     late_entry_island_rescue_run = None
     late_island_rescue_result = None
@@ -270,8 +270,8 @@ def execute_reconstruction_postprocess(
             projected_flow_graph=projected_flow_graph,
             residual_dispatcher_preds=residual_dispatcher_preds,
             initial_residual_dispatcher_preds=initial_residual_dispatcher_preds,
-            allow_post_apply_bst_cleanup=allow_post_apply_bst_cleanup,
-            post_apply_bst_cleanup_reason=post_apply_bst_cleanup_reason,
+            allow_post_apply_condition_chain_cleanup=allow_post_apply_condition_chain_cleanup,
+            post_apply_condition_chain_cleanup_reason=post_apply_condition_chain_cleanup_reason,
             state_var_stkoff=state_var_stkoff,
             state_constants_count=state_constants_count,
             flow_graph_block_count=flow_graph_block_count,
@@ -333,17 +333,17 @@ def execute_reconstruction_postprocess(
     initial_residual_dispatcher_preds = collect_residual_dispatcher_predecessors(
         projected_flow_graph,
         dispatcher_serial,
-        bst_node_blocks=dispatcher_region,
+        condition_chain_blocks=dispatcher_region,
         reachable_from_serial=getattr(projected_flow_graph, "entry_serial", None),
     )
     residual_dispatcher_preds = initial_residual_dispatcher_preds
     if residual_dispatcher_preds:
-        allow_post_apply_bst_cleanup = False
-        post_apply_bst_cleanup_reason = "residual_dispatcher_predecessors"
+        allow_post_apply_condition_chain_cleanup = False
+        post_apply_condition_chain_cleanup_reason = "residual_dispatcher_predecessors"
 
-    dispatcher = getattr(bst_result, "dispatcher", None)
-    bst_set = set(dag.bst_node_blocks)
-    bst_set.add(dispatcher_serial)
+    dispatcher = getattr(range_evidence, "dispatcher", None)
+    condition_chain_set = set(dag.condition_chain_blocks)
+    condition_chain_set.add(dispatcher_serial)
     # D810_RECON_SKIP_RESIDUAL_ALIAS=1 → skip the early + late residual raw-alias
     # reconstruction overrides (technique 1 of the 5-item port list).
     _skip_residual_alias = (
@@ -376,12 +376,12 @@ def execute_reconstruction_postprocess(
         residual_dispatcher_preds = collect_residual_dispatcher_predecessors(
             projected_flow_graph,
             dispatcher_serial,
-            bst_node_blocks=dispatcher_region,
+            condition_chain_blocks=dispatcher_region,
             reachable_from_serial=getattr(projected_flow_graph, "entry_serial", None),
         )
         if not residual_dispatcher_preds:
-            allow_post_apply_bst_cleanup = True
-            post_apply_bst_cleanup_reason = None
+            allow_post_apply_condition_chain_cleanup = True
+            post_apply_condition_chain_cleanup_reason = None
     _log_postprocess_phase_probe(
         phase="post_early_residual_alias",
         projected_flow_graph=projected_flow_graph,
@@ -403,7 +403,7 @@ def execute_reconstruction_postprocess(
     common_return_corridor = collect_common_return_corridor(
         dag,
         flow_graph,
-        bst_node_blocks=bst_set,
+        condition_chain_blocks=condition_chain_set,
         dispatcher_serial=dispatcher_serial,
     )
 
@@ -413,7 +413,7 @@ def execute_reconstruction_postprocess(
         projected_flow_graph=projected_flow_graph,
         builder=builder,
         dispatcher_serial=dispatcher_serial,
-        bst_node_blocks=bst_set,
+        condition_chain_blocks=condition_chain_set,
         dispatcher=dispatcher,
         modifications=modifications,
         owned_blocks=owned_blocks,
@@ -495,8 +495,8 @@ def execute_reconstruction_postprocess(
         )
 
         if not residual_dispatcher_preds:
-            allow_post_apply_bst_cleanup = True
-            post_apply_bst_cleanup_reason = None
+            allow_post_apply_condition_chain_cleanup = True
+            post_apply_condition_chain_cleanup_reason = None
 
         if _skip_island_rescue:
             from d810.transforms.entry_island_rescue_planning import EntryIslandRescueRun
@@ -519,7 +519,7 @@ def execute_reconstruction_postprocess(
                 builder=builder,
                 modifications=modifications,
                 dispatcher_region=dispatcher_region,
-                dispatcher=getattr(bst_result, "dispatcher", None),
+                dispatcher=getattr(range_evidence, "dispatcher", None),
                 collect_seeds=lambda dag, **kwargs: collect_late_entry_island_rescue_seeds(
                     dag,
                     projected_flow_graph=kwargs["projected_flow_graph"],
@@ -547,12 +547,12 @@ def execute_reconstruction_postprocess(
     residual_dispatcher_preds = collect_residual_dispatcher_predecessors(
         projected_flow_graph,
         dispatcher_serial,
-        bst_node_blocks=dispatcher_region,
+        condition_chain_blocks=dispatcher_region,
         reachable_from_serial=getattr(projected_flow_graph, "entry_serial", None),
     )
     if not residual_dispatcher_preds:
-        allow_post_apply_bst_cleanup = True
-        post_apply_bst_cleanup_reason = None
+        allow_post_apply_condition_chain_cleanup = True
+        post_apply_condition_chain_cleanup_reason = None
     residual_raw_alias_redirect_count = 0
     if not early_residual_raw_alias_redirect_count and not _skip_residual_alias:
         residual_raw_alias_redirect_count = emit_residual_alias_overrides(
@@ -584,12 +584,12 @@ def execute_reconstruction_postprocess(
         residual_dispatcher_preds = collect_residual_dispatcher_predecessors(
             projected_flow_graph,
             dispatcher_serial,
-            bst_node_blocks=dispatcher_region,
+            condition_chain_blocks=dispatcher_region,
             reachable_from_serial=getattr(projected_flow_graph, "entry_serial", None),
         )
         if not residual_dispatcher_preds:
-            allow_post_apply_bst_cleanup = True
-            post_apply_bst_cleanup_reason = None
+            allow_post_apply_condition_chain_cleanup = True
+            post_apply_condition_chain_cleanup_reason = None
     _log_postprocess_phase_probe(
         phase="post_late_residual_alias",
         projected_flow_graph=projected_flow_graph,
@@ -628,10 +628,10 @@ def execute_reconstruction_postprocess(
 
     if (
         len(modifications) > initial_modification_count
-        and post_apply_bst_cleanup_reason is None
+        and post_apply_condition_chain_cleanup_reason is None
     ):
-        allow_post_apply_bst_cleanup = False
-        post_apply_bst_cleanup_reason = "residual_dispatcher_redirects"
+        allow_post_apply_condition_chain_cleanup = False
+        post_apply_condition_chain_cleanup_reason = "residual_dispatcher_redirects"
 
     return ReconstructionPostprocessExecutionResult(
         projected_flow_graph=projected_flow_graph,
@@ -639,8 +639,8 @@ def execute_reconstruction_postprocess(
         initial_residual_dispatcher_preds=tuple(
             int(serial) for serial in initial_residual_dispatcher_preds
         ),
-        allow_post_apply_bst_cleanup=allow_post_apply_bst_cleanup,
-        post_apply_bst_cleanup_reason=post_apply_bst_cleanup_reason,
+        allow_post_apply_condition_chain_cleanup=allow_post_apply_condition_chain_cleanup,
+        post_apply_condition_chain_cleanup_reason=post_apply_condition_chain_cleanup_reason,
         entry_island_rescue_run=entry_island_rescue_run,
         late_entry_island_rescue_run=late_entry_island_rescue_run,
         late_island_rescue_result=late_island_rescue_result,

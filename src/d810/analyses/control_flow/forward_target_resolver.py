@@ -7,11 +7,11 @@ target is *provable*.
 
 Three cases:
 
-1. **Dispatcher round-trip** — ``tgt`` is the dispatcher root or a BST
-   cascade node. The resolver reads ``src``'s reaching definition of
-   the state variable and asks a BST lookup callable to map that
+1. **Dispatcher round-trip** — ``tgt`` is the dispatcher root or a
+   condition-chain cascade node. The resolver reads ``src``'s reaching definition of
+   the state variable and asks a condition-chain lookup callable to map that
    constant to a handler block. Returns ``None`` if the state-var
-   reaching def is missing or BST lookup is ambiguous.
+   reaching def is missing or condition-chain lookup is ambiguous.
 
 2. **Spurious non-dispatcher predicate edge** — ``tgt`` has a
    conditional tail. The resolver reads ``src``'s reaching def of
@@ -86,7 +86,7 @@ def resolve_forward_target(
     classification: DispatcherAwareClassification,
     *,
     src_reaching_const: Mapping[str, int | None],
-    bst_resolver: Callable[[int], int | None] | None = None,
+    condition_chain_resolver: Callable[[int], int | None] | None = None,
     target_predicate: PredicateInfo | None = None,
 ) -> ResolvedTarget | None:
     """Compute the safe forward target block, or ``None`` if not provable.
@@ -99,7 +99,7 @@ def resolve_forward_target(
         Var-token → constant value at ``src``'s tail. ``None`` value means
         the def reaches but is non-constant; missing key means no def
         reaches. Both are treated as "not provable".
-    bst_resolver : callable
+    condition_chain_resolver : callable
         ``state_const -> handler_serial | None``. Required for dispatcher
         round-trip resolution; ignored otherwise.
     target_predicate : PredicateInfo | None
@@ -115,7 +115,7 @@ def resolve_forward_target(
         return _resolve_dispatcher_round_trip(
             classification=classification,
             src_reaching_const=src_reaching_const,
-            bst_resolver=bst_resolver,
+            condition_chain_resolver=condition_chain_resolver,
         )
 
     # Spurious non-dispatcher edge: simulate target predicate.
@@ -130,12 +130,12 @@ def _resolve_dispatcher_round_trip(
     *,
     classification: DispatcherAwareClassification,
     src_reaching_const: Mapping[str, int | None],
-    bst_resolver: Callable[[int], int | None] | None,
+    condition_chain_resolver: Callable[[int], int | None] | None,
 ) -> ResolvedTarget | None:
-    if bst_resolver is None:
+    if condition_chain_resolver is None:
         return None
     # Try every var that has a known constant reaching def. Typically
-    # only the state-var token is relevant; the BST resolver returns
+    # only the state-var token is relevant; the condition-chain resolver returns
     # None for non-state values so unrelated reaching consts are
     # naturally filtered.
     for var_token in sorted(src_reaching_const):
@@ -143,7 +143,7 @@ def _resolve_dispatcher_round_trip(
         if const is None:
             continue
         try:
-            handler = bst_resolver(int(const))
+            handler = condition_chain_resolver(int(const))
         except Exception:
             handler = None
         if handler is None:
@@ -152,7 +152,7 @@ def _resolve_dispatcher_round_trip(
             src_serial=classification.src_serial,
             old_target=classification.tgt_serial,
             new_target=int(handler),
-            resolution_kind="bst_const_resolved",
+            resolution_kind="condition_chain_const_resolved",
             reason=(
                 f"state_const=0x{int(const):x} via {var_token} -> "
                 f"handler blk[{int(handler)}]"

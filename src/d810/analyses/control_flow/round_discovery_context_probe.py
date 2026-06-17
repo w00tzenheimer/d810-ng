@@ -82,14 +82,14 @@ def compare_round_context_to_rebuild(
             f"edges(ctx_only={only_ctx},rebuild_only={only_rebuild})"
         )
 
-    # 2. bst_node_blocks equivalence
-    ctx_bst = frozenset(int(s) for s in getattr(ctx.dag, "bst_node_blocks", ()))
-    rebuild_bst = frozenset(
-        int(s) for s in getattr(rebuild_dag, "bst_node_blocks", ())
+    # 2. condition_chain_blocks equivalence
+    ctx_condition_chain = frozenset(int(s) for s in getattr(ctx.dag, "condition_chain_blocks", ()))
+    rebuild_condition_chain = frozenset(
+        int(s) for s in getattr(rebuild_dag, "condition_chain_blocks", ())
     )
-    if ctx_bst != rebuild_bst:
+    if ctx_condition_chain != rebuild_condition_chain:
         mismatches.append(
-            f"bst_node_blocks(ctx={len(ctx_bst)},rebuild={len(rebuild_bst)})"
+            f"condition_chain_blocks(ctx={len(ctx_condition_chain)},rebuild={len(rebuild_condition_chain)})"
         )
 
     # 3. dispatcher_entry_serial

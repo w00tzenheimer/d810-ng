@@ -112,7 +112,7 @@ class _DagIndexes:
 
 
 @dataclass(frozen=True, slots=True)
-class _BstIntervalFrontierRow:
+class _RangeIntervalFrontierRow:
     snapshot_id: int | None
     row_index: int | None
     lo: int
@@ -137,8 +137,8 @@ def plan_dag_authoritative_frontier_closure(
     flow_graph: object,
     modifications: list[object] | tuple[object, ...],
     dispatcher_serial: int,
-    bst_node_blocks: set[int] | frozenset[int] | tuple[int, ...] = (),
-    bst_interval_rows: tuple[object, ...] | list[object] | None = None,
+    condition_chain_blocks: set[int] | frozenset[int] | tuple[int, ...] = (),
+    range_interval_rows: tuple[object, ...] | list[object] | None = None,
     max_iterations: int = 32,
 ) -> FrontierClosureResult:
     """Close projected CFG semantic-SCC leaks using only DAG-proven edges.
@@ -183,18 +183,18 @@ def plan_dag_authoritative_frontier_closure(
         )
 
     frontier_blocks = {int(dispatcher_serial)}
-    frontier_blocks.update(int(block) for block in bst_node_blocks)
-    if bst_interval_rows is None:
-        interval_rows = _load_latest_bst_interval_rows(flow_graph)
+    frontier_blocks.update(int(block) for block in condition_chain_blocks)
+    if range_interval_rows is None:
+        interval_rows = _load_latest_range_interval_rows(flow_graph)
         if interval_rows:
             logger.info(
-                "DAG_FRONTIER_CLOSURE: using DB fallback for BST interval "
+                "DAG_FRONTIER_CLOSURE: using DB fallback for range interval "
                 "frontier proof rows=%d func_ea=0x%x",
                 len(interval_rows),
                 int(getattr(flow_graph, "func_ea", 0) or 0),
             )
     else:
-        interval_rows = _coerce_bst_interval_rows(bst_interval_rows)
+        interval_rows = _coerce_range_interval_rows(range_interval_rows)
 
     current_modifications = list(modifications)
     projected = _project(flow_graph, current_modifications)
@@ -224,7 +224,7 @@ def plan_dag_authoritative_frontier_closure(
                 current_modifications=current_modifications,
                 frontier_blocks=frontier_blocks,
                 base_flow_graph=flow_graph,
-                bst_interval_rows=interval_rows,
+                range_interval_rows=interval_rows,
             )
         if action is None:
             action = _select_dispatcher_state_residue_action(
@@ -233,7 +233,7 @@ def plan_dag_authoritative_frontier_closure(
                 current_modifications=current_modifications,
                 dispatcher_serial=dispatcher_serial,
                 base_flow_graph=flow_graph,
-                bst_interval_rows=interval_rows,
+                range_interval_rows=interval_rows,
             )
         if action is None:
             action = _select_shared_condition_entry_clone_action(
@@ -731,7 +731,7 @@ def _select_frontier_action(
     current_modifications: list[object],
     frontier_blocks: set[int],
     base_flow_graph: object,
-    bst_interval_rows: tuple[_BstIntervalFrontierRow, ...],
+    range_interval_rows: tuple[_RangeIntervalFrontierRow, ...],
 ) -> tuple[
     list[object],
     object | None,
@@ -758,7 +758,7 @@ def _select_frontier_action(
                 frontier_blocks=frontier_blocks,
             )
             if not choices:
-                bst_choice = _bst_interval_proven_frontier_choice(
+                range_choice = _range_interval_proven_frontier_choice(
                     projected_flow_graph,
                     indexes,
                     leak=leak,
@@ -766,10 +766,10 @@ def _select_frontier_action(
                     arm=arm,
                     observed_target=int(observed_target),
                     succs=succs,
-                    interval_rows=bst_interval_rows,
+                    interval_rows=range_interval_rows,
                 )
-                if bst_choice is not None:
-                    choices = (bst_choice,)
+                if range_choice is not None:
+                    choices = (range_choice,)
                 else:
                     choices = ()
             if not choices:
@@ -800,13 +800,13 @@ def _select_frontier_action(
             )
             if replacement is not None:
                 resolved_frontier = None
-                if choice.edge_kind == "BST_INTERVAL_PROVEN_FRONTIER":
+                if choice.edge_kind == "RANGE_INTERVAL_PROVEN_FRONTIER":
                     resolved_frontier = ResolvedFrontier(
                         leak=leak,
                         source_block=int(source),
                         observed_target=int(observed_target),
                         branch_arm=arm,
-                        reason="bst_interval_proven_frontier",
+                        reason="range_interval_proven_frontier",
                         target_block=int(choice.target_block),
                         payload=dict(choice.payload or {}),
                     )
@@ -822,14 +822,14 @@ def _select_dispatcher_state_residue_action(
     current_modifications: list[object],
     dispatcher_serial: int,
     base_flow_graph: object,
-    bst_interval_rows: tuple[_BstIntervalFrontierRow, ...],
+    range_interval_rows: tuple[_RangeIntervalFrontierRow, ...],
 ) -> tuple[
     list[object],
     object | None,
     object | None,
     ResolvedFrontier | None,
 ] | None:
-    if not bst_interval_rows:
+    if not range_interval_rows:
         return None
     dispatcher_serial = int(dispatcher_serial)
     state_stkoff = _dispatcher_state_stkoff(projected_flow_graph, dispatcher_serial)
@@ -864,7 +864,7 @@ def _select_dispatcher_state_residue_action(
         )
         for choice in choices:
             interval = _interval_for_state_target(
-                bst_interval_rows,
+                range_interval_rows,
                 state_const=state_const,
                 target_block=int(choice.target_block),
             )
@@ -880,20 +880,20 @@ def _select_dispatcher_state_residue_action(
                     source_block=source,
                     branch_arm=None,
                     target_block=int(choice.target_block),
-                    edge_kind="DAG_BST_INTERVAL_DISPATCHER_RESIDUE",
+                    edge_kind="DAG_RANGE_INTERVAL_DISPATCHER_RESIDUE",
                     proof=(
                         source,
                         None,
                         dispatcher_serial,
                         int(choice.target_block),
-                        "DAG_BST_INTERVAL_DISPATCHER_RESIDUE",
+                        "DAG_RANGE_INTERVAL_DISPATCHER_RESIDUE",
                         _compact_state_hex(state_const),
                         choice.proof,
                         (interval.lo, interval.hi, interval.target_block),
                     ),
                     is_path_step=False,
                     payload={
-                        "proof": "DAG_BST_INTERVAL_DISPATCHER_RESIDUE",
+                        "proof": "DAG_RANGE_INTERVAL_DISPATCHER_RESIDUE",
                         "state": _compact_state_hex(state_const),
                         "state_hex": f"0x{state_const:016x}",
                         "source": source,
@@ -916,10 +916,10 @@ def _select_dispatcher_state_residue_action(
                     source_block=source,
                     observed_target=dispatcher_serial,
                     branch_arm=None,
-                    reason="dag_bst_interval_dispatcher_residue",
+                    reason="dag_range_interval_dispatcher_residue",
                     target_block=int(choice.target_block),
                     payload={
-                        "proof": "DAG_BST_INTERVAL_DISPATCHER_RESIDUE",
+                        "proof": "DAG_RANGE_INTERVAL_DISPATCHER_RESIDUE",
                         "state": _compact_state_hex(state_const),
                         "state_hex": f"0x{state_const:016x}",
                         "source": source,
@@ -1485,7 +1485,7 @@ def _same_scc_alternate_successor_choice(
     )
 
 
-def _bst_interval_proven_frontier_choice(
+def _range_interval_proven_frontier_choice(
     flow_graph: object,
     indexes: _DagIndexes,
     *,
@@ -1494,9 +1494,9 @@ def _bst_interval_proven_frontier_choice(
     arm: int | None,
     observed_target: int,
     succs: tuple[int, ...],
-    interval_rows: tuple[_BstIntervalFrontierRow, ...],
+    interval_rows: tuple[_RangeIntervalFrontierRow, ...],
 ) -> _FrontierChoice | None:
-    """Close a BST singleton frontier using persisted interval evidence.
+    """Close a range singleton frontier using persisted interval evidence.
 
     This is intentionally not a same-SCC heuristic. It fires only when the
     live source block is an equality comparison against state ``K``, the
@@ -1543,7 +1543,7 @@ def _bst_interval_proven_frontier_choice(
         return None
 
     payload = {
-        "proof": "BST_INTERVAL_PROVEN_FRONTIER",
+        "proof": "RANGE_INTERVAL_PROVEN_FRONTIER",
         "state": _compact_state_hex(state_const),
         "state_hex": f"0x{state_const:016x}",
         "source": int(source),
@@ -1558,13 +1558,13 @@ def _bst_interval_proven_frontier_choice(
         source_block=int(source),
         branch_arm=arm,
         target_block=int(candidate),
-        edge_kind="BST_INTERVAL_PROVEN_FRONTIER",
+        edge_kind="RANGE_INTERVAL_PROVEN_FRONTIER",
         proof=(
             int(source),
             arm,
             int(observed_target),
             int(candidate),
-            "BST_INTERVAL_PROVEN_FRONTIER",
+            "RANGE_INTERVAL_PROVEN_FRONTIER",
             _compact_state_hex(state_const),
             tuple((row.lo, row.hi, row.target_block) for row in sibling_rows),
         ),
@@ -1676,11 +1676,11 @@ def _state_write_constant(block: object, state_stkoff: int) -> int | None:
 
 
 def _singleton_interval_for_state(
-    rows: tuple[_BstIntervalFrontierRow, ...],
+    rows: tuple[_RangeIntervalFrontierRow, ...],
     *,
     state_const: int,
     target_block: int,
-) -> _BstIntervalFrontierRow | None:
+) -> _RangeIntervalFrontierRow | None:
     for row in rows:
         if int(row.target_block) != int(target_block):
             continue
@@ -1690,12 +1690,12 @@ def _singleton_interval_for_state(
 
 
 def _adjacent_range_siblings(
-    rows: tuple[_BstIntervalFrontierRow, ...],
+    rows: tuple[_RangeIntervalFrontierRow, ...],
     *,
     state_const: int,
     target_block: int,
-) -> tuple[_BstIntervalFrontierRow, ...]:
-    siblings: list[_BstIntervalFrontierRow] = []
+) -> tuple[_RangeIntervalFrontierRow, ...]:
+    siblings: list[_RangeIntervalFrontierRow] = []
     for row in rows:
         if int(row.target_block) != int(target_block):
             continue
@@ -1708,11 +1708,11 @@ def _adjacent_range_siblings(
 
 
 def _interval_for_state_target(
-    rows: tuple[_BstIntervalFrontierRow, ...],
+    rows: tuple[_RangeIntervalFrontierRow, ...],
     *,
     state_const: int,
     target_block: int,
-) -> _BstIntervalFrontierRow | None:
+) -> _RangeIntervalFrontierRow | None:
     for row in rows:
         if int(row.target_block) != int(target_block):
             continue
@@ -1721,7 +1721,7 @@ def _interval_for_state_target(
     return None
 
 
-def _interval_payload(row: _BstIntervalFrontierRow) -> dict[str, object]:
+def _interval_payload(row: _RangeIntervalFrontierRow) -> dict[str, object]:
     return {
         "snapshot_id": row.snapshot_id,
         "row_index": row.row_index,
@@ -1737,12 +1737,12 @@ def _compact_state_hex(value: int) -> str:
     return f"0x{value:0{width}X}"
 
 
-def _coerce_bst_interval_rows(
-    rows: tuple[object, ...] | list[object] | tuple[_BstIntervalFrontierRow, ...],
-) -> tuple[_BstIntervalFrontierRow, ...]:
-    out: list[_BstIntervalFrontierRow] = []
+def _coerce_range_interval_rows(
+    rows: tuple[object, ...] | list[object] | tuple[_RangeIntervalFrontierRow, ...],
+) -> tuple[_RangeIntervalFrontierRow, ...]:
+    out: list[_RangeIntervalFrontierRow] = []
     for row in rows or ():
-        if isinstance(row, _BstIntervalFrontierRow):
+        if isinstance(row, _RangeIntervalFrontierRow):
             out.append(row)
             continue
         snapshot_id = _row_value(row, "snapshot_id")
@@ -1754,7 +1754,7 @@ def _coerce_bst_interval_rows(
             target = _row_value(row, "target")
         try:
             out.append(
-                _BstIntervalFrontierRow(
+                _RangeIntervalFrontierRow(
                     snapshot_id=(
                         int(snapshot_id) if snapshot_id is not None else None
                     ),
@@ -1781,7 +1781,7 @@ def _parse_int(value: object) -> int:
     return int(value)  # type: ignore[arg-type]
 
 
-def _load_latest_bst_interval_rows(flow_graph: object) -> tuple[_BstIntervalFrontierRow, ...]:
+def _load_latest_range_interval_rows(flow_graph: object) -> tuple[_RangeIntervalFrontierRow, ...]:
     try:
         from d810.core.observability import get_active_diag_conn
     except Exception:
@@ -1798,7 +1798,7 @@ def _load_latest_bst_interval_rows(flow_graph: object) -> tuple[_BstIntervalFron
         row = conn.execute(
             """
             SELECT r.snapshot_id
-            FROM bst_interval_dispatcher_rows r
+            FROM condition_chain_interval_dispatcher_rows r
             JOIN snapshots s ON s.id = r.snapshot_id
             WHERE s.func_ea_hex = ?
             GROUP BY r.snapshot_id
@@ -1809,7 +1809,7 @@ def _load_latest_bst_interval_rows(flow_graph: object) -> tuple[_BstIntervalFron
         ).fetchone()
         if row is None and func_ea == 0:
             row = conn.execute(
-                "SELECT snapshot_id FROM bst_interval_dispatcher_rows "
+                "SELECT snapshot_id FROM condition_chain_interval_dispatcher_rows "
                 "GROUP BY snapshot_id ORDER BY snapshot_id DESC LIMIT 1"
             ).fetchone()
         if row is None:
@@ -1818,7 +1818,7 @@ def _load_latest_bst_interval_rows(flow_graph: object) -> tuple[_BstIntervalFron
         rows = conn.execute(
             """
             SELECT snapshot_id, row_index, lo_i64, hi_i64, target_block
-            FROM bst_interval_dispatcher_rows
+            FROM condition_chain_interval_dispatcher_rows
             WHERE snapshot_id = ?
             ORDER BY row_index
             """,
@@ -1827,7 +1827,7 @@ def _load_latest_bst_interval_rows(flow_graph: object) -> tuple[_BstIntervalFron
     except Exception:
         return ()
     return tuple(
-        _BstIntervalFrontierRow(
+        _RangeIntervalFrontierRow(
             snapshot_id=int(row[0]),
             row_index=int(row[1]),
             lo=int(row[2]),
@@ -1874,7 +1874,7 @@ def _replace_or_add_redirect(
         )
     elif desired_target in succs:
         if choice.edge_kind not in {
-            "BST_INTERVAL_PROVEN_FRONTIER",
+            "RANGE_INTERVAL_PROVEN_FRONTIER",
             "SAME_DAG_SCC_FRONTIER",
         }:
             return None

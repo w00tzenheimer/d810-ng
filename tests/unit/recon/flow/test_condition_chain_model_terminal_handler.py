@@ -35,7 +35,7 @@ def test_terminal_handler_rejects_path_to_dispatcher() -> None:
     )
 
 
-def test_terminal_handler_rejects_path_to_bst_block() -> None:
+def test_terminal_handler_rejects_path_to_condition_chain_block() -> None:
     fg = _fg({1: (2, 4), 2: (), 4: ()})
 
     assert not is_terminal_handler(

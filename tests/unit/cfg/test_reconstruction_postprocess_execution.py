@@ -33,14 +33,14 @@ class TestExecuteReconstructionPostprocess:
         )
 
         result = execute_reconstruction_postprocess(
-            dag=SimpleNamespace(bst_node_blocks={2}),
+            dag=SimpleNamespace(condition_chain_blocks={2}),
             corrected_dag=object(),
             flow_graph=SimpleNamespace(blocks={1: object(), 2: object()}),
             modifications=[],
             builder=object(),
             dispatcher_region={2},
             dispatcher_serial=-1,
-            bst_result=SimpleNamespace(dispatcher=None),
+            range_evidence=SimpleNamespace(dispatcher=None),
             state_machine=SimpleNamespace(state_constants={0x10}),
             state_var_stkoff=0x30,
             constant_result=object(),
@@ -61,7 +61,7 @@ class TestExecuteReconstructionPostprocess:
         assert result.projected_flow_graph.blocks.keys() == {1, 2}
         assert result.residual_dispatcher_preds == ()
         assert result.initial_residual_dispatcher_preds == ()
-        assert result.allow_post_apply_bst_cleanup is True
+        assert result.allow_post_apply_condition_chain_cleanup is True
         assert result.postprocess_plan is None
 
     def test_executes_generic_postprocess_pipeline(self, monkeypatch) -> None:
@@ -124,14 +124,14 @@ class TestExecuteReconstructionPostprocess:
 
         modifications: list[object] = []
         result = execute_reconstruction_postprocess(
-            dag=SimpleNamespace(bst_node_blocks={2}),
+            dag=SimpleNamespace(condition_chain_blocks={2}),
             corrected_dag=object(),
             flow_graph=SimpleNamespace(blocks={1: object(), 2: object()}, entry_serial=1),
             modifications=modifications,
             builder=object(),
             dispatcher_region={2, 6},
             dispatcher_serial=6,
-            bst_result=SimpleNamespace(dispatcher=SimpleNamespace()),
+            range_evidence=SimpleNamespace(dispatcher=SimpleNamespace()),
             state_machine=SimpleNamespace(state_constants={0x10, 0x20}),
             state_var_stkoff=0x30,
             constant_result=object(),
@@ -158,8 +158,8 @@ class TestExecuteReconstructionPostprocess:
         ]
         assert result.initial_residual_dispatcher_preds == (41,)
         assert result.residual_dispatcher_preds == ()
-        assert result.allow_post_apply_bst_cleanup is False
-        assert result.post_apply_bst_cleanup_reason == "residual_dispatcher_redirects"
+        assert result.allow_post_apply_condition_chain_cleanup is False
+        assert result.post_apply_condition_chain_cleanup_reason == "residual_dispatcher_redirects"
         assert result.artifact_return_blocks == frozenset({94})
         assert result.common_return_corridor == frozenset({30, 40})
         assert result.postprocess_plan is postprocess_plan
@@ -209,14 +209,14 @@ class TestExecuteReconstructionPostprocess:
         residual_preds = iter(((16,), (16,), ()))
         modifications: list[object] = []
         result = execute_reconstruction_postprocess(
-            dag=SimpleNamespace(bst_node_blocks={2}),
-            corrected_dag=SimpleNamespace(edges=(), nodes=(), bst_node_blocks={2}),
+            dag=SimpleNamespace(condition_chain_blocks={2}),
+            corrected_dag=SimpleNamespace(edges=(), nodes=(), condition_chain_blocks={2}),
             flow_graph=SimpleNamespace(blocks={1: object(), 2: object()}, entry_serial=1),
             modifications=modifications,
             builder=object(),
             dispatcher_region={2, 6},
             dispatcher_serial=6,
-            bst_result=SimpleNamespace(dispatcher=SimpleNamespace(lookup=None)),
+            range_evidence=SimpleNamespace(dispatcher=SimpleNamespace(lookup=None)),
             state_machine=SimpleNamespace(state_constants={0x10}),
             state_var_stkoff=0x30,
             constant_result=object(),
@@ -238,8 +238,8 @@ class TestExecuteReconstructionPostprocess:
 
         assert modifications == [("late-raw-alias", 63)]
         assert result.residual_dispatcher_preds == ()
-        assert result.allow_post_apply_bst_cleanup is False
-        assert result.post_apply_bst_cleanup_reason == "residual_dispatcher_redirects"
+        assert result.allow_post_apply_condition_chain_cleanup is False
+        assert result.post_apply_condition_chain_cleanup_reason == "residual_dispatcher_redirects"
 
     def test_runs_early_residual_alias_overrides_before_broader_postprocess(self, monkeypatch) -> None:
         events: list[str] = []
@@ -298,14 +298,14 @@ class TestExecuteReconstructionPostprocess:
         residual_preds = iter(((), (), ()))
         modifications: list[object] = []
         result = execute_reconstruction_postprocess(
-            dag=SimpleNamespace(bst_node_blocks={2}),
-            corrected_dag=SimpleNamespace(edges=(), nodes=(), bst_node_blocks={2}),
+            dag=SimpleNamespace(condition_chain_blocks={2}),
+            corrected_dag=SimpleNamespace(edges=(), nodes=(), condition_chain_blocks={2}),
             flow_graph=SimpleNamespace(blocks={1: object(), 2: object()}, entry_serial=1),
             modifications=modifications,
             builder=object(),
             dispatcher_region={2, 6},
             dispatcher_serial=6,
-            bst_result=SimpleNamespace(dispatcher=SimpleNamespace(lookup=None)),
+            range_evidence=SimpleNamespace(dispatcher=SimpleNamespace(lookup=None)),
             state_machine=SimpleNamespace(state_constants={0x10}),
             state_var_stkoff=0x30,
             constant_result=object(),
@@ -327,8 +327,8 @@ class TestExecuteReconstructionPostprocess:
 
         assert events[:2] == ["emit", "plan"]
         assert modifications == [("late-raw-alias", 63)]
-        assert result.allow_post_apply_bst_cleanup is False
-        assert result.post_apply_bst_cleanup_reason == "residual_dispatcher_redirects"
+        assert result.allow_post_apply_condition_chain_cleanup is False
+        assert result.post_apply_condition_chain_cleanup_reason == "residual_dispatcher_redirects"
 
 
 def test_emit_residual_raw_alias_reconstruction_overrides_normalizes_to_semantic_target(monkeypatch):
@@ -349,7 +349,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_normalizes_to_semantic
     dag = SimpleNamespace(
         edges=(edge,),
         nodes=(SimpleNamespace(entry_anchor=63, state_label="STATE_474EEEBB"),),
-        bst_node_blocks={71},
+        condition_chain_blocks={71},
     )
     captured: dict[str, object] = {}
 
@@ -434,7 +434,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_uses_post_source_exit_
     dag = SimpleNamespace(
         edges=(edge,),
         nodes=(SimpleNamespace(entry_anchor=63, state_label="STATE_474EEEBB"),),
-        bst_node_blocks={71},
+        condition_chain_blocks={71},
     )
     captured: dict[str, object] = {}
 
@@ -517,7 +517,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_keeps_prenormalized_ra
     dag = SimpleNamespace(
         edges=(edge,),
         nodes=(SimpleNamespace(entry_anchor=63, state_label="STATE_474EEEBB"),),
-        bst_node_blocks={71},
+        condition_chain_blocks={71},
     )
     captured: dict[str, object] = {}
 
@@ -597,7 +597,7 @@ def test_emit_residual_raw_alias_reconstruction_overrides_uses_existing_target_e
     dag = SimpleNamespace(
         edges=(edge,),
         nodes=(SimpleNamespace(entry_anchor=63, state_label="STATE_474EEEBB"),),
-        bst_node_blocks={71},
+        condition_chain_blocks={71},
     )
     _fake_build_candidate = lambda edge, **kwargs: (
         SimpleNamespace(

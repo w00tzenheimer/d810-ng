@@ -29,9 +29,9 @@ import ida_hexrays  # noqa: F401  (import guard: this module requires Hex-Rays)
 from d810.core.logging import getLogger
 from d810.hexrays.mutation.ir_translator import lift as lift_flow_graph
 from d810.hexrays.utils.pseudocode_render import render_branch_condition
-from d810.backends.hexrays.evidence.bst_analysis import (
+from d810.backends.hexrays.evidence.condition_chain_analysis import (
     _detect_state_var_stkoff,
-    analyze_bst_dispatcher,
+    analyze_condition_chain_dispatcher,
 )
 from d810.analyses.control_flow.condition_chain_model import resolve_target_via_condition_chain
 from d810.backends.hexrays.evidence.microcode_dump import (
@@ -136,7 +136,7 @@ def structure_recovered_program_live(
         )
 
     # The structurer must run on the recovered state graph (dispatcher-free), not
-    # the lifted/projected FlowGraph (which retains the BST comparison blocks).
+    # the lifted/projected FlowGraph (which retains the condition-chain comparison blocks).
     # Prefer the ENRICHED DAG rebuilt live (full conditional-transition chain,
     # same as the linearized renderer); fall back to the unflatten shallow stash.
     base_graph = get_recovered_flow_graph()
@@ -218,7 +218,7 @@ def structure_recovered_program_live(
                     len(flow_graph.blocks),
                     flow_graph.entry_serial,
                 )
-            # Step 4a: prune infeasible BST sibling-arm edges via the decision-DAG
+            # Step 4a: prune infeasible condition-chain sibling-arm edges via the decision-DAG
             # route oracle. blk35 routes 0x7FDCE054 -> 57 (past != 0x7D9C16EC); the
             # recovery also wired 35 -> 56 (the == 0x7D9C16EC sibling arm), which
             # 0x7FDCE054 never reaches. Drop exactly those proven-infeasible
@@ -241,7 +241,7 @@ def structure_recovered_program_live(
                     )
                     if sib_pruned and logger.info_on:
                         logger.info(
-                            "structurer: pruned %d infeasible BST sibling edge(s): %s",
+                            "structurer: pruned %d infeasible condition-chain sibling edge(s): %s",
                             len(sib_pruned),
                             ", ".join(f"blk[{s}]->blk[{d}]" for s, d in sib_pruned),
                         )
@@ -253,7 +253,7 @@ def structure_recovered_program_live(
             # decision_dag forced off).  This is the keystone for the §7 router
             # consolidation: it proves the decision-DAG subsumes the legacy logic
             # so the legacy body can be safely retired.  NOTE: the legacy
-            # comparison REQUIRES forcing ``bst_result.decision_dag = None`` --
+            # comparison REQUIRES forcing ``range_evidence.decision_dag = None`` --
             # otherwise resolve_target_via_condition_chain routes through the dag and the
             # probe degenerates to a tautological dag-vs-dag check.  Multiple
             # sample points per cell (interval endpoints) catch within-cell
@@ -265,13 +265,13 @@ def structure_recovered_program_live(
                         dispatcher_entry_serial=int(dispatcher_entry_serial),
                         state_var_stkoff=int(state_var_stkoff),
                     )
-                    bst_result = analyze_bst_dispatcher(
+                    range_evidence = analyze_condition_chain_dispatcher(
                         mba,
                         int(dispatcher_entry_serial),
                         state_var_stkoff=int(state_var_stkoff),
                     )
                     # Force the LEGACY body so the comparison is genuine.
-                    bst_result.decision_dag = None
+                    range_evidence.decision_dag = None
                     cells = probe_dag.resolve_paths()
                     samples = 0
                     diverged: list[tuple[int, int, object]] = []
@@ -280,7 +280,7 @@ def structure_recovered_program_live(
                             for pt in {int(iv.low), int(iv.high)}:
                                 samples += 1
                                 dag_tgt = int(probe_dag.route(pt))
-                                legacy = resolve_target_via_condition_chain(bst_result, pt)
+                                legacy = resolve_target_via_condition_chain(range_evidence, pt)
                                 legacy_i = int(legacy) if legacy is not None else None
                                 if legacy_i != dag_tgt:
                                     diverged.append((pt, dag_tgt, legacy_i))

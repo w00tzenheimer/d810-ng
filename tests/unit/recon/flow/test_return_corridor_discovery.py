@@ -52,13 +52,13 @@ class TestReturnCorridorDiscovery:
         corridor = collect_common_return_corridor(
             dag,
             flow_graph,
-            bst_node_blocks={2},
+            condition_chain_blocks={2},
             dispatcher_serial=6,
         )
 
         assert corridor == {25, 30, 35, 40}
 
-    def test_ignores_non_return_edges_and_bst_dispatcher_preds(self) -> None:
+    def test_ignores_non_return_edges_and_condition_chain_dispatcher_preds(self) -> None:
         dag = SimpleNamespace(
             edges=(
                 _edge(SemanticEdgeKind.TRANSITION, (10, 20)),
@@ -79,7 +79,7 @@ class TestReturnCorridorDiscovery:
         corridor = collect_common_return_corridor(
             dag,
             flow_graph,
-            bst_node_blocks={2},
+            condition_chain_blocks={2},
             dispatcher_serial=6,
         )
 

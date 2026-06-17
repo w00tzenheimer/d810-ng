@@ -74,7 +74,7 @@ def block_detail(
     )
     cls = cur3.fetchone()
     if cls:
-        for key in ("is_bst", "is_reachable", "is_gutted", "in_claimed"):
+        for key in ("is_condition_chain", "is_reachable", "is_gutted", "in_claimed"):
             if key in cls:
                 blk[key] = cls[key]
 

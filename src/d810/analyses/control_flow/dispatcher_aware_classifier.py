@@ -10,8 +10,8 @@ which dispatcher reads) — wrong. With the dispatcher region known, we
 distinguish:
 
 - ``DISPATCHER_ROUND_TRIP`` — back-edge whose target is in the
-  dispatcher region (root or BST cascade). Always actionable as a
-  redirect-to-handler when paired with reaching-def + BST resolution.
+  dispatcher region (root or condition-chain cascade). Always actionable as a
+  redirect-to-handler when paired with reaching-def + condition-chain resolution.
 - ``REAL_LOOP`` — carrier overlap exists *outside* the state-var
   exclusion set. Genuine algorithmic iteration.
 - ``SPURIOUS`` — no carrier overlap and target is not dispatcher.
@@ -55,7 +55,7 @@ class DispatcherContext:
     ----------
     dispatcher_blocks : frozenset[int]
         Block serials that belong to the dispatcher region (root +
-        BST cascade). Edges with target in this set are classified as
+        condition-chain cascade). Edges with target in this set are classified as
         ``DISPATCHER_ROUND_TRIP``.
     excluded_carriers : frozenset[str]
         Variable tokens (e.g. ``%var_3C``) that should NOT count toward

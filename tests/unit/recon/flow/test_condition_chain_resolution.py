@@ -1,4 +1,4 @@
-"""Tests for BST single-hop enrichment of StateTransitionAnchorFact."""
+"""Tests for condition-chain single-hop enrichment of StateTransitionAnchorFact."""
 from __future__ import annotations
 from tests.unit.core.diag._orm_bind import make_bound_diag_db
 
@@ -8,17 +8,17 @@ import sqlite3
 from d810.core.diag.models import (
     FactObservation,
     Snapshot,
-    StateTransitionBstResolution,
+    StateTransitionConditionChainResolution,
 )
-from d810.diagnostics.bst_resolution import (
-    BstInterval,
-    load_latest_bst_intervals_from_db,
-    parse_bst_intervals,
-    persist_bst_resolutions,
+from d810.diagnostics.condition_chain_resolution import (
+    ConditionChainInterval,
+    load_latest_condition_chain_intervals_from_db,
+    parse_condition_chain_intervals,
+    persist_condition_chain_resolutions,
     resolve_state_transition_facts,
     resolve_via_intervals,
 )
-from d810.core.diag.snapshot import snapshot_bst_interval_dispatcher_rows
+from d810.core.diag.snapshot import snapshot_condition_chain_interval_dispatcher_rows
 
 
 def _make_db() -> sqlite3.Connection:
@@ -96,31 +96,31 @@ def _add_state_write_anchor(
     ).execute()
 
 
-def test_parse_bst_intervals_basic() -> None:
+def test_parse_condition_chain_intervals_basic() -> None:
     payload = json.dumps([
         {"lo": "0x100", "hi": "0x200", "target": 7},
         {"lo": "0x200", "hi": "0x300", "target": 8},
     ])
-    intervals = parse_bst_intervals(payload)
+    intervals = parse_condition_chain_intervals(payload)
     assert len(intervals) == 2
-    assert intervals[0] == BstInterval(lo=0x100, hi=0x200, target_block=7)
+    assert intervals[0] == ConditionChainInterval(lo=0x100, hi=0x200, target_block=7)
 
 
-def test_load_latest_bst_intervals_from_db() -> None:
+def test_load_latest_condition_chain_intervals_from_db() -> None:
     conn = _make_db()
     Snapshot.insert(
         id=2, label="MMAT_GLBOPT1_post_d810", func_ea_hex="0x180012df0",
         func_ea_i64=0x180012df0, maturity="MMAT_GLBOPT1", phase="post_d810",
         block_count=0, timestamp=1.0,
     ).execute()
-    snapshot_bst_interval_dispatcher_rows(
+    snapshot_condition_chain_interval_dispatcher_rows(
         conn,
         1,
         [{"lo": 0x100, "hi": 0x180, "target": 7}],
         dispatcher_entry_block=2,
         maturity="MMAT_GLBOPT1",
     )
-    snapshot_bst_interval_dispatcher_rows(
+    snapshot_condition_chain_interval_dispatcher_rows(
         conn,
         2,
         [{"lo": 0x200, "hi": 0x280, "target": 8}],
@@ -128,15 +128,15 @@ def test_load_latest_bst_intervals_from_db() -> None:
         maturity="MMAT_GLBOPT1",
     )
 
-    intervals = load_latest_bst_intervals_from_db(conn)
+    intervals = load_latest_condition_chain_intervals_from_db(conn)
 
-    assert intervals == (BstInterval(lo=0x200, hi=0x280, target_block=8),)
+    assert intervals == (ConditionChainInterval(lo=0x200, hi=0x280, target_block=8),)
 
 
 def test_resolve_via_intervals_point_match() -> None:
     intervals = (
-        BstInterval(lo=0x10743C4C, hi=0x10743C4D, target_block=158),
-        BstInterval(lo=0x10743C4D, hi=0x11CD1DA3, target_block=160),
+        ConditionChainInterval(lo=0x10743C4C, hi=0x10743C4D, target_block=158),
+        ConditionChainInterval(lo=0x10743C4D, hi=0x11CD1DA3, target_block=160),
     )
     assert resolve_via_intervals(intervals, 0x10743C4C) == 158
     assert resolve_via_intervals(intervals, 0x10743C4D) == 160
@@ -146,14 +146,14 @@ def test_resolve_via_intervals_point_match() -> None:
 
 def test_resolve_via_intervals_range_match() -> None:
     intervals = (
-        BstInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),
+        ConditionChainInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),
     )
     # 0x5A21D9DB falls in [0x57BE6FD1, 0x5D0AEBD3) -> 76
     assert resolve_via_intervals(intervals, 0x5A21D9DB) == 76
 
 
 def test_resolve_branch_with_local_state_write() -> None:
-    """branch successor_kind + BST hit + handler has local state-write."""
+    """branch successor_kind + condition-chain hit + handler has local state-write."""
     conn = _make_db()
     _add_transition_fact(
         conn,
@@ -164,24 +164,24 @@ def test_resolve_branch_with_local_state_write() -> None:
     )
     _add_state_write_anchor(conn, block=76, state_const=0x10743C4C)
     intervals = (
-        BstInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),
+        ConditionChainInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),
     )
     resolutions = resolve_state_transition_facts(
-        conn, bst_intervals=intervals, locopt_snapshot_id=1,
+        conn, range_intervals=intervals, locopt_snapshot_id=1,
     )
     assert len(resolutions) == 1
     r = resolutions[0]
     assert r.source_block_serial == 100
-    assert r.bst_resolved_next_block_serial == 76
-    assert r.bst_resolved_next_state_const_hex == "0x0000000010743c4c"
-    assert r.bst_resolution_reason == (
-        "bst_row_matched_with_local_state_write"
+    assert r.condition_chain_resolved_next_block_serial == 76
+    assert r.condition_chain_resolved_next_state_const_hex == "0x0000000010743c4c"
+    assert r.condition_chain_resolution_reason == (
+        "condition_chain_row_matched_with_local_state_write"
     )
-    assert r.bst_resolution_maturity == "MMAT_GLBOPT1"
+    assert r.condition_chain_resolution_maturity == "MMAT_GLBOPT1"
 
 
 def test_resolve_branch_handler_has_no_state_write() -> None:
-    """branch + BST hit + resolved handler has no canonical state-write."""
+    """branch + condition-chain hit + resolved handler has no canonical state-write."""
     conn = _make_db()
     _add_transition_fact(
         conn,
@@ -192,22 +192,22 @@ def test_resolve_branch_handler_has_no_state_write() -> None:
     )
     # Note: NO StateWriteAnchorFact at block 76.
     intervals = (
-        BstInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),
+        ConditionChainInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),
     )
     resolutions = resolve_state_transition_facts(
-        conn, bst_intervals=intervals, locopt_snapshot_id=1,
+        conn, range_intervals=intervals, locopt_snapshot_id=1,
     )
     assert len(resolutions) == 1
     r = resolutions[0]
-    assert r.bst_resolved_next_block_serial == 76
-    assert r.bst_resolved_next_state_const_hex is None
-    assert r.bst_resolution_reason == (
-        "bst_row_matched_no_local_state_write_at_handler"
+    assert r.condition_chain_resolved_next_block_serial == 76
+    assert r.condition_chain_resolved_next_state_const_hex is None
+    assert r.condition_chain_resolution_reason == (
+        "condition_chain_row_matched_no_local_state_write_at_handler"
     )
 
 
-def test_resolve_no_bst_row() -> None:
-    """branch + BST has no row covering the source const."""
+def test_resolve_no_condition_chain_row() -> None:
+    """branch + condition chain has no row covering the source const."""
     conn = _make_db()
     _add_transition_fact(
         conn,
@@ -217,18 +217,18 @@ def test_resolve_no_bst_row() -> None:
         successor_kind="branch",
     )
     intervals = (
-        BstInterval(lo=0x100, hi=0x200, target_block=7),
+        ConditionChainInterval(lo=0x100, hi=0x200, target_block=7),
     )
     resolutions = resolve_state_transition_facts(
-        conn, bst_intervals=intervals, locopt_snapshot_id=1,
+        conn, range_intervals=intervals, locopt_snapshot_id=1,
     )
     assert len(resolutions) == 1
-    assert resolutions[0].bst_resolution_reason == "no_bst_row"
-    assert resolutions[0].bst_resolved_next_block_serial is None
+    assert resolutions[0].condition_chain_resolution_reason == "no_condition_chain_row"
+    assert resolutions[0].condition_chain_resolved_next_block_serial is None
 
 
 def test_resolve_non_branch_successor_skipped() -> None:
-    """successor_kind = direct -> no BST resolution attempted."""
+    """successor_kind = direct -> no condition-chain resolution attempted."""
     conn = _make_db()
     _add_transition_fact(
         conn,
@@ -238,18 +238,18 @@ def test_resolve_non_branch_successor_skipped() -> None:
         successor_kind="direct",
     )
     intervals = (
-        BstInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),
+        ConditionChainInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),
     )
     resolutions = resolve_state_transition_facts(
-        conn, bst_intervals=intervals, locopt_snapshot_id=1,
+        conn, range_intervals=intervals, locopt_snapshot_id=1,
     )
     assert len(resolutions) == 1
-    assert resolutions[0].bst_resolved_next_block_serial is None
-    assert "successor_kind=direct" in resolutions[0].bst_resolution_reason
+    assert resolutions[0].condition_chain_resolved_next_block_serial is None
+    assert "successor_kind=direct" in resolutions[0].condition_chain_resolution_reason
 
 
-def test_resolve_no_bst_intervals() -> None:
-    """Empty interval set -> no_bst_intervals_available reason."""
+def test_resolve_no_condition_chain_intervals() -> None:
+    """Empty interval set -> no_condition_chain_intervals_available reason."""
     conn = _make_db()
     _add_transition_fact(
         conn,
@@ -259,12 +259,12 @@ def test_resolve_no_bst_intervals() -> None:
         successor_kind="branch",
     )
     resolutions = resolve_state_transition_facts(
-        conn, bst_intervals=(), locopt_snapshot_id=1,
+        conn, range_intervals=(), locopt_snapshot_id=1,
     )
     assert len(resolutions) == 1
     assert (
-        resolutions[0].bst_resolution_reason
-        == "no_bst_intervals_available"
+        resolutions[0].condition_chain_resolution_reason
+        == "no_condition_chain_intervals_available"
     )
 
 
@@ -279,11 +279,11 @@ def test_persist_idempotent() -> None:
     )
     _add_state_write_anchor(conn, block=76, state_const=0x10743C4C)
     intervals = (
-        BstInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),
+        ConditionChainInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),
     )
     resolutions = resolve_state_transition_facts(
-        conn, bst_intervals=intervals, locopt_snapshot_id=1,
+        conn, range_intervals=intervals, locopt_snapshot_id=1,
     )
-    persist_bst_resolutions(conn, resolutions)
-    persist_bst_resolutions(conn, resolutions)
-    assert StateTransitionBstResolution.select().count() == 1
+    persist_condition_chain_resolutions(conn, resolutions)
+    persist_condition_chain_resolutions(conn, resolutions)
+    assert StateTransitionConditionChainResolution.select().count() == 1

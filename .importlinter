@@ -97,7 +97,7 @@ source_modules =
     d810.analyses.control_flow.analysis_stats
     d810.analyses.control_flow.dispatch_region
     d810.analyses.control_flow.profile_classifier
-    d810.analyses.control_flow.transition_bst_adapter
+    d810.analyses.control_flow.transition_condition_chain_adapter
     d810.analyses.control_flow.exit_transition_discovery
     d810.analyses.control_flow.residual_handoff_discovery
     d810.analyses.control_flow.state_machine_analysis

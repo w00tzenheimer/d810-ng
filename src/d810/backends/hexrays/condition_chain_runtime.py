@@ -1,4 +1,4 @@
-"""Hex-Rays runtime helpers for legacy BST microcode analysis."""
+"""Hex-Rays runtime helpers for legacy condition-chain microcode analysis."""
 
 from __future__ import annotations
 

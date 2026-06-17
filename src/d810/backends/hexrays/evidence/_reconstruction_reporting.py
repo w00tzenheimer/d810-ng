@@ -383,7 +383,7 @@ def log_late_island_rescue_run(logger, *, run, diagnostics, mba) -> int:
             if getattr(seed, "source_block", None) is None:
                 logger.info(
                     "RECON DAG: late island rescue: no reachable "
-                    "frontier for BST passthrough blk[%d] -> "
+                    "frontier for condition-chain passthrough blk[%d] -> "
                     "blk[%d] (edge src=%s)",
                     seed.passthrough_block,
                     seed.lifted_entry,
@@ -398,7 +398,7 @@ def log_late_island_rescue_run(logger, *, run, diagnostics, mba) -> int:
             continue
         logger.info(
             "RECON DAG: late island rescue %s -> %s%s "
-            "via BST passthrough (delta=%+d)",
+            "via condition-chain passthrough (delta=%+d)",
             blk_label(mba, selection.option.source_block),
             blk_label(mba, selection.option.lifted_entry),
             (
@@ -412,9 +412,9 @@ def log_late_island_rescue_run(logger, *, run, diagnostics, mba) -> int:
     for diagnostic in diagnostics:
         logger.info(
             "RECON DAG: late island rescue diagnostic: "
-            "unreachable blk[%d] bst_preds=%s dispatcher_rows=[%s]",
+            "unreachable blk[%d] condition_chain_preds=%s dispatcher_rows=[%s]",
             diagnostic.block_serial,
-            list(diagnostic.bst_preds),
+            list(diagnostic.condition_chain_preds),
             (
                 ", ".join(diagnostic.dispatcher_rows)
                 if diagnostic.dispatcher_rows
@@ -608,7 +608,7 @@ def log_reconstruction_postprocess_result(logger, *, result, dag, mba) -> None:
 
     if result.initial_residual_dispatcher_preds:
         logger.info(
-            "RECON DAG: preserving post-apply BST cleanup because residual non-BST dispatcher predecessors remain: %s",
+            "RECON DAG: preserving post-apply condition-chain cleanup because residual non-condition-chain dispatcher predecessors remain: %s",
             [blk_label(mba, serial) for serial in result.initial_residual_dispatcher_preds],
         )
 
@@ -666,7 +666,7 @@ def log_reconstruction_postprocess_result(logger, *, result, dag, mba) -> None:
             )
         if not result.residual_dispatcher_preds:
             logger.info(
-                "RECON BRIDGE: cleared all residual dispatcher feeders — BST cleanup enabled",
+                "RECON BRIDGE: cleared all residual dispatcher feeders — condition-chain cleanup enabled",
             )
         else:
             logger.info(

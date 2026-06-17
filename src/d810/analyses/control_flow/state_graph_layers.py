@@ -35,7 +35,7 @@ class NodeKind(str, Enum):
     """The role a block plays in the recovered state machine.
 
     * ``HANDLER`` -- a semantic handler block (the default).
-    * ``DISPATCHER_TEST`` -- a BST comparison node (lives in the decision-DAG).
+    * ``DISPATCHER_TEST`` -- a condition-chain comparison node (lives in the decision-DAG).
     * ``STATE_WRITE`` -- a block that writes the next state var (re-dispatches),
       including the materialised range/else-routed handlers (e.g. ``blk57``).
     * ``ROUTE_GLUE`` -- a shared routine reached by goto from several handlers

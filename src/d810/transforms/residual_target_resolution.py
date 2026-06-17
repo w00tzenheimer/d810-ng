@@ -20,8 +20,8 @@ from d810.core.typing import Callable, Iterable
 __all__ = [
     "collect_owned_exact_sources",
     "collect_supported_exact_entries",
-    "BstConditionalTail",
-    "BstGotoTail",
+    "ConditionChainConditionalTail",
+    "ConditionChainGotoTail",
     "DispatcherTrampolineSkipDecision",
     "dispatcher_exact_state_target",
     "dispatcher_has_exact_state_row",
@@ -34,20 +34,20 @@ __all__ = [
     "resolve_owner_semantic_entry_for_blocks",
     "resolve_frontier_target_entry",
     "resolve_semantic_reference_alias_entry",
-    "walk_bst_dispatcher",
+    "walk_condition_chain_dispatcher",
 ]
 
 
 @dataclass(frozen=True, slots=True)
-class BstGotoTail:
-    """Backend-neutral view of a BST goto tail."""
+class ConditionChainGotoTail:
+    """Backend-neutral view of a condition-chain goto tail."""
 
     target: int
 
 
 @dataclass(frozen=True, slots=True)
-class BstConditionalTail:
-    """Backend-neutral view of a BST conditional tail."""
+class ConditionChainConditionalTail:
+    """Backend-neutral view of a condition-chain conditional tail."""
 
     opcode: int
     rhs_value: int
@@ -91,8 +91,8 @@ def _reject_trampoline_skip(
 def resolve_dispatcher_trampoline_skip_candidate(
     *,
     source_block: int,
-    bst_root: int,
-    bst_blocks: set[int],
+    dispatcher_root: int,
+    condition_chain_blocks: set[int],
     nsucc: int,
     goto_target: int | None,
     direct_use_def_veto: bool,
@@ -104,44 +104,44 @@ def resolve_dispatcher_trampoline_skip_candidate(
     """Resolve one residual trampoline source into an admissible redirect.
 
     The caller supplies backend-specific reads through callbacks.  The shared
-    cfg layer owns the ordering and safety contract: source must not be a BST
+    cfg layer owns the ordering and safety contract: source must not be a condition-chain
     node, prior direct use-def vetoes win, source must be a one-way goto to the
-    BST root, a state write must resolve through the BST to a live non-BST,
-    non-self target, and the target must be in range when a block count is
-    available.
+    dispatcher root, a state write must resolve through the condition chain to
+    a live non-dispatcher, non-self target, and the target must be in range when
+    a block count is available.
     """
     source_block = int(source_block)
-    bst_root = int(bst_root)
-    bst_block_set = {int(block) for block in bst_blocks}
-    if source_block in bst_block_set:
+    dispatcher_root = int(dispatcher_root)
+    condition_chain_block_set = {int(block) for block in condition_chain_blocks}
+    if source_block in condition_chain_block_set:
         return _reject_trampoline_skip(
             source_block=source_block,
-            old_target=bst_root,
-            reason="source_is_bst",
+            old_target=dispatcher_root,
+            reason="source_is_condition_chain",
         )
     if direct_use_def_veto:
         return _reject_trampoline_skip(
             source_block=source_block,
-            old_target=bst_root,
+            old_target=dispatcher_root,
             reason="direct_use_def_veto",
         )
     if int(nsucc) != 1:
         return _reject_trampoline_skip(
             source_block=source_block,
-            old_target=bst_root,
+            old_target=dispatcher_root,
             reason="source_not_1way",
         )
     if goto_target is None:
         return _reject_trampoline_skip(
             source_block=source_block,
-            old_target=bst_root,
+            old_target=dispatcher_root,
             reason="source_not_goto",
         )
-    if int(goto_target) != bst_root:
+    if int(goto_target) != dispatcher_root:
         return _reject_trampoline_skip(
             source_block=source_block,
-            old_target=bst_root,
-            reason="goto_not_bst_root",
+            old_target=dispatcher_root,
+            reason="goto_not_dispatcher_root",
             target_block=int(goto_target),
         )
 
@@ -149,7 +149,7 @@ def resolve_dispatcher_trampoline_skip_candidate(
     if state_value is None:
         return _reject_trampoline_skip(
             source_block=source_block,
-            old_target=bst_root,
+            old_target=dispatcher_root,
             reason="state_write_missing",
         )
     state_value = int(state_value)
@@ -158,23 +158,23 @@ def resolve_dispatcher_trampoline_skip_candidate(
     if target_block is None:
         return _reject_trampoline_skip(
             source_block=source_block,
-            old_target=bst_root,
-            reason="bst_walk_unresolved",
+            old_target=dispatcher_root,
+            reason="condition_chain_walk_unresolved",
             state_value=state_value,
         )
     target_block = int(target_block)
-    if target_block in bst_block_set:
+    if target_block in condition_chain_block_set:
         return _reject_trampoline_skip(
             source_block=source_block,
-            old_target=bst_root,
-            reason="target_is_bst",
+            old_target=dispatcher_root,
+            reason="target_is_condition_chain",
             state_value=state_value,
             target_block=target_block,
         )
     if target_block == source_block:
         return _reject_trampoline_skip(
             source_block=source_block,
-            old_target=bst_root,
+            old_target=dispatcher_root,
             reason="target_is_source",
             state_value=state_value,
             target_block=target_block,
@@ -182,7 +182,7 @@ def resolve_dispatcher_trampoline_skip_candidate(
     if block_count is not None and not (0 <= target_block < int(block_count)):
         return _reject_trampoline_skip(
             source_block=source_block,
-            old_target=bst_root,
+            old_target=dispatcher_root,
             reason="target_out_of_range",
             state_value=state_value,
             target_block=target_block,
@@ -190,14 +190,14 @@ def resolve_dispatcher_trampoline_skip_candidate(
     if not target_exists_fn(target_block):
         return _reject_trampoline_skip(
             source_block=source_block,
-            old_target=bst_root,
+            old_target=dispatcher_root,
             reason="target_missing",
             state_value=state_value,
             target_block=target_block,
         )
     return DispatcherTrampolineSkipDecision(
         source_block=source_block,
-        old_target=bst_root,
+        old_target=dispatcher_root,
         target_block=target_block,
         state_value=state_value,
     )
@@ -207,16 +207,16 @@ def _node_kind_name(node: object) -> str:
     return str(getattr(getattr(node, "kind", None), "name", "") or getattr(node, "kind", "") or "")
 
 
-def walk_bst_dispatcher(
+def walk_condition_chain_dispatcher(
     *,
     root: int,
-    bst_blocks: set[int],
+    condition_chain_blocks: set[int],
     state_value: int,
-    tail_for_block_fn: Callable[[int], BstGotoTail | BstConditionalTail | None],
+    tail_for_block_fn: Callable[[int], ConditionChainGotoTail | ConditionChainConditionalTail | None],
     is_conditional_taken_fn: Callable[[int, int, int, int], bool | None],
     max_steps: int = 64,
 ) -> int | None:
-    """Walk a BST dispatcher for ``state_value`` until a non-BST block.
+    """Walk a condition-chain dispatcher for ``state_value`` until a non-condition-chain block.
 
     The cfg layer owns the target-resolution algorithm, while the caller owns
     backend-specific tail decoding and conditional semantics.  This keeps the
@@ -229,13 +229,13 @@ def walk_bst_dispatcher(
         if current in visited:
             return None
         visited.add(current)
-        if current not in bst_blocks:
+        if current not in condition_chain_blocks:
             return current
 
         tail = tail_for_block_fn(current)
         if tail is None:
             return None
-        if isinstance(tail, BstGotoTail):
+        if isinstance(tail, ConditionChainGotoTail):
             current = int(tail.target)
             continue
 
@@ -326,7 +326,7 @@ def resolve_path_lead_entry_from_node(
     dag: object,
     node: object,
     *,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
 ) -> int | None:
     outgoing_paths = tuple(
         edge.ordered_path
@@ -348,7 +348,7 @@ def resolve_path_lead_entry_from_node(
         {
             int(path[0])
             for path in outgoing_paths
-            if int(path[0]) not in bst_node_blocks
+            if int(path[0]) not in condition_chain_blocks
         }
     )
     if len(path_starts) != 1:
@@ -360,13 +360,13 @@ def resolve_redirect_safe_entry_from_node(
     node: object,
     *,
     dag: object | None = None,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
 ) -> int | None:
     if dag is not None:
         path_lead_entry = resolve_path_lead_entry_from_node(
             dag,
             node,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if path_lead_entry is not None:
             return path_lead_entry
@@ -378,24 +378,24 @@ def resolve_redirect_safe_entry_from_node(
     for block_serial in candidates:
         if block_serial is None:
             continue
-        if int(block_serial) not in bst_node_blocks:
+        if int(block_serial) not in condition_chain_blocks:
             return int(block_serial)
     entry_anchor = getattr(node, "entry_anchor", None)
     if entry_anchor is None:
         return None
-    return int(entry_anchor) if int(entry_anchor) not in bst_node_blocks else None
+    return int(entry_anchor) if int(entry_anchor) not in condition_chain_blocks else None
 
 
 def resolve_redirect_safe_target_entry(
     dag: object,
     edge: object,
     *,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
 ) -> int | None:
     target_entry = getattr(edge, "target_entry_anchor", None)
     explicit_target_entry = (
         int(target_entry)
-        if target_entry is not None and int(target_entry) not in bst_node_blocks
+        if target_entry is not None and int(target_entry) not in condition_chain_blocks
         else None
     )
     target_node = (
@@ -414,7 +414,7 @@ def resolve_redirect_safe_target_entry(
             labeled_entry = resolve_redirect_safe_entry_from_node(
                 labeled_matches[0],
                 dag=dag,
-                bst_node_blocks=bst_node_blocks,
+                condition_chain_blocks=condition_chain_blocks,
             )
     if labeled_entry is not None and target_label.endswith("_fallback"):
         return labeled_entry
@@ -422,7 +422,7 @@ def resolve_redirect_safe_target_entry(
         safe_target_entry = resolve_redirect_safe_entry_from_node(
             target_node,
             dag=dag,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         ordered_path = tuple(int(block) for block in (getattr(edge, "ordered_path", ()) or ()))
         if (
@@ -444,7 +444,7 @@ def resolve_dag_entry_for_state(
     dag: object,
     state_value: int | None,
     *,
-    bst_node_blocks: set[int] | None = None,
+    condition_chain_blocks: set[int] | None = None,
 ) -> int | None:
     if state_value is None:
         return None
@@ -454,7 +454,7 @@ def resolve_dag_entry_for_state(
             return resolve_redirect_safe_entry_from_node(
                 node,
                 dag=dag,
-                bst_node_blocks=bst_node_blocks or set(),
+                condition_chain_blocks=condition_chain_blocks or set(),
             )
     for node in getattr(dag, "nodes", ()) or ():
         key = getattr(node, "key", None)
@@ -466,7 +466,7 @@ def resolve_dag_entry_for_state(
             return resolve_redirect_safe_entry_from_node(
                 node,
                 dag=dag,
-                bst_node_blocks=bst_node_blocks or set(),
+                condition_chain_blocks=condition_chain_blocks or set(),
             )
     return None
 
@@ -476,7 +476,7 @@ def resolve_normalized_alias_entry_for_state(
     state_value: int | None,
     *,
     source_block: int | None,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
 ) -> int | None:
     if state_value is None:
         return None
@@ -500,7 +500,7 @@ def resolve_normalized_alias_entry_for_state(
         entry = resolve_redirect_safe_entry_from_node(
             node,
             dag=dag,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if entry is None or entry == source_block:
             continue
@@ -530,7 +530,7 @@ def resolve_normalized_alias_entry_for_state(
         target_entry = resolve_redirect_safe_target_entry(
             dag,
             edge,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if target_entry is None:
             continue
@@ -572,7 +572,7 @@ def resolve_owner_semantic_entry_for_blocks(
     *,
     anchor_candidates: tuple[int, ...],
     source_block: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
 ) -> int | None:
     if not anchor_candidates:
         return None
@@ -609,7 +609,7 @@ def resolve_owner_semantic_entry_for_blocks(
         entry = resolve_redirect_safe_entry_from_node(
             owner,
             dag=dag,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if entry is not None and entry != source_block:
             return entry
@@ -621,7 +621,7 @@ def resolve_cover_fallback_entry_for_state(
     state_value: int | None,
     *,
     source_block: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher: object | None = None,
 ) -> int | None:
     if state_value is None:
@@ -655,7 +655,7 @@ def resolve_cover_fallback_entry_for_state(
         exact_entry = resolve_dag_entry_for_state(
             dag,
             cover_state,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if exact_entry is not None and exact_entry != source_block:
             return exact_entry
@@ -664,13 +664,13 @@ def resolve_cover_fallback_entry_for_state(
         dag,
         anchor_candidates=(cover_interval_target,) if cover_interval_target is not None else (),
         source_block=source_block,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     if semantic_cover_target is not None:
         return semantic_cover_target
     if (
         cover_interval_target is not None
-        and int(cover_interval_target) not in bst_node_blocks
+        and int(cover_interval_target) not in condition_chain_blocks
         and int(cover_interval_target) != source_block
     ):
         return int(cover_interval_target)
@@ -682,7 +682,7 @@ def resolve_nonexact_dispatch_target(
     state_value: int | None,
     *,
     source_block: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher: object | None,
     dispatcher_lookup: object | None = None,
 ) -> int | None:
@@ -695,7 +695,7 @@ def resolve_nonexact_dispatch_target(
         dag,
         state_value,
         source_block=source_block,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     if normalized_alias_target is not None:
         return normalized_alias_target
@@ -712,13 +712,13 @@ def resolve_nonexact_dispatch_target(
             dag,
             anchor_candidates=(int(resolved),) if resolved is not None else (),
             source_block=source_block,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if semantic_resolved is not None:
             return semantic_resolved
         if (
             resolved is not None
-            and int(resolved) not in bst_node_blocks
+            and int(resolved) not in condition_chain_blocks
             and int(resolved) != source_block
         ):
             return int(resolved)
@@ -727,7 +727,7 @@ def resolve_nonexact_dispatch_target(
         dag,
         state_value,
         source_block=source_block,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         dispatcher=dispatcher,
     )
     if cover_fallback_entry is not None and cover_fallback_entry != source_block:
@@ -826,7 +826,7 @@ def resolve_frontier_target_entry(
     pred_serial: int,
     state_value: int,
     dispatcher_model: object | None,
-    bst_blocks: set[int],
+    condition_chain_blocks: set[int],
     semantic_reference_program: object | None,
     dispatcher_exact_state_target_fn: Callable[..., int | None],
     supplemental_selected_entry_for_state_fn: Callable[..., int | None],
@@ -850,23 +850,23 @@ def resolve_frontier_target_entry(
     exact_dag_entry = resolve_exact_dag_entry_for_state_fn(
         dag,
         raw_state,
-        dispatcher_region=bst_blocks,
+        dispatcher_region=condition_chain_blocks,
     )
     direct_semantic_entry = resolve_semantic_reference_entry_for_state_fn(
         raw_state,
         semantic_reference_program=semantic_reference_program,
-        dispatcher_region=bst_blocks,
+        dispatcher_region=condition_chain_blocks,
     )
     target_entry = resolve_dag_entry_for_state_fn(
         dag,
         raw_state,
-        bst_node_blocks=bst_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     normalized_alias_entry = resolve_normalized_alias_entry_for_state_fn(
         dag,
         raw_state,
         source_block=int(pred_serial),
-        bst_node_blocks=bst_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     semantic_alias_entry = resolve_semantic_reference_alias_entry_fn(
         dag,
@@ -916,7 +916,7 @@ def resolve_frontier_target_entry(
         target_entry = int(preferred_alias_entry)
     if (
         target_entry is None
-        or int(target_entry) in bst_blocks
+        or int(target_entry) in condition_chain_blocks
         or int(target_entry) == int(pred_serial)
     ):
         target_entry = supplemental_selected_entry_for_state_fn(
@@ -935,11 +935,11 @@ def collect_supported_exact_entries(
     round_summary: object,
     *,
     exact_source_blocks: Iterable[int],
-    bst_blocks: set[int],
+    condition_chain_blocks: set[int],
     is_straight_line_handoff_fn: Callable[[object], bool],
     resolve_dag_entry_for_state_fn: Callable[..., int | None],
 ) -> set[int]:
-    """Return exact-node entry blocks that are safe BST bypass targets."""
+    """Return exact-node entry blocks that are safe condition-chain bypass targets."""
     supported_entries = {int(source_block) for source_block in exact_source_blocks}
     for plannable in getattr(round_summary, "plannable_edges", ()):
         edge = getattr(plannable, "edge", None)
@@ -951,9 +951,9 @@ def collect_supported_exact_entries(
         target_entry = resolve_dag_entry_for_state_fn(
             round_summary.dag,
             int(target_state) & 0xFFFFFFFF,
-            bst_node_blocks=bst_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
-        if target_entry is None or int(target_entry) in bst_blocks:
+        if target_entry is None or int(target_entry) in condition_chain_blocks:
             continue
         supported_entries.add(int(target_entry))
     return supported_entries
@@ -987,7 +987,7 @@ def is_supplemental_feeder_bypass(
     state_value: int,
     exact_dispatch_target: int | None,
     target_entry: int,
-    bst_blocks: set[int],
+    condition_chain_blocks: set[int],
     supported_entries: set[int],
     owned_exact_sources: set[int],
     terminal_source_owned_blocks: set[int],
@@ -1004,7 +1004,7 @@ def is_supplemental_feeder_bypass(
     """
     pred_serial = int(pred_serial)
     target_entry = int(target_entry)
-    if target_entry in bst_blocks or target_entry in supported_entries:
+    if target_entry in condition_chain_blocks or target_entry in supported_entries:
         return False
     if pred_serial == target_entry:
         return False

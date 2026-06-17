@@ -50,10 +50,10 @@ class ReconciliationBucket(str, Enum):
     RESOLVER_ONLY_STRATEGY_DIDNT_LOG = "RESOLVER_ONLY_STRATEGY_DIDNT_LOG"
     DISAGREE_TARGET = "DISAGREE_TARGET"
     STRATEGY_ONLY_RESOLVER_NO_STATE = "STRATEGY_ONLY_RESOLVER_NO_STATE"
-    STRATEGY_ONLY_STATE_NOT_IN_BST = "STRATEGY_ONLY_STATE_NOT_IN_BST"
+    STRATEGY_ONLY_STATE_NOT_IN_CONDITION_CHAIN = "STRATEGY_ONLY_STATE_NOT_IN_CONDITION_CHAIN"
     STRATEGY_ONLY_OTHER = "STRATEGY_ONLY_OTHER"
     BOTH_NONE_NO_STATE = "BOTH_NONE_NO_STATE"
-    BOTH_NONE_STATE_NOT_IN_BST = "BOTH_NONE_STATE_NOT_IN_BST"
+    BOTH_NONE_STATE_NOT_IN_CONDITION_CHAIN = "BOTH_NONE_STATE_NOT_IN_CONDITION_CHAIN"
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,7 +199,7 @@ def reconcile_edge(
     logged_intent_target: int | None,
     persisted_target: int | None,
     state_const: int | None,
-    state_in_bst: bool,
+    state_in_condition_chain: bool,
     log_signals: StrategyLogSignals,
 ) -> EdgeReconciliation:
     """Bucket one edge from the three observations + log signals.
@@ -248,8 +248,8 @@ def reconcile_edge(
     elif rt is None and lt is not None:
         if state_const is None:
             bucket = ReconciliationBucket.STRATEGY_ONLY_RESOLVER_NO_STATE
-        elif not state_in_bst:
-            bucket = ReconciliationBucket.STRATEGY_ONLY_STATE_NOT_IN_BST
+        elif not state_in_condition_chain:
+            bucket = ReconciliationBucket.STRATEGY_ONLY_STATE_NOT_IN_CONDITION_CHAIN
             note = f"state=0x{state_const:x}"
         else:
             bucket = ReconciliationBucket.STRATEGY_ONLY_OTHER
@@ -257,7 +257,7 @@ def reconcile_edge(
         if state_const is None:
             bucket = ReconciliationBucket.BOTH_NONE_NO_STATE
         else:
-            bucket = ReconciliationBucket.BOTH_NONE_STATE_NOT_IN_BST
+            bucket = ReconciliationBucket.BOTH_NONE_STATE_NOT_IN_CONDITION_CHAIN
             note = f"state=0x{state_const:x}"
 
     return EdgeReconciliation(
@@ -279,7 +279,7 @@ def reconcile_edges(
     logged_intent: Mapping[int, tuple[int, int]],
     persisted: Mapping[int, tuple[int | None, int | None]],
     state_consts: Mapping[int, int | None],
-    bst_table: Mapping[int, int],
+    condition_chain_table: Mapping[int, int],
     log_signals: StrategyLogSignals,
 ) -> ReconciliationSummary:
     """Reconcile every edge from a back-edge list."""
@@ -297,7 +297,7 @@ def reconcile_edges(
                 logged_intent_target=li[1] if li else None,
                 persisted_target=pe[1] if pe else None,
                 state_const=sc,
-                state_in_bst=(sc is not None and int(sc) in bst_table),
+                state_in_condition_chain=(sc is not None and int(sc) in condition_chain_table),
                 log_signals=log_signals,
             )
         )

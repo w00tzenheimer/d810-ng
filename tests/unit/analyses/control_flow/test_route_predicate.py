@@ -3,7 +3,7 @@
 Covers the exact interval-set arithmetic, per-comparison signedness (the
 sign-bit-XOR reduction -- the bug a global signed flag introduces), and the
 ground-truth sub_7FFD3338C040 condition-chain dispatcher: routing must match the microcode
-trace (``.tmp/bst_trace.py``), and blk56's partition cell must be EXACTLY
+trace (``.tmp/condition_chain_trace.py``), and blk56's partition cell must be EXACTLY
 ``{0x7D9C16EC}`` -- the only state that reaches it.
 """
 from __future__ import annotations

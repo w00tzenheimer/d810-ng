@@ -3,7 +3,7 @@
 This module realizes the north-star ``#2 RecoverStateTransitions`` as a genuine
 LiSA-shaped abstract domain (CENTRAL §11.3-11.4, ticket ``llr-mmfq``), replacing
 the ad-hoc ``_walk_handler_chain`` recursion in
-``backends/hexrays/evidence/bst_analysis.py``.
+``backends/hexrays/evidence/condition_chain_analysis.py``.
 
 The walk is structural: at any ``nsucc > 1`` handler block it sub-walks each arm
 and declares a ``conditional_states`` set whenever the arms reach the dispatcher

@@ -99,7 +99,7 @@ class StateDispatcherMap:
         :class:`IntervalSet` partition (:func:`build_partition` over this map's
         exact rows as singletons, then :func:`route_via_interval_sets` membership)
         -- so there is no separate ``dict.get`` resolution path.  Exact-only here;
-        range routing needs a ``ComparisonDispatcherModel`` built with BST evidence.
+        range routing needs a ``ComparisonDispatcherModel`` built with range evidence.
         """
         return route_via_interval_sets(
             state_value,

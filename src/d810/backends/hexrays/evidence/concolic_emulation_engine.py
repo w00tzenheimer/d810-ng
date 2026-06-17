@@ -61,7 +61,7 @@ from d810.analyses.control_flow.minimal_state_recovery import _resolve_state_var
 from d810.analyses.value_flow.global_init_fold import (
     compute_initializer_stable_global_reads,
 )
-from d810.capabilities.providers import get_bst_walkers
+from d810.capabilities.providers import get_condition_chain_walkers
 from d810.backends.hexrays.evidence.emulation_dispatcher_resolver import (
     _SELF_UPDATE_OPS,
     EmulationDispatcherResolver,
@@ -588,7 +588,7 @@ class ConcolicEmulationEngine:
         scan misses). At most one ``mov`` arm per block (the last write wins, matching
         ``_mov_const_to_stkoff``), so a single-arm block stays a single arm.
 
-        ABSOLUTE COMPUTED write fallback (ticket llr-iy9i round 4): a binary-search BST
+        ABSOLUTE COMPUTED write fallback (ticket llr-iy9i round 4): a condition-chain
         machine (``hardened_cond_chain_simple``) writes its next state with a folded
         ``add (global ^ K) + K -> state`` -- neither ``state OP #const`` nor ``mov #const``.
         When neither direct form is found, fold the block's state-slot write to a constant in
@@ -651,7 +651,7 @@ class ConcolicEmulationEngine:
         if cached is not None:
             return cached
         try:
-            fetch = get_bst_walkers().fetch_idb_value
+            fetch = get_condition_chain_walkers().fetch_idb_value
         except Exception:  # noqa: BLE001 — no provider -> no global fold (direct path only)
             self._fgr_cache[int(handler)] = {}
             return {}

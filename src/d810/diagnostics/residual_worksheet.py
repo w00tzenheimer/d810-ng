@@ -100,7 +100,7 @@ class PlannerOwnershipInfo:
 class TransitionMeta:
     dispatcher_entry_serial: int | None
     state_var_stkoff: int | None
-    bst_node_blocks: tuple[int, ...]
+    condition_chain_blocks: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -262,7 +262,7 @@ def find_latest_log_file(
         if (
             "LFG DAG:" in sample
             or "residual handoff" in sample
-            or "unresolved non-BST dispatcher predecessors" in sample
+            or "unresolved non-condition-chain dispatcher predecessors" in sample
         ):
             return path
     return None
@@ -443,13 +443,13 @@ def load_block_classification(
     conn: sqlite3.Connection,
     snapshot_id: int | None,
 ) -> dict[int, dict[str, bool]]:
-    """Load reachability/BST flags for one snapshot."""
+    """Load reachability/condition-chain flags for one snapshot."""
     if snapshot_id is None:
         return {}
     rows = (
         BlockClassification.select(
             BlockClassification.serial,
-            BlockClassification.is_bst,
+            BlockClassification.is_condition_chain,
             BlockClassification.is_reachable,
             BlockClassification.is_gutted,
             BlockClassification.in_claimed,
@@ -461,7 +461,7 @@ def load_block_classification(
     result: dict[int, dict[str, bool]] = {}
     for row in rows:
         result[int(row["serial"])] = {
-            "is_bst": bool(row["is_bst"]),
+            "is_condition_chain": bool(row["is_condition_chain"]),
             "is_reachable": bool(row["is_reachable"]),
             "is_gutted": bool(row["is_gutted"]),
             "in_claimed": bool(row["in_claimed"]),
@@ -640,7 +640,7 @@ def load_transition_meta(recon_db_path: Path | None, *, func_ea: int) -> Transit
     report = metrics.get("transition_report")
     if not isinstance(report, dict):
         return None
-    bst_nodes = report.get("bst_node_blocks") or ()
+    condition_chain_nodes = report.get("condition_chain_blocks") or ()
     return TransitionMeta(
         dispatcher_entry_serial=(
             int(report["dispatcher_entry_serial"])
@@ -652,7 +652,7 @@ def load_transition_meta(recon_db_path: Path | None, *, func_ea: int) -> Transit
             if report.get("state_var_stkoff") is not None
             else None
         ),
-        bst_node_blocks=tuple(int(v) for v in bst_nodes),
+        condition_chain_blocks=tuple(int(v) for v in condition_chain_nodes),
     )
 
 
@@ -742,7 +742,7 @@ _NORMALIZED_RE = re.compile(
     r"\(was blk\[(?P<old>\d+)\]\)"
 )
 _UNRESOLVED_PREDS_RE = re.compile(
-    r"unresolved non-BST dispatcher predecessors remain:\s*(?P<payload>\{.*\})"
+    r"unresolved non-condition-chain dispatcher predecessors remain:\s*(?P<payload>\{.*\})"
 )
 
 
@@ -928,11 +928,11 @@ def detect_feeder_blocks(
     if transition_meta is not None and transition_meta.dispatcher_entry_serial is not None:
         dispatcher = blocks.get(transition_meta.dispatcher_entry_serial)
         if dispatcher is not None:
-            bst_blocks = set(int(v) for v in transition_meta.bst_node_blocks)
+            condition_chain_blocks = set(int(v) for v in transition_meta.condition_chain_blocks)
             residual_preds = [
                 int(pred)
                 for pred in dispatcher.preds
-                if pred != dispatcher.serial and pred not in bst_blocks and pred in reachable
+                if pred != dispatcher.serial and pred not in condition_chain_blocks and pred in reachable
             ]
             if residual_preds:
                 return sorted(residual_preds)
@@ -940,7 +940,7 @@ def detect_feeder_blocks(
     claimed = sorted(
         serial
         for serial, flags in classification.items()
-        if flags.get("in_claimed", False) and not flags.get("is_bst", False)
+        if flags.get("in_claimed", False) and not flags.get("is_condition_chain", False)
     )
     if claimed:
         return claimed

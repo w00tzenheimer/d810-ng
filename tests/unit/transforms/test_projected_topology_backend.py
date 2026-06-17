@@ -61,7 +61,7 @@ def test_materialize_state_dag_builds_mba_and_corrected_dag(monkeypatch) -> None
         pre_header_serial=7,
         initial_state=0x1111,
         handler_range_map={10: (0x1000, 0x2000)},
-        bst_node_blocks=(5, 6),
+        condition_chain_blocks=(5, 6),
         diagnostics=("diag",),
         dispatcher="dispatcher",
         collect_corrected_dag=True,
@@ -111,7 +111,7 @@ def test_project_state_dag_projects_modifications_before_materializing(
         pre_header_serial=None,
         initial_state=None,
         handler_range_map=None,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         diagnostics=(),
         dispatcher=None,
     )

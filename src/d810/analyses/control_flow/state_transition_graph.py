@@ -4,11 +4,11 @@ The goto-free structurer (:mod:`d810.analyses.control_flow.structurer`) consumes
 a flow-graph of basic blocks (``.blocks`` / ``.entry_serial`` / ``.get_block`` +
 ``.successors`` / ``.predecessors``). Feeding it the raw lifted ``mba`` -- or even
 the unflatten *projected* FlowGraph -- structures the **dispatcher**: those graphs keep
-the BST comparison blocks (``if (var_64 <=u 0xNNNN)``) as nodes; the unflatten spine
-only redirects edges, and the BST blocks die later via the full plan + IDA's DCE.
+the condition-chain comparison blocks (``if (var_64 <=u 0xNNNN)``) as nodes; the unflatten spine
+only redirects edges, and the condition-chain blocks die later via the full plan + IDA's DCE.
 
 The recovered :class:`LinearizedStateDag` is the genuinely clean graph: handler
-state nodes + typed semantic transitions, with no ``var_64`` BST nodes. This
+state nodes + typed semantic transitions, with no ``var_64`` condition-chain nodes. This
 adapter projects it back down to a **block** CFG so the structurer (and the
 verified block-keyed reaching-defs/liveness in
 :mod:`d810.backends.hexrays.evidence.stack_value_flow_live`) operate on real
@@ -16,7 +16,7 @@ handler block serials:
 
 * **Nodes** = the union of every state node's ``owned_blocks`` plus every block
   named in a wired edge's ``ordered_path`` (handler bodies + the return
-  corridor); no dispatcher / BST blocks are pulled in.
+  corridor); no dispatcher / condition-chain blocks are pulled in.
 * **Edges** = primarily each semantic transition's ``ordered_path``: in the
   *flattened* base CFG, handler blocks do not directly succeed one another (they
   round-trip through the dispatcher), so the DAG's traced ``ordered_path`` is the
@@ -157,9 +157,9 @@ def build_state_transition_graph(
             initial-state handler's entry anchor (falling back to the
             dispatcher entry serial, then the first node's entry anchor).
         materialize_blocks: Extra physical-CFG blocks to project as nodes even
-            though they are not equality-leaf handlers -- dispatcher/BST-region
+            though they are not equality-leaf handlers -- dispatcher/condition-chain region
             blocks that write the state var and are resolved-edge endpoints (e.g.
-            the ``!= 0x7D9C16EC`` BST else-leaf ``blk57``, reached by range-
+            the ``!= 0x7D9C16EC`` condition-chain else-leaf ``blk57``, reached by range-
             narrowing rather than an exact-equality leaf). The mba-aware caller
             decides this set via the state-var-write criterion; here they are
             simply added as nodes so :func:`augment_state_transition_graph` can attach
@@ -260,7 +260,7 @@ def build_state_transition_graph(
     #     blocks that write the state var; absent from the equality-leaf handler
     #     projection above). They enter as bare nodes here; their resolved edges
     #     attach in augment_state_transition_graph. No resolved edge is dropped merely
-    #     because one endpoint lives behind a BST comparison.
+    #     because one endpoint lives behind a condition-chain comparison.
     for b in materialize_blocks:
         block_set.add(int(b))
 
@@ -383,9 +383,9 @@ def prune_infeasible_sibling_arms(
     route_targets: Mapping[int, "Iterable[int]"],
     sibling_arms: Mapping[int, "Iterable[int]"],
 ) -> tuple[StateTransitionGraph, tuple[tuple[int, int], ...]]:
-    """Drop ``src -> dst`` where *dst* is the infeasible BST sibling of *src*'s route.
+    """Drop ``src -> dst`` where *dst* is the infeasible condition-chain sibling of *src*'s route.
 
-    A block ``src`` that dispatches a concrete state routes, through the BST, to a
+    A block ``src`` that dispatches a concrete state routes, through the condition chain, to a
     single feasible target; the recovery can also wire it to that comparison's
     OTHER arm (e.g. ``blk35`` sets ``0x7FDCE054`` and routes past ``!= 0x7D9C16EC``
     to ``57``, yet is also wired to ``56``, the ``== 0x7D9C16EC`` sibling arm).

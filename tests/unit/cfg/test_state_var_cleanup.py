@@ -9,17 +9,17 @@ from d810.transforms.state_var_cleanup import (
 
 
 def test_collect_state_constants_merges_snapshot_and_dispatcher_maps() -> None:
-    bst_result = SimpleNamespace(
+    range_evidence = SimpleNamespace(
         handler_state_map={10: 0x1000, 20: 0x2000},
         handler_range_map={30: (0x3000, 0x30FF), 40: (None, 0x40FF)},
     )
 
-    constants = collect_state_constants((0xABCD,), bst_result)
+    constants = collect_state_constants((0xABCD,), range_evidence)
 
     assert constants == frozenset({0xABCD, 0x1000, 0x2000, 0x3000, 0x30FF, 0x40FF})
 
 
-def test_collect_state_constants_handles_missing_bst_result() -> None:
+def test_collect_state_constants_handles_missing_range_evidence() -> None:
     assert collect_state_constants((1, 2), None) == frozenset({1, 2})
 
 

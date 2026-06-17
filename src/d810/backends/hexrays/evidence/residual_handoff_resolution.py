@@ -108,7 +108,7 @@ def resolve_synthesized_handoff_target(
     block_serial: int,
     *,
     state_var_stkoff: int | None,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher: object | None,
     via_pred: int | None = None,
 ) -> tuple[int, int] | None:
@@ -117,7 +117,7 @@ def resolve_synthesized_handoff_target(
         mba,
         block_serial,
         state_var_stkoff=state_var_stkoff,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         dispatcher=dispatcher,
         via_pred=via_pred,
         resolve_state_via_valranges=_resolve_state_via_valranges(),
@@ -128,7 +128,7 @@ def resolve_effective_target_entry(
     dag: LinearizedStateDag,
     edge: StateDagEdge,
     *,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     state_var_stkoff: int | None,
     dispatcher_lookup: object | None,
     dispatcher: object | None,
@@ -137,7 +137,7 @@ def resolve_effective_target_entry(
     resolution = discover_effective_target_entry(
         dag,
         edge,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         state_var_stkoff=state_var_stkoff,
         dispatcher_lookup=dispatcher_lookup,
         dispatcher=dispatcher,
@@ -163,7 +163,7 @@ def is_semantic_handoff_redirect(
         mba,
         source_block,
         state_var_stkoff=state_var_stkoff,
-        bst_node_blocks=set(),
+        condition_chain_blocks=set(),
         dispatcher_lookup=dispatcher_lookup,
         dispatcher=dispatcher,
     )
@@ -175,7 +175,7 @@ def is_semantic_handoff_redirect(
         mba,
         source_block,
         state_var_stkoff=state_var_stkoff,
-        bst_node_blocks=set(),
+        condition_chain_blocks=set(),
         dispatcher=dispatcher,
         via_pred=via_pred,
     )

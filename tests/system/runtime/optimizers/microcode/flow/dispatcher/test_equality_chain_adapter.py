@@ -40,12 +40,12 @@ def test_live_adapter_normalizes_hexrays_numeric_opcode_and_mop_types(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        equality_chain._hexrays_bst_runtime,
+        equality_chain._hexrays_condition_chain_runtime,
         "build_opcode_map",
         lambda: {444: "m_jz"},
     )
     monkeypatch.setattr(
-        equality_chain._hexrays_bst_runtime,
+        equality_chain._hexrays_condition_chain_runtime,
         "build_mop_type_map",
         lambda: {22: "mop_n", 55: "mop_S", 77: "mop_b"},
     )

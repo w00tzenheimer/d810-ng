@@ -153,7 +153,7 @@ def discover_residual_alias_overrides(
     residual_dispatcher_preds: tuple[int, ...],
     node_by_key,
     shared_suffix_blocks: set[int],
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
 ) -> ResidualAliasDiscoveryResult:
     """Discover residual raw-alias overrides on ``dag``.
 
@@ -183,7 +183,7 @@ def discover_residual_alias_overrides(
             resolution = resolve_effective_target_entry(
                 dag,
                 edge,
-                bst_node_blocks=bst_node_blocks,
+                condition_chain_blocks=condition_chain_blocks,
                 state_var_stkoff=int(state_var_stkoff),
                 dispatcher_lookup=dispatcher_lookup,
                 dispatcher=dispatcher,
@@ -198,7 +198,7 @@ def discover_residual_alias_overrides(
         original_target_entry = getattr(edge, "target_entry_anchor", None)
         if (
             normalized_target == int(source_block)
-            or normalized_target in bst_node_blocks
+            or normalized_target in condition_chain_blocks
         ):
             continue
         if (

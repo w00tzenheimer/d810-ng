@@ -58,7 +58,7 @@ class FunctionPipelineContext:
 @dataclass(frozen=True)
 class CapabilityPolicy:
     """Capabilities a pass requires from the backend (keys like ``"live_mba"``,
-    ``"valranges"``, ``"bst_walkers"``). Empty == no special requirements."""
+    ``"valranges"``, ``"condition_chain_walkers"``). Empty == no special requirements."""
 
     required: frozenset[str] = frozenset()
 

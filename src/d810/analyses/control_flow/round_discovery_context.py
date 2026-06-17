@@ -112,9 +112,9 @@ class ReconRoundDiscoveryContext:
     dispatcher_region: frozenset[int]
     dispatcher_serial: int
 
-    # Upstream analysis results carried through the round. ``bst_result`` is
-    # caller-specific (per-family BST types) so it legitimately stays ``object``.
-    bst_result: object | None
+    # Upstream analysis results carried through the round. ``range_evidence`` is
+    # caller-specific (per-family range-routing evidence) so it legitimately stays ``object``.
+    range_evidence: object | None
     transition_result: TransitionResult
     constant_fixpoint: SnapshotConstantFixpointResult | None
 
@@ -209,11 +209,11 @@ def build_round_discovery_context(
     state_var_stkoff: int | None,
     structured_regions: tuple = (),
     constant_fixpoint: SnapshotConstantFixpointResult | None = None,
-    bst_result: object | None = None,
+    range_evidence: object | None = None,
     initial_state: int | None = None,
     pre_header_serial: int | None = None,
     handler_range_map: object | None = None,
-    bst_node_blocks: tuple[int, ...] = (),
+    condition_chain_blocks: tuple[int, ...] = (),
     diagnostics: tuple[str, ...] = (),
     dispatcher: object | None = None,
     mba: object | None = None,
@@ -230,7 +230,7 @@ def build_round_discovery_context(
     inline setup recipes.
 
     Callers that cannot supply a coherent input set (missing state var
-    stkoff, missing BST dispatcher serial, etc.) should skip building the
+    stkoff, missing condition-chain dispatcher serial, etc.) should skip building the
     context and pass ``discovery=None`` to :class:`AnalysisSnapshot`; we do
     **not** try to half-build here.
     """
@@ -243,7 +243,7 @@ def build_round_discovery_context(
         pre_header_serial=pre_header_serial,
         initial_state=initial_state,
         handler_range_map=handler_range_map or {},
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         diagnostics=diagnostics,
         dispatcher=dispatcher,
         mba=mba,
@@ -329,7 +329,7 @@ def build_round_discovery_context(
         corrected_dag=corrected_dag,
         dispatcher_region=dispatcher_region,
         dispatcher_serial=int(indexes.dispatcher_serial),
-        bst_result=bst_result,
+        range_evidence=range_evidence,
         transition_result=transition_result,
         constant_fixpoint=constant_fixpoint,
         structured_regions=tuple(structured_regions),

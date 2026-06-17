@@ -3,7 +3,7 @@
 The concrete precision oracle the concolic refiner consumes (ticket ``llr-1szn``,
 epic ``llr-7ouc``).  It wraps the existing portable block-stepper
 (:func:`d810.analyses.value_flow.state_write.forward_eval_insn`, exposed as
-``bst_analysis._forward_eval_insn``) so it can prove the exact constant a live
+``condition_chain_analysis._forward_eval_insn``) so it can prove the exact constant a live
 microcode block writes to the dispatcher state variable -- including MBA /
 opaque-XOR next-state writes that span several instructions, which a
 single-instruction reference emulator cannot fold.
@@ -60,7 +60,7 @@ class HexRaysBlockEmulator:
     :class:`ExactResult` keys the same cell the refiner folds into).
 
     ``eval_block`` steps the block via the portable
-    :func:`forward_eval_insn` core (through ``bst_analysis._forward_eval_insn``,
+    :func:`forward_eval_insn` core (through ``condition_chain_analysis._forward_eval_insn``,
     which carries the Hex-Rays seams) seeding the forward maps from ``store``
     where the operands map to known stack/register locations.  It NEVER asserts a
     wrong :class:`ExactResult`: a state-var constant is returned only when the

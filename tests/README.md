@@ -270,7 +270,7 @@ D810_REPO_ROOT=/Users/mahmoud/src/idapro/d810 \
   --dump-microcode-maturity CALLS,GLBOPT1 \
   --dump-microcode-d810 \
   --dump-terminal-return-valranges \
-  --dump-bst-maturity GLBOPT1 \
+  --dump-condition-chain-maturity GLBOPT1 \
   2>&1 | tail -3
 ```
 

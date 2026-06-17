@@ -20,7 +20,7 @@ from d810.backends.hexrays.evidence.residual_handoff_resolution import (
 class EffectiveTargetEntryRequest:
     dag: object
     edge: object
-    bst_node_blocks: AbstractSet[int]
+    condition_chain_blocks: AbstractSet[int]
     state_var_stkoff: int | None
     dispatcher_lookup: object | None
     dispatcher: object | None
@@ -38,7 +38,7 @@ class SynthesizedHandoffTargetRequest:
     mba: object
     block_serial: int
     state_var_stkoff: int | None
-    bst_node_blocks: AbstractSet[int]
+    condition_chain_blocks: AbstractSet[int]
     dispatcher: object | None
     via_pred: int | None = None
 
@@ -47,7 +47,7 @@ class SynthesizedHandoffTargetRequest:
 class ProjectedPathTailTargetRequest:
     dag: object
     source_block: int
-    bst_node_blocks: AbstractSet[int]
+    condition_chain_blocks: AbstractSet[int]
     dispatcher: object | None = None
     predecessor_hints: tuple[int, ...] | None = None
     require_predecessor_match: bool = False
@@ -59,7 +59,7 @@ class ImmediateHandoffTargetRequest:
     mba: object
     block_serial: int
     state_var_stkoff: int | None
-    bst_node_blocks: AbstractSet[int]
+    condition_chain_blocks: AbstractSet[int]
     dispatcher_lookup: object | None
     dispatcher: object | None = None
 
@@ -70,7 +70,7 @@ class ProjectedSnapshotHandoffTargetRequest:
     flow_graph: object
     block_serial: int
     state_var_stkoff: int | None
-    bst_node_blocks: AbstractSet[int]
+    condition_chain_blocks: AbstractSet[int]
     dispatcher: object | None
 
 
@@ -79,7 +79,7 @@ class AssignmentMapHandoffTargetRequest:
     dag: object
     state_machine: object | None
     block_serial: int
-    bst_node_blocks: AbstractSet[int]
+    condition_chain_blocks: AbstractSet[int]
     dispatcher: object | None
 
 
@@ -144,7 +144,7 @@ class HodurLinearizedFlowGraphHandoffResolutionBackend:
             target_entry=resolve_effective_target_entry(
                 request.dag,
                 request.edge,
-                bst_node_blocks=set(int(block) for block in request.bst_node_blocks),
+                condition_chain_blocks=set(int(block) for block in request.condition_chain_blocks),
                 state_var_stkoff=request.state_var_stkoff,
                 dispatcher_lookup=request.dispatcher_lookup,
                 dispatcher=request.dispatcher,
@@ -162,7 +162,7 @@ class HodurLinearizedFlowGraphHandoffResolutionBackend:
                 request.mba,
                 int(request.block_serial),
                 state_var_stkoff=request.state_var_stkoff,
-                bst_node_blocks=set(int(block) for block in request.bst_node_blocks),
+                condition_chain_blocks=set(int(block) for block in request.condition_chain_blocks),
                 dispatcher=request.dispatcher,
                 via_pred=request.via_pred,
             )
@@ -176,7 +176,7 @@ class HodurLinearizedFlowGraphHandoffResolutionBackend:
             target=resolve_projected_path_tail_target(
                 request.dag,
                 source_block=int(request.source_block),
-                bst_node_blocks=set(int(block) for block in request.bst_node_blocks),
+                condition_chain_blocks=set(int(block) for block in request.condition_chain_blocks),
                 dispatcher=request.dispatcher,
                 predecessor_hints=request.predecessor_hints,
                 require_predecessor_match=bool(request.require_predecessor_match),
@@ -193,7 +193,7 @@ class HodurLinearizedFlowGraphHandoffResolutionBackend:
                 request.mba,
                 int(request.block_serial),
                 state_var_stkoff=request.state_var_stkoff,
-                bst_node_blocks=set(int(block) for block in request.bst_node_blocks),
+                condition_chain_blocks=set(int(block) for block in request.condition_chain_blocks),
                 dispatcher_lookup=request.dispatcher_lookup,
                 dispatcher=request.dispatcher,
             )
@@ -209,7 +209,7 @@ class HodurLinearizedFlowGraphHandoffResolutionBackend:
                 request.flow_graph,
                 int(request.block_serial),
                 state_var_stkoff=request.state_var_stkoff,
-                bst_node_blocks=set(int(block) for block in request.bst_node_blocks),
+                condition_chain_blocks=set(int(block) for block in request.condition_chain_blocks),
                 dispatcher=request.dispatcher,
             )
         )
@@ -223,7 +223,7 @@ class HodurLinearizedFlowGraphHandoffResolutionBackend:
                 request.dag,
                 request.state_machine,
                 int(request.block_serial),
-                bst_node_blocks=set(int(block) for block in request.bst_node_blocks),
+                condition_chain_blocks=set(int(block) for block in request.condition_chain_blocks),
                 dispatcher=request.dispatcher,
             )
         )

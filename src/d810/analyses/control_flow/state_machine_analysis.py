@@ -16,7 +16,7 @@ from d810.ir.flowgraph import (
 )
 from d810.core import logging
 from d810.core.typing import Optional
-from d810.capabilities.providers import get_bst_walkers
+from d810.capabilities.providers import get_condition_chain_walkers
 from d810.ir.results import ConstantFixpointResult
 
 logger = logging.getLogger(__name__)
@@ -27,9 +27,9 @@ logger = logging.getLogger(__name__)
 # backend-free (ticket d81-1w16).  Kept as a module-level name so call sites are
 # unchanged.
 def _forward_eval_insn(*args, **kwargs):
-    return get_bst_walkers().forward_eval_insn(*args, **kwargs)
+    return get_condition_chain_walkers().forward_eval_insn(*args, **kwargs)
 
-_BST_BRANCH_PREDICATES = frozenset(
+_CONDITION_CHAIN_BRANCH_PREDICATES = frozenset(
     {
         PredicateKind.NE,
         PredicateKind.EQ,
@@ -40,7 +40,7 @@ _BST_BRANCH_PREDICATES = frozenset(
     }
 )
 _LEGACY_BLT_STOP = 1
-_LEGACY_BST_STACK_OPERAND = 3
+_LEGACY_CONDITION_CHAIN_STACK_OPERAND = 3
 _LEGACY_INSN_KIND_OPCODES = {
     InsnKind.NOP: frozenset({0x00}),
     InsnKind.STORE: frozenset({0x01}),
@@ -234,11 +234,11 @@ def _branch_predicate_for_tail(tail: object | None) -> PredicateKind | object | 
     }.get(opcode_name)
 
 
-def _bst_condition_key_for_tail(tail: object | None) -> object | None:
+def _condition_chain_condition_key_for_tail(tail: object | None) -> object | None:
     if tail is None:
         return None
     raw_opcode = getattr(tail, "opcode", None)
-    if raw_opcode in _BST_CMP_OPCODES:
+    if raw_opcode in _CONDITION_CHAIN_CMP_OPCODES:
         return raw_opcode
     return _branch_predicate_for_tail(tail)
 
@@ -281,14 +281,14 @@ def _state_var_ref(operand: object) -> tuple[object, int | None]:
     return (_semantic_value(kind), getattr(operand, "size", None))
 
 
-def _tracks_bst_stack_offset(operand: object | None) -> bool:
+def _tracks_condition_chain_stack_offset(operand: object | None) -> bool:
     raw_type = getattr(operand, "t", None)
     if raw_type is None:
         return _is_stack_operand(operand)
     if raw_type == "mop_S":
         return True
     try:
-        return int(raw_type) == _LEGACY_BST_STACK_OPERAND
+        return int(raw_type) == _LEGACY_CONDITION_CHAIN_STACK_OPERAND
     except (TypeError, ValueError):
         return False
 
@@ -304,14 +304,14 @@ __all__ = [
     "build_mba_view_from_flow_graph",
     "can_reach_return_snapshot",
     "detect_conditional_transitions",
-    "eval_bst_condition",
+    "eval_condition_chain_condition",
     "evaluate_handler_paths",
     "find_last_state_write_site_snapshot",
     "find_last_state_write_site_on_path_snapshot",
     "find_state_write_sites_snapshot",
     "find_terminal_exit_target_snapshot",
-    "init_bst_cmp_opcodes",
-    "resolve_exit_via_bst_default_snapshot",
+    "init_condition_chain_cmp_opcodes",
+    "resolve_exit_via_condition_chain_default_snapshot",
     "run_snapshot_constant_fixpoint",
 ]
 
@@ -420,8 +420,8 @@ class ExitStateKind(enum.Enum):
     TERMINAL = "terminal"
     """Path ends at return/exit (final_state is None)."""
 
-    BST_REENTRY = "bst_reentry"
-    """Path returns to the dispatcher BST (exit_block succ in bst_node_blocks)."""
+    CONDITION_CHAIN_REENTRY = "condition_chain_reentry"
+    """Path returns to the condition-chain dispatcher region."""
 
     SELF_LOOP = "self_loop"
     """Exit state equals incoming state (handler writes its own state back)."""
@@ -436,7 +436,7 @@ def classify_exit_state(
     incoming_state: int | None,
     successor_serial: int,
     state_var_stkoff: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     max_blocks: int = 6,
 ) -> ExitStateKind:
     """Classify an exit state via path-local lookahead through the successor.
@@ -444,7 +444,7 @@ def classify_exit_state(
     Walks forward from *successor_serial* through straight-line blocks in the
     MBA.  If the state variable is overwritten before any unsafe side effect
     (``m_call``/``m_icall``/``m_stx``), branch (nsucc > 1), merge (npred > 1),
-    BST re-entry, or terminal (nsucc == 0), the exit state is transient — it
+    condition-chain re-entry, or terminal (nsucc == 0), the exit state is transient — it
     gets consumed internally and never reaches the dispatcher.
 
     Args:
@@ -453,7 +453,7 @@ def classify_exit_state(
         incoming_state: The state value at handler entry.
         successor_serial: The handler-entry block that caused DFS termination.
         state_var_stkoff: Stack offset of the state variable.
-        bst_node_blocks: BST comparison node serials.
+        condition_chain_blocks: Condition-chain comparison node serials.
         max_blocks: Maximum corridor depth to walk.
     """
     if final_state is None:
@@ -469,7 +469,7 @@ def classify_exit_state(
     # or a ``_FlowGraphMBAView`` projection; the seam makes the identical
     # ``get_mblock``/``nsucc``/``succ`` calls from the backend layer so portable
     # code holds no live-MBA method coupling (ticket llr-zeyu).
-    walkers = get_bst_walkers()
+    walkers = get_condition_chain_walkers()
     serial = successor_serial
     visited: set[int] = set()
     try:
@@ -483,7 +483,7 @@ def classify_exit_state(
         blk = walkers.get_block(mba, serial)
 
         # Note: no merge-point guard here.  OLLVM handler entries have
-        # npred > 1 from BST routing + shared suffix flows.  The
+        # npred > 1 from condition-chain routing + shared suffix flows.  The
         # instruction-level checks (side effects, state writes, non-state
         # stack writes) are sufficient to classify corridor vs handler body.
 
@@ -536,39 +536,39 @@ def classify_exit_state(
             return ExitStateKind.STABLE_HANDOFF
 
         next_serial = succs[0]
-        if next_serial in bst_node_blocks:
-            # Re-enters dispatcher → stable handoff (state will be consumed by BST).
-            return ExitStateKind.BST_REENTRY
+        if next_serial in condition_chain_blocks:
+            # Re-enters dispatcher -> stable handoff (state will be consumed by condition-chain routing).
+            return ExitStateKind.CONDITION_CHAIN_REENTRY
         serial = next_serial
 
     return ExitStateKind.UNCLASSIFIED
 
 
-def _resolved_bst_exit_kind(
+def _resolved_condition_chain_exit_kind(
     mba: object,
     flow_graph: FlowGraph,
     *,
-    bst_root_serial: int,
+    dispatcher_root_serial: int,
     state_value: int,
     incoming_state: int | None,
     state_var_stkoff: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     state_machine_blocks: set[int],
 ) -> tuple[int | None, ExitStateKind | None, bool]:
-    """Resolve ``state_value`` through the BST and classify the resolved body.
+    """Resolve ``state_value`` through the condition chain and classify the resolved body.
 
     A block outside the known state-machine set is not automatically terminal.
-    OLLVM residual phases commonly route an intermediate state through the BST
+    OLLVM residual phases commonly route an intermediate state through the condition chain
     to a small pre-header/body block that writes the next dispatcher state and
-    re-enters the BST.  A reachability-only terminal check misclassifies that
+    re-enters the condition chain.  A reachability-only terminal check misclassifies that
     shape because the pre-header can eventually reach a return through the
     rest of the function.  Local lookahead distinguishes those live state
     handoffs from true return-frontier exits.
     """
 
-    resolved = resolve_exit_via_bst_default_snapshot(
+    resolved = resolve_exit_via_condition_chain_default_snapshot(
         flow_graph,
-        int(bst_root_serial),
+        int(dispatcher_root_serial),
         int(state_value) & 0xFFFFFFFF,
     )
     if resolved is None or resolved in state_machine_blocks:
@@ -582,7 +582,7 @@ def _resolved_bst_exit_kind(
         incoming_state=incoming_state,
         successor_serial=int(resolved),
         state_var_stkoff=int(state_var_stkoff),
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     is_terminal = resolved_kind in (
         ExitStateKind.TERMINAL,
@@ -955,7 +955,7 @@ def find_state_write_sites_snapshot(
 ) -> tuple[StateWriteSite, ...]:
     """Return all resolved state-variable write sites in one snapshot block.
 
-    The walk uses the same forward evaluator as the live BST analysis, so it
+    The walk uses the same forward evaluator as the live condition-chain analysis, so it
     can recover simple formula-derived constants within a block rather than
     matching only literal ``m_mov #const, state_var`` writes.
     """
@@ -1130,21 +1130,20 @@ def find_terminal_exit_target_snapshot(
     return None
 
 
-def init_bst_cmp_opcodes() -> frozenset:
-    """Build the set of comparison opcodes for BST walking.
+def init_condition_chain_cmp_opcodes() -> frozenset:
+    """Build the set of comparison opcodes for condition-chain walking.
 
-    The legacy name is kept for compatibility with tests and callers that
-    monkeypatch ``_BST_CMP_OPCODES`` with synthetic opcode integers. The
-    default remains the legacy numeric opcode set; portable
-    ``PredicateKind`` values are accepted in the walkers as an additive
-    snapshot path.
+    The default remains the legacy numeric opcode set; portable callers may
+    monkeypatch ``_CONDITION_CHAIN_CMP_OPCODES`` with synthetic opcode integers.
+    ``PredicateKind`` values are accepted in the walkers as an additive snapshot
+    path.
     """
 
     return frozenset(_LEGACY_BRANCH_PREDICATE_OPCODES)
 
 
-def eval_bst_condition(opcode: object, state: int, cmp_val: int) -> bool:
-    """Evaluate a BST comparison: does the condition cause a jump?"""
+def eval_condition_chain_condition(opcode: object, state: int, cmp_val: int) -> bool:
+    """Evaluate a condition-chain comparison: does the condition cause a jump?"""
 
     if not isinstance(opcode, str):
         try:
@@ -1167,26 +1166,26 @@ def eval_bst_condition(opcode: object, state: int, cmp_val: int) -> bool:
     return False
 
 
-_BST_CMP_OPCODES: frozenset = frozenset()
+_CONDITION_CHAIN_CMP_OPCODES: frozenset = frozenset()
 
 
-def _is_bst_comparison_snapshot(
+def _is_condition_chain_comparison_snapshot(
     block: object | None,
     *,
     state_var_ref: tuple[object, int | None] | None = None,
     state_var_stkoff: int | None = None,
 ) -> bool:
-    """Return whether *block* continues the current BST comparison walk."""
+    """Return whether *block* continues the current condition-chain comparison walk."""
 
     if block is None or getattr(block, "nsucc", 0) != 2:
         return False
     tail = _tail_insn(block)
-    condition_key = _bst_condition_key_for_tail(tail)
+    condition_key = _condition_chain_condition_key_for_tail(tail)
     if condition_key is None:
         condition_key = getattr(tail, "opcode", getattr(block, "tail_opcode", None))
     if (
-        condition_key not in _BST_CMP_OPCODES
-        and condition_key not in _BST_BRANCH_PREDICATES
+        condition_key not in _CONDITION_CHAIN_CMP_OPCODES
+        and condition_key not in _CONDITION_CHAIN_BRANCH_PREDICATES
     ):
         return False
     l_mop = getattr(tail, "l", None)
@@ -1199,7 +1198,7 @@ def _is_bst_comparison_snapshot(
         if _state_var_ref(l_mop) != state_var_ref:
             return False
         if (
-            _tracks_bst_stack_offset(l_mop)
+            _tracks_condition_chain_stack_offset(l_mop)
             and state_var_stkoff is not None
             and _stack_offset(l_mop) != state_var_stkoff
         ):
@@ -1207,7 +1206,7 @@ def _is_bst_comparison_snapshot(
     return True
 
 
-def _is_trivial_bst_connector_snapshot(
+def _is_trivial_condition_chain_connector_snapshot(
     block: object,
     flow_graph: FlowGraph,
     *,
@@ -1230,25 +1229,25 @@ def _is_trivial_bst_connector_snapshot(
     succs = tuple(getattr(block, "succs", ()) or ())
     if len(succs) != 1:
         return False
-    return _is_bst_comparison_snapshot(
+    return _is_condition_chain_comparison_snapshot(
         flow_graph.get_block(int(succs[0])),
         state_var_ref=state_var_ref,
         state_var_stkoff=state_var_stkoff,
     )
 
 
-def resolve_exit_via_bst_default_snapshot(
+def resolve_exit_via_condition_chain_default_snapshot(
     flow_graph: FlowGraph,
-    bst_default_serial: int,
+    condition_chain_default_serial: int,
     exit_state: int,
 ) -> int | None:
-    """Resolve an exit state by walking BST comparison blocks via snapshots."""
+    """Resolve an exit state by walking condition-chain comparison blocks via snapshots."""
 
-    global _BST_CMP_OPCODES
-    if not _BST_CMP_OPCODES:
-        _BST_CMP_OPCODES = init_bst_cmp_opcodes()
+    global _CONDITION_CHAIN_CMP_OPCODES
+    if not _CONDITION_CHAIN_CMP_OPCODES:
+        _CONDITION_CHAIN_CMP_OPCODES = init_condition_chain_cmp_opcodes()
 
-    current_serial = bst_default_serial
+    current_serial = condition_chain_default_serial
     visited: set[int] = set()
     state_var_ref: tuple[object, int | None] | None = None
     state_var_stkoff_local: int | None = None
@@ -1259,8 +1258,8 @@ def resolve_exit_via_bst_default_snapshot(
         blk_snap = flow_graph.get_block(current_serial)
         if (
             blk_snap is not None
-            and current_serial != bst_default_serial
-            and _is_trivial_bst_connector_snapshot(
+            and current_serial != condition_chain_default_serial
+            and _is_trivial_condition_chain_connector_snapshot(
                 blk_snap,
                 flow_graph,
                 state_var_ref=state_var_ref,
@@ -1270,29 +1269,29 @@ def resolve_exit_via_bst_default_snapshot(
             current_serial = int(blk_snap.succs[0])
             continue
         if blk_snap is None or blk_snap.nsucc != 2:
-            return current_serial if current_serial != bst_default_serial else None
+            return current_serial if current_serial != condition_chain_default_serial else None
 
         tail = _tail_insn(blk_snap)
-        condition_key = _bst_condition_key_for_tail(tail)
+        condition_key = _condition_chain_condition_key_for_tail(tail)
         if condition_key is None:
             condition_key = getattr(tail, "opcode", None)
         if tail is None or (
-            condition_key not in _BST_CMP_OPCODES
-            and condition_key not in _BST_BRANCH_PREDICATES
+            condition_key not in _CONDITION_CHAIN_CMP_OPCODES
+            and condition_key not in _CONDITION_CHAIN_BRANCH_PREDICATES
         ):
-            return current_serial if current_serial != bst_default_serial else None
+            return current_serial if current_serial != condition_chain_default_serial else None
 
         r_mop = tail.r
         if r_mop is None or not _is_number_operand(r_mop):
-            return current_serial if current_serial != bst_default_serial else None
+            return current_serial if current_serial != condition_chain_default_serial else None
 
         l_mop = tail.l
         if l_mop is None:
-            return current_serial if current_serial != bst_default_serial else None
+            return current_serial if current_serial != condition_chain_default_serial else None
 
         if state_var_ref is None:
             state_var_ref = _state_var_ref(l_mop)
-            if _tracks_bst_stack_offset(l_mop):
+            if _tracks_condition_chain_stack_offset(l_mop):
                 state_var_stkoff_local = _stack_offset(l_mop)
         else:
             if _state_var_ref(l_mop) != state_var_ref:
@@ -1302,9 +1301,9 @@ def resolve_exit_via_bst_default_snapshot(
                     current_serial,
                     l_mop.t,
                 )
-                return current_serial if current_serial != bst_default_serial else None
+                return current_serial if current_serial != condition_chain_default_serial else None
             if (
-                _tracks_bst_stack_offset(l_mop)
+                _tracks_condition_chain_stack_offset(l_mop)
                 and state_var_stkoff_local != _stack_offset(l_mop)
             ):
                 logger.info(
@@ -1313,12 +1312,12 @@ def resolve_exit_via_bst_default_snapshot(
                     current_serial,
                     getattr(l_mop, "stkoff", None),
                 )
-                return current_serial if current_serial != bst_default_serial else None
+                return current_serial if current_serial != condition_chain_default_serial else None
 
         cmp_val = _constant_operand_value(r_mop)
         if cmp_val is None:
-            return current_serial if current_serial != bst_default_serial else None
-        cond_taken = eval_bst_condition(condition_key, exit_state, cmp_val)
+            return current_serial if current_serial != condition_chain_default_serial else None
+        cond_taken = eval_condition_chain_condition(condition_key, exit_state, cmp_val)
 
         if cond_taken:
             next_serial = blk_snap.succs[1]
@@ -1326,7 +1325,7 @@ def resolve_exit_via_bst_default_snapshot(
             next_serial = blk_snap.succs[0]
 
         if next_serial == current_serial:
-            return current_serial if current_serial != bst_default_serial else None
+            return current_serial if current_serial != condition_chain_default_serial else None
 
         current_serial = next_serial
 
@@ -1345,7 +1344,7 @@ def detect_terminal_state_families_snapshot(
        that reaches ``BLT_STOP`` via restricted BFS **and** the path
        passes through at least one block with side effects (calls, stores).
        This distinguishes cleanup regions (printf, CloseHandle) from simple
-       BST-to-exit fallthroughs.
+       condition-chain-to-exit fallthroughs.
     2. Expand to the **reverse predecessor cone**: walk backwards through
        dispatcher-block predecessors of the boundary.
 
@@ -1414,8 +1413,8 @@ def detect_terminal_state_families_snapshot(
     reached_roots = dispatcher_roots & cone
     if reached_roots:
         # Forward BFS from each reached root through ALL edges, but only
-        # collect dispatcher blocks.  This captures interleaved non-BST
-        # dispatcher blocks (e.g. for-loop conditions between BST nodes)
+        # collect dispatcher blocks.  This captures interleaved non-condition-chain
+        # dispatcher blocks (e.g. for-loop conditions between condition-chain nodes)
         # that are reachable via handler body intermediates.
         component: set[int] = set()
         visited_comp: set[int] = set()
@@ -1461,7 +1460,7 @@ def _restricted_reach_stop_with_side_effects(
     Returns True only if a path to BLT_STOP exists AND at least one block
     on the path has side effects (calls, stores).  This distinguishes
     cleanup regions (hodur_func: printf, CloseHandle) from simple
-    BST-to-exit fallthroughs (direct return, no side effects).
+    condition-chain-to-exit fallthroughs (direct return, no side effects).
     """
     visited: set[int] = set()
     queue = [start]
@@ -1650,21 +1649,21 @@ def evaluate_handler_paths(
     mba: object,
     entry_serial: int,
     incoming_state: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     state_var_stkoff: int,
     handler_entry_blocks: set[int] | None = None,
     *,
     flow_graph: "FlowGraph | None" = None,
     known_handler_states: "set[int] | None" = None,
-    bst_root_serial: "int | None" = None,
+    dispatcher_root_serial: "int | None" = None,
     state_machine_blocks: "set[int] | None" = None,
     use_snapshot_state_writes: bool = True,
-    classify_bst_exits: bool = True,
+    classify_condition_chain_exits: bool = True,
 ) -> list[HandlerPathResult]:
     """DFS forward eval of a handler, forking state at conditional branches.
 
-    When *flow_graph*, *known_handler_states*, *bst_root_serial*, and
-    *state_machine_blocks* are provided, exits whose resolved BST target
+    When *flow_graph*, *known_handler_states*, *dispatcher_root_serial*, and
+    *state_machine_blocks* are provided, exits whose resolved condition-chain target
     lands outside the state machine and can reach a return are emitted as
     **terminal** paths (``final_state=None``) rather than state handoffs.
     """
@@ -1684,7 +1683,7 @@ def evaluate_handler_paths(
     # Block topology via the backend seam (see classify_exit_state); ``mba`` is
     # a live ``mba_t`` or ``_FlowGraphMBAView`` -- behaviour is identical for
     # both (ticket llr-zeyu).
-    walkers = get_bst_walkers()
+    walkers = get_condition_chain_walkers()
 
     while queue:
         curr_serial, reg_map, stk_map, path_visited, state_writes, ordered_path = (
@@ -1815,7 +1814,7 @@ def evaluate_handler_paths(
                         incoming_state is not None
                         and (final_val & 0xFFFFFFFF) == (incoming_state & 0xFFFFFFFF)
                         and succ_serial not in path_visited
-                        and succ_serial not in bst_node_blocks
+                        and succ_serial not in condition_chain_blocks
                     ):
                         # Self-loop default write — shared suffix may
                         # overwrite with the real exit state.
@@ -1832,11 +1831,11 @@ def evaluate_handler_paths(
                         )
                     elif (
                         succ_serial not in path_visited
-                        and succ_serial not in bst_node_blocks
+                        and succ_serial not in condition_chain_blocks
                         and classify_exit_state(
                             mba, final_val, incoming_state,
                             succ_serial, state_var_stkoff,
-                            bst_node_blocks,
+                            condition_chain_blocks,
                         ) == ExitStateKind.TRANSIENT_CORRIDOR
                     ):
                         # Transient corridor: successor overwrites state
@@ -1861,40 +1860,40 @@ def evaluate_handler_paths(
                                 ordered_path=list(ordered_path),
                             )
                         )
-            elif succ_serial in bst_node_blocks:
+            elif succ_serial in condition_chain_blocks:
                 final_val, final_writes = _resolved_final_state_and_writes()
                 if final_val is not None:
                     masked = final_val & 0xFFFFFFFF
                     # --- Terminal classification ---
                     # If the exit state is NOT a known handler and we
-                    # have enough context, resolve through the BST to
+                    # have enough context, resolve through the condition chain to
                     # check whether it reaches cleanup/return.
                     _is_terminal = False
                     if (
-                        classify_bst_exits
+                        classify_condition_chain_exits
                         and
                         known_handler_states is not None
                         and masked not in known_handler_states
                         and flow_graph is not None
-                        and bst_root_serial is not None
+                        and dispatcher_root_serial is not None
                     ):
-                        _sm_blks = state_machine_blocks or bst_node_blocks
+                        _sm_blks = state_machine_blocks or condition_chain_blocks
                         _resolved, _resolved_kind, _is_terminal = (
-                            _resolved_bst_exit_kind(
+                            _resolved_condition_chain_exit_kind(
                                 mba,
                                 flow_graph,
-                                bst_root_serial=bst_root_serial,
+                                dispatcher_root_serial=dispatcher_root_serial,
                                 state_value=masked,
                                 incoming_state=incoming_state,
                                 state_var_stkoff=state_var_stkoff,
-                                bst_node_blocks=bst_node_blocks,
+                                condition_chain_blocks=condition_chain_blocks,
                                 state_machine_blocks=set(_sm_blks),
                             )
                         )
                         if _resolved is not None and _resolved not in _sm_blks:
                             if _is_terminal:
                                 logger.info(
-                                    "  [BST-TERMINAL] entry=%d curr=%d "
+                                    "  [CONDITION_CHAIN_TERMINAL] entry=%d curr=%d "
                                     "state=0x%08X resolved=blk[%d] kind=%s "
                                     "→ terminal",
                                     entry_serial, curr_serial, masked,
@@ -1907,7 +1906,7 @@ def evaluate_handler_paths(
                                 )
                             else:
                                 logger.info(
-                                    "  [BST-HANDOFF] entry=%d curr=%d "
+                                    "  [CONDITION_CHAIN_HANDOFF] entry=%d curr=%d "
                                     "state=0x%08X resolved=blk[%d] kind=%s "
                                     "→ keep state handoff",
                                     entry_serial, curr_serial, masked,

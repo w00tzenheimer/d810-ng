@@ -66,7 +66,7 @@ class TopologicalSortStrategy:
 
     def is_applicable(self, snapshot: AnalysisSnapshot) -> bool:
         """Return True when the snapshot has a state machine with handlers,
-        a BST result with handler_state_map, and a known initial_state.
+        a condition-chain result with handler_state_map, and a known initial_state.
 
         Args:
             snapshot: Immutable analysis snapshot for the current function.
@@ -92,10 +92,10 @@ class TopologicalSortStrategy:
         if sm.initial_state is None:
             return False
 
-        bst = snapshot.bst_result
-        if bst is None:
+        condition_chain = snapshot.range_evidence
+        if condition_chain is None:
             return False
-        handler_state_map = getattr(bst, "handler_state_map", None) or {}
+        handler_state_map = getattr(condition_chain, "handler_state_map", None) or {}
         if not handler_state_map:
             return False
         return True
@@ -109,21 +109,21 @@ class TopologicalSortStrategy:
         snapshot: AnalysisSnapshot,
     ) -> ReorderBlocks | None:
         """Compatibility wrapper over :mod:`d810.transforms.reorder_blocks_planning`."""
-        bst_result = snapshot.bst_result
-        if bst_result is None:
+        range_evidence = snapshot.range_evidence
+        if range_evidence is None:
             return None
         return plan_reorder_blocks(
             snapshot,
             resolve_target_entry=lambda state: resolve_target_via_condition_chain(
-                bst_result,
+                range_evidence,
                 state,
             ),
             handler_entry_state_map=(
-                getattr(bst_result, "handler_state_map", {}) or {}
+                getattr(range_evidence, "handler_state_map", {}) or {}
             ),
             dispatcher_blocks=frozenset(
                 int(block)
-                for block in (getattr(bst_result, "condition_chain_blocks", ()) or ())
+                for block in (getattr(range_evidence, "condition_chain_blocks", ()) or ())
             ),
         )
 

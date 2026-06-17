@@ -129,7 +129,7 @@ class TestResolveEdgeTargetEntry:
         assert result.rejection_reason is None
         assert result.original_dispatcher_entry is None
 
-    def test_resolves_dispatcher_target_to_non_bst_block_from_target_node(self):
+    def test_resolves_dispatcher_target_to_non_condition_chain_block_from_target_node(self):
         node = _node(entry=2, handler=2, state=0x11, exclusive=(24,))
         edge = _edge(
             source_handler=10,

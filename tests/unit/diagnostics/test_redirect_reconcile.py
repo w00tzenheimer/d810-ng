@@ -11,7 +11,7 @@ from d810.diagnostics.redirect_reconcile import (
     compute_dispatcher_blocks,
     load_block_succs,
     load_block_writes_and_predicates,
-    load_bst_table,
+    load_condition_chain_table,
     load_persisted_dup_sources,
     load_persisted_redirect_goto,
     run_reconcile,
@@ -35,7 +35,7 @@ def _make_diag_db(tmp_path: Path) -> Path:
         dispatcher threshold for tests using min_dispatcher_preds=5, but
         we exercise the threshold logic independently.
       - State-var writes on block 10 (mov #0x100, var_3C).
-      - state_cfg_edges: one (state_const=0x100, target_entry=20) row -- so BST
+      - state_cfg_edges: one (state_const=0x100, target_entry=20) row -- so condition chain
         resolves 0x100 -> 20.
       - modifications:
           (a) RedirectGoto: source_block=10, old_target=20, target_block=20
@@ -71,7 +71,7 @@ def _make_diag_db(tmp_path: Path) -> Path:
             ea_hex="0x0", ea_i64=0, opcode=0, opcode_name="",
             src_l_stkoff=0x3C,
         ).execute()
-        # BST: state 0x100 -> handler at block 20.
+        # condition chain: state 0x100 -> handler at block 20.
         StateCfgEdge.insert(
             snapshot=5, edge_id=0,
             target_state_i64=0x100, target_entry=20,
@@ -136,20 +136,20 @@ def test_load_persisted_redirect_goto_returns_first_row_per_source(
 
 
 # ---------------------------------------------------------------------------
-# load_bst_table
+# load_condition_chain_table
 # ---------------------------------------------------------------------------
 
 
-def test_load_bst_table_keys_by_uint64_state_const(diag_db: Path) -> None:
+def test_load_condition_chain_table_keys_by_uint64_state_const(diag_db: Path) -> None:
     db = open_diag_database(str(diag_db))
     try:
-        bst = load_bst_table(db.connection())
+        condition_chain = load_condition_chain_table(db.connection())
     finally:
         db.close()
-    assert bst == {0x100: 20}
+    assert condition_chain == {0x100: 20}
 
 
-def test_load_bst_table_handles_negative_i64_via_uint64_mask(tmp_path: Path) -> None:
+def test_load_condition_chain_table_handles_negative_i64_via_uint64_mask(tmp_path: Path) -> None:
     db = make_bound_diag_db()
     Snapshot.insert(
         id=1, label="", func_ea_hex="0x0", func_ea_i64=0,
@@ -161,8 +161,8 @@ def test_load_bst_table_handles_negative_i64_via_uint64_mask(tmp_path: Path) -> 
         target_state_i64=-1, target_entry=77,
         edge_kind="UNKNOWN", ordered_path="[]",
     ).execute()
-    bst = load_bst_table(db.connection())
-    assert bst == {0xFFFFFFFFFFFFFFFF: 77}
+    condition_chain = load_condition_chain_table(db.connection())
+    assert condition_chain == {0xFFFFFFFFFFFFFFFF: 77}
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +227,7 @@ def test_run_reconcile_emits_header_and_summary(tmp_path: Path, diag_db: Path) -
         diag_db, log, snap_id=5, state_var_stkoff=0x3C,
     )
     assert "# Reconciliation: snap 5" in out
-    assert "BST table size: 1 state -> handler entries" in out
+    assert "condition-chain table size: 1 state -> handler entries" in out
     assert "Persisted RedirectGoto mods: 1" in out
     # format_summary is invoked, producing at least one TOTAL line.
     assert "TOTAL" in out.upper() or "Total" in out or "total" in out
@@ -289,7 +289,7 @@ def test_run_reconcile_persisted_dup_source_merges_into_log_signals(
 
 
 def test_run_reconcile_against_empty_dag_edges(tmp_path: Path) -> None:
-    """Sparse DB with no BST entries -- BST table size renders as 0 and no
+    """Sparse DB with no condition-chain entries -- condition-chain table size renders as 0 and no
     edges resolve."""
     db_path = tmp_path / "empty.sqlite3"
     db = create_diag_database(str(db_path))
@@ -302,7 +302,7 @@ def test_run_reconcile_against_empty_dag_edges(tmp_path: Path) -> None:
     log = tmp_path / "d810.log"
     log.write_text("")
     out = run_reconcile(db_path, log, snap_id=5, state_var_stkoff=0x3C)
-    assert "BST table size: 0 state -> handler entries" in out
+    assert "condition-chain table size: 0 state -> handler entries" in out
     assert "Round-trip back-edges: 0" in out
 
 

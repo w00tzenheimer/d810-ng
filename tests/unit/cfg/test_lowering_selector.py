@@ -85,7 +85,7 @@ class TestCanPeelPredecessorEdge:
             source_block=14,
             target_entry=16,
             dispatcher_serial=6,
-            bst_node_blocks=frozenset(),
+            condition_chain_blocks=frozenset(),
             target_reaches_pred=False,
             )
         )
@@ -98,7 +98,7 @@ class TestCanPeelPredecessorEdge:
             source_block=14,
             target_entry=16,
             dispatcher_serial=6,
-            bst_node_blocks=frozenset(),
+            condition_chain_blocks=frozenset(),
             target_reaches_pred=False,
             )
         )
@@ -111,7 +111,7 @@ class TestCanPeelPredecessorEdge:
             source_block=14,
             target_entry=16,
             dispatcher_serial=6,
-            bst_node_blocks=frozenset(),
+            condition_chain_blocks=frozenset(),
             target_reaches_pred=False,
             )
         )
@@ -124,7 +124,7 @@ class TestCanPeelPredecessorEdge:
             source_block=14,
             target_entry=16,
             dispatcher_serial=6,
-            bst_node_blocks=frozenset(),
+            condition_chain_blocks=frozenset(),
             target_reaches_pred=True,
             )
         )
@@ -140,7 +140,7 @@ class TestResolveRedirectOldTarget:
                 target_entry_anchor=16,
                 source_branch_arm=0,
                 source_is_conditional_branch=True,
-                bst_node_blocks=frozenset(),
+                condition_chain_blocks=frozenset(),
                 dispatcher_region=frozenset({6}),
             )
             == 6
@@ -155,7 +155,7 @@ class TestResolveRedirectOldTarget:
                 target_entry_anchor=16,
                 source_branch_arm=None,
                 source_is_conditional_branch=False,
-                bst_node_blocks=frozenset(),
+                condition_chain_blocks=frozenset(),
                 dispatcher_region=frozenset({6}),
             )
             == 20
@@ -170,7 +170,7 @@ class TestResolveRedirectOldTarget:
                 target_entry_anchor=16,
                 source_branch_arm=None,
                 source_is_conditional_branch=False,
-                bst_node_blocks=frozenset(),
+                condition_chain_blocks=frozenset(),
                 dispatcher_region=frozenset({6}),
             )
             == 6
@@ -264,7 +264,7 @@ class TestSelectSharedFeederLowering:
             via_pred_succs=(6, 14),
             target_entry=16,
             dispatcher_serial=6,
-            bst_node_blocks=frozenset(),
+            condition_chain_blocks=frozenset(),
             target_reaches_pred=False,
             )
         )
@@ -279,7 +279,7 @@ class TestSelectSharedFeederLowering:
             via_pred_succs=(6, 14),
             target_entry=16,
             dispatcher_serial=6,
-            bst_node_blocks=frozenset(),
+            condition_chain_blocks=frozenset(),
             target_reaches_pred=False,
             )
         )
@@ -295,7 +295,7 @@ class TestSelectSharedFeederLowering:
             via_pred_succs=(32,),
             target_entry=34,
             dispatcher_serial=6,
-            bst_node_blocks=frozenset(),
+            condition_chain_blocks=frozenset(),
             target_reaches_pred=False,
             )
         )
@@ -311,7 +311,7 @@ class TestSelectSharedFeederLowering:
             via_pred_succs=(6, 14),
             target_entry=16,
             dispatcher_serial=6,
-            bst_node_blocks=frozenset(),
+            condition_chain_blocks=frozenset(),
             target_reaches_pred=True,
             )
         )
@@ -326,7 +326,7 @@ class TestSelectSharedFeederLowering:
                 via_pred_succs=(6, 14),
                 target_entry=16,
                 dispatcher_serial=6,
-                bst_node_blocks=frozenset(),
+                condition_chain_blocks=frozenset(),
                 target_reaches_pred=False,
             )
         )
@@ -344,7 +344,7 @@ class TestSelectSharedFeederLowering:
                 via_pred_succs=(6, 14),
                 target_entry=16,
                 dispatcher_serial=6,
-                bst_node_blocks=frozenset(),
+                condition_chain_blocks=frozenset(),
                 target_reaches_pred=False,
             )
         )
@@ -376,7 +376,7 @@ class TestSelectSharedFeederLowering:
                 via_pred_succs=(6, 14),
                 target_entry=16,
                 dispatcher_serial=6,
-                bst_node_blocks=frozenset(),
+                condition_chain_blocks=frozenset(),
                 target_reaches_pred=False,
             ),
             scorer=_TestScorer(),
@@ -402,7 +402,7 @@ class TestSelectSharedFeederLowering:
                 via_pred_succs=(6, 14),
                 target_entry=16,
                 dispatcher_serial=6,
-                bst_node_blocks=frozenset(),
+                condition_chain_blocks=frozenset(),
                 target_reaches_pred=False,
             ),
             scorer=_RejectAllScorer(),
@@ -497,7 +497,7 @@ class TestPlanResidualBranchAnchorHandoff:
                 old_target=14,
                 ordered_path=(12, 14, 15),
                 dispatcher_serial=6,
-                bst_node_blocks=frozenset(),
+                condition_chain_blocks=frozenset(),
                 target_reaches_branch=False,
             )
         )
@@ -517,7 +517,7 @@ class TestPlanResidualBranchAnchorHandoff:
                 old_target=14,
                 ordered_path=(12, 14, 15),
                 dispatcher_serial=6,
-                bst_node_blocks=frozenset(),
+                condition_chain_blocks=frozenset(),
                 target_reaches_branch=False,
             )
         )
@@ -536,7 +536,7 @@ class TestPlanResidualBranchAnchorHandoff:
                 old_target=14,
                 ordered_path=(12, 14, 15),
                 dispatcher_serial=6,
-                bst_node_blocks=frozenset(),
+                condition_chain_blocks=frozenset(),
                 target_reaches_branch=False,
             )
         )
@@ -555,7 +555,7 @@ class TestPlanResidualBranchAnchorHandoff:
                 old_target=14,
                 ordered_path=(12, 14, 15),
                 dispatcher_serial=6,
-                bst_node_blocks=frozenset(),
+                condition_chain_blocks=frozenset(),
                 target_reaches_branch=True,
             )
         )
@@ -571,7 +571,7 @@ class TestPlanResidualPrefixPeel:
             source_block=14,
             target_entry=16,
             dispatcher_serial=6,
-            bst_node_blocks=frozenset(),
+            condition_chain_blocks=frozenset(),
             target_reaches_pred=False,
         )
 
@@ -638,7 +638,7 @@ class TestPlanResidualPredSplit:
                 via_pred=12,
                 target_entry=16,
                 dispatcher_serial=6,
-                bst_node_blocks=frozenset(),
+                condition_chain_blocks=frozenset(),
                 valid_pair=True,
                 target_reaches_via_pred=False,
                 already_emitted=False,
@@ -653,7 +653,7 @@ class TestPlanResidualPredSplit:
                 via_pred=12,
                 target_entry=6,
                 dispatcher_serial=6,
-                bst_node_blocks=frozenset(),
+                condition_chain_blocks=frozenset(),
                 valid_pair=True,
                 target_reaches_via_pred=False,
                 already_emitted=False,
@@ -669,7 +669,7 @@ class TestPlanResidualPredSplit:
                 via_pred=12,
                 target_entry=16,
                 dispatcher_serial=6,
-                bst_node_blocks=frozenset(),
+                condition_chain_blocks=frozenset(),
                 valid_pair=True,
                 target_reaches_via_pred=True,
                 already_emitted=False,
@@ -686,7 +686,7 @@ class TestPlanResidualGotoHandoff:
                 source_block=14,
                 target_entry=16,
                 dispatcher_serial=6,
-                bst_node_blocks=frozenset(),
+                condition_chain_blocks=frozenset(),
                 allow_family_fallback_tail=False,
                 is_shared_suffix_conditional_tail=False,
                 has_prior_branch_cut=False,
@@ -703,7 +703,7 @@ class TestPlanResidualGotoHandoff:
                 source_block=14,
                 target_entry=16,
                 dispatcher_serial=6,
-                bst_node_blocks=frozenset(),
+                condition_chain_blocks=frozenset(),
                 allow_family_fallback_tail=False,
                 is_shared_suffix_conditional_tail=True,
                 has_prior_branch_cut=False,
@@ -721,7 +721,7 @@ class TestPlanResidualGotoHandoff:
                 source_block=14,
                 target_entry=16,
                 dispatcher_serial=6,
-                bst_node_blocks=frozenset(),
+                condition_chain_blocks=frozenset(),
                 allow_family_fallback_tail=False,
                 is_shared_suffix_conditional_tail=False,
                 has_prior_branch_cut=False,

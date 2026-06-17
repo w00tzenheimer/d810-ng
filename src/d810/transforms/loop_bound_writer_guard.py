@@ -35,7 +35,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from d810.capabilities.providers import get_bst_walkers
+from d810.capabilities.providers import get_condition_chain_walkers
 from d810.ir.flowgraph import InsnKind, OperandKind
 
 # Loop-bound mask values seen on OLLVM-style flattened functions where the
@@ -311,7 +311,7 @@ def detect_loop_bound_writer_redirect(
     if qty <= 0:
         return None
 
-    walkers = get_bst_walkers()
+    walkers = get_condition_chain_walkers()
     try:
         source_blk = walkers.get_block(mba, int(source_block_serial))
     except Exception:
@@ -534,7 +534,7 @@ def detect_loop_counter_writeback_tail(
     if qty <= 0:
         return None
 
-    walkers = get_bst_walkers()
+    walkers = get_condition_chain_walkers()
     try:
         tail_blk = walkers.get_block(mba, int(tail_block_serial))
     except Exception:
@@ -676,7 +676,7 @@ def collect_const_var_refs_in_block(
     if serial < 0 or serial >= qty:
         return frozenset()
     try:
-        blk = get_bst_walkers().get_block(mba, serial)
+        blk = get_condition_chain_walkers().get_block(mba, serial)
     except Exception:
         return frozenset()
     if blk is None:

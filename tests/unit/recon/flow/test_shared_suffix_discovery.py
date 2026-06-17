@@ -108,7 +108,7 @@ class TestSharedSuffixDiscovery:
             dag,
             source_block=60,
             state_value=0x11,
-            bst_node_blocks={2, 6},
+            condition_chain_blocks={2, 6},
         )
 
     def test_has_prior_branch_cut_for_state_allows_immediate_conditional_leaf_tail(self) -> None:
@@ -131,7 +131,7 @@ class TestSharedSuffixDiscovery:
             dag,
             source_block=60,
             state_value=0x11,
-            bst_node_blocks={2, 6},
+            condition_chain_blocks={2, 6},
         )
 
     def test_is_shared_suffix_conditional_tail_requires_suffix_membership(self) -> None:
@@ -184,7 +184,7 @@ class TestSharedSuffixDiscovery:
             source_block=40,
             target_entry=30,
             current_preds=(12,),
-            bst_node_blocks={2, 6},
+            condition_chain_blocks={2, 6},
         )
 
     def test_can_rewrite_shared_suffix_family_fallback_allows_pruned_oneway_tail(self) -> None:
@@ -201,7 +201,7 @@ class TestSharedSuffixDiscovery:
             source_block=40,
             target_entry=30,
             current_preds=(12,),
-            bst_node_blocks={2, 6},
+            condition_chain_blocks={2, 6},
             flow_graph=flow_graph,
         )
 
@@ -220,7 +220,7 @@ class TestSharedSuffixDiscovery:
             source_block=40,
             target_entry=30,
             current_preds=(12, 13),
-            bst_node_blocks={2, 6},
+            condition_chain_blocks={2, 6},
             flow_graph=flow_graph,
         )
 

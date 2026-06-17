@@ -18,7 +18,7 @@ from d810.core.diag.models import (
     BlockObservation,
     BranchWitnessDecision,
     BranchOwnershipProof,
-    BstIntervalDispatcherRow,
+    ConditionChainIntervalDispatcherRow,
     CfgProvenance,
     ExitPathShortcutDecision,
     FactConflict,
@@ -595,23 +595,23 @@ def snapshot_reachability(
     snapshot_id: int,
     all_serials: set[int],
     reachable: set[int] | None = None,
-    bst_serials: set[int] | None = None,
+    condition_chain_serials: set[int] | None = None,
     gutted: set[int] | None = None,
     claimed_sources: set[int] | None = None,
 ) -> None:
-    """Snapshot block classification (reachability, BST, gut status).
+    """Snapshot block classification (reachability, condition-chain, gut status).
 
     Args:
         conn: SQLite connection with schema already created.
         snapshot_id: The snapshot to associate with.
         all_serials: Complete set of block serials to classify.
         reachable: Set of reachable block serials.
-        bst_serials: Set of BST block serials.
+        condition_chain_serials: Set of condition-chain block serials.
         gutted: Set of gutted block serials.
         claimed_sources: Set of claimed source block serials.
     """
     _reachable = reachable or set()
-    _bst = bst_serials or set()
+    _condition_chain = condition_chain_serials or set()
     _gutted = gutted or set()
     _claimed = claimed_sources or set()
 
@@ -619,7 +619,7 @@ def snapshot_reachability(
         {
             "snapshot": snapshot_id,
             "serial": serial,
-            "is_bst": 1 if serial in _bst else 0,
+            "is_condition_chain": 1 if serial in _condition_chain else 0,
             "is_reachable": 1 if serial in _reachable else 0,
             "is_gutted": 1 if serial in _gutted else 0,
             "in_claimed": 1 if serial in _claimed else 0,
@@ -671,7 +671,7 @@ def snapshot_dag_frontier_closure_diagnostics(
     conn.commit()
 
 
-def snapshot_bst_interval_dispatcher_rows(
+def snapshot_condition_chain_interval_dispatcher_rows(
     conn: sqlite3.Connection,
     snapshot_id: int,
     rows: Iterable[Mapping[str, Any] | object],
@@ -679,9 +679,9 @@ def snapshot_bst_interval_dispatcher_rows(
     dispatcher_entry_block: int | None = None,
     maturity: str | None = None,
 ) -> None:
-    """Persist recovered BST interval dispatcher rows for a snapshot."""
+    """Persist recovered condition-chain interval dispatcher rows for a snapshot."""
     conn.execute(
-        "DELETE FROM bst_interval_dispatcher_rows WHERE snapshot_id=?",
+        "DELETE FROM condition_chain_interval_dispatcher_rows WHERE snapshot_id=?",
         (snapshot_id,),
     )
     db_rows = []
@@ -722,7 +722,7 @@ def snapshot_bst_interval_dispatcher_rows(
     db = _diag_db()
     with diag_models_on(db), db.atomic():
         if db_rows:
-            BstIntervalDispatcherRow.insert_many(db_rows).execute()
+            ConditionChainIntervalDispatcherRow.insert_many(db_rows).execute()
     conn.commit()
 
 
@@ -928,12 +928,12 @@ def snapshot_exit_path_shortcut_decisions(
     conn.commit()
 
 
-def _load_bst_interval_rows(
+def _load_condition_chain_interval_rows(
     conn: sqlite3.Connection, snapshot_id: int
 ) -> list[tuple[int, int, int]]:
-    """Load ``(lo, hi_exclusive, target)`` BST interval rows for *snapshot_id*.
+    """Load ``(lo, hi_exclusive, target)`` condition-chain interval rows for *snapshot_id*.
 
-    Returns the persisted ``bst_interval_dispatcher_rows`` (ticket llr-mra1) so
+    Returns the persisted ``condition_chain_interval_dispatcher_rows`` (ticket llr-mra1) so
     :func:`_route_via_interval_rows` can resolve an interior state the exact
     ``state_dispatcher_rows`` map omits.  Empty when the table is absent (older
     DBs) or the snapshot carries no interval evidence.
@@ -942,7 +942,7 @@ def _load_bst_interval_rows(
         rows = conn.execute(
             """
             SELECT lo_i64, hi_i64, target_block
-            FROM bst_interval_dispatcher_rows
+            FROM condition_chain_interval_dispatcher_rows
             WHERE snapshot_id=?
             ORDER BY row_index
             """,
@@ -963,7 +963,7 @@ def _route_via_interval_rows(
     state: int,
     dispatcher_blocks: set[int],
 ) -> int | None:
-    """Route *state* through the covering ``[lo, hi)`` BST range (ticket llr-mra1).
+    """Route *state* through the covering ``[lo, hi)`` condition-chain range (ticket llr-mra1).
 
     Returns the first interval row's target whose half-open ``[lo, hi)`` covers
     *state* and whose target is a real handler (not a dispatcher/compare block);
@@ -1042,14 +1042,14 @@ def snapshot_state_transition_dispatch_resolutions_from_latest_facts(
     if not state_to_target:
         return 0
 
-    # Interval-interior fallback (ticket llr-mra1): a comparison BST routes a
+    # Interval-interior fallback (ticket llr-mra1): a comparison condition chain routes a
     # whole [lo, hi) span to one handler, so an interior state (e.g. Approov's
     # 0xF6A1E in [0, 0xF6A1F) -> blk9) has NO exact ``state_dispatcher_rows``
-    # entry and resolves ``state_not_in_dispatcher_map`` even though the BST
-    # covers it.  Load the persisted ``bst_interval_dispatcher_rows`` so the
+    # entry and resolves ``state_not_in_dispatcher_map`` even though the condition chain
+    # covers it.  Load the persisted ``condition_chain_interval_dispatcher_rows`` so the
     # diagnostic resolver can route an exact-row MISS through the covering range
-    # -- additive: it only fills states the exact map lacks but the BST covers.
-    interval_rows = _load_bst_interval_rows(conn, int(snapshot_id))
+    # -- additive: it only fills states the exact map lacks but the condition chain covers.
+    interval_rows = _load_condition_chain_interval_rows(conn, int(snapshot_id))
 
     write_lookup = _state_write_lookup_for_snapshot(conn, fact_snapshot_id)
     rows = []
@@ -1087,7 +1087,7 @@ def snapshot_state_transition_dispatch_resolutions_from_latest_facts(
             resolved_via_interval = False
             if target_block is None and interval_rows:
                 # Exact-row miss: route the interior state through the covering
-                # BST range (ticket llr-mra1).  ``resolved_exact_state`` becomes
+                # condition-chain range (ticket llr-mra1).  ``resolved_exact_state`` becomes
                 # ``resolved_interval_state`` so the provenance is visible.
                 target_block = _route_via_interval_rows(
                     interval_rows, source_const & _MASK64, dispatcher_blocks

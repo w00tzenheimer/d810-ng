@@ -127,7 +127,7 @@ class TestDetectTerminalStateFamilies:
         assert 0 in result
 
     def test_reverse_predecessor_cone(self) -> None:
-        """Linear BST chain A->B->C where C is boundary -> cone = {A, B, C}."""
+        """Linear condition-chain chain A->B->C where C is boundary -> cone = {A, B, C}."""
         # Chain: 10 -> 11 -> 12 (all dispatchers, 2-way)
         # 12 has non-dispatcher arm -> 20 -> 30 (BLT_STOP)
         blk10 = _make_block(10, BLT_2WAY, succs=(11, 13), preds=())

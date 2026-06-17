@@ -125,7 +125,7 @@ class TestResidualHandoffResolution:
                 object(),
                 12,
                 state_var_stkoff=0x38,
-                bst_node_blocks={1, 2},
+                condition_chain_blocks={1, 2},
                 dispatcher=object(),
                 via_pred=7,
             ) == (0x11, 24)
@@ -148,7 +148,7 @@ class TestResidualHandoffResolution:
                 resolution.resolve_effective_target_entry(
                     dag,
                     edge,
-                    bst_node_blocks={1, 2},
+                    condition_chain_blocks={1, 2},
                     state_var_stkoff=0x40,
                     dispatcher_lookup=None,
                     dispatcher=object(),

@@ -52,7 +52,7 @@ def has_prior_branch_cut_for_state(
     *,
     source_block: int,
     state_value: int | None,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher: object | None = None,
 ) -> bool:
     """Return whether ``source_block`` is only a tail inside an earlier cut."""
@@ -92,20 +92,20 @@ def has_prior_branch_cut_for_state(
         target_entry = resolve_redirect_safe_target_entry(
             dag,
             edge,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if target_entry is None and edge.target_state is not None and edge.target_key is None:
             target_entry = resolve_nonexact_dispatch_target(
                 dag,
                 edge.target_state,
                 source_block=edge.source_anchor.block_serial,
-                bst_node_blocks=bst_node_blocks,
+                condition_chain_blocks=condition_chain_blocks,
                 dispatcher=dispatcher,
                 dispatcher_lookup=(
                     getattr(dispatcher, "lookup", None) if dispatcher is not None else None
                 ),
             )
-        if target_entry is None or target_entry in bst_node_blocks:
+        if target_entry is None or target_entry in condition_chain_blocks:
             continue
         if target_entry == source_block:
             continue
@@ -152,7 +152,7 @@ def can_rewrite_shared_suffix_family_fallback(
     source_block: int,
     target_entry: int,
     current_preds: tuple[int, ...],
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     flow_graph: object | None = None,
 ) -> bool:
     """Return whether a shared-suffix feeder tail may use family fallback."""
@@ -179,7 +179,7 @@ def can_rewrite_shared_suffix_family_fallback(
         dag,
         via_pred=via_pred,
         source_block=source_block,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     if expected_fallback is not None and expected_fallback == target_entry:
         return True

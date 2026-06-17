@@ -1,7 +1,7 @@
 """Backend-neutral state-variable cleanup helpers.
 
 State cleanup strategies still own backend-specific mutation mechanics, but the
-state-constant evidence they consume is common to BST, switch, and compare-chain
+state-constant evidence they consume is common to condition chains, switches, and compare chains
 flatteners: a snapshot contributes known state constants, and dispatcher models
 may contribute exact handler states or interval bounds.
 """
@@ -17,13 +17,13 @@ __all__ = [
 
 def collect_state_constants(
     state_constants: Iterable[int] | None = None,
-    bst_result: object | None = None,
+    range_evidence: object | None = None,
 ) -> frozenset[int]:
     """Collect known dispatcher state constants from generic evidence.
 
     Args:
         state_constants: Constants already discovered by the active family.
-        bst_result: Optional dispatcher/BST analysis result exposing
+        range_evidence: Optional dispatcher range analysis result exposing
             ``handler_state_map`` and/or ``handler_range_map`` attributes.
 
     Returns:
@@ -36,9 +36,9 @@ def collect_state_constants(
         for value in (state_constants or ())
     }
 
-    if bst_result is not None:
-        handler_state_map = getattr(bst_result, "handler_state_map", {}) or {}
-        handler_range_map = getattr(bst_result, "handler_range_map", {}) or {}
+    if range_evidence is not None:
+        handler_state_map = getattr(range_evidence, "handler_state_map", {}) or {}
+        handler_range_map = getattr(range_evidence, "handler_range_map", {}) or {}
         for state_value in handler_state_map.values():
             constants.add(int(state_value))
         for low, high in handler_range_map.values():

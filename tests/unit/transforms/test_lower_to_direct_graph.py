@@ -138,7 +138,7 @@ def test_return_wiring_emits_goto_for_conditional_return_anchor():
     graph = _graph_with_lookup({30: (1, (5,))})
     steps = _return_redirects_from_dag(
         dag, graph, 5,
-        bst_node_blocks=set(),
+        condition_chain_blocks=set(),
         common_return_corridor={99},
         artifact_return_blocks=set(),
         claimed_sources=set(),
@@ -157,7 +157,7 @@ def test_return_wiring_skips_already_claimed_anchor():
     graph = _graph_with_lookup({30: (1, (5,))})
     steps = _return_redirects_from_dag(
         dag, graph, 5,
-        bst_node_blocks=set(),
+        condition_chain_blocks=set(),
         common_return_corridor={99},
         artifact_return_blocks=set(),
         claimed_sources={30},
@@ -192,7 +192,7 @@ def test_postprocess_merge_drops_spine_mods_claimed_by_return_plan(monkeypatch):
         graph,
         6,
         spine_mods=(spine_conflict, spine_keep),
-        bst_node_blocks=set(),
+        condition_chain_blocks=set(),
         dispatcher=None,
         common_return_corridor=set(),
         artifact_return_blocks=set(),

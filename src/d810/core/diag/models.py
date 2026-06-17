@@ -317,7 +317,7 @@ class StateCfgFrontierClosureDiagnostic(BaseModel):
         indexes = ((("snapshot", "kind", "reason"), False),)
 
 
-class BstIntervalDispatcherRow(BaseModel):
+class ConditionChainIntervalDispatcherRow(BaseModel):
     snapshot = _snapshot_fk()
     row_index = IntegerField()
     lo_hex = TextField()
@@ -330,7 +330,7 @@ class BstIntervalDispatcherRow(BaseModel):
     payload_json = TextField(default="{}")
 
     class Meta:
-        table_name = "bst_interval_dispatcher_rows"
+        table_name = "condition_chain_interval_dispatcher_rows"
         primary_key = CompositeKey("snapshot", "row_index")
         indexes = ((("snapshot", "target_block"), False),)
 
@@ -359,23 +359,23 @@ class StateDispatcherRow(BaseModel):
         )
 
 
-class StateTransitionBstResolution(BaseModel):
+class StateTransitionConditionChainResolution(BaseModel):
     snapshot = _snapshot_fk()
     fact_id = TextField()
     source_block_serial = IntegerField()
     source_state_const_hex = TextField()
-    bst_resolved_next_block_serial = IntegerField(null=True)
-    bst_resolved_next_state_const_hex = TextField(null=True)
-    bst_resolved_next_state_const_u64 = IntegerField(null=True)
-    bst_resolution_reason = TextField()
-    bst_resolution_maturity = TextField()
+    condition_chain_resolved_next_block_serial = IntegerField(null=True)
+    condition_chain_resolved_next_state_const_hex = TextField(null=True)
+    condition_chain_resolved_next_state_const_u64 = IntegerField(null=True)
+    condition_chain_resolution_reason = TextField()
+    condition_chain_resolution_maturity = TextField()
 
     class Meta:
-        table_name = "state_transition_bst_resolutions"
+        table_name = "state_transition_condition_chain_resolutions"
         primary_key = CompositeKey("snapshot", "fact_id")
         indexes = (
             (("source_block_serial",), False),
-            (("bst_resolved_next_state_const_hex",), False),
+            (("condition_chain_resolved_next_state_const_hex",), False),
         )
 
 
@@ -573,7 +573,7 @@ class Modification(BaseModel):
 class BlockClassification(BaseModel):
     snapshot = _snapshot_fk()
     serial = IntegerField()
-    is_bst = IntegerField(default=0)
+    is_condition_chain = IntegerField(default=0)
     is_reachable = IntegerField(default=1)
     is_gutted = IntegerField(default=0)
     in_claimed = IntegerField(default=0)
@@ -871,9 +871,9 @@ MODELS = (
     StateCfgLocalEdge,
     StateCfgEdgeDiagnostic,
     StateCfgFrontierClosureDiagnostic,
-    BstIntervalDispatcherRow,
+    ConditionChainIntervalDispatcherRow,
     StateDispatcherRow,
-    StateTransitionBstResolution,
+    StateTransitionConditionChainResolution,
     StateTransitionDispatchResolution,
     SwitchCaseTransitionFact,
     BranchOwnershipProof,

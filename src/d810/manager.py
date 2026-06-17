@@ -45,9 +45,9 @@ from d810.core.rule_scope import (
 from d810.core.stats import OptimizationStatistics
 from d810.core.typing import TYPE_CHECKING
 from d810.backends.ast.z3 import Z3MopProver
-from d810.backends.hexrays.evidence import bst_analysis as _bst_evidence
+from d810.backends.hexrays.evidence import condition_chain_analysis as _condition_chain_evidence
 from d810.capabilities.providers import (
-    register_bst_walkers,
+    register_condition_chain_walkers,
     register_microcode_evidence,
 )
 from d810.hexrays.expr_mop_ops import HexRaysMopOps
@@ -2051,17 +2051,17 @@ class D810State(metaclass=SingletonMeta):
         """Push backend-supplied analysis seams into the portable provider registry.
 
         Composition-root injection (Landing Sequence LS10): the Hex-Rays evidence
-        walkers live in ``d810.backends.hexrays.evidence.bst_analysis``, but the
-        portable recon BST-transition analyses must not import the vendor backend.
+        walkers live in ``d810.backends.hexrays.evidence.condition_chain_analysis``, but the
+        portable recon condition-chain transition analyses must not import the vendor backend.
         Here -- a HIGH-layer module that may legally import backends -- we push the
         callables into ``d810.capabilities.providers`` so recon reads them via
-        ``get_bst_walkers()`` without a backend import (see ticket d81-1w16).
+        ``get_condition_chain_walkers()`` without a backend import (see ticket d81-1w16).
 
         Re-registered on every start so a plugin reload that clears the registry
         module globals is repopulated before any recon analysis runs.
         """
-        register_bst_walkers(_bst_evidence.build_bst_walker_provider())
-        register_microcode_evidence(_bst_evidence.build_microcode_evidence_provider())
+        register_condition_chain_walkers(_condition_chain_evidence.build_condition_chain_walker_provider())
+        register_microcode_evidence(_condition_chain_evidence.build_microcode_evidence_provider())
         # Live-mop comparison oracle for the (now portable) constraint DSL's
         # matching-time checks (equal_mops / is_bnot); replaces the old
         # importlib->hexrays_helpers dodge. See ticket llr-n2so.

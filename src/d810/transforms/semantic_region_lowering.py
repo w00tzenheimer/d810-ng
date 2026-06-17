@@ -130,7 +130,7 @@ def _select_site_horizon_block(
         "Provide a minimal semantic-region contract before compiling into GraphModification primitives.",
     ),
     examples=(
-        "Accept an exact transition whose source anchor matches the source node entry anchor and whose target entry is non-BST.",
+        "Accept an exact transition whose source anchor matches the source node entry anchor and whose target entry is outside the condition chain.",
         "Reject a feeder row that only writes the next state but does not equal the semantic source node entry anchor.",
     ),
     tags=("semantic-region", "structured-lowering", "entry-admissibility", "sese"),
@@ -260,7 +260,7 @@ def collect_admissible_region_lowering_sites(
         # internal edges (no chain inside the region). For incoming DAG edges
         # from outside the region, treat the predecessor handler as a redirect
         # site so HCC can lower the dispatcher arm directly to X's entry anchor
-        # instead of bouncing through the BST. This makes single-state terminal
+        # instead of bouncing through the condition chain. This makes single-state terminal
         # regions actionable even when their semantic-program exit_state edges
         # are not present in the live DAG.
         if (
@@ -325,7 +325,7 @@ def collect_admissible_region_lowering_sites(
                 dag,
                 target_state_value,
                 source_block=nonexact_source_block,
-                bst_node_blocks=dispatcher_blocks,
+                condition_chain_blocks=dispatcher_blocks,
             )
             supplemental_selected_entry = _resolve_supplemental_selected_entry(
                 dag,
@@ -335,7 +335,7 @@ def collect_admissible_region_lowering_sites(
                 dag,
                 target_state_value,
                 source_block=nonexact_source_block,
-                bst_node_blocks=dispatcher_blocks,
+                condition_chain_blocks=dispatcher_blocks,
                 dispatcher=dispatcher,
             )
             if (
@@ -690,7 +690,7 @@ def _resolve_owner_semantic_head_for_candidates(
         dag,
         anchor_candidates=anchor_candidates,
         source_block=int(source_block),
-        bst_node_blocks=dispatcher_blocks,
+        condition_chain_blocks=dispatcher_blocks,
     )
     if owner_entry is None:
         return None
@@ -897,7 +897,7 @@ def _augment_region_contract_semantic_successors_by_state(
                         dag,
                         exit_state,
                         source_block=int(source_entry_anchor),
-                        bst_node_blocks=dispatcher_blocks,
+                        condition_chain_blocks=dispatcher_blocks,
                     )
                 for candidate_entry in (
                     normalized_alias_entry,
@@ -1921,7 +1921,7 @@ def override_exit_sites_with_child_region_entries(
             dag,
             effective_target_state,
             source_block=target_source_block,
-            bst_node_blocks=dispatcher_blocks,
+            condition_chain_blocks=dispatcher_blocks,
         )
         supplemental_selected_entry = _resolve_supplemental_selected_entry(
             dag,

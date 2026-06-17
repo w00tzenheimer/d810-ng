@@ -1,11 +1,11 @@
-"""``route`` diagnostic: BST-route provenance for a single dispatcher state.
+"""``route`` diagnostic: condition-chain route provenance for a single dispatcher state.
 
-Loads the dispatcher BST from a diag DB (the compare instructions of a
+Loads the dispatcher condition chain from a diag DB (the compare instructions of a
 snapshot), reconstructs the portable :class:`route_predicate.DecisionDag`, and
 routes a concrete state through the *same* router the recovery uses
 (:meth:`DecisionDag.route`). It then dumps the full provenance for the state:
 
-- the BST decision path (``blkN [op #const] -> T/F`` per node),
+- the condition-chain decision path (``blkN [op #const] -> T/F`` per node),
 - the resolved handler block and its entry EA,
 - the writer site(s) that produce the state (literal ``mov #const``; opaque /
   XOR-computed states have no literal writer and are flagged),
@@ -35,9 +35,9 @@ from d810.analyses.control_flow.route_predicate import (
 )
 from d810.diagnostics.output import get_output, write_output
 
-# A dispatcher BST node is ``<op> <operand>, #0x<const>.<size>, @<taken>``.
+# A dispatcher condition chain node is ``<op> <operand>, #0x<const>.<size>, @<taken>``.
 # Handler-internal conditionals compare small DECIMAL consts (e.g. ``#3.8``)
-# and are excluded -- only state-sized hex consts (``#0x...``) are BST pivots.
+# and are excluded -- only state-sized hex consts (``#0x...``) are condition-chain pivots.
 _CMP_RE = re.compile(r"^(j\w+)\s+.*#0x([0-9A-Fa-f]+)\.\d+,\s*@(\d+)")
 _DEFAULT_DB_GLOBS = (
     ".tmp/logs/d810_logs/*.diag.sqlite3",
@@ -236,7 +236,7 @@ def format_provenance(prov: RouteProvenance) -> str:
     out: list[str] = []
     out.append(f"state 0x{prov.state:08X}  (snapshot {prov.snapshot_id}, root blk{prov.root})")
     out.append("-" * 72)
-    out.append("BST route path:")
+    out.append("condition-chain route path:")
     if prov.path:
         for st in prov.path:
             out.append(

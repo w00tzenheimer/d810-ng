@@ -207,10 +207,10 @@ class StateConstantReturnFixupStrategy:
 
     @staticmethod
     def _collect_state_constants(snapshot: AnalysisSnapshot) -> set[int]:
-        """Collect all known state constants from snapshot and BST result.
+        """Collect all known state constants from snapshot and condition-chain result.
 
         Merges ``snapshot.state_constants`` with values from
-        ``bst_result.handler_state_map`` and ``bst_result.handler_range_map``.
+        ``range_evidence.handler_state_map`` and ``range_evidence.handler_range_map``.
 
         Args:
             snapshot: Immutable analysis snapshot.
@@ -218,4 +218,4 @@ class StateConstantReturnFixupStrategy:
         Returns:
             Set of integer state constant values.
         """
-        return set(collect_state_constants(snapshot.state_constants, snapshot.bst_result))
+        return set(collect_state_constants(snapshot.state_constants, snapshot.range_evidence))

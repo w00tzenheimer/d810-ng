@@ -461,7 +461,7 @@ __all__ = [
 #     var_770 = 0x77535232
 #     var_64  = (var_770 ^ var_778) - var_780     ; == 0x2A5E29F6, a real state
 #
-# The BST walker only proves bare ``mov #const`` writes, so these handlers look
+# The condition-chain walker only proves bare ``mov #const`` writes, so these handlers look
 # self-looping / edgeless. A *local forward constant propagation* over the block,
 # folding the state-write RHS through the portable KnownBits value domain,
 # recovers the concrete next-state without symbolic execution.
@@ -1112,7 +1112,7 @@ def block_writes_state_var(
 
     ``True`` when the block has any instruction whose destination is the state
     var (a ``mov #const`` re-dispatch, an MBA fold, etc.).  Distinguishes a
-    genuine state handler -- e.g. the BST ``!=`` else-leaf ``blk57`` writing
+    genuine state handler -- e.g. the condition-chain ``!=`` else-leaf ``blk57`` writing
     ``var_7BC`` -- from a shared-*temp* writer (``blk194`` writes ``var_70``, not
     the state var; ``explore()``'s corridor walk only mis-attributes a state
     write to it).  The projection uses this to decide which dispatcher-region

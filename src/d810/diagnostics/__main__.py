@@ -64,10 +64,10 @@ from d810.diagnostics.alternate_selection import (
     persist_alternate_selections,
     select_alternate_edges,
 )
-from d810.diagnostics.bst_resolution import (
-    load_latest_bst_intervals_from_db,
-    parse_latest_bst_intervals_from_log,
-    persist_bst_resolutions,
+from d810.diagnostics.condition_chain_resolution import (
+    load_latest_condition_chain_intervals_from_db,
+    parse_latest_condition_chain_intervals_from_log,
+    persist_condition_chain_resolutions,
     resolve_state_transition_facts,
 )
 from d810.diagnostics.state_dispatcher_resolution import (
@@ -317,7 +317,7 @@ def _format_block(
     meta = blk.get("meta_parsed", {})
     if meta:
         lines.append(f"  meta={json.dumps(meta, indent=2)}")
-    for key in ("is_bst", "is_reachable", "is_gutted", "in_claimed"):
+    for key in ("is_condition_chain", "is_reachable", "is_gutted", "in_claimed"):
         if key in blk:
             lines.append(f"  {key}={blk[key]}")
     if show_insns:
@@ -1155,7 +1155,7 @@ def main(argv: list[str] | None = None) -> int:
     from d810.diagnostics.state_route import add_arguments as _route_add_args
     p_route = sub.add_parser(
         "route", parents=[common],
-        help="BST-route provenance for one dispatcher state (state -> handler blk/ea)",
+        help="condition-chain route provenance for one dispatcher state (state -> handler blk/ea)",
     )
     _route_add_args(p_route)
 
@@ -1495,27 +1495,27 @@ def main(argv: list[str] | None = None) -> int:
         dest="json_output",
     )
 
-    p_bst_resolve = sub.add_parser(
-        "state-transition-bst-resolutions",
+    p_condition_chain_resolve = sub.add_parser(
+        "state-transition-condition-chain-resolutions",
         parents=[common],
         help=(
             "Enrich LOCOPT-pre StateTransitionAnchorFacts with the "
-            "single-hop BST routing for their source_state_const, "
+            "single-hop condition-chain routing for their source_state_const, "
             "and (when the resolved handler block has a canonical "
             "state-write at LOCOPT-pre) the next state constant. "
             "Observability-only; no recon edge target selection or "
             "HCC behavior depends on these rows."
         ),
     )
-    p_bst_resolve.add_argument(
-        "--bst-log",
+    p_condition_chain_resolve.add_argument(
+        "--condition-chain-log",
         default=None,
         help=(
             "Path to a d810.log containing INTERVAL_DISPATCHER_ROWS "
-            "for old runs whose diag DB lacks persisted BST interval rows"
+            "for old runs whose diag DB lacks persisted condition-chain interval rows"
         ),
     )
-    p_bst_resolve.add_argument(
+    p_condition_chain_resolve.add_argument(
         "--snap-id",
         type=int,
         default=None,
@@ -1525,31 +1525,31 @@ def main(argv: list[str] | None = None) -> int:
             "phase pre_d810)"
         ),
     )
-    p_bst_resolve.add_argument(
+    p_condition_chain_resolve.add_argument(
         "--block",
         type=int,
         default=None,
         help="Filter output to one source block",
     )
-    p_bst_resolve.add_argument(
+    p_condition_chain_resolve.add_argument(
         "--persist",
         action="store_true",
         default=True,
         help=(
             "Persist resolutions into "
-            "state_transition_bst_resolutions table (default; idempotent)"
+            "state_transition_condition_chain_resolutions table (default; idempotent)"
         ),
     )
-    p_bst_resolve.add_argument(
+    p_condition_chain_resolve.add_argument(
         "--no-persist",
         action="store_false",
         dest="persist",
         help=(
             "Compute and print resolutions without writing "
-            "state_transition_bst_resolutions"
+            "state_transition_condition_chain_resolutions"
         ),
     )
-    p_bst_resolve.add_argument(
+    p_condition_chain_resolve.add_argument(
         "--json",
         action="store_true",
         dest="json_output",
@@ -1881,7 +1881,7 @@ def main(argv: list[str] | None = None) -> int:
             "Reconcile resolver predictions against live"
             " dispatcher_trampoline_skip emissions. Reads a diag SQLite +"
             " d810.log and prints the AGREE_FULL / HCC_DUP / HCC_REGION_* /"
-            " DISAGREE_TARGET / STRATEGY_ONLY_STATE_NOT_IN_BST / BOTH_NONE"
+            " DISAGREE_TARGET / STRATEGY_ONLY_STATE_NOT_IN_CONDITION_CHAIN / BOTH_NONE"
             " bucket breakdown (uee-32r3 Piece 5.5)."
         ),
     )
@@ -2416,11 +2416,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"(persisted={args.persist}, filter={args.kind}/"
                 f"{args.classification or 'any'})"
             )
-    elif args.command == "state-transition-bst-resolutions":
-        intervals = load_latest_bst_intervals_from_db(conn)
-        if not intervals and args.bst_log:
+    elif args.command == "state-transition-condition-chain-resolutions":
+        intervals = load_latest_condition_chain_intervals_from_db(conn)
+        if not intervals and args.condition_chain_log:
             try:
-                intervals = parse_latest_bst_intervals_from_log(args.bst_log)
+                intervals = parse_latest_condition_chain_intervals_from_log(args.condition_chain_log)
             except FileNotFoundError:
                 intervals = ()
         if args.snap_id is not None:
@@ -2443,11 +2443,11 @@ def main(argv: list[str] | None = None) -> int:
             locopt_snap = int(row[0])
         resolutions = resolve_state_transition_facts(
             conn,
-            bst_intervals=intervals,
+            range_intervals=intervals,
             locopt_snapshot_id=locopt_snap,
         )
         if args.persist:
-            persist_bst_resolutions(conn, resolutions)
+            persist_condition_chain_resolutions(conn, resolutions)
         filtered = list(resolutions)
         if args.block is not None:
             filtered = [
@@ -2463,15 +2463,15 @@ def main(argv: list[str] | None = None) -> int:
                             "fact_id": r.fact_id,
                             "source_block_serial": r.source_block_serial,
                             "source_state_const_hex": r.source_state_const_hex,
-                            "bst_resolved_next_block_serial":
-                                r.bst_resolved_next_block_serial,
-                            "bst_resolved_next_state_const_hex":
-                                r.bst_resolved_next_state_const_hex,
-                            "bst_resolved_next_state_const_u64":
-                                r.bst_resolved_next_state_const_u64,
-                            "bst_resolution_reason": r.bst_resolution_reason,
-                            "bst_resolution_maturity":
-                                r.bst_resolution_maturity,
+                            "condition_chain_resolved_next_block_serial":
+                                r.condition_chain_resolved_next_block_serial,
+                            "condition_chain_resolved_next_state_const_hex":
+                                r.condition_chain_resolved_next_state_const_hex,
+                            "condition_chain_resolved_next_state_const_u64":
+                                r.condition_chain_resolved_next_state_const_u64,
+                            "condition_chain_resolution_reason": r.condition_chain_resolution_reason,
+                            "condition_chain_resolution_maturity":
+                                r.condition_chain_resolution_maturity,
                         }
                         for r in filtered
                     ],
@@ -2492,13 +2492,13 @@ def main(argv: list[str] | None = None) -> int:
                             str(r.source_block_serial),
                             r.source_state_const_hex,
                             (
-                                str(r.bst_resolved_next_block_serial)
-                                if r.bst_resolved_next_block_serial
+                                str(r.condition_chain_resolved_next_block_serial)
+                                if r.condition_chain_resolved_next_block_serial
                                 is not None else "-"
                             ),
-                            r.bst_resolved_next_state_const_hex or "-",
-                            r.bst_resolution_reason,
-                            r.bst_resolution_maturity,
+                            r.condition_chain_resolved_next_state_const_hex or "-",
+                            r.condition_chain_resolution_reason,
+                            r.condition_chain_resolution_maturity,
                         )
                     )
                 )

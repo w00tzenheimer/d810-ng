@@ -184,7 +184,7 @@ def test_recover_dispatcher_threads_entry_dominated_initial_state():
     result = recover_dispatcher(_prologue_loop_head_graph(), facts=None)
     assert result.dispatch_map is not None
     # recover_dispatcher threads the corrected initial state onto the map so the
-    # §1a entry bridge prefers it over the spurious BST mid-chain value.
+    # §1a entry bridge prefers it over the spurious condition-chain mid-chain value.
     assert result.dispatch_map.initial_state == INIT_STATE
 
 

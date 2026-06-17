@@ -62,7 +62,7 @@ from d810.analyses.data_flow.concolic import (
 )
 from d810.analyses.data_flow.concolic.emulation import EmulationCapability
 from d810.analyses.control_flow.transition_builder import _convert_condition_chain_to_result
-from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
+from d810.backends.hexrays.evidence.condition_chain_analysis import analyze_condition_chain_dispatcher
 from d810.analyses.control_flow.indirect_jump_resolver import (
     IndirectJumpDispatcherResolver,
 )
@@ -153,7 +153,7 @@ class _ReducedProductBypassFamily:
     #: (A CALL_MODELED pre-fold stage was tried for the folded conditional-chain machines
     #: hardened_cond_chain_simple / unwrap_loops and REVERTED: those have only ONE
     #: ``state OP #const`` block at BOTH CALLS and GLBOPT1 -- their transitions are
-    #: ``mov #const`` binary-search writes, which the concolic ``_discover`` cannot anchor at
+    #: ``mov #const`` condition-chain writes, which the concolic ``_discover`` cannot anchor at
     #: any maturity, so the extra stage helped nothing and only added cost/risk.)
     recovery_maturities = (IRMaturity.GLOBAL_ANALYZED,)
 
@@ -521,19 +521,19 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 fact_view = flow_ctx.validated_fact_view(mba.maturity)
             except Exception:  # noqa: BLE001 — fact view is best-effort input
                 logger.debug("unflat: validated_fact_view unavailable", exc_info=True)
-        # Pre-mutation BST/interval evidence: walk the PRISTINE mba here (it still matches
+        # Pre-mutation condition-chain/interval evidence: walk the PRISTINE mba here (it still matches
         # source.flow_graph; the pipeline mutates it below) so the value-range dispatcher recovery
-        # sees the intact BST. PROMOTED TO PRODUCTION (gap3+gap4, ticket llr-t1s8): #4's
-        # LowerStateMachine consumes this through the AnalysisManager to build the BST-enriched DAG
+        # sees the intact condition-chain. PROMOTED TO PRODUCTION (gap3+gap4, ticket llr-t1s8): #4's
+        # LowerStateMachine consumes this through the AnalysisManager to build the condition-chain-enriched DAG
         # whose CONDITIONAL_RETURN edges (interval-map classification, not the bounded mba walk)
-        # materialize terminal returns — the unflatten returns=0 -> returns=N fix. analyze_bst_dispatcher
+        # materialize terminal returns — the unflatten returns=0 -> returns=N fix. analyze_condition_chain_dispatcher
         # lives in the hexrays backend (needs the live mba), which the portable LowerStateMachine
         # can't import, so the evidence is computed here in the entry and threaded as an opaque fact.
         # The LiSA-discovery diff log stays diag-only. Self-gating: no dispatcher -> no evidence ->
         # #4 stays on the committed shallow path (byte-identical).
-        bst_evidence = None
+        range_evidence = None
         prelim = None
-        # Thread the rule's min_state_constant into the prelim recovery so the BST
+        # Thread the rule's min_state_constant into the prelim recovery so the condition-chain
         # evidence (and select_family below) agree on the threshold; defaults to the
         # module MIN_STATE_CONSTANT when the config omits it (golden byte-identical).
         prelim_min_state_constant = min_state_constant_from_config(
@@ -546,18 +546,18 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 min_state_constant=prelim_min_state_constant,
             )
             if getattr(prelim, "dispatcher_block_serial", None) is not None:
-                bst_evidence = analyze_bst_dispatcher(
+                range_evidence = analyze_condition_chain_dispatcher(
                     mba,
                     int(prelim.dispatcher_block_serial),
                     getattr(prelim, "state_var_stkoff", None),
                 )
                 if _capture_diagnostics_enabled():
-                    self._log_lisa_discovery_diff(source.flow_graph, prelim, bst_evidence)
+                    self._log_lisa_discovery_diff(source.flow_graph, prelim, range_evidence)
         except Exception:  # noqa: BLE001 — evidence recovery is best-effort
-            logger.debug("unflat: pre-pipeline BST evidence failed", exc_info=True)
+            logger.debug("unflat: pre-pipeline condition-chain evidence failed", exc_info=True)
         facts = AnalysisManager(source.flow_graph, input_facts=fact_view)
-        if bst_evidence is not None:
-            facts.put_analysis("bst_evidence", bst_evidence)
+        if range_evidence is not None:
+            facts.put_analysis("range_evidence", range_evidence)
         backend = HexRaysMutationBackend()
         # Provide the live value-range capability so RecoverStateTransitions can resolve handler
         # transitions the exact equality-chain leaves unresolved (the north-star
@@ -572,8 +572,8 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # golden (no live indirect detector). Omitted when the dispatcher state var is
         # unknown (e.g. no dispatcher), so construction can never crash.
         state_var_stkoff = (
-            getattr(bst_evidence, "state_var_stkoff", None)
-            if bst_evidence is not None
+            getattr(range_evidence, "state_var_stkoff", None)
+            if range_evidence is not None
             else None
         )
         if state_var_stkoff is None:
@@ -703,7 +703,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # Diag DB: publish the unflatten structural analysis so the SQLite diag tables are not blind to
         # this path (the legacy recon instrumentation does not run under the flag). llr-6dq7.
         self._publish_unflat_diagnostics(
-            mba, source, rec, tr, regions, fact_view, bst_evidence, capabilities
+            mba, source, rec, tr, regions, fact_view, range_evidence, capabilities
         )
         # Termination (ticket llr-3gn4): mark the ea done the moment recovery finds NO
         # dispatcher to lower -- the graph is clean or fully unflattened, so re-running
@@ -734,10 +734,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # dispatcher survives (verified: returning the count regressed approov_real_pattern).
         return 0
 
-    def _log_lisa_discovery_diff(self, flow_graph, prelim, bst_evidence) -> None:
-        """Compare the LiSA value-set dispatcher discovery to analyze_bst_dispatcher (gap1 parity gate).
+    def _log_lisa_discovery_diff(self, flow_graph, prelim, range_evidence) -> None:
+        """Compare the LiSA value-set dispatcher discovery to analyze_condition_chain_dispatcher (gap1 parity gate).
 
-        Headline: does the fixpoint's exact-handler recovery (``handler_entry_by_state``) reach the BST
+        Headline: does the fixpoint's exact-handler recovery (``handler_entry_by_state``) reach the condition-chain
         walk's handler count, and how many range-routed handlers does it surface (the P1 promotion
         candidates the read-off does not yet fold into the exact map)? Diagnostics-only.
         """
@@ -748,24 +748,24 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             view = discover_dispatcher_from_flow_graph(
                 flow_graph,
                 state_var_stkoff=int(stkoff),
-                initial_state=getattr(bst_evidence, "initial_state", None),
+                initial_state=getattr(range_evidence, "initial_state", None),
             )
         except Exception:  # noqa: BLE001 — the diff is diagnostics-only
             logger.debug("unflat: LiSA dispatcher discovery diff failed", exc_info=True)
             return
         logger.info(
             "unflat discover(LiSA): exact_handlers=%d range_handlers=%d head=%s | "
-            "bst handlers=%d state_var=0x%x initial=%s",
+            "condition-chain handlers=%d state_var=0x%x initial=%s",
             len(view.handler_entry_by_state),
             len(view.handler_range_map),
             view.dispatcher_entry,
-            len(getattr(bst_evidence, "handler_state_map", {}) or {}),
+            len(getattr(range_evidence, "handler_state_map", {}) or {}),
             int(stkoff),
-            getattr(bst_evidence, "initial_state", None),
+            getattr(range_evidence, "initial_state", None),
         )
 
     def _dual_build_read_dag_diff(
-        self, source, dmap, bst_evidence, dag_tr, func_ea, maturity
+        self, source, dmap, range_evidence, dag_tr, func_ea, maturity
     ) -> None:
         """Diag-only: build the portable ``read_dag_from`` read-off and OBSERVE it to
         the diag DB under a separate snapshot (``unflat_read_dag_lisa``).
@@ -782,7 +782,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             view = discover_dispatcher_from_flow_graph(
                 flow_graph,
                 state_var_stkoff=int(dmap.state_var_stkoff),
-                initial_state=getattr(bst_evidence, "initial_state", None),
+                initial_state=getattr(range_evidence, "initial_state", None),
             )
             blocks = flow_graph.blocks
             succ = {int(s): tuple(int(x) for x in b.succs) for s, b in blocks.items()}
@@ -885,28 +885,28 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 snap,
                 all_serials=tuple(source.flow_graph.blocks),
                 reachable=tuple(getattr(rec, "reachable_block_serials", ()) or ()),
-                bst_serials=tuple(getattr(rec, "bst_block_serials", ()) or ()),
+                condition_chain_serials=tuple(getattr(rec, "condition_chain_block_serials", ()) or ()),
             )
             entry_serial = int(dmap.dispatcher_entry_block)
-            # Pre-mutation BST evidence (value-range dispatcher, handler ranges, pre-header/initial
+            # Pre-mutation condition-chain evidence (value-range dispatcher, handler ranges, pre-header/initial
             # state) recovered before the pipeline mutated the mba (passed in). DIAG-ONLY: validates
             # evidence-recovery WITHOUT touching production lowering, so a still-naive emission cannot
             # collapse the live output (llr-gp9d/mmfq/opck).
-            bst = range_evidence
+            condition_chain = range_evidence
             # Inc4 (llr-mmfq): measure the sound #2 StateTransitionDomain fixpoint against the ad-hoc
-            # bst-walk + oracle BEFORE swapping it into the DAG. Pure logging, feeds nothing.
-            if bst is not None and fact_view is not None:
+            # condition-chain walk + oracle BEFORE swapping it into the DAG. Pure logging, feeds nothing.
+            if condition_chain is not None and fact_view is not None:
                 self._unflat_fixpoint_probe(
-                    source, bst, fact_view, entry_serial, mba=mba, dmap=dmap
+                    source, condition_chain, fact_view, entry_serial, mba=mba, dmap=dmap
                 )
-            # Prefer the BST-derived rich transition_result: it backfills handlers reachable only
-            # through wide BST range intervals (the range-backed states the exact-only unflatten #2 omits),
+            # Prefer the condition-chain-derived rich transition_result: it backfills handlers reachable only
+            # through wide condition-chain range intervals (the range-backed states the exact-only unflatten #2 omits),
             # so the diag DAG node/edge counts approach the legacy oracle instead of being capped by
             # the shallow exact-chain transitions.
             dag_tr = tr
-            if bst is not None:
+            if condition_chain is not None:
                 try:
-                    dag_tr = _convert_condition_chain_to_result(bst)
+                    dag_tr = _convert_condition_chain_to_result(condition_chain)
                 except Exception:  # noqa: BLE001 — fall back to the unflatten transition_result
                     dag_tr = tr
             if dag_tr is not None and getattr(dag_tr, "transitions", None):
@@ -915,24 +915,24 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     transition_result=dag_tr,
                     dispatcher_entry_serial=entry_serial,
                     state_var_stkoff=dmap.state_var_stkoff,
-                    bst_node_blocks=(
-                        tuple(sorted(int(b) for b in bst.condition_chain_blocks))
-                        if bst is not None
+                    condition_chain_blocks=(
+                        tuple(sorted(int(b) for b in condition_chain.condition_chain_blocks))
+                        if condition_chain is not None
                         else ()
                     ),
-                    handler_range_map=(bst.handler_range_map if bst is not None else None),
-                    dispatcher=(bst.dispatcher if bst is not None else None),
-                    pre_header_serial=(bst.pre_header_serial if bst is not None else None),
-                    initial_state=(bst.initial_state if bst is not None else None),
+                    handler_range_map=(condition_chain.handler_range_map if condition_chain is not None else None),
+                    dispatcher=(condition_chain.dispatcher if condition_chain is not None else None),
+                    pre_header_serial=(condition_chain.pre_header_serial if condition_chain is not None else None),
+                    initial_state=(condition_chain.initial_state if condition_chain is not None else None),
                     mba=mba,
                     prefer_local_corridors=True,
                 )
                 observe_dag(snap, _diag_dag_nodes(dag), _diag_dag_edges(dag))
                 observe_dag_local_facts(snap, dag)
                 self._dual_build_read_dag_diff(
-                    source, dmap, bst, dag_tr, func_ea, maturity
+                    source, dmap, condition_chain, dag_tr, func_ea, maturity
                 )
-                # Feed the BST-enriched DAG (built above) + the recovered BST node set so the #4
+                # Feed the condition-chain-enriched DAG (built above) + the recovered condition-chain node set so the #4
                 # return-wiring (gap3) lowers the CONDITIONAL_RETURN edges here in the diag rebuild.
                 # DIAG-ONLY: gated on --full-diagnostics + a capture subscriber, so it cannot touch
                 # production lowering; it validates the translated return phase against the oracle.
@@ -945,12 +945,12 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     state_var_stkoff=dmap.state_var_stkoff,
                     regions=regions,
                     dag=dag,
-                    bst_node_blocks=(
-                        tuple(sorted(int(b) for b in bst.condition_chain_blocks))
-                        if bst is not None
+                    condition_chain_blocks=(
+                        tuple(sorted(int(b) for b in condition_chain.condition_chain_blocks))
+                        if condition_chain is not None
                         else None
                     ),
-                    dispatcher=(bst.dispatcher if bst is not None else None),
+                    dispatcher=(condition_chain.dispatcher if condition_chain is not None else None),
                     # Production-realistic claims: feed the SAME use-def-protected spine production
                     # uses (filtered emission) so the diag postprocess measures the real claim set,
                     # not the unfiltered greedy spine. ``live_source`` is the opaque live backend fn.
@@ -975,13 +975,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             logger.debug("unflat: snapshot-correlated diagnostics failed", exc_info=True)
 
     def _unflat_fixpoint_probe(
-        self, source, bst, fact_view, dispatcher_entry: int, *, mba=None, dmap=None
+        self, source, condition_chain, fact_view, dispatcher_entry: int, *, mba=None, dmap=None
     ) -> None:
         """DIAG-ONLY: measure the sound #2 ``StateTransitionDomain`` fixpoint (llr-mmfq Inc4).
 
         Builds the value-set ``transition_result`` from the SAME per-block state-write evidence the
-        fact view already carries (``StateWriteAnchor``) and the BST handler map, then logs its
-        conditional-transition count against the ad-hoc ``bst.conditional_transitions`` walk (the diag
+        fact view already carries (``StateWriteAnchor``) and the condition-chain handler map, then logs its
+        conditional-transition count against the ad-hoc ``condition_chain.conditional_transitions`` walk (the diag
         DAG's CONDITIONAL_TRANSITION source) and the legacy oracle (66). Pure measurement: it feeds
         nothing into the DAG/plan, so production and the diag DAG are untouched. The check confirms
         whether the sound fixpoint constrains the over-count before the Inc5 swap.
@@ -1002,8 +1002,8 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             }
             handler_entry_by_state = {
                 int(state): int(blk)
-                for blk, state in bst.handler_state_map.items()
-                if blk not in bst.condition_chain_blocks
+                for blk, state in condition_chain.handler_state_map.items()
+                if blk not in condition_chain.condition_chain_blocks
             }
 
             def _succ(serial):
@@ -1041,12 +1041,12 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             if folded:
                 fixpoint_tr, cond = _run(refined_writes)
 
-            bst_cond_edges = sum(
-                len(v) for v in (bst.conditional_transitions or {}).values()
+            condition_chain_cond_edges = sum(
+                len(v) for v in (condition_chain.conditional_transitions or {}).values()
             )
             logger.info(
                 "unflat #2 fixpoint-probe: fixpoint cond=%d (anchor-only=%d, concrete-folds=%d) "
-                "uncond=%d total=%d handlers=%d writes=%d | bst_walk cond_edges=%d | oracle cond=66",
+                "uncond=%d total=%d handlers=%d writes=%d | condition_chain_walk cond_edges=%d | oracle cond=66",
                 cond,
                 cond_anchor,
                 folded,
@@ -1054,7 +1054,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 len(fixpoint_tr.transitions),
                 len(handler_entry_by_state),
                 len(refined_writes),
-                bst_cond_edges,
+                condition_chain_cond_edges,
             )
 
             # S4 C1 shadow-diff (ticket llr-1szn): emit StateWriteTransition tuples from
@@ -1064,13 +1064,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             # Case-2 opaque-XOR residual the flip (C) is gated on. Diagnostic only.
             state_var_stkoff = getattr(dmap, "state_var_stkoff", None)
             # Source the router the SAME way production does (the llr-oq8v resolver
-            # chain): for the collapsed sub_7FFD BST, bst.dispatcher is None and the
+            # chain): for the collapsed sub_7FFD condition-chain, condition_chain.dispatcher is None and the
             # exact state->handler map wins -- exactly what emit_minimal_unflatten uses.
             _dmap_rows = getattr(dmap, "rows", None) if dmap is not None else None
             dispatcher = select_router(
                 default_resolvers(),
                 RouterResolutionContext(
-                    condition_chain_router=getattr(bst, "dispatcher", None),
+                    condition_chain_router=getattr(condition_chain, "dispatcher", None),
                     state_to_handler=dmap.state_to_handler() if _dmap_rows else None,
                     default_target=getattr(dmap, "default_target_block", None),
                     dispatcher_entry=int(dispatcher_entry),

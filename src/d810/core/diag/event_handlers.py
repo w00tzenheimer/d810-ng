@@ -38,7 +38,7 @@ from d810.core.diag.models import CfgProvenance, FactConsumer, Snapshot
 from d810.core.diag.snapshot import (
     snapshot_branch_witness_decisions,
     snapshot_branch_ownership_proofs,
-    snapshot_bst_interval_dispatcher_rows,
+    snapshot_condition_chain_interval_dispatcher_rows,
     snapshot_exit_path_shortcut_decisions,
     snapshot_dag_frontier_closure_diagnostics,
     snapshot_dag,
@@ -65,7 +65,7 @@ from d810.core.observability import (
 from d810.core.observability_events import (
     BranchOwnershipProofsObserved,
     BranchWitnessDecisionsObserved,
-    BstIntervalDispatcherObserved,
+    ConditionChainIntervalDispatcherObserved,
     CaptureMbaSnapshotRequested,
     CfgProvenanceForLatestSnapshot,
     CfgProvenanceObserved,
@@ -107,8 +107,8 @@ _snapshot_id_by_ref_key: dict[str, int] = {}
 _provenance_lock = threading.Lock()
 _pending_provenance: list[CfgProvenanceObserved] = []
 
-_bst_interval_lock = threading.Lock()
-_pending_bst_intervals: list[BstIntervalDispatcherObserved] = []
+_condition_chain_interval_lock = threading.Lock()
+_pending_condition_chain_intervals: list[ConditionChainIntervalDispatcherObserved] = []
 
 _state_dispatcher_lock = threading.Lock()
 _pending_state_dispatcher_rows: list[StateDispatcherRowsObserved] = []
@@ -192,7 +192,7 @@ def _handle_capture_mba(ev: CaptureMbaSnapshotRequested) -> None:
     # last snapshot and this one. They share the "next snapshot"
     # attribution semantics with the legacy IoC drain.
     _flush_pending_provenance(conn, snap_id)
-    _flush_pending_bst_intervals(conn, snap_id, snap.func_ea)
+    _flush_pending_condition_chain_intervals(conn, snap_id, snap.func_ea)
     _flush_pending_state_dispatcher_rows(conn, snap_id, snap.func_ea)
     _flush_pending_branch_witness_decisions(conn, snap_id, snap.func_ea)
     _flush_pending_exit_path_shortcut_decisions(conn, snap_id, snap.func_ea)
@@ -223,8 +223,8 @@ def _handle_dag_frontier_closure_diagnostics(
     snapshot_dag_frontier_closure_diagnostics(conn, snap_id, ev.rows)
 
 
-def _handle_bst_interval_dispatcher(
-    ev: BstIntervalDispatcherObserved,
+def _handle_condition_chain_interval_dispatcher(
+    ev: ConditionChainIntervalDispatcherObserved,
 ) -> None:
     try:
         conn = get_diag_conn(int(ev.func_ea))
@@ -234,9 +234,9 @@ def _handle_bst_interval_dispatcher(
         return
     snap_id = _latest_snapshot_id_for_func(ev.func_ea)
     if snap_id is None:
-        _buffer_bst_interval_dispatcher(ev)
+        _buffer_condition_chain_interval_dispatcher(ev)
         return
-    snapshot_bst_interval_dispatcher_rows(
+    snapshot_condition_chain_interval_dispatcher_rows(
         conn,
         snap_id,
         ev.rows,
@@ -245,30 +245,30 @@ def _handle_bst_interval_dispatcher(
     )
 
 
-def _buffer_bst_interval_dispatcher(
-    ev: BstIntervalDispatcherObserved,
+def _buffer_condition_chain_interval_dispatcher(
+    ev: ConditionChainIntervalDispatcherObserved,
 ) -> None:
-    with _bst_interval_lock:
-        _pending_bst_intervals.append(ev)
+    with _condition_chain_interval_lock:
+        _pending_condition_chain_intervals.append(ev)
 
 
-def _flush_pending_bst_intervals(
+def _flush_pending_condition_chain_intervals(
     conn: sqlite3.Connection,
     snap_id: int,
     func_ea: int,
 ) -> None:
-    with _bst_interval_lock:
+    with _condition_chain_interval_lock:
         matching = [
-            ev for ev in _pending_bst_intervals
+            ev for ev in _pending_condition_chain_intervals
             if int(ev.func_ea) == int(func_ea)
         ]
         if matching:
-            _pending_bst_intervals[:] = [
-                ev for ev in _pending_bst_intervals
+            _pending_condition_chain_intervals[:] = [
+                ev for ev in _pending_condition_chain_intervals
                 if int(ev.func_ea) != int(func_ea)
             ]
     for ev in matching:
-        snapshot_bst_interval_dispatcher_rows(
+        snapshot_condition_chain_interval_dispatcher_rows(
             conn,
             int(snap_id),
             ev.rows,
@@ -561,7 +561,7 @@ def _handle_reachability(ev: ReachabilityObserved) -> None:
         snap_id,
         all_serials=set(ev.all_serials),
         reachable=set(ev.reachable),
-        bst_serials=set(ev.bst_serials),
+        condition_chain_serials=set(ev.condition_chain_serials),
         gutted=set(ev.gutted),
         claimed_sources=set(ev.claimed_sources),
     )
@@ -702,7 +702,7 @@ def _provenance_extra_json(ev: CfgProvenanceObserved) -> str | None:
 # subscriber registration is symmetric.
 _HANDLERS: tuple[tuple[type, object], ...] = (
     (CaptureMbaSnapshotRequested, _handle_capture_mba),
-    (BstIntervalDispatcherObserved, _handle_bst_interval_dispatcher),
+    (ConditionChainIntervalDispatcherObserved, _handle_condition_chain_interval_dispatcher),
     (StateDispatcherRowsObserved, _handle_state_dispatcher_rows),
     (
         StateTransitionDispatchResolutionsObserved,
@@ -770,8 +770,8 @@ def _uninstall_locked() -> None:
     _clear_snapshot_mapping()
     with _provenance_lock:
         _pending_provenance.clear()
-    with _bst_interval_lock:
-        _pending_bst_intervals.clear()
+    with _condition_chain_interval_lock:
+        _pending_condition_chain_intervals.clear()
     with _state_dispatcher_lock:
         _pending_state_dispatcher_rows.clear()
     with _branch_witness_lock:

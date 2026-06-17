@@ -83,16 +83,16 @@ class DeadStateVariableEliminationStrategy:
             return None
 
         state_constants = self._collect_state_constants(snapshot)
-        bst_result = getattr(snapshot, "bst_result", None)
-        bst_node_blocks = frozenset(
+        range_evidence = getattr(snapshot, "range_evidence", None)
+        condition_chain_blocks = frozenset(
             int(block)
-            for block in (getattr(bst_result, "condition_chain_blocks", set()) or set())
+            for block in (getattr(range_evidence, "condition_chain_blocks", set()) or set())
         )
         evidence = _DEAD_STATE_BACKEND.collect_dead_state_read_cleanup_evidence(
             mba,
             state_variable=state_variable,
             known_state_constants=state_constants,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
 
         if evidence.use_site_count == 0:
@@ -166,5 +166,5 @@ class DeadStateVariableEliminationStrategy:
 
     @staticmethod
     def _collect_state_constants(snapshot: AnalysisSnapshot) -> frozenset[int]:
-        """Collect all known state constants from the snapshot and BST result."""
-        return collect_state_constants(snapshot.state_constants, snapshot.bst_result)
+        """Collect all known state constants from the snapshot and condition-chain result."""
+        return collect_state_constants(snapshot.state_constants, snapshot.range_evidence)

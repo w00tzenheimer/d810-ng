@@ -5145,7 +5145,7 @@ class DeferredGraphModifier:
             # warning observed on live functions.
             #
             # Mirror the direct succset/predset ``_del`` + ``push_back``
-            # pattern used by ``_post_apply_bst_cleanup`` (unflattener) for
+            # pattern used by ``_post_apply_condition_chain_cleanup`` (unflattener) for
             # dispatcher-edge severing — it is the battle-tested primitive
             # the codebase already uses when the block-0 guard blocks a
             # high-level helper.  This path keeps both sides of the edge
@@ -5309,7 +5309,7 @@ class DeferredGraphModifier:
             # block still has succset / predset entries at removal time.
             # Pre-disconnect both sides of every edge the block
             # participates in before calling ``remove_block`` — this
-            # mirrors the battle-tested ``_post_apply_bst_cleanup``
+            # mirrors the battle-tested ``_post_apply_condition_chain_cleanup``
             # pattern (unflattener.py L1537) which already severs edges
             # via ``succset._del`` + ``predset._del`` at GLBOPT1 without
             # hitting INTERR 51919.
@@ -9448,7 +9448,7 @@ class DeferredGraphModifier:
         will remap) and clear only the predset.
 
         Step 0: Convert each old handler block into a 1-way trampoline
-        (m_goto → new_serial).  External 2-way blocks (BST check nodes) have
+        (m_goto → new_serial).  External 2-way blocks (condition-chain check nodes) have
         the old handler serial as their fallthrough (serial+1).  IDA requires
         serial+1 to remain in the succset of BLT_2WAY blocks, so we leave those
         entries as-is in Phase B; the trampoline at the old serial correctly

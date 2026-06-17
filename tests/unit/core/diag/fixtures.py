@@ -269,12 +269,12 @@ def create_sub_7ffd_scenario(conn: sqlite3.Connection) -> int:
         })
     StateCfgLocalEdge.insert_many(local_edge_rows).execute()
 
-    # Block classification (all blocks: is_bst=0, is_reachable=1, is_gutted=0)
+    # Block classification (all blocks: is_condition_chain=0, is_reachable=1, is_gutted=0)
     BlockClassification.insert_many([
         {
             "snapshot": 1,
             "serial": serial,
-            "is_bst": 0,
+            "is_condition_chain": 0,
             "is_reachable": 1,
             "is_gutted": 0,
             "in_claimed": 0,

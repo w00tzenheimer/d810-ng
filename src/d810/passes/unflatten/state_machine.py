@@ -242,7 +242,7 @@ def _recovery_from_machine(machine, graph, min_state_constant: int) -> Dispatche
     return DispatcherRecovery(
         reachable_block_serials=reachable,
         dispatcher_block_serial=dmap.dispatcher_entry_block,
-        bst_block_serials=tuple(sorted(dmap.dispatcher_blocks)),
+        condition_chain_block_serials=tuple(sorted(dmap.dispatcher_blocks)),
         state_var_stkoff=dmap.state_var_stkoff,
         dispatch_map=dmap,
     )
@@ -304,7 +304,7 @@ class RecoverDispatcher(PipelinePass):
         # interval-routed next-states resolve via WrappedInterval.contains. The
         # model is published for RecoverStateTransitions to route through; None
         # for non-comparison kinds (caller falls back to exact-only).
-        model = _build_comparison_model(recovery, _analysis(context, "bst_evidence"))
+        model = _build_comparison_model(recovery, _analysis(context, "range_evidence"))
         _publish(context, "dispatcher_model", model)
         return PassResult(facts=(recovery,), preserved=PreservedAnalyses.all())
 
@@ -414,7 +414,7 @@ class LowerStateMachine(PipelinePass):
         dispatcher_entry = getattr(recovery, "dispatcher_block_serial", None)
         state_var_stkoff = getattr(recovery, "state_var_stkoff", None)
         live_function = getattr(context.source, "live_source", None)
-        range_evidence = _analysis(context, "bst_evidence")
+        range_evidence = _analysis(context, "range_evidence")
 
         # Direct interval-set unflatten (epic d81-jfg2): the interval-set
         # dispatcher (state -> handler) + per-handler next-state recovery IS the

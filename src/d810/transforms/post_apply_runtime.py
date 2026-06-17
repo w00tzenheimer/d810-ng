@@ -21,9 +21,9 @@ def collect_live_residual_dispatcher_preds(
     cfg_translator: object,
     logger: Any | None = None,
 ) -> tuple[int, ...]:
-    """Collect live residual non-BST predecessors to the dispatcher."""
-    bst_result = snapshot.bst_result
-    if bst_result is None or snapshot.bst_dispatcher_serial < 0:
+    """Collect live residual non-condition-chain predecessors to the dispatcher."""
+    range_evidence = snapshot.range_evidence
+    if range_evidence is None or snapshot.dispatcher_root_serial < 0:
         return ()
     strategy = next(
         (
@@ -42,8 +42,8 @@ def collect_live_residual_dispatcher_preds(
         active_collector = raw_collector or collector
         return active_collector(
             flow_graph,
-            snapshot.bst_dispatcher_serial,
-            bst_node_blocks=set(bst_result.condition_chain_blocks),
+            snapshot.dispatcher_root_serial,
+            condition_chain_blocks=set(range_evidence.condition_chain_blocks),
         )
     except Exception:
         if logger is not None:
@@ -73,13 +73,13 @@ def collect_live_lfg_residual_dispatcher_preds(
     )
 
 
-def collect_post_apply_bst_cleanup_blockers(
+def collect_post_apply_condition_chain_cleanup_blockers(
     pipeline: list[PlanFragment],
     results: list[StageResult],
     *,
     live_residual_dispatcher_preds_by_strategy: dict[str, tuple[int, ...]] | None = None,
 ) -> dict[str, tuple[int, ...]]:
-    """Return strategy blockers that must prevent post-apply BST cleanup."""
+    """Return strategy blockers that must prevent post-apply condition-chain cleanup."""
     blockers: dict[str, tuple[int, ...]] = {}
     live_residual_dispatcher_preds_by_strategy = (
         live_residual_dispatcher_preds_by_strategy or {}
@@ -87,10 +87,10 @@ def collect_post_apply_bst_cleanup_blockers(
     for fragment, result in zip(pipeline, results):
         if not (result.success and result.edits_applied > 0):
             continue
-        if fragment.metadata.get("allow_post_apply_bst_cleanup", True):
+        if fragment.metadata.get("allow_post_apply_condition_chain_cleanup", True):
             continue
-        cleanup_reason = fragment.metadata.get("post_apply_bst_cleanup_reason")
-        group_name = fragment.metadata.get("post_apply_bst_cleanup_group")
+        cleanup_reason = fragment.metadata.get("post_apply_condition_chain_cleanup_reason")
+        group_name = fragment.metadata.get("post_apply_condition_chain_cleanup_group")
         if isinstance(group_name, str):
             residual_source = live_residual_dispatcher_preds_by_strategy.get(
                 f"group:{group_name}"

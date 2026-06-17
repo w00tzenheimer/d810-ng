@@ -83,7 +83,7 @@ class ResidualBranchAnchorContext:
     old_target: int | None
     ordered_path: tuple[int, ...]
     dispatcher_serial: int
-    bst_node_blocks: frozenset[int]
+    condition_chain_blocks: frozenset[int]
     target_reaches_branch: bool
 
 
@@ -126,7 +126,7 @@ class ResidualPredSplitContext:
     via_pred: int
     target_entry: int
     dispatcher_serial: int
-    bst_node_blocks: frozenset[int]
+    condition_chain_blocks: frozenset[int]
     valid_pair: bool
     target_reaches_via_pred: bool
     already_emitted: bool
@@ -147,7 +147,7 @@ class ResidualGotoHandoffContext:
     source_block: int
     target_entry: int
     dispatcher_serial: int
-    bst_node_blocks: frozenset[int]
+    condition_chain_blocks: frozenset[int]
     allow_family_fallback_tail: bool
     is_shared_suffix_conditional_tail: bool
     has_prior_branch_cut: bool
@@ -205,7 +205,7 @@ class PredecessorPeelContext:
     source_block: int
     target_entry: int
     dispatcher_serial: int
-    bst_node_blocks: frozenset[int]
+    condition_chain_blocks: frozenset[int]
     target_reaches_pred: bool
 
 
@@ -219,7 +219,7 @@ class SharedFeederContext:
     via_pred_succs: tuple[int, ...]
     target_entry: int
     dispatcher_serial: int
-    bst_node_blocks: frozenset[int]
+    condition_chain_blocks: frozenset[int]
     target_reaches_pred: bool
 
     @property
@@ -239,7 +239,7 @@ class SharedFeederContext:
             source_block=self.source_serial,
             target_entry=self.target_entry,
             dispatcher_serial=self.dispatcher_serial,
-            bst_node_blocks=self.bst_node_blocks,
+            condition_chain_blocks=self.condition_chain_blocks,
             target_reaches_pred=self.target_reaches_pred,
         )
 
@@ -317,7 +317,7 @@ def resolve_redirect_old_target(
     target_entry_anchor: int | None,
     source_branch_arm: int | None,
     source_is_conditional_branch: bool,
-    bst_node_blocks: set[int] | frozenset[int],
+    condition_chain_blocks: set[int] | frozenset[int],
     dispatcher_region: set[int] | frozenset[int],
 ) -> int | None:
     """Resolve the CFG edge being replaced by a redirect."""
@@ -339,7 +339,7 @@ def resolve_redirect_old_target(
                 return candidate
 
     for succ in succs:
-        if succ in bst_node_blocks:
+        if succ in condition_chain_blocks:
             return succ
     for succ in succs:
         if succ in dispatcher_region:
@@ -407,7 +407,7 @@ def can_peel_predecessor_edge(context: PredecessorPeelContext) -> bool:
         context.via_pred,
     }:
         return False
-    if context.target_entry in context.bst_node_blocks:
+    if context.target_entry in context.condition_chain_blocks:
         return False
     other_succs = {
         int(succ)
@@ -569,7 +569,7 @@ def plan_residual_branch_anchor_handoff(
         or context.old_target == context.prefix_target
         or context.old_target not in context.ordered_path
         or context.prefix_target in {context.dispatcher_serial, context.branch_source}
-        or context.prefix_target in context.bst_node_blocks
+        or context.prefix_target in context.condition_chain_blocks
     ):
         return ResidualBranchAnchorPlan(
             accepted=False,
@@ -643,7 +643,7 @@ def plan_residual_pred_split(
     if (
         context.target_entry == context.source_block
         or context.target_entry == context.dispatcher_serial
-        or context.target_entry in context.bst_node_blocks
+        or context.target_entry in context.condition_chain_blocks
     ):
         return ResidualPredSplitPlan(
             accepted=False,
@@ -668,7 +668,7 @@ def plan_residual_goto_handoff(
     if (
         context.target_entry == context.source_block
         or context.target_entry == context.dispatcher_serial
-        or context.target_entry in context.bst_node_blocks
+        or context.target_entry in context.condition_chain_blocks
     ):
         return ResidualGotoHandoffPlan(
             accepted=False,

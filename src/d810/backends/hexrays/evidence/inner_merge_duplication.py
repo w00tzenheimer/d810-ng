@@ -11,7 +11,7 @@ Safety gates:
    are skipped (too expensive to clone).
  - Loop guard: blocks inside SCCs are never duplicated (they are loop
    bodies/headers, not DAG merge points).
- - Infrastructure guard: dispatcher, BST, entry and stop blocks are
+ - Infrastructure guard: dispatcher, condition-chain, entry and stop blocks are
    excluded.
  - Total clone budget: at most ``MAX_TOTAL_CLONES`` duplications per
    function to bound code-size growth.
@@ -220,7 +220,7 @@ class InnerMergeDuplicationStrategy:
             return False
         if snapshot.flow_graph is None:
             return False
-        if snapshot.bst_result is None:
+        if snapshot.range_evidence is None:
             return False
         if snapshot.state_machine is None:
             return False
@@ -240,16 +240,16 @@ class InnerMergeDuplicationStrategy:
             return None
 
         fg: FlowGraph = snapshot.flow_graph
-        bst_result = snapshot.bst_result
-        dispatcher_serial: int = snapshot.bst_dispatcher_serial
+        range_evidence = snapshot.range_evidence
+        dispatcher_serial: int = snapshot.dispatcher_root_serial
         state_machine = snapshot.state_machine
 
         # ---- Build infrastructure exclusion set ----
         sm_blocks = collect_state_machine_blocks(state_machine)
-        bst_node_blocks: set[int] = set(
-            getattr(bst_result, "condition_chain_blocks", set()) or set()
+        condition_chain_blocks: set[int] = set(
+            getattr(range_evidence, "condition_chain_blocks", set()) or set()
         )
-        bst_node_blocks.add(dispatcher_serial)
+        condition_chain_blocks.add(dispatcher_serial)
 
         # Entry and stop block
         entry_serial = fg.entry_serial
@@ -257,7 +257,7 @@ class InnerMergeDuplicationStrategy:
         stop_serial = max_serial  # BLT_STOP is always the last block
 
         full_infra: frozenset[int] = frozenset(
-            bst_node_blocks
+            condition_chain_blocks
             | sm_blocks
             | {entry_serial, stop_serial}
         )

@@ -139,7 +139,7 @@ class LoopRegion:
 
     Each :class:`LoopRegion` corresponds to one cyclic :class:`StateSCC` and
     augments it with structural information about how the cycle's handler
-    blocks intersect the dispatcher region (BST nodes plus dispatcher entry).
+    blocks intersect the dispatcher region (condition-chain nodes plus dispatcher entry).
 
     Parameters
     ----------
@@ -189,7 +189,7 @@ def classify_loop_regions(
         Must already have ``sccs`` populated (Phase 1 contract).
     dispatcher_region : set[int]
         Block serials considered "inside" the dispatcher. Typically
-        ``set(report.bst_node_blocks) | {report.dispatcher_entry_serial}``.
+        ``set(report.condition_chain_blocks) | {report.dispatcher_entry_serial}``.
     """
     region = frozenset(dispatcher_region)
     sccs = getattr(dag, "sccs", ()) or ()

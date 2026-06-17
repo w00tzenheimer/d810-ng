@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.capabilities.providers import get_bst_walkers
+from d810.capabilities.providers import get_condition_chain_walkers
 from d810.ir.flowgraph import InsnKind, OperandKind
 from d810.analyses.control_flow.recon_dag_index import build_dag_node_maps
 from d810.analyses.control_flow.linearized_state_dag import (
@@ -23,7 +23,7 @@ from d810.analyses.control_flow.linearized_state_dag import (
 # Registry-backed seam (``d810.capabilities.providers``, ticket d81-1w16): kept
 # as a module-level name so call sites are unchanged.
 def _forward_eval_insn(*args, **kwargs):
-    return get_bst_walkers().forward_eval_insn(*args, **kwargs)
+    return get_condition_chain_walkers().forward_eval_insn(*args, **kwargs)
 
 
 _MOVE_OPCODE = 4
@@ -173,9 +173,9 @@ def resolve_path_lead_entry_from_node(
     dag: LinearizedStateDag,
     node: StateDagNode,
     *,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
 ) -> int | None:
-    """Return a unique non-BST path lead for ``node``, if one exists."""
+    """Return a unique non-condition-chain path lead for ``node``, if one exists."""
     outgoing_paths = tuple(
         edge.ordered_path
         for edge in dag.edges
@@ -196,7 +196,7 @@ def resolve_path_lead_entry_from_node(
         {
             path[0]
             for path in outgoing_paths
-            if path[0] not in bst_node_blocks
+            if path[0] not in condition_chain_blocks
         }
     )
     if len(path_starts) != 1:
@@ -208,14 +208,14 @@ def resolve_redirect_safe_entry_from_node(
     node: StateDagNode,
     *,
     dag: LinearizedStateDag | None = None,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
 ) -> int | None:
-    """Return a non-BST entry representative for ``node``."""
+    """Return a non-condition-chain entry representative for ``node``."""
     if dag is not None:
         path_lead_entry = resolve_path_lead_entry_from_node(
             dag,
             node,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if path_lead_entry is not None:
             return path_lead_entry
@@ -225,22 +225,22 @@ def resolve_redirect_safe_entry_from_node(
         *node.owned_blocks,
     )
     for block_serial in candidates:
-        if block_serial not in bst_node_blocks:
+        if block_serial not in condition_chain_blocks:
             return block_serial
-    return node.entry_anchor if node.entry_anchor not in bst_node_blocks else None
+    return node.entry_anchor if node.entry_anchor not in condition_chain_blocks else None
 
 
 def resolve_redirect_safe_target_entry(
     dag: LinearizedStateDag,
     edge: StateDagEdge,
     *,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
 ) -> int | None:
     """Return the semantic redirect-safe entry for one residual handoff edge."""
     target_entry = edge.target_entry_anchor
     explicit_target_entry = (
         target_entry
-        if target_entry is not None and target_entry not in bst_node_blocks
+        if target_entry is not None and target_entry not in condition_chain_blocks
         else None
     )
     target_node = (
@@ -257,7 +257,7 @@ def resolve_redirect_safe_target_entry(
             labeled_entry = resolve_redirect_safe_entry_from_node(
                 labeled_matches[0],
                 dag=dag,
-                bst_node_blocks=bst_node_blocks,
+                condition_chain_blocks=condition_chain_blocks,
             )
     if (
         labeled_entry is not None
@@ -269,7 +269,7 @@ def resolve_redirect_safe_target_entry(
         safe_target_entry = resolve_redirect_safe_entry_from_node(
             target_node,
             dag=dag,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if (
             explicit_target_entry is not None
@@ -292,7 +292,7 @@ def resolve_dag_entry_for_state(
     dag: LinearizedStateDag,
     state_value: int | None,
     *,
-    bst_node_blocks: set[int] | None = None,
+    condition_chain_blocks: set[int] | None = None,
 ) -> int | None:
     """Resolve the best semantic entry for ``state_value``."""
     if state_value is None:
@@ -302,7 +302,7 @@ def resolve_dag_entry_for_state(
             return resolve_redirect_safe_entry_from_node(
                 node,
                 dag=dag,
-                bst_node_blocks=bst_node_blocks or set(),
+                condition_chain_blocks=condition_chain_blocks or set(),
             )
     for node in dag.nodes:
         lo = node.key.range_lo
@@ -313,7 +313,7 @@ def resolve_dag_entry_for_state(
             return resolve_redirect_safe_entry_from_node(
                 node,
                 dag=dag,
-                bst_node_blocks=bst_node_blocks or set(),
+                condition_chain_blocks=condition_chain_blocks or set(),
             )
     return None
 
@@ -352,7 +352,7 @@ def resolve_nonlocal_state_entry(
     state_value: int | None,
     *,
     forbidden_blocks: set[int],
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
 ) -> int | None:
     """Resolve a semantic entry for ``state_value`` that avoids ``forbidden_blocks``."""
     if state_value is None:
@@ -373,7 +373,7 @@ def resolve_nonlocal_state_entry(
         entry = resolve_redirect_safe_entry_from_node(
             node,
             dag=dag,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if entry is None or entry in forbidden_blocks:
             continue
@@ -394,7 +394,7 @@ def resolve_contextual_dag_entry_for_state(
     state_value: int | None,
     *,
     source_block: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
 ) -> int | None:
     """Resolve the best semantic entry for ``state_value`` relative to ``source_block``."""
     if state_value is None:
@@ -408,7 +408,7 @@ def resolve_contextual_dag_entry_for_state(
         target_entry = resolve_redirect_safe_target_entry(
             dag,
             edge,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if target_entry is None or target_entry == source_block:
             continue
@@ -424,7 +424,7 @@ def resolve_contextual_dag_entry_for_state(
                 dag,
                 state_value,
                 forbidden_blocks=set(edge.ordered_path),
-                bst_node_blocks=bst_node_blocks,
+                condition_chain_blocks=condition_chain_blocks,
             )
             if nonlocal_entry is not None:
                 target_entry = nonlocal_entry
@@ -446,7 +446,7 @@ def resolve_normalized_alias_entry_for_state(
     state_value: int | None,
     *,
     source_block: int | None,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
 ) -> int | None:
     """Resolve a non-raw alias entry for ``state_value``."""
     if state_value is None:
@@ -470,7 +470,7 @@ def resolve_normalized_alias_entry_for_state(
         entry = resolve_redirect_safe_entry_from_node(
             node,
             dag=dag,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if entry is None or entry == source_block:
             continue
@@ -498,7 +498,7 @@ def resolve_normalized_alias_entry_for_state(
         target_entry = resolve_redirect_safe_target_entry(
             dag,
             edge,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if target_entry is None:
             continue
@@ -537,7 +537,7 @@ def resolve_owner_semantic_entry_for_blocks(
     *,
     anchor_candidates: tuple[int, ...],
     source_block: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
 ) -> int | None:
     """Resolve the owner semantic entry for concrete CFG anchor candidates."""
     if not anchor_candidates:
@@ -570,7 +570,7 @@ def resolve_owner_semantic_entry_for_blocks(
         entry = resolve_redirect_safe_entry_from_node(
             owner,
             dag=dag,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if entry is not None and entry != source_block:
             return entry
@@ -582,7 +582,7 @@ def resolve_owner_family_fallback_entry(
     *,
     via_pred: int,
     source_block: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
 ) -> int | None:
     """Resolve a family fallback entry for a via-pred loopback alias."""
     def _owns_candidate(node: StateDagNode, block_serial: int) -> bool:
@@ -605,7 +605,7 @@ def resolve_owner_family_fallback_entry(
         entry = resolve_redirect_safe_entry_from_node(
             node,
             dag=dag,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if entry is None:
             continue
@@ -633,7 +633,7 @@ def resolve_owner_family_fallback_entry(
         entry = resolve_redirect_safe_entry_from_node(
             node,
             dag=dag,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if entry is None or entry in {source_block, via_pred}:
             continue
@@ -658,7 +658,7 @@ def resolve_cover_fallback_entry_for_state(
     state_value: int | None,
     *,
     source_block: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher: object | None = None,
 ) -> int | None:
     """Resolve the nearest non-exact cover fallback for ``state_value``."""
@@ -698,7 +698,7 @@ def resolve_cover_fallback_entry_for_state(
         exact_entry = resolve_dag_entry_for_state(
             dag,
             candidate_state,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if exact_entry is not None and exact_entry != source_block:
             return exact_entry
@@ -712,7 +712,7 @@ def resolve_cover_fallback_entry_for_state(
             and resolve_redirect_safe_entry_from_node(
                 node,
                 dag=dag,
-                bst_node_blocks=bst_node_blocks,
+                condition_chain_blocks=condition_chain_blocks,
             )
             not in {None, source_block}
             and int(node.state_label.split("_fallback", 1)[0], 16) < state_value
@@ -733,7 +733,7 @@ def resolve_cover_fallback_entry_for_state(
                     resolve_redirect_safe_entry_from_node(
                         node,
                         dag=dag,
-                        bst_node_blocks=bst_node_blocks,
+                        condition_chain_blocks=condition_chain_blocks,
                     ),
                 )
                 if (
@@ -749,13 +749,13 @@ def resolve_cover_fallback_entry_for_state(
         dag,
         anchor_candidates=(cover_interval_target,) if cover_interval_target is not None else (),
         source_block=source_block,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     if semantic_cover_target is not None:
         return semantic_cover_target
     if (
         cover_interval_target is not None
-        and cover_interval_target not in bst_node_blocks
+        and cover_interval_target not in condition_chain_blocks
         and cover_interval_target != source_block
     ):
         return cover_interval_target
@@ -768,7 +768,7 @@ def resolve_loopback_alias_fallback_entry(
     *,
     source_block: int,
     via_pred: int | None,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher: object | None,
 ) -> int | None:
     """Resolve a nonlocal fallback when a loopback alias would self-target."""
@@ -779,7 +779,7 @@ def resolve_loopback_alias_fallback_entry(
         dag,
         via_pred=via_pred,
         source_block=source_block,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     if family_fallback is not None:
         return family_fallback
@@ -788,7 +788,7 @@ def resolve_loopback_alias_fallback_entry(
         dag,
         state_value,
         source_block=via_pred,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         dispatcher=dispatcher,
     )
     if cover_fallback is not None and cover_fallback not in {source_block, via_pred}:
@@ -805,7 +805,7 @@ def resolve_loopback_alias_fallback_entry(
             resolved = None
         if (
             resolved is not None
-            and int(resolved) not in bst_node_blocks
+            and int(resolved) not in condition_chain_blocks
             and int(resolved) not in {source_block, via_pred}
         ):
             return int(resolved)
@@ -817,7 +817,7 @@ def resolve_nonexact_dispatch_target(
     state_value: int | None,
     *,
     source_block: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher: object | None,
     dispatcher_lookup: object | None = None,
 ) -> int | None:
@@ -839,13 +839,13 @@ def resolve_nonexact_dispatch_target(
             dag,
             anchor_candidates=(int(resolved),) if resolved is not None else (),
             source_block=source_block,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if semantic_resolved is not None:
             return semantic_resolved
         if (
             resolved is not None
-            and int(resolved) not in bst_node_blocks
+            and int(resolved) not in condition_chain_blocks
             and int(resolved) != source_block
         ):
             return int(resolved)
@@ -854,7 +854,7 @@ def resolve_nonexact_dispatch_target(
         dag,
         state_value,
         source_block=source_block,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     if normalized_alias_target is not None:
         return normalized_alias_target
@@ -863,7 +863,7 @@ def resolve_nonexact_dispatch_target(
         dag,
         state_value,
         source_block=source_block,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         dispatcher=dispatcher,
     )
     if cover_fallback_entry is not None and cover_fallback_entry != source_block:
@@ -875,7 +875,7 @@ def resolve_projected_path_tail_target(
     dag: LinearizedStateDag,
     *,
     source_block: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher: object | None = None,
     predecessor_hints: tuple[int, ...] | None = None,
     require_predecessor_match: bool = False,
@@ -897,7 +897,7 @@ def resolve_projected_path_tail_target(
         target_entry = resolve_redirect_safe_target_entry(
             dag,
             edge,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if target_entry is None or target_entry == source_block:
             continue
@@ -906,7 +906,7 @@ def resolve_projected_path_tail_target(
                 dag,
                 edge.target_state,
                 source_block=source_block,
-                bst_node_blocks=bst_node_blocks,
+                condition_chain_blocks=condition_chain_blocks,
                 dispatcher=dispatcher,
                 dispatcher_lookup=(getattr(dispatcher, "lookup", None) if dispatcher is not None else None),
             )
@@ -919,7 +919,7 @@ def resolve_projected_path_tail_target(
                 dag,
                 edge.target_state,
                 forbidden_blocks=set(edge.ordered_path),
-                bst_node_blocks=bst_node_blocks,
+                condition_chain_blocks=condition_chain_blocks,
             )
             if nonlocal_entry is not None:
                 target_entry = nonlocal_entry
@@ -938,7 +938,7 @@ def resolve_projected_path_tail_target(
                 edge.target_state,
                 source_block=source_block,
                 via_pred=path_pred,
-                bst_node_blocks=bst_node_blocks,
+                condition_chain_blocks=condition_chain_blocks,
                 dispatcher=dispatcher,
             )
             if fallback_target is not None:
@@ -1010,7 +1010,7 @@ def iter_residual_prefix_handoffs(
     dag: LinearizedStateDag,
     *,
     source_block: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher: object | None = None,
 ) -> list[tuple[StateDagEdge, int, int]]:
     """Enumerate prefix handoff candidates for one residual dispatcher feeder."""
@@ -1030,7 +1030,7 @@ def iter_residual_prefix_handoffs(
         target_entry = resolve_redirect_safe_target_entry(
             dag,
             edge,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if target_entry is None:
             continue
@@ -1039,13 +1039,13 @@ def iter_residual_prefix_handoffs(
                 dag,
                 edge.target_state,
                 source_block=via_pred,
-                bst_node_blocks=bst_node_blocks,
+                condition_chain_blocks=condition_chain_blocks,
                 dispatcher=dispatcher,
                 dispatcher_lookup=(getattr(dispatcher, "lookup", None) if dispatcher is not None else None),
             )
             if nonexact_target is not None:
                 target_entry = nonexact_target
-        if target_entry in bst_node_blocks:
+        if target_entry in condition_chain_blocks:
             continue
         if target_entry in {source_block, via_pred}:
             continue
@@ -1219,7 +1219,7 @@ def resolve_singleton_state_write_value(
     if mba is None or state_var_stkoff is None:
         return None
     try:
-        block = get_bst_walkers().get_block(mba, block_serial)
+        block = get_condition_chain_walkers().get_block(mba, block_serial)
     except Exception:
         return None
     if block is None:
@@ -1283,7 +1283,7 @@ def block_has_state_var_write(
     if mba is None or state_var_stkoff is None:
         return False
     try:
-        block = get_bst_walkers().get_block(mba, block_serial)
+        block = get_condition_chain_walkers().get_block(mba, block_serial)
     except Exception:
         return False
     if block is None:
@@ -1306,8 +1306,8 @@ def resolve_evaluated_handoff_state_via_pred(
     if mba is None or state_var_stkoff is None:
         return None
     try:
-        pred_blk = get_bst_walkers().get_block(mba, via_pred)
-        src_blk = get_bst_walkers().get_block(mba, source_block)
+        pred_blk = get_condition_chain_walkers().get_block(mba, via_pred)
+        src_blk = get_condition_chain_walkers().get_block(mba, source_block)
     except Exception:
         return None
     if pred_blk is None or src_blk is None:
@@ -1344,7 +1344,7 @@ def resolve_immediate_handoff_target(
     block_serial: int,
     *,
     state_var_stkoff: int | None,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher_lookup: object | None,
     dispatcher: object | None = None,
 ) -> tuple[int, int] | None:
@@ -1352,7 +1352,7 @@ def resolve_immediate_handoff_target(
     if mba is None or state_var_stkoff is None:
         return None
     try:
-        block = get_bst_walkers().get_block(mba, block_serial)
+        block = get_condition_chain_walkers().get_block(mba, block_serial)
     except Exception:
         return None
     if block is None:
@@ -1387,7 +1387,7 @@ def resolve_immediate_handoff_target(
     direct_entry = resolve_dag_entry_for_state(
         dag,
         state_value,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     exact_dispatcher_row = dispatcher_has_exact_state_row(
         state_value,
@@ -1404,7 +1404,7 @@ def resolve_immediate_handoff_target(
         dag,
         state_value,
         source_block=block_serial,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         dispatcher=dispatcher,
         dispatcher_lookup=dispatcher_lookup,
     )
@@ -1412,13 +1412,13 @@ def resolve_immediate_handoff_target(
         dag,
         state_value,
         source_block=block_serial,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     contextual_target = resolve_contextual_dag_entry_for_state(
         dag,
         state_value,
         source_block=block_serial,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     target_entry = nonexact_target or direct_entry or normalized_alias_target or contextual_target
     if target_entry is None or target_entry == block_serial:
@@ -1432,7 +1432,7 @@ def resolve_projected_snapshot_handoff_target(
     block_serial: int,
     *,
     state_var_stkoff: int | None,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher: object | None,
 ) -> tuple[int, int] | None:
     """Resolve a projected insn snapshot handoff target."""
@@ -1471,7 +1471,7 @@ def resolve_projected_snapshot_handoff_target(
     direct_entry = resolve_dag_entry_for_state(
         dag,
         state_value,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     if dispatcher_has_exact_state_row(state_value, dispatcher=dispatcher):
         if direct_entry is None or direct_entry == block_serial:
@@ -1485,7 +1485,7 @@ def resolve_assignment_map_handoff_target(
     state_machine: object | None,
     block_serial: int,
     *,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher: object | None,
 ) -> tuple[int, int] | None:
     """Resolve a handoff target from the state machine assignment map."""
@@ -1528,7 +1528,7 @@ def resolve_assignment_map_handoff_target(
     direct_entry = resolve_dag_entry_for_state(
         dag,
         state_value,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     if dispatcher_has_exact_state_row(state_value, dispatcher=dispatcher):
         if direct_entry is None or direct_entry == block_serial:
@@ -1543,7 +1543,7 @@ def resolve_synthesized_handoff_target(
     block_serial: int,
     *,
     state_var_stkoff: int | None,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher: object | None,
     via_pred: int | None = None,
     resolve_state_via_valranges: object | None = None,
@@ -1573,7 +1573,7 @@ def resolve_synthesized_handoff_target(
     direct_entry = resolve_dag_entry_for_state(
         dag,
         state_value,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     exact_dispatcher_row = dispatcher_has_exact_state_row(
         state_value,
@@ -1588,7 +1588,7 @@ def resolve_synthesized_handoff_target(
         dag,
         state_value,
         source_block=contextual_source,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         dispatcher=dispatcher,
     )
     if cover_fallback_entry is not None and cover_fallback_entry != block_serial:
@@ -1600,7 +1600,7 @@ def resolve_synthesized_handoff_target(
             dag,
             state_value,
             source_block=contextual_source,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
             dispatcher=dispatcher,
             dispatcher_lookup=(getattr(dispatcher, "lookup", None) if dispatcher is not None else None),
         )
@@ -1611,7 +1611,7 @@ def resolve_synthesized_handoff_target(
         dag,
         state_value,
         source_block=contextual_source,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     normalized_alias_target = None
     if dispatcher is None or state_has_semantic_support(dag, state_value):
@@ -1619,7 +1619,7 @@ def resolve_synthesized_handoff_target(
             dag,
             state_value,
             source_block=contextual_source,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if normalized_alias_target is not None:
             target_entry = normalized_alias_target
@@ -1629,7 +1629,7 @@ def resolve_synthesized_handoff_target(
             state_value,
             source_block=block_serial,
             via_pred=via_pred,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
             dispatcher=dispatcher,
         )
         if fallback_target is not None:
@@ -1641,7 +1641,7 @@ def resolve_synthesized_handoff_target(
         target_entry = resolve_dag_entry_for_state(
             dag,
             state_value,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if target_entry is not None and target_entry != block_serial:
             return (state_value, target_entry)
@@ -1650,7 +1650,7 @@ def resolve_synthesized_handoff_target(
         dag,
         anchor_candidates=((contextual_source,) if via_pred is not None else (block_serial,)),
         source_block=block_serial,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     if owner_entry is not None and owner_entry != block_serial:
         return (state_value, owner_entry)
@@ -1667,7 +1667,7 @@ def resolve_single_successor_handoff_target(
     block_serial: int,
     *,
     state_var_stkoff: int | None,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher_lookup: object | None,
     dispatcher: object | None = None,
     resolve_state_via_valranges: object | None = None,
@@ -1676,7 +1676,7 @@ def resolve_single_successor_handoff_target(
     if mba is None:
         return None
     try:
-        block = get_bst_walkers().get_block(mba, block_serial)
+        block = get_condition_chain_walkers().get_block(mba, block_serial)
     except Exception:
         return None
     if block is None:
@@ -1686,7 +1686,7 @@ def resolve_single_successor_handoff_target(
     if len(succs) != 1:
         return None
     successor_serial = int(succs[0])
-    if successor_serial == int(block_serial) or successor_serial in bst_node_blocks:
+    if successor_serial == int(block_serial) or successor_serial in condition_chain_blocks:
         return None
 
     handoff = resolve_immediate_handoff_target(
@@ -1694,7 +1694,7 @@ def resolve_single_successor_handoff_target(
         mba,
         successor_serial,
         state_var_stkoff=state_var_stkoff,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         dispatcher_lookup=dispatcher_lookup,
         dispatcher=dispatcher,
     )
@@ -1704,7 +1704,7 @@ def resolve_single_successor_handoff_target(
             mba,
             successor_serial,
             state_var_stkoff=state_var_stkoff,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
             dispatcher=dispatcher,
             via_pred=int(block_serial),
             resolve_state_via_valranges=resolve_state_via_valranges,
@@ -1713,7 +1713,7 @@ def resolve_single_successor_handoff_target(
         handoff = resolve_projected_path_tail_target(
             dag,
             source_block=successor_serial,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
             dispatcher=dispatcher,
             predecessor_hints=(int(block_serial),),
             require_predecessor_match=True,
@@ -1747,7 +1747,7 @@ def resolve_effective_target_entry(
     dag: LinearizedStateDag,
     edge: StateDagEdge,
     *,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     state_var_stkoff: int | None,
     dispatcher_lookup: object | None,
     dispatcher: object | None,
@@ -1758,7 +1758,7 @@ def resolve_effective_target_entry(
     target_entry = resolve_redirect_safe_target_entry(
         dag,
         edge,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     source_block = (
         edge.ordered_path[-1] if edge.ordered_path else edge.source_anchor.block_serial
@@ -1777,7 +1777,7 @@ def resolve_effective_target_entry(
             dag,
             edge.target_state,
             source_block=source_block,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
             dispatcher=dispatcher,
             dispatcher_lookup=dispatcher_lookup,
         )
@@ -1793,7 +1793,7 @@ def resolve_effective_target_entry(
         mba,
         source_block,
         state_var_stkoff=state_var_stkoff,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         dispatcher_lookup=dispatcher_lookup,
         dispatcher=dispatcher,
     )
@@ -1805,7 +1805,7 @@ def resolve_effective_target_entry(
             mba,
             source_block,
             state_var_stkoff=state_var_stkoff,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
             dispatcher=dispatcher,
             via_pred=via_pred,
             resolve_state_via_valranges=resolve_state_via_valranges,
@@ -1817,7 +1817,7 @@ def resolve_effective_target_entry(
         immediate_direct_entry = resolve_dag_entry_for_state(
             dag,
             immediate_state,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if (
             edge.target_state is not None
@@ -1828,7 +1828,7 @@ def resolve_effective_target_entry(
             )
             and immediate_state == (edge.target_state & 0xFFFFFFFF)
             and target_entry is not None
-            and target_entry not in bst_node_blocks
+            and target_entry not in condition_chain_blocks
             and immediate_target_entry != target_entry
         ):
             if not (
@@ -1851,7 +1851,7 @@ def resolve_effective_target_entry(
                 dag,
                 immediate_state,
                 source_block=source_block,
-                bst_node_blocks=bst_node_blocks,
+                condition_chain_blocks=condition_chain_blocks,
                 dispatcher=dispatcher,
             )
             if (
@@ -1895,7 +1895,7 @@ def resolve_effective_target_entry(
                 )
         elif (
             target_entry is not None
-            and target_entry not in bst_node_blocks
+            and target_entry not in condition_chain_blocks
             and immediate_target_entry != target_entry
             and edge.target_state is not None
             and (immediate_state & 0xFFFFFFFF) == (edge.target_state & 0xFFFFFFFF)
@@ -1926,7 +1926,7 @@ def collect_residual_source_handoff_facts(
     source_block: int,
     current_preds: tuple[int, ...],
     state_var_stkoff: int | None,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher_lookup: object | None,
     dispatcher: object | None = None,
     analysis_mba: object | None = None,
@@ -1954,7 +1954,7 @@ def collect_residual_source_handoff_facts(
         dag,
         state_machine,
         source_block,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         dispatcher=dispatcher,
     )
     projected_snapshot_handoff = resolve_projected_snapshot_handoff_target(
@@ -1962,7 +1962,7 @@ def collect_residual_source_handoff_facts(
         projected_flow_graph,
         source_block,
         state_var_stkoff=state_var_stkoff,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         dispatcher=dispatcher,
     )
     immediate_handoff = resolve_immediate_handoff_target(
@@ -1970,7 +1970,7 @@ def collect_residual_source_handoff_facts(
         analysis_mba,
         source_block,
         state_var_stkoff=state_var_stkoff,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         dispatcher_lookup=dispatcher_lookup,
         dispatcher=dispatcher,
     )
@@ -1983,7 +1983,7 @@ def collect_residual_source_handoff_facts(
                 analysis_mba,
                 source_block,
                 state_var_stkoff=state_var_stkoff,
-                bst_node_blocks=bst_node_blocks,
+                condition_chain_blocks=condition_chain_blocks,
                 dispatcher=dispatcher,
                 via_pred=current_preds[0],
             )
@@ -1993,7 +1993,7 @@ def collect_residual_source_handoff_facts(
                 analysis_mba,
                 source_block,
                 state_var_stkoff=state_var_stkoff,
-                bst_node_blocks=bst_node_blocks,
+                condition_chain_blocks=condition_chain_blocks,
                 dispatcher=dispatcher,
             )
 
@@ -2007,7 +2007,7 @@ def collect_residual_source_handoff_facts(
             live_mba,
             source_block,
             state_var_stkoff=state_var_stkoff,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
             dispatcher_lookup=dispatcher_lookup,
             dispatcher=dispatcher,
         )
@@ -2018,7 +2018,7 @@ def collect_residual_source_handoff_facts(
                     live_mba,
                     source_block,
                     state_var_stkoff=state_var_stkoff,
-                    bst_node_blocks=bst_node_blocks,
+                    condition_chain_blocks=condition_chain_blocks,
                     dispatcher=dispatcher,
                     via_pred=current_preds[0],
                 )
@@ -2028,7 +2028,7 @@ def collect_residual_source_handoff_facts(
                     live_mba,
                     source_block,
                     state_var_stkoff=state_var_stkoff,
-                    bst_node_blocks=bst_node_blocks,
+                    condition_chain_blocks=condition_chain_blocks,
                     dispatcher=dispatcher,
                 )
 
@@ -2044,7 +2044,7 @@ def collect_residual_source_handoff_facts(
             analysis_mba,
             source_block,
             state_var_stkoff=state_var_stkoff,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
             dispatcher_lookup=dispatcher_lookup,
             dispatcher=dispatcher,
         )
@@ -2058,7 +2058,7 @@ def collect_residual_source_handoff_facts(
                 live_mba,
                 source_block,
                 state_var_stkoff=state_var_stkoff,
-                bst_node_blocks=bst_node_blocks,
+                condition_chain_blocks=condition_chain_blocks,
                 dispatcher_lookup=dispatcher_lookup,
                 dispatcher=dispatcher,
             )
@@ -2077,7 +2077,7 @@ def collect_residual_source_handoff_facts(
         projected_path_handoff = resolve_projected_path_tail_target(
             dag,
             source_block=source_block,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
             dispatcher=dispatcher,
             predecessor_hints=current_preds if current_preds else None,
         )

@@ -28,7 +28,7 @@ from d810.analyses.value_flow.state_write import (
     MicrocodeEvalSeams,
     forward_eval_insn as _portable_forward_eval_insn,
 )
-from d810.capabilities.providers import BstWalkerProvider, register_bst_walkers
+from d810.capabilities.providers import ConditionChainWalkerProvider, register_condition_chain_walkers
 from d810.ir.flowgraph import (
     BlockKind,
     BlockSnapshot,
@@ -101,13 +101,13 @@ def _seam():
             state_var_lvar_idx=kw.pop("state_var_lvar_idx", None),
         )
 
-    register_bst_walkers(BstWalkerProvider(
+    register_condition_chain_walkers(ConditionChainWalkerProvider(
         detect_state_var_stkoff=lambda *a, **k: None,
         dump_dispatcher_node=lambda *a, **k: None,
         find_pre_header_state=lambda *a, **k: None,
         walk_handler_chain=lambda *a, **k: None,
         forward_eval_insn=_fwd,
-        resolve_via_bst_walk=lambda *a, **k: None,
+        resolve_via_condition_chain_walk=lambda *a, **k: None,
         get_block=lambda mba, serial: mba.get_block(serial),
         block_successors=lambda blk: tuple(blk.succs),
     ))

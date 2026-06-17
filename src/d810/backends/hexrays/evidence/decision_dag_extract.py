@@ -1,4 +1,4 @@
-"""Extract a :class:`DecisionDag` route oracle from a live dispatcher BST.
+"""Extract a :class:`DecisionDag` route oracle from a live dispatcher condition-chain.
 
 Walks the dispatcher comparison tree from its entry, collecting every
 state-variable comparison (range ``ja/jbe/jb/jae`` AND equality ``jz/jnz``) as a
@@ -8,8 +8,8 @@ whose operands are NOT the state variable (a handler's own internal branch, e.g.
 
 This is the IDA-coupled adapter for the portable
 :mod:`d810.analyses.control_flow.route_predicate`. It mirrors the const / target
-extraction of ``bst_analysis`` (``tail.d.b`` = jump target, ``blk.succ(i)`` =
-successors, const from ``.l`` or ``.r``) but, unlike ``bst_analysis``'s
+extraction of ``condition_chain_analysis`` (``tail.d.b`` = jump target, ``blk.succ(i)`` =
+successors, const from ``.l`` or ``.r``) but, unlike ``condition_chain_analysis``'s
 single-state ``_walk``, materialises the WHOLE tree so the caller gets
 ``route`` / ``resolve_paths`` / ``sibling_arms``.
 """
@@ -90,7 +90,7 @@ def _detect_state_var_reg(
     """Mreg the state var is loaded into at the dispatcher entry, or ``None``.
 
     Scans the entry block for ``<load> mop_S(state_var_stkoff) -> mop_r(R)`` (e.g.
-    ``xdu var_694, rax``); the BST children then compare ``R``.
+    ``xdu var_694, rax``); the condition-chain children then compare ``R``.
     """
     try:
         blk = mba.get_mblock(int(dispatcher_entry_serial))
@@ -164,7 +164,7 @@ def _descend_to_root(
     """Follow single-successor blocks from *entry* to the first state-var comparison.
 
     The dispatcher entry handed in may be a loop header / glue block that flows
-    (1-way) into the actual BST root; descend until a state-var comparison is
+    (1-way) into the actual condition-chain root; descend until a state-var comparison is
     found (or the chain forks / ends).
     """
     cur = int(entry)
@@ -203,7 +203,7 @@ def extract_decision_dag(
 
     Args:
         mba: The live ``mba_t``.
-        dispatcher_entry_serial: The BST root block (handlers ``goto`` here).
+        dispatcher_entry_serial: The condition-chain root block (handlers ``goto`` here).
         state_var_stkoff: The dispatcher state variable's ``mop_S.s.off``.
         state_var_lvar_idx: Its lvar index when the state var is a register/lvar.
         width: State variable bit-width (default 32).
@@ -212,7 +212,7 @@ def extract_decision_dag(
     Returns:
         A :class:`DecisionDag` whose nodes are exactly the state-var comparison
         blocks reachable from the root; every other reached block is a leaf
-        (handler). ``route`` reproduces the live BST routing.
+        (handler). ``route`` reproduces the live condition-chain routing.
     """
     op_map = _op_mnemonic_map()
     mask = (1 << int(width)) - 1

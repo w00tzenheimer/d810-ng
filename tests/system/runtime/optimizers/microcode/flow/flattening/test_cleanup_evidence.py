@@ -765,18 +765,18 @@ def test_bad_while_loop_follow_up_reclassifier_uses_modern_target_evidence() -> 
     )
     assert dag_rows[0].proof_sources == ("semantic_dag",)
 
-    bst_rows = reclassify_bad_while_loop_follow_ups(
+    range_rows = reclassify_bad_while_loop_follow_ups(
         follow_up,
         _conditional_redirect_cfg(),
-        bst_intervals=(
+        range_intervals=(
             SimpleNamespace(lo=0x100, hi=0x200, target_block=12),
         ),
         state_constants_by_source={1: 0x123},
     )
-    assert bst_rows[0].bucket is (
+    assert range_rows[0].bucket is (
         CleanupFollowUpResolutionBucket.NOW_RESOLVABLE_REDIRECT
     )
-    assert bst_rows[0].proof_sources == ("bst_interval_singleton",)
+    assert range_rows[0].proof_sources == ("range_interval_singleton",)
 
 
 def test_bad_while_loop_follow_up_proof_builder_feeds_reclassifier() -> None:

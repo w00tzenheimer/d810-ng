@@ -2,7 +2,7 @@
 
 Packages the round's accumulated modifications + ownership + metadata into a
 ``PlanFragment``. Also applies the late PTS-vs-block-creator deferral and the
-structured-region-leakage soft-gate on post-apply BST cleanup.
+structured-region-leakage soft-gate on post-apply condition-chain cleanup.
 
 Lives in the Hodur strategies package because ``PlanFragment`` is a
 Hodur-specific type; moving this to ``d810.cfg`` would require an upward
@@ -210,8 +210,8 @@ def finalize_reconstruction_fragment(
     owned_edges: set[tuple[int, int]],
     accepted_metadata: list[dict[str, int | str | None]],
     rejected_metadata: list[dict[str, int | str | None]],
-    allow_post_apply_bst_cleanup: bool,
-    post_apply_bst_cleanup_reason: str | None,
+    allow_post_apply_condition_chain_cleanup: bool,
+    post_apply_condition_chain_cleanup_reason: str | None,
     residual_dispatcher_preds: tuple[int, ...],
     structured_region_fidelity: dict[str, object] | None = None,
     round_index: int = 0,
@@ -233,9 +233,9 @@ def finalize_reconstruction_fragment(
     )
     structured_region_fidelity = structured_region_fidelity or {}
     leaked_units = tuple(structured_region_fidelity.get("leaked_units", ()))
-    if leaked_units and allow_post_apply_bst_cleanup:
-        allow_post_apply_bst_cleanup = False
-        post_apply_bst_cleanup_reason = "structured_region_leakage"
+    if leaked_units and allow_post_apply_condition_chain_cleanup:
+        allow_post_apply_condition_chain_cleanup = False
+        post_apply_condition_chain_cleanup_reason = "structured_region_leakage"
 
     if pts_mods and has_block_creators:
         non_pts_mods = [mod for mod in modifications if not isinstance(mod, pts_types)]
@@ -293,8 +293,8 @@ def finalize_reconstruction_fragment(
             "mode": "experimental_reconstruction",
             "reconstruction_sites": tuple(accepted_metadata),
             "reconstruction_rejections": tuple(rejected_metadata),
-            "allow_post_apply_bst_cleanup": allow_post_apply_bst_cleanup,
-            "post_apply_bst_cleanup_reason": post_apply_bst_cleanup_reason,
+            "allow_post_apply_condition_chain_cleanup": allow_post_apply_condition_chain_cleanup,
+            "post_apply_condition_chain_cleanup_reason": post_apply_condition_chain_cleanup_reason,
             "residual_dispatcher_preds": residual_dispatcher_preds,
             "structured_region_fidelity": structured_region_fidelity,
             "safeguard_min_required": 1,

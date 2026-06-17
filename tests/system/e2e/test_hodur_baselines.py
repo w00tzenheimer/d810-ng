@@ -244,7 +244,7 @@ class TestHodurBaselines:
             )
             request.addfinalizer(reset_settings)
             # unflatten back-edge unflatten path (hodur_flag2_s1a.json). Drives both the
-            # comparison-BST sub_7FFD and the equality-chain hodur_func through
+            # comparison-condition-chain sub_7FFD and the equality-chain hodur_func through
             # emit_minimal_unflatten. Replaces the legacy HodurUnflattener (which
             # collapses sub_7FFD to a stub + INTERR 50877 on the corrected MASM
             # sample) and the emulated dispatcher engine (hodur_func).

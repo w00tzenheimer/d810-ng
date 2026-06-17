@@ -54,7 +54,7 @@ class EffectiveTargetEvidenceBackend(Protocol):
         dag: object,
         edge: object,
         *,
-        bst_node_blocks: set[int] | frozenset[int],
+        condition_chain_blocks: set[int] | frozenset[int],
         state_variable: StateVariableRef | None,
         dispatcher_lookup: object | None,
         dispatcher: object | None,
@@ -89,7 +89,7 @@ class ResidualFrontierEvidenceBackend(Protocol):
         pred_serial: int,
         state_value: int,
         dispatcher_model: object | None,
-        bst_node_blocks: set[int] | frozenset[int],
+        condition_chain_blocks: set[int] | frozenset[int],
         state_variable: StateVariableRef | None,
         mba: object | None,
     ) -> ResidualEffectiveTargetEvidence:
@@ -104,7 +104,7 @@ class HexRaysEffectiveTargetEvidenceBackend:
         dag: object,
         edge: object,
         *,
-        bst_node_blocks: set[int] | frozenset[int],
+        condition_chain_blocks: set[int] | frozenset[int],
         state_variable: StateVariableRef | None,
         dispatcher_lookup: object | None,
         dispatcher: object | None,
@@ -123,7 +123,7 @@ class HexRaysEffectiveTargetEvidenceBackend:
         target_entry = resolve_live_effective_target_entry(
             dag,
             edge,
-            bst_node_blocks=set(int(block) for block in bst_node_blocks),
+            condition_chain_blocks=set(int(block) for block in condition_chain_blocks),
             state_var_stkoff=int(state_variable.stkoff),
             dispatcher_lookup=dispatcher_lookup,
             dispatcher=dispatcher,
@@ -197,7 +197,7 @@ class HexRaysResidualFrontierEvidenceBackend:
         pred_serial: int,
         state_value: int,
         dispatcher_model: object | None,
-        bst_node_blocks: set[int] | frozenset[int],
+        condition_chain_blocks: set[int] | frozenset[int],
         state_variable: StateVariableRef | None,
         mba: object | None,
     ) -> ResidualEffectiveTargetEvidence:
@@ -229,7 +229,7 @@ class HexRaysResidualFrontierEvidenceBackend:
         target_entry = resolve_live_effective_target_entry(
             dag,
             synthetic_edge,
-            bst_node_blocks=set(int(block) for block in bst_node_blocks),
+            condition_chain_blocks=set(int(block) for block in condition_chain_blocks),
             state_var_stkoff=int(state_variable.stkoff),
             dispatcher_lookup=getattr(dispatcher_model, "lookup", None),
             dispatcher=dispatcher_model,

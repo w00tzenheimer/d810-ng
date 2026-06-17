@@ -49,7 +49,7 @@ def plan_reconstruction_return_modifications(
     builder,
     claimed_sources: set[int],
     dispatcher_serial: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     common_return_corridor: set[int],
     artifact_return_blocks: set[int],
     node_by_key,
@@ -57,8 +57,8 @@ def plan_reconstruction_return_modifications(
     return_mods: list = []
     log_entries: list[ReconstructionReturnLogEntry] = []
     skipped_entries: list[ReconstructionReturnSkipEntry] = []
-    bst_set = {int(dispatcher_serial)}
-    bst_set.update(int(block) for block in bst_node_blocks)
+    condition_chain_set = {int(dispatcher_serial)}
+    condition_chain_set.update(int(block) for block in condition_chain_blocks)
 
     for edge in dag.edges:
         if _edge_kind_name(edge) != "CONDITIONAL_RETURN":
@@ -111,7 +111,7 @@ def plan_reconstruction_return_modifications(
                 block
                 for block in node_shared_suffix
                 if block != terminal
-                and block not in bst_set
+                and block not in condition_chain_set
                 and block in ordered_set
             )
         if corridor_candidates:
@@ -123,7 +123,7 @@ def plan_reconstruction_return_modifications(
             for hop_idx in range(len(ordered) - 1):
                 from_serial = ordered[hop_idx]
                 expected_next = ordered[hop_idx + 1]
-                if from_serial in bst_set or from_serial in claimed_sources:
+                if from_serial in condition_chain_set or from_serial in claimed_sources:
                     continue
                 from_block = flow_graph.get_block(from_serial)
                 if from_block is None:
@@ -214,11 +214,11 @@ def plan_reconstruction_return_modifications(
                 )
             continue
 
-        if anchor_serial in bst_set:
+        if anchor_serial in condition_chain_set:
             skipped_entries.append(
                 ReconstructionReturnSkipEntry(
                     source_block=int(anchor_serial),
-                    reason="anchor_in_bst",
+                    reason="anchor_in_condition_chain",
                 )
             )
             continue

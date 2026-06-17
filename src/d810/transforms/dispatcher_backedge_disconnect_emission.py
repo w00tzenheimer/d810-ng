@@ -22,7 +22,7 @@ def execute_dispatcher_backedge_disconnects(
     block_nsucc_map: dict[int, int],
     block_succ_map: dict[int, tuple[int, ...]],
     dispatcher_serial: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     emitted: set[tuple[int, int]],
     convert_to_goto,
     modifications: list,
@@ -31,7 +31,7 @@ def execute_dispatcher_backedge_disconnects(
         block_nsucc_map=block_nsucc_map,
         block_succ_map=block_succ_map,
         dispatcher_serial=int(dispatcher_serial),
-        bst_node_blocks={int(block) for block in bst_node_blocks},
+        condition_chain_blocks={int(block) for block in condition_chain_blocks},
         emitted=emitted,
     )
 
@@ -44,8 +44,8 @@ def execute_dispatcher_backedge_disconnects(
     return DispatcherBackedgeDisconnectExecutionResult(plans=plans)
 
 
-def disconnect_bst_comparison_nodes(
-    bst_node_blocks: set[int],
+def disconnect_condition_chain_nodes(
+    condition_chain_blocks: set[int],
     dispatcher_serial: int,
     builder: object,
     modifications: list,
@@ -57,7 +57,7 @@ def disconnect_bst_comparison_nodes(
         block_nsucc_map=builder.block_nsucc_map,
         block_succ_map=builder.block_succ_map,
         dispatcher_serial=int(dispatcher_serial),
-        bst_node_blocks={int(block) for block in bst_node_blocks},
+        condition_chain_blocks={int(block) for block in condition_chain_blocks},
         emitted=emitted,
         convert_to_goto=builder.convert_to_goto,
         modifications=modifications,
@@ -69,7 +69,7 @@ def disconnect_bst_comparison_nodes(
 
 
 __all__ = [
-    "disconnect_bst_comparison_nodes",
+    "disconnect_condition_chain_nodes",
     "DispatcherBackedgeDisconnectExecutionResult",
     "execute_dispatcher_backedge_disconnects",
 ]

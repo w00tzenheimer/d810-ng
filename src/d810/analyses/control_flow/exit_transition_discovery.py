@@ -1,20 +1,20 @@
-"""Exit-transition discovery helpers for late handler/BST recovery."""
+"""Exit-transition discovery helpers for late handler/condition-chain recovery."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from d810.analyses.control_flow.condition_chain_model import resolve_target_via_condition_chain
-from d810.capabilities.providers import get_bst_walkers
+from d810.capabilities.providers import get_condition_chain_walkers
 from d810.analyses.control_flow.state_machine_analysis import evaluate_handler_paths
 from d810.analyses.control_flow.transition_builder import _get_state_var_stkoff
 
 
 # Registry-backed seam (see ``d810.capabilities.providers``, ticket d81-1w16):
 # kept as a module-level name so call sites are unchanged and tests can
-# monkeypatch ``resolve_via_bst_walk`` in place.
-def resolve_via_bst_walk(*args, **kwargs):
-    return get_bst_walkers().resolve_via_bst_walk(*args, **kwargs)
+# monkeypatch ``resolve_via_condition_chain_walk`` in place.
+def resolve_via_condition_chain_walk(*args, **kwargs):
+    return get_condition_chain_walkers().resolve_via_condition_chain_walk(*args, **kwargs)
 
 _MOVE_OPCODE = 4
 _NUMBER_OPERAND = 2
@@ -33,8 +33,8 @@ class ExitTransitionCandidate:
 
 
 @dataclass(frozen=True, slots=True)
-class BstDefaultTransitionCandidate:
-    """One discovered redirect candidate from BST-default path evaluation."""
+class ConditionChainDefaultTransitionCandidate:
+    """One discovered redirect candidate from condition-chain-default path evaluation."""
 
     handler_state: int
     handler_entry: int
@@ -87,9 +87,9 @@ def collect_exit_transition_candidates(
     snapshot: object,
     *,
     sm: object,
-    bst_result: object,
+    range_evidence: object,
     handler_state_map: dict[int, int],
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     max_bfs_depth: int = 6,
 ) -> tuple[ExitTransitionCandidate, ...]:
     """Collect redirect candidates for handler exit-state recovery."""
@@ -105,7 +105,7 @@ def collect_exit_transition_candidates(
         return ()
 
     state_to_entry: dict[int, int] = {v: k for k, v in handler_state_map.items()}
-    exit_dispatcher = getattr(bst_result, "dispatcher", None)
+    exit_dispatcher = getattr(range_evidence, "dispatcher", None)
 
     transitions = tuple(getattr(sm, "transitions", ()))
     handlers = dict(getattr(sm, "handlers", {}))
@@ -123,7 +123,7 @@ def collect_exit_transition_candidates(
         handler_transitions = [t for t in transitions if t.from_state == state_val]
         all_self_loop = True
         for transition in handler_transitions:
-            target = resolve_target_via_condition_chain(bst_result, transition.to_state)
+            target = resolve_target_via_condition_chain(range_evidence, transition.to_state)
             if target is None or transition.from_block != target:
                 all_self_loop = False
                 break
@@ -146,14 +146,14 @@ def collect_exit_transition_candidates(
             correct_entry = exit_dispatcher.lookup(state_val)
 
         if correct_entry is None:
-            dispatcher_serial = int(getattr(snapshot, "bst_dispatcher_serial", -1))
-            if dispatcher_serial < 0 or not bst_node_blocks:
+            dispatcher_serial = int(getattr(snapshot, "dispatcher_root_serial", -1))
+            if dispatcher_serial < 0 or not condition_chain_blocks:
                 continue
-            target_serial = resolve_via_bst_walk(
+            target_serial = resolve_via_condition_chain_walk(
                 mba,
                 dispatcher_serial,
                 state_val,
-                bst_node_blocks,
+                condition_chain_blocks,
             )
             if target_serial is None:
                 continue
@@ -170,7 +170,7 @@ def collect_exit_transition_candidates(
                     if handler_blocks
                     else int(getattr(handler, "check_block", -1))
                 )
-            if from_block in bst_node_blocks or from_block == target_serial:
+            if from_block in condition_chain_blocks or from_block == target_serial:
                 continue
             candidates.append(
                 ExitTransitionCandidate(
@@ -178,7 +178,7 @@ def collect_exit_transition_candidates(
                     from_block=from_block,
                     target_entry=int(target_serial),
                     exit_state_value=None,
-                    discovery_kind="bst_walk",
+                    discovery_kind="condition_chain_walk",
                 )
             )
             continue
@@ -190,13 +190,13 @@ def collect_exit_transition_candidates(
         # Block topology via the backend seam: ``mba`` is the live
         # ``snapshot.mba``; the seam makes the identical get_mblock/nsucc/succ
         # calls from the backend layer (ticket llr-zeyu).
-        walkers = get_bst_walkers()
+        walkers = get_condition_chain_walkers()
         while queue:
             blk_serial, depth = queue.pop(0)
             if blk_serial in visited:
                 continue
             visited.add(blk_serial)
-            if blk_serial in bst_node_blocks:
+            if blk_serial in condition_chain_blocks:
                 continue
 
             try:
@@ -230,7 +230,7 @@ def collect_exit_transition_candidates(
                     pass
 
         for write_blk, exit_state_value in found_writes:
-            target_entry = resolve_target_via_condition_chain(bst_result, exit_state_value)
+            target_entry = resolve_target_via_condition_chain(range_evidence, exit_state_value)
             if target_entry is None or write_blk == target_entry:
                 continue
             candidates.append(
@@ -267,15 +267,15 @@ def _is_stack_operand(mop: object) -> bool:
     return _kind_matches(getattr(mop, "t", None), "mop_S", _STACK_OPERAND)
 
 
-def collect_bst_default_transition_candidates(
+def collect_condition_chain_default_transition_candidates(
     snapshot: object,
     *,
     sm: object,
-    bst_result: object,
+    range_evidence: object,
     handler_state_map: dict[int, int],
-    bst_node_blocks: set[int],
-) -> tuple[BstDefaultTransitionCandidate, ...]:
-    """Collect raw BST-default transition candidates via handler-path eval."""
+    condition_chain_blocks: set[int],
+) -> tuple[ConditionChainDefaultTransitionCandidate, ...]:
+    """Collect raw condition-chain-default transition candidates via handler-path eval."""
     mba = getattr(snapshot, "mba", None)
     if mba is None:
         return ()
@@ -288,13 +288,13 @@ def collect_bst_default_transition_candidates(
         return ()
 
     handler_entry_blocks: set[int] = set(handler_state_map.values())
-    candidates: list[BstDefaultTransitionCandidate] = []
+    candidates: list[ConditionChainDefaultTransitionCandidate] = []
     for handler_state, handler_entry in handler_state_map.items():
         paths = evaluate_handler_paths(
             mba=mba,
             entry_serial=handler_entry,
             incoming_state=handler_state,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
             state_var_stkoff=stkoff,
             handler_entry_blocks=handler_entry_blocks,
         )
@@ -305,11 +305,11 @@ def collect_bst_default_transition_candidates(
 
             final_state = path_result.final_state & 0xFFFFFFFF
             from_block = path_result.exit_block
-            target_entry = resolve_target_via_condition_chain(bst_result, final_state)
+            target_entry = resolve_target_via_condition_chain(range_evidence, final_state)
             if target_entry is None or from_block == target_entry:
                 continue
             candidates.append(
-                BstDefaultTransitionCandidate(
+                ConditionChainDefaultTransitionCandidate(
                     handler_state=handler_state,
                     handler_entry=handler_entry,
                     from_block=from_block,
@@ -325,7 +325,7 @@ def collect_valrange_exit_transition_candidates(
     snapshot: object,
     *,
     sm: object,
-    bst_result: object,
+    range_evidence: object,
     resolve_state_via_valranges: object | None,
 ) -> ValrangeExitTransitionDiscovery:
     """Collect unresolved handler exits that valranges resolves to one target."""
@@ -344,7 +344,7 @@ def collect_valrange_exit_transition_candidates(
 
     # Block lookup via the backend seam (``mba`` is the live ``snapshot.mba``);
     # behaviour is identical to the inlined ``get_mblock`` (ticket llr-zeyu).
-    walkers = get_bst_walkers()
+    walkers = get_condition_chain_walkers()
     for handler in handlers.values():
         for transition in tuple(getattr(handler, "transitions", ())):
             key = (int(transition.from_state), int(transition.to_state))
@@ -368,7 +368,7 @@ def collect_valrange_exit_transition_candidates(
             if resolved_value is None:
                 continue
 
-            target_entry = resolve_target_via_condition_chain(bst_result, resolved_value)
+            target_entry = resolve_target_via_condition_chain(range_evidence, resolved_value)
             if target_entry is None:
                 continue
 
@@ -389,11 +389,11 @@ def collect_valrange_exit_transition_candidates(
 
 
 __all__ = [
-    "BstDefaultTransitionCandidate",
+    "ConditionChainDefaultTransitionCandidate",
     "ExitTransitionCandidate",
     "ValrangeExitTransitionCandidate",
     "ValrangeExitTransitionDiscovery",
-    "collect_bst_default_transition_candidates",
+    "collect_condition_chain_default_transition_candidates",
     "collect_exit_transition_candidates",
     "collect_valrange_exit_transition_candidates",
     "resolve_state_var_stkoff",

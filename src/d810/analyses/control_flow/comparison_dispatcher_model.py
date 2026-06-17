@@ -103,7 +103,7 @@ def _target_intervals_from_decision_dag(dag: object) -> "dict[int, IntervalSet]"
     ``(domain, target)`` cells with per-comparison signedness handled correctly
     (the sign-bit-XOR reduction in ``route_predicate.satisfying_set``). This is
     the complete, signed-correct routing substrate -- unlike the legacy unsigned
-    :class:`IntervalDispatcher`, which is blind to signed (``jle``/``jg``) BSTs.
+    :class:`IntervalDispatcher`, which is blind to signed (``jle``/``jg``) condition chains.
     """
     partition: dict[int, IntervalSet] = {}
     for cell in dag.resolve_paths():

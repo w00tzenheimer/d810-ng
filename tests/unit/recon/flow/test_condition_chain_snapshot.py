@@ -1,21 +1,21 @@
-"""K3.4 tests: find_bst_default_block_snapshot using FlowGraph.
+"""K3.4 tests: find_condition_chain_default_block_snapshot using FlowGraph.
 
 Validates that the snapshot variant produces identical results to the
-live-mba find_bst_default_block for pure-topology BST default lookups.
+live-mba find_condition_chain_default_block for pure-topology condition-chain default lookups.
 """
 from __future__ import annotations
 
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
-from d810.analyses.control_flow.bst_snapshot import find_bst_default_block_snapshot
+from d810.analyses.control_flow.condition_chain_snapshot import find_condition_chain_default_block_snapshot
 
 
-def _make_bst_cfg() -> FlowGraph:
-    """Build a BST dispatcher FlowGraph.
+def _make_condition_chain_cfg() -> FlowGraph:
+    """Build a condition-chain dispatcher FlowGraph.
 
     Topology::
 
-        blk5 (BST root)  -> blk6, blk10 (handler)
-        blk6 (BST node)  -> blk10 (handler), blk7 (default)
+        blk5 (condition-chain root)  -> blk6, blk10 (handler)
+        blk6 (condition-chain node)  -> blk10 (handler), blk7 (default)
         blk7 (default)    -> blk8
         blk8 (exit)       -> ()
         blk10 (handler)   -> blk8
@@ -47,33 +47,33 @@ def _make_bst_cfg() -> FlowGraph:
     )
 
 
-class TestFindBstDefaultBlockSnapshot:
-    """Verify find_bst_default_block_snapshot matches live-mba behavior."""
+class TestFindConditionChainDefaultBlockSnapshot:
+    """Verify find_condition_chain_default_block_snapshot matches live-mba behavior."""
 
     def test_finds_default_block(self) -> None:
-        """Default block (7) is the first succ not in BST nodes or handlers."""
-        cfg = _make_bst_cfg()
-        result = find_bst_default_block_snapshot(
-            cfg, bst_root_serial=5,
-            bst_node_blocks={5, 6}, handler_block_serials={10},
+        """Default block (7) is the first succ not in condition-chain nodes or handlers."""
+        cfg = _make_condition_chain_cfg()
+        result = find_condition_chain_default_block_snapshot(
+            cfg, dispatcher_root_serial=5,
+            condition_chain_blocks={5, 6}, handler_block_serials={10},
         )
         assert result == 7
 
     def test_returns_none_when_no_default(self) -> None:
-        """Returns None when all BST-node successors are BST nodes or handlers."""
-        cfg = _make_bst_cfg()
-        result = find_bst_default_block_snapshot(
-            cfg, bst_root_serial=5,
-            bst_node_blocks={5, 6}, handler_block_serials={10, 7},
+        """Returns None when all condition-chain successors are condition-chain nodes or handlers."""
+        cfg = _make_condition_chain_cfg()
+        result = find_condition_chain_default_block_snapshot(
+            cfg, dispatcher_root_serial=5,
+            condition_chain_blocks={5, 6}, handler_block_serials={10, 7},
         )
         assert result is None
 
     def test_returns_none_for_none_flow_graph(self) -> None:
         """Returns None when flow_graph is None."""
-        assert find_bst_default_block_snapshot(None, 0, set(), set()) is None
+        assert find_condition_chain_default_block_snapshot(None, 0, set(), set()) is None
 
-    def test_root_only_bst(self) -> None:
-        """Single BST root node with a handler and default successor."""
+    def test_root_only_condition_chain(self) -> None:
+        """Single condition-chain root node with a handler and default successor."""
         blk0 = BlockSnapshot(
             serial=0, block_type=1, succs=(1, 2), preds=(),
             flags=0, start_ea=0x1000, insn_snapshots=(),
@@ -90,8 +90,8 @@ class TestFindBstDefaultBlockSnapshot:
             blocks={0: blk0, 1: blk1, 2: blk2},
             entry_serial=0, func_ea=0x1000,
         )
-        result = find_bst_default_block_snapshot(
-            cfg, bst_root_serial=0,
-            bst_node_blocks=set(), handler_block_serials={1},
+        result = find_condition_chain_default_block_snapshot(
+            cfg, dispatcher_root_serial=0,
+            condition_chain_blocks=set(), handler_block_serials={1},
         )
         assert result == 2

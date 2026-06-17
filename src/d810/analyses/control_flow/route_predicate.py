@@ -24,7 +24,7 @@ reduction (``s <_signed c  <=>  (s ^ 2**(w-1)) <_unsigned (c ^ 2**(w-1))``), so
 signed and unsigned comparisons in the same route compose soundly.
 
 Pure: no IDA. Extraction of the backend comparison shape from live microcode lives in
-``backends/hexrays/evidence/bst_analysis``; this module only consumes the
+``backends/hexrays/evidence/condition_chain_analysis``; this module only consumes the
 ``RouteComparison`` records.
 """
 from __future__ import annotations

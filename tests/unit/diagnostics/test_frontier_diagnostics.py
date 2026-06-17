@@ -49,7 +49,7 @@ def _unresolved_row() -> FrontierClosureDiagnosticRow:
 def _resolved_row() -> FrontierClosureDiagnosticRow:
     return FrontierClosureDiagnosticRow(
         kind="resolved",
-        reason="bst_interval_proven_frontier",
+        reason="range_interval_proven_frontier",
         source_block=129,
         observed_target=130,
         branch_arm=0,
@@ -59,7 +59,7 @@ def _resolved_row() -> FrontierClosureDiagnosticRow:
         path=(129, 130, 143, 145, 155, 171),
         cfg_scc_size=201,
         payload={
-            "proof": "BST_INTERVAL_PROVEN_FRONTIER",
+            "proof": "RANGE_INTERVAL_PROVEN_FRONTIER",
             "state": "0x0ACD0BD5",
         },
     )
@@ -108,7 +108,7 @@ def test_frontier_diagnostics_report_formats_unresolved_rows() -> None:
     assert "path=[129,130,143,145,155,171]" in text
 
 
-def test_frontier_diagnostics_report_formats_resolved_bst_proof() -> None:
+def test_frontier_diagnostics_report_formats_resolved_condition_chain_proof() -> None:
     conn = _make_db()
     snapshot_dag_frontier_closure_diagnostics(conn, 7, [_resolved_row()])
 
@@ -116,10 +116,10 @@ def test_frontier_diagnostics_report_formats_resolved_bst_proof() -> None:
     text = format_frontier_diagnostics(rows)
 
     assert "kind=resolved" in text
-    assert "reason=bst_interval_proven_frontier" in text
+    assert "reason=range_interval_proven_frontier" in text
     assert "candidates=[131]" in text
     assert "state=0x0ACD0BD5" in text
-    assert "proof=BST_INTERVAL_PROVEN_FRONTIER" in text
+    assert "proof=RANGE_INTERVAL_PROVEN_FRONTIER" in text
 
 
 def test_frontier_diagnostics_cli_prints_unresolved_rows(tmp_path, capsys) -> None:

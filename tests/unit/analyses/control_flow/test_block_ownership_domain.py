@@ -11,7 +11,7 @@ These tests pin the correctness invariants (spec §8):
 * dispatcher-KILL -- the handler->dispatcher->handler back-edges must NOT make
   every block owned by every handler;
 * shared epilogue -- a tail block two handlers fall into is owned by both;
-* infrastructure -- the dispatcher head and BST compare blocks are owned by
+* infrastructure -- the dispatcher head and condition-chain compare blocks are owned by
   nobody (``frozenset()``);
 * range-backed -- a handler reached for a multi-constant range is still ONE
   owner;
@@ -38,7 +38,7 @@ def _pred_of(succ: dict[int, list[int]]) -> dict[int, list[int]]:
 
 # --- canonical dispatcher: two exact handlers sharing one epilogue ----------
 #   1  dispatcher head           -> 2
-#   2  BST compare (s == K1?)    -> 10 (h1) | 20 (h2)
+#   2  condition-chain compare (s == K1?)    -> 10 (h1) | 20 (h2)
 #   10 h1 entry -> 11 -> 30
 #   20 h2 entry -> 21 -> 30
 #   30 shared epilogue           -> 1   (back-edge to the dispatcher head)
@@ -62,8 +62,8 @@ def test_fixpoint_converges():
     assert _analyze().converged is True
 
 
-def test_dispatcher_and_bst_blocks_owned_by_nobody():
-    # §8 Infrastructure: dispatcher head + BST compare own no handler region.
+def test_dispatcher_and_condition_chain_blocks_owned_by_nobody():
+    # §8 Infrastructure: dispatcher head + condition-chain compare own no handler region.
     # NB: the dispatcher's IN-state is the back-edge fan-in of *every* handler;
     # only the OUT-state (post-KILL) reads as empty -- this is why the read-off
     # is over out_states.

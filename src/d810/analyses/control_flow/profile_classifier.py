@@ -51,7 +51,7 @@ class DispatchPattern(enum.Enum):
     """
 
     SIMPLE_COMPARE_CHAIN = "simple_compare_chain"  # Linear if-else chain
-    NESTED_COMPARE_TREE = "nested_compare_tree"  # Binary search tree
+    NESTED_COMPARE_TREE = "nested_compare_tree"  # Condition-chain tree
     SWITCH_TABLE = "switch_table"  # Computed jump table
     MIXED_DISPATCH = "mixed_dispatch"  # Combination of patterns
     UNKNOWN = "unknown"  # Cannot classify
@@ -317,7 +317,7 @@ class FlowProfileClassifier:
             )
 
         # 4. NESTED_COMPARE_TREE: Low chain/table ratio, low fan-out
-        #    Suggests binary search tree organization (fewer comparisons)
+        #    Suggests condition-chain organization (fewer comparisons)
         if chain_to_table_ratio < 0.5:
             confidence = min(1.0, 0.7 + (0.5 - chain_to_table_ratio) * 0.4)
             return ClassificationResult(

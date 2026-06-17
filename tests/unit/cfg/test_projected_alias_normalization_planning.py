@@ -29,10 +29,10 @@ def test_collect_projected_alias_normalization_actions_adds_new_redirect() -> No
         projected_flow_graph=_FakeFlowGraph({95: _FakeBlock((160,)), 202: _FakeBlock(())}),
         dispatcher_serial=2,
         redirected_blocks={95},
-        bst_node_blocks={2},
+        condition_chain_blocks={2},
         modifications=[],
         emitted=set(),
-        resolve_projected_path_tail_target=lambda dag, *, source_block, bst_node_blocks: (0x24E2E77A, 202),
+        resolve_projected_path_tail_target=lambda dag, *, source_block, condition_chain_blocks: (0x24E2E77A, 202),
     )
 
     assert actions == (
@@ -53,10 +53,10 @@ def test_collect_projected_alias_normalization_actions_replaces_existing_redirec
         projected_flow_graph=_FakeFlowGraph({95: _FakeBlock((160,)), 202: _FakeBlock(())}),
         dispatcher_serial=2,
         redirected_blocks={95},
-        bst_node_blocks={2},
+        condition_chain_blocks={2},
         modifications=[RedirectGoto(from_serial=95, old_target=2, new_target=160)],
         emitted={(95, 160)},
-        resolve_projected_path_tail_target=lambda dag, *, source_block, bst_node_blocks: (0x24E2E77A, 202),
+        resolve_projected_path_tail_target=lambda dag, *, source_block, condition_chain_blocks: (0x24E2E77A, 202),
     )
 
     assert actions == (

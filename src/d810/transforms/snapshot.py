@@ -103,8 +103,8 @@ class AnalysisSnapshot:
     state_machine: object | None = None
     detector: object | None = None
     dispatcher_analysis: object | None = None  # opaque; family-specific DispatcherAnalysis
-    bst_result: object | None = None
-    bst_dispatcher_serial: int = -1
+    range_evidence: object | None = None
+    dispatcher_root_serial: int = -1
     dispatcher_blocks: frozenset[int] = field(default_factory=frozenset)
     handler_graph: dict = field(default_factory=dict)
     reachability: ReachabilityInfo | None = None
@@ -162,7 +162,7 @@ class AnalysisSnapshot:
 
     @property
     def dispatcher_serial(self) -> int:
-        return int(self.bst_dispatcher_serial)
+        return int(self.dispatcher_root_serial)
 
     @property
     def handler_count(self) -> int:

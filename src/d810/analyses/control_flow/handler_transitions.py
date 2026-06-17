@@ -4,7 +4,7 @@ Thin adapter over the canonical transition report API. The collector accepts:
 
 - a prebuilt report object or serialized report payload in target metadata
 - graph-portable inputs (`flow_graph` + `transition_result`)
-- live BST inputs (`mba` + dispatcher metadata) as a last resort
+- live condition-chain inputs (`mba` + dispatcher metadata) as a last resort
 """
 from __future__ import annotations
 
@@ -115,7 +115,7 @@ class HandlerTransitionsCollector:
                     cls._get_field(target, metadata, "initial_state")
                 ),
                 handler_range_map=metadata.get("handler_range_map"),
-                bst_node_blocks=tuple(metadata.get("bst_node_blocks", ())),
+                condition_chain_blocks=tuple(metadata.get("condition_chain_blocks", ())),
                 diagnostics=tuple(metadata.get("diagnostics", ())),
             )
 

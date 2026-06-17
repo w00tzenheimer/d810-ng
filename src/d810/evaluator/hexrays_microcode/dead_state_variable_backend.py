@@ -73,7 +73,7 @@ class DeadStateVariableEvidenceBackend(Protocol):
         *,
         state_variable: StateVariableRef,
         known_state_constants: set[int] | frozenset[int],
-        bst_node_blocks: set[int] | frozenset[int] = frozenset(),
+        condition_chain_blocks: set[int] | frozenset[int] = frozenset(),
     ) -> DeadStateVariableCleanupEvidence:
         """Return neutral cleanup sites for dead state-variable reads."""
 
@@ -114,10 +114,10 @@ class HexRaysDeadStateVariableEvidenceBackend:
         *,
         state_variable: StateVariableRef,
         known_state_constants: set[int] | frozenset[int],
-        bst_node_blocks: set[int] | frozenset[int] = frozenset(),
+        condition_chain_blocks: set[int] | frozenset[int] = frozenset(),
     ) -> DeadStateVariableCleanupEvidence:
         state_constants = frozenset(int(value) for value in known_state_constants)
-        bst_blocks = frozenset(int(block) for block in bst_node_blocks)
+        condition_chain_blocks = frozenset(int(block) for block in condition_chain_blocks)
         vr_fixpoint = _run_valrange_fixpoint(mba)
 
         use_sites: list[UseSite] = find_all_uses_of_stkvar(
@@ -134,7 +134,7 @@ class HexRaysDeadStateVariableEvidenceBackend:
                 use,
                 state_variable=state_variable,
                 state_constants=state_constants,
-                bst_node_blocks=bst_blocks,
+                condition_chain_blocks=condition_chain_blocks,
                 vr_fixpoint=vr_fixpoint,
             )
             if isinstance(decision, DeadStateReadCleanupSite):
@@ -189,16 +189,16 @@ def _classify_dead_state_use(
     *,
     state_variable: StateVariableRef,
     state_constants: frozenset[int],
-    bst_node_blocks: frozenset[int],
+    condition_chain_blocks: frozenset[int],
     vr_fixpoint: FixpointResult | None,
 ) -> DeadStateReadCleanupSite | DeadStateReadSkip:
-    if use.block_serial in bst_node_blocks:
+    if use.block_serial in condition_chain_blocks:
         logger.debug(
-            "DSVE: skipping NOP in BST node blk[%d] ea=0x%x",
+            "DSVE: skipping NOP in condition-chain node blk[%d] ea=0x%x",
             use.block_serial,
             use.ins_ea,
         )
-        return _skip(use, "bst_node")
+        return _skip(use, "condition_chain_node")
 
     if _is_gutted_block(mba, use.block_serial):
         logger.debug(

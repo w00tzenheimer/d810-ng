@@ -1,6 +1,6 @@
-"""BST-specific adapter for canonical dispatcher transition reporting.
+"""condition-chain-specific adapter for canonical dispatcher transition reporting.
 
-This module isolates direct use of BST private walker helpers so
+This module isolates direct use of condition-chain private walker helpers so
 ``transition_report.py`` can focus on rendering portable analysis outputs.
 """
 from __future__ import annotations
@@ -8,46 +8,46 @@ from __future__ import annotations
 from d810.core.typing import Any, Optional
 
 from d810.analyses.control_flow.condition_chain_model import ConditionChainNodeMap
-from d810.capabilities.providers import get_bst_walkers
+from d810.capabilities.providers import get_condition_chain_walkers
 from d810.analyses.control_flow.transition_analysis import (
     DispatcherTransitionAnalysis,
     HandlerTransitionObservation,
 )
 
 
-# Registry-backed seams: the Hex-Rays BST walkers are supplied by the
+# Registry-backed seams: the Hex-Rays condition-chain walkers are supplied by the
 # composition root via ``d810.capabilities.providers`` so recon stays
 # backend-free (ticket d81-1w16).  Kept as module-level names so call sites are
 # unchanged and tests can monkeypatch them in place.
 def _detect_state_var_stkoff(*args, **kwargs):
-    return get_bst_walkers().detect_state_var_stkoff(*args, **kwargs)
+    return get_condition_chain_walkers().detect_state_var_stkoff(*args, **kwargs)
 
 
 def _dump_dispatcher_node(*args, **kwargs):
-    return get_bst_walkers().dump_dispatcher_node(*args, **kwargs)
+    return get_condition_chain_walkers().dump_dispatcher_node(*args, **kwargs)
 
 
 def _find_pre_header_state(*args, **kwargs):
-    return get_bst_walkers().find_pre_header_state(*args, **kwargs)
+    return get_condition_chain_walkers().find_pre_header_state(*args, **kwargs)
 
 
 def _walk_handler_chain(*args, **kwargs):
-    return get_bst_walkers().walk_handler_chain(*args, **kwargs)
+    return get_condition_chain_walkers().walk_handler_chain(*args, **kwargs)
 
 
-def analyze_bst_dispatcher(
+def analyze_condition_chain_dispatcher(
     mba: Any,
     dispatcher_entry_serial: int,
     *,
     state_var_stkoff: Optional[int] = None,
     state_var_lvar_idx: Optional[int] = None,
-    max_bst_depth: int = 20,
+    max_condition_chain_depth: int = 20,
     max_chain_depth: int = 64,
     transitions_hint_by_handler: Optional[dict[int, int]] = None,
     capture_diagnostics: bool = False,
     max_diag_handlers: int = 3,
 ) -> DispatcherTransitionAnalysis:
-    """Adapt BST walker data into portable transition observations."""
+    """Adapt condition-chain walker data into portable transition observations."""
     diagnostics: list[str] = [] if capture_diagnostics else []
 
     if state_var_stkoff is None:
@@ -76,7 +76,7 @@ def analyze_bst_dispatcher(
     handler_state_map: dict[int, int] = {}
     handler_serials: set[int] = set()
     handler_range_map: dict[int, tuple[Optional[int], Optional[int]]] = {}
-    bst_node_blocks: ConditionChainNodeMap = ConditionChainNodeMap()
+    condition_chain_blocks: ConditionChainNodeMap = ConditionChainNodeMap()
     _dump_dispatcher_node(
         mba,
         dispatcher_entry_serial,
@@ -84,13 +84,13 @@ def analyze_bst_dispatcher(
         visited=set(),
         lines=[],
         depth=0,
-        max_depth=max_bst_depth,
+        max_depth=max_condition_chain_depth,
         value_lo=0,
         value_hi=0xFFFFFFFF,
         handler_state_map=handler_state_map,
         handler_serials=handler_serials,
         handler_range_map=handler_range_map,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
 
     observations: list[HandlerTransitionObservation] = []
@@ -166,10 +166,10 @@ def analyze_bst_dispatcher(
         initial_state=initial_state,
         handler_state_map=handler_state_map,
         handler_range_map=handler_range_map,
-        bst_node_blocks=tuple(sorted(bst_node_blocks)),
+        condition_chain_blocks=tuple(sorted(condition_chain_blocks)),
         observations=tuple(observations),
         diagnostics=tuple(diagnostics),
     )
 
 
-__all__ = ["analyze_bst_dispatcher"]
+__all__ = ["analyze_condition_chain_dispatcher"]

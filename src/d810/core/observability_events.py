@@ -71,8 +71,8 @@ class DagFrontierClosureDiagnosticsObserved:
 
 
 @dataclass(frozen=True)
-class BstIntervalDispatcherObserved:
-    """Recon observed recovered BST interval-dispatcher rows.
+class ConditionChainIntervalDispatcherObserved:
+    """Recon observed recovered condition-chain interval-dispatcher rows.
 
     The producer may not have a fresh SnapshotRef at the emission site, so the
     diag sink attaches these rows to the latest snapshot for ``func_ea``.
@@ -225,7 +225,7 @@ class ReachabilityObserved:
     snapshot: SnapshotRef
     all_serials: frozenset[int]
     reachable: frozenset[int] = field(default_factory=frozenset)
-    bst_serials: frozenset[int] = field(default_factory=frozenset)
+    condition_chain_serials: frozenset[int] = field(default_factory=frozenset)
     gutted: frozenset[int] = field(default_factory=frozenset)
     claimed_sources: frozenset[int] = field(default_factory=frozenset)
 
@@ -316,7 +316,7 @@ __all__ = [
     # Recon
     "BranchOwnershipProofsObserved",
     "BranchWitnessDecisionsObserved",
-    "BstIntervalDispatcherObserved",
+    "ConditionChainIntervalDispatcherObserved",
     "ExitPathShortcutDecisionsObserved",
     "DagFrontierClosureDiagnosticsObserved",
     "DagLocalFactsObserved",

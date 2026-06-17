@@ -477,7 +477,7 @@ def discover_exit_path_effect_group(
     flow_graph = snapshot.flow_graph
     dispatcher_serial = int(snapshot.dispatcher_serial)
     if dispatcher_serial < 0:
-        return ExitPathEffectDiscoveryResult(None, "missing_bst_result")
+        return ExitPathEffectDiscoveryResult(None, "missing_dispatcher_root")
     state_machine = snapshot.state_machine
 
     dispatcher_blocks: set[int] = set(

@@ -169,7 +169,7 @@ class TestCollectLateEntryIslandRescueSeeds:
 
 
 class TestCollectLateEntryIslandDiagnostics:
-    def test_collects_bst_only_unreachable_blocks(self) -> None:
+    def test_collects_condition_chain_only_unreachable_blocks(self) -> None:
         flow_graph = _FlowGraph(
             {
                 7: _Block(),
@@ -193,7 +193,7 @@ class TestCollectLateEntryIslandDiagnostics:
         ) == (
             LateEntryIslandDiagnostic(
                 block_serial=50,
-                bst_preds=(7, 8),
+                condition_chain_preds=(7, 8),
                 dispatcher_rows=(
                     "[0x10..0x1F)->blk[7]",
                     "[0x20..0x2F)->blk[50]",

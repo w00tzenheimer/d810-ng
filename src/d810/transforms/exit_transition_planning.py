@@ -38,13 +38,13 @@ def _resolve_old_target_for_two_way(
     source_block: int,
     target_entry: int,
     block_succ_map: dict[int, tuple[int, ...]] | dict[int, list[int]],
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher_region: set[int],
     owned_blocks: set[int],
 ) -> int | None:
     from_succs = tuple(int(succ) for succ in block_succ_map.get(int(source_block), ()))
     for succ_serial in from_succs:
-        if succ_serial in bst_node_blocks:
+        if succ_serial in condition_chain_blocks:
             return succ_serial
     for succ_serial in from_succs:
         if succ_serial not in owned_blocks:
@@ -63,7 +63,7 @@ def plan_exit_redirects(
     *,
     block_nsucc_map: dict[int, int],
     block_succ_map: dict[int, tuple[int, ...]] | dict[int, list[int]],
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher_region: set[int],
     owned_blocks: set[int],
     emitted: set[tuple[int, int]] | frozenset[tuple[int, int]],
@@ -98,7 +98,7 @@ def plan_exit_redirects(
                 source_block=source_block,
                 target_entry=target_entry,
                 block_succ_map=block_succ_map,
-                bst_node_blocks=bst_node_blocks,
+                condition_chain_blocks=condition_chain_blocks,
                 dispatcher_region=dispatcher_region,
                 owned_blocks=owned_blocks,
             )

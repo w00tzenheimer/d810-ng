@@ -1,7 +1,7 @@
 """Sound forward value-set fixpoint over the state variable (llr-mmfq, Path C).
 
 Pure-Python, no IDA.  The domain replaces the ad-hoc ``_walk_handler_chain``
-recursion (``backends/hexrays/evidence/bst_analysis.py``) whose structural
+recursion (``backends/hexrays/evidence/condition_chain_analysis.py``) whose structural
 successor-walk over-generates ``conditional_states`` (the diag DAG's 82 vs
 oracle-66 ``CONDITIONAL_TRANSITION`` inflation).  A handler yields a conditional
 transition only when its *feasible* exit value-set genuinely has >1 constant --

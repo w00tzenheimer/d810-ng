@@ -137,7 +137,7 @@ def resolve_edge_target_entry(
     target_entry = int(target_entry)
 
     target_node = node_by_key.get(edge.target_key)
-    resolved_non_bst: int | None = None
+    resolved_non_condition_chain: int | None = None
 
     def _node_local_blocks(node: StateDagNode | None) -> set[int]:
         if node is None:
@@ -189,17 +189,17 @@ def resolve_edge_target_entry(
 
     # Prefer a semantic head entry for the target state before falling back to
     # interior owned blocks. Region-first lowering needs to enter a target
-    # state family through its admissible head, not an arbitrary non-BST
+    # state family through its admissible head, not an arbitrary non-condition-chain
     # corridor block.
     for _, node in same_state_nodes:
         candidate = int(node.entry_anchor)
         if candidate not in dispatcher_region:
-            resolved_non_bst = candidate
+            resolved_non_condition_chain = candidate
             break
 
-    if resolved_non_bst is not None:
+    if resolved_non_condition_chain is not None:
         return EdgeTargetEntryResolution(
-            target_entry=resolved_non_bst,
+            target_entry=resolved_non_condition_chain,
             original_dispatcher_entry=(
                 target_entry if target_entry in dispatcher_region else None
             ),
@@ -208,17 +208,17 @@ def resolve_edge_target_entry(
     if target_entry not in dispatcher_region:
         return EdgeTargetEntryResolution(target_entry=target_entry)
 
-    if resolved_non_bst is None and target_node is not None:
+    if resolved_non_condition_chain is None and target_node is not None:
         candidate_blocks: list[int] = []
         candidate_blocks.extend(int(b) for b in target_node.exclusive_blocks)
         candidate_blocks.extend(int(b) for b in target_node.owned_blocks)
         candidate_blocks.extend(int(b) for b in target_node.shared_suffix_blocks)
         for candidate in candidate_blocks:
             if candidate not in dispatcher_region:
-                resolved_non_bst = candidate
+                resolved_non_condition_chain = candidate
                 break
 
-    if resolved_non_bst is None:
+    if resolved_non_condition_chain is None:
         for _, node in same_state_nodes:
             candidate_blocks: list[int] = []
             candidate_blocks.extend(int(b) for b in node.exclusive_blocks)
@@ -226,18 +226,18 @@ def resolve_edge_target_entry(
             candidate_blocks.extend(int(b) for b in node.shared_suffix_blocks)
             for candidate in candidate_blocks:
                 if candidate not in dispatcher_region:
-                    resolved_non_bst = candidate
+                    resolved_non_condition_chain = candidate
                     break
-            if resolved_non_bst is not None:
+            if resolved_non_condition_chain is not None:
                 break
 
-    if resolved_non_bst is None:
+    if resolved_non_condition_chain is None:
         return EdgeTargetEntryResolution(
             target_entry=None,
             rejection_reason="dispatcher_target_entry",
         )
     return EdgeTargetEntryResolution(
-        target_entry=resolved_non_bst,
+        target_entry=resolved_non_condition_chain,
         original_dispatcher_entry=target_entry,
     )
 

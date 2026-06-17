@@ -36,13 +36,13 @@ import idaapi
 import idc
 
 from d810.analyses.control_flow.dispatcher_recovery import build_dispatch_map_any_kind
-from d810.backends.hexrays.evidence.bst_analysis import build_bst_walker_provider
+from d810.backends.hexrays.evidence.condition_chain_analysis import build_condition_chain_walker_provider
 from d810.backends.hexrays.evidence.concolic_emulation_engine import (
     ConcolicEmulationEngine,
 )
 from d810.backends.hexrays.evidence.dispatcher_anchor_discovery import discover_anchors
 from d810.backends.hexrays.lifter import lift_function
-from d810.capabilities.providers import register_bst_walkers
+from d810.capabilities.providers import register_condition_chain_walkers
 
 #: The entry-state handler's global-carried next-state (Approov source line
 #: ``opcode = (int)(approov_qword |= 1010208)`` -> 0xF6A20).
@@ -69,9 +69,9 @@ def _get_func_ea(name: str) -> int:
 def approov_setup(ida_database, configure_hexrays, setup_libobfuscated_funcs):
     if not idaapi.init_hexrays_plugin():
         pytest.skip("Hex-Rays decompiler plugin not available")
-    # The global fold consumes the live BST walker provider (forward_eval_insn +
+    # The global fold consumes the live condition-chain walker provider (forward_eval_insn +
     # fetch_idb_value); start_d810 registers it in production, here we do it directly.
-    register_bst_walkers(build_bst_walker_provider())
+    register_condition_chain_walkers(build_condition_chain_walker_provider())
     return ida_database
 
 

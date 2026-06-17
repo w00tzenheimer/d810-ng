@@ -174,7 +174,7 @@ class CleanupFollowUpTargetProof:
 
     Follow-up rows are diagnostic metadata. This object lets callers feed
     modern recon evidence into the read-only classifier without making the
-    cleanup engine depend on transition-report, DAG, BST, or state-fixpoint
+    cleanup engine depend on transition-report, DAG, range, or state-fixpoint
     concrete types.
     """
 
@@ -1396,7 +1396,7 @@ def reclassify_bad_while_loop_follow_ups(
     dependency_diagnostics: Sequence[Mapping[str, object]] = (),
     transition_report: object | None = None,
     dag_authority: object | None = None,
-    bst_intervals: Sequence[object] = (),
+    range_intervals: Sequence[object] = (),
     state_constants_by_source: Mapping[int, int] | None = None,
 ) -> tuple[CleanupFollowUpReclassification, ...]:
     """Read-only bucketization for remaining BadWhileLoop follow-up rows.
@@ -1420,7 +1420,7 @@ def reclassify_bad_while_loop_follow_ups(
             dependency_diagnostics=dependency_diagnostics,
             transition_report=transition_report,
             dag_authority=dag_authority,
-            bst_intervals=bst_intervals,
+            range_intervals=range_intervals,
             state_constants_by_source=state_constants_by_source,
         )
         if row is not None:
@@ -1444,7 +1444,7 @@ def reclassify_bad_while_loop_follow_up(
     dependency_diagnostics: Sequence[Mapping[str, object]] = (),
     transition_report: object | None = None,
     dag_authority: object | None = None,
-    bst_intervals: Sequence[object] = (),
+    range_intervals: Sequence[object] = (),
     state_constants_by_source: Mapping[int, int] | None = None,
 ) -> CleanupFollowUpReclassification | None:
     fields = _follow_up_fields(follow_up)
@@ -1614,7 +1614,7 @@ def reclassify_bad_while_loop_follow_up(
         cfg=cfg,
         transition_report=transition_report,
         dag_authority=dag_authority,
-        bst_intervals=bst_intervals,
+        range_intervals=range_intervals,
         state_constants_by_source=state_constants_by_source,
     )
     if modern_target_source is not None:
@@ -1951,7 +1951,7 @@ def _modern_single_target_source(
     cfg: FlowGraph | None,
     transition_report: object | None,
     dag_authority: object | None,
-    bst_intervals: Sequence[object],
+    range_intervals: Sequence[object],
     state_constants_by_source: Mapping[int, int] | None,
 ) -> tuple[str, ...] | None:
     if cfg is not None and not _one_way_to_dispatcher(
@@ -1977,9 +1977,9 @@ def _modern_single_target_source(
         if state_constants_by_source is not None
         else None
     )
-    bst_target = _target_from_bst_intervals(bst_intervals, state_const)
-    if bst_target is not None and _target_matches(target_serial, bst_target):
-        return ("bst_interval_singleton",)
+    range_target = _target_from_range_intervals(range_intervals, state_const)
+    if range_target is not None and _target_matches(target_serial, range_target):
+        return ("range_interval_singleton",)
     return None
 
 
@@ -2083,7 +2083,7 @@ def build_bad_while_loop_follow_up_proofs(
     *,
     transition_report: object | None = None,
     dag_authority: object | None = None,
-    bst_intervals: Sequence[object] = (),
+    range_intervals: Sequence[object] = (),
     state_constants_by_source: Mapping[int, int] | None = None,
     per_pred_targets_by_follow_up: (
         Mapping[tuple[int, int, str], tuple[tuple[int, int], ...]] | None
@@ -2095,7 +2095,7 @@ def build_bad_while_loop_follow_up_proofs(
     """Build read-only BadWhileLoop follow-up proofs from modern evidence.
 
     This is intentionally an adapter over structural inputs. The cleanup engine
-    should not import recon/DAG/BST concrete types, but callers can still feed
+    should not import recon/DAG/range concrete types, but callers can still feed
     those results into the follow-up classifier through neutral proof rows.
     """
 
@@ -2197,8 +2197,8 @@ def build_bad_while_loop_follow_up_proofs(
         )
         add_target(
             key=key,
-            target=_target_from_bst_intervals(bst_intervals, state_const),
-            proof_sources=("bst_interval_singleton",),
+            target=_target_from_range_intervals(range_intervals, state_const),
+            proof_sources=("range_interval_singleton",),
         )
 
         if per_pred_targets_by_follow_up is not None:
@@ -2269,7 +2269,7 @@ def _target_from_dag_authority(authority: object | None, from_serial: int) -> in
         return None
 
 
-def _target_from_bst_intervals(
+def _target_from_range_intervals(
     intervals: Sequence[object],
     state_const: int | None,
 ) -> int | None:

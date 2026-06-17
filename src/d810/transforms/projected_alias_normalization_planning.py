@@ -25,12 +25,12 @@ def collect_projected_alias_normalization_actions(
     projected_flow_graph,
     dispatcher_serial: int,
     redirected_blocks: set[int],
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     modifications: list,
     emitted: set[tuple[int, int]],
     resolve_projected_path_tail_target,
 ) -> tuple[ProjectedAliasNormalizationAction, ...]:
-    ignored_blocks = set(int(block) for block in bst_node_blocks)
+    ignored_blocks = set(int(block) for block in condition_chain_blocks)
     ignored_blocks.add(int(dispatcher_serial))
     actions: list[ProjectedAliasNormalizationAction] = []
 
@@ -45,7 +45,7 @@ def collect_projected_alias_normalization_actions(
         projected_handoff = resolve_projected_path_tail_target(
             dag,
             source_block=source_block,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
         )
         if projected_handoff is None:
             continue
@@ -127,7 +127,7 @@ def normalize_projected_alias_handoffs(
     projected_flow_graph: object,
     dispatcher_serial: int,
     redirected_blocks: set[int],
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     modifications: list,
     owned_blocks: set[int],
     owned_edges: set[tuple[int, int]],
@@ -141,7 +141,7 @@ def normalize_projected_alias_handoffs(
         projected_flow_graph=projected_flow_graph,
         dispatcher_serial=int(dispatcher_serial),
         redirected_blocks={int(block) for block in redirected_blocks},
-        bst_node_blocks={int(block) for block in bst_node_blocks},
+        condition_chain_blocks={int(block) for block in condition_chain_blocks},
         modifications=modifications,
         emitted=emitted,
         resolve_projected_path_tail_target=resolve_projected_path_tail_target,

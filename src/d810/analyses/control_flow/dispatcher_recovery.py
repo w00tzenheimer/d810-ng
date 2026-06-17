@@ -70,7 +70,7 @@ class DispatcherRecovery:
 
     reachable_block_serials: frozenset[int] = frozenset()
     dispatcher_block_serial: int | None = None
-    bst_block_serials: tuple[int, ...] = ()
+    condition_chain_block_serials: tuple[int, ...] = ()
     state_var_stkoff: int | None = None
     dispatch_map: StateDispatcherMap | None = None
 
@@ -255,7 +255,7 @@ def build_state_dispatcher_map_from_flow_graph(
 def _read_state_init_const(blk, state_var_stkoff: int) -> int | None:
     """Read the constant a block initializes the state variable to, portably.
 
-    Mirrors the live ``_extract_state_from_block`` (bst_analysis) over portable
+    Mirrors the live ``_extract_state_from_block`` (condition_chain_analysis) over portable
     ``InsnSnapshot``s: a state-var initialization is a ``mov #const -> stkoff``
     (``InsnKind.MOV``, dest is the state slot, source is a number) or the
     equivalent ``store #const -> &stkoff`` (``InsnKind.STORE``, the GLBOPT m_stx
@@ -539,10 +539,10 @@ def recover_dispatcher(
     if dmap is None:
         return DispatcherRecovery(reachable_block_serials=reachable)
     # Equality-chain / switch dispatchers do not thread an ``initial_state`` (the
-    # live BST evidence supplies a SPURIOUS mid-chain value via the backwards
+    # live range evidence supplies a SPURIOUS mid-chain value via the backwards
     # ``_find_pre_header`` heuristic). Recover the true prologue state by
     # entry-dominance and thread it onto the map so the §1a entry bridge prefers
-    # it over the spurious BST value. INDIRECT maps already carry their own
+    # it over the spurious range value. INDIRECT maps already carry their own
     # recovered ``initial_state`` and are left untouched (ticket llr-mra1).
     if dmap.router_kind is not RouterKind.INDIRECT_TABLE and dmap.initial_state is None:
         recovered_initial = recover_entry_dominated_initial_state(graph, dmap)
@@ -551,7 +551,7 @@ def recover_dispatcher(
     return DispatcherRecovery(
         reachable_block_serials=reachable,
         dispatcher_block_serial=dmap.dispatcher_entry_block,
-        bst_block_serials=tuple(sorted(dmap.dispatcher_blocks)),
+        condition_chain_block_serials=tuple(sorted(dmap.dispatcher_blocks)),
         state_var_stkoff=dmap.state_var_stkoff,
         dispatch_map=dmap,
     )

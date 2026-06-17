@@ -1093,7 +1093,7 @@ class TestSnapshotDag:
             state_var_stkoff=0x3C,
             pre_header_serial=None,
             initial_state=0x298372CC,
-            bst_node_blocks=(),
+            condition_chain_blocks=(),
             nodes=(node,),
             edges=(),
         )
@@ -1151,7 +1151,7 @@ class TestSnapshotDag:
             state_var_stkoff=0x3C,
             pre_header_serial=None,
             initial_state=None,
-            bst_node_blocks=(),
+            condition_chain_blocks=(),
             nodes=(node,),
             edges=(),
         )
@@ -1253,29 +1253,29 @@ class TestSnapshotReachability:
 
         all_serials = {0, 1, 2, 3, 4}
         reachable = {0, 1, 2, 3}
-        bst_serials = {3, 4}
+        condition_chain_serials = {3, 4}
         gutted = {4}
         claimed = {0, 1}
 
         snapshot_reachability(
             conn, 1, all_serials,
             reachable=reachable,
-            bst_serials=bst_serials,
+            condition_chain_serials=condition_chain_serials,
             gutted=gutted,
             claimed_sources=claimed,
         )
 
         rows = conn.execute(
-            "SELECT serial, is_bst, is_reachable, is_gutted, in_claimed "
+            "SELECT serial, is_condition_chain, is_reachable, is_gutted, in_claimed "
             "FROM block_classification WHERE snapshot_id=1 ORDER BY serial"
         ).fetchall()
         assert len(rows) == 5
 
-        # serial=0: not bst, reachable, not gutted, claimed
+        # serial=0: not condition-chain, reachable, not gutted, claimed
         assert rows[0] == (0, 0, 1, 0, 1)
-        # serial=3: bst, reachable, not gutted, not claimed
+        # serial=3: condition-chain, reachable, not gutted, not claimed
         assert rows[3] == (3, 1, 1, 0, 0)
-        # serial=4: bst, NOT reachable, gutted, not claimed
+        # serial=4: condition-chain, NOT reachable, gutted, not claimed
         assert rows[4] == (4, 1, 0, 1, 0)
 
     def test_empty_sets(self) -> None:
@@ -1286,11 +1286,11 @@ class TestSnapshotReachability:
         )
         snapshot_reachability(conn, 1, {0, 1, 2})
         rows = conn.execute(
-            "SELECT serial, is_bst, is_reachable, is_gutted, in_claimed "
+            "SELECT serial, is_condition_chain, is_reachable, is_gutted, in_claimed "
             "FROM block_classification WHERE snapshot_id=1 ORDER BY serial"
         ).fetchall()
         assert len(rows) == 3
-        # All defaults: not bst, not reachable, not gutted, not claimed
+        # All defaults: not condition-chain, not reachable, not gutted, not claimed
         assert all(row[1:] == (0, 0, 0, 0) for row in rows)
 
 

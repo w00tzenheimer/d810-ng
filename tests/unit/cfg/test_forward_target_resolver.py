@@ -31,38 +31,38 @@ def _mk_classification(
 
 
 class TestDispatcherRoundTrip:
-    def test_const_state_with_bst_match_resolves(self) -> None:
+    def test_const_state_with_condition_chain_match_resolves(self) -> None:
         # Classic OLLVM trampoline: handler at blk[42] writes
-        # %state_var = 0x6b588048; dispatcher BST resolves to handler 11.
-        bst_table = {0x6B588048: 11, 0x37B42A3F: 7}
+        # %state_var = 0x6b588048; dispatcher condition-chain resolves to handler 11.
+        condition_chain_table = {0x6B588048: 11, 0x37B42A3F: 7}
         c = _mk_classification(
             DispatcherAwareEdgeClass.DISPATCHER_ROUND_TRIP, src=42, tgt=2
         )
         result = resolve_forward_target(
             c,
             src_reaching_const={"%var_3C": 0x6B588048},
-            bst_resolver=lambda k: bst_table.get(k),
+            condition_chain_resolver=lambda k: condition_chain_table.get(k),
         )
         assert isinstance(result, ResolvedTarget)
         assert result.src_serial == 42
         assert result.old_target == 2
         assert result.new_target == 11
-        assert result.resolution_kind == "bst_const_resolved"
+        assert result.resolution_kind == "condition_chain_const_resolved"
         assert "0x6b588048" in result.reason
         assert "blk[11]" in result.reason
 
     def test_const_state_via_range_row(self) -> None:
-        # BST row encodes a range: any value in [0x000..0x100] -> 7.
+        # range row encodes a range: any value in [0x000..0x100] -> 7.
         # The resolver doesn't know about ranges; it delegates to the
-        # bst_resolver callable. This test documents that contract.
-        def bst(k: int) -> int | None:
+        # condition_chain_resolver callable. This test documents that contract.
+        def condition_chain(k: int) -> int | None:
             if 0 <= k <= 0x100:
                 return 7
             return None
 
         c = _mk_classification(DispatcherAwareEdgeClass.DISPATCHER_ROUND_TRIP)
         result = resolve_forward_target(
-            c, src_reaching_const={"%var_3C": 0x42}, bst_resolver=bst
+            c, src_reaching_const={"%var_3C": 0x42}, condition_chain_resolver=condition_chain
         )
         assert result is not None
         assert result.new_target == 7
@@ -72,43 +72,43 @@ class TestDispatcherRoundTrip:
         result = resolve_forward_target(
             c,
             src_reaching_const={"%var_3C": None},
-            bst_resolver=lambda k: 99,
+            condition_chain_resolver=lambda k: 99,
         )
         assert result is None
 
-    def test_no_bst_resolver_returns_none(self) -> None:
+    def test_no_condition_chain_resolver_returns_none(self) -> None:
         c = _mk_classification(DispatcherAwareEdgeClass.DISPATCHER_ROUND_TRIP)
         result = resolve_forward_target(
-            c, src_reaching_const={"%var_3C": 0x42}, bst_resolver=None,
+            c, src_reaching_const={"%var_3C": 0x42}, condition_chain_resolver=None,
         )
         assert result is None
 
-    def test_bst_returns_none_keeps_unresolved(self) -> None:
-        # State const exists but BST has no row for it (e.g. value
+    def test_condition_chain_returns_none_keeps_unresolved(self) -> None:
+        # State const exists but condition-chain has no row for it (e.g. value
         # outside dispatcher's known range).
         c = _mk_classification(DispatcherAwareEdgeClass.DISPATCHER_ROUND_TRIP)
         result = resolve_forward_target(
             c,
             src_reaching_const={"%var_3C": 0xDEADBEEF},
-            bst_resolver=lambda k: None,
+            condition_chain_resolver=lambda k: None,
         )
         assert result is None
 
-    def test_bst_resolver_exception_treated_as_unresolved(self) -> None:
+    def test_condition_chain_resolver_exception_treated_as_unresolved(self) -> None:
         def boom(k: int) -> int | None:
-            raise RuntimeError("BST not built")
+            raise RuntimeError("condition chain not built")
 
         c = _mk_classification(DispatcherAwareEdgeClass.DISPATCHER_ROUND_TRIP)
         result = resolve_forward_target(
-            c, src_reaching_const={"%var_3C": 0x42}, bst_resolver=boom,
+            c, src_reaching_const={"%var_3C": 0x42}, condition_chain_resolver=boom,
         )
         assert result is None
 
     def test_multiple_reaching_consts_uses_first_resolvable(self) -> None:
         # If src has multiple known consts (e.g. a temp + state var),
-        # the resolver tries each via the BST callable. Sort order is
+        # the resolver tries each via the condition-chain callable. Sort order is
         # alphabetical to keep behavior deterministic.
-        bst = lambda k: 11 if k == 0x6B588048 else None  # noqa: E731
+        condition_chain = lambda k: 11 if k == 0x6B588048 else None  # noqa: E731
         c = _mk_classification(DispatcherAwareEdgeClass.DISPATCHER_ROUND_TRIP)
         result = resolve_forward_target(
             c,
@@ -116,7 +116,7 @@ class TestDispatcherRoundTrip:
                 "%var_178": 0x12345678,    # not a state value
                 "%var_3C": 0x6B588048,     # the state value
             },
-            bst_resolver=bst,
+            condition_chain_resolver=condition_chain,
         )
         assert result is not None
         assert result.new_target == 11
@@ -261,7 +261,7 @@ class TestRefuseToRewriteRealLoops:
         result = resolve_forward_target(
             c,
             src_reaching_const={"%var_178": 5},
-            bst_resolver=lambda k: 99,
+            condition_chain_resolver=lambda k: 99,
             target_predicate=pred,
         )
         assert result is None
@@ -271,6 +271,6 @@ class TestRefuseToRewriteRealLoops:
         result = resolve_forward_target(
             c,
             src_reaching_const={"%var_X": 5},
-            bst_resolver=lambda k: 11,
+            condition_chain_resolver=lambda k: 11,
         )
         assert result is None

@@ -199,8 +199,8 @@ def discover_frontier_overrides(
     returns ``FrontierOverridePlan`` records in DAG-edge order. It does NOT
     inspect claim state; the emitter enforces incremental claim collisions.
     """
-    bst_set = {int(dispatcher_serial)}
-    bst_set.update(int(block) for block in dispatcher_region)
+    condition_chain_set = {int(dispatcher_serial)}
+    condition_chain_set.update(int(block) for block in dispatcher_region)
     plans: list[FrontierOverridePlan] = []
 
     for edge in getattr(dag, "edges", ()):
@@ -246,7 +246,7 @@ def discover_frontier_overrides(
                 sorted({membership['role'] for membership in memberships}),
             )
             continue
-        if target_entry in bst_set:
+        if target_entry in condition_chain_set:
             continue
 
         block = flow_graph.get_block(exit_block)
@@ -279,14 +279,14 @@ def discover_frontier_overrides(
         old_target_value: int | None = None
         if block.nsucc == 1:
             candidate_old_target = int(block.succs[0])
-            if candidate_old_target != dispatcher_serial and candidate_old_target not in bst_set:
+            if candidate_old_target != dispatcher_serial and candidate_old_target not in condition_chain_set:
                 continue
             old_target_value = candidate_old_target
         elif block.nsucc == 2:
             selected = False
             for arm in range(2):
                 arm_target = int(block.succs[arm])
-                if arm_target == dispatcher_serial or arm_target in bst_set:
+                if arm_target == dispatcher_serial or arm_target in condition_chain_set:
                     if arm != 1:
                         break
                     branch_arm = arm

@@ -86,7 +86,7 @@ class _FakeMBA:
         return self._blocks.get(serial)
 
 
-def test_evaluate_handler_paths_uses_snapshot_state_for_bst_exit(monkeypatch):
+def test_evaluate_handler_paths_uses_snapshot_state_for_condition_chain_exit(monkeypatch):
     mba = _FakeMBA(
         {
             1: _FakeBlock((2,)),
@@ -117,11 +117,11 @@ def test_evaluate_handler_paths_uses_snapshot_state_for_bst_exit(monkeypatch):
         mba,
         entry_serial=1,
         incoming_state=0x741CA546,
-        bst_node_blocks={0},
+        condition_chain_blocks={0},
         state_var_stkoff=0x364,
         flow_graph=flow_graph,
         known_handler_states={0xA3130002},
-        bst_root_serial=0,
+        dispatcher_root_serial=0,
         state_machine_blocks={0, 1, 2},
     )
 
@@ -163,7 +163,7 @@ def test_evaluate_handler_paths_uses_snapshot_state_for_handler_handoff(
         mba,
         entry_serial=1,
         incoming_state=0x741CA546,
-        bst_node_blocks={0},
+        condition_chain_blocks={0},
         state_var_stkoff=0x364,
         handler_entry_blocks={1, 3},
         flow_graph=object(),
@@ -205,7 +205,7 @@ def test_evaluate_handler_paths_resolves_no_successor_state_write_stub(
         mba,
         entry_serial=1,
         incoming_state=0x11,
-        bst_node_blocks={0},
+        condition_chain_blocks={0},
         state_var_stkoff=0x364,
         flow_graph=object(),
         known_handler_states={0x24},
@@ -246,7 +246,7 @@ def test_evaluate_handler_paths_keeps_unknown_no_successor_write_terminal(
         mba,
         entry_serial=1,
         incoming_state=0x11,
-        bst_node_blocks={0},
+        condition_chain_blocks={0},
         state_var_stkoff=0x364,
         flow_graph=object(),
         known_handler_states={0x24},
@@ -258,7 +258,7 @@ def test_evaluate_handler_paths_keeps_unknown_no_successor_write_terminal(
     assert results[0].ordered_path == [1, 2]
 
 
-def test_resolve_exit_via_bst_default_snapshot_skips_trivial_connectors():
+def test_resolve_exit_via_condition_chain_default_snapshot_skips_trivial_connectors():
     flow_graph = _SnapshotFlowGraph(
         {
             6: _SnapshotBlock(
@@ -290,7 +290,7 @@ def test_resolve_exit_via_bst_default_snapshot_skips_trivial_connectors():
     )
 
     assert (
-        sma.resolve_exit_via_bst_default_snapshot(
+        sma.resolve_exit_via_condition_chain_default_snapshot(
             flow_graph,
             6,
             0x790A1FEB,
@@ -299,7 +299,7 @@ def test_resolve_exit_via_bst_default_snapshot_skips_trivial_connectors():
     )
 
 
-def test_resolve_exit_via_bst_default_snapshot_keeps_empty_handler_anchor():
+def test_resolve_exit_via_condition_chain_default_snapshot_keeps_empty_handler_anchor():
     flow_graph = _SnapshotFlowGraph(
         {
             6: _SnapshotBlock(
@@ -324,7 +324,7 @@ def test_resolve_exit_via_bst_default_snapshot_keeps_empty_handler_anchor():
     )
 
     assert (
-        sma.resolve_exit_via_bst_default_snapshot(
+        sma.resolve_exit_via_condition_chain_default_snapshot(
             flow_graph,
             6,
             0x1000,

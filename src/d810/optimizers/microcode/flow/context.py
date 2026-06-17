@@ -57,7 +57,7 @@ def _flowgraph_from_live_mba(
                 break
             insn = insn.next
 
-        # Capture only the tail instruction (for BST-walk opcode checks).
+        # Capture only the tail instruction (for condition-chain-walk opcode checks).
         insns: tuple[InsnSnapshot, ...] = ()
         tail = blk.tail
         if tail is not None:
@@ -272,7 +272,7 @@ class FlowMaturityContext:
         """Return the terminal cone — dispatcher blocks that FixPred must skip.
 
         Lazily computed from the dispatcher analysis.  Identifies the
-        reverse-predecessor cone of BST comparison blocks whose non-dispatcher
+        reverse-predecessor cone of condition-chain comparison blocks whose non-dispatcher
         arm reaches ``BLT_STOP``.  If the cone reaches a dispatcher root,
         it expands to cover that root's entire reachable component to avoid
         INTERR 50858 from partial resolution.

@@ -27,7 +27,7 @@ from d810.analyses.value_flow.state_write import (
     MicrocodeEvalSeams,
     forward_eval_insn as _portable_forward_eval_insn,
 )
-from d810.capabilities.providers import BstWalkerProvider, register_bst_walkers
+from d810.capabilities.providers import ConditionChainWalkerProvider, register_condition_chain_walkers
 from d810.ir.flowgraph import (
     BlockKind,
     BlockSnapshot,
@@ -74,13 +74,13 @@ def _seam():
                                            mba=kw.pop("mba", None),
                                            state_var_lvar_idx=kw.pop("state_var_lvar_idx", None))
 
-    register_bst_walkers(BstWalkerProvider(
+    register_condition_chain_walkers(ConditionChainWalkerProvider(
         detect_state_var_stkoff=lambda *a, **k: None,
         dump_dispatcher_node=lambda *a, **k: None,
         find_pre_header_state=lambda *a, **k: None,
         walk_handler_chain=lambda *a, **k: None,
         forward_eval_insn=_fwd,
-        resolve_via_bst_walk=lambda *a, **k: None,
+        resolve_via_condition_chain_walk=lambda *a, **k: None,
         get_block=lambda mba, serial: mba.get_block(serial),
         block_successors=lambda blk: tuple(blk.succs),
     ))
@@ -490,7 +490,7 @@ def test_entry_bridge_preserves_witness_exit_path_with_live_call_target_reg(_sea
 def test_recovers_initial_state_from_prologue(_seam) -> None:
     # prologue blk0 -> blk1(writes initial 0x10) -> dispatcher blk2.  The prologue
     # is a dispatcher predecessor too, so its folded state IS the initial state --
-    # recovered without any caller-supplied initial_state / bst evidence.
+    # recovered without any caller-supplied initial_state / condition-chain evidence.
     fg = FlowGraph(
         blocks={
             0: _b(0, (1,), ()),                                   # entry

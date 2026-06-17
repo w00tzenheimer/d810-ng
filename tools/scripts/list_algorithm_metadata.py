@@ -33,7 +33,7 @@ SOURCE_FILES = (
     "src/d810/cfg/linearized_flow_graph_fragment_planning.py",
     "src/d810/optimizers/microcode/flow/flattening/hodur/strategies/reconstruction.py",
     "src/d810/cfg/flow/compare_chain.py",
-    "src/d810/recon/flow/bst_analysis.py",
+    "src/d810/recon/flow/condition_chain_analysis.py",
     "src/d810/optimizers/microcode/flow/flattening/hodur/strategies/semantic_exact_node.py",
     "src/d810/optimizers/microcode/flow/flattening/hodur/strategies/exact_conditional_node.py",
 )

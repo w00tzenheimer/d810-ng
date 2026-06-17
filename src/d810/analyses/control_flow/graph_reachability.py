@@ -80,9 +80,9 @@ def collect_dispatcher_predecessors(
     flow_graph: object,
     dispatcher_serial: int,
     *,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
 ) -> tuple[int, ...]:
-    """Return non-BST predecessors of ``dispatcher_serial``."""
+    """Return non-condition-chain predecessors of ``dispatcher_serial``."""
     if dispatcher_serial < 0:
         return ()
     try:
@@ -94,7 +94,7 @@ def collect_dispatcher_predecessors(
 
     residual: list[int] = []
     for serial in sorted(tuple(getattr(dispatcher_block, "preds", ()))):
-        if serial == dispatcher_serial or serial in bst_node_blocks:
+        if serial == dispatcher_serial or serial in condition_chain_blocks:
             continue
         residual.append(int(serial))
     return tuple(residual)
@@ -104,14 +104,14 @@ def collect_residual_dispatcher_predecessors(
     flow_graph: object,
     dispatcher_serial: int,
     *,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     reachable_from_serial: int | None = None,
 ) -> tuple[int, ...]:
     """Return dispatcher predecessors that remain reachable from entry."""
     residual = collect_dispatcher_predecessors(
         flow_graph,
         dispatcher_serial,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
     reachable_blocks = compute_reachable_blocks(
         flow_graph,

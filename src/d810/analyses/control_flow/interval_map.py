@@ -1,6 +1,6 @@
-"""Sorted interval map for recovered BST dispatchers.
+"""Sorted interval map for recovered condition-chain dispatchers.
 
-Converts a BST comparison tree into a sorted table of disjoint half-open
+Converts a condition-chain comparison tree into a sorted table of disjoint half-open
 intervals [lo, hi) -> target, queryable with binary search.
 Pure Python — no IDA imports.
 """
@@ -87,12 +87,12 @@ class Interval:
 
 
 # ---------------------------------------------------------------------------
-# BST node types
+# Condition-chain node types
 # ---------------------------------------------------------------------------
 
 
 class NodeKind(Enum):
-    """Kind of node in the recovered BST comparison tree."""
+    """Kind of node in the recovered condition-chain comparison tree."""
 
     JBE = auto()     # unsigned <=  (yes branch taken when state <= imm)
     JA = auto()      # unsigned >   (yes branch taken when state >  imm)
@@ -105,7 +105,7 @@ class NodeKind(Enum):
 
 @dataclass
 class Node:
-    """Node in the recovered BST comparison tree.
+    """Node in the recovered condition-chain comparison tree.
 
     Args:
         kind: Classification of this comparison node.
@@ -170,7 +170,7 @@ def emit_dispatch_intervals(
     root: Node,
     domain: Interval = _DOMAIN,
 ) -> list[EmittedRange]:
-    """Convert a BST Node tree into a flat list of disjoint EmittedRange entries.
+    """Convert a condition-chain node tree into a flat list of disjoint EmittedRange entries.
 
     The DFS carries a ``feasible`` set of intervals representing which state
     values are still reachable on the current path.  Each comparison node
@@ -184,7 +184,7 @@ def emit_dispatch_intervals(
         JAE(k): yes=[k, 2^32), no=[0, k)
 
     Args:
-        root: Root of the recovered BST comparison tree.
+        root: Root of the recovered condition-chain comparison tree.
         domain: Universe interval for feasibility (default: full u32).
 
     Returns:
@@ -392,7 +392,7 @@ def compute_gaps(
 
 
 class IntervalDispatcher:
-    """Binary-search dispatcher table built from a recovered BST.
+    """Condition-chain dispatcher table built from recovered condition-chain evidence.
 
     Provides O(log n) lookup of the handler target for a given 32-bit state
     value.
@@ -423,7 +423,7 @@ class IntervalDispatcher:
         # ``StateDispatcherMap`` whose no-match fall-through is the shared
         # return), trust it. Otherwise derive it from the table's gap rows --
         # BUT only when ``compute_default`` is set. The max-row-count heuristic
-        # is meaningful for a comparison-BST table (gap rows route to the
+        # is meaningful for a comparison-chain table (gap rows route to the
         # default), but for an EXACT single-value map (built by
         # ``interval_dispatcher_from_state_map``) every row is one point and the
         # heuristic would spuriously crown an arbitrary handler the default,
@@ -445,7 +445,7 @@ class IntervalDispatcher:
         intervals all route to the default block, so the default is reached by the **most distinct
         rows** (one per gap), while each handler occupies a single point/narrow interval. The target
         with the maximum ROW COUNT is therefore the default (tie-broken by total width). Row-count —
-        not total width — is the robust signal: a SIGNED BST puts the whole negative half (high bit
+        not total width — is the robust signal: a signed comparison chain puts the whole negative half (high bit
         set) into ONE enormous interval routed to a single handler, so a max-WIDTH rule mis-picks
         that negative-half handler as the default. Returns None for an empty table; tables carrying
         only handler rows (no gap rows) yield a handler here, but the classifier guards on
@@ -617,7 +617,7 @@ def interval_dispatcher_from_state_map(
     Each state value becomes a single-value interval ``[state, state + 1)``
     routing to its handler block. This adapts a register / equality-chain
     ``StateDispatcherMap`` (``jz eax, #state, @handler``) into the same
-    interval-set router the comparison-BST path produces, so the unflatten back-edge
+    interval-set router the condition-chain path produces, so the unflatten back-edge
     emit (``emit_minimal_unflatten``) is dispatcher-shape-agnostic: it consumes
     the router without caring whether it came from a comparison tree or an
     equality chain.

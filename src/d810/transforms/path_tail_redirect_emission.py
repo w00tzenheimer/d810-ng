@@ -33,7 +33,7 @@ class PathTailRedirectExecutionContext:
     report_exit_handlers: frozenset[int]
     report_exit_owned_blocks: frozenset[int]
     terminal_protected_blocks: frozenset[int]
-    bst_node_blocks: frozenset[int]
+    condition_chain_blocks: frozenset[int]
     dispatcher_region: frozenset[int]
     state_var_stkoff: int | None
     dispatcher_lookup: object | None
@@ -81,7 +81,7 @@ def execute_path_tail_redirect(
         target_entry = context.resolve_effective_target_entry(
             context.dag,
             context.edge,
-            bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+            condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
             state_var_stkoff=context.state_var_stkoff,
             dispatcher_lookup=context.dispatcher_lookup,
             dispatcher=context.dispatcher,
@@ -127,7 +127,7 @@ def execute_path_tail_redirect(
         context.flow_graph,
         target_entry=int(target_entry),
         source_block=source_block,
-        ignored_blocks=set(context.dispatcher_region) | set(context.bst_node_blocks),
+        ignored_blocks=set(context.dispatcher_region) | set(context.condition_chain_blocks),
     )
 
     source_snapshot = context.flow_graph.get_block(source_block)
@@ -148,7 +148,7 @@ def execute_path_tail_redirect(
         source_is_conditional_branch=(
             context.edge.source_anchor.kind.name == "CONDITIONAL_BRANCH"
         ),
-        bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+        condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
         dispatcher_region=set(int(block) for block in context.dispatcher_region),
     )
 
@@ -161,7 +161,7 @@ def execute_path_tail_redirect(
             context.mba,
             source_block,
             state_var_stkoff=context.state_var_stkoff,
-            bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+            condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
             dispatcher_lookup=context.dispatcher_lookup,
             dispatcher=context.dispatcher,
         )
@@ -328,7 +328,7 @@ def emit_path_tail_redirect(
     report_exit_handlers: set[int],
     report_exit_owned_blocks: set[int],
     terminal_protected_blocks: set[int],
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher_region: set[int],
     flow_graph: object,
     state_var_stkoff: int | None,
@@ -350,7 +350,7 @@ def emit_path_tail_redirect(
             report_exit_handlers=frozenset(report_exit_handlers),
             report_exit_owned_blocks=frozenset(report_exit_owned_blocks),
             terminal_protected_blocks=frozenset(terminal_protected_blocks),
-            bst_node_blocks=frozenset(bst_node_blocks),
+            condition_chain_blocks=frozenset(condition_chain_blocks),
             dispatcher_region=frozenset(dispatcher_region),
             state_var_stkoff=state_var_stkoff,
             dispatcher_lookup=dispatcher_lookup,

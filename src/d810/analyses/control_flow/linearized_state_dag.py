@@ -33,7 +33,7 @@ from d810.analyses.control_flow.state_machine_analysis import (
     classify_exit_state,
     detect_conditional_transitions,
     evaluate_handler_paths,
-    resolve_exit_via_bst_default_snapshot,
+    resolve_exit_via_condition_chain_default_snapshot,
 )
 
 from d810.analyses.control_flow.return_frontier_carrier_facts import (
@@ -253,7 +253,7 @@ def _block_has_side_effect_opcode(
 def detect_side_effect_corridors(
     flow_graph: FlowGraph | None,
     *,
-    bst_block_set: frozenset[int] | set[int] | None = None,
+    condition_chain_block_set: frozenset[int] | set[int] | None = None,
     min_chain_length: int = 3,
     max_chain_length: int = 16,
 ) -> tuple[tuple[int, ...], ...]:
@@ -269,12 +269,12 @@ def detect_side_effect_corridors(
       * for ``i > 0``, ``B_i`` has only ``B_{i-1}`` as predecessor coming
         from inside the corridor (joins from outside disqualify the chain
         because they prove the ordered semantics is already broken)
-      * none of the ``B_i`` are BST dispatcher/route blocks
+      * none of the ``B_i`` are condition-chain dispatcher/route blocks
       * ``k + 1 >= min_chain_length`` (default 3 — short pairs aren't
         a meaningful "corridor")
 
     Detection is conservative — it intentionally rejects:
-      * cascades that include a BST node (those are routing, not side-effect)
+      * cascades that include a condition-chain node (those are routing, not side-effect)
       * cascades whose head already has a non-trivial predecessor merge
         (HCC may have pre-emptively shredded them)
 
@@ -285,14 +285,14 @@ def detect_side_effect_corridors(
         return ()
     side_effect_ops = _SIDE_EFFECT_OPCODES
 
-    bst_set: set[int] = (
-        set(int(s) for s in (bst_block_set or ())) if bst_block_set else set()
+    condition_chain_set: set[int] = (
+        set(int(s) for s in (condition_chain_block_set or ())) if condition_chain_block_set else set()
     )
 
     # Collect side-effect candidates AND traversable transit blocks.
     # The OLLVM byte-emit cascade alternates TEST(m_jcnd) -> EMIT(m_stx),
     # so the corridor walk must hop through small transit blocks (no
-    # m_stx but nsucc<=2 and not in BST set) between side-effect steps.
+    # m_stx but nsucc<=2 and not in condition-chain set) between side-effect steps.
     candidate_set: set[int] = set()
     transit_set: set[int] = set()
     blocks_by_serial: dict[int, object] = {}
@@ -303,7 +303,7 @@ def detect_side_effect_corridors(
             continue
         if serial < 0:
             continue
-        if serial in bst_set:
+        if serial in condition_chain_set:
             continue
         nsucc = len(tuple(getattr(blk, "succs", ()) or ()))
         if nsucc not in (1, 2):
@@ -1568,7 +1568,7 @@ class LinearizedStateDag:
     state_var_stkoff: int | None
     pre_header_serial: int | None
     initial_state: int | None
-    bst_node_blocks: tuple[int, ...]
+    condition_chain_blocks: tuple[int, ...]
     nodes: tuple[StateDagNode, ...]
     edges: tuple[StateDagEdge, ...]
     transient_entry_blocks: tuple[int, ...] = ()
@@ -1642,7 +1642,7 @@ def _resolve_fallback_anchor_from_exact_cover(
     if handler_snapshot is None or len(handler_snapshot.preds) != 1:
         return None
     pred_serial = handler_snapshot.preds[0]
-    if pred_serial not in set(report.bst_node_blocks):
+    if pred_serial not in set(report.condition_chain_blocks):
         return None
 
     pred_snapshot = flow_graph.get_block(pred_serial)
@@ -1662,7 +1662,7 @@ def _resolve_exact_cover_anchor(
     report: DispatcherTransitionReport,
     *,
     dispatcher: IntervalDispatcher | None = None,
-    bst_node_blocks: tuple[int, ...] | set[int] = (),
+    condition_chain_blocks: tuple[int, ...] | set[int] = (),
 ) -> int | None:
     cover_row = _find_exact_cover_row(
         state_value,
@@ -1677,7 +1677,7 @@ def _resolve_exact_cover_anchor(
         cover_anchor = None
     else:
         cover_anchor = int(cover_row.handler_serial)
-        if cover_anchor in set(bst_node_blocks):
+        if cover_anchor in set(condition_chain_blocks):
             cover_anchor = None
     if cover_anchor is not None:
         return cover_anchor
@@ -1685,7 +1685,7 @@ def _resolve_exact_cover_anchor(
     if dispatcher is None:
         return None
 
-    bst_block_set = set(bst_node_blocks)
+    condition_chain_block_set = set(condition_chain_blocks)
     state_u32 = int(state_value) & 0xFFFFFFFF
     cover_dispatcher_row: IntervalRow | None = None
     for row in getattr(dispatcher, "_rows", ()):
@@ -1695,7 +1695,7 @@ def _resolve_exact_cover_anchor(
         if hi <= state_u32:
             if (
                 hi == lo + 1
-                and target not in bst_block_set
+                and target not in condition_chain_block_set
                 and target != report.dispatcher_entry_serial
             ):
                 cover_dispatcher_row = row
@@ -1718,7 +1718,7 @@ def _is_range_backed_only_handoff_anchor(
 ) -> bool:
     """Return true when a handoff anchor is only shared interval evidence.
 
-    Stable BST handoff promotion is allowed to claim an anchor only when the
+    Stable condition-chain handoff promotion is allowed to claim an anchor only when the
     target block is owned by the supplemental state.  A block that appears only
     through ``handler_range_map`` is a shared interval/fallback body: it may be
     the correct control-flow corridor for many state values, but it is not safe
@@ -1898,7 +1898,7 @@ def _resolve_nonraw_owner_semantic_alias(
     *,
     anchor_candidates: set[int] | tuple[int, ...],
     dag: LinearizedStateDag,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
 ) -> tuple[int, str] | None:
     """Promote a raw same-state alias onto its owning non-raw semantic head."""
 
@@ -1916,14 +1916,14 @@ def _resolve_nonraw_owner_semantic_alias(
 
     def _redirect_safe_owner_entry(node: StateDagNode) -> int | None:
         entry_anchor = int(node.entry_anchor)
-        if entry_anchor not in bst_node_blocks and entry_anchor not in seed_anchors:
+        if entry_anchor not in condition_chain_blocks and entry_anchor not in seed_anchors:
             return entry_anchor
         for block_serial in (*node.exclusive_blocks, *node.owned_blocks):
             block_int = int(block_serial)
-            if block_int in bst_node_blocks or block_int in seed_anchors:
+            if block_int in condition_chain_blocks or block_int in seed_anchors:
                 continue
             return block_int
-        if entry_anchor not in bst_node_blocks:
+        if entry_anchor not in condition_chain_blocks:
             return entry_anchor
         return None
 
@@ -1969,7 +1969,7 @@ def _resolve_nonraw_dispatcher_cover_alias(
     *,
     dag: LinearizedStateDag,
     dispatcher: IntervalDispatcher | None,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     raw_exact_cover_anchor: int | None = None,
 ) -> tuple[int, str] | None:
     """Lift a raw supplemental state to the preceding non-raw dispatcher family."""
@@ -1994,7 +1994,7 @@ def _resolve_nonraw_dispatcher_cover_alias(
     label_by_entry: dict[int, str] = {}
     for node in dag.nodes:
         entry_anchor = int(node.entry_anchor)
-        if entry_anchor in bst_node_blocks:
+        if entry_anchor in condition_chain_blocks:
             continue
         label_text = str(node.state_label or "")
         current = label_by_entry.get(entry_anchor)
@@ -2006,7 +2006,7 @@ def _resolve_nonraw_dispatcher_cover_alias(
 
     for row in reversed(rows[:containing_index]):
         target = int(row.target)
-        if target in bst_node_blocks:
+        if target in condition_chain_blocks:
             continue
         if raw_exact_cover_anchor is not None and int(target) == int(raw_exact_cover_anchor):
             continue
@@ -2207,7 +2207,7 @@ def _resolve_supplemental_source_family_alias(
     *,
     source_contexts: set[tuple[int, int]] | tuple[tuple[int, int], ...],
     dag: LinearizedStateDag,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
 ) -> tuple[int, str] | None:
     """Resolve a raw supplemental state to a semantic family entry.
 
@@ -2228,7 +2228,7 @@ def _resolve_supplemental_source_family_alias(
         if edge.target_state is None or (edge.target_state & 0xFFFFFFFF) != raw_value:
             continue
         target_entry = edge.target_entry_anchor
-        if target_entry is None or target_entry in bst_node_blocks:
+        if target_entry is None or target_entry in condition_chain_blocks:
             continue
         target_label = edge.target_label or ""
         target_node = node_by_key.get(edge.target_key) if edge.target_key is not None else None
@@ -2274,7 +2274,7 @@ def _resolve_prior_supplemental_selected_alias(
     state_value: int,
     *,
     dag: LinearizedStateDag,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
 ) -> tuple[int, str] | None:
     """Preserve a previously selected semantic supplemental alias across rebuilds."""
 
@@ -2285,7 +2285,7 @@ def _resolve_prior_supplemental_selected_alias(
             continue
         selected_anchor = int(anchor)
         break
-    if selected_anchor is None or selected_anchor in bst_node_blocks:
+    if selected_anchor is None or selected_anchor in condition_chain_blocks:
         return None
 
     best_score: tuple[int, int, int, int] | None = None
@@ -2387,12 +2387,12 @@ def _is_supported_explicit_conditional_transition(
     return transition_is_trusted_for_explicit_conditional_bridge(transition)
 
 
-def _suppress_bst_extension_alias_edges(
+def _suppress_condition_chain_extension_alias_edges(
     edges: tuple[StateDagEdge, ...] | list[StateDagEdge],
     *,
-    bst_node_blocks: tuple[int, ...] | set[int],
+    condition_chain_blocks: tuple[int, ...] | set[int],
 ) -> list[StateDagEdge]:
-    """Drop alias edges that only extend a resolved path back into the BST.
+    """Drop alias edges that only extend a resolved path back into the condition chain.
 
     These show up as a second semantic edge whose ordered path is exactly the
     same as a concrete transition, plus one trailing dispatcher-root hop. They
@@ -2400,8 +2400,8 @@ def _suppress_bst_extension_alias_edges(
     0x27EEEA11 alive and in turn preserve dispatcher-root loops in the planner.
     """
 
-    bst_block_set = set(bst_node_blocks)
-    if not bst_block_set:
+    condition_chain_block_set = set(condition_chain_blocks)
+    if not condition_chain_block_set:
         return list(edges)
 
     concrete_prefixes: set[tuple[StateDagNodeKey, tuple[int, ...]]] = set()
@@ -2409,7 +2409,7 @@ def _suppress_bst_extension_alias_edges(
         if (
             edge.kind not in (SemanticEdgeKind.TRANSITION, SemanticEdgeKind.CONDITIONAL_TRANSITION)
             or edge.target_entry_anchor is None
-            or edge.target_entry_anchor in bst_block_set
+            or edge.target_entry_anchor in condition_chain_block_set
             or not edge.ordered_path
         ):
             continue
@@ -2420,9 +2420,9 @@ def _suppress_bst_extension_alias_edges(
         if (
             edge.kind in (SemanticEdgeKind.TRANSITION, SemanticEdgeKind.CONDITIONAL_TRANSITION)
             and edge.target_entry_anchor is not None
-            and edge.target_entry_anchor in bst_block_set
+            and edge.target_entry_anchor in condition_chain_block_set
             and len(edge.ordered_path) >= 2
-            and edge.ordered_path[-1] in bst_block_set
+            and edge.ordered_path[-1] in condition_chain_block_set
             and (edge.source_key, tuple(edge.ordered_path[:-1])) in concrete_prefixes
         ):
             continue
@@ -2570,7 +2570,7 @@ def _find_exact_bridge_edge(
 def _preferred_alias_collapse_anchor(
     node: StateDagNode,
     *,
-    bst_node_blocks: tuple[int, ...] | set[int],
+    condition_chain_blocks: tuple[int, ...] | set[int],
 ) -> int:
     """Preserve a resolver-promoted dispatcher/body anchor during alias collapse.
 
@@ -2580,10 +2580,10 @@ def _preferred_alias_collapse_anchor(
     family entry when the resolved body block is already known.
     """
 
-    bst_block_set = set(bst_node_blocks)
+    condition_chain_block_set = set(condition_chain_blocks)
     if (
         node.handler_serial != node.entry_anchor
-        and node.handler_serial not in bst_block_set
+        and node.handler_serial not in condition_chain_block_set
     ):
         return node.handler_serial
     return node.entry_anchor
@@ -2670,7 +2670,7 @@ def _build_state_resolver(
     }
     valid_handler_serials = {row.handler_serial for row in report.rows}
 
-    bst_block_set = set(report.bst_node_blocks)
+    condition_chain_block_set = set(report.condition_chain_blocks)
     transient_target_states = {
         int(state) & 0xFFFFFFFF for state in transient_state_values
     }
@@ -2718,7 +2718,7 @@ def _build_state_resolver(
                 )
             )
             # Validate: if the IntervalDispatcher routes this state to a
-            # different non-BST block, the exact match is stale — the BST
+            # different non-condition-chain block, the exact match is stale; the condition chain
             # intercepts at a higher level before reaching the exact handler.
             if (
                 dispatcher is not None
@@ -2730,13 +2730,13 @@ def _build_state_resolver(
                     dispatcher_target is not None
                     and int(dispatcher_target) != handler_serial
                     and int(dispatcher_target) != report.dispatcher_entry_serial
-                    and int(dispatcher_target) not in bst_block_set
+                    and int(dispatcher_target) not in condition_chain_block_set
                 ):
                     # Guard: if the exact handler is a direct predecessor
-                    # of the dispatcher target (adjacent BST check → body),
+                    # of the dispatcher target (adjacent condition-chain check → body),
                     # the disagreement is normal — don't override.
                     # Only override when they're in different subtrees
-                    # (the BST intercepts the state at a higher level).
+                    # (the condition chain intercepts the state at a higher level).
                     adjacent = False
                     if flow_graph is not None:
                         exact_blk = flow_graph.get_block(handler_serial)
@@ -2927,7 +2927,7 @@ def _compute_alias_label_override(
         and len(incoming_edges) == 1
         and incoming_edges[0].source_key.state_const is not None
     ):
-        bst_blocks = set(report.bst_node_blocks)
+        condition_chain_blocks = set(report.condition_chain_blocks)
         incoming_edge = incoming_edges[0]
         source_state = incoming_edge.source_key.state_const & 0xFFFFFFFF
         source_terminal_edges = tuple(
@@ -2962,7 +2962,7 @@ def _compute_alias_label_override(
                 (
                     block_serial
                     for block_serial in exit_path[common_len:]
-                    if block_serial not in bst_blocks
+                    if block_serial not in condition_chain_blocks
                 ),
                 None,
             )
@@ -2971,7 +2971,7 @@ def _compute_alias_label_override(
                     (
                         block_serial
                         for block_serial in exit_path
-                        if block_serial not in bst_blocks
+                        if block_serial not in condition_chain_blocks
                     ),
                     None,
                 )
@@ -3092,7 +3092,7 @@ def _compute_alias_label_override(
     edge = outgoing_edges[0]
     collapse_anchor = _preferred_alias_collapse_anchor(
         node,
-        bst_node_blocks=report.bst_node_blocks,
+        condition_chain_blocks=report.condition_chain_blocks,
     )
     if (
         prefer_local_corridors
@@ -3225,7 +3225,7 @@ def _normalize_alias_nodes(
     flow_graph: FlowGraph,
     *,
     prefer_local_corridors: bool = False,
-    bst_node_blocks: tuple[int, ...] = (),
+    condition_chain_blocks: tuple[int, ...] = (),
     dispatcher: IntervalDispatcher | None = None,
 ) -> tuple[list[StateDagNode], list[StateDagEdge]]:
     real_handler_states = _canonical_exact_handler_states(
@@ -3380,7 +3380,7 @@ def _normalize_alias_nodes(
         key_updates[node.key] = normalized
 
     normalized_edges: list[StateDagEdge] = []
-    _bst_set = set(bst_node_blocks)
+    _condition_chain_set = set(condition_chain_blocks)
     for edge in edges:
         target_node = key_updates.get(edge.target_key) if edge.target_key is not None else None
         _resolved_anchor = (
@@ -3390,12 +3390,12 @@ def _normalize_alias_nodes(
         )
         if (
             _resolved_anchor is not None
-            and int(_resolved_anchor) in _bst_set
+            and int(_resolved_anchor) in _condition_chain_set
             and edge.target_state is not None
             and dispatcher is not None
         ):
             _lookup = dispatcher.lookup(edge.target_state)
-            if _lookup is not None and int(_lookup) not in _bst_set:
+            if _lookup is not None and int(_lookup) not in _condition_chain_set:
                 _resolved_anchor = int(_lookup)
             else:
                 _resolved_anchor = None  # No valid target
@@ -3428,7 +3428,7 @@ def _normalize_nonhandler_exact_nodes(
     flow_graph: FlowGraph,
     *,
     prefer_local_corridors: bool = False,
-    bst_node_blocks: tuple[int, ...] = (),
+    condition_chain_blocks: tuple[int, ...] = (),
     dispatcher: IntervalDispatcher | None = None,
 ) -> tuple[list[StateDagNode], list[StateDagEdge]]:
     canonical_handler_states = _canonical_exact_handler_states(
@@ -3606,7 +3606,7 @@ def _normalize_nonhandler_exact_nodes(
         key_updates[node.key] = normalized
 
     normalized_edges: list[StateDagEdge] = []
-    _bst_set = set(bst_node_blocks)
+    _condition_chain_set = set(condition_chain_blocks)
     for edge in edges:
         target_node = key_updates.get(edge.target_key) if edge.target_key is not None else None
         _resolved_anchor = (
@@ -3616,12 +3616,12 @@ def _normalize_nonhandler_exact_nodes(
         )
         if (
             _resolved_anchor is not None
-            and int(_resolved_anchor) in _bst_set
+            and int(_resolved_anchor) in _condition_chain_set
             and edge.target_state is not None
             and dispatcher is not None
         ):
             _lookup = dispatcher.lookup(edge.target_state)
-            if _lookup is not None and int(_lookup) not in _bst_set:
+            if _lookup is not None and int(_lookup) not in _condition_chain_set:
                 _resolved_anchor = int(_lookup)
             else:
                 _resolved_anchor = None  # No valid target
@@ -3740,12 +3740,12 @@ def _promote_range_backed_nodes_to_dispatcher_bodies(
     edges: list[StateDagEdge],
     dispatcher: IntervalDispatcher | None,
     *,
-    bst_node_blocks: tuple[int, ...],
+    condition_chain_blocks: tuple[int, ...],
 ) -> tuple[list[StateDagNode], list[StateDagEdge]]:
     if dispatcher is None:
         return nodes, edges
 
-    bst_blocks = set(bst_node_blocks)
+    condition_chain_blocks = set(condition_chain_blocks)
     promoted_by_key: dict[StateDagNodeKey, StateDagNode] = {}
     promoted_nodes: list[StateDagNode] = []
 
@@ -3754,7 +3754,7 @@ def _promote_range_backed_nodes_to_dispatcher_bodies(
         if (
             node.kind == StateNodeKind.RANGE_BACKED
             and node.key.state_const is not None
-            and node.entry_anchor in bst_blocks
+            and node.entry_anchor in condition_chain_blocks
         ):
             try:
                 dispatcher_row = dispatcher.lookup_row(node.key.state_const)
@@ -3762,7 +3762,7 @@ def _promote_range_backed_nodes_to_dispatcher_bodies(
                 dispatcher_row = None
             promoted_anchor = (
                 int(dispatcher_row.target)
-                if dispatcher_row is not None and dispatcher_row.target not in bst_blocks
+                if dispatcher_row is not None and dispatcher_row.target not in condition_chain_blocks
                 else None
             )
             if promoted_anchor is not None and promoted_anchor != node.entry_anchor:
@@ -3788,7 +3788,7 @@ def _promote_range_backed_nodes_to_dispatcher_bodies(
         promoted_by_key[promoted.key] = promoted
 
     promoted_edges: list[StateDagEdge] = []
-    _bst_set = set(bst_node_blocks)
+    _condition_chain_set = set(condition_chain_blocks)
     for edge in edges:
         target_node = (
             promoted_by_key.get(edge.target_key)
@@ -3802,12 +3802,12 @@ def _promote_range_backed_nodes_to_dispatcher_bodies(
         )
         if (
             _resolved_anchor is not None
-            and int(_resolved_anchor) in _bst_set
+            and int(_resolved_anchor) in _condition_chain_set
             and edge.target_state is not None
             and dispatcher is not None
         ):
             _lookup = dispatcher.lookup(edge.target_state)
-            if _lookup is not None and int(_lookup) not in _bst_set:
+            if _lookup is not None and int(_lookup) not in _condition_chain_set:
                 _resolved_anchor = int(_lookup)
             else:
                 _resolved_anchor = None  # No valid target
@@ -3836,10 +3836,10 @@ def _normalize_entry_anchors_to_unique_path_starts(
     nodes: list[StateDagNode],
     edges: list[StateDagEdge],
     *,
-    bst_node_blocks: tuple[int, ...],
+    condition_chain_blocks: tuple[int, ...],
     dispatcher: IntervalDispatcher | None = None,
 ) -> tuple[list[StateDagNode], list[StateDagEdge]]:
-    bst_blocks = set(bst_node_blocks)
+    condition_chain_blocks = set(condition_chain_blocks)
     outgoing_by_key: defaultdict[StateDagNodeKey, list[StateDagEdge]] = defaultdict(list)
     for edge in edges:
         outgoing_by_key[edge.source_key].append(edge)
@@ -3877,7 +3877,7 @@ def _normalize_entry_anchors_to_unique_path_starts(
             [
                 path[0]
                 for path in outgoing_paths
-                if path and path[0] not in bst_blocks
+                if path and path[0] not in condition_chain_blocks
             ]
         )
         if len(path_starts) != 1:
@@ -3939,12 +3939,12 @@ def _normalize_entry_anchors_to_unique_path_starts(
         )
         if (
             _resolved_anchor is not None
-            and int(_resolved_anchor) in bst_blocks
+            and int(_resolved_anchor) in condition_chain_blocks
             and edge.target_state is not None
             and dispatcher is not None
         ):
             _lookup = dispatcher.lookup(edge.target_state)
-            if _lookup is not None and int(_lookup) not in bst_blocks:
+            if _lookup is not None and int(_lookup) not in condition_chain_blocks:
                 _resolved_anchor = int(_lookup)
             else:
                 _resolved_anchor = None  # No valid target
@@ -4005,10 +4005,10 @@ def _resolve_semantic_entry_anchor(
     local_blocks: tuple[int, ...],
     paths: tuple[HandlerPathResult, ...],
     *,
-    bst_node_blocks: tuple[int, ...],
+    condition_chain_blocks: tuple[int, ...],
 ) -> int:
-    bst_blocks = set(bst_node_blocks)
-    if handler_serial not in bst_blocks:
+    condition_chain_blocks = set(condition_chain_blocks)
+    if handler_serial not in condition_chain_blocks:
         return handler_serial
 
     path_roots = _ordered_unique(
@@ -4027,7 +4027,7 @@ def _resolve_semantic_entry_anchor(
             (
                 block_serial
                 for block_serial in path.ordered_path[start_idx + 1 :]
-                if block_serial not in bst_blocks
+                if block_serial not in condition_chain_blocks
             ),
             None,
         )
@@ -4042,7 +4042,7 @@ def _resolve_semantic_entry_anchor(
         (
             block_serial
             for block_serial in local_blocks
-            if block_serial != handler_serial and block_serial not in bst_blocks
+            if block_serial != handler_serial and block_serial not in condition_chain_blocks
         ),
         None,
     )
@@ -4477,7 +4477,7 @@ def _discover_supplemental_states(
         if row.state_const is not None
     }
     handler_entry_blocks = {row.handler_serial for row in report.rows}
-    bst_block_set = set(report.bst_node_blocks)
+    condition_chain_block_set = set(report.condition_chain_blocks)
     # Map handler serial → incoming state for classification.
     handler_incoming_state = {
         row.handler_serial: row.state_const
@@ -4490,10 +4490,10 @@ def _discover_supplemental_states(
     supplemental_source_contexts: dict[int, set[tuple[int, int]]] = {}
     terminal_alias_states: set[int] = set()
     terminal_state_cache: dict[int, bool] = {}
-    bst_exit_classification_cache: dict[
+    condition_chain_exit_classification_cache: dict[
         int, tuple[ExitStateKind | None, int | None]
     ] = {}
-    bst_handoff_anchor_cache: dict[int, int | None] = {}
+    condition_chain_handoff_anchor_cache: dict[int, int | None] = {}
     protected_exact_keys = _protected_exact_point_keys(report)
     protected_exact_handlers = {
         int(key.handler_serial) for key in protected_exact_keys
@@ -4514,7 +4514,7 @@ def _discover_supplemental_states(
         for entry in handler_entry_blocks:
             if prefer_local_corridors and entry in protected_transient_handlers:
                 continue
-            if entry in bst_block_set:
+            if entry in condition_chain_block_set:
                 continue
             kind = classify_exit_state(
                 mba=mba,
@@ -4522,7 +4522,7 @@ def _discover_supplemental_states(
                 incoming_state=None,
                 successor_serial=entry,
                 state_var_stkoff=state_var_stkoff,
-                bst_node_blocks=bst_block_set,
+                condition_chain_blocks=condition_chain_block_set,
             )
             if kind == ExitStateKind.TRANSIENT_CORRIDOR:
                 transient_entry_blocks.add(entry)
@@ -4535,19 +4535,19 @@ def _discover_supplemental_states(
         and edge.ordered_path
     }
 
-    def resolves_to_terminal_bst_exit(state_value: int) -> bool:
+    def resolves_to_terminal_condition_chain_exit(state_value: int) -> bool:
         masked = int(state_value) & 0xFFFFFFFF
         cached = terminal_state_cache.get(masked)
         if cached is not None:
             return cached
         is_terminal = False
-        if bst_block_set:
-            resolved = resolve_exit_via_bst_default_snapshot(
+        if condition_chain_block_set:
+            resolved = resolve_exit_via_condition_chain_default_snapshot(
                 flow_graph,
                 int(report.dispatcher_entry_serial),
                 masked,
             )
-            state_machine_blocks = set(report.bst_node_blocks) | handler_entry_blocks
+            state_machine_blocks = set(report.condition_chain_blocks) | handler_entry_blocks
             if (
                 resolved is not None
                 and resolved not in state_machine_blocks
@@ -4560,7 +4560,7 @@ def _discover_supplemental_states(
                         incoming_state=None,
                         successor_serial=int(resolved),
                         state_var_stkoff=int(state_var_stkoff),
-                        bst_node_blocks=bst_block_set,
+                        condition_chain_blocks=condition_chain_block_set,
                     )
                     is_terminal = resolved_kind in (
                         ExitStateKind.TERMINAL,
@@ -4596,10 +4596,10 @@ def _discover_supplemental_states(
         terminal_state_cache[masked] = is_terminal
         return is_terminal
 
-    def classify_supplemental_bst_exit(
+    def classify_supplemental_condition_chain_exit(
         state_value: int,
     ) -> tuple[ExitStateKind | None, int | None]:
-        """Classify the BST resolution for a supplemental state value.
+        """Classify the condition-chain resolution for a supplemental state value.
 
         Supplemental states often come from a semantic handler writing a state
         and re-entering the equality-chain dispatcher. If the dispatcher would
@@ -4609,18 +4609,18 @@ def _discover_supplemental_states(
         """
 
         masked = int(state_value) & 0xFFFFFFFF
-        cached = bst_exit_classification_cache.get(masked)
+        cached = condition_chain_exit_classification_cache.get(masked)
         if cached is not None:
             return cached
 
         result: tuple[ExitStateKind | None, int | None] = (None, None)
-        if bst_block_set and mba is not None and state_var_stkoff is not None:
-            resolved = resolve_exit_via_bst_default_snapshot(
+        if condition_chain_block_set and mba is not None and state_var_stkoff is not None:
+            resolved = resolve_exit_via_condition_chain_default_snapshot(
                 flow_graph,
                 int(report.dispatcher_entry_serial),
                 masked,
             )
-            state_machine_blocks = set(report.bst_node_blocks) | handler_entry_blocks
+            state_machine_blocks = set(report.condition_chain_blocks) | handler_entry_blocks
             if resolved is not None and resolved not in state_machine_blocks:
                 resolved_kind = classify_exit_state(
                     mba=mba,
@@ -4628,17 +4628,17 @@ def _discover_supplemental_states(
                     incoming_state=None,
                     successor_serial=int(resolved),
                     state_var_stkoff=int(state_var_stkoff),
-                    bst_node_blocks=bst_block_set,
+                    condition_chain_blocks=condition_chain_block_set,
                 )
                 result = (resolved_kind, int(resolved))
 
-        bst_exit_classification_cache[masked] = result
+        condition_chain_exit_classification_cache[masked] = result
         return result
 
-    def resolve_stable_bst_handoff_anchor(state_value: int) -> int | None:
-        """Return a non-BST handler anchor reached by a supplemental state.
+    def resolve_stable_condition_chain_handoff_anchor(state_value: int) -> int | None:
+        """Return a non-condition-chain handler anchor reached by a supplemental state.
 
-        Some OLLVM equality-chain phases write a state, re-enter the BST, and
+        Some OLLVM equality-chain phases write a state, re-enter the condition chain, and
         land on a small semantic handoff block that is not itself an exact
         dispatcher row.  The path evaluator correctly classifies these as
         STABLE_HANDOFF instead of terminal aliases; without recording the
@@ -4647,10 +4647,10 @@ def _discover_supplemental_states(
         """
 
         masked = int(state_value) & 0xFFFFFFFF
-        if masked in bst_handoff_anchor_cache:
-            return bst_handoff_anchor_cache[masked]
+        if masked in condition_chain_handoff_anchor_cache:
+            return condition_chain_handoff_anchor_cache[masked]
         anchor: int | None = None
-        resolved_kind, resolved = classify_supplemental_bst_exit(masked)
+        resolved_kind, resolved = classify_supplemental_condition_chain_exit(masked)
         if resolved_kind == ExitStateKind.STABLE_HANDOFF and resolved is not None:
             if _is_range_backed_only_handoff_anchor(
                 masked,
@@ -4659,7 +4659,7 @@ def _discover_supplemental_states(
                 dispatcher,
             ):
                 logger.info(
-                    "supplemental BST handoff: state 0x%X "
+                    "supplemental condition-chain handoff: state 0x%X "
                     "resolved=blk[%d] kind=%s -> rejected shared range-backed anchor",
                     masked,
                     int(resolved),
@@ -4668,13 +4668,13 @@ def _discover_supplemental_states(
             else:
                 anchor = int(resolved)
                 logger.info(
-                    "supplemental BST handoff: state 0x%X "
+                    "supplemental condition-chain handoff: state 0x%X "
                     "resolved=blk[%d] kind=%s -> supplemental anchor",
                     masked,
                     int(resolved),
                     resolved_kind.value,
                 )
-        bst_handoff_anchor_cache[masked] = anchor
+        condition_chain_handoff_anchor_cache[masked] = anchor
         return anchor
 
     if transient_entry_blocks and dispatcher is not None:
@@ -4728,7 +4728,7 @@ def _discover_supplemental_states(
             if state_value not in existing_states:
                 # Identify the successor to classify.  Prefer handler
                 # entry blocks (the DFS terminated there), but fall back
-                # to any non-BST, non-visited successor.
+                # to any non-condition-chain, non-visited successor.
                 exit_blk = flow_graph.get_block(path.exit_block)
                 path_set = set(path.ordered_path) if path.ordered_path else set()
                 succ_serial: int | None = None
@@ -4739,7 +4739,7 @@ def _discover_supplemental_states(
                             break
                     if succ_serial is None:
                         for s in exit_blk.succs:
-                            if s not in bst_block_set and s not in path_set:
+                            if s not in condition_chain_block_set and s not in path_set:
                                 succ_serial = s
                                 break
                 kind = ExitStateKind.UNCLASSIFIED
@@ -4750,24 +4750,24 @@ def _discover_supplemental_states(
                         incoming_state=incoming,
                         successor_serial=succ_serial,
                         state_var_stkoff=state_var_stkoff,
-                        bst_node_blocks=bst_block_set,
+                        condition_chain_blocks=condition_chain_block_set,
                     )
                 if (
                     kind == ExitStateKind.UNCLASSIFIED
                     and succ_serial is None
                     and path.exit_block in terminal_path_exit_blocks
-                    and resolves_to_terminal_bst_exit(state_value)
+                    and resolves_to_terminal_condition_chain_exit(state_value)
                 ):
                     terminal_alias_states.add(state_value)
                     logger.info(
-                        "supplemental classification: state 0x%X from handler blk[%d] exit_block=%d matches existing terminal edge and BST terminal resolution -> terminal alias",
+                        "supplemental classification: state 0x%X from handler blk[%d] exit_block=%d matches existing terminal edge and condition-chain terminal resolution -> terminal alias",
                         state_value,
                         handler_serial,
                         path.exit_block,
                     )
                     kind = ExitStateKind.TERMINAL
                 if kind == ExitStateKind.UNCLASSIFIED and succ_serial is None:
-                    resolved_kind, resolved = classify_supplemental_bst_exit(
+                    resolved_kind, resolved = classify_supplemental_condition_chain_exit(
                         state_value
                     )
                     if resolved_kind == ExitStateKind.TRANSIENT_CORRIDOR:
@@ -4779,14 +4779,14 @@ def _discover_supplemental_states(
                                     mba,
                                     int(resolved),
                                     state_value,
-                                    bst_block_set,
+                                    condition_chain_block_set,
                                     int(state_var_stkoff),
                                     handler_entry_blocks,
                                     flow_graph=flow_graph,
                                     known_handler_states=existing_states,
-                                    bst_root_serial=int(report.dispatcher_entry_serial),
+                                    dispatcher_root_serial=int(report.dispatcher_entry_serial),
                                     state_machine_blocks=(
-                                        set(bst_block_set) | handler_entry_blocks
+                                        set(condition_chain_block_set) | handler_entry_blocks
                                     ),
                                 )
                             )
@@ -4801,7 +4801,7 @@ def _discover_supplemental_states(
                             ).add(int(resolved))
                             logger.info(
                                 "supplemental classification: state 0x%X from "
-                                "handler blk[%d] exit_block=%d BST-resolves to "
+                                "handler blk[%d] exit_block=%d condition-chain-resolves to "
                                 "transient corridor blk[%d] writing known "
                                 "state(s) %s -> supplemental handoff",
                                 state_value,
@@ -4820,7 +4820,7 @@ def _discover_supplemental_states(
                             transient_states.add(state_value)
                             logger.info(
                                 "supplemental classification: state 0x%X from "
-                                "handler blk[%d] exit_block=%d BST-resolves to "
+                                "handler blk[%d] exit_block=%d condition-chain-resolves to "
                                 "transient corridor blk[%d] -> transient",
                                 state_value,
                                 handler_serial,
@@ -4829,7 +4829,7 @@ def _discover_supplemental_states(
                             )
                             kind = ExitStateKind.TRANSIENT_CORRIDOR
                     handoff_anchor = (
-                        resolve_stable_bst_handoff_anchor(state_value)
+                        resolve_stable_condition_chain_handoff_anchor(state_value)
                         if kind == ExitStateKind.UNCLASSIFIED
                         else None
                     )
@@ -4951,7 +4951,7 @@ def _discover_supplemental_states(
 def _discover_shadowed_range_handlers(
     dag: LinearizedStateDag,
     dispatcher: IntervalDispatcher | None,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     flow_graph: FlowGraph,
     existing_states: set[int],
     handler_paths_by_handler: dict[int, tuple] | None = None,
@@ -4961,7 +4961,7 @@ def _discover_shadowed_range_handlers(
 
     When exact resolution picks a more specific handler for every concrete
     state in a range, the range-backed handler block is never materialized
-    as a DAG node.  If the range block has real handler semantics (non-BST,
+    as a DAG node.  If the range block has real handler semantics (non-condition-chain,
     has outgoing dispatcher feeder), its range-start state should be
     injected so the supplemental machinery can wire it.
 
@@ -4979,7 +4979,7 @@ def _discover_shadowed_range_handlers(
     shadowed_ranges: list[tuple[int, int, int]] = []  # (lo, hi, target)
     for row in getattr(dispatcher, "_rows", ()):
         target = int(row.target)
-        if target in bst_node_blocks:
+        if target in condition_chain_blocks:
             continue
         if target in dag_entry_anchors:
             continue
@@ -5047,7 +5047,7 @@ def build_live_linearized_state_dag_from_graph(
     pre_header_serial: int | None = None,
     initial_state: int | None = None,
     handler_range_map: Mapping[int, tuple[int | None, int | None]] | None = None,
-    bst_node_blocks: tuple[int, ...] = (),
+    condition_chain_blocks: tuple[int, ...] = (),
     diagnostics: tuple[str, ...] = (),
     dispatcher: IntervalDispatcher | None = None,
     mba: object | None = None,
@@ -5079,17 +5079,17 @@ def build_live_linearized_state_dag_from_graph(
         pre_header_serial=pre_header_serial,
         initial_state=initial_state,
         handler_range_map=handler_range_map,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         diagnostics=diagnostics,
     )
 
     # Validate report rows: when a row's handler_serial disagrees with the
     # IntervalDispatcher AND the exact handler is not a direct predecessor
-    # of the dispatcher target, the exact handler is stale (the BST
+    # of the dispatcher target, the exact handler is stale (the condition chain
     # intercepts the state at a higher level).  Replace with the dispatcher
     # target so downstream DAG edges use the correct handler.
     if dispatcher is not None:
-        bst_set = set(bst_node_blocks)
+        condition_chain_set = set(condition_chain_blocks)
         patched_rows: list[TransitionRow] = []
         for row in report.rows:
             if row.state_const is None:
@@ -5100,7 +5100,7 @@ def build_live_linearized_state_dag_from_graph(
                 disp_target is not None
                 and int(disp_target) != row.handler_serial
                 and int(disp_target) != dispatcher_entry_serial
-                and int(disp_target) not in bst_set
+                and int(disp_target) not in condition_chain_set
             ):
                 exact_blk = flow_graph.get_block(row.handler_serial)
                 adjacent = False
@@ -5158,9 +5158,9 @@ def build_live_linearized_state_dag_from_graph(
                 handler_entry_blocks.add(int(dispatcher_row.target))
     state_constants = set(transition_result.handlers.keys())
     real_handler_states = state_constants | set(report.handler_state_map.values())
-    # State machine blocks = BST nodes + all handler entry blocks.
-    _sm_blocks = set(report.bst_node_blocks) | handler_entry_blocks
-    _bst_root = report.dispatcher_entry_serial if report.dispatcher_entry_serial >= 0 else None
+    # State machine blocks = condition-chain nodes + all handler entry blocks.
+    _sm_blocks = set(report.condition_chain_blocks) | handler_entry_blocks
+    _dispatcher_root = report.dispatcher_entry_serial if report.dispatcher_entry_serial >= 0 else None
 
     def _explicit_conditional_transitions_for_row(
         row: TransitionRow,
@@ -5218,7 +5218,7 @@ def build_live_linearized_state_dag_from_graph(
                 int(dispatcher_row.target)
                 if dispatcher_row is not None
                 and getattr(dispatcher_row, "lo", None) == row.state_const
-                and int(dispatcher_row.target) not in set(report.bst_node_blocks)
+                and int(dispatcher_row.target) not in set(report.condition_chain_blocks)
                 else None
             )
             if exact_anchor is not None and exact_anchor != row.handler_serial:
@@ -5227,12 +5227,12 @@ def build_live_linearized_state_dag_from_graph(
                         mba,
                         exact_anchor,
                         incoming_state,
-                        set(report.bst_node_blocks),
+                        set(report.condition_chain_blocks),
                         state_var_stkoff,
                         handler_entry_blocks,
                         flow_graph=flow_graph,
                         known_handler_states=real_handler_states,
-                        bst_root_serial=_bst_root,
+                        dispatcher_root_serial=_dispatcher_root,
                         state_machine_blocks=_sm_blocks,
                     )
                 )
@@ -5244,12 +5244,12 @@ def build_live_linearized_state_dag_from_graph(
                 mba,
                 analysis_anchor,
                 incoming_state,
-                set(report.bst_node_blocks),
+                set(report.condition_chain_blocks),
                 state_var_stkoff,
                 handler_entry_blocks,
                 flow_graph=flow_graph,
                 known_handler_states=real_handler_states,
-                bst_root_serial=_bst_root,
+                dispatcher_root_serial=_dispatcher_root,
                 state_machine_blocks=_sm_blocks,
             )
         )
@@ -5302,7 +5302,7 @@ def build_live_linearized_state_dag_from_graph(
                 "None" if dispatcher is None else type(dispatcher).__name__,
             )
             return
-        bst_set = set(rpt.bst_node_blocks)
+        condition_chain_set = set(rpt.condition_chain_blocks)
         n_corrections = 0
         corrected_rows: list[TransitionRow] = []
         for row in rpt.rows:
@@ -5314,7 +5314,7 @@ def build_live_linearized_state_dag_from_graph(
                 disp_target is not None
                 and int(disp_target) != row.handler_serial
                 and int(disp_target) != rpt.dispatcher_entry_serial
-                and int(disp_target) not in bst_set
+                and int(disp_target) not in condition_chain_set
             ):
                 exact_blk = flow_graph.get_block(row.handler_serial)
                 adjacent = False
@@ -5346,7 +5346,7 @@ def build_live_linearized_state_dag_from_graph(
             initial_state=rpt.initial_state,
             handler_state_map=rpt.handler_state_map,
             handler_range_map=rpt.handler_range_map,
-            bst_node_blocks=rpt.bst_node_blocks,
+            condition_chain_blocks=rpt.condition_chain_blocks,
             rows=tuple(corrected_rows),
             summary=_summarize_rows(tuple(corrected_rows)),
             diagnostics=rpt.diagnostics,
@@ -5445,7 +5445,7 @@ def build_live_linearized_state_dag_from_graph(
             shadowed = _discover_shadowed_range_handlers(
                 dag,
                 dispatcher,
-                set(report_with_supplemental.bst_node_blocks),
+                set(report_with_supplemental.condition_chain_blocks),
                 flow_graph,
                 existing_states,
                 handler_paths_by_handler=handler_paths_by_handler,
@@ -5492,23 +5492,23 @@ def build_live_linearized_state_dag_from_graph(
         supplemental_rows: list[TransitionRow] = []
         for state_value in pending_states:
             anchor_candidates = collapsed_target_anchors.get(state_value, set())
-            bst_block_set = set(report_with_supplemental.bst_node_blocks)
+            condition_chain_block_set = set(report_with_supplemental.condition_chain_blocks)
             prior_selected_alias = _resolve_prior_supplemental_selected_alias(
                 state_value,
                 dag=dag,
-                bst_node_blocks=bst_block_set,
+                condition_chain_blocks=condition_chain_block_set,
             )
             source_family_alias = prior_selected_alias or _resolve_supplemental_source_family_alias(
                 state_value,
                 source_contexts=supplemental_source_contexts.get(state_value, set()),
                 dag=dag,
-                bst_node_blocks=bst_block_set,
+                condition_chain_blocks=condition_chain_block_set,
             )
             cover_exact_anchor = _resolve_exact_cover_anchor(
                 state_value,
                 report_with_supplemental,
                 dispatcher=dispatcher,
-                bst_node_blocks=bst_block_set,
+                condition_chain_blocks=condition_chain_block_set,
             )
             cover_anchor = _resolve_fallback_anchor_from_exact_cover(
                 state_value,
@@ -5520,14 +5520,14 @@ def build_live_linearized_state_dag_from_graph(
             )
             dispatcher_anchor = (
                 dispatcher_row.target
-                if dispatcher_row is not None and dispatcher_row.target not in bst_block_set
+                if dispatcher_row is not None and dispatcher_row.target not in condition_chain_block_set
                 else None
             )
             dispatcher_exact_anchor = (
                 dispatcher_row.target
                 if dispatcher_row is not None
                 and getattr(dispatcher_row, "lo", None) == state_value
-                and dispatcher_row.target not in bst_block_set
+                and dispatcher_row.target not in condition_chain_block_set
                 else None
             )
             bridge_row = _find_unique_exact_bridge_row(
@@ -5604,7 +5604,7 @@ def build_live_linearized_state_dag_from_graph(
                 candidate_anchor_set: set[int] = {
                     candidate_anchor
                     for candidate_anchor in anchor_candidates
-                    if candidate_anchor not in bst_block_set
+                    if candidate_anchor not in condition_chain_block_set
                 }
                 candidate_results_by_anchor: dict[
                     int,
@@ -5625,7 +5625,7 @@ def build_live_linearized_state_dag_from_graph(
                 ):
                     if (
                         candidate_anchor is not None
-                        and candidate_anchor not in bst_block_set
+                        and candidate_anchor not in condition_chain_block_set
                     ):
                         candidate_anchor_set.add(candidate_anchor)
 
@@ -5648,16 +5648,16 @@ def build_live_linearized_state_dag_from_graph(
                             mba,
                             candidate_anchor,
                             state_value,
-                            bst_block_set,
+                            condition_chain_block_set,
                             state_var_stkoff,
                             handler_entry_blocks,
                             flow_graph=flow_graph,
                             known_handler_states=(
                                 state_constants | existing_states | set(pending_states)
                             ),
-                            bst_root_serial=_bst_root,
+                            dispatcher_root_serial=_dispatcher_root,
                             state_machine_blocks=(
-                                set(bst_block_set) | handler_entry_blocks
+                                set(condition_chain_block_set) | handler_entry_blocks
                             ),
                         )
                     )
@@ -5844,7 +5844,7 @@ def build_live_linearized_state_dag_from_graph(
                     state_value,
                     anchor_candidates=raw_owner_seed_anchors,
                     dag=dag,
-                    bst_node_blocks=bst_block_set,
+                    condition_chain_blocks=condition_chain_block_set,
                 )
                 if owner_semantic_alias is not None:
                     if debug_anchor_selection:
@@ -5861,7 +5861,7 @@ def build_live_linearized_state_dag_from_graph(
                         state_value,
                         dag=dag,
                         dispatcher=dispatcher,
-                        bst_node_blocks=bst_block_set,
+                        condition_chain_blocks=condition_chain_block_set,
                         raw_exact_cover_anchor=cover_exact_anchor,
                     )
                     if dispatcher_cover_alias is not None:
@@ -5876,22 +5876,22 @@ def build_live_linearized_state_dag_from_graph(
                         source_family_alias_anchor = dispatcher_cover_alias[0]
             if not prefer_local_corridors and len(anchor_candidates) == 1:
                 candidate_anchor = next(iter(anchor_candidates))
-                if candidate_anchor not in bst_block_set:
+                if candidate_anchor not in condition_chain_block_set:
                     candidate_paths = tuple(
                         evaluate_handler_paths(
                             mba,
                             candidate_anchor,
                             state_value,
-                            bst_block_set,
+                            condition_chain_block_set,
                             state_var_stkoff,
                             handler_entry_blocks,
                             flow_graph=flow_graph,
                             known_handler_states=(
                                 state_constants | existing_states | set(pending_states)
                             ),
-                            bst_root_serial=_bst_root,
+                            dispatcher_root_serial=_dispatcher_root,
                             state_machine_blocks=(
-                                set(bst_block_set) | handler_entry_blocks
+                                set(condition_chain_block_set) | handler_entry_blocks
                             ),
                         )
                     )
@@ -6016,7 +6016,7 @@ def build_live_linearized_state_dag_from_graph(
             if anchor is None and not cover_conflicts_with_dispatcher:
                 anchor = cover_anchor
             # Prefer a concrete dispatcher-resolved body entry over a
-            # range-backed BST family anchor. This keeps supplemental alias
+            # range-backed range-backed family anchor. This keeps supplemental alias
             # states off dispatcher-root compare nodes like blk[2] when the
             # interval lookup already points at the first semantic body block.
             if anchor is None:
@@ -6027,7 +6027,7 @@ def build_live_linearized_state_dag_from_graph(
                 anchor = range_anchor
             if anchor is None and len(anchor_candidates) == 1:
                 only_candidate = next(iter(anchor_candidates))
-                if only_candidate not in bst_block_set:
+                if only_candidate not in condition_chain_block_set:
                     anchor = only_candidate
             if anchor is None and bridge_row is not None:
                 anchor = bridge_row.handler_serial
@@ -6129,16 +6129,16 @@ def build_live_linearized_state_dag_from_graph(
                         mba,
                         anchor,
                         state_value,
-                        set(report_with_supplemental.bst_node_blocks),
+                        set(report_with_supplemental.condition_chain_blocks),
                         state_var_stkoff,
                         handler_entry_blocks,
                         flow_graph=flow_graph,
                         known_handler_states=(
                             state_constants | existing_states | set(pending_states)
                         ),
-                        bst_root_serial=_bst_root,
+                        dispatcher_root_serial=_dispatcher_root,
                         state_machine_blocks=(
-                            set(report_with_supplemental.bst_node_blocks)
+                            set(report_with_supplemental.condition_chain_blocks)
                             | handler_entry_blocks
                         ),
                     )
@@ -6254,7 +6254,7 @@ def build_live_linearized_state_dag_from_graph(
             initial_state=report_with_supplemental.initial_state,
             handler_state_map=report_with_supplemental.handler_state_map,
             handler_range_map=report_with_supplemental.handler_range_map,
-            bst_node_blocks=report_with_supplemental.bst_node_blocks,
+            condition_chain_blocks=report_with_supplemental.condition_chain_blocks,
             rows=rows,
             summary=_summarize_rows(rows),
             diagnostics=report_with_supplemental.diagnostics,
@@ -6422,7 +6422,7 @@ def build_linearized_state_dag_from_graph(
             row.handler_serial,
             local_blocks,
             paths,
-            bst_node_blocks=report.bst_node_blocks,
+            condition_chain_blocks=report.condition_chain_blocks,
         )
 
         node = StateDagNode(
@@ -6565,7 +6565,7 @@ def build_linearized_state_dag_from_graph(
     # terminal STOP without re-entering the dispatcher) AND the node resolution
     # is such a phantom, emit a return-to-exit edge instead of a transition to
     # the wrong block.
-    _edge_bst_set = set(report.bst_node_blocks)
+    _edge_condition_chain_set = set(report.condition_chain_blocks)
     _dispatcher_targets: set[int] = (
         {int(r.target) for r in getattr(dispatcher, "_rows", ())}
         if dispatcher is not None
@@ -6579,7 +6579,7 @@ def build_linearized_state_dag_from_graph(
         if (
             cur is None
             or int(cur) == int(report.dispatcher_entry_serial)
-            or int(cur) in _edge_bst_set
+            or int(cur) in _edge_condition_chain_set
         ):
             return False
         seen: set[int] = set()
@@ -6594,7 +6594,7 @@ def build_linearized_state_dag_from_graph(
                 int(s)
                 for s in (getattr(blk, "succs", ()) or ())
                 if int(s) != int(report.dispatcher_entry_serial)
-                and int(s) not in _edge_bst_set
+                and int(s) not in _edge_condition_chain_set
             ]
             if len(onward) != 1:
                 # a dead-end that is NOT a STOP (incomplete/orphan), a branch, or
@@ -6700,15 +6700,15 @@ def build_linearized_state_dag_from_graph(
                     seen_edge_keys.add(_exit_key)
                     edges.append(_exit_edge)
                 continue
-            # Fix 1: resolve target_entry_anchor past BST region
+            # Fix 1: resolve target_entry_anchor past condition-chain region
             _target_entry: int | None = (
                 target_node.entry_anchor if target_node is not None else target_handler_serial
             )
-            _bst_set = set(report.bst_node_blocks)
-            if _target_entry is not None and int(_target_entry) in _bst_set:
+            _condition_chain_set = set(report.condition_chain_blocks)
+            if _target_entry is not None and int(_target_entry) in _condition_chain_set:
                 if dispatcher is not None and transition.to_state is not None:
                     _resolved = dispatcher.lookup(transition.to_state)
-                    if _resolved is not None and int(_resolved) not in _bst_set:
+                    if _resolved is not None and int(_resolved) not in _condition_chain_set:
                         _target_entry = int(_resolved)
                     else:
                         _target_entry = None
@@ -6805,15 +6805,15 @@ def build_linearized_state_dag_from_graph(
                 block_serial=cond.branch_block,
                 branch_arm=cond.branch_arm,
             )
-            # Fix 1: resolve target_entry_anchor past BST region
+            # Fix 1: resolve target_entry_anchor past condition-chain region
             _cond_target_entry: int | None = (
                 target_node.entry_anchor if target_node is not None else target_handler_serial
             )
-            _cond_bst_set = set(report.bst_node_blocks)
-            if _cond_target_entry is not None and int(_cond_target_entry) in _cond_bst_set:
+            _cond_condition_chain_set = set(report.condition_chain_blocks)
+            if _cond_target_entry is not None and int(_cond_target_entry) in _cond_condition_chain_set:
                 if dispatcher is not None and cond.target_state is not None:
                     _cond_resolved = dispatcher.lookup(cond.target_state)
-                    if _cond_resolved is not None and int(_cond_resolved) not in _cond_bst_set:
+                    if _cond_resolved is not None and int(_cond_resolved) not in _cond_condition_chain_set:
                         _cond_target_entry = int(_cond_resolved)
                     else:
                         _cond_target_entry = None
@@ -6985,15 +6985,15 @@ def build_linearized_state_dag_from_graph(
                         seen_edge_keys.add(_lo_exit_key)
                         edges.append(_lo_exit_edge)
                     continue
-                # Fix 1: resolve target_entry_anchor past BST region
+                # Fix 1: resolve target_entry_anchor past condition-chain region
                 _lo_target_entry: int | None = (
                     target_node.entry_anchor if target_node is not None else target_handler_serial
                 )
-                _lo_bst_set = set(report.bst_node_blocks)
-                if _lo_target_entry is not None and int(_lo_target_entry) in _lo_bst_set:
+                _lo_condition_chain_set = set(report.condition_chain_blocks)
+                if _lo_target_entry is not None and int(_lo_target_entry) in _lo_condition_chain_set:
                     if dispatcher is not None and path.final_state is not None:
                         _lo_resolved = dispatcher.lookup(path.final_state)
-                        if _lo_resolved is not None and int(_lo_resolved) not in _lo_bst_set:
+                        if _lo_resolved is not None and int(_lo_resolved) not in _lo_condition_chain_set:
                             _lo_target_entry = int(_lo_resolved)
                         else:
                             _lo_target_entry = None
@@ -7089,7 +7089,7 @@ def build_linearized_state_dag_from_graph(
         transition_result,
         flow_graph,
         prefer_local_corridors=prefer_local_corridors,
-        bst_node_blocks=report.bst_node_blocks,
+        condition_chain_blocks=report.condition_chain_blocks,
         dispatcher=dispatcher,
     )
     _log_debug_node_entries("after_alias", nodes)
@@ -7100,7 +7100,7 @@ def build_linearized_state_dag_from_graph(
         transition_result,
         flow_graph,
         prefer_local_corridors=prefer_local_corridors,
-        bst_node_blocks=report.bst_node_blocks,
+        condition_chain_blocks=report.condition_chain_blocks,
         dispatcher=dispatcher,
     )
     _log_debug_node_entries("after_nonhandler_exact", nodes)
@@ -7108,19 +7108,19 @@ def build_linearized_state_dag_from_graph(
         nodes,
         edges,
         dispatcher,
-        bst_node_blocks=report.bst_node_blocks,
+        condition_chain_blocks=report.condition_chain_blocks,
     )
     _log_debug_node_entries("after_promote_range_backed", nodes)
     nodes, edges = _normalize_entry_anchors_to_unique_path_starts(
         nodes,
         edges,
-        bst_node_blocks=report.bst_node_blocks,
+        condition_chain_blocks=report.condition_chain_blocks,
         dispatcher=dispatcher,
     )
     _log_debug_node_entries("after_unique_path_starts", nodes)
-    edges = _suppress_bst_extension_alias_edges(
+    edges = _suppress_condition_chain_extension_alias_edges(
         edges,
-        bst_node_blocks=report.bst_node_blocks,
+        condition_chain_blocks=report.condition_chain_blocks,
     )
     live_transient_states = {
         int(getattr(node.key, "state_const", -1)) & 0xFFFFFFFF
@@ -7146,7 +7146,7 @@ def build_linearized_state_dag_from_graph(
         state_var_stkoff=report.state_var_stkoff,
         pre_header_serial=report.pre_header_serial,
         initial_state=report.initial_state,
-        bst_node_blocks=report.bst_node_blocks,
+        condition_chain_blocks=report.condition_chain_blocks,
         nodes=tuple(nodes),
         edges=tuple(edges),
         transient_state_values=tuple(sorted(live_transient_states)),
@@ -7156,7 +7156,7 @@ def build_linearized_state_dag_from_graph(
     sccs = compute_state_sccs(dag)
     log_sccs(sccs)
     dag = replace(dag, sccs=sccs)
-    dispatcher_region = set(report.bst_node_blocks) | {
+    dispatcher_region = set(report.condition_chain_blocks) | {
         report.dispatcher_entry_serial
     }
     loop_regions = classify_loop_regions(
@@ -7165,7 +7165,7 @@ def build_linearized_state_dag_from_graph(
     dag = replace(dag, loop_regions=loop_regions)
     cfg_level_corridors = detect_side_effect_corridors(
         flow_graph,
-        bst_block_set=frozenset(report.bst_node_blocks),
+        condition_chain_block_set=frozenset(report.condition_chain_blocks),
     )
     dag_level_corridors = detect_state_dag_terminal_byte_corridors(
         dag, flow_graph

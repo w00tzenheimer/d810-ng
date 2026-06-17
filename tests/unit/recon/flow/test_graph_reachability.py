@@ -54,14 +54,14 @@ class TestComputeReachableBlocks:
 
 
 class TestDispatcherPredecessors:
-    def test_collect_dispatcher_predecessors_skips_dispatcher_and_bst(self):
+    def test_collect_dispatcher_predecessors_skips_dispatcher_and_condition_chain(self):
         fg = _DummyFlowGraph({
             6: ((), (6, 8, 9, 12)),
         })
         assert collect_dispatcher_predecessors(
             fg,
             6,
-            bst_node_blocks={9},
+            condition_chain_blocks={9},
         ) == (8, 12)
 
     def test_collect_residual_dispatcher_predecessors_filters_unreachable(self):
@@ -74,7 +74,7 @@ class TestDispatcherPredecessors:
         assert collect_residual_dispatcher_predecessors(
             fg,
             6,
-            bst_node_blocks=set(),
+            condition_chain_blocks=set(),
             reachable_from_serial=0,
         ) == (8,)
 

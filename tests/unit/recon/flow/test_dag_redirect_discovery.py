@@ -65,7 +65,7 @@ def _dag(*, nodes: tuple[StateDagNode, ...], edges: tuple[StateDagEdge, ...]) ->
         state_var_stkoff=60,
         pre_header_serial=None,
         initial_state=0x10,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=nodes,
         edges=edges,
         diagnostics=(),

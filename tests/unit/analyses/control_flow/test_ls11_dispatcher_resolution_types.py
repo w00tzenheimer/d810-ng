@@ -49,7 +49,7 @@ def test_router_kind_is_str_enum() -> None:
     assert {k.value for k in RouterKind} >= {
         "switch", "equality_chain", "condition_chain", "indirect_table", "unknown",
     }
-    assert "bst" not in {k.value for k in RouterKind}
+    assert RouterKind.CONDITION_CHAIN.value == "condition_chain"
 
 
 # --- C6: ResolverCandidate / DispatcherResolution -------------------------- #

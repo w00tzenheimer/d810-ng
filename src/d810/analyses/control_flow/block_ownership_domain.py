@@ -9,9 +9,9 @@ needed -- a ``RANGE_BACKED`` handler is one owner (entry ``H``) whose
 
 The lattice is a forward "may-reach-from-handler-entry" set, finite-height
 (bounded by the handler count), so it needs no widening.  Three transfer rules
-collapse the BST-corridor / supplemental / anchor heuristic clusters:
+collapse the condition-chain corridor / supplemental / anchor heuristic clusters:
 
-* dispatcher region (head + BST compares) -> **KILL** (ownership never flows
+* dispatcher region (head + condition-chain compares) -> **KILL** (ownership never flows
   through the dispatcher; this is what keeps the handler->dispatcher->handler
   back-edges from making every block owned by everyone);
 * handler entry -> **GEN** (the block starts its own region);
@@ -109,7 +109,7 @@ def analyze_block_ownership(
     ``handler_entries`` and ``dispatcher_region`` come straight off the
     :class:`~d810.analyses.control_flow.dispatcher_discovery_fixpoint.DispatcherView`
     read-off (``handler_entry_by_state`` values, and ``dispatcher_entry`` plus
-    ``bst_node_blocks``) -- no new structural recognition.  The handler entries
+    ``condition_chain_blocks``) -- no new structural recognition.  The handler entries
     seed the worklist with an empty boundary; each GENs itself via
     ``transfer``.
     """
@@ -131,7 +131,7 @@ def block_owners(result: FixpointResult[frozenset[int]]) -> Mapping[int, frozens
     """The owner map: block serial -> the handler-entry set that owns it.
 
     Read off the OUT-state (see the module docstring on the IN-vs-OUT choice).
-    A block mapping to ``frozenset()`` is dispatcher / BST infrastructure,
+    A block mapping to ``frozenset()`` is dispatcher / condition-chain infrastructure,
     correctly owned by no handler.
     """
     return {int(b): owners for b, owners in result.out_states.items()}

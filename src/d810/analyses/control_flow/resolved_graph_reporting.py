@@ -16,7 +16,7 @@ class ResolvedStateMachineDotReport:
 
 def build_resolved_state_machine_dot_report(
     sm: object,
-    bst_result: object,
+    range_evidence: object,
     handler_state_map: dict[int, int],
 ) -> ResolvedStateMachineDotReport:
     state_to_serial: dict[int, int] = {}
@@ -34,7 +34,7 @@ def build_resolved_state_machine_dot_report(
     unresolved_states: set[int] = set()
 
     range_map: dict[int, tuple[int | None, int | None]] = getattr(
-        bst_result, "handler_range_map", {}
+        range_evidence, "handler_range_map", {}
     ) or {}
 
     for state_val, _handler in getattr(sm, "handlers", {}).items():
@@ -49,7 +49,7 @@ def build_resolved_state_machine_dot_report(
         has_resolved = False
         for transition in handler_transitions:
             target_entry = _resolve_target_via_range_map(
-                bst_result=bst_result,
+                range_evidence=range_evidence,
                 range_map=range_map,
                 to_state=int(transition.to_state),
             )
@@ -155,11 +155,11 @@ def build_resolved_state_machine_dot_report(
 
 def _resolve_target_via_range_map(
     *,
-    bst_result: object,
+    range_evidence: object,
     range_map: dict[int, tuple[int | None, int | None]],
     to_state: int,
 ) -> int | None:
-    resolve_target = getattr(bst_result, "resolve_target", None)
+    resolve_target = getattr(range_evidence, "resolve_target", None)
     if callable(resolve_target):
         target_entry = resolve_target(int(to_state))
         if target_entry is not None:

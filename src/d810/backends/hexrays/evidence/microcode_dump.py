@@ -75,11 +75,11 @@ from d810.hexrays.utils.hexrays_helpers import (
     ShowInstructionsFlags,
     UseDefFlags,
 )
-from d810.backends.hexrays.evidence.bst_analysis import (
+from d810.backends.hexrays.evidence.condition_chain_analysis import (
     _detect_state_var_stkoff,
     _dump_dispatcher_node,
     _find_pre_header_state,
-    analyze_bst_dispatcher,
+    analyze_condition_chain_dispatcher,
 )
 from d810.analyses.control_flow.linearized_state_dag import (
     BoundaryInlineMode,
@@ -597,7 +597,7 @@ def mba_to_human_readable(mba: object) -> List[str]:
 
 # -----------------------------------------------------------------------------
 # Dispatcher Tree Visualization
-# (BST analysis helpers imported from d810.backends.hexrays.evidence.bst_analysis)
+# (condition-chain analysis helpers imported from d810.backends.hexrays.evidence.condition_chain_analysis)
 # -----------------------------------------------------------------------------
 
 
@@ -609,17 +609,17 @@ def dump_dispatcher_tree(
     transitions: dict = None,
     max_depth: int = 20,
 ) -> str:
-    """Walk the BST dispatcher and return a full state machine visualization.
+    """Walk the condition-chain dispatcher and return a full state machine visualization.
 
     Outputs three sections:
     1. Pre-header: the block that initializes the state variable.
-    2. BST tree: the binary search tree of comparison blocks.
+    2. condition-chain tree: the condition-chain of comparison blocks.
     3. Handler transitions: for each handler, the next-state written and
        whether it loops back to the dispatcher or exits.
 
     Args:
         mba: The microcode block array.
-        dispatcher_entry_serial: Block serial number of the BST root.
+        dispatcher_entry_serial: Block serial number of the condition-chain root.
         state_var_stkoff: Optional stack offset of the state variable. Used to
             extract state writes in handler chains and pre-header.
         state_constants: Optional set of known state constant values (from Hodur
@@ -636,7 +636,7 @@ def dump_dispatcher_tree(
     # Diagnostics collected during pre-header search and first-3-handler walks
     diag_section: List[str] = []
 
-    # Auto-detect state_var_stkoff (and lvar_idx for mop_l) from the BST root
+    # Auto-detect state_var_stkoff (and lvar_idx for mop_l) from the condition-chain root
     state_var_lvar_idx: Optional[int] = None
     if state_var_stkoff is None:
         (detected, detected_lvar_idx), detect_diag = _detect_state_var_stkoff(
@@ -680,13 +680,13 @@ def dump_dispatcher_tree(
         )
     sections.append("")
 
-    # --- Section 2: BST tree ---
-    sections.append("=== DISPATCHER BST ===")
-    bst_lines: List[str] = []
-    bst_visited: set = set()
+    # --- Section 2: condition-chain tree ---
+    sections.append("=== DISPATCHER CONDITION CHAIN ===")
+    condition_chain_lines: List[str] = []
+    condition_chain_visited: set = set()
     handler_state_map: Dict[int, int] = (
         {}
-    )  # handler_serial -> state_constant (from BST leaf)
+    )  # handler_serial -> state_constant (from condition-chain leaf)
     handler_serials: set = set()
     handler_range_map: Dict[int, Tuple[Optional[int], Optional[int]]] = (
         {}
@@ -696,8 +696,8 @@ def dump_dispatcher_tree(
         mba,
         dispatcher_entry_serial,
         indent=0,
-        visited=bst_visited,
-        lines=bst_lines,
+        visited=condition_chain_visited,
+        lines=condition_chain_lines,
         depth=0,
         max_depth=max_depth,
         value_lo=0,
@@ -706,14 +706,14 @@ def dump_dispatcher_tree(
         handler_serials=handler_serials,
         handler_range_map=handler_range_map,
     )
-    sections.extend(bst_lines)
+    sections.extend(condition_chain_lines)
     sections.append("")
 
     # --- Section 3: Handler transitions ---
     sections.append("=== HANDLER TRANSITIONS ===")
 
     if not handler_serials:
-        sections.append("<no handlers found in BST>")
+        sections.append("<no handlers found in condition-chain>")
     else:
         raw_report = build_dispatcher_transition_report(
             mba=mba,
@@ -728,20 +728,20 @@ def dump_dispatcher_tree(
             diag_section.extend(list(raw_report.diagnostics))
 
         try:
-            bst_result = analyze_bst_dispatcher(
+            range_evidence = analyze_condition_chain_dispatcher(
                 mba,
                 dispatcher_entry_serial,
                 state_var_stkoff=state_var_stkoff,
                 state_var_lvar_idx=state_var_lvar_idx,
                 max_depth=max_depth,
             )
-            transition_result = _convert_condition_chain_to_result(bst_result)
+            transition_result = _convert_condition_chain_to_result(range_evidence)
             flow_graph = IDAIRTranslator().lift(mba)
             known_states = set(
-                int(value) for value in bst_result.handler_state_map.values()
+                int(value) for value in range_evidence.handler_state_map.values()
             )
-            if bst_result.initial_state is not None:
-                known_states.add(int(bst_result.initial_state))
+            if range_evidence.initial_state is not None:
+                known_states.add(int(range_evidence.initial_state))
             transition_result = recover_dynamic_state_write_transitions(
                 mba=mba,
                 flow_graph=flow_graph,
@@ -756,10 +756,10 @@ def dump_dispatcher_tree(
                 dispatcher_entry_serial=dispatcher_entry_serial,
                 state_var_stkoff=state_var_stkoff,
                 state_var_lvar_idx=state_var_lvar_idx,
-                pre_header_serial=bst_result.pre_header_serial,
-                initial_state=bst_result.initial_state,
-                handler_range_map=bst_result.handler_range_map,
-                bst_node_blocks=tuple(sorted(bst_result.condition_chain_blocks)),
+                pre_header_serial=range_evidence.pre_header_serial,
+                initial_state=range_evidence.initial_state,
+                handler_range_map=range_evidence.handler_range_map,
+                condition_chain_blocks=tuple(sorted(range_evidence.condition_chain_blocks)),
             )
         except Exception:
             logger.warning("Failed to build recovered transition report", exc_info=True)
@@ -809,17 +809,17 @@ def _block_start_ea(mba: "idaapi.mbl_array_t", serial: int) -> Optional[int]:
         return None
 
 
-def _build_comparison_model_from_bst(
-    bst_result,
+def _build_comparison_model_from_condition_chain(
+    range_evidence,
     *,
     mba: "idaapi.mbl_array_t",
     dispatcher_entry_serial: int,
     state_var_stkoff: Optional[int],
     state_var_lvar_idx: Optional[int],
 ) -> ComparisonDispatcherModel:
-    """Build a :class:`ComparisonDispatcherModel` from BST recovery evidence.
+    """Build a :class:`ComparisonDispatcherModel` from condition-chain recovery evidence.
 
-    ``bst_result.handler_state_map`` (``handler_serial -> state_const``) is
+    ``range_evidence.handler_state_map`` (``handler_serial -> state_const``) is
     inverted into exact ``StateDispatcherRow`` rows; the interval evidence
     (``handler_range_map``) routes through :func:`route_via_interval_sets` inside
     the model.  ``block_ea`` carries each handler's EA so the routed
@@ -827,14 +827,14 @@ def _build_comparison_model_from_bst(
     """
     rows: list[StateDispatcherRow] = []
     block_ea: dict[int, int] = {}
-    for handler_serial, state_const in bst_result.handler_state_map.items():
+    for handler_serial, state_const in range_evidence.handler_state_map.items():
         rows.append(
             StateDispatcherRow(
                 state_const=int(state_const) & 0xFFFFFFFF,
                 target_block=int(handler_serial),
                 dispatcher_block=int(dispatcher_entry_serial),
                 compare_block=None,
-                branch_kind="bst",
+                branch_kind="condition_chain",
                 router_kind=RouterKind.CONDITION_CHAIN,
             )
         )
@@ -844,22 +844,22 @@ def _build_comparison_model_from_bst(
     dispatch_map = StateDispatcherMap(
         rows=tuple(rows),
         dispatcher_entry_block=int(dispatcher_entry_serial),
-        dispatcher_blocks=frozenset(int(s) for s in bst_result.condition_chain_blocks)
+        dispatcher_blocks=frozenset(int(s) for s in range_evidence.condition_chain_blocks)
         | {int(dispatcher_entry_serial)},
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=state_var_lvar_idx,
         router_kind=RouterKind.CONDITION_CHAIN,
-        initial_state=bst_result.initial_state,
+        initial_state=range_evidence.initial_state,
     )
     return ComparisonDispatcherModel.from_recovery(
-        dispatch_map, range_evidence=bst_result, block_ea=block_ea
+        dispatch_map, range_evidence=range_evidence, block_ea=block_ea
     )
 
 
 def _inject_explore_resolved_edges(
     dag,
     *,
-    bst_result,
+    range_evidence,
     mba: "idaapi.mbl_array_t",
     state_var_stkoff: Optional[int],
     state_var_lvar_idx: Optional[int],
@@ -886,8 +886,8 @@ def _inject_explore_resolved_edges(
     if not node_by_handler:
         return dag
 
-    model = _build_comparison_model_from_bst(
-        bst_result,
+    model = _build_comparison_model_from_condition_chain(
+        range_evidence,
         mba=mba,
         dispatcher_entry_serial=dispatcher_entry_serial,
         state_var_stkoff=state_var_stkoff,
@@ -971,7 +971,7 @@ def _inject_explore_resolved_edges(
     # mba-aware materialisation decision (the projection's portable adapter
     # cannot make it): a block that is the *destination* of a RESOLVED transition
     # and *writes the state var directly* must exist in the projected state-
-    # transition graph, even if it sits inside the dispatcher/BST region and was
+    # transition graph, even if it sits inside the dispatcher/condition-chain region and was
     # never registered as an equality-leaf handler (e.g. the `!= 0x7D9C16EC`
     # else-leaf blk57, routed-to by 35 and re-dispatching 0x307BF0E5 -> 186).
     # Two filters, both load-bearing:
@@ -1123,18 +1123,18 @@ def _build_live_linearized_state_dag(
             if state_var_lvar_idx is None:
                 state_var_lvar_idx = detected_lvar_idx
 
-    bst_result = analyze_bst_dispatcher(
+    range_evidence = analyze_condition_chain_dispatcher(
         mba,
         dispatcher_entry_serial,
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=state_var_lvar_idx,
         max_depth=max_depth,
     )
-    transition_result = _convert_condition_chain_to_result(bst_result)
+    transition_result = _convert_condition_chain_to_result(range_evidence)
     flow_graph = IDAIRTranslator().lift(mba)
-    known_states = set(int(value) for value in bst_result.handler_state_map.values())
-    if bst_result.initial_state is not None:
-        known_states.add(int(bst_result.initial_state))
+    known_states = set(int(value) for value in range_evidence.handler_state_map.values())
+    if range_evidence.initial_state is not None:
+        known_states.add(int(range_evidence.initial_state))
     transition_result = recover_dynamic_state_write_transitions(
         mba=mba,
         flow_graph=flow_graph,
@@ -1149,11 +1149,11 @@ def _build_live_linearized_state_dag(
         dispatcher_entry_serial=dispatcher_entry_serial,
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=state_var_lvar_idx,
-        pre_header_serial=bst_result.pre_header_serial,
-        initial_state=bst_result.initial_state,
-        handler_range_map=bst_result.handler_range_map,
-        bst_node_blocks=tuple(sorted(bst_result.condition_chain_blocks)),
-        dispatcher=bst_result.dispatcher,
+        pre_header_serial=range_evidence.pre_header_serial,
+        initial_state=range_evidence.initial_state,
+        handler_range_map=range_evidence.handler_range_map,
+        condition_chain_blocks=tuple(sorted(range_evidence.condition_chain_blocks)),
+        dispatcher=range_evidence.dispatcher,
         mba=mba,
         prefer_local_corridors=True,
     )
@@ -1162,7 +1162,7 @@ def _build_live_linearized_state_dag(
     if os.environ.get("D810_USE_EXPLORE", "0").strip() == "1":
         dag = _inject_explore_resolved_edges(
             dag,
-            bst_result=bst_result,
+            range_evidence=range_evidence,
             mba=mba,
             state_var_stkoff=state_var_stkoff,
             state_var_lvar_idx=state_var_lvar_idx,
@@ -1183,7 +1183,7 @@ def dump_linearized_dag(
 
     Diagnostics that rebuild the DAG from a mutated MBA can produce
     different anchor selections than what HCC actually consumed at
-    recon time (the BST/state-machine analysis reads the live CFG).
+    recon time (the condition-chain/state-machine analysis reads the live CFG).
     The recon-time DAG is captured into the per-function process-level
     cache by ``build_round_discovery_context``; consult it first so the
     diagnostic shows what the engine actually saw.
@@ -1252,7 +1252,7 @@ def resolve_dispatcher_context_for_linearized_program(
 
     This is intentionally diagnostic-oriented and may be more expensive than
     normal planning. It probes plausible conditional-root blocks and scores
-    ``analyze_bst_dispatcher()`` results, which is useful for post-D810
+    ``analyze_condition_chain_dispatcher()`` results, which is useful for post-D810
     maturity captures where no live Hodur rule state is available.
     """
     qty = int(getattr(mba, "qty", 0) or 0)
@@ -1277,7 +1277,7 @@ def resolve_dispatcher_context_for_linearized_program(
         if detected is None:
             continue
         try:
-            result = analyze_bst_dispatcher(
+            result = analyze_condition_chain_dispatcher(
                 mba,
                 serial,
                 state_var_stkoff=detected,
@@ -1450,15 +1450,15 @@ def dump_state_machine_graph(
 ) -> Tuple[str, str]:
     """Dump the raw state machine topology as a Graphviz DOT graph.
 
-    Extracts all handlers and transitions from the BST analysis and renders
+    Extracts all handlers and transitions from the condition-chain analysis and renders
     them as a DOT digraph.  No forward evaluation or linearization is
-    performed -- this is the raw state machine as seen by the BST walker.
+    performed -- this is the raw state machine as seen by the condition-chain walker.
 
     Args:
         mba: The microcode block array.
-        dispatcher_entry_serial: Block serial number of the BST root.
+        dispatcher_entry_serial: Block serial number of the condition-chain root.
         state_var_stkoff: Optional stack offset of the state variable
-            (auto-detected from the BST root when *None*).
+            (auto-detected from the condition-chain root when *None*).
 
     Returns:
         Tuple of (dot_string, summary_string) where *dot_string* is a
