@@ -421,6 +421,12 @@ def _stack_refs_from_mop(
         stack_ref = getattr(mop, "s", None)
         offset = getattr(stack_ref, "off", None)
         return () if offset is None else (int(offset),)
+    if getattr(mop, "t", None) == ida_hexrays.mop_a:
+        return _stack_refs_from_mop(
+            _address_inner_mop(mop),
+            visited_mops=visited_mops,
+            visited_insns=visited_insns,
+        )
     if getattr(mop, "t", None) != ida_hexrays.mop_d:
         return ()
 
@@ -446,6 +452,14 @@ def _stack_refs_from_mop(
             )
         )
     return tuple(dict.fromkeys(refs))
+
+
+def _address_inner_mop(mop: object | None) -> object | None:
+    addr = getattr(mop, "a", None)
+    if addr is None:
+        return None
+    inner = getattr(addr, "v", None)
+    return inner if inner is not None else addr
 
 
 def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
@@ -496,6 +510,19 @@ def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
             sub_kind=sub_kind,
             sub_l=sub_l,
             sub_r=sub_r,
+            kind=kind,
+        )
+    if t == ida_hexrays.mop_a:
+        # Address-of operands are not sub-instructions, but they still name the
+        # addressed operand. Preserve that stack evidence portably so analyses
+        # can recognize narrow ``reg = &stack_slot`` shapes without reading
+        # Hex-Rays-owned operand_slots.
+        inner = capture_mop_snapshot(_address_inner_mop(mop))
+        return CfgMopSnapshot(
+            t=t,
+            size=size,
+            stack_refs=_stack_refs_from_mop(mop),
+            sub_l=inner,
             kind=kind,
         )
     if t == ida_hexrays.mop_r:

@@ -1530,6 +1530,7 @@ class DecompilationEvent(enum.Enum):
     FINISHED = "decompilation.finished"
     MATURITY_CHANGED = "decompilation.maturity.changed"
     POST_D810_CAPTURE = "decompilation.post_d810.capture"
+    HEXRAYS_FLOWCHART_READY = "decompilation.hexrays.flowchart.ready"
     # Axis-C end-state event (E1): emitted once per maturity transition
     # with a portable ``FlowGraph`` snapshot.  Recon-side subscribers
     # land in E4 -- E1 only publishes the event; no consumers yet.
@@ -1619,6 +1620,37 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         self.ctree_optimizer_manager = ctree_optimizer_manager
         self._block_optimizer = block_optimizer
 
+    def flowchart(
+        self,
+        fc,
+        mba: ida_hexrays.mbl_array_t,
+        reachable_blocks,
+        decomp_flags,
+    ) -> "int":
+        decision: dict[str, object] = {"request_redo": False}
+        try:
+            self.callback(
+                DecompilationEvent.HEXRAYS_FLOWCHART_READY,
+                function_ea=int(mba.entry_ea),
+                mba=mba,
+                decision=decision,
+            )
+        except Exception:
+            main_logger.debug(
+                "Hex-Rays flowchart event failed for 0x%X",
+                int(getattr(mba, "entry_ea", 0) or 0),
+                exc_info=True,
+            )
+            return 0
+        if bool(decision.get("request_redo")):
+            main_logger.info(
+                "Hex-Rays flowchart preanalysis requested redo for 0x%X: %s",
+                int(mba.entry_ea),
+                decision.get("reason", "unspecified"),
+            )
+            return ida_hexrays.MERR_REDO
+        return 0
+
     def prolog(
         self, mba: ida_hexrays.mbl_array_t, fc, reachable_blocks, decomp_flags
     ) -> "int":
@@ -1627,18 +1659,6 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             fn_name = idaapi.get_func_name(mba.entry_ea)
         prologue = f"{fn_name} @ {hex(mba.entry_ea)}"
         main_logger.info("Starting decompilation of function %s", prologue)
-        try:
-            from d810.hexrays.preanalysis.indirect_jump_labels import (
-                run_indirect_materialization_for_function,
-            )
-
-            # Pre-decompile: structurally materialize Tigress computed-goto
-            # label bodies for the function being decompiled so the first MBA
-            # build sees the indirect jump targets.  No-op unless the indirect
-            # engine is active and this function is a real indirect dispatcher.
-            run_indirect_materialization_for_function(int(mba.entry_ea))
-        except Exception:
-            pass  # behavior-neutral prepass, never gates decompilation
         try:
             from d810.core.observability import open_observability_session
             # open_observability_session opens the diag session

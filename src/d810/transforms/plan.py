@@ -719,6 +719,7 @@ class PatchPlan:
     relocation_map: PatchRelocationMap = field(default_factory=PatchRelocationMap)
     planner_modifications: tuple[GraphModification, ...] = ()
     execution_policy: ExecutionPolicy = ExecutionPolicy.STRICT
+    metadata: tuple[tuple[str, object], ...] = ()
 
     @property
     def concrete_operations(self) -> tuple[PatchOperation, ...]:
@@ -750,6 +751,20 @@ class PatchPlan:
                 f"PatchPlan step {type(step).__name__} has no planner GraphModification equivalent"
             )
         return reconstructed
+
+    def metadata_dict(self) -> dict[str, object]:
+        """Return plan metadata as a dict for consumers that need keyed facts."""
+        return dict(self.metadata)
+
+    def metadata_value(self, key: str, default: object = None) -> object:
+        """Return one metadata value without exposing the immutable pair storage."""
+        return self.metadata_dict().get(key, default)
+
+    def with_metadata(self, **entries: object) -> "PatchPlan":
+        """Return a copy with metadata entries merged by key."""
+        metadata = self.metadata_dict()
+        metadata.update(entries)
+        return replace(self, metadata=tuple(sorted(metadata.items())))
 
 
 class _VirtualIdAllocator:

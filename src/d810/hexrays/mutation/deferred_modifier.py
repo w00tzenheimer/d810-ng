@@ -9267,18 +9267,54 @@ class DeferredGraphModifier:
                     site_templates = list(suffix_templates)
 
                 cloned_serials: list[int] = []
+                allow_terminal_tail_skip = bool(
+                    getattr(site, "skip_terminal_control_tail", False)
+                )
+                for source_serial, template in zip(clone_source_serials, site_templates):
+                    tail = getattr(template, "tail", None)
+                    tail_is_conditional = (
+                        tail is not None
+                        and ida_hexrays.is_mcode_jcond(int(getattr(tail, "opcode", -1)))
+                    )
+                    if template.nsucc() != 1 and not (
+                        allow_terminal_tail_skip
+                        and template.nsucc() == 2
+                        and tail_is_conditional
+                    ):
+                        logger.warning(
+                            "direct_terminal_lowering_group: materializer blk[%d] "
+                            "is not a 1-way template (nsucc=%d)",
+                            source_serial,
+                            template.nsucc(),
+                        )
+                        return False
+
                 for idx, source_serial in enumerate(clone_source_serials):
                     template_blk = site_templates[idx]
 
-                    # Clone instructions (skip trailing goto — will be re-inserted)
+                    # Clone instructions. Trailing gotos are re-inserted by the
+                    # clone helper; a proven terminal corridor may also drop the
+                    # final conditional state guard and wire the clone straight
+                    # to BLT_STOP.
                     instructions_to_copy = []
                     cur_ins = template_blk.head
                     while cur_ins is not None:
+                        is_tail = cur_ins.next is None
                         if (
                             template_blk.nsucc() == 1
                             and template_blk.tail is not None
                             and template_blk.tail.opcode == ida_hexrays.m_goto
-                            and cur_ins.next is None
+                            and is_tail
+                        ):
+                            break
+                        if (
+                            allow_terminal_tail_skip
+                            and template_blk.nsucc() == 2
+                            and template_blk.tail is not None
+                            and is_tail
+                            and ida_hexrays.is_mcode_jcond(
+                                int(getattr(template_blk.tail, "opcode", -1))
+                            )
                         ):
                             break
                         cloned_ins = ida_hexrays.minsn_t(cur_ins)

@@ -116,7 +116,11 @@ from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle impor
 )
 from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.driver import run_pipeline
+from d810.passes.unflatten.state_machine import LOWER_STATE_MACHINE_PLAN_METADATA
 from d810.families.state_machine_cff.pipeline import standard_state_machine_passes
+from d810.transforms.minimal_unflatten_emit import (
+    TERMINAL_CARRIER_CONVERGENCE_METADATA,
+)
 from d810.transforms.state_machine_unflatten import lower_to_direct_graph
 
 logger = logging.getLogger("D810.unflat", logging.DEBUG)
@@ -275,6 +279,18 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         """Mark ``func_ea`` terminal — recovery found no dispatcher (graph fully unflattened)."""
         self._unflat_done_eas.add(func_ea)
 
+    def _lower_plan_requested_terminal_convergence(self, facts: object) -> bool:
+        getter = getattr(facts, "get_analysis", None)
+        if not callable(getter):
+            return False
+        metadata = getter(LOWER_STATE_MACHINE_PLAN_METADATA, {}) or {}
+        if not isinstance(metadata, dict):
+            try:
+                metadata = dict(metadata)
+            except (TypeError, ValueError):
+                return False
+        return bool(metadata.get(TERMINAL_CARRIER_CONVERGENCE_METADATA))
+
     def _family_recovery_maturities(self, family) -> "frozenset[int]":
         """Resolve a profile's portable ``recovery_maturities`` (:class:`IRMaturity`) to
         ``ida_hexrays.MMAT_*`` constants — the FINE per-family maturity gate (ticket
@@ -337,33 +353,31 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             self._union_maturities_cache = cache
         return cache
 
+    @staticmethod
+    def _uses_tigress_indirect_materialization(config: object) -> bool:
+        """Return true only for the explicit Tigress indirect profile."""
+        if not isinstance(config, dict):
+            return False
+        profile = str(config.get("profile", "") or "").strip().lower()
+        return profile in {
+            "tigress_indirect",
+            "indirect_jump",
+            "indirect_jump_table",
+        }
+
     def configure(self, kwargs):
-        # Configure-time hook (project load, runs ONCE before any decompilation
-        # prolog). The ComposedUnflatteningRule/FlowOptimizationRule chain sets
-        # ``self.config = kwargs`` here, so this is where the unflatten indirect profile
-        # registers pre-decompile materialization of the Tigress computed-goto
-        # label bodies — the (now-retired) emulated dispatcher engine did the
-        # equivalent in its own ``configure``. ``optimize``
-        # runs per-decompilation AFTER prolog, which is too late to inject crefs
-        # before the first MBA build, so materialization MUST live here (I1.5,
-        # ticket llr-tm3i).
+        # Configure-time hook (project load, runs ONCE). The
+        # ComposedUnflatteningRule/FlowOptimizationRule chain sets
+        # ``self.config = kwargs`` here.  The Tigress indirect profile registers
+        # current-function computed-goto materialization here because ``optimize``
+        # runs only AFTER Hex-Rays has built the first MBA.  The registration is
+        # cheap; the flowchart event subscriber does the per-function work.
         super().configure(kwargs)
-        # unflatten runs address-agnostic indirect-jump materialization for EVERY
-        # project — no per-binary configured addresses, no profile flag (llr-trxj).
-        # The per-function prolog hook (run_indirect_materialization_for_function)
-        # STRUCTURALLY detects whether the function being decompiled is a
-        # register-indirect (computed-goto) dispatcher and materializes its label
-        # bodies before the first MBA build; it is a NO-OP for every function that
-        # is not such a dispatcher (and records the EAs that ARE, which optimize()
-        # queries as its ``_is_indirect`` maturity-routing signal). Arming is
-        # therefore inert for hodur/approov/switch and needs nothing in config.
-        # ``goto_table_info`` is retained ONLY as an OPTIONAL per-function override
-        # (state base/slot/table geometry) for binaries where structural discovery
-        # needs help; the shipped indirect config hardcodes NOTHING.
+        if not self._uses_tigress_indirect_materialization(self.config):
+            return
         try:
             from d810.core.project import register_project_reload_cleanup
             from d810.hexrays.preanalysis.indirect_jump_labels import (
-                materialize_discovered_indirect_label_targets,
                 register_indirect_materialization,
                 reset_indirect_materialization,
             )
@@ -373,8 +387,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             )
             return
         # Clear any prior registration (fresh start for a reconfigured session),
-        # then arm the prolog hook unconditionally. Arming only enables the
-        # structural per-function detector; it does not itself touch any function.
+        # then arm the flowchart event subscriber. If ``goto_table_info`` contains
+        # the current function, that configured layout is used. Otherwise the
+        # subscriber structurally discovers only the current function. It never
+        # scans the whole IDB during project load.
         override = dict(self.config.get("goto_table_info", {}) or {})
         try:
             register_project_reload_cleanup(
@@ -385,29 +401,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             register_indirect_materialization(override)
         except Exception:  # noqa: BLE001 — registration is best-effort
             logger.warning(
-                "unflat: indirect prolog registration failed", exc_info=True
-            )
-        # Configure-time prepass: structurally discover and materialize EVERY
-        # indirect-table dispatcher in the database NOW, before any decompile.
-        # This SEEDS the recon facts the unflatten LiSA dispatcher discovery consumes —
-        # the prolog hook alone materializes only the entry function, which is
-        # insufficient for STANDALONE discovery (head=None otherwise, so the test
-        # would only pass when a sibling seeded it first; llr-trxj isolation fix).
-        # Address-agnostic + behavior-neutral for non-dispatcher functions
-        # (discovery returns None), so it stays inert for hodur/approov/switch.
-        try:
-            for result in materialize_discovered_indirect_label_targets(override):
-                logger.info(
-                    "Tigress indirect (unflat) preanalysis 0x%X: success=%s "
-                    "materialized=%d/%d",
-                    result.function_ea,
-                    result.success,
-                    result.materialized_target_count,
-                    result.target_count,
-                )
-        except Exception:  # noqa: BLE001 — prepass is best-effort
-            logger.warning(
-                "unflat: indirect target materialization prepass failed", exc_info=True
+                "unflat: indirect materialization registration failed", exc_info=True
             )
 
     def optimize(self, blk: "ida_hexrays.mblock_t") -> int:
@@ -436,10 +430,11 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # function commits at the earliest maturity whose dispatcher is intact + soundly
         # bridged; per-(ea,maturity) round budgeting + per-ea convergence keep an
         # already-unflattened function from being reprocessed later. The indirect profile
-        # is detected STRUCTURALLY (llr-trxj): the prolog hook materialized this function
-        # iff it is a register-indirect computed-goto dispatcher, and recorded its EA — no
-        # config key, no hardcoded addresses. (Matches the existing local-import pattern
-        # for this IDA-bound preanalysis module elsewhere in configure().)
+        # is detected STRUCTURALLY (llr-trxj): the flowchart event subscriber
+        # materialized this function iff it is a register-indirect computed-goto
+        # dispatcher, and recorded its EA — no config key, no hardcoded
+        # addresses. (Matches the existing local-import pattern for this
+        # IDA-bound preanalysis module elsewhere in configure().)
         from d810.hexrays.preanalysis.indirect_jump_labels import (
             is_materialized_indirect_dispatcher,
         )

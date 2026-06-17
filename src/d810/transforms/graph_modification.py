@@ -712,6 +712,7 @@ class DirectTerminalLoweringSite:
     source_stkoff: int | None = None
     source_mreg: int | None = None
     materializer_serials: tuple[int, ...] = ()
+    skip_terminal_control_tail: bool = False
 
 
 @dataclass(frozen=True)

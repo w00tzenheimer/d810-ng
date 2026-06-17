@@ -18,6 +18,7 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     recover_state_write_transitions_via_fixpoint,
     recover_state_write_transitions_via_multicell_fixpoint,
     recover_state_write_transitions_via_partitioned_fixpoint,
+    transitions_use_terminal_stack_alias_guard,
 )
 from d810.analyses.control_flow.state_transition_domain import (
     StateValue,
@@ -37,14 +38,18 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
+from d810.ir.semantics import PredicateKind
 
 _OP_MOV = 4
 _OP_XOR = 31
+_OP_STORE = 88
+_OP_JZ = 44
 _T_NUM = 2
 _T_STK = 4
 _T_REG = 1
-_OPCODE_NAMES = {_OP_MOV: "m_mov", _OP_XOR: "m_xor"}
-_OPCODE_VALUES = {"m_mov": _OP_MOV, "m_xor": _OP_XOR}
+_T_ADDR = 10
+_OPCODE_NAMES = {_OP_MOV: "m_mov", _OP_XOR: "m_xor", _OP_STORE: "m_stx"}
+_OPCODE_VALUES = {"m_mov": _OP_MOV, "m_xor": _OP_XOR, "m_stx": _OP_STORE}
 _MOP_NAMES = {_T_NUM: "mop_n", _T_STK: "mop_S", _T_REG: "mop_r"}
 _MOP_VALUES = {"mop_n": _T_NUM, "mop_S": _T_STK, "mop_r": _T_REG}
 _STATE_OFF = 0x64
@@ -102,15 +107,56 @@ def _reg(r: int) -> MopSnapshot:
 
 
 def _stk(off: int) -> MopSnapshot:
-    return MopSnapshot(t=_T_STK, size=4, stkoff=off, kind=OperandKind.STACK)
+    return MopSnapshot(
+        t=_T_STK,
+        size=4,
+        stkoff=off,
+        stack_refs=(off,),
+        kind=OperandKind.STACK,
+    )
+
+
+def _addr(off: int) -> MopSnapshot:
+    return MopSnapshot(
+        t=_T_ADDR,
+        size=8,
+        stack_refs=(off,),
+        kind=OperandKind.ADDRESS,
+        sub_l=_stk(off),
+    )
 
 
 def _mov(ea: int, src: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
     return InsnSnapshot(opcode=_OP_MOV, ea=ea, operands=(), l=src, d=dst, kind=InsnKind.MOV)
 
 
+def _store(ea: int, src: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=_OP_STORE,
+        ea=ea,
+        operands=(),
+        l=src,
+        d=dst,
+        kind=InsnKind.STORE,
+    )
+
+
 def _xor(ea: int, l: MopSnapshot, r: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
     return InsnSnapshot(opcode=_OP_XOR, ea=ea, operands=(), l=l, r=r, d=dst, kind=InsnKind.AND)
+
+
+def _jz_stack_const(ea: int, stkoff: int, const: int, target: int) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=_OP_JZ,
+        ea=ea,
+        operands=(),
+        l=_stk(stkoff),
+        r=_num(const),
+        d=MopSnapshot(t=-1, size=0, block_ref=target, kind=OperandKind.BLOCK),
+        kind=InsnKind.EQUALITY_JUMP,
+        branch_predicate=PredicateKind.EQ,
+        is_conditional_jump=True,
+    )
 
 
 _OP_AND = 21  # m_and (portable evaluator default)
@@ -202,6 +248,230 @@ def test_conditional_two_arm_transition(_seam) -> None:
     targets = {a.next_state: a.target_handler for a in h30.arms}
     assert targets == {0xAA: 40, 0xBB: 50}
     assert all(a.branch_block == 30 for a in h30.arms)
+
+
+def test_nested_dispatcher_corridor_uses_concrete_reentry_path(_seam) -> None:
+    # Handler blk13 is selected by the inner dispatcher (blk9).  Its arms write
+    # the inner state, then jump through an outer dispatcher corridor (blk2/3)
+    # before re-entering blk9.  The scan must follow the concrete outer state
+    # seeded by blk9 and must not explore the infeasible decoy arm through blk6.
+    outer_state = 0x18
+    fg = FlowGraph(
+        blocks={
+            0: _blk(0, (9,), (), ()),
+            2: _blk(2, (3, 6), (14, 15, 6), (_jz_stack_const(0x2000, outer_state, 0, 6),)),
+            3: _blk(3, (4, 9), (2,), (_jz_stack_const(0x3000, outer_state, 1, 9),)),
+            4: _stop(4, (3,)),
+            6: _blk(6, (2,), (2,), (_mov(0x6000, _num(0), _stk(_STATE_OFF)),)),
+            9: _blk(
+                9,
+                (10, 13),
+                (0, 3),
+                (
+                    _mov(0x9000, _num(1), _stk(outer_state)),
+                    _jz_stack_const(0x9004, _STATE_OFF, 0, 13),
+                ),
+            ),
+            10: _blk(10, (11, 16), (9,), (_jz_stack_const(0xA000, _STATE_OFF, 1, 16),)),
+            11: _blk(11, (23,), (10,), ()),
+            13: _blk(13, (14, 15), (9,), ()),
+            14: _blk(14, (2,), (13,), (_mov(0x1400, _num(1), _stk(_STATE_OFF)),)),
+            15: _blk(15, (2,), (13,), (_mov(0x1500, _num(9), _stk(_STATE_OFF)),)),
+            16: _blk(16, (9,), (10,), ()),
+            23: _blk(23, (9,), (11,), ()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _dispatcher({0: 13, 1: 16, 9: 23}, exit_block=4)
+
+    edges = {
+        edge.handler: edge
+        for edge in recover_handler_transitions(
+            fg,
+            disp,
+            _STATE_OFF,
+            dispatcher_entry_serial=9,
+        )
+    }
+
+    h13 = edges[13]
+    assert h13.is_conditional
+    by_state = {arm.next_state: arm for arm in h13.arms}
+    assert set(by_state) == {1, 9}
+    assert by_state[1].target_handler == 16
+    assert by_state[9].target_handler == 23
+    assert {arm.branch_block for arm in h13.arms} == {13}
+    assert {arm.ordered_path[1] for arm in h13.arms} == {14, 15}
+
+
+def test_partitioned_fixpoint_resolves_stack_address_alias_state_store(_seam) -> None:
+    # blk10 proves r3 == &state_var; blk11 writes the next state via r3 and
+    # re-enters the dispatcher. The provider is structural: no magic constants,
+    # only the configured state stack offset and the address alias.
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 20), (11,), (_mov(0x2000, _num(0), _reg(0)),)),
+            10: _blk(10, (11,), (2,), (_mov(0x1000, _addr(_STATE_OFF), _reg(3)),)),
+            11: _blk(11, (2,), (10,), (_store(0x1100, _num(0x20), _reg(3)),)),
+            20: _blk(20, (2,), (2,), ()),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    disp = _dispatcher({0x10: 10, 0x20: 20}, exit_block=99)
+
+    edges = recover_state_write_transitions_via_partitioned_fixpoint(
+        fg,
+        disp,
+        _STATE_OFF,
+        dispatcher_entry_serial=2,
+    )
+
+    assert len(edges) == 1
+    edge = edges[0]
+    assert edge.write_block == 11
+    assert edge.next_state == 0x20
+    assert edge.target_handler == 20
+    assert edge.is_return is False
+    assert edge.proof is not None
+    assert edge.proof.kind == "stack_address_alias_store"
+
+
+def test_partitioned_fixpoint_resolves_joined_stack_address_alias_state_store(_seam) -> None:
+    # Both incoming edges to blk12 prove r3 == &state_var before the shared store.
+    # This is the terminal-corridor shape from sub_1815C8C30: the state store is
+    # not in the alias-defining block, and the shared store block has more than
+    # one non-dispatch predecessor.
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 11, 20), (12,), (_mov(0x2000, _num(0), _reg(0)),)),
+            10: _blk(10, (12,), (2,), (_mov(0x1000, _addr(_STATE_OFF), _reg(3)),)),
+            11: _blk(11, (12,), (2,), (_mov(0x1010, _addr(_STATE_OFF), _reg(3)),)),
+            12: _blk(12, (2,), (10, 11), (_store(0x1200, _num(0x20), _reg(3)),)),
+            20: _blk(20, (2,), (2,), ()),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    disp = _dispatcher({0x10: 10, 0x11: 11, 0x20: 20}, exit_block=99)
+
+    edges = recover_state_write_transitions_via_partitioned_fixpoint(
+        fg,
+        disp,
+        _STATE_OFF,
+        dispatcher_entry_serial=2,
+    )
+
+    assert len(edges) == 1
+    edge = edges[0]
+    assert edge.write_block == 12
+    assert edge.next_state == 0x20
+    assert edge.target_handler == 20
+    assert edge.is_return is False
+    assert edge.proof is not None
+    assert edge.proof.kind == "stack_address_alias_store"
+
+
+def test_partitioned_fixpoint_resolves_nested_join_stack_address_alias_state_store(_seam) -> None:
+    # The alias can be established before a join that then flows into the store
+    # block. Every incoming edge to blk12 proves the same alias, blk12 preserves
+    # it, and blk13 writes through the register.
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 11, 20), (13,), (_mov(0x2000, _num(0), _reg(0)),)),
+            10: _blk(10, (12,), (2,), (_mov(0x1000, _addr(_STATE_OFF), _reg(3)),)),
+            11: _blk(11, (12,), (2,), (_mov(0x1010, _addr(_STATE_OFF), _reg(3)),)),
+            12: _blk(12, (13,), (10, 11), ()),
+            13: _blk(13, (2,), (12,), (_store(0x1300, _num(0x20), _reg(3)),)),
+            20: _blk(20, (2,), (2,), ()),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    disp = _dispatcher({0x10: 10, 0x11: 11, 0x20: 20}, exit_block=99)
+
+    edges = recover_state_write_transitions_via_partitioned_fixpoint(
+        fg,
+        disp,
+        _STATE_OFF,
+        dispatcher_entry_serial=2,
+    )
+
+    assert len(edges) == 1
+    edge = edges[0]
+    assert edge.write_block == 13
+    assert edge.next_state == 0x20
+    assert edge.target_handler == 20
+    assert edge.is_return is False
+    assert edge.proof is not None
+    assert edge.proof.kind == "stack_address_alias_store"
+
+
+def test_partitioned_fixpoint_splits_predecessor_sensitive_stack_alias_store(_seam) -> None:
+    # Mirrors sub_1815C8C30's terminal block: through one predecessor r3 is a
+    # non-state stack address, through the terminal predecessor r3 is &state.
+    # The provider must keep the shared carrier block on the terminal arm via
+    # via_block instead of treating the whole block as one state write.
+    non_state_off = 0x30
+    terminal_state_full = 0xDD1FF05BF465445C
+    terminal_state = terminal_state_full & 0xFFFFFFFF
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (4, 20), (8,), (_mov(0x2000, _num(0), _reg(0)),)),
+            4: _blk(4, (5, 6), (2,), (_mov(0x4000, _addr(non_state_off), _reg(3)),)),
+            5: _blk(5, (6,), (4,), (_mov(0x5000, _addr(non_state_off), _reg(3)),)),
+            6: _blk(6, (7, 8), (4, 5), (_mov(0x6000, _addr(non_state_off), _reg(3)),)),
+            7: _blk(7, (8,), (6,), (_mov(0x7000, _addr(_STATE_OFF), _reg(3)),)),
+            8: _blk(
+                8,
+                (20, 2),
+                (6, 7),
+                (
+                    _store(0x8000, _num(terminal_state_full), _reg(3)),
+                    InsnSnapshot(
+                        opcode=44,
+                        ea=0x8004,
+                        operands=(),
+                        l=_stk(_STATE_OFF),
+                        r=_num(terminal_state_full),
+                        kind=InsnKind.EQUALITY_JUMP,
+                        branch_predicate=PredicateKind.NE,
+                    ),
+                ),
+            ),
+            20: _stop(20, (8,)),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    disp = _dispatcher({0x10: 4}, exit_block=4)
+
+    edges = recover_state_write_transitions_via_partitioned_fixpoint(
+        fg,
+        disp,
+        _STATE_OFF,
+        dispatcher_entry_serial=2,
+    )
+
+    partitioned = [
+        edge
+        for edge in edges
+        if edge.proof is not None
+        and edge.proof.kind == "stack_address_alias_terminal_guard_partitioned"
+    ]
+    assert len(partitioned) == 1
+    edge = partitioned[0]
+    assert edge.write_block == 7
+    assert edge.via_block == 8
+    assert edge.next_state == terminal_state
+    assert edge.target_handler == 20
+    assert edge.proof is not None
+    assert (
+        edge.proof.reason
+        == "predecessor_state_store_through_stack_address_alias_terminal_guard"
+    )
+    assert transitions_use_terminal_stack_alias_guard(edges) is True
 
 
 def test_shared_suffix_folds_per_handler(_seam) -> None:

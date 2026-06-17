@@ -20,6 +20,8 @@ from d810.analyses.control_flow.recovered_machine import (
     MachineTransition,
     RecoveredMachine,
     Soundness,
+    TerminalCorridor,
+    TerminalCorridorEffect,
 )
 from d810.analyses.data_flow.concolic import AbstractEvidence
 from d810.analyses.machine.orchestrator import compose_reduced_product
@@ -65,6 +67,27 @@ def _spine_machine(transitions, rows=()):
     )
 
 
+def _terminal_corridor() -> TerminalCorridor:
+    return TerminalCorridor(
+        initial_state=7,
+        terminal_state=9,
+        path_blocks=(1, 2, 4, 8),
+        effects=(
+            TerminalCorridorEffect(
+                kind="store",
+                target="result_slot",
+                expression="R % 3u",
+            ),
+        ),
+        terminal_block=8,
+        symbolic_inputs=("R",),
+        enumerated_inputs_complete=True,
+        deterministic=True,
+        terminal_reachable=True,
+        provenance=("unit",),
+    )
+
+
 _ANCHORS = DispatcherAnchors(dispatcher_entry_block=1, state_var_stkoff=0x3C)
 
 
@@ -86,6 +109,34 @@ def test_complete_V_refines_top_cell():
     assert out is not None
     fork = next(t for t in out.transitions if t.src_state == 7)
     assert fork.next_states == (3, 4)  # refined ⊤ -> V
+
+
+def test_complete_terminal_corridor_is_carried_into_machine():
+    top = MachineTransition(src_state=7, context=(), next_states=())
+    machine = _spine_machine((top,), rows=(MachineRow(1, 101, 1),))
+    spine = _FakeSpine(_FakeSpineResult(machine, top_density=0.0, floors={}))
+    corridor = _terminal_corridor()
+
+    def resolver(src, ctx):
+        if (src, ctx) == (7, ()):
+            return ConcolicCellValue(
+                next_states=frozenset({9}),
+                enumerated_inputs_complete=True,
+                deterministic=True,
+                terminal_corridor=corridor,
+            )
+        return None
+
+    out = compose_reduced_product(
+        graph=object(), anchors=_ANCHORS, caps=None,
+        spine_engine=spine, concolic_resolver=resolver,
+        gate_mode=GateMode.DETERMINISTIC_F,
+    )
+
+    assert out is not None
+    assert out.terminal_corridors == (corridor,)
+    fork = next(t for t in out.transitions if t.src_state == 7)
+    assert fork.next_states == (9,)
 
 
 def test_incomplete_V_stays_top():

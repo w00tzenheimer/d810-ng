@@ -1648,6 +1648,15 @@ class D810Manager:
                 self._collect_recon_on_flowgraph_ready,
             )
 
+        from d810.hexrays.preanalysis.flowchart_preanalysis import (
+            run_flowchart_preanalysis_handlers,
+        )
+
+        self.event_emitter.on(
+            DecompilationEvent.HEXRAYS_FLOWCHART_READY,
+            run_flowchart_preanalysis_handlers,
+        )
+
         self.event_emitter.on(
             DecompilationEvent.MATURITY_CHANGED, self.dump_profiling_segment
         )

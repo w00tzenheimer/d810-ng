@@ -1,6 +1,11 @@
 import sys
 from types import SimpleNamespace
 
+from d810.hexrays.preanalysis import flowchart_preanalysis
+from d810.hexrays.preanalysis import indirect_jump_labels as labels
+from d810.hexrays.preanalysis.indirect_jump_discovery import (
+    DiscoveredIndirectJumpTable,
+)
 from d810.hexrays.preanalysis.indirect_jump_labels import (
     _add_user_cref_with_fallback,
     _add_resolved_state_write_crefs,
@@ -114,3 +119,118 @@ def test_resolved_state_write_crefs_scan_raw_label_range(monkeypatch) -> None:
 
     assert count == 2
     assert calls == [(0x100, 0xBBB0), (0x120, 0xCCC0)]
+
+
+def test_current_function_materialization_uses_discovered_state_slot(
+    monkeypatch,
+) -> None:
+    discovered = DiscoveredIndirectJumpTable(
+        function_ea=0x180013BD0,
+        dispatch_jump_ea=0x180013DB8,
+        table_address=0x18001DF00,
+        table_count=37,
+        target_eas=(0x180013C2A, 0x180013C80),
+        label_start=0x180013C2A,
+        label_end=0x18001433F,
+        source="operand_decode",
+        state_var_stkoff=0x30,
+        initial_state=0x22,
+        stack_table_offset=0x28,
+    )
+    calls: list[dict[str, object]] = []
+
+    def materialize(**kwargs):
+        calls.append(kwargs)
+        return labels.IndirectLabelMaterializationResult(
+            function_ea=int(kwargs["function_ea"]),
+            table_address=int(kwargs["table_address"]),
+            table_count=int(kwargs["table_count"]),
+            label_start=int(kwargs["label_start"]),
+            label_end=int(kwargs["label_end"]),
+            target_count=2,
+            materialized_target_count=2,
+            dispatch_jump_ea=int(kwargs["dispatch_jump_ea"]),
+            jump_xref_count=2,
+            switch_info_installed=False,
+            appended_tail=False,
+            success=True,
+            reason="materialized",
+            resolved_state_xref_count=2,
+        )
+
+    monkeypatch.setattr(
+        labels,
+        "discover_indirect_jump_table",
+        lambda function_ea: discovered
+        if function_ea == discovered.function_ea
+        else None,
+    )
+    monkeypatch.setattr(labels, "materialize_indirect_label_targets", materialize)
+
+    result = labels.materialize_indirect_label_targets_for_function(
+        discovered.function_ea
+    )
+
+    assert result is not None
+    assert calls
+    assert calls[0]["state_var_stkoff"] == 0x30
+    assert calls[0]["install_switch_info"] is False
+
+
+def test_indirect_materialization_subscribes_to_flowchart_event(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        flowchart_preanalysis,
+        "_FLOWCHART_PREANALYSIS_HANDLERS",
+        {},
+    )
+    result = labels.IndirectLabelMaterializationResult(
+        function_ea=0x180013BD0,
+        table_address=0x18001DF00,
+        table_count=37,
+        label_start=0x180013C2A,
+        label_end=0x18001433F,
+        target_count=2,
+        materialized_target_count=2,
+        dispatch_jump_ea=0x180013DB8,
+        jump_xref_count=2,
+        switch_info_installed=False,
+        appended_tail=False,
+        success=True,
+        reason="materialized",
+        resolved_state_xref_count=2,
+    )
+    calls: list[int] = []
+
+    def materialize(function_ea: int):
+        calls.append(function_ea)
+        return result
+
+    monkeypatch.setattr(labels, "run_indirect_materialization_for_function", materialize)
+
+    labels.register_indirect_materialization({})
+    decision: dict[str, object] = {"request_redo": False}
+    flowchart_preanalysis.run_flowchart_preanalysis_handlers(
+        function_ea=0x180013BD0,
+        mba=object(),
+        decision=decision,
+    )
+
+    assert calls == [0x180013BD0]
+    assert decision["request_redo"] is True
+    assert decision["reason"] == "indirect_jump_label_materialized"
+    assert decision["details"] == {
+        "function_ea": 0x180013BD0,
+        "target_count": 2,
+        "materialized_target_count": 2,
+    }
+
+    labels.reset_indirect_materialization()
+    decision = {"request_redo": False}
+    flowchart_preanalysis.run_flowchart_preanalysis_handlers(
+        function_ea=0x180013BD0,
+        mba=object(),
+        decision=decision,
+    )
+    assert decision == {"request_redo": False}

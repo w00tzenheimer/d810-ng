@@ -56,13 +56,18 @@ class StateDispatcherMap:
     default_row_kind: str | None = None
 
     def state_to_handler(self) -> dict[int, int]:
-        """Return exact ``state_const -> target_block`` rows.
+        """Return exact routable ``state_const -> target_block`` rows.
 
         This intentionally includes exact dispatcher self-loop rows: they are
         part of the state-machine table even though older handler-map adapters
-        skip them.
+        skip them. Diagnostic rows that do not name live handler/self-loop
+        blocks are preserved in ``rows`` but are not routable CFG targets.
         """
-        return {int(row.state_const): int(row.target_block) for row in self.rows}
+        return {
+            int(row.state_const): int(row.target_block)
+            for row in self.rows
+            if row.is_handler_row or row.is_dispatcher_self_loop
+        }
 
     def handler_state_map(self) -> dict[int, int]:
         """Return lossy ``handler_block -> first_state_const`` adapter rows.

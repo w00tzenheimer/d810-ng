@@ -61,6 +61,8 @@ from d810.core import logging
 
 logger = logging.getLogger("D810.passes.unflatten.state_machine")
 
+LOWER_STATE_MACHINE_PLAN_METADATA = "lower_state_machine_plan_metadata"
+
 
 def _count_valrange_confirmable(valrange, dispatch_map, state_var_stkoff) -> int:
     """Count dispatcher rows whose routing the live value-range analysis independently confirms.
@@ -518,7 +520,12 @@ class LowerStateMachine(PipelinePass):
                 branch_witness_emu=branch_witness_emu,
                 entry_bridge_corridor_blocks=entry_bridge_corridor_blocks,
                 entry_bridge_requires_witness=entry_bridge_requires_witness,
+                terminal_corridor_recovery=(
+                    isinstance(context.project_config, dict)
+                    and bool(context.project_config.get("terminal_corridor_recovery"))
+                ),
             )
+            _publish(context, LOWER_STATE_MACHINE_PLAN_METADATA, plan.metadata_dict())
             return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
 
         # Fallback (no interval dispatcher recovered): the committed shallow
@@ -536,6 +543,7 @@ class LowerStateMachine(PipelinePass):
             use_def_safety=context.capabilities.optional(UseDefSafetyCapability),
             live_function=live_function,
         )
+        _publish(context, LOWER_STATE_MACHINE_PLAN_METADATA, {})
         return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
 
 

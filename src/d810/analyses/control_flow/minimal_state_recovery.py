@@ -60,6 +60,8 @@ from d810.analyses.data_flow.concolic import (
     fold_exact,
 )
 from d810.capabilities.providers import get_bst_walkers
+from d810.ir.flowgraph import InsnKind, OperandKind
+from d810.ir.semantics import PredicateKind
 
 logger = getLogger(__name__)
 
@@ -74,6 +76,8 @@ __all__ = [
     "recover_handler_transitions",
     "StateWriteTransition",
     "TransitionProof",
+    "transition_uses_terminal_stack_alias_guard",
+    "transitions_use_terminal_stack_alias_guard",
     "block_has_live_carrier_write",
     "recover_state_write_transitions",
     "recover_state_write_transitions_via_fixpoint",
@@ -86,6 +90,18 @@ __all__ = [
 #: The oracle that resolves a back-edge next-state after the S4 C3 flip: the sound
 #: region-partitioned multi-cell constant fixpoint (run_snapshot_constant_fixpoint).
 _FIXPOINT_ORACLE = "region_partitioned_fixpoint"
+_KIND_STACK_ADDRESS_ALIAS_STORE = "stack_address_alias_store"
+_KIND_STACK_ADDRESS_ALIAS_STORE_PARTITIONED = "stack_address_alias_store_partitioned"
+_KIND_STACK_ADDRESS_ALIAS_TERMINAL_GUARD = "stack_address_alias_terminal_guard"
+_KIND_STACK_ADDRESS_ALIAS_TERMINAL_GUARD_PARTITIONED = (
+    "stack_address_alias_terminal_guard_partitioned"
+)
+_TERMINAL_STACK_ALIAS_GUARD_KINDS = frozenset(
+    {
+        _KIND_STACK_ADDRESS_ALIAS_TERMINAL_GUARD,
+        _KIND_STACK_ADDRESS_ALIAS_TERMINAL_GUARD_PARTITIONED,
+    }
+)
 
 #: The reduced-product CONCRETE leg (ticket llr-xauw): a prove-exact-or-abstain
 #: ``EmulationCapability`` consulted ONLY where the abstract fixpoint fold left a
@@ -266,6 +282,27 @@ class StateWriteTransition:
     proof: "TransitionProof | None" = None  # typed provenance (d81-t9ok); the
                                             # authoritative fixpoint emitter attaches
                                             # it, None = unattributed (legacy fold)
+
+
+def transition_uses_terminal_stack_alias_guard(transition: object) -> bool:
+    """Return whether one transition used the terminal guarded stack-alias proof."""
+
+    proof = getattr(transition, "proof", None)
+    return (
+        proof is not None
+        and getattr(proof, "oracle_kind", None) == _FIXPOINT_ORACLE
+        and getattr(proof, "kind", None) in _TERMINAL_STACK_ALIAS_GUARD_KINDS
+        and bool(getattr(proof, "trusted", False))
+    )
+
+
+def transitions_use_terminal_stack_alias_guard(transitions: object) -> bool:
+    """Return whether recovery used the terminal guarded stack-alias state proof."""
+
+    for transition in tuple(transitions or ()):
+        if transition_uses_terminal_stack_alias_guard(transition):
+            return True
+    return False
 
 
 def _resolve_state_var_alias(
@@ -777,6 +814,7 @@ class _ResolverContext:
 
     flow_graph: object
     fp: object
+    dispatcher_entry: int
     read_key: int
     effective_stkoff: int
     state_var_gaddr: int | None
@@ -787,6 +825,417 @@ class _ResolverContext:
     state_cell: object | None
     classify: object
     arm_of: object
+
+
+def _stack_offset_from_address(operand: object | None) -> int | None:
+    if operand is None:
+        return None
+    if getattr(operand, "kind", None) is OperandKind.STACK:
+        off = getattr(operand, "stkoff", None)
+        return int(off) if off is not None else None
+    if getattr(operand, "kind", None) is OperandKind.ADDRESS:
+        inner = getattr(operand, "sub_l", None)
+        if inner is not None:
+            return _stack_offset_from_address(inner)
+        refs = tuple(getattr(operand, "stack_refs", ()) or ())
+        if len(refs) == 1:
+            return int(refs[0])
+    refs = tuple(getattr(operand, "stack_refs", ()) or ())
+    if len(refs) == 1:
+        return int(refs[0])
+    return None
+
+
+def _reg_of(operand: object | None) -> int | None:
+    if operand is not None and getattr(operand, "kind", None) is OperandKind.REGISTER:
+        reg = getattr(operand, "reg", None)
+        return int(reg) if reg is not None else None
+    return None
+
+
+def _number_value(operand: object | None) -> int | None:
+    if operand is not None and getattr(operand, "kind", None) is OperandKind.NUMBER:
+        value = getattr(operand, "value", None)
+        return int(value) if value is not None else None
+    return None
+
+
+def _constant_operand_value(
+    operand: object | None,
+    stk_map: dict[int, int],
+    reg_map: dict[int, int],
+) -> int | None:
+    value = _number_value(operand)
+    if value is not None:
+        return int(value)
+    off = _stack_offset_from_address(operand)
+    if off is not None:
+        return stk_map.get(int(off))
+    reg = _reg_of(operand)
+    if reg is not None:
+        return reg_map.get(int(reg))
+    return None
+
+
+def _as_signed(value: int, width: int) -> int:
+    bits = max(1, int(width) * 8)
+    mask = (1 << bits) - 1
+    value = int(value) & mask
+    sign = 1 << (bits - 1)
+    return value - (1 << bits) if value & sign else value
+
+
+def _predicate_holds(
+    predicate: PredicateKind | None,
+    left: int,
+    right: int,
+    *,
+    width: int,
+) -> bool | None:
+    if predicate is PredicateKind.EQ:
+        return int(left) == int(right)
+    if predicate is PredicateKind.NE:
+        return int(left) != int(right)
+    if predicate is PredicateKind.ULT:
+        return int(left) < int(right)
+    if predicate is PredicateKind.ULE:
+        return int(left) <= int(right)
+    if predicate is PredicateKind.UGT:
+        return int(left) > int(right)
+    if predicate is PredicateKind.UGE:
+        return int(left) >= int(right)
+    if predicate is PredicateKind.SLT:
+        return _as_signed(left, width) < _as_signed(right, width)
+    if predicate is PredicateKind.SLE:
+        return _as_signed(left, width) <= _as_signed(right, width)
+    if predicate is PredicateKind.SGT:
+        return _as_signed(left, width) > _as_signed(right, width)
+    if predicate is PredicateKind.SGE:
+        return _as_signed(left, width) >= _as_signed(right, width)
+    if predicate is PredicateKind.TRUTHY:
+        return int(left) != 0
+    return None
+
+
+def _conditional_taken_fallthrough(
+    block: object,
+    succs: tuple[int, ...],
+) -> tuple[int, int] | None:
+    tail = getattr(block, "tail", None)
+    if tail is None:
+        return None
+    dest = getattr(tail, "d", None)
+    taken = getattr(dest, "block_ref", None)
+    if taken is not None and int(taken) in succs:
+        fallthrough = next((succ for succ in succs if int(succ) != int(taken)), None)
+        if fallthrough is not None:
+            return int(taken), int(fallthrough)
+    # Hex-Rays snapshot succ ordering is fallthrough, taken for m_jcc blocks.
+    if len(succs) == 2:
+        return int(succs[1]), int(succs[0])
+    return None
+
+
+def _concrete_successors(
+    block: object,
+    stk_map: dict[int, int],
+    reg_map: dict[int, int],
+) -> tuple[int, ...]:
+    succs = tuple(int(s) for s in getattr(block, "succs", ()) or ())
+    if len(succs) != 2:
+        return succs
+    tail = getattr(block, "tail", None)
+    if tail is None or not getattr(tail, "is_conditional_jump", False):
+        return succs
+    predicate = getattr(tail, "branch_predicate", None)
+    left = _constant_operand_value(getattr(tail, "l", None), stk_map, reg_map)
+    if predicate is PredicateKind.TRUTHY:
+        right = 0
+    else:
+        right = _constant_operand_value(getattr(tail, "r", None), stk_map, reg_map)
+    if left is None or right is None:
+        return succs
+    width = int(getattr(tail, "compare_width", 4) or 4)
+    holds = _predicate_holds(predicate, int(left), int(right), width=width)
+    targets = _conditional_taken_fallthrough(block, succs)
+    if holds is None or targets is None:
+        return succs
+    taken, fallthrough = targets
+    return (taken if holds else fallthrough,)
+
+
+def _collect_alias_corridor(
+    flow_graph: object,
+    *,
+    back_edge_serial: int,
+    dispatcher_entry: int,
+    max_blocks: int = 16,
+) -> tuple[int, ...]:
+    get_block = getattr(flow_graph, "get_block", None)
+    if not callable(get_block):
+        return (int(back_edge_serial),)
+    current = int(back_edge_serial)
+    seen: set[int] = set()
+    path: list[int] = []
+    while current not in seen and len(path) < max_blocks:
+        seen.add(current)
+        path.append(current)
+        block = get_block(current)
+        if block is None:
+            break
+        preds = [
+            int(pred)
+            for pred in tuple(getattr(block, "preds", ()) or ())
+            if int(pred) != int(dispatcher_entry)
+        ]
+        if len(preds) != 1:
+            break
+        current = preds[0]
+    return tuple(reversed(path))
+
+
+def _alias_map_for_path(flow_graph: object, path_blocks: tuple[int, ...]) -> dict[int, int]:
+    get_block = getattr(flow_graph, "get_block", None)
+    aliases: dict[int, int] = {}
+    if not callable(get_block):
+        return aliases
+    for serial in path_blocks:
+        block = get_block(int(serial))
+        if block is None:
+            continue
+        for insn in tuple(getattr(block, "insn_snapshots", ()) or ()):
+            if getattr(insn, "kind", None) is not InsnKind.MOV:
+                continue
+            dst_reg = _reg_of(getattr(insn, "d", None))
+            if dst_reg is None:
+                continue
+            offset = _stack_offset_from_address(getattr(insn, "l", None))
+            if offset is None:
+                aliases.pop(dst_reg, None)
+            else:
+                aliases[dst_reg] = int(offset)
+    return aliases
+
+
+def _store_target_offset(insn: object, aliases: dict[int, int]) -> int | None:
+    target = getattr(insn, "d", None)
+    offset = _stack_offset_from_address(target)
+    if offset is not None:
+        return int(offset)
+    reg = _reg_of(target)
+    if reg is not None:
+        return aliases.get(reg)
+    return None
+
+
+def _alias_offset_after_block_for_reg(
+    flow_graph: object,
+    *,
+    serial: int,
+    target_reg: int,
+    dispatcher_entry: int,
+    visited: frozenset[tuple[str, int, int]] = frozenset(),
+    max_blocks: int = 16,
+) -> int | None:
+    get_block = getattr(flow_graph, "get_block", None)
+    if not callable(get_block):
+        return None
+    key = ("after", int(serial), int(target_reg))
+    if key in visited or len(visited) >= max_blocks:
+        return None
+    block = get_block(int(serial))
+    if block is None:
+        return None
+
+    aliases: dict[int, int] = {}
+    entry_offset = _alias_offset_at_block_entry_for_reg(
+        flow_graph,
+        block=block,
+        target_reg=int(target_reg),
+        dispatcher_entry=int(dispatcher_entry),
+        visited=visited | {key},
+        max_blocks=max_blocks,
+    )
+    if entry_offset is not None:
+        aliases[int(target_reg)] = int(entry_offset)
+
+    for insn in tuple(getattr(block, "insn_snapshots", ()) or ()):
+        if getattr(insn, "kind", None) is not InsnKind.MOV:
+            continue
+        if _reg_of(getattr(insn, "d", None)) != int(target_reg):
+            continue
+        offset = _stack_offset_from_address(getattr(insn, "l", None))
+        if offset is None:
+            aliases.pop(int(target_reg), None)
+        else:
+            aliases[int(target_reg)] = int(offset)
+    return aliases.get(int(target_reg))
+
+
+def _alias_offset_at_block_entry_for_reg(
+    flow_graph: object,
+    *,
+    block: object,
+    target_reg: int,
+    dispatcher_entry: int,
+    visited: frozenset[tuple[str, int, int]] = frozenset(),
+    max_blocks: int = 16,
+) -> int | None:
+    block_serial = getattr(block, "serial", None)
+    if block_serial is None:
+        return None
+    key = ("entry", int(block_serial), int(target_reg))
+    if key in visited or len(visited) >= max_blocks:
+        return None
+    pred_serials = [
+        int(pred)
+        for pred in tuple(getattr(block, "preds", ()) or ())
+        if int(pred) != int(dispatcher_entry)
+    ]
+    if not pred_serials:
+        return None
+
+    offsets: list[int] = []
+    for pred_serial in pred_serials:
+        offset = _alias_offset_after_block_for_reg(
+            flow_graph,
+            serial=int(pred_serial),
+            target_reg=int(target_reg),
+            dispatcher_entry=int(dispatcher_entry),
+            visited=visited | {key},
+            max_blocks=max_blocks,
+        )
+        if offset is None:
+            return None
+        offsets.append(int(offset))
+    if offsets and len(set(offsets)) == 1:
+        return offsets[0]
+    return None
+
+
+def _incoming_alias_offset_for_reg(
+    ctx: _ResolverContext,
+    *,
+    block: object,
+    target_reg: int,
+) -> int | None:
+    block_serial = getattr(block, "serial", None)
+    if block_serial is not None:
+        same_block = _alias_map_for_path(ctx.flow_graph, (int(block_serial),)).get(
+            int(target_reg)
+        )
+        if same_block is not None:
+            return int(same_block)
+
+    return _alias_offset_at_block_entry_for_reg(
+        ctx.flow_graph,
+        block=block,
+        target_reg=int(target_reg),
+        dispatcher_entry=int(ctx.dispatcher_entry),
+    )
+
+
+def _resolve_stack_alias_state_store(
+    ctx: _ResolverContext,
+    *,
+    pred: int,
+    block: object,
+) -> int | None:
+    path = _collect_alias_corridor(
+        ctx.flow_graph,
+        back_edge_serial=int(pred),
+        dispatcher_entry=int(ctx.dispatcher_entry),
+    )
+    aliases = _alias_map_for_path(ctx.flow_graph, path)
+    for insn in tuple(getattr(block, "insn_snapshots", ()) or ()):
+        if getattr(insn, "kind", None) is not InsnKind.STORE:
+            continue
+        target = _store_target_offset(insn, aliases)
+        if target is None:
+            target_reg = _reg_of(getattr(insn, "d", None))
+            if target_reg is not None:
+                target = _incoming_alias_offset_for_reg(
+                    ctx,
+                    block=block,
+                    target_reg=int(target_reg),
+                )
+        if target is None or int(target) != int(ctx.effective_stkoff):
+            continue
+        value = _number_value(getattr(insn, "l", None))
+        if value is not None:
+            return int(value) & 0xFFFFFFFF
+    return None
+
+
+def _resolve_stack_alias_state_store_from_predecessor(
+    ctx: _ResolverContext,
+    *,
+    predecessor: int,
+    block: object,
+) -> int | None:
+    aliases = _alias_map_for_path(
+        ctx.flow_graph,
+        _collect_alias_corridor(
+            ctx.flow_graph,
+            back_edge_serial=int(predecessor),
+            dispatcher_entry=int(ctx.dispatcher_entry),
+        ),
+    )
+    for insn in tuple(getattr(block, "insn_snapshots", ()) or ()):
+        if getattr(insn, "kind", None) is not InsnKind.STORE:
+            continue
+        target = _store_target_offset(insn, aliases)
+        if target is None or int(target) != int(ctx.effective_stkoff):
+            continue
+        value = _number_value(getattr(insn, "l", None))
+        if value is not None:
+            return int(value) & 0xFFFFFFFF
+    return None
+
+
+def _terminal_guard_successor_for_state(
+    block: object,
+    *,
+    state: int,
+    state_var_stkoff: int,
+    dispatcher_entry: int,
+) -> int | None:
+    succs = tuple(int(succ) for succ in getattr(block, "succs", ()) or ())
+    if len(succs) != 2 or int(dispatcher_entry) not in succs:
+        return None
+    tail = getattr(block, "tail", None)
+    if tail is None or not getattr(tail, "is_conditional_jump", False):
+        return None
+    left = getattr(tail, "l", None)
+    right = getattr(tail, "r", None)
+    left_state = int(state_var_stkoff) in tuple(getattr(left, "stack_refs", ()) or ())
+    right_state = int(state_var_stkoff) in tuple(getattr(right, "stack_refs", ()) or ())
+    left_value = _number_value(left)
+    right_value = _number_value(right)
+
+    def _matches_state(value: int | None) -> bool:
+        if value is None:
+            return False
+        if int(value) == int(state):
+            return True
+        return (int(value) & 0xFFFFFFFF) == (int(state) & 0xFFFFFFFF)
+
+    compares_state = (
+        (left_state and _matches_state(right_value))
+        or (right_state and _matches_state(left_value))
+    )
+    if not compares_state:
+        return None
+    predicate = getattr(tail, "branch_predicate", None)
+    if predicate is PredicateKind.EQ:
+        target = int(succs[1])
+    elif predicate is PredicateKind.NE:
+        target = int(succs[0])
+    else:
+        return None
+    if target == int(dispatcher_entry):
+        return None
+    return target
 
 
 def _provider_global_fold(ctx: _ResolverContext, pred, block, arm):
@@ -904,6 +1353,104 @@ def _provider_emulation(ctx, pred, block, arm, ambiguous):
     return out
 
 
+def _provider_stack_address_alias(ctx, pred, block, arm):
+    """[floor] State write through a register proven to be ``&state_slot``.
+
+    This handles OLLVM corridors where a handler materializes stack addresses into
+    registers, then writes the next dispatcher state via ``m_stx value, ds, reg``.
+    The proof is local: follow a unique predecessor corridor that excludes the
+    dispatcher, collect only ``reg = &stack_slot`` definitions, and accept a state
+    transition only when the store target alias is the configured state slot.
+    """
+
+    state = _resolve_stack_alias_state_store(ctx, pred=int(pred), block=block)
+    if state is None:
+        partitioned: list[StateWriteTransition] = []
+        for ip in sorted(
+            int(p)
+            for p in tuple(getattr(block, "preds", ()) or ())
+            if int(p) != int(ctx.dispatcher_entry)
+        ):
+            ip_state = _resolve_stack_alias_state_store_from_predecessor(
+                ctx,
+                predecessor=int(ip),
+                block=block,
+            )
+            if ip_state is None:
+                continue
+            terminal_target = _terminal_guard_successor_for_state(
+                block,
+                state=int(ip_state),
+                state_var_stkoff=int(ctx.effective_stkoff),
+                dispatcher_entry=int(ctx.dispatcher_entry),
+            )
+            terminal_guard = terminal_target is not None
+            if not terminal_guard:
+                target, is_ret = ctx.classify(ip_state)
+            else:
+                target, is_ret = int(terminal_target), False
+            ip_arm = ctx.arm_of(ctx.flow_graph.get_block(int(ip)), pred)
+            partitioned.append(
+                StateWriteTransition(
+                    int(ip),
+                    int(ip_state),
+                    target,
+                    is_ret,
+                    ip_arm,
+                    via_block=pred,
+                    proof=TransitionProof(
+                        _FIXPOINT_ORACLE,
+                        (
+                            _KIND_STACK_ADDRESS_ALIAS_TERMINAL_GUARD_PARTITIONED
+                            if terminal_guard
+                            else _KIND_STACK_ADDRESS_ALIAS_STORE_PARTITIONED
+                        ),
+                        not is_ret,
+                        reason=(
+                            "predecessor_state_store_through_stack_address_alias_terminal_guard"
+                            if terminal_guard
+                            else "predecessor_state_store_through_stack_address_alias"
+                        ),
+                    ),
+                )
+            )
+        return partitioned or None
+    terminal_target = _terminal_guard_successor_for_state(
+        block,
+        state=int(state),
+        state_var_stkoff=int(ctx.effective_stkoff),
+        dispatcher_entry=int(ctx.dispatcher_entry),
+    )
+    terminal_guard = terminal_target is not None
+    if not terminal_guard:
+        target, is_ret = ctx.classify(state)
+    else:
+        target, is_ret = int(terminal_target), False
+    return [
+        StateWriteTransition(
+            int(pred),
+            int(state),
+            target,
+            is_ret,
+            arm,
+            proof=TransitionProof(
+                _FIXPOINT_ORACLE,
+                (
+                    _KIND_STACK_ADDRESS_ALIAS_TERMINAL_GUARD
+                    if terminal_guard
+                    else _KIND_STACK_ADDRESS_ALIAS_STORE
+                ),
+                not is_ret,
+                reason=(
+                    "state_store_through_stack_address_alias_terminal_guard"
+                    if terminal_guard
+                    else "state_store_through_stack_address_alias"
+                ),
+            ),
+        )
+    ]
+
+
 def _provider_region_seeded(ctx, pred, block, arm):
     """[floor] The seeded per-region fold (masked-OR / state-reading write).
 
@@ -970,6 +1517,12 @@ def _resolve_next_state(ctx: _ResolverContext, pred, block, arm):
     # [refine] the reduced-product CONCRETE leg -- BEFORE the seeded fold can mask a
     # ⊥ with a stale dispatch-key self-loop.
     edges = _provider_emulation(ctx, pred, block, arm, ambiguous)
+    if edges is not None:
+        return edges
+
+    # [floor] local address-alias state write.  This sits below the ordinary
+    # abstract and concrete legs, and above the seeded fallback/unresolved sink.
+    edges = _provider_stack_address_alias(ctx, pred, block, arm)
     if edges is not None:
         return edges
 
@@ -1118,6 +1671,7 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
     resolver_ctx = _ResolverContext(
         flow_graph=flow_graph,
         fp=fp,
+        dispatcher_entry=disp,
         read_key=read_key,
         effective_stkoff=effective_stkoff,
         state_var_gaddr=state_var_gaddr,
@@ -1529,6 +2083,8 @@ def _scan_handler(
     dispatcher_entry_serial: int | None,
     handler_entries: set[int],
     max_depth: int = _MAX_CORRIDOR_DEPTH,
+    initial_stk: dict[int, int] | None = None,
+    initial_reg: dict[int, int] | None = None,
 ) -> list[tuple[int | None, int | None, tuple[int, ...]]]:
     """Strictly handler-local forward scan from *entry*.
 
@@ -1543,7 +2099,15 @@ def _scan_handler(
     results: list[tuple[int | None, int | None, tuple[int, ...]]] = []
     # stack frames: (block, stk_map, reg_map, branch_block, visited, depth, path)
     stack: list[tuple[int, dict, dict, int | None, frozenset[int], int, tuple[int, ...]]] = [
-        (int(entry), {}, {}, None, frozenset({int(entry)}), 0, (int(entry),))
+        (
+            int(entry),
+            dict(initial_stk or {}),
+            dict(initial_reg or {}),
+            None,
+            frozenset({int(entry)}),
+            0,
+            (int(entry),),
+        )
     ]
 
     while stack:
@@ -1559,7 +2123,7 @@ def _scan_handler(
         )
         running_state = nstk.get(state_var_stkoff)
 
-        succs = tuple(int(s) for s in block.succs)
+        succs = _concrete_successors(block, nstk, nreg)
 
         def _is_boundary_succ(s: int) -> bool:
             if dispatcher_entry_serial is not None and s == int(dispatcher_entry_serial):
@@ -1673,6 +2237,18 @@ def recover_handler_transitions(
 
     handler_entries = _handler_entries(dispatcher)
     states_by_handler = _states_by_handler(dispatcher)
+    seed_stk: dict[int, int] = {}
+    seed_reg: dict[int, int] = {}
+    if dispatcher_entry_serial is not None:
+        dispatcher_entry = flow_graph.get_block(int(dispatcher_entry_serial))
+        if dispatcher_entry is not None:
+            seed_stk, seed_reg = _transfer_snapshot_constant_block(
+                dispatcher_entry,
+                {},
+                {},
+                int(state_var_stkoff),
+            )
+            seed_stk.pop(int(state_var_stkoff), None)
     results: list[HandlerTransition] = []
 
     for handler in sorted(handler_entries):
@@ -1683,6 +2259,8 @@ def recover_handler_transitions(
             dispatcher_entry_serial=dispatcher_entry_serial,
             handler_entries=handler_entries,
             max_depth=max_depth,
+            initial_stk=seed_stk,
+            initial_reg=seed_reg,
         )
         # Dedup arms by next_state: identical next-states on multiple paths are
         # the same edge (a degenerate branch), not a conditional.

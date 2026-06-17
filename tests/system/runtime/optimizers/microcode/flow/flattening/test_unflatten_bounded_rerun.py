@@ -13,11 +13,17 @@ Placement Rule: never mock IDA in unit tests).
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import ida_hexrays
 import pytest
 
 from d810.optimizers.microcode.flow.flattening.state_machine_cff_unflattener import (
     StateMachineCffUnflattener,
+)
+from d810.passes.unflatten.state_machine import LOWER_STATE_MACHINE_PLAN_METADATA
+from d810.transforms.minimal_unflatten_emit import (
+    TERMINAL_CARRIER_CONVERGENCE_METADATA,
 )
 
 
@@ -90,6 +96,128 @@ class TestUnflattenBoundedRerunGate:
         # The converged ea is terminal but a different function still runs.
         assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT) is False
         assert rule._should_run_unflatten_round(other, is_indirect=False, maturity=_MAT) is True
+
+    def test_terminal_carrier_plan_metadata_requests_convergence(self) -> None:
+        """A terminal stack-alias guard split is a scoped early-convergence signal."""
+        rule = _fresh_rule()
+        facts = SimpleNamespace(
+            get_analysis=lambda name, default=None: (
+                {TERMINAL_CARRIER_CONVERGENCE_METADATA: True}
+                if name == LOWER_STATE_MACHINE_PLAN_METADATA
+                else default
+            )
+        )
+
+        assert rule._lower_plan_requested_terminal_convergence(facts) is True
+
+
+class TestTigressIndirectMaterializationConfig:
+    def test_non_tigress_profile_does_not_register_materialization(self, monkeypatch) -> None:
+        """OLLVM/state-map configs must not arm Tigress indirect materialization."""
+        calls: list[str] = []
+
+        from d810.core import project as project_mod
+        from d810.hexrays.preanalysis import indirect_jump_labels as label_mod
+
+        monkeypatch.setattr(
+            project_mod,
+            "register_project_reload_cleanup",
+            lambda *_args, **_kwargs: calls.append("cleanup"),
+        )
+        monkeypatch.setattr(
+            label_mod,
+            "register_indirect_materialization",
+            lambda *_args, **_kwargs: calls.append("register"),
+        )
+        monkeypatch.setattr(
+            label_mod,
+            "materialize_discovered_indirect_label_targets",
+            lambda *_args, **_kwargs: calls.append("idb_scan"),
+        )
+
+        rule = StateMachineCffUnflattener()
+        rule.configure({"profile": "state_dispatcher_map"})
+
+        assert calls == []
+
+    def test_tigress_profile_registers_current_function_materialization_only(
+        self,
+        monkeypatch,
+    ) -> None:
+        """Tigress indirect arms flowchart events but never scans the whole IDB."""
+        calls: list[tuple[str, object]] = []
+
+        from d810.core import project as project_mod
+        from d810.hexrays.preanalysis import indirect_jump_labels as label_mod
+
+        monkeypatch.setattr(
+            project_mod,
+            "register_project_reload_cleanup",
+            lambda name, _callback: calls.append(("cleanup", name)),
+        )
+        monkeypatch.setattr(
+            label_mod,
+            "reset_indirect_materialization",
+            lambda: calls.append(("reset", None)),
+        )
+        monkeypatch.setattr(
+            label_mod,
+            "register_indirect_materialization",
+            lambda info: calls.append(("register", dict(info))),
+        )
+
+        def _fail_idb_scan(*_args, **_kwargs):
+            raise AssertionError("whole-IDB Tigress prepass must not run")
+
+        monkeypatch.setattr(
+            label_mod,
+            "materialize_discovered_indirect_label_targets",
+            _fail_idb_scan,
+        )
+
+        rule = StateMachineCffUnflattener()
+        rule.configure({"profile": "tigress_indirect"})
+
+        assert calls == [
+            ("cleanup", "hexrays.indirect_jump_label_materialization"),
+            ("reset", None),
+            ("register", {}),
+        ]
+
+    def test_tigress_profile_preserves_configured_goto_table_info(self, monkeypatch) -> None:
+        """Configured layout remains supported as the precise override path."""
+        registered: list[dict] = []
+
+        from d810.core import project as project_mod
+        from d810.hexrays.preanalysis import indirect_jump_labels as label_mod
+
+        monkeypatch.setattr(
+            project_mod,
+            "register_project_reload_cleanup",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(label_mod, "reset_indirect_materialization", lambda: None)
+        monkeypatch.setattr(
+            label_mod,
+            "register_indirect_materialization",
+            lambda info: registered.append(dict(info)),
+        )
+
+        goto_table_info = {
+            "0x1800175c0": {
+                "table_address": "0x180019f10",
+                "table_nb_elt": 37,
+            },
+        }
+        rule = StateMachineCffUnflattener()
+        rule.configure(
+            {
+                "profile": "tigress_indirect",
+                "goto_table_info": goto_table_info,
+            }
+        )
+
+        assert registered == [goto_table_info]
 
 
 if __name__ == "__main__":

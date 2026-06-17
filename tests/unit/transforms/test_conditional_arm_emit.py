@@ -16,6 +16,8 @@ import pytest
 
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.analyses.control_flow.minimal_state_recovery import (
+    HandlerTransition,
+    TransitionArm,
     recover_handler_transitions,
 )
 from d810.analyses.value_flow.model import FactObservation
@@ -376,6 +378,69 @@ def test_existing_back_edge_edge_is_not_double_redirected(_seam) -> None:
     # Every arm edge the back-edge model already owns must be vetoed.
     arm_keys = {(int(m.from_serial), int(m.old_target)) for m in arm_mods}
     assert arm_keys.isdisjoint(existing)
+
+
+def test_conflicting_one_way_arm_redirects_are_suppressed(_seam) -> None:
+    """A one-way source edge cannot encode two conditional arm targets.
+
+    Hodur-style terminal candidates can recover multiple conditional arms whose
+    write boundary is the same dispatcher predecessor.  Emitting both creates
+    conflicting ``goto source -> target`` rewrites and lets the deferred modifier
+    pick one arm arbitrarily, which can erase effect-bearing terminal corridors.
+    """
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (10,), ()),
+            2: _b(2, (20, 40, 50), (10,)),
+            10: _b(10, (2,), (0,), (_mov_state(0x1000, 0xAA),)),
+            20: _b(20, (), (2,)),
+            40: _b(40, (), (2,)),
+            50: _b(50, (), (2,)),
+            99: _stop(99, (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 20, 0xAA: 40, 0xBB: 50}, exit_block=99)
+    handler_transitions = (
+        HandlerTransition(
+            handler=20,
+            states=(0x10,),
+            arms=(
+                TransitionArm(
+                    next_state=0xAA,
+                    target_handler=40,
+                    is_return=False,
+                    branch_block=None,
+                    write_block=10,
+                    exit_block=10,
+                    ordered_path=(20, 10),
+                ),
+                TransitionArm(
+                    next_state=0xBB,
+                    target_handler=50,
+                    is_return=False,
+                    branch_block=None,
+                    write_block=10,
+                    exit_block=10,
+                    ordered_path=(20, 10),
+                ),
+            ),
+        ),
+    )
+
+    arm_mods = build_conditional_arm_redirects(
+        fg,
+        disp,
+        handler_transitions,
+        dispatcher_entry_serial=2,
+        existing=set(),
+    )
+
+    assert [
+        m for m in arm_mods
+        if isinstance(m, RedirectGoto) and m.from_serial == 10 and m.old_target == 2
+    ] == []
 
 
 def _shared_write_block_fg() -> FlowGraph:
