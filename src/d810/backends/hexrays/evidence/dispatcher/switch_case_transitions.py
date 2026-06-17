@@ -41,7 +41,7 @@ def collect_switch_case_transition_facts_from_mba(
                 mba,
                 entry_serial=entry_block,
                 incoming_state=source_state,
-                bst_node_blocks=set(dispatch_map.dispatcher_blocks),
+                condition_chain_blocks=set(dispatch_map.dispatcher_blocks),
                 state_var_stkoff=int(dispatch_map.state_var_stkoff),
                 handler_entry_blocks=handler_entry_blocks,
             )
@@ -144,7 +144,7 @@ def _return_value_for_path(mba: object, ordered_path: tuple[int, ...]) -> int | 
         m_ret = ida_hexrays.m_ret
     except Exception:
         m_ret = None
-    from d810.backends.hexrays.evidence.bst_analysis import _get_mop_const_value
+    from d810.backends.hexrays.evidence.condition_chain_analysis import _get_mop_const_value
 
     for serial in reversed(tuple(int(value) for value in ordered_path)):
         blk = _get_block(mba, serial)
@@ -182,7 +182,7 @@ def _return_value_from_frontier_writer(
     except Exception:
         return None
 
-    from d810.backends.hexrays.evidence.bst_analysis import _get_mop_const_value
+    from d810.backends.hexrays.evidence.condition_chain_analysis import _get_mop_const_value
     from d810.backends.hexrays.evidence.dispatcher.return_frontier_carrier_audit import (
         _walk_to_return_writer,
     )

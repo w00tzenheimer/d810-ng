@@ -95,10 +95,10 @@ def test_nodes_sorted_by_handler_serial():
     assert serials == sorted(serials)
 
 
-def test_container_carries_dispatcher_and_bst_blocks():
+def test_container_carries_dispatcher_and_condition_chain_blocks():
     dag = _dag()
     assert dag.dispatcher_entry_serial == 1
-    assert dag.bst_node_blocks == (2,)
+    assert dag.condition_chain_blocks == (2,)
 
 
 def test_local_structure_populated_when_topology_provided():

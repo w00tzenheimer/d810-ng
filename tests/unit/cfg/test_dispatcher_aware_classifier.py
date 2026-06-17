@@ -34,13 +34,13 @@ class TestClassifyBackedgeDispatcherAware:
         assert c.overlap == frozenset()
         assert "dispatcher region" in c.reason
 
-    def test_target_in_bst_cascade_also_round_trip(self) -> None:
+    def test_target_in_condition_chain_cascade_also_round_trip(self) -> None:
         ctx = DispatcherContext(
             dispatcher_blocks=frozenset({2, 3, 4, 5, 6}),
         )
         c = classify_backedge_dispatcher_aware(
             src_serial=42,
-            tgt_serial=4,  # BST cascade node
+            tgt_serial=4,  # condition-chain cascade node
             src_writes=frozenset(),
             tgt_predicate_reads=frozenset(),
             context=ctx,
@@ -127,7 +127,7 @@ class TestClassifyBackedgeDispatcherAware:
     def test_dispatcher_takes_priority_over_carrier_overlap(self) -> None:
         # Even when src writes %var_3C and tgt reads %var_3C, if tgt is
         # the dispatcher we classify ROUND_TRIP (not SPURIOUS), so the
-        # actionable forward-target resolver knows to BST-resolve.
+        # actionable forward-target resolver knows to condition-chain-resolve.
         ctx = DispatcherContext(
             dispatcher_blocks=frozenset({2}),
             excluded_carriers=frozenset({"%var_3C"}),

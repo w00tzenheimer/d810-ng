@@ -1,7 +1,7 @@
-"""Unit tests for the ``route`` BST-route provenance diagnostic.
+"""Unit tests for the ``route`` condition-chain route provenance diagnostic.
 
 Pure: builds a synthetic in-memory diag DB (no IDA, no real run) with a tiny
-dispatcher BST and asserts the reconstructed route + provenance.
+dispatcher condition chain and asserts the reconstructed route + provenance.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ SNAP = 5
 
 
 def _make_db() -> sqlite3.Connection:
-    """A 1-node BST: blk3 ``jg #0x100`` -> blk10 (state>0x100, BLT_STOP) else blk4.
+    """A 1-node condition chain: blk3 ``jg #0x100`` -> blk10 (state>0x100, BLT_STOP) else blk4.
 
     blk4 falls through to blk5 (a 1-way handler corridor, not terminal).
     A literal writer (blk20 ``mov #0x200``) produces state 0x200; the recovery
@@ -88,7 +88,7 @@ def test_route_state_above_pivot_is_terminal():
     assert prov.handler_ea == "0x1100"
     assert prov.reaches_stop is True
     assert prov.stop_chain == [10]
-    # one BST step, took=True
+    # one condition-chain step, took=True
     assert [(s.block, s.op, s.took) for s in prov.path] == [(3, "jg", True)]
     # literal writer recorded
     assert prov.literal_writers == [(20, "0x2000")]

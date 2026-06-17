@@ -75,7 +75,7 @@ class EmulatedDispatcherPhaseArtifact:
     state_var_stkoff: int | None = None
     pre_header_serial: int | None = None
     initial_state: int | None = None
-    bst_node_blocks: tuple[int, ...] = ()
+    condition_chain_blocks: tuple[int, ...] = ()
     handler_state_map: tuple[tuple[int, int], ...] = ()
     handler_range_map: tuple[tuple[int, int | None, int | None], ...] = ()
     transition_rows: int = 0
@@ -92,7 +92,7 @@ class EmulatedDispatcherPhaseArtifact:
 class EmulatedDispatcherPhaseContext:
     """Raw recon objects backing the summarized phase artifact."""
 
-    bst_result: object
+    range_evidence: object
     transition_result: object
     transition_report: object
     dag: object

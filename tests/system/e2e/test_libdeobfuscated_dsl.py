@@ -401,7 +401,7 @@ class TestLoopPatterns:
 class TestHardenedConditionalChains:
     """Tests for hardened OLLVM conditional-chain state machines.
 
-    These cases use table-backed state constants and binary-search dispatch, so
+    These cases use table-backed state constants and condition-chain dispatch, so
     they are owned by the whole-dispatcher reconstruction path rather than the
     predecessor-local conditional-jump fixup.
     """

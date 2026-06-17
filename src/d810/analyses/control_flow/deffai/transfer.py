@@ -92,7 +92,7 @@ def scalar_block_evaluator(state_var_stkoff: int) -> BlockEvaluator:
 
     Resolves :func:`_transfer_snapshot_constant_block` from
     ``state_machine_analysis`` at call time.  That fold delegates to the
-    ``BstWalkerProvider`` seam (``forward_eval_insn``), so production reuses the
+    ``ConditionChainWalkerProvider`` seam (``forward_eval_insn``), so production reuses the
     proven evaluator; unit tests inject their own ``BlockEvaluator`` instead.
 
     The import is at module top (portable); only the *call* touches the seam.

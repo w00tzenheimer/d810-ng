@@ -70,7 +70,7 @@ def _refresh_graph_metadata_after_edge_override(dag):
     sccs = compute_state_sccs(dag)
     log_sccs(sccs)
     refreshed = dataclasses.replace(dag, sccs=sccs)
-    dispatcher_region = set(getattr(refreshed, "bst_node_blocks", ()) or ())
+    dispatcher_region = set(getattr(refreshed, "condition_chain_blocks", ()) or ())
     dispatcher_serial = getattr(refreshed, "dispatcher_entry_serial", None)
     if dispatcher_serial is not None:
         try:

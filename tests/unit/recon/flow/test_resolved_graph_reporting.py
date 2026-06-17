@@ -23,7 +23,7 @@ class TestBuildResolvedStateMachineDotReport:
                 ),
             ],
         )
-        bst_result = SimpleNamespace(
+        range_evidence = SimpleNamespace(
             handler_range_map={
                 10: (0xAAAA, 0xAAAA),
             },
@@ -33,7 +33,7 @@ class TestBuildResolvedStateMachineDotReport:
 
         report = build_resolved_state_machine_dot_report(
             sm,
-            bst_result,
+            range_evidence,
             handler_state_map,
         )
 
@@ -56,14 +56,14 @@ class TestBuildResolvedStateMachineDotReport:
                 ),
             ],
         )
-        bst_result = SimpleNamespace(
+        range_evidence = SimpleNamespace(
             handler_range_map={},
             resolve_target=lambda _to_state: None,
         )
 
         report = build_resolved_state_machine_dot_report(
             sm,
-            bst_result,
+            range_evidence,
             {},
         )
 

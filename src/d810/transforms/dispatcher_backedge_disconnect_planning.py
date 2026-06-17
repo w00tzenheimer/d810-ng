@@ -7,7 +7,7 @@ from dataclasses import dataclass
 class DispatcherBackedgeDisconnectPlan:
     source_block: int
     keep_target: int
-    is_bst: bool
+    is_condition_chain: bool
 
 
 def plan_dispatcher_backedge_disconnects(
@@ -15,7 +15,7 @@ def plan_dispatcher_backedge_disconnects(
     block_nsucc_map: dict[int, int],
     block_succ_map: dict[int, tuple[int, ...]],
     dispatcher_serial: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     emitted: set[tuple[int, int]],
 ) -> tuple[DispatcherBackedgeDisconnectPlan, ...]:
     if dispatcher_serial < 0:
@@ -51,7 +51,7 @@ def plan_dispatcher_backedge_disconnects(
             DispatcherBackedgeDisconnectPlan(
                 source_block=int(serial),
                 keep_target=int(keep_serial),
-                is_bst=(int(serial) in bst_node_blocks),
+                is_condition_chain=(int(serial) in condition_chain_blocks),
             )
         )
 

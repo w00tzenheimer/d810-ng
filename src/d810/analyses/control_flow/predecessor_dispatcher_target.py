@@ -144,7 +144,7 @@ def resolve_predecessor_dispatcher_target(
     dispatcher_entry_serial: int,
     state_const: int,
     state_dispatcher_map: StateDispatcherMap | None = None,
-    bst_result: ConditionChainAnalysisResult | None = None,
+    range_evidence: ConditionChainAnalysisResult | None = None,
     source_state_const: int | None = None,
     transition_provenance_kind: str | None = None,
     condition_block_serial: int | None = None,
@@ -178,10 +178,10 @@ def resolve_predecessor_dispatcher_target(
                 confidence=float(row.confidence),
             )
 
-    if bst_result is None:
+    if range_evidence is None:
         return None
 
-    dispatcher = getattr(bst_result, "dispatcher", None)
+    dispatcher = getattr(range_evidence, "dispatcher", None)
     if dispatcher is not None:
         row = dispatcher.lookup_row(normalized_state)
         if row is not None and row.target is not None:
@@ -208,7 +208,7 @@ def resolve_predecessor_dispatcher_target(
             )
 
     for handler_serial, handler_state in getattr(
-        bst_result, "handler_state_map", {}
+        range_evidence, "handler_state_map", {}
     ).items():
         if (int(handler_state) & 0xFFFFFFFFFFFFFFFF) != normalized_state:
             continue
@@ -217,7 +217,7 @@ def resolve_predecessor_dispatcher_target(
             dispatcher_entry_serial=dispatcher_entry_serial,
             state_const=normalized_state,
             target_block_serial=int(handler_serial),
-            resolver_kind="bst_handler_state_map_exact_row",
+            resolver_kind="condition_chain_handler_state_map_exact_row",
             row_kind="exact",
             dispatcher_block_serial=None,
             compare_block_serial=None,
@@ -230,9 +230,9 @@ def resolve_predecessor_dispatcher_target(
             state_var_stkoff=state_var_stkoff,
         )
 
-    exact_handler_serials = set(getattr(bst_result, "handler_state_map", {}).keys())
+    exact_handler_serials = set(getattr(range_evidence, "handler_state_map", {}).keys())
     for handler_serial, (lo, hi) in getattr(
-        bst_result, "handler_range_map", {}
+        range_evidence, "handler_range_map", {}
     ).items():
         if handler_serial in exact_handler_serials:
             continue
@@ -248,7 +248,7 @@ def resolve_predecessor_dispatcher_target(
                 dispatcher_entry_serial=dispatcher_entry_serial,
                 state_const=normalized_state,
                 target_block_serial=int(handler_serial),
-                resolver_kind="bst_handler_range_map_row",
+                resolver_kind="condition_chain_handler_range_map_row",
                 row_kind="range",
                 dispatcher_block_serial=None,
                 compare_block_serial=None,
@@ -269,7 +269,7 @@ def collect_predecessor_dispatcher_target_facts(
     transition_result: object | None,
     dispatcher_entry_serial: int,
     state_dispatcher_map: StateDispatcherMap | None = None,
-    bst_result: ConditionChainAnalysisResult | None = None,
+    range_evidence: ConditionChainAnalysisResult | None = None,
     transition_report: object | None = None,
     dag: object | None = None,
     state_var_stkoff: int | None = None,
@@ -289,7 +289,7 @@ def collect_predecessor_dispatcher_target_facts(
                 dispatcher_entry_serial=int(dispatcher_entry_serial),
                 state_const=int(to_state),
                 state_dispatcher_map=state_dispatcher_map,
-                bst_result=bst_result,
+                range_evidence=range_evidence,
                 source_state_const=_maybe_int(getattr(transition, "from_state", None)),
                 transition_provenance_kind=_maybe_str(
                     getattr(transition, "provenance_kind", None)
@@ -318,7 +318,7 @@ def collect_predecessor_dispatcher_target_facts(
                     dispatcher_entry_serial=int(dispatcher_entry_serial),
                     state_const=int(next_state),
                     state_dispatcher_map=state_dispatcher_map,
-                    bst_result=bst_result,
+                    range_evidence=range_evidence,
                     source_state_const=_maybe_int(getattr(row, "state_const", None)),
                     transition_provenance_kind="transition_report",
                     condition_block_serial=None,
@@ -337,7 +337,7 @@ def collect_predecessor_dispatcher_target_facts(
                     dispatcher_entry_serial=int(dispatcher_entry_serial),
                     state_const=int(conditional_state),
                     state_dispatcher_map=state_dispatcher_map,
-                    bst_result=bst_result,
+                    range_evidence=range_evidence,
                     source_state_const=_maybe_int(getattr(row, "state_const", None)),
                     transition_provenance_kind="transition_report_conditional",
                     condition_block_serial=None,
@@ -370,7 +370,7 @@ def collect_predecessor_dispatcher_target_facts(
                 dispatcher_entry_serial=int(dispatcher_entry_serial),
                 state_const=int(next_state),
                 state_dispatcher_map=state_dispatcher_map,
-                bst_result=bst_result,
+                range_evidence=range_evidence,
                 source_state_const=_maybe_int(
                     getattr(source_key, "state_const", None)
                 ),

@@ -38,7 +38,7 @@ def _fixpoint_claimed_sources(
     flow_graph,
     projected_flow_graph,
     dispatcher_serial: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher,
     constant_result,
     state_var_stkoff: int | None,
@@ -55,7 +55,7 @@ def _fixpoint_claimed_sources(
     a shared block while redirecting all old local predecessors away from it,
     leaving the original block as a reachable residual state writer for a newly
     bridged predecessor.  If the projected source still exits to the dispatcher
-    and its concrete state resolves to a non-BST target, allow the fixpoint pass
+    and its concrete state resolves to a non-condition-chain target, allow the fixpoint pass
     to rewrite that outgoing edge.
     """
 
@@ -68,8 +68,8 @@ def _fixpoint_claimed_sources(
     ):
         return fixpoint_claimed
 
-    bst_set = {int(dispatcher_serial)}
-    bst_set.update(int(block) for block in bst_node_blocks)
+    condition_chain_set = {int(dispatcher_serial)}
+    condition_chain_set.update(int(block) for block in condition_chain_blocks)
 
     pinned_sources = {
         int(source) for source in (pinned_claimed_sources or set())
@@ -85,7 +85,7 @@ def _fixpoint_claimed_sources(
         if projected_block is None or getattr(projected_block, "nsucc", 0) != 1:
             continue
         projected_target = int(projected_block.succs[0])
-        if projected_target != int(dispatcher_serial) and projected_target not in bst_set:
+        if projected_target != int(dispatcher_serial) and projected_target not in condition_chain_set:
             continue
 
         out_map = constant_result.out_stk_maps.get(source, {})
@@ -97,7 +97,7 @@ def _fixpoint_claimed_sources(
             exact_dispatcher_map=exact_dispatcher_map,
             dispatcher=dispatcher,
         )
-        if resolved is None or int(resolved) in bst_set or int(resolved) == source:
+        if resolved is None or int(resolved) in condition_chain_set or int(resolved) == source:
             continue
 
         fixpoint_claimed.discard(source)
@@ -113,7 +113,7 @@ def _fixpoint_claimed_sources(
         if block is None or block.nsucc != 1:
             continue
         old_target = int(block.succs[0])
-        if old_target != int(dispatcher_serial) and old_target not in bst_set:
+        if old_target != int(dispatcher_serial) and old_target not in condition_chain_set:
             continue
 
         out_map = constant_result.out_stk_maps.get(source, {})
@@ -125,7 +125,7 @@ def _fixpoint_claimed_sources(
             exact_dispatcher_map=exact_dispatcher_map,
             dispatcher=dispatcher,
         )
-        if resolved is None or int(resolved) in bst_set:
+        if resolved is None or int(resolved) in condition_chain_set:
             continue
 
         duplicate_targets = {
@@ -146,7 +146,7 @@ def plan_reconstruction_postprocess_modifications(
     projected_flow_graph,
     builder,
     dispatcher_serial: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher,
     modifications: list,
     owned_blocks: set[int],
@@ -159,15 +159,15 @@ def plan_reconstruction_postprocess_modifications(
     fixpoint_redirect_veto=None,
     exact_dispatcher_map=None,
 ) -> ReconstructionPostprocessPlanningResult:
-    bst_set = {int(dispatcher_serial)}
-    bst_set.update(int(block) for block in bst_node_blocks)
+    condition_chain_set = {int(dispatcher_serial)}
+    condition_chain_set.update(int(block) for block in condition_chain_blocks)
 
     preheader_bridge = plan_reconstruction_preheader_bridge(
         dag=dag,
         flow_graph=flow_graph,
         builder=builder,
         dispatcher_serial=dispatcher_serial,
-        bst_node_blocks=bst_set,
+        condition_chain_blocks=condition_chain_set,
         dispatcher=dispatcher,
     )
 
@@ -192,7 +192,7 @@ def plan_reconstruction_postprocess_modifications(
         builder=builder,
         claimed_sources=set(),
         dispatcher_serial=dispatcher_serial,
-        bst_node_blocks=bst_set,
+        condition_chain_blocks=condition_chain_set,
         common_return_corridor=common_return_corridor,
         artifact_return_blocks=artifact_return_blocks,
         node_by_key=node_by_key,
@@ -211,7 +211,7 @@ def plan_reconstruction_postprocess_modifications(
         flow_graph=flow_graph,
         builder=builder,
         dispatcher_serial=dispatcher_serial,
-        bst_node_blocks=bst_set,
+        condition_chain_blocks=condition_chain_set,
         claimed_sources=claimed_sources,
         claimed_targets=claimed_targets,
         suppressed_bridge_pairs=suppressed_bridge_pairs,
@@ -226,7 +226,7 @@ def plan_reconstruction_postprocess_modifications(
         projected_flow_graph=projected_flow_graph,
         builder=builder,
         dispatcher_serial=dispatcher_serial,
-        bst_node_blocks=bst_set,
+        condition_chain_blocks=condition_chain_set,
         claimed_sources=claimed_sources,
         claimed_targets=claimed_targets,
         suppressed_bridge_pairs=suppressed_bridge_pairs,
@@ -246,7 +246,7 @@ def plan_reconstruction_postprocess_modifications(
         flow_graph=flow_graph,
         projected_flow_graph=projected_flow_graph,
         dispatcher_serial=dispatcher_serial,
-        bst_node_blocks=bst_set,
+        condition_chain_blocks=condition_chain_set,
         dispatcher=dispatcher,
         constant_result=constant_result,
         state_var_stkoff=state_var_stkoff,
@@ -260,7 +260,7 @@ def plan_reconstruction_postprocess_modifications(
         flow_graph=flow_graph,
         builder=builder,
         dispatcher_serial=dispatcher_serial,
-        bst_node_blocks=bst_set,
+        condition_chain_blocks=condition_chain_set,
         claimed_sources=fixpoint_blocking_sources,
         constant_result=constant_result,
         state_var_stkoff=state_var_stkoff,

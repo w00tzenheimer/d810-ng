@@ -99,7 +99,7 @@ def test_dump_help_recommends_full_diagnostics_recipe() -> None:
     assert "short name" in result.stdout
     assert "Unflattening debug recipe" in result.stdout
     assert "--dump-microcode-maturity LOCOPT,CALLS,GLBOPT1" in result.stdout
-    assert "--dump-bst-maturity CALLS,GLBOPT1,GLBOPT2" in result.stdout
+    assert "--dump-condition-chain-maturity CALLS,GLBOPT1,GLBOPT2" in result.stdout
 
 
 def test_root_checkout_defaults_to_repo_root_without_worktree(
@@ -198,7 +198,7 @@ def test_dump_full_diagnostics_expands_recon_diag_flags(
     assert "LOCOPT,CALLS,GLBOPT1" in argv
     assert "--dump-microcode-d810" in argv
     assert "--dump-terminal-return-valranges" in argv
-    assert "--dump-bst-maturity" in argv
+    assert "--dump-condition-chain-maturity" in argv
     assert "CALLS,GLBOPT1,GLBOPT2" in argv
 
 

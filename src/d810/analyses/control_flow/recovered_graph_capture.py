@@ -46,7 +46,7 @@ def record_recovered_state_dag(dag: object) -> None:
 
     Read by the ``D810_USE_STRUCTURER`` diagnostic structurer so it structures
     the recovered state graph (dispatcher-free) instead of the lifted/projected
-    FlowGraph (which retains the BST comparison blocks).
+    FlowGraph (which retains the condition-chain comparison blocks).
     """
     global _LAST_RECOVERED_STATE_DAG
     _LAST_RECOVERED_STATE_DAG = dag
@@ -80,8 +80,8 @@ def get_explore_resolved_edges() -> tuple[object, ...]:
 def record_explore_materialize_blocks(blocks: object) -> None:
     """Stash blocks the projection must materialise as state-graph nodes.
 
-    A dispatcher/BST-region block that ``explore()`` routed to AND that writes
-    the state var directly (e.g. the ``!= 0x7D9C16EC`` BST else-leaf ``blk57``,
+    A dispatcher/condition-chain region block that ``explore()`` routed to AND that writes
+    the state var directly (e.g. the ``!= 0x7D9C16EC`` condition-chain else-leaf ``blk57``,
     which re-dispatches ``0x307BF0E5`` -> ``186``).  Absent from the projected
     handler CFG, such a block severs the routed chain and orphans the block it
     re-dispatches to.  The ``D810_USE_EXPLORE`` structurer reads this set and

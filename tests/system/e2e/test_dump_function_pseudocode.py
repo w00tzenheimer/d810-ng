@@ -372,10 +372,10 @@ class TestDumpFunctionPseudocode:
                 manual_diag_handlers_installed = False
                 try:
 
-                    _bst_maturity_name = request.config.getoption(
-                        "--dump-bst-maturity", default=None
+                    _condition_chain_maturity_name = request.config.getoption(
+                        "--dump-condition-chain-maturity", default=None
                     )
-                    _bst_maturity_map = {
+                    _condition_chain_maturity_map = {
                         "GENERATED": ida_hexrays.MMAT_GENERATED,
                         "PREOPTIMIZED": ida_hexrays.MMAT_PREOPTIMIZED,
                         "LOCOPT": ida_hexrays.MMAT_LOCOPT,
@@ -399,9 +399,9 @@ class TestDumpFunctionPseudocode:
                                 manual_diag_handlers_installed = True
                         except Exception:
                             pass
-                    if _bst_maturity_name:
-                        target_mat = _bst_maturity_map.get(
-                            _bst_maturity_name.upper(), ida_hexrays.MMAT_GLBOPT1
+                    if _condition_chain_maturity_name:
+                        target_mat = _condition_chain_maturity_map.get(
+                            _condition_chain_maturity_name.upper(), ida_hexrays.MMAT_GLBOPT1
                         )
                         func = idaapi.get_func(func_ea)
                         mbr = idaapi.mba_ranges_t()
@@ -410,7 +410,7 @@ class TestDumpFunctionPseudocode:
                         mba = idaapi.gen_microcode(
                             mbr, hf, None, idaapi.DECOMP_NO_WAIT, target_mat
                         )
-                        mba_source = f"gen_microcode({_bst_maturity_name.upper()})"
+                        mba_source = f"gen_microcode({_condition_chain_maturity_name.upper()})"
                     else:
                         cfunc_raw = idaapi.decompile(
                             func_ea, flags=idaapi.DECOMP_NO_CACHE
@@ -679,7 +679,7 @@ class TestDumpFunctionPseudocode:
                         except Exception:
                             pass
 
-                # --- Diagnostic SQLite snapshot for BST dump MBA ---
+                # --- Diagnostic SQLite snapshot for condition-chain dump MBA ---
                 try:
                     if mba:
                         from d810.core.diag import get_diag_conn
@@ -689,22 +689,22 @@ class TestDumpFunctionPseudocode:
                             snapshot_rendered_program as _snap_rendered_program,
                         )
 
-                        _bst_mat = _bst_maturity_name.upper() if _bst_maturity_name else "LVARS"
+                        _condition_chain_mat = _condition_chain_maturity_name.upper() if _condition_chain_maturity_name else "LVARS"
                         _diag_conn = get_diag_conn(func_ea)
                         if _diag_conn is not None:
                             _snap_blocks = mba_to_block_snapshots(mba)
-                            _bst_snap_id = _snap_mba(
+                            _condition_chain_snap_id = _snap_mba(
                                 _diag_conn,
                                 _snap_blocks,
-                                label=f"dump_bst_{function_name}_{_bst_mat}",
+                                label=f"dump_condition_chain_{function_name}_{_condition_chain_mat}",
                                 func_ea=func_ea,
-                                maturity=f"MMAT_{_bst_mat}",
+                                maturity=f"MMAT_{_condition_chain_mat}",
                                 phase="pre_d810",
                             )
                             for _rendered_program in rendered_programs_to_snapshot:
                                 _snap_rendered_program(
                                     _diag_conn,
-                                    _bst_snap_id,
+                                    _condition_chain_snap_id,
                                     _rendered_program,
                                 )
                             _diag_conn.close()

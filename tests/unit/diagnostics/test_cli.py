@@ -19,7 +19,7 @@ from d810.core.diag.models import (
 )
 from d810.core.diag.snapshot import (
     _dual,
-    snapshot_bst_interval_dispatcher_rows,
+    snapshot_condition_chain_interval_dispatcher_rows,
     snapshot_fact_conflicts,
     snapshot_fact_consumers,
     snapshot_fact_mappings,
@@ -351,9 +351,9 @@ class TestStateLocalCommand:
         assert "blk[217] -terminal-> blk[218]" in out
 
 
-class TestStateTransitionBstResolutionsCommand:
-    def _make_bst_resolution_db_and_log(self, tmp_path: Path) -> tuple[Path, Path]:
-        db_path = tmp_path / "bst.sqlite3"
+class TestStateTransitionConditionChainResolutionsCommand:
+    def _make_condition_chain_resolution_db_and_log(self, tmp_path: Path) -> tuple[Path, Path]:
+        db_path = tmp_path / "condition_chain.sqlite3"
         log_path = tmp_path / "d810.log"
         transition_payload = {
             "source_block_serial": 100,
@@ -430,12 +430,12 @@ class TestStateTransitionBstResolutionsCommand:
     def test_persists_by_default(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        db_path, log_path = self._make_bst_resolution_db_and_log(tmp_path)
+        db_path, log_path = self._make_condition_chain_resolution_db_and_log(tmp_path)
         rc = main([
-            "state-transition-bst-resolutions",
+            "state-transition-condition-chain-resolutions",
             "--db",
             str(db_path),
-            "--bst-log",
+            "--condition-chain-log",
             str(log_path),
         ])
 
@@ -444,7 +444,7 @@ class TestStateTransitionBstResolutionsCommand:
         assert "persisted=True" in out
         conn = create_diag_database(str(db_path)).connection()
         row = conn.execute(
-            "SELECT COUNT(*) FROM state_transition_bst_resolutions"
+            "SELECT COUNT(*) FROM state_transition_condition_chain_resolutions"
         ).fetchone()
         conn.close()
         assert row[0] == 1
@@ -452,9 +452,9 @@ class TestStateTransitionBstResolutionsCommand:
     def test_persists_from_db_intervals_without_log(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        db_path, _log_path = self._make_bst_resolution_db_and_log(tmp_path)
+        db_path, _log_path = self._make_condition_chain_resolution_db_and_log(tmp_path)
         conn = create_diag_database(str(db_path)).connection()
-        snapshot_bst_interval_dispatcher_rows(
+        snapshot_condition_chain_interval_dispatcher_rows(
             conn,
             1,
             [{"lo": 0x100, "hi": 0x200, "target": 7}],
@@ -464,7 +464,7 @@ class TestStateTransitionBstResolutionsCommand:
         conn.close()
 
         rc = main([
-            "state-transition-bst-resolutions",
+            "state-transition-condition-chain-resolutions",
             "--db",
             str(db_path),
         ])
@@ -475,8 +475,8 @@ class TestStateTransitionBstResolutionsCommand:
         assert "intervals=1" in out
         conn = create_diag_database(str(db_path)).connection()
         row = conn.execute(
-            "SELECT bst_resolved_next_block_serial "
-            "FROM state_transition_bst_resolutions"
+            "SELECT condition_chain_resolved_next_block_serial "
+            "FROM state_transition_condition_chain_resolutions"
         ).fetchone()
         conn.close()
         assert row[0] == 7
@@ -484,12 +484,12 @@ class TestStateTransitionBstResolutionsCommand:
     def test_no_persist_opt_out(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        db_path, log_path = self._make_bst_resolution_db_and_log(tmp_path)
+        db_path, log_path = self._make_condition_chain_resolution_db_and_log(tmp_path)
         rc = main([
-            "state-transition-bst-resolutions",
+            "state-transition-condition-chain-resolutions",
             "--db",
             str(db_path),
-            "--bst-log",
+            "--condition-chain-log",
             str(log_path),
             "--no-persist",
         ])
@@ -499,7 +499,7 @@ class TestStateTransitionBstResolutionsCommand:
         assert "persisted=False" in out
         conn = create_diag_database(str(db_path)).connection()
         row = conn.execute(
-            "SELECT COUNT(*) FROM state_transition_bst_resolutions"
+            "SELECT COUNT(*) FROM state_transition_condition_chain_resolutions"
         ).fetchone()
         conn.close()
         assert row[0] == 0

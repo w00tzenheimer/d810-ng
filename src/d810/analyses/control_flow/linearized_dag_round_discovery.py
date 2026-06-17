@@ -854,7 +854,7 @@ def build_linearized_dag_round_summary(
     pre_header_serial: int | None,
     initial_state: int | None,
     handler_range_map: dict | None,
-    bst_node_blocks: tuple[int, ...],
+    condition_chain_blocks: tuple[int, ...],
     diagnostics: tuple[object, ...],
     dispatcher: object | None,
     mba: object | None,
@@ -880,7 +880,7 @@ def build_linearized_dag_round_summary(
         pre_header_serial=pre_header_serial,
         initial_state=initial_state,
         handler_range_map=handler_range_map or {},
-        bst_node_blocks=tuple(sorted(int(block) for block in bst_node_blocks)),
+        condition_chain_blocks=tuple(sorted(int(block) for block in condition_chain_blocks)),
         diagnostics=tuple(diagnostics or ()),
         dispatcher=dispatcher,
         mba=mba,
@@ -906,7 +906,7 @@ def build_linearized_dag_round_summary(
         pre_header_serial=pre_header_serial,
         initial_state=initial_state,
         handler_range_map=handler_range_map or {},
-        bst_node_blocks=tuple(sorted(int(block) for block in bst_node_blocks)),
+        condition_chain_blocks=tuple(sorted(int(block) for block in condition_chain_blocks)),
         diagnostics=tuple(diagnostics or ()),
     )
     report_exit_handlers = {

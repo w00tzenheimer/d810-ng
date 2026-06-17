@@ -213,7 +213,7 @@ def apply_dispatcher_residue_cleanup_plan(
                 action="SEVER_EDGE",
                 block_serial=dispatcher_serial,
                 target_serial=succ_serial,
-                reason="dispatcher_outgoing_to_bst_comparison",
+                reason="dispatcher_outgoing_to_condition_chain_comparison",
                 mba=mba,
             )
         outgoing_severed = _apply_deferred(
@@ -291,7 +291,7 @@ def apply_unreachable_region_cleanup_plan(
             action="SOFT_KILL",
             block_serial=serial,
             target_serial=(blk.succ(0) if blk.nsucc() > 0 else None),
-            reason="unreachable_after_bst_cleanup",
+            reason="unreachable_after_condition_chain_cleanup",
             extra={"original_nsucc": int(nsucc)},
             mba=mba,
         )

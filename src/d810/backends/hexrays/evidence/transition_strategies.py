@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from d810.core.typing import TYPE_CHECKING, Optional
 
-from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
+from d810.backends.hexrays.evidence.condition_chain_analysis import analyze_condition_chain_dispatcher
 from d810.analyses.control_flow.transition_builder import (
     TransitionBuilderStrategy,
     TransitionResult,
@@ -20,12 +20,12 @@ if TYPE_CHECKING:
     )
 
 
-class BSTWalkerStrategy:
-    """Walk BST dispatcher tree to discover transitions."""
+class ConditionChainWalkerStrategy:
+    """Walk condition-chain dispatcher tree to discover transitions."""
 
     @property
     def name(self) -> str:
-        return "bst_walker"
+        return "condition_chain_walker"
 
     def build(
         self,
@@ -40,7 +40,7 @@ class BSTWalkerStrategy:
 
         stkoff = _get_state_var_stkoff(detector)
         try:
-            bst = analyze_bst_dispatcher(
+            condition_chain = analyze_condition_chain_dispatcher(
                 mba,
                 dispatcher_entry_serial=entry_serial,
                 state_var_stkoff=stkoff,
@@ -48,9 +48,9 @@ class BSTWalkerStrategy:
         except Exception:
             return None
 
-        if not bst.handler_state_map:
+        if not condition_chain.handler_state_map:
             return None
-        return _convert_condition_chain_to_result(bst)
+        return _convert_condition_chain_to_result(condition_chain)
 
 
 class BFSWithMopTrackerStrategy:
@@ -83,12 +83,11 @@ class BFSWithMopTrackerStrategy:
 
 def default_hodur_transition_strategies() -> list[TransitionBuilderStrategy]:
     """Default ordered strategy set for Hodur transition discovery."""
-    return [BSTWalkerStrategy(), BFSWithMopTrackerStrategy()]
+    return [ConditionChainWalkerStrategy(), BFSWithMopTrackerStrategy()]
 
 
 __all__ = [
-    "BSTWalkerStrategy",
+    "ConditionChainWalkerStrategy",
     "BFSWithMopTrackerStrategy",
     "default_hodur_transition_strategies",
 ]
-

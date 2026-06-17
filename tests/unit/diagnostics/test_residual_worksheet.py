@@ -159,7 +159,7 @@ def test_parse_residual_log_events_extracts_cycle_skip():
 
 def test_parse_residual_log_events_extracts_unresolved_predecessors():
     line = (
-        "unresolved non-BST dispatcher predecessors remain:"
+        "unresolved non-condition-chain dispatcher predecessors remain:"
         " {'pre_d810': [10, 20], 'post_d810': [30]}"
     )
     events = parse_residual_log_events(line + "\n")
@@ -234,7 +234,7 @@ def test_detect_feeder_blocks_prefers_log_event_sources():
 
 
 def test_detect_feeder_blocks_uses_dispatcher_residual_preds():
-    """When no log, no claimed-non-BST: emit residual non-BST preds of
+    """When no log, no claimed-non-condition-chain: emit residual non-condition-chain preds of
     the dispatcher entry that are reachable."""
     blocks = {
         0: _block(0, succs=(100,)),
@@ -247,7 +247,7 @@ def test_detect_feeder_blocks_uses_dispatcher_residual_preds():
     transition_meta = TransitionMeta(
         dispatcher_entry_serial=100,
         state_var_stkoff=0x3C,
-        bst_node_blocks=(5,),  # 5 is a real BST node, not a feeder
+        condition_chain_blocks=(5,),  # 5 is a real condition-chain node, not a feeder
     )
     out = detect_feeder_blocks(
         blocks=blocks,
@@ -256,7 +256,7 @@ def test_detect_feeder_blocks_uses_dispatcher_residual_preds():
         log_events=[],
         dag_edges=[],
     )
-    # 0 is a pred but is the entry; 5 is in bst_node_blocks → excluded.
+    # 0 is a pred but is the entry; 5 is in condition_chain_blocks → excluded.
     # Remaining: 6, 7 (sorted, both reachable).
     assert out == [0, 6, 7]
 
@@ -363,15 +363,15 @@ def _make_diag_db(tmp_path: Path) -> Path:
             text="STATE_5FE86821:",
         ).execute()
         BlockClassification.insert_many([
-            dict(snapshot=snap.id, serial=0, is_bst=0, is_reachable=1,
+            dict(snapshot=snap.id, serial=0, is_condition_chain=0, is_reachable=1,
                  is_gutted=0, in_claimed=0),
-            dict(snapshot=snap.id, serial=100, is_bst=1, is_reachable=1,
+            dict(snapshot=snap.id, serial=100, is_condition_chain=1, is_reachable=1,
                  is_gutted=0, in_claimed=0),
-            dict(snapshot=snap.id, serial=6, is_bst=0, is_reachable=1,
+            dict(snapshot=snap.id, serial=6, is_condition_chain=0, is_reachable=1,
                  is_gutted=0, in_claimed=1),
-            dict(snapshot=snap.id, serial=7, is_bst=0, is_reachable=1,
+            dict(snapshot=snap.id, serial=7, is_condition_chain=0, is_reachable=1,
                  is_gutted=0, in_claimed=1),
-            dict(snapshot=snap.id, serial=200, is_bst=0, is_reachable=1,
+            dict(snapshot=snap.id, serial=200, is_condition_chain=0, is_reachable=1,
                  is_gutted=0, in_claimed=0),
         ]).execute()
     db.close()
@@ -382,7 +382,7 @@ def test_build_worksheet_uses_dag_fallback_when_no_log_or_dispatcher(
     tmp_path: Path,
 ):
     """With no log_path and no transition_meta, build_residual_dispatcher_worksheet
-    falls through to the in-claimed-not-BST path: blocks 6 and 7 qualify."""
+    falls through to the in-claimed-not-condition-chain path: blocks 6 and 7 qualify."""
     db = _make_diag_db(tmp_path)
     result = build_residual_dispatcher_worksheet(
         diag_db_path=db,

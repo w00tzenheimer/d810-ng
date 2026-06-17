@@ -2,7 +2,7 @@
 
 The index is intentionally DAG-native: callers ask for proven semantic edges by
 node key, entry anchor, or source anchor.  The proof producer may be a dispatcher
-map, BST row, legacy emulation, or another recon source, but lowering code does
+map, range row, legacy emulation, or another recon source, but lowering code does
 not consume producer-specific candidate types.
 """
 

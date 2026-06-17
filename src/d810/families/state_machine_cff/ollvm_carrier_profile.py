@@ -24,7 +24,7 @@ import re
 from d810.core.logging import getLogger
 from d810.core.project import register_recon_fact_collector_registration_handler
 from d810.core.typing import Any, Iterable
-from d810.capabilities.providers import get_bst_walkers, get_microcode_evidence
+from d810.capabilities.providers import get_condition_chain_walkers, get_microcode_evidence
 from d810.capabilities.source_lifter import select_lifter
 from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipProof,
@@ -731,7 +731,7 @@ class OllvmCarrierBranchOwnershipOracle:
         if self._mba is None:
             return None
         try:
-            return get_bst_walkers().get_block(self._mba, int(serial))
+            return get_condition_chain_walkers().get_block(self._mba, int(serial))
         except Exception:
             return None
 
@@ -1448,7 +1448,7 @@ def _iter_mba_instruction_texts(mba: object | None) -> tuple[str, ...]:
         qty = int(getattr(mba, "qty", 0) or 0)
     except (TypeError, ValueError):
         qty = 0
-    walkers = get_bst_walkers()
+    walkers = get_condition_chain_walkers()
     texts: list[str] = []
     for serial in range(max(0, qty)):
         try:

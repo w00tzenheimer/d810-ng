@@ -17,7 +17,7 @@ emitter gets wrong:
   "not 1-way");
 - ``old_target`` is the block's real current successor, never a hardcoded dispatcher serial.
 
-It consumes only snapshot-bound CFG facts (``nsucc``/``succs`` maps, the bst/dispatcher serial
+It consumes only snapshot-bound CFG facts (``nsucc``/``succs`` maps, the condition-chain/dispatcher serial
 sets) and the already-resolved ``target_entry_anchor`` carried on each edge — no live ``mba``. The
 legacy strategy layers *additional* live-MBA handoff resolution (``resolve_effective_target_entry``)
 and path-tail redirects on top of this base; that surface stays in the hexrays backend. Here we
@@ -52,7 +52,7 @@ def emit_spine_modifications(
     dispatcher_entry_serial: int,
     block_nsucc_map: Mapping[int, int],
     block_succ_map: Mapping[int, tuple[int, ...]],
-    bst_node_blocks: frozenset[int] = frozenset(),
+    condition_chain_blocks: frozenset[int] = frozenset(),
     dispatcher_region: frozenset[int] = frozenset(),
 ) -> list[GraphModification]:
     """Walk the DAG's spine edges -> one neutral redirect modification per emitted edge.
@@ -73,7 +73,7 @@ def emit_spine_modifications(
             left for the dispatcher cleanup pass.
         block_nsucc_map: ``serial -> live successor count`` for the current graph.
         block_succ_map: ``serial -> tuple of live successor serials`` for the current graph.
-        bst_node_blocks: BST comparison block serials (old_target resolution hint).
+        condition_chain_blocks: Condition-chain comparison block serials (old_target resolution hint).
         dispatcher_region: Dispatcher region block serials (old_target resolution hint).
 
     Returns:
@@ -89,7 +89,7 @@ def emit_spine_modifications(
     owned_edges: set[tuple[int, int]] = set()
     owned_transitions: set[tuple[int, int]] = set()
 
-    bst = {int(b) for b in bst_node_blocks}
+    condition_chain_set = {int(b) for b in condition_chain_blocks}
     region = {int(b) for b in dispatcher_region}
 
     for edge in dag.edges:
@@ -120,7 +120,7 @@ def emit_spine_modifications(
             target_entry_anchor=new_target,
             source_branch_arm=source_branch_arm,
             source_is_conditional_branch=source_is_conditional_branch,
-            bst_node_blocks=bst,
+            condition_chain_blocks=condition_chain_set,
             dispatcher_region=region,
         )
 

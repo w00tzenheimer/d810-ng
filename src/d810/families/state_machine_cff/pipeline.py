@@ -1,6 +1,6 @@
 """Portable unflatten pass shape: the canonical five-pass state-machine spine.
 
-The five-pass spine is dispatcher-shape neutral: every standard kind (equality-chain, BST,
+The five-pass spine is dispatcher-shape neutral: every standard kind (equality-chain, condition-chain,
 switch-table) runs the SAME passes, which re-derive their own evidence from ``ctx.graph``.
 This module owns the canonical 5-tuple — the DRY source consumed by the family
 ``pipeline_for`` (``HodurFamily``; ``ApproovFamily`` for the switch-table kind).

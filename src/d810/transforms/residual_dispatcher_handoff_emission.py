@@ -39,7 +39,7 @@ class ResidualDispatcherHandoffExecutionContext:
     state_machine: object | None
     projected_flow_graph: object
     dispatcher_serial: int
-    bst_node_blocks: frozenset[int]
+    condition_chain_blocks: frozenset[int]
     residual_preds: tuple[int, ...]
     block_succ_map: Mapping[int, tuple[int, ...]]
     state_var_stkoff: int | None
@@ -89,7 +89,7 @@ def build_residual_dispatcher_handoff_execution_context(
     state_machine: object | None,
     projected_flow_graph: object,
     dispatcher_serial: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     block_succ_map: Mapping[int, tuple[int, ...]],
     state_var_stkoff: int | None,
     dispatcher_lookup: object | None,
@@ -111,7 +111,7 @@ def build_residual_dispatcher_handoff_execution_context(
     residual_preds = collect_residual_dispatcher_predecessors(
         projected_flow_graph,
         int(dispatcher_serial),
-        bst_node_blocks=set(int(block) for block in bst_node_blocks),
+        condition_chain_blocks=set(int(block) for block in condition_chain_blocks),
         reachable_from_serial=getattr(projected_flow_graph, "entry_serial", None),
     )
     residual_mba_view = build_projected_mba(projected_flow_graph)
@@ -121,7 +121,7 @@ def build_residual_dispatcher_handoff_execution_context(
         state_machine=state_machine,
         projected_flow_graph=projected_flow_graph,
         dispatcher_serial=int(dispatcher_serial),
-        bst_node_blocks=frozenset(int(block) for block in bst_node_blocks),
+        condition_chain_blocks=frozenset(int(block) for block in condition_chain_blocks),
         residual_preds=tuple(int(pred) for pred in residual_preds),
         block_succ_map={
             int(block): tuple(int(succ) for succ in succs)
@@ -192,7 +192,7 @@ def _normalize_residual_handoff(
         resolution = context.resolve_effective_target_entry(
             context.dag,
             edge,
-            bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+            condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
             state_var_stkoff=context.state_var_stkoff,
             dispatcher_lookup=context.dispatcher_lookup,
             dispatcher=context.dispatcher,
@@ -255,7 +255,7 @@ def _prefer_shared_suffix_family_source(
         source_block=int(source_block),
         target_entry=int(target_entry),
         current_preds=current_preds,
-        bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+        condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
         flow_graph=context.projected_flow_graph,
     ):
         return handoff
@@ -276,7 +276,7 @@ def execute_residual_dispatcher_handoffs(
     redirected = 0
     outcomes: list[ResidualDispatcherSourceOutcome] = []
 
-    ignored_blocks = set(int(block) for block in context.bst_node_blocks)
+    ignored_blocks = set(int(block) for block in context.condition_chain_blocks)
     ignored_blocks.add(int(context.dispatcher_serial))
     residual_ignored_blocks = ignored_blocks | set(int(pred) for pred in context.residual_preds)
     pred_split_emitted: set[tuple[int, int, int]] = set()
@@ -300,7 +300,7 @@ def execute_residual_dispatcher_handoffs(
             source_block=int(source_block),
             current_preds=current_preds,
             state_var_stkoff=context.state_var_stkoff,
-            bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+            condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
             dispatcher_lookup=context.dispatcher_lookup,
             dispatcher=context.dispatcher,
             analysis_mba=context.analysis_mba,
@@ -340,7 +340,7 @@ def execute_residual_dispatcher_handoffs(
         for edge, via_pred, prefix_target in context.iter_residual_prefix_handoffs(
             context.dag,
             source_block=int(source_block),
-            bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+            condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
             dispatcher=context.dispatcher,
         ):
             source_anchor = edge.source_anchor
@@ -368,7 +368,7 @@ def execute_residual_dispatcher_handoffs(
                 source_is_conditional_branch=(
                     edge.source_anchor.kind.name == "CONDITIONAL_BRANCH"
                 ),
-                bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+                condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
                 dispatcher_region=ignored_blocks,
             )
             prefix_before_attempts.append(
@@ -395,7 +395,7 @@ def execute_residual_dispatcher_handoffs(
                         old_target=int(old_target),
                         ordered_path=tuple(int(node) for node in edge.ordered_path),
                         dispatcher_serial=int(context.dispatcher_serial),
-                        bst_node_blocks=frozenset(int(block) for block in context.bst_node_blocks),
+                        condition_chain_blocks=frozenset(int(block) for block in context.condition_chain_blocks),
                         target_reaches_branch=target_reaches_source_ignoring_blocks(
                             context.projected_flow_graph,
                             target_entry=int(prefix_target),
@@ -419,7 +419,7 @@ def execute_residual_dispatcher_handoffs(
                         context.analysis_mba,
                         int(source_block),
                         state_var_stkoff=context.state_var_stkoff,
-                        bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+                        condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
                         dispatcher=context.dispatcher,
                         via_pred=int(via_pred),
                     )
@@ -433,7 +433,7 @@ def execute_residual_dispatcher_handoffs(
                             context.live_mba,
                             int(source_block),
                             state_var_stkoff=context.state_var_stkoff,
-                            bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+                            condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
                             dispatcher=context.dispatcher,
                             via_pred=int(via_pred),
                         )
@@ -441,7 +441,7 @@ def execute_residual_dispatcher_handoffs(
                     pred_handoff = context.resolve_projected_path_tail_target(
                         context.dag,
                         source_block=int(source_block),
-                        bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+                        condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
                         dispatcher=context.dispatcher,
                         predecessor_hints=(int(via_pred),),
                         require_predecessor_match=True,
@@ -452,7 +452,7 @@ def execute_residual_dispatcher_handoffs(
                         context.analysis_mba,
                         int(source_block),
                         state_var_stkoff=context.state_var_stkoff,
-                        bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+                        condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
                         dispatcher=context.dispatcher,
                         via_pred=int(via_pred),
                     )
@@ -466,7 +466,7 @@ def execute_residual_dispatcher_handoffs(
                         context.live_mba,
                         int(source_block),
                         state_var_stkoff=context.state_var_stkoff,
-                        bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+                        condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
                         dispatcher=context.dispatcher,
                         via_pred=int(via_pred),
                     )
@@ -476,7 +476,7 @@ def execute_residual_dispatcher_handoffs(
                         context.analysis_mba,
                         int(via_pred),
                         state_var_stkoff=context.state_var_stkoff,
-                        bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+                        condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
                         dispatcher_lookup=(
                             getattr(context.dispatcher, "lookup", None)
                             if context.dispatcher is not None
@@ -496,7 +496,7 @@ def execute_residual_dispatcher_handoffs(
                             state_value=int(state_value),
                             source_block=int(source_block),
                             dispatcher_serial=int(context.dispatcher_serial),
-                            bst_node_blocks=frozenset(int(block) for block in context.bst_node_blocks),
+                            condition_chain_blocks=frozenset(int(block) for block in context.condition_chain_blocks),
                             valid_pair=is_valid_pred_split_pair(
                                 int(source_block),
                                 via_pred=int(via_pred),
@@ -528,7 +528,7 @@ def execute_residual_dispatcher_handoffs(
                 source_block=int(source_block),
                 target_entry=int(target_entry),
                 current_preds=current_preds,
-                bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+                condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
                 flow_graph=context.projected_flow_graph,
             )
             if (
@@ -543,14 +543,14 @@ def execute_residual_dispatcher_handoffs(
                     state_value=int(state_value),
                     source_block=int(source_block),
                     dispatcher_serial=int(context.dispatcher_serial),
-                    bst_node_blocks=frozenset(int(block) for block in context.bst_node_blocks),
+                    condition_chain_blocks=frozenset(int(block) for block in context.condition_chain_blocks),
                     allow_family_fallback_tail=allow_family_fallback_tail,
                     is_shared_suffix_conditional_tail=source_is_shared_suffix_tail,
                     has_prior_branch_cut=context.has_prior_branch_cut_for_state(
                         context.dag,
                         source_block=int(source_block),
                         state_value=int(state_value),
-                        bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+                        condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
                         dispatcher=context.dispatcher,
                     ),
                     target_reaches_source=target_reaches_source_ignoring_blocks(
@@ -570,7 +570,7 @@ def execute_residual_dispatcher_handoffs(
             for edge, via_pred, prefix_target in context.iter_residual_prefix_handoffs(
                 context.dag,
                 source_block=int(source_block),
-                bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+                condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
                 dispatcher=context.dispatcher,
             ):
                 pred_block = context.projected_flow_graph.get_block(int(via_pred))
@@ -603,7 +603,7 @@ def execute_residual_dispatcher_handoffs(
                     source_is_conditional_branch=(
                         edge.source_anchor.kind.name == "CONDITIONAL_BRANCH"
                     ),
-                    bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+                    condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
                     dispatcher_region=ignored_blocks,
                 )
                 prefix_after_attempts.append(
@@ -632,7 +632,7 @@ def execute_residual_dispatcher_handoffs(
                             old_target=int(old_target),
                             ordered_path=tuple(int(node) for node in edge.ordered_path),
                             dispatcher_serial=int(context.dispatcher_serial),
-                            bst_node_blocks=frozenset(int(block) for block in context.bst_node_blocks),
+                            condition_chain_blocks=frozenset(int(block) for block in context.condition_chain_blocks),
                             target_reaches_branch=(
                                 target_reaches_source_ignoring_blocks(
                                     context.projected_flow_graph,
@@ -751,7 +751,7 @@ def emit_residual_dispatcher_handoffs(
     state_machine: object | None,
     projected_flow_graph: object,
     dispatcher_serial: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     builder: object,
     modifications: list,
     owned_blocks: set[int],
@@ -784,7 +784,7 @@ def emit_residual_dispatcher_handoffs(
             state_machine=state_machine,
             projected_flow_graph=projected_flow_graph,
             dispatcher_serial=int(dispatcher_serial),
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
             block_succ_map=builder.block_succ_map,
             state_var_stkoff=state_var_stkoff,
             dispatcher_lookup=dispatcher_lookup,

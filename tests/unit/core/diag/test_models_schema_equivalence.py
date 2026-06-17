@@ -179,7 +179,7 @@ EXPECTED_TABLE_INFO = {
         ("cfg_scc_size", "INTEGER", 0, 0),
         ("payload_json", "TEXT", 1, 0),
     ],
-    "bst_interval_dispatcher_rows": [
+    "condition_chain_interval_dispatcher_rows": [
         ("snapshot_id", "INTEGER", 1, 1),
         ("row_index", "INTEGER", 1, 2),
         ("lo_hex", "TEXT", 1, 0),
@@ -205,16 +205,16 @@ EXPECTED_TABLE_INFO = {
         ("confidence", "REAL", 1, 0),
         ("payload_json", "TEXT", 1, 0),
     ],
-    "state_transition_bst_resolutions": [
+    "state_transition_condition_chain_resolutions": [
         ("snapshot_id", "INTEGER", 1, 1),
         ("fact_id", "TEXT", 1, 2),
         ("source_block_serial", "INTEGER", 1, 0),
         ("source_state_const_hex", "TEXT", 1, 0),
-        ("bst_resolved_next_block_serial", "INTEGER", 0, 0),
-        ("bst_resolved_next_state_const_hex", "TEXT", 0, 0),
-        ("bst_resolved_next_state_const_u64", "INTEGER", 0, 0),
-        ("bst_resolution_reason", "TEXT", 1, 0),
-        ("bst_resolution_maturity", "TEXT", 1, 0),
+        ("condition_chain_resolved_next_block_serial", "INTEGER", 0, 0),
+        ("condition_chain_resolved_next_state_const_hex", "TEXT", 0, 0),
+        ("condition_chain_resolved_next_state_const_u64", "INTEGER", 0, 0),
+        ("condition_chain_resolution_reason", "TEXT", 1, 0),
+        ("condition_chain_resolution_maturity", "TEXT", 1, 0),
     ],
     "state_transition_dispatch_resolutions": [
         ("snapshot_id", "INTEGER", 1, 1),
@@ -342,7 +342,7 @@ EXPECTED_TABLE_INFO = {
     "block_classification": [
         ("snapshot_id", "INTEGER", 1, 1),
         ("serial", "INTEGER", 1, 2),
-        ("is_bst", "INTEGER", 1, 0),
+        ("is_condition_chain", "INTEGER", 1, 0),
         ("is_reachable", "INTEGER", 1, 0),
         ("is_gutted", "INTEGER", 1, 0),
         ("in_claimed", "INTEGER", 1, 0),
@@ -557,7 +557,7 @@ EXPECTED_INDEXES = {
             ),
         ),
     ],
-    "bst_interval_dispatcher_rows": [
+    "condition_chain_interval_dispatcher_rows": [
         ("c", ("snapshot_id", "target_block")),
         ("pk", ("snapshot_id", "row_index")),
     ],
@@ -567,8 +567,8 @@ EXPECTED_INDEXES = {
         ("c", ("snapshot_id", "target_block")),
         ("pk", ("snapshot_id", "row_index")),
     ],
-    "state_transition_bst_resolutions": [
-        ("c", ("bst_resolved_next_state_const_hex",)),
+    "state_transition_condition_chain_resolutions": [
+        ("c", ("condition_chain_resolved_next_state_const_hex",)),
         ("c", ("source_block_serial",)),
         ("pk", ("snapshot_id", "fact_id")),
     ],

@@ -53,7 +53,7 @@ DEFAULT_EXTRAS = [
     "CALLS,GLBOPT1",
     "--dump-microcode-d810",
     "--dump-terminal-return-valranges",
-    "--dump-bst-maturity",
+    "--dump-condition-chain-maturity",
     "GLBOPT1",
 ]
 FULL_DIAGNOSTIC_EXTRAS = [
@@ -63,7 +63,7 @@ FULL_DIAGNOSTIC_EXTRAS = [
     "LOCOPT,CALLS,GLBOPT1",
     "--dump-microcode-d810",
     "--dump-terminal-return-valranges",
-    "--dump-bst-maturity",
+    "--dump-condition-chain-maturity",
     "CALLS,GLBOPT1,GLBOPT2",
 ]
 
@@ -506,7 +506,7 @@ def cmd_route(args: argparse.Namespace) -> int:
     """Workflow wrapper for `python -m d810.diagnostics route`.
 
     Resolves the latest diag DB for the worktree (or honours --db) and dumps
-    BST-route provenance for one dispatcher state (state -> handler blk/ea,
+    condition-chain route provenance for one dispatcher state (state -> handler blk/ea,
     writers, terminal/exit, recovery-target disagreement). All logic lives in
     ``d810.diagnostics.state_route``.
     """
@@ -1148,7 +1148,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  This truncates the worktree d810.log, enables debug logging and diag\n"
             "  snapshots, dumps raw and post-D810 microcode around LOCOPT/CALLS/"
             "GLBOPT1,\n"
-            "  dumps terminal return valranges, and dumps BST diagnostics at "
+            "  dumps terminal return valranges, and dumps condition-chain diagnostics at "
             "CALLS/\n"
             "  GLBOPT1/GLBOPT2. Use the printed DUMP= and DB= paths for follow-up\n"
             "  commands such as `d810cli after --stats`, `d810cli snap-render`,\n"
@@ -1156,7 +1156,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  Equivalent pytest extras:\n"
             "    --dump-microcode-maturity LOCOPT,CALLS,GLBOPT1 "
             "--dump-microcode-d810\n"
-            "    --dump-terminal-return-valranges --dump-bst-maturity "
+            "    --dump-terminal-return-valranges --dump-condition-chain-maturity "
             "CALLS,GLBOPT1,GLBOPT2"
         ),
     )
@@ -1176,7 +1176,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "recommended for unflattening investigations: enable diag snapshots "
-            "and use the full recon/diagnostic microcode, valrange, and BST dump set"
+            "and use the full recon/diagnostic microcode, valrange, and condition-chain dump set"
         ),
     )
     sp.add_argument("--extra", action="append",
@@ -1323,7 +1323,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser(
         "route",
         help=(
-            "BST-route provenance for one dispatcher state: state -> handler"
+            "condition-chain route provenance for one dispatcher state: state -> handler"
             " blk/ea, writers, terminal/exit, and route_predicate-vs-recovery"
             " disagreement. Wraps `python -m d810.diagnostics route`."
         ),

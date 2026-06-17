@@ -21,7 +21,7 @@ class EntryIslandRescueSeed:
 
 @dataclass(frozen=True, slots=True)
 class LateEntryIslandRescueSeed:
-    """Discovery result for one unreachable non-dispatcher successor behind BST."""
+    """Discovery result for one unreachable non-dispatcher successor behind a condition chain."""
 
     source_block: int | None
     lifted_entry: int
@@ -31,10 +31,10 @@ class LateEntryIslandRescueSeed:
 
 @dataclass(frozen=True, slots=True)
 class LateEntryIslandDiagnostic:
-    """Diagnostic facts for an unreachable non-dispatcher block behind BST-only preds."""
+    """Diagnostic facts for an unreachable non-dispatcher block behind condition-chain-only preds."""
 
     block_serial: int
-    bst_preds: tuple[int, ...]
+    condition_chain_preds: tuple[int, ...]
     dispatcher_rows: tuple[str, ...]
 
 
@@ -159,7 +159,7 @@ def collect_late_entry_island_diagnostics(
         diagnostics.append(
             LateEntryIslandDiagnostic(
                 block_serial=serial,
-                bst_preds=preds,
+                condition_chain_preds=preds,
                 dispatcher_rows=rows_info,
             )
         )

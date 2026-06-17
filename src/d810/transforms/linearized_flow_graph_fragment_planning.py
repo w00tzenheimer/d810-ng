@@ -68,7 +68,7 @@ class LinearizedFlowGraphPlanSetup:
     dispatcher: object | None
     blocked_sources: frozenset[int]
     dispatcher_region: frozenset[int]
-    bst_node_blocks: frozenset[int]
+    condition_chain_blocks: frozenset[int]
     original_blocks: frozenset[int]
     transition_result: object
     pre_header_serial: int | None
@@ -85,7 +85,7 @@ class LinearizedFlowGraphPlanningContext:
     mba: object | None
     state_machine: object
     dispatcher_serial: int
-    bst_node_blocks: frozenset[int]
+    condition_chain_blocks: frozenset[int]
     dispatcher_region: frozenset[int]
     state_var_stkoff: int | None
     dispatcher_lookup: object | None
@@ -122,7 +122,7 @@ class LinearizedFlowGraphPlanningCallbacks:
     ]
     emit_structured_region: Callable[..., "LinearizedFlowGraphStructuredRegionResult"]
     emit_residual_dispatcher_handoffs: Callable[..., int]
-    disconnect_bst_comparison_nodes: Callable[..., int]
+    disconnect_condition_chain_nodes: Callable[..., int]
     resolve_effective_target_entry: Callable[..., int | None] | None = None
 
 
@@ -162,7 +162,7 @@ class LinearizedFlowGraphPlanningResult:
     residual_dispatcher_redirect_count: int
     residual_dispatcher_normalized_count: int
     dead_island_cleanup_count: int
-    unresolved_bst_targets: int
+    unresolved_condition_chain_targets: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,7 +407,7 @@ def _normalize_projected_conditional_redirects(
                 resolve_effective_target_entry(
                     dag,
                     edge,
-                    bst_node_blocks=set(int(block) for block in dispatcher_region),
+                    condition_chain_blocks=set(int(block) for block in dispatcher_region),
                     state_var_stkoff=state_var_stkoff,
                     dispatcher_lookup=dispatcher_lookup,
                     dispatcher=dispatcher,
@@ -493,7 +493,7 @@ def prepare_linearized_flow_graph_plan_setup(
     *,
     snapshot: object,
     state_machine: object,
-    bst_result: object,
+    range_evidence: object,
     flow_graph: object,
     same_maturity_rerun: bool,
     build_builder: Callable[[object], object],
@@ -502,23 +502,23 @@ def prepare_linearized_flow_graph_plan_setup(
     label_block: Callable[[int | None], str],
     transition_result: object,
 ) -> LinearizedFlowGraphPlanSetup:
-    bst_node_blocks = frozenset(
+    condition_chain_blocks = frozenset(
         int(block)
-        for block in (getattr(bst_result, "condition_chain_blocks", set()) or set())
+        for block in (getattr(range_evidence, "condition_chain_blocks", set()) or set())
     )
     builder = build_builder(snapshot)
     state_var_stkoff = resolve_state_var_stkoff(snapshot, state_machine)
-    dispatcher = getattr(bst_result, "dispatcher", None)
+    dispatcher = getattr(range_evidence, "dispatcher", None)
     blocked_sources = frozenset(
         int(serial)
         for serial in (getattr(snapshot, "lfg_redirected_blocks", ()) or ())
     )
-    dispatcher_region = bst_node_blocks
+    dispatcher_region = condition_chain_blocks
     original_blocks = frozenset(
         int(block) for block in flow_graph_block_serials(flow_graph)
     )
     raw_pre_header = (
-        None if same_maturity_rerun else getattr(bst_result, "pre_header_serial", None)
+        None if same_maturity_rerun else getattr(range_evidence, "pre_header_serial", None)
     )
     entry_serial = getattr(getattr(snapshot, "reachability", None), "entry_serial", None)
     pre_header_serial = (
@@ -545,7 +545,7 @@ def prepare_linearized_flow_graph_plan_setup(
         dispatcher=dispatcher,
         blocked_sources=blocked_sources,
         dispatcher_region=dispatcher_region,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         original_blocks=original_blocks,
         transition_result=transition_result,
         pre_header_serial=pre_header_serial,
@@ -570,7 +570,7 @@ def build_linearized_flow_graph_planning_context(
         mba=mba,
         state_machine=state_machine,
         dispatcher_serial=int(dispatcher_serial),
-        bst_node_blocks=setup.bst_node_blocks,
+        condition_chain_blocks=setup.condition_chain_blocks,
         dispatcher_region=setup.dispatcher_region,
         state_var_stkoff=setup.state_var_stkoff,
         dispatcher_lookup=(dispatcher.lookup if dispatcher is not None else None),
@@ -593,14 +593,14 @@ def build_linearized_flow_graph_planning_context(
 def adapt_linearized_dag_round_summary(
     *,
     state_machine: object,
-    bst_result: object,
+    range_evidence: object,
     transition_result: object,
     current_flow_graph: object,
     dag_round_mba: object | None,
     dispatcher_serial: int,
     state_var_stkoff: int | None,
     pre_header_serial: int | None,
-    bst_node_blocks: frozenset[int],
+    condition_chain_blocks: frozenset[int],
     build_round_summary: object,
     build_live_dag: object,
     build_transition_report: object,
@@ -614,10 +614,10 @@ def adapt_linearized_dag_round_summary(
         state_var_stkoff=state_var_stkoff,
         pre_header_serial=pre_header_serial,
         initial_state=state_machine.initial_state,
-        handler_range_map=getattr(bst_result, "handler_range_map", {}) or {},
-        bst_node_blocks=tuple(sorted(bst_node_blocks)),
-        diagnostics=tuple(getattr(bst_result, "diagnostics", ()) or ()),
-        dispatcher=getattr(bst_result, "dispatcher", None),
+        handler_range_map=getattr(range_evidence, "handler_range_map", {}) or {},
+        condition_chain_blocks=tuple(sorted(condition_chain_blocks)),
+        diagnostics=tuple(getattr(range_evidence, "diagnostics", ()) or ()),
+        dispatcher=getattr(range_evidence, "dispatcher", None),
         mba=dag_round_mba,
         handlers=state_machine.handlers,
         build_live_dag=build_live_dag,
@@ -695,7 +695,7 @@ def build_linearized_flow_graph_planning_callbacks(
     *,
     snapshot: object,
     state_machine: object,
-    bst_result: object,
+    range_evidence: object,
     mba: object | None,
     setup: LinearizedFlowGraphPlanSetup,
     discover_round_summary: object,
@@ -707,7 +707,7 @@ def build_linearized_flow_graph_planning_callbacks(
     collect_residual_dispatcher_predecessors: object,
     emit_structured_region: object,
     emit_residual_dispatcher_handoffs: object,
-    disconnect_bst_comparison_nodes: object,
+    disconnect_condition_chain_nodes: object,
     resolve_effective_target_entry: object | None,
     build_live_dag: object,
     build_transition_report: object,
@@ -717,14 +717,14 @@ def build_linearized_flow_graph_planning_callbacks(
     return LinearizedFlowGraphPlanningCallbacks(
         build_round_summary=lambda current_flow_graph, dag_round_mba: adapt_linearized_dag_round_summary(
             state_machine=state_machine,
-            bst_result=bst_result,
+            range_evidence=range_evidence,
             transition_result=setup.transition_result,
             current_flow_graph=current_flow_graph,
             dag_round_mba=dag_round_mba,
-            dispatcher_serial=int(snapshot.bst_dispatcher_serial),
+            dispatcher_serial=int(snapshot.dispatcher_root_serial),
             state_var_stkoff=setup.state_var_stkoff,
             pre_header_serial=setup.pre_header_serial,
-            bst_node_blocks=setup.bst_node_blocks,
+            condition_chain_blocks=setup.condition_chain_blocks,
             build_round_summary=discover_round_summary,
             build_live_dag=build_live_dag,
             build_transition_report=build_transition_report,
@@ -733,15 +733,15 @@ def build_linearized_flow_graph_planning_callbacks(
         ),
         build_projected_mba=build_projected_mba,
         project_flow_graph=project_flow_graph,
-        resolve_redirect_safe_target_entry=lambda dag, edge, bst_node_blocks: resolve_redirect_safe_target_entry(
+        resolve_redirect_safe_target_entry=lambda dag, edge, condition_chain_blocks: resolve_redirect_safe_target_entry(
             dag,
             edge,
-            bst_node_blocks=set(int(block) for block in bst_node_blocks),
+            condition_chain_blocks=set(int(block) for block in condition_chain_blocks),
         ),
-        resolve_initial_entry=lambda dag, initial_state, bst_node_blocks: resolve_initial_entry(
+        resolve_initial_entry=lambda dag, initial_state, condition_chain_blocks: resolve_initial_entry(
             dag,
             initial_state,
-            bst_node_blocks=set(int(block) for block in bst_node_blocks),
+            condition_chain_blocks=set(int(block) for block in condition_chain_blocks),
         ),
         emit_dag_redirect=lambda *,
             edge,
@@ -773,7 +773,7 @@ def build_linearized_flow_graph_planning_callbacks(
                 terminal_protected_blocks=set(terminal_protected_blocks),
                 report_exit_handlers=set(report_exit_handlers),
                 report_exit_owned_blocks=set(report_exit_owned_blocks),
-                bst_node_blocks=set(int(block) for block in setup.bst_node_blocks),
+                condition_chain_blocks=set(int(block) for block in setup.condition_chain_blocks),
                 dispatcher_region=set(int(block) for block in setup.dispatcher_region),
                 flow_graph=flow_graph,
                 state_var_stkoff=setup.state_var_stkoff,
@@ -783,10 +783,10 @@ def build_linearized_flow_graph_planning_callbacks(
                 dispatcher=setup.dispatcher,
                 mba=mba,
             ),
-        collect_residual_dispatcher_predecessors=lambda current_flow_graph, dispatcher_serial, bst_node_blocks, reachable_from_serial: collect_residual_dispatcher_predecessors(
+        collect_residual_dispatcher_predecessors=lambda current_flow_graph, dispatcher_serial, condition_chain_blocks, reachable_from_serial: collect_residual_dispatcher_predecessors(
             current_flow_graph,
             dispatcher_serial,
-            bst_node_blocks=set(int(block) for block in bst_node_blocks),
+            condition_chain_blocks=set(int(block) for block in condition_chain_blocks),
             reachable_from_serial=reachable_from_serial,
         ),
         emit_structured_region=lambda *,
@@ -812,8 +812,8 @@ def build_linearized_flow_graph_planning_callbacks(
                 dag=dag,
                 state_machine=state_machine,
                 projected_flow_graph=projected_flow_graph,
-                dispatcher_serial=int(snapshot.bst_dispatcher_serial),
-                bst_node_blocks=set(int(block) for block in setup.bst_node_blocks),
+                dispatcher_serial=int(snapshot.dispatcher_root_serial),
+                condition_chain_blocks=set(int(block) for block in setup.condition_chain_blocks),
                 builder=setup.builder,
                 modifications=state.modifications,
                 owned_blocks=state.owned_blocks,
@@ -831,8 +831,8 @@ def build_linearized_flow_graph_planning_callbacks(
                 redirected_blocks=redirected_blocks,
                 rejected_sources=rejected_sources,
             ),
-        disconnect_bst_comparison_nodes=lambda bst_node_blocks, dispatcher_serial, state: disconnect_bst_comparison_nodes(
-            set(int(block) for block in bst_node_blocks),
+        disconnect_condition_chain_nodes=lambda condition_chain_blocks, dispatcher_serial, state: disconnect_condition_chain_nodes(
+            set(int(block) for block in condition_chain_blocks),
             dispatcher_serial,
             setup.builder,
             state.modifications,
@@ -893,7 +893,7 @@ def execute_linearized_flow_graph_planning(
     terminal_skipped = 0
     unknown_skipped = 0
     skipped_count = 0
-    unresolved_bst_targets = 0
+    unresolved_condition_chain_targets = 0
     consumed_structured_state_edges: set[tuple[int, int]] = set()
     pending_region_states: set[int] = (
         {int(context.initial_state) & 0xFFFFFFFF}
@@ -1017,7 +1017,7 @@ def execute_linearized_flow_graph_planning(
                 if not revisit_added_modifications:
                     break
 
-        round_unresolved_bst_targets = 0
+        round_unresolved_condition_chain_targets = 0
         round_start = len(state.modifications)
         if not context.same_maturity_rerun:
             for plannable_edge in latest_summary.plannable_edges:
@@ -1044,10 +1044,10 @@ def execute_linearized_flow_graph_planning(
                     safe_target_entry = callbacks.resolve_redirect_safe_target_entry(
                         latest_summary.dag,
                         plannable_edge.edge,
-                        context.bst_node_blocks,
+                        context.condition_chain_blocks,
                     )
                     if safe_target_entry is None:
-                        round_unresolved_bst_targets += 1
+                        round_unresolved_condition_chain_targets += 1
                 if plannable_edge.source_anchor_block not in context.original_blocks:
                     continue
                 if any(
@@ -1084,7 +1084,7 @@ def execute_linearized_flow_graph_planning(
             callbacks.resolve_initial_entry(
                 latest_summary.dag,
                 int(context.initial_state),
-                context.bst_node_blocks,
+                context.condition_chain_blocks,
             )
             if context.initial_state is not None
             else None
@@ -1119,7 +1119,7 @@ def execute_linearized_flow_graph_planning(
             state.claimed_1way[int(context.pre_header_serial)] = int(initial_entry)
             transition_count += 1
 
-        unresolved_bst_targets = round_unresolved_bst_targets
+        unresolved_condition_chain_targets = round_unresolved_condition_chain_targets
         round_added = len(state.modifications) - round_start
         if round_added <= 0:
             break
@@ -1161,7 +1161,7 @@ def execute_linearized_flow_graph_planning(
             residual_dispatcher_redirect_count=0,
             residual_dispatcher_normalized_count=0,
             dead_island_cleanup_count=0,
-            unresolved_bst_targets=unresolved_bst_targets,
+            unresolved_condition_chain_targets=unresolved_condition_chain_targets,
         )
 
     cleanup_gate_reason: str | None = None
@@ -1234,7 +1234,7 @@ def execute_linearized_flow_graph_planning(
         residual_dispatcher_preds = callbacks.collect_residual_dispatcher_predecessors(
             final_flow_graph,
             int(context.dispatcher_serial),
-            context.bst_node_blocks,
+            context.condition_chain_blocks,
             getattr(final_flow_graph, "entry_serial", None),
         )
         if residual_dispatcher_preds:
@@ -1273,7 +1273,7 @@ def execute_linearized_flow_graph_planning(
                 next_residual_dispatcher_preds = callbacks.collect_residual_dispatcher_predecessors(
                     final_flow_graph,
                     int(context.dispatcher_serial),
-                    context.bst_node_blocks,
+                    context.condition_chain_blocks,
                     getattr(final_flow_graph, "entry_serial", None),
                 )
                 residual_dispatcher_preds = next_residual_dispatcher_preds
@@ -1363,7 +1363,7 @@ def execute_linearized_flow_graph_planning(
                     residual_dispatcher_preds = callbacks.collect_residual_dispatcher_predecessors(
                         final_flow_graph,
                         int(context.dispatcher_serial),
-                        context.bst_node_blocks,
+                        context.condition_chain_blocks,
                         getattr(final_flow_graph, "entry_serial", None),
                     )
                     if residual_dispatcher_preds:
@@ -1378,13 +1378,13 @@ def execute_linearized_flow_graph_planning(
                 exc_info=True,
             )
 
-    if unresolved_bst_targets or cleanup_gate_reason is not None:
+    if unresolved_condition_chain_targets or cleanup_gate_reason is not None:
         disconnect_count = 0
-        if unresolved_bst_targets and cleanup_gate_reason is None:
-            cleanup_gate_reason = "unresolved_bst_targets"
+        if unresolved_condition_chain_targets and cleanup_gate_reason is None:
+            cleanup_gate_reason = "unresolved_condition_chain_targets"
     else:
-        disconnect_count = callbacks.disconnect_bst_comparison_nodes(
-            context.bst_node_blocks,
+        disconnect_count = callbacks.disconnect_condition_chain_nodes(
+            context.condition_chain_blocks,
             int(context.dispatcher_serial),
             state=state,
         )
@@ -1406,7 +1406,7 @@ def execute_linearized_flow_graph_planning(
         residual_dispatcher_redirect_count=int(residual_dispatcher_redirect_count),
         residual_dispatcher_normalized_count=int(residual_dispatcher_normalized_count),
         dead_island_cleanup_count=0,
-        unresolved_bst_targets=int(unresolved_bst_targets),
+        unresolved_condition_chain_targets=int(unresolved_condition_chain_targets),
     )
 
 

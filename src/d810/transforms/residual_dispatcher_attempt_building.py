@@ -30,7 +30,7 @@ class ResidualPrefixAttemptBuildContext:
     old_target: int | None = None
     ordered_path: tuple[int, ...] = ()
     dispatcher_serial: int | None = None
-    bst_node_blocks: frozenset[int] = frozenset()
+    condition_chain_blocks: frozenset[int] = frozenset()
     target_reaches_branch: bool = False
     via_pred_succs: tuple[int, ...] = ()
     target_reaches_pred: bool = False
@@ -46,7 +46,7 @@ class ResidualPredSplitAttemptBuildContext:
     state_value: int
     source_block: int
     dispatcher_serial: int
-    bst_node_blocks: frozenset[int]
+    condition_chain_blocks: frozenset[int]
     valid_pair: bool
     target_reaches_via_pred: bool
     already_emitted: bool
@@ -58,7 +58,7 @@ class ResidualGotoAttemptBuildContext:
     state_value: int
     source_block: int
     dispatcher_serial: int
-    bst_node_blocks: frozenset[int]
+    condition_chain_blocks: frozenset[int]
     allow_family_fallback_tail: bool
     is_shared_suffix_conditional_tail: bool
     has_prior_branch_cut: bool
@@ -87,7 +87,7 @@ def build_residual_prefix_attempt(
             old_target=int(context.old_target),
             ordered_path=tuple(int(node) for node in context.ordered_path),
             dispatcher_serial=int(context.dispatcher_serial),
-            bst_node_blocks=frozenset(int(block) for block in context.bst_node_blocks),
+            condition_chain_blocks=frozenset(int(block) for block in context.condition_chain_blocks),
             target_reaches_branch=bool(context.target_reaches_branch),
         )
 
@@ -100,7 +100,7 @@ def build_residual_prefix_attempt(
                 source_block=int(context.source_block) if context.source_block is not None else 0,
                 target_entry=int(context.prefix_target),
                 dispatcher_serial=int(context.dispatcher_serial),
-                bst_node_blocks=frozenset(int(block) for block in context.bst_node_blocks),
+                condition_chain_blocks=frozenset(int(block) for block in context.condition_chain_blocks),
                 target_reaches_pred=bool(context.target_reaches_pred),
             ),
             already_emitted=bool(context.already_emitted),
@@ -144,7 +144,7 @@ def build_residual_pred_split_attempt(
             via_pred=int(context.via_pred),
             target_entry=int(context.target_entry),
             dispatcher_serial=int(context.dispatcher_serial),
-            bst_node_blocks=frozenset(int(block) for block in context.bst_node_blocks),
+            condition_chain_blocks=frozenset(int(block) for block in context.condition_chain_blocks),
             valid_pair=bool(context.valid_pair),
             target_reaches_via_pred=bool(context.target_reaches_via_pred),
             already_emitted=bool(context.already_emitted),
@@ -162,7 +162,7 @@ def build_residual_goto_attempt(
             source_block=int(context.source_block),
             target_entry=int(context.target_entry),
             dispatcher_serial=int(context.dispatcher_serial),
-            bst_node_blocks=frozenset(int(block) for block in context.bst_node_blocks),
+            condition_chain_blocks=frozenset(int(block) for block in context.condition_chain_blocks),
             allow_family_fallback_tail=bool(context.allow_family_fallback_tail),
             is_shared_suffix_conditional_tail=bool(context.is_shared_suffix_conditional_tail),
             has_prior_branch_cut=bool(context.has_prior_branch_cut),

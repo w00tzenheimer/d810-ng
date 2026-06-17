@@ -166,7 +166,7 @@ class DispatchTable:
     summary="Reconstructs dispatch tables from equality-compare chains over state aliases.",
     use_cases=(
         "Recover a dispatcher table when flattened code uses linear compare chains instead of a switch.",
-        "Normalize compare-based dispatch information before BST or interval reconstruction merges it.",
+        "Normalize compare-based dispatch information before condition-chain or interval reconstruction merges it.",
     ),
     examples=(
         "Resolve `if (state == 0x42) goto A; if (state == 0x100) goto B;` into `{0x42: A, 0x100: B}`.",
@@ -175,7 +175,7 @@ class DispatchTable:
     tags=("compare-chain", "dispatcher", "state-machine", "intervals"),
     related_paths=(
         "src/d810/cfg/flow/compare_chain.py",
-        "src/d810/backends/hexrays/evidence/bst_analysis.py",
+        "src/d810/backends/hexrays/evidence/condition_chain_analysis.py",
     ),
 )
 class CompareChainResolver:

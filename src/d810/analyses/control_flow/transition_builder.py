@@ -276,7 +276,7 @@ def _convert_condition_chain_to_result(
         assignment_map={},
         initial_state=condition_chain.initial_state,
         pre_header_serial=condition_chain.pre_header_serial,
-        strategy_name="bst_walker",
+        strategy_name="condition_chain_walker",
         resolved_count=len(transitions),
     )
 

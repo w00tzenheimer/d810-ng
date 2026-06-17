@@ -1363,12 +1363,12 @@ def pytest_addoption(parser):
         ),
     )
     parser.addoption(
-        "--dump-bst-maturity",
+        "--dump-condition-chain-maturity",
         action="store",
         default=None,
         help=(
-            "Maturity level at which to dump the BST dispatcher tree (e.g. GLBOPT1). "
-            "When set, uses gen_microcode() instead of decompile() for the BST dump. "
+            "Maturity level at which to dump the condition-chain dispatcher tree (e.g. GLBOPT1). "
+            "When set, uses gen_microcode() instead of decompile() for the condition-chain dump. "
             "Valid values: GENERATED, PREOPTIMIZED, LOCOPT, CALLS, GLBOPT1, GLBOPT2, GLBOPT3, LVARS."
         ),
     )

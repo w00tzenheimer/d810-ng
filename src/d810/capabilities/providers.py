@@ -7,7 +7,7 @@ backend, while the composition root (``D810State.start_d810`` -- an
 optimizer/HIGH-layer module that may legally import backends) REGISTERS them.
 
 This inverts the dependency honestly (backend pushes, portable reads) and is
-the mechanism that lets the recon BST-transition analyses drop their direct
+the mechanism that lets the recon condition-chain transition analyses drop their direct
 ``from d810.backends.hexrays.evidence import ...`` edges (Landing Sequence
 LS10 -> P1, ticket d81-1w16/llr-pqem).
 
@@ -25,15 +25,15 @@ from d810.core.typing import Any, Callable, Optional
 
 
 @dataclass(frozen=True)
-class BstWalkerProvider:
-    """Backend-supplied BST live-mba walkers + constant-folding eval.
+class ConditionChainWalkerProvider:
+    """Backend-supplied condition-chain live-mba walkers + constant-folding eval.
 
-    Bundles the Hex-Rays evidence callables the recon BST-transition analyses
+    Bundles the Hex-Rays evidence callables the recon condition-chain transition analyses
     depend on.  The Hex-Rays implementation lives in
-    ``d810.backends.hexrays.evidence.bst_analysis``; the composition root
+    ``d810.backends.hexrays.evidence.condition_chain_analysis``; the composition root
     constructs this bundle from it and registers it via
-    :func:`register_bst_walkers`.  Recon consumers read it via
-    :func:`get_bst_walkers` and never import the backend.
+    :func:`register_condition_chain_walkers`.  Recon consumers read it via
+    :func:`get_condition_chain_walkers` and never import the backend.
     """
 
     detect_state_var_stkoff: Callable[..., Any]
@@ -41,7 +41,7 @@ class BstWalkerProvider:
     find_pre_header_state: Callable[..., Any]
     walk_handler_chain: Callable[..., Any]
     forward_eval_insn: Callable[..., Any]
-    resolve_via_bst_walk: Callable[..., Any]
+    resolve_via_condition_chain_walk: Callable[..., Any]
     # Block topology accessors.  Portable-core path analyses hold an opaque
     # backend object (a live ``mba_t`` OR a ``_FlowGraphMBAView`` snapshot
     # projection) and must not call its live-MBA method API
@@ -168,37 +168,37 @@ class MicrocodeEvidenceProvider:
 
 
 _lock = threading.Lock()
-_bst_walkers: Optional[BstWalkerProvider] = None
+_condition_chain_walkers: Optional[ConditionChainWalkerProvider] = None
 _microcode_evidence: Optional[MicrocodeEvidenceProvider] = None
 
 
-def register_bst_walkers(provider: BstWalkerProvider) -> None:
-    """Register the backend BST-walker provider.
+def register_condition_chain_walkers(provider: ConditionChainWalkerProvider) -> None:
+    """Register the backend condition-chain walker provider.
 
     Called only by the composition root (``D810State.start_d810``), which may
     import ``d810.backends.hexrays.evidence`` to build the bundle.
     """
-    global _bst_walkers
+    global _condition_chain_walkers
     with _lock:
-        _bst_walkers = provider
+        _condition_chain_walkers = provider
 
 
-def get_bst_walkers() -> BstWalkerProvider:
-    """Return the registered BST-walker provider.
+def get_condition_chain_walkers() -> ConditionChainWalkerProvider:
+    """Return the registered condition-chain walker provider.
 
     Raises:
-        LookupError: if no provider is registered.  The recon BST-transition
+        LookupError: if no provider is registered.  The recon condition-chain transition
             path REQUIRES this seam, so a missing provider is a
             composition-root wiring bug (fail loud), not an optional miss --
             unlike diagnostic seams that may legitimately be absent.
     """
     with _lock:
-        provider = _bst_walkers
+        provider = _condition_chain_walkers
     if provider is None:
         raise LookupError(
-            "BstWalkerProvider not registered: the composition root "
-            "(D810State.start_d810) must call register_bst_walkers() before "
-            "recon BST-transition analyses run."
+            "ConditionChainWalkerProvider not registered: the composition root "
+            "(D810State.start_d810) must call register_condition_chain_walkers() before "
+            "recon condition-chain transition analyses run."
         )
     return provider
 
@@ -231,7 +231,7 @@ def get_microcode_evidence() -> MicrocodeEvidenceProvider:
 
 def reset_providers_for_tests() -> None:
     """Clear all registered providers (test isolation)."""
-    global _bst_walkers, _microcode_evidence
+    global _condition_chain_walkers, _microcode_evidence
     with _lock:
-        _bst_walkers = None
+        _condition_chain_walkers = None
         _microcode_evidence = None

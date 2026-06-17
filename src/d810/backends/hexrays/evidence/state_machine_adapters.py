@@ -64,7 +64,7 @@ def detect_switch_table_state_machine(
                 mba,
                 entry_serial=handler_serial,
                 incoming_state=state_const,
-                bst_node_blocks=dispatcher_blocks_set,
+                condition_chain_blocks=dispatcher_blocks_set,
                 state_var_stkoff=handler_map.state_var_stkoff,
                 handler_entry_blocks=handler_entry_blocks,
             )

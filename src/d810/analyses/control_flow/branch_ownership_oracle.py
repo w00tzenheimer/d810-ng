@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from d810.core.typing import Callable
-from d810.capabilities.providers import get_bst_walkers
+from d810.capabilities.providers import get_condition_chain_walkers
 from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipProof,
     BranchOwnershipProofKind,
@@ -210,7 +210,7 @@ class MopTrackerBranchOwnershipOracle:
         if self._mba is None:
             return None
         try:
-            return get_bst_walkers().get_block(self._mba, int(serial))
+            return get_condition_chain_walkers().get_block(self._mba, int(serial))
         except Exception:
             return None
 
@@ -327,7 +327,7 @@ class Z3BranchOwnershipOracle:
         if self._mba is None:
             return None
         try:
-            return get_bst_walkers().get_block(self._mba, int(serial))
+            return get_condition_chain_walkers().get_block(self._mba, int(serial))
         except Exception:
             return None
 
@@ -590,7 +590,7 @@ def _resolve_mop_value(
         serial = getattr(tail, "block_serial", None)
         if serial is not None:
             try:
-                block = get_bst_walkers().get_block(mba, int(serial))
+                block = get_condition_chain_walkers().get_block(mba, int(serial))
             except Exception:
                 block = None
     if block is None:
@@ -620,7 +620,7 @@ def _resolve_mop_value(
         must_use_pred = None
         if via_pred is not None and mba is not None:
             try:
-                must_use_pred = get_bst_walkers().get_block(mba, int(via_pred))
+                must_use_pred = get_condition_chain_walkers().get_block(mba, int(via_pred))
             except Exception:
                 must_use_pred = None
         histories = tracker.search_backward(
@@ -868,7 +868,7 @@ def _discarded_corridor_side_effect_reason(
     if qty and (start_serial < 0 or start_serial >= qty):
         return "discarded_target_out_of_range"
 
-    walkers = get_bst_walkers()
+    walkers = get_condition_chain_walkers()
     visited: set[int] = set()
     queue: list[tuple[int, int]] = [(int(start_serial), 0)]
     while queue:

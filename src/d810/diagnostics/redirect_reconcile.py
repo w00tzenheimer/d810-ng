@@ -10,7 +10,7 @@ script):
 * ``AGREE_INTENT_DROPPED_OTHER``
 * ``RESOLVER_OK_STRATEGY_USE_DEF_VETO``
 * ``DISAGREE_TARGET``
-* ``STRATEGY_ONLY_STATE_NOT_IN_BST``
+* ``STRATEGY_ONLY_STATE_NOT_IN_CONDITION_CHAIN``
 * ``BOTH_NONE``
 
 The actual classification logic lives in :mod:`d810.analyses.control_flow.redirect_reconciliation`
@@ -70,7 +70,7 @@ def load_persisted_dup_sources(conn: sqlite3.Connection) -> frozenset[int]:
     return frozenset(int(r[0]) for r in rows)
 
 
-def load_bst_table(conn: sqlite3.Connection) -> dict[int, int]:
+def load_condition_chain_table(conn: sqlite3.Connection) -> dict[int, int]:
     """``state_const -> handler_block`` lookup from ``state_cfg_edges``."""
     out: dict[int, int] = {}
     for sc, h in (
@@ -256,10 +256,10 @@ def run_reconcile(
                 ),
             )
 
-        bst_table = load_bst_table(conn)
+        condition_chain_table = load_condition_chain_table(conn)
 
-        def bst(k: int) -> int | None:
-            return bst_table.get(int(k) & 0xFFFFFFFFFFFFFFFF)
+        def condition_chain(k: int) -> int | None:
+            return condition_chain_table.get(int(k) & 0xFFFFFFFFFFFFFFFF)
 
         block_succs = load_block_succs(conn, snap_id)
         block_serials = sorted(block_succs)
@@ -296,7 +296,7 @@ def run_reconcile(
             res = resolve_forward_target(
                 c,
                 src_reaching_const={state_var_tok: rc},
-                bst_resolver=bst,
+                condition_chain_resolver=condition_chain,
             )
             resolver_targets[(c.src_serial, c.tgt_serial)] = (
                 res.new_target if res else None
@@ -310,14 +310,14 @@ def run_reconcile(
             logged_intent=logged_intent,
             persisted=persisted,
             state_consts=state_consts,
-            bst_table=bst_table,
+            condition_chain_table=condition_chain_table,
             log_signals=log_signals,
         )
 
     lines: list[str] = [
         f"# Reconciliation: snap {snap_id} ({db_path})",
         "",
-        f"- BST table size: {len(bst_table)} state -> handler entries",
+        f"- condition-chain table size: {len(condition_chain_table)} state -> handler entries",
         f"- Dispatcher region (in-deg >= {min_dispatcher_preds}): "
         f"{len(dispatcher_blocks)} blocks",
         f"- Round-trip back-edges: {len(round_trips)}",

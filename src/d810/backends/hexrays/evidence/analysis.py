@@ -164,7 +164,7 @@ class HodurStateMachineDetector:
         self.state_machine: DispatcherStateMachine | None = None
         self.use_cache = use_cache
         self._dispatcher_analysis: DispatcherAnalysis | None = None
-        self.bst_result: ConditionChainAnalysisResult | None = None
+        self.range_evidence: ConditionChainAnalysisResult | None = None
         self.min_state_constant = min_state_constant
         self.min_state_constants = min_state_constants
         self.max_state_constants = max_state_constants
@@ -1470,7 +1470,7 @@ class HodurStateMachineDetector:
     def _discover_transitions_via_ud_chains(
         self,
         mba: "ida_hexrays.mba_t",
-        bst_result: ConditionChainAnalysisResult | None = None,
+        range_evidence: ConditionChainAnalysisResult | None = None,
     ) -> "list[StateTransition]":
         """Discover uncovered handler transitions via UD chain analysis.
 
@@ -1479,8 +1479,8 @@ class HodurStateMachineDetector:
         map to known handler states.  For non-literal sources, performs one
         level of backward UD chain lookup to resolve through temp variables.
 
-        When *bst_result* is provided and the BFS predecessor walk fails to
-        resolve ``from_state``, a BST provenance fallback is attempted via
+        When *range_evidence* is provided and the BFS predecessor walk fails to
+        resolve ``from_state``, a condition-chain provenance fallback is attempted via
         :meth:`ConditionChainNodeMap.resolve_state_for_block`.
 
         Returns a list of newly discovered :class:`StateTransition` objects.
@@ -1523,7 +1523,7 @@ class HodurStateMachineDetector:
             return []
 
         # --- Find all blocks that define the state variable ---
-        # Query UD chains at the dispatcher entry (block 0 or first BST node)
+        # Query UD chains at the dispatcher entry (block 0 or first condition-chain node)
         # to find all reaching defs.  But we actually want ALL defs globally,
         # so we scan every block for state var defs via the scan helper.
         all_def_sites: list[DefSite] = []
@@ -1645,26 +1645,26 @@ class HodurStateMachineDetector:
                             except (AttributeError, RuntimeError):
                                 pass
 
-                        if pred_from is None and bst_result is not None:
-                            # BFS backward walk through BST provenance (depth 4)
-                            pp_bst_node_map = bst_result.condition_chain_blocks
-                            pp_bst_hsm = bst_result.handler_state_map
-                            pp_bst_frontier: set[int] = {pred_serial}
-                            pp_visited_bst: set[int] = set()
-                            pp_bst_resolved = False
-                            _pp_bst_depth = 0
-                            for _pp_bst_depth in range(4):
-                                pp_next_bst_frontier: set[int] = set()
-                                for pp_blk_serial in pp_bst_frontier:
-                                    if pp_blk_serial in pp_visited_bst:
+                        if pred_from is None and range_evidence is not None:
+                            # BFS backward walk through condition-chain provenance (depth 4)
+                            pp_condition_chain_node_map = range_evidence.condition_chain_blocks
+                            pp_condition_chain_hsm = range_evidence.handler_state_map
+                            pp_condition_chain_frontier: set[int] = {pred_serial}
+                            pp_visited_condition_chain: set[int] = set()
+                            pp_condition_chain_resolved = False
+                            _pp_condition_chain_depth = 0
+                            for _pp_condition_chain_depth in range(4):
+                                pp_next_condition_chain_frontier: set[int] = set()
+                                for pp_blk_serial in pp_condition_chain_frontier:
+                                    if pp_blk_serial in pp_visited_condition_chain:
                                         continue
-                                    pp_visited_bst.add(pp_blk_serial)
-                                    pp_resolved = pp_bst_node_map.resolve_state(
-                                        pp_blk_serial, pp_bst_hsm,
+                                    pp_visited_condition_chain.add(pp_blk_serial)
+                                    pp_resolved = pp_condition_chain_node_map.resolve_state(
+                                        pp_blk_serial, pp_condition_chain_hsm,
                                     )
                                     if pp_resolved is not None:
                                         pred_from = pp_resolved
-                                        pp_bst_resolved = True
+                                        pp_condition_chain_resolved = True
                                         break
                                     # Expand predecessors
                                     try:
@@ -1672,20 +1672,20 @@ class HodurStateMachineDetector:
                                         if pp_blk_obj is not None:
                                             for pp_p_raw in pp_blk_obj.predset:
                                                 pp_p_int = int(pp_p_raw)
-                                                if pp_p_int not in pp_visited_bst:
-                                                    pp_next_bst_frontier.add(pp_p_int)
+                                                if pp_p_int not in pp_visited_condition_chain:
+                                                    pp_next_condition_chain_frontier.add(pp_p_int)
                                     except (AttributeError, RuntimeError):
                                         pass
-                                if pp_bst_resolved:
+                                if pp_condition_chain_resolved:
                                     break
-                                pp_bst_frontier = pp_next_bst_frontier
+                                pp_condition_chain_frontier = pp_next_condition_chain_frontier
                             if pred_from is not None and unflat_logger.debug_on:
                                 unflat_logger.debug(
-                                    "UD_CHAIN_DIAG: BST provenance resolved "
+                                    "UD_CHAIN_DIAG: condition-chain provenance resolved "
                                     "pred_from=0x%X for pred blk[%d] (depth %d)",
                                     pred_from,
                                     pred_serial,
-                                    _pp_bst_depth,
+                                    _pp_condition_chain_depth,
                                 )
 
                         if pred_from is None:
@@ -1788,26 +1788,26 @@ class HodurStateMachineDetector:
                 except (AttributeError, RuntimeError):
                     pass
 
-            if from_state is None and bst_result is not None:
-                # BFS backward walk through BST provenance (depth 4)
-                bst_node_map = bst_result.condition_chain_blocks
-                bst_hsm = bst_result.handler_state_map
-                bst_frontier: set[int] = {def_site.block_serial}
-                visited_bst: set[int] = set()
-                bst_resolved = False
-                _bst_depth = 0
-                for _bst_depth in range(4):
-                    next_bst_frontier: set[int] = set()
-                    for blk_serial in bst_frontier:
-                        if blk_serial in visited_bst:
+            if from_state is None and range_evidence is not None:
+                # BFS backward walk through condition-chain provenance (depth 4)
+                condition_chain_node_map = range_evidence.condition_chain_blocks
+                condition_chain_hsm = range_evidence.handler_state_map
+                condition_chain_frontier: set[int] = {def_site.block_serial}
+                visited_condition_chain: set[int] = set()
+                condition_chain_resolved = False
+                _condition_chain_depth = 0
+                for _condition_chain_depth in range(4):
+                    next_condition_chain_frontier: set[int] = set()
+                    for blk_serial in condition_chain_frontier:
+                        if blk_serial in visited_condition_chain:
                             continue
-                        visited_bst.add(blk_serial)
-                        resolved = bst_node_map.resolve_state(
-                            blk_serial, bst_hsm,
+                        visited_condition_chain.add(blk_serial)
+                        resolved = condition_chain_node_map.resolve_state(
+                            blk_serial, condition_chain_hsm,
                         )
                         if resolved is not None:
                             from_state = resolved
-                            bst_resolved = True
+                            condition_chain_resolved = True
                             break
                         # Expand predecessors
                         try:
@@ -1815,20 +1815,20 @@ class HodurStateMachineDetector:
                             if blk_obj is not None:
                                 for p_raw in blk_obj.predset:
                                     p_int = int(p_raw)
-                                    if p_int not in visited_bst:
-                                        next_bst_frontier.add(p_int)
+                                    if p_int not in visited_condition_chain:
+                                        next_condition_chain_frontier.add(p_int)
                         except (AttributeError, RuntimeError):
                             pass
-                    if bst_resolved:
+                    if condition_chain_resolved:
                         break
-                    bst_frontier = next_bst_frontier
+                    condition_chain_frontier = next_condition_chain_frontier
                 if from_state is not None and unflat_logger.debug_on:
                     unflat_logger.debug(
-                        "UD_CHAIN_DIAG: BST provenance resolved "
+                        "UD_CHAIN_DIAG: condition-chain provenance resolved "
                         "from_state=0x%X for block %d (depth %d)",
                         from_state,
                         def_site.block_serial,
-                        _bst_depth,
+                        _condition_chain_depth,
                     )
 
             if from_state is None:
@@ -2297,7 +2297,7 @@ class HodurStateMachineDetector:
                     continue
                 visited.add(curr_serial)
 
-                # Skip check blocks for other states -- they are BST
+                # Skip check blocks for other states -- they are condition-chain
                 # comparison nodes the BFS entered via fall-through.
                 # Don't add them to handler_blocks but still expand
                 # through them to reach the real handler body.
@@ -2422,32 +2422,32 @@ class HodurStateMachineDetector:
                 len(forward_transitions) - added_count,
             )
 
-        # Phase 3.5: Compute BST analysis for UD chain provenance fallback
-        if self.bst_result is None and self.state_machine.handlers:
+        # Phase 3.5: Compute condition-chain analysis for UD chain provenance fallback
+        if self.range_evidence is None and self.state_machine.handlers:
             entry_serial = list(self.state_machine.handlers.values())[0].check_block
-            stkoff_for_bst: int | None = None
+            stkoff_for_condition_chain: int | None = None
             if self.state_machine.state_var is not None:
                 sv = self.state_machine.state_var
                 if sv.t == ida_hexrays.mop_S:
-                    stkoff_for_bst = sv.s.off
+                    stkoff_for_condition_chain = sv.s.off
             try:
-                from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
+                from d810.backends.hexrays.evidence.condition_chain_analysis import analyze_condition_chain_dispatcher
 
-                raw_bst = analyze_bst_dispatcher(
+                raw_condition_chain = analyze_condition_chain_dispatcher(
                     self.mba,
                     dispatcher_entry_serial=entry_serial,
-                    state_var_stkoff=stkoff_for_bst,
+                    state_var_stkoff=stkoff_for_condition_chain,
                 )
-                if raw_bst is not None and len(raw_bst.handler_state_map) > 0:
-                    self.bst_result = raw_bst
+                if raw_condition_chain is not None and len(raw_condition_chain.handler_state_map) > 0:
+                    self.range_evidence = raw_condition_chain
                     unflat_logger.debug(
-                        "BST analysis computed for UD chain fallback: "
+                        "condition-chain analysis computed for UD chain fallback: "
                         "%d handler mappings",
-                        len(raw_bst.handler_state_map),
+                        len(raw_condition_chain.handler_state_map),
                     )
             except Exception:
                 unflat_logger.debug(
-                    "BST analysis for UD chain fallback failed"
+                    "condition-chain analysis for UD chain fallback failed"
                 )
 
         # Phase 4: UD chain discovery with fixpoint iteration
@@ -2455,7 +2455,7 @@ class HodurStateMachineDetector:
         for iteration in range(_UD_CHAIN_MAX_ITERATIONS):
             try:
                 ud_transitions = self._discover_transitions_via_ud_chains(
-                    self.mba, bst_result=self.bst_result,
+                    self.mba, range_evidence=self.range_evidence,
                 )
             except Exception:
                 unflat_logger.debug(

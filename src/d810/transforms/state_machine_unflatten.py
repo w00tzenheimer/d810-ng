@@ -261,7 +261,7 @@ def _disconnect_residual_dispatcher_backedges(
 
     After the spine redirects (#4) some 2-way spine blocks still keep ``dispatcher_entry_serial``
     as one of their two successors — a spurious back-edge that the vendor structurer renders as a
-    ``while`` loop. Mirroring the legacy ``_disconnect_bst_comparison_nodes`` seam, each such block
+    ``while`` loop. Mirroring the condition-chain comparison disconnect seam, each such block
     is converted to a 1-way goto that KEEPS its non-dispatcher successor. Scoped to spine members
     (sources/targets in ``dag.edges``) so unrelated 2-way blocks are left untouched, and excluding
     any block already handled by a #4 redirect so the same source is never double-edited.
@@ -280,7 +280,7 @@ def _disconnect_residual_dispatcher_backedges(
         block_nsucc_map=nsucc_map,
         block_succ_map=succ_map,
         dispatcher_serial=int(dispatcher_entry_serial),
-        bst_node_blocks=set(),
+        condition_chain_blocks=set(),
         emitted=emitted,
     )
     spine_members = _spine_members_from_dag(dag)
@@ -302,7 +302,7 @@ def _return_redirects_from_dag(
     graph,
     dispatcher_entry_serial: int,
     *,
-    bst_node_blocks,
+    condition_chain_blocks,
     common_return_corridor,
     artifact_return_blocks,
     claimed_sources: set[int],
@@ -327,7 +327,7 @@ def _return_redirects_from_dag(
         builder=builder,
         claimed_sources=claimed_sources,
         dispatcher_serial=int(dispatcher_entry_serial),
-        bst_node_blocks=set(int(b) for b in bst_node_blocks),
+        condition_chain_blocks=set(int(b) for b in condition_chain_blocks),
         common_return_corridor=set(int(b) for b in common_return_corridor),
         artifact_return_blocks=set(int(b) for b in artifact_return_blocks),
         node_by_key=node_by_key,
@@ -347,7 +347,7 @@ def _reconstruction_postprocess_mods(
     dispatcher_entry_serial: int,
     *,
     spine_mods,
-    bst_node_blocks,
+    condition_chain_blocks,
     dispatcher,
     common_return_corridor,
     artifact_return_blocks,
@@ -360,7 +360,7 @@ def _reconstruction_postprocess_mods(
 
     Translates ``StateWriteReconstructionStrategy``'s postprocess: the already-portable
     :func:`plan_reconstruction_postprocess_modifications` runs preheader -> bridge -> feeder ->
-    fixpoint-feeder -> return over the BST-enriched DAG, threading ``claimed_sources`` through each
+    fixpoint-feeder -> return over the condition-chain-enriched DAG, threading ``claimed_sources`` through each
     phase (so the return planner sees the post-bridge claims, not the raw spine). ``spine_mods`` is the
     neutral direct-reconstruction set; ``owned_blocks`` is its source/target span. Returns the union of
     all sub-plan modifications (InsertBlock / EdgeRedirectViaPredSplit / ZeroStateWrite /
@@ -400,7 +400,7 @@ def _reconstruction_postprocess_mods(
         projected_flow_graph=projected_flow_graph,
         builder=builder,
         dispatcher_serial=int(dispatcher_entry_serial),
-        bst_node_blocks=set(int(b) for b in bst_node_blocks),
+        condition_chain_blocks=set(int(b) for b in condition_chain_blocks),
         dispatcher=dispatcher,
         modifications=list(spine_mods),
         owned_blocks=owned_blocks,
@@ -465,7 +465,7 @@ def lower_to_direct_graph(
     regions: SemanticRegionPlan | None = None,
     use_def_safety=None,
     live_function=None,
-    bst_node_blocks=None,
+    condition_chain_blocks=None,
     dag=None,
     dispatcher=None,
     constant_result=None,
@@ -478,13 +478,13 @@ def lower_to_direct_graph(
     variable's uses are vetoed before they reach the plan. Both ``None`` on the portable/test path,
     where emission is unfiltered (byte-identical).
 
-    ``bst_node_blocks`` is the enriched-DAG signal: when the entry threads the recovered BST node set
-    in (bst evidence promoted to production), the DAG carries CONDITIONAL_RETURN edges and the legacy
+    ``condition_chain_blocks`` is the enriched-DAG signal: when the entry threads the recovered condition-chain node set
+    in (range evidence promoted to production), the DAG carries CONDITIONAL_RETURN edges and the legacy
     return wiring is lowered (gap3). ``None`` -> the return phase is skipped (shallow production path,
     byte-identical).
 
     ``dispatcher`` (the recovered ``IntervalDispatcher``) is the full-reconstruction signal: with both
-    it and ``bst_node_blocks`` present, #4 runs the entire portable postprocess orchestration
+    it and ``condition_chain_blocks`` present, #4 runs the entire portable postprocess orchestration
     (preheader/bridge/feeder/fixpoint/return — :func:`_reconstruction_postprocess_mods`) and returns
     the rich neutral mod set via ``planner_modifications`` (the channel the backend applies for
     InsertBlock / ZeroStateWrite / …). ``None`` -> the redirect-only ``steps`` path below (the
@@ -499,7 +499,7 @@ def lower_to_direct_graph(
         or dispatcher_entry_serial is None
     ):
         return PatchPlan()
-    # ``dag`` lets the caller inject a pre-built (BST-enriched) DAG — the entry's diag rebuild already
+    # ``dag`` lets the caller inject a pre-built (condition-chain-enriched) DAG — the entry's diag rebuild already
     # constructs the oracle-grade DAG with the full value-range evidence. When ``None`` (production /
     # portable test) we build the shallow exact-chain DAG from ``transition_result`` here.
     if dag is None:
@@ -512,17 +512,17 @@ def lower_to_direct_graph(
     # Diagnostics: stash the recovered (dispatcher-free) state-DAG so the
     # D810_USE_STRUCTURER dump structures it instead of the lifted FlowGraph.
     record_recovered_state_dag(dag)
-    # Full reconstruction (unflatten gap3+gap4): with the recovered IntervalDispatcher AND the BST node set,
+    # Full reconstruction (unflatten gap3+gap4): with the recovered IntervalDispatcher AND the condition-chain node set,
     # run the entire portable postprocess orchestration over the enriched DAG and emit the rich neutral
     # mod set through ``planner_modifications`` (the backend's apply channel for InsertBlock /
     # ZeroStateWrite / per-pred splits / returns). Mirrors StateWriteReconstructionStrategy.plan;
     # returns are EMERGENT from the full chain, not a discrete mod. Gated on ``dispatcher`` so the
     # committed redirect-only ``steps`` path below stays byte-identical when it is absent.
-    if bst_node_blocks is not None and dispatcher is not None:
+    if condition_chain_blocks is not None and dispatcher is not None:
         corridor = collect_common_return_corridor(
             dag,
             graph,
-            bst_node_blocks=set(int(b) for b in bst_node_blocks),
+            condition_chain_blocks=set(int(b) for b in condition_chain_blocks),
             dispatcher_serial=int(dispatcher_entry_serial),
         )
         state_constants = {
@@ -552,7 +552,7 @@ def lower_to_direct_graph(
             graph,
             int(dispatcher_entry_serial),
             spine_mods=spine_mods,
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
             dispatcher=dispatcher,
             common_return_corridor=corridor,
             artifact_return_blocks=artifact_return_blocks,
@@ -585,15 +585,15 @@ def lower_to_direct_graph(
         dag, int(dispatcher_entry_serial), graph, redirect_steps
     )
     # Return wiring (unflatten gap3): lower the DAG's CONDITIONAL_RETURN edges to terminal returns by
-    # translating StateWriteReconstructionStrategy's return phase. GATED on ``bst_node_blocks`` — the
-    # enriched-DAG signal the entry threads in once bst evidence reaches production. On today's
+    # translating StateWriteReconstructionStrategy's return phase. GATED on ``condition_chain_blocks`` — the
+    # enriched-DAG signal the entry threads in once range evidence reaches production. On today's
     # shallow production path (``None``) the return phase is skipped, so the plan is byte-identical.
     return_steps: tuple[object, ...] = ()
-    if bst_node_blocks is not None:
+    if condition_chain_blocks is not None:
         corridor = collect_common_return_corridor(
             dag,
             graph,
-            bst_node_blocks=set(int(b) for b in bst_node_blocks),
+            condition_chain_blocks=set(int(b) for b in condition_chain_blocks),
             dispatcher_serial=int(dispatcher_entry_serial),
         )
         state_constants = {
@@ -624,17 +624,17 @@ def lower_to_direct_graph(
             dag,
             graph,
             int(dispatcher_entry_serial),
-            bst_node_blocks=bst_node_blocks,
+            condition_chain_blocks=condition_chain_blocks,
             common_return_corridor=corridor,
             artifact_return_blocks=artifact_return_blocks,
             claimed_sources=claimed_sources,
         )
     if logger.info_on:
         logger.info(
-            "unflat #4 lowering: spine=%d backedge=%d return=%d (bst=%s)",
+            "unflat #4 lowering: spine=%d backedge=%d return=%d (condition_chain=%s)",
             len(redirect_steps),
             len(backedge_steps),
             len(return_steps),
-            "on" if bst_node_blocks is not None else "off",
+            "on" if condition_chain_blocks is not None else "off",
         )
     return PatchPlan(steps=(*redirect_steps, *backedge_steps, *return_steps))

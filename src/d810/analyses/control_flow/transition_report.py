@@ -11,7 +11,7 @@ from d810.analyses.control_flow.transition_analysis import (
     HandlerTransitionObservation,
     build_transition_analysis_from_graph,
 )
-from d810.analyses.control_flow.transition_bst_adapter import analyze_bst_dispatcher
+from d810.analyses.control_flow.transition_condition_chain_adapter import analyze_condition_chain_dispatcher
 from d810.analyses.control_flow.transition_builder import TransitionResult
 
 
@@ -77,7 +77,7 @@ class DispatcherTransitionReport:
     initial_state: Optional[int]
     handler_state_map: Mapping[int, int]
     handler_range_map: Mapping[int, Tuple[Optional[int], Optional[int]]]
-    bst_node_blocks: Tuple[int, ...]
+    condition_chain_blocks: Tuple[int, ...]
     rows: Tuple[TransitionRow, ...]
     summary: TransitionSummary
     diagnostics: Tuple[str, ...]
@@ -178,7 +178,7 @@ def render_dispatcher_transition_report(
         initial_state=analysis.initial_state,
         handler_state_map=dict(analysis.handler_state_map),
         handler_range_map=dict(analysis.handler_range_map),
-        bst_node_blocks=tuple(analysis.bst_node_blocks),
+        condition_chain_blocks=tuple(analysis.condition_chain_blocks),
         rows=rows_tuple,
         summary=_summary_from_rows(rows_tuple),
         diagnostics=tuple(analysis.diagnostics),
@@ -191,20 +191,20 @@ def build_dispatcher_transition_report(
     *,
     state_var_stkoff: Optional[int] = None,
     state_var_lvar_idx: Optional[int] = None,
-    max_bst_depth: int = 20,
+    max_condition_chain_depth: int = 20,
     max_chain_depth: int = 64,
     transitions_hint_by_handler: Optional[dict[int, int]] = None,
     capture_diagnostics: bool = False,
     max_diag_handlers: int = 3,
     chain_preview_len: int = 4,
 ) -> DispatcherTransitionReport:
-    """Build a canonical transition report for a BST dispatcher."""
-    analysis = analyze_bst_dispatcher(
+    """Build a canonical transition report for a condition-chain dispatcher."""
+    analysis = analyze_condition_chain_dispatcher(
         mba,
         dispatcher_entry_serial,
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=state_var_lvar_idx,
-        max_bst_depth=max_bst_depth,
+        max_condition_chain_depth=max_condition_chain_depth,
         max_chain_depth=max_chain_depth,
         transitions_hint_by_handler=transitions_hint_by_handler,
         capture_diagnostics=capture_diagnostics,
@@ -226,7 +226,7 @@ def build_dispatcher_transition_report_from_graph(
     pre_header_serial: Optional[int] = None,
     initial_state: Optional[int] = None,
     handler_range_map: Mapping[int, tuple[Optional[int], Optional[int]]] | None = None,
-    bst_node_blocks: tuple[int, ...] = (),
+    condition_chain_blocks: tuple[int, ...] = (),
     diagnostics: tuple[str, ...] = (),
     chain_preview_len: int = 4,
 ) -> DispatcherTransitionReport:
@@ -240,7 +240,7 @@ def build_dispatcher_transition_report_from_graph(
         pre_header_serial=pre_header_serial,
         initial_state=initial_state,
         handler_range_map=handler_range_map,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         diagnostics=diagnostics,
     )
     return render_dispatcher_transition_report(
@@ -266,7 +266,7 @@ def transition_report_to_dict(
             str(serial): [range_lo, range_hi]
             for serial, (range_lo, range_hi) in report.handler_range_map.items()
         },
-        "bst_node_blocks": list(report.bst_node_blocks),
+        "condition_chain_blocks": list(report.condition_chain_blocks),
         "rows": [
             {
                 "state_const": row.state_const,
@@ -386,7 +386,7 @@ def transition_report_from_dict(
             )
             for serial, values in dict(payload.get("handler_range_map", {})).items()
         },
-        bst_node_blocks=tuple(int(v) for v in payload.get("bst_node_blocks", [])),
+        condition_chain_blocks=tuple(int(v) for v in payload.get("condition_chain_blocks", [])),
         rows=tuple(rows),
         summary=TransitionSummary(
             handlers_total=int(summary_payload["handlers_total"]),

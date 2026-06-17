@@ -24,7 +24,7 @@ class BoundaryKind(Enum):
     STABLE_HANDOFF = "stable_handoff"
     TRANSIENT_CORRIDOR = "transient_corridor"
     TERMINAL = "terminal"
-    BST_REENTRY = "bst_reentry"
+    CONDITION_CHAIN_REENTRY = "condition_chain_reentry"
     UNSAFE_SIDE_EFFECT = "unsafe_side_effect"
 
 

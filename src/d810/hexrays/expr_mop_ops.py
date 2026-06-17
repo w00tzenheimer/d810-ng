@@ -3,7 +3,7 @@
 Implements the live-mop structural comparisons the portable constraint DSL needs at
 rule-matching time (``equal_mops`` / ``is_bnot``), wrapping ``hexrays_helpers``.
 Registered at the composition root (``D810State.start_d810``), mirroring
-``register_bst_walkers`` -- this is what replaces the old
+``register_condition_chain_walkers`` -- this is what replaces the old
 ``importlib.import_module("d810.hexrays...")`` dodge inside the (now portable) DSL.
 """
 from __future__ import annotations

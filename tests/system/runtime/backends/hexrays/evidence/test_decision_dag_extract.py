@@ -1,9 +1,9 @@
-"""Runtime tests for the live-BST -> DecisionDag extractor.
+"""Runtime tests for the live condition-chain -> DecisionDag extractor.
 
 Drives :func:`extract_decision_dag` with ``SimpleNamespace`` shims shaped like
 ``mblock_t`` / ``minsn_t`` / ``mop_t`` (real ``ida_hexrays`` opcode + mop-type
 constants, no full decompile), reproducing the ground-truth sub_7FFD3338C040
-dispatcher BST path so routing matches ``.tmp/bst_trace.py``.
+dispatcher condition-chain path so routing matches ``.tmp/condition_chain_trace.py``.
 
 IDA-dependent (reads ``ida_hexrays`` constants) -> system/runtime, not a unit.
 """
@@ -93,7 +93,7 @@ def test_extract_routes_match_microcode():
 
 def test_extract_skips_handler_internal_conditional():
     # A comparison whose operands are NOT the state var (a handler's own branch,
-    # e.g. ``jl var_1C8, #0x80``) is a leaf, never a BST node.
+    # e.g. ``jl var_1C8, #0x80``) is a leaf, never a condition-chain node.
     handler = _Blk(
         SimpleNamespace(
             opcode=ida_hexrays.m_jl,

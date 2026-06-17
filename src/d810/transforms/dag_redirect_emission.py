@@ -31,7 +31,7 @@ class DagRedirectExecutionContext:
     terminal_source_owned_blocks: frozenset[int]
     terminal_protected_blocks: frozenset[int]
     blocked_sources: frozenset[int]
-    bst_node_blocks: frozenset[int]
+    condition_chain_blocks: frozenset[int]
     dispatcher_region: frozenset[int]
     state_var_stkoff: int | None
     dispatcher_lookup: object | None
@@ -84,7 +84,7 @@ def execute_dag_redirect_fallback(
         context.flow_graph,
         target_entry=target_entry,
         source_block=source_block,
-        ignored_blocks=set(context.dispatcher_region) | set(context.bst_node_blocks),
+        ignored_blocks=set(context.dispatcher_region) | set(context.condition_chain_blocks),
     )
 
     emit_key = (source_block, target_entry)
@@ -106,7 +106,7 @@ def execute_dag_redirect_fallback(
         source_is_conditional_branch=(
             context.edge.source_anchor.kind.name == "CONDITIONAL_BRANCH"
         ),
-        bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+        condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
         dispatcher_region=set(int(block) for block in context.dispatcher_region),
     )
     branch_key = (
@@ -229,7 +229,7 @@ def emit_dag_redirect(
     terminal_protected_blocks: set[int],
     report_exit_handlers: set[int],
     report_exit_owned_blocks: set[int],
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher_region: set[int],
     flow_graph: object,
     state_var_stkoff: int | None,
@@ -244,7 +244,7 @@ def emit_dag_redirect(
     target_entry = resolve_effective_target_entry(
         dag,
         edge,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         state_var_stkoff=state_var_stkoff,
         dispatcher_lookup=dispatcher_lookup,
         dispatcher=dispatcher,
@@ -270,7 +270,7 @@ def emit_dag_redirect(
         report_exit_handlers=report_exit_handlers,
         report_exit_owned_blocks=report_exit_owned_blocks,
         terminal_protected_blocks=terminal_protected_blocks,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         dispatcher_region=dispatcher_region,
         flow_graph=flow_graph,
         state_var_stkoff=state_var_stkoff,
@@ -298,7 +298,7 @@ def emit_dag_redirect(
             terminal_source_owned_blocks=frozenset(terminal_source_owned_blocks),
             terminal_protected_blocks=frozenset(terminal_protected_blocks),
             blocked_sources=frozenset(blocked_sources),
-            bst_node_blocks=frozenset(bst_node_blocks),
+            condition_chain_blocks=frozenset(condition_chain_blocks),
             dispatcher_region=frozenset(dispatcher_region),
             state_var_stkoff=state_var_stkoff,
             dispatcher_lookup=dispatcher_lookup,

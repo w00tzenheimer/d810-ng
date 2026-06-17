@@ -96,7 +96,7 @@ class TestReconcileEdgeBuckets:
         e = reconcile_edge(
             src_serial=42, tgt_serial=2,
             resolver_target=51, logged_intent_target=51, persisted_target=51,
-            state_const=0x737189D5, state_in_bst=True,
+            state_const=0x737189D5, state_in_condition_chain=True,
             log_signals=_empty_signals(),
         )
         assert e.bucket is ReconciliationBucket.AGREE_FULL
@@ -110,7 +110,7 @@ class TestReconcileEdgeBuckets:
         e = reconcile_edge(
             src_serial=110, tgt_serial=2,
             resolver_target=143, logged_intent_target=143, persisted_target=None,
-            state_const=0xABC, state_in_bst=True,
+            state_const=0xABC, state_in_condition_chain=True,
             log_signals=sig,
         )
         assert e.bucket is ReconciliationBucket.AGREE_INTENT_DROPPED_DAG
@@ -126,7 +126,7 @@ class TestReconcileEdgeBuckets:
         e = reconcile_edge(
             src_serial=16, tgt_serial=2,
             resolver_target=71, logged_intent_target=71, persisted_target=None,
-            state_const=0xABC, state_in_bst=True,
+            state_const=0xABC, state_in_condition_chain=True,
             log_signals=sig,
         )
         assert e.bucket is ReconciliationBucket.AGREE_INTENT_DROPPED_PLANNER_CTX
@@ -136,7 +136,7 @@ class TestReconcileEdgeBuckets:
         e = reconcile_edge(
             src_serial=200, tgt_serial=2,
             resolver_target=23, logged_intent_target=23, persisted_target=None,
-            state_const=0xABC, state_in_bst=True,
+            state_const=0xABC, state_in_condition_chain=True,
             log_signals=sig,
         )
         assert e.bucket is ReconciliationBucket.AGREE_INTENT_DROPPED_HCC_DUP_REDIRECT
@@ -147,7 +147,7 @@ class TestReconcileEdgeBuckets:
         e = reconcile_edge(
             src_serial=21, tgt_serial=2,
             resolver_target=75, logged_intent_target=75, persisted_target=None,
-            state_const=0xABC, state_in_bst=True,
+            state_const=0xABC, state_in_condition_chain=True,
             log_signals=sig,
         )
         assert e.bucket is ReconciliationBucket.AGREE_INTENT_DROPPED_HCC_REGION_HANDLER
@@ -157,7 +157,7 @@ class TestReconcileEdgeBuckets:
         e = reconcile_edge(
             src_serial=100, tgt_serial=2,
             resolver_target=21, logged_intent_target=21, persisted_target=None,
-            state_const=0xABC, state_in_bst=True,
+            state_const=0xABC, state_in_condition_chain=True,
             log_signals=sig,
         )
         assert e.bucket is ReconciliationBucket.AGREE_INTENT_DROPPED_HCC_REGION_PRED
@@ -167,7 +167,7 @@ class TestReconcileEdgeBuckets:
         e = reconcile_edge(
             src_serial=56, tgt_serial=2,
             resolver_target=42, logged_intent_target=42, persisted_target=None,
-            state_const=0xABC, state_in_bst=True,
+            state_const=0xABC, state_in_condition_chain=True,
             log_signals=sig,
         )
         assert e.bucket is ReconciliationBucket.AGREE_INTENT_DROPPED_HCC_REGION_TARGET
@@ -186,7 +186,7 @@ class TestReconcileEdgeBuckets:
         e = reconcile_edge(
             src_serial=42, tgt_serial=2,
             resolver_target=51, logged_intent_target=51, persisted_target=None,
-            state_const=0xABC, state_in_bst=True,
+            state_const=0xABC, state_in_condition_chain=True,
             log_signals=sig,
         )
         assert e.bucket is ReconciliationBucket.AGREE_INTENT_DROPPED_DAG
@@ -198,7 +198,7 @@ class TestReconcileEdgeBuckets:
         e = reconcile_edge(
             src_serial=42, tgt_serial=2,
             resolver_target=51, logged_intent_target=51, persisted_target=None,
-            state_const=0xABC, state_in_bst=True,
+            state_const=0xABC, state_in_condition_chain=True,
             log_signals=_empty_signals(),
         )
         assert e.bucket is ReconciliationBucket.AGREE_INTENT_DROPPED_OTHER
@@ -208,7 +208,7 @@ class TestReconcileEdgeBuckets:
         e = reconcile_edge(
             src_serial=54, tgt_serial=2,
             resolver_target=101, logged_intent_target=100, persisted_target=100,
-            state_const=0xABC, state_in_bst=True,
+            state_const=0xABC, state_in_condition_chain=True,
             log_signals=_empty_signals(),
         )
         assert e.bucket is ReconciliationBucket.DISAGREE_TARGET
@@ -224,7 +224,7 @@ class TestReconcileEdgeBuckets:
         e = reconcile_edge(
             src_serial=109, tgt_serial=2,
             resolver_target=190, logged_intent_target=None, persisted_target=None,
-            state_const=0xABC, state_in_bst=True,
+            state_const=0xABC, state_in_condition_chain=True,
             log_signals=sig,
         )
         assert e.bucket is ReconciliationBucket.RESOLVER_OK_STRATEGY_USE_DEF_VETO
@@ -233,7 +233,7 @@ class TestReconcileEdgeBuckets:
         e = reconcile_edge(
             src_serial=42, tgt_serial=2,
             resolver_target=51, logged_intent_target=None, persisted_target=None,
-            state_const=0xABC, state_in_bst=True,
+            state_const=0xABC, state_in_condition_chain=True,
             log_signals=_empty_signals(),
         )
         assert e.bucket is ReconciliationBucket.RESOLVER_ONLY_STRATEGY_DIDNT_LOG
@@ -242,26 +242,26 @@ class TestReconcileEdgeBuckets:
         e = reconcile_edge(
             src_serial=69, tgt_serial=2,
             resolver_target=None, logged_intent_target=122, persisted_target=122,
-            state_const=None, state_in_bst=False,
+            state_const=None, state_in_condition_chain=False,
             log_signals=_empty_signals(),
         )
         assert e.bucket is ReconciliationBucket.STRATEGY_ONLY_RESOLVER_NO_STATE
 
-    def test_strategy_only_state_not_in_bst(self) -> None:
+    def test_strategy_only_state_not_in_condition_chain(self) -> None:
         e = reconcile_edge(
             src_serial=145, tgt_serial=2,
             resolver_target=None, logged_intent_target=155, persisted_target=155,
-            state_const=0x7A1A2C0, state_in_bst=False,
+            state_const=0x7A1A2C0, state_in_condition_chain=False,
             log_signals=_empty_signals(),
         )
-        assert e.bucket is ReconciliationBucket.STRATEGY_ONLY_STATE_NOT_IN_BST
+        assert e.bucket is ReconciliationBucket.STRATEGY_ONLY_STATE_NOT_IN_CONDITION_CHAIN
         assert "0x7a1a2c0" in e.note
 
     def test_strategy_only_other(self) -> None:
         e = reconcile_edge(
             src_serial=999, tgt_serial=2,
             resolver_target=None, logged_intent_target=42, persisted_target=42,
-            state_const=0xABC, state_in_bst=True,
+            state_const=0xABC, state_in_condition_chain=True,
             log_signals=_empty_signals(),
         )
         assert e.bucket is ReconciliationBucket.STRATEGY_ONLY_OTHER
@@ -270,19 +270,19 @@ class TestReconcileEdgeBuckets:
         e = reconcile_edge(
             src_serial=42, tgt_serial=2,
             resolver_target=None, logged_intent_target=None, persisted_target=None,
-            state_const=None, state_in_bst=False,
+            state_const=None, state_in_condition_chain=False,
             log_signals=_empty_signals(),
         )
         assert e.bucket is ReconciliationBucket.BOTH_NONE_NO_STATE
 
-    def test_both_none_state_not_in_bst(self) -> None:
+    def test_both_none_state_not_in_condition_chain(self) -> None:
         e = reconcile_edge(
             src_serial=42, tgt_serial=2,
             resolver_target=None, logged_intent_target=None, persisted_target=None,
-            state_const=0xDEAD, state_in_bst=False,
+            state_const=0xDEAD, state_in_condition_chain=False,
             log_signals=_empty_signals(),
         )
-        assert e.bucket is ReconciliationBucket.BOTH_NONE_STATE_NOT_IN_BST
+        assert e.bucket is ReconciliationBucket.BOTH_NONE_STATE_NOT_IN_CONDITION_CHAIN
 
 
 class TestReconcileEdgesBatch:
@@ -299,13 +299,13 @@ class TestReconcileEdgesBatch:
             logged_intent={42: (0x737189D5, 51), 145: (0x10F2434, 155)},
             persisted={42: (2, 51), 145: (2, 155)},
             state_consts={42: 0x737189D5, 109: 0xABC, 145: 0x10F2434},
-            bst_table={0x737189D5: 51, 0xABC: 1},  # 145's state not in table
+            condition_chain_table={0x737189D5: 51, 0xABC: 1},  # 145's state not in table
             log_signals=sig,
         )
         counts = s.bucket_counts
         assert counts[ReconciliationBucket.AGREE_FULL] == 1
         assert counts[ReconciliationBucket.RESOLVER_OK_STRATEGY_USE_DEF_VETO] == 1
-        assert counts[ReconciliationBucket.STRATEGY_ONLY_STATE_NOT_IN_BST] == 1
+        assert counts[ReconciliationBucket.STRATEGY_ONLY_STATE_NOT_IN_CONDITION_CHAIN] == 1
         assert s.total == 3
         assert s.safe_overlap == 1
 
@@ -317,7 +317,7 @@ class TestReconcileEdgesBatch:
             logged_intent={1: (0x1, 5)},
             persisted={1: (0, 5)},
             state_consts={1: 0x1, 2: None},
-            bst_table={0x1: 5},
+            condition_chain_table={0x1: 5},
             log_signals=_empty_signals(),
         )
         text = format_summary(s)

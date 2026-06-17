@@ -194,7 +194,7 @@ def test_discover_exit_path_effect_group_rejects_missing_dispatcher_evidence():
     )
 
     assert result.group is None
-    assert result.failure_reason == "missing_bst_result"
+    assert result.failure_reason == "missing_dispatcher_root"
 
 
 def test_discover_exit_path_effect_group_excludes_dispatcher_block_set():

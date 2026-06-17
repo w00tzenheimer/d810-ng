@@ -7,7 +7,7 @@ matching. That comparison lives in the Hex-Rays backend (``hexrays_helpers``), w
 the portable ``ir`` layer must not import (``portable-core-no-ida``).
 
 So the check delegates to a provider injected by the backend at the composition root
-(:func:`register_mop_ops`, mirroring ``register_bst_walkers``). With no provider
+(:func:`register_mop_ops`, mirroring ``register_condition_chain_walkers``). With no provider
 registered — headless / portable use, where these matching-time checks are never
 invoked — it returns a conservative default. This replaces the
 ``importlib.import_module("d810.hexrays...")`` dodge that silently bypassed the

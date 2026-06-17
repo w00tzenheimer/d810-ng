@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import idaapi
 
-from d810.backends.hexrays.evidence import bst_analysis
+from d810.backends.hexrays.evidence import condition_chain_analysis
 
 
 def _mop_b(serial: int):
@@ -63,7 +63,7 @@ def test_detect_state_var_stkoff_follows_mop_b_trampoline() -> None:
         }
     )
 
-    result, diag_lines = bst_analysis._detect_state_var_stkoff(mba, 2, diag=True)
+    result, diag_lines = condition_chain_analysis._detect_state_var_stkoff(mba, 2, diag=True)
 
     assert result == (0x38, None)
     assert any("mop_b block reference -> blk[5]" in line for line in diag_lines)

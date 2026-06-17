@@ -4,7 +4,7 @@ After DirectLinearization resolves the majority of handler transitions via
 forward evaluation, some handler exits remain unresolved (e.g. MBA-obfuscated
 state computations).  This strategy queries IDA's pre-computed value range
 analysis (``get_valranges``) for the state variable at each unresolved exit
-block.  If a single concrete value is obtained, BST lookup determines the
+block.  If a single concrete value is obtained, condition-chain lookup determines the
 target handler and a redirect is emitted.
 
 This mirrors hrtng's ``get_valranges(VR_EXACT)`` fallback in ``unflat.cpp``.
@@ -47,7 +47,7 @@ class ValrangeResolutionStrategy:
     1. Retrieves the live ``mblock_t`` for the exit block.
     2. Queries ``resolve_state_via_valranges`` for the state variable at the
        block tail instruction.
-    3. If a single concrete value is returned, performs a BST lookup to find
+    3. If a single concrete value is returned, performs a condition-chain lookup to find
        the target handler and emits a ``RedirectGoto`` modification.
 
     Family: ``FAMILY_FALLBACK`` -- runs after the primary direct strategies.
@@ -65,14 +65,14 @@ class ValrangeResolutionStrategy:
         return FAMILY_FALLBACK
 
     def is_applicable(self, snapshot: AnalysisSnapshot) -> bool:
-        """Return True when a state machine and BST result are present.
+        """Return True when a state machine and condition-chain result are present.
 
         Args:
             snapshot: Immutable analysis snapshot for the current function.
 
         Returns:
             True if the snapshot describes a state machine with handlers,
-            a BST result for target resolution, and unresolved transitions.
+            a condition-chain result for target resolution, and unresolved transitions.
         """
         sm = snapshot.state_machine
         if sm is None:
@@ -81,7 +81,7 @@ class ValrangeResolutionStrategy:
         state_var = getattr(sm, "state_var", None)
         if not handlers or state_var is None:
             return False
-        if snapshot.bst_result is None:
+        if snapshot.range_evidence is None:
             return False
         return snapshot.unresolved_transition_count > 0
 
@@ -90,7 +90,7 @@ class ValrangeResolutionStrategy:
 
         For each handler with unresolved exit transitions, query IDA's value
         range analysis for the state variable at the exit block's tail
-        instruction.  If a single concrete value is obtained, BST lookup
+        instruction.  If a single concrete value is obtained, condition-chain lookup
         determines the target handler and a redirect is emitted.
 
         Args:
@@ -105,8 +105,8 @@ class ValrangeResolutionStrategy:
 
         mba = snapshot.mba
         sm = snapshot.state_machine
-        bst_result = snapshot.bst_result
-        if mba is None or sm is None or bst_result is None:
+        range_evidence = snapshot.range_evidence
+        if mba is None or sm is None or range_evidence is None:
             return None
 
         handlers = getattr(sm, "handlers", {}) or {}
@@ -116,7 +116,7 @@ class ValrangeResolutionStrategy:
         discovery = collect_valrange_exit_transition_candidates(
             snapshot,
             sm=sm,
-            bst_result=bst_result,
+            range_evidence=range_evidence,
             resolve_state_via_valranges=resolve_state_via_valranges,
         )
         resolved_count = len(discovery.candidates)

@@ -17,7 +17,7 @@ from d810.evaluator.hexrays_microcode.dynamic_state_write_backend import (
     recognize_derived_xor_dispatcher_model,
     recognize_global_or_state_write_transition,
 )
-from d810.backends.hexrays.evidence.bst_analysis import _detect_state_var_stkoff
+from d810.backends.hexrays.evidence.condition_chain_analysis import _detect_state_var_stkoff
 from d810.analyses.control_flow.transition_builder import (
     StateHandler,
     StateTransition,
@@ -44,7 +44,7 @@ def _clone_handlers(
 
 
 def _handler_needs_dynamic_recovery(handler: StateHandler) -> bool:
-    """Only enrich handlers whose normal BST walk did not prove a real edge."""
+    """Only enrich handlers whose normal condition-chain walk did not prove a real edge."""
 
     if not handler.transitions:
         return True
@@ -102,7 +102,7 @@ def recover_dynamic_state_write_transitions(
 ) -> TransitionResult:
     """Add guarded transitions recovered from dynamic state-carrier writes.
 
-    The BST walker can miss handlers that compute the next dispatcher state
+    The condition-chain walker can miss handlers that compute the next dispatcher state
     through writable storage.  The Approov VM sample has this form:
     ``global |= STATE; state_var = global``.  Since the previous global value
     is not proven here, the recovered edge is marked conditional/advisory and
@@ -365,7 +365,7 @@ def recover_dynamic_state_write_transitions(
             )
         return transition_result
 
-    strategy_name = transition_result.strategy_name or "bst_walker"
+    strategy_name = transition_result.strategy_name or "condition_chain_walker"
     if "dynamic_state_write" not in strategy_name:
         strategy_name = f"{strategy_name}+dynamic_state_write"
     if derived_model is not None and "derived_xor_dispatch_key" not in strategy_name:

@@ -127,7 +127,7 @@ def plan_reconstruction_preheader_bridge(
     flow_graph,
     builder,
     dispatcher_serial: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher,
 ) -> ReconstructionPreheaderBridgeResult:
     if (
@@ -140,10 +140,10 @@ def plan_reconstruction_preheader_bridge(
             resolved_target=None,
         )
 
-    bst_set = {int(dispatcher_serial)}
-    bst_set.update(int(block) for block in bst_node_blocks)
+    condition_chain_set = {int(dispatcher_serial)}
+    condition_chain_set.update(int(block) for block in condition_chain_blocks)
     resolved = dispatcher.lookup(dag.initial_state)
-    if resolved is None or int(resolved) in bst_set:
+    if resolved is None or int(resolved) in condition_chain_set:
         return ReconstructionPreheaderBridgeResult(
             modification=None,
             resolved_target=None,
@@ -157,7 +157,7 @@ def plan_reconstruction_preheader_bridge(
         )
 
     old_target = int(pre_blk.succs[0])
-    if old_target != dispatcher_serial and old_target not in bst_set:
+    if old_target != dispatcher_serial and old_target not in condition_chain_set:
         return ReconstructionPreheaderBridgeResult(
             modification=None,
             resolved_target=None,
@@ -188,7 +188,7 @@ def plan_reconstruction_bridge_modifications(
     flow_graph,
     builder,
     dispatcher_serial: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     claimed_sources: set[int],
     claimed_targets: set[int],
     suppressed_bridge_pairs: set[tuple[int, int]],
@@ -196,25 +196,25 @@ def plan_reconstruction_bridge_modifications(
 ) -> ReconstructionBridgePlanResult:
     bridge_mods: list = []
     log_entries: list[ReconstructionBridgeLogEntry] = []
-    bst_set = {int(dispatcher_serial)}
-    bst_set.update(int(block) for block in bst_node_blocks)
+    condition_chain_set = {int(dispatcher_serial)}
+    condition_chain_set.update(int(block) for block in condition_chain_blocks)
 
     for edge in dag.edges:
         if edge.target_entry_anchor is None:
             continue
         target_entry = int(edge.target_entry_anchor)
-        if target_entry in bst_set or target_entry in claimed_targets:
+        if target_entry in condition_chain_set or target_entry in claimed_targets:
             continue
 
         exit_block: int | None = None
         if edge.ordered_path:
             for serial in reversed(edge.ordered_path):
-                if int(serial) not in bst_set:
+                if int(serial) not in condition_chain_set:
                     exit_block = int(serial)
                     break
         else:
             src = int(edge.source_anchor.block_serial)
-            if src not in bst_set:
+            if src not in condition_chain_set:
                 exit_block = src
 
         if exit_block is None or (exit_block, target_entry) in suppressed_bridge_pairs:
@@ -233,7 +233,7 @@ def plan_reconstruction_bridge_modifications(
 
         if block.nsucc == 1:
             old_target = int(block.succs[0])
-            if old_target == dispatcher_serial or old_target in bst_set:
+            if old_target == dispatcher_serial or old_target in condition_chain_set:
                 edge_state = getattr(
                     getattr(edge, "source_key", None), "state_const", None
                 )
@@ -300,7 +300,7 @@ def plan_reconstruction_bridge_modifications(
         elif block.nsucc == 2:
             for arm in range(2):
                 arm_target = int(block.succs[arm])
-                if arm_target == dispatcher_serial or arm_target in bst_set:
+                if arm_target == dispatcher_serial or arm_target in condition_chain_set:
                     if arm == 1:
                         edge_state = getattr(
                             getattr(edge, "source_key", None), "state_const", None
@@ -382,15 +382,15 @@ def plan_reconstruction_feeder_modifications(
     projected_flow_graph,
     builder,
     dispatcher_serial: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     claimed_sources: set[int],
     claimed_targets: set[int],
     suppressed_bridge_pairs: set[tuple[int, int]],
 ) -> ReconstructionFeederPlanResult:
     feeder_mods: list = []
     log_entries: list[ReconstructionFeederLogEntry] = []
-    bst_set = {int(dispatcher_serial)}
-    bst_set.update(int(block) for block in bst_node_blocks)
+    condition_chain_set = {int(dispatcher_serial)}
+    condition_chain_set.update(int(block) for block in condition_chain_blocks)
 
     for edge in dag.edges:
         if edge.target_entry_anchor is None:
@@ -399,7 +399,7 @@ def plan_reconstruction_feeder_modifications(
         if edge_kind_name not in {"TRANSITION", "CONDITIONAL_TRANSITION", "UNKNOWN"}:
             continue
         target_entry = int(edge.target_entry_anchor)
-        if target_entry in bst_set:
+        if target_entry in condition_chain_set:
             continue
 
         src_serial = int(edge.source_anchor.block_serial)
@@ -414,7 +414,7 @@ def plan_reconstruction_feeder_modifications(
 
         has_dispatcher_succ = any(
             int(src_block.succs[arm]) == dispatcher_serial
-            or int(src_block.succs[arm]) in bst_set
+            or int(src_block.succs[arm]) in condition_chain_set
             for arm in range(src_block.nsucc)
         )
         if not has_dispatcher_succ:
@@ -422,7 +422,7 @@ def plan_reconstruction_feeder_modifications(
 
         if src_block.nsucc == 1:
             old_target = int(src_block.succs[0])
-            if old_target != dispatcher_serial and old_target not in bst_set:
+            if old_target != dispatcher_serial and old_target not in condition_chain_set:
                 continue
 
             feeder_tag = "UNKNOWN 1-way" if edge_kind_name == "UNKNOWN" else "1-way"
@@ -435,7 +435,7 @@ def plan_reconstruction_feeder_modifications(
                 via_pred_succs=(),
                 target_entry=target_entry,
                 dispatcher_serial=dispatcher_serial,
-                bst_node_blocks=frozenset(bst_set),
+                condition_chain_blocks=frozenset(condition_chain_set),
                 target_reaches_pred=False,
             )
             edge_pred = feeder_context.via_pred
@@ -449,7 +449,7 @@ def plan_reconstruction_feeder_modifications(
                     projected_flow_graph,
                     target_entry=target_entry,
                     source_block=edge_pred,
-                    ignored_blocks=bst_set | {dispatcher_serial, src_serial},
+                    ignored_blocks=condition_chain_set | {dispatcher_serial, src_serial},
                 )
                 if edge_pred is not None
                 else False
@@ -462,7 +462,7 @@ def plan_reconstruction_feeder_modifications(
                     via_pred_succs=pred_succs,
                     target_entry=feeder_context.target_entry,
                     dispatcher_serial=feeder_context.dispatcher_serial,
-                    bst_node_blocks=feeder_context.bst_node_blocks,
+                    condition_chain_blocks=feeder_context.condition_chain_blocks,
                     target_reaches_pred=target_reaches_pred,
                 )
             )
@@ -513,7 +513,7 @@ def plan_reconstruction_feeder_modifications(
         elif src_block.nsucc == 2:
             for arm in range(2):
                 arm_target = int(src_block.succs[arm])
-                if arm_target == dispatcher_serial or arm_target in bst_set:
+                if arm_target == dispatcher_serial or arm_target in condition_chain_set:
                     if arm == 1:
                         feeder_mods.append(
                             builder.edge_redirect(
@@ -551,7 +551,7 @@ def plan_fixpoint_feeder_modifications(
     flow_graph,
     builder,
     dispatcher_serial: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     claimed_sources: set[int],
     constant_result,
     state_var_stkoff: int | None,
@@ -573,8 +573,8 @@ def plan_fixpoint_feeder_modifications(
             claimed_sources=frozenset(int(serial) for serial in claimed_sources),
         )
 
-    bst_set = {int(dispatcher_serial)}
-    bst_set.update(int(block) for block in bst_node_blocks)
+    condition_chain_set = {int(dispatcher_serial)}
+    condition_chain_set.update(int(block) for block in condition_chain_blocks)
     for blk_serial in flow_graph.blocks:
         if blk_serial in claimed_sources:
             continue
@@ -582,7 +582,7 @@ def plan_fixpoint_feeder_modifications(
         if blk is None or blk.nsucc != 1:
             continue
         old_target = int(blk.succs[0])
-        if old_target != dispatcher_serial and old_target not in bst_set:
+        if old_target != dispatcher_serial and old_target not in condition_chain_set:
             continue
         out_map = constant_result.out_stk_maps.get(blk_serial, {})
         state_val = out_map.get(state_var_stkoff)
@@ -593,7 +593,7 @@ def plan_fixpoint_feeder_modifications(
             exact_dispatcher_map=exact_dispatcher_map,
             dispatcher=dispatcher,
         )
-        if resolved is None or int(resolved) in bst_set:
+        if resolved is None or int(resolved) in condition_chain_set:
             continue
         modification = builder.goto_redirect(
             source_block=blk_serial,

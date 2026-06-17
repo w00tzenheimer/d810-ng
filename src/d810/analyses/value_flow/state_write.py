@@ -1,8 +1,8 @@
 """Portable microcode constant-folding / state-write evaluation (value-flow).
 
-Extracted from ``d810.backends.hexrays.evidence.bst_analysis`` in the LS6 bst-cluster split
+Extracted from ``d810.backends.hexrays.evidence.condition_chain_analysis`` in the LS6 condition-chain split
 (Landing Sequence step 6 / ticket d81-1w16).  This is the PURE constant-folding
-core of the BST handler-chain walker: forward evaluation of microcode
+core of the condition-chain handler-chain walker: forward evaluation of microcode
 instructions to recover the constant value written to a state variable.
 
 Portable-core: no IDA / Hex-Rays imports.  Everything vendor-specific is

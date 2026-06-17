@@ -113,7 +113,7 @@ def test_build_dispatcher_transition_report_from_graph_classifies_rows():
     assert by_handler[7].transition_label == "unknown"
 
 
-def test_bst_backed_and_graph_backed_reports_render_the_same_rows(monkeypatch):
+def test_condition_chain_backed_and_graph_backed_reports_render_the_same_rows(monkeypatch):
     flow_graph = _make_flow_graph()
     transition_result = _make_transition_result()
     expected = build_dispatcher_transition_report_from_graph(
@@ -122,7 +122,7 @@ def test_bst_backed_and_graph_backed_reports_render_the_same_rows(monkeypatch):
         dispatcher_entry_serial=5,
         state_var_stkoff=0x20,
         state_var_lvar_idx=3,
-        bst_node_blocks=(8, 9),
+        condition_chain_blocks=(8, 9),
         diagnostics=("portable",),
     )
 
@@ -133,12 +133,12 @@ def test_bst_backed_and_graph_backed_reports_render_the_same_rows(monkeypatch):
             dispatcher_entry_serial=5,
             state_var_stkoff=0x20,
             state_var_lvar_idx=3,
-            bst_node_blocks=(8, 9),
+            condition_chain_blocks=(8, 9),
             diagnostics=("portable",),
         )
 
     monkeypatch.setattr(
-        "d810.analyses.control_flow.transition_report.analyze_bst_dispatcher",
+        "d810.analyses.control_flow.transition_report.analyze_condition_chain_dispatcher",
         fake_analyze,
     )
 

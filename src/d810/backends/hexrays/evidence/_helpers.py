@@ -14,11 +14,11 @@ from d810.analyses.control_flow.state_machine_analysis import (
     HandlerPathResult,
     can_reach_return_snapshot,
     detect_conditional_transitions,
-    eval_bst_condition,
+    eval_condition_chain_condition,
     evaluate_handler_paths,
     find_terminal_exit_target_snapshot,
-    init_bst_cmp_opcodes,
-    resolve_exit_via_bst_default_snapshot,
+    init_condition_chain_cmp_opcodes,
+    resolve_exit_via_condition_chain_default_snapshot,
 )
 
 _helpers_logger = logging.getLogger("D810.hodur.strategy.helpers")
@@ -32,9 +32,9 @@ __all__ = [
     "find_terminal_exit_target_snapshot",
     "can_reach_return_snapshot",
     "evaluate_handler_paths",
-    "init_bst_cmp_opcodes",
-    "eval_bst_condition",
-    "resolve_exit_via_bst_default_snapshot",
+    "init_condition_chain_cmp_opcodes",
+    "eval_condition_chain_condition",
+    "resolve_exit_via_condition_chain_default_snapshot",
 ]
 
 

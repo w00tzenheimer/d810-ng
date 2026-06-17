@@ -34,7 +34,7 @@ class StateMachineSnapshotBuilder:
         reachability_builder=None,
         fact_view_resolver=None,
         function_priors_resolver=None,
-        bst_evidence_resolver=None,
+        range_evidence_resolver=None,
         transition_supplementer=None,
         discovery_builder=None,
     ) -> AnalysisSnapshot:
@@ -64,10 +64,10 @@ class StateMachineSnapshotBuilder:
                 run_state=run_state,
             )
 
-        bst_result = None
-        bst_dispatcher_serial = -1
-        if bst_evidence_resolver is not None:
-            bst_result, bst_dispatcher_serial = bst_evidence_resolver(
+        range_evidence = None
+        dispatcher_root_serial = -1
+        if range_evidence_resolver is not None:
+            range_evidence, dispatcher_root_serial = range_evidence_resolver(
                 mba,
                 state_machine,
             )
@@ -85,8 +85,8 @@ class StateMachineSnapshotBuilder:
                 mba,
                 state_machine=state_machine,
                 flow_graph=flow_graph,
-                bst_result=bst_result,
-                bst_dispatcher_serial=bst_dispatcher_serial,
+                range_evidence=range_evidence,
+                dispatcher_root_serial=dispatcher_root_serial,
                 function_priors=function_priors,
                 run_state=run_state,
             )
@@ -96,12 +96,12 @@ class StateMachineSnapshotBuilder:
             state_machine=state_machine,
             detector=getattr(detection, "detector", None),
             dispatcher_analysis=dispatcher_analysis,
-            bst_result=bst_result,
-            bst_dispatcher_serial=bst_dispatcher_serial,
+            range_evidence=range_evidence,
+            dispatcher_root_serial=dispatcher_root_serial,
             dispatcher_blocks=frozenset(
                 int(block)
                 for block in (
-                    getattr(bst_result, "condition_chain_blocks", set()) or set()
+                    getattr(range_evidence, "condition_chain_blocks", set()) or set()
                 )
             ),
             reachability=reachability,

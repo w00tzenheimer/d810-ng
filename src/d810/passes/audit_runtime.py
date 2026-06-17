@@ -75,11 +75,11 @@ def prepare_return_frontier_audit(
                     len(report.rows),
                     len(return_sites),
                 )
-        elif snapshot.bst_dispatcher_serial >= 0:
+        elif snapshot.dispatcher_root_serial >= 0:
             try:
                 report = build_dispatcher_transition_report(
                     snapshot.mba,
-                    snapshot.bst_dispatcher_serial,
+                    snapshot.dispatcher_root_serial,
                     state_var_stkoff=state_var_stkoff,
                 )
                 save_transition_report_to_store(

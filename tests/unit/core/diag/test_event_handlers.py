@@ -218,7 +218,7 @@ def test_reachability_translates_frozensets_to_classification_rows(fake_conn):
         snap,
         all_serials=[0, 1, 2],
         reachable=[0, 1],
-        bst_serials=[],
+        condition_chain_serials=[],
         gutted=[2],
         claimed_sources=[1],
     )

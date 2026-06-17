@@ -358,7 +358,7 @@ class TestResolveExactBranchWitness:
         assert result[0].target_block == 10
 
     def test_adapter_abstains_for_non_conditional_chain_maps(self):
-        """Switch/indirect/BST maps must not become equality-chain witnesses."""
+        """Switch/indirect/condition-chain maps must not become equality-chain witnesses."""
         fg = FlowGraph(blocks={
             2: _jz_block(2, 0x10, taken=10, fallthrough=3),
             3: _b(3, (99,), (2,)),

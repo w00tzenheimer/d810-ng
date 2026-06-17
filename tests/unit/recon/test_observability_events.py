@@ -134,7 +134,7 @@ def test_observe_reachability_converts_to_frozensets():
         snap,
         all_serials=[1, 2, 3, 1],
         reachable=[1, 2],
-        bst_serials=(2,),
+        condition_chain_serials=(2,),
         gutted=(3,),
         claimed_sources=(),
     )
@@ -143,7 +143,7 @@ def test_observe_reachability_converts_to_frozensets():
     ev = seen[0]
     assert ev.all_serials == frozenset({1, 2, 3})
     assert ev.reachable == frozenset({1, 2})
-    assert ev.bst_serials == frozenset({2})
+    assert ev.condition_chain_serials == frozenset({2})
     assert ev.gutted == frozenset({3})
     assert ev.claimed_sources == frozenset()
 

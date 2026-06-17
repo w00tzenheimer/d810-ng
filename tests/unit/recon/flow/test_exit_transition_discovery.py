@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import d810.analyses.control_flow.exit_transition_discovery as exit_transition_discovery
 from d810.analyses.control_flow.exit_transition_discovery import (
-    collect_bst_default_transition_candidates,
+    collect_condition_chain_default_transition_candidates,
     collect_exit_transition_candidates,
     collect_valrange_exit_transition_candidates,
 )
@@ -49,7 +49,7 @@ class TestCollectExitTransitionCandidates:
         snapshot = SimpleNamespace(
             mba=_DummyMba({24: _DummyBlock(head=_DummyInsn(value=0x22))}),
             detector=None,
-            bst_dispatcher_serial=6,
+            dispatcher_root_serial=6,
         )
         sm = SimpleNamespace(
             state_var=SimpleNamespace(t=_STACK_OPERAND, s=SimpleNamespace(off=0x30)),
@@ -58,7 +58,7 @@ class TestCollectExitTransitionCandidates:
                 0x11: SimpleNamespace(handler_blocks=(24,), check_block=24),
             },
         )
-        bst_result = SimpleNamespace(
+        range_evidence = SimpleNamespace(
             dispatcher=None,
             handler_state_map={88: 0x22},
             handler_range_map={},
@@ -68,9 +68,9 @@ class TestCollectExitTransitionCandidates:
         candidates = collect_exit_transition_candidates(
             snapshot,
             sm=sm,
-            bst_result=bst_result,
+            range_evidence=range_evidence,
             handler_state_map={24: 0x11},
-            bst_node_blocks={2, 6},
+            condition_chain_blocks={2, 6},
         )
 
         assert len(candidates) == 1
@@ -79,11 +79,11 @@ class TestCollectExitTransitionCandidates:
         assert candidates[0].exit_state_value == 0x22
         assert candidates[0].discovery_kind == "write"
 
-    def test_collects_bst_walk_fallback_candidates(self, monkeypatch) -> None:
+    def test_collects_condition_chain_walk_fallback_candidates(self, monkeypatch) -> None:
         snapshot = SimpleNamespace(
             mba=_DummyMba({24: _DummyBlock(head=None)}),
             detector=None,
-            bst_dispatcher_serial=6,
+            dispatcher_root_serial=6,
         )
         sm = SimpleNamespace(
             state_var=SimpleNamespace(t=_STACK_OPERAND, s=SimpleNamespace(off=0x30)),
@@ -92,7 +92,7 @@ class TestCollectExitTransitionCandidates:
                 0x11: SimpleNamespace(handler_blocks=(24,), check_block=24),
             },
         )
-        bst_result = SimpleNamespace(
+        range_evidence = SimpleNamespace(
             dispatcher=None,
             handler_state_map={},
             handler_range_map={},
@@ -100,26 +100,26 @@ class TestCollectExitTransitionCandidates:
         )
 
         monkeypatch.setattr(
-            "d810.analyses.control_flow.exit_transition_discovery.resolve_via_bst_walk",
-            lambda mba, dispatcher_serial, state_val, bst_nodes: 88,
+            "d810.analyses.control_flow.exit_transition_discovery.resolve_via_condition_chain_walk",
+            lambda mba, dispatcher_serial, state_val, condition_chain_nodes: 88,
         )
 
         candidates = collect_exit_transition_candidates(
             snapshot,
             sm=sm,
-            bst_result=bst_result,
+            range_evidence=range_evidence,
             handler_state_map={},
-            bst_node_blocks={2, 6},
+            condition_chain_blocks={2, 6},
         )
 
         assert len(candidates) == 1
         assert candidates[0].from_block == 24
         assert candidates[0].target_entry == 88
         assert candidates[0].exit_state_value is None
-        assert candidates[0].discovery_kind == "bst_walk"
+        assert candidates[0].discovery_kind == "condition_chain_walk"
 
 
-class TestCollectBstDefaultTransitionCandidates:
+class TestCollectConditionChainDefaultTransitionCandidates:
     def test_collects_path_eval_candidates(self, monkeypatch) -> None:
         snapshot = SimpleNamespace(
             mba=_DummyMba({}),
@@ -128,7 +128,7 @@ class TestCollectBstDefaultTransitionCandidates:
         sm = SimpleNamespace(
             state_var=SimpleNamespace(t=_STACK_OPERAND, s=SimpleNamespace(off=0x30)),
         )
-        bst_result = SimpleNamespace()
+        range_evidence = SimpleNamespace()
 
         seen_calls: list[tuple[int, int, frozenset[int]]] = []
 
@@ -137,7 +137,7 @@ class TestCollectBstDefaultTransitionCandidates:
             mba,
             entry_serial,
             incoming_state,
-            bst_node_blocks,
+            condition_chain_blocks,
             state_var_stkoff,
             handler_entry_blocks,
         ):
@@ -161,15 +161,15 @@ class TestCollectBstDefaultTransitionCandidates:
         )
         monkeypatch.setattr(
             "d810.analyses.control_flow.exit_transition_discovery.resolve_target_via_condition_chain",
-            lambda bst, state: 88 if state == 0x22 else None,
+            lambda condition_chain, state: 88 if state == 0x22 else None,
         )
 
-        candidates = collect_bst_default_transition_candidates(
+        candidates = collect_condition_chain_default_transition_candidates(
             snapshot,
             sm=sm,
-            bst_result=bst_result,
+            range_evidence=range_evidence,
             handler_state_map={24: 0x11},
-            bst_node_blocks={2, 6},
+            condition_chain_blocks={2, 6},
         )
 
         assert seen_calls == [(0x11, 24, frozenset({0x11}))]
@@ -203,17 +203,17 @@ class TestCollectValrangeExitTransitionCandidates:
             state_var=SimpleNamespace(name="state"),
             handlers={0x11: SimpleNamespace(transitions=(transition,))},
         )
-        bst_result = SimpleNamespace()
+        range_evidence = SimpleNamespace()
 
         monkeypatch.setattr(
             "d810.analyses.control_flow.exit_transition_discovery.resolve_target_via_condition_chain",
-            lambda bst, state: 88 if state == 0x33 else None,
+            lambda condition_chain, state: 88 if state == 0x33 else None,
         )
 
         discovery = collect_valrange_exit_transition_candidates(
             snapshot,
             sm=sm,
-            bst_result=bst_result,
+            range_evidence=range_evidence,
             resolve_state_via_valranges=lambda blk, state_var, insn: 0x33,
         )
 
@@ -240,7 +240,7 @@ class TestCollectValrangeExitTransitionCandidates:
         discovery = collect_valrange_exit_transition_candidates(
             snapshot,
             sm=sm,
-            bst_result=SimpleNamespace(),
+            range_evidence=SimpleNamespace(),
             resolve_state_via_valranges=lambda blk, state_var, insn: 0x33,
         )
 

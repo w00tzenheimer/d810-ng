@@ -187,7 +187,7 @@ def test_resolves_synthetic_alias_to_owner_family_fallback() -> None:
         state_var_stkoff=0x3C,
         pre_header_serial=None,
         initial_state=0x64AFC49D,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=StateDagNodeKey(handler_serial=26, state_const=0x64AFC49D),
@@ -245,7 +245,7 @@ def test_resolves_supplemental_source_family_alias_to_fallback_edge() -> None:
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=StateDagNodeKey(handler_serial=14, state_const=0x474EEEBB),
@@ -310,7 +310,7 @@ def test_resolves_supplemental_source_family_alias_to_fallback_edge() -> None:
         0x4C77464F,
         source_contexts={(15, 16)},
         dag=dag,
-        bst_node_blocks=set(),
+        condition_chain_blocks=set(),
     ) == (14, "0x474EEEBB_fallback")
 
 
@@ -400,7 +400,7 @@ def test_resolves_supplemental_source_family_alias_to_same_state_exact_entry() -
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=exact_key,
@@ -440,7 +440,7 @@ def test_resolves_supplemental_source_family_alias_to_same_state_exact_entry() -
         0x4C77464F,
         source_contexts={(15, 16)},
         dag=dag,
-        bst_node_blocks=set(),
+        condition_chain_blocks=set(),
     ) == (66, "0x4C77464F")
 
 
@@ -451,7 +451,7 @@ def test_resolves_supplemental_source_family_alias_prefers_semantic_alias_over_r
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=StateDagNodeKey(handler_serial=14, state_const=0x474EEEBB),
@@ -517,7 +517,7 @@ def test_resolves_supplemental_source_family_alias_prefers_semantic_alias_over_r
         0x4C77464F,
         source_contexts={(15, 16)},
         dag=dag,
-        bst_node_blocks=set(),
+        condition_chain_blocks=set(),
     ) == (14, "0x474EEEBB_fallback")
 
 
@@ -528,7 +528,7 @@ def test_resolves_nonraw_owner_semantic_alias_for_raw_exact_cover_anchor() -> No
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=StateDagNodeKey(handler_serial=63, state_const=0x474EEEBB),
@@ -565,7 +565,7 @@ def test_resolves_nonraw_owner_semantic_alias_for_raw_exact_cover_anchor() -> No
         0x4C77464F,
         anchor_candidates={66, 71},
         dag=dag,
-        bst_node_blocks=set(),
+        condition_chain_blocks=set(),
     ) == (63, "0x474EEEBB")
 
 
@@ -575,7 +575,7 @@ def test_resolves_nonraw_owner_semantic_alias_to_owner_exclusive_head_when_entry
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=StateDagNodeKey(handler_serial=66, state_const=0x474EEEBB),
@@ -600,7 +600,7 @@ def test_resolves_nonraw_owner_semantic_alias_to_owner_exclusive_head_when_entry
         0x4C77464F,
         anchor_candidates={66, 71},
         dag=dag,
-        bst_node_blocks=set(),
+        condition_chain_blocks=set(),
     ) == (63, "0x474EEEBB")
 
 
@@ -610,7 +610,7 @@ def test_resolves_nonraw_owner_semantic_alias_returns_none_without_nonraw_owner(
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=StateDagNodeKey(handler_serial=66, state_const=0x4C77464F),
@@ -636,7 +636,7 @@ def test_resolves_nonraw_owner_semantic_alias_returns_none_without_nonraw_owner(
             0x4C77464F,
             anchor_candidates={66},
             dag=dag,
-            bst_node_blocks=set(),
+            condition_chain_blocks=set(),
         )
         is None
     )
@@ -648,7 +648,7 @@ def test_resolves_nonraw_owner_semantic_alias_from_branchy_raw_path_blocks() -> 
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=StateDagNodeKey(handler_serial=66, state_const=0x4C77464F),
@@ -685,7 +685,7 @@ def test_resolves_nonraw_owner_semantic_alias_from_branchy_raw_path_blocks() -> 
         0x4C77464F,
         anchor_candidates={66, 67, 68, 69},
         dag=dag,
-        bst_node_blocks=set(),
+        condition_chain_blocks=set(),
     ) == (68, "0x474EEEBB")
 
 
@@ -695,7 +695,7 @@ def test_resolves_prior_supplemental_selected_alias_to_semantic_owner() -> None:
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=StateDagNodeKey(handler_serial=66, state_const=0x4C77464F),
@@ -746,7 +746,7 @@ def test_resolves_prior_supplemental_selected_alias_to_semantic_owner() -> None:
     assert _resolve_prior_supplemental_selected_alias(
         0x4C77464F,
         dag=dag,
-        bst_node_blocks=set(),
+        condition_chain_blocks=set(),
     ) == (68, "0x474EEEBB")
 
 
@@ -764,7 +764,7 @@ def test_resolves_nonraw_dispatcher_cover_alias_skips_raw_exact_range_row() -> N
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=StateDagNodeKey(handler_serial=63, state_const=0x474EEEBB),
@@ -813,7 +813,7 @@ def test_resolves_nonraw_dispatcher_cover_alias_skips_raw_exact_range_row() -> N
         0x4C77464F,
         dag=dag,
         dispatcher=dispatcher,
-        bst_node_blocks=set(),
+        condition_chain_blocks=set(),
     ) == (63, "0x474EEEBB")
 
 
@@ -831,7 +831,7 @@ def test_resolves_nonraw_dispatcher_cover_alias_skips_known_cover_anchor_without
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=StateDagNodeKey(handler_serial=63, state_const=0x474EEEBB),
@@ -856,7 +856,7 @@ def test_resolves_nonraw_dispatcher_cover_alias_skips_known_cover_anchor_without
         0x4C77464F,
         dag=dag,
         dispatcher=dispatcher,
-        bst_node_blocks=set(),
+        condition_chain_blocks=set(),
         raw_exact_cover_anchor=66,
     ) == (63, "0x474EEEBB")
 
@@ -867,7 +867,7 @@ def test_selects_branchy_cover_exact_as_raw_alias_candidate_when_source_family_i
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(),
         edges=(),
         transient_entry_blocks=(),
@@ -920,7 +920,7 @@ def test_selects_branchy_source_family_as_raw_alias_candidate_when_exact_entry_i
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=StateDagNodeKey(handler_serial=66, state_const=0x4C77464F),
@@ -1001,7 +1001,7 @@ def test_build_linearized_state_program_normalizes_rendered_raw_alias_labels() -
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=source_key,
@@ -1100,7 +1100,7 @@ def test_build_linearized_state_program_normalizes_rendered_raw_alias_labels() -
     assert "STATE_474EEEBB" in rendered
 
 
-def test_semantic_entry_anchor_keeps_non_bst_handler_over_unique_path_root() -> None:
+def test_semantic_entry_anchor_keeps_non_condition_chain_handler_over_unique_path_root() -> None:
     paths = (
         HandlerPathResult(
             exit_block=68,
@@ -1115,7 +1115,7 @@ def test_semantic_entry_anchor_keeps_non_bst_handler_over_unique_path_root() -> 
             63,
             local_blocks=(63, 66, 67, 68),
             paths=paths,
-            bst_node_blocks=(0, 1, 2, 15, 16),
+            condition_chain_blocks=(0, 1, 2, 15, 16),
         )
         == 63
     )
@@ -1128,7 +1128,7 @@ def test_prefers_family_fallback_over_branchy_raw_exact_supplemental_anchor() ->
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=raw_exact_key,
@@ -1193,7 +1193,7 @@ def test_does_not_prefer_family_fallback_over_straight_raw_exact_anchor() -> Non
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=raw_exact_key,
@@ -1242,7 +1242,7 @@ def test_does_not_prefer_family_fallback_when_source_family_alias_is_raw_exact()
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=raw_exact_key,
@@ -1309,7 +1309,7 @@ def test_prefers_family_fallback_when_source_family_alias_is_raw_exact_with_dist
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=raw_exact_key,
@@ -1378,7 +1378,7 @@ def test_prefers_family_fallback_over_branchy_duplicate_cover_exact_anchor() -> 
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=raw_exact_key,
@@ -1455,7 +1455,7 @@ def test_does_not_prefer_family_fallback_over_branchy_nonraw_cover_exact_anchor(
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=StateDagNodeKey(handler_serial=66, state_const=0x474EEEBB),
@@ -1525,7 +1525,7 @@ def test_resolves_exact_cover_anchor_to_preceding_exact_row() -> None:
         initial_state=0x6107F8EC,
         handler_state_map={66: 0x474EEEBB},
         handler_range_map={71: (0x474EEEBC, 0x4E69F350)},
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         rows=(
             TransitionRow(
                 state_const=0x474EEEBB,
@@ -1585,7 +1585,7 @@ def test_resolves_exact_cover_anchor_to_preceding_exact_row() -> None:
     assert _resolve_exact_cover_anchor(
         0x4C77464F,
         report,
-        bst_node_blocks=set(),
+        condition_chain_blocks=set(),
     ) == 66
 
 
@@ -1598,7 +1598,7 @@ def test_resolves_exact_cover_anchor_from_dispatcher_singleton_row() -> None:
         initial_state=0x6107F8EC,
         handler_state_map={},
         handler_range_map={71: (0x474EEEBC, 0x4E69F350)},
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         rows=(
             TransitionRow(
                 state_const=None,
@@ -1644,7 +1644,7 @@ def test_resolves_exact_cover_anchor_from_dispatcher_singleton_row() -> None:
         0x4C77464F,
         report,
         dispatcher=dispatcher,
-        bst_node_blocks=set(),
+        condition_chain_blocks=set(),
     ) == 66
 
 
@@ -1657,7 +1657,7 @@ def test_build_state_resolver_preserves_raw_exact_row_over_dispatcher_corridor()
         initial_state=0x6107F8EC,
         handler_state_map={66: 0x4C77464F},
         handler_range_map={71: (0x474EEEBC, 0x4E69F350)},
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         rows=(
             TransitionRow(
                 state_const=0x4C77464F,
@@ -1725,7 +1725,7 @@ def test_build_state_resolver_overrides_transient_raw_exact_row_to_dispatcher() 
         initial_state=0x6107F8EC,
         handler_state_map={66: 0x4C77464F},
         handler_range_map={71: (0x474EEEBC, 0x4E69F350)},
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         rows=(
             TransitionRow(
                 state_const=0x4C77464F,
@@ -1794,7 +1794,7 @@ def test_build_state_resolver_still_overrides_nonraw_exact_row_to_dispatcher() -
         initial_state=0x6107F8EC,
         handler_state_map={66: 0x474EEEBB},
         handler_range_map={71: (0x474EEEBC, 0x4E69F350)},
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         rows=(
             TransitionRow(
                 state_const=0x474EEEBB,
@@ -1862,7 +1862,7 @@ def test_build_state_resolver_prefers_dispatcher_over_protected_non_carrier_retu
         initial_state=0x6107F8EC,
         handler_state_map={66: 0x474EEEBB},
         handler_range_map={71: (0x474EEEBC, 0x4E69F350)},
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         rows=(
             TransitionRow(
                 state_const=0x474EEEBB,
@@ -1939,7 +1939,7 @@ def test_build_state_resolver_preserves_nonraw_semantic_alias_row_over_dispatche
         initial_state=0x6107F8EC,
         handler_state_map={68: 0x4C77464F},
         handler_range_map={71: (0x474EEEBC, 0x4E69F350)},
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         rows=(
             TransitionRow(
                 state_const=0x4C77464F,
@@ -2234,7 +2234,7 @@ def test_alias_label_override_preserves_node_local_prefix_over_prelude_collapse(
             180: 0x2FBA4611,
         },
         handler_range_map={},
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         rows=(),
         summary=TransitionSummary(
             handlers_total=0,
@@ -2338,7 +2338,7 @@ def test_alias_label_override_rejects_sibling_prelude_from_branch_source() -> No
         initial_state=None,
         handler_state_map={117: 0x02760C0D},
         handler_range_map={},
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         rows=(),
         summary=TransitionSummary(
             handlers_total=0,
@@ -2447,7 +2447,7 @@ def test_alias_label_override_preserves_dispatcher_body_anchor_for_upper_gap_col
             14: 0x606DC166,
         },
         handler_range_map={80: (0x5FE86822, 0x606DC165)},
-        bst_node_blocks=(79,),
+        condition_chain_blocks=(79,),
         rows=(
             TransitionRow(
                 state_const=0x5D0AEBD3,
@@ -2591,7 +2591,7 @@ def test_alias_label_override_preserves_dispatcher_body_anchor_for_cover_collaps
             80: 0x606DC165,
         },
         handler_range_map={80: (0x5FE86822, 0x606DC165)},
-        bst_node_blocks=(79,),
+        condition_chain_blocks=(79,),
         rows=(
             TransitionRow(
                 state_const=0x5FE86821,
@@ -2915,7 +2915,7 @@ def test_render_linearized_state_program_renders_fallback_and_exit_routine() -> 
         state_var_stkoff=0x3C,
         pre_header_serial=None,
         initial_state=0x27EEEA11,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=fallback_key,
@@ -2969,7 +2969,7 @@ def test_render_linearized_state_program_disambiguates_colliding_labels() -> Non
         state_var_stkoff=0x3C,
         pre_header_serial=None,
         initial_state=0x11111111,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=source_key,
@@ -3057,7 +3057,7 @@ def test_render_linearized_state_program_explicitly_emits_local_segments() -> No
         state_var_stkoff=0x3C,
         pre_header_serial=None,
         initial_state=0x20,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=node_key,
@@ -3152,7 +3152,7 @@ def test_render_linearized_state_program_selectively_collapses_local_corridors()
         state_var_stkoff=0x3C,
         pre_header_serial=None,
         initial_state=0x20,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=source_key,
@@ -3277,7 +3277,7 @@ def test_render_linearized_state_program_inlines_one_boundary_level() -> None:
         state_var_stkoff=0x3C,
         pre_header_serial=None,
         initial_state=0x20,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=source_key,
@@ -3386,7 +3386,7 @@ def test_render_linearized_state_program_renders_block_payload_without_terminal_
         state_var_stkoff=0x3C,
         pre_header_serial=None,
         initial_state=0x20,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=source_key,
@@ -3479,7 +3479,7 @@ def test_render_linearized_state_program_structures_simple_collapsed_sidechain()
         state_var_stkoff=0x3C,
         pre_header_serial=None,
         initial_state=0x20,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=source_key,
@@ -3651,7 +3651,7 @@ def test_render_linearized_state_program_preserves_entry_corridor_payload_before
         state_var_stkoff=0x3C,
         pre_header_serial=None,
         initial_state=0x20,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=source_key,
@@ -3744,7 +3744,7 @@ def test_render_linearized_state_program_emits_semantic_edge_tail_payload() -> N
         state_var_stkoff=0x3C,
         pre_header_serial=None,
         initial_state=0x20,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=source_key,
@@ -3925,7 +3925,7 @@ def test_render_linearized_state_program_emits_two_way_merge_once_with_transitio
         state_var_stkoff=0x3C,
         pre_header_serial=None,
         initial_state=0x20,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=source_key,
@@ -4066,7 +4066,7 @@ def test_render_linearized_state_program_minimal_comment_mode_hides_metadata_sca
         state_var_stkoff=0x3C,
         pre_header_serial=None,
         initial_state=0x20,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=source_key,
@@ -4173,7 +4173,7 @@ def test_render_strategies_distinguish_catalog_from_semantic_order() -> None:
         state_var_stkoff=0x3C,
         pre_header_serial=None,
         initial_state=0x10,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(node_10, node_05, node_30),
         edges=(
             StateDagEdge(
@@ -4240,9 +4240,9 @@ def test_suppresses_dispatcher_root_alias_edge_when_concrete_prefix_exists() -> 
         ordered_path=(118, 120, 2),
     )
 
-    filtered = dag_mod._suppress_bst_extension_alias_edges(
+    filtered = dag_mod._suppress_condition_chain_extension_alias_edges(
         [alias_edge, concrete_edge],
-        bst_node_blocks={2},
+        condition_chain_blocks={2},
     )
 
     assert concrete_edge in filtered
@@ -4602,7 +4602,7 @@ def _make_shared_suffix_report() -> DispatcherTransitionReport:
         initial_state=0x10,
         handler_state_map={1: 0x10, 2: 0x20},
         handler_range_map={9: (0x100, 0x1FF)},
-        bst_node_blocks=(11,),
+        condition_chain_blocks=(11,),
         rows=rows,
         summary=TransitionSummary(
             handlers_total=3,
@@ -4729,7 +4729,7 @@ def test_terminal_branch_handoff_preserves_local_goto_chain() -> None:
         initial_state=0x0ACD0BD5,
         handler_state_map={131: 0x0ACD0BD5, 199: 0x258ED455, 23: 0x6465D165},
         handler_range_map={},
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         rows=(
             TransitionRow(
                 state_const=0x0ACD0BD5,
@@ -4922,7 +4922,7 @@ def test_alias_states_can_share_handler_anchor_and_inherit_edges() -> None:
         initial_state=0x10,
         handler_state_map={1: 0x10, 2: 0x20, 3: 0x30},
         handler_range_map={},
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         rows=(
             TransitionRow(
                 state_const=0x10,
@@ -5130,7 +5130,7 @@ def test_live_builder_iterates_supplemental_fallback_aliases(
             14: 0x606DC166,
         },
         handler_range_map={},
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         rows=(
             TransitionRow(
                 state_const=0x00C0C59F,
@@ -5333,7 +5333,7 @@ def test_live_builder_iterates_supplemental_fallback_aliases(
         mba,
         handler_serial,
         incoming_state,
-        bst_node_blocks,
+        condition_chain_blocks,
         state_var_stkoff,
         handler_entry_blocks,
         **_kwargs,
@@ -5500,7 +5500,7 @@ def test_live_builder_prefers_exact_cover_fallback_anchor_over_bridge_row(
             212: 0x3E7EA8B8,
         },
         handler_range_map={},
-        bst_node_blocks=(210,),
+        condition_chain_blocks=(210,),
         rows=(
             TransitionRow(
                 state_const=0x00C0C59F,
@@ -5657,7 +5657,7 @@ def test_live_builder_prefers_exact_cover_fallback_anchor_over_bridge_row(
         mba,
         handler_serial,
         incoming_state,
-        bst_node_blocks,
+        condition_chain_blocks,
         state_var_stkoff,
         handler_entry_blocks,
         **_kwargs,
@@ -5778,7 +5778,7 @@ def test_live_builder_prefers_body_anchor_over_condition_chain_range_root(
         handler_range_map={
             2: (0x258ED456, 0x296F2451),
         },
-        bst_node_blocks=(2,),
+        condition_chain_blocks=(2,),
         rows=(
             TransitionRow(
                 state_const=0x42267E66,
@@ -5861,7 +5861,7 @@ def test_live_builder_prefers_body_anchor_over_condition_chain_range_root(
         mba,
         handler_serial,
         incoming_state,
-        bst_node_blocks,
+        condition_chain_blocks,
         state_var_stkoff,
         handler_entry_blocks,
         **_kwargs,
@@ -5906,7 +5906,7 @@ def test_live_builder_prefers_body_anchor_over_condition_chain_range_root(
     assert alias_edge.target_entry_anchor == 23
 
 
-def test_live_builder_skips_terminal_bst_supplemental_alias(
+def test_live_builder_skips_terminal_condition_chain_supplemental_alias(
     monkeypatch,
 ) -> None:
     from d810.analyses.control_flow import linearized_state_dag as dag_mod
@@ -5979,7 +5979,7 @@ def test_live_builder_skips_terminal_bst_supplemental_alias(
         handler_range_map={
             2: (0x258ED456, 0x296F2451),
         },
-        bst_node_blocks=(2,),
+        condition_chain_blocks=(2,),
         rows=(
             TransitionRow(
                 state_const=0x42267E66,
@@ -6062,7 +6062,7 @@ def test_live_builder_skips_terminal_bst_supplemental_alias(
         mba,
         handler_serial,
         incoming_state,
-        bst_node_blocks,
+        condition_chain_blocks,
         state_var_stkoff,
         handler_entry_blocks,
         **_kwargs,
@@ -6086,8 +6086,8 @@ def test_live_builder_skips_terminal_bst_supplemental_alias(
     )
     monkeypatch.setattr(
         dag_mod,
-        "resolve_exit_via_bst_default_snapshot",
-        lambda flow_graph, bst_root_serial, state_value: 24
+        "resolve_exit_via_condition_chain_default_snapshot",
+        lambda flow_graph, dispatcher_root_serial, state_value: 24
         if state_value == 0x27EEEA11
         else None,
     )
@@ -6114,7 +6114,7 @@ def test_live_builder_skips_terminal_bst_supplemental_alias(
     assert edge.target_key is None
 
 
-def test_terminal_bst_alias_requires_existing_terminal_edge_exit(
+def test_terminal_condition_chain_alias_requires_existing_terminal_edge_exit(
     monkeypatch,
 ) -> None:
     from d810.analyses.control_flow import linearized_state_dag as dag_mod
@@ -6138,7 +6138,7 @@ def test_terminal_bst_alias_requires_existing_terminal_edge_exit(
         initial_state=0x1000,
         handler_state_map={10: 0x1000},
         handler_range_map={},
-        bst_node_blocks=(0,),
+        condition_chain_blocks=(0,),
         rows=(
             TransitionRow(
                 state_const=0x1000,
@@ -6202,7 +6202,7 @@ def test_terminal_bst_alias_requires_existing_terminal_edge_exit(
         state_var_stkoff=0x3C,
         pre_header_serial=None,
         initial_state=0x1000,
-        bst_node_blocks=(0,),
+        condition_chain_blocks=(0,),
         nodes=(),
         edges=(
             StateDagEdge(
@@ -6223,8 +6223,8 @@ def test_terminal_bst_alias_requires_existing_terminal_edge_exit(
 
     monkeypatch.setattr(
         dag_mod,
-        "resolve_exit_via_bst_default_snapshot",
-        lambda flow_graph, bst_root_serial, state_value: 30
+        "resolve_exit_via_condition_chain_default_snapshot",
+        lambda flow_graph, dispatcher_root_serial, state_value: 30
         if state_value == 0x2000
         else None,
     )
@@ -6309,7 +6309,7 @@ def test_state_resolver_prefers_dispatcher_lookup_over_range_map() -> None:
         initial_state=0x42267E66,
         handler_state_map={93: 0x42267E66},
         handler_range_map={2: (0x258ED456, 0x296F2451)},
-        bst_node_blocks=(2,),
+        condition_chain_blocks=(2,),
         rows=(
             TransitionRow(
                 state_const=0x42267E66,
@@ -6368,7 +6368,7 @@ def test_stable_handoff_anchor_rejects_range_backed_only_interval_body() -> None
         initial_state=0x1000,
         handler_state_map={10: 0x1000},
         handler_range_map={shared_range_handler: (0x7D9C16ED, 0xFFFFFFFF)},
-        bst_node_blocks=(2,),
+        condition_chain_blocks=(2,),
         rows=(),
         summary=TransitionSummary(
             handlers_total=0,
@@ -6408,7 +6408,7 @@ def test_stable_handoff_anchor_allows_exact_dispatcher_binding() -> None:
         initial_state=0x1000,
         handler_state_map={10: 0x1000},
         handler_range_map={exact_handler: (0x7D9C16ED, 0xFFFFFFFF)},
-        bst_node_blocks=(2,),
+        condition_chain_blocks=(2,),
         rows=(),
         summary=TransitionSummary(
             handlers_total=0,
@@ -6501,7 +6501,7 @@ def test_live_builder_rejects_self_handoff_candidate_anchor(
             23: 0x00C0C59F,
         },
         handler_range_map={},
-        bst_node_blocks=(20,),
+        condition_chain_blocks=(20,),
         rows=(
             TransitionRow(
                 state_const=0x139F2922,
@@ -6614,7 +6614,7 @@ def test_live_builder_rejects_self_handoff_candidate_anchor(
         mba,
         handler_serial,
         incoming_state,
-        bst_node_blocks,
+        condition_chain_blocks,
         state_var_stkoff,
         handler_entry_blocks,
         **_kwargs,
@@ -6739,7 +6739,7 @@ def test_alias_node_normalizes_to_direct_exact_prelude() -> None:
             118: 0x029EEE50,
         },
         handler_range_map={},
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         rows=(
             TransitionRow(
                 state_const=0x3E7EA8B8,
@@ -6921,7 +6921,7 @@ def test_alias_node_normalizes_to_direct_exact_prelude() -> None:
     assert incoming.target_entry_anchor == 78
 
 
-def test_exact_node_entry_anchor_skips_bst_prefix() -> None:
+def test_exact_node_entry_anchor_skips_condition_chain_prefix() -> None:
     flow_graph = FlowGraph(
         blocks={
             77: BlockSnapshot(77, 0, (78, 79), (), 0, 0, ()),
@@ -6971,7 +6971,7 @@ def test_exact_node_entry_anchor_skips_bst_prefix() -> None:
             14: 0x606DC166,
         },
         handler_range_map={},
-        bst_node_blocks=(77,),
+        condition_chain_blocks=(77,),
         rows=(
             TransitionRow(
                 state_const=0x5D0AEBD3,
@@ -7061,7 +7061,7 @@ def test_render_prefers_raw_target_state_over_canonical_handler_label() -> None:
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x10,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(
             StateDagNode(
                 key=source_key,
@@ -7171,7 +7171,7 @@ def test_unique_outgoing_path_start_reanchors_fallback_node() -> None:
                 ordered_path=(39,),
             ),
         ],
-        bst_node_blocks=(2,),
+        condition_chain_blocks=(2,),
     )
 
     fallback_node = next(node for node in nodes if node.key == fallback_key)
@@ -7233,7 +7233,7 @@ def test_exact_point_dispatcher_node_is_not_rewritten_into_fallback_family() -> 
         initial_state=None,
         handler_state_map={},
         handler_range_map={},
-        bst_node_blocks=(2,),
+        condition_chain_blocks=(2,),
         rows=(
             TransitionRow(
                 state_const=0x71E22BF3,
@@ -7485,7 +7485,7 @@ def test_live_builder_prefers_exact_dispatcher_boundary_anchor_for_supplemental_
             202: 0x296F2452,
         },
         handler_range_map={},
-        bst_node_blocks=(150,),
+        condition_chain_blocks=(150,),
         rows=(
             TransitionRow(
                 state_const=0x16F7FF74,
@@ -7555,7 +7555,7 @@ def test_live_builder_prefers_exact_dispatcher_boundary_anchor_for_supplemental_
         mba,
         handler_serial,
         incoming_state,
-        bst_node_blocks,
+        condition_chain_blocks,
         state_var_stkoff,
         handler_entry_blocks,
         **_kwargs,
@@ -7651,7 +7651,7 @@ def test_terminal_alias_node_collapses_to_source_terminal_sibling() -> None:
             47: 0x6E958F9A,
         },
         handler_range_map={},
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         rows=(
             TransitionRow(
                 state_const=0x11CD1DA3,
@@ -7784,7 +7784,7 @@ def test_resolve_target_node_reconnects_mid_interval_next_state() -> None:
         initial_state=0x10000000,
         handler_state_map={10: 0x10000000},
         handler_range_map={52: (0x737189D6, 0x7C2C0220)},
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         rows=(
             TransitionRow(
                 state_const=0x10000000,

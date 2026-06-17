@@ -59,7 +59,7 @@ from d810.analyses.data_flow.concolic import (
     PrecisionStatus,
     fold_exact,
 )
-from d810.capabilities.providers import get_bst_walkers
+from d810.capabilities.providers import get_condition_chain_walkers
 from d810.ir.flowgraph import InsnKind, OperandKind
 from d810.ir.semantics import PredicateKind
 
@@ -415,7 +415,7 @@ def _compute_foldable_global_reads(
     """
     if initial_handler_serial is None:
         return {}
-    fetch = getattr(get_bst_walkers(), "fetch_idb_value", None)
+    fetch = getattr(get_condition_chain_walkers(), "fetch_idb_value", None)
     if fetch is None:
         return {}
     return compute_initializer_stable_global_reads(
@@ -510,7 +510,7 @@ def _resolve_back_edge_states(
     # folding that write to ``M`` needs the incoming low bits, which ARE that key.
     # Seeding the state var with it lets the forward fold resolve the masked-OR/XOR
     # write that an empty seed cannot. Restricted to *point* rows (``hi == lo + 1``,
-    # an exact single-state key) so range-row BST routers (the equality-chain
+    # an exact single-state key) so range-row condition-chain routers (the equality-chain
     # spine, e.g. sub_7FFD) are untouched; targets with conflicting keys (a handler
     # shared by several states, whose state-dependent write would need all of them)
     # are left unseeded.

@@ -26,7 +26,7 @@ from d810.analyses.control_flow.transition_builder import (
 
 
 class TestConvertConditionChainToResultUnconditional:
-    def _make_bst(self) -> ConditionChainAnalysisResult:
+    def _make_condition_chain(self) -> ConditionChainAnalysisResult:
         return ConditionChainAnalysisResult(
             handler_state_map={10: 100, 20: 200, 30: 300},
             handler_range_map={10: (0, 50), 20: (50, 100), 30: (100, 150)},
@@ -38,71 +38,71 @@ class TestConvertConditionChainToResultUnconditional:
         )
 
     def test_returns_transition_result(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         assert isinstance(result, TransitionResult)
 
-    def test_strategy_name_is_bst_walker(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
-        assert result.strategy_name == "bst_walker"
+    def test_strategy_name_is_backend_walker(self):
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
+        assert result.strategy_name == "condition_chain_walker"
 
     def test_pre_header_serial_passed_through(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         assert result.pre_header_serial == 5
 
     def test_initial_state_passed_through(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         assert result.initial_state == 100
 
     def test_none_transition_skipped(self):
         # state 300 -> None, should not produce a StateTransition
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         to_states = {t.to_state for t in result.transitions}
         assert None not in to_states
 
     def test_resolved_count_excludes_none(self):
         # 100->200 and 200->300 are resolved; 300->None is skipped → 2
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         assert result.resolved_count == 2
 
     def test_transitions_correct_from_state_and_to_state(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         pairs = {(t.from_state, t.to_state) for t in result.transitions}
         assert (100, 200) in pairs
         assert (200, 300) in pairs
 
     def test_transition_from_block_is_handler_serial(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         t100 = next(t for t in result.transitions if t.from_state == 100)
         # handler_state_map: blk 10 -> state 100, so from_block should be 10
         assert t100.from_block == 10
 
     def test_unconditional_transitions_not_flagged(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         for t in result.transitions:
             assert t.is_conditional is False
 
     def test_handlers_keyed_by_state(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         assert set(result.handlers.keys()) == {100, 200, 300}
 
     def test_handler_state_value(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         assert result.handlers[100].state_value == 100
         assert result.handlers[200].state_value == 200
 
     def test_handler_blocks_contains_serial(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         # blk 10 maps to state 100
         assert result.handlers[100].handler_blocks == [10]
 
     def test_handler_transitions_populated(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         # handler 100 has one outgoing transition: 100->200
         assert len(result.handlers[100].transitions) == 1
         assert result.handlers[100].transitions[0].to_state == 200
 
     def test_assignment_map_is_empty(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         assert result.assignment_map == {}
 
 
@@ -112,7 +112,7 @@ class TestConvertConditionChainToResultUnconditional:
 
 
 class TestConvertConditionChainToResultConditional:
-    def _make_bst(self) -> ConditionChainAnalysisResult:
+    def _make_condition_chain(self) -> ConditionChainAnalysisResult:
         return ConditionChainAnalysisResult(
             handler_state_map={10: 100, 20: 200, 30: 300},
             handler_range_map={},
@@ -124,35 +124,35 @@ class TestConvertConditionChainToResultConditional:
         )
 
     def test_produces_two_conditional_transitions(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         # 100->None (skipped), 100->200 (conditional), 100->300 (conditional)
         assert len(result.transitions) == 2
 
     def test_all_transitions_marked_conditional(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         for t in result.transitions:
             assert t.is_conditional is True
 
     def test_both_from_state_100(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         assert all(t.from_state == 100 for t in result.transitions)
 
     def test_to_states_are_200_and_300(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         to_states = {t.to_state for t in result.transitions}
         assert to_states == {200, 300}
 
     def test_condition_block_equals_from_block(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         for t in result.transitions:
             assert t.condition_block == t.from_block
 
     def test_handler_100_has_two_transitions(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         assert len(result.handlers[100].transitions) == 2
 
     def test_resolved_count_counts_conditional(self):
-        result = _convert_condition_chain_to_result(self._make_bst())
+        result = _convert_condition_chain_to_result(self._make_condition_chain())
         assert result.resolved_count == 2
 
 
@@ -162,8 +162,8 @@ class TestConvertConditionChainToResultConditional:
 
 
 class TestConditionChainAnalysisResultDefaults:
-    def test_bst_node_blocks_defaults_to_empty_set(self):
-        bst = ConditionChainAnalysisResult(
+    def test_condition_chain_blocks_defaults_to_empty_set(self):
+        condition_chain = ConditionChainAnalysisResult(
             handler_state_map={},
             handler_range_map={},
             transitions={},
@@ -172,10 +172,10 @@ class TestConditionChainAnalysisResultDefaults:
             pre_header_serial=None,
             initial_state=None,
         )
-        assert bst.condition_chain_blocks == set()
+        assert condition_chain.condition_chain_blocks == set()
 
-    def test_bst_node_blocks_accepts_values(self):
-        bst = ConditionChainAnalysisResult(
+    def test_condition_chain_blocks_accepts_values(self):
+        condition_chain = ConditionChainAnalysisResult(
             handler_state_map={10: 100},
             handler_range_map={},
             transitions={},
@@ -185,12 +185,12 @@ class TestConditionChainAnalysisResultDefaults:
             initial_state=None,
             condition_chain_blocks={5, 7, 9},
         )
-        assert bst.condition_chain_blocks == {5, 7, 9}
+        assert condition_chain.condition_chain_blocks == {5, 7, 9}
 
 
 class TestConvertConditionChainToResultEdgeCases:
-    def test_empty_bst(self):
-        bst = ConditionChainAnalysisResult(
+    def test_empty_condition_chain(self):
+        condition_chain = ConditionChainAnalysisResult(
             handler_state_map={},
             handler_range_map={},
             transitions={},
@@ -199,7 +199,7 @@ class TestConvertConditionChainToResultEdgeCases:
             pre_header_serial=None,
             initial_state=None,
         )
-        result = _convert_condition_chain_to_result(bst)
+        result = _convert_condition_chain_to_result(condition_chain)
         assert result.transitions == []
         assert result.handlers == {}
         assert result.resolved_count == 0
@@ -207,7 +207,7 @@ class TestConvertConditionChainToResultEdgeCases:
         assert result.pre_header_serial is None
 
     def test_single_handler_no_transitions(self):
-        bst = ConditionChainAnalysisResult(
+        condition_chain = ConditionChainAnalysisResult(
             handler_state_map={7: 42},
             handler_range_map={},
             transitions={},
@@ -216,7 +216,7 @@ class TestConvertConditionChainToResultEdgeCases:
             pre_header_serial=None,
             initial_state=42,
         )
-        result = _convert_condition_chain_to_result(bst)
+        result = _convert_condition_chain_to_result(condition_chain)
         assert result.handlers == {42: result.handlers[42]}
         assert result.handlers[42].state_value == 42
         assert result.handlers[42].handler_blocks == [7]
@@ -224,7 +224,7 @@ class TestConvertConditionChainToResultEdgeCases:
         assert result.resolved_count == 0
 
     def test_all_transitions_none(self):
-        bst = ConditionChainAnalysisResult(
+        condition_chain = ConditionChainAnalysisResult(
             handler_state_map={10: 100, 20: 200},
             handler_range_map={},
             transitions={100: None, 200: None},
@@ -233,13 +233,13 @@ class TestConvertConditionChainToResultEdgeCases:
             pre_header_serial=3,
             initial_state=100,
         )
-        result = _convert_condition_chain_to_result(bst)
+        result = _convert_condition_chain_to_result(condition_chain)
         assert result.transitions == []
         assert result.resolved_count == 0
 
     def test_transition_from_state_missing_in_handler_map_skipped(self):
         # from_state 999 has no matching blk in handler_state_map
-        bst = ConditionChainAnalysisResult(
+        condition_chain = ConditionChainAnalysisResult(
             handler_state_map={10: 100},
             handler_range_map={},
             transitions={999: 100},  # 999 not in handler_state_map
@@ -248,7 +248,7 @@ class TestConvertConditionChainToResultEdgeCases:
             pre_header_serial=None,
             initial_state=None,
         )
-        result = _convert_condition_chain_to_result(bst)
+        result = _convert_condition_chain_to_result(condition_chain)
         assert result.transitions == []
         assert result.resolved_count == 0
 
@@ -342,11 +342,11 @@ class TestTransitionBuilderSelection:
     def test_default_strategies_instantiated(self):
         from d810.backends.hexrays.evidence.transition_strategies import (
             BFSWithMopTrackerStrategy,
-            BSTWalkerStrategy,
+            ConditionChainWalkerStrategy,
             default_hodur_transition_strategies,
         )
 
         builder = TransitionBuilder(strategies=default_hodur_transition_strategies())
         assert len(builder.strategies) == 2
-        assert isinstance(builder.strategies[0], BSTWalkerStrategy)
+        assert isinstance(builder.strategies[0], ConditionChainWalkerStrategy)
         assert isinstance(builder.strategies[1], BFSWithMopTrackerStrategy)

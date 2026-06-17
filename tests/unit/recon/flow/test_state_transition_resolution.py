@@ -17,8 +17,8 @@ from d810.analyses.value_flow.state_write import (
     forward_eval_insn as _portable_forward_eval_insn,
 )
 from d810.capabilities.providers import (
-    BstWalkerProvider,
-    register_bst_walkers,
+    ConditionChainWalkerProvider,
+    register_condition_chain_walkers,
 )
 from d810.ir.flowgraph import (
     BlockSnapshot,
@@ -211,7 +211,7 @@ def _eval_seams() -> MicrocodeEvalSeams:
 
 
 @pytest.fixture
-def _portable_bst_walkers():
+def _portable_condition_chain_walkers():
     """Register a portable ``forward_eval_insn`` for the fold path; reset after."""
     from d810.capabilities import providers as _providers
 
@@ -229,17 +229,17 @@ def _portable_bst_walkers():
             state_var_lvar_idx=kwargs.pop("state_var_lvar_idx", None),
         )
 
-    provider = BstWalkerProvider(
+    provider = ConditionChainWalkerProvider(
         detect_state_var_stkoff=lambda *a, **k: None,
         dump_dispatcher_node=lambda *a, **k: None,
         find_pre_header_state=lambda *a, **k: None,
         walk_handler_chain=lambda *a, **k: None,
         forward_eval_insn=_forward_eval_insn,
-        resolve_via_bst_walk=lambda *a, **k: None,
+        resolve_via_condition_chain_walk=lambda *a, **k: None,
         get_block=lambda mba, serial: mba.get_block(serial),
         block_successors=lambda blk: tuple(blk.succs),
     )
-    register_bst_walkers(provider)
+    register_condition_chain_walkers(provider)
     try:
         yield
     finally:
@@ -357,7 +357,7 @@ def _fold_flow_graph() -> FlowGraph:
     )
 
 
-def test_folds_binop_over_register_next_state(_portable_bst_walkers) -> None:
+def test_folds_binop_over_register_next_state(_portable_condition_chain_walkers) -> None:
     resolutions = resolve_state_transitions_with_dispatcher_map(
         (
             StateTransitionFact(
@@ -382,7 +382,7 @@ def test_folds_binop_over_register_next_state(_portable_bst_walkers) -> None:
     assert res.resolution_reason == "resolved_folded_state_write"
 
 
-def test_fold_rejected_when_value_not_a_known_target(_portable_bst_walkers) -> None:
+def test_fold_rejected_when_value_not_a_known_target(_portable_condition_chain_walkers) -> None:
     # Same graph, but the dispatcher map lacks 0x1A2893D9 in its state set, so
     # the folded value is not a known target -> next-state stays BLANK.
     dispatch_map = StateDispatcherMap(
@@ -424,7 +424,7 @@ def test_fold_rejected_when_value_not_a_known_target(_portable_bst_walkers) -> N
     assert res.resolution_reason == "resolved_exact_state"
 
 
-def test_literal_anchor_is_not_overridden_by_fold(_portable_bst_walkers) -> None:
+def test_literal_anchor_is_not_overridden_by_fold(_portable_condition_chain_walkers) -> None:
     # A literal write anchor present at the routed handler wins; the fold path
     # is never consulted (additive/safe: only fills previously-BLANK states).
     resolutions = resolve_state_transitions_with_dispatcher_map(

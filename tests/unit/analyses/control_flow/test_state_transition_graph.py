@@ -2,7 +2,7 @@
 
 The adapter projects a recovered :class:`LinearizedStateDag` back to a
 block-granularity CFG the goto-free structurer can consume: handler blocks only
-(no dispatcher/BST nodes), intra-handler edges from the base CFG restricted to
+(no dispatcher/condition-chain nodes), intra-handler edges from the base CFG restricted to
 each handler's owned set, and inter-handler edges from the DAG's semantic
 transitions. The synthetic graphs mirror the real sub_7FFD3338C040 shapes the
 diag DB surfaced (shared-suffix fan-in, a forward-flowing range-backed node, an
@@ -78,7 +78,7 @@ def _dag(nodes, edges, *, initial_state=None, dispatcher_entry=2):
         state_var_stkoff=0x64,
         pre_header_serial=None,
         initial_state=initial_state,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=tuple(nodes),
         edges=tuple(edges),
     )
@@ -383,7 +383,7 @@ def test_augment_fans_out_multiple_edges_from_one_block():
 
 
 def test_build_materializes_extra_routed_state_write_block():
-    # blk57 (the BST `!=` else-leaf) writes the state var and is a resolved-edge
+    # blk57 (the condition-chain `!=` else-leaf) writes the state var and is a resolved-edge
     # endpoint, but is not an equality-leaf handler, so the handler projection
     # skips it. The mba-aware caller (which checked the state-var write) passes it
     # in materialize_blocks; build adds it as a (bare) node so augment can later

@@ -73,7 +73,7 @@ def _make_report(rows: list[TransitionRow]) -> DispatcherTransitionReport:
         initial_state=None,
         handler_state_map={},
         handler_range_map={},
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         rows=tuple(rows),
         summary=TransitionSummary(
             handlers_total=len(rows),

@@ -66,7 +66,7 @@ def _base_context(**overrides):
         mba=None,
         state_machine=_FakeStateMachine(),
         dispatcher_serial=2,
-        bst_node_blocks=frozenset({2}),
+        condition_chain_blocks=frozenset({2}),
         dispatcher_region=frozenset({2}),
         state_var_stkoff=None,
         dispatcher_lookup=None,
@@ -123,7 +123,7 @@ def test_synthesize_exact_node_regions_adds_uncovered_exact_successors():
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(2,),
+        condition_chain_blocks=(2,),
         nodes=(
             StateDagNode(
                 key=StateDagNodeKey(handler_serial=15, state_const=0x6107F8EC),
@@ -214,7 +214,7 @@ def test_adapt_round_summary_can_disable_synthetic_exact_regions():
         state_var_stkoff=None,
         pre_header_serial=None,
         initial_state=0x6107F8EC,
-        bst_node_blocks=(2,),
+        condition_chain_blocks=(2,),
         nodes=(
             StateDagNode(
                 key=StateDagNodeKey(handler_serial=15, state_const=0x6107F8EC),
@@ -298,14 +298,14 @@ def test_adapt_round_summary_can_disable_synthetic_exact_regions():
 
     without_synthetic = adapt_linearized_dag_round_summary(
         state_machine=SimpleNamespace(initial_state=0x6107F8EC, handlers={}),
-        bst_result=SimpleNamespace(),
+        range_evidence=SimpleNamespace(),
         transition_result=SimpleNamespace(),
         current_flow_graph=object(),
         dag_round_mba=None,
         dispatcher_serial=2,
         state_var_stkoff=None,
         pre_header_serial=None,
-        bst_node_blocks=frozenset({2}),
+        condition_chain_blocks=frozenset({2}),
         build_round_summary=lambda **kwargs: resolved_summary,
         build_live_dag=lambda *args, **kwargs: dag,
         build_transition_report=lambda *args, **kwargs: SimpleNamespace(rows=()),
@@ -314,14 +314,14 @@ def test_adapt_round_summary_can_disable_synthetic_exact_regions():
     )
     with_synthetic = adapt_linearized_dag_round_summary(
         state_machine=SimpleNamespace(initial_state=0x6107F8EC, handlers={}),
-        bst_result=SimpleNamespace(),
+        range_evidence=SimpleNamespace(),
         transition_result=SimpleNamespace(),
         current_flow_graph=object(),
         dag_round_mba=None,
         dispatcher_serial=2,
         state_var_stkoff=None,
         pre_header_serial=None,
-        bst_node_blocks=frozenset({2}),
+        condition_chain_blocks=frozenset({2}),
         build_round_summary=lambda **kwargs: resolved_summary,
         build_live_dag=lambda *args, **kwargs: dag,
         build_transition_report=lambda *args, **kwargs: SimpleNamespace(rows=()),
@@ -404,13 +404,13 @@ class TestExecuteLinearizedFlowGraphPlanning:
                 build_round_summary=lambda current_flow_graph, dag_round_mba: _summary(edge),
                 build_projected_mba=lambda flow_graph: flow_graph,
                 project_flow_graph=lambda flow_graph, modifications: flow_graph,
-                resolve_redirect_safe_target_entry=lambda dag, planned_edge, bst_blocks: None,
-                resolve_initial_entry=lambda dag, initial_state, bst_blocks: 11,
+                resolve_redirect_safe_target_entry=lambda dag, planned_edge, condition_chain_blocks: None,
+                resolve_initial_entry=lambda dag, initial_state, condition_chain_blocks: 11,
                 emit_dag_redirect=emit_dag_redirect,
-                collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, bst_blocks, reachable_from_serial: (),
+                collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, condition_chain_blocks, reachable_from_serial: (),
                 emit_structured_region=lambda **kwargs: LinearizedFlowGraphStructuredRegionResult(accepted=False),
                 emit_residual_dispatcher_handoffs=lambda **kwargs: 0,
-                disconnect_bst_comparison_nodes=lambda bst_blocks, dispatcher_serial, state: 2,
+                disconnect_condition_chain_nodes=lambda condition_chain_blocks, dispatcher_serial, state: 2,
             ),
         )
 
@@ -437,19 +437,19 @@ class TestExecuteLinearizedFlowGraphPlanning:
                 build_round_summary=lambda current_flow_graph, dag_round_mba: _summary(edge),
                 build_projected_mba=lambda flow_graph: flow_graph,
                 project_flow_graph=lambda flow_graph, modifications: flow_graph,
-                resolve_redirect_safe_target_entry=lambda dag, planned_edge, bst_blocks: None,
-                resolve_initial_entry=lambda dag, initial_state, bst_blocks: None,
+                resolve_redirect_safe_target_entry=lambda dag, planned_edge, condition_chain_blocks: None,
+                resolve_initial_entry=lambda dag, initial_state, condition_chain_blocks: None,
                 emit_dag_redirect=lambda **kwargs: False,
-                collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, bst_blocks, reachable_from_serial: (),
+                collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, condition_chain_blocks, reachable_from_serial: (),
                 emit_structured_region=lambda **kwargs: LinearizedFlowGraphStructuredRegionResult(accepted=False),
                 emit_residual_dispatcher_handoffs=lambda **kwargs: 0,
-                disconnect_bst_comparison_nodes=lambda bst_blocks, dispatcher_serial, state: 0,
+                disconnect_condition_chain_nodes=lambda condition_chain_blocks, dispatcher_serial, state: 0,
             ),
         )
 
         assert not result.accepted
         assert result.modifications == ()
-        assert result.unresolved_bst_targets == 1
+        assert result.unresolved_condition_chain_targets == 1
         assert result.skipped_count == 1
 
     def test_preserves_cleanup_gate_when_residual_dispatcher_preds_remain(self):
@@ -465,7 +465,7 @@ class TestExecuteLinearizedFlowGraphPlanning:
         residual_calls = {"count": 0}
         residual_calls = {"count": 0}
 
-        def collect_residual(flow_graph, dispatcher_serial, bst_blocks, reachable_from_serial):
+        def collect_residual(flow_graph, dispatcher_serial, condition_chain_blocks, reachable_from_serial):
             residual_calls["count"] += 1
             return (21,)
 
@@ -480,13 +480,13 @@ class TestExecuteLinearizedFlowGraphPlanning:
                 build_round_summary=lambda current_flow_graph, dag_round_mba: _summary(edge),
                 build_projected_mba=lambda flow_graph: flow_graph,
                 project_flow_graph=lambda flow_graph, modifications: flow_graph,
-                resolve_redirect_safe_target_entry=lambda dag, planned_edge, bst_blocks: None,
-                resolve_initial_entry=lambda dag, initial_state, bst_blocks: None,
+                resolve_redirect_safe_target_entry=lambda dag, planned_edge, condition_chain_blocks: None,
+                resolve_initial_entry=lambda dag, initial_state, condition_chain_blocks: None,
                 emit_dag_redirect=emit_dag_redirect,
                 collect_residual_dispatcher_predecessors=collect_residual,
                 emit_structured_region=lambda **kwargs: LinearizedFlowGraphStructuredRegionResult(accepted=False),
                 emit_residual_dispatcher_handoffs=lambda **kwargs: 1,
-                disconnect_bst_comparison_nodes=lambda bst_blocks, dispatcher_serial, state: disconnect_calls.append(1) or 7,
+                disconnect_condition_chain_nodes=lambda condition_chain_blocks, dispatcher_serial, state: disconnect_calls.append(1) or 7,
             ),
         )
 
@@ -517,7 +517,7 @@ class TestExecuteLinearizedFlowGraphPlanning:
         def collect_residual_dispatcher_predecessors(
             flow_graph,
             dispatcher_serial,
-            bst_blocks,
+            condition_chain_blocks,
             reachable_from_serial,
         ):
             if residual_calls["count"] == 0:
@@ -531,13 +531,13 @@ class TestExecuteLinearizedFlowGraphPlanning:
                 build_round_summary=lambda current_flow_graph, dag_round_mba: _summary(edge),
                 build_projected_mba=lambda flow_graph: flow_graph,
                 project_flow_graph=lambda flow_graph, modifications: flow_graph,
-                resolve_redirect_safe_target_entry=lambda dag, planned_edge, bst_blocks: None,
-                resolve_initial_entry=lambda dag, initial_state, bst_blocks: None,
+                resolve_redirect_safe_target_entry=lambda dag, planned_edge, condition_chain_blocks: None,
+                resolve_initial_entry=lambda dag, initial_state, condition_chain_blocks: None,
                 emit_dag_redirect=lambda **kwargs: kwargs["state"].modifications.append(("edge", "e1")) or True,
                 collect_residual_dispatcher_predecessors=collect_residual_dispatcher_predecessors,
                 emit_structured_region=lambda **kwargs: LinearizedFlowGraphStructuredRegionResult(accepted=False),
                 emit_residual_dispatcher_handoffs=emit_residual_dispatcher_handoffs,
-                disconnect_bst_comparison_nodes=lambda bst_blocks, dispatcher_serial, state: disconnect_calls.append(1) or 7,
+                disconnect_condition_chain_nodes=lambda condition_chain_blocks, dispatcher_serial, state: disconnect_calls.append(1) or 7,
             ),
         )
 
@@ -563,7 +563,7 @@ class TestExecuteLinearizedFlowGraphPlanning:
         def collect_residual_dispatcher_predecessors(
             flow_graph,
             dispatcher_serial,
-            bst_blocks,
+            condition_chain_blocks,
             reachable_from_serial,
         ):
             if residual_calls["count"] == 0:
@@ -577,13 +577,13 @@ class TestExecuteLinearizedFlowGraphPlanning:
                 build_round_summary=lambda current_flow_graph, dag_round_mba: _summary(edge),
                 build_projected_mba=lambda flow_graph: flow_graph,
                 project_flow_graph=lambda flow_graph, modifications: flow_graph,
-                resolve_redirect_safe_target_entry=lambda dag, planned_edge, bst_blocks: None,
-                resolve_initial_entry=lambda dag, initial_state, bst_blocks: None,
+                resolve_redirect_safe_target_entry=lambda dag, planned_edge, condition_chain_blocks: None,
+                resolve_initial_entry=lambda dag, initial_state, condition_chain_blocks: None,
                 emit_dag_redirect=lambda **kwargs: kwargs["state"].modifications.append(("edge", "e1")) or True,
                 collect_residual_dispatcher_predecessors=collect_residual_dispatcher_predecessors,
                 emit_structured_region=lambda **kwargs: LinearizedFlowGraphStructuredRegionResult(accepted=False),
                 emit_residual_dispatcher_handoffs=lambda **kwargs: 1,
-                disconnect_bst_comparison_nodes=lambda bst_blocks, dispatcher_serial, state: disconnect_calls.append(1) or 7,
+                disconnect_condition_chain_nodes=lambda condition_chain_blocks, dispatcher_serial, state: disconnect_calls.append(1) or 7,
             ),
         )
 
@@ -646,13 +646,13 @@ class TestExecuteLinearizedFlowGraphPlanning:
                 ),
                 build_projected_mba=lambda flow_graph: flow_graph,
                 project_flow_graph=lambda flow_graph, modifications: flow_graph,
-                resolve_redirect_safe_target_entry=lambda dag, planned_edge, bst_blocks: None,
-                resolve_initial_entry=lambda dag, initial_state, bst_blocks: None,
+                resolve_redirect_safe_target_entry=lambda dag, planned_edge, condition_chain_blocks: None,
+                resolve_initial_entry=lambda dag, initial_state, condition_chain_blocks: None,
                 emit_dag_redirect=lambda **kwargs: emit_edge_calls.append("edge") or True,
-                collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, bst_blocks, reachable_from_serial: (),
+                collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, condition_chain_blocks, reachable_from_serial: (),
                 emit_structured_region=emit_structured_region,
                 emit_residual_dispatcher_handoffs=lambda **kwargs: 0,
-                disconnect_bst_comparison_nodes=lambda bst_blocks, dispatcher_serial, state: 0,
+                disconnect_condition_chain_nodes=lambda condition_chain_blocks, dispatcher_serial, state: 0,
             ),
         )
 
@@ -672,7 +672,7 @@ class TestExecuteLinearizedFlowGraphPlanning:
             state_var_stkoff=None,
             pre_header_serial=None,
             initial_state=0x6107F8EC,
-            bst_node_blocks=(2,),
+            condition_chain_blocks=(2,),
             nodes=(
                 StateDagNode(
                     key=StateDagNodeKey(handler_serial=15, state_const=0x6107F8EC),
@@ -792,13 +792,13 @@ class TestExecuteLinearizedFlowGraphPlanning:
                 ),
                 build_projected_mba=lambda flow_graph: flow_graph,
                 project_flow_graph=lambda flow_graph, modifications: flow_graph,
-                resolve_redirect_safe_target_entry=lambda dag, planned_edge, bst_blocks: None,
-                resolve_initial_entry=lambda dag, initial_state, bst_blocks: None,
+                resolve_redirect_safe_target_entry=lambda dag, planned_edge, condition_chain_blocks: None,
+                resolve_initial_entry=lambda dag, initial_state, condition_chain_blocks: None,
                 emit_dag_redirect=emit_dag_redirect,
-                collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, bst_blocks, reachable_from_serial: (),
+                collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, condition_chain_blocks, reachable_from_serial: (),
                 emit_structured_region=lambda **kwargs: LinearizedFlowGraphStructuredRegionResult(accepted=False),
                 emit_residual_dispatcher_handoffs=lambda **kwargs: 0,
-                disconnect_bst_comparison_nodes=lambda bst_blocks, dispatcher_serial, state: 0,
+                disconnect_condition_chain_nodes=lambda condition_chain_blocks, dispatcher_serial, state: 0,
             ),
         )
 
@@ -882,13 +882,13 @@ def test_structured_regions_follow_successor_worklist_from_initial_state():
             ),
             build_projected_mba=lambda flow_graph: flow_graph,
             project_flow_graph=lambda flow_graph, modifications: flow_graph,
-            resolve_redirect_safe_target_entry=lambda dag, planned_edge, bst_blocks: None,
-            resolve_initial_entry=lambda dag, initial_state, bst_blocks: None,
+            resolve_redirect_safe_target_entry=lambda dag, planned_edge, condition_chain_blocks: None,
+            resolve_initial_entry=lambda dag, initial_state, condition_chain_blocks: None,
             emit_dag_redirect=lambda **kwargs: False,
-            collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, bst_blocks, reachable_from_serial: (),
+            collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, condition_chain_blocks, reachable_from_serial: (),
             emit_structured_region=emit_structured_region,
             emit_residual_dispatcher_handoffs=lambda **kwargs: 0,
-            disconnect_bst_comparison_nodes=lambda bst_blocks, dispatcher_serial, state: 0,
+            disconnect_condition_chain_nodes=lambda condition_chain_blocks, dispatcher_serial, state: 0,
         ),
     )
 
@@ -963,13 +963,13 @@ def test_structured_regions_follow_transitive_region_graph_from_initial_state():
             ),
             build_projected_mba=lambda flow_graph: flow_graph,
             project_flow_graph=lambda flow_graph, modifications: flow_graph,
-            resolve_redirect_safe_target_entry=lambda dag, planned_edge, bst_blocks: None,
-            resolve_initial_entry=lambda dag, initial_state, bst_blocks: None,
+            resolve_redirect_safe_target_entry=lambda dag, planned_edge, condition_chain_blocks: None,
+            resolve_initial_entry=lambda dag, initial_state, condition_chain_blocks: None,
             emit_dag_redirect=lambda **kwargs: False,
-            collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, bst_blocks, reachable_from_serial: (),
+            collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, condition_chain_blocks, reachable_from_serial: (),
             emit_structured_region=emit_structured_region,
             emit_residual_dispatcher_handoffs=lambda **kwargs: 0,
-            disconnect_bst_comparison_nodes=lambda bst_blocks, dispatcher_serial, state: 0,
+            disconnect_condition_chain_nodes=lambda condition_chain_blocks, dispatcher_serial, state: 0,
         ),
     )
 
@@ -1038,13 +1038,13 @@ def test_structured_regions_requeue_unresolved_source_states_from_accepted_regio
             ),
             build_projected_mba=lambda flow_graph: flow_graph,
             project_flow_graph=lambda flow_graph, modifications: flow_graph,
-            resolve_redirect_safe_target_entry=lambda dag, planned_edge, bst_blocks: None,
-            resolve_initial_entry=lambda dag, initial_state, bst_blocks: None,
+            resolve_redirect_safe_target_entry=lambda dag, planned_edge, condition_chain_blocks: None,
+            resolve_initial_entry=lambda dag, initial_state, condition_chain_blocks: None,
             emit_dag_redirect=lambda **kwargs: False,
-            collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, bst_blocks, reachable_from_serial: (),
+            collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, condition_chain_blocks, reachable_from_serial: (),
             emit_structured_region=emit_structured_region,
             emit_residual_dispatcher_handoffs=lambda **kwargs: 0,
-            disconnect_bst_comparison_nodes=lambda bst_blocks, dispatcher_serial, state: 0,
+            disconnect_condition_chain_nodes=lambda condition_chain_blocks, dispatcher_serial, state: 0,
         ),
     )
 
@@ -1059,7 +1059,7 @@ def test_discover_structured_dag_regions_finds_sub7ffd_initial_region():
         state_var_stkoff=0x7BC,
         pre_header_serial=78,
         initial_state=0x5D0AEBD3,
-        bst_node_blocks=(20,),
+        condition_chain_blocks=(20,),
         nodes=(
             StateDagNode(
                 key=StateDagNodeKey(handler_serial=78, state_const=0x5D0AEBD3),
@@ -1304,13 +1304,13 @@ def test_execute_planning_revisits_structured_regions_after_residual_handoffs():
             build_round_summary=build_round_summary,
             build_projected_mba=lambda flow_graph: flow_graph,
             project_flow_graph=lambda flow_graph, modifications: flow_graph,
-            resolve_redirect_safe_target_entry=lambda dag, planned_edge, bst_blocks: None,
-            resolve_initial_entry=lambda dag, initial_state, bst_blocks: None,
+            resolve_redirect_safe_target_entry=lambda dag, planned_edge, condition_chain_blocks: None,
+            resolve_initial_entry=lambda dag, initial_state, condition_chain_blocks: None,
             emit_dag_redirect=lambda **kwargs: False,
-            collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, bst_blocks, reachable_from_serial: (99,) if residual_calls["count"] == 0 else (),
+            collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, condition_chain_blocks, reachable_from_serial: (99,) if residual_calls["count"] == 0 else (),
             emit_structured_region=emit_structured_region,
             emit_residual_dispatcher_handoffs=emit_residual_dispatcher_handoffs,
-            disconnect_bst_comparison_nodes=lambda bst_blocks, dispatcher_serial, state: 0,
+            disconnect_condition_chain_nodes=lambda condition_chain_blocks, dispatcher_serial, state: 0,
         ),
     )
 
@@ -1403,13 +1403,13 @@ def test_execute_planning_revisits_structured_regions_until_new_child_region_is_
             build_round_summary=build_round_summary,
             build_projected_mba=lambda flow_graph: flow_graph,
             project_flow_graph=lambda flow_graph, modifications: flow_graph,
-            resolve_redirect_safe_target_entry=lambda dag, planned_edge, bst_blocks: None,
-            resolve_initial_entry=lambda dag, initial_state, bst_blocks: None,
+            resolve_redirect_safe_target_entry=lambda dag, planned_edge, condition_chain_blocks: None,
+            resolve_initial_entry=lambda dag, initial_state, condition_chain_blocks: None,
             emit_dag_redirect=lambda **kwargs: False,
-            collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, bst_blocks, reachable_from_serial: (99,) if residual_calls["count"] == 0 else (),
+            collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, condition_chain_blocks, reachable_from_serial: (99,) if residual_calls["count"] == 0 else (),
             emit_structured_region=emit_structured_region,
             emit_residual_dispatcher_handoffs=emit_residual_dispatcher_handoffs,
-            disconnect_bst_comparison_nodes=lambda bst_blocks, dispatcher_serial, state: 0,
+            disconnect_condition_chain_nodes=lambda condition_chain_blocks, dispatcher_serial, state: 0,
         ),
     )
 
@@ -1480,13 +1480,13 @@ def test_execute_planning_revisits_structured_regions_before_raw_dag_phase_when_
             build_round_summary=build_round_summary,
             build_projected_mba=lambda flow_graph: flow_graph,
             project_flow_graph=lambda flow_graph, modifications: flow_graph,
-            resolve_redirect_safe_target_entry=lambda dag, planned_edge, bst_blocks: None,
-            resolve_initial_entry=lambda dag, initial_state, bst_blocks: None,
+            resolve_redirect_safe_target_entry=lambda dag, planned_edge, condition_chain_blocks: None,
+            resolve_initial_entry=lambda dag, initial_state, condition_chain_blocks: None,
             emit_dag_redirect=lambda **kwargs: False,
-            collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, bst_blocks, reachable_from_serial: (),
+            collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, condition_chain_blocks, reachable_from_serial: (),
             emit_structured_region=emit_structured_region,
             emit_residual_dispatcher_handoffs=lambda **kwargs: 0,
-            disconnect_bst_comparison_nodes=lambda bst_blocks, dispatcher_serial, state: 0,
+            disconnect_condition_chain_nodes=lambda condition_chain_blocks, dispatcher_serial, state: 0,
         ),
     )
 
@@ -1576,13 +1576,13 @@ def test_execute_planning_revisits_partially_lowered_region_after_residual_hando
             build_round_summary=build_round_summary,
             build_projected_mba=lambda flow_graph: flow_graph,
             project_flow_graph=lambda flow_graph, modifications: flow_graph,
-            resolve_redirect_safe_target_entry=lambda dag, planned_edge, bst_blocks: None,
-            resolve_initial_entry=lambda dag, initial_state, bst_blocks: None,
+            resolve_redirect_safe_target_entry=lambda dag, planned_edge, condition_chain_blocks: None,
+            resolve_initial_entry=lambda dag, initial_state, condition_chain_blocks: None,
             emit_dag_redirect=lambda **kwargs: False,
-            collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, bst_blocks, reachable_from_serial: (99,) if residual_calls["count"] == 0 else (),
+            collect_residual_dispatcher_predecessors=lambda flow_graph, dispatcher_serial, condition_chain_blocks, reachable_from_serial: (99,) if residual_calls["count"] == 0 else (),
             emit_structured_region=emit_structured_region,
             emit_residual_dispatcher_handoffs=emit_residual_dispatcher_handoffs,
-            disconnect_bst_comparison_nodes=lambda bst_blocks, dispatcher_serial, state: 0,
+            disconnect_condition_chain_nodes=lambda condition_chain_blocks, dispatcher_serial, state: 0,
         ),
     )
 
@@ -1594,7 +1594,7 @@ def test_execute_planning_revisits_partially_lowered_region_after_residual_hando
 
 def test_prepare_plan_setup_uses_three_rounds_for_first_pass_projectable_flow():
     snapshot = SimpleNamespace(lfg_redirected_blocks=())
-    bst_result = SimpleNamespace(
+    range_evidence = SimpleNamespace(
         dispatcher=None,
         pre_header_serial=None,
     )
@@ -1608,7 +1608,7 @@ def test_prepare_plan_setup_uses_three_rounds_for_first_pass_projectable_flow():
     setup = prepare_linearized_flow_graph_plan_setup(
         snapshot=snapshot,
         state_machine=_FakeStateMachine(),
-        bst_result=bst_result,
+        range_evidence=range_evidence,
         flow_graph=flow_graph,
         same_maturity_rerun=False,
         build_builder=lambda snapshot: _FakeBuilder(),

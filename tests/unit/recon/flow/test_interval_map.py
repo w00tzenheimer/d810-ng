@@ -193,7 +193,7 @@ class TestEmitDispatchIntervals:
         for e in default_entries:
             assert e.target == 9
 
-    def test_balanced_bst(self) -> None:
+    def test_balanced_condition_chain(self) -> None:
         # JBE root with JNZ leaves → 2 point intervals + INTERVAL_DEFAULT remainders
         yes_leaf = Node(kind=NodeKind.JNZ, imm=0x10, target=10, yes=None, block_serial=5)
         no_leaf = Node(kind=NodeKind.JNZ, imm=0x50, target=50, yes=None, block_serial=6)
@@ -454,7 +454,7 @@ class TestIntervalDispatcherFromStateMap:
 
     This is the equality-chain adapter: a register/equality-chain
     ``StateDispatcherMap`` (``jz eax, #state, @handler``) becomes the same
-    interval-set router the comparison-BST path produces, so the unflatten back-edge
+    interval-set router the comparison-condition-chain path produces, so the unflatten back-edge
     emit is dispatcher-shape-agnostic.
     """
 

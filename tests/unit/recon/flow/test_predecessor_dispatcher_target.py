@@ -57,7 +57,7 @@ def test_resolves_predecessor_target_from_exact_dispatcher_row() -> None:
 
 
 def test_resolves_predecessor_target_from_interval_dispatcher_row() -> None:
-    bst_result = ConditionChainAnalysisResult(
+    range_evidence = ConditionChainAnalysisResult(
         dispatcher=IntervalDispatcher(
             [
                 IntervalRow(lo=0x100, hi=0x120, target=11),
@@ -70,7 +70,7 @@ def test_resolves_predecessor_target_from_interval_dispatcher_row() -> None:
         predecessor_block_serial=9,
         dispatcher_entry_serial=4,
         state_const=0x118,
-        bst_result=bst_result,
+        range_evidence=range_evidence,
     )
 
     assert fact is not None

@@ -35,7 +35,7 @@ def test_build_dag_local_facts_indexes_node_local_cfg() -> None:
         state_var_stkoff=0x3C,
         pre_header_serial=None,
         initial_state=0x298372CC,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=(node,),
         edges=(),
     )

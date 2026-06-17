@@ -1,15 +1,15 @@
-"""BST dispatcher analysis for d810 unflattening.
+"""condition-chain dispatcher analysis for d810 unflattening.
 
-This module provides functions for analyzing binary search tree (BST) style
+This module provides functions for analyzing condition-chain style
 dispatchers found in control-flow-flattened code.  It extracts state machine
 information — handler blocks, state constants, and handler-to-handler
 transitions — from the microcode block array.
 
 Typical usage::
 
-    from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
+    from d810.backends.hexrays.evidence.condition_chain_analysis import analyze_condition_chain_dispatcher
 
-    result = analyze_bst_dispatcher(mba, dispatcher_entry_serial=5)
+    result = analyze_condition_chain_dispatcher(mba, dispatcher_entry_serial=5)
     # result.handler_state_map  -> {handler_serial: state_const, ...}
     # result.transitions        -> {state_const: next_state_const, ...}
     # result.exits              -> {state_const, ...}  (states that exit)
@@ -22,9 +22,9 @@ from dataclasses import dataclass
 import ida_hexrays
 
 from d810.analyses.value_flow import state_write
-from d810.backends.hexrays import bst_runtime as _hexrays_bst_runtime
+from d810.backends.hexrays import condition_chain_runtime as _hexrays_condition_chain_runtime
 from d810.capabilities.providers import (
-    BstWalkerProvider,
+    ConditionChainWalkerProvider,
     MicrocodeConstants,
     MicrocodeEvidenceProvider,
 )
@@ -50,7 +50,7 @@ logger = getLogger(__name__)
 def _ensure_ida_imports() -> None:
     """Keep the legacy lazy-availability boundary for live-only callers."""
 
-    _hexrays_bst_runtime.is_available()
+    _hexrays_condition_chain_runtime.is_available()
 
 
 # -----------------------------------------------------------------------------
@@ -60,7 +60,7 @@ def _ensure_ida_imports() -> None:
 OPCODE_MAP: Dict[int, str] = {}
 MOP_TYPE_MAP: Dict[int, str] = {}
 _maps_initialized = False
-_BST_OPCODE_NAMES = frozenset(
+_CONDITION_CHAIN_OPCODE_NAMES = frozenset(
     {
         "m_jbe",
         "m_ja",
@@ -70,7 +70,7 @@ _BST_OPCODE_NAMES = frozenset(
         "m_jz",
     }
 )
-_BST_OPCODE_NAME_TO_KIND = {
+_CONDITION_CHAIN_OPCODE_NAME_TO_KIND = {
     "m_jbe": NodeKind.JBE,
     "m_ja": NodeKind.JA,
     "m_jb": NodeKind.JB,
@@ -86,8 +86,8 @@ def _init_constants() -> None:
     if _maps_initialized:
         return
 
-    OPCODE_MAP = _hexrays_bst_runtime.build_opcode_map()
-    MOP_TYPE_MAP = _hexrays_bst_runtime.build_mop_type_map()
+    OPCODE_MAP = _hexrays_condition_chain_runtime.build_opcode_map()
+    MOP_TYPE_MAP = _hexrays_condition_chain_runtime.build_mop_type_map()
 
     _maps_initialized = True
 
@@ -106,12 +106,12 @@ def _opcode_name(opcode: object) -> str | None:
 
 def _opcode_kind(opcode: object) -> NodeKind | None:
     name = _opcode_name(opcode)
-    return _BST_OPCODE_NAME_TO_KIND.get(name or "")
+    return _CONDITION_CHAIN_OPCODE_NAME_TO_KIND.get(name or "")
 
 
-def _is_bst_opcode(opcode: object) -> bool:
+def _is_condition_chain_opcode(opcode: object) -> bool:
     name = _opcode_name(opcode)
-    return name in _BST_OPCODE_NAMES
+    return name in _CONDITION_CHAIN_OPCODE_NAMES
 
 
 def _mop_type_name(mop_type: object) -> str | None:
@@ -127,82 +127,82 @@ def _mop_type_name(mop_type: object) -> str | None:
 
 
 def _opcode_value(name: str, default: int | None = None) -> int | None:
-    return _hexrays_bst_runtime.opcode_value(name, default)
+    return _hexrays_condition_chain_runtime.opcode_value(name, default)
 
 
 def _mop_type_value(name: str, default: int | None = None) -> int | None:
-    return _hexrays_bst_runtime.mop_type_value(name, default)
+    return _hexrays_condition_chain_runtime.mop_type_value(name, default)
 
 
-def find_bst_default_block(
+def find_condition_chain_default_block(
     mba: object,
-    bst_root_serial: int,
-    bst_node_blocks: set,
+    dispatcher_root_serial: int,
+    condition_chain_blocks: set,
     handler_block_serials: set,
 ) -> Optional[int]:
-    """Find the BST's default fall-through block (reached when no comparison matches).
+    """Find the condition-chain's default fall-through block (reached when no comparison matches).
 
-    Walks all BST node successors. Any successor that is neither a BST node
+    Walks all condition-chain node successors. Any successor that is neither a condition-chain node
     nor a handler entry is the default block (contains cleanup/exit code).
 
     Args:
         mba: The microcode block array.
-        bst_root_serial: Serial of the BST dispatcher root (included in search).
-        bst_node_blocks: Set of block serials that are BST comparison nodes.
+        dispatcher_root_serial: Serial of the condition-chain dispatcher root (included in search).
+        condition_chain_blocks: Set of block serials that are condition-chain comparison nodes.
         handler_block_serials: Set of block serials that are handler entries.
 
     Returns:
         Serial of the default fall-through block, or None if not found.
 
     >>> # Doctest: pure-Python path (no IDA)
-    >>> find_bst_default_block(None, 0, set(), set()) is None
+    >>> find_condition_chain_default_block(None, 0, set(), set()) is None
     True
     """
     _ensure_ida_imports()
     if mba is None:
         return None
 
-    all_bst_serials = bst_node_blocks | {bst_root_serial}
+    all_condition_chain_serials = condition_chain_blocks | {dispatcher_root_serial}
 
-    for bst_serial in all_bst_serials:
-        blk = mba.get_mblock(bst_serial)
+    for condition_chain_serial in all_condition_chain_serials:
+        blk = mba.get_mblock(condition_chain_serial)
         if blk is None:
             continue
         for i in range(blk.nsucc()):
             succ = blk.succ(i)
-            if succ not in all_bst_serials and succ not in handler_block_serials:
+            if succ not in all_condition_chain_serials and succ not in handler_block_serials:
                 return succ
 
     return None
 
 
-# Compat re-export.  The canonical home for the snapshot-only BST
-# default-block discovery is `d810.analyses.control_flow.bst_snapshot` (axis-C
+# Compat re-export.  The canonical home for the snapshot-only condition-chain
+# default-block discovery is `d810.analyses.control_flow.condition_chain_snapshot` (axis-C
 # slice 5a).  Keeping the name re-exported here so any prod consumer
-# that finds it through `bst_analysis` keeps working; tests import
+# that finds it through `condition_chain_analysis` keeps working; tests import
 # from the canonical location directly.
 #
-# One-way dependency: bst_analysis -> bst_snapshot.  Do NOT add an
+# One-way dependency: condition_chain_analysis -> condition_chain_snapshot.  Do NOT add an
 # import in the reverse direction.
-from d810.analyses.control_flow.bst_snapshot import find_bst_default_block_snapshot
+from d810.analyses.control_flow.condition_chain_snapshot import find_condition_chain_default_block_snapshot
 
 
-def resolve_via_bst_walk(
+def resolve_via_condition_chain_walk(
     mba: object,
-    bst_root_serial: int,
+    dispatcher_root_serial: int,
     state_value: int,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     max_depth: int = 30,
 ) -> Optional[int]:
-    """Walk the BST comparison chain for a specific state value.
+    """Walk the condition-chain comparison chain for a specific state value.
 
-    Starting from *bst_root_serial*, follow the comparison at each BST node
+    Starting from *dispatcher_root_serial*, follow the comparison at each condition-chain node
     block for *state_value*.  Return the first block serial that is **not** in
-    *bst_node_blocks* (i.e. the handler / default block this value reaches).
+    *condition_chain_blocks* (i.e. the handler / default block this value reaches).
 
     Returns ``None`` if the walk exceeds *max_depth* or cannot resolve.
 
-    >>> resolve_via_bst_walk(None, 0, 0x1234, set()) is None
+    >>> resolve_via_condition_chain_walk(None, 0, 0x1234, set()) is None
     True
     """
     _ensure_ida_imports()
@@ -211,11 +211,11 @@ def resolve_via_bst_walk(
     if mba is None:
         return None
 
-    current_serial = bst_root_serial
+    current_serial = dispatcher_root_serial
 
     for _ in range(max_depth):
-        if current_serial not in bst_node_blocks:
-            # Reached a non-BST block — this is the target.
+        if current_serial not in condition_chain_blocks:
+            # Reached a non-condition-chain block — this is the target.
             return current_serial
 
         blk = mba.get_mblock(current_serial)
@@ -321,7 +321,7 @@ def _dump_dispatcher_node(
     handler_serials: Optional[set] = None,
     handler_range_map: Optional[Dict[int, Tuple[Optional[int], Optional[int]]]] = None,
     chain_depth: int = 0,
-    bst_node_blocks: Optional[ConditionChainNodeMap] = None,
+    condition_chain_blocks: Optional[ConditionChainNodeMap] = None,
     allow_revisit: bool = False,
     parent_serial: Optional[int] = None,
     branch: str = "",
@@ -335,11 +335,11 @@ def _dump_dispatcher_node(
             from the leaf comparison node (jnz/jz).
         handler_serials: If provided, collects all handler block serials seen at leaves.
         handler_range_map: If provided, maps handler_serial -> (value_lo, value_hi) from
-            the BST path leading to that handler leaf.
+            the condition-chain path leading to that handler leaf.
         chain_depth: Current depth of m_jnz chain recursion (max 10).
-        bst_node_blocks: If provided, collects all BST internal/comparison block serials
+        condition_chain_blocks: If provided, collects all condition-chain internal/comparison block serials
             (blocks to NOP after m_jtbl conversion).
-        parent_serial: Serial of the BST parent node that routes to this node.
+        parent_serial: Serial of the condition-chain parent node that routes to this node.
         branch: Which branch of the parent leads here ("taken" or "fallthrough").
     """
     _init_constants()
@@ -387,8 +387,8 @@ def _dump_dispatcher_node(
     is_jz = opcode_kind is NodeKind.JZ
 
     if is_jbe or is_ja or is_jb or is_jae:
-        if bst_node_blocks is not None:
-            bst_node_blocks.add(serial,
+        if condition_chain_blocks is not None:
+            condition_chain_blocks.add(serial,
                 value_range=(value_lo, value_hi),
                 parent_serial=parent_serial,
                 comparison_const=cmp_val,
@@ -450,14 +450,14 @@ def _dump_dispatcher_node(
                 handler_serials=handler_serials,
                 handler_range_map=handler_range_map,
                 chain_depth=chain_depth,
-                bst_node_blocks=bst_node_blocks,
+                condition_chain_blocks=condition_chain_blocks,
                 parent_serial=serial,
                 branch=c_branch,
             )
 
     elif is_jnz or is_jz:
-        if bst_node_blocks is not None:
-            bst_node_blocks.add(serial,
+        if condition_chain_blocks is not None:
+            condition_chain_blocks.add(serial,
                 value_range=(value_lo, value_hi),
                 parent_serial=parent_serial,
                 comparison_const=cmp_val,
@@ -472,7 +472,7 @@ def _dump_dispatcher_node(
         fall_blk = succs[0] if succs else "?"
         jump_blk = succs[1] if len(succs) > 1 else "?"
 
-        # Derive states from the BST range rather than V-1/V+1 heuristic.
+        # Derive states from the condition-chain range rather than V-1/V+1 heuristic.
         # For m_jnz != V:
         #   fall-through (succs[0]) = state == V  → fall_state = V
         #   jump target  (succs[1]) = state != V  → jump_state = the other value in [lo..hi]
@@ -508,8 +508,8 @@ def _dump_dispatcher_node(
             f" jump blk[{jump_blk}] ({jump_state_str})"
         )
 
-        # Extract the state variable size from the root BST node once so that
-        # _is_bst_node / _is_bst_node_chain can reject comparisons that test a
+        # Extract the state variable size from the root condition-chain node once so that
+        # _is_condition_chain_node / _is_condition_chain_node_chain can reject comparisons that test a
         # differently-sized operand (e.g. an 8-byte pointer vs NULL).
         # mop_n == 2: the constant side; the other side is the state variable.
         if getattr(insn.l, "t", None) == 2:  # mop_n on left → state var on right
@@ -519,7 +519,7 @@ def _dump_dispatcher_node(
         else:
             _root_state_var_size = None  # Can't determine, skip size filtering
 
-        def _is_bst_node(blk_serial: int) -> bool:
+        def _is_condition_chain_node(blk_serial: int) -> bool:
             if blk_serial in visited:
                 return False
             _b = mba.get_mblock(blk_serial)
@@ -528,7 +528,7 @@ def _dump_dispatcher_node(
             _tail = _b.tail
             if _tail is None:
                 return False
-            if not _is_bst_opcode(getattr(_tail, "opcode", None)):
+            if not _is_condition_chain_opcode(getattr(_tail, "opcode", None)):
                 return False
             if _root_state_var_size is not None:
                 _l_t = getattr(_tail.l, "t", None)
@@ -540,7 +540,7 @@ def _dump_dispatcher_node(
                     if getattr(_tail.l, "size", None) != _root_state_var_size:
                         return False
                 else:
-                    return False  # No constant operand → not a BST comparison
+                    return False  # No constant operand → not a condition-chain comparison
             return True
 
         # Compute narrowed range for the "not-equal" continuation path.
@@ -563,7 +563,7 @@ def _dump_dispatcher_node(
                 return lo, (hi - 1) & MASK
             return lo, hi
 
-        # Check whether cmp_val falls within the active range for this BST node.
+        # Check whether cmp_val falls within the active range for this condition-chain node.
         # If cmp_val is outside [value_lo, value_hi] the equality branch is dead
         # code planted by the obfuscator; do not register it as a handler.
         cmp_in_range = (
@@ -573,18 +573,18 @@ def _dump_dispatcher_node(
             and value_lo <= cmp_val <= value_hi
         )
 
-        # Variant of _is_bst_node that skips the visited-set check — used for
+        # Variant of _is_condition_chain_node that skips the visited-set check — used for
         # chain recursion (m_jnz/m_jz continuation path) so that a node already
         # visited via interior recursion (with a wide range) can still be
         # re-entered from a chain to produce a narrower range.
-        def _is_bst_node_chain(blk_serial: int) -> bool:
+        def _is_condition_chain_node_chain(blk_serial: int) -> bool:
             _b = mba.get_mblock(blk_serial)
             if _b is None or _b.nsucc() != 2:
                 return False
             _tail = _b.tail
             if _tail is None:
                 return False
-            if not _is_bst_opcode(getattr(_tail, "opcode", None)):
+            if not _is_condition_chain_opcode(getattr(_tail, "opcode", None)):
                 return False
             if _root_state_var_size is not None:
                 _l_t = getattr(_tail.l, "t", None)
@@ -596,7 +596,7 @@ def _dump_dispatcher_node(
                     if getattr(_tail.l, "size", None) != _root_state_var_size:
                         return False
                 else:
-                    return False  # No constant operand → not a BST comparison
+                    return False  # No constant operand → not a condition-chain comparison
             return True
 
         MAX_CHAIN_DEPTH = 10
@@ -618,8 +618,8 @@ def _dump_dispatcher_node(
                         handler_state_map[fall_blk] = fall_state
                     if handler_range_map is not None:
                         handler_range_map[fall_blk] = (value_lo, value_hi)
-                    if bst_node_blocks is not None:
-                        bst_node_blocks.add(fall_blk,
+                    if condition_chain_blocks is not None:
+                        condition_chain_blocks.add(fall_blk,
                             value_range=(value_lo, value_hi),
                             parent_serial=serial,
                             comparison_const=cmp_val,
@@ -630,7 +630,7 @@ def _dump_dispatcher_node(
                             is_handler_entry=True,
                         )
 
-            # jump target (succs[1]) is state != V → recurse if BST node, else handler.
+            # jump target (succs[1]) is state != V → recurse if condition-chain node, else handler.
             # For the chain path: bypass visited check; guard by chain_depth instead.
             if isinstance(jump_blk, int):
                 already_resolved = (
@@ -638,7 +638,7 @@ def _dump_dispatcher_node(
                     and jump_blk in handler_state_map
                     and handler_state_map[jump_blk] is not None
                 )
-                if not already_resolved and _is_bst_node_chain(jump_blk) and chain_depth < MAX_CHAIN_DEPTH:
+                if not already_resolved and _is_condition_chain_node_chain(jump_blk) and chain_depth < MAX_CHAIN_DEPTH:
                     new_lo, new_hi = _narrow_range_excluding(cmp_val, value_lo, value_hi)
                     _dump_dispatcher_node(
                         mba, jump_blk, indent + 1, visited, lines, depth + 1, max_depth,
@@ -648,12 +648,12 @@ def _dump_dispatcher_node(
                         handler_serials=handler_serials,
                         handler_range_map=handler_range_map,
                         chain_depth=chain_depth + 1,
-                        bst_node_blocks=bst_node_blocks,
+                        condition_chain_blocks=condition_chain_blocks,
                         allow_revisit=True,
                         parent_serial=serial,
                         branch="taken",
                     )
-                elif not already_resolved and not _is_bst_node_chain(jump_blk):
+                elif not already_resolved and not _is_condition_chain_node_chain(jump_blk):
                     if cmp_val is None:
                         lines.append(f"{prefix}  [unknown cmp_val: cannot classify jump blk[{jump_blk}]]")
                     elif handler_serials is not None and jump_state is not None:
@@ -662,8 +662,8 @@ def _dump_dispatcher_node(
                             handler_state_map[jump_blk] = jump_state
                         if handler_range_map is not None:
                             handler_range_map[jump_blk] = (value_lo, value_hi)
-                        if bst_node_blocks is not None:
-                            bst_node_blocks.add(jump_blk,
+                        if condition_chain_blocks is not None:
+                            condition_chain_blocks.add(jump_blk,
                                 value_range=(value_lo, value_hi),
                                 parent_serial=serial,
                                 comparison_const=jump_state,
@@ -674,7 +674,7 @@ def _dump_dispatcher_node(
                                 is_handler_entry=True,
                             )
                     # When jump_state is None, the range has >2 values but the
-                    # continuation is not a BST node — this is the BST default/
+                    # continuation is not a condition-chain node — this is the condition-chain default/
                     # exit block (reached when no comparison matches). Do NOT
                     # classify it as a handler.
 
@@ -695,8 +695,8 @@ def _dump_dispatcher_node(
                         handler_state_map[jump_blk] = jump_state
                     if handler_range_map is not None:
                         handler_range_map[jump_blk] = (value_lo, value_hi)
-                    if bst_node_blocks is not None:
-                        bst_node_blocks.add(jump_blk,
+                    if condition_chain_blocks is not None:
+                        condition_chain_blocks.add(jump_blk,
                             value_range=(value_lo, value_hi),
                             parent_serial=serial,
                             comparison_const=cmp_val,
@@ -707,7 +707,7 @@ def _dump_dispatcher_node(
                             is_handler_entry=True,
                         )
 
-            # fall-through (succs[0]) is state != V → recurse if BST node, else handler.
+            # fall-through (succs[0]) is state != V → recurse if condition-chain node, else handler.
             # For the chain path: bypass visited check; guard by chain_depth instead.
             if isinstance(fall_blk, int):
                 already_resolved = (
@@ -715,7 +715,7 @@ def _dump_dispatcher_node(
                     and fall_blk in handler_state_map
                     and handler_state_map[fall_blk] is not None
                 )
-                if not already_resolved and _is_bst_node_chain(fall_blk) and chain_depth < MAX_CHAIN_DEPTH:
+                if not already_resolved and _is_condition_chain_node_chain(fall_blk) and chain_depth < MAX_CHAIN_DEPTH:
                     new_lo, new_hi = _narrow_range_excluding(cmp_val, value_lo, value_hi)
                     _dump_dispatcher_node(
                         mba, fall_blk, indent + 1, visited, lines, depth + 1, max_depth,
@@ -725,12 +725,12 @@ def _dump_dispatcher_node(
                         handler_serials=handler_serials,
                         handler_range_map=handler_range_map,
                         chain_depth=chain_depth + 1,
-                        bst_node_blocks=bst_node_blocks,
+                        condition_chain_blocks=condition_chain_blocks,
                         allow_revisit=True,
                         parent_serial=serial,
                         branch="fallthrough",
                     )
-                elif not already_resolved and not _is_bst_node_chain(fall_blk):
+                elif not already_resolved and not _is_condition_chain_node_chain(fall_blk):
                     if cmp_val is None:
                         lines.append(f"{prefix}  [unknown cmp_val: cannot classify fall-through blk[{fall_blk}]]")
                     elif handler_serials is not None and fall_state is not None:
@@ -739,8 +739,8 @@ def _dump_dispatcher_node(
                             handler_state_map[fall_blk] = fall_state
                         if handler_range_map is not None:
                             handler_range_map[fall_blk] = (value_lo, value_hi)
-                        if bst_node_blocks is not None:
-                            bst_node_blocks.add(fall_blk,
+                        if condition_chain_blocks is not None:
+                            condition_chain_blocks.add(fall_blk,
                                 value_range=(value_lo, value_hi),
                                 parent_serial=serial,
                                 comparison_const=fall_state,
@@ -1012,15 +1012,15 @@ def _resolve_mop_value_in_block(
 
 def _fetch_idb_value(address: int, size: int) -> int | None:
     """Read a scalar IDB value without depending on higher hexrays helpers."""
-    return _hexrays_bst_runtime.fetch_idb_value(address, size)
+    return _hexrays_condition_chain_runtime.fetch_idb_value(address, size)
 
 
 def _segment_is_read_only(addr: int) -> bool:
-    return _hexrays_bst_runtime.segment_is_read_only(addr)
+    return _hexrays_condition_chain_runtime.segment_is_read_only(addr)
 
 
 def _is_never_written_var(address: int) -> bool:
-    return _hexrays_bst_runtime.is_never_written_var(address)
+    return _hexrays_condition_chain_runtime.is_never_written_var(address)
 
 
 def _fetch_stable_global_value(addr: int, size: int) -> int | None:
@@ -1363,7 +1363,7 @@ def _walk_handler_chain(
                 break
             # Continue walking — do NOT stop on multi-predecessor blocks.
             # Handler blocks in a flattened loop naturally have multiple
-            # predecessors (multiple BST leaves route adjacent state values
+            # predecessors (multiple condition-chain leaves route adjacent state values
             # to the same handler block). Stopping there prevents finding
             # the state variable write.
             current = next_serial
@@ -1479,7 +1479,7 @@ def _find_pre_header_state(
 
     Args:
         mba: The microcode block array.
-        dispatcher_entry_serial: Block serial of the BST root.
+        dispatcher_entry_serial: Block serial of the condition-chain root.
         state_var_stkoff: Stack offset of the state variable.
         diag_lines: Optional list to collect diagnostic strings.
         state_var_lvar_idx: If not None, also match mop_l writes by lvar index.
@@ -1505,9 +1505,9 @@ def _detect_state_var_stkoff(
     dispatcher_entry_serial: int,
     diag: bool = False,
 ):
-    """Auto-detect the state variable stack offset from the BST root comparison.
+    """Auto-detect the state variable stack offset from the condition-chain root comparison.
 
-    The BST root block's tail instruction is a conditional jump (jbe/ja/jnz/jz)
+    The condition-chain root block's tail instruction is a conditional jump (jbe/ja/jnz/jz)
     whose left operand is the state variable.  If that operand is a direct stack
     variable (mop_S), its ``.s.off`` is the stkoff we need.  If the operand is
     a register (mop_r), we try to find the stack variable via the register's
@@ -1516,7 +1516,7 @@ def _detect_state_var_stkoff(
 
     Args:
         mba: The microcode block array.
-        dispatcher_entry_serial: Block serial of the BST root.
+        dispatcher_entry_serial: Block serial of the condition-chain root.
         diag: If True, return ((stkoff, lvar_idx), diag_lines) tuple.
 
     Returns:
@@ -1694,35 +1694,35 @@ def _detect_state_var_stkoff(
 
 
 @algorithm_metadata(
-    algorithm_id="recon.analyze_bst_dispatcher",
+    algorithm_id="recon.analyze_condition_chain_dispatcher",
     family="compare_chain_interval_dispatch_reconstruction",
-    summary="Analyzes BST-style state dispatchers to recover handler states and transitions.",
+    summary="Analyzes condition-chain state dispatchers to recover handler states and transitions.",
     use_cases=(
-        "Recover handler-entry mappings and successor states from interval/BST dispatch ladders.",
-        "Seed dispatcher reports and semantic DAG construction from a resolved BST dispatcher root.",
+        "Recover handler-entry mappings and successor states from interval/condition-chain dispatch ladders.",
+        "Seed dispatcher reports and semantic DAG construction from a resolved condition-chain dispatcher root.",
     ),
     examples=(
         "Walk a JNZ/JZ/JBE ladder to map state constants to handler blocks and terminal exits.",
-        "Detect the default block and handler transitions for a state variable dispatched through a BST.",
+        "Detect the default block and handler transitions for a state variable dispatched through a condition-chain.",
     ),
-    tags=("bst", "dispatcher", "intervals", "state-machine", "analysis"),
+    tags=("condition-chain", "dispatcher", "intervals", "state-machine", "analysis"),
     related_paths=(
-        "src/d810/backends/hexrays/evidence/bst_analysis.py",
+        "src/d810/backends/hexrays/evidence/condition_chain_analysis.py",
         "src/d810/cfg/flow/compare_chain.py",
     ),
 )
-def analyze_bst_dispatcher(
+def analyze_condition_chain_dispatcher(
     mba: object,
     dispatcher_entry_serial: int,
     state_var_stkoff: Optional[int] = None,
     state_var_lvar_idx: Optional[int] = None,
     max_depth: int = 20,
 ) -> ConditionChainAnalysisResult:
-    """Analyze a BST-style dispatcher and return a structured result.
+    """Analyze a condition-chain dispatcher and return a structured result.
 
     Performs two analysis phases:
 
-    Phase 1 — BST walk: starts at *dispatcher_entry_serial* and recursively
+    Phase 1 — condition-chain walk: starts at *dispatcher_entry_serial* and recursively
     follows jbe/ja/jnz/jz comparisons, collecting handler block serials and
     the state constant associated with each leaf.
 
@@ -1732,12 +1732,12 @@ def analyze_bst_dispatcher(
 
     Args:
         mba: The microcode block array.
-        dispatcher_entry_serial: Block serial number of the BST root block.
+        dispatcher_entry_serial: Block serial number of the condition-chain root block.
         state_var_stkoff: Stack offset of the state variable.  When None, it
-            is auto-detected from the BST root's comparison instruction.
+            is auto-detected from the condition-chain root's comparison instruction.
         state_var_lvar_idx: lvar index for mop_l matching (auto-set when
             auto-detection finds a promoted stack variable).
-        max_depth: Maximum BST recursion depth (guard against malformed CFGs).
+        max_depth: Maximum condition-chain recursion depth (guard against malformed CFGs).
 
     Returns:
         A populated :class:`ConditionChainAnalysisResult`.
@@ -1758,7 +1758,7 @@ def analyze_bst_dispatcher(
 
     # Path B: build the decision-DAG route oracle for this dispatcher and attach
     # it so resolve_target_via_condition_chain routes through it (golden-neutral
-    # consolidation; the decision-DAG walks the real BST comparison tree, verified
+    # consolidation; the decision-DAG walks the real condition-chain comparison tree, verified
     # 0 divergence vs the legacy interval/exact/range router on sub_7FFD).
     # Best-effort: any failure leaves decision_dag=None -> legacy routing remains.
     if state_var_stkoff is not None:
@@ -1788,20 +1788,20 @@ def analyze_bst_dispatcher(
     result.pre_header_serial = pre_header_serial
     result.initial_state = initial_state
 
-    # Phase 1 (cont.): BST walk to collect handler_state_map, handler_serials, handler_range_map
-    bst_lines: List[str] = []
-    bst_visited: set = set()
+    # Phase 1 (cont.): condition-chain walk to collect handler_state_map, handler_serials, handler_range_map
+    condition_chain_lines: List[str] = []
+    condition_chain_visited: set = set()
     handler_state_map: Dict[int, int] = {}
     handler_serials: set = set()
     handler_range_map: Dict[int, Tuple[Optional[int], Optional[int]]] = {}
-    bst_node_blocks: ConditionChainNodeMap = ConditionChainNodeMap()
+    condition_chain_blocks: ConditionChainNodeMap = ConditionChainNodeMap()
 
     _dump_dispatcher_node(
         mba,
         dispatcher_entry_serial,
         indent=0,
-        visited=bst_visited,
-        lines=bst_lines,
+        visited=condition_chain_visited,
+        lines=condition_chain_lines,
         depth=0,
         max_depth=max_depth,
         value_lo=0,
@@ -1809,39 +1809,39 @@ def analyze_bst_dispatcher(
         handler_state_map=handler_state_map,
         handler_serials=handler_serials,
         handler_range_map=handler_range_map,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
     )
 
     result.handler_state_map = handler_state_map
     result.handler_range_map = handler_range_map
-    # Register EVERY BST comparison node from the decision_dag (incl. the
+    # Register EVERY condition-chain comparison node from the decision_dag (incl. the
     # register-resident range nodes the legacy walk is blind to), so the
     # handler-path walk STOPS at the full dispatcher boundary. An incomplete
-    # bst_node_blocks lets the path walk traverse INTO the dispatcher BST, which
+    # condition_chain_blocks lets the path walk traverse INTO the dispatcher condition-chain, which
     # makes ``evaluate_handler_paths`` enumerate a combinatorial blow-up of paths
     # and ``detect_conditional_transitions`` over-produce thousands of spurious
     # conditional edges (the cond-explosion that starves return materialization).
-    _ddag_bst = getattr(result, "decision_dag", None)
-    if _ddag_bst is not None and getattr(_ddag_bst, "nodes", None):
-        _added_bst = 0
-        for _ns, _node in _ddag_bst.nodes.items():
-            if int(_ns) not in bst_node_blocks:
-                bst_node_blocks.add(
+    _ddag_condition_chain = getattr(result, "decision_dag", None)
+    if _ddag_condition_chain is not None and getattr(_ddag_condition_chain, "nodes", None):
+        _added_condition_chain = 0
+        for _ns, _node in _ddag_condition_chain.nodes.items():
+            if int(_ns) not in condition_chain_blocks:
+                condition_chain_blocks.add(
                     int(_ns), comparison_const=getattr(_node, "const", None)
                 )
-                _added_bst += 1
-        if _added_bst:
+                _added_condition_chain += 1
+        if _added_condition_chain:
             logger.info(
-                "DECISION_DAG_BST_NODES: registered %d extra BST comparison nodes "
-                "(total bst_node_blocks=%d)",
-                _added_bst,
-                len(bst_node_blocks),
+                "DECISION_DAG_CONDITION_CHAIN_NODES: registered %d extra condition-chain comparison nodes "
+                "(total condition_chain_blocks=%d)",
+                _added_condition_chain,
+                len(condition_chain_blocks),
             )
-    result.condition_chain_blocks = bst_node_blocks
+    result.condition_chain_blocks = condition_chain_blocks
 
     # Phase 1b: Build interval dispatcher. Prefer the signedness-aware DecisionDag
     # (route_predicate IntervalSet) partition -- it is the single correct router and
-    # handles signed (jle/jg) + register-resident BSTs the legacy unsigned
+    # handles signed (jle/jg) + register-resident condition-chains the legacy unsigned
     # build_dispatch_tree is blind to. Fall back to build_dispatch_tree only when no
     # DecisionDag is available.
     dispatcher = _interval_dispatcher_from_decision_dag(
@@ -1849,7 +1849,7 @@ def analyze_bst_dispatcher(
     )
     if dispatcher is None:
         try:
-            dispatch_tree, _dispatch_bst_serials = build_dispatch_tree(
+            dispatch_tree, _dispatch_condition_chain_serials = build_dispatch_tree(
                 mba, dispatcher_entry_serial, state_var_stkoff,
             )
             if dispatch_tree is not None:
@@ -1866,10 +1866,10 @@ def analyze_bst_dispatcher(
         try:
             from d810.core.observability import emit as _emit_observation
             from d810.core.observability_events import (
-                BstIntervalDispatcherObserved,
+                ConditionChainIntervalDispatcherObserved,
             )
 
-            _emit_observation(BstIntervalDispatcherObserved(
+            _emit_observation(ConditionChainIntervalDispatcherObserved(
                 func_ea=int(getattr(mba, "entry_ea", 0) or 0),
                 maturity="MMAT_GLBOPT1",
                 dispatcher_entry_block=int(dispatcher_entry_serial),
@@ -1967,9 +1967,9 @@ def analyze_bst_dispatcher(
                 len(derived_hsm),
             )
 
-    # Default block: BST successor that is neither a BST node nor a handler
-    result.default_block_serial = find_bst_default_block(
-        mba, dispatcher_entry_serial, bst_node_blocks, handler_serials,
+    # Default block: condition-chain successor that is neither a condition-chain node nor a handler
+    result.default_block_serial = find_condition_chain_default_block(
+        mba, dispatcher_entry_serial, condition_chain_blocks, handler_serials,
     )
 
     # NUKE the register-blind leaf set (user directive llr-kufq): when the
@@ -2070,7 +2070,7 @@ def analyze_bst_dispatcher(
 
 @dataclass(frozen=True)
 class DecodedCond:
-    """Decoded BST comparison from a block tail instruction."""
+    """Decoded condition-chain comparison from a block tail instruction."""
 
     kind: NodeKind
     imm: int
@@ -2086,9 +2086,9 @@ def _get_mcode_to_kind() -> dict[int, NodeKind]:
     if _MCODE_TO_KIND is None:
         _init_constants()
         _MCODE_TO_KIND = {
-            opcode: _BST_OPCODE_NAME_TO_KIND[name]
+            opcode: _CONDITION_CHAIN_OPCODE_NAME_TO_KIND[name]
             for opcode, name in OPCODE_MAP.items()
-            if name in _BST_OPCODE_NAME_TO_KIND
+            if name in _CONDITION_CHAIN_OPCODE_NAME_TO_KIND
         }
     return _MCODE_TO_KIND
 
@@ -2119,7 +2119,7 @@ def decode_dispatch_cond(
     blk_serial: int,
     state_var_stkoff: int,
 ) -> DecodedCond | None:
-    """Decode a BST comparison node from an MBA block.
+    """Decode a condition-chain comparison node from an MBA block.
 
     Returns DecodedCond if the block is a 2-way conditional comparing
     the state variable against a constant. Returns None otherwise.
@@ -2181,10 +2181,10 @@ def build_dispatch_tree(
     """Walk MBA blocks to build a Node tree for interval emission.
 
     Returns:
-        (root_node, bst_block_serials): The Node tree and set of
-        BST comparison block serials visited during construction.
+        (root_node, condition_chain_block_serials): The Node tree and set of
+        condition-chain comparison block serials visited during construction.
     """
-    bst_serials: set[int] = set()
+    condition_chain_serials: set[int] = set()
     memo: dict[int, Node] = {}
 
     def _build(serial: int, depth: int) -> Node | None:
@@ -2196,7 +2196,7 @@ def build_dispatch_tree(
         # Only memoize interior range-split nodes (safe to share).
         # JZ/JNZ chain nodes and TARGET nodes are path-sensitive —
         # memoizing by block serial causes overlapping intervals when
-        # the same block is reachable from multiple BST paths.
+        # the same block is reachable from multiple condition-chain paths.
         memoable = (
             dc is not None
             and dc.kind in (NodeKind.JBE, NodeKind.JA, NodeKind.JB, NodeKind.JAE)
@@ -2213,7 +2213,7 @@ def build_dispatch_tree(
                 block_serial=serial,
             )
 
-        bst_serials.add(serial)
+        condition_chain_serials.add(serial)
 
         match dc.kind:
             case NodeKind.JBE | NodeKind.JA | NodeKind.JB | NodeKind.JAE:
@@ -2253,7 +2253,7 @@ def build_dispatch_tree(
         return node
 
     root = _build(root_serial, 0)
-    return root, bst_serials
+    return root, condition_chain_serials
 
 
 # -----------------------------------------------------------------------------
@@ -2280,22 +2280,22 @@ def _block_successors(block: object) -> tuple[int, ...]:
     return tuple(block.succ(i) for i in range(block.nsucc()))
 
 
-def build_bst_walker_provider() -> BstWalkerProvider:
-    """Bundle this backend's BST evidence seams for the provider registry.
+def build_condition_chain_walker_provider() -> ConditionChainWalkerProvider:
+    """Bundle this backend's condition-chain evidence seams for the provider registry.
 
     Single source of truth for which Hex-Rays evidence callables satisfy each
     portable seam.  Called by the composition root (``D810State.start_d810``)
     and by unit-test fixtures, so production and tests inject identical walkers
     into ``d810.capabilities.providers`` (recon reads them via
-    ``get_bst_walkers()`` without importing this backend; ticket d81-1w16).
+    ``get_condition_chain_walkers()`` without importing this backend; ticket d81-1w16).
     """
-    return BstWalkerProvider(
+    return ConditionChainWalkerProvider(
         detect_state_var_stkoff=_detect_state_var_stkoff,
         dump_dispatcher_node=_dump_dispatcher_node,
         find_pre_header_state=_find_pre_header_state,
         walk_handler_chain=_walk_handler_chain,
         forward_eval_insn=_forward_eval_insn,
-        resolve_via_bst_walk=resolve_via_bst_walk,
+        resolve_via_condition_chain_walk=resolve_via_condition_chain_walk,
         get_block=_get_block,
         block_successors=_block_successors,
         fetch_idb_value=_fetch_idb_value,

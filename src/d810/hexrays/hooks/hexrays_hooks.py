@@ -1684,15 +1684,15 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         main_logger.info("glbopt finished for function at %s", hex(mba.entry_ea))
         main_logger.reset_maturity()
 
-        # PruneUnreachable: diagnostic-only — logs unreachable BST blocks
-        # but does NOT remove them (see _prune_unreachable_bst for rationale).
-        self._prune_unreachable_bst(mba)
+        # PruneUnreachable: diagnostic-only — logs unreachable condition-chain blocks
+        # but does NOT remove them (see _prune_unreachable_condition_chain for rationale).
+        self._prune_unreachable_condition_chain(mba)
         return 0
 
-    def _prune_unreachable_bst(self, mba: ida_hexrays.mbl_array_t) -> int:
-        """Diagnostic: identify BST blocks proven unreachable by Hodur.
+    def _prune_unreachable_condition_chain(self, mba: ida_hexrays.mbl_array_t) -> int:
+        """Diagnostic: identify condition-chain blocks proven unreachable by Hodur.
 
-        Reads BST block EAs persisted by HodurUnflattener during optblock pass
+        Reads condition-chain block EAs persisted by HodurUnflattener during optblock pass
         and re-maps them to current serials (IDA renumbers blocks between
         maturities so GLBOPT1 serials are stale by hxe_glbopt time).
 
@@ -1703,38 +1703,38 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             main_logger.debug("PruneUnreachable: no block_optimizer")
             return 0
 
-        # Find HodurUnflattener instance(s) with stored BST data
-        bst_block_eas: set[int] = set()
+        # Find HodurUnflattener instance(s) with stored condition-chain data
+        condition_chain_block_eas: set[int] = set()
         dispatcher_ea: int = 0
         for rule in self._block_optimizer.cfg_rules:
-            has_attr = hasattr(rule, '_last_bst_block_eas')
+            has_attr = hasattr(rule, '_last_condition_chain_block_eas')
             if has_attr:
                 main_logger.info(
-                    "PruneUnreachable: found rule %s, _last_bst_block_eas=%d, "
+                    "PruneUnreachable: found rule %s, _last_condition_chain_block_eas=%d, "
                     "_last_func_ea=%s, mba.entry_ea=%s",
                     type(rule).__name__,
-                    len(getattr(rule, '_last_bst_block_eas', set())),
+                    len(getattr(rule, '_last_condition_chain_block_eas', set())),
                     hex(getattr(rule, '_last_func_ea', 0)),
                     hex(mba.entry_ea),
                 )
             if (
                 has_attr
-                and getattr(rule, '_last_bst_block_eas', set())
+                and getattr(rule, '_last_condition_chain_block_eas', set())
                 and hasattr(rule, '_last_func_ea')
                 and rule._last_func_ea == mba.entry_ea
             ):
-                bst_block_eas = rule._last_bst_block_eas
+                condition_chain_block_eas = rule._last_condition_chain_block_eas
                 dispatcher_ea = getattr(rule, '_last_dispatcher_ea', 0)
                 # Clear after use (one-shot)
-                rule._last_bst_block_eas = set()
+                rule._last_condition_chain_block_eas = set()
                 rule._last_dispatcher_ea = 0
                 # Also clear legacy serial fields
-                rule._last_bst_serials = None
+                rule._last_condition_chain_serials = None
                 rule._last_dispatcher_serial = -1
                 break
 
-        if not bst_block_eas:
-            main_logger.info("PruneUnreachable: no pending BST block EAs for %s", hex(mba.entry_ea))
+        if not condition_chain_block_eas:
+            main_logger.info("PruneUnreachable: no pending condition-chain block EAs for %s", hex(mba.entry_ea))
             return 0
 
         # Re-map EAs to current block serials
@@ -1744,22 +1744,22 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             if blk is not None:
                 ea_to_serial[blk.start] = i
 
-        current_bst_serials: set[int] = {
-            ea_to_serial[ea] for ea in bst_block_eas if ea in ea_to_serial
+        current_condition_chain_serials: set[int] = {
+            ea_to_serial[ea] for ea in condition_chain_block_eas if ea in ea_to_serial
         }
         current_dispatcher = ea_to_serial.get(dispatcher_ea, -1)
 
-        if not current_bst_serials:
+        if not current_condition_chain_serials:
             main_logger.info(
-                "PruneUnreachable: EA re-mapping found 0 BST blocks for %s",
+                "PruneUnreachable: EA re-mapping found 0 condition-chain blocks for %s",
                 hex(mba.entry_ea),
             )
             return 0
 
         main_logger.info(
-            "PruneUnreachable[glbopt]: re-mapped %d/%d BST block EAs to current serials, "
+            "PruneUnreachable[glbopt]: re-mapped %d/%d condition-chain block EAs to current serials, "
             "dispatcher EA %s -> serial %s",
-            len(current_bst_serials), len(bst_block_eas),
+            len(current_condition_chain_serials), len(condition_chain_block_eas),
             hex(dispatcher_ea) if dispatcher_ea else "None",
             current_dispatcher if current_dispatcher >= 0 else "None",
         )
@@ -1784,13 +1784,13 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
                 if succ not in visited:
                     queue.append(succ)
 
-        # Intersect unreachable with current BST serials
+        # Intersect unreachable with current condition-chain serials
         all_serials = set(range(mba.qty))
-        unreachable_bst = (all_serials - visited) & current_bst_serials
+        unreachable_condition_chain = (all_serials - visited) & current_condition_chain_serials
 
-        if not unreachable_bst:
+        if not unreachable_condition_chain:
             main_logger.info(
-                "PruneUnreachable[glbopt]: no unreachable BST blocks for %s (dispatcher=%s)",
+                "PruneUnreachable[glbopt]: no unreachable condition-chain blocks for %s (dispatcher=%s)",
                 hex(mba.entry_ea),
                 hex(current_dispatcher) if current_dispatcher >= 0 else "None",
             )
@@ -1798,16 +1798,16 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
 
         main_logger.info(
             "PruneUnreachable[glbopt]: %d/%d blocks reachable, "
-            "%d unreachable BST blocks to prune for %s",
-            len(visited), mba.qty, len(unreachable_bst), hex(mba.entry_ea),
+            "%d unreachable condition-chain blocks to prune for %s",
+            len(visited), mba.qty, len(unreachable_condition_chain), hex(mba.entry_ea),
         )
 
         # BLOCKED: remove_block requires zero instruction-level references to target
         # block. TAIL_CHASE_FAILED handler exits still have goto instructions pointing
-        # to dispatcher/BST. Until all handler exits are resolved via instruction
+        # to dispatcher/condition-chain. Until all handler exits are resolved via instruction
         # operand redirects (like hrtng's DGM.ChangeGoto), remove_block will fail
         # with INTERR 51920 regardless of hook type (optblock_t or hxe_glbopt).
-        # The diagnostic confirms 77/77 BST blocks unreachable via edge-list BFS.
+        # The diagnostic confirms 77/77 condition-chain blocks unreachable via edge-list BFS.
         return 0
 
     def structural(self, ct: "control_graph_t") -> int:  # type: ignore

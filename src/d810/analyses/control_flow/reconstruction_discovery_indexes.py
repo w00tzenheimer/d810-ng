@@ -83,7 +83,7 @@ def build_reconstruction_discovery_indexes(
             int(edge.source_anchor.block_serial)
         )
 
-    dispatcher_region: set[int] = set(dag.bst_node_blocks)
+    dispatcher_region: set[int] = set(dag.condition_chain_blocks)
     if dag.dispatcher_entry_serial >= 0:
         dispatcher_region.add(int(dag.dispatcher_entry_serial))
     shared_suffix_blocks = collect_shared_suffix_blocks(dag)

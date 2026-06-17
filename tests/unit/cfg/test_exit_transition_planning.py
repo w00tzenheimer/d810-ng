@@ -17,7 +17,7 @@ class TestPlanExitRedirects:
             ),
             block_nsucc_map={10: 1},
             block_succ_map={10: (20,)},
-            bst_node_blocks=set(),
+            condition_chain_blocks=set(),
             dispatcher_region={20},
             owned_blocks=set(),
             emitted=set(),
@@ -31,19 +31,19 @@ class TestPlanExitRedirects:
         assert decision.target_entry == 30
         assert selection.claimed_1way == {10: 30}
 
-    def test_accepts_two_way_edge_redirect_using_bst_old_target(self):
+    def test_accepts_two_way_edge_redirect_using_condition_chain_old_target(self):
         selection = plan_exit_redirects(
             (
                 ExitRedirectAttempt(
                     source_block=10,
                     target_entry=30,
                     state_value=0xAA,
-                    discovery_kind="bst_walk",
+                    discovery_kind="condition_chain_walk",
                 ),
             ),
             block_nsucc_map={10: 2},
             block_succ_map={10: (21, 22)},
-            bst_node_blocks={21},
+            condition_chain_blocks={21},
             dispatcher_region={21, 22},
             owned_blocks=set(),
             emitted=set(),
@@ -66,7 +66,7 @@ class TestPlanExitRedirects:
             ),
             block_nsucc_map={10: 2},
             block_succ_map={10: (30,)},
-            bst_node_blocks=set(),
+            condition_chain_blocks=set(),
             dispatcher_region=set(),
             owned_blocks={30},
             emitted=set(),
@@ -83,7 +83,7 @@ class TestPlanExitRedirects:
             ),
             block_nsucc_map={10: 1, 11: 1},
             block_succ_map={10: (20,), 11: (21,)},
-            bst_node_blocks=set(),
+            condition_chain_blocks=set(),
             dispatcher_region={20, 21},
             owned_blocks=set(),
             emitted=set(),
@@ -101,7 +101,7 @@ class TestPlanExitRedirects:
             (attempt,),
             block_nsucc_map={10: 1},
             block_succ_map={10: (20,)},
-            bst_node_blocks=set(),
+            condition_chain_blocks=set(),
             dispatcher_region={20},
             owned_blocks={10},
             emitted=set(),
@@ -112,7 +112,7 @@ class TestPlanExitRedirects:
             (attempt,),
             block_nsucc_map={10: 1},
             block_succ_map={10: (20,)},
-            bst_node_blocks=set(),
+            condition_chain_blocks=set(),
             dispatcher_region={20},
             owned_blocks={10},
             emitted=set(),

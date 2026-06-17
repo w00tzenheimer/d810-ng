@@ -1,7 +1,7 @@
 """Hodur-specific return site provider.
 
 Extracts expected return sites from Hodur's analysis data
-(handler path results, BST analysis, state machine) and provides
+(handler path results, condition-chain analysis, state machine) and provides
 them in the generic ReturnSite format for frontier audit.
 """
 from __future__ import annotations
@@ -90,7 +90,7 @@ class HodurReturnSiteProvider:
         - The exit block has 0 successors (m_ret/stop) or flows to function exit
 
         Args:
-            snapshot: Current analysis snapshot with state machine, BST info.
+            snapshot: Current analysis snapshot with state machine, condition-chain info.
             handler_paths: Mapping of handler entry serial to list of evaluated
                 paths for that handler.
 

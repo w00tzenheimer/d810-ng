@@ -18,7 +18,7 @@ class ResidualBranchAnchorExecutionContext:
     via_pred: int
     prefix_target: int
     projected_flow_graph: object
-    bst_node_blocks: frozenset[int]
+    condition_chain_blocks: frozenset[int]
     dispatcher_serial: int
     block_succ_map: Mapping[int, tuple[int, ...]]
     ignored_blocks: frozenset[int]
@@ -74,7 +74,7 @@ def execute_residual_branch_anchor_handoff(
         source_is_conditional_branch=(
             context.edge.source_anchor.kind.name == "CONDITIONAL_BRANCH"
         ),
-        bst_node_blocks=set(int(block) for block in context.bst_node_blocks),
+        condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
         dispatcher_region=set(int(block) for block in context.ignored_blocks),
     )
     decision = plan_residual_branch_anchor_emission(
@@ -89,7 +89,7 @@ def execute_residual_branch_anchor_handoff(
         old_target=int(old_target),
         ordered_path=tuple(int(node) for node in context.edge.ordered_path),
         dispatcher_serial=int(context.dispatcher_serial),
-        bst_node_blocks=frozenset(int(block) for block in context.bst_node_blocks),
+        condition_chain_blocks=frozenset(int(block) for block in context.condition_chain_blocks),
         target_reaches_branch=target_reaches_source_ignoring_blocks(
             context.projected_flow_graph,
             target_entry=int(context.prefix_target),
@@ -146,7 +146,7 @@ def emit_residual_branch_anchor_handoff(
     via_pred: int,
     prefix_target: int,
     projected_flow_graph: object,
-    bst_node_blocks: set[int],
+    condition_chain_blocks: set[int],
     dispatcher_serial: int,
     builder: object,
     modifications: list,
@@ -165,7 +165,7 @@ def emit_residual_branch_anchor_handoff(
             via_pred=int(via_pred),
             prefix_target=int(prefix_target),
             projected_flow_graph=projected_flow_graph,
-            bst_node_blocks=frozenset(int(block) for block in bst_node_blocks),
+            condition_chain_blocks=frozenset(int(block) for block in condition_chain_blocks),
             dispatcher_serial=int(dispatcher_serial),
             block_succ_map=builder.block_succ_map,
             ignored_blocks=frozenset(int(block) for block in ignored_blocks),

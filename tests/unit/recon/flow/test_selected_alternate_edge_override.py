@@ -136,7 +136,7 @@ def _make_dag(nodes: tuple[StateDagNode, ...], edges: tuple[StateDagEdge, ...]) 
         state_var_stkoff=0x3C,
         pre_header_serial=None,
         initial_state=None,
-        bst_node_blocks=(),
+        condition_chain_blocks=(),
         nodes=nodes,
         edges=edges,
     )

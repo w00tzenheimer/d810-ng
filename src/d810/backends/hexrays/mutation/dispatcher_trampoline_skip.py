@@ -1,14 +1,14 @@
-"""DispatcherTrampolineSkipStrategy -- skip residual trampoline gotos to BST.
+"""DispatcherTrampolineSkipStrategy -- skip residual trampoline gotos to condition-chain.
 
-After HCC linearization, a small set of blocks may still tail-jump to the BST
+After HCC linearization, a small set of blocks may still tail-jump to the condition-chain
 root. Those blocks typically look like::
 
     [<state-write> i = #<state_const>]
-    goto BST_ROOT
+    goto CONDITION_CHAIN_ROOT
 
-Since the BST resolves the state value to a deterministic handler block, we can
+Since the condition-chain resolves the state value to a deterministic handler block, we can
 short-circuit the trampoline: rewrite the tail goto to point directly at the
-BST-resolved target.  We DO NOT NOP the state write -- only the goto
+condition-chain-resolved target.  We DO NOT NOP the state write -- only the goto
 destination changes.  The state write becomes dead code (no longer read by
 anything reachable) and IDA's dataflow optimizer collapses it.
 
@@ -21,7 +21,7 @@ isolation.  ``D810_HODUR_DISABLE_TRAMPOLINE_SKIP=1`` remains accepted as an
 explicit off switch.
 
 Risk: LOW -- only emits ``RedirectGoto`` for 1-way trampoline blocks whose
-new_target was deterministically resolved by walking the BST.
+new_target was deterministically resolved by walking the condition-chain.
 """
 from __future__ import annotations
 
@@ -35,10 +35,10 @@ from d810.ir.flowgraph import InsnKind, OperandKind
 from d810.transforms.loop_bound_writer_guard import collect_const_var_refs_in_block
 from d810.transforms.modification_builder import ModificationBuilder
 from d810.transforms.residual_target_resolution import (
-    BstConditionalTail,
-    BstGotoTail,
+    ConditionChainConditionalTail,
+    ConditionChainGotoTail,
     resolve_dispatcher_trampoline_skip_candidate,
-    walk_bst_dispatcher,
+    walk_condition_chain_dispatcher,
 )
 from d810.backends.hexrays.evidence.analysis import (
     HodurStateMachineDetector,
@@ -64,8 +64,8 @@ __all__ = ["DispatcherTrampolineSkipStrategy"]
 _GATE_ENV_ENABLE = "D810_HODUR_ENABLE_TRAMPOLINE_SKIP"
 _GATE_ENV_DISABLE = "D810_HODUR_DISABLE_TRAMPOLINE_SKIP"
 
-# Conditional opcodes the BST cascade may use to discriminate state values.
-_BST_COND_OPCODES: frozenset[int] = frozenset({
+# Conditional opcodes the condition-chain cascade may use to discriminate state values.
+_CONDITION_CHAIN_COND_OPCODES: frozenset[int] = frozenset({
     ida_hexrays.m_jnz,
     ida_hexrays.m_jz,
     ida_hexrays.m_jae,
@@ -80,7 +80,7 @@ _BST_COND_OPCODES: frozenset[int] = frozenset({
 
 
 class DispatcherTrampolineSkipStrategy:
-    """Redirect [state-write,] goto BST_ROOT trampolines to BST-resolved targets.
+    """Redirect [state-write,] goto CONDITION_CHAIN_ROOT trampolines to condition-chain-resolved targets.
 
     Family: ``FAMILY_CLEANUP`` -- last in pipeline.
     """
@@ -100,9 +100,9 @@ class DispatcherTrampolineSkipStrategy:
             return False
         if snapshot.mba is None:
             return False
-        if snapshot.bst_dispatcher_serial < 0:
+        if snapshot.dispatcher_root_serial < 0:
             return False
-        if snapshot.bst_result is None:
+        if snapshot.range_evidence is None:
             return False
         return True
 
@@ -111,11 +111,11 @@ class DispatcherTrampolineSkipStrategy:
             return None
 
         mba = snapshot.mba
-        bst_root_serial = int(snapshot.bst_dispatcher_serial)
-        bst_result = snapshot.bst_result
-        bst_node_blocks = set(getattr(bst_result, "condition_chain_blocks", {}) or {})
-        # Always treat the root itself as a BST block, even if not in node map.
-        bst_node_blocks.add(bst_root_serial)
+        dispatcher_root_serial = int(snapshot.dispatcher_root_serial)
+        range_evidence = snapshot.range_evidence
+        condition_chain_blocks = set(getattr(range_evidence, "condition_chain_blocks", {}) or {})
+        # Always treat the root itself as a condition-chain block, even if not in node map.
+        condition_chain_blocks.add(dispatcher_root_serial)
 
         state_var_stkoff = self._resolve_state_var_stkoff(snapshot)
         if state_var_stkoff is None:
@@ -147,8 +147,8 @@ class DispatcherTrampolineSkipStrategy:
             )
             decision = resolve_dispatcher_trampoline_skip_candidate(
                 source_block=serial,
-                bst_root=bst_root_serial,
-                bst_blocks=bst_node_blocks,
+                dispatcher_root=dispatcher_root_serial,
+                condition_chain_blocks=condition_chain_blocks,
                 nsucc=int(blk.nsucc()),
                 goto_target=goto_target,
                 direct_use_def_veto=direct_use_def_veto,
@@ -156,10 +156,10 @@ class DispatcherTrampolineSkipStrategy:
                     blk,
                     state_var_stkoff,
                 ),
-                target_for_state_fn=lambda state_value: self._walk_bst(
+                target_for_state_fn=lambda state_value: self._walk_condition_chain(
                     mba,
-                    bst_root_serial,
-                    bst_node_blocks,
+                    dispatcher_root_serial,
+                    condition_chain_blocks,
                     state_value,
                 ),
                 target_exists_fn=lambda target_serial: (
@@ -175,7 +175,7 @@ class DispatcherTrampolineSkipStrategy:
                     "RECON_REDIRECT_REJECTED_PRIOR_USE_DEF_VETO "
                     "source=blk[%d] old_target=blk[%d]",
                     serial,
-                    bst_root_serial,
+                    dispatcher_root_serial,
                 )
                 skipped_direct_use_def_veto += 1
                 continue
@@ -187,11 +187,11 @@ class DispatcherTrampolineSkipStrategy:
             modification = builder.goto_redirect(
                 source_block=serial,
                 target_block=target_serial,
-                old_target=bst_root_serial,
+                old_target=dispatcher_root_serial,
             )
 
             # Return-carrier const-feed gate.  Only fact-rooted, never
-            # heuristic.  ``bst_root_serial`` is, by construction, the
+            # heuristic.  ``dispatcher_root_serial`` is, by construction, the
             # redirect's old_target (the dispatcher root state-flow node), so
             # the user's "old_target is dispatcher/root state-flow" condition
             # is auto-satisfied here.
@@ -223,7 +223,7 @@ class DispatcherTrampolineSkipStrategy:
                                     "upstream_writer_ea=0x%x upstream_writer_block=%s",
                                     serial,
                                     target_serial,
-                                    bst_root_serial,
+                                    dispatcher_root_serial,
                                     site.fact_id,
                                     sorted(overlap),
                                     int(
@@ -393,26 +393,26 @@ class DispatcherTrampolineSkipStrategy:
         return int(target.b)
 
     @staticmethod
-    def _walk_bst(
+    def _walk_condition_chain(
         mba: object,
         root: int,
-        bst_blocks: set[int],
+        condition_chain_blocks: set[int],
         state_value: int,
     ) -> int | None:
-        """Walk the BST cascade for ``state_value`` until landing in a
-        non-BST block.
+        """Walk the condition-chain cascade for ``state_value`` until landing in a
+        non-condition-chain block.
 
-        Each BST block is either a 1-way passthrough (``m_goto``) or a 2-way
+        Each condition-chain block is either a 1-way passthrough (``m_goto``) or a 2-way
         comparison (``m_j*``) on the state variable against an immediate.  We
         evaluate the comparison using the known state value and follow the
-        taken / fall-through edge.  Returns the first non-BST block reached,
+        taken / fall-through edge.  Returns the first non-condition-chain block reached,
         or ``None`` if the walk hit an unrecognized block.
         """
-        return walk_bst_dispatcher(
+        return walk_condition_chain_dispatcher(
             root=int(root),
-            bst_blocks=bst_blocks,
+            condition_chain_blocks=condition_chain_blocks,
             state_value=int(state_value),
-            tail_for_block_fn=lambda serial: DispatcherTrampolineSkipStrategy._bst_tail_view(
+            tail_for_block_fn=lambda serial: DispatcherTrampolineSkipStrategy._condition_chain_tail_view(
                 mba,
                 serial,
             ),
@@ -420,10 +420,10 @@ class DispatcherTrampolineSkipStrategy:
         )
 
     @staticmethod
-    def _bst_tail_view(
+    def _condition_chain_tail_view(
         mba: object,
         serial: int,
-    ) -> BstGotoTail | BstConditionalTail | None:
+    ) -> ConditionChainGotoTail | ConditionChainConditionalTail | None:
         blk = mba.get_mblock(int(serial))
         if blk is None:
             return None
@@ -435,8 +435,8 @@ class DispatcherTrampolineSkipStrategy:
             target = tail.l
             if target is None or target.t != ida_hexrays.mop_b:
                 return None
-            return BstGotoTail(target=int(target.b))
-        if opcode not in _BST_COND_OPCODES:
+            return ConditionChainGotoTail(target=int(target.b))
+        if opcode not in _CONDITION_CHAIN_COND_OPCODES:
             return None
         rhs = tail.r
         taken_target = tail.d
@@ -452,7 +452,7 @@ class DispatcherTrampolineSkipStrategy:
             rhs_size = int(rhs.size) if rhs.size > 0 else 4
         except Exception:
             return None
-        return BstConditionalTail(
+        return ConditionChainConditionalTail(
             opcode=int(opcode),
             rhs_value=rhs_value,
             rhs_size=rhs_size,

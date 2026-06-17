@@ -30,7 +30,7 @@ from d810.core.observability import (
 from d810.core.observability_events import (
     BranchOwnershipProofsObserved as BranchOwnershipProofsObserved,
     BranchWitnessDecisionsObserved as BranchWitnessDecisionsObserved,
-    BstIntervalDispatcherObserved as BstIntervalDispatcherObserved,
+    ConditionChainIntervalDispatcherObserved as ConditionChainIntervalDispatcherObserved,
     ExitPathShortcutDecisionsObserved as ExitPathShortcutDecisionsObserved,
     DagFrontierClosureDiagnosticsObserved as DagFrontierClosureDiagnosticsObserved,
     DagLocalFactsObserved as DagLocalFactsObserved,
@@ -88,15 +88,15 @@ def observe_dag_frontier_closure_diagnostics(
     ))
 
 
-def observe_bst_interval_dispatcher(
+def observe_condition_chain_interval_dispatcher(
     *,
     func_ea: int,
     maturity: str,
     dispatcher_entry_block: int | None,
     rows,
 ) -> None:
-    """Publish recovered BST interval-dispatcher rows."""
-    _emit(BstIntervalDispatcherObserved(
+    """Publish recovered condition-chain interval-dispatcher rows."""
+    _emit(ConditionChainIntervalDispatcherObserved(
         func_ea=int(func_ea),
         maturity=str(maturity),
         dispatcher_entry_block=(
@@ -263,7 +263,7 @@ def observe_reachability(
     *,
     all_serials,
     reachable=(),
-    bst_serials=(),
+    condition_chain_serials=(),
     gutted=(),
     claimed_sources=(),
 ) -> None:
@@ -272,7 +272,7 @@ def observe_reachability(
         snapshot=snapshot,
         all_serials=frozenset(all_serials),
         reachable=frozenset(reachable),
-        bst_serials=frozenset(bst_serials),
+        condition_chain_serials=frozenset(condition_chain_serials),
         gutted=frozenset(gutted),
         claimed_sources=frozenset(claimed_sources),
     ))
@@ -290,7 +290,7 @@ def diagnostics_enabled() -> bool:
         _has_subscribers(t)
         for t in (
             DagObserved,
-            BstIntervalDispatcherObserved,
+            ConditionChainIntervalDispatcherObserved,
             DagFrontierClosureDiagnosticsObserved,
             DagLocalFactsObserved,
             FactObservationsObserved,
@@ -312,7 +312,7 @@ def diagnostics_enabled() -> bool:
 
 __all__ = [
     # Event dataclasses
-    "BstIntervalDispatcherObserved",
+    "ConditionChainIntervalDispatcherObserved",
     "BranchOwnershipProofsObserved",
     "BranchWitnessDecisionsObserved",
     "ExitPathShortcutDecisionsObserved",
@@ -337,7 +337,7 @@ __all__ = [
     # Emit helpers
     "diagnostics_enabled",
     "observe_dag",
-    "observe_bst_interval_dispatcher",
+    "observe_condition_chain_interval_dispatcher",
     "observe_state_dispatcher_rows",
     "observe_state_transition_dispatch_resolutions",
     "observe_switch_case_transition_facts",

@@ -103,14 +103,14 @@ def _dag(
     *,
     nodes: tuple[StateDagNode, ...] = (),
     edges: tuple[StateDagEdge, ...] = (),
-    bst_node_blocks: tuple[int, ...] = (),
+    condition_chain_blocks: tuple[int, ...] = (),
 ) -> LinearizedStateDag:
     return LinearizedStateDag(
         dispatcher_entry_serial=2,
         state_var_stkoff=0x3C,
         pre_header_serial=1,
         initial_state=0x5D0AEBD3,
-        bst_node_blocks=bst_node_blocks,
+        condition_chain_blocks=condition_chain_blocks,
         nodes=nodes,
         edges=edges,
         transient_entry_blocks=(),

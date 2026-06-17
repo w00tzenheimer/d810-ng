@@ -52,7 +52,7 @@ from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherRow,
 )
 from d810.analyses.control_flow.emulated_state_walk import walk_emulated_state_machine
-from d810.capabilities.providers import get_bst_walkers
+from d810.capabilities.providers import get_condition_chain_walkers
 from d810.evaluator.hexrays_microcode.emulator import (
     MicroCodeEnvironment,
     MicroCodeInterpreter,
@@ -75,7 +75,7 @@ _SELF_UPDATE_OPS: dict[int, str] = {
 }
 
 #: Conditional-jump opcodes a flattened dispatcher uses to compare the state var against a
-#: constant -- the equality cascade (``jz``/``jnz``) AND the binary-search BST
+#: constant -- the equality cascade (``jz``/``jnz``) AND the condition-chain
 #: (``ja``/``jae``/``jb``/...). The slot compared against a const in >=2 such blocks is the
 #: dispatcher's state variable (the ABSOLUTE-mov / computed-write machines -- unwrap_loops,
 #: hardened_cond_chain_simple -- whose state slot is NEVER ``state OP #const``, so the
@@ -341,7 +341,7 @@ class EmulationDispatcherResolver:
 
         The state var is the slot the dispatcher COMPARES against constants -- read in a
         conditional jump (``jz``/``jnz``/``ja``/...) whose other operand is a ``#const`` -- in
-        ``>=2`` blocks (the equality cascade or the binary-search BST), AND written in ``>=2``
+        ``>=2`` blocks (the equality cascade or the condition-chain), AND written in ``>=2``
         blocks (one per handler's next-state transition). The intersection is the soundness
         guard the ticket requires: a slot that is BOTH the dispatcher's compared operand AND
         multiply-written is the state variable, never an accidental twice-assigned local.
@@ -434,8 +434,8 @@ class EmulationDispatcherResolver:
 
         A flattened dispatcher routes by comparing the state var against constant labels --
         ``jz/jnz state, #const`` (equality cascade) or ``ja/jae/jb/... state, #const`` (the
-        binary-search BST). One operand is the stack slot, the other a ``mop_n`` constant; a
-        single ``xdu``/``xds``/``low`` widening wrapper on the compared slot is peeled (the BST
+        condition-chain). One operand is the stack slot, the other a ``mop_n`` constant; a
+        single ``xdu``/``xds``/``low`` widening wrapper on the compared slot is peeled (the condition-chain
         reads ``xdu.4(state.1)``). Slots compared in only one block are not dispatcher state
         vars (an ordinary ``if`` test).
         """
@@ -483,7 +483,7 @@ class EmulationDispatcherResolver:
 
     @staticmethod
     def _peel_widen(mop: ida_hexrays.mop_t | None) -> ida_hexrays.mop_t | None:
-        """Peel a single ``xdu``/``xds``/``low`` wrapper (the BST reads ``xdu.4(state.1)``)."""
+        """Peel a single ``xdu``/``xds``/``low`` wrapper (the condition-chain reads ``xdu.4(state.1)``)."""
         if mop is not None and mop.t == ida_hexrays.mop_d and mop.d is not None:
             inner = mop.d
             if (
@@ -827,7 +827,7 @@ class EmulationDispatcherResolver:
         single-instruction emulator above abstains on that ``mov global -> state``: it reads
         ``approov_qword`` (a writable ``.data`` global) with a fresh env, so the read is
         "not defined".  Stepping the WHOLE block via the proven legacy forward-fold
-        (``get_bst_walkers().forward_eval_insn``) folds it: the global read resolves to its
+        (``get_condition_chain_walkers().forward_eval_insn``) folds it: the global read resolves to its
         reaching-defs-stable ``.data`` initializer (``foldable_global_reads``), the in-block
         ``|=`` write is tracked under the gaddr key, and the subsequent ``state = global``
         read folds to the committed value.  This is exactly the in-block global dataflow the
@@ -881,7 +881,7 @@ class EmulationDispatcherResolver:
     ) -> int | None:
         """Forward-fold the WHOLE block, returning the constant written to ``stkoff``.
 
-        Reuses the proven legacy stepper (``get_bst_walkers().forward_eval_insn``), which
+        Reuses the proven legacy stepper (``get_condition_chain_walkers().forward_eval_insn``), which
         carries exact stack / register / global constants instruction-by-instruction in a
         per-block map.  A write to a writable global is recorded under its gaddr key, so a
         later read of that global in the SAME block (``state = (int)approov_qword`` after
@@ -892,7 +892,7 @@ class EmulationDispatcherResolver:
         missing walker provider also abstains -- never a wrong fold.
         """
         try:
-            forward_eval_insn = get_bst_walkers().forward_eval_insn
+            forward_eval_insn = get_condition_chain_walkers().forward_eval_insn
         except Exception:  # noqa: BLE001 — no provider registered -> fall back to direct fold
             return None
         stk_map: dict[int, int] = {}

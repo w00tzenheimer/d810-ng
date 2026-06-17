@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from d810.backends.hexrays import bst_runtime as _hexrays_bst_runtime
+from d810.backends.hexrays import condition_chain_runtime as _hexrays_condition_chain_runtime
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
 from d810.analyses.control_flow.equality_chain_dispatcher import (
     extract_state_dispatcher_map_from_mba,
@@ -178,8 +178,8 @@ def extract_state_dispatcher_map_from_hexrays_mba(
 
     view = _MbaView(
         mba,
-        _hexrays_bst_runtime.build_opcode_map(),
-        _hexrays_bst_runtime.build_mop_type_map(),
+        _hexrays_condition_chain_runtime.build_opcode_map(),
+        _hexrays_condition_chain_runtime.build_mop_type_map(),
     )
     dispatch_map = extract_state_dispatcher_map_from_mba(
         view,

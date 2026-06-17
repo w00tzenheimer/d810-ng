@@ -220,7 +220,7 @@ class TransactionalExecutor:
         """Attach per-round analysis context for fact-backed executor guards."""
         self.validated_fact_view = getattr(snapshot, "diagnostic_fact_view", None)
         try:
-            self.dispatcher_serial = int(getattr(snapshot, "bst_dispatcher_serial", -1))
+            self.dispatcher_serial = int(getattr(snapshot, "dispatcher_root_serial", -1))
         except (TypeError, ValueError):
             self.dispatcher_serial = -1
 

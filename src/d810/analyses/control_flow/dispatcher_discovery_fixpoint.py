@@ -1,6 +1,6 @@
 """Dispatcher discovery as a value-set fixpoint.
 
-``backends/hexrays/evidence/bst_analysis.py::analyze_bst_dispatcher`` discovers the dispatcher by a
+``backends/hexrays/evidence/condition_chain_analysis.py::analyze_condition_chain_dispatcher`` discovers the dispatcher by a
 procedural two-phase live walk: recurse the ``jz/jnz/jbe/ja`` comparison tree from the dispatcher
 root collecting ``(const -> handler)`` leaves, then a second per-handler walk for the next-state
 write.  It hard-codes the comparison topology, the comparison opcodes and the handler-chain shape.

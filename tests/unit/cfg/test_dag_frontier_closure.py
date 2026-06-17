@@ -537,7 +537,7 @@ def test_does_not_close_same_dag_scc_alternate_successor_by_default(
     assert unresolved_rows[0].path == (10, 20)
 
 
-def _bst_interval_frontier_dag():
+def _range_interval_frontier_dag():
     tail = StateDagNodeKey(handler_serial=131, state_const=0x0ACD0BD5)
     chunk = StateDagNodeKey(handler_serial=171, state_const=0x0D64F20F)
     return SimpleNamespace(
@@ -555,7 +555,7 @@ def _bst_interval_frontier_dag():
     )
 
 
-def _bst_interval_frontier_flow(
+def _range_interval_frontier_flow(
     *,
     candidate_succ: int = 131,
     observed_succ: int = 130,
@@ -576,7 +576,7 @@ def _bst_interval_frontier_flow(
     )
 
 
-def _bst_interval_rows(
+def _range_interval_rows(
     *,
     singleton_hi: int = 0x0ACD0BD6,
     singleton_target: int = 131,
@@ -607,17 +607,17 @@ def _bst_interval_rows(
     )
 
 
-def test_closes_same_scc_frontier_with_bst_interval_singleton_proof(
+def test_closes_same_scc_frontier_with_range_interval_singleton_proof(
     monkeypatch,
 ) -> None:
     monkeypatch.delenv("D810_DAG_FRONTIER_SAME_SCC_ALTERNATE", raising=False)
 
     result = plan_dag_authoritative_frontier_closure(
-        dag=_bst_interval_frontier_dag(),
-        flow_graph=_bst_interval_frontier_flow(),
+        dag=_range_interval_frontier_dag(),
+        flow_graph=_range_interval_frontier_flow(),
         modifications=[],
         dispatcher_serial=0,
-        bst_interval_rows=_bst_interval_rows(),
+        range_interval_rows=_range_interval_rows(),
     )
 
     assert result.leaks_before
@@ -632,49 +632,49 @@ def test_closes_same_scc_frontier_with_bst_interval_singleton_proof(
         ),
     )
     assert len(result.resolved_frontiers) == 1
-    assert result.resolved_frontiers[0].reason == "bst_interval_proven_frontier"
+    assert result.resolved_frontiers[0].reason == "range_interval_proven_frontier"
     resolved_rows = [
         row for row in result.diagnostic_rows if row.kind == "resolved"
     ]
     assert len(resolved_rows) == 1
-    assert resolved_rows[0].reason == "bst_interval_proven_frontier"
+    assert resolved_rows[0].reason == "range_interval_proven_frontier"
     assert resolved_rows[0].source_block == 129
     assert resolved_rows[0].observed_target == 130
     assert resolved_rows[0].branch_arm == 0
     assert resolved_rows[0].candidate_targets == (131,)
-    assert resolved_rows[0].payload["proof"] == "BST_INTERVAL_PROVEN_FRONTIER"
+    assert resolved_rows[0].payload["proof"] == "RANGE_INTERVAL_PROVEN_FRONTIER"
     assert resolved_rows[0].payload["state"] == "0x0ACD0BD5"
 
 
-def test_explicit_bst_interval_rows_do_not_use_db_fallback(monkeypatch) -> None:
+def test_explicit_range_interval_rows_do_not_use_db_fallback(monkeypatch) -> None:
     def fail_db_fallback(_flow_graph):
         raise AssertionError("DB fallback should not run with explicit rows")
 
     monkeypatch.setattr(
         dag_frontier_closure,
-        "_load_latest_bst_interval_rows",
+        "_load_latest_range_interval_rows",
         fail_db_fallback,
     )
 
     result = plan_dag_authoritative_frontier_closure(
-        dag=_bst_interval_frontier_dag(),
-        flow_graph=_bst_interval_frontier_flow(),
+        dag=_range_interval_frontier_dag(),
+        flow_graph=_range_interval_frontier_flow(),
         modifications=[],
         dispatcher_serial=0,
-        bst_interval_rows=_bst_interval_rows(),
+        range_interval_rows=_range_interval_rows(),
     )
 
     assert result.unresolved_frontiers == ()
-    assert result.resolved_frontiers[0].reason == "bst_interval_proven_frontier"
+    assert result.resolved_frontiers[0].reason == "range_interval_proven_frontier"
 
 
-def test_rejects_bst_frontier_when_singleton_interval_is_not_singleton() -> None:
+def test_rejects_range_frontier_when_singleton_interval_is_not_singleton() -> None:
     result = plan_dag_authoritative_frontier_closure(
-        dag=_bst_interval_frontier_dag(),
-        flow_graph=_bst_interval_frontier_flow(),
+        dag=_range_interval_frontier_dag(),
+        flow_graph=_range_interval_frontier_flow(),
         modifications=[],
         dispatcher_serial=0,
-        bst_interval_rows=_bst_interval_rows(singleton_hi=0x0ACD0BD7),
+        range_interval_rows=_range_interval_rows(singleton_hi=0x0ACD0BD7),
     )
 
     assert result.emitted_modifications == ()
@@ -682,13 +682,13 @@ def test_rejects_bst_frontier_when_singleton_interval_is_not_singleton() -> None
     assert result.unresolved_frontiers[0].reason == "same_scc_alternate_disabled"
 
 
-def test_rejects_bst_frontier_when_candidate_is_not_dag_entry() -> None:
+def test_rejects_range_frontier_when_candidate_is_not_dag_entry() -> None:
     result = plan_dag_authoritative_frontier_closure(
-        dag=_bst_interval_frontier_dag(),
-        flow_graph=_bst_interval_frontier_flow(candidate_succ=132),
+        dag=_range_interval_frontier_dag(),
+        flow_graph=_range_interval_frontier_flow(candidate_succ=132),
         modifications=[],
         dispatcher_serial=0,
-        bst_interval_rows=_bst_interval_rows(singleton_target=132),
+        range_interval_rows=_range_interval_rows(singleton_target=132),
     )
 
     assert result.emitted_modifications == ()
@@ -696,13 +696,13 @@ def test_rejects_bst_frontier_when_candidate_is_not_dag_entry() -> None:
     assert result.unresolved_frontiers[0].reason == "no_dag_choice_for_source"
 
 
-def test_rejects_bst_frontier_when_candidate_is_not_source_successor() -> None:
+def test_rejects_range_frontier_when_candidate_is_not_source_successor() -> None:
     result = plan_dag_authoritative_frontier_closure(
-        dag=_bst_interval_frontier_dag(),
-        flow_graph=_bst_interval_frontier_flow(candidate_succ=132),
+        dag=_range_interval_frontier_dag(),
+        flow_graph=_range_interval_frontier_flow(candidate_succ=132),
         modifications=[],
         dispatcher_serial=0,
-        bst_interval_rows=_bst_interval_rows(),
+        range_interval_rows=_range_interval_rows(),
     )
 
     assert result.emitted_modifications == ()
@@ -710,13 +710,13 @@ def test_rejects_bst_frontier_when_candidate_is_not_source_successor() -> None:
     assert result.unresolved_frontiers[0].reason == "no_dag_choice_for_source"
 
 
-def test_rejects_bst_frontier_without_observed_range_sibling() -> None:
+def test_rejects_range_frontier_without_observed_range_sibling() -> None:
     result = plan_dag_authoritative_frontier_closure(
-        dag=_bst_interval_frontier_dag(),
-        flow_graph=_bst_interval_frontier_flow(),
+        dag=_range_interval_frontier_dag(),
+        flow_graph=_range_interval_frontier_flow(),
         modifications=[],
         dispatcher_serial=0,
-        bst_interval_rows=_bst_interval_rows(observed_target=140),
+        range_interval_rows=_range_interval_rows(observed_target=140),
     )
 
     assert result.emitted_modifications == ()
@@ -724,7 +724,7 @@ def test_rejects_bst_frontier_without_observed_range_sibling() -> None:
     assert result.unresolved_frontiers[0].reason == "same_scc_alternate_disabled"
 
 
-def test_closes_dispatcher_state_residue_with_dag_chain_and_bst_interval() -> None:
+def test_closes_dispatcher_state_residue_with_dag_chain_and_range_interval() -> None:
     source_key = StateDagNodeKey(handler_serial=136, state_const=0x139F2922)
     target_key = StateDagNodeKey(handler_serial=20, state_const=0x6465D164)
     dag = SimpleNamespace(
@@ -772,7 +772,7 @@ def test_closes_dispatcher_state_residue_with_dag_chain_and_bst_interval() -> No
         flow_graph=flow,
         modifications=[],
         dispatcher_serial=2,
-        bst_interval_rows=(
+        range_interval_rows=(
             SimpleNamespace(
                 snapshot_id=5,
                 row_index=75,
@@ -790,7 +790,7 @@ def test_closes_dispatcher_state_residue_with_dag_chain_and_bst_interval() -> No
     assert len(result.resolved_frontiers) == 1
     assert (
         result.resolved_frontiers[0].reason
-        == "dag_bst_interval_dispatcher_residue"
+        == "dag_range_interval_dispatcher_residue"
     )
     resolved_rows = [
         row for row in result.diagnostic_rows if row.kind == "resolved"
@@ -798,18 +798,18 @@ def test_closes_dispatcher_state_residue_with_dag_chain_and_bst_interval() -> No
     assert len(resolved_rows) == 1
     assert (
         resolved_rows[0].reason
-        == "dag_bst_interval_dispatcher_residue"
+        == "dag_range_interval_dispatcher_residue"
     )
     assert resolved_rows[0].source_block == 140
     assert resolved_rows[0].observed_target == 2
     assert resolved_rows[0].candidate_targets == (20,)
     assert resolved_rows[0].payload["proof"] == (
-        "DAG_BST_INTERVAL_DISPATCHER_RESIDUE"
+        "DAG_RANGE_INTERVAL_DISPATCHER_RESIDUE"
     )
     assert resolved_rows[0].payload["state"] == "0x63F502FA"
 
 
-def test_rejects_dispatcher_state_residue_without_matching_bst_interval() -> None:
+def test_rejects_dispatcher_state_residue_without_matching_range_interval() -> None:
     source_key = StateDagNodeKey(handler_serial=136, state_const=0x139F2922)
     target_key = StateDagNodeKey(handler_serial=20, state_const=0x6465D164)
     dag = SimpleNamespace(
@@ -857,7 +857,7 @@ def test_rejects_dispatcher_state_residue_without_matching_bst_interval() -> Non
         flow_graph=flow,
         modifications=[],
         dispatcher_serial=2,
-        bst_interval_rows=(
+        range_interval_rows=(
             SimpleNamespace(
                 snapshot_id=5,
                 row_index=75,
@@ -872,7 +872,7 @@ def test_rejects_dispatcher_state_residue_without_matching_bst_interval() -> Non
     assert result.resolved_frontiers == ()
 
 
-def test_closes_direct_dag_bst_dispatcher_residue_without_scc_leak() -> None:
+def test_closes_direct_dag_range_dispatcher_residue_without_scc_leak() -> None:
     source_key = StateDagNodeKey(handler_serial=56, state_const=0x7D9C16EC)
     target_key = StateDagNodeKey(handler_serial=42, state_const=0x72AFE1BC)
     dag = SimpleNamespace(
@@ -915,7 +915,7 @@ def test_closes_direct_dag_bst_dispatcher_residue_without_scc_leak() -> None:
         flow_graph=flow,
         modifications=[],
         dispatcher_serial=2,
-        bst_interval_rows=(
+        range_interval_rows=(
             SimpleNamespace(
                 snapshot_id=5,
                 row_index=40,
@@ -933,7 +933,7 @@ def test_closes_direct_dag_bst_dispatcher_residue_without_scc_leak() -> None:
     assert len(result.resolved_frontiers) == 1
     assert (
         result.resolved_frontiers[0].reason
-        == "dag_bst_interval_dispatcher_residue"
+        == "dag_range_interval_dispatcher_residue"
     )
     resolved_rows = [
         row for row in result.diagnostic_rows if row.kind == "resolved"
@@ -941,18 +941,18 @@ def test_closes_direct_dag_bst_dispatcher_residue_without_scc_leak() -> None:
     assert len(resolved_rows) == 1
     assert (
         resolved_rows[0].reason
-        == "dag_bst_interval_dispatcher_residue"
+        == "dag_range_interval_dispatcher_residue"
     )
     assert resolved_rows[0].source_block == 56
     assert resolved_rows[0].observed_target == 2
     assert resolved_rows[0].candidate_targets == (42,)
     assert resolved_rows[0].payload["proof"] == (
-        "DAG_BST_INTERVAL_DISPATCHER_RESIDUE"
+        "DAG_RANGE_INTERVAL_DISPATCHER_RESIDUE"
     )
     assert resolved_rows[0].payload["state"] == "0x72AFE1BC"
 
 
-def test_rejects_direct_dag_bst_residue_when_only_path_step_is_proven() -> None:
+def test_rejects_direct_dag_range_residue_when_only_path_step_is_proven() -> None:
     source_key = StateDagNodeKey(handler_serial=56, state_const=0x7D9C16EC)
     target_key = StateDagNodeKey(handler_serial=42, state_const=0x72AFE1BC)
     dag = SimpleNamespace(
@@ -996,7 +996,7 @@ def test_rejects_direct_dag_bst_residue_when_only_path_step_is_proven() -> None:
         flow_graph=flow,
         modifications=[],
         dispatcher_serial=2,
-        bst_interval_rows=(
+        range_interval_rows=(
             SimpleNamespace(
                 snapshot_id=5,
                 row_index=40,
@@ -1105,7 +1105,7 @@ def test_clones_dag_backed_shared_condition_entry(monkeypatch) -> None:
         flow_graph=_shared_condition_clone_flow(),
         modifications=[],
         dispatcher_serial=2,
-        bst_interval_rows=(),
+        range_interval_rows=(),
     )
 
     assert result.emitted_modifications == (
@@ -1137,7 +1137,7 @@ def test_shared_condition_clone_can_be_disabled(monkeypatch) -> None:
         flow_graph=_shared_condition_clone_flow(),
         modifications=[],
         dispatcher_serial=2,
-        bst_interval_rows=(),
+        range_interval_rows=(),
     )
 
     assert result.emitted_modifications == ()
@@ -1153,7 +1153,7 @@ def test_replaces_dag_redirect_with_shared_condition_clone(monkeypatch) -> None:
         flow_graph=_shared_condition_clone_flow(base_pred_targets_condition=False),
         modifications=[existing],
         dispatcher_serial=2,
-        bst_interval_rows=(),
+        range_interval_rows=(),
     )
 
     assert result.dropped_modifications == (existing,)
@@ -1176,7 +1176,7 @@ def test_rejects_shared_condition_clone_without_dag_entry_edge(monkeypatch) -> N
         flow_graph=_shared_condition_clone_flow(),
         modifications=[],
         dispatcher_serial=2,
-        bst_interval_rows=(),
+        range_interval_rows=(),
     )
 
     assert result.emitted_modifications == ()
@@ -1191,7 +1191,7 @@ def test_rejects_shared_condition_clone_without_dag_arm_edges(monkeypatch) -> No
         flow_graph=_shared_condition_clone_flow(),
         modifications=[],
         dispatcher_serial=2,
-        bst_interval_rows=(),
+        range_interval_rows=(),
     )
 
     assert result.emitted_modifications == ()

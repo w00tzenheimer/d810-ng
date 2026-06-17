@@ -174,7 +174,7 @@ def read_dag_from(
         state_var_stkoff=state_var_stkoff,
         pre_header_serial=pre_header_serial,
         initial_state=initial_state,
-        bst_node_blocks=tuple(sorted(int(b) for b in view.condition_chain_blocks)),
+        condition_chain_blocks=tuple(sorted(int(b) for b in view.condition_chain_blocks)),
         nodes=tuple(nodes),
         edges=edges,
     )

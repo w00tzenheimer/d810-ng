@@ -42,7 +42,7 @@ class DispatcherTransitionAnalysis:
     initial_state: Optional[int]
     handler_state_map: Mapping[int, int]
     handler_range_map: Mapping[int, Tuple[Optional[int], Optional[int]]]
-    bst_node_blocks: Tuple[int, ...]
+    condition_chain_blocks: Tuple[int, ...]
     observations: Tuple[HandlerTransitionObservation, ...]
     diagnostics: Tuple[str, ...] = ()
 
@@ -83,7 +83,7 @@ def build_transition_analysis_from_graph(
     pre_header_serial: Optional[int] = None,
     initial_state: Optional[int] = None,
     handler_range_map: Mapping[int, tuple[Optional[int], Optional[int]]] | None = None,
-    bst_node_blocks: Iterable[int] = (),
+    condition_chain_blocks: Iterable[int] = (),
     diagnostics: Sequence[str] = (),
 ) -> DispatcherTransitionAnalysis:
     """Build portable handler transition observations from a ``FlowGraph``."""
@@ -164,7 +164,7 @@ def build_transition_analysis_from_graph(
         ),
         handler_state_map=handler_state_map,
         handler_range_map=dict(range_map),
-        bst_node_blocks=tuple(sorted(bst_node_blocks)),
+        condition_chain_blocks=tuple(sorted(condition_chain_blocks)),
         observations=tuple(observations),
         diagnostics=tuple(diagnostics),
     )

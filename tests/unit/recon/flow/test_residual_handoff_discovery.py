@@ -171,12 +171,12 @@ class TestRedirectSafeEntryResolution:
         )
         dag = _dag((node,), (edge,))
 
-        assert resolve_path_lead_entry_from_node(dag, node, bst_node_blocks={2, 6}) == 24
+        assert resolve_path_lead_entry_from_node(dag, node, condition_chain_blocks={2, 6}) == 24
         assert (
             resolve_redirect_safe_entry_from_node(
                 node,
                 dag=dag,
-                bst_node_blocks={2, 6},
+                condition_chain_blocks={2, 6},
             )
             == 24
         )
@@ -209,7 +209,7 @@ class TestRedirectSafeEntryResolution:
             resolve_redirect_safe_target_entry(
                 dag,
                 edge,
-                bst_node_blocks={2, 6},
+                condition_chain_blocks={2, 6},
             )
             == 24
         )
@@ -229,7 +229,7 @@ class TestRedirectSafeEntryResolution:
             resolve_redirect_safe_target_entry(
                 dag,
                 edge,
-                bst_node_blocks={2, 6},
+                condition_chain_blocks={2, 6},
             )
             == 32
         )
@@ -249,7 +249,7 @@ class TestRedirectSafeEntryResolution:
             resolve_redirect_safe_target_entry(
                 dag,
                 edge,
-                bst_node_blocks={2, 6},
+                condition_chain_blocks={2, 6},
             )
             == 30
         )
@@ -269,7 +269,7 @@ class TestResidualTargetDiscovery:
                 dag,
                 0x33,
                 source_block=10,
-                bst_node_blocks={2, 6},
+                condition_chain_blocks={2, 6},
                 dispatcher=dispatcher,
             )
             == 24
@@ -288,7 +288,7 @@ class TestResidualTargetDiscovery:
                 dag,
                 0x4C77464F,
                 source_block=16,
-                bst_node_blocks={2},
+                condition_chain_blocks={2},
                 dispatcher=dispatcher,
             )
             == 71
@@ -309,7 +309,7 @@ class TestResidualTargetDiscovery:
             resolve_projected_path_tail_target(
                 dag,
                 source_block=10,
-                bst_node_blocks={2, 6},
+                condition_chain_blocks={2, 6},
                 predecessor_hints=(8,),
             )
             == (0x33, 24)
@@ -340,7 +340,7 @@ class TestResidualTargetDiscovery:
                 dag,
                 state_machine,
                 10,
-                bst_node_blocks={2, 6},
+                condition_chain_blocks={2, 6},
                 dispatcher=dispatcher,
             )
             == (0x33, 24)
@@ -382,7 +382,7 @@ class TestResidualTargetDiscovery:
             resolution = resolve_effective_target_entry(
                 dag,
                 edge,
-                bst_node_blocks={2, 6},
+                condition_chain_blocks={2, 6},
                 state_var_stkoff=0x20,
                 dispatcher_lookup=None,
                 dispatcher=dispatcher,
@@ -427,7 +427,7 @@ class TestResidualTargetDiscovery:
             resolution = resolve_effective_target_entry(
                 dag,
                 edge,
-                bst_node_blocks={2, 6},
+                condition_chain_blocks={2, 6},
                 state_var_stkoff=0x20,
                 dispatcher_lookup=None,
                 dispatcher=dispatcher,
@@ -462,7 +462,7 @@ class TestResidualTargetDiscovery:
                 mba,
                 10,
                 state_var_stkoff=0x88,
-                bst_node_blocks={2, 6},
+                condition_chain_blocks={2, 6},
                 dispatcher_lookup=None,
                 dispatcher=dispatcher,
             )
@@ -474,7 +474,7 @@ class TestResidualTargetDiscovery:
                 flow_graph,
                 10,
                 state_var_stkoff=0x88,
-                bst_node_blocks={2, 6},
+                condition_chain_blocks={2, 6},
                 dispatcher=dispatcher,
             )
             == (0x33, 24)
@@ -517,7 +517,7 @@ class TestResidualTargetDiscovery:
             source_block=10,
             current_preds=(7,),
             state_var_stkoff=0x88,
-            bst_node_blocks={2, 6},
+            condition_chain_blocks={2, 6},
             dispatcher_lookup=None,
             dispatcher=object(),
             analysis_mba="analysis",
@@ -593,7 +593,7 @@ class TestResidualTargetDiscovery:
             source_block=16,
             current_preds=(15,),
             state_var_stkoff=0x88,
-            bst_node_blocks={2, 6},
+            condition_chain_blocks={2, 6},
             dispatcher_lookup=None,
             dispatcher=object(),
             analysis_mba="analysis",
@@ -652,7 +652,7 @@ class TestResidualTargetDiscovery:
             source_block=194,
             current_preds=(188,),
             state_var_stkoff=0x88,
-            bst_node_blocks={2, 6},
+            condition_chain_blocks={2, 6},
             dispatcher_lookup=None,
             dispatcher=object(),
             analysis_mba=mba,
