@@ -101,7 +101,7 @@ class StateMachineSnapshotBuilder:
             dispatcher_blocks=frozenset(
                 int(block)
                 for block in (
-                    getattr(bst_result, "bst_node_blocks", set()) or set()
+                    getattr(bst_result, "condition_chain_blocks", set()) or set()
                 )
             ),
             reachability=reachability,

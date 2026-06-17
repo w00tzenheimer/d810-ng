@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from d810.core import getLogger
 from d810.core.typing import Dict, List, Optional, Protocol
 
-from d810.analyses.control_flow.bst_model import BSTAnalysisResult
+from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult
 
 logger = getLogger(__name__)
 
@@ -92,7 +92,7 @@ def transition_result_from_resolutions(
     entire report -> DAG -> region pipeline derives its rows from ``handlers``
     (``build_transition_analysis_from_graph`` iterates ``transition_result.handlers``), so without
     this the DAG has zero nodes and #3 ``plan_semantic_regions`` is empty even with N transitions.
-    Mirrors the legacy ``_convert_bst_to_result`` handler construction.
+    Mirrors the legacy ``_convert_condition_chain_to_result`` handler construction.
     """
     handlers: Dict[int, StateHandler] = {}
     if dispatch_map is not None:
@@ -155,29 +155,31 @@ def _get_state_var_stkoff(detector) -> Optional[int]:
     return int(stack_off) if stack_off is not None else None
 
 
-def _convert_bst_to_result(bst: BSTAnalysisResult) -> TransitionResult:
-    """Convert a BSTAnalysisResult into a TransitionResult.
+def _convert_condition_chain_to_result(
+    condition_chain: ConditionChainAnalysisResult,
+) -> TransitionResult:
+    """Convert a ConditionChainAnalysisResult into a TransitionResult.
 
     Uses the IntervalDispatcher (when available) as the primary source
     for state-to-handler resolution, falling back to handler_state_map
-    for backward compatibility.  This ensures that handlers reachable
-    only through wide BST range intervals are included.
+    for coverage.  This ensures that handlers reachable only through
+    wide condition-chain range intervals are included.
     """
     state_to_handler_blk: Dict[int, int] = {
         state: blk
-        for blk, state in bst.handler_state_map.items()
-        if blk not in bst.bst_node_blocks
+        for blk, state in condition_chain.handler_state_map.items()
+        if blk not in condition_chain.condition_chain_blocks
     }
 
     # Backfill from IntervalDispatcher: wide-range intervals that map
     # to handler blocks not already present in handler_state_map are
     # added so that the resulting TransitionResult covers ALL handlers
-    # the BST can route to.  Targets appearing in multiple dispatcher
+    # the condition chain can route to. Targets appearing in multiple dispatcher
     # rows are catch-all / default blocks and are excluded.
-    if bst.dispatcher is not None:
+    if condition_chain.dispatcher is not None:
         from collections import Counter as _Counter
         _target_freq: dict[int, int] = _Counter(
-            r.target for r in bst.dispatcher._rows
+            r.target for r in condition_chain.dispatcher._rows
         )
         # Ground-truth genuine states: those a handler explicitly writes
         # (handler_state_map) plus exact equality-leaf constants (lo == hi rows,
@@ -192,13 +194,13 @@ def _convert_bst_to_result(bst: BSTAnalysisResult) -> TransitionResult:
         # real state and the row is skipped (it is, by construction, never the
         # sole enrolment path for a live handler -- those arrive via the
         # handler_state_map point-match above).
-        genuine_states: set[int] = set(bst.handler_state_map.values())
+        genuine_states: set[int] = set(condition_chain.handler_state_map.values())
         genuine_states.update(
-            r.lo for r in bst.dispatcher._rows if r.lo == r.hi
+            r.lo for r in condition_chain.dispatcher._rows if r.lo == r.hi
         )
-        for row in bst.dispatcher._rows:
+        for row in condition_chain.dispatcher._rows:
             target = row.target
-            if target in bst.bst_node_blocks:
+            if target in condition_chain.condition_chain_blocks:
                 continue
             if _target_freq[target] > 1:
                 continue  # catch-all / default block
@@ -214,7 +216,7 @@ def _convert_bst_to_result(bst: BSTAnalysisResult) -> TransitionResult:
                 )
                 if not in_range:
                     logger.debug(
-                        "convert_bst: skip interval row lo=0x%x hi=0x%x target=%d "
+                        "convert_condition_chain: skip interval row lo=0x%x hi=0x%x target=%d "
                         "(no genuine state in range; refusing to enrol synthetic "
                         "boundary as a state)",
                         row.lo,
@@ -235,7 +237,7 @@ def _convert_bst_to_result(bst: BSTAnalysisResult) -> TransitionResult:
         )
 
     transitions: List[StateTransition] = []
-    for from_state, to_state in bst.transitions.items():
+    for from_state, to_state in condition_chain.transitions.items():
         if to_state is None:
             continue
         from_blk = state_to_handler_blk.get(from_state)
@@ -252,7 +254,7 @@ def _convert_bst_to_result(bst: BSTAnalysisResult) -> TransitionResult:
         if from_state in handlers:
             handlers[from_state].transitions.append(transition)
 
-    for from_state, to_states in bst.conditional_transitions.items():
+    for from_state, to_states in condition_chain.conditional_transitions.items():
         from_blk = state_to_handler_blk.get(from_state)
         if from_blk is None:
             continue
@@ -272,8 +274,8 @@ def _convert_bst_to_result(bst: BSTAnalysisResult) -> TransitionResult:
         transitions=transitions,
         handlers=handlers,
         assignment_map={},
-        initial_state=bst.initial_state,
-        pre_header_serial=bst.pre_header_serial,
+        initial_state=condition_chain.initial_state,
+        pre_header_serial=condition_chain.pre_header_serial,
         strategy_name="bst_walker",
         resolved_count=len(transitions),
     )
@@ -305,5 +307,5 @@ __all__ = [
     "TransitionBuilderStrategy",
     "TransitionBuilder",
     "_get_state_var_stkoff",
-    "_convert_bst_to_result",
+    "_convert_condition_chain_to_result",
 ]

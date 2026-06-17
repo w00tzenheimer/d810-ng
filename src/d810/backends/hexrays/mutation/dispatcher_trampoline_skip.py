@@ -113,7 +113,7 @@ class DispatcherTrampolineSkipStrategy:
         mba = snapshot.mba
         bst_root_serial = int(snapshot.bst_dispatcher_serial)
         bst_result = snapshot.bst_result
-        bst_node_blocks = set(getattr(bst_result, "bst_node_blocks", {}) or {})
+        bst_node_blocks = set(getattr(bst_result, "condition_chain_blocks", {}) or {})
         # Always treat the root itself as a BST block, even if not in node map.
         bst_node_blocks.add(bst_root_serial)
 

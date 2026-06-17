@@ -160,7 +160,7 @@ class TestCollectBstDefaultTransitionCandidates:
             fake_evaluate_handler_paths,
         )
         monkeypatch.setattr(
-            "d810.analyses.control_flow.exit_transition_discovery.resolve_target_via_bst",
+            "d810.analyses.control_flow.exit_transition_discovery.resolve_target_via_condition_chain",
             lambda bst, state: 88 if state == 0x22 else None,
         )
 
@@ -206,7 +206,7 @@ class TestCollectValrangeExitTransitionCandidates:
         bst_result = SimpleNamespace()
 
         monkeypatch.setattr(
-            "d810.analyses.control_flow.exit_transition_discovery.resolve_target_via_bst",
+            "d810.analyses.control_flow.exit_transition_discovery.resolve_target_via_condition_chain",
             lambda bst, state: 88 if state == 0x33 else None,
         )
 

@@ -1,6 +1,6 @@
 """Dispatcher-type-agnostic handler mapping.
 
-Shared IR consumed by Hodur strategies. Produced by either BST analysis
+Shared IR consumed by Hodur strategies. Produced by either condition-chain analysis
 (CONDITION_CHAIN) or switch-table analysis (SWITCH).
 """
 from __future__ import annotations
@@ -34,7 +34,7 @@ class DispatcherHandlerMap:
     def resolve_target(self, state_value: int) -> int | None:
         """Resolve a concrete state value to a handler block serial.
 
-        Mirrors ``resolve_target_via_bst`` logic: exact match first, then
+        Mirrors ``resolve_target_via_condition_chain`` logic: exact match first, then
         range fallback (skipping catch-all ranges and exact-match serials).
         """
         for handler_serial, state_const in self.handler_state_map.items():
@@ -60,26 +60,26 @@ class DispatcherHandlerMap:
         return None
 
     @classmethod
-    def from_bst_result(
+    def from_condition_chain_result(
         cls,
-        bst_result: object,
+        condition_chain_result: object,
         dispatcher_serial: int,
         state_var_stkoff: int,
     ) -> DispatcherHandlerMap:
-        """Bridge from ``BSTAnalysisResult``.
+        """Bridge from ``ConditionChainAnalysisResult``.
 
-        Extracts the dispatcher-agnostic subset of fields. BST-specific
+        Extracts the dispatcher-agnostic subset of fields. Condition-chain-specific
         fields (``transitions``, ``exits``, ``dispatcher``) are not carried --
         Hodur's forward evaluator rebuilds them.
         """
         return cls(
-            handler_state_map=dict(bst_result.handler_state_map),
+            handler_state_map=dict(condition_chain_result.handler_state_map),
             dispatcher_serial=dispatcher_serial,
-            dispatcher_blocks=frozenset(bst_result.bst_node_blocks),
+            dispatcher_blocks=frozenset(condition_chain_result.condition_chain_blocks),
             state_var_stkoff=state_var_stkoff,
             router_kind=RouterKind.CONDITION_CHAIN,
-            initial_state=bst_result.initial_state,
-            handler_range_map=dict(bst_result.handler_range_map),
+            initial_state=condition_chain_result.initial_state,
+            handler_range_map=dict(condition_chain_result.handler_range_map),
         )
 
     @classmethod
@@ -98,21 +98,21 @@ class DispatcherHandlerMap:
             handler_range_map={},
         )
 
-    def to_bst_result(self) -> object:
-        """Synthesize a ``BSTAnalysisResult`` for downstream consumers.
+    def to_condition_chain_result(self) -> object:
+        """Synthesize a ``ConditionChainAnalysisResult`` for downstream consumers.
 
-        Downstream code (``resolve_target_via_bst``, ``_post_apply_bst_cleanup``)
-        accesses ``handler_state_map``, ``bst_node_blocks``, and ``initial_state``.
+        Downstream code accesses ``handler_state_map``, ``condition_chain_blocks``,
+        and ``initial_state``.
         Transition-related fields are left empty (Hodur forward eval rebuilds them).
         """
-        from d810.analyses.control_flow.bst_model import BSTAnalysisResult, BSTNodeMap
+        from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult, ConditionChainNodeMap
 
-        node_map = BSTNodeMap()
+        node_map = ConditionChainNodeMap()
         for serial in self.dispatcher_blocks:
             node_map.add(serial)
-        return BSTAnalysisResult(
+        return ConditionChainAnalysisResult(
             handler_state_map=dict(self.handler_state_map),
             handler_range_map=dict(self.handler_range_map),
-            bst_node_blocks=node_map,
+            condition_chain_blocks=node_map,
             initial_state=self.initial_state,
         )

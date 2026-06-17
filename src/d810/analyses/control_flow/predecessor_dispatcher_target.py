@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.analyses.control_flow.bst_model import BSTAnalysisResult
+from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
 
 
@@ -144,7 +144,7 @@ def resolve_predecessor_dispatcher_target(
     dispatcher_entry_serial: int,
     state_const: int,
     state_dispatcher_map: StateDispatcherMap | None = None,
-    bst_result: BSTAnalysisResult | None = None,
+    bst_result: ConditionChainAnalysisResult | None = None,
     source_state_const: int | None = None,
     transition_provenance_kind: str | None = None,
     condition_block_serial: int | None = None,
@@ -269,7 +269,7 @@ def collect_predecessor_dispatcher_target_facts(
     transition_result: object | None,
     dispatcher_entry_serial: int,
     state_dispatcher_map: StateDispatcherMap | None = None,
-    bst_result: BSTAnalysisResult | None = None,
+    bst_result: ConditionChainAnalysisResult | None = None,
     transition_report: object | None = None,
     dag: object | None = None,
     state_var_stkoff: int | None = None,

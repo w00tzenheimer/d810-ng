@@ -86,7 +86,7 @@ class DeadStateVariableEliminationStrategy:
         bst_result = getattr(snapshot, "bst_result", None)
         bst_node_blocks = frozenset(
             int(block)
-            for block in (getattr(bst_result, "bst_node_blocks", set()) or set())
+            for block in (getattr(bst_result, "condition_chain_blocks", set()) or set())
         )
         evidence = _DEAD_STATE_BACKEND.collect_dead_state_read_cleanup_evidence(
             mba,

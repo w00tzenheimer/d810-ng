@@ -29,7 +29,7 @@ import sys
 from dataclasses import dataclass, field
 
 from d810.analyses.control_flow.route_predicate import (
-    BstComparison,
+    RouteComparison,
     DecisionDag,
     _evaluate,
 )
@@ -90,7 +90,7 @@ def build_decision_dag_from_diag(
             "SELECT serial, succs FROM blocks WHERE snapshot_id=?", (snapshot_id,)
         )
     }
-    nodes: dict[int, BstComparison] = {}
+    nodes: dict[int, RouteComparison] = {}
     for blk, dstr in conn.execute(
         "SELECT block_serial, trim(dstr) FROM instructions WHERE snapshot_id=? "
         "AND trim(dstr) LIKE 'j%' AND dstr LIKE '%#0x%@%'",
@@ -105,7 +105,7 @@ def build_decision_dag_from_diag(
             if s != taken:
                 false_target = s
                 break
-        nodes[int(blk)] = BstComparison(
+        nodes[int(blk)] = RouteComparison(
             serial=int(blk), op=op, const=const,
             true_target=taken, false_target=false_target,
         )

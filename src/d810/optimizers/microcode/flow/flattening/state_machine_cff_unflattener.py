@@ -61,7 +61,7 @@ from d810.analyses.data_flow.concolic import (
     fold_exact,
 )
 from d810.analyses.data_flow.concolic.emulation import EmulationCapability
-from d810.analyses.control_flow.transition_builder import _convert_bst_to_result
+from d810.analyses.control_flow.transition_builder import _convert_condition_chain_to_result
 from d810.backends.hexrays.evidence.bst_analysis import analyze_bst_dispatcher
 from d810.analyses.control_flow.indirect_jump_resolver import (
     IndirectJumpDispatcherResolver,
@@ -797,7 +797,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             # chain into every handler.
             dispatcher_region = frozenset(
                 {int(dmap.dispatcher_entry_block)}
-            ) | frozenset(int(b) for b in view.bst_node_blocks)
+            ) | frozenset(int(b) for b in view.condition_chain_blocks)
             owner_result = analyze_block_ownership(
                 nodes=list(succ),
                 successors_of=lambda n: succ.get(int(n), ()),
@@ -906,7 +906,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             dag_tr = tr
             if bst is not None:
                 try:
-                    dag_tr = _convert_bst_to_result(bst)
+                    dag_tr = _convert_condition_chain_to_result(bst)
                 except Exception:  # noqa: BLE001 — fall back to the unflatten transition_result
                     dag_tr = tr
             if dag_tr is not None and getattr(dag_tr, "transitions", None):
@@ -916,7 +916,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     dispatcher_entry_serial=entry_serial,
                     state_var_stkoff=dmap.state_var_stkoff,
                     bst_node_blocks=(
-                        tuple(sorted(int(b) for b in bst.bst_node_blocks))
+                        tuple(sorted(int(b) for b in bst.condition_chain_blocks))
                         if bst is not None
                         else ()
                     ),
@@ -946,7 +946,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     regions=regions,
                     dag=dag,
                     bst_node_blocks=(
-                        tuple(sorted(int(b) for b in bst.bst_node_blocks))
+                        tuple(sorted(int(b) for b in bst.condition_chain_blocks))
                         if bst is not None
                         else None
                     ),
@@ -1003,7 +1003,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             handler_entry_by_state = {
                 int(state): int(blk)
                 for blk, state in bst.handler_state_map.items()
-                if blk not in bst.bst_node_blocks
+                if blk not in bst.condition_chain_blocks
             }
 
             def _succ(serial):

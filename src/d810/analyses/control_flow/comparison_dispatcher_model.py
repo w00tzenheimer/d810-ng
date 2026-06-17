@@ -14,7 +14,7 @@ dropped, orphaning blk 52 and its 12-block component.  ``route`` consults the
 interval rows via :meth:`WrappedInterval.contains`, reconnecting them.
 
 The interval body intentionally MIRRORS the existing
-:func:`d810.analyses.control_flow.bst_model.resolve_target_via_bst` (exact map
+:func:`d810.analyses.control_flow.condition_chain_model.resolve_target_via_condition_chain` (exact map
 first, then ``handler_range_map`` lo/hi with the ``>= 0xFFFF0000`` degenerate-arc
 guard, then default), so the comparison model and the range resolver agree.
 
@@ -49,7 +49,7 @@ __all__ = [
 ]
 
 #: The degenerate "range covers (almost) the whole word" guard, copied from
-#: ``bst_model.resolve_target_via_bst``: a span this wide is the dispatcher's
+#: ``condition_chain_model.resolve_target_via_condition_chain``: a span this wide is the dispatcher's
 #: default/catch-all interval, not a real handler range.
 _DEGENERATE_RANGE_SPAN = 0xFFFF0000
 
@@ -238,7 +238,7 @@ class ComparisonDispatcherModel:
             from :class:`StateDispatcherMap`).
         handler_range_map: optional ``handler_serial -> (lo, hi)`` inclusive
             interval rows (the range/interval evidence).  Mirrors
-            ``BSTAnalysisResult.handler_range_map``.
+            ``ConditionChainAnalysisResult.handler_range_map``.
         default_target_block: optional catch-all handler when nothing else
             matches (the dispatcher's default arm).
         block_ea: optional ``serial -> start_ea`` so :class:`Block` route results
@@ -348,7 +348,7 @@ class ComparisonDispatcherModel:
     ) -> "ComparisonDispatcherModel":
         """Build from a :class:`StateDispatcherMap` plus optional range evidence.
 
-        ``range_evidence`` is duck-typed on ``BSTAnalysisResult`` (``handler_range_map``
+        ``range_evidence`` is duck-typed on ``ConditionChainAnalysisResult`` (``handler_range_map``
         / ``default_block_serial``) so this stays portable (no live-IDA import).
         Absent the evidence the model is exact-only — byte-identical to the old
         ``resolve_target`` behaviour, so legacy callers see no change.

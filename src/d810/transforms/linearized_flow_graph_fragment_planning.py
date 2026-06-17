@@ -504,7 +504,7 @@ def prepare_linearized_flow_graph_plan_setup(
 ) -> LinearizedFlowGraphPlanSetup:
     bst_node_blocks = frozenset(
         int(block)
-        for block in (getattr(bst_result, "bst_node_blocks", set()) or set())
+        for block in (getattr(bst_result, "condition_chain_blocks", set()) or set())
     )
     builder = build_builder(snapshot)
     state_var_stkoff = resolve_state_var_stkoff(snapshot, state_machine)

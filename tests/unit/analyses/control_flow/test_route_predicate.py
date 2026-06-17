@@ -2,7 +2,7 @@
 
 Covers the exact interval-set arithmetic, per-comparison signedness (the
 sign-bit-XOR reduction -- the bug a global signed flag introduces), and the
-ground-truth sub_7FFD3338C040 dispatcher BST: routing must match the microcode
+ground-truth sub_7FFD3338C040 condition-chain dispatcher: routing must match the microcode
 trace (``.tmp/bst_trace.py``), and blk56's partition cell must be EXACTLY
 ``{0x7D9C16EC}`` -- the only state that reaches it.
 """
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from d810.analyses.abstract_domains.interval_set import Interval, IntervalSet
 from d810.analyses.control_flow.route_predicate import (
-    BstComparison,
+    RouteComparison,
     DecisionDag,
     satisfying_set,
 )
@@ -19,7 +19,7 @@ W = 32
 
 
 def _node(serial, op, const, true_t, false_t):
-    return BstComparison(serial, op, const, true_t, false_t)
+    return RouteComparison(serial, op, const, true_t, false_t)
 
 
 # --------------------------------------------------------------- IntervalSet
@@ -54,7 +54,7 @@ def test_signed_vs_unsigned_greater_than_max_positive():
 
 
 # --------------------------------------------- sub_7FFD ground-truth routing
-def _sub7ffd_bst():
+def _sub7ffd_condition_chain():
     # The real dispatcher path to blk55 (snap5 microcode); leaves dangle.
     nodes = {
         2: _node(2, "jbe", 0x37B42A3F, 112, 3),
@@ -69,7 +69,7 @@ def _sub7ffd_bst():
 
 
 def test_sub7ffd_routes_match_microcode_trace():
-    dag = _sub7ffd_bst()
+    dag = _sub7ffd_condition_chain()
     assert dag.route(0x7FDCE054) == 57  # != 0x7D9C16EC -> jump arm (blk35's state)
     assert dag.route(0x7D9C16EC) == 56  # == 0x7D9C16EC -> fallthrough arm
     sib = dag.sibling_arms()
@@ -78,7 +78,7 @@ def test_sub7ffd_routes_match_microcode_trace():
 
 def test_blk56_partition_cell_is_exactly_0x7D9C16EC():
     # What routes to blk56? Only state 0x7D9C16EC -- proven by the partition.
-    dag = _sub7ffd_bst()
+    dag = _sub7ffd_condition_chain()
     cells56 = [p for p in dag.resolve_paths() if p.target == 56]
     assert len(cells56) == 1
     assert cells56[0].domain.intervals == (Interval(0x7D9C16EC, 0x7D9C16EC),)
