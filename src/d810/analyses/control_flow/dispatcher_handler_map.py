@@ -1,13 +1,13 @@
 """Dispatcher-type-agnostic handler mapping.
 
 Shared IR consumed by Hodur strategies. Produced by either BST analysis
-(CONDITIONAL_CHAIN) or switch-table analysis (SWITCH_TABLE).
+(CONDITION_CHAIN) or switch-table analysis (SWITCH).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,7 @@ class DispatcherHandlerMap:
     dispatcher_serial: int
     dispatcher_blocks: frozenset[int]
     state_var_stkoff: int | None
-    source: DispatcherType
+    source: RouterKind
     initial_state: int | None = None
     handler_range_map: dict[int, tuple[int | None, int | None]] = field(
         default_factory=dict
@@ -76,7 +76,7 @@ class DispatcherHandlerMap:
             dispatcher_serial=dispatcher_serial,
             dispatcher_blocks=frozenset(bst_result.bst_node_blocks),
             state_var_stkoff=state_var_stkoff,
-            source=DispatcherType.CONDITIONAL_CHAIN,
+            source=RouterKind.CONDITION_CHAIN,
             initial_state=bst_result.initial_state,
             handler_range_map=dict(bst_result.handler_range_map),
         )

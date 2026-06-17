@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap, StateDispatcherRow
 from d810.analyses.control_flow.semantic_transition import (
     StateTransitionFact,
@@ -39,7 +39,7 @@ def _dispatch_map() -> StateDispatcherMap:
                 dispatcher_block=2,
                 compare_block=2,
                 branch_kind="switch_case",
-                source=DispatcherType.SWITCH_TABLE,
+                source=RouterKind.SWITCH,
             ),
             StateDispatcherRow(
                 state_const=0x20,
@@ -47,7 +47,7 @@ def _dispatch_map() -> StateDispatcherMap:
                 dispatcher_block=2,
                 compare_block=2,
                 branch_kind="switch_self_loop",
-                source=DispatcherType.SWITCH_TABLE,
+                source=RouterKind.SWITCH,
                 row_kind="dispatcher_self_loop",
             ),
         ),
@@ -55,7 +55,7 @@ def _dispatch_map() -> StateDispatcherMap:
         dispatcher_blocks=frozenset({2}),
         state_var_stkoff=0x3C,
         state_var_lvar_idx=None,
-        source=DispatcherType.SWITCH_TABLE,
+        source=RouterKind.SWITCH,
     )
 
 
@@ -285,7 +285,7 @@ def _fold_dispatch_map() -> StateDispatcherMap:
                 dispatcher_block=2,
                 compare_block=2,
                 branch_kind="switch_case",
-                source=DispatcherType.SWITCH_TABLE,
+                source=RouterKind.SWITCH,
             ),
             StateDispatcherRow(
                 state_const=0x1A2893D9,
@@ -293,14 +293,14 @@ def _fold_dispatch_map() -> StateDispatcherMap:
                 dispatcher_block=2,
                 compare_block=2,
                 branch_kind="switch_case",
-                source=DispatcherType.SWITCH_TABLE,
+                source=RouterKind.SWITCH,
             ),
         ),
         dispatcher_entry_block=2,
         dispatcher_blocks=frozenset({2}),
         state_var_stkoff=0x64,
         state_var_lvar_idx=None,
-        source=DispatcherType.SWITCH_TABLE,
+        source=RouterKind.SWITCH,
     )
 
 
@@ -393,14 +393,14 @@ def test_fold_rejected_when_value_not_a_known_target(_portable_bst_walkers) -> N
                 dispatcher_block=2,
                 compare_block=2,
                 branch_kind="switch_case",
-                source=DispatcherType.SWITCH_TABLE,
+                source=RouterKind.SWITCH,
             ),
         ),
         dispatcher_entry_block=2,
         dispatcher_blocks=frozenset({2}),
         state_var_stkoff=0x64,
         state_var_lvar_idx=None,
-        source=DispatcherType.SWITCH_TABLE,
+        source=RouterKind.SWITCH,
     )
 
     resolutions = resolve_state_transitions_with_dispatcher_map(

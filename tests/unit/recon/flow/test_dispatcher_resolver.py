@@ -15,7 +15,7 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_resolution import (
     DispatcherResolution,
     ResolverCandidate,
@@ -26,7 +26,6 @@ from d810.analyses.control_flow.dispatcher_recovery import (
     default_dispatcher_resolvers,
 )
 from d810.analyses.control_flow.dispatcher_resolver import resolve_dispatcher
-from d810.capabilities.dispatcher import RouterKind
 
 
 def _mop(
@@ -90,7 +89,7 @@ def _flow_graph(blocks: dict[int, BlockSnapshot]) -> FlowGraph:
 
 
 def _switch_flow_graph() -> FlowGraph:
-    """A real SWITCH_TABLE graph (reuses test_switch_table_analysis fixture)."""
+    """A real SWITCH graph (reuses test_switch_table_analysis fixture)."""
     state_operand = _mop(kind=OperandKind.SUBINSN, stack_refs=(0x10,))
     switch_cases = _mop(
         kind=OperandKind.CASE_LIST,
@@ -154,7 +153,7 @@ def test_build_dispatch_map_any_kind_is_behavior_neutral_on_switch():
     dmap = build_dispatch_map_any_kind(graph)
 
     assert dmap is not None
-    assert dmap.source is DispatcherType.SWITCH_TABLE
+    assert dmap.source is RouterKind.SWITCH
     assert dmap.state_to_handler() == {0: 4, 1: 5, 2: 5}
     assert dmap.dispatcher_entry_block == 3
     assert dmap.dispatcher_blocks == frozenset({2, 3})
@@ -198,7 +197,7 @@ def _indirect_dmap() -> StateDispatcherMap:
             dispatcher_block=3,
             compare_block=None,
             branch_kind="indirect_jump_table",
-            source=DispatcherType.INDIRECT_JUMP,
+            source=RouterKind.INDIRECT_TABLE,
             row_kind="handler",
         ),
     )
@@ -208,7 +207,7 @@ def _indirect_dmap() -> StateDispatcherMap:
         dispatcher_blocks=frozenset({3}),
         state_var_stkoff=0x30,
         state_var_lvar_idx=None,
-        source=DispatcherType.INDIRECT_JUMP,
+        source=RouterKind.INDIRECT_TABLE,
     )
 
 
@@ -272,7 +271,7 @@ def test_extra_resolver_recognized_by_front_end():
         dmap = build_dispatch_map_any_kind(graph)
 
         assert dmap is not None
-        assert dmap.source is DispatcherType.INDIRECT_JUMP
+        assert dmap.source is RouterKind.INDIRECT_TABLE
         assert dmap.state_to_handler() == {1: 4}
         assert dmap.dispatcher_entry_block == 3
     finally:
@@ -300,7 +299,7 @@ def test_extra_resolver_inert_on_non_indirect_graph():
         dmap = build_dispatch_map_any_kind(_switch_flow_graph())
         # Still resolves the SWITCH map; the indirect resolver abstained.
         assert dmap is not None
-        assert dmap.source is DispatcherType.SWITCH_TABLE
+        assert dmap.source is RouterKind.SWITCH
         assert dmap.state_to_handler() == {0: 4, 1: 5, 2: 5}
     finally:
         clear_extra_dispatcher_resolvers()
@@ -343,7 +342,7 @@ def _indirect_result(rows=1, missing=0) -> IndirectJumpTableResult:
             dispatcher_block=3,
             compare_block=None,
             branch_kind="indirect_jump_table",
-            source=DispatcherType.INDIRECT_JUMP,
+            source=RouterKind.INDIRECT_TABLE,
             row_kind="handler",
         )
         for i in range(rows)
@@ -354,7 +353,7 @@ def _indirect_result(rows=1, missing=0) -> IndirectJumpTableResult:
         dispatcher_blocks=frozenset({3}),
         state_var_stkoff=0x30,
         state_var_lvar_idx=None,
-        source=DispatcherType.INDIRECT_JUMP,
+        source=RouterKind.INDIRECT_TABLE,
     )
     return IndirectJumpTableResult(
         state_dispatcher_map=dmap, entries=(), missing_target_count=missing
@@ -365,7 +364,7 @@ def _materialized_flow_graph() -> FlowGraph:
     """A materialized hub: direct flow, NO m_ijmp tail (post-materialization)."""
     return _flow_graph({
         0: _block(0, succs=(3,)),
-        3: _block(3, preds=(0,), succs=(4,)),  # plain goto tail, no INDIRECT_JUMP
+        3: _block(3, preds=(0,), succs=(4,)),  # plain goto tail, no INDIRECT_TABLE
         4: _block(4, preds=(3,)),
     })
 

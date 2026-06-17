@@ -1921,7 +1921,7 @@ def analyze_bst_dispatcher(
                     "target_block": int(handler_serial),
                     "dispatcher_entry_block": int(dispatcher_entry_serial),
                     "compare_block": None,
-                    "dispatcher_kind": "CONDITIONAL_CHAIN",
+                    "dispatcher_kind": "CONDITION_CHAIN",
                     "branch_kind": "handler_state_map",
                     "confidence": 1.0,
                 }
@@ -1936,7 +1936,7 @@ def analyze_bst_dispatcher(
                 func_ea=int(getattr(mba, "entry_ea", 0) or 0),
                 maturity="MMAT_GLBOPT1",
                 dispatcher_entry_block=int(dispatcher_entry_serial),
-                dispatcher_kind="CONDITIONAL_CHAIN",
+                dispatcher_kind="CONDITION_CHAIN",
                 rows=state_rows,
             ))
         except Exception:

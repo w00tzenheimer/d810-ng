@@ -22,7 +22,7 @@ from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
     analyze_dispatcher_live,
     is_dispatcher_block,
 )
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 
 MMAT_CALLS = 4
 MMAT_GLBOPT1 = 8
@@ -43,11 +43,11 @@ def _install_stubs(monkeypatch, analyses):
     def fake_lift(mba):
         return SimpleNamespace(blocks={})
 
-    def fake_analyze(flow_graph, *, previous_dispatcher_type=None,
+    def fake_analyze(flow_graph, *, previous_router_kind=None,
                      persisted_initial_state=None):
-        calls.append((previous_dispatcher_type, persisted_initial_state))
+        calls.append((previous_router_kind, persisted_initial_state))
         dtype, istate = next(seq)
-        return SimpleNamespace(dispatcher_type=dtype, initial_state=istate, blocks={})
+        return SimpleNamespace(router_kind=dtype, initial_state=istate, blocks={})
 
     monkeypatch.setattr(dh_mod, "lift", fake_lift)
     monkeypatch.setattr(dh_mod, "analyze_dispatcher", fake_analyze)
@@ -59,20 +59,20 @@ def test_advanced_with_promotes_type_and_keeps_state_when_none() -> None:
     when not None."""
     h0 = DispatcherHistory()
     h1 = h0.advanced_with(
-        SimpleNamespace(dispatcher_type=DispatcherType.CONDITIONAL_CHAIN,
+        SimpleNamespace(router_kind=RouterKind.CONDITION_CHAIN,
                         initial_state=0x1234)
     )
-    assert h1 == DispatcherHistory(DispatcherType.CONDITIONAL_CHAIN, 0x1234)
+    assert h1 == DispatcherHistory(RouterKind.CONDITION_CHAIN, 0x1234)
 
     h2 = h1.advanced_with(
-        SimpleNamespace(dispatcher_type=DispatcherType.SWITCH_TABLE,
+        SimpleNamespace(router_kind=RouterKind.SWITCH,
                         initial_state=None)
     )
-    assert h2 == DispatcherHistory(DispatcherType.SWITCH_TABLE, 0x1234)
+    assert h2 == DispatcherHistory(RouterKind.SWITCH, 0x1234)
 
 
 def test_first_analysis_has_no_history(monkeypatch) -> None:
-    calls = _install_stubs(monkeypatch, [(DispatcherType.CONDITIONAL_CHAIN, 0x1234)])
+    calls = _install_stubs(monkeypatch, [(RouterKind.CONDITION_CHAIN, 0x1234)])
     store = DispatcherHistoryStore()
     analyze_dispatcher_live(_FakeMba(0x401000, MMAT_CALLS), store=store)
     assert calls == [(None, None)]
@@ -82,9 +82,9 @@ def test_history_threaded_across_maturity(monkeypatch) -> None:
     calls = _install_stubs(
         monkeypatch,
         [
-            (DispatcherType.CONDITIONAL_CHAIN, 0x1234),
-            (DispatcherType.SWITCH_TABLE, None),
-            (DispatcherType.SWITCH_TABLE, None),
+            (RouterKind.CONDITION_CHAIN, 0x1234),
+            (RouterKind.SWITCH, None),
+            (RouterKind.SWITCH, None),
         ],
     )
     store = DispatcherHistoryStore()
@@ -96,13 +96,13 @@ def test_history_threaded_across_maturity(monkeypatch) -> None:
     analyze_dispatcher_live(mba, store=store)
 
     assert calls[0] == (None, None)
-    assert calls[1] == (DispatcherType.CONDITIONAL_CHAIN, 0x1234)
+    assert calls[1] == (RouterKind.CONDITION_CHAIN, 0x1234)
     # GLBOPT1's None initial_state must NOT clobber the persisted 0x1234.
-    assert calls[2] == (DispatcherType.SWITCH_TABLE, 0x1234)
+    assert calls[2] == (RouterKind.SWITCH, 0x1234)
 
 
 def test_same_maturity_uses_memo(monkeypatch) -> None:
-    calls = _install_stubs(monkeypatch, [(DispatcherType.CONDITIONAL_CHAIN, 0x1234)])
+    calls = _install_stubs(monkeypatch, [(RouterKind.CONDITION_CHAIN, 0x1234)])
     store = DispatcherHistoryStore()
     mba = _FakeMba(0x401000, MMAT_CALLS)
     a1 = analyze_dispatcher_live(mba, store=store)
@@ -115,8 +115,8 @@ def test_clear_resets_history(monkeypatch) -> None:
     calls = _install_stubs(
         monkeypatch,
         [
-            (DispatcherType.CONDITIONAL_CHAIN, 0x1234),
-            (DispatcherType.SWITCH_TABLE, 0x5678),
+            (RouterKind.CONDITION_CHAIN, 0x1234),
+            (RouterKind.SWITCH, 0x5678),
         ],
     )
     store = DispatcherHistoryStore()

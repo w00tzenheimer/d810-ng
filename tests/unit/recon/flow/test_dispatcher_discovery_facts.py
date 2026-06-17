@@ -1,4 +1,4 @@
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_discovery_facts import (
     DISPATCHER_ARTIFACT_STATE_FACT_TYPE,
     DISPATCHER_DISCOVERY_GAP_FACT_TYPE,
@@ -27,7 +27,7 @@ def _dispatch_map(
                 dispatcher_block=2,
                 compare_block=2,
                 branch_kind="switch_case",
-                source=DispatcherType.SWITCH_TABLE,
+                source=RouterKind.SWITCH,
             ),
             StateDispatcherRow(
                 state_const=0x20,
@@ -35,7 +35,7 @@ def _dispatch_map(
                 dispatcher_block=2,
                 compare_block=2,
                 branch_kind="switch_case",
-                source=DispatcherType.SWITCH_TABLE,
+                source=RouterKind.SWITCH,
                 row_kind="dispatcher_self_loop",
             ),
         ),
@@ -43,7 +43,7 @@ def _dispatch_map(
         dispatcher_blocks=frozenset({2}),
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=None,
-        source=DispatcherType.SWITCH_TABLE,
+        source=RouterKind.SWITCH,
         initial_state=initial_state,
     )
 
@@ -65,7 +65,7 @@ def test_collects_generic_state_dispatcher_discovery_observations() -> None:
     assert topology.payload["dispatcher_blocks"] == [2]
     assert topology.payload["predecessor_serials"] == [7, 9]
     assert topology.payload["handler_targets"] == [5]
-    assert topology.payload["dispatcher_source"] == "SWITCH_TABLE"
+    assert topology.payload["dispatcher_source"] == "SWITCH"
 
     state_var = by_kind[STATE_VARIABLE_IDENTITY_FACT_TYPE]
     assert state_var.payload["storage_kind"] == "stack_slot"

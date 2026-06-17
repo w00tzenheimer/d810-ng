@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 import enum
 
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
     StateDispatcherRow,
@@ -63,7 +63,7 @@ class MachineRow:
     dispatcher_block: int
     compare_block: int | None = None
     branch_kind: str = ""
-    source: DispatcherType = DispatcherType.UNKNOWN
+    source: RouterKind = RouterKind.UNKNOWN
     confidence: float = 1.0
     row_kind: str = "handler"
     context: tuple[int, ...] = ()
@@ -168,7 +168,7 @@ class RecoveredMachine:
     state_var_lvar_idx: int | None = None
     dispatcher_entry_block: int | None = None
     dispatcher_blocks: frozenset[int] = frozenset()
-    source: DispatcherType = DispatcherType.UNKNOWN
+    source: RouterKind = RouterKind.UNKNOWN
     soundness: Soundness = Soundness.PATTERN
     confidence: float = 1.0
     provenance: tuple[str, ...] = ()

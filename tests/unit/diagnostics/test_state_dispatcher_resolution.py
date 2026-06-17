@@ -116,12 +116,12 @@ def test_loads_rows_and_resolves_exact_state() -> None:
                 "target_block": 76,
                 "dispatcher_entry_block": 5,
                 "compare_block": 6,
-                "dispatcher_kind": "CONDITIONAL_CHAIN",
+                "dispatcher_kind": "CONDITION_CHAIN",
                 "branch_kind": "jz_taken",
             }
         ],
         dispatcher_entry_block=5,
-        dispatcher_kind="CONDITIONAL_CHAIN",
+        dispatcher_kind="CONDITION_CHAIN",
         maturity="MMAT_GLBOPT1",
     )
     _add_transition_fact(
@@ -157,7 +157,7 @@ def test_reports_state_not_in_dispatcher_map() -> None:
         2,
         [{"state_const": 0x10, "target_block": 7}],
         dispatcher_entry_block=5,
-        dispatcher_kind="CONDITIONAL_CHAIN",
+        dispatcher_kind="CONDITION_CHAIN",
     )
     _add_transition_fact(
         conn,
@@ -186,12 +186,12 @@ def test_handler_state_map_rows_do_not_mark_handler_as_dispatcher() -> None:
                 "target_block": 7,
                 "dispatcher_entry_block": 5,
                 "compare_block": 7,
-                "dispatcher_kind": "CONDITIONAL_CHAIN",
+                "dispatcher_kind": "CONDITION_CHAIN",
                 "branch_kind": "handler_state_map",
             }
         ],
         dispatcher_entry_block=5,
-        dispatcher_kind="CONDITIONAL_CHAIN",
+        dispatcher_kind="CONDITION_CHAIN",
     )
     _add_transition_fact(
         conn,

@@ -15,7 +15,7 @@ from d810.analyses.control_flow.comparison_dispatcher_model import (
     intervals_from_range_map,
     route_via_interval_sets,
 )
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
     StateDispatcherRow,
@@ -37,7 +37,7 @@ def _map(rows=(), *, entry=2, blocks=frozenset({2}), stkoff=0x3C):
         dispatcher_blocks=frozenset(blocks),
         state_var_stkoff=stkoff,
         state_var_lvar_idx=None,
-        source=DispatcherType.CONDITIONAL_CHAIN,
+        source=RouterKind.CONDITION_CHAIN,
     )
 
 
@@ -48,7 +48,7 @@ def _row(state_const, target, *, block=2):
         dispatcher_block=block,
         compare_block=block,
         branch_kind="eq",
-        source=DispatcherType.CONDITIONAL_CHAIN,
+        source=RouterKind.CONDITION_CHAIN,
     )
 
 

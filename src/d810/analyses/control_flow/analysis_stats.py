@@ -294,6 +294,6 @@ def summarize_dispatcher_detection(
         "skip_rate": skip_rate,
         "dispatchers_found": len(getattr(analysis, "dispatchers", [])),
         "strategies_used": strategies_used,
-        "dispatcher_type": getattr(getattr(analysis, "dispatcher_type", None), "name", "UNKNOWN"),
+        "router_kind": getattr(getattr(analysis, "router_kind", None), "name", "UNKNOWN"),
         "state_constants_count": len(getattr(analysis, "state_constants", set())),
     }

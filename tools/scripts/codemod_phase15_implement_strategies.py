@@ -40,11 +40,10 @@ Example::
 """
 from __future__ import annotations
 
-import ida_hexrays
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
 
-from d810.recon.flow.dispatcher_detection import DispatcherCache, DispatcherType
+from d810.recon.flow.dispatcher_detection import DispatcherCache
 from d810.optimizers.microcode.flow.flattening.base_strategy import (
     UnflatteningStrategy,
     PlanFragment,
@@ -134,7 +133,7 @@ class OLLVMLinearizationStrategy(UnflatteningStrategy):
 
             logger.info(
                 f"OLLVM pattern detected: {num_handlers} handlers, "
-                f"type={analysis.dispatcher_type}"
+                f"type={analysis.router_kind}"
             )
             return True
 

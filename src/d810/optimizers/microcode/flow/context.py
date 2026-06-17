@@ -15,7 +15,7 @@ from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
     analyze_dispatcher_live,
 )
 from d810.hexrays.mutation.ir_translator import lift
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.core.gate_modes import GateOperationMode
 from d810.passes.flow_hints import FlowContextHintSummary
 from d810.passes.function_priors import FunctionAnalysisPriors
@@ -282,7 +282,7 @@ class FlowMaturityContext:
         self._terminal_boundary_blocks = set()
 
         analysis = self.ensure_dispatcher_analysis()
-        if analysis is None or analysis.dispatcher_type != DispatcherType.CONDITIONAL_CHAIN:
+        if analysis is None or analysis.router_kind != RouterKind.CONDITION_CHAIN:
             return self._terminal_boundary_blocks
 
         from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
@@ -356,16 +356,16 @@ class FlowMaturityContext:
         the emulator cannot resolve state transitions and FCP would fold
         stale dispatcher constants into the return register.
 
-        SWITCH_TABLE and CONDITIONAL_CHAIN dispatchers have resolvable
+        SWITCH and CONDITION_CHAIN dispatchers have resolvable
         structure — FCP is safe for those.
         """
         analysis = self.ensure_dispatcher_analysis()
         if analysis is None or len(analysis.dispatchers) == 0:
             return FlowGateDecision(False, "no dispatcher candidates")
-        if analysis.dispatcher_type != DispatcherType.UNKNOWN:
+        if analysis.router_kind != RouterKind.UNKNOWN:
             return FlowGateDecision(
                 False,
-                f"dispatcher type {analysis.dispatcher_type.value} is FCP-safe",
+                f"dispatcher type {analysis.router_kind.value} is FCP-safe",
             )
         # UNKNOWN dispatcher — check if it has real structural signals
         strong = self._strong_dispatcher_count(analysis)
@@ -412,16 +412,16 @@ class FlowMaturityContext:
         analysis = self.ensure_dispatcher_analysis()
         if analysis is None:
             return FlowGateDecision(False, "dispatcher analysis unavailable")
-        if analysis.dispatcher_type == DispatcherType.SWITCH_TABLE:
+        if analysis.router_kind == RouterKind.SWITCH:
             return FlowGateDecision(True, "switch-table dispatcher")
         if len(analysis.dispatchers) == 0:
             return FlowGateDecision(False, "no dispatcher candidates")
         strong_dispatchers = self._strong_dispatcher_count(analysis)
-        if analysis.dispatcher_type == DispatcherType.CONDITIONAL_CHAIN:
+        if analysis.router_kind == RouterKind.CONDITION_CHAIN:
             if strong_dispatchers == 0:
                 return FlowGateDecision(False, "no strong dispatcher candidates")
             return FlowGateDecision(True, "conditional-chain dispatcher")
-        if analysis.dispatcher_type == DispatcherType.UNKNOWN:
+        if analysis.router_kind == RouterKind.UNKNOWN:
             if strong_dispatchers > 0:
                 return FlowGateDecision(True, "unknown dispatcher with strong candidates")
             profile = self.get_profile_stats()
@@ -459,7 +459,7 @@ class FlowMaturityContext:
                     f"(scc={profile.dispatch_scc_n}, score={profile.flattening_score:.2f})"
                 ),
             )
-        return FlowGateDecision(False, f"dispatcher_type={analysis.dispatcher_type.name}")
+        return FlowGateDecision(False, f"router_kind={analysis.router_kind.name}")
 
     def evaluate_fix_predecessor_gate(self) -> FlowGateDecision:
         """Evaluate whether fix-predecessor optimization should proceed.
@@ -484,13 +484,13 @@ class FlowMaturityContext:
         analysis = self.ensure_dispatcher_analysis()
         if analysis is None:
             return FlowGateDecision(False, "dispatcher analysis unavailable")
-        if analysis.dispatcher_type == DispatcherType.SWITCH_TABLE:
-            return FlowGateDecision(False, f"dispatcher_type={analysis.dispatcher_type.name}")
-        if analysis.dispatcher_type not in (
-            DispatcherType.CONDITIONAL_CHAIN,
-            DispatcherType.UNKNOWN,
+        if analysis.router_kind == RouterKind.SWITCH:
+            return FlowGateDecision(False, f"router_kind={analysis.router_kind.name}")
+        if analysis.router_kind not in (
+            RouterKind.CONDITION_CHAIN,
+            RouterKind.UNKNOWN,
         ):
-            return FlowGateDecision(False, f"dispatcher_type={analysis.dispatcher_type.name}")
+            return FlowGateDecision(False, f"router_kind={analysis.router_kind.name}")
         if len(analysis.dispatchers) == 0:
             return FlowGateDecision(False, "no dispatcher candidates")
         strong_dispatchers = self._strong_dispatcher_count(analysis)
@@ -505,6 +505,6 @@ class FlowMaturityContext:
                     f"< {self.MIN_FIXPRED_DISPATCHER_PREDS}"
                 ),
             )
-        if analysis.dispatcher_type == DispatcherType.CONDITIONAL_CHAIN:
+        if analysis.router_kind == RouterKind.CONDITION_CHAIN:
             return FlowGateDecision(True, "conditional-chain dispatcher with strong signals")
         return FlowGateDecision(True, "unknown dispatcher with strong signals")

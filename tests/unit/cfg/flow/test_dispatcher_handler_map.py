@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from d810.analyses.control_flow.dispatcher_handler_map import DispatcherHandlerMap
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 
 
 class TestDispatcherHandlerMap:
@@ -17,7 +17,7 @@ class TestDispatcherHandlerMap:
             dispatcher_serial=5,
             dispatcher_blocks=frozenset({5}),
             state_var_stkoff=0x3C,
-            source=DispatcherType.SWITCH_TABLE,
+            source=RouterKind.SWITCH,
             initial_state=0,
         )
 
@@ -29,7 +29,7 @@ class TestDispatcherHandlerMap:
     def test_handler_state_map_contents(self):
         m = self._make_simple_map()
         assert m.handler_state_map == {10: 0, 11: 1, 12: 2, 13: 3}
-        assert m.source == DispatcherType.SWITCH_TABLE
+        assert m.source == RouterKind.SWITCH
 
     def test_initial_state(self):
         m = self._make_simple_map()
@@ -45,7 +45,7 @@ class TestResolveTarget:
             dispatcher_serial=5,
             dispatcher_blocks=frozenset({5}),
             state_var_stkoff=0x3C,
-            source=DispatcherType.SWITCH_TABLE,
+            source=RouterKind.SWITCH,
         )
 
     def test_exact_match(self):
@@ -64,7 +64,7 @@ class TestResolveTarget:
             dispatcher_serial=5,
             dispatcher_blocks=frozenset({5}),
             state_var_stkoff=0x3C,
-            source=DispatcherType.CONDITIONAL_CHAIN,
+            source=RouterKind.CONDITION_CHAIN,
             handler_range_map={12: (0x300, 0x400)},
         )
         assert m.resolve_target(0x350) == 12
@@ -76,7 +76,7 @@ class TestResolveTarget:
             dispatcher_serial=5,
             dispatcher_blocks=frozenset({5}),
             state_var_stkoff=0x3C,
-            source=DispatcherType.CONDITIONAL_CHAIN,
+            source=RouterKind.CONDITION_CHAIN,
             handler_range_map={10: (0, 0xFFFFFFFF)},
         )
         assert m.resolve_target(0x100) == 10
@@ -89,7 +89,7 @@ class TestResolveTarget:
             dispatcher_serial=5,
             dispatcher_blocks=frozenset({5}),
             state_var_stkoff=0x3C,
-            source=DispatcherType.CONDITIONAL_CHAIN,
+            source=RouterKind.CONDITION_CHAIN,
             handler_range_map={11: (0, 0xFFFFFFFF)},
         )
         assert m.resolve_target(0x500) is None
@@ -118,7 +118,7 @@ class TestFromBstResult:
         assert m.dispatcher_serial == 5
         assert m.dispatcher_blocks == frozenset({5, 6})
         assert m.state_var_stkoff == 0x3C
-        assert m.source == DispatcherType.CONDITIONAL_CHAIN
+        assert m.source == RouterKind.CONDITION_CHAIN
         assert m.initial_state == 0xAABB
 
 
@@ -133,7 +133,7 @@ class TestToBstResult:
             dispatcher_serial=5,
             dispatcher_blocks=frozenset({5, 6}),
             state_var_stkoff=0x3C,
-            source=DispatcherType.SWITCH_TABLE,
+            source=RouterKind.SWITCH,
             initial_state=0,
         )
         bst = m.to_bst_result()
@@ -147,7 +147,7 @@ class TestToBstResult:
             dispatcher_serial=5,
             dispatcher_blocks=frozenset({5, 6}),
             state_var_stkoff=0x3C,
-            source=DispatcherType.SWITCH_TABLE,
+            source=RouterKind.SWITCH,
         )
         bst = m.to_bst_result()
         assert set(bst.bst_node_blocks) == {5, 6}
@@ -158,7 +158,7 @@ class TestToBstResult:
             dispatcher_serial=5,
             dispatcher_blocks=frozenset({5}),
             state_var_stkoff=0x3C,
-            source=DispatcherType.SWITCH_TABLE,
+            source=RouterKind.SWITCH,
         )
         bst = m.to_bst_result()
         assert bst.transitions == {}

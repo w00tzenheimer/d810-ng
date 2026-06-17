@@ -91,7 +91,7 @@ def test_summarize_dispatcher_detection_centralizes_strategy_stats():
             2: SimpleNamespace(strategies=_Strat.NONE),
         },
         dispatchers=[0, 1],
-        dispatcher_type=SimpleNamespace(name="CONDITIONAL_CHAIN"),
+        router_kind=SimpleNamespace(name="CONDITION_CHAIN"),
         state_constants={0x10, 0x20},
     )
 
@@ -107,6 +107,6 @@ def test_summarize_dispatcher_detection_centralizes_strategy_stats():
     assert summary["blocks_skipped"] == 7
     assert summary["skip_rate"] == pytest.approx(0.7)
     assert summary["dispatchers_found"] == 2
-    assert summary["dispatcher_type"] == "CONDITIONAL_CHAIN"
+    assert summary["router_kind"] == "CONDITION_CHAIN"
     assert summary["state_constants_count"] == 2
     assert summary["strategies_used"] == {"A": 2, "B": 1}

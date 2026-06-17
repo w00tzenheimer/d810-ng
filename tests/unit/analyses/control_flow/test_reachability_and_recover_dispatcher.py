@@ -6,7 +6,7 @@ shared primitive, and proves ``recover_dispatcher`` computes reachability over a
 from __future__ import annotations
 
 from d810.analyses.control_flow.reachability import reachable_from
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_recovery import (
     DispatcherRecovery,
     recover_dispatcher,
@@ -125,7 +125,7 @@ def test_recover_dispatcher_resolves_switch_table_when_no_equality_chain():
     )
     result = recover_dispatcher(graph, facts=None)
     assert result.dispatch_map is not None
-    assert result.dispatch_map.source is DispatcherType.SWITCH_TABLE
+    assert result.dispatch_map.source is RouterKind.SWITCH
     assert result.dispatch_map.state_to_handler() == {0: 2, 1: 3, 2: 4, 3: 5}
     assert result.dispatch_map.state_var_stkoff == 0x40
     assert result.dispatcher_block_serial == 1

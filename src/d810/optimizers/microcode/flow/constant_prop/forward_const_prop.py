@@ -278,7 +278,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         # sees single-predecessor return blocks and folds dispatcher-state
         # constants (e.g. 0xffffffff) into the return register before
         # FakeJump/Hodur can reconstruct the real control flow.
-        # SWITCH_TABLE/CONDITIONAL_CHAIN dispatchers are FCP-safe.
+        # SWITCH/CONDITION_CHAIN dispatchers are FCP-safe.
         if (
             self.flow_context is not None
             and self.current_maturity == ida_hexrays.MMAT_CALLS

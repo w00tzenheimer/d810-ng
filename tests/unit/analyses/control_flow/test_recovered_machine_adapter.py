@@ -8,7 +8,7 @@ switch-table ``FlowGraph`` (the end-to-end shape).
 """
 from __future__ import annotations
 
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_recovery import build_dispatch_map_any_kind
 from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
@@ -76,7 +76,7 @@ def _block(
 
 
 def _switch_flow_graph() -> FlowGraph:
-    """A real SWITCH_TABLE graph (mirrors test_dispatcher_resolver fixture)."""
+    """A real SWITCH graph (mirrors test_dispatcher_resolver fixture)."""
     state_operand = _mop(kind=OperandKind.SUBINSN, stack_refs=(0x10,))
     switch_cases = _mop(
         kind=OperandKind.CASE_LIST,
@@ -114,7 +114,7 @@ def _equality_chain_map() -> StateDispatcherMap:
             dispatcher_block=2,
             compare_block=2,
             branch_kind="eq",
-            source=DispatcherType.CONDITIONAL_CHAIN,
+            source=RouterKind.CONDITION_CHAIN,
             confidence=2.0,
             row_kind="handler",
             payload={"note": "first"},
@@ -125,7 +125,7 @@ def _equality_chain_map() -> StateDispatcherMap:
             dispatcher_block=3,
             compare_block=3,
             branch_kind="eq",
-            source=DispatcherType.CONDITIONAL_CHAIN,
+            source=RouterKind.CONDITION_CHAIN,
             row_kind="handler",
         ),
     )
@@ -135,7 +135,7 @@ def _equality_chain_map() -> StateDispatcherMap:
         dispatcher_blocks=frozenset({2, 3}),
         state_var_stkoff=0x3C,
         state_var_lvar_idx=None,
-        source=DispatcherType.CONDITIONAL_CHAIN,
+        source=RouterKind.CONDITION_CHAIN,
     )
 
 
@@ -147,7 +147,7 @@ def test_round_trip_identity_equality_chain():
 def test_round_trip_identity_switch_table():
     m = build_dispatch_map_any_kind(_switch_flow_graph())
     assert m is not None
-    assert m.source is DispatcherType.SWITCH_TABLE
+    assert m.source is RouterKind.SWITCH
     assert RecoveredMachine.from_state_dispatcher_map(m).to_state_dispatcher_map() == m
 
 

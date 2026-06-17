@@ -14,7 +14,7 @@ This is a *sibling* of :class:`HodurFamily`, not a fork: it runs the SAME portab
   folded by a concrete emulator (``EmulationCapability``; M3 backend ``llr-xauw``).
 
 Disambiguation (the resolution of "why is Hodur attacking Approov"): each family OWNS a
-``DispatcherType`` set. A switch function is claimed HERE; an equality-chain function by
+``RouterKind`` set. A switch function is claimed HERE; an equality-chain function by
 ``HodurFamily``. The shared *front-end* stays shared; only the *claim* is per-family.
 Because the claims are DISJOINT (switch/indirect here, equality-chain for Hodur),
 ``select_family`` is order-independent — no priority/tiebreak needed.
@@ -22,7 +22,7 @@ Because the claims are DISJOINT (switch/indirect here, equality-chain for Hodur)
 Additive + inert: ApproovFamily auto-registers (via :class:`StateMachineCffFamily` /
 ``Registrant``) and is enumerated by :func:`d810.families.registry.select_family`, which
 is NOT on the live maturity-hook path (the live entry hardcodes ``HodurFamily()``).
-``HodurFamily.detect`` already claims ``CONDITIONAL_CHAIN`` only, so the claims are disjoint
+``HodurFamily.detect`` already claims ``CONDITION_CHAIN`` only, so the claims are disjoint
 today; the remaining cutover is wiring the live entry to ``select_family`` so abc on
 unflatten-portable routes here (production abc is unaffected — it runs via HCC).
 """
@@ -44,7 +44,6 @@ from d810.passes.unflatten.state_machine import (
     RecoverStateTransitions,
 )
 from d810.capabilities.dispatcher import RouterKind
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.analyses.control_flow.dispatcher_recovery import build_dispatch_map_any_kind
 from d810.families.state_machine_cff.base import StateMachineCffFamily
 from d810.ir.maturity import IRMaturity
@@ -57,8 +56,8 @@ from d810.families.state_machine_cff.pipeline import standard_state_machine_pass
 emulation = CapabilityPolicy(required=frozenset({"live_mba", "emulation"}))
 
 # The dispatcher kinds THIS profile owns. A switch/indirect function is claimed here;
-# equality-chain (CONDITIONAL_CHAIN) belongs to HodurFamily.
-_APPROOV_KINDS = frozenset({DispatcherType.SWITCH_TABLE, DispatcherType.INDIRECT_JUMP})
+# equality-chain (CONDITION_CHAIN) belongs to HodurFamily.
+_APPROOV_KINDS = frozenset({RouterKind.SWITCH, RouterKind.INDIRECT_TABLE})
 
 
 class ApproovFamily(StateMachineCffFamily):
@@ -68,7 +67,7 @@ class ApproovFamily(StateMachineCffFamily):
 
     #: Switch-table dispatchers survive flat through global analysis (the backend keeps the
     #: jump table), so ``GLOBAL_ANALYZED`` (Hex-Rays ``MMAT_GLBOPT1``) is the recovery point
-    #: — the goldens are tuned to it (ticket llr-a93i). The INDIRECT_JUMP case is routed to
+    #: — the goldens are tuned to it (ticket llr-a93i). The INDIRECT_TABLE case is routed to
     #: ``CALL_MODELED`` (``MMAT_CALLS``) by the rule's structural ``_is_indirect`` gate, not
     #: by this declaration.
     recovery_maturities = (IRMaturity.GLOBAL_ANALYZED,)
@@ -92,15 +91,15 @@ class ApproovFamily(StateMachineCffFamily):
     def pipeline_for(self, match, context) -> "tuple[PassSpec, ...]":
         """Kind-aware pipeline.
 
-        ``SWITCH_TABLE`` runs the standard seeded-fold spine (NO emulation) — proven on
+        ``SWITCH`` runs the standard seeded-fold spine (NO emulation) — proven on
         abc_or_dispatch, whose masked-OR writes fold via the partitioned fixpoint; this is
         the only live ApproovFamily kind (the chain has no indirect detector yet).
 
-        ``INDIRECT_JUMP`` needs the concrete emulator to fold computed targets
+        ``INDIRECT_TABLE`` needs the concrete emulator to fold computed targets
         (``EmulationCapability``, M3+) and pins ``RouterKind.INDIRECT_TABLE``; structural
         until an indirect resolver + emulation backend land.
         """
-        if getattr(match, "source", None) == DispatcherType.INDIRECT_JUMP:
+        if getattr(match, "source", None) == RouterKind.INDIRECT_TABLE:
             return (
                 PassSpec("recover_dispatcher", RecoverDispatcher, live_mba, default),
                 PassSpec("recover_state_transitions", RecoverStateTransitions, emulation, default),

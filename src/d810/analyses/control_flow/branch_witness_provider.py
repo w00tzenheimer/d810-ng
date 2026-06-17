@@ -19,7 +19,7 @@ from d810.analyses.control_flow.branch_witness import (
     _predicate_value,
     static_witness_for_state,
 )
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 
 
 def build_static_equality_chain_witness_map(
@@ -35,7 +35,7 @@ def build_static_equality_chain_witness_map(
     states and dispatcher metadata; row target blocks are deliberately ignored.
     """
 
-    if getattr(dispatch_map, "source", None) is not DispatcherType.CONDITIONAL_CHAIN:
+    if getattr(dispatch_map, "source", None) is not RouterKind.CONDITION_CHAIN:
         return None
     entry = _int_or_none(getattr(dispatch_map, "dispatcher_entry_block", None))
     if entry is None:

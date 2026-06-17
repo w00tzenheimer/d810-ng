@@ -9,7 +9,7 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.switch_table_analysis import (
     analyze_switch_table_flow_graph,
     build_state_dispatcher_map_from_cases,
@@ -184,7 +184,7 @@ class TestBuildStateDispatcherMapFromCases:
         assert m.dispatcher_entry_block == 5
         assert m.dispatcher_blocks == frozenset({5})
         assert m.state_var_stkoff == 0x3C
-        assert m.source == DispatcherType.SWITCH_TABLE
+        assert m.source == RouterKind.SWITCH
 
     def test_with_initial_state(self):
         cases = [(0, 10), (1, 11)]

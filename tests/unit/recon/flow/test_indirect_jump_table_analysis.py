@@ -1,4 +1,4 @@
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.indirect_jump_table_analysis import (
     IndirectJumpTableEntry,
     _find_dispatcher_serial_by_ea,
@@ -46,7 +46,7 @@ def test_indirect_jump_table_rows_preserve_unmaterialized_targets() -> None:
         table_address=0x180019F10,
     )
 
-    assert dispatch_map.source is DispatcherType.INDIRECT_JUMP
+    assert dispatch_map.source is RouterKind.INDIRECT_TABLE
     assert dispatch_map.initial_state == 2
     assert dispatch_map.handler_state_map() == {7: 1}
 

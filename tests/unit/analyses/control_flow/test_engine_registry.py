@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_recovery import (
     clear_extra_dispatcher_resolvers,
 )
@@ -97,7 +97,7 @@ class _FakeEngine:
     def recover(self, graph, anchors=None, caps=None) -> RecoveredMachine:
         return RecoveredMachine(
             rows=(MachineRow(state_const=1, target_block=2, dispatcher_block=0),),
-            source=DispatcherType.UNKNOWN,
+            source=RouterKind.UNKNOWN,
             soundness=self._soundness,
             confidence=self._confidence,
             provenance=(self.name,),

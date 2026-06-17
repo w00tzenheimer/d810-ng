@@ -27,7 +27,7 @@ from d810.analyses.control_flow.dispatcher_facts import (
     DispatcherStrategy,
     StateVariableCandidate,
 )
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 
 __all__ = [
     "DispatcherAnalysis",
@@ -54,30 +54,30 @@ class DispatcherAnalysis:
     state_variable: StateVariableCandidate | None = None
     state_constants: set[int] = field(default_factory=set)
 
-    dispatcher_type: DispatcherType = DispatcherType.UNKNOWN
+    router_kind: RouterKind = RouterKind.UNKNOWN
     initial_state: int | None = None
     nested_loop_depth: int = 0
 
     @property
     def is_conditional_chain(self) -> bool:
         """True if dispatcher uses conditional-chain state comparisons."""
-        return self.dispatcher_type == DispatcherType.CONDITIONAL_CHAIN
+        return self.router_kind == RouterKind.CONDITION_CHAIN
 
     @property
     def is_switch_table(self) -> bool:
         """True if dispatcher uses a switch/jump-table dispatcher."""
-        return self.dispatcher_type == DispatcherType.SWITCH_TABLE
+        return self.router_kind == RouterKind.SWITCH
 
 
 def analyze_dispatcher(
     flow_graph: FlowGraph,
     *,
-    previous_dispatcher_type: DispatcherType | None = None,
+    previous_router_kind: RouterKind | None = None,
     persisted_initial_state: int | None = None,
 ) -> DispatcherAnalysis:
     """Analyze dispatcher structure from a portable ``FlowGraph`` snapshot.
 
-    ``previous_dispatcher_type`` and ``persisted_initial_state`` are the
+    ``previous_router_kind`` and ``persisted_initial_state`` are the
     explicit dispatcher-history facts. Keeping them as parameters avoids
     introducing a generic maturity history store before a concrete
     consumer needs one.
@@ -88,7 +88,7 @@ def analyze_dispatcher(
     )
 
     if _has_table_jump(flow_graph):
-        analysis.dispatcher_type = DispatcherType.SWITCH_TABLE
+        analysis.router_kind = RouterKind.SWITCH
         return analysis
 
     _analyze_block_predecessors(flow_graph, analysis)
@@ -98,10 +98,10 @@ def analyze_dispatcher(
     _analyze_block_sizes(flow_graph, analysis)
     _analyze_switch_jumps(flow_graph, analysis)
     _score_blocks(analysis)
-    _classify_dispatcher_type(
+    _classify_router_kind(
         flow_graph,
         analysis,
-        previous_dispatcher_type=previous_dispatcher_type,
+        previous_router_kind=previous_router_kind,
         persisted_initial_state=persisted_initial_state,
     )
 
@@ -364,11 +364,11 @@ def _score_blocks(analysis: DispatcherAnalysis) -> None:
         block_info.score = score
 
 
-def _classify_dispatcher_type(
+def _classify_router_kind(
     flow_graph: FlowGraph,
     analysis: DispatcherAnalysis,
     *,
-    previous_dispatcher_type: DispatcherType | None,
+    previous_router_kind: RouterKind | None,
     persisted_initial_state: int | None,
 ) -> None:
     conditional_chain_score = 0
@@ -384,23 +384,23 @@ def _classify_dispatcher_type(
 
     min_score = 30 if analysis.nested_loop_depth >= 2 else 50
     if conditional_chain_score >= min_score:
-        analysis.dispatcher_type = DispatcherType.CONDITIONAL_CHAIN
+        analysis.router_kind = RouterKind.CONDITION_CHAIN
         _find_initial_state(
             flow_graph,
             analysis,
             persisted_initial_state=persisted_initial_state,
         )
-    elif previous_dispatcher_type == DispatcherType.CONDITIONAL_CHAIN:
-        analysis.dispatcher_type = DispatcherType.CONDITIONAL_CHAIN
+    elif previous_router_kind == RouterKind.CONDITION_CHAIN:
+        analysis.router_kind = RouterKind.CONDITION_CHAIN
         _find_initial_state(
             flow_graph,
             analysis,
             persisted_initial_state=persisted_initial_state,
         )
     elif has_jtbl:
-        analysis.dispatcher_type = DispatcherType.SWITCH_TABLE
+        analysis.router_kind = RouterKind.SWITCH
     else:
-        analysis.dispatcher_type = DispatcherType.UNKNOWN
+        analysis.router_kind = RouterKind.UNKNOWN
 
 
 def _find_initial_state(

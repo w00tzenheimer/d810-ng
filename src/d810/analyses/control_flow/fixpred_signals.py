@@ -59,12 +59,12 @@ def _ratio(numerator: int, denominator: int) -> float:
 def _canonical_dispatcher_type(raw: object) -> str:
     """Normalize a raw dispatcher type string to a canonical form."""
     text = str(raw or "").strip().upper()
-    if text.endswith("CONDITIONAL_CHAIN"):
-        return "CONDITIONAL_CHAIN"
-    if text.endswith("SWITCH_TABLE"):
-        return "SWITCH_TABLE"
-    if text.endswith("INDIRECT_JUMP"):
-        return "INDIRECT_JUMP"
+    if text.endswith("CONDITION_CHAIN"):
+        return "CONDITION_CHAIN"
+    if text.endswith("SWITCH"):
+        return "SWITCH"
+    if text.endswith("INDIRECT_TABLE"):
+        return "INDIRECT_TABLE"
     return "UNKNOWN"
 
 

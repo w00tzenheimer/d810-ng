@@ -6,7 +6,7 @@ Profiles are discovered via :class:`d810.core.registry.Registrant`: every
 "scanner loads the project" auto-config), so there is no hand-maintained family list.
 ``select_family`` polls the registered profiles in REGISTRATION order (``hodur``,
 ``approov``, ``tigress``) and returns the first match. ``HodurFamily`` owns the disjoint
-``CONDITIONAL_CHAIN`` shape; ``ApproovFamily`` and ``TigressFamily`` both own switch /
+``CONDITION_CHAIN`` shape; ``ApproovFamily`` and ``TigressFamily`` both own switch /
 indirect, so registration order disambiguates them (Approov keeps switch by default).
 
 Hybrid config override (``router_resolution`` policy): a project may bias / restrict the

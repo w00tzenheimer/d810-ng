@@ -631,7 +631,7 @@ def interval_dispatcher_from_state_map(
     ]
     # Exact single-value rows: never run the gap-row max-count heuristic (it is
     # meaningless here and would spuriously pick a handler as the default). Trust
-    # an explicit ``default_target`` (e.g. a SWITCH_TABLE's resolved default
+    # an explicit ``default_target`` (e.g. a SWITCH's resolved default
     # case); otherwise leave it None and let the consumer classify returns
     # structurally (uncovered state / STOP-block routing).
     return IntervalDispatcher(
