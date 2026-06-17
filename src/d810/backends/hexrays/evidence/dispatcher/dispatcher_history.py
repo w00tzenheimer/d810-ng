@@ -3,19 +3,19 @@
 Replaces the hidden cross-maturity state that the retired live
 dispatcher-analysis owner kept inside a per-function object.  The two
 load-bearing facts --
-``previous_type`` and ``persisted_initial_state`` -- become an explicit,
+``previous_router_kind`` and ``persisted_initial_state`` -- become an explicit,
 immutable :class:`DispatcherHistory` value owned by a small
 :class:`DispatcherHistoryStore` keyed by ``func_ea``.  Consumers then
 access dispatcher analysis through the stateless
 ``analyze_dispatcher_live(mba, store=...)`` helper:
 
     lift(mba) -> FlowGraph
-    analyze_dispatcher(flow_graph, previous_dispatcher_type=..., persisted_initial_state=...)
+    analyze_dispatcher(flow_graph, previous_router_kind=..., persisted_initial_state=...)
 
 The promotion rule is identical to the retired live dispatcher history
 (pinned by ``tests/.../test_dispatcher_history_store.py`` and
 mirrored by this module's own test): on each new maturity the prior
-analysis' ``dispatcher_type`` and -- only when not ``None`` --
+analysis' ``router_kind`` and -- only when not ``None`` --
 ``initial_state`` are carried forward.
 
 The live ``lift`` import means this module needs ``ida_hexrays`` at
@@ -31,14 +31,14 @@ from d810.analyses.control_flow.dispatcher_analysis import (
     DispatcherAnalysis,
     analyze_dispatcher,
 )
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 
 logger = getLogger("D810.dispatcher")
 
 __all__ = [
     # Re-export so consumers import analysis + access in one place.
     "DispatcherAnalysis",
-    "DispatcherType",
+    "RouterKind",
     "DispatcherHistory",
     "DispatcherHistoryStore",
     "DEFAULT_DISPATCHER_HISTORY_STORE",
@@ -56,19 +56,19 @@ class DispatcherHistory:
     maturity after observing ``analysis`` at the current one.
     """
 
-    previous_type: DispatcherType | None = None
+    previous_router_kind: RouterKind | None = None
     persisted_initial_state: int | None = None
 
     def advanced_with(self, analysis: DispatcherAnalysis) -> "DispatcherHistory":
         """Promotion rule used by dispatcher-history promotion:
 
-        * ``previous_type`` <- this analysis' ``dispatcher_type``.
+        * ``previous_router_kind`` <- this analysis' ``router_kind``.
         * ``persisted_initial_state`` <- this analysis' ``initial_state``
           ONLY when it is not ``None`` (a later ``None`` must not clobber
           a previously-known concrete state).
         """
         return DispatcherHistory(
-            previous_type=analysis.dispatcher_type,
+            previous_router_kind=analysis.router_kind,
             persisted_initial_state=(
                 analysis.initial_state
                 if analysis.initial_state is not None
@@ -150,7 +150,7 @@ def analyze_dispatcher_live(
     flow_graph = lift(mba)
     analysis = analyze_dispatcher(
         flow_graph,
-        previous_dispatcher_type=history.previous_type,
+        previous_router_kind=history.previous_router_kind,
         persisted_initial_state=history.persisted_initial_state,
     )
     store.record(func_ea, maturity, analysis)

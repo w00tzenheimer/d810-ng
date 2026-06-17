@@ -11,7 +11,7 @@ from d810.ir.flowgraph import (
 )
 from d810.analyses.control_flow.dispatcher_analysis import analyze_dispatcher
 from d810.analyses.control_flow.dispatcher_facts import DispatcherStrategy
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 
 
 def _mop(
@@ -111,7 +111,7 @@ def test_table_jump_short_circuits_to_switch_table() -> None:
     analysis = analyze_dispatcher(flow_graph)
 
     assert analysis.maturity == 42
-    assert analysis.dispatcher_type == DispatcherType.SWITCH_TABLE
+    assert analysis.router_kind == RouterKind.SWITCH
     assert analysis.is_switch_table
     assert analysis.blocks == {}
     assert analysis.dispatchers == []
@@ -141,7 +141,7 @@ def test_state_comparisons_pick_most_common_portable_operand() -> None:
 
     analysis = analyze_dispatcher(flow_graph)
 
-    assert analysis.dispatcher_type == DispatcherType.CONDITIONAL_CHAIN
+    assert analysis.router_kind == RouterKind.CONDITION_CHAIN
     assert analysis.state_variable is not None
     assert analysis.state_variable.mop.kind is OperandKind.STACK
     assert analysis.state_variable.mop_offset == 0x20
@@ -187,7 +187,7 @@ def test_nested_loops_classify_conditional_chain_without_constants() -> None:
 
     analysis = analyze_dispatcher(flow_graph)
 
-    assert analysis.dispatcher_type == DispatcherType.CONDITIONAL_CHAIN
+    assert analysis.router_kind == RouterKind.CONDITION_CHAIN
     assert analysis.nested_loop_depth >= 2
     for serial in (0, 1, 2):
         assert DispatcherStrategy.NESTED_LOOP in analysis.blocks[serial].strategies
@@ -198,11 +198,11 @@ def test_previous_conditional_chain_and_persisted_state_are_explicit_inputs() ->
 
     analysis = analyze_dispatcher(
         flow_graph,
-        previous_dispatcher_type=DispatcherType.CONDITIONAL_CHAIN,
+        previous_router_kind=RouterKind.CONDITION_CHAIN,
         persisted_initial_state=0xBEEF,
     )
 
-    assert analysis.dispatcher_type == DispatcherType.CONDITIONAL_CHAIN
+    assert analysis.router_kind == RouterKind.CONDITION_CHAIN
     assert analysis.initial_state == 0xBEEF
 
 
@@ -219,7 +219,7 @@ def test_truthy_conditional_jump_is_not_treated_as_state_comparison() -> None:
 
     assert analysis.state_variable is None
     assert analysis.state_constants == set()
-    assert analysis.dispatcher_type == DispatcherType.UNKNOWN
+    assert analysis.router_kind == RouterKind.UNKNOWN
 
 
 def test_computed_goto_marks_switch_jump_without_classifying_switch_table() -> None:
@@ -231,6 +231,6 @@ def test_computed_goto_marks_switch_jump_without_classifying_switch_table() -> N
 
     analysis = analyze_dispatcher(flow_graph)
 
-    assert analysis.dispatcher_type == DispatcherType.UNKNOWN
+    assert analysis.router_kind == RouterKind.UNKNOWN
     assert analysis.dispatchers == [0]
     assert DispatcherStrategy.SWITCH_JUMP in analysis.blocks[0].strategies

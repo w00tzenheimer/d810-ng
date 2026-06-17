@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from d810.analyses.control_flow.branch_ownership import BranchOwnershipProofKind
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap, StateDispatcherRow
 from d810.analyses.control_flow.switch_case_transition_analysis import (
     SwitchCaseBody,
@@ -25,7 +25,7 @@ def _dispatch_map(states: tuple[int, ...] = TIGRESS_VISIBLE_STATES) -> StateDisp
                 dispatcher_block=50,
                 compare_block=50,
                 branch_kind="switch_case",
-                source=DispatcherType.SWITCH_TABLE,
+                source=RouterKind.SWITCH,
             )
             for state in states
         ),
@@ -33,7 +33,7 @@ def _dispatch_map(states: tuple[int, ...] = TIGRESS_VISIBLE_STATES) -> StateDisp
         dispatcher_blocks=frozenset({50}),
         state_var_stkoff=0x30,
         state_var_lvar_idx=None,
-        source=DispatcherType.SWITCH_TABLE,
+        source=RouterKind.SWITCH,
     )
 
 
@@ -158,14 +158,14 @@ def test_direct_case_facts_carry_exit_block_and_ordered_path() -> None:
 def test_alias_self_loop_and_default_rows_are_diagnostics() -> None:
     dispatch_map = StateDispatcherMap(
         rows=(
-            StateDispatcherRow(1, 10, 5, 5, "switch_case_alias", DispatcherType.SWITCH_TABLE, row_kind="handler_alias"),
-            StateDispatcherRow(2, 5, 5, 5, "switch_self_loop", DispatcherType.SWITCH_TABLE, row_kind="dispatcher_self_loop"),
+            StateDispatcherRow(1, 10, 5, 5, "switch_case_alias", RouterKind.SWITCH, row_kind="handler_alias"),
+            StateDispatcherRow(2, 5, 5, 5, "switch_self_loop", RouterKind.SWITCH, row_kind="dispatcher_self_loop"),
         ),
         dispatcher_entry_block=5,
         dispatcher_blocks=frozenset({5}),
         state_var_stkoff=0x30,
         state_var_lvar_idx=None,
-        source=DispatcherType.SWITCH_TABLE,
+        source=RouterKind.SWITCH,
         default_target_block=99,
         default_row_kind="dispatcher_default",
     )

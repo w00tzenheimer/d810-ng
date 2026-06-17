@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_recovery import (
     build_dispatch_map_any_kind,
     clear_extra_dispatcher_resolvers,
@@ -23,7 +23,6 @@ from d810.analyses.control_flow.dispatcher_resolution import (
 from d810.analyses.control_flow.machine_recovery_engine import MachineRecoveryEngine
 from d810.analyses.control_flow.recovered_machine import RecoveredMachine
 from d810.analyses.control_flow.static_shape_engine import StaticShapeEngine
-from d810.capabilities.dispatcher import RouterKind
 from d810.ir.flowgraph import (
     BlockSnapshot,
     FlowGraph,
@@ -202,7 +201,7 @@ class _FakeIndirectResolver:
                 dispatcher_block=3,
                 compare_block=None,
                 branch_kind="indirect_jump_table",
-                source=DispatcherType.INDIRECT_JUMP,
+                source=RouterKind.INDIRECT_TABLE,
                 row_kind="handler",
             ),
         )
@@ -212,7 +211,7 @@ class _FakeIndirectResolver:
             dispatcher_blocks=frozenset({3}),
             state_var_stkoff=0x30,
             state_var_lvar_idx=None,
-            source=DispatcherType.INDIRECT_JUMP,
+            source=RouterKind.INDIRECT_TABLE,
         )
         return DispatcherResolution(
             dispatcher_map=dmap,
@@ -250,7 +249,7 @@ def test_engine_matches_build_dispatch_map_any_kind():
     g = _equality_chain_flow_graph()
     expected = build_dispatch_map_any_kind(g)
     assert expected is not None
-    assert expected.source is DispatcherType.CONDITIONAL_CHAIN
+    assert expected.source is RouterKind.CONDITION_CHAIN
     machine = StaticShapeEngine().recover(g)
     assert machine is not None
     assert machine.to_state_dispatcher_map() == expected
@@ -260,7 +259,7 @@ def test_engine_switch_table_equivalence():
     g = _switch_flow_graph()
     expected = build_dispatch_map_any_kind(g)
     assert expected is not None
-    assert expected.source is DispatcherType.SWITCH_TABLE
+    assert expected.source is RouterKind.SWITCH
     machine = StaticShapeEngine().recover(g)
     assert machine is not None
     assert machine.to_state_dispatcher_map() == expected
@@ -280,7 +279,7 @@ def test_engine_respects_min_state_constant():
     # Lowering the threshold admits them.
     machine = StaticShapeEngine(min_state_constant=low).recover(g)
     assert machine is not None
-    assert machine.source is DispatcherType.CONDITIONAL_CHAIN
+    assert machine.source is RouterKind.CONDITION_CHAIN
 
 
 def test_engine_provenance_carries_resolver_name():
@@ -301,7 +300,7 @@ def test_engine_consults_extra_resolvers():
     register_extra_dispatcher_resolver(_FakeIndirectResolver())
     machine = StaticShapeEngine().recover(g)
     assert machine is not None
-    assert machine.source is DispatcherType.INDIRECT_JUMP
+    assert machine.source is RouterKind.INDIRECT_TABLE
     assert machine.to_state_dispatcher_map().state_to_handler() == {1: 4}
 
 

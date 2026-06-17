@@ -12,7 +12,6 @@ from d810.analyses.control_flow.comparison_dispatcher_model import (
     build_partition,
     route_via_interval_sets,
 )
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.capabilities.dispatcher import RouterKind
 
 
@@ -25,7 +24,7 @@ class StateDispatcherRow:
     dispatcher_block: int
     compare_block: int | None
     branch_kind: str
-    source: DispatcherType
+    source: RouterKind
     confidence: float = 1.0
     row_kind: str = "handler"
     payload: dict[str, object] = field(default_factory=dict)
@@ -50,7 +49,7 @@ class StateDispatcherMap:
     dispatcher_blocks: frozenset[int]
     state_var_stkoff: int | None
     state_var_lvar_idx: int | None
-    source: DispatcherType
+    source: RouterKind
     initial_state: int | None = None
     default_target_block: int | None = None
     default_row_kind: str | None = None

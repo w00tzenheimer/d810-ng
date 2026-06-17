@@ -48,7 +48,7 @@ from d810.analyses.control_flow.concolic_machine_walk import (
     WalkTransition,
     walk_forking_state_machine,
 )
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.emulated_state_walk import DEFAULT_MAX_STATES
 from d810.analyses.control_flow.machine_recovery_engine import DispatcherAnchors
 from d810.analyses.control_flow.recovered_machine import (
@@ -856,7 +856,7 @@ class ConcolicEmulationEngine:
                 dispatcher_block=int(disc.entry),
                 compare_block=int(disc.entry),
                 branch_kind="emulated",
-                source=DispatcherType.CONDITIONAL_CHAIN,
+                source=RouterKind.CONDITION_CHAIN,
             )
             for state_const, target_block in rows_map.items()
         )
@@ -892,7 +892,7 @@ class ConcolicEmulationEngine:
             state_var_lvar_idx=anchors.state_var_lvar_idx,
             dispatcher_entry_block=int(disc.entry),
             dispatcher_blocks=dispatcher_blocks,
-            source=DispatcherType.CONDITIONAL_CHAIN,
+            source=RouterKind.CONDITION_CHAIN,
             soundness=Soundness.EXACT_BOUNDED,
             confidence=float(len(rows)),
             provenance=prov.as_tuple(),

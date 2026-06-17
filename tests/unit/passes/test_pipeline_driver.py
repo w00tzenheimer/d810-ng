@@ -24,7 +24,6 @@ from d810.families.state_machine_cff import tigress as tigress_pipeline
 from d810.families.state_machine_cff import ApproovFamily
 from d810.families.state_machine_cff import TigressFamily
 from d810.families.registry import select_family, registered_families
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.capabilities.dispatcher import RouterKind
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 
@@ -176,15 +175,15 @@ def test_approov_detect_is_kind_scoped_to_switch_and_indirect(monkeypatch):
 
     # Switch-table and indirect-jump are CLAIMED (truthy map returned).
     monkeypatch.setattr(approov_pipeline, "build_dispatch_map_any_kind",
-                        _stub(DispatcherType.SWITCH_TABLE))
+                        _stub(RouterKind.SWITCH))
     assert fam.detect(_GRAPH, frozenset()) is not None
     monkeypatch.setattr(approov_pipeline, "build_dispatch_map_any_kind",
-                        _stub(DispatcherType.INDIRECT_JUMP))
+                        _stub(RouterKind.INDIRECT_TABLE))
     assert fam.detect(_GRAPH, frozenset()) is not None
 
     # Equality-chain belongs to HodurFamily -> ApproovFamily must NOT claim it.
     monkeypatch.setattr(approov_pipeline, "build_dispatch_map_any_kind",
-                        _stub(DispatcherType.CONDITIONAL_CHAIN))
+                        _stub(RouterKind.CONDITION_CHAIN))
     assert fam.detect(_GRAPH, frozenset()) is None
     # Front-end found nothing -> None.
     monkeypatch.setattr(approov_pipeline, "build_dispatch_map_any_kind", lambda graph: None)
@@ -192,9 +191,9 @@ def test_approov_detect_is_kind_scoped_to_switch_and_indirect(monkeypatch):
 
 
 def test_approov_pipeline_for_switch_is_standard_no_emulation():
-    """SWITCH_TABLE (the live kind) runs the standard seeded-fold spine — NO emulation
+    """SWITCH (the live kind) runs the standard seeded-fold spine — NO emulation
     (abc_or_dispatch folds masked-OR writes via the partitioned fixpoint)."""
-    specs = ApproovFamily().pipeline_for(_FakeMap(DispatcherType.SWITCH_TABLE), None)
+    specs = ApproovFamily().pipeline_for(_FakeMap(RouterKind.SWITCH), None)
     assert [s.name for s in specs] == [
         "recover_dispatcher",
         "recover_state_transitions",
@@ -208,8 +207,8 @@ def test_approov_pipeline_for_switch_is_standard_no_emulation():
 
 
 def test_approov_pipeline_for_indirect_is_emulation_gated():
-    """INDIRECT_JUMP needs the emulator + pins RouterKind.INDIRECT_TABLE (M3+, structural)."""
-    specs = ApproovFamily().pipeline_for(_FakeMap(DispatcherType.INDIRECT_JUMP), None)
+    """INDIRECT_TABLE needs the emulator + pins RouterKind.INDIRECT_TABLE (M3+, structural)."""
+    specs = ApproovFamily().pipeline_for(_FakeMap(RouterKind.INDIRECT_TABLE), None)
     by_name = {s.name: s for s in specs}
     assert "emulation" in by_name["recover_state_transitions"].requirements.required
     assert "emulation" in by_name["lower_state_machine"].requirements.required
@@ -237,15 +236,15 @@ def test_tigress_detect_is_kind_scoped_to_switch_and_indirect(monkeypatch):
 
     # Switch-table and indirect-jump are CLAIMED (truthy map returned).
     monkeypatch.setattr(tigress_pipeline, "build_dispatch_map_any_kind",
-                        _stub(DispatcherType.SWITCH_TABLE))
+                        _stub(RouterKind.SWITCH))
     assert fam.detect(_GRAPH, frozenset()) is not None
     monkeypatch.setattr(tigress_pipeline, "build_dispatch_map_any_kind",
-                        _stub(DispatcherType.INDIRECT_JUMP))
+                        _stub(RouterKind.INDIRECT_TABLE))
     assert fam.detect(_GRAPH, frozenset()) is not None
 
     # Equality-chain belongs to HodurFamily -> TigressFamily must NOT claim it.
     monkeypatch.setattr(tigress_pipeline, "build_dispatch_map_any_kind",
-                        _stub(DispatcherType.CONDITIONAL_CHAIN))
+                        _stub(RouterKind.CONDITION_CHAIN))
     assert fam.detect(_GRAPH, frozenset()) is None
     # Front-end found nothing -> None.
     monkeypatch.setattr(tigress_pipeline, "build_dispatch_map_any_kind", lambda graph: None)
@@ -253,8 +252,8 @@ def test_tigress_detect_is_kind_scoped_to_switch_and_indirect(monkeypatch):
 
 
 def test_tigress_pipeline_for_switch_is_standard_no_emulation():
-    """SWITCH_TABLE runs the standard seeded-fold spine — NO emulation."""
-    specs = TigressFamily().pipeline_for(_FakeMap(DispatcherType.SWITCH_TABLE), None)
+    """SWITCH runs the standard seeded-fold spine — NO emulation."""
+    specs = TigressFamily().pipeline_for(_FakeMap(RouterKind.SWITCH), None)
     assert [s.name for s in specs] == [
         "recover_dispatcher",
         "recover_state_transitions",
@@ -268,8 +267,8 @@ def test_tigress_pipeline_for_switch_is_standard_no_emulation():
 
 
 def test_tigress_pipeline_for_indirect_is_emulation_gated():
-    """INDIRECT_JUMP needs the emulator + pins RouterKind.INDIRECT_TABLE (slice 2)."""
-    specs = TigressFamily().pipeline_for(_FakeMap(DispatcherType.INDIRECT_JUMP), None)
+    """INDIRECT_TABLE needs the emulator + pins RouterKind.INDIRECT_TABLE (slice 2)."""
+    specs = TigressFamily().pipeline_for(_FakeMap(RouterKind.INDIRECT_TABLE), None)
     by_name = {s.name: s for s in specs}
     assert "emulation" in by_name["recover_state_transitions"].requirements.required
     assert "emulation" in by_name["lower_state_machine"].requirements.required

@@ -86,14 +86,14 @@ class TestHelpers:
         assert _ratio(5, -1) == 0.0
 
     def test_canonical_dispatcher_type_conditional(self) -> None:
-        assert _canonical_dispatcher_type("CONDITIONAL_CHAIN") == "CONDITIONAL_CHAIN"
-        assert _canonical_dispatcher_type("foo_CONDITIONAL_CHAIN") == "CONDITIONAL_CHAIN"
+        assert _canonical_dispatcher_type("CONDITION_CHAIN") == "CONDITION_CHAIN"
+        assert _canonical_dispatcher_type("foo_CONDITION_CHAIN") == "CONDITION_CHAIN"
 
     def test_canonical_dispatcher_type_switch(self) -> None:
-        assert _canonical_dispatcher_type("SWITCH_TABLE") == "SWITCH_TABLE"
+        assert _canonical_dispatcher_type("SWITCH") == "SWITCH"
 
     def test_canonical_dispatcher_type_indirect(self) -> None:
-        assert _canonical_dispatcher_type("INDIRECT_JUMP") == "INDIRECT_JUMP"
+        assert _canonical_dispatcher_type("INDIRECT_TABLE") == "INDIRECT_TABLE"
 
     def test_canonical_dispatcher_type_unknown(self) -> None:
         assert _canonical_dispatcher_type("something_else") == "UNKNOWN"
@@ -293,13 +293,13 @@ class TestPortableSignals:
             blocks,
             metadata={
                 "dispatchers": [0],
-                "dispatcher_type": "CONDITIONAL_CHAIN",
+                "dispatcher_type": "CONDITION_CHAIN",
             },
         )
         collector = FixPredSignalsCollector()
         result = collector.collect(target, func_ea=0x401000, maturity=3)
 
-        assert result.metrics["dispatcher_type"] == "CONDITIONAL_CHAIN"
+        assert result.metrics["dispatcher_type"] == "CONDITION_CHAIN"
 
     def test_result_metrics_are_readonly(self) -> None:
         """ReconResult.metrics must be a read-only mapping."""

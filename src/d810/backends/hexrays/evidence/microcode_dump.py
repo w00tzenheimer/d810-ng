@@ -109,7 +109,7 @@ from d810.analyses.control_flow.persisted_recon_dag import get_persisted_recon_d
 from d810.analyses.control_flow.comparison_dispatcher_model import (
     ComparisonDispatcherModel,
 )
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
     StateDispatcherRow,
@@ -835,7 +835,7 @@ def _build_comparison_model_from_bst(
                 dispatcher_block=int(dispatcher_entry_serial),
                 compare_block=None,
                 branch_kind="bst",
-                source=DispatcherType.CONDITIONAL_CHAIN,
+                source=RouterKind.CONDITION_CHAIN,
             )
         )
         ea = _block_start_ea(mba, handler_serial)
@@ -848,7 +848,7 @@ def _build_comparison_model_from_bst(
         | {int(dispatcher_entry_serial)},
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=state_var_lvar_idx,
-        source=DispatcherType.CONDITIONAL_CHAIN,
+        source=RouterKind.CONDITION_CHAIN,
         initial_state=bst_result.initial_state,
     )
     return ComparisonDispatcherModel.from_recovery(

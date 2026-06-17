@@ -21,7 +21,7 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.machine_recovery_engine import DispatcherAnchors
 from d810.analyses.control_flow.recovered_machine import RecoveredMachine, Soundness
 from d810.backends.hexrays.evidence.concolic_emulation_engine import (
@@ -149,7 +149,7 @@ class TestSelectorAnchoring:
             dispatcher_blocks=frozenset(),
             state_var_stkoff=OFF_RESULT,  # the WRONG slot the bug would pick
             state_var_lvar_idx=None,
-            source=DispatcherType.SWITCH_TABLE,
+            source=RouterKind.SWITCH,
             initial_state=0,
         )
         anchors = discover_anchors(mba, graph=None, prelim=prelim)
@@ -169,7 +169,7 @@ class TestSelectorAnchoring:
             dispatcher_blocks=frozenset(),
             state_var_stkoff=OFF_STATE,
             state_var_lvar_idx=None,
-            source=DispatcherType.CONDITIONAL_CHAIN,
+            source=RouterKind.CONDITION_CHAIN,
             initial_state=0,
         )
         anchors = discover_anchors(mba, graph=None, prelim=prelim)

@@ -77,7 +77,7 @@ HODUR_BASELINES = [
         "hodur_func",
         "hodur_flag2_s1a.json",
         # unflatten back-edge unflatten (conditional/equality-chain migration, ticket
-        # llr-28ht). hodur_func is a pure CONDITIONAL_CHAIN dispatcher; its
+        # llr-28ht). hodur_func is a pure CONDITION_CHAIN dispatcher; its
         # exact state->handler map IS routed through emit_minimal_unflatten just
         # like sub_7FFD. The AST metrics are byte-identical to the legacy
         # emulated path ({statements:39, returns:3, whiles:0, gotos:1, ifs:8}),

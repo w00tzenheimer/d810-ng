@@ -9,7 +9,7 @@ from d810.backends.hexrays.evidence.dispatcher.switch_case_transitions import (
     collect_switch_case_transition_facts_from_mba,
 )
 from d810.analyses.control_flow.branch_ownership import BranchOwnershipProofKind
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap, StateDispatcherRow
 from d810.analyses.control_flow.switch_case_transition_analysis import SwitchCaseTransitionKind
 
@@ -23,7 +23,7 @@ def _dispatch_map(states: tuple[int, ...]) -> StateDispatcherMap:
                 dispatcher_block=50,
                 compare_block=50,
                 branch_kind="switch_case",
-                source=DispatcherType.SWITCH_TABLE,
+                source=RouterKind.SWITCH,
                 confidence=1.0,
             )
             for state in states
@@ -32,7 +32,7 @@ def _dispatch_map(states: tuple[int, ...]) -> StateDispatcherMap:
         dispatcher_blocks=frozenset({50}),
         state_var_stkoff=0x20,
         state_var_lvar_idx=None,
-        source=DispatcherType.SWITCH_TABLE,
+        source=RouterKind.SWITCH,
     )
 
 

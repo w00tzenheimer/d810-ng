@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, MopSnapshot
 from d810.core.logging import getLogger
 from d810.core.typing import Callable
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
     StateDispatcherRow,
@@ -87,7 +87,7 @@ def build_state_dispatcher_map_from_cases(
                 dispatcher_block=int(dispatcher_serial),
                 compare_block=int(dispatcher_serial),
                 branch_kind=branch_kind,
-                source=DispatcherType.SWITCH_TABLE,
+                source=RouterKind.SWITCH,
                 confidence=1.0,
                 row_kind=row_kind,
             )
@@ -98,7 +98,7 @@ def build_state_dispatcher_map_from_cases(
         dispatcher_blocks=dispatcher_blocks,
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=None,
-        source=DispatcherType.SWITCH_TABLE,
+        source=RouterKind.SWITCH,
         initial_state=initial_state,
         default_target_block=default_target,
         default_row_kind=default_kind,

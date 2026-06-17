@@ -393,7 +393,7 @@ def _write_diag_db(path: Path, *, indirect_rows: bool) -> None:
         )
         if indirect_rows:
             conn.execute(
-                "INSERT INTO state_dispatcher_rows VALUES ('INDIRECT_JUMP')"
+                "INSERT INTO state_dispatcher_rows VALUES ('INDIRECT_TABLE')"
             )
         conn.commit()
     finally:

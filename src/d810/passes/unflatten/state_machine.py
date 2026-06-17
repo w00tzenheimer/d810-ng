@@ -34,7 +34,7 @@ from d810.analyses.machine import recover_machine
 from d810.analyses.control_flow.comparison_dispatcher_model import (
     ComparisonDispatcherModel,
 )
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.branch_witness_provider import (
     build_static_equality_chain_witness_map,
 )
@@ -43,7 +43,6 @@ from d810.analyses.control_flow.router_resolver import (
     default_resolvers,
     select_router,
 )
-from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.semantic_transition import resolve_state_transitions
 from d810.analyses.control_flow.transition_builder import (
     transition_result_from_resolutions,
@@ -89,16 +88,6 @@ def _count_valrange_confirmable(valrange, dispatch_map, state_var_stkoff) -> int
     return confirmed
 
 
-# DispatcherType (recovery taxonomy) -> RouterKind (portable router enum). Only the
-# comparison kinds get a ComparisonDispatcherModel; the unflatten equality-chain detector
-# (dispatcher_recovery) yields CONDITIONAL_CHAIN -> CONDITION_CHAIN.
-_DISPATCHER_TYPE_TO_ROUTER_KIND = {
-    DispatcherType.SWITCH_TABLE: RouterKind.SWITCH,
-    DispatcherType.CONDITIONAL_CHAIN: RouterKind.CONDITION_CHAIN,
-    DispatcherType.INDIRECT_JUMP: RouterKind.INDIRECT_TABLE,
-    DispatcherType.UNKNOWN: RouterKind.UNKNOWN,
-}
-
 # RouterKinds whose route() is the shared comparison body (exact ∪ interval).
 _COMPARISON_ROUTER_KINDS = frozenset(
     {
@@ -131,8 +120,7 @@ def _build_comparison_model(recovery, bst_evidence):
     dispatch_map = getattr(recovery, "dispatch_map", None)
     if dispatch_map is None:
         return None
-    source = getattr(dispatch_map, "source", None)
-    router_kind = _DISPATCHER_TYPE_TO_ROUTER_KIND.get(source, RouterKind.UNKNOWN)
+    router_kind = getattr(dispatch_map, "source", RouterKind.UNKNOWN)
     if router_kind not in _COMPARISON_ROUTER_KINDS:
         return None
     return ComparisonDispatcherModel.from_recovery(
@@ -182,7 +170,7 @@ def _resolve_initial_state(bst_evidence, recovery) -> int | None:
 
     The recovered ``StateDispatcherMap.initial_state`` is preferred whenever it is
     present, because ``recover_dispatcher`` now threads the TRUE prologue state
-    onto the map -- via the structural indirect-table recovery for INDIRECT_JUMP
+    onto the map -- via the structural indirect-table recovery for INDIRECT_TABLE
     (ticket llr-m9r4) AND via entry-dominance for equality-chain / switch kinds
     (ticket llr-mra1). The latter corrects the SPURIOUS mid-chain value the live
     BST evidence supplies through the backwards ``_find_pre_header`` "fewest-npred"
@@ -194,7 +182,7 @@ def _resolve_initial_state(bst_evidence, recovery) -> int | None:
     """
     dmap = getattr(recovery, "dispatch_map", None) if recovery is not None else None
     map_initial = getattr(dmap, "initial_state", None) if dmap is not None else None
-    # Prefer the recovered map's initial_state. For INDIRECT_JUMP the BST analyzer
+    # Prefer the recovered map's initial_state. For INDIRECT_TABLE the BST analyzer
     # emits a spurious folded inner state; for equality-chain the BST emits a
     # spurious mid-chain state -- in both cases the map carries the structurally
     # recovered true prologue state, so it wins when present.
@@ -218,7 +206,7 @@ def _entry_bridge_requires_witness(bst_evidence, dmap) -> bool:
     grow explicit witness providers of their own.
     """
     del bst_evidence
-    if getattr(dmap, "source", None) is DispatcherType.CONDITIONAL_CHAIN:
+    if getattr(dmap, "source", None) is RouterKind.CONDITION_CHAIN:
         rows = tuple(getattr(dmap, "rows", ()) or ())
         branch_kinds = {str(getattr(row, "branch_kind", "")) for row in rows}
         return bool(branch_kinds & _STATIC_BRANCH_KINDS) or "emulated" in branch_kinds
@@ -445,16 +433,16 @@ class LowerStateMachine(PipelinePass):
         ):
             # Initial state for the entry bridge: prefer the BST evidence (comparison /
             # switch kinds), fall back to the recovered StateDispatcherMap.initial_state
-            # for the INDIRECT_JUMP kind where bst_evidence is None (ticket llr-16jl).
+            # for the INDIRECT_TABLE kind where bst_evidence is None (ticket llr-16jl).
             initial_state = _resolve_initial_state(bst_evidence, recovery)
             dmap = getattr(recovery, "dispatch_map", None)
             # INDIRECT-only emit gates (ticket llr-m9r4): the terminal-tail recovery
             # and the shared-EXIT redirect veto are load-bearing for the Tigress
-            # INDIRECT_JUMP shape but regress equality-chain / switch goldens
+            # INDIRECT_TABLE shape but regress equality-chain / switch goldens
             # (hodur, approov). Thread the dispatcher kind so only the indirect
             # profile enables them.
             is_indirect = (
-                getattr(dmap, "source", None) is DispatcherType.INDIRECT_JUMP
+                getattr(dmap, "source", None) is RouterKind.INDIRECT_TABLE
                 if dmap is not None
                 else False
             )

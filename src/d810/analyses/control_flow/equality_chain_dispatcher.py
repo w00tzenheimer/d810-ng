@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core import logging
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
     StateDispatcherRow,
@@ -166,7 +166,7 @@ def extract_state_dispatcher_map_from_mba(
                 dispatcher_block=int(entry),
                 compare_block=int(serial),
                 branch_kind=branch_kind,
-                source=DispatcherType.CONDITIONAL_CHAIN,
+                source=RouterKind.CONDITION_CHAIN,
                 confidence=1.0,
             )
         )
@@ -190,7 +190,7 @@ def extract_state_dispatcher_map_from_mba(
         state_var_lvar_idx=(
             state_var.identifier if state_var.kind == "lvar" else None
         ),
-        source=DispatcherType.CONDITIONAL_CHAIN,
+        source=RouterKind.CONDITION_CHAIN,
     )
     return dispatch_map
 

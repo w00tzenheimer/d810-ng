@@ -5,8 +5,8 @@ SAME portable ``run_pipeline`` driver over the SAME five passes. A *profile* onl
 customises ``detect`` (which dispatcher *kinds* it claims) and ``pipeline_for`` (the
 per-pass capability requirements + router-shape pin).
 
-Tigress emits two CFF shapes this profile owns: a switch-table dispatcher (``SWITCH_TABLE``)
-and a computed indirect-jump dispatcher (``INDIRECT_JUMP``). Detection is scoped over the
+Tigress emits two CFF shapes this profile owns: a switch-table dispatcher (``SWITCH``)
+and a computed indirect-jump dispatcher (``INDIRECT_TABLE``). Detection is scoped over the
 SHARED front-end ``build_dispatch_map_any_kind`` so the families never grow parallel
 detectors; the claim is then narrowed by ``StateDispatcherMap.source`` to this kind set.
 
@@ -14,8 +14,8 @@ Behaviour-neutral foundation (M3 slice 1, ``llr-11du``): TigressFamily auto-regi
 :class:`StateMachineCffFamily` / ``Registrant``) AFTER ``ApproovFamily``, so for the live
 switch kind Approov is polled first and keeps the claim — Tigress is INERT in golden. There
 is NO indirect detector in the front-end chain yet, so ``build_dispatch_map_any_kind`` never
-returns ``INDIRECT_JUMP`` live; the indirect / jump-table analysis is slice 2 (``llr-890r``).
-The ``INDIRECT_JUMP`` branch of ``pipeline_for`` is therefore structural until that lands.
+returns ``INDIRECT_TABLE`` live; the indirect / jump-table analysis is slice 2 (``llr-890r``).
+The ``INDIRECT_TABLE`` branch of ``pipeline_for`` is therefore structural until that lands.
 """
 from __future__ import annotations
 
@@ -35,7 +35,6 @@ from d810.passes.unflatten.state_machine import (
     RecoverStateTransitions,
 )
 from d810.capabilities.dispatcher import RouterKind
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
 from d810.analyses.control_flow.dispatcher_recovery import build_dispatch_map_any_kind
 from d810.families.state_machine_cff.base import StateMachineCffFamily
 from d810.ir.maturity import IRMaturity
@@ -50,9 +49,9 @@ __all__ = ["TigressFamily"]
 emulation = CapabilityPolicy(required=frozenset({"live_mba", "emulation"}))
 
 # The dispatcher kinds THIS profile owns. Tigress emits switch-table and computed
-# indirect-jump CFF; equality-chain (CONDITIONAL_CHAIN) belongs to HodurFamily.
+# indirect-jump CFF; equality-chain (CONDITION_CHAIN) belongs to HodurFamily.
 _TIGRESS_KINDS = frozenset(
-    {DispatcherType.SWITCH_TABLE, DispatcherType.INDIRECT_JUMP}
+    {RouterKind.SWITCH, RouterKind.INDIRECT_TABLE}
 )
 
 
@@ -61,8 +60,8 @@ class TigressFamily(StateMachineCffFamily):
 
     name = "tigress"
 
-    #: The SWITCH_TABLE case recovers at ``GLOBAL_ANALYZED`` (Hex-Rays ``MMAT_GLBOPT1``, the
-    #: golden-tuned stage), like Approov. The INDIRECT_JUMP case is routed to
+    #: The SWITCH case recovers at ``GLOBAL_ANALYZED`` (Hex-Rays ``MMAT_GLBOPT1``, the
+    #: golden-tuned stage), like Approov. The INDIRECT_TABLE case is routed to
     #: ``CALL_MODELED`` (``MMAT_CALLS``) by the rule's structural ``_is_indirect`` gate (its
     #: state writes + accumulation-loop guard are DCE'd by global analysis), so it is NOT
     #: listed here (ticket llr-a93i / llr-m9r4).
@@ -86,13 +85,13 @@ class TigressFamily(StateMachineCffFamily):
     def pipeline_for(self, match, context) -> "tuple[PassSpec, ...]":
         """Kind-aware pipeline (mirrors :meth:`ApproovFamily.pipeline_for`).
 
-        ``SWITCH_TABLE`` runs the standard seeded-fold spine (NO emulation).
+        ``SWITCH`` runs the standard seeded-fold spine (NO emulation).
 
-        ``INDIRECT_JUMP`` needs the concrete emulator to fold computed targets
+        ``INDIRECT_TABLE`` needs the concrete emulator to fold computed targets
         (``EmulationCapability``) and pins ``RouterKind.INDIRECT_TABLE``; structural
         until the indirect resolver + emulation backend land (slice 2, ``llr-890r``).
         """
-        if getattr(match, "source", None) == DispatcherType.INDIRECT_JUMP:
+        if getattr(match, "source", None) == RouterKind.INDIRECT_TABLE:
             return (
                 PassSpec("recover_dispatcher", RecoverDispatcher, live_mba, default),
                 PassSpec(

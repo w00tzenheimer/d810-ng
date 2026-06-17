@@ -20,7 +20,7 @@ from d810.ir.semantics import PredicateKind
 from d810.analyses.value_flow.model import ValidatedFactView
 from d810.analyses.control_flow.reachability import reachable_from
 from d810.analyses.control_flow.dominator import compute_dom_tree
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_resolution import (
     DispatcherResolution,
     ResolverCandidate,
@@ -34,7 +34,6 @@ from d810.analyses.control_flow.dispatcher_resolver import (
 from d810.analyses.control_flow.switch_table_analysis import (
     analyze_switch_table_flow_graph,
 )
-from d810.capabilities.dispatcher import RouterKind
 
 # Matches the live HodurStateMachineDetector threshold (analysis.py MIN_STATE_CONSTANT).
 MIN_STATE_CONSTANT = 0x01000000
@@ -202,7 +201,7 @@ def build_state_dispatcher_map_from_flow_graph(
                     dispatcher_block=int(serial),
                     compare_block=int(serial),
                     branch_kind=pred.value,
-                    source=DispatcherType.CONDITIONAL_CHAIN,
+                    source=RouterKind.CONDITION_CHAIN,
                 ),
                 state_op,
             )
@@ -249,7 +248,7 @@ def build_state_dispatcher_map_from_flow_graph(
         dispatcher_blocks=chain_blocks,
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=None,
-        source=DispatcherType.CONDITIONAL_CHAIN,
+        source=RouterKind.CONDITION_CHAIN,
     )
 
 
@@ -347,7 +346,7 @@ def recover_entry_dominated_initial_state(
 
 @dataclass(frozen=True, slots=True)
 class EqualityChainDispatcherResolver:
-    """Equality-chain (``CONDITIONAL_CHAIN``) resolver -- the preferred shape.
+    """Equality-chain (``CONDITION_CHAIN``) resolver -- the preferred shape.
 
     ``specificity=10`` (> switch's 5) preserves the historical equality-first
     precedence of ``build_dispatch_map_any_kind`` under the ranked chain.
@@ -497,7 +496,7 @@ def build_dispatch_map_any_kind(
     """Recover a ``StateDispatcherMap`` of ANY supported dispatcher kind.
 
     Delegates to the ranked :func:`resolve_dispatcher` chain over
-    :func:`default_dispatcher_resolvers`. Equality-chain (``CONDITIONAL_CHAIN``,
+    :func:`default_dispatcher_resolvers`. Equality-chain (``CONDITION_CHAIN``,
     specificity 10) outranks the switch-table fallback (specificity 5), so the
     historical equality-first precedence is preserved. The two detectors are
     disjoint in practice (equality -> ``None`` on switch graphs and vice versa),
@@ -545,7 +544,7 @@ def recover_dispatcher(
     # entry-dominance and thread it onto the map so the §1a entry bridge prefers
     # it over the spurious BST value. INDIRECT maps already carry their own
     # recovered ``initial_state`` and are left untouched (ticket llr-mra1).
-    if dmap.source is not DispatcherType.INDIRECT_JUMP and dmap.initial_state is None:
+    if dmap.source is not RouterKind.INDIRECT_TABLE and dmap.initial_state is None:
         recovered_initial = recover_entry_dominated_initial_state(graph, dmap)
         if recovered_initial is not None:
             dmap = replace(dmap, initial_state=recovered_initial)

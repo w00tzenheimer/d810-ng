@@ -41,7 +41,7 @@ import ida_hexrays
 
 from d810.core.logging import getLogger
 from d810.core.observability_labels import live_block_label
-from d810.analyses.control_flow.dispatcher_kind import DispatcherType
+from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_recovery import (
     recover_entry_dominated_initial_state,
 )
@@ -52,7 +52,6 @@ from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherRow,
 )
 from d810.analyses.control_flow.emulated_state_walk import walk_emulated_state_machine
-from d810.capabilities.dispatcher import RouterKind
 from d810.capabilities.providers import get_bst_walkers
 from d810.evaluator.hexrays_microcode.emulator import (
     MicroCodeEnvironment,
@@ -231,7 +230,7 @@ class EmulationDispatcherResolver:
                 dispatcher_block=int(disc.entry),
                 compare_block=int(disc.entry),
                 branch_kind="emulated",
-                source=DispatcherType.CONDITIONAL_CHAIN,
+                source=RouterKind.CONDITION_CHAIN,
             )
             for row in result.rows
         )
@@ -241,7 +240,7 @@ class EmulationDispatcherResolver:
             dispatcher_blocks=dispatcher_blocks,
             state_var_stkoff=int(disc.stkoff),
             state_var_lvar_idx=None,
-            source=DispatcherType.CONDITIONAL_CHAIN,
+            source=RouterKind.CONDITION_CHAIN,
             initial_state=int(disc.initial_state),
         )
         logger.info(
@@ -653,7 +652,7 @@ class EmulationDispatcherResolver:
             dispatcher_blocks=frozenset(),
             state_var_stkoff=int(stkoff),
             state_var_lvar_idx=None,
-            source=DispatcherType.CONDITIONAL_CHAIN,
+            source=RouterKind.CONDITION_CHAIN,
         )
         try:
             via_dominance = recover_entry_dominated_initial_state(graph, minimal)

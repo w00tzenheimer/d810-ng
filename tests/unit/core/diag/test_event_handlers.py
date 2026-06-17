@@ -249,7 +249,7 @@ def test_state_dispatcher_rows_buffer_until_snapshot(fake_conn):
         func_ea=0x401000,
         maturity="MMAT_GLBOPT1",
         dispatcher_entry_block=2,
-        dispatcher_kind="CONDITIONAL_CHAIN",
+        dispatcher_kind="CONDITION_CHAIN",
         rows=[
             {
                 "state_const": 0x89407346,

@@ -563,7 +563,7 @@ class TestStateTransitionDispatchResolutionsCommand:
             2,
             [{"state_const": 0x89407346, "target_block": 76}],
             dispatcher_entry_block=5,
-            dispatcher_kind="CONDITIONAL_CHAIN",
+            dispatcher_kind="CONDITION_CHAIN",
         )
         conn.commit()
         conn.close()
