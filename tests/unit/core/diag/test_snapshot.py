@@ -8,6 +8,10 @@ import pytest
 
 from d810._vendor import peewee
 
+from d810.analyses.control_flow.dispatcher_resolution import (
+    StateDispatcherRow as ExactStateDispatcherRow,
+)
+from d810.capabilities.dispatcher import RouterKind
 from d810.core.diag.formatting import format_block_id
 from d810.transforms.block_lineage import (
     BlockLineageEntry,
@@ -139,6 +143,36 @@ def test_snapshot_state_dispatcher_rows_round_trip() -> None:
     assert payload["row_kind"] is None
     assert payload["branch_kind"] == "jz_taken"
     assert payload["target_ea_hex"] == "0x00000001800178e3"
+
+
+def test_snapshot_state_dispatcher_rows_reads_object_router_kind() -> None:
+    conn = create_diag_database(":memory:").connection()
+    conn.execute(
+        "INSERT INTO snapshots VALUES "
+        "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', "
+        "'unknown', 0, 0.0)"
+    )
+
+    snapshot_state_dispatcher_rows(
+        conn,
+        1,
+        [
+            ExactStateDispatcherRow(
+                state_const=0x1234,
+                target_block=9,
+                dispatcher_block=2,
+                compare_block=3,
+                branch_kind="eq",
+                router_kind=RouterKind.CONDITION_CHAIN,
+            )
+        ],
+    )
+
+    row = conn.execute(
+        "SELECT dispatcher_kind, payload_json FROM state_dispatcher_rows"
+    ).fetchone()
+    assert row[0] == "CONDITION_CHAIN"
+    assert json.loads(row[1])["dispatcher_kind"] == "CONDITION_CHAIN"
 
 
 def test_snapshot_state_transition_dispatch_resolutions_round_trip() -> None:
