@@ -27,6 +27,9 @@ from d810.analyses.value_flow import (
     production_value_flow_fact,
     project_value_flow_facts,
 )
+from d810.families.state_machine_cff.ollvm_carrier_profile import (
+    project_ollvm_value_flow_evidence,
+)
 from d810.analyses.value_flow.model import FactObservation
 
 
@@ -82,7 +85,10 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
         confidence=0.78,
     )
 
-    projected = project_value_flow_facts((hodur_byte_store, ollvm_output_store))
+    projected = (
+        *project_value_flow_facts((hodur_byte_store,)),
+        *project_ollvm_value_flow_evidence((ollvm_output_store,)),
+    )
     observable = [fact for fact in projected if fact.kind == OBSERVABLE_MEMORY_DEF_FACT_TYPE]
 
     assert len(observable) == 2
@@ -240,7 +246,25 @@ def test_hodur_return_and_byte_evidence_project_to_standard_value_flow_families(
     assert OBSERVABLE_OUTPUT_FACT_TYPE in kinds
 
 
-def test_unanchored_ollvm_oracle_fact_does_not_emit_generic_authority() -> None:
+def test_generic_projection_ignores_raw_ollvm_profile_evidence() -> None:
+    ollvm_output_store = _fact(
+        fact_id="ollvm-output-store",
+        kind="OllvmValueFlowEvidence",
+        payload={
+            "role": "ARG_OUTPUT_STORE_CANDIDATE",
+            "carrier_token": "%var_30",
+            "instruction_index": 7,
+            "instruction_ea": 0x18000F00D,
+            "instruction_dstr": "stx [ds.4:%var_30.8], %var_88.4",
+        },
+        source_block=11,
+        source_ea=0x18000F00D,
+    )
+
+    assert project_value_flow_facts((ollvm_output_store,)) == ()
+
+
+def test_unanchored_ollvm_oracle_fact_does_not_emit_profile_authority() -> None:
     ollvm_output_store = _fact(
         fact_id="ollvm-output-store",
         kind="OllvmValueFlowEvidence",
@@ -253,7 +277,7 @@ def test_unanchored_ollvm_oracle_fact_does_not_emit_generic_authority() -> None:
         source_ea=None,
     )
 
-    assert project_value_flow_facts((ollvm_output_store,)) == ()
+    assert project_ollvm_value_flow_evidence((ollvm_output_store,)) == ()
 
 
 def test_exact_arg_and_local_store_candidates_emit_two_store_families() -> None:
@@ -272,7 +296,7 @@ def test_exact_arg_and_local_store_candidates_emit_two_store_families() -> None:
         confidence=0.78,
     )
 
-    projected = project_value_flow_facts((output_store,))
+    projected = project_ollvm_value_flow_evidence((output_store,))
     by_kind = {fact.kind: fact for fact in projected}
 
     assert OBSERVABLE_MEMORY_DEF_FACT_TYPE in by_kind
@@ -313,7 +337,7 @@ def test_exact_arg_and_local_store_candidates_keep_carrier_store_promotion(
         confidence=0.78,
     )
 
-    kinds = {fact.kind for fact in project_value_flow_facts((output_store,))}
+    kinds = {fact.kind for fact in project_ollvm_value_flow_evidence((output_store,))}
 
     assert OBSERVABLE_MEMORY_DEF_FACT_TYPE in kinds
     assert SCALAR_PROMOTION_FACT_TYPE in kinds
@@ -364,7 +388,7 @@ def test_ollvm_alias_expression_loop_and_store_proofs_emit_concrete_families() -
         source_ea=0x18000F300,
     )
 
-    kinds = {fact.kind for fact in project_value_flow_facts((
+    kinds = {fact.kind for fact in project_ollvm_value_flow_evidence((
         accumulator,
         loop_index,
         indirect_store,
@@ -393,7 +417,7 @@ def test_local_working_pointer_emits_may_alias_evidence() -> None:
         source_ea=0x18000F111,
     )
 
-    kinds = {fact.kind for fact in project_value_flow_facts((local_pointer,))}
+    kinds = {fact.kind for fact in project_ollvm_value_flow_evidence((local_pointer,))}
 
     assert MAY_ALIAS_FACT_TYPE in kinds
     assert SCALAR_REPLACEMENT_FACT_TYPE in kinds
@@ -416,7 +440,7 @@ def test_output_pointer_emits_points_to_fact_family() -> None:
 
     projected = [
         fact
-        for fact in project_value_flow_facts((output_pointer,))
+        for fact in project_ollvm_value_flow_evidence((output_pointer,))
         if fact.kind == POINTS_TO_FACT_TYPE
     ]
 
@@ -446,7 +470,7 @@ def test_accumulator_without_local_base_does_not_emit_scalarization_authority() 
         source_ea=0x18000F123,
     )
 
-    projected = project_value_flow_facts((accumulator,))
+    projected = project_ollvm_value_flow_evidence((accumulator,))
     kinds = {fact.kind for fact in projected}
 
     assert SCALAR_REPLACEMENT_FACT_TYPE not in kinds
@@ -469,7 +493,7 @@ def test_loop_index_carrier_does_not_authorize_local_scalarization() -> None:
         source_ea=0x18000F200,
     )
 
-    projected = project_value_flow_facts((loop_index,))
+    projected = project_ollvm_value_flow_evidence((loop_index,))
     kinds = {fact.kind for fact in projected}
 
     assert LOOP_PREDICATE_VALUE_FACT_TYPE in kinds
@@ -493,7 +517,7 @@ def test_accumulator_scalarization_authority_is_named_by_proof_family() -> None:
         source_ea=0x18000F123,
     )
 
-    projected = project_value_flow_facts((accumulator,))
+    projected = project_ollvm_value_flow_evidence((accumulator,))
     scalarization = [
         fact for fact in projected
         if fact.kind == SCALAR_REPLACEMENT_FACT_TYPE
@@ -522,7 +546,7 @@ def test_call_result_oracle_fact_becomes_concrete_call_result_family() -> None:
         source_ea=0x18000F123,
     )
 
-    (projected,) = project_value_flow_facts((compare,))
+    (projected,) = project_ollvm_value_flow_evidence((compare,))
 
     assert projected.kind == CALL_RETURN_VALUE_FACT_TYPE
     assert projected.payload["storage_identity"] == "%var_58"

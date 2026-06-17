@@ -1,9 +1,11 @@
-"""Tests for the OLLVM carrier backend adapter boundary."""
+"""Tests for the OLLVM carrier profile boundary."""
 from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.backends.hexrays.evidence import ollvm_carrier_backend
+from d810.core import project as project_callbacks
+from d810.backends.facts.ida import ensure_hexrays_lifter_registered
+from d810.families.state_machine_cff import ollvm_carrier_profile
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
 
@@ -46,11 +48,12 @@ def test_raw_semantic_carrier_facts_collect_from_adapted_target(monkeypatch) -> 
             return ("raw_fact",)
 
     monkeypatch.setattr(
-        "d810.analyses.value_flow.ollvm_semantic_carrier.OllvmValueFlowEvidenceCollector",
+        "d810.families.state_machine_cff.ollvm_carrier_profile.OllvmCarrierRawEvidenceCollector",
         FakeCollector,
     )
 
-    facts = ollvm_carrier_backend.collect_ollvm_raw_semantic_carrier_facts(live_mba)
+    ensure_hexrays_lifter_registered()
+    facts = ollvm_carrier_profile.collect_ollvm_raw_semantic_carrier_facts(live_mba)
 
     assert facts == ("raw_fact",)
     assert seen["func_ea"] == 0x18000E790
@@ -68,7 +71,7 @@ def test_raw_semantic_carrier_facts_collect_from_adapted_target(monkeypatch) -> 
 
 
 def test_raw_semantic_carrier_facts_return_empty_for_empty_target() -> None:
-    facts = ollvm_carrier_backend.collect_ollvm_raw_semantic_carrier_facts(object())
+    facts = ollvm_carrier_profile.collect_ollvm_raw_semantic_carrier_facts(object())
 
     assert facts == ()
 
@@ -76,4 +79,45 @@ def test_raw_semantic_carrier_facts_return_empty_for_empty_target() -> None:
 def test_collector_target_reuses_existing_snapshot_target() -> None:
     target = SimpleNamespace(blocks={})
 
-    assert ollvm_carrier_backend._collector_target(target) is target
+    assert ollvm_carrier_profile._collector_target(target) is target
+
+
+def test_profile_registration_requires_explicit_project_opt_in(monkeypatch) -> None:
+    monkeypatch.setattr(
+        project_callbacks,
+        "_recon_fact_collector_registration_handlers",
+        {},
+    )
+    project_callbacks.register_recon_fact_collector_registration_handler(
+        ollvm_carrier_profile._OLLVM_CARRIER_REGISTRATION_HANDLER,
+        ollvm_carrier_profile._register_ollvm_carrier_fact_collectors,
+    )
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.collectors: list[object] = []
+
+        def register_fact_collector(self, collector: object) -> None:
+            self.collectors.append(collector)
+
+    runtime = Runtime()
+    project_callbacks.emit_recon_fact_collector_registration(
+        runtime=runtime,
+        project_config={},
+    )
+
+    assert runtime.collectors == []
+
+    project_callbacks.emit_recon_fact_collector_registration(
+        runtime=runtime,
+        project_config={
+            "recon_fact_profile_modules": [
+                ollvm_carrier_profile.OLLVM_CARRIER_PROFILE_MODULE,
+            ],
+        },
+    )
+
+    assert [
+        getattr(collector, "name", None)
+        for collector in runtime.collectors
+    ] == ["OllvmCarrierProfileFactCollector"]

@@ -103,6 +103,10 @@ class MicrocodeConstants:
     mop_S: int
     mop_r: int
     mop_b: int
+    m_stx: int = -1
+    m_call: int = -1
+    m_icall: int = -1
+    m_jcnd: int = -1
 
 
 @dataclass(frozen=True)

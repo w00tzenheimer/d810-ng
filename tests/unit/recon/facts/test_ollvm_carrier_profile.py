@@ -1,10 +1,12 @@
-"""Tests for OllvmValueFlowEvidenceCollector."""
+"""Tests for OLLVM profile-local raw evidence collection."""
 from __future__ import annotations
 
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
-from d810.analyses.value_flow.ollvm_semantic_carrier import OllvmValueFlowEvidenceCollector
+from d810.families.state_machine_cff.ollvm_carrier_profile import (
+    OllvmCarrierRawEvidenceCollector,
+)
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
 
@@ -53,7 +55,7 @@ def _target(*blocks: BlockSnapshot) -> SimpleNamespace:
 
 
 def _collect(target: object):
-    return OllvmValueFlowEvidenceCollector().collect(
+    return OllvmCarrierRawEvidenceCollector().collect(
         target,
         func_ea=0x18000E360,
         maturity=_MATURITY_VALUES["MMAT_GLBOPT1"],

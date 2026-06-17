@@ -21,6 +21,9 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     recover_handler_transitions,
 )
 from d810.analyses.value_flow.model import FactObservation
+from d810.families.state_machine_cff.ollvm_carrier_profile import (
+    project_ollvm_value_flow_evidence,
+)
 from d810.analyses.value_flow.state_write import (
     MicrocodeEvalSeams,
     forward_eval_insn as _portable_forward_eval_insn,
@@ -640,7 +643,10 @@ def test_stack_temp_shared_write_emits_only_write_anchor_routes(_seam) -> None:
 
 class _FactView:
     def __init__(self, observations: tuple[FactObservation, ...]) -> None:
-        self.active_observations = observations
+        self.active_observations = (
+            *observations,
+            *project_ollvm_value_flow_evidence(observations),
+        )
 
 
 def _ollvm_loop_index_fact(*, source_block: int, source_ea: int) -> FactObservation:
