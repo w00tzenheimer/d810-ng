@@ -180,10 +180,12 @@ def select_router(
 ) -> object | None:
     """Pick and materialise a router from ``resolvers`` over ``ctx``.
 
-    ``configured_kind`` set -> restrict to providers producing that kind (a pin); if
-    none produce it, fall back to detection (the pin is a preference, never a hard
-    failure).  Detection ranks by ``(confidence, specificity)`` descending -- coverage
-    dominates, the per-provider priority breaks ties.  Returns the selected provider's
+    ``configured_kind`` set -> restrict to providers producing that kind (a pin);
+    if none produce it, fall back to detection. A ``CONDITION_CHAIN`` pin is a
+    preference for usable range evidence, not permission to prefer a collapsed
+    catch-all over a higher-coverage exact map. Detection ranks by
+    ``(confidence, specificity)`` descending -- coverage dominates, the
+    per-provider priority breaks ties. Returns the selected provider's
     materialised router, or ``None`` when nobody applies.
     """
     ranked = [
@@ -193,11 +195,21 @@ def select_router(
     ]
     if not ranked:
         return None
+
+    def rank_key(rc):
+        return (rc[1].confidence, rc[1].specificity)
+
+    best_overall = max(ranked, key=rank_key)
     if configured_kind is not None:
         forced = [rc for rc in ranked if rc[1].router_kind == configured_kind]
         if forced:
-            ranked = forced
-    resolver, _ = max(
-        ranked, key=lambda rc: (rc[1].confidence, rc[1].specificity)
-    )
+            best_forced = max(forced, key=rank_key)
+            forced_is_collapsed_condition = (
+                configured_kind is RouterKind.CONDITION_CHAIN
+                and best_forced[1].confidence <= 0
+                and best_overall[1].confidence > best_forced[1].confidence
+            )
+            if not forced_is_collapsed_condition:
+                ranked = forced
+    resolver, _ = max(ranked, key=rank_key)
     return resolver.resolve(ctx)
