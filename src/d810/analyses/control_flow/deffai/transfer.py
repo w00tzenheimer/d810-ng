@@ -117,7 +117,7 @@ def _arm_targets(
     """The (taken, fallthrough) successor serials of a 2-way branch tail.
 
     ``taken = tail.d.block_ref``; the fallthrough is the block's other successor
-    (mirrors ``dispatcher_discovery_extractors.extract_bst_comparisons``).
+    (mirrors ``dispatcher_discovery_extractors.extract_state_arm_comparisons``).
     Returns ``(None, None)`` when the shape is not a clean 2-way branch.
     """
     tail = block.tail

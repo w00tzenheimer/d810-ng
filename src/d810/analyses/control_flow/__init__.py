@@ -2,8 +2,9 @@
 
 ``d810.analyses.control_flow`` hosts backend-neutral CFG analyses:
 dominators, reachability, SESE regions, and the state-machine / dispatcher
-recognition graph algorithms relocated out of ``d810.recon.flow`` (BST
-interval maps, dispatcher node models, snapshot-only topology helpers).
+recognition graph algorithms relocated out of ``d810.recon.flow``
+(condition-chain interval maps, route-node models, snapshot-only topology
+helpers).
 
 Portable-core layer: no live IDA / Hex-Rays imports, no vendor mutation
 surfaces (enforced by the ``portable-core-*`` import-linter contracts and
