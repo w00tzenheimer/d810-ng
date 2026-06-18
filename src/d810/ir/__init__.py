@@ -36,9 +36,10 @@ Scope discipline:
   ``ControlTransferKind`` + ``CallKind``. Backend adapters normalize raw
   opcodes into these families and keep raw opcode integers/names in
   diagnostic attrs only.
-* llr-epu0 scaffold: ``Instruction`` is the canonical portable instruction
-  record. Its ``operation`` field uses the operation vocabulary above; legacy
-  statement projections remain views over the canonical instruction source.
+* llr-epu0: ``Instruction`` is the canonical portable instruction record. Its
+  ``operation`` field uses the operation vocabulary above, operands/results are
+  ``Varnode``s, and legacy statement projections remain views over the
+  canonical instruction source.
 """
 
 from __future__ import annotations
@@ -46,7 +47,13 @@ from __future__ import annotations
 from .confidence import FactConfidence
 from .expressions import Add, Const, ExprRef, Load, Move, Store, Sub, ValueOpKind
 from .handles import BlockHandle, FlowGraphHandle, InsnHandle, OperandHandle
-from .instructions import Instruction, InstructionControl
+from .instructions import (
+    Instruction,
+    InstructionControl,
+    InstructionEffect,
+    InstructionEffectKind,
+    InstructionSwitchCase,
+)
 from .locations import (
     AggregateLocation,
     MemoryCell,
@@ -87,6 +94,9 @@ __all__ = [
     "InsnHandle",
     "Instruction",
     "InstructionControl",
+    "InstructionEffect",
+    "InstructionEffectKind",
+    "InstructionSwitchCase",
     "InstructionResultRef",
     "LiftedOpcode",
     "Load",

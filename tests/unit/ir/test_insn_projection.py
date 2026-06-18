@@ -9,18 +9,25 @@ from __future__ import annotations
 
 from dataclasses import fields
 
-from d810.ir.expressions import Add, And, Const, Move, Sub
+from d810.ir.expressions import Add, And, Const, Move, Sub, ValueOpKind
 from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
 from d810.ir.insn_projection import (
     project_assignment,
     project_conditional_branch,
     project_instruction,
 )
-from d810.ir.instructions import Instruction, InstructionControl
+from d810.ir.instructions import (
+    Instruction,
+    InstructionControl,
+    InstructionEffect,
+    InstructionEffectKind,
+    InstructionSwitchCase,
+)
 from d810.ir.locations import RegisterLocation, StackSlot, WeakStackSlot
 from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.ir.statements import Assignment, ConditionalBranch
 from d810.ir.value_refs import DefinitionRef
+from d810.ir.varnode import Space, Varnode
 
 M_MOV = 0x4
 
@@ -35,6 +42,18 @@ def _stk(offset: int, size: int = 4) -> MopSnapshot:
 
 def _reg(register_id: int, size: int = 4) -> MopSnapshot:
     return MopSnapshot(kind=OperandKind.REGISTER, reg=register_id, size=size)
+
+
+def _glob(address: int, size: int = 8) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.GLOBAL, gaddr=address, size=size)
+
+
+def _lvar(offset: int, size: int = 4) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.LVAR, lvar_off=offset, size=size)
+
+
+def _block(serial: int) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.BLOCK, block_ref=serial)
 
 
 def _mov(l: MopSnapshot | None, d: MopSnapshot | None) -> InsnSnapshot:
@@ -75,8 +94,8 @@ def test_instruction_projection_value_op_keeps_raw_opcode_in_attrs_only():
     instruction = project_instruction(insn)
 
     assert instruction.operation is insn.value_op_kind
-    assert instruction.inputs == ()
-    assert instruction.result is None
+    assert instruction.inputs == (Varnode(Space.CONST, 0x41, 4),)
+    assert instruction.result == Varnode(Space.STACK, 0x10, 4)
     assert instruction.effects == ()
     assert instruction.control is None
     assert instruction.attrs["ea"] == 0x1000
@@ -85,6 +104,46 @@ def test_instruction_projection_value_op_keeps_raw_opcode_in_attrs_only():
     assert instruction.attrs["raw_opcode_name"] == "m_mov"
     assert instruction.attrs["producer_stage_id"] == 14
     assert not hasattr(instruction, "raw_opcode")
+
+
+def test_instruction_projection_preserves_register_stack_global_lvar_varnodes():
+    add = InsnSnapshot(
+        opcode=0x12,
+        ea=0x1000,
+        operands=(),
+        kind=InsnKind.ADD,
+        l=_reg(1, size=8),
+        r=_glob(0x180012340, size=8),
+        d=_lvar(0x28, size=8),
+    )
+
+    instruction = project_instruction(add)
+
+    assert instruction.operation is add.value_op_kind
+    assert instruction.inputs == (
+        Varnode(Space.REGISTER, 1, 8),
+        Varnode(Space.GLOBAL, 0x180012340, 8),
+    )
+    assert instruction.result == Varnode(Space.LVAR, 0x28, 8)
+
+
+def test_instruction_projection_skips_unknown_operands():
+    weak_stack = MopSnapshot(kind=OperandKind.STACK, stkoff=None, size=4)
+    number_without_value = MopSnapshot(kind=OperandKind.NUMBER, value=None, size=4)
+    insn = InsnSnapshot(
+        opcode=0x12,
+        ea=0x1000,
+        operands=(),
+        kind=InsnKind.ADD,
+        l=weak_stack,
+        r=number_without_value,
+        d=weak_stack,
+    )
+
+    instruction = project_instruction(insn)
+
+    assert instruction.inputs == ()
+    assert instruction.result is None
 
 
 def test_mov_const_to_stack_projects_const_and_stackslot():
@@ -177,6 +236,11 @@ def test_instruction_projection_conditional_branch_uses_control_operation():
     instruction = project_instruction(_jcc(PredicateKind.EQ, _stk(0x3C), _num(7)))
 
     assert instruction.operation is ControlTransferKind.CONDITIONAL_BRANCH
+    assert instruction.inputs == (
+        Varnode(Space.STACK, 0x3C, 4),
+        Varnode(Space.CONST, 7, 4),
+    )
+    assert instruction.result is None
     assert instruction.control == InstructionControl(
         transfer=ControlTransferKind.CONDITIONAL_BRANCH,
         predicate=PredicateKind.EQ,
@@ -207,8 +271,33 @@ def test_instruction_projection_predicate_materialization_uses_predicate_operati
     instruction = project_instruction(insn)
 
     assert instruction.operation is PredicateKind.EQ
+    assert instruction.inputs == ()
+    assert instruction.result is None
     assert instruction.control is None
     assert instruction.attrs["raw_opcode_name"] == "m_setz"
+
+
+def test_instruction_projection_predicate_materialization_uses_destination_result():
+    insn = InsnSnapshot(
+        opcode=0x34,
+        ea=0x1000,
+        operands=(),
+        kind=InsnKind.UNKNOWN,
+        l=_reg(1),
+        r=_num(0),
+        d=_reg(2, size=1),
+        predicate_kind=PredicateKind.EQ,
+        opcode_attrs={"backend": "hexrays", "raw_opcode_name": "m_setz"},
+    )
+
+    instruction = project_instruction(insn)
+
+    assert instruction.operation is PredicateKind.EQ
+    assert instruction.inputs == (
+        Varnode(Space.REGISTER, 1, 4),
+        Varnode(Space.CONST, 0, 4),
+    )
+    assert instruction.result == Varnode(Space.REGISTER, 2, 1)
 
 
 def test_instruction_projection_raw_opcode_name_does_not_authorize_semantics():
@@ -233,22 +322,149 @@ def test_instruction_projection_call_and_return_operations():
             ea=0x1000,
             operands=(),
             kind=InsnKind.CALL,
+            l=_glob(0x180010000),
+            d=_reg(0, size=8),
             call_kind=CallKind.DIRECT,
         )
     )
     ret = project_instruction(
-        InsnSnapshot(opcode=0x42, ea=0x1004, operands=(), kind=InsnKind.RET)
+        InsnSnapshot(opcode=0x42, ea=0x1004, operands=(), kind=InsnKind.RET, l=_reg(0, size=8))
     )
 
     assert call.operation is CallKind.DIRECT
-    assert call.control is None
+    assert call.inputs == (Varnode(Space.GLOBAL, 0x180010000, 8),)
+    assert call.result == Varnode(Space.REGISTER, 0, 8)
+    assert call.effects == (
+        InstructionEffect(
+            kind=InstructionEffectKind.CALL,
+            target=Varnode(Space.GLOBAL, 0x180010000, 8),
+            value=Varnode(Space.REGISTER, 0, 8),
+        ),
+    )
+    assert call.control == InstructionControl(
+        call_kind=CallKind.DIRECT,
+        call_target=Varnode(Space.GLOBAL, 0x180010000, 8),
+    )
     assert ret.operation is ControlTransferKind.RETURN
-    assert ret.control == InstructionControl(transfer=ControlTransferKind.RETURN)
+    assert ret.inputs == (Varnode(Space.REGISTER, 0, 8),)
+    assert ret.result is None
+    assert ret.control == InstructionControl(
+        transfer=ControlTransferKind.RETURN,
+        return_value=Varnode(Space.REGISTER, 0, 8),
+    )
+
+
+def test_instruction_projection_store_has_typed_effect_not_result():
+    store = project_instruction(
+        InsnSnapshot(
+            opcode=0x21,
+            ea=0x1000,
+            operands=(),
+            kind=InsnKind.STORE,
+            l=_reg(1, size=8),
+            r=_reg(2, size=4),
+            d=_glob(0x180020000, size=4),
+        )
+    )
+
+    assert store.operation is ValueOpKind.STORE
+    assert store.inputs == (
+        Varnode(Space.REGISTER, 1, 8),
+        Varnode(Space.REGISTER, 2, 4),
+        Varnode(Space.GLOBAL, 0x180020000, 4),
+    )
+    assert store.result is None
+    assert store.effects == (
+        InstructionEffect(
+            kind=InstructionEffectKind.STORE,
+            target=Varnode(Space.GLOBAL, 0x180020000, 4),
+            segment=Varnode(Space.REGISTER, 2, 4),
+            value=Varnode(Space.REGISTER, 1, 8),
+        ),
+    )
+
+
+def test_instruction_projection_goto_indirect_and_switch_control_payloads():
+    goto = project_instruction(
+        InsnSnapshot(opcode=0x30, ea=0x1000, operands=(), kind=InsnKind.GOTO, l=_block(7))
+    )
+    ijmp = project_instruction(
+        InsnSnapshot(
+            opcode=0x31,
+            ea=0x1004,
+            operands=(),
+            kind=InsnKind.INDIRECT_JUMP,
+            l=_reg(9, size=8),
+        )
+    )
+    cases = (((1, 2), 10), ((), 11))
+    table = project_instruction(
+        InsnSnapshot(
+            opcode=0x32,
+            ea=0x1008,
+            operands=(),
+            kind=InsnKind.TABLE_JUMP,
+            l=MopSnapshot(kind=OperandKind.CASE_LIST, switch_cases=cases),
+            r=_reg(3, size=4),
+        )
+    )
+
+    assert goto.control == InstructionControl(transfer=ControlTransferKind.GOTO, target=7)
+    assert ijmp.control == InstructionControl(
+        transfer=ControlTransferKind.INDIRECT_BRANCH,
+        indirect_target=Varnode(Space.REGISTER, 9, 8),
+    )
+    assert table.operation is ControlTransferKind.TABLE_BRANCH
+    assert table.inputs == (Varnode(Space.REGISTER, 3, 4),)
+    assert table.control == InstructionControl(
+        transfer=ControlTransferKind.TABLE_BRANCH,
+        switch_cases=(
+            InstructionSwitchCase(values=(1, 2), target=10),
+            InstructionSwitchCase(values=(), target=11),
+        ),
+    )
+
+
+def test_subinsn_indirect_target_reuses_input_temp():
+    nested = _subinsn(InsnKind.ADD, _reg(1, size=8), _num(4, size=8))
+    instruction = project_instruction(
+        InsnSnapshot(
+            opcode=0x31,
+            ea=0x1000,
+            operands=(),
+            kind=InsnKind.INDIRECT_JUMP,
+            l=nested,
+        )
+    )
+
+    assert instruction.inputs == (
+        Varnode(Space.TEMP, 0, 0),
+        Varnode(Space.REGISTER, 1, 8),
+        Varnode(Space.CONST, 4, 8),
+    )
+    assert instruction.control == InstructionControl(
+        transfer=ControlTransferKind.INDIRECT_BRANCH,
+        indirect_target=Varnode(Space.TEMP, 0, 0),
+    )
 
 
 def test_assignment_and_conditional_branch_are_statement_views_not_instructions():
     assert not issubclass(Assignment, Instruction)
     assert not issubclass(ConditionalBranch, Instruction)
+
+
+def test_assignment_view_reuses_canonical_instruction_boundary():
+    insn = _mov(_num(0x41), _stk(0x10))
+    instruction = project_instruction(insn)
+    assignment = project_assignment(insn)
+
+    assert instruction.operation is ValueOpKind.MOVE
+    assert instruction.inputs == (Varnode(Space.CONST, 0x41, 4),)
+    assert instruction.result == Varnode(Space.STACK, 0x10, 4)
+    assert assignment == Assignment(
+        target=DefinitionRef(location=StackSlot(offset=0x10, size=4)),
+        value=Const(value=0x41),
+    )
 
 
 def _subinsn(sub_kind, sub_l: MopSnapshot, sub_r: MopSnapshot) -> MopSnapshot:
@@ -258,7 +474,14 @@ def _subinsn(sub_kind, sub_l: MopSnapshot, sub_r: MopSnapshot) -> MopSnapshot:
 def test_nested_mop_d_and_lifts_to_And_expression():
     # ``jz (var & 0x3F), #0`` -- the compared operand is a nested m_and.
     nested = _subinsn(InsnKind.AND, _stk(0x3C), _num(0x3F))
+    instruction = project_instruction(_jcc(PredicateKind.EQ, nested, _num(0)))
     cb = project_conditional_branch(_jcc(PredicateKind.EQ, nested, _num(0)))
+    assert instruction.inputs == (
+        Varnode(Space.TEMP, 0, 0),
+        Varnode(Space.STACK, 0x3C, 4),
+        Varnode(Space.CONST, 0x3F, 4),
+        Varnode(Space.CONST, 0, 4),
+    )
     assert cb.lhs == And(
         left=Move(source=DefinitionRef(location=StackSlot(offset=0x3C, size=4))),
         right=Const(value=0x3F),
@@ -268,7 +491,16 @@ def test_nested_mop_d_and_lifts_to_And_expression():
 def test_nested_mop_d_recurses_two_levels():
     # ``((var - 1) & 0x3F)``
     outer = _subinsn(InsnKind.AND, _subinsn(InsnKind.SUB, _stk(0x10), _num(1)), _num(0x3F))
+    instruction = project_instruction(_jcc(PredicateKind.NE, outer, _num(0)))
     cb = project_conditional_branch(_jcc(PredicateKind.NE, outer, _num(0)))
+    assert instruction.inputs == (
+        Varnode(Space.TEMP, 0, 0),
+        Varnode(Space.TEMP, 1, 0),
+        Varnode(Space.STACK, 0x10, 4),
+        Varnode(Space.CONST, 1, 4),
+        Varnode(Space.CONST, 0x3F, 4),
+        Varnode(Space.CONST, 0, 4),
+    )
     assert cb.lhs == And(
         left=Sub(
             left=Move(source=DefinitionRef(location=StackSlot(offset=0x10, size=4))),
