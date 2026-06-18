@@ -142,6 +142,7 @@ class MopSnapshot:
     # of the flattened ``stack_refs`` (ticket llr-lxas).  None for non-nested
     # operands; ``sub_l`` / ``sub_r`` recurse for deeper nesting.
     sub_kind: "InsnKind | None" = None
+    sub_value_op_kind: "ValueOpKind | None" = None
     sub_l: "MopSnapshot | None" = None
     sub_r: "MopSnapshot | None" = None
 

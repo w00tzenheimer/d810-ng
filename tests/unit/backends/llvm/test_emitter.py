@@ -58,6 +58,22 @@ def _subinsn(
     )
 
 
+def _semantic_subinsn(
+    value_op_kind: ValueOpKind,
+    sub_l: MopSnapshot | None,
+    sub_r: MopSnapshot | None = None,
+    *,
+    size: int = 0,
+) -> MopSnapshot:
+    return MopSnapshot(
+        kind=OperandKind.SUBINSN,
+        size=size,
+        sub_value_op_kind=value_op_kind,
+        sub_l=sub_l,
+        sub_r=sub_r,
+    )
+
+
 def _mov(src: MopSnapshot, dst: MopSnapshot, ea: int = 0x1000) -> InsnSnapshot:
     return InsnSnapshot(opcode=0x04, ea=ea, operands=(), kind=InsnKind.MOV, l=src, d=dst)
 
@@ -321,6 +337,24 @@ def test_value_op_with_nested_supported_operand_emits_temp_before_parent():
     assert " = sub i32 " in result.ir_text
     assert " = add i32 " in result.ir_text
     assert result.ir_text.index(" = sub i32 ") < result.ir_text.index(" = add i32 ")
+
+
+def test_nested_extended_value_op_kind_emits_supported_temp():
+    nested = _semantic_subinsn(ValueOpKind.XOR, _stk(0x10), _num(0xFF))
+    flow = _graph(
+        _block(0, (1, 2), (_jcc(PredicateKind.NE, nested, _num(0)),)),
+        _block(1, (), (_ret(),)),
+        _block(2, (), (_ret(),)),
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert " = xor i32 " in result.ir_text
+    assert " = icmp ne i32 " in result.ir_text
+    assert "nested_expression_unsupported" not in {
+        reason.kind.value for reason in result.unsupported
+    }
 
 
 def test_raw_opcode_attrs_do_not_authorize_conditional_branch():
@@ -622,6 +656,25 @@ def test_unsupported_nested_expression_has_structured_kind():
     assert any(
         reason.kind is UnsupportedLiftKind.NESTED_EXPRESSION_UNSUPPORTED
         and reason.reason == "nested expression unknown is unsupported in M1f"
+        for reason in result.unsupported
+    )
+
+
+def test_unsupported_nested_value_op_kind_fails_closed():
+    nested = _semantic_subinsn(ValueOpKind.SHL, _stk(0x10), _num(1))
+    flow = _graph(
+        _block(0, (1, 2), (_jcc(PredicateKind.EQ, nested, _num(0)),)),
+        _block(1, (), (_ret(),)),
+        _block(2, (), (_ret(),)),
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.VALUE_OP_UNSUPPORTED
+        and reason.reason == "value operation shl is unsupported in M1a"
         for reason in result.unsupported
     )
 

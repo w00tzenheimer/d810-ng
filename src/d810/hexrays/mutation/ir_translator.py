@@ -453,7 +453,7 @@ def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
         # analyses can read the compared/computed expression structure, not
         # just the flattened ``stack_refs``.  ``sub_l``/``sub_r`` recurse.
         inner = getattr(mop, "d", None)
-        sub_kind = sub_l = sub_r = None
+        sub_kind = sub_value_op_kind = sub_l = sub_r = None
         if inner is not None:
             # Match the defensive ``getattr`` used for ``l``/``r`` below so a
             # partial sub-instruction (a minsn without an opcode, or a test
@@ -464,6 +464,9 @@ def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
             sub_kind = (
                 None if sub_opcode is None else _insn_kind_from_hexrays(sub_opcode)
             )
+            sub_value_op_kind = (
+                None if sub_opcode is None else opcode_lift.value_op_from_opcode(sub_opcode)
+            )
             sub_l = capture_mop_snapshot(getattr(inner, "l", None))
             sub_r = capture_mop_snapshot(getattr(inner, "r", None))
         return CfgMopSnapshot(
@@ -471,6 +474,7 @@ def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
             size=size,
             stack_refs=_stack_refs_from_mop(mop),
             sub_kind=sub_kind,
+            sub_value_op_kind=sub_value_op_kind,
             sub_l=sub_l,
             sub_r=sub_r,
             kind=kind,

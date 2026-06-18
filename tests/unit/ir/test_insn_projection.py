@@ -518,6 +518,19 @@ def _subinsn(sub_kind, sub_l: MopSnapshot, sub_r: MopSnapshot) -> MopSnapshot:
     return MopSnapshot(kind=OperandKind.SUBINSN, sub_kind=sub_kind, sub_l=sub_l, sub_r=sub_r)
 
 
+def _semantic_subinsn(
+    value_op_kind: ValueOpKind,
+    sub_l: MopSnapshot,
+    sub_r: MopSnapshot,
+) -> MopSnapshot:
+    return MopSnapshot(
+        kind=OperandKind.SUBINSN,
+        sub_value_op_kind=value_op_kind,
+        sub_l=sub_l,
+        sub_r=sub_r,
+    )
+
+
 def test_nested_mop_d_and_lifts_to_And_expression():
     # ``jz (var & 0x3F), #0`` -- the compared operand is a nested m_and.
     nested = _subinsn(InsnKind.AND, _stk(0x3C), _num(0x3F))
@@ -597,6 +610,25 @@ def test_instruction_sequence_lowers_nested_two_level_expression_child_first():
     assert branch.operation is ControlTransferKind.CONDITIONAL_BRANCH
     assert branch.inputs == (
         Varnode(Space.TEMP, 1, 4),
+        Varnode(Space.CONST, 0, 4),
+    )
+
+
+def test_instruction_sequence_uses_nested_value_op_kind_for_extended_ops():
+    nested = _semantic_subinsn(ValueOpKind.XOR, _stk(0x10), _num(0xFF))
+    sequence = project_instruction_sequence(_jcc(PredicateKind.NE, nested, _num(0)))
+
+    assert len(sequence) == 2
+    xor_temp, branch = sequence
+    assert xor_temp.operation is ValueOpKind.XOR
+    assert xor_temp.inputs == (
+        Varnode(Space.STACK, 0x10, 4),
+        Varnode(Space.CONST, 0xFF, 4),
+    )
+    assert xor_temp.result == Varnode(Space.TEMP, 0, 4)
+    assert xor_temp.attrs["nested_sub_value_op_kind"] == "xor"
+    assert branch.inputs == (
+        Varnode(Space.TEMP, 0, 4),
         Varnode(Space.CONST, 0, 4),
     )
 
