@@ -45,6 +45,10 @@ class AnalysisManager:
         """Return a prior pass's published result, or ``default``."""
         return self._derived.get(name, default)
 
+    def has_analysis(self, name: str) -> bool:
+        """Return whether ``name`` is available as a published or cached analysis."""
+        return name in self._derived or name in self._cache
+
     def view(self) -> "AnalysisManager":
         """Return the read handle passed to passes as ``ctx.facts``."""
         return self
@@ -64,5 +68,10 @@ class AnalysisManager:
         self._cache = {
             name: result
             for name, result in self._cache.items()
+            if preserved.preserves(name)
+        }
+        self._derived = {
+            name: result
+            for name, result in self._derived.items()
             if preserved.preserves(name)
         }

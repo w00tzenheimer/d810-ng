@@ -12,6 +12,7 @@ from d810.transforms.plan import PatchPlan
 def test_defaults():
     assert pp.PassResult().rewrite_plan == PatchPlan()
     assert pp.PassResult().run_later == ()
+    assert pp.PassResult().analysis_outputs == {}
     assert pp.CapabilityPolicy().required == frozenset()
     assert pp.SafetyPolicy().name == "default"
     assert pp.SafetyPolicy().golden_required is False
@@ -23,6 +24,11 @@ def test_rewriteplan_alias_is_patchplan():
 
 def test_preserved_analyses():
     assert pp.PassResult().preserved.preserves("anything") is True  # default all
+    assert pp.PassResult().preserved_explicit is False
+    assert (
+        pp.PassResult(preserved=pp.PreservedAnalyses.none()).preserved_explicit
+        is True
+    )
     assert pp.PreservedAnalyses.none().preserves("x") is False
     keep = pp.PreservedAnalyses.preserving({"dominators"})
     assert keep.preserves("dominators") is True

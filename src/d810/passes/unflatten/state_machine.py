@@ -300,11 +300,14 @@ class RecoverDispatcher(PipelinePass):
                 machine, context.graph, min_state_constant
             )
             _publish(context, "recovered_machine", machine)
+            analysis_outputs = {"recovered_machine": machine}
         else:
             recovery = recover_dispatcher(
                 context.graph, context.facts, min_state_constant=min_state_constant
             )
+            analysis_outputs = {}
         _publish(context, self.name, recovery)
+        analysis_outputs[self.name] = recovery
         # S2: build the consolidated ComparisonDispatcherModel for comparison
         # router kinds, folding in the pristine range/interval evidence so
         # interval-routed next-states resolve via WrappedInterval.contains. The
@@ -312,7 +315,12 @@ class RecoverDispatcher(PipelinePass):
         # for non-comparison kinds (caller falls back to exact-only).
         model = _build_comparison_model(recovery, _analysis(context, "range_evidence"))
         _publish(context, "dispatcher_model", model)
-        return PassResult(facts=(recovery,), preserved=PreservedAnalyses.all())
+        analysis_outputs["dispatcher_model"] = model
+        return PassResult(
+            facts=(recovery,),
+            preserved=PreservedAnalyses.all(),
+            analysis_outputs=analysis_outputs,
+        )
 
 
 class RecoverStateTransitions(PipelinePass):
@@ -336,20 +344,28 @@ class RecoverStateTransitions(PipelinePass):
         # confirmation metric proving the live capability executes end-to-end; the substantive
         # transition enrichment lands once #4's protected emission can absorb the richer DAG.
         valrange = context.capabilities.optional(ValRangeCapability)
+        analysis_outputs = {
+            self.name: resolutions,
+            "transition_result": transition_result,
+        }
         if valrange is not None and dispatch_map is not None:
+            confirmable_count = _count_valrange_confirmable(
+                valrange,
+                dispatch_map,
+                getattr(recovery, "state_var_stkoff", None),
+            )
             _publish(
                 context,
                 "valrange_confirmable_count",
-                _count_valrange_confirmable(
-                    valrange,
-                    dispatch_map,
-                    getattr(recovery, "state_var_stkoff", None),
-                ),
+                confirmable_count,
             )
+            analysis_outputs["valrange_confirmable_count"] = confirmable_count
         _publish(context, self.name, resolutions)
         _publish(context, "transition_result", transition_result)
         return PassResult(
-            facts=(resolutions, transition_result), preserved=PreservedAnalyses.all()
+            facts=(resolutions, transition_result),
+            preserved=PreservedAnalyses.all(),
+            analysis_outputs=analysis_outputs,
         )
 
 
@@ -366,7 +382,11 @@ class PlanSemanticRegions(PipelinePass):
             state_var_stkoff=getattr(recovery, "state_var_stkoff", None),
         )
         _publish(context, self.name, regions)
-        return PassResult(facts=(regions,), preserved=PreservedAnalyses.all())
+        return PassResult(
+            facts=(regions,),
+            preserved=PreservedAnalyses.all(),
+            analysis_outputs={self.name: regions},
+        )
 
 @dataclass
 class LowerStateMachine(PipelinePass):
@@ -526,8 +546,13 @@ class LowerStateMachine(PipelinePass):
                     and bool(context.project_config.get("exit_path_effect_recovery"))
                 ),
             )
-            _publish(context, LOWER_STATE_MACHINE_PLAN_METADATA, plan.metadata_dict())
-            return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
+            plan_metadata = plan.metadata_dict()
+            _publish(context, LOWER_STATE_MACHINE_PLAN_METADATA, plan_metadata)
+            return PassResult(
+                rewrite_plan=plan,
+                preserved=PreservedAnalyses.none(),
+                analysis_outputs={LOWER_STATE_MACHINE_PLAN_METADATA: plan_metadata},
+            )
 
         # Fallback (no interval dispatcher recovered): the committed shallow
         # redirect-only path.
@@ -545,7 +570,11 @@ class LowerStateMachine(PipelinePass):
             live_function=live_function,
         )
         _publish(context, LOWER_STATE_MACHINE_PLAN_METADATA, {})
-        return PassResult(rewrite_plan=plan, preserved=PreservedAnalyses.none())
+        return PassResult(
+            rewrite_plan=plan,
+            preserved=PreservedAnalyses.none(),
+            analysis_outputs={LOWER_STATE_MACHINE_PLAN_METADATA: {}},
+        )
 
 
 class CleanupResidualDispatcher(PipelinePass):

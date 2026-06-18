@@ -19,6 +19,7 @@ from dataclasses import replace
 from d810.core.typing import Protocol, runtime_checkable
 from d810.capabilities.resolver import CapabilitySet
 from d810.passes.pass_pipeline import (
+    BackendRoute,
     CapabilityPolicy,
     FunctionPipelineContext,
     PassSpec,
@@ -31,6 +32,14 @@ from d810.transforms.plan import PatchPlan
 
 class CapabilityError(RuntimeError):
     """A pass requires a backend capability the backend does not advertise."""
+
+
+class AnalysisContractError(RuntimeError):
+    """A pass violated its declared analysis contract."""
+
+
+class BackendRouteError(RuntimeError):
+    """A pass produced work incompatible with its declared backend route."""
 
 
 @runtime_checkable
@@ -61,6 +70,78 @@ def validate_capabilities(backend, requirements: CapabilityPolicy) -> None:
         )
 
 
+def _require_analysis_methods(facts, *, pass_id: str, method_names: tuple[str, ...]) -> None:
+    missing = tuple(name for name in method_names if not hasattr(facts, name))
+    if missing:
+        raise AnalysisContractError(
+            f"pass {pass_id!r} declares analysis contracts but facts view "
+            f"does not support {sorted(missing)}"
+        )
+
+
+def validate_required_analyses(spec: PassSpec, ctx: FunctionPipelineContext) -> None:
+    """Fail loud when a pass's declared analysis prerequisites are unavailable."""
+    if not spec.analyses.required:
+        return
+    _require_analysis_methods(
+        ctx.facts, pass_id=spec.pass_id, method_names=("has_analysis",)
+    )
+    missing = tuple(
+        sorted(
+            key
+            for key in spec.analyses.required
+            if not ctx.facts.has_analysis(key)
+        )
+    )
+    if missing:
+        raise AnalysisContractError(
+            f"pass {spec.pass_id!r} missing required analyses {list(missing)}"
+        )
+
+
+def validate_analysis_outputs(spec: PassSpec, result) -> None:
+    """Fail when a pass publishes undeclared typed analysis outputs."""
+    if not result.analysis_outputs:
+        return
+    undeclared = frozenset(result.analysis_outputs) - spec.analyses.provided
+    if undeclared:
+        raise AnalysisContractError(
+            f"pass {spec.pass_id!r} published undeclared analyses "
+            f"{sorted(undeclared)}"
+        )
+
+
+def publish_analysis_outputs(
+    spec: PassSpec, ctx: FunctionPipelineContext, result
+) -> None:
+    """Publish typed pass outputs through the analysis manager edge."""
+    if not result.analysis_outputs:
+        return
+    _require_analysis_methods(
+        ctx.facts, pass_id=spec.pass_id, method_names=("put_analysis",)
+    )
+    for name, value in result.analysis_outputs.items():
+        ctx.facts.put_analysis(name, value)
+
+
+def validate_backend_route(spec: PassSpec, result) -> None:
+    """Fail when an analysis-only pass tries to emit backend mutation work."""
+    if (
+        spec.backend_route is BackendRoute.ANALYSIS_ONLY
+        and _plan_has_work(result.rewrite_plan)
+    ):
+        raise BackendRouteError(
+            f"analysis-only pass {spec.pass_id!r} produced a rewrite plan"
+        )
+
+
+def effective_preserved_analyses(
+    spec: PassSpec, result
+) -> PreservedAnalyses:
+    """Return the invalidation hint chosen by result override or spec default."""
+    return result.preserved if result.preserved_explicit else spec.preservation
+
+
 def _run_pass_spec(
     *,
     spec: PassSpec,
@@ -70,7 +151,10 @@ def _run_pass_spec(
     scheduler: PassScheduler | None,
 ) -> FunctionPipelineContext:
     validate_capabilities(backend, spec.requirements)
+    validate_required_analyses(spec, ctx)
     result = spec.pass_factory().run(ctx)
+    validate_analysis_outputs(spec, result)
+    validate_backend_route(spec, result)
     if scheduler is not None:
         for request in result.run_later:
             scheduler.request(
@@ -80,11 +164,12 @@ def _run_pass_spec(
                 run_later=request,
                 domain=RunLaterDomain.PIPELINE_PASS,
             )
+    publish_analysis_outputs(spec, ctx, result)
     if _plan_has_work(result.rewrite_plan):
         new_graph = backend.apply(
             result.rewrite_plan, ctx.source.live_source, spec.safety_policy
         )
-        facts.invalidate_to(new_graph, result.preserved)
+        facts.invalidate_to(new_graph, effective_preserved_analyses(spec, result))
         ctx = replace(ctx, graph=new_graph)
     return ctx
 
