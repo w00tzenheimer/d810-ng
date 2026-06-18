@@ -3,12 +3,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from d810.ir.maturity import IRMaturity
 from d810.passes import pass_pipeline as pp
+from d810.passes.scheduler import RunLater
 from d810.transforms.plan import PatchPlan
 
 
 def test_defaults():
     assert pp.PassResult().rewrite_plan == PatchPlan()
+    assert pp.PassResult().run_later == ()
     assert pp.CapabilityPolicy().required == frozenset()
     assert pp.SafetyPolicy().name == "default"
     assert pp.SafetyPolicy().golden_required is False
@@ -24,6 +27,12 @@ def test_preserved_analyses():
     keep = pp.PreservedAnalyses.preserving({"dominators"})
     assert keep.preserves("dominators") is True
     assert keep.preserves("scc") is False
+
+
+def test_pass_result_accepts_run_later_requests():
+    request = RunLater(at=IRMaturity.GLOBAL_ANALYZED, reason="later facts")
+    result = pp.PassResult(run_later=(request,))
+    assert result.run_later == (request,)
 
 
 def test_pipeline_pass_conformance():

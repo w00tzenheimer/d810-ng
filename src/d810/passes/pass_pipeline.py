@@ -18,6 +18,7 @@ from d810.ir.flowgraph import FlowGraph
 from d810.ir.maturity import IRMaturity
 from d810.analyses.value_flow.model import ValidatedFactView
 from d810.capabilities.resolver import CapabilitySet
+from d810.passes.scheduler import RunLater
 from d810.transforms.plan import PatchPlan
 
 # Rewrite-plan vocabulary alias (canonical home already exists).
@@ -109,6 +110,7 @@ class PassResult:
     facts: tuple[object, ...] = ()
     rewrite_plan: PatchPlan = field(default_factory=PatchPlan)
     preserved: PreservedAnalyses = field(default_factory=PreservedAnalyses.all)
+    run_later: tuple[RunLater, ...] = ()
 
 
 @runtime_checkable

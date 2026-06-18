@@ -497,6 +497,7 @@ class PatternOptimizer(InstructionOptimizer):
         ins: ida_hexrays.minsn_t,
         *,
         allowed_rule_names: frozenset[str] | None = None,
+        scheduled_rule_names: frozenset[str] | None = None,
     ) -> ida_hexrays.minsn_t | None:
         if blk is not None:
             self.cur_maturity = blk.mba.maturity
@@ -542,6 +543,7 @@ class PatternOptimizer(InstructionOptimizer):
             ins,
             tmp,
             allowed_rule_names=allowed_rule_names,
+            scheduled_rule_names=scheduled_rule_names,
             source_label="direct",
         )
         if new_ins is not None:
@@ -556,6 +558,7 @@ class PatternOptimizer(InstructionOptimizer):
                 ins,
                 resolved_ast,
                 allowed_rule_names=allowed_rule_names,
+                scheduled_rule_names=scheduled_rule_names,
                 source_label="tracker",
             )
             if new_ins is not None:
@@ -626,18 +629,24 @@ class PatternOptimizer(InstructionOptimizer):
         test_ast: AstBase,
         *,
         allowed_rule_names: frozenset[str] | None,
+        scheduled_rule_names: frozenset[str] | None,
         source_label: str,
     ) -> ida_hexrays.minsn_t | None:
         all_matches = self._get_candidates(test_ast)
         match_len = len(all_matches)
+        scheduled_rule_names = scheduled_rule_names or frozenset()
         for i, rule_pattern_info in enumerate(all_matches):
+            rule_name = str(rule_pattern_info.rule.name)
             if (
                 allowed_rule_names is not None
-                and rule_pattern_info.rule.name not in allowed_rule_names
+                and rule_name not in allowed_rule_names
             ):
                 continue
             # Per-rule maturity check (Gate 2)
-            if self.cur_maturity not in rule_pattern_info.rule.maturities:
+            if (
+                self.cur_maturity not in rule_pattern_info.rule.maturities
+                and rule_name not in scheduled_rule_names
+            ):
                 continue
             if optimizer_logger.debug_on:
                 optimizer_logger.debug(
@@ -647,17 +656,17 @@ class PatternOptimizer(InstructionOptimizer):
                     match_len,
                     rule_pattern_info,
                 )
+            bind_match_context = getattr(
+                rule_pattern_info.rule,
+                "bind_match_context",
+                None,
+            )
+            clear_match_context = getattr(
+                rule_pattern_info.rule,
+                "clear_match_context",
+                None,
+            )
             try:
-                bind_match_context = getattr(
-                    rule_pattern_info.rule,
-                    "bind_match_context",
-                    None,
-                )
-                clear_match_context = getattr(
-                    rule_pattern_info.rule,
-                    "clear_match_context",
-                    None,
-                )
                 if bind_match_context is not None:
                     bind_match_context(blk, ins)
 
@@ -708,6 +717,11 @@ class PatternOptimizer(InstructionOptimizer):
                     exc_info=True,
                 )
             finally:
+                if self._run_later_callback is not None:
+                    self._run_later_callback(
+                        rule_pattern_info.rule,
+                        self.cur_maturity,
+                    )
                 if clear_match_context is not None:
                     clear_match_context()
         return None

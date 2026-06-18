@@ -29,13 +29,10 @@ from d810.backends.hexrays.registration import (
 )
 from d810.diagnostics.post_d810_handoff import detect_post_d810_handoff_violations
 from d810.hexrays.hooks.ctree_hooks import CtreeOptimizerManager
-from d810.hexrays.hooks.hexrays_hooks import (
-    HEXRAYS_MICROCODE_PROVIDER,
-    BlockOptimizerManager,
-    DecompilationEvent,
-    HexraysDecompilationHook,
-    InstructionOptimizerManager,
-)
+from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
+from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
+from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
+from d810.hexrays.lifecycle import DecompilationEvent, HEXRAYS_MICROCODE_PROVIDER
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
 from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizer,
@@ -55,6 +52,7 @@ from d810.passes.recon_runtime_factory import (
     build_recon_phase,
     build_recon_runtime_bundle,
 )
+from d810.passes.scheduler import PassScheduler
 from d810.passes.store import shutdown_all_writers
 from d810.manager.flowgraph_ready import FlowGraphReadySubscriber
 from d810.manager.hexrays_pass_pipeline import build_hexrays_flowgraph_pipeline
@@ -121,6 +119,10 @@ class D810Manager:
     event_emitter: EventEmitter = dataclasses.field(default_factory=EventEmitter)
     rule_scope_service: RuleScopeService = dataclasses.field(
         default_factory=RuleScopeService
+    )
+    block_pass_scheduler: PassScheduler = dataclasses.field(default_factory=PassScheduler)
+    instruction_pass_scheduler: PassScheduler = dataclasses.field(
+        default_factory=PassScheduler
     )
     profiling: ProfilingController = dataclasses.field(init=False)
     rule_scope_runtime: RuleScopeRuntime = dataclasses.field(init=False)
@@ -408,6 +410,7 @@ class D810Manager:
             rule_scope_service=self.rule_scope_service,
             rule_scope_project_name=project_name,
             rule_scope_idb_key=idb_key,
+            pass_scheduler=self.instruction_pass_scheduler,
         )
         self.block_optimizer = BlockOptimizerManager(
             self.stats, self.log_dir, ctx_cls=FlowMaturityContext
@@ -417,6 +420,7 @@ class D810Manager:
             rule_scope_service=self.rule_scope_service,
             rule_scope_project_name=project_name,
             rule_scope_idb_key=idb_key,
+            pass_scheduler=self.block_pass_scheduler,
             function_priors_provider=self.function_analysis_priors_for_ea,
         )
         for rule in self.instruction_optimizer_rules:
@@ -603,6 +607,7 @@ class D810Manager:
             MOP_TO_AST_CACHE.clear,
             Z3MopProver().clear_caches,
             self.instruction_optimizer.reset_cycle_detection,
+            self.instruction_optimizer.reset_run_later_state,
             self.block_optimizer.reset_pass_counter,
             self.block_optimizer.reset_pipeline_tracker,
             self.block_optimizer.reset_perf_counters,

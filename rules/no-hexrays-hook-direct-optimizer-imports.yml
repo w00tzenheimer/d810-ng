@@ -10,8 +10,10 @@ language: python
 severity: error
 
 files:
-  - "src/d810/hexrays/hexrays_hooks.py"
-  - "src/d810/hexrays/ctree_hooks.py"
+  - "src/d810/hexrays/hooks/hexrays_hooks.py"
+  - "src/d810/hexrays/hooks/optinsn_adapter.py"
+  - "src/d810/hexrays/hooks/optblock_adapter.py"
+  - "src/d810/hexrays/hooks/ctree_hooks.py"
 
 message: |
   Do not directly import optimizer handler modules from hexrays hook modules.

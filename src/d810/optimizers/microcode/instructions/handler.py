@@ -10,7 +10,9 @@ from d810.errors import D810Exception
 from d810.hexrays.expr.ast import AstNode
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t, maturity_to_string
+from d810.ir.maturity import IRMaturity
 from d810.optimizers.microcode.handler import OptimizationRule
+from d810.passes.scheduler import RunLater
 
 if typing.TYPE_CHECKING:
     from d810.core import OptimizationStatistics
@@ -31,6 +33,19 @@ class InstructionOptimizationRule(OptimizationRule, Registrant, abc.ABC):
     def __init__(self):
         super().__init__()
         self.maturities = []
+        self._run_later_requests: list[RunLater] = []
+
+    def run_later(self, at: IRMaturity, reason: str = "") -> None:
+        """Request that this rule run again at a later maturity."""
+        self._run_later_requests.append(RunLater(at=at, reason=reason))
+
+    def drain_run_later_requests(self) -> tuple[RunLater, ...]:
+        """Return and clear this rule's queued run-later requests."""
+        if not self._run_later_requests:
+            return ()
+        requests = tuple(self._run_later_requests)
+        self._run_later_requests.clear()
+        return requests
 
     @abc.abstractmethod
     def check_and_replace(self, blk, ins):
@@ -161,6 +176,10 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         self.cur_maturity = ida_hexrays.MMAT_PREOPTIMIZED
         # Centralized statistics collector injected by the manager
         self.stats = stats
+        self._run_later_callback = None
+
+    def set_run_later_callback(self, callback) -> None:
+        self._run_later_callback = callback
 
     def add_rule(self, rule: T_Rule) -> bool:
         """Add a rule to this optimizer if it matches RULE_CLASSES.
@@ -191,6 +210,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         ins: ida_hexrays.minsn_t,
         *,
         allowed_rule_names: frozenset[str] | None = None,
+        scheduled_rule_names: frozenset[str] | None = None,
     ) -> ida_hexrays.minsn_t | None:
         # uee-b7ze causality test: when ``D810_FENCE_INSN_OPT_AT_GLBOPT1``
         # is set, suppress every instruction-level optimizer (Z3 const
@@ -237,15 +257,24 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         # Optimizer-level maturity gate: skip entire optimizer if current
         # maturity is not in this optimizer's allowed maturities.
         # Per-rule maturity checks (below) provide defense-in-depth.
-        if self.cur_maturity not in self.maturities:
+        scheduled_rule_names = scheduled_rule_names or frozenset()
+        if self.cur_maturity not in self.maturities and not scheduled_rule_names:
             return None
         for rule in self.rules:
-            if allowed_rule_names is not None and rule.name not in allowed_rule_names:
+            rule_name = str(rule.name)
+            if allowed_rule_names is not None and rule_name not in allowed_rule_names:
                 continue
-            if self.cur_maturity not in rule.maturities:
+            if (
+                self.cur_maturity not in rule.maturities
+                and rule_name not in scheduled_rule_names
+            ):
                 continue
             try:
-                new_ins = rule.check_and_replace(blk, ins)
+                try:
+                    new_ins = rule.check_and_replace(blk, ins)
+                finally:
+                    if self._run_later_callback is not None:
+                        self._run_later_callback(rule, self.cur_maturity)
                 if new_ins is not None:
                     if self.stats is not None:
                         # Use new API with actual rule object

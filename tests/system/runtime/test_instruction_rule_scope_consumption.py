@@ -10,10 +10,12 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.core.stats import OptimizationStatistics
-from d810.hexrays.hooks.hexrays_hooks import InstructionOptimizerManager
+from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
+from d810.ir.maturity import IRMaturity
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizer
 from d810.optimizers.microcode.instructions.pattern_matching import handler as _pattern_handler
 from d810.optimizers.microcode.instructions.pattern_matching.handler import PatternOptimizer
+from d810.passes.scheduler import PassScheduler, RunLater
 
 
 def _get_default_binary() -> str:
@@ -52,6 +54,8 @@ class _CaptureOptimizer:
 
     def __init__(self):
         self.allowed: list[frozenset[str] | None] = []
+        self.scheduled: list[frozenset[str] | None] = []
+        self.rules = ()
 
     def get_optimized_instruction(
         self,
@@ -59,8 +63,10 @@ class _CaptureOptimizer:
         ins,
         *,
         allowed_rule_names: frozenset[str] | None = None,
+        scheduled_rule_names: frozenset[str] | None = None,
     ):
         self.allowed.append(allowed_rule_names)
+        self.scheduled.append(scheduled_rule_names)
         return None
 
 
@@ -74,6 +80,35 @@ class _PatternRule:
     def check_pattern_and_replace(self, pattern, candidate):
         self.calls += 1
         return self._replacement
+
+
+class _ScheduledInstructionRule:
+    name = "Rule.Scheduled"
+
+    def __init__(self):
+        self.maturities = [ida_hexrays.MMAT_GLBOPT1]
+        self.calls = 0
+
+    def check_and_replace(self, blk, ins):
+        self.calls += 1
+        return None
+
+
+class _RunLaterRequestingRule:
+    name = "Rule.RequestLater"
+
+    def __init__(self):
+        self._requests = (
+            RunLater(
+                IRMaturity.GLOBAL_OPTIMIZED,
+                reason="needs GLBOPT2",
+            ),
+        )
+
+    def drain_run_later_requests(self):
+        requests = self._requests
+        self._requests = ()
+        return requests
 
 
 def _make_block(func_ea: int) -> SimpleNamespace:
@@ -119,6 +154,7 @@ class TestInstructionScopeCaching:
         manager.current_maturity = 1
         assert manager.optimize(blk_401000, ins) is False
         assert capture.allowed[-1] == frozenset({"Rule.A", "Rule.B"})
+        assert capture.scheduled[-1] == frozenset()
         assert len(scope_service.calls) == 1
 
         # Second call with same (func_ea, maturity) must NOT re-query the service.
@@ -129,13 +165,75 @@ class TestInstructionScopeCaching:
         manager.current_maturity = 2
         assert manager.optimize(blk_401000, ins) is False
         assert capture.allowed[-1] == frozenset({"Rule.C"})
+        assert capture.scheduled[-1] == frozenset()
         assert len(scope_service.calls) == 2
 
         # New func_ea → new query.
         blk_402000 = _make_block(0x402000)
         assert manager.optimize(blk_402000, ins) is False
         assert capture.allowed[-1] == frozenset({"Rule.D"})
+        assert capture.scheduled[-1] == frozenset()
         assert len(scope_service.calls) == 3
+
+    def test_instruction_run_later_request_joins_rule_scope_names(
+        self, libobfuscated_setup
+    ):
+        manager = InstructionOptimizerManager(
+            OptimizationStatistics(), Path("."), optimizer_cls=InstructionOptimizer
+        )
+        manager.analyzer = SimpleNamespace(analyze=lambda *_args, **_kwargs: None)
+        capture = _CaptureOptimizer()
+        manager.instruction_optimizers = [capture]
+        manager._active_optimizers = list(manager.instruction_optimizers)
+        manager.current_maturity = ida_hexrays.MMAT_GLBOPT1
+        manager.configure(
+            rule_scope_service=_FakeRuleScopeService({}),
+            rule_scope_project_name="proj",
+            rule_scope_idb_key="idb",
+            pass_scheduler=PassScheduler(),
+        )
+        manager._rule_scope_func_ea = 0x401000
+
+        manager._record_run_later_requests(
+            _RunLaterRequestingRule(),
+            ida_hexrays.MMAT_GLBOPT1,
+        )
+        manager.current_maturity = ida_hexrays.MMAT_GLBOPT2
+        manager._drain_run_later_for_maturity(
+            SimpleNamespace(entry_ea=0x401000),
+        )
+
+        assert manager.optimize(_make_block(0x401000), SimpleNamespace()) is False
+        assert capture.allowed[-1] == frozenset({"Rule.RequestLater"})
+        assert capture.scheduled[-1] == frozenset({"Rule.RequestLater"})
+
+
+def test_instruction_optimizer_scheduled_rule_bypasses_static_maturity():
+    optimizer = InstructionOptimizer(
+        [ida_hexrays.MMAT_GLBOPT1],
+        OptimizationStatistics(),
+        log_dir=Path("."),
+    )
+    rule = _ScheduledInstructionRule()
+    optimizer.rules = {rule}
+    blk = SimpleNamespace(
+        mba=SimpleNamespace(maturity=ida_hexrays.MMAT_GLBOPT2),
+    )
+
+    optimizer.get_optimized_instruction(
+        blk,
+        SimpleNamespace(opcode=ida_hexrays.m_add),
+        allowed_rule_names=frozenset({"Rule.Scheduled"}),
+    )
+    assert rule.calls == 0
+
+    optimizer.get_optimized_instruction(
+        blk,
+        SimpleNamespace(opcode=ida_hexrays.m_add),
+        allowed_rule_names=frozenset({"Rule.Scheduled"}),
+        scheduled_rule_names=frozenset({"Rule.Scheduled"}),
+    )
+    assert rule.calls == 1
 
 
 def test_pattern_optimizer_filters_matches_by_allowed_rule_names(monkeypatch):

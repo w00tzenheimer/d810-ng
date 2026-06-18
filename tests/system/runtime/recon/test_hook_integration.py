@@ -29,9 +29,11 @@ def _resolve_hook_file(*relative_paths: tuple[str, ...] | str) -> pathlib.Path:
     return _SRC / str(relative_paths[0])
 
 
-_HEXRAYS_HOOKS = _resolve_hook_file(
-    "hexrays/hooks/hexrays_hooks.py",
-    "hexrays/hexrays_hooks.py",
+_OPTINSN_ADAPTER = _resolve_hook_file(
+    "hexrays/hooks/optinsn_adapter.py",
+)
+_OPTBLOCK_ADAPTER = _resolve_hook_file(
+    "hexrays/hooks/optblock_adapter.py",
 )
 _CTREE_HOOKS = _resolve_hook_file(
     "hexrays/hooks/ctree_hooks.py",
@@ -54,14 +56,14 @@ class TestInstructionOptimizerManagerHasReconPhase:
     """InstructionOptimizerManager must have _recon_phase support."""
 
     def test_has_recon_phase_in_init(self):
-        filepath = _HEXRAYS_HOOKS
+        filepath = _OPTINSN_ADAPTER
         cls_src = _get_class_source(filepath, "InstructionOptimizerManager")
         assert "_recon_phase" in cls_src, (
             "InstructionOptimizerManager.__init__ must set self._recon_phase"
         )
 
     def test_configure_accepts_recon_phase(self):
-        filepath = _HEXRAYS_HOOKS
+        filepath = _OPTINSN_ADAPTER
         cls_src = _get_class_source(filepath, "InstructionOptimizerManager")
         assert "recon_phase" in cls_src, (
             "InstructionOptimizerManager.configure() must accept recon_phase kwarg"
@@ -77,7 +79,7 @@ class TestInstructionOptimizerManagerHasReconPhase:
         Architectural pin: catches drift that either removes the
         emit (recon stops firing for this manager) or re-introduces
         a direct ``run_microcode_collectors`` call (double-collect)."""
-        filepath = _HEXRAYS_HOOKS
+        filepath = _OPTINSN_ADAPTER
         cls_src = _get_class_source(filepath, "InstructionOptimizerManager")
         assert "_emit_flowgraph_ready_event(" in cls_src, (
             "InstructionOptimizerManager.log_info_on_input() must call "
@@ -98,14 +100,14 @@ class TestBlockOptimizerManagerHasReconPhase:
     """BlockOptimizerManager must have _recon_phase support."""
 
     def test_has_recon_phase_in_init(self):
-        filepath = _HEXRAYS_HOOKS
+        filepath = _OPTBLOCK_ADAPTER
         cls_src = _get_class_source(filepath, "BlockOptimizerManager")
         assert "_recon_phase" in cls_src, (
             "BlockOptimizerManager.__init__ must set self._recon_phase"
         )
 
     def test_configure_accepts_recon_phase(self):
-        filepath = _HEXRAYS_HOOKS
+        filepath = _OPTBLOCK_ADAPTER
         cls_src = _get_class_source(filepath, "BlockOptimizerManager")
         assert "recon_phase" in cls_src, (
             "BlockOptimizerManager.configure() must accept recon_phase kwarg"
@@ -115,7 +117,7 @@ class TestBlockOptimizerManagerHasReconPhase:
         """E4a contract: see ``InstructionOptimizerManager`` sibling.
         Both manager maturity gates emit; ``ReconPhase`` dedupes the
         two emits per ``(func_ea, maturity)``."""
-        filepath = _HEXRAYS_HOOKS
+        filepath = _OPTBLOCK_ADAPTER
         cls_src = _get_class_source(filepath, "BlockOptimizerManager")
         assert "_emit_flowgraph_ready_event(" in cls_src, (
             "BlockOptimizerManager.log_info_on_input() must call "

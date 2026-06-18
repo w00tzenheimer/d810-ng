@@ -82,7 +82,7 @@ def test_maturity_gate_allows_optimizer_at_correct_maturity():
     assert rule.calls == 1, f"Rule was not called at correct maturity"
 
 
-from d810.hexrays.hooks.hexrays_hooks import InstructionOptimizerManager
+from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
 
 
 class _MockOptimizer:
@@ -94,7 +94,14 @@ class _MockOptimizer:
         self.calls = 0
         self.cur_maturity = ida_hexrays.MMAT_PREOPTIMIZED
 
-    def get_optimized_instruction(self, blk, ins, *, allowed_rule_names=None):
+    def get_optimized_instruction(
+        self,
+        blk,
+        ins,
+        *,
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+    ):
         self.calls += 1
         return None
 
@@ -129,6 +136,8 @@ def test_active_optimizer_list_filters_by_maturity():
     mgr.log_dir = None
     mgr._recon_phase = None
     mgr._recon_runtime = None
+    mgr._run_later_scheduler = None
+    mgr._run_later_rule_names = frozenset()
 
     # Simulate maturity change to MMAT_LOCOPT
     blk = _make_blk(ida_hexrays.MMAT_LOCOPT)

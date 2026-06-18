@@ -22,6 +22,7 @@ __all__ = [
 ]
 
 IDA_TO_IR_MATURITY: "dict[int, IRMaturity]" = {
+    ida_hexrays.MMAT_ZERO: IRMaturity.LIFTED,
     ida_hexrays.MMAT_GENERATED: IRMaturity.LIFTED,
     ida_hexrays.MMAT_PREOPTIMIZED: IRMaturity.CANONICAL,
     ida_hexrays.MMAT_LOCOPT: IRMaturity.LOCAL_OPTIMIZED,

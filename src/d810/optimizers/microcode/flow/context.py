@@ -17,8 +17,10 @@ from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
 from d810.hexrays.mutation.ir_translator import lift
 from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.core.gate_modes import GateOperationMode
+from d810.ir.maturity import IRMaturity
 from d810.passes.flow_hints import FlowContextHintSummary
 from d810.passes.function_priors import FunctionAnalysisPriors
+from d810.passes.scheduler import RunLater
 
 if TYPE_CHECKING:
     from d810.analyses.value_flow.model import FactConsumerRecord, ValidatedFactView
@@ -133,6 +135,8 @@ class FlowMaturityContext:
             Callable[[int], FunctionAnalysisPriors] | None
         ) = None
         self._terminal_boundary_blocks: set[int] | None = None
+        self._current_rule_name: str | None = None
+        self._run_later_requests: list[tuple[str, RunLater]] = []
 
     @property
     def hint_summary(self) -> FlowContextHintSummary | None:
@@ -240,10 +244,55 @@ class FlowMaturityContext:
         self.phase_priority = int(priority)
         self.phase_index = int(phase_index)
         self._active_rule_names = active_rule_names
+        self._current_rule_name = None
 
     @property
     def active_rule_names(self) -> tuple[str, ...]:
         return self._active_rule_names
+
+    def set_current_rule_name(self, rule_name: str | None) -> None:
+        """Record the rule currently executing in this context."""
+        self._current_rule_name = None if rule_name is None else str(rule_name)
+
+    def run_later(
+        self,
+        at: IRMaturity,
+        reason: str = "",
+        *,
+        pass_id: str | None = None,
+    ) -> None:
+        """Request that the current flow rule run again at a later maturity."""
+        requested_pass = pass_id if pass_id is not None else self._current_rule_name
+        if requested_pass is None:
+            raise ValueError("run_later requires an executing rule or explicit pass_id")
+        self._run_later_requests.append((
+            str(requested_pass),
+            RunLater(at=at, reason=reason),
+        ))
+
+    def drain_run_later_requests(
+        self,
+        *,
+        pass_id: str | None = None,
+    ) -> tuple[tuple[str, RunLater], ...]:
+        """Return and remove queued run-later requests."""
+        if not self._run_later_requests:
+            return ()
+        if pass_id is None:
+            drained = tuple(self._run_later_requests)
+            self._run_later_requests.clear()
+            return drained
+
+        pass_id_text = str(pass_id)
+        drained_list: list[tuple[str, RunLater]] = []
+        remaining: list[tuple[str, RunLater]] = []
+        for request_pass_id, request in self._run_later_requests:
+            if request_pass_id == pass_id_text:
+                drained_list.append((request_pass_id, request))
+            else:
+                remaining.append((request_pass_id, request))
+        self._run_later_requests = remaining
+        return tuple(drained_list)
 
     def prime_for_rules(self, rules: tuple[FlowOptimizationRule, ...]) -> None:
         if any(getattr(rule, "REQUIRES_DISPATCHER_ANALYSIS", False) for rule in rules):

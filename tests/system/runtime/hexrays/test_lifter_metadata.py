@@ -234,6 +234,22 @@ class TestProviderNeutralStageMetadata:
         assert m("MMAT_LVARS") is SnapshotForm.LVAR_RECOVERED
         assert m("bogus") is SnapshotForm.UNKNOWN
 
+    def test_zero_maturity_integer_path_is_raw_ir(self, monkeypatch) -> None:
+        """The production integer-maturity path must match the string helper."""
+        import ida_hexrays
+        from d810.hexrays.mutation import ir_translator
+        from d810.ir.maturity import SnapshotForm
+
+        monkeypatch.setattr(
+            ir_translator.idaapi, "inf_get_procname", lambda: "metapc"
+        )
+
+        flow_graph = ir_translator.lift(
+            _StubMba(maturity=int(ida_hexrays.MMAT_ZERO))
+        )
+
+        assert flow_graph.metadata["snapshot_form"] is SnapshotForm.RAW_IR
+
 
 class TestLifterMetadataImmutability:
     """Metadata is exposed through a ``MappingProxyType`` so consumers

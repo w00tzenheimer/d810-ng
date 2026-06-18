@@ -24,6 +24,7 @@ from d810.passes.pass_pipeline import (
     PassSpec,
     PreservedAnalyses,
 )
+from d810.passes.scheduler import PassScheduler
 from d810.transforms.plan import PatchPlan
 
 
@@ -60,7 +61,15 @@ def validate_capabilities(backend, requirements: CapabilityPolicy) -> None:
 
 
 def run_pipeline(
-    *, source, family, backend, facts, project_config, maturity, capabilities=None
+    *,
+    source,
+    family,
+    backend,
+    facts,
+    project_config,
+    maturity,
+    capabilities=None,
+    scheduler: PassScheduler | None = None,
 ):
     """Run one family's pipeline over one function/maturity. Returns the final graph.
 
@@ -85,6 +94,14 @@ def run_pipeline(
     for spec in family.pipeline_for(match, ctx):
         validate_capabilities(backend, spec.requirements)
         result = spec.pass_factory().run(ctx)
+        if scheduler is not None:
+            for request in result.run_later:
+                scheduler.request(
+                    func_ea=ctx.source.func_ea,
+                    pass_id=spec.name,
+                    current_maturity=ctx.maturity,
+                    run_later=request,
+                )
         if _plan_has_work(result.rewrite_plan):
             new_graph = backend.apply(
                 result.rewrite_plan, ctx.source.live_source, spec.safety_policy

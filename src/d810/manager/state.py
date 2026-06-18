@@ -151,6 +151,7 @@ class D810State(metaclass=SingletonMeta):
                 rule_scope_idb_key=str(
                     cfg.get("idb_key", self.current_project.path.name)
                 ),
+                pass_scheduler=self.manager.instruction_pass_scheduler,
             )
             self.manager.block_optimizer.configure(
                 rule_scope_service=self.manager.rule_scope_service,
@@ -158,6 +159,7 @@ class D810State(metaclass=SingletonMeta):
                 rule_scope_idb_key=str(
                     cfg.get("idb_key", self.current_project.path.name)
                 ),
+                pass_scheduler=self.manager.block_pass_scheduler,
                 function_priors_provider=(
                     self.manager.function_analysis_priors_for_ea
                 ),

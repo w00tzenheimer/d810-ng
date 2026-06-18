@@ -444,11 +444,13 @@ class PatternOptimizer2(InstructionOptimizer):  # type: ignore[misc]
         ins: ida_hexrays.minsn_t,
         *,
         allowed_rule_names: frozenset[str] | None = None,
+        scheduled_rule_names: frozenset[str] | None = None,
     ) -> ida_hexrays.minsn_t | None:  # type: ignore[override]
         # Respect the current maturity as in the original implementation
         if blk is not None:
             self.cur_maturity = blk.mba.maturity
-        if self.cur_maturity not in self.maturities:
+        scheduled_rule_names = scheduled_rule_names or frozenset()
+        if self.cur_maturity not in self.maturities and not scheduled_rule_names:
             return None
         # If no rules are configured, skip conversion altogether
         if len(self.rules) == 0:
@@ -469,23 +471,29 @@ class PatternOptimizer2(InstructionOptimizer):  # type: ignore[misc]
         canonical_candidate = canonicalize_ast(tmp_ast)
         # Try each rule in order
         for rule in self.rules:
-            if allowed_rule_names is not None and rule.name not in allowed_rule_names:
+            rule_name = str(rule.name)
+            if allowed_rule_names is not None and rule_name not in allowed_rule_names:
                 continue
-            canonical_pattern = rule.canonical_pattern
-            mapping: dict[str, AstBase] = {}
-            # Attempt to match the canonical pattern against the canonical candidate
-            if not match_pattern(canonical_pattern, canonical_candidate, mapping):
+            if (
+                self.cur_maturity not in self.maturities
+                and rule_name not in scheduled_rule_names
+            ):
                 continue
-            # Reconstruct the candidate AST in the shape of the original pattern
-            candidate_ast_for_rule = substitute_pattern(rule.PATTERN, mapping)
-            if candidate_ast_for_rule is None:
-                continue
-            # We need a fresh copy of the pattern AST for mops copying
-            # Deepcopy is used because rule.PATTERN is reused across matches
-            candidate_pattern = copy.deepcopy(rule.PATTERN)
-            candidate_pattern.reset_mops()
-            # Copy the mops from the reconstructed candidate into the pattern
             try:
+                canonical_pattern = rule.canonical_pattern
+                mapping: dict[str, AstBase] = {}
+                # Attempt to match the canonical pattern against the canonical candidate
+                if not match_pattern(canonical_pattern, canonical_candidate, mapping):
+                    continue
+                # Reconstruct the candidate AST in the shape of the original pattern
+                candidate_ast_for_rule = substitute_pattern(rule.PATTERN, mapping)
+                if candidate_ast_for_rule is None:
+                    continue
+                # We need a fresh copy of the pattern AST for mops copying
+                # Deepcopy is used because rule.PATTERN is reused across matches
+                candidate_pattern = copy.deepcopy(rule.PATTERN)
+                candidate_pattern.reset_mops()
+                # Copy the mops from the reconstructed candidate into the pattern
                 if not candidate_pattern.check_pattern_and_copy_mops(
                     candidate_ast_for_rule
                 ):
@@ -493,28 +501,22 @@ class PatternOptimizer2(InstructionOptimizer):  # type: ignore[misc]
             except Exception:
                 # In case the check fails unexpectedly, skip this match
                 continue
-            # Allow the rule to perform custom candidate checks (e.g. equal_mops_ignore_size)
             try:
+                # Allow the rule to perform custom candidate checks (e.g. equal_mops_ignore_size)
                 if not rule.check_candidate(candidate_pattern):
                     continue
-            except Exception:
-                # If the candidate check raises, log and skip
-                optimizer_logger.error(
-                    "Error during candidate check for rule %s",
-                    rule,
-                    exc_info=True,
-                )
-                continue
-            # Build the replacement instruction via the rule's replacement pattern
-            try:
+                # Build the replacement instruction via the rule's replacement pattern
                 new_instruction = rule.get_replacement(candidate_pattern)
             except Exception:
                 optimizer_logger.error(
-                    "Error during replacement construction for rule %s",
+                    "Error during canonical rule %s",
                     rule,
                     exc_info=True,
                 )
                 continue
+            finally:
+                if self._run_later_callback is not None:
+                    self._run_later_callback(rule, self.cur_maturity)
             if new_instruction is not None:
                 # Update usage statistics as in the original implementation
                 self.rules_usage_info[rule.name] += 1
