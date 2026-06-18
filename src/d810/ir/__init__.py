@@ -52,6 +52,8 @@ from .instructions import (
     InstructionControl,
     InstructionEffect,
     InstructionEffectKind,
+    InstructionMemoryAccess,
+    InstructionMemoryAccessKind,
     InstructionSwitchCase,
 )
 from .locations import (
@@ -96,6 +98,8 @@ __all__ = [
     "InstructionControl",
     "InstructionEffect",
     "InstructionEffectKind",
+    "InstructionMemoryAccess",
+    "InstructionMemoryAccessKind",
     "InstructionSwitchCase",
     "InstructionResultRef",
     "LiftedOpcode",
