@@ -253,6 +253,50 @@ def test_required_analysis_present_runs():
     assert out is _GRAPH
 
 
+def test_required_analysis_provider_runs():
+    calls: list[object] = []
+
+    class _NeedsDomtree:
+        name = "needs_domtree"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.get_analysis("domtree") == "D"
+            return PassResult()
+
+    class _OneShot:
+        name = "one_shot"
+
+        def detect(self, graph, capabilities, context=None):
+            return object()
+
+        def pipeline_for(self, match, context):
+            return (
+                PassSpec(
+                    "needs_domtree",
+                    _NeedsDomtree,
+                    no_caps,
+                    default,
+                    analyses=AnalysisContract(
+                        required=frozenset({"domtree"}),
+                    ),
+                ),
+            )
+
+    facts = AnalysisManager(
+        _GRAPH,
+        providers={"domtree": lambda graph: calls.append(graph) or "D"},
+    )
+
+    out = run_pipeline(
+        source=_Src(), family=_OneShot(), backend=_Backend(),
+        facts=facts, project_config=None,
+        maturity=IRMaturity.CANONICAL,
+    )
+
+    assert out is _GRAPH
+    assert calls == [_GRAPH]
+
+
 def test_declared_analysis_output_is_visible_to_later_pass():
     class _PublishDomtree:
         name = "publish_domtree"

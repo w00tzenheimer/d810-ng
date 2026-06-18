@@ -13,20 +13,28 @@ Satisfies the driver's ``FactStore`` protocol (``view`` + ``invalidate_to``). Po
 """
 from __future__ import annotations
 
-from d810.core.typing import Callable
+from d810.core.typing import Callable, Mapping
 from d810.passes.pass_pipeline import PreservedAnalyses
 
 
 class AnalysisManager:
     """Lazy, snapshot-keyed analysis cache for one function's pipeline run."""
 
-    def __init__(self, graph: object, input_facts: object | None = None) -> None:
+    def __init__(
+        self,
+        graph: object,
+        input_facts: object | None = None,
+        providers: Mapping[str, Callable[[object], object]] | None = None,
+    ) -> None:
         self._graph = graph
         self._cache: dict[str, object] = {}
         # The live input fact view (state observations etc.); portable passes that read
         # observations (resolve_state_transitions) see them through this manager transparently.
         self._input_facts = input_facts
         self._derived: dict[str, object] = {}
+        self._providers: dict[str, Callable[[object], object]] = dict(
+            providers or {}
+        )
 
     @property
     def graph(self) -> object:
@@ -45,13 +53,32 @@ class AnalysisManager:
         """Publish a pass result for later passes (the LLVM ``AnalysisManager.getResult`` edge)."""
         self._derived[name] = value
 
+    def register_provider(
+        self, name: str, compute: Callable[[object], object]
+    ) -> None:
+        """Register a lazy analysis provider for ``name``."""
+        self._providers[str(name)] = compute
+
     def get_analysis(self, name: str, default: object = None) -> object:
         """Return a prior pass's published result, or ``default``."""
-        return self._derived.get(name, default)
+        if name in self._derived:
+            return self._derived[name]
+        if name in self._cache:
+            return self._cache[name]
+        provider = self._providers.get(name)
+        if provider is not None:
+            return self.get(name, provider)
+        return default
+
+    def require_analysis(self, name: str) -> object:
+        """Return analysis ``name`` or raise when no result/provider exists."""
+        if not self.has_analysis(name):
+            raise KeyError(name)
+        return self.get_analysis(name)
 
     def has_analysis(self, name: str) -> bool:
         """Return whether ``name`` is available as a published or cached analysis."""
-        return name in self._derived or name in self._cache
+        return name in self._derived or name in self._cache or name in self._providers
 
     def view(self) -> "AnalysisManager":
         """Return the read handle passed to passes as ``ctx.facts``."""

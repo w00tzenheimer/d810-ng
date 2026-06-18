@@ -122,10 +122,43 @@ def test_manager_threads_scheduler_across_maturity_runs():
 
 
 def test_manager_bubbles_analysis_contract_failure_with_pass_id():
+    class _NeedsMemorySsa:
+        name = "needs_memoryssa"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult()
+
+    family = _MatchingFamily(
+        (
+            PassSpec(
+                "needs_memoryssa",
+                _NeedsMemorySsa,
+                no_caps,
+                default,
+                analyses=AnalysisContract(required=frozenset({"memoryssa"})),
+            ),
+        )
+    )
+
+    with pytest.raises(AnalysisContractError, match="needs_memoryssa"):
+        FunctionPassManager().run(
+            source=_Src(),
+            family=family,
+            backend=_Backend(),
+            project_config=None,
+            maturity=IRMaturity.CANONICAL,
+        )
+
+
+def test_manager_satisfies_domtree_from_default_provider():
+    captured: dict[str, object] = {}
+
     class _NeedsDomtree:
         name = "needs_domtree"
 
         def run(self, ctx) -> PassResult:
+            domtree = ctx.facts.require_analysis("domtree")
+            captured["dominates_entry"] = domtree.dominates(0, 0)
             return PassResult()
 
     family = _MatchingFamily(
@@ -140,14 +173,50 @@ def test_manager_bubbles_analysis_contract_failure_with_pass_id():
         )
     )
 
-    with pytest.raises(AnalysisContractError, match="needs_domtree"):
-        FunctionPassManager().run(
-            source=_Src(),
-            family=family,
-            backend=_Backend(),
-            project_config=None,
-            maturity=IRMaturity.CANONICAL,
-        )
+    FunctionPassManager().run(
+        source=_Src(),
+        family=family,
+        backend=_Backend(),
+        project_config=None,
+        maturity=IRMaturity.CANONICAL,
+    )
+
+    assert captured == {"dominates_entry": True}
+
+
+def test_manager_registers_provider_on_existing_facts():
+    captured: dict[str, object] = {}
+
+    class _NeedsAa:
+        name = "needs_aa"
+
+        def run(self, ctx) -> PassResult:
+            captured["aa"] = ctx.facts.require_analysis("aa")
+            return PassResult()
+
+    manager = FunctionPassManager(analysis_providers={})
+    manager.facts_for(_Src())
+    manager.register_analysis_provider("aa", lambda graph: f"AA:{graph.func_ea:x}")
+
+    manager.run(
+        source=_Src(),
+        family=_MatchingFamily(
+            (
+                PassSpec(
+                    "needs_aa",
+                    _NeedsAa,
+                    no_caps,
+                    default,
+                    analyses=AnalysisContract(required=frozenset({"aa"})),
+                ),
+            )
+        ),
+        backend=_Backend(),
+        project_config=None,
+        maturity=IRMaturity.CANONICAL,
+    )
+
+    assert captured == {"aa": "AA:1000"}
 
 
 def test_manager_owns_analysis_manager_per_function():
