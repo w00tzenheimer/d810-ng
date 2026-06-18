@@ -492,6 +492,10 @@ def test_cfg_provenance_buffers_until_next_capture(fake_conn):
         action="REDIRECT_EDGE",
         block_serial=10,
         target_serial=20,
+        block_label="blk[10]@0x401010",
+        block_ea=0x401010,
+        target_label="blk[20]@0x401020",
+        target_ea=0x401020,
     )
 
     # No rows yet — they're buffered.
@@ -514,6 +518,25 @@ def test_cfg_provenance_buffers_until_next_capture(fake_conn):
         ("cfg_mutations", "DELETE", 42, None),
         ("cfg_mutations", "REDIRECT_EDGE", 10, 20),
     ]
+
+    detail = fake_conn.execute(
+        """
+        SELECT block_label, block_ea_hex, block_ea_i64,
+               target_label, target_ea_hex, target_ea_i64, extra_json
+        FROM cfg_provenance
+        WHERE action='REDIRECT_EDGE'
+        """
+    ).fetchone()
+    assert detail[:6] == (
+        "blk[10]@0x401010",
+        "0x0000000000401010",
+        0x401010,
+        "blk[20]@0x401020",
+        "0x0000000000401020",
+        0x401020,
+    )
+    assert '"block_label": "blk[10]@0x401010"' in detail[6]
+    assert '"target_label": "blk[20]@0x401020"' in detail[6]
 
 
 def test_cfg_provenance_latest_writes_to_current_function_snapshot(fake_conn):

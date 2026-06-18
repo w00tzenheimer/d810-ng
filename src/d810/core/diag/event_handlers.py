@@ -35,6 +35,7 @@ from d810._vendor.peewee import fn
 from d810.core import logging as _d810_logging
 from d810.core.diag import active_diag_db, diag_models_on, get_diag_conn
 from d810.core.diag.models import CfgProvenance, FactConsumer, Snapshot
+from d810.core.formatting import format_block_id
 from d810.core.diag.snapshot import (
     snapshot_branch_witness_decisions,
     snapshot_branch_ownership_proofs,
@@ -648,23 +649,47 @@ def _insert_cfg_provenance_events(
                 .scalar()
             )
             next_seq = (int(current_max) + 1) if current_max is not None else 0
-            rows = [
-                {
+            rows = []
+            for seq_idx, ev in enumerate(events):
+                block_diag = _provenance_block_diag(
+                    conn,
+                    snap_id,
+                    int(ev.block_serial),
+                    label=ev.block_label,
+                    ea=getattr(ev, "block_ea", None),
+                )
+                target_serial = (
+                    int(ev.target_serial)
+                    if ev.target_serial is not None
+                    else None
+                )
+                target_diag = _provenance_block_diag(
+                    conn,
+                    snap_id,
+                    target_serial,
+                    label=ev.target_label,
+                    ea=getattr(ev, "target_ea", None),
+                )
+                rows.append({
                     "snapshot": int(snap_id),
                     "seq": next_seq + seq_idx,
                     "pass_name": ev.pass_name,
                     "action": ev.action,
                     "block_serial": int(ev.block_serial),
-                    "target_serial": (
-                        int(ev.target_serial)
-                        if ev.target_serial is not None
-                        else None
-                    ),
+                    "block_label": block_diag["label"],
+                    "block_ea_hex": block_diag["ea_hex"],
+                    "block_ea_i64": block_diag["ea_i64"],
+                    "target_serial": target_serial,
+                    "target_label": target_diag["label"],
+                    "target_ea_hex": target_diag["ea_hex"],
+                    "target_ea_i64": target_diag["ea_i64"],
                     "reason": ev.reason,
-                    "extra_json": _provenance_extra_json(ev),
-                }
-                for seq_idx, ev in enumerate(events)
-            ]
+                    "extra_json": _provenance_extra_json(
+                        ev,
+                        block_label=block_diag["label"],
+                        target_label=target_diag["label"],
+                    ),
+                })
             with db.atomic():
                 CfgProvenance.insert_many(rows).execute()
     except Exception:
@@ -675,15 +700,64 @@ def _insert_cfg_provenance_events(
         )
 
 
-def _provenance_extra_json(ev: CfgProvenanceObserved) -> str | None:
+def _provenance_block_diag(
+    conn: sqlite3.Connection,
+    snap_id: int,
+    serial: int | None,
+    *,
+    label: str | None,
+    ea: int | None,
+) -> dict[str, str | int | None]:
+    if serial is None:
+        return {"label": None, "ea_hex": None, "ea_i64": None}
+    ea_i64 = int(ea) if ea is not None else None
+    ea_hex = f"0x{ea_i64 & 0xFFFFFFFFFFFFFFFF:016x}" if ea_i64 is not None else None
+    if ea_i64 is None:
+        ea_hex, ea_i64 = _lookup_provenance_block_ea(conn, snap_id, int(serial))
+    if label is None or label.endswith("@?") or label.endswith("@unknown"):
+        label = format_block_id(int(serial), start_ea=ea_hex or ea_i64)
+    return {"label": label, "ea_hex": ea_hex, "ea_i64": ea_i64}
+
+
+def _lookup_provenance_block_ea(
+    conn: sqlite3.Connection,
+    snap_id: int,
+    serial: int,
+) -> tuple[str | None, int | None]:
+    row = conn.execute(
+        """
+        SELECT b.start_ea_hex, b.start_ea_i64
+        FROM blocks b
+        JOIN snapshots s ON s.id = b.snapshot_id
+        WHERE b.serial = ?
+          AND s.func_ea_hex = (
+              SELECT func_ea_hex FROM snapshots WHERE id = ?
+          )
+          AND s.id <= ?
+        ORDER BY s.id DESC
+        LIMIT 1
+        """,
+        (int(serial), int(snap_id), int(snap_id)),
+    ).fetchone()
+    if row is None:
+        return None, None
+    return row[0], row[1]
+
+
+def _provenance_extra_json(
+    ev: CfgProvenanceObserved,
+    *,
+    block_label: object | None = None,
+    target_label: object | None = None,
+) -> str | None:
     """Serialize the extra dict (plus precomputed labels) as JSON."""
     import json
 
     extra: dict[str, object] = dict(ev.extra or {})
-    if ev.block_label is not None:
-        extra.setdefault("block_label", ev.block_label)
-    if ev.target_label is not None:
-        extra.setdefault("target_label", ev.target_label)
+    if block_label is not None:
+        extra.setdefault("block_label", block_label)
+    if target_label is not None:
+        extra.setdefault("target_label", target_label)
     if ev.maturity_label is not None:
         extra.setdefault("maturity", ev.maturity_label)
     if not extra:

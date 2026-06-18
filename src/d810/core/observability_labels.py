@@ -11,6 +11,7 @@ event payload use the exact same label strings (no drift).
 """
 from __future__ import annotations
 
+from d810.core.formatting import format_block_id
 from d810.core.typing import Any
 
 
@@ -45,26 +46,40 @@ def live_maturity_label(source: Any | None) -> str:
 
 
 def live_block_label(source: Any | None, serial: int | None) -> str:
-    """Format ``blk[serial]@0x...`` from a portable FlowGraph snapshot.
+    """Format ``blk[serial]@0x...`` from a live or portable CFG source.
 
-    Reads ``source.blocks[serial].start_ea`` (the ``d810.ir`` shape) by
-    duck-typing only -- ``core`` may not import ``ir``. Degrades to
-    ``blk[serial]@?`` when no portable block / ``start_ea`` is available
-    (e.g. a producer still passing a bare live ``mba`` rather than a
-    FlowGraph). The ``@0x...`` suffix is a debug-label nicety, not load-bearing.
+    Reads ``source.blocks[serial].start_ea`` (portable ``FlowGraph``) or
+    ``source.get_mblock(serial).start`` (live Hex-Rays MBA) by duck typing
+    only -- ``core`` may not import ``ir``, Hex-Rays, or IDA. Degrades to
+    ``blk[serial]@unknown`` only when no effective address is available.
     """
     if serial is None:
-        return "blk[?]@?"
+        return format_block_id(None)
     serial_int = int(serial)
-    if source is None:
-        return f"blk[{serial_int}]@?"
+    ea = live_block_start_ea(source, serial_int)
+    return format_block_id(serial_int, start_ea=ea)
+
+
+def live_block_start_ea(source: Any | None, serial: int | None) -> int | None:
+    """Return a block start EA from a portable graph or live MBA source."""
+    if source is None or serial is None:
+        return None
+    serial_int = int(serial)
     try:
         blocks = getattr(source, "blocks", None)
         getter = getattr(blocks, "get", None)
         blk = getter(serial_int) if callable(getter) else None
         ea = getattr(blk, "start_ea", None) if blk is not None else None
         if ea is not None:
-            return f"blk[{serial_int}]@0x{int(ea):x}"
+            return int(ea)
     except Exception:
         pass
-    return f"blk[{serial_int}]@?"
+    try:
+        getter = getattr(source, "get_mblock", None)
+        blk = getter(serial_int) if callable(getter) else None
+        ea = getattr(blk, "start", None) if blk is not None else None
+        if ea is not None:
+            return int(ea)
+    except Exception:
+        pass
+    return None
