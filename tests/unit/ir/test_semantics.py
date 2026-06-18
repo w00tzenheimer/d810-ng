@@ -13,7 +13,10 @@ adapter from ``tests/unit/`` would violate the
 
 from __future__ import annotations
 
-from d810.ir.semantics import ControlTransferKind, PredicateKind
+import pytest
+
+from d810.ir.expressions import ValueOpKind
+from d810.ir.semantics import CallKind, ControlTransferKind, LiftedOpcode, PredicateKind
 
 
 class TestPredicateKind:
@@ -47,7 +50,7 @@ class TestControlTransferKind:
         """Five transfer kinds cover the recon-side dispatch shapes
         the adapter needs today: gotos, conditional branches, jump
         tables, indirect jumps, and returns.  Calls have their own
-        future ``CallKind`` family."""
+        sibling ``CallKind`` family."""
         names = {member.name for member in ControlTransferKind}
         assert names == {
             "GOTO",
@@ -56,6 +59,33 @@ class TestControlTransferKind:
             "INDIRECT_BRANCH",
             "RETURN",
         }
+
+    def test_values_are_stable_tokens(self) -> None:
+        assert ControlTransferKind.GOTO.value == "goto"
+        assert ControlTransferKind.INDIRECT_BRANCH.value == "indirect_branch"
+
+
+class TestCallKind:
+    def test_call_kinds(self) -> None:
+        names = {member.name for member in CallKind}
+        assert names == {"DIRECT", "INDIRECT", "INTRINSIC"}
+
+    def test_values_are_stable_tokens(self) -> None:
+        assert CallKind.DIRECT.value == "direct"
+        assert CallKind.INDIRECT.value == "indirect"
+
+
+class TestLiftedOpcode:
+    def test_attrs_are_read_only_provenance(self) -> None:
+        lifted = LiftedOpcode(
+            kind=ValueOpKind.ADD,
+            attrs={"backend": "test", "raw_opcode_int": 12},
+        )
+
+        assert lifted.kind is ValueOpKind.ADD
+        assert lifted.attrs["backend"] == "test"
+        with pytest.raises(TypeError):
+            lifted.attrs["backend"] = "other"  # type: ignore[index]
 
 
 class TestNotFlatOpcodeEnum:
@@ -82,4 +112,11 @@ class TestNotFlatOpcodeEnum:
             assert not member.name.startswith("M_"), (
                 f"ControlTransferKind.{member.name} looks like a Hex-Rays mcode_t "
                 "name; transfer kinds describe semantics, not opcodes."
+            )
+
+    def test_call_kind_has_no_mcode_naming(self) -> None:
+        for member in CallKind:
+            assert not member.name.startswith("M_"), (
+                f"CallKind.{member.name} looks like a Hex-Rays mcode_t name; "
+                "call kinds describe semantics, not opcodes."
             )

@@ -43,6 +43,11 @@ portable tokens (`"add"`, `"sar"`) to match `PredicateKind` and keep diag/golden
 serialization stable. YAGNI: enroll only what the backlog (~35 µcode ops) + the
 obvious P-Code core need, not a full P-Code clone.
 
+Status 2026-06-18: implemented. `ValueOpKind` is now a `(str, Enum)` with the
+machine-near integer/value core plus `VENDOR`. `ExprRef` remains narrower than
+`ValueOpKind`; adding a vocabulary member does not imply every operation already
+has a dedicated expression dataclass.
+
 ### A2. Collapse rules
 * signedness → in the op (`SAR`/`SHR`, `SDIV`/`UDIV`; compares via `PredicateKind`)
 * width → never in the op; carried by `varnode.size`
@@ -58,17 +63,28 @@ belong to a separate `CallKind` family. This plan now follows that contract.
 Ticket `llr-a5b7` tracks the remaining operation-vocabulary implementation and
 lift tests.
 
+Status 2026-06-18: implemented. `CallKind.{DIRECT,INDIRECT,INTRINSIC}` is live,
+Hex-Rays `m_call` / `m_icall` classify as direct / indirect calls, and
+`ControlTransferKind` remains transfer-only.
+
 ### A3. Provenance & lift
 `Operation.attrs` carries `raw_opcode_int` + `raw_opcode_name` + backend id
 (diagnostics only; the `op_<N>` fallback disappears). Per-backend lift table in
 `d810/backends/<vendor>/opcode_lift.py`: `lift_opcode(raw) -> (kind, attrs)`.
 Hex-Rays first; `pcode`/`vex`/`llvm` later reuse the SAME three enums.
 
+Status 2026-06-18: implemented for Hex-Rays. The live SDK-facing table is
+`d810.hexrays.opcode_lift` because `d810.hexrays` is lower than
+`d810.backends` in the import-linter layer order; the backend-facing seam exists
+at `d810.backends.hexrays.opcode_lift` and delegates downward without creating a
+reverse layer edge. `lift_opcode(raw)` returns `LiftedOpcode(kind, attrs)`.
+Unknown opcodes use `ValueOpKind.VENDOR` and keep the raw integer without
+fabricating `op_<N>` names.
+
 ### A4. Migration off the `OpcodeName` bridge
-`ir/opcode_name.py:OpcodeName` (built this session, `(str,Enum)` valued at the
-mnemonics) is the TRANSITIONAL bridge: strings→`OpcodeName.X` is behaviour-
-neutral and decoupled. End-state: lift emits the three enums; `OpcodeName` +
-`op_<N>` retire.
+Status 2026-06-18: implemented. `ir/opcode_name.py:OpcodeName` and the
+`codemod_vendor_string_to_enum.py` bridge are deleted. Lift emits canonical
+family enums plus diagnostic attrs.
 
 ---
 
@@ -311,9 +327,11 @@ feeds it; that stays true with the resolver under `CONDITION_CHAIN`.)
 ## Where it lives
 `capabilities/dispatcher.py` (RouterKind, TableProvenance),
 `analyses/control_flow/dispatch_key.py` (DispatchKeyTransformKind),
-`ir/semantics.py` (EdgeTransferKind beside ControlTransferKind),
-`ir/expressions.py` (grown ValueOpKind), `backends/<vendor>/opcode_lift.py`
-(lift tables). `DispatcherType` retires into `RouterKind`. Maturity/form
+`ir/semantics.py` (`CallKind`, `LiftedOpcode`, `EdgeTransferKind` beside
+ControlTransferKind), `ir/expressions.py` (grown ValueOpKind),
+`hexrays/opcode_lift.py` + `backends/hexrays/opcode_lift.py` (Hex-Rays lift
+table and backend-facing seam). `DispatcherType` retires into `RouterKind`.
+Maturity/form
 vocabulary stays in `ir/maturity.py` (`IRMaturity`, `SnapshotForm`, and the total
 mapping helper); do not create another independent stage enum.
 

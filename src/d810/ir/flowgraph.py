@@ -15,7 +15,12 @@ from d810.ir.directed_graph import (
     sccs as _sccs,
 )
 from d810.ir.maturity import SnapshotForm
-from d810.ir.semantics import PredicateKind  # re-exported; BranchPredicate retired (llr-lxas)
+from d810.ir.expressions import ValueOpKind
+from d810.ir.semantics import (
+    CallKind,
+    ControlTransferKind,
+    PredicateKind,  # re-exported; BranchPredicate retired (llr-lxas)
+)
 
 logger = getLogger(__name__)
 
@@ -163,6 +168,10 @@ class InsnSnapshot:
     d: MopSnapshot | None = None   # dest operand
     kind: InsnKind = InsnKind.UNKNOWN
     raw_opcode: int | None = None
+    value_op_kind: ValueOpKind | None = None
+    control_transfer_kind: ControlTransferKind | None = None
+    call_kind: CallKind | None = None
+    opcode_attrs: Mapping[str, object] = field(default_factory=dict, hash=False)
     branch_predicate: PredicateKind | None = None
     compare_width: int | None = None
     is_conditional_jump: bool = False
@@ -174,6 +183,33 @@ class InsnSnapshot:
             object.__setattr__(self, "raw_opcode", int(self.opcode))
         if self.opcode < 0 and self.raw_opcode is not None:
             object.__setattr__(self, "opcode", int(self.raw_opcode))
+        object.__setattr__(self, "opcode_attrs", MappingProxyType(dict(self.opcode_attrs)))
+        if self.value_op_kind is None:
+            kind_to_value = {
+                InsnKind.MOV: ValueOpKind.MOVE,
+                InsnKind.LOAD: ValueOpKind.LOAD,
+                InsnKind.XDU: ValueOpKind.ZEXT,
+                InsnKind.XDS: ValueOpKind.SEXT,
+                InsnKind.ADD: ValueOpKind.ADD,
+                InsnKind.SUB: ValueOpKind.SUB,
+                InsnKind.AND: ValueOpKind.AND,
+                InsnKind.STORE: ValueOpKind.STORE,
+            }
+            inferred = kind_to_value.get(self.kind)
+            if inferred is not None:
+                object.__setattr__(self, "value_op_kind", inferred)
+        if self.control_transfer_kind is None:
+            kind_to_transfer = {
+                InsnKind.GOTO: ControlTransferKind.GOTO,
+                InsnKind.COND_JUMP: ControlTransferKind.CONDITIONAL_BRANCH,
+                InsnKind.EQUALITY_JUMP: ControlTransferKind.CONDITIONAL_BRANCH,
+                InsnKind.TABLE_JUMP: ControlTransferKind.TABLE_BRANCH,
+                InsnKind.INDIRECT_JUMP: ControlTransferKind.INDIRECT_BRANCH,
+                InsnKind.RET: ControlTransferKind.RETURN,
+            }
+            inferred_transfer = kind_to_transfer.get(self.kind)
+            if inferred_transfer is not None:
+                object.__setattr__(self, "control_transfer_kind", inferred_transfer)
         if (
             self.branch_predicate is not None
             or self.kind in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}
