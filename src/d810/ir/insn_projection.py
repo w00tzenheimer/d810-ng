@@ -126,6 +126,12 @@ _SUBINSN_VALUE_OPS = {
 }
 
 
+def _subinsn_value_op(mop: MopSnapshot) -> ValueOpKind:
+    if mop.sub_value_op_kind is not None:
+        return mop.sub_value_op_kind
+    return _SUBINSN_VALUE_OPS.get(mop.sub_kind, ValueOpKind.VENDOR)
+
+
 class _SequenceProjector:
     """Instruction-local lowering of nested SUBINSN operands to temp defs."""
 
@@ -166,13 +172,16 @@ class _SequenceProjector:
             temp = Varnode(Space.TEMP, self._next_temp, self._infer_temp_size(mop))
             self._subinsn_temps[key] = temp
             self._next_temp += 1
-        operation = _SUBINSN_VALUE_OPS.get(mop.sub_kind, ValueOpKind.VENDOR)
+        operation = _subinsn_value_op(mop)
         if operation is ValueOpKind.MOVE:
             inputs = tuple(vn for vn in (left,) if vn is not None)
         else:
             inputs = tuple(vn for vn in (left, right) if vn is not None)
         attrs = _instruction_attrs(self._parent)
         attrs["nested_sub_kind"] = mop.sub_kind.value if mop.sub_kind is not None else None
+        attrs["nested_sub_value_op_kind"] = (
+            mop.sub_value_op_kind.value if mop.sub_value_op_kind is not None else None
+        )
         if operation is ValueOpKind.VENDOR:
             attrs["unsupported_nested_sub_kind"] = attrs["nested_sub_kind"]
         self.instructions.append(

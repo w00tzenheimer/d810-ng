@@ -25,6 +25,7 @@ from d810.ir.flowgraph import (
     InsnSnapshot,
     OperandKind,
 )
+from d810.ir.expressions import ValueOpKind
 from d810.transforms.graph_modification import (
     CloneConditionalAsGoto,
     CreateConditionalRedirect,
@@ -188,6 +189,32 @@ def test_capture_mop_snapshot_preserves_nested_stack_refs():
     assert nested_snapshot is not None
     assert nested_snapshot.kind is OperandKind.SUBINSN
     assert nested_snapshot.stack_refs == (0x38,)
+
+
+def test_capture_mop_snapshot_preserves_nested_value_op_kind():
+    left_mop = SimpleNamespace(
+        t=ida_hexrays.mop_S,
+        size=4,
+        s=SimpleNamespace(off=0x38),
+    )
+    right_mop = SimpleNamespace(
+        t=ida_hexrays.mop_n,
+        size=4,
+        nnn=SimpleNamespace(value=0xF),
+    )
+    nested_expr = SimpleNamespace(
+        t=ida_hexrays.mop_d,
+        size=4,
+        d=SimpleNamespace(opcode=ida_hexrays.m_xor, l=left_mop, r=right_mop),
+    )
+
+    nested_snapshot = capture_mop_snapshot(nested_expr)
+
+    assert nested_snapshot is not None
+    assert nested_snapshot.kind is OperandKind.SUBINSN
+    assert nested_snapshot.sub_value_op_kind is ValueOpKind.XOR
+    assert nested_snapshot.sub_l is not None
+    assert nested_snapshot.sub_l.stack_refs == (0x38,)
 
 
 def test_hexrays_branch_opcodes_map_to_backend_neutral_predicates():
