@@ -170,10 +170,11 @@ class TestLifterMetadataContract:
 class TestProviderNeutralStageMetadata:
     """E2d: the lifter exposes provider-neutral stage metadata
     (``producer`` / ``producer_stage_id`` / ``producer_stage_name`` /
-    ``snapshot_stage``) as the canonical contract.  The E2b
+    ``snapshot_form``) as the canonical contract.  The E2b
     ``maturity`` / ``maturity_name`` keys remain as aliases and MUST be
     provably equal to the neutral fields so legacy callers keep working
-    while new code migrates to the neutral names."""
+    while new code migrates to the neutral names. ``snapshot_stage`` remains a
+    metadata alias for the same coarse form during the rename."""
 
     def _lift(self, monkeypatch, maturity: int = 14):
         from d810.hexrays.mutation import ir_translator
@@ -189,7 +190,7 @@ class TestProviderNeutralStageMetadata:
             "producer",
             "producer_stage_id",
             "producer_stage_name",
-            "snapshot_stage",
+            "snapshot_form",
         ):
             assert key in meta, key
 
@@ -203,31 +204,35 @@ class TestProviderNeutralStageMetadata:
         assert meta["producer_stage_id"] == meta["maturity"]
         assert meta["producer_stage_name"] == meta["maturity_name"]
 
-    def test_snapshot_stage_is_portable_family(self, monkeypatch) -> None:
-        from d810.ir.flowgraph import SnapshotStage
+    def test_snapshot_form_is_portable_family(self, monkeypatch) -> None:
+        from d810.ir.maturity import SnapshotForm
         from d810.hexrays.mutation import ir_translator
 
         meta = self._lift(monkeypatch).metadata
-        stage = meta["snapshot_stage"]
-        assert isinstance(stage, SnapshotStage)
+        snapshot_form = meta["snapshot_form"]
+        assert isinstance(snapshot_form, SnapshotForm)
+        assert meta["snapshot_stage"] is snapshot_form
         # Derived from the producer stage name via the lifter's mapping.
-        assert stage is ir_translator._snapshot_stage_for_maturity_name(
+        assert snapshot_form is ir_translator._snapshot_form_for_maturity_name(
             meta["producer_stage_name"]
         )
 
-    def test_snapshot_stage_mapping_is_coarse_and_neutral(self, monkeypatch) -> None:
+    def test_snapshot_form_mapping_is_coarse_and_neutral(self, monkeypatch) -> None:
         """Spot-check the coarse mapping: GLBOPT* are optimized IR,
         LVARS is lvar-recovered -- no MMAT string leaks into the
         portable family value."""
-        from d810.ir.flowgraph import SnapshotStage
+        from d810.ir.maturity import SnapshotForm
         from d810.hexrays.mutation import ir_translator
 
-        m = ir_translator._snapshot_stage_for_maturity_name
-        assert m("MMAT_GLBOPT1") is SnapshotStage.OPTIMIZED_IR
-        assert m("MMAT_GLBOPT2") is SnapshotStage.OPTIMIZED_IR
-        assert m("MMAT_LVARS") is SnapshotStage.LVAR_RECOVERED
-        assert m("MMAT_PREOPTIMIZED") is SnapshotStage.NORMALIZED_IR
-        assert m("bogus") is SnapshotStage.UNKNOWN
+        m = ir_translator._snapshot_form_for_maturity_name
+        assert m("MMAT_ZERO") is SnapshotForm.RAW_IR
+        assert m("MMAT_PREOPTIMIZED") is SnapshotForm.NORMALIZED_IR
+        assert m("MMAT_LOCOPT") is SnapshotForm.OPTIMIZED_IR
+        assert m("MMAT_GLBOPT1") is SnapshotForm.OPTIMIZED_IR
+        assert m("MMAT_GLBOPT2") is SnapshotForm.OPTIMIZED_IR
+        assert m("MMAT_GLBOPT3") is SnapshotForm.FINAL_PRE_RENDER
+        assert m("MMAT_LVARS") is SnapshotForm.LVAR_RECOVERED
+        assert m("bogus") is SnapshotForm.UNKNOWN
 
 
 class TestLifterMetadataImmutability:

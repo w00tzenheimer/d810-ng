@@ -14,6 +14,7 @@ from d810.ir.directed_graph import (
     has_cycles as _has_cycles,
     sccs as _sccs,
 )
+from d810.ir.maturity import SnapshotForm
 from d810.ir.semantics import PredicateKind  # re-exported; BranchPredicate retired (llr-lxas)
 
 logger = getLogger(__name__)
@@ -67,26 +68,11 @@ class InsnKind(Enum):
 # existing ``from d810.ir.flowgraph import PredicateKind`` imports resolve.
 
 
-class SnapshotStage(str, Enum):
-    """Coarse, backend-neutral pipeline stage of a ``FlowGraph`` snapshot.
+# Retired name: the coarse metadata vocabulary is now ``SnapshotForm``.
+# Keep this import alias narrow so older imports resolve while new code stops
+# teaching "stage" as the pass-gating concept.
+SnapshotStage = SnapshotForm
 
-    Providers expose a fine-grained, provider-local stage id/name
-    (``producer_stage_id`` / ``producer_stage_name`` -- for Hex-Rays the
-    ``MMAT_*`` maturity).  ``SnapshotStage`` is the portable family that
-    LLVM/angr/LiSA adapters can all map onto, so portable analyses can ask
-    "is this optimized IR?" without learning ``MMAT_GLBOPT1``.
-
-    ``str`` mixin keeps it JSON-serializable when stored in
-    ``FlowGraph.metadata`` and comparable to plain strings.
-    """
-
-    UNKNOWN = "unknown"
-    RAW_IR = "raw_ir"
-    NORMALIZED_IR = "normalized_ir"
-    OPTIMIZED_IR = "optimized_ir"
-    SSA_LIKE = "ssa_like"
-    LVAR_RECOVERED = "lvar_recovered"
-    FINAL_PRE_RENDER = "final_pre_render"
 
 
 class OperandKind(Enum):

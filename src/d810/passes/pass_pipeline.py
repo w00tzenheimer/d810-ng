@@ -14,7 +14,8 @@ from dataclasses import dataclass, field
 
 from d810.core.typing import Any, Callable, Protocol, runtime_checkable
 from d810.core.config import ProjectConfiguration
-from d810.ir.flowgraph import FlowGraph, SnapshotStage
+from d810.ir.flowgraph import FlowGraph
+from d810.ir.maturity import IRMaturity
 from d810.analyses.value_flow.model import ValidatedFactView
 from d810.capabilities.resolver import CapabilitySet
 from d810.transforms.plan import PatchPlan
@@ -46,7 +47,7 @@ class FunctionPipelineContext:
 
     source: FunctionSource
     graph: FlowGraph
-    maturity: SnapshotStage
+    maturity: IRMaturity
     project_config: ProjectConfiguration
     facts: ValidatedFactView
     # Backend-provided capability instances keyed by Protocol type (the north-star
