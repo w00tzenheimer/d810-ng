@@ -21,6 +21,18 @@ Verification policy:
 - This is only the front-lift verification gate. M1 is not complete until
   identity-lower/parity is also proven.
 
+Identity parity policy:
+
+- Successful lifts carry a portable identity manifest emitted from the same
+  accepted instruction map and varnode allocation list that produced the LLVM
+  text.
+- `d810.backends.llvm.identity_lowering` compares the source `FlowGraph`
+  signature against that manifest and returns `passed`, `failed`, or
+  `unsupported` with structured mismatch rows.
+- This is an M1 identity-lower scaffold for the supported subset. It does not
+  parse arbitrary LLVM IR, does not lower optimized LLVM back into Hex-Rays
+  microcode, and is not the M3 body-emitter/drop interface.
+
 Current freeze-maturity policy:
 
 - The target capture point is optimized/recovered microcode after d810 structural

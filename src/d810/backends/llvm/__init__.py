@@ -6,10 +6,25 @@ emits textual LLVM IR for the narrow M1a supported subset.
 from __future__ import annotations
 
 from .emitter import (
+    LlvmIdentityManifest,
     LlvmLiftResult,
     UnsupportedLiftKind,
     UnsupportedLiftReason,
     emit_flowgraph_to_llvm,
+)
+from .identity_lowering import (
+    LlvmIdentityManifestBlock,
+    LlvmIdentityManifestControl,
+    LlvmIdentityManifestEffect,
+    LlvmIdentityManifestInstruction,
+    LlvmIdentityManifestMemory,
+    LlvmIdentityManifestSwitchCase,
+    LlvmIdentityManifestVarnode,
+    LlvmIdentityMismatch,
+    LlvmIdentityParityResult,
+    LlvmIdentityParityStatus,
+    check_identity_manifest,
+    check_identity_roundtrip,
 )
 from .maturity_policy import (
     LLVM_M1_ACCEPTED_MATURITIES,
@@ -27,6 +42,17 @@ from .verification import (
 __all__ = [
     "LLVM_M1_ACCEPTED_MATURITIES",
     "LLVM_M1_PREFERRED_MATURITY",
+    "LlvmIdentityManifest",
+    "LlvmIdentityManifestBlock",
+    "LlvmIdentityManifestControl",
+    "LlvmIdentityManifestEffect",
+    "LlvmIdentityManifestInstruction",
+    "LlvmIdentityManifestMemory",
+    "LlvmIdentityManifestSwitchCase",
+    "LlvmIdentityManifestVarnode",
+    "LlvmIdentityMismatch",
+    "LlvmIdentityParityResult",
+    "LlvmIdentityParityStatus",
     "LlvmLiftResult",
     "LlvmMaturityAssessment",
     "LlvmVerificationResult",
@@ -34,6 +60,8 @@ __all__ = [
     "UnsupportedLiftKind",
     "UnsupportedLiftReason",
     "assess_flowgraph_maturity",
+    "check_identity_manifest",
+    "check_identity_roundtrip",
     "emit_flowgraph_to_llvm",
     "find_llvm_opt",
     "verify_llvm_ir",
