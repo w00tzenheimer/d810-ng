@@ -62,14 +62,25 @@ M3a lower-back contract policy:
 - It models the contract records a production dropper will need: functions,
   blocks, terminators, PHI nodes, edge moves, unsupported diagnostics, and a
   lower-back planning result.
-- The only positive lowering in M3a is scalar PHI destructuring for a tiny
-  hand-authored diamond CFG. A PHI such as
+- The first positive lowering is scalar PHI destructuring for tiny hand-authored
+  CFGs. A PHI such as
   `%x = phi i32 [ %a, %then ], [ %b, %else ]` plans edge moves
   `then -> merge: x = a` and `else -> merge: x = b`, preserving predecessor
   labels and incoming order.
-- The planner fails closed for critical-edge splits, non-scalar PHIs, unknown
-  block targets, unsupported call/memory instructions, and unsupported control
-  such as `indirectbr`, `invoke`, or landingpad-style terminators.
+- M3b extends the contract with deterministic critical-edge bridge planning.
+  When a PHI copy belongs to a critical predecessor->successor edge, the plan
+  records an inserted bridge block and an edge rewrite, then places the
+  parallel-copy group in that bridge. Bridge labels are stable
+  `m3_split__<pred>__<succ>` strings when unique; existing-block collisions or
+  sanitized generated-label collisions fail closed with `bridge_label_conflict`.
+- Multiple PHIs targeting the same edge produce an ordered parallel-copy group.
+  The planner preserves PHI order within each edge group and fails closed with
+  `parallel_copy_conflict` if source/target overlap would require a temp or
+  cycle-breaking plan that this DTO prototype does not yet model.
+- The planner also fails closed for non-scalar PHIs, inconsistent predecessor
+  edges, unknown block targets, unsupported call/memory instructions, and
+  unsupported control such as `indirectbr`, `invoke`, or landingpad-style
+  terminators.
 - This is not the M3 production body emitter. It does not consume M1/M2
   optimized output, parse arbitrary LLVM modules, import IDAvator, mutate
   Hex-Rays microcode, or claim decompile/oracle parity. Production M3 remains
