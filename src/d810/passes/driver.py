@@ -60,6 +60,11 @@ def _plan_has_work(plan: PatchPlan) -> bool:
     return bool(plan.steps or plan.new_blocks or plan.planner_modifications)
 
 
+def _graph_changed(old_graph, new_graph) -> bool:
+    """Return whether backend apply produced a meaningfully new graph snapshot."""
+    return new_graph != old_graph
+
+
 def validate_capabilities(backend, requirements: CapabilityPolicy) -> None:
     """Fail loud if the backend cannot satisfy a pass's required capabilities."""
     have = frozenset(backend.capabilities())
@@ -169,8 +174,9 @@ def _run_pass_spec(
         new_graph = backend.apply(
             result.rewrite_plan, ctx.source.live_source, spec.safety_policy
         )
-        facts.invalidate_to(new_graph, effective_preserved_analyses(spec, result))
-        ctx = replace(ctx, graph=new_graph)
+        if _graph_changed(ctx.graph, new_graph):
+            facts.invalidate_to(new_graph, effective_preserved_analyses(spec, result))
+            ctx = replace(ctx, graph=new_graph)
     return ctx
 
 
