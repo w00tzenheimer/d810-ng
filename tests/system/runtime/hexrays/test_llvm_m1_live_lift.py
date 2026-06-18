@@ -1,12 +1,8 @@
 """LLVM M1b live-lift maturity probe over real Hex-Rays snapshots."""
 from __future__ import annotations
 
-import os
-import shutil
-import subprocess
 from collections import Counter
 from dataclasses import dataclass
-from pathlib import Path
 
 import pytest
 
@@ -19,6 +15,7 @@ from d810.backends.llvm import (
     UnsupportedLiftKind,
     assess_flowgraph_maturity,
     emit_flowgraph_to_llvm,
+    verify_llvm_ir,
 )
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.ir.maturity import IRMaturity
@@ -77,33 +74,6 @@ class _CensusRow:
             f"blocks={self.block_count} supported={self.supported} "
             f"kinds={histogram} operations={operations}"
         )
-
-
-def _find_opt() -> Path | None:
-    candidates = [
-        os.environ.get("LLVM_OPT"),
-        "/opt/homebrew/opt/llvm/bin/opt",
-        shutil.which("opt"),
-    ]
-    for candidate in candidates:
-        if not candidate:
-            continue
-        path = Path(candidate)
-        if path.is_file() and os.access(path, os.X_OK):
-            return path
-    return None
-
-
-def _verify_with_opt(opt: Path, ir_text: str, tmp_path: Path) -> None:
-    ir_path = tmp_path / "lab_if_diamond.m1b.ll"
-    ir_path.write_text(ir_text, encoding="utf-8")
-    proc = subprocess.run(
-        [str(opt), "-S", "-passes=verify", str(ir_path), "-o", "-"],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert proc.returncode == 0, proc.stderr or proc.stdout
 
 
 class TestLLVMM1LiveLiftProbe:
@@ -187,11 +157,21 @@ class TestLLVMM1LiveLiftProbe:
             + "\n".join(row.summary() for row in rows)
         )
 
-        opt = _find_opt()
-        if opt is not None:
-            _verify_with_opt(opt, preferred_ir, tmp_path)
-        else:
-            print("LLVM opt not found; live supported-lift gate passed without opt -verify")
+        verification = verify_llvm_ir(
+            preferred_ir,
+            function_name="lab_if_diamond_m1_preferred",
+            tmp_dir=tmp_path,
+        )
+        print(
+            "LLVM verification: "
+            f"status={verification.status.value} "
+            f"opt={verification.opt_path or '<none>'} "
+            f"reason={verification.reason or '-'}"
+        )
+        if verification.failed:
+            raise AssertionError(
+                verification.reason or verification.stderr or verification.stdout
+            )
 
 
 class TestLLVMM1CoverageCensus:

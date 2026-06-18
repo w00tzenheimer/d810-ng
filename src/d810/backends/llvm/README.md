@@ -9,6 +9,18 @@ M1 deliberately follows IDAvator's supported-subset discipline: classify the
 whole function first, record precise unsupported reasons, and emit no misleading
 partial LLVM when any required instruction or terminator is unsupported.
 
+Verification policy:
+
+- `d810.backends.llvm.verification` provides the structured verification API for
+  `opt -S -passes=verify`.
+- The verifier looks for `LLVM_OPT`, Homebrew LLVM's `opt`, then `PATH`, and
+  returns `passed`, `skipped`, or `failed` with the command, stdout/stderr, and
+  reason.
+- Live Docker evidence may report `skipped` only when no `opt` binary is
+  available. If `opt` is available, verifier failure is a hard test failure.
+- This is only the front-lift verification gate. M1 is not complete until
+  identity-lower/parity is also proven.
+
 Current freeze-maturity policy:
 
 - The target capture point is optimized/recovered microcode after d810 structural
