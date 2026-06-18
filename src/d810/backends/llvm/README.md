@@ -39,11 +39,14 @@ Current supported subset:
 - one-way block edges as `br label`,
 - conditional branches from `Instruction.control.transfer` plus `PredicateKind`,
   using `succs[0]` as true and `succs[1]` as false for the current M1 policy,
+- table branches from `Instruction.control.switch_cases` as LLVM `switch` when
+  the portable selector, case rows, default row, and successor targets are
+  complete and case constants are unique after selector-width canonicalization,
 - `RETURN` with an `i32` return varnode, or fixed `ret i32 0` when no return
   value is available.
 
 Unsupported in the current M1 subset: calls, store/memory effects beyond scalar
-varnode allocas, tables/switches, indirect branches, flags/overflow-specific
-predicates, truthy predicate materialization, non-scalar widths, casts other
-than width-increasing `ZEXT`, and any operation that would require raw opcode
-provenance to infer behavior.
+varnode allocas, incomplete table/switch payloads, indirect branches,
+flags/overflow-specific predicates, truthy predicate materialization,
+non-scalar widths, casts other than width-increasing `ZEXT`, and any operation
+that would require raw opcode provenance to infer behavior.
