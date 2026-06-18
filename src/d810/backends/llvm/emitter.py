@@ -31,9 +31,19 @@ _BINARY_VALUE_OPS = {
 }
 _UNARY_VALUE_OPS = {
     ValueOpKind.NEG,
+    ValueOpKind.SIGN_BIT,
     ValueOpKind.ZEXT,
 }
-_VALUE_OPS = {ValueOpKind.MOVE, *_BINARY_VALUE_OPS, *_UNARY_VALUE_OPS}
+_OVERFLOW_VALUE_OPS = {
+    ValueOpKind.OVERFLOW_ADD,
+    ValueOpKind.OVERFLOW_FLAG,
+}
+_VALUE_OPS = {
+    ValueOpKind.MOVE,
+    *_BINARY_VALUE_OPS,
+    *_UNARY_VALUE_OPS,
+    *_OVERFLOW_VALUE_OPS,
+}
 _PREDICATES = {
     PredicateKind.EQ: "eq",
     PredicateKind.NE: "ne",
@@ -329,6 +339,15 @@ class _Classifier:
                     "NEG requires one input",
                 )
             self._check_matching_widths(block_serial, instruction_index, instruction)
+        if instruction.operation is ValueOpKind.SIGN_BIT:
+            if len(instruction.inputs) != 1:
+                self._add(
+                    block_serial,
+                    instruction_index,
+                    instruction,
+                    UnsupportedLiftKind.VALUE_ARITY,
+                    "SIGN_BIT requires one input",
+                )
         if instruction.operation is ValueOpKind.ZEXT:
             if len(instruction.inputs) != 1:
                 self._add(
@@ -358,6 +377,16 @@ class _Classifier:
                     f"{instruction.operation.value.upper()} requires two inputs",
                 )
             self._check_matching_widths(block_serial, instruction_index, instruction)
+        if instruction.operation in _OVERFLOW_VALUE_OPS:
+            if len(instruction.inputs) != 2:
+                self._add(
+                    block_serial,
+                    instruction_index,
+                    instruction,
+                    UnsupportedLiftKind.VALUE_ARITY,
+                    f"{instruction.operation.value.upper()} requires two inputs",
+                )
+            self._check_input_widths_match(block_serial, instruction_index, instruction)
 
     def _check_call(
         self,
@@ -385,6 +414,8 @@ class _Classifier:
                 UnsupportedLiftKind.CALL_PAYLOAD_UNSUPPORTED,
                 "call requires a portable call target",
             )
+        else:
+            self._check_varnode(block_serial, instruction_index, instruction, call_target)
         if instruction.result is not None and instruction.result.space is Space.CONST:
             self._add(
                 block_serial,
@@ -410,6 +441,22 @@ class _Classifier:
                 instruction,
                 UnsupportedLiftKind.VALUE_WIDTH_MISMATCH,
                 "M1a requires value operands and result to have matching widths",
+            )
+
+    def _check_input_widths_match(
+        self,
+        block_serial: int,
+        instruction_index: int,
+        instruction: Instruction,
+    ) -> None:
+        widths = {vn.size for vn in instruction.inputs}
+        if len(widths) > 1:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.VALUE_WIDTH_MISMATCH,
+                "M1k requires flag inputs to have matching widths",
             )
 
     def _check_predicate_materialization(
@@ -625,7 +672,7 @@ class _Emitter:
         self.function_name = function_name
         self.instructions = _collect_instructions(flow_graph)
         self.varnodes = self._collect_varnodes()
-        self.declarations: dict[str, tuple[str, tuple[str, ...]]] = {}
+        self.declarations: dict[str, str] = {}
         self._next_tmp = 0
 
     def emit(self) -> str:
@@ -644,8 +691,7 @@ class _Emitter:
         body_lines.append("}")
         lines = body_lines[:3]
         for name in sorted(self.declarations):
-            ret_ty, arg_tys = self.declarations[name]
-            lines.append(f"declare {ret_ty} @{name}({', '.join(arg_tys)})")
+            lines.append(self.declarations[name])
         if self.declarations:
             lines.append("")
         lines.extend(body_lines[3:])
@@ -726,7 +772,13 @@ class _Emitter:
     def _call_declaration_name(self, ret_ty: str, arg_tys: tuple[str, ...]) -> str:
         sig = "_".join((ret_ty, *arg_tys)).replace("*", "ptr").replace(" ", "_")
         name = f"__d810_opaque_call_{sig}"
-        self.declarations.setdefault(name, (ret_ty, arg_tys))
+        self.declarations.setdefault(name, f"declare {ret_ty} @{name}({', '.join(arg_tys)})")
+        return name
+
+    def _overflow_intrinsic_name(self, operation: ValueOpKind, ty: str) -> str:
+        suffix = "sadd" if operation is ValueOpKind.OVERFLOW_ADD else "ssub"
+        name = f"llvm.{suffix}.with.overflow.{ty}"
+        self.declarations.setdefault(name, f"declare {{ {ty}, i1 }} @{name}({ty}, {ty})")
         return name
 
     def _emit_call_instruction(self, instruction: Instruction) -> list[str]:
@@ -774,11 +826,32 @@ class _Emitter:
             tmp = self._tmp()
             lines.append(f"  {tmp} = sub {result_ty} 0, {value}")
             computed = tmp
+        elif instruction.operation is ValueOpKind.SIGN_BIT:
+            input_ty, value = self._emit_value(instruction.inputs[0], lines)
+            cmp_tmp = self._tmp()
+            zext_tmp = self._tmp()
+            lines.append(f"  {cmp_tmp} = icmp slt {input_ty} {value}, 0")
+            lines.append(f"  {zext_tmp} = zext i1 {cmp_tmp} to {result_ty}")
+            computed = zext_tmp
         elif instruction.operation is ValueOpKind.ZEXT:
             input_ty, value = self._emit_value(instruction.inputs[0], lines)
             tmp = self._tmp()
             lines.append(f"  {tmp} = zext {input_ty} {value} to {result_ty}")
             computed = tmp
+        elif instruction.operation in _OVERFLOW_VALUE_OPS:
+            input_ty, left = self._emit_value(instruction.inputs[0], lines)
+            _right_ty, right = self._emit_value(instruction.inputs[1], lines)
+            intrinsic = self._overflow_intrinsic_name(instruction.operation, input_ty)
+            pair_tmp = self._tmp()
+            overflow_tmp = self._tmp()
+            zext_tmp = self._tmp()
+            pair_ty = f"{{ {input_ty}, i1 }}"
+            lines.append(
+                f"  {pair_tmp} = call {pair_ty} @{intrinsic}({input_ty} {left}, {input_ty} {right})"
+            )
+            lines.append(f"  {overflow_tmp} = extractvalue {pair_ty} {pair_tmp}, 1")
+            lines.append(f"  {zext_tmp} = zext i1 {overflow_tmp} to {result_ty}")
+            computed = zext_tmp
         else:
             _left_ty, left = self._emit_value(instruction.inputs[0], lines)
             _right_ty, right = self._emit_value(instruction.inputs[1], lines)
