@@ -21,13 +21,22 @@ they need.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from d810.ir.expressions import Add, And, Const, ExprRef, Move, Sub, ValueOpKind
 from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
-from d810.ir.instructions import Instruction, InstructionControl
+from d810.ir.instructions import (
+    Instruction,
+    InstructionControl,
+    InstructionEffect,
+    InstructionEffectKind,
+    InstructionSwitchCase,
+)
 from d810.ir.locations import RegisterLocation, StackSlot, StorageLocation, WeakStackSlot
 from d810.ir.semantics import ControlTransferKind, OperationKind
 from d810.ir.statements import Assignment, ConditionalBranch
 from d810.ir.value_refs import DefinitionRef
+from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
 
 __all__ = [
     "project_assignment",
@@ -65,30 +74,196 @@ def _operation_of(insn: InsnSnapshot) -> OperationKind:
     return ValueOpKind.VENDOR
 
 
+class _VarnodeProjector:
+    """Instruction-local ``MopSnapshot`` to ``Varnode`` projection.
+
+    S1's public adapter preserves identity-key behavior and deliberately maps
+    SUBINSN to UNKNOWN.  Instruction projection needs a richer statement-local
+    view: nested SUBINSN trees become deterministic TEMP varnodes and their
+    leaves are exposed as additional inputs.
+    """
+
+    def __init__(self) -> None:
+        self._next_temp = 0
+        self._subinsn_temps: dict[int, Varnode] = {}
+
+    def one(self, mop: MopSnapshot | None) -> Varnode | None:
+        if mop is None:
+            return None
+        if mop.kind is OperandKind.SUBINSN:
+            key = id(mop)
+            existing = self._subinsn_temps.get(key)
+            if existing is not None:
+                return existing
+            temp = Varnode(Space.TEMP, self._next_temp, int(mop.size or 0))
+            self._subinsn_temps[key] = temp
+            self._next_temp += 1
+            return temp
+        vn = varnode_from_mop_snapshot(mop)
+        if vn is None or vn.space is Space.UNKNOWN:
+            return None
+        return vn
+
+    def input_nodes(self, mop: MopSnapshot | None) -> tuple[Varnode, ...]:
+        if mop is None:
+            return ()
+        if mop.kind is OperandKind.SUBINSN:
+            nodes: list[Varnode] = []
+            temp = self.one(mop)
+            if temp is not None:
+                nodes.append(temp)
+            nodes.extend(self.input_nodes(mop.sub_l))
+            nodes.extend(self.input_nodes(mop.sub_r))
+            return tuple(nodes)
+        vn = self.one(mop)
+        return (vn,) if vn is not None else ()
+
+
+def _dedupe_varnodes(nodes: Iterable[Varnode]) -> tuple[Varnode, ...]:
+    seen: set[Varnode] = set()
+    ordered: list[Varnode] = []
+    for node in nodes:
+        if node in seen:
+            continue
+        seen.add(node)
+        ordered.append(node)
+    return tuple(ordered)
+
+
+def _source_operands_for_instruction(insn: InsnSnapshot) -> tuple[MopSnapshot | None, ...]:
+    if insn.control_transfer_kind is ControlTransferKind.CONDITIONAL_BRANCH:
+        return (insn.l, insn.r)
+    if insn.control_transfer_kind is ControlTransferKind.TABLE_BRANCH:
+        return (insn.l, insn.r)
+    if insn.control_transfer_kind in {
+        ControlTransferKind.GOTO,
+        ControlTransferKind.INDIRECT_BRANCH,
+        ControlTransferKind.RETURN,
+    }:
+        return (insn.l, insn.r)
+    if insn.call_kind is not None:
+        return (insn.l, insn.r)
+    if insn.value_op_kind is ValueOpKind.STORE:
+        return (insn.l, insn.r, insn.d)
+    if insn.value_op_kind is not None or insn.predicate_kind is not None:
+        return (insn.l, insn.r)
+    return (insn.l, insn.r)
+
+
+def _instruction_result(insn: InsnSnapshot, projector: _VarnodeProjector) -> Varnode | None:
+    if insn.control_transfer_kind is not None:
+        return None
+    if insn.value_op_kind is ValueOpKind.STORE:
+        return None
+    if (
+        insn.value_op_kind is not None
+        or insn.predicate_kind is not None
+        or insn.call_kind is not None
+    ):
+        return projector.one(insn.d)
+    return None
+
+
+def _switch_cases_from(insn: InsnSnapshot) -> tuple[InstructionSwitchCase, ...]:
+    for mop in (insn.l, insn.r, insn.d):
+        if mop is None or not mop.switch_cases:
+            continue
+        return tuple(
+            InstructionSwitchCase(values=tuple(values), target=target)
+            for values, target in mop.switch_cases
+        )
+    return ()
+
+
+def _block_target_from(mop: MopSnapshot | None) -> int | None:
+    if mop is None or mop.kind is not OperandKind.BLOCK or mop.block_ref is None:
+        return None
+    return int(mop.block_ref)
+
+
+def _first_varnode(
+    projector: _VarnodeProjector,
+    *mops: MopSnapshot | None,
+) -> Varnode | None:
+    for mop in mops:
+        vn = projector.one(mop)
+        if vn is not None:
+            return vn
+    return None
+
+
+def _instruction_control(
+    insn: InsnSnapshot,
+    projector: _VarnodeProjector,
+) -> InstructionControl | None:
+    transfer = insn.control_transfer_kind
+    if transfer is ControlTransferKind.CONDITIONAL_BRANCH:
+        return InstructionControl(transfer=transfer, predicate=insn.predicate_kind)
+    if transfer is ControlTransferKind.TABLE_BRANCH:
+        return InstructionControl(transfer=transfer, switch_cases=_switch_cases_from(insn))
+    if transfer is ControlTransferKind.GOTO:
+        return InstructionControl(transfer=transfer, target=_block_target_from(insn.l))
+    if transfer is ControlTransferKind.INDIRECT_BRANCH:
+        return InstructionControl(
+            transfer=transfer,
+            indirect_target=_first_varnode(projector, insn.l, insn.r),
+        )
+    if transfer is ControlTransferKind.RETURN:
+        return InstructionControl(
+            transfer=transfer,
+            return_value=_first_varnode(projector, insn.l, insn.r),
+        )
+    if insn.call_kind is not None:
+        return InstructionControl(
+            call_kind=insn.call_kind,
+            call_target=_first_varnode(projector, insn.l, insn.r),
+        )
+    return None
+
+
+def _instruction_effects(
+    insn: InsnSnapshot,
+    projector: _VarnodeProjector,
+) -> tuple[InstructionEffect, ...]:
+    if insn.call_kind is not None:
+        return (
+            InstructionEffect(
+                kind=InstructionEffectKind.CALL,
+                target=_first_varnode(projector, insn.l, insn.r),
+                value=projector.one(insn.d),
+            ),
+        )
+    if insn.value_op_kind is ValueOpKind.STORE:
+        return (
+            InstructionEffect(
+                kind=InstructionEffectKind.STORE,
+                target=projector.one(insn.d),
+                segment=projector.one(insn.r),
+                value=projector.one(insn.l),
+            ),
+        )
+    return ()
+
+
 def project_instruction(insn: InsnSnapshot) -> Instruction:
     """Project ``InsnSnapshot`` to the canonical portable ``Instruction``.
 
-    ``llr-5b99`` Varnode is still open, so this first slice does not fabricate
-    full ``inputs`` / ``result`` from ``MopSnapshot``.  It pins the semantic
-    instruction shape and preserves raw backend details only in attrs.
+    Semantic operation comes only from already-lifted vocabulary fields.  Raw
+    backend opcode integer/name and lift-stage details stay in provenance attrs.
     """
-    transfer = insn.control_transfer_kind
-    predicate = (
-        insn.predicate_kind
-        if transfer is ControlTransferKind.CONDITIONAL_BRANCH
-        else None
+    projector = _VarnodeProjector()
+    inputs = _dedupe_varnodes(
+        node
+        for mop in _source_operands_for_instruction(insn)
+        for node in projector.input_nodes(mop)
     )
-    control = (
-        InstructionControl(transfer=transfer, predicate=predicate)
-        if transfer is not None
-        else None
-    )
+    result = _instruction_result(insn, projector)
     return Instruction(
         operation=_operation_of(insn),
-        inputs=(),
-        result=None,
-        effects=(),
-        control=control,
+        inputs=inputs,
+        result=result,
+        effects=_instruction_effects(insn, projector),
+        control=_instruction_control(insn, projector),
         attrs=_instruction_attrs(insn),
     )
 
@@ -154,7 +329,8 @@ def project_assignment(insn: InsnSnapshot) -> Assignment | None:
     ``isinstance(a.value, Const)`` with the same selectivity as the live
     ``insn.l.kind is OperandKind.NUMBER`` guard it replaces.
     """
-    if insn.kind is not InsnKind.MOV:
+    instruction = project_instruction(insn)
+    if instruction.operation is not ValueOpKind.MOVE:
         return None
     value = _value_of(insn.l)
     target_location = _location_of(insn.d)

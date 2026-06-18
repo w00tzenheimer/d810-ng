@@ -4,10 +4,7 @@
 ``operation`` field carries the semantic operation family; raw backend opcode
 details are provenance-only attrs and must not authorize behavior.
 
-This first ``llr-epu0`` slice is deliberately non-Varnode: ``llr-5b99`` has not
-landed, so ``InsnSnapshot`` projection leaves ``inputs`` empty and ``result``
-unset rather than inventing ad hoc operand/result objects.  Statement-level
-views such as :class:`d810.ir.statements.Assignment` and
+Statement-level views such as :class:`d810.ir.statements.Assignment` and
 :class:`d810.ir.statements.ConditionalBranch` remain separate projections over
 the same source snapshot.
 """
@@ -15,28 +12,76 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import Enum
 from types import MappingProxyType
 
-from d810.ir.semantics import ControlTransferKind, OperationKind, PredicateKind
-from d810.ir.value_refs import ValueRef
+from d810.ir.semantics import (
+    CallKind,
+    ControlTransferKind,
+    OperationKind,
+    PredicateKind,
+)
+from d810.ir.varnode import Varnode
 
 __all__ = [
     "Instruction",
     "InstructionControl",
+    "InstructionEffect",
+    "InstructionEffectKind",
+    "InstructionSwitchCase",
 ]
 
 
 @dataclass(frozen=True, slots=True)
-class InstructionControl:
-    """Minimal control-transfer payload for an ``Instruction``.
+class InstructionSwitchCase:
+    """Portable switch/table branch case row."""
 
-    The transfer kind is the semantic control-flow operation; ``predicate`` is
-    populated for conditional branches.  Target block modeling stays outside
-    this first slice because CFG topology already lives on ``FlowGraph``.
+    values: tuple[int, ...]
+    target: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values", tuple(int(v) for v in self.values))
+        object.__setattr__(self, "target", int(self.target))
+
+
+@dataclass(frozen=True, slots=True)
+class InstructionControl:
+    """Typed control payload for an ``Instruction``.
+
+    ``transfer`` is populated for branch/return operations.  Calls carry their
+    own ``CallKind`` because calls have call effects and optional results rather
+    than being control transfers in the portable vocabulary.
     """
 
-    transfer: ControlTransferKind
+    transfer: ControlTransferKind | None = None
     predicate: PredicateKind | None = None
+    target: int | None = None
+    fallthrough: int | None = None
+    switch_cases: tuple[InstructionSwitchCase, ...] = ()
+    indirect_target: Varnode | None = None
+    call_kind: CallKind | None = None
+    call_target: Varnode | None = None
+    return_value: Varnode | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "switch_cases", tuple(self.switch_cases))
+
+
+class InstructionEffectKind(str, Enum):
+    """Coarse side-effect families currently exposed by snapshots."""
+
+    STORE = "store"
+    CALL = "call"
+
+
+@dataclass(frozen=True, slots=True)
+class InstructionEffect:
+    """Typed side-effect payload for an ``Instruction``."""
+
+    kind: InstructionEffectKind
+    target: Varnode | None = None
+    segment: Varnode | None = None
+    value: Varnode | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,9 +95,9 @@ class Instruction:
     """
 
     operation: OperationKind
-    inputs: tuple[ValueRef, ...] = ()
-    result: ValueRef | None = None
-    effects: tuple[object, ...] = ()
+    inputs: tuple[Varnode, ...] = ()
+    result: Varnode | None = None
+    effects: tuple[InstructionEffect, ...] = ()
     control: InstructionControl | None = None
     attrs: Mapping[str, object] = field(default_factory=dict, hash=False)
 
