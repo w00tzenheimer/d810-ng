@@ -184,6 +184,13 @@ def test_pipeline_config_rejects_invalid_enum_and_maturity_values():
         pp.PipelineConfig.from_dict(
             {"pass_id": "recover_dispatcher", "maturity_gates": "CALL_MODELED"}
         )
+    with pytest.raises(pp.PipelineConfigError, match="safety_policy.name"):
+        pp.PipelineConfig.from_dict(
+            {
+                "pass_id": "recover_dispatcher",
+                "safety_policy": {"name": 123},
+            }
+        )
 
 
 def test_analysis_contract_records_required_and_provided_keys():

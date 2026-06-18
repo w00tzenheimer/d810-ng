@@ -1,10 +1,10 @@
 """unflatten live entry point — the state-machine-CFF unflattener driven by the north-star call graph.
 
 This is the runtime realization of the unflatten pseudocode: at the maturity hook it lifts the live
-``mba`` to a portable ``FunctionSource``, builds an ``AnalysisManager`` (facts), and routes
+``mba`` to a portable ``FunctionSource``, routes facts through ``FunctionPassManager``, and routes
 through the registered state-machine-CFF profiles — ``select_family`` polls the
 ``StateMachineCffFamily`` registry (``HodurFamily``=equality-chain, ``ApproovFamily``=
-switch/indirect) and the claiming profile's ``pipeline_for`` drives ``run_pipeline``. The ONLY
+switch/indirect) and the claiming profile's ``pipeline_for`` drives the pass manager. The ONLY
 live-mba touch points are the lifter + ``HexRaysMutationBackend`` (backends/hexrays).
 
 PRODUCTION PATH (M2 cutover, llr-ibpi): the unflatten chain+spine pipeline is the SOLE CFF unflattener.
@@ -14,6 +14,7 @@ The legacy HCC fork is removed and unflatten runs unconditionally — there is n
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping as ABCMapping
 
 import ida_hexrays
 from d810.analyses.control_flow.block_ownership_domain import \
@@ -114,10 +115,13 @@ from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle import (
     ComposedUnflatteningRule,
 )
-from d810.passes.analysis_manager import AnalysisManager
-from d810.passes.driver import run_pipeline
+from d810.passes.function_pass_manager import FunctionPassManager
+from d810.passes.pipeline_shadow import compare_pipeline_v2_shadow
 from d810.passes.unflatten.state_machine import LOWER_STATE_MACHINE_PLAN_METADATA
-from d810.families.state_machine_cff.pipeline import standard_state_machine_passes
+from d810.families.state_machine_cff.pipeline import (
+    standard_state_machine_passes,
+    state_machine_pass_registry,
+)
 from d810.transforms.minimal_unflatten_emit import (
     TERMINAL_CARRIER_CONVERGENCE_METADATA,
 )
@@ -159,7 +163,7 @@ class _ReducedProductBypassFamily:
 
     def detect(self, graph, capabilities, context=None):
         """Claim every graph (truthy) -- the static poll already declined, so this is the
-        deliberate reduced_product fallthrough. ``run_pipeline`` re-runs ``detect`` and
+        deliberate reduced_product fallthrough. The pass manager re-runs ``detect`` and
         bails on ``None``; returning a non-None sentinel lets the spine run."""
         return self
 
@@ -239,9 +243,26 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         #: maturity, no later maturity should reprocess it.
         self._unflat_done_eas: set[int] = set()
         self._pass_scheduler = None
+        self._pass_manager = FunctionPassManager()
+        self._pass_manager_session_by_func: dict[int, int] = {}
 
     def set_pass_scheduler(self, scheduler: object | None) -> None:
         self._pass_scheduler = scheduler
+
+    def reset_pass_manager_state(self) -> None:
+        """Reset manager-owned pipeline facts/scheduler state for a fresh session."""
+        self._pass_manager.reset_all()
+        self._pass_manager_session_by_func.clear()
+
+    def _reset_pass_manager_if_new_session(self, mba: object) -> None:
+        func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        if func_ea == 0:
+            return
+        session_id = id(mba)
+        if self._pass_manager_session_by_func.get(func_ea) == session_id:
+            return
+        self._pass_manager.reset_func(func_ea)
+        self._pass_manager_session_by_func[func_ea] = session_id
 
     def _should_run_unflatten_round(
         self, func_ea: int, *, is_indirect: bool, maturity: int
@@ -282,6 +303,50 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
     def _mark_ea_converged(self, func_ea: int) -> None:
         """Mark ``func_ea`` terminal — recovery found no dispatcher (graph fully unflattened)."""
         self._unflat_done_eas.add(func_ea)
+
+    def _log_pipeline_v2_shadow(self, project_config, family, source, backend) -> None:
+        """Compare optional project PipelineConfig v2 against the live family pipeline."""
+        config = (
+            project_config
+            if isinstance(project_config, ABCMapping)
+            else getattr(project_config, "additional_configuration", {}) or {}
+        )
+        if not isinstance(config, ABCMapping) or "pipeline_v2" not in config:
+            return
+        try:
+            match = family.detect(
+                source.flow_graph, backend.capabilities(), context=project_config
+            )
+            if match is None:
+                return
+            live_specs = tuple(family.pipeline_for(match, None))
+            comparison = compare_pipeline_v2_shadow(
+                project_config=project_config,
+                registry=state_machine_pass_registry(),
+                live_specs=live_specs,
+            )
+        except Exception:
+            logger.warning(
+                "unflat: pipeline_v2 shadow comparison failed for family=%s",
+                getattr(family, "name", "?"),
+                exc_info=True,
+            )
+            raise
+        if not comparison.enabled:
+            return
+        if comparison.matches:
+            logger.info(
+                "unflat: pipeline_v2 shadow matches family=%s passes=%s",
+                getattr(family, "name", "?"),
+                list(comparison.live_pass_ids),
+            )
+            return
+        logger.warning(
+            "unflat: pipeline_v2 shadow mismatch family=%s configured=%s live=%s",
+            getattr(family, "name", "?"),
+            list(comparison.configured_pass_ids),
+            list(comparison.live_pass_ids),
+        )
 
     def _lower_plan_requested_terminal_convergence(self, facts: object) -> bool:
         getter = getattr(facts, "get_analysis", None)
@@ -461,6 +526,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             # DIFFERENT stage within the union/override.
             return 0
         func_ea: int = mba.entry_ea
+        self._reset_pass_manager_if_new_session(mba)
         # Bounded re-run (ticket llr-3gn4): re-running the unflatten on the re-lifted
         # post-redirect graph discovers + redirects a residual dispatcher a single pass
         # leaves behind, so IDA's optimize_global converges to the dispatcher-free graph.
@@ -477,7 +543,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         source = lift_function(mba, maturity=mba.maturity)
         # llr-dczv: register the PORTABLE indirect jump-table resolver into the
         # shared front-end (build_dispatch_map_any_kind) BEFORE any detection
-        # (the prelim recover_dispatcher, select_family, run_pipeline) so the
+        # (the prelim recover_dispatcher, select_family, pass manager) so the
         # Tigress indirect dispatcher is recognized end-to-end. The resolver is
         # IDA-free; the live binary table reads live behind the injected
         # HexRaysIndirectJumpTableCapability (bound to the fresh mba). accepts()
@@ -559,9 +625,12 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     self._log_lisa_discovery_diff(source.flow_graph, prelim, range_evidence)
         except Exception:  # noqa: BLE001 — evidence recovery is best-effort
             logger.debug("unflat: pre-pipeline condition-chain evidence failed", exc_info=True)
-        facts = AnalysisManager(source.flow_graph, input_facts=fact_view)
-        if range_evidence is not None:
-            facts.put_analysis("range_evidence", range_evidence)
+        analysis_inputs = {"range_evidence": range_evidence}
+        facts = self._pass_manager.facts_for(
+            source,
+            input_facts=fact_view,
+            analysis_inputs=analysis_inputs,
+        )
         backend = HexRaysMutationBackend()
         # Provide the live value-range capability so RecoverStateTransitions can resolve handler
         # transitions the exact equality-chain leaves unresolved (the north-star
@@ -621,7 +690,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # Route through the registered profiles (llr-ibpi): select_family polls the
         # StateMachineCffFamily registry (HodurFamily=equality-chain, ApproovFamily/
         # TigressFamily=switch/indirect) and returns the one whose detect claims this
-        # graph; the selected profile's pipeline_for drives run_pipeline. The rule's
+        # graph; the selected profile's pipeline_for drives the pass manager. The rule's
         # JSON config is threaded so a project may override the choice via the
         # router_resolution policy (llr-11du); empty config preserves registration order.
         project_config = getattr(self, "config", None)
@@ -691,16 +760,18 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         maturity_to_string(int(mba.maturity)),
                     )
                 return 0
-            run_pipeline(
+            self._log_pipeline_v2_shadow(project_config, family, source, backend)
+            self._pass_manager.run(
                 source=source,
                 family=family,
                 backend=backend,
-                facts=facts,
                 project_config=project_config,
                 maturity=current_ir_maturity,
                 capabilities=capabilities,
-                scheduler=self._pass_scheduler,
+                input_facts=fact_view,
+                analysis_inputs=analysis_inputs,
             )
+            facts = self._pass_manager.analysis_manager_for(func_ea) or facts
         # Iteration diagnostics: where does the unflatten chain stand for this function?
         rec = facts.get_analysis("recover_dispatcher")
         tr = facts.get_analysis("transition_result")

@@ -111,8 +111,8 @@ class TestUnflattenBoundedRerunGate:
 
         assert rule._lower_plan_requested_terminal_convergence(facts) is True
 
-    def test_live_pipeline_receives_ir_maturity_and_scheduler(self, monkeypatch) -> None:
-        """The live optimizer adapter must not pass raw Hex-Rays maturity downstream."""
+    def test_live_pipeline_receives_ir_maturity_and_input_facts(self, monkeypatch) -> None:
+        """The live optimizer adapter must route through FunctionPassManager."""
         from d810.hexrays.preanalysis import indirect_jump_labels
         from d810.optimizers.microcode.flow.flattening import (
             state_machine_cff_unflattener as unflat_mod,
@@ -127,7 +127,7 @@ class TestUnflattenBoundedRerunGate:
                 return frozenset()
 
         class _Facts:
-            def __init__(self, _graph, input_facts=None):
+            def __init__(self):
                 self._values = {}
 
             def put_analysis(self, name, value):
@@ -136,9 +136,35 @@ class TestUnflattenBoundedRerunGate:
             def get_analysis(self, name, default=None):
                 return self._values.get(name, default)
 
+        class _FunctionPassManager:
+            def __init__(self):
+                self.facts = _Facts()
+
+            def reset_all(self):
+                pass
+
+            def reset_func(self, func_ea):
+                captured["reset_func"] = int(func_ea)
+
+            def facts_for(self, source, *, input_facts=None, analysis_inputs=None):
+                captured["prepared_input_facts"] = input_facts
+                captured["prepared_analysis_inputs"] = dict(analysis_inputs or {})
+                for name, value in (analysis_inputs or {}).items():
+                    self.facts.put_analysis(name, value)
+                return self.facts
+
+            def run(self, **kwargs):
+                captured.update(kwargs)
+                return kwargs["source"].flow_graph
+
+            def analysis_manager_for(self, func_ea):
+                captured["analysis_manager_for"] = int(func_ea)
+                return self.facts
+
         captured: dict[str, object] = {}
         scheduler = object()
         family = _Family()
+        fact_view = SimpleNamespace(active_observations=("state",))
 
         monkeypatch.setattr(
             indirect_jump_labels,
@@ -157,8 +183,17 @@ class TestUnflattenBoundedRerunGate:
         )
         monkeypatch.setattr(
             unflat_mod,
+            "FunctionPassManager",
+            _FunctionPassManager,
+        )
+        monkeypatch.setattr(
+            unflat_mod,
             "lift_function",
-            lambda mba, maturity: SimpleNamespace(flow_graph=object()),
+            lambda mba, maturity: SimpleNamespace(
+                flow_graph=object(),
+                func_ea=int(mba.entry_ea),
+                live_source=mba,
+            ),
         )
         monkeypatch.setattr(
             unflat_mod,
@@ -174,7 +209,6 @@ class TestUnflattenBoundedRerunGate:
             ),
         )
         monkeypatch.setattr(unflat_mod, "select_family", lambda *_args, **_kwargs: family)
-        monkeypatch.setattr(unflat_mod, "AnalysisManager", _Facts)
         monkeypatch.setattr(unflat_mod, "HexRaysMutationBackend", _Backend)
         monkeypatch.setattr(unflat_mod, "HexRaysValRangeCapability", lambda _mba: object())
         monkeypatch.setattr(unflat_mod, "HexRaysUseDefSafetyBackend", lambda: object())
@@ -184,14 +218,11 @@ class TestUnflattenBoundedRerunGate:
             lambda **_kwargs: object(),
         )
 
-        def _run_pipeline(**kwargs):
-            captured.update(kwargs)
-            return kwargs["source"].flow_graph
-
-        monkeypatch.setattr(unflat_mod, "run_pipeline", _run_pipeline)
-
         rule = StateMachineCffUnflattener()
         rule.config = {}
+        rule.flow_context = SimpleNamespace(
+            validated_fact_view=lambda _maturity: fact_view
+        )
         rule.set_pass_scheduler(scheduler)
         rule._union_maturities_cache = frozenset({ida_hexrays.MMAT_GLBOPT1})
 
@@ -202,7 +233,11 @@ class TestUnflattenBoundedRerunGate:
         assert rule.optimize(SimpleNamespace(mba=mba, serial=0)) == 0
 
         assert captured["maturity"] is IRMaturity.GLOBAL_ANALYZED
-        assert captured["scheduler"] is scheduler
+        assert captured["input_facts"] is fact_view
+        assert captured["prepared_input_facts"] is fact_view
+        assert captured["analysis_inputs"] == {"range_evidence": None}
+        assert captured["prepared_analysis_inputs"] == {"range_evidence": None}
+        assert captured["reset_func"] == _EA
 
 
 class TestTigressIndirectMaterializationConfig:

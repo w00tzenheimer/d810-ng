@@ -82,6 +82,12 @@ def _parse_bool(value: object, field_name: str) -> bool:
     return value
 
 
+def _parse_string(value: object, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise PipelineConfigError(f"{field_name} must be a string")
+    return value
+
+
 @runtime_checkable
 class FunctionSource(Protocol):
     """Portable handle to the function under analysis plus its live backend source.
@@ -299,7 +305,10 @@ class PipelineConfig:
                 "backend_route",
             ),
             safety_policy=SafetyPolicy(
-                name=str(safety_policy_data.get("name", "default")),
+                name=_parse_string(
+                    safety_policy_data.get("name", "default"),
+                    "safety_policy.name",
+                ),
                 golden_required=_parse_bool(
                     safety_policy_data.get("golden_required", False),
                     "safety_policy.golden_required",

@@ -63,3 +63,16 @@ def test_satisfies_factstore_protocol_used_by_driver():
     am = AnalysisManager(graph="G0")
     assert am.view() is am
     assert hasattr(am, "invalidate_to")
+
+
+def test_set_input_facts_replaces_active_observations():
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type("_Facts", (), {"active_observations": ("old",)})(),
+    )
+
+    am.set_input_facts(
+        type("_Facts", (), {"active_observations": ("new",)})()
+    )
+
+    assert am.active_observations == ("new",)
