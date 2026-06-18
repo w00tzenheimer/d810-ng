@@ -28,6 +28,8 @@ from d810.ir.instructions import (
     InstructionControl,
     InstructionEffect,
     InstructionEffectKind,
+    InstructionMemoryAccess,
+    InstructionMemoryAccessKind,
     InstructionSwitchCase,
 )
 from d810.ir.locations import RegisterLocation, StackSlot, StorageLocation, WeakStackSlot
@@ -320,6 +322,49 @@ def _instruction_effects(
     return ()
 
 
+_DIRECT_CELL_SPACES = frozenset({Space.STACK, Space.GLOBAL, Space.LVAR, Space.TEMP})
+
+
+def _memory_access_kind(
+    target: Varnode | None,
+    segment: Varnode | None,
+) -> InstructionMemoryAccessKind:
+    if target is None:
+        return InstructionMemoryAccessKind.UNKNOWN
+    if segment is not None:
+        return InstructionMemoryAccessKind.INDIRECT
+    if target.space in _DIRECT_CELL_SPACES:
+        return InstructionMemoryAccessKind.DIRECT_CELL
+    return InstructionMemoryAccessKind.INDIRECT
+
+
+def _instruction_memory_access(
+    insn: InsnSnapshot,
+    projector: _VarnodeProjector,
+) -> InstructionMemoryAccess | None:
+    if insn.value_op_kind is ValueOpKind.LOAD:
+        target = projector.one(insn.r)
+        segment = projector.one(insn.l)
+        return InstructionMemoryAccess(
+            kind=_memory_access_kind(target, segment),
+            target=target,
+            segment=segment,
+            width=int(insn.d.size) if insn.d is not None else None,
+        )
+    if insn.value_op_kind is ValueOpKind.STORE:
+        target = projector.one(insn.d)
+        segment = projector.one(insn.r)
+        value = projector.one(insn.l)
+        return InstructionMemoryAccess(
+            kind=_memory_access_kind(target, segment),
+            target=target,
+            segment=segment,
+            value=value,
+            width=int(insn.l.size) if insn.l is not None else None,
+        )
+    return None
+
+
 def project_instruction(insn: InsnSnapshot) -> Instruction:
     """Project ``InsnSnapshot`` to the canonical portable ``Instruction``.
 
@@ -339,6 +384,7 @@ def project_instruction(insn: InsnSnapshot) -> Instruction:
         result=result,
         effects=_instruction_effects(insn, projector),
         control=_instruction_control(insn, projector),
+        memory=_instruction_memory_access(insn, projector),
         attrs=_instruction_attrs(insn),
     )
 
@@ -364,6 +410,7 @@ def project_instruction_sequence(insn: InsnSnapshot) -> tuple[Instruction, ...]:
         result=_instruction_result(insn, projector),
         effects=_instruction_effects(insn, projector),
         control=_instruction_control(insn, projector),
+        memory=_instruction_memory_access(insn, projector),
         attrs=_instruction_attrs(insn),
     )
     return (*projector.instructions, parent)

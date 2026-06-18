@@ -29,6 +29,8 @@ from d810.ir.instructions import (
     InstructionControl,
     InstructionEffect,
     InstructionEffectKind,
+    InstructionMemoryAccess,
+    InstructionMemoryAccessKind,
 )
 from d810.ir.maturity import IRMaturity
 from d810.ir.semantics import CallKind, PredicateKind
@@ -1103,7 +1105,112 @@ def test_unsupported_nested_value_op_kind_fails_closed():
     )
 
 
-def test_store_effect_has_structured_unsupported_kind():
+def test_direct_cell_store_emits_distinct_alloca_store(monkeypatch):
+    target = Varnode(Space.STACK, 0x10, 4)
+    value = Varnode(Space.REGISTER, 0, 4)
+    store = Instruction(
+        operation=ValueOpKind.STORE,
+        inputs=(value, target),
+        effects=(InstructionEffect(InstructionEffectKind.STORE, target=target, value=value),),
+        memory=InstructionMemoryAccess(
+            kind=InstructionMemoryAccessKind.DIRECT_CELL,
+            target=target,
+            value=value,
+            width=4,
+        ),
+    )
+    flow = _graph(_block(0, (), (_mov(_num(1), _reg(0)),)))
+    monkeypatch.setattr(llvm_emitter, "_collect_instructions", lambda _flow: {0: (store,)})
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert "%S16_4 = alloca i32" in result.ir_text
+    assert "%r0_4 = alloca i32" in result.ir_text
+    assert " = load i32, ptr %r0_4, align 4" in result.ir_text
+    assert "store i32 %t" in result.ir_text
+    assert "ptr %S16_4, align 4" in result.ir_text
+
+
+@pytest.mark.parametrize(
+    ("effect_target", "effect_segment", "effect_value"),
+    (
+        (Varnode(Space.STACK, 0x20, 4), None, Varnode(Space.REGISTER, 0, 4)),
+        (Varnode(Space.STACK, 0x10, 4), None, Varnode(Space.REGISTER, 1, 4)),
+        (
+            Varnode(Space.STACK, 0x10, 4),
+            Varnode(Space.REGISTER, 2, 4),
+            Varnode(Space.REGISTER, 0, 4),
+        ),
+    ),
+)
+def test_direct_cell_store_requires_effect_memory_payload_consistency(
+    monkeypatch,
+    effect_target,
+    effect_segment,
+    effect_value,
+):
+    target = Varnode(Space.STACK, 0x10, 4)
+    value = Varnode(Space.REGISTER, 0, 4)
+    store = Instruction(
+        operation=ValueOpKind.STORE,
+        inputs=(value, target),
+        effects=(
+            InstructionEffect(
+                InstructionEffectKind.STORE,
+                target=effect_target,
+                segment=effect_segment,
+                value=effect_value,
+            ),
+        ),
+        memory=InstructionMemoryAccess(
+            kind=InstructionMemoryAccessKind.DIRECT_CELL,
+            target=target,
+            value=value,
+            width=4,
+        ),
+    )
+    flow = _graph(_block(0, (), (_mov(_num(1), _reg(0)),)))
+    monkeypatch.setattr(llvm_emitter, "_collect_instructions", lambda _flow: {0: (store,)})
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.MEMORY_PAYLOAD_UNSUPPORTED
+        and reason.reason == "STORE effect payload must match memory access contract"
+        for reason in result.unsupported
+    )
+
+
+def test_direct_cell_load_emits_distinct_alloca_load(monkeypatch):
+    target = Varnode(Space.STACK, 0x10, 4)
+    result_vn = Varnode(Space.REGISTER, 0, 4)
+    load = Instruction(
+        operation=ValueOpKind.LOAD,
+        inputs=(target,),
+        result=result_vn,
+        memory=InstructionMemoryAccess(
+            kind=InstructionMemoryAccessKind.DIRECT_CELL,
+            target=target,
+            width=4,
+        ),
+    )
+    flow = _graph(_block(0, (), (_mov(_num(1), _reg(0)),)))
+    monkeypatch.setattr(llvm_emitter, "_collect_instructions", lambda _flow: {0: (load,)})
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert "%S16_4 = alloca i32" in result.ir_text
+    assert "%r0_4 = alloca i32" in result.ir_text
+    assert " = load i32, ptr %S16_4, align 4" in result.ir_text
+    assert "store i32 %t" in result.ir_text
+    assert "ptr %r0_4, align 4" in result.ir_text
+
+
+def test_indirect_store_effect_has_structured_unsupported_kind():
     store = InsnSnapshot(
         opcode=0x21,
         ea=0x5000,
@@ -1118,7 +1225,68 @@ def test_store_effect_has_structured_unsupported_kind():
     result = emit_flowgraph_to_llvm(flow)
 
     assert not result.supported
-    assert any(reason.kind is UnsupportedLiftKind.EFFECT_UNSUPPORTED for reason in result.unsupported)
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.MEMORY_TARGET_UNSUPPORTED
+        and reason.reason == "M1l supports only direct-cell memory accesses"
+        for reason in result.unsupported
+    )
+
+
+def test_direct_cell_store_width_mismatch_fails_closed(monkeypatch):
+    target = Varnode(Space.STACK, 0x10, 4)
+    value = Varnode(Space.REGISTER, 0, 8)
+    store = Instruction(
+        operation=ValueOpKind.STORE,
+        inputs=(value, target),
+        effects=(InstructionEffect(InstructionEffectKind.STORE, target=target, value=value),),
+        memory=InstructionMemoryAccess(
+            kind=InstructionMemoryAccessKind.DIRECT_CELL,
+            target=target,
+            value=value,
+            width=4,
+        ),
+    )
+    flow = _graph(_block(0, (), (_mov(_num(1), _reg(0)),)))
+    monkeypatch.setattr(llvm_emitter, "_collect_instructions", lambda _flow: {0: (store,)})
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.MEMORY_WIDTH_MISMATCH
+        and reason.reason == "direct-cell memory access requires target/value/access widths to match"
+        for reason in result.unsupported
+    )
+
+
+def test_direct_cell_register_target_fails_closed(monkeypatch):
+    target = Varnode(Space.REGISTER, 1, 4)
+    value = Varnode(Space.REGISTER, 0, 4)
+    store = Instruction(
+        operation=ValueOpKind.STORE,
+        inputs=(value, target),
+        effects=(InstructionEffect(InstructionEffectKind.STORE, target=target, value=value),),
+        memory=InstructionMemoryAccess(
+            kind=InstructionMemoryAccessKind.DIRECT_CELL,
+            target=target,
+            value=value,
+            width=4,
+        ),
+    )
+    flow = _graph(_block(0, (), (_mov(_num(1), _reg(0)),)))
+    monkeypatch.setattr(llvm_emitter, "_collect_instructions", lambda _flow: {0: (store,)})
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.MEMORY_TARGET_UNSUPPORTED
+        and reason.reason == "direct-cell memory target must be a concrete non-register storage cell"
+        for reason in result.unsupported
+    )
 
 
 def test_raw_opcode_attrs_do_not_authorize_store_effect():
@@ -1133,6 +1301,30 @@ def test_raw_opcode_attrs_do_not_authorize_store_effect():
         d=_stk(0x10),
     )
     flow = _graph(_block(0, (), (fake_store, _ret(_reg(0)))))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.operation == "vendor"
+        and reason.kind is UnsupportedLiftKind.VALUE_OP_UNSUPPORTED
+        for reason in result.unsupported
+    )
+
+
+def test_raw_opcode_attrs_do_not_authorize_load_memory():
+    fake_load = InsnSnapshot(
+        opcode=0x20,
+        ea=0x5008,
+        operands=(),
+        kind=InsnKind.UNKNOWN,
+        opcode_attrs={"raw_opcode_name": "m_ldx"},
+        l=_reg(1, size=2),
+        r=_stk(0x10),
+        d=_reg(0),
+    )
+    flow = _graph(_block(0, (), (fake_load, _ret(_reg(0)))))
 
     result = emit_flowgraph_to_llvm(flow)
 

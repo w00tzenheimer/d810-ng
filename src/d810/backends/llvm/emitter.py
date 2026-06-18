@@ -8,7 +8,11 @@ from enum import Enum
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import FlowGraph
 from d810.ir.insn_projection import project_instruction_sequence
-from d810.ir.instructions import Instruction, InstructionEffectKind
+from d810.ir.instructions import (
+    Instruction,
+    InstructionEffectKind,
+    InstructionMemoryAccessKind,
+)
 from d810.ir.semantics import CallKind, ControlTransferKind, OperationKind, PredicateKind
 from d810.ir.varnode import Space, Varnode
 
@@ -67,6 +71,9 @@ class UnsupportedLiftKind(str, Enum):
     CALL_PAYLOAD_UNSUPPORTED = "call_payload_unsupported"
     CALL_RESULT_UNSUPPORTED = "call_result_unsupported"
     EFFECT_UNSUPPORTED = "effect_unsupported"
+    MEMORY_PAYLOAD_UNSUPPORTED = "memory_payload_unsupported"
+    MEMORY_TARGET_UNSUPPORTED = "memory_target_unsupported"
+    MEMORY_WIDTH_MISMATCH = "memory_width_mismatch"
     CONTROL_TRANSFER_UNSUPPORTED = "control_transfer_unsupported"
     VALUE_OP_UNSUPPORTED = "value_op_unsupported"
     VALUE_RESULT_MISSING = "value_result_missing"
@@ -259,6 +266,9 @@ class _Classifier:
         if isinstance(instruction.operation, CallKind):
             self._check_call(block_serial, instruction_index, instruction)
             return
+        if instruction.operation in {ValueOpKind.LOAD, ValueOpKind.STORE}:
+            self._check_memory_access(block_serial, instruction_index, instruction)
+            return
         if instruction.effects:
             self._add(
                 block_serial,
@@ -387,6 +397,150 @@ class _Classifier:
                     f"{instruction.operation.value.upper()} requires two inputs",
                 )
             self._check_input_widths_match(block_serial, instruction_index, instruction)
+
+    def _check_memory_access(
+        self,
+        block_serial: int,
+        instruction_index: int,
+        instruction: Instruction,
+    ) -> None:
+        memory = instruction.memory
+        if memory is None:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.MEMORY_PAYLOAD_UNSUPPORTED,
+                "memory operation requires an explicit portable memory access contract",
+            )
+            return
+        if memory.kind is not InstructionMemoryAccessKind.DIRECT_CELL:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.MEMORY_TARGET_UNSUPPORTED,
+                "M1l supports only direct-cell memory accesses",
+            )
+            return
+        if memory.segment is not None:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.MEMORY_TARGET_UNSUPPORTED,
+                "direct-cell memory access cannot carry a segment or pointer component",
+            )
+        if memory.target is None:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.MEMORY_PAYLOAD_UNSUPPORTED,
+                "direct-cell memory access requires a target cell",
+            )
+            return
+        self._check_varnode(block_serial, instruction_index, instruction, memory.target)
+        if memory.target.space in {Space.CONST, Space.REGISTER, Space.UNKNOWN}:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.MEMORY_TARGET_UNSUPPORTED,
+                "direct-cell memory target must be a concrete non-register storage cell",
+            )
+        if instruction.operation is ValueOpKind.LOAD:
+            if instruction.result is None:
+                self._add(
+                    block_serial,
+                    instruction_index,
+                    instruction,
+                    UnsupportedLiftKind.VALUE_RESULT_MISSING,
+                    "LOAD requires a result varnode",
+                )
+                return
+            if instruction.result.space is Space.CONST:
+                self._add(
+                    block_serial,
+                    instruction_index,
+                    instruction,
+                    UnsupportedLiftKind.VALUE_RESULT_CONST,
+                    "LOAD result cannot be const",
+                )
+            self._check_varnode(block_serial, instruction_index, instruction, instruction.result)
+            self._check_memory_width(
+                block_serial,
+                instruction_index,
+                instruction,
+                memory.target,
+                instruction.result,
+                memory.width,
+            )
+            return
+        if (
+            len(instruction.effects) != 1
+            or instruction.effects[0].kind is not InstructionEffectKind.STORE
+        ):
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.MEMORY_PAYLOAD_UNSUPPORTED,
+                "STORE requires exactly one canonical store effect",
+            )
+            return
+        store_effect = instruction.effects[0]
+        if (
+            store_effect.target != memory.target
+            or store_effect.segment != memory.segment
+            or store_effect.value != memory.value
+        ):
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.MEMORY_PAYLOAD_UNSUPPORTED,
+                "STORE effect payload must match memory access contract",
+            )
+        if memory.value is None:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.MEMORY_PAYLOAD_UNSUPPORTED,
+                "STORE requires a value varnode",
+            )
+            return
+        self._check_varnode(block_serial, instruction_index, instruction, memory.value)
+        self._check_memory_width(
+            block_serial,
+            instruction_index,
+            instruction,
+            memory.target,
+            memory.value,
+            memory.width,
+        )
+
+    def _check_memory_width(
+        self,
+        block_serial: int,
+        instruction_index: int,
+        instruction: Instruction,
+        target: Varnode,
+        value: Varnode,
+        access_width: int | None,
+    ) -> None:
+        widths = {int(target.size), int(value.size)}
+        if access_width is not None:
+            widths.add(int(access_width))
+        if len(widths) > 1:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.MEMORY_WIDTH_MISMATCH,
+                "direct-cell memory access requires target/value/access widths to match",
+            )
 
     def _check_call(
         self,
@@ -722,6 +876,16 @@ class _Emitter:
                             continue
                         found.add(vn)
                         ordered.append(vn)
+                if instruction.memory is not None:
+                    for vn in (
+                        instruction.memory.target,
+                        instruction.memory.segment,
+                        instruction.memory.value,
+                    ):
+                        if vn is None or not _is_non_const(vn) or vn in found:
+                            continue
+                        found.add(vn)
+                        ordered.append(vn)
         return tuple(sorted(ordered, key=lambda vn: (vn.space.value, vn.offset, vn.size)))
 
     def _emit_block(self, serial: int) -> list[str]:
@@ -759,6 +923,8 @@ class _Emitter:
     def _emit_body_instruction(self, instruction: Instruction) -> list[str]:
         if isinstance(instruction.operation, CallKind):
             return self._emit_call_instruction(instruction)
+        if instruction.operation in {ValueOpKind.LOAD, ValueOpKind.STORE}:
+            return self._emit_memory_instruction(instruction)
         return self._emit_value_instruction(instruction)
 
     def _call_arguments(self, instruction: Instruction) -> tuple[Varnode, ...]:
@@ -800,6 +966,34 @@ class _Emitter:
         lines.append(
             f"  store {ret_ty} {tmp}, ptr %{_varnode_name(instruction.result)}, "
             f"align {instruction.result.size}"
+        )
+        return lines
+
+    def _emit_memory_instruction(self, instruction: Instruction) -> list[str]:
+        assert instruction.memory is not None
+        assert instruction.memory.target is not None
+        target = instruction.memory.target
+        target_ty = _llvm_type(target)
+        assert target_ty is not None
+        lines: list[str] = []
+        if instruction.operation is ValueOpKind.LOAD:
+            assert instruction.result is not None
+            result_ty = _llvm_type(instruction.result)
+            assert result_ty is not None
+            loaded = self._tmp()
+            lines.append(
+                f"  {loaded} = load {target_ty}, ptr %{_varnode_name(target)}, align {target.size}"
+            )
+            lines.append(
+                f"  store {result_ty} {loaded}, ptr %{_varnode_name(instruction.result)}, "
+                f"align {instruction.result.size}"
+            )
+            return lines
+        assert instruction.memory.value is not None
+        value_ty, value = self._emit_value(instruction.memory.value, lines)
+        assert value_ty == target_ty
+        lines.append(
+            f"  store {target_ty} {value}, ptr %{_varnode_name(target)}, align {target.size}"
         )
         return lines
 

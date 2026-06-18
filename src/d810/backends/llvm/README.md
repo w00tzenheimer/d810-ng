@@ -45,12 +45,15 @@ Current supported subset:
 - direct/indirect/intrinsic `CallKind` operations as opaque external calls when
   the canonical call effect and portable call target are present; no purity or
   memory attributes are attached, so LLVM must treat them as side-effecting,
+- direct-cell `LOAD` / `STORE` operations only when
+  `Instruction.memory.kind == DIRECT_CELL`; each concrete storage cell maps to
+  its own distinct alloca, and target/value/access widths must match,
 - `RETURN` with an `i32` return varnode, or fixed `ret i32 0` when no return
   value is available.
 
-Unsupported in the current M1 subset: store/memory effects beyond scalar
-varnode allocas, incomplete call payloads, incomplete table/switch payloads,
-indirect branches, carry/borrow and flags beyond the explicit sign/overflow
-ops above, truthy predicate materialization, non-scalar widths, casts other than
-width-increasing `ZEXT`, and any operation that would require raw opcode
-provenance to infer behavior.
+Unsupported in the current M1 subset: segmented/pointer/unknown memory accesses,
+volatile/atomic/precise alias semantics, incomplete call payloads, incomplete
+table/switch payloads, indirect branches, carry/borrow and flags beyond the
+explicit sign/overflow ops above, truthy predicate materialization, non-scalar
+widths, casts other than width-increasing `ZEXT`, and any operation that would
+require raw opcode provenance to infer behavior.

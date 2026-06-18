@@ -28,6 +28,8 @@ __all__ = [
     "InstructionControl",
     "InstructionEffect",
     "InstructionEffectKind",
+    "InstructionMemoryAccess",
+    "InstructionMemoryAccessKind",
     "InstructionSwitchCase",
 ]
 
@@ -74,6 +76,30 @@ class InstructionEffectKind(str, Enum):
     CALL = "call"
 
 
+class InstructionMemoryAccessKind(str, Enum):
+    """Portable memory alias contract for memory-shaped instructions."""
+
+    DIRECT_CELL = "direct_cell"
+    INDIRECT = "indirect"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class InstructionMemoryAccess:
+    """Typed memory access contract for LOAD/STORE instructions.
+
+    ``DIRECT_CELL`` means ``target`` is a concrete portable cell that can map to
+    its own distinct alloca.  ``INDIRECT`` preserves pointer/segment-shaped
+    operands but is not alias-safe enough for M1 LLVM lowering.
+    """
+
+    kind: InstructionMemoryAccessKind
+    target: Varnode | None = None
+    segment: Varnode | None = None
+    value: Varnode | None = None
+    width: int | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class InstructionEffect:
     """Typed side-effect payload for an ``Instruction``."""
@@ -99,6 +125,7 @@ class Instruction:
     result: Varnode | None = None
     effects: tuple[InstructionEffect, ...] = ()
     control: InstructionControl | None = None
+    memory: InstructionMemoryAccess | None = None
     attrs: Mapping[str, object] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:

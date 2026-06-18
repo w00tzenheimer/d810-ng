@@ -22,6 +22,8 @@ from d810.ir.instructions import (
     InstructionControl,
     InstructionEffect,
     InstructionEffectKind,
+    InstructionMemoryAccess,
+    InstructionMemoryAccessKind,
     InstructionSwitchCase,
 )
 from d810.ir.locations import RegisterLocation, StackSlot, WeakStackSlot
@@ -72,6 +74,7 @@ def test_instruction_record_pins_operation_as_field_not_whole_record():
         "result",
         "effects",
         "control",
+        "memory",
         "attrs",
     ]
 
@@ -428,6 +431,41 @@ def test_instruction_projection_store_has_typed_effect_not_result():
             segment=Varnode(Space.REGISTER, 2, 4),
             value=Varnode(Space.REGISTER, 1, 8),
         ),
+    )
+    assert store.memory == InstructionMemoryAccess(
+        kind=InstructionMemoryAccessKind.INDIRECT,
+        target=Varnode(Space.GLOBAL, 0x180020000, 4),
+        segment=Varnode(Space.REGISTER, 2, 4),
+        value=Varnode(Space.REGISTER, 1, 8),
+        width=8,
+    )
+
+
+def test_instruction_projection_load_has_indirect_memory_contract():
+    load = project_instruction(
+        InsnSnapshot(
+            opcode=0x20,
+            ea=0x1000,
+            operands=(),
+            kind=InsnKind.LOAD,
+            l=_reg(2, size=2),
+            r=_glob(0x180020000, size=4),
+            d=_reg(1, size=4),
+        )
+    )
+
+    assert load.operation is ValueOpKind.LOAD
+    assert load.inputs == (
+        Varnode(Space.REGISTER, 2, 2),
+        Varnode(Space.GLOBAL, 0x180020000, 4),
+    )
+    assert load.result == Varnode(Space.REGISTER, 1, 4)
+    assert load.effects == ()
+    assert load.memory == InstructionMemoryAccess(
+        kind=InstructionMemoryAccessKind.INDIRECT,
+        target=Varnode(Space.GLOBAL, 0x180020000, 4),
+        segment=Varnode(Space.REGISTER, 2, 2),
+        width=4,
     )
 
 
