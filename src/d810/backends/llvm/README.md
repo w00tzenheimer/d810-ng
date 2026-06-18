@@ -32,7 +32,8 @@ Current supported subset:
 - integer constants and register/stack/global/lvar/temp varnodes with 1/2/4/8
   byte scalar widths,
 - one `alloca` per distinct non-const varnode,
-- `MOVE`, `ADD`, `SUB`, `MUL`, `OR`, `AND`, and `XOR`,
+- `MOVE`, `ADD`, `SUB`, `MUL`, `OR`, `AND`, `XOR`, `NEG`, and
+  width-increasing `ZEXT`,
 - materialized canonical `PredicateKind` comparisons as `icmp` plus zero-extend
   into the result varnode,
 - one-way block edges as `br label`,
@@ -43,5 +44,6 @@ Current supported subset:
 
 Unsupported in the current M1 subset: calls, store/memory effects beyond scalar
 varnode allocas, tables/switches, indirect branches, flags/overflow-specific
-predicates, truthy predicate materialization, non-scalar widths, and any
-operation that would require raw opcode provenance to infer behavior.
+predicates, truthy predicate materialization, non-scalar widths, casts other
+than width-increasing `ZEXT`, and any operation that would require raw opcode
+provenance to infer behavior.

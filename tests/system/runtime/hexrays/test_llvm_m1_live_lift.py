@@ -60,6 +60,7 @@ class _CensusRow:
     supported: bool
     missing: bool
     unsupported_kind_counts: tuple[tuple[str, int], ...]
+    unsupported_operation_counts: tuple[tuple[str, int], ...]
 
     def summary(self) -> str:
         if self.missing:
@@ -67,10 +68,14 @@ class _CensusRow:
         histogram = ",".join(
             f"{kind}={count}" for kind, count in self.unsupported_kind_counts
         ) or "-"
+        operations = ",".join(
+            f"{operation}={count}"
+            for operation, count in self.unsupported_operation_counts
+        ) or "-"
         return (
             f"{self.function_name}: maturity={self.maturity_name} "
             f"blocks={self.block_count} supported={self.supported} "
-            f"kinds={histogram}"
+            f"kinds={histogram} operations={operations}"
         )
 
 
@@ -224,6 +229,7 @@ class TestLLVMM1CoverageCensus:
                         supported=False,
                         missing=True,
                         unsupported_kind_counts=(),
+                        unsupported_operation_counts=(),
                     )
                 )
                 continue
@@ -238,6 +244,7 @@ class TestLLVMM1CoverageCensus:
                         supported=False,
                         missing=True,
                         unsupported_kind_counts=(("microcode_unavailable", 1),),
+                        unsupported_operation_counts=(),
                     )
                 )
                 continue
@@ -245,6 +252,9 @@ class TestLLVMM1CoverageCensus:
             flow_graph = lift_function(mba).flow_graph
             result = emit_flowgraph_to_llvm(flow_graph, function_name=function_name)
             kind_counts = Counter(reason.kind.value for reason in result.unsupported)
+            operation_counts = Counter(
+                reason.operation for reason in result.unsupported
+            )
             total_kind_counts.update(kind_counts)
             rows.append(
                 _CensusRow(
@@ -254,6 +264,9 @@ class TestLLVMM1CoverageCensus:
                     supported=result.supported,
                     missing=False,
                     unsupported_kind_counts=tuple(sorted(kind_counts.items())),
+                    unsupported_operation_counts=tuple(
+                        sorted(operation_counts.items())
+                    ),
                 )
             )
 
