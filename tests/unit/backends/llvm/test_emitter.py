@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import os
-import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -11,9 +8,12 @@ import d810.backends.llvm.emitter as llvm_emitter
 from d810.backends.llvm import (
     LLVM_M1_PREFERRED_MATURITY,
     LlvmLiftResult,
+    LlvmVerificationStatus,
     UnsupportedLiftKind,
     assess_flowgraph_maturity,
     emit_flowgraph_to_llvm,
+    find_llvm_opt,
+    verify_llvm_ir,
 )
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import (
@@ -237,21 +237,6 @@ def _graph(
         func_ea=0x180000000,
         metadata=metadata or {},
     )
-
-
-def _find_opt() -> Path | None:
-    candidates = [
-        os.environ.get("LLVM_OPT"),
-        "/opt/homebrew/opt/llvm/bin/opt",
-        shutil.which("opt"),
-    ]
-    for candidate in candidates:
-        if not candidate:
-            continue
-        path = Path(candidate)
-        if path.is_file() and os.access(path, os.X_OK):
-            return path
-    return None
 
 
 def test_simple_arithmetic_emits_allocas_loads_and_stores():
@@ -1644,10 +1629,94 @@ def test_tail_return_with_successor_is_reported_not_silently_emitted():
     )
 
 
+def _write_fake_opt(tmp_path, body: str):
+    opt = tmp_path / "opt"
+    opt.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    opt.chmod(0o755)
+    return opt
+
+
+def test_verify_llvm_ir_reports_passed_status_with_fake_opt(tmp_path):
+    opt = _write_fake_opt(tmp_path, "echo verified\nexit 0\n")
+
+    result = verify_llvm_ir(
+        "define i32 @verify_me() { ret i32 0 }\n",
+        function_name="verify_me",
+        opt_path=opt,
+        tmp_dir=tmp_path,
+    )
+
+    assert result.status is LlvmVerificationStatus.PASSED
+    assert result.passed
+    assert result.opt_path == opt
+    assert result.command[:3] == (str(opt), "-S", "-passes=verify")
+    assert result.command[-2:] == ("-o", "-")
+    assert result.stdout == "verified\n"
+    assert result.stderr == ""
+
+
+def test_verify_llvm_ir_reports_failed_status_with_fake_opt(tmp_path):
+    opt = _write_fake_opt(tmp_path, "echo bad-out\necho bad-err >&2\nexit 7\n")
+
+    result = verify_llvm_ir(
+        "define i32 @verify_me() { ret i32 0 }\n",
+        function_name="verify_me",
+        opt_path=opt,
+        tmp_dir=tmp_path,
+    )
+
+    assert result.status is LlvmVerificationStatus.FAILED
+    assert result.failed
+    assert result.stdout == "bad-out\n"
+    assert result.stderr == "bad-err\n"
+    assert result.reason == "bad-err\n"
+
+
+def test_verify_llvm_ir_reports_skipped_when_opt_missing(tmp_path):
+    result = verify_llvm_ir(
+        "define i32 @verify_me() { ret i32 0 }\n",
+        opt_path=tmp_path / "missing-opt",
+        tmp_dir=tmp_path,
+    )
+
+    assert result.status is LlvmVerificationStatus.SKIPPED
+    assert result.skipped
+    assert result.command == ()
+    assert "not executable" in result.reason
+
+
+@pytest.mark.parametrize("function_name", ("../escape", "a/b"))
+def test_verify_llvm_ir_keeps_output_file_inside_tmp_dir(tmp_path, function_name):
+    opt = _write_fake_opt(tmp_path, "exit 0\n")
+    inside = tmp_path / "inside"
+    inside.mkdir()
+
+    result = verify_llvm_ir(
+        "define i32 @x() { ret i32 0 }\n",
+        function_name=function_name,
+        opt_path=opt,
+        tmp_dir=inside,
+    )
+
+    assert result.status is LlvmVerificationStatus.PASSED
+    assert result.command
+    ir_path = Path(result.command[3]).resolve()
+    assert ir_path.parent == inside.resolve()
+    assert ir_path.name == "d810-verify.ll"
+    assert (inside / "d810-verify.ll").exists()
+    assert not (tmp_path / "escape.ll").exists()
+    assert not (tmp_path / "a").exists()
+
+
+def test_find_llvm_opt_honors_explicit_env_override(tmp_path):
+    opt = _write_fake_opt(tmp_path, "exit 0\n")
+
+    result = find_llvm_opt({"LLVM_OPT": str(opt), "PATH": ""})
+
+    assert result == opt
+
+
 def test_opt_verify_accepts_supported_emission_when_opt_available(tmp_path):
-    opt = _find_opt()
-    if opt is None:
-        pytest.skip("LLVM opt not found; set LLVM_OPT or install opt in PATH/Homebrew LLVM")
     flow = _graph(
         _block(
             0,
@@ -1662,17 +1731,17 @@ def test_opt_verify_accepts_supported_emission_when_opt_available(tmp_path):
     )
     result = emit_flowgraph_to_llvm(flow, function_name="verify_me")
     assert result.supported
-    ir_path = tmp_path / "verify_me.ll"
-    ir_path.write_text(result.ir_text, encoding="utf-8")
-
-    proc = subprocess.run(
-        [str(opt), "-S", "-passes=verify", str(ir_path), "-o", "-"],
-        text=True,
-        capture_output=True,
-        check=False,
+    verification = verify_llvm_ir(
+        result.ir_text,
+        function_name="verify_me",
+        tmp_dir=tmp_path,
     )
+    if verification.skipped:
+        pytest.skip(verification.reason)
 
-    assert proc.returncode == 0, proc.stderr or proc.stdout
+    assert verification.status is LlvmVerificationStatus.PASSED, (
+        verification.reason or verification.stderr or verification.stdout
+    )
 
 
 def test_maturity_policy_accepts_preferred_portable_metadata():

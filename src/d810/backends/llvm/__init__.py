@@ -17,14 +17,24 @@ from .maturity_policy import (
     LlvmMaturityAssessment,
     assess_flowgraph_maturity,
 )
+from .verification import (
+    LlvmVerificationResult,
+    LlvmVerificationStatus,
+    find_llvm_opt,
+    verify_llvm_ir,
+)
 
 __all__ = [
     "LLVM_M1_ACCEPTED_MATURITIES",
     "LLVM_M1_PREFERRED_MATURITY",
     "LlvmLiftResult",
     "LlvmMaturityAssessment",
+    "LlvmVerificationResult",
+    "LlvmVerificationStatus",
     "UnsupportedLiftKind",
     "UnsupportedLiftReason",
     "assess_flowgraph_maturity",
     "emit_flowgraph_to_llvm",
+    "find_llvm_opt",
+    "verify_llvm_ir",
 ]
