@@ -58,14 +58,11 @@ has a dedicated expression dataclass.
   `TABLE_BRANCH`) — dispatcher recovery needs it (the dewolf asymmetry)
 * unmodeled → `ValueOpKind.VENDOR`, raw opcode in `attrs`
 
-Status 2026-06-17: the live IR contract in `ir/semantics.py` already says calls
-belong to a separate `CallKind` family. This plan now follows that contract.
-Ticket `llr-a5b7` tracks the remaining operation-vocabulary implementation and
-lift tests.
-
 Status 2026-06-18: implemented. `CallKind.{DIRECT,INDIRECT,INTRINSIC}` is live,
 Hex-Rays `m_call` / `m_icall` classify as direct / indirect calls, and
-`ControlTransferKind` remains transfer-only.
+`ControlTransferKind` remains transfer-only. Ticket `llr-a5b7` is closed for
+this vocabulary slice; the remaining open `llr-epu0` work is the larger
+Operation-record projection, not a vocabulary blocker.
 
 ### A3. Provenance & lift
 `Operation.attrs` carries `raw_opcode_int` + `raw_opcode_name` + backend id
