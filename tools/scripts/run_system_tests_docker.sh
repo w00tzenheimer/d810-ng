@@ -29,6 +29,8 @@
 #   --enable-debug-logging  Set D810_DEBUG_LOGGING=1 inside the container so getLogger uses DEBUG as
 #                           the default level instead of INFO (explicit caller levels are unaffected).
 #   --enable-diag-snapshot  Set D810_DIAG_SNAPSHOT=1 inside the container.
+#   --enable-llvm-opt       Opt-in only: install/probe LLVM opt in the container,
+#                           export LLVM_OPT, and set D810_REQUIRE_LLVM_OPT=1.
 #   --disable-fact-lifecycle
 #                           Set D810_FACT_LIFECYCLE=0 inside the container.
 #   --                      Remaining args passed to pytest (system/test) or used as command separator (exec)
@@ -133,6 +135,7 @@ DUMP_OUT=""
 MOUNT_LOGS=""
 ENABLE_DEBUG_LOGGING=""
 ENABLE_DIAG_SNAPSHOT=""
+ENABLE_LLVM_OPT=""
 DISABLE_FACT_LIFECYCLE=""
 EXTRA_PYTEST=()
 EXEC_ARGS=()
@@ -169,6 +172,10 @@ while [ $# -gt 0 ]; do
       ;;
     --enable-diag-snapshot)
       ENABLE_DIAG_SNAPSHOT=1
+      shift
+      ;;
+    --enable-llvm-opt)
+      ENABLE_LLVM_OPT=1
       shift
       ;;
     --enable-fact-lifecycle)
@@ -240,6 +247,9 @@ fi
 if [ -n "$ENABLE_DIAG_SNAPSHOT" ]; then
   echo "  diag:     D810_DIAG_SNAPSHOT=1"
 fi
+if [ -n "$ENABLE_LLVM_OPT" ]; then
+  echo "  llvm:     provisioning LLVM opt and requiring verification"
+fi
 if [ -n "$DISABLE_FACT_LIFECYCLE" ]; then
   echo "  facts:    D810_FACT_LIFECYCLE=0"
 fi
@@ -268,6 +278,14 @@ ENV_TEST="D810_NO_CYTHON=${D810_NO_CYTHON:-1} D810_TEST_BINARY=${D810_TEST_BINAR
 if [ -n "$ENABLE_DEBUG_LOGGING" ]; then
   ENV_TEST="$ENV_TEST D810_DEBUG_LOGGING=1"
 fi
+if [ -n "$ENABLE_LLVM_OPT" ]; then
+  ENV_TEST="$ENV_TEST D810_REQUIRE_LLVM_OPT=1"
+fi
+
+LLVM_OPT_SETUP=""
+if [ -n "$ENABLE_LLVM_OPT" ]; then
+  LLVM_OPT_SETUP='if ! command -v opt >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends llvm; fi; LLVM_OPT_PATH="$(command -v opt || find /usr/lib/llvm-*/bin -name opt -type f -perm /111 2>/dev/null | sort -V | tail -1)"; if [ -z "$LLVM_OPT_PATH" ]; then echo "ERROR: --enable-llvm-opt could not find LLVM opt after provisioning" >&2; exit 1; fi; export LLVM_OPT="$LLVM_OPT_PATH"; echo "LLVM opt: $LLVM_OPT"; "$LLVM_OPT" --version | head -n 1'
+fi
 
 # Forward every set D810_* env var to the container via docker -e flags.
 # Wrapper-only vars (those that only affect this script) are excluded.
@@ -289,7 +307,7 @@ IDA_VENV_PIP="/app/ida/.venv/bin/pip"
 IDA_VENV_PYTHON="/app/ida/.venv/bin/python"
 
 # One-time setup: export env, pip install -e .[dev], d810.speedups.install
-SETUP_CMD="export $ENV_IDA $ENV_PYTHON && $IDA_VENV_PIP install -e .[dev] -q && $IDA_VENV_PYTHON -m d810.speedups.install"
+SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON && $IDA_VENV_PIP install -e .[dev] -q && $IDA_VENV_PYTHON -m d810.speedups.install"
 
 run_bash() {
   local inner="$1"

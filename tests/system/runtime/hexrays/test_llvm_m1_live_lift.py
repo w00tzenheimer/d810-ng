@@ -1,6 +1,7 @@
 """LLVM M1b live-lift maturity probe over real Hex-Rays snapshots."""
 from __future__ import annotations
 
+import os
 from collections import Counter
 from dataclasses import dataclass
 
@@ -190,6 +191,11 @@ class TestLLVMM1LiveLiftProbe:
             f"opt={verification.opt_path or '<none>'} "
             f"reason={verification.reason or '-'}"
         )
+        if verification.skipped and os.environ.get("D810_REQUIRE_LLVM_OPT") == "1":
+            raise AssertionError(
+                "D810_REQUIRE_LLVM_OPT=1 requires LLVM verification to run; "
+                f"reason={verification.reason or '-'}"
+            )
         if verification.failed:
             raise AssertionError(
                 verification.reason or verification.stderr or verification.stdout

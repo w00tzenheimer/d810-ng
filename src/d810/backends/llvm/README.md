@@ -18,8 +18,13 @@ Verification policy:
   reason.
 - Live Docker evidence may report `skipped` only when no `opt` binary is
   available. If `opt` is available, verifier failure is a hard test failure.
-- This is only the front-lift verification gate. M1 is not complete until
-  identity-lower/parity is also proven.
+- System Docker runs can make verifier execution mandatory with:
+  `./tools/scripts/run_system_tests_docker.sh system -w llvm-lisa-restructure -l -o logs/llvm-m1o-opt-required-live-lift.log --enable-llvm-opt -- -k TestLLVMM1LiveLiftProbe -s`.
+  The wrapper provisions LLVM `opt`, exports `LLVM_OPT`, and sets
+  `D810_REQUIRE_LLVM_OPT=1`; with that environment, a skipped verifier result
+  is a test failure.
+- This is only the front-lift verification gate. It is not M3 Hex-Rays
+  lower-back or optimized-LLVM parity over a dropped body.
 
 Identity parity policy:
 
