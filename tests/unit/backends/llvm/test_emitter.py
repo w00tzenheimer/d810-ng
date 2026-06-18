@@ -42,6 +42,12 @@ def _num(value: int, size: int = 4) -> MopSnapshot:
     return MopSnapshot(kind=OperandKind.NUMBER, value=value, size=size)
 
 
+def _case_list(
+    cases: tuple[tuple[tuple[int, ...], int], ...],
+) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.CASE_LIST, switch_cases=cases)
+
+
 def _subinsn(
     sub_kind: InsnKind,
     sub_l: MopSnapshot | None,
@@ -147,6 +153,20 @@ def _jcc(predicate: PredicateKind, lhs: MopSnapshot, rhs: MopSnapshot) -> InsnSn
         branch_predicate=predicate,
         l=lhs,
         r=rhs,
+    )
+
+
+def _jtbl(
+    selector: MopSnapshot | None,
+    cases: tuple[tuple[tuple[int, ...], int], ...],
+) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=0x35,
+        ea=0x2030,
+        operands=(),
+        kind=InsnKind.TABLE_JUMP,
+        l=selector,
+        r=_case_list(cases),
     )
 
 
@@ -358,6 +378,26 @@ def test_conditional_branch_uses_instruction_control_not_raw_opcode_attrs():
     assert " = icmp eq i32 " in result.ir_text
     assert "br i1" in result.ir_text
     assert "label %bb1, label %bb2" in result.ir_text
+
+
+def test_table_branch_emits_switch_from_portable_control_payload():
+    cases = (((0,), 1), ((1, 2), 2), ((), 3))
+    flow = _graph(
+        _block(0, (1, 2, 3), (_jtbl(_stk(0x10), cases),)),
+        _block(1, (), (_ret(_num(11)),)),
+        _block(2, (), (_ret(_num(22)),)),
+        _block(3, (), (_ret(_num(33)),)),
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert " = load i32, ptr %S16_4" in result.ir_text
+    assert "switch i32 %t" in result.ir_text
+    assert "label %bb3 [" in result.ir_text
+    assert "i32 0, label %bb1" in result.ir_text
+    assert "i32 1, label %bb2" in result.ir_text
+    assert "i32 2, label %bb2" in result.ir_text
 
 
 def test_conditional_branch_with_nested_and_emits_temp_then_two_input_icmp():
@@ -577,6 +617,34 @@ def test_raw_opcode_attrs_do_not_authorize_zext_value_operation():
     )
 
 
+def test_raw_opcode_attrs_do_not_authorize_table_branch():
+    fake_jtbl = InsnSnapshot(
+        opcode=0x35,
+        ea=0x2034,
+        operands=(),
+        kind=InsnKind.UNKNOWN,
+        opcode_attrs={"raw_opcode_name": "m_jtbl"},
+        l=_stk(0x10),
+        r=_case_list((((0,), 1), ((), 2))),
+    )
+    flow = _graph(
+        _block(0, (1, 2), (fake_jtbl,)),
+        _block(1, (), (_ret(),)),
+        _block(2, (), (_ret(),)),
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.operation == "vendor"
+        and reason.kind is UnsupportedLiftKind.VALUE_OP_UNSUPPORTED
+        and reason.reason == "value operation vendor is unsupported in M1a"
+        for reason in result.unsupported
+    )
+
+
 @pytest.mark.parametrize(
     ("insn", "expected_kind", "expected_reason"),
     (
@@ -709,6 +777,70 @@ def test_unsupported_value_cases_have_structured_kinds(
             d=_reg(1),
         )
     flow = _graph(_block(0, (), (insn, _ret(_reg(0)))))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is expected_kind and reason.reason == expected_reason
+        for reason in result.unsupported
+    )
+
+
+@pytest.mark.parametrize(
+    ("insn", "succs", "expected_kind", "expected_reason"),
+    (
+        (
+            _jtbl(None, (((0,), 1), ((), 2))),
+            (1, 2),
+            UnsupportedLiftKind.TABLE_ARITY,
+            "table branch requires one selector input",
+        ),
+        (
+            _jtbl(_stk(0x10), ()),
+            (1, 2),
+            UnsupportedLiftKind.TABLE_CASES_MISSING,
+            "table branch requires switch cases",
+        ),
+        (
+            _jtbl(_stk(0x10), (((0,), 1),)),
+            (1,),
+            UnsupportedLiftKind.TABLE_DEFAULT_MISSING,
+            "table branch requires exactly one default case",
+        ),
+        (
+            _jtbl(_stk(0x10), (((0,), 3), ((), 2))),
+            (1, 2),
+            UnsupportedLiftKind.TABLE_TARGET_UNSUPPORTED,
+            "table branch case target is not a block successor",
+        ),
+        (
+            _jtbl(_stk(0x10), (((1,), 1), ((1,), 2), ((), 3))),
+            (1, 2, 3),
+            UnsupportedLiftKind.TABLE_CASE_DUPLICATE,
+            "table branch case values must be unique after selector-width canonicalization",
+        ),
+        (
+            _jtbl(_stk(0x10, size=1), (((-1,), 1), ((255,), 2), ((), 3))),
+            (1, 2, 3),
+            UnsupportedLiftKind.TABLE_CASE_DUPLICATE,
+            "table branch case values must be unique after selector-width canonicalization",
+        ),
+    ),
+)
+def test_unsupported_table_branch_cases_have_structured_kinds(
+    insn: InsnSnapshot,
+    succs: tuple[int, ...],
+    expected_kind: UnsupportedLiftKind,
+    expected_reason: str,
+):
+    flow = _graph(
+        _block(0, succs, (insn,)),
+        _block(1, (), (_ret(),)),
+        _block(2, (), (_ret(),)),
+        _block(3, (), (_ret(),)),
+    )
 
     result = emit_flowgraph_to_llvm(flow)
 

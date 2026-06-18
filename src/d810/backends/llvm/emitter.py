@@ -69,6 +69,11 @@ class UnsupportedLiftKind(str, Enum):
     BRANCH_SUCCESSOR_ARITY = "branch_successor_arity"
     BRANCH_PREDICATE_UNSUPPORTED = "branch_predicate_unsupported"
     BRANCH_ARITY = "branch_arity"
+    TABLE_ARITY = "table_arity"
+    TABLE_CASES_MISSING = "table_cases_missing"
+    TABLE_DEFAULT_MISSING = "table_default_missing"
+    TABLE_CASE_DUPLICATE = "table_case_duplicate"
+    TABLE_TARGET_UNSUPPORTED = "table_target_unsupported"
     MALFORMED_TERMINATOR = "malformed_terminator"
     RETURN_SUCCESSOR = "return_successor"
     RETURN_TYPE_UNSUPPORTED = "return_type_unsupported"
@@ -257,6 +262,8 @@ class _Classifier:
                 "effects are unsupported in M1a",
             )
         if isinstance(instruction.operation, ControlTransferKind):
+            if instruction.operation is ControlTransferKind.TABLE_BRANCH:
+                return
             if instruction.operation not in {
                 ControlTransferKind.CONDITIONAL_BRANCH,
                 ControlTransferKind.RETURN,
@@ -481,6 +488,66 @@ class _Classifier:
             else:
                 self._check_matching_widths(block_serial, len(instructions) - 1, tail)
             return
+        if tail is not None and tail.operation is ControlTransferKind.TABLE_BRANCH:
+            if len(tail.inputs) != 1:
+                self._add(
+                    block_serial,
+                    len(instructions) - 1,
+                    tail,
+                    UnsupportedLiftKind.TABLE_ARITY,
+                    "table branch requires one selector input",
+                )
+            cases = tail.control.switch_cases if tail.control is not None else ()
+            if not cases:
+                self._add(
+                    block_serial,
+                    len(instructions) - 1,
+                    tail,
+                    UnsupportedLiftKind.TABLE_CASES_MISSING,
+                    "table branch requires switch cases",
+                )
+                return
+            default_cases = [case for case in cases if not case.values]
+            if len(default_cases) != 1:
+                self._add(
+                    block_serial,
+                    len(instructions) - 1,
+                    tail,
+                    UnsupportedLiftKind.TABLE_DEFAULT_MISSING,
+                    "table branch requires exactly one default case",
+                )
+            if len(tail.inputs) == 1 and _llvm_type(tail.inputs[0]) is not None:
+                bits = int(tail.inputs[0].size) * 8
+                mask = (1 << bits) - 1
+                seen_values: set[int] = set()
+                for case in cases:
+                    for value in case.values:
+                        masked = int(value) & mask
+                        if masked in seen_values:
+                            self._add(
+                                block_serial,
+                                len(instructions) - 1,
+                                tail,
+                                UnsupportedLiftKind.TABLE_CASE_DUPLICATE,
+                                "table branch case values must be unique after selector-width canonicalization",
+                            )
+                            break
+                        seen_values.add(masked)
+                    else:
+                        continue
+                    break
+            succs = {int(succ) for succ in block.succs}
+            for case in cases:
+                if int(case.target) not in succs:
+                    self._add(
+                        block_serial,
+                        len(instructions) - 1,
+                        tail,
+                        UnsupportedLiftKind.TABLE_TARGET_UNSUPPORTED,
+                        "table branch case target is not a block successor",
+                    )
+                    break
+            return
         if tail is not None and tail.operation is ControlTransferKind.RETURN:
             if block.succs:
                 self._add(
@@ -657,6 +724,8 @@ class _Emitter:
         tail = instructions[-1] if instructions else None
         if tail is not None and tail.operation is ControlTransferKind.CONDITIONAL_BRANCH:
             return self._emit_conditional_branch(block.succs, tail)
+        if tail is not None and tail.operation is ControlTransferKind.TABLE_BRANCH:
+            return self._emit_table_branch(tail)
         if tail is not None and tail.operation is ControlTransferKind.RETURN:
             return self._emit_return(tail)
         if block.succs:
@@ -675,6 +744,22 @@ class _Emitter:
         icmp = self._tmp()
         lines.append(f"  {icmp} = icmp {_PREDICATES[pred]} {lhs_ty} {lhs}, {rhs}")
         lines.append(f"  br i1 {icmp}, label %bb{succs[0]}, label %bb{succs[1]}")
+        return lines
+
+    def _emit_table_branch(self, instruction: Instruction) -> list[str]:
+        lines: list[str] = []
+        selector_ty, selector = self._emit_value(instruction.inputs[0], lines)
+        cases = instruction.control.switch_cases if instruction.control is not None else ()
+        default_target = next(case.target for case in cases if not case.values)
+        lines.append(f"  switch {selector_ty} {selector}, label %bb{default_target} [")
+        for case in cases:
+            if not case.values:
+                continue
+            for value in case.values:
+                bits = int(instruction.inputs[0].size) * 8
+                masked = int(value) & ((1 << bits) - 1)
+                lines.append(f"    {selector_ty} {masked}, label %bb{case.target}")
+        lines.append("  ]")
         return lines
 
     def _emit_return(self, instruction: Instruction) -> list[str]:
