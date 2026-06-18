@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from d810.ir.maturity import IRMaturity
 from d810.passes import pass_pipeline as pp
 from d810.passes.scheduler import RunLater
@@ -16,6 +18,13 @@ def test_defaults():
     assert pp.CapabilityPolicy().required == frozenset()
     assert pp.SafetyPolicy().name == "default"
     assert pp.SafetyPolicy().golden_required is False
+
+
+def test_pass_result_analysis_outputs_is_read_only():
+    result = pp.PassResult(analysis_outputs={"domtree": "D"})
+    assert result.analysis_outputs["domtree"] == "D"
+    with pytest.raises(TypeError):
+        result.analysis_outputs["domtree"] = "changed"
 
 
 def test_rewriteplan_alias_is_patchplan():
@@ -114,6 +123,67 @@ def test_pass_spec_maturity_gates_are_explicit():
 
     assert spec.enabled_at(IRMaturity.CANONICAL) is False
     assert spec.enabled_at(IRMaturity.GLOBAL_ANALYZED) is True
+
+
+def test_pipeline_config_roundtrip_preserves_contract_fields():
+    config = pp.PipelineConfig(
+        pass_id="recover_dispatcher",
+        maturity_gates=frozenset(
+            {IRMaturity.CALL_MODELED, IRMaturity.GLOBAL_ANALYZED}
+        ),
+        granularity=pp.PassGranularity.CFG,
+        requirements=pp.CapabilityPolicy(
+            required=frozenset({"emulation", "live_mba"})
+        ),
+        analyses=pp.AnalysisContract(
+            required=frozenset({"range_evidence"}),
+            provided=frozenset({"recover_dispatcher"}),
+        ),
+        preservation=pp.PreservedAnalyses.preserving({"range_evidence"}),
+        scheduler_policy=pp.SchedulerPolicy.REPLAY_AFTER_PIPELINE,
+        backend_route=pp.BackendRoute.ANALYSIS_ONLY,
+        safety_policy=pp.SafetyPolicy(name="golden", golden_required=True),
+    )
+
+    payload = config.to_dict()
+    assert payload["granularity"] == "cfg"
+    assert payload["scheduler_policy"] == "replay_after_pipeline"
+    assert payload["backend_route"] == "analysis_only"
+    assert pp.PipelineConfig.from_dict(payload) == config
+
+
+def test_pipeline_config_parses_enum_names_and_maturity_values():
+    config = pp.PipelineConfig.from_dict(
+        {
+            "pass_id": "recover_dispatcher",
+            "maturity_gates": ["CALL_MODELED", "ir.global.analyzed"],
+            "granularity": "FUNCTION",
+            "scheduler_policy": "WORKLIST",
+            "backend_route": "MUTATION_BACKEND",
+        }
+    )
+
+    assert config.maturity_gates == frozenset(
+        {IRMaturity.CALL_MODELED, IRMaturity.GLOBAL_ANALYZED}
+    )
+    assert config.granularity is pp.PassGranularity.FUNCTION
+    assert config.scheduler_policy is pp.SchedulerPolicy.WORKLIST
+    assert config.backend_route is pp.BackendRoute.MUTATION_BACKEND
+
+
+def test_pipeline_config_rejects_invalid_enum_and_maturity_values():
+    with pytest.raises(pp.PipelineConfigError, match="scheduler_policy"):
+        pp.PipelineConfig.from_dict(
+            {"pass_id": "recover_dispatcher", "scheduler_policy": "later"}
+        )
+    with pytest.raises(pp.PipelineConfigError, match="maturity_gates"):
+        pp.PipelineConfig.from_dict(
+            {"pass_id": "recover_dispatcher", "maturity_gates": ["MMAT_GLBOPT1"]}
+        )
+    with pytest.raises(pp.PipelineConfigError, match="maturity_gates"):
+        pp.PipelineConfig.from_dict(
+            {"pass_id": "recover_dispatcher", "maturity_gates": "CALL_MODELED"}
+        )
 
 
 def test_analysis_contract_records_required_and_provided_keys():

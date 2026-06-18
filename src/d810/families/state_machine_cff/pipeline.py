@@ -18,6 +18,7 @@ from d810.passes.pass_pipeline import (
     live_mba,
     no_caps,
 )
+from d810.passes.registry import PassRegistry
 from d810.passes.unflatten.state_machine import (
     CleanupResidualDispatcher,
     LowerStateMachine,
@@ -32,7 +33,9 @@ __all__ = [
     "LOWER_ANALYSES",
     "REGION_ANALYSES",
     "TRANSITION_ANALYSES",
+    "register_state_machine_passes",
     "standard_state_machine_passes",
+    "state_machine_pass_registry",
 ]
 
 DISPATCHER_ANALYSES = AnalysisContract(
@@ -69,6 +72,21 @@ LOWER_ANALYSES = AnalysisContract(
     provided=frozenset({"lower_state_machine_plan_metadata"}),
 )
 CLEANUP_ANALYSES = AnalysisContract()
+
+
+def register_state_machine_passes(registry: PassRegistry) -> PassRegistry:
+    """Register the canonical state-machine CFF pass factories."""
+    registry.register("recover_dispatcher", RecoverDispatcher)
+    registry.register("recover_state_transitions", RecoverStateTransitions)
+    registry.register("plan_semantic_regions", PlanSemanticRegions)
+    registry.register("lower_state_machine", LowerStateMachine)
+    registry.register("cleanup_residual_dispatcher", CleanupResidualDispatcher)
+    return registry
+
+
+def state_machine_pass_registry() -> PassRegistry:
+    """Return a registry populated with the canonical state-machine pass ids."""
+    return register_state_machine_passes(PassRegistry())
 
 
 def standard_state_machine_passes() -> tuple[PassSpec, ...]:
