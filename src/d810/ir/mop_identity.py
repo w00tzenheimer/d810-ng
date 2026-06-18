@@ -47,7 +47,8 @@ module is what portable consumers will import):
 
 from __future__ import annotations
 
-from d810.ir.flowgraph import InsnSnapshot, MopSnapshot, OperandKind
+from d810.ir.flowgraph import InsnSnapshot, MopSnapshot
+from d810.ir.varnode import varnode_from_mop_snapshot, varnode_key, varnode_offset
 
 __all__ = ["cfg_operand_slots", "mop_snapshot_key", "mop_snapshot_offset"]
 
@@ -86,18 +87,7 @@ def mop_snapshot_key(mop: MopSnapshot | None) -> str | None:
     Returns ``None`` if the operand is ``None``, has unknown kind, or
     is a kind that has no stable identity (number, block ref, etc.).
     """
-    if mop is None:
-        return None
-    kind = mop.kind
-    if kind is OperandKind.REGISTER and mop.reg is not None:
-        return f"r{mop.reg}"
-    if kind is OperandKind.STACK and mop.stkoff is not None:
-        return f"S{mop.stkoff}"
-    if kind is OperandKind.GLOBAL and mop.gaddr is not None:
-        return f"v{mop.gaddr}"
-    if kind is OperandKind.LVAR and mop.lvar_off is not None:
-        return f"l{mop.lvar_off}"
-    return None
+    return varnode_key(varnode_from_mop_snapshot(mop))
 
 
 def mop_snapshot_offset(mop: MopSnapshot | None) -> int:
@@ -105,15 +95,4 @@ def mop_snapshot_offset(mop: MopSnapshot | None) -> int:
     offset, global address, lvar offset) with a ``0`` fallback for
     kinds that don't carry a portable identifier.
     """
-    if mop is None:
-        return 0
-    kind = mop.kind
-    if kind is OperandKind.REGISTER and mop.reg is not None:
-        return int(mop.reg)
-    if kind is OperandKind.STACK and mop.stkoff is not None:
-        return int(mop.stkoff)
-    if kind is OperandKind.GLOBAL and mop.gaddr is not None:
-        return int(mop.gaddr)
-    if kind is OperandKind.LVAR and mop.lvar_off is not None:
-        return int(mop.lvar_off)
-    return 0
+    return varnode_offset(varnode_from_mop_snapshot(mop))
