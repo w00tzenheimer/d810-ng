@@ -8,7 +8,7 @@ from enum import Enum
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import FlowGraph
 from d810.ir.insn_projection import project_instruction_sequence
-from d810.ir.instructions import Instruction
+from d810.ir.instructions import Instruction, InstructionEffectKind
 from d810.ir.semantics import CallKind, ControlTransferKind, OperationKind, PredicateKind
 from d810.ir.varnode import Space, Varnode
 
@@ -54,6 +54,8 @@ class UnsupportedLiftKind(str, Enum):
     VARNODE_WIDTH = "varnode_width"
     VARNODE_SPACE = "varnode_space"
     CALL_UNSUPPORTED = "call_unsupported"
+    CALL_PAYLOAD_UNSUPPORTED = "call_payload_unsupported"
+    CALL_RESULT_UNSUPPORTED = "call_result_unsupported"
     EFFECT_UNSUPPORTED = "effect_unsupported"
     CONTROL_TRANSFER_UNSUPPORTED = "control_transfer_unsupported"
     VALUE_OP_UNSUPPORTED = "value_op_unsupported"
@@ -245,13 +247,7 @@ class _Classifier:
         for vn in (*instruction.inputs, instruction.result):
             self._check_varnode(block_serial, instruction_index, instruction, vn)
         if isinstance(instruction.operation, CallKind):
-            self._add(
-                block_serial,
-                instruction_index,
-                instruction,
-                UnsupportedLiftKind.CALL_UNSUPPORTED,
-                "calls are unsupported in M1a",
-            )
+            self._check_call(block_serial, instruction_index, instruction)
             return
         if instruction.effects:
             self._add(
@@ -362,6 +358,41 @@ class _Classifier:
                     f"{instruction.operation.value.upper()} requires two inputs",
                 )
             self._check_matching_widths(block_serial, instruction_index, instruction)
+
+    def _check_call(
+        self,
+        block_serial: int,
+        instruction_index: int,
+        instruction: Instruction,
+    ) -> None:
+        if (
+            len(instruction.effects) != 1
+            or instruction.effects[0].kind is not InstructionEffectKind.CALL
+        ):
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.CALL_PAYLOAD_UNSUPPORTED,
+                "call requires exactly one canonical call effect",
+            )
+        call_target = instruction.control.call_target if instruction.control is not None else None
+        if call_target is None:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.CALL_PAYLOAD_UNSUPPORTED,
+                "call requires a portable call target",
+            )
+        if instruction.result is not None and instruction.result.space is Space.CONST:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.CALL_RESULT_UNSUPPORTED,
+                "call result cannot be const",
+            )
 
     def _check_matching_widths(
         self,
@@ -594,10 +625,11 @@ class _Emitter:
         self.function_name = function_name
         self.instructions = _collect_instructions(flow_graph)
         self.varnodes = self._collect_varnodes()
+        self.declarations: dict[str, tuple[str, tuple[str, ...]]] = {}
         self._next_tmp = 0
 
     def emit(self) -> str:
-        lines: list[str] = [
+        body_lines: list[str] = [
             f"; ModuleID = 'd810.{self.function_name}'",
             'source_filename = "d810-portable-ir"',
             "",
@@ -605,11 +637,18 @@ class _Emitter:
             "entry:",
         ]
         for vn in self.varnodes:
-            lines.append(f"  %{_varnode_name(vn)} = alloca {_llvm_type(vn)}, align {vn.size}")
-        lines.append(f"  br label %bb{self.flow_graph.entry_serial}")
+            body_lines.append(f"  %{_varnode_name(vn)} = alloca {_llvm_type(vn)}, align {vn.size}")
+        body_lines.append(f"  br label %bb{self.flow_graph.entry_serial}")
         for serial in self._ordered_blocks():
-            lines.extend(self._emit_block(serial))
-        lines.append("}")
+            body_lines.extend(self._emit_block(serial))
+        body_lines.append("}")
+        lines = body_lines[:3]
+        for name in sorted(self.declarations):
+            ret_ty, arg_tys = self.declarations[name]
+            lines.append(f"declare {ret_ty} @{name}({', '.join(arg_tys)})")
+        if self.declarations:
+            lines.append("")
+        lines.extend(body_lines[3:])
         return "\n".join(lines) + "\n"
 
     def _ordered_blocks(self) -> tuple[int, ...]:
@@ -647,7 +686,7 @@ class _Emitter:
         if body and isinstance(body[-1].operation, ControlTransferKind):
             body = body[:-1]
         for instruction in body:
-            lines.extend(self._emit_value_instruction(instruction))
+            lines.extend(self._emit_body_instruction(instruction))
         lines.extend(self._emit_terminator(serial, instructions))
         return lines
 
@@ -670,6 +709,47 @@ class _Emitter:
             lines.append(f"  {value}")
             return ty, value.split(" = ", 1)[0]
         return ty, value
+
+    def _emit_body_instruction(self, instruction: Instruction) -> list[str]:
+        if isinstance(instruction.operation, CallKind):
+            return self._emit_call_instruction(instruction)
+        return self._emit_value_instruction(instruction)
+
+    def _call_arguments(self, instruction: Instruction) -> tuple[Varnode, ...]:
+        target = instruction.control.call_target if instruction.control is not None else None
+        if target is None:
+            return instruction.inputs
+        if instruction.inputs and instruction.inputs[0] == target:
+            return instruction.inputs
+        return (target, *instruction.inputs)
+
+    def _call_declaration_name(self, ret_ty: str, arg_tys: tuple[str, ...]) -> str:
+        sig = "_".join((ret_ty, *arg_tys)).replace("*", "ptr").replace(" ", "_")
+        name = f"__d810_opaque_call_{sig}"
+        self.declarations.setdefault(name, (ret_ty, arg_tys))
+        return name
+
+    def _emit_call_instruction(self, instruction: Instruction) -> list[str]:
+        lines: list[str] = []
+        args: list[str] = []
+        arg_tys: list[str] = []
+        for vn in self._call_arguments(instruction):
+            ty, value = self._emit_value(vn, lines)
+            arg_tys.append(ty)
+            args.append(f"{ty} {value}")
+        ret_ty = _llvm_type(instruction.result) if instruction.result is not None else "void"
+        assert ret_ty is not None
+        callee = self._call_declaration_name(ret_ty, tuple(arg_tys))
+        if instruction.result is None:
+            lines.append(f"  call void @{callee}({', '.join(args)})")
+            return lines
+        tmp = self._tmp()
+        lines.append(f"  {tmp} = call {ret_ty} @{callee}({', '.join(args)})")
+        lines.append(
+            f"  store {ret_ty} {tmp}, ptr %{_varnode_name(instruction.result)}, "
+            f"align {instruction.result.size}"
+        )
+        return lines
 
     def _emit_value_instruction(self, instruction: Instruction) -> list[str]:
         assert instruction.result is not None
