@@ -7,7 +7,7 @@ from enum import Enum
 
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import FlowGraph
-from d810.ir.insn_projection import project_instruction
+from d810.ir.insn_projection import project_instruction_sequence
 from d810.ir.instructions import Instruction
 from d810.ir.semantics import CallKind, ControlTransferKind, OperationKind, PredicateKind
 from d810.ir.varnode import Space, Varnode
@@ -70,6 +70,7 @@ class UnsupportedLiftKind(str, Enum):
     RETURN_TYPE_UNSUPPORTED = "return_type_unsupported"
     GOTO_SUCCESSOR_ARITY = "goto_successor_arity"
     BLOCK_TERMINATOR_MISSING = "block_terminator_missing"
+    NESTED_EXPRESSION_UNSUPPORTED = "nested_expression_unsupported"
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +154,9 @@ def _collect_instructions(flow_graph: FlowGraph) -> dict[int, tuple[Instruction,
     projected: dict[int, tuple[Instruction, ...]] = {}
     for serial, block in flow_graph.blocks.items():
         projected[int(serial)] = tuple(
-            project_instruction(insn) for insn in block.insn_snapshots
+            instruction
+            for insn in block.insn_snapshots
+            for instruction in project_instruction_sequence(insn)
         )
     return projected
 
@@ -265,6 +268,16 @@ class _Classifier:
             return
         if isinstance(instruction.operation, PredicateKind):
             self._check_predicate_materialization(block_serial, instruction_index, instruction)
+            return
+        if "unsupported_nested_sub_kind" in instruction.attrs:
+            nested_kind = instruction.attrs.get("unsupported_nested_sub_kind")
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.NESTED_EXPRESSION_UNSUPPORTED,
+                f"nested expression {nested_kind} is unsupported in M1f",
+            )
             return
         if instruction.operation not in _VALUE_OPS:
             self._add(

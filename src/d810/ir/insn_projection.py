@@ -40,6 +40,7 @@ __all__ = [
     "project_assignment",
     "project_conditional_branch",
     "project_instruction",
+    "project_instruction_sequence",
 ]
 
 
@@ -115,6 +116,84 @@ class _VarnodeProjector:
             return tuple(nodes)
         vn = self.one(mop)
         return (vn,) if vn is not None else ()
+
+
+_SUBINSN_VALUE_OPS = {
+    InsnKind.MOV: ValueOpKind.MOVE,
+    InsnKind.ADD: ValueOpKind.ADD,
+    InsnKind.SUB: ValueOpKind.SUB,
+    InsnKind.AND: ValueOpKind.AND,
+}
+
+
+class _SequenceProjector:
+    """Instruction-local lowering of nested SUBINSN operands to temp defs."""
+
+    def __init__(self, parent: InsnSnapshot) -> None:
+        self._parent = parent
+        self._next_temp = 0
+        self._subinsn_temps: dict[int, Varnode] = {}
+        self._subinsn_lowered: set[int] = set()
+        self.instructions: list[Instruction] = []
+
+    def one(self, mop: MopSnapshot | None) -> Varnode | None:
+        if mop is None:
+            return None
+        if mop.kind is OperandKind.SUBINSN:
+            return self._ensure_subinsn(mop)
+        vn = varnode_from_mop_snapshot(mop)
+        if vn is None or vn.space is Space.UNKNOWN:
+            return None
+        return vn
+
+    def input_nodes(self, mop: MopSnapshot | None) -> tuple[Varnode, ...]:
+        vn = self.one(mop)
+        return (vn,) if vn is not None else ()
+
+    def lower_sources_for(self, insn: InsnSnapshot) -> None:
+        for mop in _source_operands_for_instruction(insn):
+            self.one(mop)
+
+    def _ensure_subinsn(self, mop: MopSnapshot) -> Varnode:
+        key = id(mop)
+        if key in self._subinsn_lowered:
+            return self._subinsn_temps[key]
+        self._subinsn_lowered.add(key)
+        left = self.one(mop.sub_l)
+        right = self.one(mop.sub_r)
+        temp = self._subinsn_temps.get(key)
+        if temp is None:
+            temp = Varnode(Space.TEMP, self._next_temp, self._infer_temp_size(mop))
+            self._subinsn_temps[key] = temp
+            self._next_temp += 1
+        operation = _SUBINSN_VALUE_OPS.get(mop.sub_kind, ValueOpKind.VENDOR)
+        if operation is ValueOpKind.MOVE:
+            inputs = tuple(vn for vn in (left,) if vn is not None)
+        else:
+            inputs = tuple(vn for vn in (left, right) if vn is not None)
+        attrs = _instruction_attrs(self._parent)
+        attrs["nested_sub_kind"] = mop.sub_kind.value if mop.sub_kind is not None else None
+        if operation is ValueOpKind.VENDOR:
+            attrs["unsupported_nested_sub_kind"] = attrs["nested_sub_kind"]
+        self.instructions.append(
+            Instruction(
+                operation=operation,
+                inputs=inputs,
+                result=temp,
+                attrs=attrs,
+            )
+        )
+        return temp
+
+    def _infer_temp_size(self, mop: MopSnapshot) -> int:
+        if int(mop.size or 0) > 0:
+            return int(mop.size)
+        child_sizes = [
+            int(child.size or 0)
+            for child in (mop.sub_l, mop.sub_r)
+            if child is not None and int(child.size or 0) > 0
+        ]
+        return max(child_sizes) if child_sizes else 0
 
 
 def _source_operands_for_instruction(insn: InsnSnapshot) -> tuple[MopSnapshot | None, ...]:
@@ -253,6 +332,32 @@ def project_instruction(insn: InsnSnapshot) -> Instruction:
         control=_instruction_control(insn, projector),
         attrs=_instruction_attrs(insn),
     )
+
+
+def project_instruction_sequence(insn: InsnSnapshot) -> tuple[Instruction, ...]:
+    """Project ``insn`` and explicit temp producers for nested SUBINSNs.
+
+    ``project_instruction()`` intentionally preserves the legacy single-record
+    view where nested operands expose both a root temp and leaf dependencies.
+    LLVM-shaped consumers need a flat instruction stream instead: each nested
+    pure sub-expression is emitted as a temp-producing instruction before the
+    parent, and the parent consumes only the root temp.
+    """
+    projector = _SequenceProjector(insn)
+    projector.lower_sources_for(insn)
+    parent = Instruction(
+        operation=_operation_of(insn),
+        inputs=tuple(
+            node
+            for mop in _source_operands_for_instruction(insn)
+            for node in projector.input_nodes(mop)
+        ),
+        result=_instruction_result(insn, projector),
+        effects=_instruction_effects(insn, projector),
+        control=_instruction_control(insn, projector),
+        attrs=_instruction_attrs(insn),
+    )
+    return (*projector.instructions, parent)
 
 
 def _location_of(mop: MopSnapshot | None) -> StorageLocation | None:

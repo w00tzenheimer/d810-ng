@@ -15,6 +15,7 @@ from d810.ir.insn_projection import (
     project_assignment,
     project_conditional_branch,
     project_instruction,
+    project_instruction_sequence,
 )
 from d810.ir.instructions import (
     Instruction,
@@ -534,6 +535,25 @@ def test_nested_mop_d_and_lifts_to_And_expression():
     )
 
 
+def test_instruction_sequence_lowers_nested_and_before_branch():
+    nested = _subinsn(InsnKind.AND, _stk(0x3C), _num(0x3F))
+    sequence = project_instruction_sequence(_jcc(PredicateKind.EQ, nested, _num(0)))
+
+    assert len(sequence) == 2
+    and_temp, branch = sequence
+    assert and_temp.operation is ValueOpKind.AND
+    assert and_temp.inputs == (
+        Varnode(Space.STACK, 0x3C, 4),
+        Varnode(Space.CONST, 0x3F, 4),
+    )
+    assert and_temp.result == Varnode(Space.TEMP, 0, 4)
+    assert branch.operation is ControlTransferKind.CONDITIONAL_BRANCH
+    assert branch.inputs == (
+        Varnode(Space.TEMP, 0, 4),
+        Varnode(Space.CONST, 0, 4),
+    )
+
+
 def test_nested_mop_d_recurses_two_levels():
     # ``((var - 1) & 0x3F)``
     outer = _subinsn(InsnKind.AND, _subinsn(InsnKind.SUB, _stk(0x10), _num(1)), _num(0x3F))
@@ -556,8 +576,48 @@ def test_nested_mop_d_recurses_two_levels():
     )
 
 
+def test_instruction_sequence_lowers_nested_two_level_expression_child_first():
+    outer = _subinsn(InsnKind.AND, _subinsn(InsnKind.SUB, _stk(0x10), _num(1)), _num(0x3F))
+    sequence = project_instruction_sequence(_jcc(PredicateKind.NE, outer, _num(0)))
+
+    assert len(sequence) == 3
+    sub_temp, and_temp, branch = sequence
+    assert sub_temp.operation is ValueOpKind.SUB
+    assert sub_temp.inputs == (
+        Varnode(Space.STACK, 0x10, 4),
+        Varnode(Space.CONST, 1, 4),
+    )
+    assert sub_temp.result == Varnode(Space.TEMP, 0, 4)
+    assert and_temp.operation is ValueOpKind.AND
+    assert and_temp.inputs == (
+        Varnode(Space.TEMP, 0, 4),
+        Varnode(Space.CONST, 0x3F, 4),
+    )
+    assert and_temp.result == Varnode(Space.TEMP, 1, 4)
+    assert branch.operation is ControlTransferKind.CONDITIONAL_BRANCH
+    assert branch.inputs == (
+        Varnode(Space.TEMP, 1, 4),
+        Varnode(Space.CONST, 0, 4),
+    )
+
+
 def test_unmapped_nested_op_projects_none_not_wrong():
     # An unmapped sub-op kind -> None (lossy), never a wrong expression.
     nested = _subinsn(InsnKind.UNKNOWN, _stk(0x10), _num(1))
     cb = project_conditional_branch(_jcc(PredicateKind.EQ, nested, _num(0)))
     assert cb is not None and cb.lhs is None
+
+
+def test_instruction_sequence_keeps_unsupported_nested_op_explicit():
+    nested = _subinsn(InsnKind.UNKNOWN, _stk(0x10), _num(1))
+    sequence = project_instruction_sequence(_jcc(PredicateKind.EQ, nested, _num(0)))
+
+    assert len(sequence) == 2
+    unsupported, branch = sequence
+    assert unsupported.operation is ValueOpKind.VENDOR
+    assert unsupported.result == Varnode(Space.TEMP, 0, 4)
+    assert unsupported.attrs["unsupported_nested_sub_kind"] == "unknown"
+    assert branch.inputs == (
+        Varnode(Space.TEMP, 0, 4),
+        Varnode(Space.CONST, 0, 4),
+    )
