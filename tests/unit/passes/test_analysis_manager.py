@@ -50,6 +50,65 @@ def test_has_analysis_checks_published_and_cached_results():
     assert am.has_analysis("cached")
 
 
+def test_provider_backed_analysis_is_available_and_computed_once():
+    calls: list[object] = []
+    am = AnalysisManager(
+        graph="G0",
+        providers={"domtree": lambda graph: calls.append(graph) or f"D:{graph}"},
+    )
+
+    assert am.has_analysis("domtree")
+    assert am.get_analysis("domtree") == "D:G0"
+    assert am.get_analysis("domtree") == "D:G0"
+    assert calls == ["G0"]
+
+
+def test_register_provider_makes_analysis_available():
+    am = AnalysisManager(graph="G0")
+    assert not am.has_analysis("domtree")
+
+    am.register_provider("domtree", lambda graph: f"D:{graph}")
+
+    assert am.require_analysis("domtree") == "D:G0"
+
+
+def test_require_analysis_raises_when_missing():
+    am = AnalysisManager(graph="G0")
+
+    try:
+        am.require_analysis("missing")
+    except KeyError as exc:
+        assert exc.args == ("missing",)
+    else:
+        raise AssertionError("missing analysis should raise KeyError")
+
+
+def test_provider_recomputes_after_invalidation_when_not_preserved():
+    calls: list[object] = []
+    am = AnalysisManager(
+        graph="G0",
+        providers={"domtree": lambda graph: calls.append(graph) or f"D:{graph}"},
+    )
+
+    assert am.get_analysis("domtree") == "D:G0"
+    am.invalidate_to("G1", PreservedAnalyses.none())
+    assert am.get_analysis("domtree") == "D:G1"
+    assert calls == ["G0", "G1"]
+
+
+def test_provider_cache_survives_invalidation_when_preserved():
+    calls: list[object] = []
+    am = AnalysisManager(
+        graph="G0",
+        providers={"domtree": lambda graph: calls.append(graph) or f"D:{graph}"},
+    )
+
+    assert am.get_analysis("domtree") == "D:G0"
+    am.invalidate_to("G1", PreservedAnalyses.preserving({"domtree"}))
+    assert am.get_analysis("domtree") == "D:G0"
+    assert calls == ["G0"]
+
+
 def test_invalidate_all_keeps_everything():
     am = AnalysisManager(graph="G0")
     am.get("reach", lambda g: 1)
