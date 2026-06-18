@@ -84,10 +84,9 @@ class RouterKind(str, enum.Enum):       # the SHAPE only
     UNKNOWN = "unknown"
 
 class TableProvenance(str, enum.Enum):   # recognition path, NOT router identity
-    COMPILER_SWITCH = "compiler_switch"
-    RECOVERED_INDIRECT_JUMP = "recovered_indirect_jump"
-    COMPUTED_GOTO = "computed_goto"
-    MANUAL_TABLE = "manual_table"
+    SWITCH = "switch"
+    INDIRECT_JUMP_TABLE = "indirect_jump_table"
+    UNKNOWN = "unknown"
 
 class DispatchKeyTransformKind(str, enum.Enum):   # what is compared/indexed
     IDENTITY = "identity"
@@ -115,7 +114,7 @@ class EdgeTransferKind(str, enum.Enum):  # how a chosen edge transfers control
 * `EQUALITY_CHAIN` stays: exact-match map is a different routing primitive.
 * `SWITCH`/`INDIRECT_TABLE` → `TABLE`: both are indexed jump through a table of
   code addresses; they differ only in whether `get_switch_info` recognises it →
-  `TableProvenance.{COMPILER_SWITCH, RECOVERED_INDIRECT_JUMP}`.
+  `TableProvenance.{SWITCH, INDIRECT_JUMP_TABLE}`.
 * `LOOKUP_TABLE` strict split: a **code-address** table (`state -> code_ptr`) IS
   `RouterKind.TABLE`; a **data** table (`state -> next_state`) is NOT a router —
   it is `DispatchKeyTransformKind.TABLE_LOOKUP` feeding whatever router consumes
@@ -158,13 +157,16 @@ Status 2026-06-17:
 
 Remaining gaps:
 
-* `RouterKind` still has `SWITCH` and `INDIRECT_TABLE`; those must collapse to
-  `TABLE` with `TableProvenance.{COMPILER_SWITCH, RECOVERED_INDIRECT_JUMP}`.
-  This is schema/tooling-sensitive because diag rows, CLI queries, and persisted
-  `dispatcher_kind` compatibility currently encode `SWITCH`/`INDIRECT_TABLE`.
-* The dispatch-key axis still leaks as
-  `TransitionTrustKind.DERIVED_DISPATCH_KEY`; extract it into
-  `DispatchKeyTransformKind`.
+* Stale comments/scripts/tests can still teach retired router taxonomy even when
+  source behavior is already moved. Ticket `llr-zkju` owns this breadcrumb
+  cleanup and classification.
+* Persisted diagnostic schema still has physical compatibility names such as
+  `state_dispatcher_rows.dispatcher_kind`. Those names are schema/storage
+  compatibility only. Current writer semantics encode router shape as `TABLE`
+  and put table origin in `payload_json["table_provenance"]`.
+* Historical migration docs can mention old names when they are explicitly
+  describing past slices. Current-roadmap docs must not describe `BST`,
+  `SWITCH`, `INDIRECT_TABLE`, or `DERIVED_DISPATCH_KEY` as live contracts.
 
 ---
 
@@ -217,22 +219,21 @@ design.
 ## Migration plan (ordered slices, each behaviour-preserving + Docker-golden-gated)
 
 1. **Fold `BST` → `CONDITION_CHAIN`.** Families pin `CONDITION_CHAIN`; the
-   IntervalSet/`ComparisonDispatcherModel` resolver handles range routing. Touch:
-   `capabilities/dispatcher.py`, `passes/unflatten/state_machine.py:95`, the
-   family PassSpec factories, `bst_model.py` (becomes the CONDITION_CHAIN
-   recovery, not a kind).
+   IntervalSet/`ComparisonDispatcherModel` resolver handles range routing. The
+   live recovery/provider vocabulary is condition-chain/range evidence, not
+   binary-tree model names.
 
    Status 2026-06-17: implemented by commits `923225dad` and `c126ee703`.
    `RouterKind.BST` is removed; the BST/interval resolver now reports
    `RouterKind.CONDITION_CHAIN`.
 
-   Refinement 2026-06-17: shared/public names must also stop saying BST.
+   Refinement 2026-06-17/18: shared/public names must also stop saying BST.
    Commits `c1c104fa2`, `5ca9c8358`, and `c927f500e` moved generic router API
    parameters, the shared model, and the shared dispatcher extractor onto
-   condition-chain/state-arm vocabulary. Remaining `bst` spellings are not
-   blanket-approved; each residual hit must classify as persisted schema
-   compatibility, historical backend implementation, provider-seam debt, or a
-   cleanup item under `llr-x9xt`.
+   condition-chain/state-arm vocabulary. Tickets `llr-x9xt` and `llr-am0v` then
+   removed the remaining DAG/lowering and backend/provider seam spellings. New
+   residual `bst` hits should be treated as cleanup unless they are explicitly
+   historical migration text.
 2. **Unify `RouterKind` + `DispatcherType`** into one router-shape enum.
 
    Status 2026-06-17: implemented by commits `fffd1f6b9` and `cdb876dbc`.
@@ -259,18 +260,29 @@ design.
 5. **Collapse `SWITCH`/`INDIRECT_TABLE` → `TABLE`** + introduce
    `TableProvenance`.
 
-   Ticket: `llr-nulv`. This is not a pure enum rename; it must migrate
-   producers, family ownership gates, CLI/diagnostic readers, and persisted diag
-   schema compatibility.
+   Status 2026-06-18: implemented by `084fc87db` under ticket `llr-nulv`.
+   `RouterKind` now has `TABLE`, `EQUALITY_CHAIN`, `CONDITION_CHAIN`, and
+   `UNKNOWN`; switch-recognized and recovered indirect-jump tables use
+   `TableProvenance.SWITCH` and `TableProvenance.INDIRECT_JUMP_TABLE`.
+   Persisted diag rows keep the physical `dispatcher_kind` column for storage
+   compatibility but write `TABLE` plus `payload_json["table_provenance"]`.
 6. **Extract dispatch-key** out of `TransitionTrustKind` into
    `DispatchKeyTransformKind`.
 
-   Ticket: `llr-rec9`.
+   Status 2026-06-18: implemented by `084fc87db` under ticket `llr-rec9`.
+   `DispatchKeyTransformKind` lives in
+   `analyses/control_flow/dispatch_key.py`; derived-XOR dispatch-key evidence is
+   descriptive metadata and no longer authorizes transitions through
+   `TransitionTrustKind`.
 7. **Detector provenance becomes metadata**, not enum identity (the standing
    rule that prevents the debt recurring).
 
    Breadcrumb cleanup ticket: `llr-zkju` classifies or removes stale comments,
-   scripts, and tests that still teach retired router taxonomy.
+   scripts, and tests that still teach retired router taxonomy. Residual names
+   are allowed only when classified as persisted DB/schema compatibility or
+   historical migration context; live source, tests, and current roadmap text
+   should use `RouterKind.TABLE`, `TableProvenance`, and
+   `DispatchKeyTransformKind`.
 8. **Post-vocabulary / pre-LLVM: normalize maturity-to-form ranges.**
 
    Ticket: `llr-nix5`, blocked on `llr-nulv`, `llr-rec9`, and `llr-zkju`.
@@ -287,16 +299,17 @@ tests/system` — false-red). Unit + `lint-imports` locally.
 
 ## Risk
 Moderate, not high. The remaining risk is not condition-chain router semantics;
-it is table-router taxonomy and boundary drift. Condition-chain routing still
-uses the same interval/range evidence and the same golden-gated behavior. Do
-NOT keep five router kinds "for now" and do NOT let retired comparison-chain
-vocabulary leak back into shared APIs; the completed condition-chain rename is
-the mitigation.
+it is boundary drift in docs/tests/tools and the next maturity/form cleanup.
+Condition-chain routing still uses the same interval/range evidence and the
+same golden-gated behavior. Table routing now uses one router kind plus
+provenance. Do NOT reintroduce separate switch/indirect-table router kinds and
+do NOT let retired comparison-chain vocabulary leak back into shared APIs; the
+completed condition-chain and table/provenance renames are the mitigation.
 (`ComparisonDispatcherModel` routes 62/62 sub_7FFD states when the range walk
 feeds it; that stays true with the resolver under `CONDITION_CHAIN`.)
 
 ## Where it lives
-`capabilities/dispatcher.py` (RouterKind, TableProvenance), a new
+`capabilities/dispatcher.py` (RouterKind, TableProvenance),
 `analyses/control_flow/dispatch_key.py` (DispatchKeyTransformKind),
 `ir/semantics.py` (EdgeTransferKind beside ControlTransferKind),
 `ir/expressions.py` (grown ValueOpKind), `backends/<vendor>/opcode_lift.py`
