@@ -104,7 +104,7 @@ from d810.evaluator.hexrays_microcode.value_range_capability import (
     HexRaysValRangeCapability,
 )
 from d810.families.registry import registered_families, select_family
-from d810.hexrays.ir_maturity import ir_maturity_to_ida
+from d810.hexrays.ir_maturity import ida_maturity_to_ir, ir_maturity_to_ida
 from d810.ir.maturity import IRMaturity
 from d810.hexrays.observability import (
     diagnostics_enabled as _capture_diagnostics_enabled,
@@ -238,6 +238,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         #: Per-ea (not per-maturity): once a function is fully unflattened at ANY
         #: maturity, no later maturity should reprocess it.
         self._unflat_done_eas: set[int] = set()
+        self._pass_scheduler = None
+
+    def set_pass_scheduler(self, scheduler: object | None) -> None:
+        self._pass_scheduler = scheduler
 
     def _should_run_unflatten_round(
         self, func_ea: int, *, is_indirect: bool, maturity: int
@@ -677,14 +681,25 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 )
             return 0
         if family is not None:
+            try:
+                current_ir_maturity = ida_maturity_to_ir(int(mba.maturity))
+            except ValueError:
+                if logger.debug_on:
+                    logger.debug(
+                        "unflat: skipping func=0x%x at unsupported maturity %s",
+                        int(mba.entry_ea),
+                        maturity_to_string(int(mba.maturity)),
+                    )
+                return 0
             run_pipeline(
                 source=source,
                 family=family,
                 backend=backend,
                 facts=facts,
                 project_config=project_config,
-                maturity=mba.maturity,
+                maturity=current_ir_maturity,
                 capabilities=capabilities,
+                scheduler=self._pass_scheduler,
             )
         # Iteration diagnostics: where does the unflatten chain stand for this function?
         rec = facts.get_analysis("recover_dispatcher")

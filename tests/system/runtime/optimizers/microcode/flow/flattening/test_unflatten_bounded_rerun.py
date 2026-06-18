@@ -21,6 +21,7 @@ import pytest
 from d810.optimizers.microcode.flow.flattening.state_machine_cff_unflattener import (
     StateMachineCffUnflattener,
 )
+from d810.ir.maturity import IRMaturity
 from d810.passes.unflatten.state_machine import LOWER_STATE_MACHINE_PLAN_METADATA
 from d810.transforms.minimal_unflatten_emit import (
     TERMINAL_CARRIER_CONVERGENCE_METADATA,
@@ -109,6 +110,99 @@ class TestUnflattenBoundedRerunGate:
         )
 
         assert rule._lower_plan_requested_terminal_convergence(facts) is True
+
+    def test_live_pipeline_receives_ir_maturity_and_scheduler(self, monkeypatch) -> None:
+        """The live optimizer adapter must not pass raw Hex-Rays maturity downstream."""
+        from d810.hexrays.preanalysis import indirect_jump_labels
+        from d810.optimizers.microcode.flow.flattening import (
+            state_machine_cff_unflattener as unflat_mod,
+        )
+
+        class _Family:
+            name = "fake"
+            recovery_maturities = (IRMaturity.GLOBAL_ANALYZED,)
+
+        class _Backend:
+            def capabilities(self):
+                return frozenset()
+
+        class _Facts:
+            def __init__(self, _graph, input_facts=None):
+                self._values = {}
+
+            def put_analysis(self, name, value):
+                self._values[name] = value
+
+            def get_analysis(self, name, default=None):
+                return self._values.get(name, default)
+
+        captured: dict[str, object] = {}
+        scheduler = object()
+        family = _Family()
+
+        monkeypatch.setattr(
+            indirect_jump_labels,
+            "is_materialized_indirect_dispatcher",
+            lambda _ea: False,
+        )
+        monkeypatch.setattr(
+            StateMachineCffUnflattener,
+            "_should_run_unflatten_round",
+            lambda self, func_ea, *, is_indirect, maturity: True,
+        )
+        monkeypatch.setattr(
+            StateMachineCffUnflattener,
+            "_publish_unflat_diagnostics",
+            lambda self, *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            unflat_mod,
+            "lift_function",
+            lambda mba, maturity: SimpleNamespace(flow_graph=object()),
+        )
+        monkeypatch.setattr(
+            unflat_mod,
+            "register_extra_dispatcher_resolver",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            unflat_mod,
+            "recover_dispatcher",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                dispatcher_block_serial=None,
+                state_var_stkoff=None,
+            ),
+        )
+        monkeypatch.setattr(unflat_mod, "select_family", lambda *_args, **_kwargs: family)
+        monkeypatch.setattr(unflat_mod, "AnalysisManager", _Facts)
+        monkeypatch.setattr(unflat_mod, "HexRaysMutationBackend", _Backend)
+        monkeypatch.setattr(unflat_mod, "HexRaysValRangeCapability", lambda _mba: object())
+        monkeypatch.setattr(unflat_mod, "HexRaysUseDefSafetyBackend", lambda: object())
+        monkeypatch.setattr(
+            unflat_mod,
+            "HexRaysMachineRecoveryEnginesCapability",
+            lambda **_kwargs: object(),
+        )
+
+        def _run_pipeline(**kwargs):
+            captured.update(kwargs)
+            return kwargs["source"].flow_graph
+
+        monkeypatch.setattr(unflat_mod, "run_pipeline", _run_pipeline)
+
+        rule = StateMachineCffUnflattener()
+        rule.config = {}
+        rule.set_pass_scheduler(scheduler)
+        rule._union_maturities_cache = frozenset({ida_hexrays.MMAT_GLBOPT1})
+
+        mba = SimpleNamespace(
+            entry_ea=_EA,
+            maturity=ida_hexrays.MMAT_GLBOPT1,
+        )
+        assert rule.optimize(SimpleNamespace(mba=mba, serial=0)) == 0
+
+        assert captured["maturity"] is IRMaturity.GLOBAL_ANALYZED
+        assert captured["scheduler"] is scheduler
 
 
 class TestTigressIndirectMaterializationConfig:

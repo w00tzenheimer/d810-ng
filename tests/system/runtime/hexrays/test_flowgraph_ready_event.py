@@ -23,7 +23,7 @@ Scope (E1 only):
 from __future__ import annotations
 
 from d810.core.events import EventEmitter
-from d810.hexrays.hooks.hexrays_hooks import DecompilationEvent
+from d810.hexrays.lifecycle import DecompilationEvent
 
 
 class TestDecompilationEventValues:
@@ -233,11 +233,8 @@ class TestProducerHelper:
         ``maturity_name`` come from ``flow_graph.metadata`` (not from
         an alternate convention)."""
         from d810.core.events import EventEmitter
-        from d810.hexrays.hooks import hexrays_hooks
-        from d810.hexrays.hooks.hexrays_hooks import (
-            DecompilationEvent,
-            _emit_flowgraph_ready_event,
-        )
+        from d810.hexrays import lifecycle
+        from d810.hexrays.lifecycle import DecompilationEvent, _emit_flowgraph_ready_event
 
         sentinel_flow_graph = self._fake_flow_graph(
             func_ea=0x140002000,
@@ -246,7 +243,7 @@ class TestProducerHelper:
         )
 
         monkeypatch.setattr(
-            hexrays_hooks,
+            lifecycle,
             "lift_mba_to_flowgraph",
             lambda mba: sentinel_flow_graph,
         )
@@ -290,15 +287,12 @@ class TestProducerHelper:
         the instruction-manager producer still emits the canonical
         four-key payload."""
         from d810.core.events import EventEmitter
-        from d810.hexrays.hooks import hexrays_hooks
-        from d810.hexrays.hooks.hexrays_hooks import (
-            DecompilationEvent,
-            _emit_flowgraph_ready_event,
-        )
+        from d810.hexrays import lifecycle
+        from d810.hexrays.lifecycle import DecompilationEvent, _emit_flowgraph_ready_event
 
         sentinel_flow_graph = self._fake_flow_graph()
         monkeypatch.setattr(
-            hexrays_hooks,
+            lifecycle,
             "lift_mba_to_flowgraph",
             lambda mba: sentinel_flow_graph,
         )
@@ -347,11 +341,8 @@ class TestProducerHelper:
         a separate parameter and forgets to plumb the lifter
         metadata through, this test catches the drift."""
         from d810.core.events import EventEmitter
-        from d810.hexrays.hooks import hexrays_hooks
-        from d810.hexrays.hooks.hexrays_hooks import (
-            DecompilationEvent,
-            _emit_flowgraph_ready_event,
-        )
+        from d810.hexrays import lifecycle
+        from d810.hexrays.lifecycle import DecompilationEvent, _emit_flowgraph_ready_event
 
         # Deliberately uncommon maturity name and arch so we can
         # detect any code that hard-codes ``maturity_to_string(...)``
@@ -363,7 +354,7 @@ class TestProducerHelper:
             cpu_arch_name="ARM",
         )
         monkeypatch.setattr(
-            hexrays_hooks,
+            lifecycle,
             "lift_mba_to_flowgraph",
             lambda mba: fake_flow_graph,
         )
@@ -395,10 +386,8 @@ class TestProducerHelper:
     def test_helper_with_none_emitter_is_noop(self, monkeypatch) -> None:
         """A manager without ``event_emitter`` wired up still calls
         the helper; the helper short-circuits cleanly."""
-        from d810.hexrays.hooks import hexrays_hooks
-        from d810.hexrays.hooks.hexrays_hooks import (
-            _emit_flowgraph_ready_event,
-        )
+        from d810.hexrays import lifecycle
+        from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
 
         called = [False]
 
@@ -407,7 +396,7 @@ class TestProducerHelper:
             return self._fake_flow_graph()
 
         monkeypatch.setattr(
-            hexrays_hooks, "lift_mba_to_flowgraph", fake_lift
+            lifecycle, "lift_mba_to_flowgraph", fake_lift
         )
 
         stub = self._stub_mba()
@@ -424,17 +413,14 @@ class TestProducerHelper:
         decompilation.  The helper logs and returns cleanly; the
         event is suppressed for that one transition."""
         from d810.core.events import EventEmitter
-        from d810.hexrays.hooks import hexrays_hooks
-        from d810.hexrays.hooks.hexrays_hooks import (
-            DecompilationEvent,
-            _emit_flowgraph_ready_event,
-        )
+        from d810.hexrays import lifecycle
+        from d810.hexrays.lifecycle import DecompilationEvent, _emit_flowgraph_ready_event
 
         def failing_lift(mba):
             raise RuntimeError("simulated lift failure")
 
         monkeypatch.setattr(
-            hexrays_hooks, "lift_mba_to_flowgraph", failing_lift
+            lifecycle, "lift_mba_to_flowgraph", failing_lift
         )
 
         emitter: EventEmitter[DecompilationEvent] = EventEmitter()
@@ -462,13 +448,14 @@ class TestProducerHelper:
         consumer rewire would lose a recon collection point."""
         import inspect
 
-        from d810.hexrays.hooks import hexrays_hooks
+        from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
+        from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 
         instr_src = inspect.getsource(
-            hexrays_hooks.InstructionOptimizerManager.log_info_on_input
+            InstructionOptimizerManager.log_info_on_input
         )
         block_src = inspect.getsource(
-            hexrays_hooks.BlockOptimizerManager.log_info_on_input
+            BlockOptimizerManager.log_info_on_input
         )
 
         assert "_emit_flowgraph_ready_event" in instr_src, (

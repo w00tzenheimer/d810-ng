@@ -5,9 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import ida_hexrays
+
 from d810.core.stats import OptimizationStatistics
-from d810.hexrays.hooks.hexrays_hooks import BlockOptimizerManager
+from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
+from d810.ir.maturity import IRMaturity
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
+from d810.passes.scheduler import PassScheduler, RunLater
 
 
 class _DummyRule:
@@ -29,12 +33,40 @@ class _DummyRule:
         self.use_blacklist = blacklist is not None
         self.blacklisted_function_ea_list = list(blacklist or [])
         self.calls = 0
+        self.flow_context = None
 
     def set_flow_context(self, flow_context) -> None:
-        pass
+        self.flow_context = flow_context
 
     def optimize(self, blk) -> int:
         self.calls += 1
+        return self.patches
+
+
+class _RunLaterRule(_DummyRule):
+    def optimize(self, blk) -> int:
+        self.calls += 1
+        if self.calls == 1 and self.flow_context is not None:
+            self.flow_context.run_later(
+                IRMaturity.GLOBAL_OPTIMIZED,
+                reason="needs GLBOPT2 facts",
+            )
+        return self.patches
+
+
+class _CrossPassRunLaterRule(_DummyRule):
+    def __init__(self, name: str, target_rule_name: str):
+        super().__init__(name)
+        self.target_rule_name = target_rule_name
+
+    def optimize(self, blk) -> int:
+        self.calls += 1
+        if self.calls == 1 and self.flow_context is not None:
+            self.flow_context.run_later(
+                IRMaturity.GLOBAL_OPTIMIZED,
+                reason="needs target rule at GLBOPT2",
+                pass_id=self.target_rule_name,
+            )
         return self.patches
 
 
@@ -57,9 +89,90 @@ class _FakeRuleScopeService:
         return self.rules
 
 
-def _make_block(func_ea: int = 0x401000):
-    mba = SimpleNamespace(entry_ea=func_ea)
+def _make_block(func_ea: int = 0x401000, maturity=None):
+    mba = SimpleNamespace(entry_ea=func_ea, qty=1)
+    if maturity is not None:
+        mba.maturity = maturity
     return SimpleNamespace(mba=mba, serial=0)
+
+
+def test_flow_context_records_and_drains_run_later_request():
+    context = FlowMaturityContext(
+        mba=SimpleNamespace(),
+        func_ea=0x401000,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+    )
+    context.set_current_rule_name("late_rule")
+    context.run_later(IRMaturity.GLOBAL_OPTIMIZED, reason="needs GLBOPT2 facts")
+
+    assert context.drain_run_later_requests() == (
+        (
+            "late_rule",
+            RunLater(
+                IRMaturity.GLOBAL_OPTIMIZED,
+                reason="needs GLBOPT2 facts",
+            ),
+        ),
+    )
+    assert context.drain_run_later_requests() == ()
+
+
+def test_block_optimizer_runs_scheduled_rule_at_later_maturity():
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    scheduler = PassScheduler()
+    rule = _RunLaterRule("late_rule")
+    scope_service = _FakeRuleScopeService((rule,))
+    manager.add_rule(rule)
+    manager.configure(
+        rule_scope_service=scope_service,
+        rule_scope_project_name="proj",
+        rule_scope_idb_key="idb",
+        pass_scheduler=scheduler,
+    )
+
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT1
+    assert manager.optimize(_make_block()) == 0
+    assert rule.calls == 1
+
+    scope_service.rules = ()
+    manager.log_info_on_input(
+        _make_block(maturity=ida_hexrays.MMAT_GLBOPT2),
+    )
+    assert manager.optimize(_make_block()) == 0
+    assert rule.calls == 2
+
+
+def test_block_optimizer_runs_cross_pass_scheduled_rule_at_later_maturity():
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    scheduler = PassScheduler()
+    source_rule = _CrossPassRunLaterRule("source_rule", "target_rule")
+    target_rule = _DummyRule("target_rule")
+    scope_service = _FakeRuleScopeService((source_rule,))
+    manager.add_rule(source_rule)
+    manager.add_rule(target_rule)
+    manager.configure(
+        rule_scope_service=scope_service,
+        rule_scope_project_name="proj",
+        rule_scope_idb_key="idb",
+        pass_scheduler=scheduler,
+    )
+
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT1
+    assert manager.optimize(_make_block()) == 0
+    assert source_rule.calls == 1
+    assert target_rule.calls == 0
+
+    scope_service.rules = ()
+    manager.log_info_on_input(
+        _make_block(maturity=ida_hexrays.MMAT_GLBOPT2),
+    )
+    assert manager.optimize(_make_block()) == 0
+    assert source_rule.calls == 1
+    assert target_rule.calls == 1
 
 
 def test_scoped_perf_counters_track_calls_candidates_and_lookup_time():

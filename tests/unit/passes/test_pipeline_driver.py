@@ -16,6 +16,7 @@ from d810.passes.pass_pipeline import (
     live_mba,
     no_caps,
 )
+from d810.passes.scheduler import RunLater
 from d810.transforms.plan import PatchPlan
 from d810.passes.driver import CapabilityError, run_pipeline, validate_capabilities
 from d810.families.state_machine_cff import HodurFamily
@@ -26,6 +27,7 @@ from d810.families.state_machine_cff import TigressFamily
 from d810.families.registry import select_family, registered_families
 from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.maturity import IRMaturity
 
 # A real 1-block FlowGraph so the (now real) recover_dispatcher pass can run over it.
 _GRAPH = FlowGraph(
@@ -72,6 +74,15 @@ class _Backend:
         return "G1"  # fresh snapshot identity
 
 
+class _RecordingScheduler:
+    def __init__(self):
+        self.requests = []
+
+    def request(self, **kwargs):
+        self.requests.append(kwargs)
+        return True
+
+
 class _MatchingHodur:
     """A Family-Protocol double (NOT a registered profile — does not subclass the
     Registrant family, else it would auto-register and pollute select_family) whose
@@ -97,6 +108,18 @@ def test_run_pipeline_runs_all_five_passes_no_apply_on_empty_plans():
     assert backend.applied == 0
     assert facts.invalidations == 0
     assert out is _GRAPH
+
+
+def test_run_pipeline_does_not_record_empty_run_later_requests():
+    backend = _Backend()
+    facts = _Facts()
+    scheduler = _RecordingScheduler()
+    run_pipeline(
+        source=_Src(), family=_MatchingHodur(), backend=backend,
+        facts=facts, project_config=None, maturity=IRMaturity.CANONICAL,
+        scheduler=scheduler,
+    )
+    assert scheduler.requests == []
 
 
 def test_run_pipeline_no_match_is_a_noop():
@@ -136,6 +159,45 @@ def test_run_pipeline_applies_nonempty_plan_and_invalidates():
     assert backend.applied == 1
     assert facts.invalidations == 1
     assert out == "G1"
+
+
+def test_run_pipeline_records_pass_result_run_later_requests():
+    """A pass result can ask the injected scheduler for later-maturity work."""
+    request = RunLater(
+        IRMaturity.GLOBAL_ANALYZED,
+        reason="needs optimized graph",
+    )
+
+    class _AskLater:
+        name = "ask_later"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(run_later=(request,))
+
+    class _OneShot:
+        name = "one_shot"
+
+        def detect(self, graph, capabilities, context=None):
+            return object()
+
+        def pipeline_for(self, match, context):
+            return (PassSpec("ask_later", _AskLater, no_caps, default),)
+
+    scheduler = _RecordingScheduler()
+    out = run_pipeline(
+        source=_Src(), family=_OneShot(), backend=_Backend(),
+        facts=_Facts(), project_config=None,
+        maturity=IRMaturity.CANONICAL,
+        scheduler=scheduler,
+    )
+
+    assert out is _GRAPH
+    assert scheduler.requests == [{
+        "func_ea": 0x1000,
+        "pass_id": "ask_later",
+        "current_maturity": IRMaturity.CANONICAL,
+        "run_later": request,
+    }]
 
 
 def test_validate_capabilities_fails_loud_on_missing():

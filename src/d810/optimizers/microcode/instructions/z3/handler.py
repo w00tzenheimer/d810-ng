@@ -87,6 +87,7 @@ class Z3Optimizer(InstructionOptimizer):
         ins: ida_hexrays.minsn_t,
         *,
         allowed_rule_names: frozenset[str] | None = None,
+        scheduled_rule_names: frozenset[str] | None = None,
     ):  # type: ignore[override]
         # The opcode pre-filter is now handled by clearing _allowed_root_opcodes
         # when a patternless rule is added, which also disables the base class filter.
@@ -94,4 +95,5 @@ class Z3Optimizer(InstructionOptimizer):
             blk,
             ins,
             allowed_rule_names=allowed_rule_names,
+            scheduled_rule_names=scheduled_rule_names,
         )

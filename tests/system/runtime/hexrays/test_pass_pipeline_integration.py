@@ -160,6 +160,18 @@ class TestBlockOptimizerManagerPipelineIntegration:
     optimization cycle, before the MBA is finalized.
     """
 
+    def _read_block_adapter_source(self) -> str:
+        """Return the source of optblock_adapter.py as a string."""
+        import pathlib
+        repo_root = pathlib.Path(__file__).parent.parent.parent.parent.parent
+        candidates = (
+            repo_root / "src/d810/hexrays/hooks/optblock_adapter.py",
+        )
+        for path in candidates:
+            if path.exists():
+                return path.read_text(encoding="utf-8")
+        raise FileNotFoundError(f"optblock_adapter.py not found in candidates: {candidates}")
+
     def _read_hook_source(self) -> str:
         """Return the source of hexrays_hooks.py as a string."""
         import pathlib
@@ -168,49 +180,49 @@ class TestBlockOptimizerManagerPipelineIntegration:
             repo_root / "src/d810/hexrays/hooks/hexrays_hooks.py",
             repo_root / "src/d810/hexrays/hexrays_hooks.py",
         )
-        for hook_path in candidates:
-            if hook_path.exists():
-                return hook_path.read_text(encoding="utf-8")
+        for path in candidates:
+            if path.exists():
+                return path.read_text(encoding="utf-8")
         raise FileNotFoundError(f"hexrays_hooks.py not found in candidates: {candidates}")
 
     def test_block_optimizer_has_pass_pipeline_attribute(self):
         """BlockOptimizerManager source must declare _pass_pipeline attribute."""
-        src = self._read_hook_source()
+        src = self._read_block_adapter_source()
         assert "_pass_pipeline" in src, (
             "BlockOptimizerManager must declare a '_pass_pipeline' attribute"
         )
 
     def test_block_optimizer_pass_pipeline_defaults_to_none(self):
         """_pass_pipeline must default to None in BlockOptimizerManager source."""
-        src = self._read_hook_source()
+        src = self._read_block_adapter_source()
         assert "self._pass_pipeline = None" in src, (
             "_pass_pipeline must default to None"
         )
 
     def test_block_optimizer_configure_accepts_pass_pipeline(self):
         """configure() must accept and store pass_pipeline kwarg."""
-        src = self._read_hook_source()
+        src = self._read_block_adapter_source()
         assert 'kwargs.get("pass_pipeline"' in src, (
             "BlockOptimizerManager.configure() must accept 'pass_pipeline' kwarg"
         )
 
     def test_block_optimizer_fires_pipeline_at_mmat_glbopt2(self):
         """BlockOptimizerManager source must gate pipeline execution on MMAT_GLBOPT2."""
-        src = self._read_hook_source()
+        src = self._read_block_adapter_source()
         assert "MMAT_GLBOPT2" in src, (
             "Pipeline must be gated on MMAT_GLBOPT2 in BlockOptimizerManager"
         )
 
     def test_block_optimizer_tracks_pipeline_last_maturity(self):
         """BlockOptimizerManager must track last maturity the pipeline fired at."""
-        src = self._read_hook_source()
+        src = self._read_block_adapter_source()
         assert "_pipeline_last_maturity" in src, (
             "BlockOptimizerManager must have '_pipeline_last_maturity' tracker"
         )
 
     def test_block_optimizer_calls_pipeline_run(self):
         """BlockOptimizerManager source must call _pass_pipeline.run(mba)."""
-        src = self._read_hook_source()
+        src = self._read_block_adapter_source()
         assert "self._pass_pipeline.run(mba)" in src, (
             "BlockOptimizerManager must call self._pass_pipeline.run(mba)"
         )
