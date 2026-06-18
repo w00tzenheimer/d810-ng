@@ -81,7 +81,7 @@ CLEANUP_STRATEGY = '''#!/usr/bin/env python3
 
 This strategy removes dead code and simplifies the CFG after
 unflattening has been applied:
-1. Removes unreachable blocks (former dispatcher/BST blocks)
+1. Removes unreachable blocks (former dispatcher/condition-chain blocks)
 2. Coalesces redundant jumps
 3. Cleans up residual state variable writes
 

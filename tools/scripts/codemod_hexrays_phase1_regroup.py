@@ -46,7 +46,7 @@ MODULE_RENAMES: dict[str, str] = {
     "d810.hexrays.table_utils": "d810.hexrays.utils.table_utils",
     "d810.hexrays.tracker": "d810.hexrays.utils.tracker",
     "d810.hexrays.arch_utils": "d810.hexrays.utils.arch_utils",
-    "d810.hexrays.bst_analysis": "d810.hexrays.utils.bst_analysis",
+    "d810.hexrays.condition_chain_analysis": "d810.hexrays.utils.condition_chain_analysis",
     "d810.hexrays.emulator": "d810.hexrays.utils.emulator",
 }
 
@@ -93,7 +93,7 @@ FILE_RENAMES: dict[str, str] = {
     "src/d810/hexrays/table_utils.py": "src/d810/hexrays/utils/table_utils.py",
     "src/d810/hexrays/tracker.py": "src/d810/hexrays/utils/tracker.py",
     "src/d810/hexrays/arch_utils.py": "src/d810/hexrays/utils/arch_utils.py",
-    "src/d810/hexrays/bst_analysis.py": "src/d810/hexrays/utils/bst_analysis.py",
+    "src/d810/hexrays/condition_chain_analysis.py": "src/d810/hexrays/utils/condition_chain_analysis.py",
     "src/d810/hexrays/emulator.py": "src/d810/hexrays/utils/emulator.py",
 }
 

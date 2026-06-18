@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Codemod: retire ``BranchPredicate`` (ir.flowgraph) in favour of the LLVM-named
-``PredicateKind`` (ir.semantics) -- the dedup half of the BST-condition
+``PredicateKind`` (ir.semantics) -- the dedup half of the condition-chain condition
 convergence (ticket llr-lxas).
 
 The two enums are semantically identical (same 11 members; BranchPredicate's
