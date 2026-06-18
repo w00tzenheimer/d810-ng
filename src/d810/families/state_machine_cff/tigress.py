@@ -38,7 +38,14 @@ from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.analyses.control_flow.dispatcher_recovery import build_dispatch_map_any_kind
 from d810.families.state_machine_cff.base import StateMachineCffFamily
 from d810.ir.maturity import IRMaturity
-from d810.families.state_machine_cff.pipeline import standard_state_machine_passes
+from d810.families.state_machine_cff.pipeline import (
+    CLEANUP_ANALYSES,
+    DISPATCHER_ANALYSES,
+    LOWER_ANALYSES,
+    REGION_ANALYSES,
+    TRANSITION_ANALYSES,
+    standard_state_machine_passes,
+)
 
 __all__ = ["TigressFamily"]
 
@@ -104,14 +111,27 @@ class TigressFamily(StateMachineCffFamily):
             is TableProvenance.INDIRECT_JUMP_TABLE
         ):
             return (
-                PassSpec("recover_dispatcher", RecoverDispatcher, live_mba, default),
+                PassSpec(
+                    "recover_dispatcher",
+                    RecoverDispatcher,
+                    live_mba,
+                    default,
+                    analyses=DISPATCHER_ANALYSES,
+                ),
                 PassSpec(
                     "recover_state_transitions",
                     RecoverStateTransitions,
                     emulation,
                     default,
+                    analyses=TRANSITION_ANALYSES,
                 ),
-                PassSpec("plan_semantic_regions", PlanSemanticRegions, no_caps, default),
+                PassSpec(
+                    "plan_semantic_regions",
+                    PlanSemanticRegions,
+                    no_caps,
+                    default,
+                    analyses=REGION_ANALYSES,
+                ),
                 PassSpec(
                     "lower_state_machine",
                     lambda: LowerStateMachine(
@@ -122,12 +142,14 @@ class TigressFamily(StateMachineCffFamily):
                     ),
                     emulation,
                     golden,
+                    analyses=LOWER_ANALYSES,
                 ),
                 PassSpec(
                     "cleanup_residual_dispatcher",
                     CleanupResidualDispatcher,
                     no_caps,
                     golden,
+                    analyses=CLEANUP_ANALYSES,
                 ),
             )
         return standard_state_machine_passes()

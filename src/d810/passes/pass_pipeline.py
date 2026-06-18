@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from d810.core.typing import Any, Callable, Protocol, runtime_checkable
+from d810.core.typing import Any, Callable, Mapping, Protocol, runtime_checkable
 from d810.core.config import ProjectConfiguration
 from d810.ir.flowgraph import FlowGraph
 from d810.ir.maturity import IRMaturity
@@ -150,15 +150,58 @@ class PipelineConfig:
         return not self.maturity_gates or maturity in self.maturity_gates
 
 
-@dataclass(frozen=True)
+_PRESERVED_UNSET = object()
+
+
+@dataclass(frozen=True, init=False)
 class PassResult:
     """What a pass produces: derived facts, a (possibly empty) rewrite plan, and an
-    OPTIMISTIC same-maturity invalidation hint (the sound base is snapshot identity)."""
+    OPTIMISTIC same-maturity invalidation hint (the sound base is snapshot identity).
 
-    facts: tuple[object, ...] = ()
-    rewrite_plan: PatchPlan = field(default_factory=PatchPlan)
-    preserved: PreservedAnalyses = field(default_factory=PreservedAnalyses.all)
-    run_later: tuple[RunLater, ...] = ()
+    ``preserved`` remains default-all for legacy callers. The custom initializer also
+    records whether the caller supplied it explicitly, so the driver can use the
+    owning ``PassSpec``'s preservation default when a result truly omits a policy.
+    """
+
+    facts: tuple[object, ...]
+    rewrite_plan: PatchPlan
+    preserved: PreservedAnalyses
+    run_later: tuple[RunLater, ...]
+    analysis_outputs: Mapping[str, object]
+    _preserved_explicit: bool = field(default=False, repr=False, compare=False)
+
+    def __init__(
+        self,
+        *,
+        facts: tuple[object, ...] = (),
+        rewrite_plan: PatchPlan | None = None,
+        preserved: PreservedAnalyses | object = _PRESERVED_UNSET,
+        run_later: tuple[RunLater, ...] = (),
+        analysis_outputs: Mapping[str, object] | None = None,
+    ) -> None:
+        preserved_explicit = preserved is not _PRESERVED_UNSET
+        preserved_value = (
+            preserved if preserved_explicit else PreservedAnalyses.all()
+        )
+        object.__setattr__(self, "facts", facts)
+        object.__setattr__(
+            self,
+            "rewrite_plan",
+            rewrite_plan if rewrite_plan is not None else PatchPlan(),
+        )
+        object.__setattr__(self, "preserved", preserved_value)
+        object.__setattr__(self, "run_later", run_later)
+        object.__setattr__(
+            self,
+            "analysis_outputs",
+            {} if analysis_outputs is None else dict(analysis_outputs),
+        )
+        object.__setattr__(self, "_preserved_explicit", preserved_explicit)
+
+    @property
+    def preserved_explicit(self) -> bool:
+        """Whether this result supplied a result-level preservation policy."""
+        return self._preserved_explicit
 
 
 @runtime_checkable

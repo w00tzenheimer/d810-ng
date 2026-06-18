@@ -7,10 +7,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
+
+from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.pass_pipeline import (
+    AnalysisContract,
+    BackendRoute,
     FunctionPipelineContext,
     PassResult,
     PassSpec,
+    PreservedAnalyses,
     SafetyPolicy,
     SchedulerPolicy,
     default,
@@ -19,7 +25,13 @@ from d810.passes.pass_pipeline import (
 )
 from d810.passes.scheduler import PassScheduler, RunLater, RunLaterDomain
 from d810.transforms.plan import PatchPlan
-from d810.passes.driver import CapabilityError, run_pipeline, validate_capabilities
+from d810.passes.driver import (
+    AnalysisContractError,
+    BackendRouteError,
+    CapabilityError,
+    run_pipeline,
+    validate_capabilities,
+)
 from d810.families.state_machine_cff import HodurFamily
 from d810.families.state_machine_cff import approov as approov_pipeline
 from d810.families.state_machine_cff import tigress as tigress_pipeline
@@ -54,12 +66,16 @@ class _Src:
 class _Facts:
     def __init__(self):
         self.invalidations = 0
+        self.last_graph = None
+        self.last_preserved = None
 
     def view(self):
         return self
 
     def invalidate_to(self, graph, preserved):
         self.invalidations += 1
+        self.last_graph = graph
+        self.last_preserved = preserved
 
 
 class _Backend:
@@ -103,20 +119,19 @@ class _MatchingHodur:
 
 def test_run_pipeline_runs_all_five_passes_no_apply_on_empty_plans():
     backend = _Backend()
-    facts = _Facts()
+    facts = AnalysisManager(_GRAPH)
     out = run_pipeline(
         source=_Src(), family=_MatchingHodur(), backend=backend,
         facts=facts, project_config=None, maturity=None,
     )
     # skeleton transforms emit empty plans -> backend.apply never called, graph unchanged.
     assert backend.applied == 0
-    assert facts.invalidations == 0
     assert out is _GRAPH
 
 
 def test_run_pipeline_does_not_record_empty_run_later_requests():
     backend = _Backend()
-    facts = _Facts()
+    facts = AnalysisManager(_GRAPH)
     scheduler = _RecordingScheduler()
     run_pipeline(
         source=_Src(), family=_MatchingHodur(), backend=backend,
@@ -163,6 +178,339 @@ def test_run_pipeline_applies_nonempty_plan_and_invalidates():
     assert backend.applied == 1
     assert facts.invalidations == 1
     assert out == "G1"
+
+
+def test_missing_required_analysis_raises_contract_error():
+    class _NeedsDomtree:
+        name = "needs_domtree"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult()
+
+    class _OneShot:
+        name = "one_shot"
+
+        def detect(self, graph, capabilities, context=None):
+            return object()
+
+        def pipeline_for(self, match, context):
+            return (
+                PassSpec(
+                    "needs_domtree",
+                    _NeedsDomtree,
+                    no_caps,
+                    default,
+                    analyses=AnalysisContract(
+                        required=frozenset({"domtree"}),
+                    ),
+                ),
+            )
+
+    with pytest.raises(AnalysisContractError, match="missing required analyses"):
+        run_pipeline(
+            source=_Src(), family=_OneShot(), backend=_Backend(),
+            facts=AnalysisManager(_GRAPH), project_config=None,
+            maturity=IRMaturity.CANONICAL,
+        )
+
+
+def test_required_analysis_present_runs():
+    class _NeedsDomtree:
+        name = "needs_domtree"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.get_analysis("domtree") == "D"
+            return PassResult()
+
+    class _OneShot:
+        name = "one_shot"
+
+        def detect(self, graph, capabilities, context=None):
+            return object()
+
+        def pipeline_for(self, match, context):
+            return (
+                PassSpec(
+                    "needs_domtree",
+                    _NeedsDomtree,
+                    no_caps,
+                    default,
+                    analyses=AnalysisContract(
+                        required=frozenset({"domtree"}),
+                    ),
+                ),
+            )
+
+    facts = AnalysisManager(_GRAPH)
+    facts.put_analysis("domtree", "D")
+
+    out = run_pipeline(
+        source=_Src(), family=_OneShot(), backend=_Backend(),
+        facts=facts, project_config=None,
+        maturity=IRMaturity.CANONICAL,
+    )
+
+    assert out is _GRAPH
+
+
+def test_declared_analysis_output_is_visible_to_later_pass():
+    class _PublishDomtree:
+        name = "publish_domtree"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(analysis_outputs={"domtree": "D"})
+
+    class _NeedsDomtree:
+        name = "needs_domtree"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.get_analysis("domtree") == "D"
+            return PassResult()
+
+    class _TwoPasses:
+        name = "two_passes"
+
+        def detect(self, graph, capabilities, context=None):
+            return object()
+
+        def pipeline_for(self, match, context):
+            return (
+                PassSpec(
+                    "publish_domtree",
+                    _PublishDomtree,
+                    no_caps,
+                    default,
+                    analyses=AnalysisContract(
+                        provided=frozenset({"domtree"}),
+                    ),
+                ),
+                PassSpec(
+                    "needs_domtree",
+                    _NeedsDomtree,
+                    no_caps,
+                    default,
+                    analyses=AnalysisContract(
+                        required=frozenset({"domtree"}),
+                    ),
+                ),
+            )
+
+    run_pipeline(
+        source=_Src(), family=_TwoPasses(), backend=_Backend(),
+        facts=AnalysisManager(_GRAPH), project_config=None,
+        maturity=IRMaturity.CANONICAL,
+    )
+
+
+def test_undeclared_analysis_output_is_rejected():
+    class _PublishDomtree:
+        name = "publish_domtree"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(analysis_outputs={"domtree": "D"})
+
+    class _OneShot:
+        name = "one_shot"
+
+        def detect(self, graph, capabilities, context=None):
+            return object()
+
+        def pipeline_for(self, match, context):
+            return (
+                PassSpec("publish_domtree", _PublishDomtree, no_caps, default),
+            )
+
+    with pytest.raises(AnalysisContractError, match="undeclared analyses"):
+        run_pipeline(
+            source=_Src(), family=_OneShot(), backend=_Backend(),
+            facts=AnalysisManager(_GRAPH), project_config=None,
+            maturity=IRMaturity.CANONICAL,
+        )
+
+
+def test_analysis_only_pass_with_empty_plan_succeeds():
+    class _Analyzer:
+        name = "analyzer"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(analysis_outputs={"domtree": "D"})
+
+    class _OneShot:
+        name = "one_shot"
+
+        def detect(self, graph, capabilities, context=None):
+            return object()
+
+        def pipeline_for(self, match, context):
+            return (
+                PassSpec(
+                    "analyzer",
+                    _Analyzer,
+                    no_caps,
+                    default,
+                    analyses=AnalysisContract(
+                        provided=frozenset({"domtree"}),
+                    ),
+                    backend_route=BackendRoute.ANALYSIS_ONLY,
+                ),
+            )
+
+    facts = AnalysisManager(_GRAPH)
+
+    out = run_pipeline(
+        source=_Src(), family=_OneShot(), backend=_Backend(),
+        facts=facts, project_config=None,
+        maturity=IRMaturity.CANONICAL,
+    )
+
+    assert out is _GRAPH
+    assert facts.get_analysis("domtree") == "D"
+
+
+def test_analysis_only_pass_with_rewrite_plan_fails_before_apply():
+    class _Analyzer:
+        name = "analyzer"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(
+                analysis_outputs={"domtree": "D"},
+                rewrite_plan=PatchPlan(planner_modifications=(object(),)),
+            )
+
+    class _OneShot:
+        name = "one_shot"
+
+        def detect(self, graph, capabilities, context=None):
+            return object()
+
+        def pipeline_for(self, match, context):
+            return (
+                PassSpec(
+                    "analyzer",
+                    _Analyzer,
+                    no_caps,
+                    default,
+                    analyses=AnalysisContract(
+                        provided=frozenset({"domtree"}),
+                    ),
+                    backend_route=BackendRoute.ANALYSIS_ONLY,
+                ),
+            )
+
+    backend = _Backend()
+    facts = AnalysisManager(_GRAPH)
+
+    with pytest.raises(BackendRouteError, match="analysis-only pass"):
+        run_pipeline(
+            source=_Src(), family=_OneShot(), backend=backend,
+            facts=facts, project_config=None,
+            maturity=IRMaturity.CANONICAL,
+        )
+
+    assert backend.applied == 0
+    assert facts.get_analysis("domtree") is None
+
+
+def test_mutation_backend_pass_with_rewrite_plan_still_applies():
+    class _Mutator:
+        name = "mutator"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+
+    class _OneShot:
+        name = "one_shot"
+
+        def detect(self, graph, capabilities, context=None):
+            return object()
+
+        def pipeline_for(self, match, context):
+            return (PassSpec("mutator", _Mutator, no_caps, default),)
+
+    backend, facts = _Backend(), _Facts()
+
+    out = run_pipeline(
+        source=_Src(), family=_OneShot(), backend=backend,
+        facts=facts, project_config=None,
+        maturity=IRMaturity.CANONICAL,
+    )
+
+    assert backend.applied == 1
+    assert facts.invalidations == 1
+    assert out == "G1"
+
+
+def test_spec_preservation_applies_when_result_omits_preservation():
+    class _Mutator:
+        name = "mutator"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+
+    class _OneShot:
+        name = "one_shot"
+
+        def detect(self, graph, capabilities, context=None):
+            return object()
+
+        def pipeline_for(self, match, context):
+            return (
+                PassSpec(
+                    "mutator",
+                    _Mutator,
+                    no_caps,
+                    default,
+                    preservation=PreservedAnalyses.preserving({"domtree"}),
+                ),
+            )
+
+    facts = _Facts()
+
+    run_pipeline(
+        source=_Src(), family=_OneShot(), backend=_Backend(),
+        facts=facts, project_config=None,
+        maturity=IRMaturity.CANONICAL,
+    )
+
+    assert facts.last_preserved == PreservedAnalyses.preserving({"domtree"})
+
+
+def test_result_preservation_overrides_spec_default():
+    class _Mutator:
+        name = "mutator"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(
+                rewrite_plan=PatchPlan(planner_modifications=(object(),)),
+                preserved=PreservedAnalyses.none(),
+            )
+
+    class _OneShot:
+        name = "one_shot"
+
+        def detect(self, graph, capabilities, context=None):
+            return object()
+
+        def pipeline_for(self, match, context):
+            return (
+                PassSpec(
+                    "mutator",
+                    _Mutator,
+                    no_caps,
+                    default,
+                    preservation=PreservedAnalyses.all(),
+                ),
+            )
+
+    facts = _Facts()
+
+    run_pipeline(
+        source=_Src(), family=_OneShot(), backend=_Backend(),
+        facts=facts, project_config=None,
+        maturity=IRMaturity.CANONICAL,
+    )
+
+    assert facts.last_preserved == PreservedAnalyses.none()
 
 
 def test_run_pipeline_records_pass_result_run_later_requests():
