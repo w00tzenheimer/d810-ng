@@ -72,6 +72,54 @@ def test_pass_spec_factory_builds_a_pass():
     assert spec.safety_policy.name == "default"
 
 
+def test_pass_spec_exposes_pipeline_config_v2_defaults():
+    class _FakePass:
+        name = "fake"
+
+        def run(self, ctx):
+            return pp.PassResult()
+
+    spec = pp.PassSpec("fake", _FakePass, pp.no_caps, pp.default)
+
+    assert spec.pass_id == "fake"
+    assert spec.config.pass_id == "fake"
+    assert spec.config.granularity is pp.PassGranularity.FUNCTION
+    assert spec.config.scheduler_policy is pp.SchedulerPolicy.WORKLIST
+    assert spec.config.backend_route is pp.BackendRoute.MUTATION_BACKEND
+    assert spec.config.requirements is spec.requirements
+    assert spec.config.safety_policy is spec.safety_policy
+    assert spec.enabled_at(IRMaturity.CANONICAL) is True
+
+
+def test_pass_spec_maturity_gates_are_explicit():
+    class _FakePass:
+        name = "fake"
+
+        def run(self, ctx):
+            return pp.PassResult()
+
+    spec = pp.PassSpec(
+        "fake",
+        _FakePass,
+        pp.no_caps,
+        pp.default,
+        maturity_gates=frozenset({IRMaturity.GLOBAL_ANALYZED}),
+    )
+
+    assert spec.enabled_at(IRMaturity.CANONICAL) is False
+    assert spec.enabled_at(IRMaturity.GLOBAL_ANALYZED) is True
+
+
+def test_analysis_contract_records_required_and_provided_keys():
+    contract = pp.AnalysisContract(
+        required=frozenset({"domtree"}),
+        provided=frozenset({"state_transitions"}),
+    )
+
+    assert contract.required == frozenset({"domtree"})
+    assert contract.provided == frozenset({"state_transitions"})
+
+
 def test_authoring_singletons():
     assert pp.live_mba.required == frozenset({"live_mba"})
     assert pp.golden.golden_required is True

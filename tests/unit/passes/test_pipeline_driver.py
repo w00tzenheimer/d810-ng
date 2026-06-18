@@ -12,6 +12,7 @@ from d810.passes.pass_pipeline import (
     PassResult,
     PassSpec,
     SafetyPolicy,
+    SchedulerPolicy,
     default,
     live_mba,
     no_caps,
@@ -204,7 +205,7 @@ def test_run_pipeline_records_pass_result_run_later_requests():
     }]
 
 
-def test_run_pipeline_drains_pipeline_domain_and_replays_named_pass():
+def test_run_pipeline_drains_pipeline_domain_into_worklist_without_duplicate():
     """Pipeline run_later work is consumed by the pipeline, not cfg rule lookup."""
     calls: list[IRMaturity] = []
     request = RunLater(
@@ -261,8 +262,119 @@ def test_run_pipeline_drains_pipeline_domain_and_replays_named_pass():
     assert calls == [
         IRMaturity.CANONICAL,
         IRMaturity.GLOBAL_ANALYZED,
-        IRMaturity.GLOBAL_ANALYZED,
     ]
+    assert scheduler.drain(
+        func_ea=0x1000,
+        current_maturity=IRMaturity.GLOBAL_ANALYZED,
+        domain=RunLaterDomain.PIPELINE_PASS,
+    ) == ()
+
+
+def test_run_pipeline_scheduled_worklist_pass_dedupes_at_normal_position():
+    calls: list[str] = []
+
+    class _First:
+        name = "first"
+
+        def run(self, ctx) -> PassResult:
+            calls.append("first")
+            return PassResult()
+
+    class _Second:
+        name = "second"
+
+        def run(self, ctx) -> PassResult:
+            calls.append("second")
+            return PassResult()
+
+    class _TwoPasses:
+        name = "two_passes"
+
+        def detect(self, graph, capabilities, context=None):
+            return object()
+
+        def pipeline_for(self, match, context):
+            return (
+                PassSpec("first", _First, no_caps, default),
+                PassSpec("second", _Second, no_caps, default),
+            )
+
+    scheduler = PassScheduler()
+    scheduler.request(
+        func_ea=0x1000,
+        pass_id="second",
+        current_maturity=IRMaturity.CANONICAL,
+        run_later=RunLater(IRMaturity.GLOBAL_ANALYZED),
+        domain=RunLaterDomain.PIPELINE_PASS,
+    )
+
+    run_pipeline(
+        source=_Src(), family=_TwoPasses(), backend=_Backend(),
+        facts=_Facts(), project_config=None,
+        maturity=IRMaturity.GLOBAL_ANALYZED,
+        scheduler=scheduler,
+    )
+
+    assert calls == ["first", "second"]
+    assert scheduler.drain(
+        func_ea=0x1000,
+        current_maturity=IRMaturity.GLOBAL_ANALYZED,
+        domain=RunLaterDomain.PIPELINE_PASS,
+    ) == ()
+
+
+def test_run_pipeline_replay_after_pipeline_policy_is_explicit_opt_in():
+    calls: list[str] = []
+
+    class _First:
+        name = "first"
+
+        def run(self, ctx) -> PassResult:
+            calls.append("first")
+            return PassResult()
+
+    class _Second:
+        name = "second"
+
+        def run(self, ctx) -> PassResult:
+            calls.append("second")
+            return PassResult()
+
+    class _TwoPasses:
+        name = "two_passes"
+
+        def detect(self, graph, capabilities, context=None):
+            return object()
+
+        def pipeline_for(self, match, context):
+            return (
+                PassSpec("first", _First, no_caps, default),
+                PassSpec(
+                    "second",
+                    _Second,
+                    no_caps,
+                    default,
+                    scheduler_policy=SchedulerPolicy.REPLAY_AFTER_PIPELINE,
+                ),
+            )
+
+    scheduler = PassScheduler()
+    scheduler.request(
+        func_ea=0x1000,
+        pass_id="second",
+        current_maturity=IRMaturity.CANONICAL,
+        run_later=RunLater(IRMaturity.GLOBAL_ANALYZED),
+        domain=RunLaterDomain.PIPELINE_PASS,
+    )
+
+    run_pipeline(
+        source=_Src(), family=_TwoPasses(), backend=_Backend(),
+        facts=_Facts(), project_config=None,
+        maturity=IRMaturity.GLOBAL_ANALYZED,
+        scheduler=scheduler,
+    )
+
+    assert calls == ["first", "second", "second"]
     assert scheduler.drain(
         func_ea=0x1000,
         current_maturity=IRMaturity.GLOBAL_ANALYZED,
