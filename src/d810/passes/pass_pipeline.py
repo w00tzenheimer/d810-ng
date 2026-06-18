@@ -10,10 +10,12 @@ every concept that already exists is *bound to*, never duplicated.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping as ABCMapping
 from dataclasses import dataclass, field
 from enum import Enum
+from types import MappingProxyType
 
-from d810.core.typing import Any, Callable, Mapping, Protocol, runtime_checkable
+from d810.core.typing import Any, Callable, Mapping, Protocol, TypeVar, runtime_checkable
 from d810.core.config import ProjectConfiguration
 from d810.ir.flowgraph import FlowGraph
 from d810.ir.maturity import IRMaturity
@@ -24,6 +26,60 @@ from d810.transforms.plan import PatchPlan
 
 # Rewrite-plan vocabulary alias (canonical home already exists).
 RewritePlan = PatchPlan
+
+_EnumT = TypeVar("_EnumT", bound=Enum)
+
+
+class PipelineConfigError(ValueError):
+    """Invalid PipelineConfig v2 serialization payload."""
+
+
+def _require_mapping(value: object, field_name: str) -> Mapping[str, object]:
+    if not isinstance(value, ABCMapping):
+        raise PipelineConfigError(f"{field_name} must be a mapping")
+    return value
+
+
+def _parse_enum(enum_type: type[_EnumT], value: object, field_name: str) -> _EnumT:
+    if isinstance(value, enum_type):
+        return value
+    if isinstance(value, str):
+        try:
+            return enum_type[value]
+        except KeyError:
+            pass
+        try:
+            return enum_type(value)
+        except ValueError:
+            pass
+    raise PipelineConfigError(f"invalid {field_name}: {value!r}")
+
+
+def _parse_string_set(value: object, field_name: str) -> frozenset[str]:
+    if value is None:
+        return frozenset()
+    if isinstance(value, str) or not isinstance(value, (list, tuple, set, frozenset)):
+        raise PipelineConfigError(f"{field_name} must be a sequence of strings")
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise PipelineConfigError(f"{field_name} must contain only strings")
+        result.append(item)
+    return frozenset(result)
+
+
+def _parse_maturity_set(value: object, field_name: str) -> frozenset[IRMaturity]:
+    if value is None:
+        return frozenset()
+    if isinstance(value, str) or not isinstance(value, (list, tuple, set, frozenset)):
+        raise PipelineConfigError(f"{field_name} must be a sequence of maturities")
+    return frozenset(_parse_enum(IRMaturity, item, field_name) for item in value)
+
+
+def _parse_bool(value: object, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise PipelineConfigError(f"{field_name} must be a boolean")
+    return value
 
 
 @runtime_checkable
@@ -149,6 +205,108 @@ class PipelineConfig:
     def enabled_at(self, maturity: IRMaturity | None) -> bool:
         return not self.maturity_gates or maturity in self.maturity_gates
 
+    def to_dict(self) -> dict[str, object]:
+        """Serialize this config using stable string values."""
+        return {
+            "pass_id": self.pass_id,
+            "maturity_gates": sorted(stage.value for stage in self.maturity_gates),
+            "granularity": self.granularity.value,
+            "requirements": {
+                "required": sorted(self.requirements.required),
+            },
+            "analyses": {
+                "required": sorted(self.analyses.required),
+                "provided": sorted(self.analyses.provided),
+            },
+            "preservation": {
+                "all_preserved": self.preservation.all_preserved,
+                "kept": sorted(self.preservation.kept),
+            },
+            "scheduler_policy": self.scheduler_policy.value,
+            "backend_route": self.backend_route.value,
+            "safety_policy": {
+                "name": self.safety_policy.name,
+                "golden_required": self.safety_policy.golden_required,
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> "PipelineConfig":
+        """Deserialize a PipelineConfig v2 payload.
+
+        Enum fields accept either enum names (``WORKLIST``) or stable values
+        (``worklist``). ``IRMaturity`` gates accept enum names or values too.
+        """
+        data = _require_mapping(payload, "pipeline config")
+        pass_id = data.get("pass_id")
+        if not isinstance(pass_id, str) or not pass_id:
+            raise PipelineConfigError("pass_id must be a non-empty string")
+
+        requirements_data = _require_mapping(
+            data.get("requirements", {}), "requirements"
+        )
+        analyses_data = _require_mapping(data.get("analyses", {}), "analyses")
+        preservation_data = _require_mapping(
+            data.get("preservation", {}), "preservation"
+        )
+        safety_policy_data = _require_mapping(
+            data.get("safety_policy", {}), "safety_policy"
+        )
+
+        maturity_gates = _parse_maturity_set(
+            data.get("maturity_gates", ()), "maturity_gates"
+        )
+        preservation = PreservedAnalyses(
+            all_preserved=_parse_bool(
+                preservation_data.get("all_preserved", True),
+                "preservation.all_preserved",
+            ),
+            kept=_parse_string_set(
+                preservation_data.get("kept", ()), "preservation.kept"
+            ),
+        )
+        return cls(
+            pass_id=pass_id,
+            maturity_gates=maturity_gates,
+            granularity=_parse_enum(
+                PassGranularity,
+                data.get("granularity", PassGranularity.FUNCTION.value),
+                "granularity",
+            ),
+            requirements=CapabilityPolicy(
+                required=_parse_string_set(
+                    requirements_data.get("required", ()),
+                    "requirements.required",
+                )
+            ),
+            analyses=AnalysisContract(
+                required=_parse_string_set(
+                    analyses_data.get("required", ()), "analyses.required"
+                ),
+                provided=_parse_string_set(
+                    analyses_data.get("provided", ()), "analyses.provided"
+                ),
+            ),
+            preservation=preservation,
+            scheduler_policy=_parse_enum(
+                SchedulerPolicy,
+                data.get("scheduler_policy", SchedulerPolicy.WORKLIST.value),
+                "scheduler_policy",
+            ),
+            backend_route=_parse_enum(
+                BackendRoute,
+                data.get("backend_route", BackendRoute.MUTATION_BACKEND.value),
+                "backend_route",
+            ),
+            safety_policy=SafetyPolicy(
+                name=str(safety_policy_data.get("name", "default")),
+                golden_required=_parse_bool(
+                    safety_policy_data.get("golden_required", False),
+                    "safety_policy.golden_required",
+                ),
+            ),
+        )
+
 
 _PRESERVED_UNSET = object()
 
@@ -194,7 +352,7 @@ class PassResult:
         object.__setattr__(
             self,
             "analysis_outputs",
-            {} if analysis_outputs is None else dict(analysis_outputs),
+            MappingProxyType({} if analysis_outputs is None else dict(analysis_outputs)),
         )
         object.__setattr__(self, "_preserved_explicit", preserved_explicit)
 
