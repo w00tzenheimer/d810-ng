@@ -12,8 +12,10 @@ import idaapi
 from d810.backends.hexrays.lifter import lift_function
 from d810.backends.llvm import (
     LLVM_M1_PREFERRED_MATURITY,
+    LlvmIdentityParityStatus,
     UnsupportedLiftKind,
     assess_flowgraph_maturity,
+    check_identity_roundtrip,
     emit_flowgraph_to_llvm,
     verify_llvm_ir,
 )
@@ -73,6 +75,26 @@ class _CensusRow:
             f"{self.function_name}: maturity={self.maturity_name} "
             f"blocks={self.block_count} supported={self.supported} "
             f"kinds={histogram} operations={operations}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _ParityRow:
+    function_name: str
+    block_count: int
+    supported: bool
+    missing: bool
+    parity_status: str
+    mismatch_count: int
+    reason: str
+
+    def summary(self) -> str:
+        if self.missing:
+            return f"{self.function_name}: missing/skipped"
+        return (
+            f"{self.function_name}: blocks={self.block_count} "
+            f"supported={self.supported} parity={self.parity_status} "
+            f"mismatches={self.mismatch_count} reason={self.reason or '-'}"
         )
 
 
@@ -276,3 +298,95 @@ class TestLLVMM1CoverageCensus:
             )
             for kind, _count in row.unsupported_kind_counts:
                 assert kind in {item.value for item in UnsupportedLiftKind}
+
+
+class TestLLVMM1IdentityParity:
+    """Check portable identity parity for preferred-maturity live M1 lifts."""
+
+    binary_name = "restructuring_lab.dll"
+
+    _FUNCTIONS = TestLLVMM1CoverageCensus._FUNCTIONS
+
+    def test_restructuring_lab_preferred_maturity_identity_parity(
+        self, ida_database, configure_hexrays
+    ):
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+
+        rows: list[_ParityRow] = []
+        for function_name in self._FUNCTIONS:
+            func_ea = get_func_ea(function_name)
+            if func_ea == idaapi.BADADDR:
+                rows.append(
+                    _ParityRow(
+                        function_name=function_name,
+                        block_count=0,
+                        supported=False,
+                        missing=True,
+                        parity_status="missing",
+                        mismatch_count=0,
+                        reason="function not present in fixture",
+                    )
+                )
+                continue
+
+            mba = gen_microcode_at_maturity(func_ea, int(ida_hexrays.MMAT_GLBOPT1))
+            if mba is None:
+                rows.append(
+                    _ParityRow(
+                        function_name=function_name,
+                        block_count=0,
+                        supported=False,
+                        missing=True,
+                        parity_status="missing",
+                        mismatch_count=0,
+                        reason="gen_microcode returned None",
+                    )
+                )
+                continue
+
+            flow_graph = lift_function(mba).flow_graph
+            lift = emit_flowgraph_to_llvm(flow_graph, function_name=function_name)
+            parity = check_identity_roundtrip(
+                flow_graph,
+                function_name=function_name,
+                lift_result=lift,
+            )
+            rows.append(
+                _ParityRow(
+                    function_name=function_name,
+                    block_count=flow_graph.block_count,
+                    supported=lift.supported,
+                    missing=False,
+                    parity_status=parity.status.value,
+                    mismatch_count=len(parity.mismatches),
+                    reason=parity.reason or "",
+                )
+            )
+
+        print("\n=== LLVM M1 preferred-maturity identity parity ===")
+        for row in rows:
+            print(row.summary())
+
+        present_rows = [row for row in rows if not row.missing]
+        assert present_rows, "No parity functions were present in restructuring_lab.dll"
+        lab_if_rows = [row for row in present_rows if row.function_name == "lab_if_diamond"]
+        assert lab_if_rows, (
+            "Known-supported lab_if_diamond was not present:\n"
+            + "\n".join(row.summary() for row in rows)
+        )
+        assert lab_if_rows[0].parity_status == LlvmIdentityParityStatus.PASSED.value, (
+            "lab_if_diamond did not pass portable identity parity:\n"
+            + "\n".join(row.summary() for row in rows)
+        )
+        for row in present_rows:
+            if not row.supported:
+                assert row.parity_status == LlvmIdentityParityStatus.UNSUPPORTED.value, (
+                    "Unsupported lift reported misleading parity success:\n"
+                    + row.summary()
+                )
+                continue
+            assert row.parity_status == LlvmIdentityParityStatus.PASSED.value, (
+                "Supported lift failed portable identity parity:\n"
+                + "\n".join(row.summary() for row in rows)
+            )

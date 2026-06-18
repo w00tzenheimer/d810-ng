@@ -1,7 +1,6 @@
 """Textual LLVM IR emitter for the M1a portable-IR supported subset."""
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from enum import Enum
 
@@ -15,8 +14,14 @@ from d810.ir.instructions import (
 )
 from d810.ir.semantics import CallKind, ControlTransferKind, OperationKind, PredicateKind
 from d810.ir.varnode import Space, Varnode
+from d810.backends.llvm.identity_lowering import (
+    LlvmIdentityManifest,
+    build_identity_manifest,
+    sanitize_llvm_function_name,
+)
 
 __all__ = [
+    "LlvmIdentityManifest",
     "LlvmLiftResult",
     "UnsupportedLiftKind",
     "UnsupportedLiftReason",
@@ -119,6 +124,7 @@ class LlvmLiftResult:
 
     ir_text: str
     unsupported: tuple[UnsupportedLiftReason, ...] = ()
+    identity_manifest: LlvmIdentityManifest | None = None
 
     @property
     def supported(self) -> bool:
@@ -139,17 +145,12 @@ def emit_flowgraph_to_llvm(
     unsupported = classifier.classify()
     if unsupported:
         return LlvmLiftResult(ir_text="", unsupported=tuple(unsupported))
-    emitter = _Emitter(flow_graph, _sanitize_function_name(function_name))
-    return LlvmLiftResult(ir_text=emitter.emit())
+    emitter = _Emitter(flow_graph, sanitize_llvm_function_name(function_name))
+    return LlvmLiftResult(ir_text=emitter.emit(), identity_manifest=emitter.identity_manifest())
 
 
 def _sanitize_function_name(name: str) -> str:
-    sanitized = re.sub(r"[^A-Za-z0-9_$.-]", "_", name)
-    if not sanitized:
-        return "d810_fn"
-    if sanitized[0].isdigit():
-        return f"d810_{sanitized}"
-    return sanitized
+    return sanitize_llvm_function_name(name)
 
 
 def _operation_name(operation: OperationKind | None) -> str:
@@ -850,6 +851,16 @@ class _Emitter:
             lines.append("")
         lines.extend(body_lines[3:])
         return "\n".join(lines) + "\n"
+
+    def identity_manifest(self) -> LlvmIdentityManifest:
+        """Return the portable identity manifest for the accepted lift."""
+
+        return build_identity_manifest(
+            self.flow_graph,
+            self.instructions,
+            self.varnodes,
+            function_name=self.function_name,
+        )
 
     def _ordered_blocks(self) -> tuple[int, ...]:
         entry = int(self.flow_graph.entry_serial)
