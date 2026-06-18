@@ -32,6 +32,16 @@ from .maturity_policy import (
     LlvmMaturityAssessment,
     assess_flowgraph_maturity,
 )
+from .optimization import (
+    LLVM_M2A_STOCK_PIPELINE,
+    LlvmIrMetrics,
+    LlvmOptimizationResult,
+    LlvmOptimizationStatus,
+    LlvmOptPipeline,
+    measure_llvm_ir,
+    normalize_llvm_ir,
+    run_llvm_opt_pipeline,
+)
 from .verification import (
     LlvmVerificationResult,
     LlvmVerificationStatus,
@@ -42,6 +52,7 @@ from .verification import (
 __all__ = [
     "LLVM_M1_ACCEPTED_MATURITIES",
     "LLVM_M1_PREFERRED_MATURITY",
+    "LLVM_M2A_STOCK_PIPELINE",
     "LlvmIdentityManifest",
     "LlvmIdentityManifestBlock",
     "LlvmIdentityManifestControl",
@@ -55,6 +66,10 @@ __all__ = [
     "LlvmIdentityParityStatus",
     "LlvmLiftResult",
     "LlvmMaturityAssessment",
+    "LlvmIrMetrics",
+    "LlvmOptimizationResult",
+    "LlvmOptimizationStatus",
+    "LlvmOptPipeline",
     "LlvmVerificationResult",
     "LlvmVerificationStatus",
     "UnsupportedLiftKind",
@@ -64,5 +79,8 @@ __all__ = [
     "check_identity_roundtrip",
     "emit_flowgraph_to_llvm",
     "find_llvm_opt",
+    "measure_llvm_ir",
+    "normalize_llvm_ir",
+    "run_llvm_opt_pipeline",
     "verify_llvm_ir",
 ]
