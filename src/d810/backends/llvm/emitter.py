@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import Enum
 
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import FlowGraph
@@ -13,6 +14,7 @@ from d810.ir.varnode import Space, Varnode
 
 __all__ = [
     "LlvmLiftResult",
+    "UnsupportedLiftKind",
     "UnsupportedLiftReason",
     "emit_flowgraph_to_llvm",
 ]
@@ -42,6 +44,34 @@ _PREDICATES = {
 }
 
 
+class UnsupportedLiftKind(str, Enum):
+    """Stable front-lift diagnostic taxonomy for unsupported LLVM M1 input."""
+
+    VARNODE_WIDTH = "varnode_width"
+    VARNODE_SPACE = "varnode_space"
+    CALL_UNSUPPORTED = "call_unsupported"
+    EFFECT_UNSUPPORTED = "effect_unsupported"
+    CONTROL_TRANSFER_UNSUPPORTED = "control_transfer_unsupported"
+    VALUE_OP_UNSUPPORTED = "value_op_unsupported"
+    VALUE_RESULT_MISSING = "value_result_missing"
+    VALUE_RESULT_CONST = "value_result_const"
+    VALUE_ARITY = "value_arity"
+    VALUE_WIDTH_MISMATCH = "value_width_mismatch"
+    PREDICATE_UNSUPPORTED = "predicate_unsupported"
+    PREDICATE_RESULT_MISSING = "predicate_result_missing"
+    PREDICATE_RESULT_CONST = "predicate_result_const"
+    PREDICATE_ARITY = "predicate_arity"
+    PREDICATE_WIDTH_MISMATCH = "predicate_width_mismatch"
+    BRANCH_SUCCESSOR_ARITY = "branch_successor_arity"
+    BRANCH_PREDICATE_UNSUPPORTED = "branch_predicate_unsupported"
+    BRANCH_ARITY = "branch_arity"
+    MALFORMED_TERMINATOR = "malformed_terminator"
+    RETURN_SUCCESSOR = "return_successor"
+    RETURN_TYPE_UNSUPPORTED = "return_type_unsupported"
+    GOTO_SUCCESSOR_ARITY = "goto_successor_arity"
+    BLOCK_TERMINATOR_MISSING = "block_terminator_missing"
+
+
 @dataclass(frozen=True, slots=True)
 class UnsupportedLiftReason:
     """Why a portable instruction or block cannot be lifted in M1a."""
@@ -50,6 +80,7 @@ class UnsupportedLiftReason:
     instruction_index: int | None
     ea: int | None
     operation: str
+    kind: UnsupportedLiftKind
     reason: str
 
 
@@ -147,6 +178,7 @@ class _Classifier:
         block_serial: int,
         instruction_index: int | None,
         instruction: Instruction | None,
+        kind: UnsupportedLiftKind,
         reason: str,
     ) -> None:
         ea = None
@@ -161,6 +193,7 @@ class _Classifier:
                 instruction_index=instruction_index,
                 ea=ea,
                 operation=operation,
+                kind=kind,
                 reason=reason,
             )
         )
@@ -179,10 +212,17 @@ class _Classifier:
                 block_serial,
                 instruction_index,
                 instruction,
+                UnsupportedLiftKind.VARNODE_WIDTH,
                 f"unsupported varnode width {vn.size}; expected 1/2/4/8 bytes",
             )
         if vn.space is Space.UNKNOWN:
-            self._add(block_serial, instruction_index, instruction, "unknown varnode space")
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.VARNODE_SPACE,
+                "unknown varnode space",
+            )
 
     def _check_instruction(
         self,
@@ -193,10 +233,22 @@ class _Classifier:
         for vn in (*instruction.inputs, instruction.result):
             self._check_varnode(block_serial, instruction_index, instruction, vn)
         if isinstance(instruction.operation, CallKind):
-            self._add(block_serial, instruction_index, instruction, "calls are unsupported in M1a")
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.CALL_UNSUPPORTED,
+                "calls are unsupported in M1a",
+            )
             return
         if instruction.effects:
-            self._add(block_serial, instruction_index, instruction, "effects are unsupported in M1a")
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.EFFECT_UNSUPPORTED,
+                "effects are unsupported in M1a",
+            )
         if isinstance(instruction.operation, ControlTransferKind):
             if instruction.operation not in {
                 ControlTransferKind.CONDITIONAL_BRANCH,
@@ -207,6 +259,7 @@ class _Classifier:
                     block_serial,
                     instruction_index,
                     instruction,
+                    UnsupportedLiftKind.CONTROL_TRANSFER_UNSUPPORTED,
                     f"control transfer {instruction.operation.value} is unsupported in M1a",
                 )
             return
@@ -218,21 +271,41 @@ class _Classifier:
                 block_serial,
                 instruction_index,
                 instruction,
+                UnsupportedLiftKind.VALUE_OP_UNSUPPORTED,
                 f"value operation {_operation_name(instruction.operation)} is unsupported in M1a",
             )
             return
         if instruction.result is None:
-            self._add(block_serial, instruction_index, instruction, "value op has no result varnode")
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.VALUE_RESULT_MISSING,
+                "value op has no result varnode",
+            )
         elif instruction.result.space is Space.CONST:
-            self._add(block_serial, instruction_index, instruction, "value op result cannot be const")
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.VALUE_RESULT_CONST,
+                "value op result cannot be const",
+            )
         if instruction.operation is ValueOpKind.MOVE and len(instruction.inputs) != 1:
-            self._add(block_serial, instruction_index, instruction, "MOVE requires one input")
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.VALUE_ARITY,
+                "MOVE requires one input",
+            )
         if instruction.operation in _BINARY_VALUE_OPS:
             if len(instruction.inputs) != 2:
                 self._add(
                     block_serial,
                     instruction_index,
                     instruction,
+                    UnsupportedLiftKind.VALUE_ARITY,
                     f"{instruction.operation.value.upper()} requires two inputs",
                 )
             self._check_matching_widths(block_serial, instruction_index, instruction)
@@ -251,6 +324,7 @@ class _Classifier:
                 block_serial,
                 instruction_index,
                 instruction,
+                UnsupportedLiftKind.VALUE_WIDTH_MISMATCH,
                 "M1a requires value operands and result to have matching widths",
             )
 
@@ -265,6 +339,7 @@ class _Classifier:
                 block_serial,
                 instruction_index,
                 instruction,
+                UnsupportedLiftKind.PREDICATE_UNSUPPORTED,
                 f"predicate {_operation_name(instruction.operation)} is unsupported for materialization in M1c",
             )
         if instruction.result is None:
@@ -272,6 +347,7 @@ class _Classifier:
                 block_serial,
                 instruction_index,
                 instruction,
+                UnsupportedLiftKind.PREDICATE_RESULT_MISSING,
                 "predicate materialization has no result varnode",
             )
         elif instruction.result.space is Space.CONST:
@@ -279,6 +355,7 @@ class _Classifier:
                 block_serial,
                 instruction_index,
                 instruction,
+                UnsupportedLiftKind.PREDICATE_RESULT_CONST,
                 "predicate materialization result cannot be const",
             )
         if len(instruction.inputs) != 2:
@@ -286,6 +363,7 @@ class _Classifier:
                 block_serial,
                 instruction_index,
                 instruction,
+                UnsupportedLiftKind.PREDICATE_ARITY,
                 "predicate materialization requires two compared inputs",
             )
             return
@@ -295,6 +373,7 @@ class _Classifier:
                 block_serial,
                 instruction_index,
                 instruction,
+                UnsupportedLiftKind.PREDICATE_WIDTH_MISMATCH,
                 "M1c requires predicate inputs to have matching widths",
             )
 
@@ -315,6 +394,7 @@ class _Classifier:
                     block_serial,
                     index,
                     instructions[index],
+                    UnsupportedLiftKind.MALFORMED_TERMINATOR,
                     "block has multiple control-transfer instructions",
                 )
         for index in control_indexes:
@@ -323,19 +403,33 @@ class _Classifier:
                     block_serial,
                     index,
                     instructions[index],
+                    UnsupportedLiftKind.MALFORMED_TERMINATOR,
                     "control-transfer instruction must be block tail",
                 )
         tail = instructions[-1] if instructions else None
         if tail is not None and tail.operation is ControlTransferKind.CONDITIONAL_BRANCH:
             if len(block.succs) != 2:
-                self._add(block_serial, len(instructions) - 1, tail, "conditional block needs two succs")
+                self._add(
+                    block_serial,
+                    len(instructions) - 1,
+                    tail,
+                    UnsupportedLiftKind.BRANCH_SUCCESSOR_ARITY,
+                    "conditional block needs two succs",
+                )
             if tail.control is None or tail.control.predicate not in _PREDICATES:
-                self._add(block_serial, len(instructions) - 1, tail, "unsupported branch predicate")
+                self._add(
+                    block_serial,
+                    len(instructions) - 1,
+                    tail,
+                    UnsupportedLiftKind.BRANCH_PREDICATE_UNSUPPORTED,
+                    "unsupported branch predicate",
+                )
             if len(tail.inputs) != 2:
                 self._add(
                     block_serial,
                     len(instructions) - 1,
                     tail,
+                    UnsupportedLiftKind.BRANCH_ARITY,
                     "conditional branch requires two compared inputs",
                 )
             else:
@@ -343,7 +437,13 @@ class _Classifier:
             return
         if tail is not None and tail.operation is ControlTransferKind.RETURN:
             if block.succs:
-                self._add(block_serial, len(instructions) - 1, tail, "return block must have zero succs")
+                self._add(
+                    block_serial,
+                    len(instructions) - 1,
+                    tail,
+                    UnsupportedLiftKind.RETURN_SUCCESSOR,
+                    "return block must have zero succs",
+                )
             if tail.control is not None and tail.control.return_value is not None:
                 ret_vn = tail.control.return_value
                 if _llvm_type(ret_vn) != "i32":
@@ -351,15 +451,28 @@ class _Classifier:
                         block_serial,
                         len(instructions) - 1,
                         tail,
+                        UnsupportedLiftKind.RETURN_TYPE_UNSUPPORTED,
                         "M1a function signature supports only i32 return values",
                     )
             return
         if tail is not None and tail.operation is ControlTransferKind.GOTO:
             if len(block.succs) != 1:
-                self._add(block_serial, len(instructions) - 1, tail, "goto block needs one succ")
+                self._add(
+                    block_serial,
+                    len(instructions) - 1,
+                    tail,
+                    UnsupportedLiftKind.GOTO_SUCCESSOR_ARITY,
+                    "goto block needs one succ",
+                )
             return
         if len(block.succs) > 1:
-            self._add(block_serial, None, None, "multi-successor block needs conditional terminator")
+            self._add(
+                block_serial,
+                None,
+                None,
+                UnsupportedLiftKind.BLOCK_TERMINATOR_MISSING,
+                "multi-successor block needs conditional terminator",
+            )
 
 
 class _Emitter:

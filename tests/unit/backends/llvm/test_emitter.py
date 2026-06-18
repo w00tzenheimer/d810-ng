@@ -7,9 +7,11 @@ from pathlib import Path
 
 import pytest
 
+import d810.backends.llvm.emitter as llvm_emitter
 from d810.backends.llvm import (
     LLVM_M1_PREFERRED_MATURITY,
     LlvmLiftResult,
+    UnsupportedLiftKind,
     assess_flowgraph_maturity,
     emit_flowgraph_to_llvm,
 )
@@ -22,8 +24,10 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
+from d810.ir.instructions import Instruction
 from d810.ir.maturity import IRMaturity
 from d810.ir.semantics import CallKind, PredicateKind
+from d810.ir.varnode import Space, Varnode
 
 
 def _reg(register_id: int, size: int = 4) -> MopSnapshot:
@@ -279,6 +283,10 @@ def test_raw_opcode_attrs_do_not_authorize_conditional_branch():
     assert not result.supported
     assert result.ir_text == ""
     assert any(reason.reason == "multi-successor block needs conditional terminator" for reason in result.unsupported)
+    assert any(
+        reason.kind is UnsupportedLiftKind.BLOCK_TERMINATOR_MISSING
+        for reason in result.unsupported
+    )
 
 
 def test_predicate_materialization_emits_icmp_zext_and_store_byte_result():
@@ -365,6 +373,7 @@ def test_raw_opcode_attrs_do_not_authorize_predicate_materialization():
     assert result.ir_text == ""
     assert any(
         reason.operation == "vendor"
+        and reason.kind is UnsupportedLiftKind.VALUE_OP_UNSUPPORTED
         and reason.reason == "value operation vendor is unsupported in M1a"
         for reason in result.unsupported
     )
@@ -389,38 +398,45 @@ def test_raw_opcode_attrs_do_not_authorize_xor_value_operation():
     assert result.ir_text == ""
     assert any(
         reason.operation == "vendor"
+        and reason.kind is UnsupportedLiftKind.VALUE_OP_UNSUPPORTED
         and reason.reason == "value operation vendor is unsupported in M1a"
         for reason in result.unsupported
     )
 
 
 @pytest.mark.parametrize(
-    ("insn", "expected_reason"),
+    ("insn", "expected_kind", "expected_reason"),
     (
         (
             _setcc(PredicateKind.EQ, _reg(0), _reg(1), None),
+            UnsupportedLiftKind.PREDICATE_RESULT_MISSING,
             "predicate materialization has no result varnode",
         ),
         (
             _setcc(PredicateKind.EQ, _reg(0), _reg(1), _num(0, size=1)),
+            UnsupportedLiftKind.PREDICATE_RESULT_CONST,
             "predicate materialization result cannot be const",
         ),
         (
             _setcc(PredicateKind.EQ, _reg(0), None, _reg(1, size=1)),
+            UnsupportedLiftKind.PREDICATE_ARITY,
             "predicate materialization requires two compared inputs",
         ),
         (
             _setcc(PredicateKind.EQ, _reg(0, size=4), _reg(1, size=8), _reg(2, size=1)),
+            UnsupportedLiftKind.PREDICATE_WIDTH_MISMATCH,
             "M1c requires predicate inputs to have matching widths",
         ),
         (
             _setcc(PredicateKind.TRUTHY, _reg(0), _num(0), _reg(1, size=1)),
+            UnsupportedLiftKind.PREDICATE_UNSUPPORTED,
             "predicate truthy is unsupported for materialization in M1c",
         ),
     ),
 )
 def test_unsupported_predicate_materialization_cases_fail_closed(
     insn: InsnSnapshot,
+    expected_kind: UnsupportedLiftKind,
     expected_reason: str,
 ):
     flow = _graph(_block(0, (), (insn, _ret(_reg(0)))))
@@ -429,7 +445,10 @@ def test_unsupported_predicate_materialization_cases_fail_closed(
 
     assert not result.supported
     assert result.ir_text == ""
-    assert any(reason.reason == expected_reason for reason in result.unsupported)
+    assert any(
+        reason.kind is expected_kind and reason.reason == expected_reason
+        for reason in result.unsupported
+    )
 
 
 def test_m1d_binary_op_mismatched_widths_fail_closed():
@@ -449,12 +468,233 @@ def test_m1d_binary_op_mismatched_widths_fail_closed():
     assert not result.supported
     assert result.ir_text == ""
     assert any(
-        reason.reason == "M1a requires value operands and result to have matching widths"
+        reason.kind is UnsupportedLiftKind.VALUE_WIDTH_MISMATCH
+        and reason.reason == "M1a requires value operands and result to have matching widths"
         for reason in result.unsupported
     )
 
 
-def test_unsupported_call_returns_diagnostic_and_no_ir():
+@pytest.mark.parametrize(
+    ("insn", "expected_kind", "expected_reason"),
+    (
+        (
+            _mov(_num(1), None),
+            UnsupportedLiftKind.VALUE_RESULT_MISSING,
+            "value op has no result varnode",
+        ),
+        (
+            _mov(_num(1), _num(0)),
+            UnsupportedLiftKind.VALUE_RESULT_CONST,
+            "value op result cannot be const",
+        ),
+        (
+            _mov(_num(1), _reg(0, size=3)),
+            UnsupportedLiftKind.VARNODE_WIDTH,
+            "unsupported varnode width 3; expected 1/2/4/8 bytes",
+        ),
+        (
+            _add(_reg(0), _reg(1), _reg(2, size=8)),
+            UnsupportedLiftKind.VALUE_WIDTH_MISMATCH,
+            "M1a requires value operands and result to have matching widths",
+        ),
+        (
+            _value_op(ValueOpKind.XOR, _reg(0), _reg(1), _reg(2)),
+            UnsupportedLiftKind.VALUE_ARITY,
+            "XOR requires two inputs",
+        ),
+    ),
+)
+def test_unsupported_value_cases_have_structured_kinds(
+    insn: InsnSnapshot,
+    expected_kind: UnsupportedLiftKind,
+    expected_reason: str,
+):
+    if expected_reason == "XOR requires two inputs":
+        insn = InsnSnapshot(
+            opcode=-1,
+            raw_opcode=0x80,
+            ea=0x1014,
+            operands=(),
+            kind=InsnKind.UNKNOWN,
+            value_op_kind=ValueOpKind.XOR,
+            l=_reg(0),
+            d=_reg(1),
+        )
+    flow = _graph(_block(0, (), (insn, _ret(_reg(0)))))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is expected_kind and reason.reason == expected_reason
+        for reason in result.unsupported
+    )
+
+
+def test_unknown_varnode_space_has_structured_kind(monkeypatch):
+    unknown = Instruction(
+        operation=ValueOpKind.MOVE,
+        inputs=(Varnode(Space.UNKNOWN, 0, 4),),
+        result=Varnode(Space.REGISTER, 0, 4),
+    )
+    monkeypatch.setattr(llvm_emitter, "project_instruction", lambda _insn: unknown)
+    flow = _graph(_block(0, (), (_mov(_num(1), _reg(0)),)))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.VARNODE_SPACE
+        and reason.reason == "unknown varnode space"
+        for reason in result.unsupported
+    )
+
+
+def test_store_effect_has_structured_unsupported_kind():
+    store = InsnSnapshot(
+        opcode=0x21,
+        ea=0x5000,
+        operands=(),
+        kind=InsnKind.STORE,
+        l=_reg(0),
+        r=_reg(1),
+        d=_stk(0x10),
+    )
+    flow = _graph(_block(0, (), (store, _ret(_reg(0)))))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert any(reason.kind is UnsupportedLiftKind.EFFECT_UNSUPPORTED for reason in result.unsupported)
+
+
+def test_unsupported_control_transfer_has_structured_kind():
+    indirect = InsnSnapshot(
+        opcode=0x31,
+        ea=0x6000,
+        operands=(),
+        kind=InsnKind.INDIRECT_JUMP,
+        l=_reg(0, size=8),
+    )
+    flow = _graph(_block(0, (), (indirect,)))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert any(
+        reason.kind is UnsupportedLiftKind.CONTROL_TRANSFER_UNSUPPORTED
+        and reason.reason == "control transfer indirect_branch is unsupported in M1a"
+        for reason in result.unsupported
+    )
+
+
+def test_conditional_truthy_branch_has_structured_predicate_kind():
+    flow = _graph(
+        _block(0, (1, 2), (_jcc(PredicateKind.TRUTHY, _reg(0), _num(0)),)),
+        _block(1, (), (_ret(),)),
+        _block(2, (), (_ret(),)),
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert any(
+        reason.kind is UnsupportedLiftKind.BRANCH_PREDICATE_UNSUPPORTED
+        and reason.reason == "unsupported branch predicate"
+        for reason in result.unsupported
+    )
+
+
+def test_return_with_successor_has_structured_kind():
+    flow = _graph(_block(0, (1,), (_ret(_reg(0)),)), _block(1, (), (_ret(),)))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert any(
+        reason.kind is UnsupportedLiftKind.RETURN_SUCCESSOR
+        and reason.reason == "return block must have zero succs"
+        for reason in result.unsupported
+    )
+
+
+def test_goto_bad_successor_count_has_structured_kind():
+    goto = InsnSnapshot(opcode=0x30, ea=0x7000, operands=(), kind=InsnKind.GOTO)
+    flow = _graph(_block(0, (), (goto,)))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert any(
+        reason.kind is UnsupportedLiftKind.GOTO_SUCCESSOR_ARITY
+        and reason.reason == "goto block needs one succ"
+        for reason in result.unsupported
+    )
+
+
+def test_return_type_has_structured_kind():
+    flow = _graph(_block(0, (), (_ret(_reg(0, size=8)),)))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert any(
+        reason.kind is UnsupportedLiftKind.RETURN_TYPE_UNSUPPORTED
+        and reason.reason == "M1a function signature supports only i32 return values"
+        for reason in result.unsupported
+    )
+
+
+def test_multiple_control_transfers_have_structured_malformed_kind():
+    flow = _graph(_block(0, (), (_ret(_reg(0)), _ret(_reg(0)))))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert any(
+        reason.kind is UnsupportedLiftKind.MALFORMED_TERMINATOR
+        and reason.reason == "block has multiple control-transfer instructions"
+        for reason in result.unsupported
+    )
+
+
+def test_conditional_branch_successor_count_has_structured_kind():
+    flow = _graph(_block(0, (1,), (_jcc(PredicateKind.NE, _reg(0), _num(0)),)))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert any(
+        reason.kind is UnsupportedLiftKind.BRANCH_SUCCESSOR_ARITY
+        and reason.reason == "conditional block needs two succs"
+        for reason in result.unsupported
+    )
+
+
+def test_conditional_branch_arity_has_structured_kind():
+    jcc = InsnSnapshot(
+        opcode=0x2C,
+        ea=0x2000,
+        operands=(),
+        kind=InsnKind.EQUALITY_JUMP,
+        branch_predicate=PredicateKind.NE,
+        l=_reg(0),
+    )
+    flow = _graph(_block(0, (1, 2), (jcc,)), _block(1, (), (_ret(),)), _block(2, (), (_ret(),)))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert any(
+        reason.kind is UnsupportedLiftKind.BRANCH_ARITY
+        and reason.reason == "conditional branch requires two compared inputs"
+        for reason in result.unsupported
+    )
+
+
+def test_call_has_structured_unsupported_kind():
     call = InsnSnapshot(
         opcode=0x41,
         ea=0x3000,
@@ -473,6 +713,7 @@ def test_unsupported_call_returns_diagnostic_and_no_ir():
     assert result.unsupported[0].block_serial == 0
     assert result.unsupported[0].ea == 0x3000
     assert result.unsupported[0].operation == "indirect"
+    assert result.unsupported[0].kind is UnsupportedLiftKind.CALL_UNSUPPORTED
     assert "calls are unsupported" in result.unsupported[0].reason
 
 
@@ -483,7 +724,11 @@ def test_unsupported_width_returns_diagnostic_and_no_ir():
 
     assert not result.supported
     assert result.ir_text == ""
-    assert any("unsupported varnode width 3" in reason.reason for reason in result.unsupported)
+    assert any(
+        reason.kind is UnsupportedLiftKind.VARNODE_WIDTH
+        and "unsupported varnode width 3" in reason.reason
+        for reason in result.unsupported
+    )
 
 
 def test_non_tail_return_is_reported_not_asserted():
@@ -495,6 +740,7 @@ def test_non_tail_return_is_reported_not_asserted():
     assert result.ir_text == ""
     assert any(
         reason.operation == "return"
+        and reason.kind is UnsupportedLiftKind.MALFORMED_TERMINATOR
         and reason.reason == "control-transfer instruction must be block tail"
         for reason in result.unsupported
     )
@@ -512,6 +758,7 @@ def test_non_tail_conditional_branch_is_reported_not_asserted():
     assert result.ir_text == ""
     assert any(
         reason.operation == "conditional_branch"
+        and reason.kind is UnsupportedLiftKind.MALFORMED_TERMINATOR
         and reason.reason == "control-transfer instruction must be block tail"
         for reason in result.unsupported
     )
@@ -526,6 +773,7 @@ def test_tail_return_with_successor_is_reported_not_silently_emitted():
     assert result.ir_text == ""
     assert any(
         reason.operation == "return"
+        and reason.kind is UnsupportedLiftKind.RETURN_SUCCESSOR
         and reason.reason == "return block must have zero succs"
         for reason in result.unsupported
     )
