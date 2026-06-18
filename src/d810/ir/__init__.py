@@ -36,6 +36,9 @@ Scope discipline:
   ``ControlTransferKind`` + ``CallKind``. Backend adapters normalize raw
   opcodes into these families and keep raw opcode integers/names in
   diagnostic attrs only.
+* llr-epu0 scaffold: ``Instruction`` is the canonical portable instruction
+  record. Its ``operation`` field uses the operation vocabulary above; legacy
+  statement projections remain views over the canonical instruction source.
 """
 
 from __future__ import annotations
@@ -43,6 +46,7 @@ from __future__ import annotations
 from .confidence import FactConfidence
 from .expressions import Add, Const, ExprRef, Load, Move, Store, Sub, ValueOpKind
 from .handles import BlockHandle, FlowGraphHandle, InsnHandle, OperandHandle
+from .instructions import Instruction, InstructionControl
 from .locations import (
     AggregateLocation,
     MemoryCell,
@@ -52,7 +56,13 @@ from .locations import (
 )
 from .redirect import RedirectBranchIntent, RedirectGotoIntent, RedirectIntent
 from .results import ConstantFixpointResult
-from .semantics import CallKind, ControlTransferKind, LiftedOpcode, PredicateKind
+from .semantics import (
+    CallKind,
+    ControlTransferKind,
+    LiftedOpcode,
+    OperationKind,
+    PredicateKind,
+)
 from .value_refs import (
     DefinitionRef,
     InstructionResultRef,
@@ -74,12 +84,15 @@ __all__ = [
     "FactConfidence",
     "FlowGraphHandle",
     "InsnHandle",
+    "Instruction",
+    "InstructionControl",
     "InstructionResultRef",
     "LiftedOpcode",
     "Load",
     "MemoryCell",
     "Move",
     "OperandHandle",
+    "OperationKind",
     "PredicateKind",
     "RedirectBranchIntent",
     "RedirectGotoIntent",

@@ -7,11 +7,18 @@ true exactly when the live source operand was a number.
 """
 from __future__ import annotations
 
+from dataclasses import fields
+
 from d810.ir.expressions import Add, And, Const, Move, Sub
 from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
-from d810.ir.insn_projection import project_assignment, project_conditional_branch
+from d810.ir.insn_projection import (
+    project_assignment,
+    project_conditional_branch,
+    project_instruction,
+)
+from d810.ir.instructions import Instruction, InstructionControl
 from d810.ir.locations import RegisterLocation, StackSlot, WeakStackSlot
-from d810.ir.semantics import PredicateKind
+from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.ir.statements import Assignment, ConditionalBranch
 from d810.ir.value_refs import DefinitionRef
 
@@ -32,6 +39,52 @@ def _reg(register_id: int, size: int = 4) -> MopSnapshot:
 
 def _mov(l: MopSnapshot | None, d: MopSnapshot | None) -> InsnSnapshot:
     return InsnSnapshot(opcode=M_MOV, ea=0x1000, operands=(), kind=InsnKind.MOV, l=l, d=d)
+
+
+def test_instruction_record_pins_operation_as_field_not_whole_record():
+    instruction = project_instruction(_mov(_num(1), _stk(0x10)))
+
+    assert isinstance(instruction, Instruction)
+    assert instruction.operation is not instruction
+    assert [field.name for field in fields(Instruction)] == [
+        "operation",
+        "inputs",
+        "result",
+        "effects",
+        "control",
+        "attrs",
+    ]
+
+
+def test_instruction_projection_value_op_keeps_raw_opcode_in_attrs_only():
+    insn = InsnSnapshot(
+        opcode=M_MOV,
+        ea=0x1000,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=_num(0x41),
+        d=_stk(0x10),
+        opcode_attrs={
+            "backend": "hexrays",
+            "raw_opcode_name": "m_mov",
+            "producer_stage_id": 14,
+            "producer_stage_name": "MMAT_GLBOPT1",
+        },
+    )
+
+    instruction = project_instruction(insn)
+
+    assert instruction.operation is insn.value_op_kind
+    assert instruction.inputs == ()
+    assert instruction.result is None
+    assert instruction.effects == ()
+    assert instruction.control is None
+    assert instruction.attrs["ea"] == 0x1000
+    assert instruction.attrs["backend"] == "hexrays"
+    assert instruction.attrs["raw_opcode_int"] == M_MOV
+    assert instruction.attrs["raw_opcode_name"] == "m_mov"
+    assert instruction.attrs["producer_stage_id"] == 14
+    assert not hasattr(instruction, "raw_opcode")
 
 
 def test_mov_const_to_stack_projects_const_and_stackslot():
@@ -120,6 +173,16 @@ def test_conditional_branch_projects_predicate_operands_and_edges():
     )
 
 
+def test_instruction_projection_conditional_branch_uses_control_operation():
+    instruction = project_instruction(_jcc(PredicateKind.EQ, _stk(0x3C), _num(7)))
+
+    assert instruction.operation is ControlTransferKind.CONDITIONAL_BRANCH
+    assert instruction.control == InstructionControl(
+        transfer=ControlTransferKind.CONDITIONAL_BRANCH,
+        predicate=PredicateKind.EQ,
+    )
+
+
 def test_conditional_branch_none_for_non_branch():
     assert project_conditional_branch(_mov(_num(1), _stk(0x10))) is None
 
@@ -129,6 +192,63 @@ def test_conditional_branch_predicate_passthrough():
     cb = project_conditional_branch(_jcc(PredicateKind.TRUTHY, _stk(0x10), _num(0)))
     assert cb is not None and cb.predicate is PredicateKind.TRUTHY
     assert cb.taken is None and cb.fallthrough is None
+
+
+def test_instruction_projection_predicate_materialization_uses_predicate_operation():
+    insn = InsnSnapshot(
+        opcode=0x34,
+        ea=0x1000,
+        operands=(),
+        kind=InsnKind.UNKNOWN,
+        predicate_kind=PredicateKind.EQ,
+        opcode_attrs={"backend": "hexrays", "raw_opcode_name": "m_setz"},
+    )
+
+    instruction = project_instruction(insn)
+
+    assert instruction.operation is PredicateKind.EQ
+    assert instruction.control is None
+    assert instruction.attrs["raw_opcode_name"] == "m_setz"
+
+
+def test_instruction_projection_raw_opcode_name_does_not_authorize_semantics():
+    insn = InsnSnapshot(
+        opcode=0x2C,
+        ea=0x1000,
+        operands=(),
+        kind=InsnKind.UNKNOWN,
+        opcode_attrs={"backend": "hexrays", "raw_opcode_name": "m_jz"},
+    )
+
+    instruction = project_instruction(insn)
+
+    assert instruction.operation is not ControlTransferKind.CONDITIONAL_BRANCH
+    assert instruction.control is None
+
+
+def test_instruction_projection_call_and_return_operations():
+    call = project_instruction(
+        InsnSnapshot(
+            opcode=0x41,
+            ea=0x1000,
+            operands=(),
+            kind=InsnKind.CALL,
+            call_kind=CallKind.DIRECT,
+        )
+    )
+    ret = project_instruction(
+        InsnSnapshot(opcode=0x42, ea=0x1004, operands=(), kind=InsnKind.RET)
+    )
+
+    assert call.operation is CallKind.DIRECT
+    assert call.control is None
+    assert ret.operation is ControlTransferKind.RETURN
+    assert ret.control == InstructionControl(transfer=ControlTransferKind.RETURN)
+
+
+def test_assignment_and_conditional_branch_are_statement_views_not_instructions():
+    assert not issubclass(Assignment, Instruction)
+    assert not issubclass(ConditionalBranch, Instruction)
 
 
 def _subinsn(sub_kind, sub_l: MopSnapshot, sub_r: MopSnapshot) -> MopSnapshot:
