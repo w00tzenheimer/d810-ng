@@ -205,17 +205,33 @@ class TestProviderNeutralStageMetadata:
         assert meta["producer_stage_name"] == meta["maturity_name"]
 
     def test_snapshot_form_is_portable_family(self, monkeypatch) -> None:
-        from d810.ir.maturity import SnapshotForm
+        import ida_hexrays
+        from d810.ir.maturity import SnapshotForm, snapshot_form_for_maturity
         from d810.hexrays.mutation import ir_translator
 
-        meta = self._lift(monkeypatch).metadata
+        meta = self._lift(monkeypatch, maturity=int(ida_hexrays.MMAT_GLBOPT1)).metadata
+        ir_maturity = meta["ir_maturity"]
         snapshot_form = meta["snapshot_form"]
+        assert snapshot_form is snapshot_form_for_maturity(ir_maturity)
         assert isinstance(snapshot_form, SnapshotForm)
         assert meta["snapshot_stage"] is snapshot_form
         # Derived from the producer stage name via the lifter's mapping.
         assert snapshot_form is ir_translator._snapshot_form_for_maturity_name(
             meta["producer_stage_name"]
         )
+
+    def test_ir_maturity_is_canonical_portable_stage(self, monkeypatch) -> None:
+        import ida_hexrays
+        from d810.hexrays.ir_maturity import ida_maturity_to_ir
+        from d810.ir.maturity import IRMaturity, snapshot_form_for_maturity
+
+        flow_graph = self._lift(monkeypatch, maturity=int(ida_hexrays.MMAT_GLBOPT1))
+        meta = flow_graph.metadata
+        ir_maturity = meta["ir_maturity"]
+
+        assert isinstance(ir_maturity, IRMaturity)
+        assert ir_maturity is ida_maturity_to_ir(int(ida_hexrays.MMAT_GLBOPT1))
+        assert meta["snapshot_form"] is snapshot_form_for_maturity(ir_maturity)
 
     def test_snapshot_form_mapping_is_coarse_and_neutral(self, monkeypatch) -> None:
         """Spot-check the coarse mapping: GLBOPT* are optimized IR,
@@ -249,6 +265,23 @@ class TestProviderNeutralStageMetadata:
         )
 
         assert flow_graph.metadata["snapshot_form"] is SnapshotForm.RAW_IR
+
+    def test_unknown_maturity_integer_path_is_unknown_and_nonfatal(
+        self, monkeypatch
+    ) -> None:
+        """Unknown backend maturity must not crash the snapshot lift."""
+        from d810.hexrays.mutation import ir_translator
+        from d810.ir.maturity import SnapshotForm
+
+        monkeypatch.setattr(
+            ir_translator.idaapi, "inf_get_procname", lambda: "metapc"
+        )
+
+        flow_graph = ir_translator.lift(_StubMba(maturity=999999))
+
+        assert flow_graph.metadata["ir_maturity"] is None
+        assert flow_graph.metadata["snapshot_form"] is SnapshotForm.UNKNOWN
+        assert flow_graph.metadata["snapshot_stage"] is SnapshotForm.UNKNOWN
 
 
 class TestLifterMetadataImmutability:

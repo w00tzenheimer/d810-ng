@@ -10,9 +10,19 @@ from .emitter import (
     UnsupportedLiftReason,
     emit_flowgraph_to_llvm,
 )
+from .maturity_policy import (
+    LLVM_M1_ACCEPTED_MATURITIES,
+    LLVM_M1_PREFERRED_MATURITY,
+    LlvmMaturityAssessment,
+    assess_flowgraph_maturity,
+)
 
 __all__ = [
+    "LLVM_M1_ACCEPTED_MATURITIES",
+    "LLVM_M1_PREFERRED_MATURITY",
     "LlvmLiftResult",
+    "LlvmMaturityAssessment",
     "UnsupportedLiftReason",
+    "assess_flowgraph_maturity",
     "emit_flowgraph_to_llvm",
 ]

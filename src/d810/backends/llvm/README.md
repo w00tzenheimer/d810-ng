@@ -13,8 +13,13 @@ Current freeze-maturity policy:
 
 - The target capture point is optimized/recovered microcode after d810 structural
   recovery, not raw `MMAT_ZERO`.
-- The exact live Hex-Rays freeze point remains open until capture integration
-  compares `CALLS`, `GLBOPT1`, and `GLBOPT2`.
+- The candidate range is defined by the IDA-free policy API in
+  `d810.backends.llvm.maturity_policy`: `CALL_MODELED`, `GLOBAL_ANALYZED`, and
+  `GLOBAL_OPTIMIZED`.
+- The provisional preferred freeze point is `GLOBAL_ANALYZED` because it has
+  global dataflow while preserving more predicate/value residue than later
+  simplification. Hex-Rays maps this to `MMAT_GLBOPT1`, but the policy consumes
+  only portable `FlowGraph.metadata["ir_maturity"]`.
 - The decision criteria are to preserve enough predicate/value residue for LLVM
   while avoiding pre-recovery CFG noise.
 - This package is the LLVM front-lift route only. M3 lower-back should expose a
