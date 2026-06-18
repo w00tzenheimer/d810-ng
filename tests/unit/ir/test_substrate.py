@@ -30,6 +30,8 @@ from d810.ir import (
     ValueOpKind,
     ValueRef,
 )
+from d810.ir.flowgraph import InsnKind, InsnSnapshot
+from d810.ir.semantics import ControlTransferKind, PredicateKind
 
 
 def test_newtypes_are_identity_wrappers() -> None:
@@ -126,6 +128,20 @@ def test_value_op_kind_values_are_stable_tokens() -> None:
     assert ValueOpKind.ADD.value == "add"
     assert ValueOpKind.SAR.value == "sar"
     assert ValueOpKind.VENDOR.value == "vendor"
+
+
+def test_insn_snapshot_infers_predicate_kind_from_branch_predicate() -> None:
+    snapshot = InsnSnapshot(
+        opcode=0,
+        ea=0,
+        operands=(),
+        kind=InsnKind.EQUALITY_JUMP,
+        branch_predicate=PredicateKind.EQ,
+    )
+
+    assert snapshot.predicate_kind is PredicateKind.EQ
+    assert snapshot.control_transfer_kind is ControlTransferKind.CONDITIONAL_BRANCH
+    assert snapshot.is_conditional_jump is True
 
 
 def test_expr_ref_union_covers_families() -> None:

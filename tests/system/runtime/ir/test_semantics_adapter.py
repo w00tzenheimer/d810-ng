@@ -25,6 +25,7 @@ import ida_hexrays
 import pytest
 
 from d810.hexrays.mutation.ir_translator import (
+    capture_insn_snapshot,
     classify_branch_predicate,
     classify_call_kind,
     classify_control_transfer,
@@ -41,6 +42,25 @@ class _StubInsn:
 
     def __init__(self, opcode: int) -> None:
         self.opcode = int(opcode)
+
+
+class _EmptyMop:
+    t = int(ida_hexrays.mop_z)
+    size = 0
+
+
+class _SnapshotInsn:
+    """Duck-typed instruction for snapshot capture without allocating minsn_t."""
+
+    def __init__(self, opcode: int) -> None:
+        self.opcode = int(opcode)
+        self.ea = 0
+        self.l = _EmptyMop()
+        self.r = _EmptyMop()
+        self.d = _EmptyMop()
+
+    def dstr(self) -> str:
+        return ""
 
 
 def _required(name: str) -> int:
@@ -237,6 +257,24 @@ class TestHexraysOpcodeLift:
             not (isinstance(value, str) and value.startswith("op_"))
             for value in lifted.attrs.values()
         )
+
+
+# ---------------------------------------------------------------------------
+# capture_insn_snapshot
+# ---------------------------------------------------------------------------
+
+
+class TestCaptureInsnSnapshotOperationFamilies:
+    def test_set_predicate_survives_snapshot_capture_without_transfer(self) -> None:
+        insn = _SnapshotInsn(_required("m_setz"))
+
+        snapshot = capture_insn_snapshot(insn)
+
+        assert snapshot.predicate_kind is PredicateKind.EQ
+        assert snapshot.branch_predicate is None
+        assert snapshot.control_transfer_kind is None
+        assert snapshot.is_conditional_jump is False
+        assert snapshot.opcode_attrs["raw_opcode_name"] == "m_setz"
 
 
 # ---------------------------------------------------------------------------
