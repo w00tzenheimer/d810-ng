@@ -1,10 +1,17 @@
-# LLVM M0a Middle Proof
+# LLVM M0 Lab Proof
 
-This directory is a partial `llr-6q39` artifact: it proves the LLVM middle on
-the `lab_flat_branchless` residue, but it is not the complete M0 lab
-round-trip. `llr-6q39` remains open until the optimized LLVM result is
-hand-lowered back through the lab microcode/pseudocode path and checked against
-the reference by the parity oracle.
+This directory contains the checked-in `llr-6q39` M0 lab proof for
+`lab_flat_branchless`.
+
+It has two deliberately hand-authored pieces:
+
+- **M0a:** `fixtures/lab_flat_branchless.before.ll` translates the observed
+  branchless residue into LLVM IR and `run_opt.py` proves what the LLVM middle
+  collapses.
+- **M0b:** `lab_flat_branchless.lower_back.json` maps the optimized LLVM residue
+  to d810's existing lab lower-back primitive and oracle test: recover the live
+  `(token & 1)` predicate, synthesize an `if/else`, decompile
+  `restructuring_lab.dll`, and compare against `lab_ref_cond`.
 
 This is still a lab spike, not the M1 microcode-to-LLVM lifter.
 
@@ -28,7 +35,7 @@ state = (K1 & mask) | (K2 & ~mask)
 that residue plus the nearby value computation. It is intentionally not generated
 from `Instruction` or `InsnSnapshot`.
 
-## What This Proves
+## M0a: LLVM Middle Proof
 
 Running:
 
@@ -57,6 +64,33 @@ conservative pipeline, the mask/or select remains mask/or form. The `if/else`
 recovery in the real lab case is still d810's job: predicate recovery plus
 `LowerConditionalStateTransition`.
 
+## M0b: Hand Lower-Back / Parity Proof
+
+`lab_flat_branchless.lower_back.json` connects the optimized LLVM fixture to the
+existing d810 lab lower-back proof:
+
+- source fixture: `fixtures/lab_flat_branchless.after.ll`
+- low predicate: `%low = and i32 %token, 1`
+- surviving state mask form: `%state = or i32 %state_false, %state_true`
+- true / odd arm: state `0xB92456DE`, value `(token + 0x11) ^ 0x22`
+- false / even arm: state `0x3C8960A9`, value `token - 0x22`
+- hand-lowered control: `if ((token & 1) != 0) ... else ...`
+- d810 primitive: `ConditionalSynthesize`, via `recover_branchless` plus
+  `lower_conditional_synthesize`
+- oracle/reference: `lab_ref_cond`
+
+The focused system proof is:
+
+```text
+tests/system/runtime/hexrays/test_llvm_m0_roundtrip.py::TestLLVMM0RoundTrip::test_hand_lowered_branchless_llvm_matches_cond_oracle
+```
+
+It reads the lower-back artifact, lowers `lab_flat_branchless` through the
+catalog primitive, decompiles the lowered result, renders `lab_ref_cond`, and
+asserts their `semantic_signature(...)` values match.
+
+This is a hand lower-back proof. It does not implement a general LLVM dropper.
+
 ## IDAvator Reference
 
 IDAvator is the existing local proof/reference for the literal LLVM lift/drop
@@ -74,30 +108,25 @@ shape:
   `hxe_preoptimized`, rebuilds the target function's microcode from LLVM IR, and
   lets Hex-Rays decompile the rebuilt body.
 
-This d810 M0a artifact does not call, vendor, or depend on IDAvator. It also
-does not implement d810's drop/lower-back step yet. The remaining `llr-6q39`
-work should borrow IDAvator's supported-subset discipline and lower-back
-interface shape where possible, while preserving d810's native
-`restructuring_lab.dll` decompile/parity-oracle gate.
+This d810 M0 proof does not call, vendor, or depend on IDAvator. M0b is a
+hand-lowered lab proof that reaches d810's `restructuring_lab.dll`
+decompile/parity-oracle gate; it is not a general automated LLVM drop/backend.
+Future M3/general lower-back work should borrow IDAvator's supported-subset
+discipline and interface shape where useful, while preserving d810's native
+oracle/decompile gate.
 
-## Remaining M0 Work
+## M0 Collapse Classes
 
-The full `llr-6q39` M0 gate still requires the lower-back half documented in
-`docs/plans/llvm-deobfuscation-track.md`:
+This fixture classifies the M0 result as:
 
-- hand-lower the optimized LLVM result back into Hex-Rays microcode or an
-  equivalent decompilable lab path, analogous to IDAvator's `llvm_drop` lane,
-- decompile the lowered form in `restructuring_lab.dll`,
-- gate pseudocode equivalence through the parity oracle/reference source,
-- document the fixture's collapse classes as:
-  - `LLVM-free`: residue collapsed by stock LLVM middle-end passes,
-  - `needs d810 predicate recovery`: branchless mask/or to recovered predicate
-    and synthesized `if/else`,
-  - `needs MBA/Z3`: stronger value/predicate residues LLVM cannot prove alone.
+- `LLVM-free`: `~mask` canonicalization and false-arm fold to `token - 0x22`.
+- `needs d810 predicate recovery`: mask/or state select to recovered
+  `(token & 1)` predicate to synthesized `if/else`.
+- `needs MBA/Z3`: none for this fixture. Stronger future residues may need it.
 
 ## Boundaries
 
-- This is M0a / a partial M0 middle proof, not the complete M0 round-trip.
+- This is a completed M0 hand-lowered lab proof, not M1/M3 automation.
 - There is no automated `Instruction -> LLVM` lifter in this slice.
 - There is no general LLVM drop/backend in d810 in this slice.
 - M1 must lift from canonical `Instruction` / `Varnode`; it must not target
@@ -106,6 +135,5 @@ The full `llr-6q39` M0 gate still requires the lower-back half documented in
   of this d810 M0 artifact.
 
 The next LLVM milestone should use this as an evidence fixture only. It should
-not treat the hand-authored `.ll` as a substitute for the remaining M0
-lower-back/parity work, the real M1 lifter, or M3 Hex-Rays microcode
-lower-back.
+not treat the hand-authored `.ll` or hand lower-back map as a substitute for the
+real M1 lifter or M3 Hex-Rays microcode lower-back.
