@@ -771,6 +771,9 @@ def snapshot_state_dispatcher_rows(
         )
         if hasattr(dispatcher_kind_value, "name"):
             dispatcher_kind_value = dispatcher_kind_value.name
+        table_provenance = _mapping_value(row, "table_provenance")
+        if hasattr(table_provenance, "value"):
+            table_provenance = table_provenance.value
         row_branch_kind = _mapping_value(row, "branch_kind")
         state_row_kind = _mapping_value(row, "row_kind")
         confidence = _mapping_value(row, "confidence", 1.0)
@@ -781,6 +784,9 @@ def snapshot_state_dispatcher_rows(
             "branch_kind": row_branch_kind,
             "dispatcher_kind": str(
                 dispatcher_kind_value or dispatcher_kind or "unknown"
+            ),
+            "table_provenance": (
+                None if table_provenance is None else str(table_provenance)
             ),
             "row_kind": state_row_kind,
         }

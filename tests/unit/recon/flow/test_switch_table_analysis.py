@@ -184,7 +184,7 @@ class TestBuildStateDispatcherMapFromCases:
         assert m.dispatcher_entry_block == 5
         assert m.dispatcher_blocks == frozenset({5})
         assert m.state_var_stkoff == 0x3C
-        assert m.router_kind == RouterKind.SWITCH
+        assert m.router_kind == RouterKind.TABLE
 
     def test_with_initial_state(self):
         cases = [(0, 10), (1, 11)]

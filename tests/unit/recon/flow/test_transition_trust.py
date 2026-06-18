@@ -6,6 +6,9 @@ from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipProof,
     BranchOwnershipProofKind,
 )
+from d810.analyses.control_flow.dispatch_key import (
+    DispatchKeyTransformKind,
+)
 from d810.analyses.control_flow.transition_trust import (
     TransitionTrustKind,
     TransitionTrustResult,
@@ -95,6 +98,21 @@ def test_provenance_tag_is_adapter_not_consumer_allowlist() -> None:
     assert result.authorizes_explicit_conditional_bridge
     assert result.trust_kind == TransitionTrustKind.DYNAMIC_STATE_WRITE
     assert result.evidence == {"source": "provenance_tag_adapter"}
+
+
+def test_dispatch_key_transform_shape_does_not_authorize_bridge() -> None:
+    transition = _conditional_transition(
+        provenance_kind="derived_xor_dispatch_key",
+    )
+
+    result = classify_transition_trust_for_explicit_conditional_bridge(
+        transition
+    )
+
+    assert not result.authorizes_explicit_conditional_bridge
+    assert result.reason == "dispatch_key_transform_not_authority"
+    assert result.dispatch_key_transform_kind == DispatchKeyTransformKind.XOR
+    assert result.evidence == {"source": "dispatch_key_transform_adapter"}
 
 
 def test_unsupported_provenance_remains_diagnostic_only() -> None:

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.capabilities.dispatcher import RouterKind
+from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.ir.flowgraph import FlowGraph
 from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
@@ -64,9 +64,10 @@ def build_state_dispatcher_map_from_indirect_entries(
                 dispatcher_block=int(dispatcher_serial),
                 compare_block=None,
                 branch_kind=branch_kind,
-                router_kind=RouterKind.INDIRECT_TABLE,
+                router_kind=RouterKind.TABLE,
                 confidence=1.0,
                 row_kind=row_kind,
+                table_provenance=TableProvenance.INDIRECT_JUMP_TABLE,
                 payload={
                     "table_index": int(table_index),
                     "target_ea_hex": (
@@ -88,10 +89,11 @@ def build_state_dispatcher_map_from_indirect_entries(
         dispatcher_blocks=frozenset(int(block) for block in dispatcher_blocks),
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=None,
-        router_kind=RouterKind.INDIRECT_TABLE,
+        router_kind=RouterKind.TABLE,
         initial_state=initial_state,
         default_target_block=None,
         default_row_kind=None,
+        table_provenance=TableProvenance.INDIRECT_JUMP_TABLE,
     )
 
 

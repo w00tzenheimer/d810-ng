@@ -66,6 +66,6 @@ def test_entry_bridge_does_not_require_witness_for_unknown_router_without_provid
 
 
 def test_entry_bridge_legacy_allowed_without_comparison_evidence() -> None:
-    dmap = SimpleNamespace(router_kind=RouterKind.SWITCH)
+    dmap = SimpleNamespace(router_kind=RouterKind.TABLE)
 
     assert _entry_bridge_requires_witness(dmap) is False

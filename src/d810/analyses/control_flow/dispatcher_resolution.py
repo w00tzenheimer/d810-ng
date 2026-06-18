@@ -12,7 +12,7 @@ from d810.analyses.control_flow.comparison_dispatcher_model import (
     build_partition,
     route_via_interval_sets,
 )
-from d810.capabilities.dispatcher import RouterKind
+from d810.capabilities.dispatcher import RouterKind, TableProvenance
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +27,7 @@ class StateDispatcherRow:
     router_kind: RouterKind
     confidence: float = 1.0
     row_kind: str = "handler"
+    table_provenance: TableProvenance | None = None
     payload: dict[str, object] = field(default_factory=dict)
 
     @property
@@ -53,6 +54,7 @@ class StateDispatcherMap:
     initial_state: int | None = None
     default_target_block: int | None = None
     default_row_kind: str | None = None
+    table_provenance: TableProvenance | None = None
 
     def state_to_handler(self) -> dict[int, int]:
         """Return exact routable ``state_const -> target_block`` rows.
@@ -126,6 +128,7 @@ class ResolverCandidate:
     router_kind: RouterKind
     confidence: float
     specificity: int = 0
+    table_provenance: TableProvenance | None = None
     reasons: tuple[str, ...] = ()
 
 
@@ -142,6 +145,7 @@ class DispatcherResolution:
     resolver_name: str
     router_kind: RouterKind
     confidence: float
+    table_provenance: TableProvenance | None = None
     ranking_reason: tuple[str, ...] = ()
 
 

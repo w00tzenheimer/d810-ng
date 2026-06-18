@@ -373,14 +373,14 @@ class TestResolveExactBranchWitness:
                     dispatcher_block=2,
                     compare_block=None,
                     branch_kind="indirect_jump_table",
-                    router_kind=RouterKind.INDIRECT_TABLE,
+                    router_kind=RouterKind.TABLE,
                 ),
             ),
             dispatcher_entry_block=2,
             dispatcher_blocks=frozenset((2,)),
             state_var_stkoff=_STATE,
             state_var_lvar_idx=None,
-            router_kind=RouterKind.INDIRECT_TABLE,
+            router_kind=RouterKind.TABLE,
         )
 
         assert build_static_equality_chain_witness_map(fg, dispatch_map) is None

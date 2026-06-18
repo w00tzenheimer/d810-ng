@@ -389,11 +389,14 @@ def _write_diag_db(path: Path, *, indirect_rows: bool) -> None:
     conn = sqlite3.connect(path)
     try:
         conn.execute(
-            "CREATE TABLE state_dispatcher_rows (dispatcher_kind TEXT)"
+            "CREATE TABLE state_dispatcher_rows "
+            "(dispatcher_kind TEXT, payload_json TEXT)"
         )
         if indirect_rows:
             conn.execute(
-                "INSERT INTO state_dispatcher_rows VALUES ('INDIRECT_TABLE')"
+                "INSERT INTO state_dispatcher_rows VALUES "
+                "('TABLE', json_object('table_provenance', "
+                "'indirect_jump_table'))"
             )
         conn.commit()
     finally:

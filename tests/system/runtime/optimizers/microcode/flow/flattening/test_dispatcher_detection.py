@@ -5,7 +5,7 @@ multiple detection strategies for identifying state machine dispatcher blocks.
 
 The tests cover:
 - Real IDA integration testing with actual microcode
-- Dispatcher type detection (CONDITION_CHAIN vs SWITCH)
+- Dispatcher type detection (CONDITION_CHAIN vs TABLE/switch)
 - should_skip_dispatcher() integration
 """
 
@@ -64,8 +64,8 @@ class TestDispatcherDetectionWithRealMicrocode:
         - hardened_cond_chain_simple: CONDITION_CHAIN with binary search dispatch
         - _hodur_func: Real Hodur C2 malware dispatcher
 
-        Also tests functions that may have SWITCH early-return:
-        - high_fan_in_pattern: May produce jtbl (SWITCH early-return is expected)
+        Also tests functions that may have TABLE/switch early-return:
+        - high_fan_in_pattern: May produce jtbl (TABLE/switch early-return is expected)
         """
         import ida_hexrays
         import idaapi
@@ -79,7 +79,7 @@ class TestDispatcherDetectionWithRealMicrocode:
         test_functions = [
             ("nested_while_hodur_pattern", RouterKind.CONDITION_CHAIN),  # 3-level nested while
             ("_hodur_func", RouterKind.CONDITION_CHAIN),                 # Real Hodur malware
-            ("high_fan_in_pattern", RouterKind.SWITCH),             # May produce jtbl
+            ("high_fan_in_pattern", RouterKind.TABLE),             # May produce jtbl
             ("hardened_cond_chain_simple", RouterKind.CONDITION_CHAIN),  # Uses state values 0x1000-0x7000 (now detected)
         ]
 
@@ -118,11 +118,11 @@ class TestDispatcherDetectionWithRealMicrocode:
 
                 # Check if we detected the expected type
                 if expected_type is not None and analysis.router_kind == expected_type:
-                    if expected_type == RouterKind.SWITCH:
-                        # SWITCH has empty dispatchers due to early return
+                    if expected_type == RouterKind.TABLE:
+                        # TABLE/switch has empty dispatchers due to early return
                         assert len(analysis.dispatchers) == 0, \
-                            "SWITCH should have empty dispatchers (early return)"
-                        print(f"      * SWITCH early-return as expected")
+                            "TABLE/switch should have empty dispatchers (early return)"
+                        print(f"      * TABLE/switch early-return as expected")
                     elif expected_type == RouterKind.CONDITION_CHAIN:
                         assert analysis.is_conditional_chain
                         print(f"      * Detected CONDITION_CHAIN at maturity {maturity}")
@@ -143,7 +143,7 @@ class TestDispatcherDetectionWithRealMicrocode:
         """Test CONDITION_CHAIN detection in Hodur-style dispatchers.
 
         Verifies that nested while(1) + if/else patterns are correctly identified
-        as CONDITION_CHAIN (not SWITCH).
+        as CONDITION_CHAIN (not TABLE/switch).
 
         Note: Only tests functions that reliably meet the CONDITION_CHAIN threshold.
         hardened_cond_chain_simple is tested in test_analyze_detects_dispatcher_in_real_function
@@ -189,10 +189,10 @@ class TestDispatcherDetectionWithRealMicrocode:
             print(f"    * Detected as CONDITION_CHAIN with {len(analysis.dispatchers)} dispatcher(s)")
 
     def test_detect_switch_table_in_ollvm_function(self, ida_setup):
-        """Test SWITCH detection in O-LLVM style dispatchers.
+        """Test TABLE/switch detection in O-LLVM style dispatchers.
 
         Verifies that switch/case patterns with jtbl are correctly identified
-        as SWITCH (not CONDITION_CHAIN).
+        as TABLE/switch (not CONDITION_CHAIN).
         """
         import ida_hexrays
         import idaapi
@@ -216,20 +216,20 @@ class TestDispatcherDetectionWithRealMicrocode:
         DEFAULT_DISPATCHER_HISTORY_STORE.clear()
         analysis = analyze_dispatcher_live(mba)
 
-        # Verify SWITCH detection (has jtbl, not conditional chain)
+        # Verify TABLE/switch detection (has jtbl, not conditional chain)
         assert not analysis.is_conditional_chain, \
             f"{func_name} should NOT be CONDITION_CHAIN (has jtbl/switch)"
-        assert analysis.router_kind == RouterKind.SWITCH, \
-            f"router_kind should be SWITCH, got {analysis.router_kind}"
+        assert analysis.router_kind == RouterKind.TABLE, \
+            f"router_kind should be TABLE, got {analysis.router_kind}"
 
-        print(f"    * Detected as SWITCH (O-LLVM style)")
+        print(f"    * Detected as TABLE/switch (O-LLVM style)")
 
     def test_should_skip_dispatcher_with_real_blocks(self, ida_setup):
         """Test should_skip_dispatcher() integration with real dispatcher blocks.
 
         Verifies that:
         - Hodur-style CONDITION_CHAIN dispatchers return True (should skip)
-        - O-LLVM-style SWITCH dispatchers return False (should NOT skip)
+        - O-LLVM-style TABLE/switch dispatchers return False (should NOT skip)
         """
         import ida_hexrays
         import idaapi
@@ -260,7 +260,7 @@ class TestDispatcherDetectionWithRealMicrocode:
 
             # Find a dispatcher block to test
             if len(analysis.dispatchers) == 0:
-                # For SWITCH, early-return leaves dispatchers empty - use first block
+                # For TABLE/switch, early-return leaves dispatchers empty - use first block
                 test_block = mba.get_mblock(0)
             else:
                 dispatcher_serial = analysis.dispatchers[0]

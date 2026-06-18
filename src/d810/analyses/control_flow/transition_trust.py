@@ -14,6 +14,10 @@ from enum import Enum
 from d810.analyses.control_flow.branch_ownership import (
     branch_ownership_proof_from_any,
 )
+from d810.analyses.control_flow.dispatch_key import (
+    DispatchKeyTransformKind,
+    dispatch_key_transform_kind_from_any,
+)
 
 
 class TransitionTrustKind(str, Enum):
@@ -25,12 +29,6 @@ class TransitionTrustKind(str, Enum):
         to treat the written state as the branch target.  This can authorize an
         explicit conditional DAG bridge because it identifies real transition
         data, not merely graph shape.
-
-    ``DERIVED_DISPATCH_KEY``
-        A recon producer recovered a dispatcher-key expression, such as a
-        derived XOR key, and resolved it to a concrete transition.  This can
-        authorize an explicit conditional DAG bridge when the producer supplies
-        the required provenance chain.
 
     ``BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT``
         Branch ownership proved the arm is real source-program control flow.
@@ -49,7 +47,6 @@ class TransitionTrustKind(str, Enum):
     """
 
     DYNAMIC_STATE_WRITE = "DYNAMIC_STATE_WRITE"
-    DERIVED_DISPATCH_KEY = "DERIVED_DISPATCH_KEY"
     BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT = (
         "BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT"
     )
@@ -65,6 +62,7 @@ class TransitionTrustResult:
     reason: str
     trust_kind: TransitionTrustKind | str = TransitionTrustKind.UNSUPPORTED
     provenance_kind: str | None = None
+    dispatch_key_transform_kind: DispatchKeyTransformKind | None = None
     evidence: dict[str, object] = field(default_factory=dict)
 
     @property
@@ -80,7 +78,6 @@ class TransitionTrustResult:
 
         return bool(self.trusted) and self.trust_kind_name in {
             TransitionTrustKind.DYNAMIC_STATE_WRITE.value,
-            TransitionTrustKind.DERIVED_DISPATCH_KEY.value,
             TransitionTrustKind.BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT.value,
             TransitionTrustKind.EXPLICIT_PRODUCER_TRUST.value,
         }
@@ -88,12 +85,14 @@ class TransitionTrustResult:
 
 _PROVENANCE_TAG_TRUST_KIND_BY_NAME = {
     "global_or_state_write": TransitionTrustKind.DYNAMIC_STATE_WRITE,
-    "derived_xor_dispatch_key": TransitionTrustKind.DERIVED_DISPATCH_KEY,
 }
 
 _PROVENANCE_TAG_REASON_BY_KIND = {
     TransitionTrustKind.DYNAMIC_STATE_WRITE: "dynamic_state_write",
-    TransitionTrustKind.DERIVED_DISPATCH_KEY: "derived_dispatch_key",
+}
+
+_DISPATCH_KEY_TRANSFORM_BY_PROVENANCE_KIND = {
+    "derived_xor_dispatch_key": DispatchKeyTransformKind.XOR,
 }
 
 
@@ -122,6 +121,10 @@ def classify_transition_trust_for_explicit_conditional_bridge(
         return branch_result
 
     provenance_kind = _transition_provenance_kind(transition)
+    dispatch_key_transform_kind = _transition_dispatch_key_transform_kind(
+        transition,
+        provenance_kind=provenance_kind,
+    )
     provenance_trust_kind = _PROVENANCE_TAG_TRUST_KIND_BY_NAME.get(
         provenance_kind
     )
@@ -131,7 +134,17 @@ def classify_transition_trust_for_explicit_conditional_bridge(
             _PROVENANCE_TAG_REASON_BY_KIND[provenance_trust_kind],
             trust_kind=provenance_trust_kind,
             provenance_kind=provenance_kind,
+            dispatch_key_transform_kind=dispatch_key_transform_kind,
             evidence={"source": "provenance_tag_adapter"},
+        )
+
+    if dispatch_key_transform_kind is not None:
+        return TransitionTrustResult(
+            False,
+            "dispatch_key_transform_not_authority",
+            provenance_kind=provenance_kind,
+            dispatch_key_transform_kind=dispatch_key_transform_kind,
+            evidence={"source": "dispatch_key_transform_adapter"},
         )
 
     return TransitionTrustResult(
@@ -184,12 +197,20 @@ def transition_trust_result_from_any(
         reason = value.get("reason")
         trust_kind = value.get("trust_kind")
         provenance_kind = value.get("provenance_kind")
+        dispatch_key_transform_kind = value.get(
+            "dispatch_key_transform_kind"
+        )
         evidence = value.get("evidence") or {}
     else:
         trusted = getattr(value, "trusted", None)
         reason = getattr(value, "reason", None)
         trust_kind = getattr(value, "trust_kind", None)
         provenance_kind = getattr(value, "provenance_kind", None)
+        dispatch_key_transform_kind = getattr(
+            value,
+            "dispatch_key_transform_kind",
+            None,
+        )
         evidence = getattr(value, "evidence", None) or {}
     if trusted is None or reason is None:
         return None
@@ -209,6 +230,9 @@ def transition_trust_result_from_any(
         trust_kind=normalized_kind,
         provenance_kind=(
             None if provenance_kind is None else str(provenance_kind)
+        ),
+        dispatch_key_transform_kind=dispatch_key_transform_kind_from_any(
+            dispatch_key_transform_kind
         ),
         evidence=dict(evidence),
     )
@@ -269,6 +293,34 @@ def _transition_provenance_kind(transition: object) -> str | None:
         if isinstance(metadata, dict):
             provenance_kind = metadata.get("provenance_kind")
     return None if provenance_kind is None else str(provenance_kind)
+
+
+def _transition_dispatch_key_transform_kind(
+    transition: object,
+    *,
+    provenance_kind: str | None,
+) -> DispatchKeyTransformKind | None:
+    for attr in (
+        "dispatch_key_transform_kind",
+        "key_transform_kind",
+        "dispatch_key_transform",
+    ):
+        result = dispatch_key_transform_kind_from_any(
+            getattr(transition, attr, None)
+        )
+        if result is not None:
+            return result
+    metadata = getattr(transition, "metadata", None)
+    if isinstance(metadata, dict):
+        for key in (
+            "dispatch_key_transform_kind",
+            "key_transform_kind",
+            "dispatch_key_transform",
+        ):
+            result = dispatch_key_transform_kind_from_any(metadata.get(key))
+            if result is not None:
+                return result
+    return _DISPATCH_KEY_TRANSFORM_BY_PROVENANCE_KIND.get(provenance_kind)
 
 
 __all__ = [

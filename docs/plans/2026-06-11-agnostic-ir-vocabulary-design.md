@@ -190,6 +190,23 @@ The rule for `PipelineConfig v2`: pass specs declare `IRMaturity` gates; backend
 hook adapters resolve those gates to native callback stages. `SnapshotStage` is
 not a replacement for `IRMaturity`; it is a lossy analysis hint.
 
+Post-vocabulary / pre-LLVM action item: ticket `llr-nix5` makes the relationship
+explicit instead of leaving two near-duplicate stage vocabularies. The intended
+shape is:
+
+* `IRMaturity` is the fine-grained ordered vocabulary for pass scheduling.
+* `SnapshotStage` (or renamed `SnapshotForm`, decision in `llr-nix5`) is the
+  coarse derived snapshot-form bucket stored in `FlowGraph.metadata`.
+* The mapping must be total and tested. Initial target:
+  * `LIFTED` -> `RAW_IR`
+  * `CANONICAL` -> `NORMALIZED_IR`
+  * `LOCAL_OPTIMIZED`, `CALL_MODELED`, `GLOBAL_ANALYZED`,
+    `GLOBAL_OPTIMIZED` -> `OPTIMIZED_IR`
+  * `STRUCTURED` -> `FINAL_PRE_RENDER`
+  * `VARIABLE_RECOVERED` -> `LVAR_RECOVERED`
+* If `SSA_LIKE` remains, treat it as an orthogonal metadata/capability flag, not
+  a competing range bucket.
+
 Current migration gap: some collectors and fact lifecycle code still carry raw
 Hex-Rays maturity integers / `MMAT_*` strings. Those should move behind the same
 adapter boundary over time, but the vocabulary axis itself does not need a new
@@ -254,6 +271,16 @@ design.
 
    Breadcrumb cleanup ticket: `llr-zkju` classifies or removes stale comments,
    scripts, and tests that still teach retired router taxonomy.
+8. **Post-vocabulary / pre-LLVM: normalize maturity-to-form ranges.**
+
+   Ticket: `llr-nix5`, blocked on `llr-nulv`, `llr-rec9`, and `llr-zkju`.
+   Before any LLVM facade / IDAvator-route work, make `IRMaturity` the
+   fine-grained ordered stage vocabulary and `SnapshotStage`/`SnapshotForm` the
+   coarse derived range bucket. Decide whether to rename `SnapshotStage` to
+   `SnapshotForm`, implement a single `IRMaturity -> SnapshotStage/SnapshotForm`
+   helper, update `FlowGraph` metadata production to use it, and add tests that
+   pass gates use `IRMaturity` while read-only snapshot classification uses only
+   the coarse form.
 
 Each phase: golden suite green via the Docker runner (NEVER local `pytest
 tests/system` — false-red). Unit + `lint-imports` locally.
@@ -275,10 +302,14 @@ feeds it; that stays true with the resolver under `CONDITION_CHAIN`.)
 `ir/expressions.py` (grown ValueOpKind), `backends/<vendor>/opcode_lift.py`
 (lift tables). `DispatcherType` retires into `RouterKind`. Maturity/stage
 vocabulary stays in `ir/maturity.py` (`IRMaturity`) plus `FlowGraph`
-`SnapshotStage`; do not create another stage enum.
+`SnapshotStage`/possible `SnapshotForm`; do not create another independent stage
+enum. `llr-nix5` owns the range mapping and rename decision before LLVM facade
+work starts.
 
 ## Testing
 * cross-backend lift-table test: every backend opcode → a kind, no gaps.
 * str-enum equivalence battery (op-vocab) + router-remap parity per phase.
+* `IRMaturity -> SnapshotStage/SnapshotForm` range-map tests plus guardrails that
+  pass gates do not key on the coarse snapshot form.
 * the family dispatcher goldens (hodur/approov/ollvm/tigress/sub_7FFD) green
   through every phase.

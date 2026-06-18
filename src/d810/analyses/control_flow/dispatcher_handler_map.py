@@ -1,7 +1,7 @@
 """Dispatcher-type-agnostic handler mapping.
 
 Shared IR consumed by Hodur strategies. Produced by either condition-chain analysis
-(CONDITION_CHAIN) or switch-table analysis (SWITCH).
+(CONDITION_CHAIN) or switch-table analysis (TABLE with switch provenance).
 """
 from __future__ import annotations
 

@@ -138,8 +138,11 @@ def _insert_dispatch_row(
           state_const_i64, state_const_hex, target_block, branch_kind,
           payload_json
         )
-        VALUES (1, 'INDIRECT_TABLE', 99, ?, ?, ?, ?, 'indirect',
-                json_object('target_ea_hex', ?))
+        VALUES (1, 'TABLE', 99, ?, ?, ?, ?, 'indirect',
+                json_object(
+                  'target_ea_hex', ?,
+                  'table_provenance', 'indirect_jump_table'
+                ))
         """,
         (row_index, state, f"0x{state:x}", target, f"0x{0x180000000 + target:x}"),
     )

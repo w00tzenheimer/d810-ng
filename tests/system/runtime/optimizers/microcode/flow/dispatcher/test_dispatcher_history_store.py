@@ -65,10 +65,10 @@ def test_advanced_with_promotes_type_and_keeps_state_when_none() -> None:
     assert h1 == DispatcherHistory(RouterKind.CONDITION_CHAIN, 0x1234)
 
     h2 = h1.advanced_with(
-        SimpleNamespace(router_kind=RouterKind.SWITCH,
+        SimpleNamespace(router_kind=RouterKind.TABLE,
                         initial_state=None)
     )
-    assert h2 == DispatcherHistory(RouterKind.SWITCH, 0x1234)
+    assert h2 == DispatcherHistory(RouterKind.TABLE, 0x1234)
 
 
 def test_first_analysis_has_no_history(monkeypatch) -> None:
@@ -83,8 +83,8 @@ def test_history_threaded_across_maturity(monkeypatch) -> None:
         monkeypatch,
         [
             (RouterKind.CONDITION_CHAIN, 0x1234),
-            (RouterKind.SWITCH, None),
-            (RouterKind.SWITCH, None),
+            (RouterKind.TABLE, None),
+            (RouterKind.TABLE, None),
         ],
     )
     store = DispatcherHistoryStore()
@@ -98,7 +98,7 @@ def test_history_threaded_across_maturity(monkeypatch) -> None:
     assert calls[0] == (None, None)
     assert calls[1] == (RouterKind.CONDITION_CHAIN, 0x1234)
     # GLBOPT1's None initial_state must NOT clobber the persisted 0x1234.
-    assert calls[2] == (RouterKind.SWITCH, 0x1234)
+    assert calls[2] == (RouterKind.TABLE, 0x1234)
 
 
 def test_same_maturity_uses_memo(monkeypatch) -> None:
@@ -116,7 +116,7 @@ def test_clear_resets_history(monkeypatch) -> None:
         monkeypatch,
         [
             (RouterKind.CONDITION_CHAIN, 0x1234),
-            (RouterKind.SWITCH, 0x5678),
+            (RouterKind.TABLE, 0x5678),
         ],
     )
     store = DispatcherHistoryStore()

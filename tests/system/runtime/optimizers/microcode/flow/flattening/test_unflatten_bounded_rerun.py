@@ -4,7 +4,7 @@ A single spine-redirect pass can leave the dispatcher's comparison ENTRY block
 reachable; the equality-chain / switch profile re-runs (bounded) so a later round
 recovers + redirects that residual dispatcher and IDA's optimize_global converges
 to the clean dispatcher-free graph (approov_real_pattern needs the 2nd round). The
-INDIRECT_TABLE profile keeps the historical one-shot contract.
+TABLE/indirect_jump_table profile keeps the historical one-shot contract.
 
 These exercise the pure gate (``_should_run_unflatten_round`` / ``_mark_ea_converged``)
 — no live ``mba`` — but the rule's module imports ``ida_hexrays`` at top level, so the
@@ -56,7 +56,7 @@ class TestUnflattenBoundedRerunGate:
         assert rule._should_run_unflatten_round(_EA, is_indirect=False, maturity=_MAT) is False
 
     def test_indirect_is_one_shot(self) -> None:
-        """The INDIRECT_TABLE profile runs exactly once (no re-run, no body drop)."""
+        """The TABLE/indirect_jump_table profile runs exactly once (no re-run, no body drop)."""
         rule = _fresh_rule()
         assert rule._should_run_unflatten_round(_EA, is_indirect=True, maturity=_MAT) is True
         # Second invocation is refused even though the ea was never marked converged.

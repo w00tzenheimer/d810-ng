@@ -17,7 +17,7 @@ class TestDispatcherHandlerMap:
             dispatcher_serial=5,
             dispatcher_blocks=frozenset({5}),
             state_var_stkoff=0x3C,
-            router_kind=RouterKind.SWITCH,
+            router_kind=RouterKind.TABLE,
             initial_state=0,
         )
 
@@ -29,7 +29,7 @@ class TestDispatcherHandlerMap:
     def test_handler_state_map_contents(self):
         m = self._make_simple_map()
         assert m.handler_state_map == {10: 0, 11: 1, 12: 2, 13: 3}
-        assert m.router_kind == RouterKind.SWITCH
+        assert m.router_kind == RouterKind.TABLE
 
     def test_initial_state(self):
         m = self._make_simple_map()
@@ -45,7 +45,7 @@ class TestResolveTarget:
             dispatcher_serial=5,
             dispatcher_blocks=frozenset({5}),
             state_var_stkoff=0x3C,
-            router_kind=RouterKind.SWITCH,
+            router_kind=RouterKind.TABLE,
         )
 
     def test_exact_match(self):
@@ -133,7 +133,7 @@ class TestToConditionChainResult:
             dispatcher_serial=5,
             dispatcher_blocks=frozenset({5, 6}),
             state_var_stkoff=0x3C,
-            router_kind=RouterKind.SWITCH,
+            router_kind=RouterKind.TABLE,
             initial_state=0,
         )
         condition_chain = m.to_condition_chain_result()
@@ -147,7 +147,7 @@ class TestToConditionChainResult:
             dispatcher_serial=5,
             dispatcher_blocks=frozenset({5, 6}),
             state_var_stkoff=0x3C,
-            router_kind=RouterKind.SWITCH,
+            router_kind=RouterKind.TABLE,
         )
         condition_chain = m.to_condition_chain_result()
         assert set(condition_chain.condition_chain_blocks) == {5, 6}
@@ -158,7 +158,7 @@ class TestToConditionChainResult:
             dispatcher_serial=5,
             dispatcher_blocks=frozenset({5}),
             state_var_stkoff=0x3C,
-            router_kind=RouterKind.SWITCH,
+            router_kind=RouterKind.TABLE,
         )
         condition_chain = m.to_condition_chain_result()
         assert condition_chain.transitions == {}

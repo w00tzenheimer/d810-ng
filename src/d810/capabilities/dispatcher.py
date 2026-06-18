@@ -9,12 +9,23 @@ from __future__ import annotations
 
 import enum
 
-__all__ = ["RouterKind"]
+__all__ = ["RouterKind", "TableProvenance"]
 
 
 class RouterKind(str, enum.Enum):
-    SWITCH = "switch"
+    TABLE = "table"
     EQUALITY_CHAIN = "equality_chain"
     CONDITION_CHAIN = "condition_chain"
-    INDIRECT_TABLE = "indirect_table"
+    UNKNOWN = "unknown"
+
+
+class TableProvenance(str, enum.Enum):
+    """Origin of a table-backed dispatcher.
+
+    ``RouterKind.TABLE`` says routing is table-backed.  This enum says which
+    recovery/projection produced the table evidence.
+    """
+
+    SWITCH = "switch"
+    INDIRECT_JUMP_TABLE = "indirect_jump_table"
     UNKNOWN = "unknown"
