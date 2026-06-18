@@ -21,13 +21,76 @@ they need.
 """
 from __future__ import annotations
 
-from d810.ir.expressions import Add, And, Const, ExprRef, Move, Sub
+from d810.ir.expressions import Add, And, Const, ExprRef, Move, Sub, ValueOpKind
 from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
+from d810.ir.instructions import Instruction, InstructionControl
 from d810.ir.locations import RegisterLocation, StackSlot, StorageLocation, WeakStackSlot
+from d810.ir.semantics import ControlTransferKind, OperationKind
 from d810.ir.statements import Assignment, ConditionalBranch
 from d810.ir.value_refs import DefinitionRef
 
-__all__ = ["project_assignment", "project_conditional_branch"]
+__all__ = [
+    "project_assignment",
+    "project_conditional_branch",
+    "project_instruction",
+]
+
+
+def _instruction_attrs(insn: InsnSnapshot) -> dict[str, object]:
+    """Provenance attrs for the canonical instruction projection."""
+    attrs = dict(insn.opcode_attrs)
+    attrs["ea"] = int(insn.ea)
+    raw_opcode = insn.raw_opcode if insn.raw_opcode is not None else insn.opcode
+    if raw_opcode >= 0:
+        attrs.setdefault("raw_opcode_int", int(raw_opcode))
+    return attrs
+
+
+def _operation_of(insn: InsnSnapshot) -> OperationKind:
+    """Return the semantic operation for ``insn``.
+
+    The order is intentional: branches use ``ControlTransferKind`` as their
+    operation and keep predicate details in ``Instruction.control``; set*
+    materializations have no transfer kind, so their ``PredicateKind`` becomes
+    the operation.  Raw opcode attrs are never consulted here.
+    """
+    if insn.control_transfer_kind is not None:
+        return insn.control_transfer_kind
+    if insn.call_kind is not None:
+        return insn.call_kind
+    if insn.predicate_kind is not None:
+        return insn.predicate_kind
+    if insn.value_op_kind is not None:
+        return insn.value_op_kind
+    return ValueOpKind.VENDOR
+
+
+def project_instruction(insn: InsnSnapshot) -> Instruction:
+    """Project ``InsnSnapshot`` to the canonical portable ``Instruction``.
+
+    ``llr-5b99`` Varnode is still open, so this first slice does not fabricate
+    full ``inputs`` / ``result`` from ``MopSnapshot``.  It pins the semantic
+    instruction shape and preserves raw backend details only in attrs.
+    """
+    transfer = insn.control_transfer_kind
+    predicate = (
+        insn.predicate_kind
+        if transfer is ControlTransferKind.CONDITIONAL_BRANCH
+        else None
+    )
+    control = (
+        InstructionControl(transfer=transfer, predicate=predicate)
+        if transfer is not None
+        else None
+    )
+    return Instruction(
+        operation=_operation_of(insn),
+        inputs=(),
+        result=None,
+        effects=(),
+        control=control,
+        attrs=_instruction_attrs(insn),
+    )
 
 
 def _location_of(mop: MopSnapshot | None) -> StorageLocation | None:

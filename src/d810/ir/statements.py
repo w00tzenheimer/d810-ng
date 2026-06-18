@@ -12,9 +12,11 @@ unified here into one node because ``d810.ir.locations`` already unifies those
 namespaces.  ``TemporaryRef`` / ``SSAValueRef`` targets stay available for a
 future SSA pass without changing this node.
 
-Minimum viable scope: ``Assignment`` (``target := value``).  Extend with
-control-transfer / call / guard statements on demand -- do NOT preload the
-statement universe (see ``d810.ir.semantics`` for the planned families).
+``Assignment`` and ``ConditionalBranch`` are statement-level views over the
+canonical ``d810.ir.instructions.Instruction`` source record.  They are not
+subclasses of ``Instruction``: callers that need instruction identity and raw
+provenance should project an ``Instruction`` first; callers that need a focused
+statement shape can derive these views from the same ``InsnSnapshot``.
 """
 from __future__ import annotations
 
