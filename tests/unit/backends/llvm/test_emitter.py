@@ -54,6 +54,29 @@ def _and(lhs: MopSnapshot, rhs: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
     return InsnSnapshot(opcode=0x14, ea=0x100C, operands=(), kind=InsnKind.AND, l=lhs, r=rhs, d=dst)
 
 
+def _value_op(
+    operation: ValueOpKind,
+    lhs: MopSnapshot,
+    rhs: MopSnapshot,
+    dst: MopSnapshot,
+    *,
+    raw_opcode_name: str | None = None,
+) -> InsnSnapshot:
+    attrs = {"raw_opcode_name": raw_opcode_name} if raw_opcode_name is not None else {}
+    return InsnSnapshot(
+        opcode=-1,
+        raw_opcode=0x80,
+        ea=0x1014,
+        operands=(),
+        kind=InsnKind.UNKNOWN,
+        value_op_kind=operation,
+        opcode_attrs=attrs,
+        l=lhs,
+        r=rhs,
+        d=dst,
+    )
+
+
 def _ret(value: MopSnapshot | None = None) -> InsnSnapshot:
     return InsnSnapshot(opcode=0x42, ea=0x1010, operands=(), kind=InsnKind.RET, l=value)
 
@@ -154,6 +177,55 @@ def test_simple_arithmetic_emits_allocas_loads_and_stores():
     assert " = sub i32 " in result.ir_text
     assert " = and i32 " in result.ir_text
     assert "ret i32 %" in result.ir_text
+
+
+@pytest.mark.parametrize(
+    ("operation", "llvm_opcode"),
+    (
+        (ValueOpKind.OR, "or"),
+        (ValueOpKind.XOR, "xor"),
+        (ValueOpKind.MUL, "mul"),
+    ),
+)
+def test_m1d_integer_binary_ops_emit_canonical_llvm_opcode(
+    operation: ValueOpKind,
+    llvm_opcode: str,
+):
+    flow = _graph(
+        _block(
+            0,
+            (),
+            (
+                _value_op(operation, _reg(0), _num(0x55), _reg(1)),
+                _ret(_reg(1)),
+            ),
+        )
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert f" = {llvm_opcode} i32 " in result.ir_text
+    assert "ptr %r1_4" in result.ir_text
+
+
+def test_xor_materialization_accepts_duplicate_compared_operands():
+    flow = _graph(
+        _block(
+            0,
+            (),
+            (
+                _value_op(ValueOpKind.XOR, _reg(0), _reg(0), _reg(1)),
+                _ret(_reg(1)),
+            ),
+        )
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert " = xor i32 " in result.ir_text
+    assert "XOR requires two inputs" not in {reason.reason for reason in result.unsupported}
 
 
 def test_one_way_cfg_edge_emits_branch_label():
@@ -298,6 +370,30 @@ def test_raw_opcode_attrs_do_not_authorize_predicate_materialization():
     )
 
 
+def test_raw_opcode_attrs_do_not_authorize_xor_value_operation():
+    fake_xor = InsnSnapshot(
+        opcode=0x80,
+        ea=0x2020,
+        operands=(),
+        kind=InsnKind.UNKNOWN,
+        opcode_attrs={"raw_opcode_name": "m_xor"},
+        l=_reg(0),
+        r=_reg(1),
+        d=_reg(2),
+    )
+    flow = _graph(_block(0, (), (fake_xor, _ret(_reg(0)))))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.operation == "vendor"
+        and reason.reason == "value operation vendor is unsupported in M1a"
+        for reason in result.unsupported
+    )
+
+
 @pytest.mark.parametrize(
     ("insn", "expected_reason"),
     (
@@ -334,6 +430,28 @@ def test_unsupported_predicate_materialization_cases_fail_closed(
     assert not result.supported
     assert result.ir_text == ""
     assert any(reason.reason == expected_reason for reason in result.unsupported)
+
+
+def test_m1d_binary_op_mismatched_widths_fail_closed():
+    flow = _graph(
+        _block(
+            0,
+            (),
+            (
+                _value_op(ValueOpKind.MUL, _reg(0, size=4), _reg(1, size=8), _reg(2)),
+                _ret(_reg(2)),
+            ),
+        )
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.reason == "M1a requires value operands and result to have matching widths"
+        for reason in result.unsupported
+    )
 
 
 def test_unsupported_call_returns_diagnostic_and_no_ir():

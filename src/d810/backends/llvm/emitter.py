@@ -19,7 +19,15 @@ __all__ = [
 
 
 _SCALAR_WIDTHS = {1: "i8", 2: "i16", 4: "i32", 8: "i64"}
-_VALUE_OPS = {ValueOpKind.MOVE, ValueOpKind.ADD, ValueOpKind.SUB, ValueOpKind.AND}
+_BINARY_VALUE_OPS = {
+    ValueOpKind.ADD,
+    ValueOpKind.SUB,
+    ValueOpKind.MUL,
+    ValueOpKind.OR,
+    ValueOpKind.AND,
+    ValueOpKind.XOR,
+}
+_VALUE_OPS = {ValueOpKind.MOVE, *_BINARY_VALUE_OPS}
 _PREDICATES = {
     PredicateKind.EQ: "eq",
     PredicateKind.NE: "ne",
@@ -219,7 +227,7 @@ class _Classifier:
             self._add(block_serial, instruction_index, instruction, "value op result cannot be const")
         if instruction.operation is ValueOpKind.MOVE and len(instruction.inputs) != 1:
             self._add(block_serial, instruction_index, instruction, "MOVE requires one input")
-        if instruction.operation in {ValueOpKind.ADD, ValueOpKind.SUB, ValueOpKind.AND}:
+        if instruction.operation in _BINARY_VALUE_OPS:
             if len(instruction.inputs) != 2:
                 self._add(
                     block_serial,
@@ -462,7 +470,10 @@ class _Emitter:
             opcode = {
                 ValueOpKind.ADD: "add",
                 ValueOpKind.SUB: "sub",
+                ValueOpKind.MUL: "mul",
+                ValueOpKind.OR: "or",
                 ValueOpKind.AND: "and",
+                ValueOpKind.XOR: "xor",
             }[instruction.operation]
             lines.append(f"  {tmp} = {opcode} {result_ty} {left}, {right}")
             computed = tmp
