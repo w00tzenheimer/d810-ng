@@ -241,7 +241,7 @@ CLEANUP_STRATEGY_FULL = '''#!/usr/bin/env python3
 
 This strategy removes dead code and simplifies the CFG after
 unflattening has been applied:
-1. Removes unreachable blocks (former dispatcher/BST blocks)
+1. Removes unreachable blocks (former dispatcher/condition-chain blocks)
 2. Coalesces redundant jumps
 3. Cleans up residual state variable writes
 
@@ -282,7 +282,7 @@ class CleanupStrategy(UnflatteningStrategy):
 
     This strategy:
     1. Identifies unreachable blocks (no incoming edges from entry)
-    2. Removes former dispatcher/BST blocks
+    2. Removes former dispatcher/condition-chain blocks
     3. Cleans up state variable writes that are now dead
     4. Returns a PlanFragment with cleanup modifications
 

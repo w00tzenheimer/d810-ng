@@ -53,7 +53,7 @@ EXACT_MODULE_RENAMES: dict[str, str] = {
         "d810.diagnostics.alternate_correlation"
     ),
     "d810.recon.flow.alternate_selection": "d810.diagnostics.alternate_selection",
-    "d810.recon.flow.bst_resolution": "d810.diagnostics.bst_resolution",
+    "d810.recon.flow.condition_chain_resolution": "d810.diagnostics.condition_chain_resolution",
     "d810.recon.flow.edge_diagnostics": "d810.diagnostics.edge_diagnostics",
 }
 

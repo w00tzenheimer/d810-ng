@@ -615,7 +615,7 @@ class BenefitMetrics:
     Args:
         handlers_resolved: Number of flattened handlers the plan linearises.
         transitions_resolved: Number of state transitions that become explicit gotos.
-        blocks_freed: Number of dispatcher or BST blocks that become dead code.
+        blocks_freed: Number of dispatcher or condition-chain blocks that become dead code.
         conflict_density: Estimated proportion of owned resources that conflict
             with other concurrently-active strategies (0.0-1.0+).
     """
@@ -760,7 +760,7 @@ class StageResult:
 class VerificationGate:
     """Post-stage verification thresholds.
 
-    After direct linearization, dispatcher and BST blocks become dead code,
+    After direct linearization, dispatcher and condition-chain blocks become dead code,
     so block-level reachability drops significantly (e.g. to ~0.66). This is
     *expected*. The primary correctness metric is **handler reachability** -
     the fraction of handler entry blocks that remain reachable from the
