@@ -1189,9 +1189,31 @@ class TestSnapshotDag:
 class TestSnapshotModifications:
     def test_writes_modifications(self) -> None:
         conn = create_diag_database(":memory:").connection()
-        conn.execute(
-            "INSERT INTO snapshots VALUES "
-            "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
+        snap_id = snapshot_mba(
+            conn,
+            [
+                BlockSnapshot(
+                    serial=50,
+                    block_type=1,
+                    type_name="BLT_1WAY",
+                    start_ea=0x1500,
+                ),
+                BlockSnapshot(
+                    serial=131,
+                    block_type=1,
+                    type_name="BLT_1WAY",
+                    start_ea=0x1800,
+                ),
+                BlockSnapshot(
+                    serial=174,
+                    block_type=1,
+                    type_name="BLT_1WAY",
+                    start_ea=0x1A00,
+                ),
+            ],
+            label="test",
+            func_ea=0x1000,
+            maturity="GLBOPT1",
         )
 
         mods = [
@@ -1220,15 +1242,45 @@ class TestSnapshotModifications:
             ),
         ]
 
-        snapshot_modifications(conn, 1, mods)
+        snapshot_modifications(conn, snap_id, mods)
 
         rows = conn.execute(
-            "SELECT mod_type, status FROM modifications WHERE snapshot_id=1 "
-            "ORDER BY mod_index"
+            """
+            SELECT mod_type, status, source_block_label, target_block_label,
+                   old_target_label
+            FROM modifications
+            WHERE snapshot_id=?
+            ORDER BY mod_index
+            """,
+            (snap_id,),
         ).fetchall()
         assert len(rows) == 3
-        assert rows[0] == ("goto_redirect", "emitted")
-        assert rows[1] == ("nop_instructions", "skipped")
+        assert rows[0] == (
+            "goto_redirect",
+            "emitted",
+            "blk[131]@0x1800",
+            "blk[174]@0x1A00",
+            "blk[50]@0x1500",
+        )
+        assert rows[1] == (
+            "nop_instructions",
+            "skipped",
+            "blk[32]@unknown",
+            None,
+            None,
+        )
+
+        ea_rows = conn.execute(
+            "SELECT source_block_ea_hex, target_block_ea_hex, old_target_ea_hex "
+            "FROM modifications WHERE snapshot_id=? "
+            "ORDER BY mod_index",
+            (snap_id,),
+        ).fetchall()
+        assert ea_rows[0] == (
+            "0x0000000000001800",
+            "0x0000000000001a00",
+            "0x0000000000001500",
+        )
 
     def test_empty_modifications(self) -> None:
         conn = create_diag_database(":memory:").connection()

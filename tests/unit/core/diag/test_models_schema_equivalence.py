@@ -331,8 +331,17 @@ EXPECTED_TABLE_INFO = {
         ("mod_index", "INTEGER", 1, 2),
         ("mod_type", "TEXT", 1, 0),
         ("source_block", "INTEGER", 0, 0),
+        ("source_block_label", "TEXT", 0, 0),
+        ("source_block_ea_hex", "TEXT", 0, 0),
+        ("source_block_ea_i64", "INTEGER", 0, 0),
         ("target_block", "INTEGER", 0, 0),
+        ("target_block_label", "TEXT", 0, 0),
+        ("target_block_ea_hex", "TEXT", 0, 0),
+        ("target_block_ea_i64", "INTEGER", 0, 0),
         ("old_target", "INTEGER", 0, 0),
+        ("old_target_label", "TEXT", 0, 0),
+        ("old_target_ea_hex", "TEXT", 0, 0),
+        ("old_target_ea_i64", "INTEGER", 0, 0),
         ("write_site_ea_hex", "TEXT", 0, 0),
         ("write_site_ea_i64", "INTEGER", 0, 0),
         ("write_site_blk", "INTEGER", 0, 0),
@@ -406,7 +415,13 @@ EXPECTED_TABLE_INFO = {
         ("pass_name", "TEXT", 1, 0),
         ("action", "TEXT", 1, 0),
         ("block_serial", "INTEGER", 1, 0),
+        ("block_label", "TEXT", 0, 0),
+        ("block_ea_hex", "TEXT", 0, 0),
+        ("block_ea_i64", "INTEGER", 0, 0),
         ("target_serial", "INTEGER", 0, 0),
+        ("target_label", "TEXT", 0, 0),
+        ("target_ea_hex", "TEXT", 0, 0),
+        ("target_ea_i64", "INTEGER", 0, 0),
         ("reason", "TEXT", 0, 0),
         ("extra_json", "TEXT", 0, 0),
     ],
@@ -669,6 +684,52 @@ EXPECTED_INDEXES = {
 ALLOWED_PK_NOTNULL_DIFFS = {("watch_block_transitions", "id"): 0}
 
 
+BLOCK_REFERENCE_EA_CONTRACTS = {
+    "modifications": {
+        "source_block": (
+            "source_block_label",
+            "source_block_ea_hex",
+            "source_block_ea_i64",
+        ),
+        "target_block": (
+            "target_block_label",
+            "target_block_ea_hex",
+            "target_block_ea_i64",
+        ),
+        "old_target": (
+            "old_target_label",
+            "old_target_ea_hex",
+            "old_target_ea_i64",
+        ),
+        "write_site_blk": (
+            "write_site_ea_hex",
+            "write_site_ea_i64",
+        ),
+    },
+    "cfg_provenance": {
+        "block_serial": (
+            "block_label",
+            "block_ea_hex",
+            "block_ea_i64",
+        ),
+        "target_serial": (
+            "target_label",
+            "target_ea_hex",
+            "target_ea_i64",
+        ),
+    },
+}
+
+
+def _looks_like_block_reference(column: str) -> bool:
+    return (
+        column.endswith("_block")
+        or column.endswith("_serial")
+        or column.endswith("_target")
+        or column.endswith("_blk")
+    )
+
+
 def _table_info(conn: sqlite3.Connection, table: str) -> list[tuple]:
     return [
         (r[1], r[2], r[3], r[5])  # name, type, notnull, pk
@@ -727,6 +788,24 @@ class TestModeledSchemaEquivalence:
             name, typ, notnull, pk = cells[col]
             assert pk > 0, (table, col, "must be a PK column")
             assert notnull == 1 and pristine_notnull == 0, (table, col)
+
+    def test_block_reference_columns_have_ea_context(self) -> None:
+        """Block-reference columns in key diag tables must carry EA context."""
+        conn = create_diag_database(":memory:").connection()
+        for table, contracts in BLOCK_REFERENCE_EA_CONTRACTS.items():
+            columns = {row[0] for row in _table_info(conn, table)}
+            refs = {
+                column
+                for column in columns
+                if _looks_like_block_reference(column)
+                and column not in {"snapshot_id"}
+                and not column.endswith("_ea_i64")
+            }
+            assert refs == set(contracts), (table, sorted(refs))
+            for ref_column, required_columns in contracts.items():
+                assert ref_column in columns, (table, ref_column)
+                for required in required_columns:
+                    assert required in columns, (table, ref_column, required)
 
     def test_modeled_count(self) -> None:
         # Phase A models the non-slice-1, non-view tables.

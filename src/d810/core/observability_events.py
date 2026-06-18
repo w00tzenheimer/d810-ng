@@ -253,7 +253,9 @@ class CfgProvenanceObserved:
     reason: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
     block_label: str | None = None
+    block_ea: int | None = None
     target_label: str | None = None
+    target_ea: int | None = None
     maturity_label: str | None = None
 
 

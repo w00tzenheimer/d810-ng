@@ -12,6 +12,7 @@ from collections.abc import Mapping as MappingABC
 # existing callers (`from d810.core.diag.snapshot import BlockSnapshot`).
 from d810._vendor.peewee import SqliteDatabase
 from d810.core.diag import active_diag_db, diag_models_on
+from d810.core.formatting import format_block_id
 from d810.core.diag.models import (
     Block,
     BlockClassification,
@@ -488,16 +489,23 @@ def snapshot_modifications(
         snapshot_id: The snapshot to associate with.
         modifications: List of Modification dataclasses.
     """
+    block_lookup = _block_label_lookup(conn, snapshot_id)
     rows = []
     for m in modifications:
         ws_hex, ws_i64 = _dual(m.write_site_ea)
+        source_diag = _block_diag_fields("source_block", m.source_block, block_lookup)
+        target_diag = _block_diag_fields("target_block", m.target_block, block_lookup)
+        old_diag = _block_diag_fields("old_target", m.old_target, block_lookup)
         rows.append({
             "snapshot": snapshot_id,
             "mod_index": m.mod_index,
             "mod_type": m.mod_type,
             "source_block": m.source_block,
+            **source_diag,
             "target_block": m.target_block,
+            **target_diag,
             "old_target": m.old_target,
+            **old_diag,
             "write_site_ea_hex": ws_hex,
             "write_site_ea_i64": ws_i64,
             "write_site_blk": m.write_site_blk,
@@ -508,6 +516,47 @@ def snapshot_modifications(
     with diag_models_on(db), db.atomic():
         if rows:
             ModificationModel.insert_many(rows).execute()
+
+
+def _block_label_lookup(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+) -> dict[int, tuple[str | None, int | None]]:
+    rows = conn.execute(
+        """
+        SELECT serial, start_ea_hex, start_ea_i64
+        FROM blocks
+        WHERE snapshot_id=?
+        """,
+        (snapshot_id,),
+    ).fetchall()
+    return {
+        int(serial): (start_ea_hex, start_ea_i64)
+        for serial, start_ea_hex, start_ea_i64 in rows
+    }
+
+
+def _block_diag_fields(
+    prefix: str,
+    serial: int | None,
+    block_lookup: Mapping[int, tuple[str | None, int | None]],
+) -> dict[str, str | int | None]:
+    if serial is None:
+        return {
+            f"{prefix}_label": None,
+            f"{prefix}_ea_hex": None,
+            f"{prefix}_ea_i64": None,
+        }
+    serial_i = int(serial)
+    ea_hex: str | None = None
+    ea_i64: int | None = None
+    if serial_i in block_lookup:
+        ea_hex, ea_i64 = block_lookup[serial_i]
+    return {
+        f"{prefix}_label": format_block_id(serial_i, start_ea=ea_hex or ea_i64),
+        f"{prefix}_ea_hex": ea_hex,
+        f"{prefix}_ea_i64": ea_i64,
+    }
 
 
 def snapshot_rendered_program(

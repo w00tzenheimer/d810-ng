@@ -32,6 +32,7 @@ from d810.core.observability_events import (
 )
 from d810.core.observability_labels import (
     live_block_label,
+    live_block_start_ea,
     live_maturity_label,
     safe_serial,
 )
@@ -53,7 +54,9 @@ def observe_cfg_provenance(
     extra: dict[str, Any] | None = None,
     mba: Any | None = None,
     block_label: str | None = None,
+    block_ea: int | None = None,
     target_label: str | None = None,
+    target_ea: int | None = None,
     maturity_label: str | None = None,
 ) -> None:
     """Publish a :class:`CfgProvenanceObserved` event.
@@ -74,8 +77,12 @@ def observe_cfg_provenance(
         )
         if block_label is None:
             block_label = live_block_label(mba, block_int)
+        if block_ea is None:
+            block_ea = live_block_start_ea(mba, block_int)
         if target_label is None and target_int is not None:
             target_label = live_block_label(mba, target_int)
+        if target_ea is None and target_int is not None:
+            target_ea = live_block_start_ea(mba, target_int)
         if maturity_label is None:
             maturity_label = live_maturity_label(mba)
     _emit(CfgProvenanceObserved(
@@ -88,7 +95,9 @@ def observe_cfg_provenance(
         reason=str(reason),
         extra=dict(extra or {}),
         block_label=block_label,
+        block_ea=block_ea,
         target_label=target_label,
+        target_ea=target_ea,
         maturity_label=maturity_label,
     ))
 
@@ -104,7 +113,9 @@ def observe_cfg_provenance_latest(
     extra: dict[str, Any] | None = None,
     mba: Any | None = None,
     block_label: str | None = None,
+    block_ea: int | None = None,
     target_label: str | None = None,
+    target_ea: int | None = None,
     maturity_label: str | None = None,
 ) -> None:
     """Publish CFG provenance against the latest snapshot for ``func_ea``.
@@ -122,8 +133,12 @@ def observe_cfg_provenance_latest(
         )
         if block_label is None:
             block_label = live_block_label(mba, block_int)
+        if block_ea is None:
+            block_ea = live_block_start_ea(mba, block_int)
         if target_label is None and target_int is not None:
             target_label = live_block_label(mba, target_int)
+        if target_ea is None and target_int is not None:
+            target_ea = live_block_start_ea(mba, target_int)
         if maturity_label is None:
             maturity_label = live_maturity_label(mba)
     event = CfgProvenanceObserved(
@@ -136,7 +151,9 @@ def observe_cfg_provenance_latest(
         reason=str(reason),
         extra=dict(extra or {}),
         block_label=block_label,
+        block_ea=block_ea,
         target_label=target_label,
+        target_ea=target_ea,
         maturity_label=maturity_label,
     )
     # Prefer the explicit late-binding event. Some embedded IDA harnesses
