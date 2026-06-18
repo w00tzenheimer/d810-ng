@@ -32,7 +32,7 @@ Current supported subset:
 - integer constants and register/stack/global/lvar/temp varnodes with 1/2/4/8
   byte scalar widths,
 - one `alloca` per distinct non-const varnode,
-- `MOVE`, `ADD`, `SUB`, and `AND`,
+- `MOVE`, `ADD`, `SUB`, `MUL`, `OR`, `AND`, and `XOR`,
 - materialized canonical `PredicateKind` comparisons as `icmp` plus zero-extend
   into the result varnode,
 - one-way block edges as `br label`,
