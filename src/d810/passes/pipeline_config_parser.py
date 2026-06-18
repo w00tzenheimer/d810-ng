@@ -26,6 +26,8 @@ def pipeline_configs_from_project_config(project_config) -> tuple[PipelineConfig
         return ()
     if isinstance(payload, Mapping) or not isinstance(payload, (list, tuple)):
         raise PipelineConfigError("pipeline_v2 must be a sequence of pass configs")
+    if not payload:
+        raise PipelineConfigError("pipeline_v2 must contain at least one pass config")
     return tuple(PipelineConfig.from_dict(item) for item in payload)
 
 
