@@ -11,6 +11,7 @@ every concept that already exists is *bound to*, never duplicated.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 
 from d810.core.typing import Any, Callable, Protocol, runtime_checkable
 from d810.core.config import ProjectConfiguration
@@ -73,6 +74,27 @@ class SafetyPolicy:
     golden_required: bool = False
 
 
+class PassGranularity(str, Enum):
+    """IR unit a pass operates on."""
+
+    FUNCTION = "function"
+    CFG = "cfg"
+
+
+class BackendRoute(str, Enum):
+    """Backend apply route for a pass result."""
+
+    MUTATION_BACKEND = "mutation_backend"
+    ANALYSIS_ONLY = "analysis_only"
+
+
+class SchedulerPolicy(str, Enum):
+    """How eligible scheduled work enters a pass-manager run."""
+
+    WORKLIST = "worklist"
+    REPLAY_AFTER_PIPELINE = "replay_after_pipeline"
+
+
 @dataclass(frozen=True)
 class PreservedAnalyses:
     """LLVM ``PreservedAnalyses`` analog -- an OPTIMISTIC carry-forward HINT, not the
@@ -103,6 +125,32 @@ class PreservedAnalyses:
 
 
 @dataclass(frozen=True)
+class AnalysisContract:
+    """Declared analysis dependencies and products for a pass."""
+
+    required: frozenset[str] = frozenset()
+    provided: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class PipelineConfig:
+    """PipelineConfig v2: declarative pass-manager contract."""
+
+    pass_id: str
+    maturity_gates: frozenset[IRMaturity] = frozenset()
+    granularity: PassGranularity = PassGranularity.FUNCTION
+    requirements: CapabilityPolicy = field(default_factory=CapabilityPolicy)
+    analyses: AnalysisContract = field(default_factory=AnalysisContract)
+    preservation: PreservedAnalyses = field(default_factory=PreservedAnalyses.all)
+    scheduler_policy: SchedulerPolicy = SchedulerPolicy.WORKLIST
+    backend_route: BackendRoute = BackendRoute.MUTATION_BACKEND
+    safety_policy: SafetyPolicy = field(default_factory=SafetyPolicy)
+
+    def enabled_at(self, maturity: IRMaturity | None) -> bool:
+        return not self.maturity_gates or maturity in self.maturity_gates
+
+
+@dataclass(frozen=True)
 class PassResult:
     """What a pass produces: derived facts, a (possibly empty) rewrite plan, and an
     OPTIMISTIC same-maturity invalidation hint (the sound base is snapshot identity)."""
@@ -128,6 +176,33 @@ class PassSpec:
     pass_factory: Callable[..., PipelinePass]
     requirements: CapabilityPolicy
     safety_policy: SafetyPolicy
+    maturity_gates: frozenset[IRMaturity] = frozenset()
+    granularity: PassGranularity = PassGranularity.FUNCTION
+    analyses: AnalysisContract = field(default_factory=AnalysisContract)
+    preservation: PreservedAnalyses = field(default_factory=PreservedAnalyses.all)
+    scheduler_policy: SchedulerPolicy = SchedulerPolicy.WORKLIST
+    backend_route: BackendRoute = BackendRoute.MUTATION_BACKEND
+
+    @property
+    def pass_id(self) -> str:
+        return self.name
+
+    @property
+    def config(self) -> PipelineConfig:
+        return PipelineConfig(
+            pass_id=self.pass_id,
+            maturity_gates=self.maturity_gates,
+            granularity=self.granularity,
+            requirements=self.requirements,
+            analyses=self.analyses,
+            preservation=self.preservation,
+            scheduler_policy=self.scheduler_policy,
+            backend_route=self.backend_route,
+            safety_policy=self.safety_policy,
+        )
+
+    def enabled_at(self, maturity: IRMaturity | None) -> bool:
+        return self.config.enabled_at(maturity)
 
 
 @runtime_checkable

@@ -23,6 +23,7 @@ from d810.passes.pass_pipeline import (
     FunctionPipelineContext,
     PassSpec,
     PreservedAnalyses,
+    SchedulerPolicy,
 )
 from d810.passes.scheduler import PassScheduler, RunLaterDomain
 from d810.transforms.plan import PatchPlan
@@ -74,7 +75,7 @@ def _run_pass_spec(
         for request in result.run_later:
             scheduler.request(
                 func_ea=ctx.source.func_ea,
-                pass_id=spec.name,
+                pass_id=spec.pass_id,
                 current_maturity=ctx.maturity,
                 run_later=request,
                 domain=RunLaterDomain.PIPELINE_PASS,
@@ -86,6 +87,47 @@ def _run_pass_spec(
         facts.invalidate_to(new_graph, result.preserved)
         ctx = replace(ctx, graph=new_graph)
     return ctx
+
+
+def _eligible_specs(
+    specs: tuple[PassSpec, ...],
+    maturity,
+) -> tuple[PassSpec, ...]:
+    return tuple(spec for spec in specs if spec.enabled_at(maturity))
+
+
+def _build_pass_worklists(
+    *,
+    specs: tuple[PassSpec, ...],
+    scheduler: PassScheduler | None,
+    ctx: FunctionPipelineContext,
+) -> tuple[tuple[PassSpec, ...], tuple[PassSpec, ...]]:
+    worklist = list(_eligible_specs(specs, ctx.maturity))
+    replay_after_pipeline: list[PassSpec] = []
+    if scheduler is None:
+        return tuple(worklist), ()
+
+    specs_by_name = {spec.pass_id: spec for spec in specs}
+    scheduled_worklist: list[PassSpec] = []
+    for pending in scheduler.drain(
+        func_ea=ctx.source.func_ea,
+        current_maturity=ctx.maturity,
+        domain=RunLaterDomain.PIPELINE_PASS,
+    ):
+        spec = specs_by_name.get(pending.pass_id)
+        if spec is None or not spec.enabled_at(ctx.maturity):
+            continue
+        if spec.scheduler_policy is SchedulerPolicy.REPLAY_AFTER_PIPELINE:
+            replay_after_pipeline.append(spec)
+        else:
+            scheduled_worklist.append(spec)
+
+    queued_ids = {spec.pass_id for spec in worklist}
+    for spec in scheduled_worklist:
+        if spec.pass_id not in queued_ids:
+            worklist.append(spec)
+            queued_ids.add(spec.pass_id)
+    return tuple(worklist), tuple(replay_after_pipeline)
 
 
 def run_pipeline(
@@ -120,29 +162,19 @@ def run_pipeline(
         capabilities=capabilities if capabilities is not None else CapabilitySet(),
     )
     specs = family.pipeline_for(match, ctx)
-    scheduled_pass_ids: tuple[str, ...] = ()
-    if scheduler is not None:
-        scheduled_pass_ids = tuple(
-            pending.pass_id
-            for pending in scheduler.drain(
-                func_ea=ctx.source.func_ea,
-                current_maturity=ctx.maturity,
-                domain=RunLaterDomain.PIPELINE_PASS,
-            )
-        )
+    worklist, replay_after_pipeline = _build_pass_worklists(
+        specs=specs,
+        scheduler=scheduler,
+        ctx=ctx,
+    )
 
-    for spec in specs:
+    for spec in worklist:
         ctx = _run_pass_spec(
             spec=spec, ctx=ctx, backend=backend, facts=facts, scheduler=scheduler
         )
 
-    if scheduled_pass_ids:
-        specs_by_name = {spec.name: spec for spec in specs}
-        for pass_id in scheduled_pass_ids:
-            spec = specs_by_name.get(pass_id)
-            if spec is None:
-                continue
-            ctx = _run_pass_spec(
-                spec=spec, ctx=ctx, backend=backend, facts=facts, scheduler=scheduler
-            )
+    for spec in replay_after_pipeline:
+        ctx = _run_pass_spec(
+            spec=spec, ctx=ctx, backend=backend, facts=facts, scheduler=scheduler
+        )
     return ctx.graph
