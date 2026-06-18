@@ -11,6 +11,7 @@ from d810.core.logging import getLogger
 from d810.core.typing import TYPE_CHECKING, Callable
 
 from d810.hexrays.contracts import CfgContractViolationError, IDACfgContract
+from d810.hexrays.ir_maturity import ida_maturity_to_ir
 
 from d810.transforms.graph_modification import (
     CloneConditionalAsGoto,
@@ -34,8 +35,8 @@ from d810.ir.flowgraph import (
     InsnKind,
     InsnSnapshot,
     OperandKind,
-    SnapshotStage,
 )
+from d810.ir.maturity import IRMaturity, SnapshotForm, snapshot_form_for_maturity
 from d810.ir.flowgraph import MopSnapshot as CfgMopSnapshot
 from d810.ir.semantics import ControlTransferKind, PredicateKind
 from d810.transforms.plan import (
@@ -641,24 +642,39 @@ def lift_block(blk: "ida_hexrays.mblock_t") -> BlockSnapshot:
     )
 
 
-# Maps Hex-Rays maturity names to the portable, coarse ``SnapshotStage``
-# family.  Keeping the mapping name-keyed avoids importing raw ``MMAT_*``
-# constants here and mirrors maturity_to_string()'s vocabulary.
-_MATURITY_NAME_TO_SNAPSHOT_STAGE = {
-    "MMAT_ZERO": SnapshotStage.RAW_IR,
-    "MMAT_GENERATED": SnapshotStage.RAW_IR,
-    "MMAT_PREOPTIMIZED": SnapshotStage.NORMALIZED_IR,
-    "MMAT_LOCOPT": SnapshotStage.NORMALIZED_IR,
-    "MMAT_CALLS": SnapshotStage.OPTIMIZED_IR,
-    "MMAT_GLBOPT1": SnapshotStage.OPTIMIZED_IR,
-    "MMAT_GLBOPT2": SnapshotStage.OPTIMIZED_IR,
-    "MMAT_GLBOPT3": SnapshotStage.OPTIMIZED_IR,
-    "MMAT_LVARS": SnapshotStage.LVAR_RECOVERED,
+# Diagnostic/test convenience for callers that start from Hex-Rays maturity
+# names instead of the raw maturity integer available on ``mba_t``.
+_MATURITY_NAME_TO_IR_MATURITY = {
+    "MMAT_ZERO": IRMaturity.LIFTED,
+    "MMAT_GENERATED": IRMaturity.LIFTED,
+    "MMAT_PREOPTIMIZED": IRMaturity.CANONICAL,
+    "MMAT_LOCOPT": IRMaturity.LOCAL_OPTIMIZED,
+    "MMAT_CALLS": IRMaturity.CALL_MODELED,
+    "MMAT_GLBOPT1": IRMaturity.GLOBAL_ANALYZED,
+    "MMAT_GLBOPT2": IRMaturity.GLOBAL_OPTIMIZED,
+    "MMAT_GLBOPT3": IRMaturity.STRUCTURED,
+    "MMAT_LVARS": IRMaturity.VARIABLE_RECOVERED,
 }
 
 
-def _snapshot_stage_for_maturity_name(maturity_name: str) -> SnapshotStage:
-    return _MATURITY_NAME_TO_SNAPSHOT_STAGE.get(maturity_name, SnapshotStage.UNKNOWN)
+def _snapshot_form_for_maturity_name(maturity_name: str) -> SnapshotForm:
+    maturity = _MATURITY_NAME_TO_IR_MATURITY.get(maturity_name)
+    if maturity is None:
+        return SnapshotForm.UNKNOWN
+    return snapshot_form_for_maturity(maturity)
+
+
+def _snapshot_form_for_maturity_int(maturity: int) -> SnapshotForm:
+    try:
+        return snapshot_form_for_maturity(ida_maturity_to_ir(maturity))
+    except ValueError:
+        return SnapshotForm.UNKNOWN
+
+
+def _snapshot_stage_for_maturity_name(maturity_name: str) -> SnapshotForm:
+    """Retired helper name; prefer ``_snapshot_form_for_maturity_name``."""
+
+    return _snapshot_form_for_maturity_name(maturity_name)
 
 
 def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
@@ -695,6 +711,7 @@ def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
 
     maturity_int = int(mba.maturity)
     maturity_name = maturity_to_string(maturity_int)
+    snapshot_form = _snapshot_form_for_maturity_int(maturity_int)
     return FlowGraph(
         blocks=blocks,
         entry_serial=0,
@@ -705,7 +722,8 @@ def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
             "producer": "hexrays",
             "producer_stage_id": maturity_int,
             "producer_stage_name": maturity_name,
-            "snapshot_stage": _snapshot_stage_for_maturity_name(maturity_name),
+            "snapshot_form": snapshot_form,
+            "snapshot_stage": snapshot_form,
             "cpu_arch_name": cpu_arch_name,
             # E2b transition aliases (retained for legacy callers; proven
             # equal to the neutral fields by the lifter parity test).

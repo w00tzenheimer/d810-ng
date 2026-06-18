@@ -13,6 +13,14 @@ mapping lives in the vendor adapter).
 from __future__ import annotations
 
 from enum import Enum
+from types import MappingProxyType
+
+__all__ = [
+    "IRMaturity",
+    "SnapshotForm",
+    "IR_MATURITY_TO_SNAPSHOT_FORM",
+    "snapshot_form_for_maturity",
+]
 
 
 class IRMaturity(str, Enum):
@@ -44,3 +52,43 @@ class IRMaturity(str, Enum):
     # Binary Ninja: HLIL with variable recovery
     # Meaning: pseudocode-ready local variable abstraction.
     VARIABLE_RECOVERED = "ir.variable.recovered"
+
+
+class SnapshotForm(str, Enum):
+    """Coarse, backend-neutral form of a lifted ``FlowGraph`` snapshot.
+
+    ``IRMaturity`` is the fine-grained ordered pass-scheduling vocabulary.
+    ``SnapshotForm`` is the lossy derived classification stored in snapshot
+    metadata for read-only analyses that only need to ask which broad shape of
+    IR they are observing.
+    """
+
+    UNKNOWN = "unknown"
+    RAW_IR = "raw_ir"
+    NORMALIZED_IR = "normalized_ir"
+    OPTIMIZED_IR = "optimized_ir"
+    LVAR_RECOVERED = "lvar_recovered"
+    FINAL_PRE_RENDER = "final_pre_render"
+
+
+IR_MATURITY_TO_SNAPSHOT_FORM = MappingProxyType(
+    {
+        IRMaturity.LIFTED: SnapshotForm.RAW_IR,
+        IRMaturity.CANONICAL: SnapshotForm.NORMALIZED_IR,
+        IRMaturity.LOCAL_OPTIMIZED: SnapshotForm.OPTIMIZED_IR,
+        IRMaturity.CALL_MODELED: SnapshotForm.OPTIMIZED_IR,
+        IRMaturity.GLOBAL_ANALYZED: SnapshotForm.OPTIMIZED_IR,
+        IRMaturity.GLOBAL_OPTIMIZED: SnapshotForm.OPTIMIZED_IR,
+        IRMaturity.STRUCTURED: SnapshotForm.FINAL_PRE_RENDER,
+        IRMaturity.VARIABLE_RECOVERED: SnapshotForm.LVAR_RECOVERED,
+    }
+)
+
+
+def snapshot_form_for_maturity(maturity: IRMaturity) -> SnapshotForm:
+    """Return the coarse snapshot form for one fine-grained IR maturity."""
+
+    try:
+        return IR_MATURITY_TO_SNAPSHOT_FORM[maturity]
+    except KeyError as exc:
+        raise ValueError(f"No SnapshotForm mapping for {maturity!r}") from exc

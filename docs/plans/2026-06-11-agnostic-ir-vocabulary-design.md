@@ -181,33 +181,33 @@ exists:
   `VARIABLE_RECOVERED`.
 * `d810.hexrays.ir_maturity` is the Hex-Rays adapter from `IRMaturity` to
   `ida_hexrays.MMAT_*`. Other backends add their own adapters.
-* `FlowGraph.metadata["snapshot_stage"]` / `SnapshotStage` is the coarse
+* `FlowGraph.metadata["snapshot_form"]` / `SnapshotForm` is the coarse
   read-only snapshot classification for analyses that only need to ask whether
-  the graph is raw, normalized, optimized, SSA-like, lvar-recovered, or
-  final-pre-render.
+  the graph is raw, normalized, optimized, lvar-recovered, or final-pre-render.
+  `snapshot_stage` / `SnapshotStage` is a retained alias on the current event
+  and metadata contract, not the canonical vocabulary.
 * `producer_stage_id` / `producer_stage_name` remain provider-local diagnostic
   metadata. Portable passes should not key behavior on `MMAT_*` strings.
 
 The rule for `PipelineConfig v2`: pass specs declare `IRMaturity` gates; backend
-hook adapters resolve those gates to native callback stages. `SnapshotStage` is
+hook adapters resolve those gates to native callback stages. `SnapshotForm` is
 not a replacement for `IRMaturity`; it is a lossy analysis hint.
 
-Post-vocabulary / pre-LLVM action item: ticket `llr-nix5` makes the relationship
-explicit instead of leaving two near-duplicate stage vocabularies. The intended
-shape is:
+Status 2026-06-18: ticket `llr-nix5` makes the relationship explicit instead of
+leaving two near-duplicate stage vocabularies. The shape is:
 
 * `IRMaturity` is the fine-grained ordered vocabulary for pass scheduling.
-* `SnapshotStage` (or renamed `SnapshotForm`, decision in `llr-nix5`) is the
-  coarse derived snapshot-form bucket stored in `FlowGraph.metadata`.
-* The mapping must be total and tested. Initial target:
+* `SnapshotForm` is the coarse derived snapshot-form bucket stored in
+  `FlowGraph.metadata["snapshot_form"]`.
+* The mapping is total and tested. Target:
   * `LIFTED` -> `RAW_IR`
   * `CANONICAL` -> `NORMALIZED_IR`
   * `LOCAL_OPTIMIZED`, `CALL_MODELED`, `GLOBAL_ANALYZED`,
     `GLOBAL_OPTIMIZED` -> `OPTIMIZED_IR`
   * `STRUCTURED` -> `FINAL_PRE_RENDER`
   * `VARIABLE_RECOVERED` -> `LVAR_RECOVERED`
-* If `SSA_LIKE` remains, treat it as an orthogonal metadata/capability flag, not
-  a competing range bucket.
+* `SSA_LIKE` is not a `SnapshotForm` range bucket. Treat SSA as an orthogonal
+  metadata/capability flag when needed.
 
 Current migration gap: some collectors and fact lifecycle code still carry raw
 Hex-Rays maturity integers / `MMAT_*` strings. Those should move behind the same
@@ -285,14 +285,14 @@ design.
    `DispatchKeyTransformKind`.
 8. **Post-vocabulary / pre-LLVM: normalize maturity-to-form ranges.**
 
-   Ticket: `llr-nix5`, blocked on `llr-nulv`, `llr-rec9`, and `llr-zkju`.
-   Before any LLVM facade / IDAvator-route work, make `IRMaturity` the
-   fine-grained ordered stage vocabulary and `SnapshotStage`/`SnapshotForm` the
-   coarse derived range bucket. Decide whether to rename `SnapshotStage` to
-   `SnapshotForm`, implement a single `IRMaturity -> SnapshotStage/SnapshotForm`
-   helper, update `FlowGraph` metadata production to use it, and add tests that
-   pass gates use `IRMaturity` while read-only snapshot classification uses only
-   the coarse form.
+   Status 2026-06-18: implemented under ticket `llr-nix5`. `SnapshotForm` is the
+   canonical coarse bucket in `ir/maturity.py`; `snapshot_form_for_maturity()`
+   is the single total `IRMaturity -> SnapshotForm` helper. The Hex-Rays lifter
+   maps native maturity through `ida_maturity_to_ir()` and then through that
+   helper, emits canonical `FlowGraph.metadata["snapshot_form"]`, and keeps
+   `snapshot_stage`/`SnapshotStage` as a narrow alias for the current event and
+   metadata contract. Tests cover mapping totality and guard pass gates against
+   importing the coarse form.
 
 Each phase: golden suite green via the Docker runner (NEVER local `pytest
 tests/system` — false-red). Unit + `lint-imports` locally.
@@ -313,16 +313,14 @@ feeds it; that stays true with the resolver under `CONDITION_CHAIN`.)
 `analyses/control_flow/dispatch_key.py` (DispatchKeyTransformKind),
 `ir/semantics.py` (EdgeTransferKind beside ControlTransferKind),
 `ir/expressions.py` (grown ValueOpKind), `backends/<vendor>/opcode_lift.py`
-(lift tables). `DispatcherType` retires into `RouterKind`. Maturity/stage
-vocabulary stays in `ir/maturity.py` (`IRMaturity`) plus `FlowGraph`
-`SnapshotStage`/possible `SnapshotForm`; do not create another independent stage
-enum. `llr-nix5` owns the range mapping and rename decision before LLVM facade
-work starts.
+(lift tables). `DispatcherType` retires into `RouterKind`. Maturity/form
+vocabulary stays in `ir/maturity.py` (`IRMaturity`, `SnapshotForm`, and the total
+mapping helper); do not create another independent stage enum.
 
 ## Testing
 * cross-backend lift-table test: every backend opcode → a kind, no gaps.
 * str-enum equivalence battery (op-vocab) + router-remap parity per phase.
-* `IRMaturity -> SnapshotStage/SnapshotForm` range-map tests plus guardrails that
-  pass gates do not key on the coarse snapshot form.
+* `IRMaturity -> SnapshotForm` range-map tests plus guardrails that pass gates do
+  not key on the coarse snapshot form.
 * the family dispatcher goldens (hodur/approov/ollvm/tigress/sub_7FFD) green
   through every phase.
