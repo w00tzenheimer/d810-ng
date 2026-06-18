@@ -42,11 +42,14 @@ Current supported subset:
 - table branches from `Instruction.control.switch_cases` as LLVM `switch` when
   the portable selector, case rows, default row, and successor targets are
   complete and case constants are unique after selector-width canonicalization,
+- direct/indirect/intrinsic `CallKind` operations as opaque external calls when
+  the canonical call effect and portable call target are present; no purity or
+  memory attributes are attached, so LLVM must treat them as side-effecting,
 - `RETURN` with an `i32` return varnode, or fixed `ret i32 0` when no return
   value is available.
 
-Unsupported in the current M1 subset: calls, store/memory effects beyond scalar
-varnode allocas, incomplete table/switch payloads, indirect branches,
-flags/overflow-specific predicates, truthy predicate materialization,
-non-scalar widths, casts other than width-increasing `ZEXT`, and any operation
-that would require raw opcode provenance to infer behavior.
+Unsupported in the current M1 subset: store/memory effects beyond scalar
+varnode allocas, incomplete call payloads, incomplete table/switch payloads,
+indirect branches, flags/overflow-specific predicates, truthy predicate
+materialization, non-scalar widths, casts other than width-increasing `ZEXT`,
+and any operation that would require raw opcode provenance to infer behavior.

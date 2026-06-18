@@ -188,6 +188,25 @@ def _setcc(
     )
 
 
+def _call(
+    call_kind: CallKind,
+    target: MopSnapshot | None,
+    dst: MopSnapshot | None = None,
+    *,
+    arg: MopSnapshot | None = None,
+) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=0x41,
+        ea=0x3000,
+        operands=(),
+        kind=InsnKind.CALL,
+        call_kind=call_kind,
+        l=target,
+        r=arg,
+        d=dst,
+    )
+
+
 def _block(serial: int, succs: tuple[int, ...], insns: tuple[InsnSnapshot, ...]) -> BlockSnapshot:
     return BlockSnapshot(
         serial=serial,
@@ -928,6 +947,30 @@ def test_store_effect_has_structured_unsupported_kind():
     assert any(reason.kind is UnsupportedLiftKind.EFFECT_UNSUPPORTED for reason in result.unsupported)
 
 
+def test_raw_opcode_attrs_do_not_authorize_store_effect():
+    fake_store = InsnSnapshot(
+        opcode=0x21,
+        ea=0x5004,
+        operands=(),
+        kind=InsnKind.UNKNOWN,
+        opcode_attrs={"raw_opcode_name": "m_stx"},
+        l=_reg(0),
+        r=_reg(1),
+        d=_stk(0x10),
+    )
+    flow = _graph(_block(0, (), (fake_store, _ret(_reg(0)))))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.operation == "vendor"
+        and reason.kind is UnsupportedLiftKind.VALUE_OP_UNSUPPORTED
+        for reason in result.unsupported
+    )
+
+
 def test_unsupported_control_transfer_has_structured_kind():
     indirect = InsnSnapshot(
         opcode=0x31,
@@ -1052,27 +1095,96 @@ def test_conditional_branch_arity_has_structured_kind():
     )
 
 
-def test_call_has_structured_unsupported_kind():
-    call = InsnSnapshot(
-        opcode=0x41,
-        ea=0x3000,
-        operands=(),
-        kind=InsnKind.CALL,
-        l=_reg(5, size=8),
-        d=_reg(0, size=8),
-        call_kind=CallKind.INDIRECT,
+def test_indirect_call_emits_opaque_side_effecting_call_with_result_store():
+    flow = _graph(_block(0, (), (_call(CallKind.INDIRECT, _reg(5, size=8), _reg(0)), _ret())))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert "declare i32 @__d810_opaque_call_i32_i64(i64)" in result.ir_text
+    assert " = load i64, ptr %r5_8, align 8" in result.ir_text
+    assert " = call i32 @__d810_opaque_call_i32_i64(i64 %t" in result.ir_text
+    assert "store i32 %t" in result.ir_text
+    assert "ptr %r0_4, align 4" in result.ir_text
+    assert not result.unsupported
+
+
+def test_direct_call_without_result_emits_void_opaque_call():
+    flow = _graph(_block(0, (), (_call(CallKind.DIRECT, _num(0x180010000, size=8)), _ret())))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert "declare void @__d810_opaque_call_void_i64(i64)" in result.ir_text
+    assert "call void @__d810_opaque_call_void_i64(i64 6442516480)" in result.ir_text
+
+
+def test_indirect_call_preserves_argument_multiplicity_when_arg_equals_target():
+    flow = _graph(
+        _block(
+            0,
+            (),
+            (_call(CallKind.INDIRECT, _reg(5, size=8), arg=_reg(5, size=8)), _ret()),
+        )
     )
-    flow = _graph(_block(0, (), (call, _ret())))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert "declare void @__d810_opaque_call_void_i64_i64(i64, i64)" in result.ir_text
+    assert result.ir_text.count(" = load i64, ptr %r5_8, align 8") == 2
+    assert "call void @__d810_opaque_call_void_i64_i64(i64 %t0, i64 %t1)" in result.ir_text
+
+
+def test_call_without_portable_target_fails_closed():
+    flow = _graph(_block(0, (), (_call(CallKind.INDIRECT, None, _reg(0)), _ret())))
 
     result = emit_flowgraph_to_llvm(flow)
 
     assert not result.supported
     assert result.ir_text == ""
-    assert result.unsupported[0].block_serial == 0
-    assert result.unsupported[0].ea == 0x3000
-    assert result.unsupported[0].operation == "indirect"
-    assert result.unsupported[0].kind is UnsupportedLiftKind.CALL_UNSUPPORTED
-    assert "calls are unsupported" in result.unsupported[0].reason
+    assert any(
+        reason.kind is UnsupportedLiftKind.CALL_PAYLOAD_UNSUPPORTED
+        and reason.reason == "call requires a portable call target"
+        for reason in result.unsupported
+    )
+
+
+def test_call_const_result_fails_closed():
+    flow = _graph(_block(0, (), (_call(CallKind.INDIRECT, _reg(5, size=8), _num(0)), _ret())))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.CALL_RESULT_UNSUPPORTED
+        and reason.reason == "call result cannot be const"
+        for reason in result.unsupported
+    )
+
+
+def test_raw_opcode_attrs_do_not_authorize_call():
+    fake_call = InsnSnapshot(
+        opcode=0x41,
+        ea=0x3004,
+        operands=(),
+        kind=InsnKind.UNKNOWN,
+        opcode_attrs={"raw_opcode_name": "m_call"},
+        l=_reg(5, size=8),
+        d=_reg(0),
+    )
+    flow = _graph(_block(0, (), (fake_call, _ret())))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.operation == "vendor"
+        and reason.kind is UnsupportedLiftKind.VALUE_OP_UNSUPPORTED
+        for reason in result.unsupported
+    )
 
 
 def test_unsupported_width_returns_diagnostic_and_no_ir():
