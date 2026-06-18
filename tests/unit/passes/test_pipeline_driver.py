@@ -16,7 +16,7 @@ from d810.passes.pass_pipeline import (
     live_mba,
     no_caps,
 )
-from d810.passes.scheduler import RunLater
+from d810.passes.scheduler import PassScheduler, RunLater, RunLaterDomain
 from d810.transforms.plan import PatchPlan
 from d810.passes.driver import CapabilityError, run_pipeline, validate_capabilities
 from d810.families.state_machine_cff import HodurFamily
@@ -81,6 +81,9 @@ class _RecordingScheduler:
     def request(self, **kwargs):
         self.requests.append(kwargs)
         return True
+
+    def drain(self, **kwargs):
+        return ()
 
 
 class _MatchingHodur:
@@ -197,7 +200,74 @@ def test_run_pipeline_records_pass_result_run_later_requests():
         "pass_id": "ask_later",
         "current_maturity": IRMaturity.CANONICAL,
         "run_later": request,
+        "domain": RunLaterDomain.PIPELINE_PASS,
     }]
+
+
+def test_run_pipeline_drains_pipeline_domain_and_replays_named_pass():
+    """Pipeline run_later work is consumed by the pipeline, not cfg rule lookup."""
+    calls: list[IRMaturity] = []
+    request = RunLater(
+        IRMaturity.GLOBAL_ANALYZED,
+        reason="needs optimized graph",
+    )
+
+    class _AskLater:
+        name = "same_name_as_possible_cfg_rule"
+
+        def run(self, ctx) -> PassResult:
+            calls.append(ctx.maturity)
+            if ctx.maturity is IRMaturity.CANONICAL:
+                return PassResult(run_later=(request,))
+            return PassResult()
+
+    class _OneShot:
+        name = "one_shot"
+
+        def detect(self, graph, capabilities, context=None):
+            return object()
+
+        def pipeline_for(self, match, context):
+            return (
+                PassSpec(
+                    "same_name_as_possible_cfg_rule",
+                    _AskLater,
+                    no_caps,
+                    default,
+                ),
+            )
+
+    scheduler = PassScheduler()
+    run_pipeline(
+        source=_Src(), family=_OneShot(), backend=_Backend(),
+        facts=_Facts(), project_config=None,
+        maturity=IRMaturity.CANONICAL,
+        scheduler=scheduler,
+    )
+
+    assert calls == [IRMaturity.CANONICAL]
+    assert scheduler.drain(
+        func_ea=0x1000,
+        current_maturity=IRMaturity.GLOBAL_ANALYZED,
+    ) == ()
+
+    run_pipeline(
+        source=_Src(), family=_OneShot(), backend=_Backend(),
+        facts=_Facts(), project_config=None,
+        maturity=IRMaturity.GLOBAL_ANALYZED,
+        scheduler=scheduler,
+    )
+
+    assert calls == [
+        IRMaturity.CANONICAL,
+        IRMaturity.GLOBAL_ANALYZED,
+        IRMaturity.GLOBAL_ANALYZED,
+    ]
+    assert scheduler.drain(
+        func_ea=0x1000,
+        current_maturity=IRMaturity.GLOBAL_ANALYZED,
+        domain=RunLaterDomain.PIPELINE_PASS,
+    ) == ()
 
 
 def test_validate_capabilities_fails_loud_on_missing():

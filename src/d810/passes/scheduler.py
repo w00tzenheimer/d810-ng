@@ -7,6 +7,7 @@ is responsible for translating drained records into concrete work.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 from d810.core.logging import getLogger
 from d810.ir.maturity import IRMaturity
@@ -33,6 +34,13 @@ class RunLater:
     reason: str = ""
 
 
+class RunLaterDomain(str, Enum):
+    """Execution domain that owns a deferred pass request."""
+
+    OPTIMIZER_RULE = "optimizer_rule"
+    PIPELINE_PASS = "pipeline_pass"
+
+
 @dataclass(frozen=True, slots=True)
 class PendingRun:
     """Scheduler-owned primitive record for deferred pass work."""
@@ -40,6 +48,7 @@ class PendingRun:
     func_ea: int
     pass_id: str
     at: IRMaturity
+    domain: RunLaterDomain = RunLaterDomain.OPTIMIZER_RULE
     reason: str = ""
 
 
@@ -67,7 +76,7 @@ class PassScheduler:
             raise ValueError("per_func_request_budget must be >= 1")
         self._per_func_request_budget = per_func_request_budget
         self._pending_by_func: dict[
-            int, dict[tuple[int, str, IRMaturity], PendingRun]
+            int, dict[tuple[int, RunLaterDomain, str, IRMaturity], PendingRun]
         ] = {}
 
     def request(
@@ -77,6 +86,7 @@ class PassScheduler:
         pass_id: str,
         current_maturity: IRMaturity,
         run_later: RunLater,
+        domain: RunLaterDomain = RunLaterDomain.OPTIMIZER_RULE,
     ) -> bool:
         """Record a future pass run.
 
@@ -94,7 +104,7 @@ class PassScheduler:
             )
             return False
 
-        key = (int(func_ea), str(pass_id), run_later.at)
+        key = (int(func_ea), RunLaterDomain(domain), str(pass_id), run_later.at)
         pending_for_func = self._pending_by_func.setdefault(int(func_ea), {})
         if key in pending_for_func:
             return True
@@ -114,6 +124,7 @@ class PassScheduler:
             func_ea=int(func_ea),
             pass_id=str(pass_id),
             at=run_later.at,
+            domain=RunLaterDomain(domain),
             reason=run_later.reason,
         )
         return True
@@ -123,6 +134,7 @@ class PassScheduler:
         *,
         func_ea: int,
         current_maturity: IRMaturity,
+        domain: RunLaterDomain = RunLaterDomain.OPTIMIZER_RULE,
     ) -> tuple[PendingRun, ...]:
         """Return and remove runs eligible at ``current_maturity``."""
 
@@ -131,9 +143,12 @@ class PassScheduler:
         if not pending_for_func:
             return ()
 
-        drained_keys: list[tuple[int, str, IRMaturity]] = []
+        requested_domain = RunLaterDomain(domain)
+        drained_keys: list[tuple[int, RunLaterDomain, str, IRMaturity]] = []
         drained: list[PendingRun] = []
         for key, pending in pending_for_func.items():
+            if pending.domain is not requested_domain:
+                continue
             maturity_delta = _compare_maturity(current_maturity, pending.at)
             if maturity_delta is not None and maturity_delta >= 0:
                 drained_keys.append(key)
