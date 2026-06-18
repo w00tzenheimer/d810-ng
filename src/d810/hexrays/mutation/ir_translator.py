@@ -572,6 +572,7 @@ def capture_insn_snapshot(insn: "ida_hexrays.minsn_t") -> InsnSnapshot:
         value_op_kind=opcode_lift.value_op_from_opcode(opcode),
         control_transfer_kind=opcode_lift.control_transfer_from_opcode(opcode),
         call_kind=opcode_lift.call_kind_from_opcode(opcode),
+        predicate_kind=opcode_lift.predicate_from_opcode(opcode),
         opcode_attrs=lifted_opcode.attrs,
         branch_predicate=branch_predicate,
         compare_width=_compare_width_from_operands(left, right),

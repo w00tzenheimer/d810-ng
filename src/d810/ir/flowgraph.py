@@ -171,6 +171,7 @@ class InsnSnapshot:
     value_op_kind: ValueOpKind | None = None
     control_transfer_kind: ControlTransferKind | None = None
     call_kind: CallKind | None = None
+    predicate_kind: PredicateKind | None = None
     opcode_attrs: Mapping[str, object] = field(default_factory=dict, hash=False)
     branch_predicate: PredicateKind | None = None
     compare_width: int | None = None
@@ -210,6 +211,8 @@ class InsnSnapshot:
             inferred_transfer = kind_to_transfer.get(self.kind)
             if inferred_transfer is not None:
                 object.__setattr__(self, "control_transfer_kind", inferred_transfer)
+        if self.predicate_kind is None and self.branch_predicate is not None:
+            object.__setattr__(self, "predicate_kind", self.branch_predicate)
         if (
             self.branch_predicate is not None
             or self.kind in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}
