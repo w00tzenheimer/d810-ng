@@ -38,6 +38,23 @@ Identity parity policy:
   parse arbitrary LLVM IR, does not lower optimized LLVM back into Hex-Rays
   microcode, and is not the M3 body-emitter/drop interface.
 
+M2a stock optimization policy:
+
+- `d810.backends.llvm.optimization` provides an IDA-free stock `opt` pipeline
+  runner with structured `passed`, `skipped`, and `failed` results.
+- `LLVM_M2A_STOCK_PIPELINE` is the first measured-collapse pipeline:
+  `instcombine,reassociate,sccp,simplifycfg,adce`. It is intentionally the
+  small M0-proven subset, not `-O3` and not the final full M2 curated pipeline.
+- The runner records coarse before/after IR metrics and keeps temporary
+  filenames fixed inside the supplied temp directory.
+- M2a proves that supported lifted IR can pass through the LLVM middle and
+  remain verifier-clean. It does not prove decompiler/oracle equivalence of
+  optimized LLVM; that remains the M3 lower-back/parity boundary.
+- Future M2 work can expand toward the full curated list (`mem2reg`, `sroa`,
+  `ipsccp`, `gvn`/`newgvn`, `cvp`, `early-cse`, `dse`,
+  `aggressive-instcombine`, and constrained `simplifycfg`) and then add the
+  d810 MBA/Z3 Souper-role passes.
+
 Current freeze-maturity policy:
 
 - The target capture point is optimized/recovered microcode after d810 structural

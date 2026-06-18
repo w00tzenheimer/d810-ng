@@ -5,6 +5,7 @@ import shutil
 
 import pytest
 
+from d810.backends.llvm import find_llvm_opt
 from tools.llvm_m0_roundtrip import run_opt
 
 
@@ -12,7 +13,7 @@ LOWER_BACK = run_opt.repo_root() / "tools/llvm_m0_roundtrip/lab_flat_branchless.
 
 
 def _opt_or_skip():
-    opt = run_opt.find_opt()
+    opt = find_llvm_opt()
     if opt is None:
         pytest.skip(
             "LLVM opt not found; set LLVM_OPT or install opt in PATH/"
