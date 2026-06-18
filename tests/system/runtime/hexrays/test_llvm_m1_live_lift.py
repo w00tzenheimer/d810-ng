@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,6 +16,7 @@ import idaapi
 from d810.backends.hexrays.lifter import lift_function
 from d810.backends.llvm import (
     LLVM_M1_PREFERRED_MATURITY,
+    UnsupportedLiftKind,
     assess_flowgraph_maturity,
     emit_flowgraph_to_llvm,
 )
@@ -47,6 +49,28 @@ class _ProbeRow:
             f"{self.maturity_name}: ir={ir_name} blocks={self.block_count} "
             f"accepted={self.accepted} preferred={self.preferred} "
             f"supported={self.supported} reasons={reasons}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _CensusRow:
+    function_name: str
+    maturity_name: str
+    block_count: int
+    supported: bool
+    missing: bool
+    unsupported_kind_counts: tuple[tuple[str, int], ...]
+
+    def summary(self) -> str:
+        if self.missing:
+            return f"{self.function_name}: missing/skipped"
+        histogram = ",".join(
+            f"{kind}={count}" for kind, count in self.unsupported_kind_counts
+        ) or "-"
+        return (
+            f"{self.function_name}: maturity={self.maturity_name} "
+            f"blocks={self.block_count} supported={self.supported} "
+            f"kinds={histogram}"
         )
 
 
@@ -163,3 +187,99 @@ class TestLLVMM1LiveLiftProbe:
             _verify_with_opt(opt, preferred_ir, tmp_path)
         else:
             print("LLVM opt not found; live supported-lift gate passed without opt -verify")
+
+
+class TestLLVMM1CoverageCensus:
+    """Census selected restructuring-lab functions at the preferred M1 maturity."""
+
+    binary_name = "restructuring_lab.dll"
+
+    _FUNCTIONS = (
+        "lab_if_diamond",
+        "lab_flat_branchless",
+        "lab_flat_jtbl",
+        "lab_flat_mini",
+        "lab_flat_cond",
+        "lab_flat_loop",
+        "lab_flat_region",
+        "hexrays_lab_side_effect_boundary_anchor",
+    )
+
+    def test_restructuring_lab_preferred_maturity_census(
+        self, ida_database, configure_hexrays
+    ):
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+
+        rows: list[_CensusRow] = []
+        total_kind_counts: Counter[str] = Counter()
+        for function_name in self._FUNCTIONS:
+            func_ea = get_func_ea(function_name)
+            if func_ea == idaapi.BADADDR:
+                rows.append(
+                    _CensusRow(
+                        function_name=function_name,
+                        maturity_name="MMAT_GLBOPT1",
+                        block_count=0,
+                        supported=False,
+                        missing=True,
+                        unsupported_kind_counts=(),
+                    )
+                )
+                continue
+
+            mba = gen_microcode_at_maturity(func_ea, int(ida_hexrays.MMAT_GLBOPT1))
+            if mba is None:
+                rows.append(
+                    _CensusRow(
+                        function_name=function_name,
+                        maturity_name="MMAT_GLBOPT1",
+                        block_count=0,
+                        supported=False,
+                        missing=True,
+                        unsupported_kind_counts=(("microcode_unavailable", 1),),
+                    )
+                )
+                continue
+
+            flow_graph = lift_function(mba).flow_graph
+            result = emit_flowgraph_to_llvm(flow_graph, function_name=function_name)
+            kind_counts = Counter(reason.kind.value for reason in result.unsupported)
+            total_kind_counts.update(kind_counts)
+            rows.append(
+                _CensusRow(
+                    function_name=function_name,
+                    maturity_name="MMAT_GLBOPT1",
+                    block_count=flow_graph.block_count,
+                    supported=result.supported,
+                    missing=False,
+                    unsupported_kind_counts=tuple(sorted(kind_counts.items())),
+                )
+            )
+
+        print("\n=== LLVM M1e preferred-maturity coverage census ===")
+        for row in rows:
+            print(row.summary())
+        total_histogram = ", ".join(
+            f"{kind}={count}" for kind, count in sorted(total_kind_counts.items())
+        ) or "-"
+        print(f"TOTAL unsupported-kind histogram: {total_histogram}")
+
+        present_rows = [row for row in rows if not row.missing]
+        assert present_rows, "No census functions were present in restructuring_lab.dll"
+        assert any(row.function_name == "lab_if_diamond" for row in present_rows), (
+            "Known-supported lab_if_diamond was not present:\n"
+            + "\n".join(row.summary() for row in rows)
+        )
+        assert any(row.supported for row in present_rows), "\n".join(
+            row.summary() for row in rows
+        )
+        for row in present_rows:
+            if row.supported:
+                continue
+            assert row.unsupported_kind_counts, (
+                "Unsupported census row lacked structured diagnostics:\n"
+                + row.summary()
+            )
+            for kind, _count in row.unsupported_kind_counts:
+                assert kind in {item.value for item in UnsupportedLiftKind}

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from .emitter import (
     LlvmLiftResult,
+    UnsupportedLiftKind,
     UnsupportedLiftReason,
     emit_flowgraph_to_llvm,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "LLVM_M1_PREFERRED_MATURITY",
     "LlvmLiftResult",
     "LlvmMaturityAssessment",
+    "UnsupportedLiftKind",
     "UnsupportedLiftReason",
     "assess_flowgraph_maturity",
     "emit_flowgraph_to_llvm",
