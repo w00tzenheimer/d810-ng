@@ -257,7 +257,7 @@ class TestLLVMM1CoverageCensus:
                 )
             )
 
-        print("\n=== LLVM M1e preferred-maturity coverage census ===")
+        print("\n=== LLVM M1 preferred-maturity coverage census ===")
         for row in rows:
             print(row.summary())
         total_histogram = ", ".join(

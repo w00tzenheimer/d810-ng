@@ -42,6 +42,22 @@ def _num(value: int, size: int = 4) -> MopSnapshot:
     return MopSnapshot(kind=OperandKind.NUMBER, value=value, size=size)
 
 
+def _subinsn(
+    sub_kind: InsnKind,
+    sub_l: MopSnapshot | None,
+    sub_r: MopSnapshot | None = None,
+    *,
+    size: int = 0,
+) -> MopSnapshot:
+    return MopSnapshot(
+        kind=OperandKind.SUBINSN,
+        size=size,
+        sub_kind=sub_kind,
+        sub_l=sub_l,
+        sub_r=sub_r,
+    )
+
+
 def _mov(src: MopSnapshot, dst: MopSnapshot, ea: int = 0x1000) -> InsnSnapshot:
     return InsnSnapshot(opcode=0x04, ea=ea, operands=(), kind=InsnKind.MOV, l=src, d=dst)
 
@@ -266,6 +282,45 @@ def test_conditional_branch_uses_instruction_control_not_raw_opcode_attrs():
     assert " = icmp eq i32 " in result.ir_text
     assert "br i1" in result.ir_text
     assert "label %bb1, label %bb2" in result.ir_text
+
+
+def test_conditional_branch_with_nested_and_emits_temp_then_two_input_icmp():
+    nested = _subinsn(InsnKind.AND, _stk(0x10), _num(0x3F))
+    flow = _graph(
+        _block(0, (1, 2), (_jcc(PredicateKind.NE, nested, _num(0)),)),
+        _block(1, (), (_ret(),)),
+        _block(2, (), (_ret(),)),
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert " = and i32 " in result.ir_text
+    assert " = icmp ne i32 " in result.ir_text
+    assert "conditional branch requires two compared inputs" not in {
+        reason.reason for reason in result.unsupported
+    }
+
+
+def test_value_op_with_nested_supported_operand_emits_temp_before_parent():
+    nested = _subinsn(InsnKind.SUB, _stk(0x10), _num(1))
+    flow = _graph(
+        _block(
+            0,
+            (),
+            (
+                _add(nested, _num(7), _reg(0)),
+                _ret(_reg(0)),
+            ),
+        )
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert " = sub i32 " in result.ir_text
+    assert " = add i32 " in result.ir_text
+    assert result.ir_text.index(" = sub i32 ") < result.ir_text.index(" = add i32 ")
 
 
 def test_raw_opcode_attrs_do_not_authorize_conditional_branch():
@@ -538,7 +593,7 @@ def test_unknown_varnode_space_has_structured_kind(monkeypatch):
         inputs=(Varnode(Space.UNKNOWN, 0, 4),),
         result=Varnode(Space.REGISTER, 0, 4),
     )
-    monkeypatch.setattr(llvm_emitter, "project_instruction", lambda _insn: unknown)
+    monkeypatch.setattr(llvm_emitter, "project_instruction_sequence", lambda _insn: (unknown,))
     flow = _graph(_block(0, (), (_mov(_num(1), _reg(0)),)))
 
     result = emit_flowgraph_to_llvm(flow)
@@ -548,6 +603,25 @@ def test_unknown_varnode_space_has_structured_kind(monkeypatch):
     assert any(
         reason.kind is UnsupportedLiftKind.VARNODE_SPACE
         and reason.reason == "unknown varnode space"
+        for reason in result.unsupported
+    )
+
+
+def test_unsupported_nested_expression_has_structured_kind():
+    nested = _subinsn(InsnKind.UNKNOWN, _stk(0x10), _num(1))
+    flow = _graph(
+        _block(0, (1, 2), (_jcc(PredicateKind.EQ, nested, _num(0)),)),
+        _block(1, (), (_ret(),)),
+        _block(2, (), (_ret(),)),
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.NESTED_EXPRESSION_UNSUPPORTED
+        and reason.reason == "nested expression unknown is unsupported in M1f"
         for reason in result.unsupported
     )
 
