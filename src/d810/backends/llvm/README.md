@@ -55,6 +55,27 @@ M2a stock optimization policy:
   `aggressive-instcombine`, and constrained `simplifycfg`) and then add the
   d810 MBA/Z3 Souper-role passes.
 
+M3a lower-back contract policy:
+
+- `d810.backends.llvm.lower_back_contract` is an IDA-free risk-reduction
+  prototype for the future LLVM->microcode drop boundary.
+- It models the contract records a production dropper will need: functions,
+  blocks, terminators, PHI nodes, edge moves, unsupported diagnostics, and a
+  lower-back planning result.
+- The only positive lowering in M3a is scalar PHI destructuring for a tiny
+  hand-authored diamond CFG. A PHI such as
+  `%x = phi i32 [ %a, %then ], [ %b, %else ]` plans edge moves
+  `then -> merge: x = a` and `else -> merge: x = b`, preserving predecessor
+  labels and incoming order.
+- The planner fails closed for critical-edge splits, non-scalar PHIs, unknown
+  block targets, unsupported call/memory instructions, and unsupported control
+  such as `indirectbr`, `invoke`, or landingpad-style terminators.
+- This is not the M3 production body emitter. It does not consume M1/M2
+  optimized output, parse arbitrary LLVM modules, import IDAvator, mutate
+  Hex-Rays microcode, or claim decompile/oracle parity. Production M3 remains
+  responsible for the real lower-back interface, Hex-Rays CFG/body emission,
+  and zero-INTERR oracle gate.
+
 Current freeze-maturity policy:
 
 - The target capture point is optimized/recovered microcode after d810 structural
