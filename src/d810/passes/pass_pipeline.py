@@ -82,9 +82,9 @@ def _parse_bool(value: object, field_name: str) -> bool:
     return value
 
 
-def _parse_string(value: object, field_name: str) -> str:
-    if not isinstance(value, str):
-        raise PipelineConfigError(f"{field_name} must be a string")
+def _parse_nonempty_string(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise PipelineConfigError(f"{field_name} must be a non-empty string")
     return value
 
 
@@ -305,7 +305,7 @@ class PipelineConfig:
                 "backend_route",
             ),
             safety_policy=SafetyPolicy(
-                name=_parse_string(
+                name=_parse_nonempty_string(
                     safety_policy_data.get("name", "default"),
                     "safety_policy.name",
                 ),

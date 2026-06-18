@@ -55,11 +55,11 @@ class FunctionPassManager:
         source,
         *,
         input_facts: object | None = None,
-        analysis_inputs: Mapping[str, object] | None = None,
+        analysis_seeds: Mapping[str, object] | None = None,
     ) -> AnalysisManager:
         """Return manager-owned facts, refreshing live inputs for this run."""
         facts = self._facts_for(source, input_facts=input_facts)
-        for name, value in (analysis_inputs or {}).items():
+        for name, value in (analysis_seeds or {}).items():
             facts.put_analysis(name, value)
         return facts
 
@@ -73,13 +73,13 @@ class FunctionPassManager:
         maturity: IRMaturity,
         capabilities: CapabilitySet | None = None,
         input_facts: object | None = None,
-        analysis_inputs: Mapping[str, object] | None = None,
+        analysis_seeds: Mapping[str, object] | None = None,
     ):
         """Run one family/function/maturity through the existing pipeline driver."""
         facts = self.facts_for(
             source,
             input_facts=input_facts,
-            analysis_inputs=analysis_inputs,
+            analysis_seeds=analysis_seeds,
         )
         return run_pipeline(
             source=source,

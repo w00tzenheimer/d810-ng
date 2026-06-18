@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
+from d810.passes.registry import PassRegistry
 
 
 def pipeline_configs_from_project_config(project_config) -> tuple[PipelineConfig, ...]:
@@ -26,3 +27,14 @@ def pipeline_configs_from_project_config(project_config) -> tuple[PipelineConfig
     if isinstance(payload, Mapping) or not isinstance(payload, (list, tuple)):
         raise PipelineConfigError("pipeline_v2 must be a sequence of pass configs")
     return tuple(PipelineConfig.from_dict(item) for item in payload)
+
+
+def pass_specs_from_project_config(
+    project_config,
+    registry: PassRegistry,
+):
+    """Build shadow PassSpecs from optional project ``pipeline_v2`` config."""
+    return tuple(
+        registry.build_spec(config)
+        for config in pipeline_configs_from_project_config(project_config)
+    )

@@ -76,3 +76,14 @@ def test_set_input_facts_replaces_active_observations():
     )
 
     assert am.active_observations == ("new",)
+
+
+def test_set_input_facts_none_clears_active_observations():
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type("_Facts", (), {"active_observations": ("old",)})(),
+    )
+
+    am.set_input_facts(None)
+
+    assert am.active_observations == ()

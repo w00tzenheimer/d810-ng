@@ -192,13 +192,54 @@ def test_manager_threads_input_facts_and_seeded_analysis_inputs():
         project_config=None,
         maturity=IRMaturity.CANONICAL,
         input_facts=SimpleNamespace(active_observations=("obs",)),
-        analysis_inputs={"range_evidence": "R"},
+        analysis_seeds={"range_evidence": "R"},
     )
 
     assert captured == {
         "observations": ("obs",),
         "range_evidence": "R",
     }
+
+
+def test_manager_replaces_and_clears_input_facts_between_runs():
+    observations: list[tuple[str, ...]] = []
+
+    class _ReadFacts:
+        name = "read_facts"
+
+        def run(self, ctx) -> PassResult:
+            observations.append(tuple(ctx.facts.active_observations))
+            return PassResult()
+
+    family = _MatchingFamily((PassSpec("read_facts", _ReadFacts, no_caps, default),))
+    manager = FunctionPassManager()
+
+    manager.run(
+        source=_Src(),
+        family=family,
+        backend=_Backend(),
+        project_config=None,
+        maturity=IRMaturity.CANONICAL,
+        input_facts=SimpleNamespace(active_observations=("first",)),
+    )
+    manager.run(
+        source=_Src(),
+        family=family,
+        backend=_Backend(),
+        project_config=None,
+        maturity=IRMaturity.CANONICAL,
+        input_facts=SimpleNamespace(active_observations=("second",)),
+    )
+    manager.run(
+        source=_Src(),
+        family=family,
+        backend=_Backend(),
+        project_config=None,
+        maturity=IRMaturity.CANONICAL,
+        input_facts=None,
+    )
+
+    assert observations == [("first",), ("second",), ()]
 
 
 def test_manager_reset_func_clears_owned_facts_and_pipeline_scheduler():
