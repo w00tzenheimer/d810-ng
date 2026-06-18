@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from d810.backends.llvm import LlvmLiftResult, emit_flowgraph_to_llvm
+from d810.backends.llvm import (
+    LLVM_M1_PREFERRED_MATURITY,
+    LlvmLiftResult,
+    assess_flowgraph_maturity,
+    emit_flowgraph_to_llvm,
+)
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import (
     BlockSnapshot,
@@ -17,6 +22,7 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
+from d810.ir.maturity import IRMaturity
 from d810.ir.semantics import CallKind, PredicateKind
 
 
@@ -76,8 +82,17 @@ def _block(serial: int, succs: tuple[int, ...], insns: tuple[InsnSnapshot, ...])
     )
 
 
-def _graph(*blocks: BlockSnapshot, entry: int = 0) -> FlowGraph:
-    return FlowGraph(blocks={blk.serial: blk for blk in blocks}, entry_serial=entry, func_ea=0x180000000)
+def _graph(
+    *blocks: BlockSnapshot,
+    entry: int = 0,
+    metadata: dict[str, object] | None = None,
+) -> FlowGraph:
+    return FlowGraph(
+        blocks={blk.serial: blk for blk in blocks},
+        entry_serial=entry,
+        func_ea=0x180000000,
+        metadata=metadata or {},
+    )
 
 
 def _find_opt() -> Path | None:
@@ -281,3 +296,47 @@ def test_opt_verify_accepts_supported_emission_when_opt_available(tmp_path):
     )
 
     assert proc.returncode == 0, proc.stderr or proc.stdout
+
+
+def test_maturity_policy_accepts_preferred_portable_metadata():
+    flow = _graph(
+        _block(0, (), (_ret(),)),
+        metadata={"ir_maturity": IRMaturity.GLOBAL_ANALYZED},
+    )
+
+    assessment = assess_flowgraph_maturity(flow)
+
+    assert assessment.observed is LLVM_M1_PREFERRED_MATURITY
+    assert assessment.accepted
+    assert assessment.preferred
+    assert "preferred" in assessment.reason
+
+
+def test_maturity_policy_accepts_string_value_metadata():
+    flow = _graph(
+        _block(0, (), (_ret(),)),
+        metadata={"ir_maturity": IRMaturity.CALL_MODELED.value},
+    )
+
+    assessment = assess_flowgraph_maturity(flow)
+
+    assert assessment.observed is IRMaturity.CALL_MODELED
+    assert assessment.accepted
+    assert not assessment.preferred
+
+
+def test_maturity_policy_rejects_missing_or_out_of_range_metadata():
+    missing = assess_flowgraph_maturity(_graph(_block(0, (), (_ret(),))))
+    early = assess_flowgraph_maturity(
+        _graph(
+            _block(0, (), (_ret(),)),
+            metadata={"ir_maturity": IRMaturity.LOCAL_OPTIMIZED},
+        )
+    )
+
+    assert missing.observed is None
+    assert not missing.accepted
+    assert "ir_maturity" in missing.reason
+    assert early.observed is IRMaturity.LOCAL_OPTIMIZED
+    assert not early.accepted
+    assert "outside" in early.reason

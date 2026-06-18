@@ -679,7 +679,13 @@ def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
 
     maturity_int = int(mba.maturity)
     maturity_name = maturity_to_string(maturity_int)
-    snapshot_form = _snapshot_form_for_maturity_int(maturity_int)
+    try:
+        ir_maturity = ida_maturity_to_ir(maturity_int)
+    except ValueError:
+        ir_maturity = None
+        snapshot_form = SnapshotForm.UNKNOWN
+    else:
+        snapshot_form = snapshot_form_for_maturity(ir_maturity)
     return FlowGraph(
         blocks=blocks,
         entry_serial=0,
@@ -690,6 +696,7 @@ def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
             "producer": "hexrays",
             "producer_stage_id": maturity_int,
             "producer_stage_name": maturity_name,
+            "ir_maturity": ir_maturity,
             "snapshot_form": snapshot_form,
             "snapshot_stage": snapshot_form,
             "cpu_arch_name": cpu_arch_name,
