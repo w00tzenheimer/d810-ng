@@ -70,6 +70,7 @@ from .value_refs import (
     TemporaryRef,
     ValueRef,
 )
+from .varnode import Space, Varnode, varnode_key, varnode_offset
 
 __all__ = [
     "Add",
@@ -99,6 +100,7 @@ __all__ = [
     "RedirectIntent",
     "RegisterLocation",
     "SSAValueRef",
+    "Space",
     "StackSlot",
     "Store",
     "StorageLocation",
@@ -106,4 +108,7 @@ __all__ = [
     "TemporaryRef",
     "ValueOpKind",
     "ValueRef",
+    "Varnode",
+    "varnode_key",
+    "varnode_offset",
 ]
