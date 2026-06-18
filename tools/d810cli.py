@@ -135,7 +135,9 @@ def _db_has_indirect_rows(path: Path) -> bool:
                 """
                 SELECT 1
                 FROM state_dispatcher_rows
-                WHERE dispatcher_kind = 'INDIRECT_TABLE'
+                WHERE dispatcher_kind = 'TABLE'
+                  AND json_extract(payload_json, '$.table_provenance')
+                      = 'indirect_jump_table'
                 LIMIT 1
                 """
             ).fetchone()
@@ -161,7 +163,7 @@ def latest_indirect_transfer_db(name: str | None) -> Path:
     for db_path in cand:
         if _db_has_indirect_rows(db_path):
             return db_path
-    _die(f"no diag sqlite3 DBs with INDIRECT_TABLE rows under {d}")
+    _die(f"no diag sqlite3 DBs with TABLE/indirect_jump_table rows under {d}")
 
 
 def resolve_dump(name: str | None, explicit: str | None) -> Path:
@@ -1355,7 +1357,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         description=(
             "Extract an indirect-dispatcher state-transfer map from the latest"
-            " diag DB that contains INDIRECT_TABLE state-dispatcher rows,"
+            " diag DB that contains TABLE/indirect_jump_table"
+            " state-dispatcher rows,"
             " including compact instruction metadata used to prove table"
             " population."
         ),

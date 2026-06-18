@@ -120,7 +120,7 @@ def test_configured_kind_prefers_noncollapsed_condition_chain() -> None:
 
 
 def test_configured_kind_absent_falls_back_to_detection() -> None:
-    # exact map has no default -> it is EQUALITY_CHAIN, so a SWITCH pin is unavailable;
+    # exact map has no default -> it is EQUALITY_CHAIN, so a TABLE pin is unavailable;
     # selection falls back to detection (range router collapsed -> exact wins).
     range_router = _router({1: ENTRY, 5: ENTRY})
     ctx = RouterResolutionContext(
@@ -128,7 +128,7 @@ def test_configured_kind_absent_falls_back_to_detection() -> None:
         state_to_handler={1: 10, 5: 20, 9: 30},
         dispatcher_entry=ENTRY,
     )
-    chosen = select_router(default_resolvers(), ctx, configured_kind=RouterKind.SWITCH)
+    chosen = select_router(default_resolvers(), ctx, configured_kind=RouterKind.TABLE)
     assert chosen is not range_router and handler_coverage(chosen, ENTRY) == 3
 
 
@@ -140,7 +140,7 @@ def test_exact_kind_is_switch_with_default_else_equality_chain() -> None:
     no_default = ExactMapRouterResolver().applies_to(
         RouterResolutionContext(state_to_handler={1: 10}, dispatcher_entry=ENTRY)
     )
-    assert with_default.router_kind is RouterKind.SWITCH
+    assert with_default.router_kind is RouterKind.TABLE
     assert no_default.router_kind is RouterKind.EQUALITY_CHAIN
     assert with_default.resolver_name == "exact_map"
 

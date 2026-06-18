@@ -717,7 +717,7 @@ class TestBoundaryConditions:
 
     def test_boundary_switch_to_mixed_fan_out(self) -> None:
         """Max successors > 2 should affect classification."""
-        # With small region, should be SWITCH
+        # With small region, should be TABLE/switch
         profile_switch = FlowProfile(
             total_blocks=20,
             dispatch_region_size=2,

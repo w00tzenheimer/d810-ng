@@ -15,7 +15,7 @@ from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
     analyze_dispatcher_live,
 )
 from d810.hexrays.mutation.ir_translator import lift
-from d810.capabilities.dispatcher import RouterKind
+from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.core.gate_modes import GateOperationMode
 from d810.passes.flow_hints import FlowContextHintSummary
 from d810.passes.function_priors import FunctionAnalysisPriors
@@ -356,7 +356,7 @@ class FlowMaturityContext:
         the emulator cannot resolve state transitions and FCP would fold
         stale dispatcher constants into the return register.
 
-        SWITCH and CONDITION_CHAIN dispatchers have resolvable
+        TABLE/switch and CONDITION_CHAIN dispatchers have resolvable
         structure — FCP is safe for those.
         """
         analysis = self.ensure_dispatcher_analysis()
@@ -412,7 +412,11 @@ class FlowMaturityContext:
         analysis = self.ensure_dispatcher_analysis()
         if analysis is None:
             return FlowGateDecision(False, "dispatcher analysis unavailable")
-        if analysis.router_kind == RouterKind.SWITCH:
+        if (
+            analysis.router_kind == RouterKind.TABLE
+            and getattr(analysis, "table_provenance", None)
+            is TableProvenance.SWITCH
+        ):
             return FlowGateDecision(True, "switch-table dispatcher")
         if len(analysis.dispatchers) == 0:
             return FlowGateDecision(False, "no dispatcher candidates")
@@ -484,7 +488,11 @@ class FlowMaturityContext:
         analysis = self.ensure_dispatcher_analysis()
         if analysis is None:
             return FlowGateDecision(False, "dispatcher analysis unavailable")
-        if analysis.router_kind == RouterKind.SWITCH:
+        if (
+            analysis.router_kind == RouterKind.TABLE
+            and getattr(analysis, "table_provenance", None)
+            is TableProvenance.SWITCH
+        ):
             return FlowGateDecision(False, f"router_kind={analysis.router_kind.name}")
         if analysis.router_kind not in (
             RouterKind.CONDITION_CHAIN,

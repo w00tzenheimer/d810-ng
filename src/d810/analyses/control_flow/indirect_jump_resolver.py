@@ -39,7 +39,7 @@ from d810.analyses.control_flow.dispatcher_resolution import (
     DispatcherResolution,
     ResolverCandidate,
 )
-from d810.capabilities.dispatcher import RouterKind
+from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.capabilities.indirect_jump_table import IndirectJumpTableCapability
 from d810.analyses.control_flow.indirect_jump_table_analysis import (
     IndirectJumpTableResult,
@@ -89,7 +89,8 @@ class IndirectJumpDispatcherResolver:
     indirect_tables: IndirectJumpTableCapability
     goto_table_info: dict = field(default_factory=dict)
     name: str = "indirect_jump_table"
-    router_kind: RouterKind = RouterKind.INDIRECT_TABLE
+    router_kind: RouterKind = RouterKind.TABLE
+    table_provenance: TableProvenance = TableProvenance.INDIRECT_JUMP_TABLE
     specificity: int = 12
 
     def _analyze(self, graph: FlowGraph) -> IndirectJumpTableResult | None:
@@ -119,6 +120,7 @@ class IndirectJumpDispatcherResolver:
             router_kind=self.router_kind,
             confidence=float(len(dmap.rows)),
             specificity=self.specificity,
+            table_provenance=self.table_provenance,
             reasons=(
                 "indirect-jump-table",
                 "materialized" if not _graph_has_indirect_jump(graph) else "m_ijmp",
@@ -141,6 +143,7 @@ class IndirectJumpDispatcherResolver:
             resolver_name=self.name,
             router_kind=self.router_kind,
             confidence=candidate.confidence,
+            table_provenance=self.table_provenance,
             ranking_reason=candidate.reasons,
         )
 

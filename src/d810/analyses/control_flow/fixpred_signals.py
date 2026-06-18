@@ -61,10 +61,8 @@ def _canonical_router_kind(raw: object) -> str:
     text = str(raw or "").strip().upper()
     if text.endswith("CONDITION_CHAIN"):
         return "CONDITION_CHAIN"
-    if text.endswith("SWITCH"):
-        return "SWITCH"
-    if text.endswith("INDIRECT_TABLE"):
-        return "INDIRECT_TABLE"
+    if text.endswith("TABLE"):
+        return "TABLE"
     return "UNKNOWN"
 
 

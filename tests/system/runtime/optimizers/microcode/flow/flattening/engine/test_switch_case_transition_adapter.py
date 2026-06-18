@@ -23,7 +23,7 @@ def _dispatch_map(states: tuple[int, ...]) -> StateDispatcherMap:
                 dispatcher_block=50,
                 compare_block=50,
                 branch_kind="switch_case",
-                router_kind=RouterKind.SWITCH,
+                router_kind=RouterKind.TABLE,
                 confidence=1.0,
             )
             for state in states
@@ -32,7 +32,7 @@ def _dispatch_map(states: tuple[int, ...]) -> StateDispatcherMap:
         dispatcher_blocks=frozenset({50}),
         state_var_stkoff=0x20,
         state_var_lvar_idx=None,
-        router_kind=RouterKind.SWITCH,
+        router_kind=RouterKind.TABLE,
     )
 
 

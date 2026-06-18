@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.capabilities.dispatcher import RouterKind
+from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.analyses.control_flow.dispatcher_resolution import (
     DispatcherResolution,
     ResolverCandidate,
@@ -47,9 +47,12 @@ def _make_dispatcher_map() -> StateDispatcherMap:
 # --- C5: capabilities.dispatcher ------------------------------------------- #
 def test_router_kind_is_str_enum() -> None:
     assert {k.value for k in RouterKind} >= {
-        "switch", "equality_chain", "condition_chain", "indirect_table", "unknown",
+        "table", "equality_chain", "condition_chain", "unknown",
     }
     assert RouterKind.CONDITION_CHAIN.value == "condition_chain"
+    assert {k.value for k in TableProvenance} >= {
+        "switch", "indirect_jump_table", "unknown",
+    }
 
 
 # --- C6: ResolverCandidate / DispatcherResolution -------------------------- #

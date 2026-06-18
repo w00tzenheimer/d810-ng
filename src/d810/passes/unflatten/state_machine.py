@@ -34,7 +34,7 @@ from d810.analyses.machine import recover_machine
 from d810.analyses.control_flow.comparison_dispatcher_model import (
     ComparisonDispatcherModel,
 )
-from d810.capabilities.dispatcher import RouterKind
+from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.analyses.control_flow.branch_witness_provider import (
     build_static_equality_chain_witness_map,
 )
@@ -91,7 +91,6 @@ def _count_valrange_confirmable(valrange, dispatch_map, state_var_stkoff) -> int
 # RouterKinds whose route() is the shared comparison body (exact ∪ interval).
 _COMPARISON_ROUTER_KINDS = frozenset(
     {
-        RouterKind.SWITCH,
         RouterKind.EQUALITY_CHAIN,
         RouterKind.CONDITION_CHAIN,
     }
@@ -114,14 +113,20 @@ _STATIC_BRANCH_KINDS = frozenset(
 def _build_comparison_model(recovery, range_evidence):
     """Build a ``ComparisonDispatcherModel`` when the kind is a comparison router.
 
-    Returns ``None`` for non-comparison kinds (INDIRECT_TABLE / UNKNOWN) or when no
-    dispatch map was recovered, so the caller falls back to exact-only routing.
+    Returns ``None`` for non-comparison kinds (unknown or indirect table
+    provenance) or when no dispatch map was recovered, so the caller falls back
+    to exact-only routing.
     """
     dispatch_map = getattr(recovery, "dispatch_map", None)
     if dispatch_map is None:
         return None
     router_kind = getattr(dispatch_map, "router_kind", RouterKind.UNKNOWN)
-    if router_kind not in _COMPARISON_ROUTER_KINDS:
+    table_provenance = getattr(dispatch_map, "table_provenance", None)
+    is_switch_table = (
+        router_kind is RouterKind.TABLE
+        and table_provenance is TableProvenance.SWITCH
+    )
+    if router_kind not in _COMPARISON_ROUTER_KINDS and not is_switch_table:
         return None
     return ComparisonDispatcherModel.from_recovery(
         dispatch_map, range_evidence=range_evidence
@@ -170,8 +175,9 @@ def _resolve_initial_state(range_evidence, recovery) -> int | None:
 
     The recovered ``StateDispatcherMap.initial_state`` is preferred whenever it is
     present, because ``recover_dispatcher`` now threads the TRUE prologue state
-    onto the map -- via the structural indirect-table recovery for INDIRECT_TABLE
-    (ticket llr-m9r4) AND via entry-dominance for equality-chain / switch kinds
+    onto the map -- via the structural indirect-table recovery for
+    ``TABLE`` with indirect-jump provenance (ticket llr-m9r4) AND via
+    entry-dominance for equality-chain / switch-table provenance
     (ticket llr-mra1). The latter corrects the SPURIOUS mid-chain value the live
     range evidence supplies through the backwards ``_find_pre_header`` "fewest-npred"
     heuristic (which can pick an ``m_goto`` back-edge over the real ``m_mov``
@@ -182,7 +188,7 @@ def _resolve_initial_state(range_evidence, recovery) -> int | None:
     """
     dmap = getattr(recovery, "dispatch_map", None) if recovery is not None else None
     map_initial = getattr(dmap, "initial_state", None) if dmap is not None else None
-    # Prefer the recovered map's initial_state. For INDIRECT_TABLE the range analyzer
+    # Prefer the recovered map's initial_state. For indirect table provenance the range analyzer
     # emits a spurious folded inner state; for equality-chain it emits a
     # spurious mid-chain state -- in both cases the map carries the structurally
     # recovered true prologue state, so it wins when present.
@@ -376,6 +382,7 @@ class LowerStateMachine(PipelinePass):
     name = "lower_state_machine"
     resolvers: tuple = field(default_factory=default_resolvers)
     configured_kind: RouterKind | None = None
+    configured_table_provenance: TableProvenance | None = None
 
     def _resolve_router(self, recovery, range_evidence, dispatcher_entry: int | None):
         """Adapt the recovered evidence into a router via the injectable chain.
@@ -403,9 +410,17 @@ class LowerStateMachine(PipelinePass):
                 else None
             ),
             dispatcher_entry=dispatcher_entry,
+            table_provenance=(
+                getattr(dmap, "table_provenance", None)
+                if dmap is not None
+                else None
+            ),
         )
         return select_router(
-            self.resolvers, ctx, configured_kind=self.configured_kind
+            self.resolvers,
+            ctx,
+            configured_kind=self.configured_kind,
+            configured_table_provenance=self.configured_table_provenance,
         )
 
     def run(self, context: FunctionPipelineContext) -> PassResult:
@@ -430,20 +445,22 @@ class LowerStateMachine(PipelinePass):
             and dispatcher_entry is not None
             and state_var_stkoff is not None
         ):
-            # Initial state for the entry bridge: prefer the range evidence (comparison /
-            # switch kinds), fall back to the recovered StateDispatcherMap.initial_state
-            # for the INDIRECT_TABLE kind where range evidence is None (ticket llr-16jl).
+            # Initial state for the entry bridge: prefer the range evidence
+            # for comparison / switch-table dispatchers, fall back to the
+            # recovered StateDispatcherMap.initial_state for indirect table
+            # provenance where range evidence is None (ticket llr-16jl).
             initial_state = _resolve_initial_state(range_evidence, recovery)
             dmap = getattr(recovery, "dispatch_map", None)
-            # INDIRECT-only emit gates (ticket llr-m9r4): the terminal-tail recovery
+            # Indirect-table-only emit gates (ticket llr-m9r4): the terminal-tail recovery
             # and the shared-EXIT redirect veto are load-bearing for the Tigress
-            # INDIRECT_TABLE shape but regress equality-chain / switch goldens
-            # (hodur, approov). Thread the dispatcher kind so only the indirect
+            # table/indirect shape but regress equality-chain / switch-table goldens
+            # (hodur, approov). Thread the table provenance so only the indirect
             # profile enables them.
             is_indirect = (
-                getattr(dmap, "router_kind", None) is RouterKind.INDIRECT_TABLE
-                if dmap is not None
-                else False
+                dmap is not None
+                and getattr(dmap, "router_kind", None) is RouterKind.TABLE
+                and getattr(dmap, "table_provenance", None)
+                is TableProvenance.INDIRECT_JUMP_TABLE
             )
             if logger.debug_on:
                 logger.debug(

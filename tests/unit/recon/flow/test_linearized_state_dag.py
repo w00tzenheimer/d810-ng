@@ -15,6 +15,7 @@ from d810.ir.flowgraph import (
     OperandKind,
 )
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
+from d810.analyses.control_flow.dispatch_key import DispatchKeyTransformKind
 from d810.analyses.control_flow.linearized_state_dag import (
     BoundaryInlineMode,
     LabelRenderMode,
@@ -140,7 +141,7 @@ def test_explicit_conditional_bridge_requires_dynamic_provenance() -> None:
 
     assert not _is_supported_explicit_conditional_transition(untagged)
     assert _is_supported_explicit_conditional_transition(dynamic)
-    assert _is_supported_explicit_conditional_transition(derived_xor)
+    assert not _is_supported_explicit_conditional_transition(derived_xor)
     untagged_support = (
         classify_transition_trust_for_explicit_conditional_bridge(untagged)
     )
@@ -155,8 +156,12 @@ def test_explicit_conditional_bridge_requires_dynamic_provenance() -> None:
     assert untagged_support.reason == "unsupported_provenance"
     assert dynamic_support.authorizes_explicit_conditional_bridge
     assert dynamic_support.reason == "dynamic_state_write"
-    assert derived_support.authorizes_explicit_conditional_bridge
-    assert derived_support.reason == "derived_dispatch_key"
+    assert not derived_support.authorizes_explicit_conditional_bridge
+    assert derived_support.reason == "dispatch_key_transform_not_authority"
+    assert (
+        derived_support.dispatch_key_transform_kind
+        == DispatchKeyTransformKind.XOR
+    )
 
 
 def _make_branch_flow_graph() -> FlowGraph:

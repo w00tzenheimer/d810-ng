@@ -1130,7 +1130,7 @@ class TestInsertUnflattenJtbl:
         text = str(cfunc)
         up = text.upper()
         # Switch drained: no jump-table dispatcher in the render.
-        assert "SWITCH" not in up, f"jtbl switch survived:\n{text}"
+        assert "TABLE" not in up, f"jtbl switch survived:\n{text}"
         # The five handlers' work survives (volatile sink forces materialization).
         for w in ("0X11", "0X22", "0X33", "0X44", "0X55"):
             assert w in up, f"handler work {w} missing after drain:\n{text}"

@@ -27,7 +27,7 @@ def _dispatch_map(
                 dispatcher_block=2,
                 compare_block=2,
                 branch_kind="switch_case",
-                router_kind=RouterKind.SWITCH,
+                router_kind=RouterKind.TABLE,
             ),
             StateDispatcherRow(
                 state_const=0x20,
@@ -35,7 +35,7 @@ def _dispatch_map(
                 dispatcher_block=2,
                 compare_block=2,
                 branch_kind="switch_case",
-                router_kind=RouterKind.SWITCH,
+                router_kind=RouterKind.TABLE,
                 row_kind="dispatcher_self_loop",
             ),
         ),
@@ -43,7 +43,7 @@ def _dispatch_map(
         dispatcher_blocks=frozenset({2}),
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=None,
-        router_kind=RouterKind.SWITCH,
+        router_kind=RouterKind.TABLE,
         initial_state=initial_state,
     )
 
@@ -65,7 +65,7 @@ def test_collects_generic_state_dispatcher_discovery_observations() -> None:
     assert topology.payload["dispatcher_blocks"] == [2]
     assert topology.payload["predecessor_serials"] == [7, 9]
     assert topology.payload["handler_targets"] == [5]
-    assert topology.payload["dispatcher_source"] == "SWITCH"
+    assert topology.payload["dispatcher_source"] == "TABLE"
 
     state_var = by_kind[STATE_VARIABLE_IDENTITY_FACT_TYPE]
     assert state_var.payload["storage_kind"] == "stack_slot"

@@ -1,7 +1,7 @@
 """The shared comparison ``DispatcherModel`` (S2 — the 28-orphan fix).
 
-The comparison dispatcher kinds (``SWITCH`` / ``EQUALITY_CHAIN`` /
-``CONDITION_CHAIN``) differ only in *recovery*; once recovered they route a
+The comparison dispatcher kinds (``TABLE`` with switch provenance /
+``EQUALITY_CHAIN`` / ``CONDITION_CHAIN``) differ only in *recovery*; once recovered they route a
 concrete state value identically: exact row first, then interval rows.  This
 collapses their divergent ``resolve_target`` bodies into ONE ``route``.
 

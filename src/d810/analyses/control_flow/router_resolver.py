@@ -31,7 +31,7 @@ from d810.core.typing import Mapping, Protocol, Sequence
 
 from d810.analyses.control_flow.dispatcher_resolution import ResolverCandidate
 from d810.analyses.control_flow.interval_map import interval_dispatcher_from_state_map
-from d810.capabilities.dispatcher import RouterKind
+from d810.capabilities.dispatcher import RouterKind, TableProvenance
 
 __all__ = [
     "RouterResolutionContext",
@@ -63,6 +63,7 @@ class RouterResolutionContext:
     state_to_handler: Mapping[int, int] | None = None
     default_target: int | None = None
     dispatcher_entry: int | None = None
+    table_provenance: TableProvenance | None = None
 
 
 def handler_coverage(router: object, entry: int | None) -> int:
@@ -137,10 +138,11 @@ class ConditionChainRangeRouterResolver:
 class ExactMapRouterResolver:
     """The recovered exact ``state -> handler`` map as single-value interval rows.
 
-    Authoritative when the condition-chain range evidence COLLAPSED (e.g. an OLLVM -fla equality
-    chain degrading to ``[0,2^32)->entry``): there the exact map strictly out-covers
-    the collapsed range router.  ``RouterKind`` is ``SWITCH`` when a default is present (switch
-    table) else ``EQUALITY_CHAIN``.
+    Authoritative when the condition-chain range evidence COLLAPSED (e.g. an
+    OLLVM -fla equality chain degrading to ``[0,2^32)->entry``): there the
+    exact map strictly out-covers the collapsed range router. ``RouterKind`` is
+    ``TABLE`` when table provenance is present, or when a default target implies
+    switch-table evidence, else ``EQUALITY_CHAIN``.
     """
 
     name: str = "exact_map"
@@ -151,12 +153,19 @@ class ExactMapRouterResolver:
         cov = _exact_map_coverage(
             ctx.state_to_handler, ctx.default_target, ctx.dispatcher_entry
         )
-        kind = RouterKind.SWITCH if ctx.default_target is not None else RouterKind.EQUALITY_CHAIN
+        table_provenance = ctx.table_provenance
+        if table_provenance is None and ctx.default_target is not None:
+            table_provenance = TableProvenance.SWITCH
+        kind = (
+            RouterKind.TABLE
+            if table_provenance is not None else RouterKind.EQUALITY_CHAIN
+        )
         return ResolverCandidate(
             resolver_name=self.name,
             router_kind=kind,
             confidence=float(cov),
             specificity=_PRIORITY_EXACT,
+            table_provenance=table_provenance,
             reasons=("exact state->handler map", f"coverage={cov}"),
         )
 
@@ -178,13 +187,16 @@ def select_router(
     ctx: RouterResolutionContext,
     *,
     configured_kind: RouterKind | None = None,
+    configured_table_provenance: TableProvenance | None = None,
 ) -> object | None:
     """Pick and materialise a router from ``resolvers`` over ``ctx``.
 
-    ``configured_kind`` set -> restrict to providers producing that kind (a pin);
-    if none produce it, fall back to detection. A ``CONDITION_CHAIN`` pin is a
-    preference for usable range evidence, not permission to prefer a collapsed
-    catch-all over a higher-coverage exact map. Detection ranks by
+    ``configured_kind`` set -> restrict to providers producing that kind (a
+    pin); ``configured_table_provenance`` further restricts ``TABLE`` providers
+    to a specific table origin. If none produce the requested shape, fall back
+    to detection. A ``CONDITION_CHAIN`` pin is a preference for usable range
+    evidence, not permission to prefer a collapsed catch-all over a
+    higher-coverage exact map. Detection ranks by
     ``(confidence, specificity)`` descending -- coverage dominates, the
     per-provider priority breaks ties. Returns the selected provider's
     materialised router, or ``None`` when nobody applies.
@@ -202,7 +214,14 @@ def select_router(
 
     best_overall = max(ranked, key=rank_key)
     if configured_kind is not None:
-        forced = [rc for rc in ranked if rc[1].router_kind == configured_kind]
+        forced = [
+            rc for rc in ranked
+            if rc[1].router_kind == configured_kind
+            and (
+                configured_table_provenance is None
+                or rc[1].table_provenance == configured_table_provenance
+            )
+        ]
         if forced:
             best_forced = max(forced, key=rank_key)
             forced_is_collapsed_condition = (

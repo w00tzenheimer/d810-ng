@@ -5,18 +5,18 @@ This is a *sibling* of :class:`HodurFamily`, not a fork: it runs the SAME portab
 ``RecoverStateTransitions`` -> ``PlanSemanticRegions`` -> ``LowerStateMachine`` ->
 ``CleanupResidualDispatcher``). A *profile* only customises three things:
 
-* ``detect`` — which dispatcher *kinds* it claims (here: switch-table / indirect-jump),
+* ``detect`` — which table provenances it claims (switch-table / indirect-jump),
   scoped over the SHARED front-end ``build_dispatch_map_any_kind`` so the two families
   never grow parallel detectors;
-* ``pipeline_for`` — per-pass capability requirements and the router *shape* pin
-  (``RouterKind.SWITCH``), via the already-injectable ``LowerStateMachine``;
+* ``pipeline_for`` — per-pass capability requirements and the table-provenance
+  pin, via the already-injectable ``LowerStateMachine``;
 * the ``"emulation"`` capability requirement — switch/indirect next-state targets are
   folded by a concrete emulator (``EmulationCapability``; M3 backend ``llr-xauw``).
 
 Disambiguation (the resolution of "why is Hodur attacking Approov"): each family OWNS a
-``RouterKind`` set. A switch function is claimed HERE; an equality-chain function by
+``TableProvenance`` set. A table-backed function is claimed HERE; an equality-chain function by
 ``HodurFamily``. The shared *front-end* stays shared; only the *claim* is per-family.
-Because the claims are DISJOINT (switch/indirect here, equality-chain for Hodur),
+Because the claims are DISJOINT (table-backed here, equality-chain for Hodur),
 ``select_family`` is order-independent — no priority/tiebreak needed.
 
 Additive + inert: ApproovFamily auto-registers (via :class:`StateMachineCffFamily` /
@@ -43,7 +43,7 @@ from d810.passes.unflatten.state_machine import (
     RecoverDispatcher,
     RecoverStateTransitions,
 )
-from d810.capabilities.dispatcher import RouterKind
+from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.analyses.control_flow.dispatcher_recovery import build_dispatch_map_any_kind
 from d810.families.state_machine_cff.base import StateMachineCffFamily
 from d810.ir.maturity import IRMaturity
@@ -55,9 +55,12 @@ from d810.families.state_machine_cff.pipeline import standard_state_machine_pass
 # via ``ctx.capabilities.optional(...)`` (portable fallback: ``ReferenceEmulator``).
 emulation = CapabilityPolicy(required=frozenset({"live_mba", "emulation"}))
 
-# The dispatcher kinds THIS profile owns. A switch/indirect function is claimed here;
+# The table provenances THIS profile owns. A table-backed function is claimed here;
 # equality-chain (CONDITION_CHAIN) belongs to HodurFamily.
-_APPROOV_KINDS = frozenset({RouterKind.SWITCH, RouterKind.INDIRECT_TABLE})
+_APPROOV_TABLE_PROVENANCES = frozenset({
+    TableProvenance.SWITCH,
+    TableProvenance.INDIRECT_JUMP_TABLE,
+})
 
 
 class ApproovFamily(StateMachineCffFamily):
@@ -67,7 +70,7 @@ class ApproovFamily(StateMachineCffFamily):
 
     #: Switch-table dispatchers survive flat through global analysis (the backend keeps the
     #: jump table), so ``GLOBAL_ANALYZED`` (Hex-Rays ``MMAT_GLBOPT1``) is the recovery point
-    #: — the goldens are tuned to it (ticket llr-a93i). The INDIRECT_TABLE case is routed to
+    #: — the goldens are tuned to it (ticket llr-a93i). The TABLE/indirect_jump_table case is routed to
     #: ``CALL_MODELED`` (``MMAT_CALLS``) by the rule's structural ``_is_indirect`` gate, not
     #: by this declaration.
     recovery_maturities = (IRMaturity.GLOBAL_ANALYZED,)
@@ -84,29 +87,44 @@ class ApproovFamily(StateMachineCffFamily):
         if graph is None or not hasattr(graph, "blocks"):
             return None
         dmap = build_dispatch_map_any_kind(graph)
-        if dmap is None or dmap.router_kind not in _APPROOV_KINDS:
+        if (
+            dmap is None
+            or dmap.router_kind is not RouterKind.TABLE
+            or dmap.table_provenance not in _APPROOV_TABLE_PROVENANCES
+        ):
             return None
         return dmap
 
     def pipeline_for(self, match, context) -> "tuple[PassSpec, ...]":
         """Kind-aware pipeline.
 
-        ``SWITCH`` runs the standard seeded-fold spine (NO emulation) — proven on
+        ``TABLE`` with switch provenance runs the standard seeded-fold spine
+        (NO emulation) — proven on
         abc_or_dispatch, whose masked-OR writes fold via the partitioned fixpoint; this is
         the only live ApproovFamily kind (the chain has no indirect detector yet).
 
-        ``INDIRECT_TABLE`` needs the concrete emulator to fold computed targets
-        (``EmulationCapability``, M3+) and pins ``RouterKind.INDIRECT_TABLE``; structural
+        ``TABLE/indirect_jump_table`` needs the concrete emulator to fold computed targets
+        (``EmulationCapability``, M3+) and pins ``RouterKind.TABLE`` plus
+        ``TableProvenance.INDIRECT_JUMP_TABLE``; structural
         until an indirect resolver + emulation backend land.
         """
-        if getattr(match, "router_kind", None) == RouterKind.INDIRECT_TABLE:
+        if (
+            getattr(match, "router_kind", None) is RouterKind.TABLE
+            and getattr(match, "table_provenance", None)
+            is TableProvenance.INDIRECT_JUMP_TABLE
+        ):
             return (
                 PassSpec("recover_dispatcher", RecoverDispatcher, live_mba, default),
                 PassSpec("recover_state_transitions", RecoverStateTransitions, emulation, default),
                 PassSpec("plan_semantic_regions", PlanSemanticRegions, no_caps, default),
                 PassSpec(
                     "lower_state_machine",
-                    lambda: LowerStateMachine(configured_kind=RouterKind.INDIRECT_TABLE),
+                    lambda: LowerStateMachine(
+                        configured_kind=RouterKind.TABLE,
+                        configured_table_provenance=(
+                            TableProvenance.INDIRECT_JUMP_TABLE
+                        ),
+                    ),
                     emulation,
                     golden,
                 ),

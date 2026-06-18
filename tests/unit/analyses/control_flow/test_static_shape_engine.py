@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.capabilities.dispatcher import RouterKind
+from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.analyses.control_flow.dispatcher_recovery import (
     build_dispatch_map_any_kind,
     clear_extra_dispatcher_resolvers,
@@ -171,7 +171,8 @@ class _FakeIndirectResolver:
     """Protocol-shaped fake (no IDA): accepts only the ``m_ijmp`` flag graph."""
 
     name = "indirect_jump_table"
-    router_kind = RouterKind.INDIRECT_TABLE
+    router_kind = RouterKind.TABLE
+    table_provenance = TableProvenance.INDIRECT_JUMP_TABLE
     specificity = 12
 
     def _is_indirect(self, graph) -> bool:
@@ -188,6 +189,7 @@ class _FakeIndirectResolver:
             router_kind=self.router_kind,
             confidence=1.0,
             specificity=self.specificity,
+            table_provenance=self.table_provenance,
             reasons=("indirect-jump-table",),
         )
 
@@ -201,8 +203,9 @@ class _FakeIndirectResolver:
                 dispatcher_block=3,
                 compare_block=None,
                 branch_kind="indirect_jump_table",
-                router_kind=RouterKind.INDIRECT_TABLE,
+                router_kind=RouterKind.TABLE,
                 row_kind="handler",
+                table_provenance=TableProvenance.INDIRECT_JUMP_TABLE,
             ),
         )
         dmap = StateDispatcherMap(
@@ -211,13 +214,15 @@ class _FakeIndirectResolver:
             dispatcher_blocks=frozenset({3}),
             state_var_stkoff=0x30,
             state_var_lvar_idx=None,
-            router_kind=RouterKind.INDIRECT_TABLE,
+            router_kind=RouterKind.TABLE,
+            table_provenance=TableProvenance.INDIRECT_JUMP_TABLE,
         )
         return DispatcherResolution(
             dispatcher_map=dmap,
             resolver_name=self.name,
             router_kind=self.router_kind,
             confidence=candidate.confidence,
+            table_provenance=self.table_provenance,
             ranking_reason=candidate.reasons,
         )
 
@@ -259,7 +264,7 @@ def test_engine_switch_table_equivalence():
     g = _switch_flow_graph()
     expected = build_dispatch_map_any_kind(g)
     assert expected is not None
-    assert expected.router_kind is RouterKind.SWITCH
+    assert expected.router_kind is RouterKind.TABLE
     machine = StaticShapeEngine().recover(g)
     assert machine is not None
     assert machine.to_state_dispatcher_map() == expected
@@ -300,7 +305,8 @@ def test_engine_consults_extra_resolvers():
     register_extra_dispatcher_resolver(_FakeIndirectResolver())
     machine = StaticShapeEngine().recover(g)
     assert machine is not None
-    assert machine.router_kind is RouterKind.INDIRECT_TABLE
+    assert machine.router_kind is RouterKind.TABLE
+    assert machine.table_provenance is TableProvenance.INDIRECT_JUMP_TABLE
     assert machine.to_state_dispatcher_map().state_to_handler() == {1: 4}
 
 

@@ -29,7 +29,6 @@ from d810.core.diag.models import (
     Block,
     CfgProvenance,
     Instruction,
-    StateDispatcherRow,
 )
 from d810.diagnostics.output import add_output_argument, get_output, write_output
 from d810.core.typing import Any
@@ -85,7 +84,9 @@ def choose_snapshot(conn: sqlite3.Connection) -> SnapshotChoice:
           SUM(CASE WHEN r.target_block = -1 THEN 1 ELSE 0 END) AS missing_count
         FROM state_dispatcher_rows r
         JOIN snapshots s ON s.id = r.snapshot_id
-        WHERE r.dispatcher_kind = 'INDIRECT_TABLE'
+        WHERE r.dispatcher_kind = 'TABLE'
+          AND json_extract(r.payload_json, '$.table_provenance')
+              = 'indirect_jump_table'
         GROUP BY s.id, r.dispatcher_entry_block
         ORDER BY
           row_count DESC,
@@ -97,7 +98,9 @@ def choose_snapshot(conn: sqlite3.Connection) -> SnapshotChoice:
         """
     ).fetchall()
     if not rows:
-        raise SystemExit("no INDIRECT_TABLE state_dispatcher_rows found")
+        raise SystemExit(
+            "no TABLE/indirect_jump_table state_dispatcher_rows found"
+        )
     row = rows[0]
     return SnapshotChoice(
         snapshot_id=int(row[0]),
@@ -198,25 +201,19 @@ def load_dispatch_rows(
     snapshot_id: int,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for row in (
-        StateDispatcherRow.select(
-            StateDispatcherRow.row_index,
-            StateDispatcherRow.state_const_i64,
-            StateDispatcherRow.state_const_hex,
-            StateDispatcherRow.target_block,
-            StateDispatcherRow.dispatcher_entry_block,
-            StateDispatcherRow.branch_kind,
-            StateDispatcherRow.payload_json,
-        )
-        .where(
-            (StateDispatcherRow.snapshot == snapshot_id)
-            & (StateDispatcherRow.dispatcher_kind == "INDIRECT_TABLE")
-        )
-        .order_by(
-            StateDispatcherRow.state_const_i64, StateDispatcherRow.row_index
-        )
-        .tuples()
-    ):
+    for row in conn.execute(
+        """
+        SELECT row_index, state_const_i64, state_const_hex, target_block,
+               dispatcher_entry_block, branch_kind, payload_json
+        FROM state_dispatcher_rows
+        WHERE snapshot_id = ?
+          AND dispatcher_kind = 'TABLE'
+          AND json_extract(payload_json, '$.table_provenance')
+              = 'indirect_jump_table'
+        ORDER BY state_const_i64, row_index
+        """,
+        (int(snapshot_id),),
+    ).fetchall():
         try:
             payload = json.loads(row[6] or "{}")
         except json.JSONDecodeError:
@@ -250,7 +247,7 @@ def load_lowered_conditionals(
     map can re-derive the two next-states.
 
     The lowering provenance is flushed under the post-pipeline snapshot whose
-    block serials match the chosen INDIRECT_TABLE snapshot, so we read across all
+    block serials match the chosen TABLE/indirect_jump_table snapshot, so we read across all
     snapshots and key on the (maturity-local) block serial.
     """
     lowered: dict[int, tuple[int, int]] = {}
@@ -632,7 +629,7 @@ def extract_transfer_map(
             choice = choose_snapshot(conn)
         else:
             # raw-SQL: GROUP BY + COUNT/SUM(CASE...) aggregate over a JOIN,
-            # selecting one snapshot's INDIRECT_TABLE dispatcher summary
+            # selecting one snapshot's TABLE/indirect_jump_table dispatcher summary
             # (§3 complex-SQL policy).
             row = conn.execute(
                 """
@@ -641,13 +638,19 @@ def extract_transfer_map(
                        SUM(CASE WHEN r.target_block = -1 THEN 1 ELSE 0 END)
                 FROM snapshots s
                 JOIN state_dispatcher_rows r ON r.snapshot_id = s.id
-                WHERE s.id = ? AND r.dispatcher_kind = 'INDIRECT_TABLE'
+                WHERE s.id = ?
+                  AND r.dispatcher_kind = 'TABLE'
+                  AND json_extract(r.payload_json, '$.table_provenance')
+                      = 'indirect_jump_table'
                 GROUP BY s.id, r.dispatcher_entry_block
                 """,
                 (snapshot_id,),
             ).fetchone()
             if row is None:
-                raise SystemExit(f"snapshot {snapshot_id} has no INDIRECT_TABLE rows")
+                raise SystemExit(
+                    f"snapshot {snapshot_id} has no TABLE/"
+                    "indirect_jump_table rows"
+                )
             choice = SnapshotChoice(
                 snapshot_id=int(row[0]),
                 label=str(row[1]),

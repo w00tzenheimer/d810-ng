@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 import enum
 
-from d810.capabilities.dispatcher import RouterKind
+from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
     StateDispatcherRow,
@@ -64,6 +64,7 @@ class MachineRow:
     compare_block: int | None = None
     branch_kind: str = ""
     router_kind: RouterKind = RouterKind.UNKNOWN
+    table_provenance: TableProvenance | None = None
     confidence: float = 1.0
     row_kind: str = "handler"
     context: tuple[int, ...] = ()
@@ -170,6 +171,7 @@ class RecoveredMachine:
     dispatcher_entry_block: int | None = None
     dispatcher_blocks: frozenset[int] = frozenset()
     router_kind: RouterKind = RouterKind.UNKNOWN
+    table_provenance: TableProvenance | None = None
     soundness: Soundness = Soundness.PATTERN
     confidence: float = 1.0
     provenance: tuple[str, ...] = ()
@@ -202,6 +204,7 @@ class RecoveredMachine:
                 compare_block=r.compare_block,
                 branch_kind=r.branch_kind,
                 router_kind=r.router_kind,
+                table_provenance=r.table_provenance,
                 confidence=r.confidence,
                 row_kind=r.row_kind,
                 context=(),                # k=1 raw state
@@ -222,6 +225,7 @@ class RecoveredMachine:
             dispatcher_entry_block=dmap.dispatcher_entry_block,
             dispatcher_blocks=dmap.dispatcher_blocks,
             router_kind=dmap.router_kind,
+            table_provenance=dmap.table_provenance,
             soundness=soundness,
             confidence=confidence,
             provenance=provenance,
@@ -246,6 +250,7 @@ class RecoveredMachine:
                 compare_block=r.compare_block,
                 branch_kind=r.branch_kind,
                 router_kind=r.router_kind,
+                table_provenance=r.table_provenance,
                 confidence=r.confidence,
                 row_kind=r.row_kind,
                 payload=dict(r.payload),
@@ -264,6 +269,7 @@ class RecoveredMachine:
             state_var_stkoff=self.state_var_stkoff,
             state_var_lvar_idx=self.state_var_lvar_idx,
             router_kind=self.router_kind,
+            table_provenance=self.table_provenance,
             initial_state=initial_state,
             default_target_block=self.default_target_block,
             default_row_kind=self.default_row_kind,

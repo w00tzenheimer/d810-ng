@@ -46,7 +46,7 @@ def test_indirect_jump_table_rows_preserve_unmaterialized_targets() -> None:
         table_address=0x180019F10,
     )
 
-    assert dispatch_map.router_kind is RouterKind.INDIRECT_TABLE
+    assert dispatch_map.router_kind is RouterKind.TABLE
     assert dispatch_map.initial_state == 2
     assert dispatch_map.handler_state_map() == {7: 1}
 

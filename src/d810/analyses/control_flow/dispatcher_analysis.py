@@ -27,7 +27,7 @@ from d810.analyses.control_flow.dispatcher_facts import (
     DispatcherStrategy,
     StateVariableCandidate,
 )
-from d810.capabilities.dispatcher import RouterKind
+from d810.capabilities.dispatcher import RouterKind, TableProvenance
 
 __all__ = [
     "DispatcherAnalysis",
@@ -55,6 +55,7 @@ class DispatcherAnalysis:
     state_constants: set[int] = field(default_factory=set)
 
     router_kind: RouterKind = RouterKind.UNKNOWN
+    table_provenance: TableProvenance | None = None
     initial_state: int | None = None
     nested_loop_depth: int = 0
 
@@ -66,7 +67,10 @@ class DispatcherAnalysis:
     @property
     def is_switch_table(self) -> bool:
         """True if dispatcher uses a switch/jump-table dispatcher."""
-        return self.router_kind == RouterKind.SWITCH
+        return (
+            self.router_kind == RouterKind.TABLE
+            and self.table_provenance is TableProvenance.SWITCH
+        )
 
 
 def analyze_dispatcher(
@@ -88,7 +92,8 @@ def analyze_dispatcher(
     )
 
     if _has_table_jump(flow_graph):
-        analysis.router_kind = RouterKind.SWITCH
+        analysis.router_kind = RouterKind.TABLE
+        analysis.table_provenance = TableProvenance.SWITCH
         return analysis
 
     _analyze_block_predecessors(flow_graph, analysis)
@@ -398,9 +403,11 @@ def _classify_router_kind(
             persisted_initial_state=persisted_initial_state,
         )
     elif has_jtbl:
-        analysis.router_kind = RouterKind.SWITCH
+        analysis.router_kind = RouterKind.TABLE
+        analysis.table_provenance = TableProvenance.SWITCH
     else:
         analysis.router_kind = RouterKind.UNKNOWN
+        analysis.table_provenance = None
 
 
 def _find_initial_state(

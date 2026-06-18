@@ -90,10 +90,10 @@ class TestHelpers:
         assert _canonical_router_kind("foo_CONDITION_CHAIN") == "CONDITION_CHAIN"
 
     def test_canonical_router_kind_switch(self) -> None:
-        assert _canonical_router_kind("SWITCH") == "SWITCH"
+        assert _canonical_router_kind("TABLE") == "TABLE"
 
     def test_canonical_router_kind_indirect(self) -> None:
-        assert _canonical_router_kind("INDIRECT_TABLE") == "INDIRECT_TABLE"
+        assert _canonical_router_kind("TABLE") == "TABLE"
 
     def test_canonical_router_kind_unknown(self) -> None:
         assert _canonical_router_kind("something_else") == "UNKNOWN"

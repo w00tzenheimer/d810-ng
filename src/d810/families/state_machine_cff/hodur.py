@@ -79,7 +79,8 @@ class HodurFamily(StateMachineCffFamily):
         # behaviour -- it does not even make the extra ``build_dispatch_map_any_kind`` call (the
         # one that would otherwise re-run the indirect resolver). Consult the shared front-end
         # ONLY on an equality-chain MISS and claim ONLY its CONDITION_CHAIN result
-        # (SWITCH/INDIRECT remain ApproovFamily/TigressFamily's). ollvm/hodur hit the equality
+        # (TABLE-backed dispatchers remain ApproovFamily/TigressFamily's).
+        # ollvm/hodur hit the equality
         # detector above and never reach here, so their goldens are unaffected.
         if not (isinstance(context, dict) and context.get("emulation_dispatcher")):
             return None

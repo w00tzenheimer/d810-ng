@@ -111,7 +111,7 @@ def test_table_jump_short_circuits_to_switch_table() -> None:
     analysis = analyze_dispatcher(flow_graph)
 
     assert analysis.maturity == 42
-    assert analysis.router_kind == RouterKind.SWITCH
+    assert analysis.router_kind == RouterKind.TABLE
     assert analysis.is_switch_table
     assert analysis.blocks == {}
     assert analysis.dispatchers == []

@@ -15,7 +15,7 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.capabilities.dispatcher import RouterKind
+from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.analyses.control_flow.dispatcher_resolution import (
     DispatcherResolution,
     ResolverCandidate,
@@ -89,7 +89,7 @@ def _flow_graph(blocks: dict[int, BlockSnapshot]) -> FlowGraph:
 
 
 def _switch_flow_graph() -> FlowGraph:
-    """A real SWITCH graph (reuses test_switch_table_analysis fixture)."""
+    """A real TABLE/switch graph (reuses test_switch_table_analysis fixture)."""
     state_operand = _mop(kind=OperandKind.SUBINSN, stack_refs=(0x10,))
     switch_cases = _mop(
         kind=OperandKind.CASE_LIST,
@@ -126,7 +126,7 @@ def test_resolve_dispatcher_on_switch_graph_returns_switch_resolution():
     resolution = resolve_dispatcher(graph, default_dispatcher_resolvers())
 
     assert isinstance(resolution, DispatcherResolution)
-    assert resolution.router_kind is RouterKind.SWITCH
+    assert resolution.router_kind is RouterKind.TABLE
     assert resolution.resolver_name == "switch_table"
     assert resolution.dispatcher_map is not None
     assert resolution.dispatcher_map.state_to_handler() == {0: 4, 1: 5, 2: 5}
@@ -142,7 +142,7 @@ def test_accepts_returns_resolver_candidate_never_bool():
     assert candidate is not None
     assert not isinstance(candidate, bool)
     assert isinstance(candidate, ResolverCandidate)
-    assert candidate.router_kind is RouterKind.SWITCH
+    assert candidate.router_kind is RouterKind.TABLE
     assert candidate.resolver_name == "switch_table"
 
 
@@ -153,7 +153,7 @@ def test_build_dispatch_map_any_kind_is_behavior_neutral_on_switch():
     dmap = build_dispatch_map_any_kind(graph)
 
     assert dmap is not None
-    assert dmap.router_kind is RouterKind.SWITCH
+    assert dmap.router_kind is RouterKind.TABLE
     assert dmap.state_to_handler() == {0: 4, 1: 5, 2: 5}
     assert dmap.dispatcher_entry_block == 3
     assert dmap.dispatcher_blocks == frozenset({2, 3})
@@ -197,8 +197,9 @@ def _indirect_dmap() -> StateDispatcherMap:
             dispatcher_block=3,
             compare_block=None,
             branch_kind="indirect_jump_table",
-            router_kind=RouterKind.INDIRECT_TABLE,
+            router_kind=RouterKind.TABLE,
             row_kind="handler",
+            table_provenance=TableProvenance.INDIRECT_JUMP_TABLE,
         ),
     )
     return StateDispatcherMap(
@@ -207,7 +208,8 @@ def _indirect_dmap() -> StateDispatcherMap:
         dispatcher_blocks=frozenset({3}),
         state_var_stkoff=0x30,
         state_var_lvar_idx=None,
-        router_kind=RouterKind.INDIRECT_TABLE,
+        router_kind=RouterKind.TABLE,
+        table_provenance=TableProvenance.INDIRECT_JUMP_TABLE,
     )
 
 
@@ -215,7 +217,8 @@ class _FakeIndirectResolver:
     """Protocol-shaped fake (no IDA): accepts only the ``m_ijmp`` flag graph."""
 
     name = "indirect_jump_table"
-    router_kind = RouterKind.INDIRECT_TABLE
+    router_kind = RouterKind.TABLE
+    table_provenance = TableProvenance.INDIRECT_JUMP_TABLE
     specificity = 12
 
     def __init__(self, marker: str = "A") -> None:
@@ -235,6 +238,7 @@ class _FakeIndirectResolver:
             router_kind=self.router_kind,
             confidence=1.0,
             specificity=self.specificity,
+            table_provenance=self.table_provenance,
             reasons=("indirect-jump-table", self.marker),
         )
 
@@ -246,6 +250,7 @@ class _FakeIndirectResolver:
             resolver_name=self.name,
             router_kind=self.router_kind,
             confidence=candidate.confidence,
+            table_provenance=self.table_provenance,
             ranking_reason=candidate.reasons,
         )
 
@@ -271,7 +276,8 @@ def test_extra_resolver_recognized_by_front_end():
         dmap = build_dispatch_map_any_kind(graph)
 
         assert dmap is not None
-        assert dmap.router_kind is RouterKind.INDIRECT_TABLE
+        assert dmap.router_kind is RouterKind.TABLE
+        assert dmap.table_provenance is TableProvenance.INDIRECT_JUMP_TABLE
         assert dmap.state_to_handler() == {1: 4}
         assert dmap.dispatcher_entry_block == 3
     finally:
@@ -297,9 +303,9 @@ def test_extra_resolver_inert_on_non_indirect_graph():
     try:
         register_extra_dispatcher_resolver(_FakeIndirectResolver())
         dmap = build_dispatch_map_any_kind(_switch_flow_graph())
-        # Still resolves the SWITCH map; the indirect resolver abstained.
+        # Still resolves the TABLE/switch map; the indirect resolver abstained.
         assert dmap is not None
-        assert dmap.router_kind is RouterKind.SWITCH
+        assert dmap.router_kind is RouterKind.TABLE
         assert dmap.state_to_handler() == {0: 4, 1: 5, 2: 5}
     finally:
         clear_extra_dispatcher_resolvers()
@@ -342,8 +348,9 @@ def _indirect_result(rows=1, missing=0) -> IndirectJumpTableResult:
             dispatcher_block=3,
             compare_block=None,
             branch_kind="indirect_jump_table",
-            router_kind=RouterKind.INDIRECT_TABLE,
+            router_kind=RouterKind.TABLE,
             row_kind="handler",
+            table_provenance=TableProvenance.INDIRECT_JUMP_TABLE,
         )
         for i in range(rows)
     )
@@ -353,7 +360,8 @@ def _indirect_result(rows=1, missing=0) -> IndirectJumpTableResult:
         dispatcher_blocks=frozenset({3}),
         state_var_stkoff=0x30,
         state_var_lvar_idx=None,
-        router_kind=RouterKind.INDIRECT_TABLE,
+        router_kind=RouterKind.TABLE,
+        table_provenance=TableProvenance.INDIRECT_JUMP_TABLE,
     )
     return IndirectJumpTableResult(
         state_dispatcher_map=dmap, entries=(), missing_target_count=missing
@@ -364,7 +372,7 @@ def _materialized_flow_graph() -> FlowGraph:
     """A materialized hub: direct flow, NO m_ijmp tail (post-materialization)."""
     return _flow_graph({
         0: _block(0, succs=(3,)),
-        3: _block(3, preds=(0,), succs=(4,)),  # plain goto tail, no INDIRECT_TABLE
+        3: _block(3, preds=(0,), succs=(4,)),  # plain goto tail, no TABLE/indirect_jump_table
         4: _block(4, preds=(3,)),
     })
 
@@ -377,7 +385,8 @@ def test_portable_resolver_accepts_on_m_ijmp_graph():
 
     assert candidate is not None
     assert isinstance(candidate, ResolverCandidate)
-    assert candidate.router_kind is RouterKind.INDIRECT_TABLE
+    assert candidate.router_kind is RouterKind.TABLE
+    assert candidate.table_provenance is TableProvenance.INDIRECT_JUMP_TABLE
     assert candidate.resolver_name == "indirect_jump_table"
     assert "m_ijmp" in candidate.reasons
     assert "rows=2" in candidate.reasons
@@ -403,7 +412,8 @@ def test_portable_resolver_recognizes_materialized_form():
 
     resolution = resolver.resolve(graph, candidate)
     assert isinstance(resolution, DispatcherResolution)
-    assert resolution.router_kind is RouterKind.INDIRECT_TABLE
+    assert resolution.router_kind is RouterKind.TABLE
+    assert resolution.table_provenance is TableProvenance.INDIRECT_JUMP_TABLE
     assert resolution.dispatcher_map.dispatcher_entry_block == 3
 
 

@@ -76,7 +76,7 @@ def _block(
 
 
 def _switch_flow_graph() -> FlowGraph:
-    """A real SWITCH graph (mirrors test_dispatcher_resolver fixture)."""
+    """A real TABLE/switch graph (mirrors test_dispatcher_resolver fixture)."""
     state_operand = _mop(kind=OperandKind.SUBINSN, stack_refs=(0x10,))
     switch_cases = _mop(
         kind=OperandKind.CASE_LIST,
@@ -147,7 +147,7 @@ def test_round_trip_identity_equality_chain():
 def test_round_trip_identity_switch_table():
     m = build_dispatch_map_any_kind(_switch_flow_graph())
     assert m is not None
-    assert m.router_kind is RouterKind.SWITCH
+    assert m.router_kind is RouterKind.TABLE
     assert RecoveredMachine.from_state_dispatcher_map(m).to_state_dispatcher_map() == m
 
 

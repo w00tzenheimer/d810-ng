@@ -125,7 +125,7 @@ def test_recover_dispatcher_resolves_switch_table_when_no_equality_chain():
     )
     result = recover_dispatcher(graph, facts=None)
     assert result.dispatch_map is not None
-    assert result.dispatch_map.router_kind is RouterKind.SWITCH
+    assert result.dispatch_map.router_kind is RouterKind.TABLE
     assert result.dispatch_map.state_to_handler() == {0: 2, 1: 3, 2: 4, 3: 5}
     assert result.dispatch_map.state_var_stkoff == 0x40
     assert result.dispatcher_block_serial == 1

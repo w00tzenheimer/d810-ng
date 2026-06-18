@@ -20,7 +20,7 @@ from d810.ir.semantics import PredicateKind
 from d810.analyses.value_flow.model import ValidatedFactView
 from d810.analyses.control_flow.reachability import reachable_from
 from d810.analyses.control_flow.dominator import compute_dom_tree
-from d810.capabilities.dispatcher import RouterKind
+from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.analyses.control_flow.dispatcher_resolution import (
     DispatcherResolution,
     ResolverCandidate,
@@ -400,7 +400,8 @@ class SwitchTableDispatcherResolver:
     """
 
     name: str = "switch_table"
-    router_kind: RouterKind = RouterKind.SWITCH
+    router_kind: RouterKind = RouterKind.TABLE
+    table_provenance: TableProvenance = TableProvenance.SWITCH
     specificity: int = 5
 
     def accepts(self, graph: FlowGraph) -> ResolverCandidate | None:
@@ -413,6 +414,7 @@ class SwitchTableDispatcherResolver:
             router_kind=self.router_kind,
             confidence=float(len(dmap.rows)),
             specificity=self.specificity,
+            table_provenance=self.table_provenance,
             reasons=("switch-table", "rows=%d" % len(dmap.rows)),
         )
 
@@ -427,6 +429,7 @@ class SwitchTableDispatcherResolver:
             resolver_name=self.name,
             router_kind=self.router_kind,
             confidence=candidate.confidence,
+            table_provenance=self.table_provenance,
             ranking_reason=candidate.reasons,
         )
 
@@ -544,7 +547,11 @@ def recover_dispatcher(
     # entry-dominance and thread it onto the map so the §1a entry bridge prefers
     # it over the spurious range value. INDIRECT maps already carry their own
     # recovered ``initial_state`` and are left untouched (ticket llr-mra1).
-    if dmap.router_kind is not RouterKind.INDIRECT_TABLE and dmap.initial_state is None:
+    is_indirect_table = (
+        dmap.router_kind is RouterKind.TABLE
+        and dmap.table_provenance is TableProvenance.INDIRECT_JUMP_TABLE
+    )
+    if not is_indirect_table and dmap.initial_state is None:
         recovered_initial = recover_entry_dominated_initial_state(graph, dmap)
         if recovered_initial is not None:
             dmap = replace(dmap, initial_state=recovered_initial)
