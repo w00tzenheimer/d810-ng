@@ -11,8 +11,14 @@ from d810.families.state_machine_cff.pipeline import (
     state_machine_pass_registry,
 )
 from d810.passes.pass_pipeline import BackendRoute, PipelineConfigError
-from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
-from d810.passes.pipeline_shadow import compare_pipeline_v2_shadow
+from d810.passes.pipeline_config_parser import (
+    pipeline_configs_from_project_config,
+    pass_specs_from_project_config,
+)
+from d810.passes.pipeline_shadow import (
+    compare_pipeline_specs,
+    compare_pipeline_v2_shadow,
+)
 from d810.passes.registry import UnknownPassIdError
 
 
@@ -84,6 +90,35 @@ def test_pipeline_v2_shadow_comparison_matches_full_live_specs():
     assert comparison.enabled is True
     assert comparison.matches is True
     assert comparison.configured_pass_ids == tuple(spec.pass_id for spec in live_specs)
+
+
+def test_pipeline_v2_configs_build_specs_from_registry():
+    live_specs = standard_state_machine_passes()
+    rebuilt_specs = pass_specs_from_project_config(
+        {"pipeline_v2": [spec.config.to_dict() for spec in live_specs]},
+        state_machine_pass_registry(),
+    )
+
+    assert tuple(spec.config for spec in rebuilt_specs) == tuple(
+        spec.config for spec in live_specs
+    )
+
+
+def test_pipeline_spec_comparison_reports_ordered_differences():
+    live_specs = standard_state_machine_passes()
+    short_specs = live_specs[:1]
+
+    comparison = compare_pipeline_specs(short_specs, live_specs)
+
+    assert comparison.matches is False
+    assert comparison.pass_ids_match is False
+    assert comparison.configs_match is False
+    assert comparison.left_pass_ids == ("recover_dispatcher",)
+    assert comparison.right_pass_ids == tuple(spec.pass_id for spec in live_specs)
+    assert comparison.missing_pass_ids == tuple(
+        spec.pass_id for spec in live_specs[1:]
+    )
+    assert comparison.extra_pass_ids == ()
 
 
 def test_pipeline_v2_shadow_comparison_reports_mismatch_without_cutover():

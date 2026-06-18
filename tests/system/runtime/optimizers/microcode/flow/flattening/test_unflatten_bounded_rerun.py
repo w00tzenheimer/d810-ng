@@ -146,10 +146,10 @@ class TestUnflattenBoundedRerunGate:
             def reset_func(self, func_ea):
                 captured["reset_func"] = int(func_ea)
 
-            def facts_for(self, source, *, input_facts=None, analysis_inputs=None):
+            def facts_for(self, source, *, input_facts=None, analysis_seeds=None):
                 captured["prepared_input_facts"] = input_facts
-                captured["prepared_analysis_inputs"] = dict(analysis_inputs or {})
-                for name, value in (analysis_inputs or {}).items():
+                captured["prepared_analysis_seeds"] = dict(analysis_seeds or {})
+                for name, value in (analysis_seeds or {}).items():
                     self.facts.put_analysis(name, value)
                 return self.facts
 
@@ -235,8 +235,8 @@ class TestUnflattenBoundedRerunGate:
         assert captured["maturity"] is IRMaturity.GLOBAL_ANALYZED
         assert captured["input_facts"] is fact_view
         assert captured["prepared_input_facts"] is fact_view
-        assert captured["analysis_inputs"] == {"range_evidence": None}
-        assert captured["prepared_analysis_inputs"] == {"range_evidence": None}
+        assert captured["analysis_seeds"] == {"range_evidence": None}
+        assert captured["prepared_analysis_seeds"] == {"range_evidence": None}
         assert captured["reset_func"] == _EA
 
 

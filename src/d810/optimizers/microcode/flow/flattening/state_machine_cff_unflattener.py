@@ -625,11 +625,11 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     self._log_lisa_discovery_diff(source.flow_graph, prelim, range_evidence)
         except Exception:  # noqa: BLE001 — evidence recovery is best-effort
             logger.debug("unflat: pre-pipeline condition-chain evidence failed", exc_info=True)
-        analysis_inputs = {"range_evidence": range_evidence}
+        analysis_seeds = {"range_evidence": range_evidence}
         facts = self._pass_manager.facts_for(
             source,
             input_facts=fact_view,
-            analysis_inputs=analysis_inputs,
+            analysis_seeds=analysis_seeds,
         )
         backend = HexRaysMutationBackend()
         # Provide the live value-range capability so RecoverStateTransitions can resolve handler
@@ -769,7 +769,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 maturity=current_ir_maturity,
                 capabilities=capabilities,
                 input_facts=fact_view,
-                analysis_inputs=analysis_inputs,
+                analysis_seeds=analysis_seeds,
             )
             facts = self._pass_manager.analysis_manager_for(func_ea) or facts
         # Iteration diagnostics: where does the unflatten chain stand for this function?
