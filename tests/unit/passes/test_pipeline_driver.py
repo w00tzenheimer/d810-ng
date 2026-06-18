@@ -484,6 +484,49 @@ def test_mutation_backend_pass_with_rewrite_plan_still_applies():
     assert out == "G1"
 
 
+def test_noop_backend_apply_preserves_analysis_epoch():
+    class _Mutator:
+        name = "mutator"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+
+    class _Reader:
+        name = "reader"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.get_analysis("recover_dispatcher") == "R"
+            return PassResult()
+
+    class _TwoPasses:
+        name = "two_passes"
+
+        def detect(self, graph, capabilities, context=None):
+            return object()
+
+        def pipeline_for(self, match, context):
+            return (
+                PassSpec("mutator", _Mutator, no_caps, default),
+                PassSpec("reader", _Reader, no_caps, default),
+            )
+
+    class _NoopBackend(_Backend):
+        def apply(self, plan, live_source, safety_policy):
+            self.applied += 1
+            return _GRAPH
+
+    facts = AnalysisManager(_GRAPH)
+    facts.put_analysis("recover_dispatcher", "R")
+    out = run_pipeline(
+        source=_Src(), family=_TwoPasses(), backend=_NoopBackend(),
+        facts=facts, project_config=None,
+        maturity=IRMaturity.CANONICAL,
+    )
+
+    assert out is _GRAPH
+    assert facts.get_analysis("recover_dispatcher") == "R"
+
+
 def test_spec_preservation_applies_when_result_omits_preservation():
     class _Mutator:
         name = "mutator"
