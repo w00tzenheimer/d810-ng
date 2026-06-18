@@ -93,7 +93,39 @@ def test_expression_families_construct() -> None:
 
 def test_value_op_kind_members() -> None:
     names = {k.name for k in ValueOpKind}
-    assert {"CONST", "MOVE", "ADD", "SUB", "LOAD", "STORE"} <= names
+    assert {
+        "CONST",
+        "MOVE",
+        "ADD",
+        "SUB",
+        "MUL",
+        "UDIV",
+        "SDIV",
+        "UMOD",
+        "SMOD",
+        "OR",
+        "AND",
+        "XOR",
+        "NOT",
+        "NEG",
+        "SHL",
+        "SHR",
+        "SAR",
+        "ZEXT",
+        "SEXT",
+        "LOW",
+        "HIGH",
+        "OVERFLOW_FLAG",
+        "LOAD",
+        "STORE",
+        "VENDOR",
+    } <= names
+
+
+def test_value_op_kind_values_are_stable_tokens() -> None:
+    assert ValueOpKind.ADD.value == "add"
+    assert ValueOpKind.SAR.value == "sar"
+    assert ValueOpKind.VENDOR.value == "vendor"
 
 
 def test_expr_ref_union_covers_families() -> None:

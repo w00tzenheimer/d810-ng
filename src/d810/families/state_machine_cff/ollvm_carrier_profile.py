@@ -785,7 +785,7 @@ def collect_ollvm_profile_fact_observations(mba: object) -> tuple[object, ...]:
     return (*raw_facts, *projected_facts)
 
 
-def _microcode_opcode_name_resolver(mba: object):
+def _microcode_opcode_label_resolver(mba: object):
     try:
         constants = get_microcode_evidence().microcode_constants(mba)
     except Exception:
@@ -829,7 +829,7 @@ def collect_ollvm_branch_ownership_refiners(
     logger: object,
 ) -> tuple[object, ...]:
     try:
-        opcode_name_resolver = _microcode_opcode_name_resolver(mba)
+        opcode_label_resolver = _microcode_opcode_label_resolver(mba)
         return (
             OllvmCarrierBranchOwnershipOracle(
                 mba=mba,
@@ -837,11 +837,11 @@ def collect_ollvm_branch_ownership_refiners(
             ).refine,
             Z3BranchOwnershipOracle(
                 mba=mba,
-                opcode_name_resolver=opcode_name_resolver,
+                opcode_label_resolver=opcode_label_resolver,
             ).refine,
             MopTrackerBranchOwnershipOracle(
                 mba=mba,
-                opcode_name_resolver=opcode_name_resolver,
+                opcode_label_resolver=opcode_label_resolver,
             ).refine,
         )
     except Exception:

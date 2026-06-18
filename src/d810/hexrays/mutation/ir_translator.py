@@ -38,7 +38,7 @@ from d810.ir.flowgraph import (
 )
 from d810.ir.maturity import IRMaturity, SnapshotForm, snapshot_form_for_maturity
 from d810.ir.flowgraph import MopSnapshot as CfgMopSnapshot
-from d810.ir.semantics import ControlTransferKind, PredicateKind
+from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.transforms.plan import (
     ExecutionPolicy,
     LegacyBlockOperation,
@@ -73,6 +73,7 @@ from d810.transforms.plan import (
 )
 from d810.hexrays.ir.block_helpers import get_pred_serials, get_succ_serials
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
+from d810.hexrays import opcode_lift
 from d810.hexrays.mutation.insn_snapshot_materializer import (
     insn_snapshots_from_captured_body,
     validate_captured_block_body,
@@ -114,8 +115,7 @@ def _block_kind_from_hexrays(block_type: int) -> BlockKind:
 
 
 def is_hexrays_opcode(opcode: int, name: str) -> bool:
-    value = getattr(ida_hexrays, name, None)
-    return value is not None and int(opcode) == int(value)
+    return opcode_lift.is_hexrays_opcode(opcode, name)
 
 
 # ``_branch_predicate_from_hexrays`` (BranchPredicate) retired (llr-lxas):
@@ -268,24 +268,7 @@ def _branch_predicate_only_from_hexrays(opcode: int) -> PredicateKind | None:
 
     Returns ``None`` for non-branch opcodes.
     """
-    opcode = int(opcode)
-    mapping = (
-        ("m_jz", PredicateKind.EQ),
-        ("m_jnz", PredicateKind.NE),
-        ("m_jae", PredicateKind.UGE),
-        ("m_ja", PredicateKind.UGT),
-        ("m_jbe", PredicateKind.ULE),
-        ("m_jb", PredicateKind.ULT),
-        ("m_jge", PredicateKind.SGE),
-        ("m_jg", PredicateKind.SGT),
-        ("m_jle", PredicateKind.SLE),
-        ("m_jl", PredicateKind.SLT),
-        ("m_jcnd", PredicateKind.TRUTHY),
-    )
-    for name, kind in mapping:
-        if is_hexrays_opcode(opcode, name):
-            return kind
-    return None
+    return opcode_lift.branch_predicate_from_opcode(int(opcode))
 
 
 def _set_predicate_only_from_hexrays(opcode: int) -> PredicateKind | None:
@@ -300,23 +283,7 @@ def _set_predicate_only_from_hexrays(opcode: int) -> PredicateKind | None:
 
     Returns ``None`` for non-set opcodes.
     """
-    opcode = int(opcode)
-    mapping = (
-        ("m_setz", PredicateKind.EQ),
-        ("m_setnz", PredicateKind.NE),
-        ("m_setae", PredicateKind.UGE),
-        ("m_seta", PredicateKind.UGT),
-        ("m_setbe", PredicateKind.ULE),
-        ("m_setb", PredicateKind.ULT),
-        ("m_setge", PredicateKind.SGE),
-        ("m_setg", PredicateKind.SGT),
-        ("m_setle", PredicateKind.SLE),
-        ("m_setl", PredicateKind.SLT),
-    )
-    for name, kind in mapping:
-        if is_hexrays_opcode(opcode, name):
-            return kind
-    return None
+    return opcode_lift.set_predicate_from_opcode(int(opcode))
 
 
 def _predicate_kind_from_hexrays(opcode: int) -> PredicateKind | None:
@@ -328,10 +295,7 @@ def _predicate_kind_from_hexrays(opcode: int) -> PredicateKind | None:
     whether the result is consumed as branch direction or as a
     materialized byte.
     """
-    kind = _branch_predicate_only_from_hexrays(opcode)
-    if kind is not None:
-        return kind
-    return _set_predicate_only_from_hexrays(opcode)
+    return opcode_lift.predicate_from_opcode(int(opcode))
 
 
 def _control_transfer_from_hexrays(opcode: int) -> ControlTransferKind | None:
@@ -339,8 +303,8 @@ def _control_transfer_from_hexrays(opcode: int) -> ControlTransferKind | None:
 
     Covers gotos, conditional branches, jump tables, indirect jumps,
     and returns.  Calls (``m_call`` / ``m_icall``) are explicitly NOT
-    included -- they'll get their own ``CallKind`` family when a
-    consumer needs them.  ``m_set*`` byte materializations are
+    included -- they are classified by the sibling ``CallKind`` family.
+    ``m_set*`` byte materializations are
     explicitly NOT control transfers -- the dispatch uses
     ``_branch_predicate_only_from_hexrays`` (NOT the broader
     ``_predicate_kind_from_hexrays``) so a materialization can never
@@ -348,18 +312,7 @@ def _control_transfer_from_hexrays(opcode: int) -> ControlTransferKind | None:
 
     Returns ``None`` for non-transfer opcodes.
     """
-    opcode = int(opcode)
-    if is_hexrays_opcode(opcode, "m_goto"):
-        return ControlTransferKind.GOTO
-    if is_hexrays_opcode(opcode, "m_jtbl"):
-        return ControlTransferKind.TABLE_BRANCH
-    if is_hexrays_opcode(opcode, "m_ijmp"):
-        return ControlTransferKind.INDIRECT_BRANCH
-    if is_hexrays_opcode(opcode, "m_ret"):
-        return ControlTransferKind.RETURN
-    if _branch_predicate_only_from_hexrays(opcode) is not None:
-        return ControlTransferKind.CONDITIONAL_BRANCH
-    return None
+    return opcode_lift.control_transfer_from_opcode(int(opcode))
 
 
 def classify_branch_predicate(insn: object) -> PredicateKind | None:
@@ -397,6 +350,15 @@ def classify_control_transfer(insn: object) -> ControlTransferKind | None:
     """
     try:
         return _control_transfer_from_hexrays(int(getattr(insn, "opcode")))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def classify_call_kind(insn: object) -> CallKind | None:
+    """Return the portable call family for a live call instruction."""
+
+    try:
+        return opcode_lift.call_kind_from_opcode(int(getattr(insn, "opcode")))
     except (AttributeError, TypeError, ValueError):
         return None
 
@@ -591,6 +553,7 @@ def capture_insn_snapshot(insn: "ida_hexrays.minsn_t") -> InsnSnapshot:
     operands = tuple(operand for _, operand in operand_slots)
     branch_predicate = _branch_predicate_only_from_hexrays(opcode)
     insn_kind = _insn_kind_from_hexrays(opcode)
+    lifted_opcode = opcode_lift.lift_opcode(opcode)
     left = capture_mop_snapshot(insn.l)
     right = capture_mop_snapshot(insn.r)
     dest = capture_mop_snapshot(insn.d)
@@ -606,6 +569,10 @@ def capture_insn_snapshot(insn: "ida_hexrays.minsn_t") -> InsnSnapshot:
         d=dest,
         kind=insn_kind,
         raw_opcode=int(opcode),
+        value_op_kind=opcode_lift.value_op_from_opcode(opcode),
+        control_transfer_kind=opcode_lift.control_transfer_from_opcode(opcode),
+        call_kind=opcode_lift.call_kind_from_opcode(opcode),
+        opcode_attrs=lifted_opcode.attrs,
         branch_predicate=branch_predicate,
         compare_width=_compare_width_from_operands(left, right),
         is_conditional_jump=branch_predicate is not None,

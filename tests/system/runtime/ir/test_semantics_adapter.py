@@ -26,9 +26,11 @@ import pytest
 
 from d810.hexrays.mutation.ir_translator import (
     classify_branch_predicate,
+    classify_call_kind,
     classify_control_transfer,
 )
-from d810.ir.semantics import ControlTransferKind, PredicateKind
+from d810.ir.expressions import ValueOpKind
+from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 
 
 class _StubInsn:
@@ -108,7 +110,7 @@ class TestClassifyBranchPredicate:
 
 class TestClassifyControlTransfer:
     """Transfer kinds: goto, conditional branch, table, indirect, return.
-    ``m_set*`` materializations and ``m_call`` are deliberately unmapped."""
+    ``m_set*`` materializations and calls are deliberately unmapped."""
 
     @pytest.mark.parametrize(
         ("opcode_name", "expected"),
@@ -150,7 +152,7 @@ class TestClassifyControlTransfer:
             "m_setg",
             "m_setle",
             "m_setl",
-            # Calls are deliberately unmapped (future CallKind family).
+            # Calls are deliberately mapped through the sibling CallKind family.
             "m_call",
             "m_icall",
             # Plain value ops have no transfer.
@@ -161,6 +163,80 @@ class TestClassifyControlTransfer:
     def test_non_transfer_opcodes_return_none(self, opcode_name: str) -> None:
         insn = _StubInsn(_required(opcode_name))
         assert classify_control_transfer(insn) is None
+
+
+# ---------------------------------------------------------------------------
+# classify_call_kind
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyCallKind:
+    """Direct and indirect calls use a sibling call vocabulary."""
+
+    @pytest.mark.parametrize(
+        ("opcode_name", "expected"),
+        [
+            ("m_call", CallKind.DIRECT),
+            ("m_icall", CallKind.INDIRECT),
+        ],
+    )
+    def test_call_mapping(self, opcode_name: str, expected: CallKind) -> None:
+        insn = _StubInsn(_required(opcode_name))
+        assert classify_call_kind(insn) is expected
+
+    @pytest.mark.parametrize("opcode_name", ["m_jz", "m_goto", "m_ret", "m_mov", "m_add"])
+    def test_non_call_opcodes_return_none(self, opcode_name: str) -> None:
+        insn = _StubInsn(_required(opcode_name))
+        assert classify_call_kind(insn) is None
+
+
+# ---------------------------------------------------------------------------
+# backend opcode lift
+# ---------------------------------------------------------------------------
+
+
+class TestHexraysOpcodeLift:
+    def test_value_opcode_mapping(self) -> None:
+        from d810.backends.hexrays.opcode_lift import lift_opcode
+
+        lifted = lift_opcode(_required("m_add"))
+
+        assert lifted.kind is ValueOpKind.ADD
+        assert lifted.attrs["backend"] == "hexrays"
+        assert lifted.attrs["raw_opcode_int"] == _required("m_add")
+        assert lifted.attrs["raw_opcode_name"] == "m_add"
+
+    def test_call_opcode_mapping(self) -> None:
+        from d810.backends.hexrays.opcode_lift import lift_opcode
+
+        assert lift_opcode(_required("m_call")).kind is CallKind.DIRECT
+        assert lift_opcode(_required("m_icall")).kind is CallKind.INDIRECT
+
+    def test_branch_opcode_lifts_to_transfer_and_keeps_predicate_query_separate(
+        self,
+    ) -> None:
+        from d810.backends.hexrays.opcode_lift import (
+            branch_predicate_from_opcode,
+            lift_opcode,
+        )
+
+        opcode = _required("m_jz")
+
+        assert lift_opcode(opcode).kind is ControlTransferKind.CONDITIONAL_BRANCH
+        assert branch_predicate_from_opcode(opcode) is PredicateKind.EQ
+
+    def test_unknown_opcode_uses_vendor_escape_without_fabricated_name(self) -> None:
+        from d810.backends.hexrays.opcode_lift import lift_opcode
+
+        lifted = lift_opcode(0x7FFFFFFE)
+
+        assert lifted.kind is ValueOpKind.VENDOR
+        assert lifted.attrs["raw_opcode_int"] == 0x7FFFFFFE
+        assert "raw_opcode_name" not in lifted.attrs
+        assert all(
+            not (isinstance(value, str) and value.startswith("op_"))
+            for value in lifted.attrs.values()
+        )
 
 
 # ---------------------------------------------------------------------------

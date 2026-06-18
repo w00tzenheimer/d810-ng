@@ -3,8 +3,8 @@
 This module hosts the **backend-neutral** semantic vocabulary for
 microcode-style operations.  Files that consume these enums never
 need to know about Hex-Rays ``mcode_t`` / IDA opcode integers /
-vendor identifier names; they consume ``PredicateKind``,
-``ControlTransferKind`` (and future siblings) and let the backend
+vendor identifier names; they consume ``ValueOpKind``, ``PredicateKind``,
+``ControlTransferKind``, ``CallKind`` and let the backend
 lifter -- ``d810.hexrays.mutation.ir_translator`` for the Hex-Rays
 side, or equivalent adapters for future angr / Ghidra backends --
 resolve raw vendor opcodes into these families at the seam.
@@ -26,33 +26,26 @@ Design principles
   at ``d810.hexrays.mutation.ir_translator`` is the only thing that
   knows how to turn a ``mcode_t`` int into one of these kinds.
 
-Planned (NOT yet implemented) family enums
-------------------------------------------
-
-* ``ValueOpKind``        -- pure arithmetic / bitwise / partition
-  operations (COPY, NEG, ADD/SUB/MUL, OR/AND/XOR, SHL/LSHR/ASHR,
-  LOW_PART/HIGH_PART, etc.)
-* ``MemoryOpKind``       -- LOAD / STORE
-* ``FlagComputationKind`` -- explicit OVERFLOW_FLAG / UADD_CARRY /
-  SHL_CARRY / SIGN_BIT / PARITY materializations (note: ``m_seto``
-  is "overflow flag materialized", NOT necessarily subtraction
-  overflow -- model it as ``OVERFLOW_FLAG`` until a consumer needs
-  to distinguish the source)
-* ``ConversionKind``     -- SIGN_EXTEND / ZERO_EXTEND / INT_TO_FLOAT
-  / FLOAT_TO_INT / FLOAT_RESIZE / FLOAT_NEG
-* ``FloatOpKind``        -- ADD / SUB / MUL / DIV
-* ``CallKind``           -- DIRECT / INDIRECT / INTRINSIC
-* ``StackEffectKind``    -- PUSH / POP
-
-Add these on demand as new axis-C slices need them.
+The remaining planned families are narrower effect domains (for example stack
+effects or floating-point operations) and should be added only when a consumer
+needs that distinction.
 """
 
 from __future__ import annotations
 
-from enum import Enum, auto
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from enum import Enum
+from types import MappingProxyType
+
+from d810.core.typing import TypeAlias
+from d810.ir.expressions import ValueOpKind
 
 __all__ = [
+    "CallKind",
     "ControlTransferKind",
+    "LiftedOpcode",
+    "OperationKind",
     "PredicateKind",
 ]
 
@@ -85,18 +78,50 @@ class PredicateKind(str, Enum):
     TRUTHY = "truthy"
 
 
-class ControlTransferKind(Enum):
+class ControlTransferKind(str, Enum):
     """Coarse categorization of an instruction's control-flow effect.
 
     Use this when a consumer needs "is this a goto vs a table branch
     vs a return vs a conditional branch"; pair with ``PredicateKind``
     when the branch additionally carries a comparison.  Direct /
     indirect / intrinsic calls are out of scope for this enum -- they
-    get their own ``CallKind`` family once a consumer needs them.
+    get their own ``CallKind`` family.
     """
 
-    GOTO = auto()
-    CONDITIONAL_BRANCH = auto()
-    TABLE_BRANCH = auto()
-    INDIRECT_BRANCH = auto()
-    RETURN = auto()
+    GOTO = "goto"
+    CONDITIONAL_BRANCH = "conditional_branch"
+    TABLE_BRANCH = "table_branch"
+    INDIRECT_BRANCH = "indirect_branch"
+    RETURN = "return"
+
+
+class CallKind(str, Enum):
+    """Call operation family.
+
+    Directness belongs here rather than in ``ControlTransferKind`` because calls
+    produce call effects and often values; dispatcher recovery treats direct /
+    indirect jumps as transfers, but call modeling consumes a sibling family.
+    """
+
+    DIRECT = "direct"
+    INDIRECT = "indirect"
+    INTRINSIC = "intrinsic"
+
+
+OperationKind: TypeAlias = ValueOpKind | PredicateKind | ControlTransferKind | CallKind
+
+
+@dataclass(frozen=True)
+class LiftedOpcode:
+    """Backend opcode lifted into the canonical semantic vocabulary.
+
+    ``attrs`` is provenance only. Portable algorithms switch on ``kind`` and may
+    record the raw backend fields for diagnostics without treating them as
+    behavior-authorizing semantics.
+    """
+
+    kind: OperationKind
+    attrs: Mapping[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "attrs", MappingProxyType(dict(self.attrs)))

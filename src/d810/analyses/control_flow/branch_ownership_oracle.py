@@ -47,7 +47,7 @@ PredicateResolver = Callable[
     [object, object | None, int | None],
     PredicateOwnershipResult,
 ]
-OpcodeNameResolver = Callable[[object], str | None]
+OpcodeLabelResolver = Callable[[object], str | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,13 +89,13 @@ class MopTrackerBranchOwnershipOracle:
         max_nb_block: int = 20,
         max_path: int = 8,
         predicate_resolver: PredicateResolver | None = None,
-        opcode_name_resolver: OpcodeNameResolver | None = None,
+        opcode_label_resolver: OpcodeLabelResolver | None = None,
     ) -> None:
         self._mba = mba
         self._max_nb_block = max_nb_block
         self._max_path = max_path
         self._predicate_resolver = predicate_resolver
-        self._opcode_name_resolver = opcode_name_resolver
+        self._opcode_label_resolver = opcode_label_resolver
 
     def refine(
         self,
@@ -229,7 +229,7 @@ class MopTrackerBranchOwnershipOracle:
             via_pred=via_pred,
             max_nb_block=self._max_nb_block,
             max_path=self._max_path,
-            opcode_name_resolver=self._opcode_name_resolver,
+            opcode_label_resolver=self._opcode_label_resolver,
         )
 
 
@@ -244,13 +244,13 @@ class Z3BranchOwnershipOracle:
         side_effect_guard: SideEffectGuard | None = None,
         discarded_side_effect_depth: int = 3,
         required_constant_markers: tuple[str, ...] = (),
-        opcode_name_resolver: OpcodeNameResolver | None = None,
+        opcode_label_resolver: OpcodeLabelResolver | None = None,
     ) -> None:
         self._mba = mba
         self._prover_factory = prover_factory
         self._side_effect_guard = side_effect_guard
         self._discarded_side_effect_depth = max(0, int(discarded_side_effect_depth))
-        self._opcode_name_resolver = opcode_name_resolver
+        self._opcode_label_resolver = opcode_label_resolver
         self._required_constant_markers = tuple(
             str(marker).upper()
             for marker in required_constant_markers
@@ -346,7 +346,7 @@ class Z3BranchOwnershipOracle:
         chosen_target = jump_target if taken else fallthrough_target
         discarded_target = fallthrough_target if taken else jump_target
         return BranchTargetIdentity(
-            opcode=_opcode_name(tail, self._opcode_name_resolver),
+            opcode=_opcode_name(tail, self._opcode_label_resolver),
             jump_target=int(jump_target),
             fallthrough_target=int(fallthrough_target),
             chosen_target=int(chosen_target),
@@ -355,7 +355,7 @@ class Z3BranchOwnershipOracle:
         )
 
     def _prove_jump_taken(self, block: object, tail: object) -> bool | None:
-        opcode = _opcode_name(tail, self._opcode_name_resolver)
+        opcode = _opcode_name(tail, self._opcode_label_resolver)
         if opcode in {"m_jcnd", "jcnd"}:
             return self._prove_jcnd_taken(block, tail)
 
@@ -367,7 +367,7 @@ class Z3BranchOwnershipOracle:
             tail,
             left,
             right,
-            opcode_name_resolver=self._opcode_name_resolver,
+            opcode_label_resolver=self._opcode_label_resolver,
         )
         if direct is not None:
             return direct
@@ -436,7 +436,7 @@ class Z3BranchOwnershipOracle:
             preserved_target=int(identity.chosen_target),
             max_depth=int(self._discarded_side_effect_depth),
             required_constant_markers=self._required_constant_markers,
-            opcode_name_resolver=self._opcode_name_resolver,
+            opcode_label_resolver=self._opcode_label_resolver,
         )
 
     def _identity_evidence(
@@ -506,7 +506,7 @@ def _resolve_predicate_with_moptracker(
     via_pred: int | None,
     max_nb_block: int,
     max_path: int,
-    opcode_name_resolver: OpcodeNameResolver | None = None,
+    opcode_label_resolver: OpcodeLabelResolver | None = None,
 ) -> PredicateOwnershipResult:
     l_mop = getattr(tail, "l", None)
     r_mop = getattr(tail, "r", None)
@@ -548,14 +548,14 @@ def _resolve_predicate_with_moptracker(
         tail,
         int(left),
         int(right),
-        opcode_name_resolver=opcode_name_resolver,
+        opcode_label_resolver=opcode_label_resolver,
     )
     if taken is None:
         return PredicateOwnershipResult(
             PredicateOwnershipKind.UNRESOLVED,
             "unsupported_conditional_opcode",
             evidence={
-                "opcode": _opcode_name(tail, opcode_name_resolver),
+                "opcode": _opcode_name(tail, opcode_label_resolver),
                 "left_value": int(left) & _MASK64,
                 "right_value": int(right) & _MASK64,
             },
@@ -565,7 +565,7 @@ def _resolve_predicate_with_moptracker(
         "moptracker_resolved_predicate_constant",
         taken=bool(taken),
         evidence={
-            "opcode": _opcode_name(tail, opcode_name_resolver),
+            "opcode": _opcode_name(tail, opcode_label_resolver),
             "left_value": int(left) & _MASK64,
             "right_value": int(right) & _MASK64,
         },
@@ -668,9 +668,9 @@ def _eval_conditional_tail(
     tail: object,
     left: int,
     right: int,
-    opcode_name_resolver: OpcodeNameResolver | None = None,
+    opcode_label_resolver: OpcodeLabelResolver | None = None,
 ) -> bool | None:
-    opcode = _opcode_name(tail, opcode_name_resolver)
+    opcode = _opcode_name(tail, opcode_label_resolver)
     size = conditional_operand_size(getattr(tail, "l", None), getattr(tail, "r", None))
     return conditional_jump_taken(opcode, left, right, operand_size=size)
 
@@ -679,7 +679,7 @@ def _eval_conditional_from_constants(
     tail: object,
     left_mop: object,
     right_mop: object,
-    opcode_name_resolver: OpcodeNameResolver | None = None,
+    opcode_label_resolver: OpcodeLabelResolver | None = None,
 ) -> bool | None:
     left = _constant_mop_value(left_mop)
     if left is None:
@@ -691,13 +691,13 @@ def _eval_conditional_from_constants(
         tail,
         int(left),
         int(right),
-        opcode_name_resolver=opcode_name_resolver,
+        opcode_label_resolver=opcode_label_resolver,
     )
 
 
 def _opcode_name(
     tail: object,
-    opcode_name_resolver: OpcodeNameResolver | None = None,
+    opcode_label_resolver: OpcodeLabelResolver | None = None,
 ) -> str:
     name = getattr(tail, "opcode_name", None)
     if isinstance(name, str) and name:
@@ -716,9 +716,9 @@ def _opcode_name(
         }.get(kind_value)
         if semantic_name is not None:
             return semantic_name
-    if opcode_name_resolver is not None:
+    if opcode_label_resolver is not None:
         try:
-            resolved = opcode_name_resolver(tail)
+            resolved = opcode_label_resolver(tail)
         except Exception:
             resolved = None
         if isinstance(resolved, str) and resolved:
@@ -856,7 +856,7 @@ def _discarded_corridor_side_effect_reason(
     preserved_target: int,
     max_depth: int,
     required_constant_markers: tuple[str, ...],
-    opcode_name_resolver: OpcodeNameResolver | None = None,
+    opcode_label_resolver: OpcodeLabelResolver | None = None,
 ) -> str | None:
     if mba is None:
         return "missing_mba_for_side_effect_guard"
@@ -888,7 +888,7 @@ def _discarded_corridor_side_effect_reason(
         block_reason = _block_side_effect_reason(
             block,
             required_constant_markers=required_constant_markers,
-            opcode_name_resolver=opcode_name_resolver,
+            opcode_label_resolver=opcode_label_resolver,
         )
         if block_reason is not None:
             return block_reason
@@ -917,10 +917,10 @@ def _block_side_effect_reason(
     block: object,
     *,
     required_constant_markers: tuple[str, ...],
-    opcode_name_resolver: OpcodeNameResolver | None = None,
+    opcode_label_resolver: OpcodeLabelResolver | None = None,
 ) -> str | None:
     for insn in _iter_block_insns(block):
-        opcode = _opcode_name(insn, opcode_name_resolver)
+        opcode = _opcode_name(insn, opcode_label_resolver)
         if opcode in {"m_call", "m_icall", "call", "icall"}:
             return "discarded_arm_contains_unknown_call_side_effect"
         if opcode not in {"m_stx", "stx"}:

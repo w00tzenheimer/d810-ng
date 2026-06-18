@@ -4,17 +4,15 @@ Backend-neutral expression trees over the value substrate, so portable analyses
 (recurrence, induction, strength-reduction) can model update expressions without
 vendor instruction objects (Landing Sequence LS8 substrate front-load).
 
-Minimum viable scope: the operation families the recurrence / induction analyses
-need (``Const``, ``Move``, ``Add``, ``Sub``, ``Load``, ``Store``).  ``ExprRef``
-is the closed union over them; ``ValueOpKind`` is the parallel operation-family
-enum for consumers that switch on op kind.  Extend on demand -- do NOT preload
-the full microcode operation space (see ``d810.ir.semantics`` for the planned
-families).
+``ExprRef`` is the closed union over the concrete expression nodes implemented
+today.  ``ValueOpKind`` is broader: it is the stable, backend-neutral operation
+vocabulary a lifter can use before every operation has a dedicated expression
+node.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum, auto
+from enum import Enum
 
 from d810.core.typing import Union
 from d810.ir.value_refs import ValueRef
@@ -32,16 +30,48 @@ __all__ = [
 ]
 
 
-class ValueOpKind(Enum):
-    """Operation family for a portable expression node."""
+class ValueOpKind(str, Enum):
+    """Machine-near value operation family.
 
-    CONST = auto()
-    MOVE = auto()
-    ADD = auto()
-    SUB = auto()
-    AND = auto()
-    LOAD = auto()
-    STORE = auto()
+    Width is intentionally not encoded here; it belongs to the value/varnode.
+    Signedness is encoded when it changes the operation algorithm.
+    """
+
+    CONST = "const"
+    MOVE = "move"
+    LOAD = "load"
+    STORE = "store"
+    ADD = "add"
+    SUB = "sub"
+    MUL = "mul"
+    UDIV = "udiv"
+    SDIV = "sdiv"
+    UMOD = "umod"
+    SMOD = "smod"
+    OR = "or"
+    AND = "and"
+    XOR = "xor"
+    NOT = "not"
+    LNOT = "lnot"
+    NEG = "neg"
+    SHL = "shl"
+    SHR = "shr"
+    SAR = "sar"
+    ROL = "rol"
+    ROR = "ror"
+    ZEXT = "zext"
+    SEXT = "sext"
+    TRUNC = "trunc"
+    LOW = "low"
+    HIGH = "high"
+    CARRY_ADD = "carry_add"
+    OVERFLOW_ADD = "overflow_add"
+    OVERFLOW_FLAG = "overflow_flag"
+    CARRY_SHL = "carry_shl"
+    CARRY_SHR = "carry_shr"
+    SIGN_BIT = "sign_bit"
+    PARITY = "parity"
+    VENDOR = "vendor"
 
 
 @dataclass(frozen=True)
