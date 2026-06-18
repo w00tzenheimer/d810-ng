@@ -24,7 +24,7 @@ from d810.passes.pass_pipeline import (
     PassSpec,
     PreservedAnalyses,
 )
-from d810.passes.scheduler import PassScheduler
+from d810.passes.scheduler import PassScheduler, RunLaterDomain
 from d810.transforms.plan import PatchPlan
 
 
@@ -60,6 +60,34 @@ def validate_capabilities(backend, requirements: CapabilityPolicy) -> None:
         )
 
 
+def _run_pass_spec(
+    *,
+    spec: PassSpec,
+    ctx: FunctionPipelineContext,
+    backend,
+    facts,
+    scheduler: PassScheduler | None,
+) -> FunctionPipelineContext:
+    validate_capabilities(backend, spec.requirements)
+    result = spec.pass_factory().run(ctx)
+    if scheduler is not None:
+        for request in result.run_later:
+            scheduler.request(
+                func_ea=ctx.source.func_ea,
+                pass_id=spec.name,
+                current_maturity=ctx.maturity,
+                run_later=request,
+                domain=RunLaterDomain.PIPELINE_PASS,
+            )
+    if _plan_has_work(result.rewrite_plan):
+        new_graph = backend.apply(
+            result.rewrite_plan, ctx.source.live_source, spec.safety_policy
+        )
+        facts.invalidate_to(new_graph, result.preserved)
+        ctx = replace(ctx, graph=new_graph)
+    return ctx
+
+
 def run_pipeline(
     *,
     source,
@@ -91,21 +119,30 @@ def run_pipeline(
         facts=facts.view(),
         capabilities=capabilities if capabilities is not None else CapabilitySet(),
     )
-    for spec in family.pipeline_for(match, ctx):
-        validate_capabilities(backend, spec.requirements)
-        result = spec.pass_factory().run(ctx)
-        if scheduler is not None:
-            for request in result.run_later:
-                scheduler.request(
-                    func_ea=ctx.source.func_ea,
-                    pass_id=spec.name,
-                    current_maturity=ctx.maturity,
-                    run_later=request,
-                )
-        if _plan_has_work(result.rewrite_plan):
-            new_graph = backend.apply(
-                result.rewrite_plan, ctx.source.live_source, spec.safety_policy
+    specs = family.pipeline_for(match, ctx)
+    scheduled_pass_ids: tuple[str, ...] = ()
+    if scheduler is not None:
+        scheduled_pass_ids = tuple(
+            pending.pass_id
+            for pending in scheduler.drain(
+                func_ea=ctx.source.func_ea,
+                current_maturity=ctx.maturity,
+                domain=RunLaterDomain.PIPELINE_PASS,
             )
-            facts.invalidate_to(new_graph, result.preserved)
-            ctx = replace(ctx, graph=new_graph)
+        )
+
+    for spec in specs:
+        ctx = _run_pass_spec(
+            spec=spec, ctx=ctx, backend=backend, facts=facts, scheduler=scheduler
+        )
+
+    if scheduled_pass_ids:
+        specs_by_name = {spec.name: spec for spec in specs}
+        for pass_id in scheduled_pass_ids:
+            spec = specs_by_name.get(pass_id)
+            if spec is None:
+                continue
+            ctx = _run_pass_spec(
+                spec=spec, ctx=ctx, backend=backend, facts=facts, scheduler=scheduler
+            )
     return ctx.graph

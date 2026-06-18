@@ -4,7 +4,12 @@ from __future__ import annotations
 import logging
 
 from d810.ir.maturity import IRMaturity
-from d810.passes.scheduler import PassScheduler, PendingRun, RunLater
+from d810.passes.scheduler import (
+    PassScheduler,
+    PendingRun,
+    RunLater,
+    RunLaterDomain,
+)
 
 
 def test_run_later_stores_ir_maturity():
@@ -78,6 +83,35 @@ def test_scheduler_dedupes_by_function_pass_and_maturity():
             pass_id="recover",
             at=IRMaturity.GLOBAL_ANALYZED,
             reason="first",
+        ),
+    )
+
+
+def test_scheduler_domains_keep_pipeline_passes_out_of_optimizer_rule_drain():
+    scheduler = PassScheduler()
+    assert scheduler.request(
+        func_ea=0x1000,
+        pass_id="same_name",
+        current_maturity=IRMaturity.CANONICAL,
+        run_later=RunLater(IRMaturity.GLOBAL_ANALYZED, reason="pipeline"),
+        domain=RunLaterDomain.PIPELINE_PASS,
+    ) is True
+
+    assert scheduler.drain(
+        func_ea=0x1000,
+        current_maturity=IRMaturity.GLOBAL_ANALYZED,
+    ) == ()
+    assert scheduler.drain(
+        func_ea=0x1000,
+        current_maturity=IRMaturity.GLOBAL_ANALYZED,
+        domain=RunLaterDomain.PIPELINE_PASS,
+    ) == (
+        PendingRun(
+            func_ea=0x1000,
+            pass_id="same_name",
+            at=IRMaturity.GLOBAL_ANALYZED,
+            domain=RunLaterDomain.PIPELINE_PASS,
+            reason="pipeline",
         ),
     )
 

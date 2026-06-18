@@ -20,6 +20,7 @@ from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
 main_logger = getLogger("D810")
 optimizer_logger = getLogger("D810.optimizer")
+_RUN_LATER_DOMAIN_OPTIMIZER_RULE = "optimizer_rule"
 
 if typing.TYPE_CHECKING:
     from d810.core import OptimizationStatistics
@@ -163,6 +164,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         pending = drain(
             func_ea=func_ea,
             current_maturity=current_ir_maturity,
+            domain=_RUN_LATER_DOMAIN_OPTIMIZER_RULE,
         )
         if not pending:
             return
@@ -812,6 +814,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 pass_id=requested_pass_id,
                 current_maturity=current_ir_maturity,
                 run_later=request,
+                domain=_RUN_LATER_DOMAIN_OPTIMIZER_RULE,
             )
             if accepted:
                 optimizer_logger.debug(

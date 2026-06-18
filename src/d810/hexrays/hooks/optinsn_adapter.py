@@ -28,6 +28,7 @@ from d810.mba.backend_registry import get_egglog_provider
 main_logger = getLogger("D810")
 optimizer_logger = getLogger("D810.optimizer")
 z3_file_logger = getLogger("D810.z3_test")
+_RUN_LATER_DOMAIN_OPTIMIZER_RULE = "optimizer_rule"
 
 # ---------------------------------------------------------------------------
 # hash_minsn: Cython fast path with pure-Python fallback
@@ -337,6 +338,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         pending = drain(
             func_ea=func_ea,
             current_maturity=current_ir_maturity,
+            domain=_RUN_LATER_DOMAIN_OPTIMIZER_RULE,
         )
         if not pending:
             return
@@ -383,6 +385,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 pass_id=self._rule_name(rule),
                 current_maturity=current_ir_maturity,
                 run_later=request,
+                domain=_RUN_LATER_DOMAIN_OPTIMIZER_RULE,
             )
             if accepted:
                 optimizer_logger.debug(
