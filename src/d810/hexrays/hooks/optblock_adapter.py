@@ -123,6 +123,10 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._impossible_return_artifact_rewrite_applied.clear()
         self._terminal_zero_literal_rewrite_applied.clear()
         self._reset_run_later_state()
+        for cfg_rule in self.cfg_rules:
+            reset_pass_manager = getattr(cfg_rule, "reset_pass_manager_state", None)
+            if callable(reset_pass_manager):
+                reset_pass_manager()
 
     def _reset_run_later_state(self) -> None:
         self._run_later_rule_names = frozenset()

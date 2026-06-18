@@ -37,6 +37,10 @@ class AnalysisManager:
         """Forward to the input fact view so ``facts_from_validated_view(am)`` works."""
         return getattr(self._input_facts, "active_observations", ()) if self._input_facts else ()
 
+    def set_input_facts(self, input_facts: object | None) -> None:
+        """Replace the live fact view for the next pipeline pass run."""
+        self._input_facts = input_facts
+
     def put_analysis(self, name: str, value: object) -> None:
         """Publish a pass result for later passes (the LLVM ``AnalysisManager.getResult`` edge)."""
         self._derived[name] = value

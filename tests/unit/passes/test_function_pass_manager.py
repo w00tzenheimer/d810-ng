@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -164,6 +165,61 @@ def test_manager_owns_analysis_manager_per_function():
     facts = manager.analysis_manager_for(0x1000)
     assert facts is not None
     assert facts.graph is _GRAPH
+
+
+def test_manager_threads_input_facts_and_seeded_analysis_inputs():
+    captured: dict[str, object] = {}
+
+    class _ReadFacts:
+        name = "read_facts"
+
+        def run(self, ctx) -> PassResult:
+            captured["observations"] = tuple(ctx.facts.active_observations)
+            captured["range_evidence"] = ctx.facts.get_analysis("range_evidence")
+            return PassResult()
+
+    family = _MatchingFamily(
+        (
+            PassSpec("read_facts", _ReadFacts, no_caps, default),
+        )
+    )
+    manager = FunctionPassManager()
+
+    manager.run(
+        source=_Src(),
+        family=family,
+        backend=_Backend(),
+        project_config=None,
+        maturity=IRMaturity.CANONICAL,
+        input_facts=SimpleNamespace(active_observations=("obs",)),
+        analysis_inputs={"range_evidence": "R"},
+    )
+
+    assert captured == {
+        "observations": ("obs",),
+        "range_evidence": "R",
+    }
+
+
+def test_manager_reset_func_clears_owned_facts_and_pipeline_scheduler():
+    manager = FunctionPassManager()
+    manager.facts_for(_Src()).put_analysis("published", object())
+    manager.scheduler.request(
+        func_ea=0x1000,
+        pass_id="recover_dispatcher",
+        current_maturity=IRMaturity.CANONICAL,
+        run_later=RunLater(IRMaturity.GLOBAL_ANALYZED),
+        domain=RunLaterDomain.PIPELINE_PASS,
+    )
+
+    manager.reset_func(0x1000)
+
+    assert manager.analysis_manager_for(0x1000) is None
+    assert manager.scheduler.drain(
+        func_ea=0x1000,
+        current_maturity=IRMaturity.GLOBAL_ANALYZED,
+        domain=RunLaterDomain.PIPELINE_PASS,
+    ) == ()
 
 
 def test_function_pass_manager_stays_ida_free():
