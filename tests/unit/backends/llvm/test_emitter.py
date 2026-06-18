@@ -24,7 +24,12 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.ir.instructions import Instruction
+from d810.ir.instructions import (
+    Instruction,
+    InstructionControl,
+    InstructionEffect,
+    InstructionEffectKind,
+)
 from d810.ir.maturity import IRMaturity
 from d810.ir.semantics import CallKind, PredicateKind
 from d810.ir.varnode import Space, Varnode
@@ -363,6 +368,74 @@ def test_m1h_zext_emits_width_increasing_cast():
     assert "ptr %r1_4" in result.ir_text
 
 
+def test_m1k_sign_bit_emits_signed_compare_to_zero():
+    flow = _graph(
+        _block(
+            0,
+            (),
+            (
+                _unary_value_op(ValueOpKind.SIGN_BIT, _reg(0), _reg(1, size=1)),
+                _ret(_reg(0)),
+            ),
+        )
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert " = icmp slt i32 " in result.ir_text
+    assert ", 0" in result.ir_text
+    assert " = zext i1 %t" in result.ir_text
+    assert " to i8" in result.ir_text
+    assert "ptr %r1_1" in result.ir_text
+
+
+def test_m1k_overflow_add_emits_signed_add_overflow_intrinsic():
+    flow = _graph(
+        _block(
+            0,
+            (),
+            (
+                _value_op(ValueOpKind.OVERFLOW_ADD, _reg(0), _reg(1), _reg(2, size=1)),
+                _ret(_reg(0)),
+            ),
+        )
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert "declare { i32, i1 } @llvm.sadd.with.overflow.i32(i32, i32)" in result.ir_text
+    assert " = call { i32, i1 } @llvm.sadd.with.overflow.i32(i32 " in result.ir_text
+    assert " = extractvalue { i32, i1 } %t" in result.ir_text
+    assert " = zext i1 %t" in result.ir_text
+    assert " to i8" in result.ir_text
+    assert "ptr %r2_1" in result.ir_text
+
+
+def test_m1k_overflow_flag_emits_signed_sub_overflow_intrinsic():
+    flow = _graph(
+        _block(
+            0,
+            (),
+            (
+                _value_op(ValueOpKind.OVERFLOW_FLAG, _reg(0), _reg(1), _reg(2, size=1)),
+                _ret(_reg(0)),
+            ),
+        )
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert "declare { i32, i1 } @llvm.ssub.with.overflow.i32(i32, i32)" in result.ir_text
+    assert " = call { i32, i1 } @llvm.ssub.with.overflow.i32(i32 " in result.ir_text
+    assert " = extractvalue { i32, i1 } %t" in result.ir_text
+    assert " = zext i1 %t" in result.ir_text
+    assert " to i8" in result.ir_text
+    assert "ptr %r2_1" in result.ir_text
+
+
 def test_one_way_cfg_edge_emits_branch_label():
     flow = _graph(
         _block(0, (2,), (_mov(_num(1), _reg(0)),)),
@@ -636,6 +709,31 @@ def test_raw_opcode_attrs_do_not_authorize_zext_value_operation():
     )
 
 
+@pytest.mark.parametrize("raw_opcode_name", ("m_sets", "m_ofadd", "m_seto"))
+def test_raw_opcode_attrs_do_not_authorize_flag_value_operations(raw_opcode_name: str):
+    fake_flag = InsnSnapshot(
+        opcode=0x82,
+        ea=0x2028,
+        operands=(),
+        kind=InsnKind.UNKNOWN,
+        opcode_attrs={"raw_opcode_name": raw_opcode_name},
+        l=_reg(0),
+        r=_reg(1),
+        d=_reg(2, size=1),
+    )
+    flow = _graph(_block(0, (), (fake_flag, _ret(_reg(0)))))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.operation == "vendor"
+        and reason.kind is UnsupportedLiftKind.VALUE_OP_UNSUPPORTED
+        for reason in result.unsupported
+    )
+
+
 def test_raw_opcode_attrs_do_not_authorize_table_branch():
     fake_jtbl = InsnSnapshot(
         opcode=0x35,
@@ -730,6 +828,82 @@ def test_m1d_binary_op_mismatched_widths_fail_closed():
     assert any(
         reason.kind is UnsupportedLiftKind.VALUE_WIDTH_MISMATCH
         and reason.reason == "M1a requires value operands and result to have matching widths"
+        for reason in result.unsupported
+    )
+
+
+def test_m1k_sign_bit_bad_arity_fails_closed():
+    insn = InsnSnapshot(
+        opcode=-1,
+        raw_opcode=0x82,
+        ea=0x101C,
+        operands=(),
+        kind=InsnKind.UNKNOWN,
+        value_op_kind=ValueOpKind.SIGN_BIT,
+        l=_reg(0),
+        r=_reg(1),
+        d=_reg(2, size=1),
+    )
+    flow = _graph(_block(0, (), (insn, _ret(_reg(0)))))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.VALUE_ARITY
+        and reason.reason == "SIGN_BIT requires one input"
+        for reason in result.unsupported
+    )
+
+
+def test_m1k_overflow_add_mismatched_input_widths_fail_closed():
+    flow = _graph(
+        _block(
+            0,
+            (),
+            (
+                _value_op(
+                    ValueOpKind.OVERFLOW_ADD,
+                    _reg(0, size=4),
+                    _reg(1, size=8),
+                    _reg(2, size=1),
+                ),
+                _ret(_reg(0)),
+            ),
+        )
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.VALUE_WIDTH_MISMATCH
+        and reason.reason == "M1k requires flag inputs to have matching widths"
+        for reason in result.unsupported
+    )
+
+
+def test_m1k_overflow_flag_const_result_fails_closed():
+    flow = _graph(
+        _block(
+            0,
+            (),
+            (
+                _value_op(ValueOpKind.OVERFLOW_FLAG, _reg(0), _reg(1), _num(0, size=1)),
+                _ret(_reg(0)),
+            ),
+        )
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.VALUE_RESULT_CONST
+        and reason.reason == "value op result cannot be const"
         for reason in result.unsupported
     )
 
@@ -1160,6 +1334,35 @@ def test_call_const_result_fails_closed():
     assert any(
         reason.kind is UnsupportedLiftKind.CALL_RESULT_UNSUPPORTED
         and reason.reason == "call result cannot be const"
+        for reason in result.unsupported
+    )
+
+
+def test_control_only_invalid_call_target_fails_in_classification(monkeypatch):
+    bad_target = Varnode(Space.UNKNOWN, 5, 3)
+    call = Instruction(
+        operation=CallKind.INDIRECT,
+        inputs=(),
+        result=None,
+        effects=(InstructionEffect(InstructionEffectKind.CALL, target=bad_target),),
+        control=InstructionControl(call_kind=CallKind.INDIRECT, call_target=bad_target),
+        attrs={"ea": 0x3008},
+    )
+    flow = _graph(_block(0, (), (_call(CallKind.INDIRECT, _reg(5, size=8)), _ret())))
+    monkeypatch.setattr(llvm_emitter, "_collect_instructions", lambda _flow: {0: (call,)})
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.VARNODE_WIDTH
+        and reason.reason == "unsupported varnode width 3; expected 1/2/4/8 bytes"
+        for reason in result.unsupported
+    )
+    assert any(
+        reason.kind is UnsupportedLiftKind.VARNODE_SPACE
+        and reason.reason == "unknown varnode space"
         for reason in result.unsupported
     )
 
