@@ -113,6 +113,27 @@ def _value_op(
     )
 
 
+def _unary_value_op(
+    operation: ValueOpKind,
+    src: MopSnapshot | None,
+    dst: MopSnapshot | None,
+    *,
+    raw_opcode_name: str | None = None,
+) -> InsnSnapshot:
+    attrs = {"raw_opcode_name": raw_opcode_name} if raw_opcode_name is not None else {}
+    return InsnSnapshot(
+        opcode=-1,
+        raw_opcode=0x81,
+        ea=0x1018,
+        operands=(),
+        kind=InsnKind.UNKNOWN,
+        value_op_kind=operation,
+        opcode_attrs=attrs,
+        l=src,
+        d=dst,
+    )
+
+
 def _ret(value: MopSnapshot | None = None) -> InsnSnapshot:
     return InsnSnapshot(opcode=0x42, ea=0x1010, operands=(), kind=InsnKind.RET, l=value)
 
@@ -262,6 +283,45 @@ def test_xor_materialization_accepts_duplicate_compared_operands():
     assert result.supported
     assert " = xor i32 " in result.ir_text
     assert "XOR requires two inputs" not in {reason.reason for reason in result.unsupported}
+
+
+def test_m1h_neg_emits_sub_from_zero():
+    flow = _graph(
+        _block(
+            0,
+            (),
+            (
+                _unary_value_op(ValueOpKind.NEG, _reg(0), _reg(1)),
+                _ret(_reg(1)),
+            ),
+        )
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert " = sub i32 0, " in result.ir_text
+    assert "ptr %r1_4" in result.ir_text
+
+
+def test_m1h_zext_emits_width_increasing_cast():
+    flow = _graph(
+        _block(
+            0,
+            (),
+            (
+                _unary_value_op(ValueOpKind.ZEXT, _reg(0, size=1), _reg(1, size=4)),
+                _ret(_reg(1)),
+            ),
+        )
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert " = zext i8 " in result.ir_text
+    assert " to i32" in result.ir_text
+    assert "ptr %r1_4" in result.ir_text
 
 
 def test_one_way_cfg_edge_emits_branch_label():
@@ -493,6 +553,30 @@ def test_raw_opcode_attrs_do_not_authorize_xor_value_operation():
     )
 
 
+def test_raw_opcode_attrs_do_not_authorize_zext_value_operation():
+    fake_zext = InsnSnapshot(
+        opcode=0x81,
+        ea=0x2024,
+        operands=(),
+        kind=InsnKind.UNKNOWN,
+        opcode_attrs={"raw_opcode_name": "m_xdu"},
+        l=_reg(0, size=1),
+        d=_reg(1, size=4),
+    )
+    flow = _graph(_block(0, (), (fake_zext, _ret(_reg(0)))))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.operation == "vendor"
+        and reason.kind is UnsupportedLiftKind.VALUE_OP_UNSUPPORTED
+        and reason.reason == "value operation vendor is unsupported in M1a"
+        for reason in result.unsupported
+    )
+
+
 @pytest.mark.parametrize(
     ("insn", "expected_kind", "expected_reason"),
     (
@@ -590,6 +674,21 @@ def test_m1d_binary_op_mismatched_widths_fail_closed():
             _value_op(ValueOpKind.XOR, _reg(0), _reg(1), _reg(2)),
             UnsupportedLiftKind.VALUE_ARITY,
             "XOR requires two inputs",
+        ),
+        (
+            _unary_value_op(ValueOpKind.NEG, _reg(0), None),
+            UnsupportedLiftKind.VALUE_RESULT_MISSING,
+            "value op has no result varnode",
+        ),
+        (
+            _unary_value_op(ValueOpKind.NEG, _reg(0), _reg(1, size=8)),
+            UnsupportedLiftKind.VALUE_WIDTH_MISMATCH,
+            "M1a requires value operands and result to have matching widths",
+        ),
+        (
+            _unary_value_op(ValueOpKind.ZEXT, _reg(0, size=4), _reg(1, size=4)),
+            UnsupportedLiftKind.VALUE_WIDTH_MISMATCH,
+            "ZEXT requires input width to be narrower than result width",
         ),
     ),
 )

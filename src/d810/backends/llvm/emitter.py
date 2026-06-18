@@ -29,7 +29,11 @@ _BINARY_VALUE_OPS = {
     ValueOpKind.AND,
     ValueOpKind.XOR,
 }
-_VALUE_OPS = {ValueOpKind.MOVE, *_BINARY_VALUE_OPS}
+_UNARY_VALUE_OPS = {
+    ValueOpKind.NEG,
+    ValueOpKind.ZEXT,
+}
+_VALUE_OPS = {ValueOpKind.MOVE, *_BINARY_VALUE_OPS, *_UNARY_VALUE_OPS}
 _PREDICATES = {
     PredicateKind.EQ: "eq",
     PredicateKind.NE: "ne",
@@ -312,6 +316,35 @@ class _Classifier:
                 UnsupportedLiftKind.VALUE_ARITY,
                 "MOVE requires one input",
             )
+        if instruction.operation is ValueOpKind.NEG:
+            if len(instruction.inputs) != 1:
+                self._add(
+                    block_serial,
+                    instruction_index,
+                    instruction,
+                    UnsupportedLiftKind.VALUE_ARITY,
+                    "NEG requires one input",
+                )
+            self._check_matching_widths(block_serial, instruction_index, instruction)
+        if instruction.operation is ValueOpKind.ZEXT:
+            if len(instruction.inputs) != 1:
+                self._add(
+                    block_serial,
+                    instruction_index,
+                    instruction,
+                    UnsupportedLiftKind.VALUE_ARITY,
+                    "ZEXT requires one input",
+                )
+            elif instruction.result is not None and (
+                int(instruction.inputs[0].size) >= int(instruction.result.size)
+            ):
+                self._add(
+                    block_serial,
+                    instruction_index,
+                    instruction,
+                    UnsupportedLiftKind.VALUE_WIDTH_MISMATCH,
+                    "ZEXT requires input width to be narrower than result width",
+                )
         if instruction.operation in _BINARY_VALUE_OPS:
             if len(instruction.inputs) != 2:
                 self._add(
@@ -589,6 +622,16 @@ class _Emitter:
         elif instruction.operation is ValueOpKind.MOVE:
             _ty, value = self._emit_value(instruction.inputs[0], lines)
             computed = value
+        elif instruction.operation is ValueOpKind.NEG:
+            _ty, value = self._emit_value(instruction.inputs[0], lines)
+            tmp = self._tmp()
+            lines.append(f"  {tmp} = sub {result_ty} 0, {value}")
+            computed = tmp
+        elif instruction.operation is ValueOpKind.ZEXT:
+            input_ty, value = self._emit_value(instruction.inputs[0], lines)
+            tmp = self._tmp()
+            lines.append(f"  {tmp} = zext {input_ty} {value} to {result_ty}")
+            computed = tmp
         else:
             _left_ty, left = self._emit_value(instruction.inputs[0], lines)
             _right_ty, right = self._emit_value(instruction.inputs[1], lines)
