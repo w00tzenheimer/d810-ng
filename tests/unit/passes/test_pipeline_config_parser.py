@@ -52,6 +52,8 @@ def test_pipeline_v2_shadow_parse_from_project_like_object():
 def test_malformed_pipeline_v2_fails_clearly():
     with pytest.raises(PipelineConfigError, match="pipeline_v2"):
         pipeline_configs_from_project_config({"pipeline_v2": {"pass_id": "x"}})
+    with pytest.raises(PipelineConfigError, match="at least one pass config"):
+        pipeline_configs_from_project_config({"pipeline_v2": []})
     with pytest.raises(PipelineConfigError, match="scheduler_policy"):
         pipeline_configs_from_project_config(
             {
@@ -77,6 +79,15 @@ def test_pipeline_v2_shadow_comparison_is_inert_when_missing():
     assert comparison.live_pass_ids == tuple(
         spec.pass_id for spec in standard_state_machine_passes()
     )
+
+
+def test_pipeline_v2_shadow_comparison_rejects_explicit_empty_config():
+    with pytest.raises(PipelineConfigError, match="at least one pass config"):
+        compare_pipeline_v2_shadow(
+            project_config={"pipeline_v2": []},
+            registry=state_machine_pass_registry(),
+            live_specs=standard_state_machine_passes(),
+        )
 
 
 def test_pipeline_v2_shadow_comparison_matches_full_live_specs():
