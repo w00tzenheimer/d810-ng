@@ -70,6 +70,24 @@ def _jcc(predicate: PredicateKind, lhs: MopSnapshot, rhs: MopSnapshot) -> InsnSn
     )
 
 
+def _setcc(
+    predicate: PredicateKind,
+    lhs: MopSnapshot | None,
+    rhs: MopSnapshot | None,
+    dst: MopSnapshot | None,
+) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=0x2D,
+        ea=0x2010,
+        operands=(),
+        kind=InsnKind.UNKNOWN,
+        predicate_kind=predicate,
+        l=lhs,
+        r=rhs,
+        d=dst,
+    )
+
+
 def _block(serial: int, succs: tuple[int, ...], insns: tuple[InsnSnapshot, ...]) -> BlockSnapshot:
     return BlockSnapshot(
         serial=serial,
@@ -191,6 +209,133 @@ def test_raw_opcode_attrs_do_not_authorize_conditional_branch():
     assert any(reason.reason == "multi-successor block needs conditional terminator" for reason in result.unsupported)
 
 
+def test_predicate_materialization_emits_icmp_zext_and_store_byte_result():
+    flow = _graph(
+        _block(
+            0,
+            (),
+            (
+                _mov(_num(7), _reg(0)),
+                _setcc(PredicateKind.EQ, _reg(0), _num(7), _reg(1, size=1)),
+                _ret(_reg(0)),
+            ),
+        )
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert "%r1_1 = alloca i8" in result.ir_text
+    assert " = icmp eq i32 " in result.ir_text
+    assert " = zext i1 %t" in result.ir_text
+    assert " to i8" in result.ir_text
+    assert "store i8 %t" in result.ir_text
+    assert "ptr %r1_1" in result.ir_text
+
+
+def test_predicate_materialization_accepts_duplicate_compared_operands():
+    flow = _graph(
+        _block(
+            0,
+            (),
+            (
+                _setcc(PredicateKind.EQ, _reg(0), _reg(0), _reg(1, size=1)),
+                _ret(_reg(0)),
+            ),
+        )
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert " = icmp eq i32 " in result.ir_text
+    assert "predicate materialization requires two compared inputs" not in {
+        reason.reason for reason in result.unsupported
+    }
+
+
+def test_signed_predicate_materialization_uses_signed_icmp():
+    flow = _graph(
+        _block(
+            0,
+            (),
+            (
+                _setcc(PredicateKind.SLT, _reg(0), _reg(1), _reg(2, size=4)),
+                _ret(_reg(0)),
+            ),
+        )
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert " = icmp slt i32 " in result.ir_text
+    assert " = zext i1 %t" in result.ir_text
+    assert " to i32" in result.ir_text
+
+
+def test_raw_opcode_attrs_do_not_authorize_predicate_materialization():
+    fake_setz = InsnSnapshot(
+        opcode=0x2D,
+        ea=0x2010,
+        operands=(),
+        kind=InsnKind.UNKNOWN,
+        opcode_attrs={"raw_opcode_name": "m_setz"},
+        l=_reg(0),
+        r=_num(0),
+        d=_reg(1, size=1),
+    )
+    flow = _graph(_block(0, (), (fake_setz, _ret(_reg(0)))))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.operation == "vendor"
+        and reason.reason == "value operation vendor is unsupported in M1a"
+        for reason in result.unsupported
+    )
+
+
+@pytest.mark.parametrize(
+    ("insn", "expected_reason"),
+    (
+        (
+            _setcc(PredicateKind.EQ, _reg(0), _reg(1), None),
+            "predicate materialization has no result varnode",
+        ),
+        (
+            _setcc(PredicateKind.EQ, _reg(0), _reg(1), _num(0, size=1)),
+            "predicate materialization result cannot be const",
+        ),
+        (
+            _setcc(PredicateKind.EQ, _reg(0), None, _reg(1, size=1)),
+            "predicate materialization requires two compared inputs",
+        ),
+        (
+            _setcc(PredicateKind.EQ, _reg(0, size=4), _reg(1, size=8), _reg(2, size=1)),
+            "M1c requires predicate inputs to have matching widths",
+        ),
+        (
+            _setcc(PredicateKind.TRUTHY, _reg(0), _num(0), _reg(1, size=1)),
+            "predicate truthy is unsupported for materialization in M1c",
+        ),
+    ),
+)
+def test_unsupported_predicate_materialization_cases_fail_closed(
+    insn: InsnSnapshot,
+    expected_reason: str,
+):
+    flow = _graph(_block(0, (), (insn, _ret(_reg(0)))))
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(reason.reason == expected_reason for reason in result.unsupported)
+
+
 def test_unsupported_call_returns_diagnostic_and_no_ir():
     call = InsnSnapshot(
         opcode=0x41,
@@ -279,6 +424,7 @@ def test_opt_verify_accepts_supported_emission_when_opt_available(tmp_path):
             (
                 _mov(_num(7), _stk(0x10)),
                 _add(_stk(0x10), _num(5), _reg(0)),
+                _setcc(PredicateKind.NE, _reg(0), _num(0), _reg(1, size=1)),
                 _ret(_reg(0)),
             ),
         )

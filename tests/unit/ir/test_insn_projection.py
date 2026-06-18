@@ -300,6 +300,52 @@ def test_instruction_projection_predicate_materialization_uses_destination_resul
     assert instruction.result == Varnode(Space.REGISTER, 2, 1)
 
 
+def test_instruction_projection_predicate_materialization_preserves_duplicate_operands():
+    repeated = _reg(0)
+    insn = InsnSnapshot(
+        opcode=0x34,
+        ea=0x1000,
+        operands=(),
+        kind=InsnKind.UNKNOWN,
+        l=repeated,
+        r=repeated,
+        d=_reg(1, size=1),
+        predicate_kind=PredicateKind.EQ,
+        opcode_attrs={"backend": "hexrays", "raw_opcode_name": "m_setz"},
+    )
+
+    instruction = project_instruction(insn)
+
+    assert instruction.operation is PredicateKind.EQ
+    assert instruction.inputs == (
+        Varnode(Space.REGISTER, 0, 4),
+        Varnode(Space.REGISTER, 0, 4),
+    )
+    assert instruction.result == Varnode(Space.REGISTER, 1, 1)
+
+
+def test_instruction_projection_value_op_preserves_duplicate_operands():
+    repeated = _reg(0)
+    add = InsnSnapshot(
+        opcode=0x12,
+        ea=0x1000,
+        operands=(),
+        kind=InsnKind.ADD,
+        l=repeated,
+        r=repeated,
+        d=_reg(1),
+    )
+
+    instruction = project_instruction(add)
+
+    assert instruction.operation is ValueOpKind.ADD
+    assert instruction.inputs == (
+        Varnode(Space.REGISTER, 0, 4),
+        Varnode(Space.REGISTER, 0, 4),
+    )
+    assert instruction.result == Varnode(Space.REGISTER, 1, 4)
+
+
 def test_instruction_projection_raw_opcode_name_does_not_authorize_semantics():
     insn = InsnSnapshot(
         opcode=0x2C,

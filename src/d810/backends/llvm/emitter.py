@@ -203,12 +203,7 @@ class _Classifier:
                 )
             return
         if isinstance(instruction.operation, PredicateKind):
-            self._add(
-                block_serial,
-                instruction_index,
-                instruction,
-                "predicate materialization is unsupported in M1a",
-            )
+            self._check_predicate_materialization(block_serial, instruction_index, instruction)
             return
         if instruction.operation not in _VALUE_OPS:
             self._add(
@@ -249,6 +244,50 @@ class _Classifier:
                 instruction_index,
                 instruction,
                 "M1a requires value operands and result to have matching widths",
+            )
+
+    def _check_predicate_materialization(
+        self,
+        block_serial: int,
+        instruction_index: int,
+        instruction: Instruction,
+    ) -> None:
+        if instruction.operation not in _PREDICATES:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                f"predicate {_operation_name(instruction.operation)} is unsupported for materialization in M1c",
+            )
+        if instruction.result is None:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                "predicate materialization has no result varnode",
+            )
+        elif instruction.result.space is Space.CONST:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                "predicate materialization result cannot be const",
+            )
+        if len(instruction.inputs) != 2:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                "predicate materialization requires two compared inputs",
+            )
+            return
+        widths = {vn.size for vn in instruction.inputs}
+        if len(widths) > 1:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                "M1c requires predicate inputs to have matching widths",
             )
 
     def _check_terminator(
@@ -403,7 +442,17 @@ class _Emitter:
         lines: list[str] = []
         result_ty = _llvm_type(instruction.result)
         assert result_ty is not None
-        if instruction.operation is ValueOpKind.MOVE:
+        if isinstance(instruction.operation, PredicateKind):
+            lhs_ty, lhs = self._emit_value(instruction.inputs[0], lines)
+            _rhs_ty, rhs = self._emit_value(instruction.inputs[1], lines)
+            cmp_tmp = self._tmp()
+            zext_tmp = self._tmp()
+            lines.append(
+                f"  {cmp_tmp} = icmp {_PREDICATES[instruction.operation]} {lhs_ty} {lhs}, {rhs}"
+            )
+            lines.append(f"  {zext_tmp} = zext i1 {cmp_tmp} to {result_ty}")
+            computed = zext_tmp
+        elif instruction.operation is ValueOpKind.MOVE:
             _ty, value = self._emit_value(instruction.inputs[0], lines)
             computed = value
         else:

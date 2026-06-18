@@ -21,8 +21,6 @@ they need.
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
-
 from d810.ir.expressions import Add, And, Const, ExprRef, Move, Sub, ValueOpKind
 from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
 from d810.ir.instructions import (
@@ -117,17 +115,6 @@ class _VarnodeProjector:
             return tuple(nodes)
         vn = self.one(mop)
         return (vn,) if vn is not None else ()
-
-
-def _dedupe_varnodes(nodes: Iterable[Varnode]) -> tuple[Varnode, ...]:
-    seen: set[Varnode] = set()
-    ordered: list[Varnode] = []
-    for node in nodes:
-        if node in seen:
-            continue
-        seen.add(node)
-        ordered.append(node)
-    return tuple(ordered)
 
 
 def _source_operands_for_instruction(insn: InsnSnapshot) -> tuple[MopSnapshot | None, ...]:
@@ -252,7 +239,7 @@ def project_instruction(insn: InsnSnapshot) -> Instruction:
     backend opcode integer/name and lift-stage details stay in provenance attrs.
     """
     projector = _VarnodeProjector()
-    inputs = _dedupe_varnodes(
+    inputs = tuple(
         node
         for mop in _source_operands_for_instruction(insn)
         for node in projector.input_nodes(mop)
