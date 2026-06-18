@@ -1,0 +1,59 @@
+{
+  "schema": "d810.llvm_m0.lower_back.v1",
+  "ticket": "llr-6q39",
+  "case": "lab_flat_branchless",
+  "source_fixture": "fixtures/lab_flat_branchless.after.ll",
+  "optimized_llvm": {
+    "function": "lab_flat_branchless_m0",
+    "low_predicate": "%low = and i32 %token, 1",
+    "state_mask_form": "%state = or i32 %state_false, %state_true",
+    "value_mask_form": "%value = or i32 %true_part, %false_part"
+  },
+  "arms": {
+    "true_odd": {
+      "condition": "(token & 1) != 0",
+      "state": "0xB92456DE",
+      "llvm_state_constant": "-1188804898",
+      "value": "(token + 0x11) ^ 0x22"
+    },
+    "false_even": {
+      "condition": "(token & 1) == 0",
+      "state": "0x3C8960A9",
+      "llvm_state_constant": "1015636137",
+      "value": "token - 0x22",
+      "llvm_fold": "(token + 0x11) - 0x33 -> token - 0x22"
+    }
+  },
+  "hand_lowered_control": {
+    "shape": "if_else",
+    "predicate": "(token & 1) != 0",
+    "true_arm": "true_odd",
+    "false_arm": "false_even"
+  },
+  "d810_lower_back": {
+    "primitive": "ConditionalSynthesize",
+    "recover": "recover_branchless",
+    "lower": "lower_conditional_synthesize",
+    "flat_function": "lab_flat_branchless",
+    "oracle_function": "lab_ref_cond",
+    "oracle": "compiled_source_semantic_signature",
+    "existing_selector": "tests/system/runtime/hexrays/test_lowering_catalog.py::TestConditionalSynthesizeLowersToOracle::test_branchless_lowers_to_cond_oracle",
+    "m0_selector": "tests/system/runtime/hexrays/test_llvm_m0_roundtrip.py::TestLLVMM0RoundTrip::test_hand_lowered_branchless_llvm_matches_cond_oracle"
+  },
+  "collapse_classes": {
+    "LLVM-free": [
+      "~mask canonicalization: xor i32 %mask, -1 -> add nsw i32 %low, -1",
+      "false-arm fold: (token + 0x11) - 0x33 -> token - 0x22"
+    ],
+    "needs d810 predicate recovery": [
+      "mask/or state select -> recovered (token & 1) predicate -> synthesized if/else"
+    ],
+    "needs MBA/Z3": []
+  },
+  "boundaries": [
+    "hand-authored M0 lab proof",
+    "no automated Instruction -> LLVM lifter",
+    "no general d810 LLVM drop/backend",
+    "IDAvator is a lower-back reference, not a dependency"
+  ]
+}
