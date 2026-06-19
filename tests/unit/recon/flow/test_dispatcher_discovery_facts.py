@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_discovery_facts import (
     DISPATCHER_ARTIFACT_STATE_FACT_TYPE,
@@ -10,6 +12,7 @@ from d810.analyses.control_flow.dispatcher_discovery_facts import (
 )
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap, StateDispatcherRow
 from d810.analyses.control_flow.predecessor_dispatcher_target import (
+    collect_predecessor_dispatcher_target_facts,
     resolve_predecessor_dispatcher_target,
 )
 from d810.analyses.value_flow.contract_evidence import contract_evidence_tokens
@@ -177,6 +180,74 @@ def test_mirrors_predecessor_dispatcher_target_as_observation() -> None:
     assert contract_evidence_tokens(observation) == frozenset(
         {"branch_targets", "dispatcher_predicates"}
     )
+
+
+def test_collects_predecessor_target_facts_from_transition_resolutions() -> None:
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=2,
+        state_dispatcher_map=_dispatch_map(),
+        transition_resolutions=(
+            SimpleNamespace(
+                source_block_serial=9,
+                source_state_const_hex="0x0000000000000010",
+                resolved_next_block_serial=5,
+                resolution_kind="state_dispatcher_map",
+                resolution_reason="resolved_exact_state",
+            ),
+        ),
+        state_var_stkoff=0x3C,
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact.predecessor_block_serial == 9
+    assert fact.target_block_serial == 5
+    assert fact.compare_block_serial == 2
+    assert fact.branch_kind == "switch_case"
+
+
+def test_rejected_transition_resolutions_do_not_resurrect_dispatcher_evidence() -> None:
+    rows = (
+        SimpleNamespace(
+            source_block_serial=9,
+            source_state_const_hex="0x0000000000000020",
+            resolved_next_block_serial=None,
+            resolution_kind="state_dispatcher_map",
+            resolution_reason="target_is_dispatcher_block",
+        ),
+        SimpleNamespace(
+            source_block_serial=9,
+            source_state_const_hex="0x0000000000000010",
+            resolved_next_block_serial=None,
+            resolution_kind="state_dispatcher_map",
+            resolution_reason="successor_kind=fallthrough; not a dispatcher-bound transition",
+        ),
+        SimpleNamespace(
+            source_block_serial=9,
+            source_state_const_hex="0x0000000000000010",
+            resolved_next_block_serial=None,
+            resolution_kind="state_dispatcher_map",
+            resolution_reason="no_dispatcher_rows_available",
+        ),
+        SimpleNamespace(
+            source_block_serial=9,
+            source_state_const_hex="0x00000000000000ff",
+            resolved_next_block_serial=None,
+            resolution_kind="state_dispatcher_map",
+            resolution_reason="state_not_in_dispatcher_map",
+        ),
+    )
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=2,
+        state_dispatcher_map=_dispatch_map(),
+        transition_resolutions=rows,
+        state_var_stkoff=0x3C,
+    )
+
+    assert facts == ()
 
 
 def test_predecessor_dispatcher_target_without_predicate_proof_only_proves_target() -> None:

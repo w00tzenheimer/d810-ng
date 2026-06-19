@@ -125,6 +125,31 @@ def test_map_threads_from_pass1_to_pass2_and_resolves():
     assert resolutions[0].resolution_reason == "resolved_exact_state"
 
 
+def test_recover_dispatcher_publishes_branch_target_evidence():
+    am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
+    ctx = _ctx(am.graph, am.view())
+
+    assert not am.has_evidence("branch_targets")
+    assert not am.has_evidence("dispatcher_predicates")
+
+    RecoverDispatcher().run(ctx)
+
+    assert am.has_evidence("branch_targets")
+    assert not am.has_evidence("dispatcher_predicates")
+
+
+def test_recover_state_transitions_publishes_dispatcher_predicate_evidence():
+    am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
+    ctx = _ctx(am.graph, am.view())
+
+    RecoverDispatcher().run(ctx)
+    assert not am.has_evidence("dispatcher_predicates")
+
+    RecoverStateTransitions().run(ctx)
+
+    assert am.has_evidence("dispatcher_predicates")
+
+
 def test_full_five_pass_chain_threads_and_completes():
     am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
     ctx = _ctx(am.graph, am.view())

@@ -207,6 +207,40 @@ def test_evidence_store_reads_published_and_live_contract_evidence_tokens():
     assert am.get_evidence("dispatcher_predicates") == (marker, observation)
 
 
+def test_put_observation_evidence_indexes_canonical_payload_tokens():
+    observation = type(
+        "_Obs",
+        (),
+        {
+            "payload": contract_evidence_payload(
+                "dispatcher_predicates",
+                "branch_targets",
+            ),
+            "evidence": ("raw provenance only",),
+        },
+    )()
+    am = AnalysisManager(graph="G0")
+
+    am.put_observation_evidence(observation)
+
+    assert am.get_evidence("dispatcher_predicates") == (observation,)
+    assert am.get_evidence("branch_targets") == (observation,)
+
+
+def test_put_observation_evidence_ignores_raw_diagnostic_evidence():
+    observation = type(
+        "_Obs",
+        (),
+        {"evidence": ("dispatcher_predicates", "branch_targets")},
+    )()
+    am = AnalysisManager(graph="G0")
+
+    am.put_observation_evidence(observation)
+
+    assert not am.has_evidence("dispatcher_predicates")
+    assert not am.has_evidence("branch_targets")
+
+
 def test_evidence_store_reads_dispatcher_projection_contract_tokens():
     dispatch_map = StateDispatcherMap(
         rows=(
@@ -252,6 +286,21 @@ def test_evidence_store_reads_dispatcher_projection_contract_tokens():
     assert am.has_evidence("dispatcher_predicates")
     assert predecessor_observation in am.get_evidence("branch_targets")
     assert predecessor_observation in am.get_evidence("dispatcher_predicates")
+
+
+def test_put_observation_evidence_ignores_tokenless_dispatcher_gap_rows():
+    observations = collect_state_dispatcher_discovery_fact_observations(
+        state_dispatcher_map=None,
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+    )
+    am = AnalysisManager(graph="G0")
+
+    for observation in observations:
+        am.put_observation_evidence(observation)
+
+    assert not am.has_evidence("branch_targets")
+    assert not am.has_evidence("dispatcher_predicates")
 
 
 def test_evidence_store_does_not_treat_raw_observation_evidence_as_contract_token():

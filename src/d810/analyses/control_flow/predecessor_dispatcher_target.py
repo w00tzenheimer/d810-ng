@@ -7,6 +7,13 @@ from dataclasses import dataclass
 from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
 
+_SUCCESSFUL_TRANSITION_RESOLUTION_REASONS = frozenset(
+    {
+        "resolved_exact_state",
+        "resolved_folded_state_write",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class PredecessorDispatcherTargetFact:
@@ -270,6 +277,7 @@ def collect_predecessor_dispatcher_target_facts(
     dispatcher_entry_serial: int,
     state_dispatcher_map: StateDispatcherMap | None = None,
     range_evidence: ConditionChainAnalysisResult | None = None,
+    transition_resolutions: object | None = None,
     transition_report: object | None = None,
     dag: object | None = None,
     state_var_stkoff: int | None = None,
@@ -278,6 +286,39 @@ def collect_predecessor_dispatcher_target_facts(
 
     facts: list[PredecessorDispatcherTargetFact] = []
     seen: set[str] = set()
+    for row in transition_resolutions or ():
+        predecessor = getattr(row, "source_block_serial", None)
+        source_state_hex = getattr(row, "source_state_const_hex", None)
+        resolution_reason = getattr(row, "resolution_reason", None)
+        if (
+            predecessor is None
+            or source_state_hex is None
+            or getattr(row, "resolved_next_block_serial", None) is None
+            or resolution_reason not in _SUCCESSFUL_TRANSITION_RESOLUTION_REASONS
+        ):
+            continue
+        try:
+            source_state = int(source_state_hex, 16)
+            fact = resolve_predecessor_dispatcher_target(
+                predecessor_block_serial=int(predecessor),
+                dispatcher_entry_serial=int(dispatcher_entry_serial),
+                state_const=source_state,
+                state_dispatcher_map=state_dispatcher_map,
+                range_evidence=range_evidence,
+                source_state_const=source_state,
+                transition_provenance_kind=_maybe_str(
+                    getattr(row, "resolution_kind", None)
+                ),
+                condition_block_serial=None,
+                state_var_stkoff=state_var_stkoff,
+            )
+        except (TypeError, ValueError):
+            continue
+        if fact is None or fact.fact_id in seen:
+            continue
+        seen.add(fact.fact_id)
+        facts.append(fact)
+
     for transition in getattr(transition_result, "transitions", ()) or ():
         to_state = getattr(transition, "to_state", None)
         predecessor = getattr(transition, "from_block", None)
