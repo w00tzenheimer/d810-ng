@@ -45,6 +45,7 @@ from d810.passes.driver import (
     validate_capabilities,
 )
 from d810.families.state_machine_cff import HodurFamily
+from d810.families.state_machine_cff.pipeline import standard_state_machine_passes
 from d810.families.state_machine_cff import approov as approov_pipeline
 from d810.families.state_machine_cff import tigress as tigress_pipeline
 from d810.families.state_machine_cff import ApproovFamily
@@ -136,6 +137,7 @@ def _run_specs(
     *,
     facts=None,
     backend=None,
+    maturity=IRMaturity.CANONICAL,
 ):
     class _OneShot:
         name = "one_shot"
@@ -152,7 +154,7 @@ def _run_specs(
         backend=backend if backend is not None else _Backend(),
         facts=facts if facts is not None else AnalysisManager(_GRAPH),
         project_config=None,
-        maturity=IRMaturity.CANONICAL,
+        maturity=maturity,
     )
 
 
@@ -1160,6 +1162,71 @@ def test_preserved_fact_and_analysis_do_not_preserve_evidence_after_mutation():
     )
 
     _run_specs(specs, facts=facts)
+
+
+def test_real_lower_contract_preserves_only_declared_mutation_state():
+    recovered_edge = type("_Fact", (), {"kind": "recovered_cfg_edge"})()
+
+    class _LowerLikeMutator:
+        name = "lower_like_mutator"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.has_analysis("plan_semantic_regions")
+            assert ctx.facts.has_analysis("recover_dispatcher")
+            assert ctx.facts.has_analysis("transition_result")
+            assert ctx.facts.has_fact("dispatcher_family")
+            assert ctx.facts.has_fact("semantic_region")
+            assert ctx.facts.has_fact("state_transition")
+            return PassResult(
+                facts=(recovered_edge,),
+                rewrite_plan=PatchPlan(planner_modifications=(object(),)),
+            )
+
+    class _Reader:
+        name = "reader"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.has_analysis("function_boundaries")
+            assert not ctx.facts.has_analysis("dominators")
+            assert ctx.facts.has_fact("raw_instruction_addresses")
+            assert ctx.facts.get_fact("recovered_cfg_edge") == (recovered_edge,)
+            assert not ctx.facts.has_fact("dispatcher_family")
+            assert not ctx.facts.has_fact("semantic_region")
+            assert not ctx.facts.has_fact("stale_cfg_shape")
+            assert not ctx.facts.has_fact("state_transition")
+            assert not ctx.facts.has_evidence("branch_targets")
+            return PassResult()
+
+    facts = AnalysisManager(_GRAPH)
+    for name in (
+        "dominators",
+        "function_boundaries",
+        "plan_semantic_regions",
+        "recover_dispatcher",
+        "transition_result",
+    ):
+        facts.put_analysis(name, object())
+    for name in (
+        "dispatcher_family",
+        "raw_instruction_addresses",
+        "semantic_region",
+        "stale_cfg_shape",
+        "state_transition",
+    ):
+        facts.put_fact(name, type("_Fact", (), {"kind": name})())
+    facts.put_evidence("branch_targets", object())
+    specs = (
+        PassSpec(
+            "lower_like_mutator",
+            _LowerLikeMutator,
+            no_caps,
+            default,
+            contract=standard_state_machine_passes()[3].contract,
+        ),
+        PassSpec("reader", _Reader, no_caps, default),
+    )
+
+    _run_specs(specs, facts=facts, maturity=IRMaturity.GLOBAL_ANALYZED)
 
 
 def test_legacy_pass_result_facts_without_native_contract_remain_allowed():
