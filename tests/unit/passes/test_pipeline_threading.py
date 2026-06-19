@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from d810.analyses.value_flow.contract_evidence import contract_evidence_payload
 from d810.ir.flowgraph import (
     BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot, MopSnapshot, OperandKind,
 )
@@ -62,6 +63,28 @@ def _obs():
         payload={"source_block_serial": 0, "source_state_const": C1, "successor_kind": "branch"})
 
 
+def _state_write_obs():
+    return SimpleNamespace(
+        kind="StateWriteAnchorFact",
+        fact_id="state-write:1",
+        maturity="GLBOPT1",
+        phase="recon",
+        confidence=1.0,
+        evidence=("mov #1, %var_3c.4",),
+        source_block=1,
+        source_ea=0x1010,
+        payload={
+            "state_var_stkoff": STATE_OFF,
+            "state_const": C1,
+            **contract_evidence_payload("state_variable_writes"),
+        },
+    )
+
+
+def _input_facts():
+    return SimpleNamespace(active_observations=(_obs(), _state_write_obs()))
+
+
 def _ctx(graph, facts):
     return FunctionPipelineContext(
         source=None, graph=graph, maturity=None, project_config=None, facts=facts)
@@ -92,7 +115,7 @@ class _StandardFamily:
 
 
 def test_map_threads_from_pass1_to_pass2_and_resolves():
-    am = AnalysisManager(_chain_graph(), input_facts=SimpleNamespace(active_observations=(_obs(),)))
+    am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
     ctx = _ctx(am.graph, am.view())
     RecoverDispatcher().run(ctx)                 # publishes the dispatcher map
     result = RecoverStateTransitions().run(ctx)  # pulls it, resolves through it
@@ -103,7 +126,7 @@ def test_map_threads_from_pass1_to_pass2_and_resolves():
 
 
 def test_full_five_pass_chain_threads_and_completes():
-    am = AnalysisManager(_chain_graph(), input_facts=SimpleNamespace(active_observations=(_obs(),)))
+    am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
     ctx = _ctx(am.graph, am.view())
     passes = [
         RecoverDispatcher(), RecoverStateTransitions(), PlanSemanticRegions(),
@@ -122,7 +145,7 @@ def test_full_five_pass_chain_threads_and_completes():
 def test_run_pipeline_publishes_state_machine_contract_facts():
     am = AnalysisManager(
         _chain_graph(),
-        input_facts=SimpleNamespace(active_observations=(_obs(),)),
+        input_facts=_input_facts(),
     )
 
     run_pipeline(
@@ -145,7 +168,7 @@ def test_run_pipeline_publishes_state_machine_contract_facts():
 def test_out_of_range_maturity_skips_state_machine_contract_specs():
     am = AnalysisManager(
         _chain_graph(),
-        input_facts=SimpleNamespace(active_observations=(_obs(),)),
+        input_facts=_input_facts(),
     )
 
     run_pipeline(
