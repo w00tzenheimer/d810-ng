@@ -65,6 +65,13 @@ from .maturity_policy import (
     LlvmMaturityAssessment,
     assess_flowgraph_maturity,
 )
+from .m2_pipeline import (
+    LlvmM2PipelinePhaseKind,
+    LlvmM2PipelinePhaseResult,
+    LlvmM2PipelineResult,
+    LlvmM2PipelineStatus,
+    run_llvm_m2_pipeline,
+)
 from .optimization import (
     LLVM_M2A_STOCK_PIPELINE,
     LlvmIrMetrics,
@@ -121,6 +128,10 @@ __all__ = [
     "LlvmLowerBackTerminatorKind",
     "LlvmLowerBackUnsupportedKind",
     "LlvmLowerBackUnsupportedReason",
+    "LlvmM2PipelinePhaseKind",
+    "LlvmM2PipelinePhaseResult",
+    "LlvmM2PipelineResult",
+    "LlvmM2PipelineStatus",
     "LlvmMaturityAssessment",
     "LlvmIrMetrics",
     "LlvmOptimizationResult",
@@ -143,6 +154,7 @@ __all__ = [
     "normalize_llvm_ir",
     "plan_lower_back",
     "run_d810_custom_passes",
+    "run_llvm_m2_pipeline",
     "run_llvm_opt_pipeline",
     "verify_llvm_ir",
 ]

@@ -78,6 +78,24 @@ M2b d810 MBA/Z3 custom pass socket:
   Full M2 remains open for the broader curated pipeline, stronger MBA/Z3
   predicate folding, measured live collapse coverage, and oracle drift gates.
 
+M2c opt-in custom+stock pipeline policy:
+
+- `d810.backends.llvm.m2_pipeline` composes the M2b custom pre-pass, the M2a
+  stock `opt` pipeline, and optimized-IR verification into one explicit
+  opt-in runner.
+- The runner records phase-by-phase DTOs for `custom_pre`, `stock_opt`, and
+  `verify_optimized`, including before/after IR, coarse metrics, custom rewrite
+  counts, stock `opt` results, and verifier results.
+- Failure is structured and stops at the responsible phase: custom pass failure
+  does not run stock `opt`; stock `opt` failure does not run verifier; missing
+  `opt` remains a structured skip unless the caller or environment requires it.
+- This does not change `run_llvm_opt_pipeline()` defaults and is not a runtime
+  project-config cutover. It is also not a compiled LLVM plugin, M3 lower-back,
+  or oracle parity proof.
+- Full M2 remains open for a broader curated pipeline, additional d810 MBA/Z3
+  predicate folding, larger live measured-collapse coverage, and native oracle
+  drift gates.
+
 M3a lower-back contract policy:
 
 - `d810.backends.llvm.lower_back_contract` is an IDA-free risk-reduction
