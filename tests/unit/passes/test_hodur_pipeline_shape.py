@@ -52,6 +52,14 @@ def test_each_spec_carries_the_north_star_policies():
 def test_each_spec_carries_native_state_machine_contract():
     specs = HodurFamily().pipeline_for(match=None, context=None)
     contracts = {spec.name: spec.contract for spec in specs}
+    mutating_preserved_analyses = frozenset({"function_boundaries"})
+    mutating_invalidated_analyses = frozenset(
+        {"dominators", "loop_info", "postdominators", "regions"}
+    )
+    mutating_preserved_facts = frozenset(
+        {"raw_instruction_addresses", "recovered_cfg_edge"}
+    )
+    mutating_invalidated_facts = frozenset({"stale_cfg_shape"})
 
     for spec in specs:
         assert spec.contract.scope is PassScope.FUNCTION
@@ -100,8 +108,24 @@ def test_each_spec_carries_native_state_machine_contract():
     assert contracts["lower_state_machine"].outputs.facts == frozenset(
         {"recovered_cfg_edge"}
     )
-    assert contracts["lower_state_machine"].invalidates.facts == frozenset(
-        {"stale_cfg_shape"}
+    assert contracts["lower_state_machine"].preserves.analyses == mutating_preserved_analyses
+    assert (
+        contracts["lower_state_machine"].invalidates.analyses
+        == mutating_invalidated_analyses
+    )
+    assert contracts["lower_state_machine"].preserves.facts == mutating_preserved_facts
+    assert contracts["lower_state_machine"].invalidates.facts == mutating_invalidated_facts
+    assert contracts["cleanup_residual_dispatcher"].preserves.analyses == (
+        mutating_preserved_analyses
+    )
+    assert contracts["cleanup_residual_dispatcher"].invalidates.analyses == (
+        mutating_invalidated_analyses
+    )
+    assert contracts["cleanup_residual_dispatcher"].preserves.facts == (
+        mutating_preserved_facts
+    )
+    assert contracts["cleanup_residual_dispatcher"].invalidates.facts == (
+        mutating_invalidated_facts
     )
 
 

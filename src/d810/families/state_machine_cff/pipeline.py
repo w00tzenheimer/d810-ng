@@ -17,6 +17,7 @@ from d810.passes.pass_pipeline import (
     PassContract,
     PassInvalidates,
     PassOutputs,
+    PassPreserves,
     PassRequires,
     PassScope,
     PassSpec,
@@ -95,6 +96,8 @@ def _state_machine_contract(
     requires_evidence: frozenset[str] = frozenset(),
     requires_facts: frozenset[str] = frozenset(),
     outputs_facts: frozenset[str] = frozenset(),
+    preserves_analyses: frozenset[str] = frozenset(),
+    preserves_facts: frozenset[str] = frozenset(),
     invalidates_analyses: frozenset[str] = frozenset(),
     invalidates_facts: frozenset[str] = frozenset(),
 ) -> PassContract:
@@ -109,6 +112,10 @@ def _state_machine_contract(
             facts=FactRequirement(required=requires_facts),
         ),
         outputs=PassOutputs(facts=outputs_facts),
+        preserves=PassPreserves(
+            analyses=preserves_analyses,
+            facts=preserves_facts,
+        ),
         invalidates=PassInvalidates(
             analyses=invalidates_analyses,
             facts=invalidates_facts,
@@ -130,6 +137,15 @@ REGION_CONTRACT = _state_machine_contract(
     requires_facts=frozenset({"dispatcher_family", "state_transition"}),
     outputs_facts=frozenset({"semantic_region"}),
 )
+MUTATING_STATE_MACHINE_PRESERVED_ANALYSES = frozenset({"function_boundaries"})
+MUTATING_STATE_MACHINE_INVALIDATED_ANALYSES = frozenset(
+    {"dominators", "loop_info", "postdominators", "regions"}
+)
+MUTATING_STATE_MACHINE_PRESERVED_FACTS = frozenset(
+    {"raw_instruction_addresses", "recovered_cfg_edge"}
+)
+MUTATING_STATE_MACHINE_INVALIDATED_FACTS = frozenset({"stale_cfg_shape"})
+
 LOWER_CONTRACT = _state_machine_contract(
     requires_analyses=LOWER_ANALYSES.required,
     requires_facts=frozenset(
@@ -140,9 +156,17 @@ LOWER_CONTRACT = _state_machine_contract(
         }
     ),
     outputs_facts=frozenset({"recovered_cfg_edge"}),
-    invalidates_facts=frozenset({"stale_cfg_shape"}),
+    preserves_analyses=MUTATING_STATE_MACHINE_PRESERVED_ANALYSES,
+    preserves_facts=MUTATING_STATE_MACHINE_PRESERVED_FACTS,
+    invalidates_analyses=MUTATING_STATE_MACHINE_INVALIDATED_ANALYSES,
+    invalidates_facts=MUTATING_STATE_MACHINE_INVALIDATED_FACTS,
 )
-CLEANUP_CONTRACT = _state_machine_contract()
+CLEANUP_CONTRACT = _state_machine_contract(
+    preserves_analyses=MUTATING_STATE_MACHINE_PRESERVED_ANALYSES,
+    preserves_facts=MUTATING_STATE_MACHINE_PRESERVED_FACTS,
+    invalidates_analyses=MUTATING_STATE_MACHINE_INVALIDATED_ANALYSES,
+    invalidates_facts=MUTATING_STATE_MACHINE_INVALIDATED_FACTS,
+)
 
 
 _CONTRACTS_BY_PASS_ID = {
