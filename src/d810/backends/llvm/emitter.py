@@ -25,6 +25,7 @@ __all__ = [
     "LlvmLiftBoundary",
     "LlvmLiftBoundaryInput",
     "LlvmLiftBoundaryObservable",
+    "LlvmLiftBoundaryReturnPolicy",
     "LlvmLiftResult",
     "UnsupportedLiftKind",
     "UnsupportedLiftReason",
@@ -157,6 +158,13 @@ class LlvmLiftBoundaryObservable:
     volatile: bool = True
 
 
+class LlvmLiftBoundaryReturnPolicy(str, Enum):
+    """How an explicit boundary return cell participates in return emission."""
+
+    FALLBACK = "fallback"
+    OVERRIDE = "override"
+
+
 @dataclass(frozen=True, slots=True)
 class LlvmLiftBoundary:
     """Explicit function-boundary policy for diagnostic/prototype lifts.
@@ -169,6 +177,7 @@ class LlvmLiftBoundary:
     inputs: tuple[LlvmLiftBoundaryInput, ...] = ()
     observables: tuple[LlvmLiftBoundaryObservable, ...] = ()
     return_cell: Varnode | None = None
+    return_policy: LlvmLiftBoundaryReturnPolicy = LlvmLiftBoundaryReturnPolicy.FALLBACK
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "inputs", tuple(self.inputs))
@@ -309,6 +318,14 @@ class _Classifier:
                 f"boundary observable {observable.name!r}",
             )
         if self.boundary.return_cell is None:
+            if self.boundary.return_policy is LlvmLiftBoundaryReturnPolicy.OVERRIDE:
+                self._add(
+                    int(self.flow_graph.entry_serial),
+                    None,
+                    None,
+                    UnsupportedLiftKind.RETURN_TYPE_UNSUPPORTED,
+                    "M2n boundary return override requires return_cell",
+                )
             return
         self._check_boundary_cell(self.boundary.return_cell, "boundary return cell")
         if _llvm_type(self.boundary.return_cell) != "i32":
@@ -937,7 +954,15 @@ class _Classifier:
                     UnsupportedLiftKind.RETURN_SUCCESSOR,
                     "return block must have zero succs",
                 )
-            if tail.control is not None and tail.control.return_value is not None:
+            boundary_return_overrides = (
+                self.boundary.return_policy is LlvmLiftBoundaryReturnPolicy.OVERRIDE
+                and self.boundary.return_cell is not None
+            )
+            if (
+                tail.control is not None
+                and tail.control.return_value is not None
+                and not boundary_return_overrides
+            ):
                 ret_vn = tail.control.return_value
                 if _llvm_type(ret_vn) != "i32":
                     self._add(
@@ -1366,6 +1391,8 @@ class _Emitter:
             return self._emit_return(tail)
         if block.succs:
             return [f"  br label %bb{block.succs[0]}"]
+        if self.boundary.return_cell is not None:
+            return self._emit_return_value(self.boundary.return_cell)
         return ["  ret i32 0"]
 
     def _emit_conditional_branch(
@@ -1411,12 +1438,22 @@ class _Emitter:
         ) and self.boundary.return_cell is None:
             return ["  ret i32 0"]
         lines: list[str] = []
-        return_value = (
-            instruction.control.return_value
-            if instruction.control is not None and instruction.control.return_value is not None
-            else self.boundary.return_cell
-        )
+        if (
+            self.boundary.return_policy is LlvmLiftBoundaryReturnPolicy.OVERRIDE
+            and self.boundary.return_cell is not None
+        ):
+            return_value = self.boundary.return_cell
+        else:
+            return_value = (
+                instruction.control.return_value
+                if instruction.control is not None and instruction.control.return_value is not None
+                else self.boundary.return_cell
+            )
         assert return_value is not None
+        return self._emit_return_value(return_value)
+
+    def _emit_return_value(self, return_value: Varnode) -> list[str]:
+        lines: list[str] = []
         _ty, value = self._emit_value(return_value, lines)
         lines.append(f"  ret i32 {value}")
         return lines
