@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import pytest
 
 from d810.passes.analysis_manager import AnalysisManager
+from d810.analyses.value_flow.contract_evidence import contract_evidence_payload
 from d810.passes.pass_pipeline import (
     AnalysisContract,
     BackendRoute,
@@ -480,11 +481,14 @@ def test_native_contract_required_evidence_missing_raises_contract_error():
         _run_specs((spec,))
 
 
-def test_native_contract_required_evidence_accepts_live_observation_token():
+def test_native_contract_required_evidence_accepts_live_canonical_observation_token():
     observation = type(
         "_Obs",
         (),
-        {"evidence": ("dispatcher_predicates",)},
+        {
+            "payload": contract_evidence_payload("dispatcher_predicates"),
+            "evidence": ("cmp %state, #1",),
+        },
     )()
 
     class _NeedsEvidence:
@@ -507,6 +511,60 @@ def test_native_contract_required_evidence_accepts_live_observation_token():
         _GRAPH,
         input_facts=type("_Facts", (), {"active_observations": (observation,)})(),
     )
+
+    _run_specs((spec,), facts=facts)
+
+
+def test_native_contract_required_evidence_rejects_raw_diagnostic_observation_text():
+    observation = type(
+        "_Obs",
+        (),
+        {"evidence": ("dispatcher_predicates", "cmp %state, #1")},
+    )()
+
+    class _NeedsEvidence:
+        name = "needs_evidence"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult()
+
+    spec = PassSpec(
+        "needs_evidence",
+        _NeedsEvidence,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(evidence=frozenset({"dispatcher_predicates"}))
+        ),
+    )
+    facts = AnalysisManager(
+        _GRAPH,
+        input_facts=type("_Facts", (), {"active_observations": (observation,)})(),
+    )
+
+    with pytest.raises(PassContractError, match="evidence"):
+        _run_specs((spec,), facts=facts)
+
+
+def test_native_contract_required_evidence_accepts_explicit_published_token():
+    class _NeedsEvidence:
+        name = "needs_evidence"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.has_evidence("dispatcher_predicates")
+            return PassResult()
+
+    spec = PassSpec(
+        "needs_evidence",
+        _NeedsEvidence,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(evidence=frozenset({"dispatcher_predicates"}))
+        ),
+    )
+    facts = AnalysisManager(_GRAPH)
+    facts.put_evidence("dispatcher_predicates", object())
 
     _run_specs((spec,), facts=facts)
 
