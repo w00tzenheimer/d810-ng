@@ -19,6 +19,7 @@ class PipelineShadowComparison:
     configured_pass_ids: tuple[str, ...]
     live_pass_ids: tuple[str, ...]
     matches: bool
+    spec_comparison: PipelineSpecComparison | None = None
 
     @property
     def enabled(self) -> bool:
@@ -41,6 +42,29 @@ class PipelineSpecComparison:
     def matches(self) -> bool:
         """Return whether both pass order and full PipelineConfig values match."""
         return self.pass_ids_match and self.configs_match
+
+
+class PipelineShadowMismatchError(RuntimeError):
+    """Explicit ``pipeline_v2`` shadow config drifted from the live family pipeline."""
+
+    def __init__(self, comparison: PipelineShadowComparison) -> None:
+        self.comparison = comparison
+        spec_comparison = comparison.spec_comparison
+        if spec_comparison is None:
+            detail = "no spec comparison available"
+        else:
+            detail = (
+                f"missing={spec_comparison.missing_pass_ids!r}; "
+                f"extra={spec_comparison.extra_pass_ids!r}; "
+                f"pass_ids_match={spec_comparison.pass_ids_match}; "
+                f"configs_match={spec_comparison.configs_match}"
+            )
+        super().__init__(
+            "pipeline_v2 shadow mismatch: "
+            f"configured={comparison.configured_pass_ids!r}; "
+            f"live={comparison.live_pass_ids!r}; "
+            f"{detail}"
+        )
 
 
 def compare_pipeline_specs(
@@ -81,6 +105,7 @@ def compare_pipeline_v2_shadow(
             configured_pass_ids=(),
             live_pass_ids=tuple(spec.pass_id for spec in live_specs),
             matches=True,
+            spec_comparison=None,
         )
 
     configured_specs = pass_specs_from_project_config(project_config, registry)
@@ -90,4 +115,22 @@ def compare_pipeline_v2_shadow(
         configured_pass_ids=tuple(spec.pass_id for spec in configured_specs),
         live_pass_ids=tuple(spec.pass_id for spec in live_specs),
         matches=spec_comparison.matches,
+        spec_comparison=spec_comparison,
     )
+
+
+def require_pipeline_v2_shadow_match(
+    *,
+    project_config,
+    registry: PassRegistry,
+    live_specs: tuple[PassSpec, ...],
+) -> PipelineShadowComparison:
+    """Return shadow comparison, raising only for explicit drifted ``pipeline_v2``."""
+    comparison = compare_pipeline_v2_shadow(
+        project_config=project_config,
+        registry=registry,
+        live_specs=live_specs,
+    )
+    if comparison.enabled and not comparison.matches:
+        raise PipelineShadowMismatchError(comparison)
+    return comparison

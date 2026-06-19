@@ -14,6 +14,7 @@ from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.ir.maturity import IRMaturity
 from d810.passes.module_pass_manager import ModulePassManager
 from d810.passes.pass_pipeline import PassResult, PassSpec, default, no_caps
+from d810.passes.pipeline_shadow import PipelineShadowMismatchError
 from d810.passes.registry import PassRegistryError
 from d810.passes.scheduler import RunLater, RunLaterDomain
 
@@ -92,6 +93,58 @@ def test_builds_state_machine_specs_from_pipeline_v2_project_config():
     )
     assert tuple(spec.config for spec in rebuilt_specs) == tuple(
         spec.config for spec in live_specs
+    )
+
+
+def test_manager_compares_pipeline_v2_shadow_with_named_registry():
+    live_specs = standard_state_machine_passes()
+    manager = ModulePassManager(
+        pass_registries={"state_machine_cff": state_machine_pass_registry()}
+    )
+
+    comparison = manager.compare_pipeline_v2_shadow(
+        {"pipeline_v2": [spec.config.to_dict() for spec in live_specs]},
+        "state_machine_cff",
+        live_specs,
+    )
+
+    assert comparison.enabled is True
+    assert comparison.matches is True
+    assert comparison.configured_pass_ids == tuple(spec.pass_id for spec in live_specs)
+
+
+def test_manager_requires_pipeline_v2_shadow_match_with_named_registry():
+    live_specs = standard_state_machine_passes()
+    manager = ModulePassManager(
+        pass_registries={"state_machine_cff": state_machine_pass_registry()}
+    )
+
+    comparison = manager.require_pipeline_v2_shadow_match(
+        {"pipeline_v2": [spec.config.to_dict() for spec in live_specs]},
+        "state_machine_cff",
+        live_specs,
+    )
+
+    assert comparison.enabled is True
+    assert comparison.matches is True
+
+
+def test_manager_require_pipeline_v2_shadow_match_fails_loudly_on_drift():
+    live_specs = standard_state_machine_passes()
+    manager = ModulePassManager(
+        pass_registries={"state_machine_cff": state_machine_pass_registry()}
+    )
+
+    with pytest.raises(PipelineShadowMismatchError) as excinfo:
+        manager.require_pipeline_v2_shadow_match(
+            {"pipeline_v2": [{"pass_id": "recover_dispatcher"}]},
+            "state_machine_cff",
+            live_specs,
+        )
+
+    assert excinfo.value.comparison.configured_pass_ids == ("recover_dispatcher",)
+    assert excinfo.value.comparison.live_pass_ids == tuple(
+        spec.pass_id for spec in live_specs
     )
 
 

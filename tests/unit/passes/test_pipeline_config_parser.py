@@ -16,8 +16,10 @@ from d810.passes.pipeline_config_parser import (
     pass_specs_from_project_config,
 )
 from d810.passes.pipeline_shadow import (
+    PipelineShadowMismatchError,
     compare_pipeline_specs,
     compare_pipeline_v2_shadow,
+    require_pipeline_v2_shadow_match,
 )
 from d810.passes.registry import UnknownPassIdError
 
@@ -154,9 +156,21 @@ def test_pipeline_v2_shadow_comparison_is_inert_when_missing():
 
     assert comparison.enabled is False
     assert comparison.matches is True
+    assert comparison.spec_comparison is None
     assert comparison.live_pass_ids == tuple(
         spec.pass_id for spec in standard_state_machine_passes()
     )
+
+
+def test_pipeline_v2_shadow_requirement_is_inert_when_missing():
+    comparison = require_pipeline_v2_shadow_match(
+        project_config={},
+        registry=state_machine_pass_registry(),
+        live_specs=standard_state_machine_passes(),
+    )
+
+    assert comparison.enabled is False
+    assert comparison.matches is True
 
 
 def test_pipeline_v2_shadow_comparison_rejects_explicit_empty_config():
@@ -179,6 +193,20 @@ def test_pipeline_v2_shadow_comparison_matches_full_live_specs():
     assert comparison.enabled is True
     assert comparison.matches is True
     assert comparison.configured_pass_ids == tuple(spec.pass_id for spec in live_specs)
+    assert comparison.spec_comparison is not None
+    assert comparison.spec_comparison.matches is True
+
+
+def test_pipeline_v2_shadow_requirement_accepts_full_live_specs():
+    live_specs = standard_state_machine_passes()
+    comparison = require_pipeline_v2_shadow_match(
+        project_config={"pipeline_v2": [spec.config.to_dict() for spec in live_specs]},
+        registry=state_machine_pass_registry(),
+        live_specs=live_specs,
+    )
+
+    assert comparison.enabled is True
+    assert comparison.matches is True
 
 
 def test_pipeline_v2_configs_build_specs_from_registry():
@@ -222,11 +250,66 @@ def test_pipeline_v2_shadow_comparison_reports_mismatch_without_cutover():
     assert comparison.matches is False
     assert comparison.configured_pass_ids == ("recover_dispatcher",)
     assert comparison.live_pass_ids == tuple(spec.pass_id for spec in live_specs)
+    assert comparison.spec_comparison is not None
+    assert comparison.spec_comparison.missing_pass_ids == tuple(
+        spec.pass_id for spec in live_specs[1:]
+    )
+
+
+def test_pipeline_v2_shadow_requirement_raises_for_short_config():
+    live_specs = standard_state_machine_passes()
+
+    with pytest.raises(PipelineShadowMismatchError) as excinfo:
+        require_pipeline_v2_shadow_match(
+            project_config={"pipeline_v2": [{"pass_id": "recover_dispatcher"}]},
+            registry=state_machine_pass_registry(),
+            live_specs=live_specs,
+        )
+
+    comparison = excinfo.value.comparison
+    assert comparison.configured_pass_ids == ("recover_dispatcher",)
+    assert comparison.live_pass_ids == tuple(spec.pass_id for spec in live_specs)
+    assert comparison.spec_comparison is not None
+    assert comparison.spec_comparison.missing_pass_ids == tuple(
+        spec.pass_id for spec in live_specs[1:]
+    )
+    assert "missing=" in str(excinfo.value)
+    assert "configs_match=False" in str(excinfo.value)
+
+
+def test_pipeline_v2_shadow_requirement_raises_for_config_drift():
+    live_specs = standard_state_machine_passes()
+    configs = [spec.config.to_dict() for spec in live_specs]
+    configs[0]["contract"]["safety"]["policy"] = "guarded-rewrite"
+
+    with pytest.raises(PipelineShadowMismatchError) as excinfo:
+        require_pipeline_v2_shadow_match(
+            project_config={"pipeline_v2": configs},
+            registry=state_machine_pass_registry(),
+            live_specs=live_specs,
+        )
+
+    comparison = excinfo.value.comparison
+    assert comparison.configured_pass_ids == tuple(spec.pass_id for spec in live_specs)
+    assert comparison.live_pass_ids == tuple(spec.pass_id for spec in live_specs)
+    assert comparison.spec_comparison is not None
+    assert comparison.spec_comparison.pass_ids_match is True
+    assert comparison.spec_comparison.configs_match is False
+    assert "configs_match=False" in str(excinfo.value)
 
 
 def test_pipeline_v2_shadow_comparison_rejects_unknown_pass_id():
     with pytest.raises(UnknownPassIdError, match="unknown pass id"):
         compare_pipeline_v2_shadow(
+            project_config={"pipeline_v2": [{"pass_id": "not_registered"}]},
+            registry=state_machine_pass_registry(),
+            live_specs=standard_state_machine_passes(),
+        )
+
+
+def test_pipeline_v2_shadow_requirement_rejects_unknown_pass_id():
+    with pytest.raises(UnknownPassIdError, match="unknown pass id"):
+        require_pipeline_v2_shadow_match(
             project_config={"pipeline_v2": [{"pass_id": "not_registered"}]},
             registry=state_machine_pass_registry(),
             live_specs=standard_state_machine_passes(),
