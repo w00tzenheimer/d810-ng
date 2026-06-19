@@ -6,13 +6,19 @@ import pytest
 
 import d810.backends.llvm.emitter as llvm_emitter
 from d810.backends.llvm import (
+    LLVM_M2_CURATED_PIPELINE,
     LLVM_M1_PREFERRED_MATURITY,
+    LlvmLiftBoundary,
+    LlvmLiftBoundaryInput,
+    LlvmLiftBoundaryObservable,
     LlvmLiftResult,
+    LlvmOptimizationStatus,
     LlvmVerificationStatus,
     UnsupportedLiftKind,
     assess_flowgraph_maturity,
     emit_flowgraph_to_llvm,
     find_llvm_opt,
+    run_llvm_opt_pipeline,
     verify_llvm_ir,
 )
 from d810.ir.expressions import ValueOpKind
@@ -43,6 +49,10 @@ def _reg(register_id: int, size: int = 4) -> MopSnapshot:
 
 def _stk(offset: int, size: int = 4) -> MopSnapshot:
     return MopSnapshot(kind=OperandKind.STACK, stkoff=offset, size=size)
+
+
+def _global(address: int, size: int = 4) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.GLOBAL, gaddr=address, size=size)
 
 
 def _num(value: int, size: int = 4) -> MopSnapshot:
@@ -276,6 +286,283 @@ def test_simple_arithmetic_emits_allocas_loads_and_stores():
     assert " = sub i32 " in result.ir_text
     assert " = and i32 " in result.ir_text
     assert "ret i32 %" in result.ir_text
+
+
+def test_boundary_input_and_return_cell_are_opt_in():
+    flow = _graph(_block(0, (), (_ret(_reg(24)),)))
+
+    default = emit_flowgraph_to_llvm(flow, function_name="boundary_default")
+    bounded = emit_flowgraph_to_llvm(
+        flow,
+        function_name="boundary_bounded",
+        boundary=LlvmLiftBoundary(
+            inputs=(LlvmLiftBoundaryInput("token", Varnode(Space.REGISTER, 24, 4)),),
+            return_cell=Varnode(Space.REGISTER, 24, 4),
+        ),
+    )
+
+    assert default.supported
+    assert "define i32 @boundary_default() {" in default.ir_text
+    assert "%token" not in default.ir_text
+    assert bounded.supported
+    assert "define i32 @boundary_bounded(i32 %arg_token) {" in bounded.ir_text
+    assert "store i32 %arg_token, ptr %r24_4, align 4" in bounded.ir_text
+    assert "ret i32 %t" in bounded.ir_text
+
+
+def test_boundary_input_alias_initializes_low_byte_dependency():
+    flow = _graph(_block(0, (), (_ret(_reg(24)),)))
+
+    result = emit_flowgraph_to_llvm(
+        flow,
+        function_name="boundary_alias",
+        boundary=LlvmLiftBoundary(
+            inputs=(
+                LlvmLiftBoundaryInput(
+                    "token",
+                    Varnode(Space.REGISTER, 24, 4),
+                    aliases=(Varnode(Space.REGISTER, 24, 1),),
+                ),
+            ),
+            return_cell=Varnode(Space.REGISTER, 24, 4),
+        ),
+    )
+
+    assert result.supported
+    assert "define i32 @boundary_alias(i32 %arg_token) {" in result.ir_text
+    assert " = trunc i32 %arg_token to i8" in result.ir_text
+    assert "store i8 %t" in result.ir_text
+    assert "ptr %r24_1, align 1" in result.ir_text
+
+
+def test_boundary_observable_cell_emits_volatile_external_global_store():
+    flow = _graph(
+        _block(
+            0,
+            (),
+            (
+                _mov(_reg(24), _global(0x1800CAFE0)),
+                _ret(_reg(24)),
+            ),
+        )
+    )
+
+    result = emit_flowgraph_to_llvm(
+        flow,
+        function_name="boundary_observable",
+        boundary=LlvmLiftBoundary(
+            inputs=(LlvmLiftBoundaryInput("token", Varnode(Space.REGISTER, 24, 4)),),
+            observables=(
+                LlvmLiftBoundaryObservable(
+                    "value_sink",
+                    Varnode(Space.GLOBAL, 0x1800CAFE0, 4),
+                ),
+            ),
+            return_cell=Varnode(Space.REGISTER, 24, 4),
+        ),
+    )
+
+    assert result.supported
+    assert "@value_sink = external global i32" in result.ir_text
+    assert "store volatile i32 %t" in result.ir_text
+    assert "ptr @value_sink, align 4" in result.ir_text
+
+
+def test_explicit_boundary_preserves_parameter_dependency_through_opt(tmp_path):
+    opt = find_llvm_opt()
+    if opt is None:
+        pytest.skip("LLVM opt not found; boundary dependency proof requires opt")
+    flow = _graph(_block(0, (), (_ret(_reg(24)),)))
+    bounded = emit_flowgraph_to_llvm(
+        flow,
+        function_name="boundary_dependency",
+        boundary=LlvmLiftBoundary(
+            inputs=(LlvmLiftBoundaryInput("token", Varnode(Space.REGISTER, 24, 4)),),
+            return_cell=Varnode(Space.REGISTER, 24, 4),
+        ),
+    )
+
+    optimized = run_llvm_opt_pipeline(
+        bounded.ir_text,
+        pipeline=LLVM_M2_CURATED_PIPELINE,
+        opt_path=opt,
+        tmp_dir=tmp_path / "bounded",
+    )
+
+    assert optimized.status is LlvmOptimizationStatus.PASSED, (
+        optimized.reason or optimized.stderr or optimized.stdout
+    )
+    assert "define i32 @boundary_dependency(i32 %arg_token)" in optimized.optimized_ir
+    assert "ret i32 %arg_token" in optimized.optimized_ir
+
+
+def test_default_local_boundary_does_not_claim_parameter_dependency(tmp_path):
+    opt = find_llvm_opt()
+    if opt is None:
+        pytest.skip("LLVM opt not found; local dependency proof requires opt")
+    flow = _graph(_block(0, (), (_ret(_reg(24)),)))
+    default = emit_flowgraph_to_llvm(flow, function_name="boundary_local")
+
+    optimized = run_llvm_opt_pipeline(
+        default.ir_text,
+        pipeline=LLVM_M2_CURATED_PIPELINE,
+        opt_path=opt,
+        tmp_dir=tmp_path / "default",
+    )
+
+    assert optimized.status is LlvmOptimizationStatus.PASSED, (
+        optimized.reason or optimized.stderr or optimized.stdout
+    )
+    assert "define i32 @boundary_local()" in optimized.optimized_ir
+    assert "%token" not in optimized.optimized_ir
+
+
+def test_boundary_input_name_cannot_collide_with_varnode_alloca():
+    flow = _graph(_block(0, (), (_ret(_reg(24)),)))
+
+    result = emit_flowgraph_to_llvm(
+        flow,
+        function_name="collision",
+        boundary=LlvmLiftBoundary(
+            inputs=(LlvmLiftBoundaryInput("r24_4", Varnode(Space.REGISTER, 24, 4)),),
+            return_cell=Varnode(Space.REGISTER, 24, 4),
+        ),
+    )
+
+    assert result.supported
+    assert "define i32 @collision(i32 %arg_r24_4) {" in result.ir_text
+    assert "%r24_4 = alloca i32" in result.ir_text
+    assert "store i32 %arg_r24_4, ptr %r24_4, align 4" in result.ir_text
+    assert verify_llvm_ir(result.ir_text, function_name="collision").status is LlvmVerificationStatus.PASSED
+
+
+def test_duplicate_sanitized_boundary_input_names_fail_closed():
+    flow = _graph(_block(0, (), (_ret(),)))
+
+    result = emit_flowgraph_to_llvm(
+        flow,
+        boundary=LlvmLiftBoundary(
+            inputs=(
+                LlvmLiftBoundaryInput("token a", Varnode(Space.REGISTER, 24, 4)),
+                LlvmLiftBoundaryInput("token_a", Varnode(Space.REGISTER, 28, 4)),
+            ),
+        ),
+    )
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.BOUNDARY_SYMBOL_CONFLICT
+        and "both sanitize to %arg_token_a" in reason.reason
+        for reason in result.unsupported
+    )
+
+
+def test_duplicate_sanitized_observable_names_with_conflicting_cells_fail_closed():
+    flow = _graph(_block(0, (), (_ret(),)))
+
+    result = emit_flowgraph_to_llvm(
+        flow,
+        boundary=LlvmLiftBoundary(
+            observables=(
+                LlvmLiftBoundaryObservable("value sink", Varnode(Space.GLOBAL, 0x1000, 4)),
+                LlvmLiftBoundaryObservable("value_sink", Varnode(Space.GLOBAL, 0x2000, 4)),
+            ),
+        ),
+    )
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.BOUNDARY_SYMBOL_CONFLICT
+        and "both sanitize to @value_sink" in reason.reason
+        for reason in result.unsupported
+    )
+
+
+@pytest.mark.parametrize("return_cell", (Varnode(Space.REGISTER, 24, 1), Varnode(Space.REGISTER, 24, 8)))
+def test_boundary_return_cell_must_be_i32(return_cell):
+    flow = _graph(_block(0, (), (_ret(),)))
+
+    result = emit_flowgraph_to_llvm(
+        flow,
+        boundary=LlvmLiftBoundary(return_cell=return_cell),
+    )
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.RETURN_TYPE_UNSUPPORTED
+        and reason.reason == "M2l boundary return_cell supports only i32 values"
+        for reason in result.unsupported
+    )
+
+
+@pytest.mark.parametrize(
+    ("boundary", "kind"),
+    (
+        (
+            LlvmLiftBoundary(
+                inputs=(LlvmLiftBoundaryInput("bad", Varnode(Space.REGISTER, 24, 3)),)
+            ),
+            UnsupportedLiftKind.VARNODE_WIDTH,
+        ),
+        (
+            LlvmLiftBoundary(
+                inputs=(
+                    LlvmLiftBoundaryInput(
+                        "bad",
+                        Varnode(Space.REGISTER, 24, 4),
+                        aliases=(Varnode(Space.REGISTER, 24, 3),),
+                    ),
+                )
+            ),
+            UnsupportedLiftKind.VARNODE_WIDTH,
+        ),
+        (
+            LlvmLiftBoundary(
+                observables=(LlvmLiftBoundaryObservable("bad_sink", Varnode(Space.GLOBAL, 1, 3)),)
+            ),
+            UnsupportedLiftKind.VARNODE_WIDTH,
+        ),
+        (
+            LlvmLiftBoundary(
+                inputs=(LlvmLiftBoundaryInput("bad", Varnode(Space.CONST, 1, 4)),)
+            ),
+            UnsupportedLiftKind.VARNODE_SPACE,
+        ),
+        (
+            LlvmLiftBoundary(
+                inputs=(
+                    LlvmLiftBoundaryInput(
+                        "bad",
+                        Varnode(Space.REGISTER, 24, 4),
+                        aliases=(Varnode(Space.UNKNOWN, 0, 4),),
+                    ),
+                )
+            ),
+            UnsupportedLiftKind.VARNODE_SPACE,
+        ),
+        (
+            LlvmLiftBoundary(
+                observables=(LlvmLiftBoundaryObservable("bad_sink", Varnode(Space.CONST, 1, 4)),)
+            ),
+            UnsupportedLiftKind.VARNODE_SPACE,
+        ),
+        (
+            LlvmLiftBoundary(return_cell=Varnode(Space.UNKNOWN, 0, 4)),
+            UnsupportedLiftKind.VARNODE_SPACE,
+        ),
+    ),
+)
+def test_boundary_cells_fail_closed_when_not_emit_safe(boundary, kind):
+    flow = _graph(_block(0, (), (_ret(),)))
+
+    result = emit_flowgraph_to_llvm(flow, boundary=boundary)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(reason.kind is kind for reason in result.unsupported)
 
 
 @pytest.mark.parametrize(
