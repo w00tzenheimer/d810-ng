@@ -80,6 +80,19 @@ def test_provider_backed_analysis_is_available_and_computed_once():
     assert calls == ["G0"]
 
 
+def test_available_analyses_includes_cache_published_and_provider_keys_without_compute():
+    calls: list[object] = []
+    am = AnalysisManager(
+        graph="G0",
+        providers={"domtree": lambda graph: calls.append(graph) or f"D:{graph}"},
+    )
+    am.put_analysis("published", object())
+    am.get("cached", lambda graph: "C")
+
+    assert am.available_analyses() == ("cached", "domtree", "published")
+    assert calls == []
+
+
 def test_register_provider_makes_analysis_available():
     am = AnalysisManager(graph="G0")
     assert not am.has_analysis("domtree")
@@ -181,6 +194,30 @@ def test_fact_store_reads_published_and_live_observation_facts():
     assert am.get_fact("state_transition") == (fact, observation)
 
 
+def test_available_facts_respects_published_and_visible_live_observation_names():
+    raw = type("_Obs", (), {"kind": "raw_instruction_addresses"})()
+    stale = type("_Obs", (), {"kind": "stale_cfg_shape"})()
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type("_Facts", (), {"active_observations": (raw, stale)})(),
+    )
+    am.put_fact("state_transition", object())
+
+    assert am.available_facts() == (
+        "raw_instruction_addresses",
+        "stale_cfg_shape",
+        "state_transition",
+    )
+
+    am.invalidate_contract(
+        PassContract(
+            preserves=PassPreserves(facts=frozenset({"raw_instruction_addresses"}))
+        )
+    )
+
+    assert am.available_facts() == ("raw_instruction_addresses",)
+
+
 def test_evidence_store_reads_published_and_live_contract_evidence_tokens():
     observation = type(
         "_Obs",
@@ -205,6 +242,35 @@ def test_evidence_store_reads_published_and_live_contract_evidence_tokens():
     am.put_evidence("dispatcher_predicates", marker)
 
     assert am.get_evidence("dispatcher_predicates") == (marker, observation)
+
+
+def test_available_evidence_respects_published_and_visible_live_tokens():
+    observation = type(
+        "_Obs",
+        (),
+        {
+            "payload": contract_evidence_payload(
+                "branch_targets",
+                "dispatcher_predicates",
+            ),
+            "evidence": ("raw provenance only",),
+        },
+    )()
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type("_Facts", (), {"active_observations": (observation,)})(),
+    )
+    am.put_evidence("state_variable_writes", object())
+
+    assert am.available_evidence() == (
+        "branch_targets",
+        "dispatcher_predicates",
+        "state_variable_writes",
+    )
+
+    am.invalidate_to("G1", PreservedAnalyses.all())
+
+    assert am.available_evidence() == ()
 
 
 def test_put_observation_evidence_indexes_canonical_payload_tokens():

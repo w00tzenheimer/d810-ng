@@ -14,7 +14,7 @@ null backend.
 """
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from d810.core.typing import Protocol, runtime_checkable
 from d810.capabilities.resolver import CapabilitySet
@@ -44,8 +44,29 @@ class AnalysisContractError(RuntimeError):
     """A pass violated its declared analysis contract."""
 
 
+@dataclass(frozen=True)
+class PassContractDiagnostic:
+    """Structured detail for a native pass-contract failure."""
+
+    pass_id: str
+    namespace: str
+    missing: tuple[str, ...] = ()
+    undeclared: tuple[str, ...] = ()
+    available: tuple[str, ...] = ()
+    detail: str = ""
+
+
 class PassContractError(RuntimeError):
     """A pass violated its native analysis/evidence/fact contract."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostics: tuple[PassContractDiagnostic, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics
 
 
 class BackendRouteError(RuntimeError):
@@ -128,6 +149,13 @@ def _require_contract_methods(
         )
 
 
+def _available_names(facts, method_name: str) -> tuple[str, ...]:
+    method = getattr(facts, method_name, None)
+    if not callable(method):
+        return ()
+    return tuple(str(name) for name in method())
+
+
 def validate_native_contract(spec: PassSpec, ctx: FunctionPipelineContext) -> None:
     """Fail loud when native pass-contract prerequisites are unavailable."""
     contract = spec.contract
@@ -170,15 +198,41 @@ def validate_native_contract(spec: PassSpec, ctx: FunctionPipelineContext) -> No
     )
     if missing_analyses or missing_facts or missing_evidence:
         parts: list[str] = []
+        diagnostics: list[PassContractDiagnostic] = []
         if missing_analyses:
             parts.append(f"analyses {list(missing_analyses)}")
+            diagnostics.append(
+                PassContractDiagnostic(
+                    pass_id=spec.pass_id,
+                    namespace="requires.analyses",
+                    missing=missing_analyses,
+                    available=_available_names(ctx.facts, "available_analyses"),
+                )
+            )
         if missing_facts:
             parts.append(f"facts {list(missing_facts)}")
+            diagnostics.append(
+                PassContractDiagnostic(
+                    pass_id=spec.pass_id,
+                    namespace="requires.facts.required",
+                    missing=missing_facts,
+                    available=_available_names(ctx.facts, "available_facts"),
+                )
+            )
         if missing_evidence:
             parts.append(f"evidence {list(missing_evidence)}")
+            diagnostics.append(
+                PassContractDiagnostic(
+                    pass_id=spec.pass_id,
+                    namespace="requires.evidence",
+                    missing=missing_evidence,
+                    available=_available_names(ctx.facts, "available_evidence"),
+                )
+            )
         raise PassContractError(
             f"pass {spec.pass_id!r} missing native contract requirements: "
-            + "; ".join(parts)
+            + "; ".join(parts),
+            diagnostics=tuple(diagnostics),
         )
 
 
@@ -212,12 +266,27 @@ def validate_contract_fact_outputs(spec: PassSpec, result) -> None:
 
     if anonymous:
         raise PassContractError(
-            f"pass {spec.pass_id!r} published facts without a kind"
+            f"pass {spec.pass_id!r} published facts without a kind",
+            diagnostics=(
+                PassContractDiagnostic(
+                    pass_id=spec.pass_id,
+                    namespace="outputs.facts",
+                    detail="published facts lacked kind",
+                ),
+            ),
         )
     if undeclared:
         raise PassContractError(
             f"pass {spec.pass_id!r} published undeclared contract facts "
-            f"{sorted(undeclared)}"
+            f"{sorted(undeclared)}",
+            diagnostics=(
+                PassContractDiagnostic(
+                    pass_id=spec.pass_id,
+                    namespace="outputs.facts",
+                    undeclared=tuple(sorted(undeclared)),
+                    available=tuple(sorted(declared)),
+                ),
+            ),
         )
 
 

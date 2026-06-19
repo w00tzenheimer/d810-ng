@@ -41,6 +41,7 @@ from d810.passes.driver import (
     AnalysisContractError,
     BackendRouteError,
     CapabilityError,
+    PassContractDiagnostic,
     PassContractError,
     effective_safety_policy,
     run_pipeline,
@@ -587,8 +588,64 @@ def test_native_contract_required_analysis_missing_raises_contract_error():
         ),
     )
 
-    with pytest.raises(PassContractError, match="analyses"):
+    with pytest.raises(PassContractError, match="analyses") as exc:
         _run_specs((spec,))
+
+    assert exc.value.diagnostics == (
+        PassContractDiagnostic(
+            pass_id="needs_domtree",
+            namespace="requires.analyses",
+            missing=("domtree",),
+        ),
+    )
+
+
+def test_native_contract_missing_multiple_namespaces_reports_structured_diagnostics():
+    class _NeedsEverything:
+        name = "needs_everything"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult()
+
+    spec = PassSpec(
+        "needs_everything",
+        _NeedsEverything,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(
+                analyses=frozenset({"domtree"}),
+                evidence=frozenset({"branch_targets"}),
+                facts=FactRequirement(required=frozenset({"dispatcher_family"})),
+            )
+        ),
+    )
+    facts = AnalysisManager(
+        _GRAPH,
+        providers={"available_only": lambda graph: "A"},
+    )
+
+    with pytest.raises(PassContractError, match="analyses") as exc:
+        _run_specs((spec,), facts=facts)
+
+    assert exc.value.diagnostics == (
+        PassContractDiagnostic(
+            pass_id="needs_everything",
+            namespace="requires.analyses",
+            missing=("domtree",),
+            available=("available_only",),
+        ),
+        PassContractDiagnostic(
+            pass_id="needs_everything",
+            namespace="requires.facts.required",
+            missing=("dispatcher_family",),
+        ),
+        PassContractDiagnostic(
+            pass_id="needs_everything",
+            namespace="requires.evidence",
+            missing=("branch_targets",),
+        ),
+    )
 
 
 def test_native_contract_required_analysis_provider_runs():
@@ -639,8 +696,16 @@ def test_native_contract_required_fact_missing_raises_contract_error():
         ),
     )
 
-    with pytest.raises(PassContractError, match="facts"):
+    with pytest.raises(PassContractError, match="facts") as exc:
         _run_specs((spec,))
+
+    assert exc.value.diagnostics == (
+        PassContractDiagnostic(
+            pass_id="needs_fact",
+            namespace="requires.facts.required",
+            missing=("state_transition",),
+        ),
+    )
 
 
 def test_native_contract_required_fact_accepts_live_observation_kind():
@@ -717,8 +782,16 @@ def test_native_contract_required_evidence_missing_raises_contract_error():
         ),
     )
 
-    with pytest.raises(PassContractError, match="evidence"):
+    with pytest.raises(PassContractError, match="evidence") as exc:
         _run_specs((spec,))
+
+    assert exc.value.diagnostics == (
+        PassContractDiagnostic(
+            pass_id="needs_evidence",
+            namespace="requires.evidence",
+            missing=("dispatcher_predicates",),
+        ),
+    )
 
 
 def test_native_contract_required_evidence_accepts_live_canonical_observation_token():
@@ -970,8 +1043,17 @@ def test_native_contract_output_fact_rejects_unexpected_kind():
         ),
     )
 
-    with pytest.raises(PassContractError, match="undeclared contract facts"):
+    with pytest.raises(PassContractError, match="undeclared contract facts") as exc:
         _run_specs((spec,))
+
+    assert exc.value.diagnostics == (
+        PassContractDiagnostic(
+            pass_id="publish_fact",
+            namespace="outputs.facts",
+            undeclared=("unexpected",),
+            available=("state_transition",),
+        ),
+    )
 
 
 def test_native_contract_output_fact_rejects_missing_kind():
@@ -991,8 +1073,16 @@ def test_native_contract_output_fact_rejects_missing_kind():
         ),
     )
 
-    with pytest.raises(PassContractError, match="without a kind"):
+    with pytest.raises(PassContractError, match="without a kind") as exc:
         _run_specs((spec,))
+
+    assert exc.value.diagnostics == (
+        PassContractDiagnostic(
+            pass_id="publish_fact",
+            namespace="outputs.facts",
+            detail="published facts lacked kind",
+        ),
+    )
 
 
 def test_native_contract_invalidation_drops_fact_while_preserving_analysis():
