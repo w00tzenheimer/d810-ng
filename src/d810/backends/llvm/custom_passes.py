@@ -111,12 +111,16 @@ D810_MBA_XOR_OR_SUB_AND_PASS = LlvmCustomPass(
     pass_id="d810_mba_xor_or_sub_and",
     name="d810 MBA/Z3 XOR from OR-sub-AND",
 )
+D810_MBA_OR_AND_XOR_ADD_PASS = LlvmCustomPass(
+    pass_id="d810_mba_or_and_xor_add",
+    name="d810 MBA/Z3 OR from AND-plus-XOR",
+)
 
 _SUPPORTED_WIDTHS = frozenset({8, 16, 32, 64})
 _SSA_NAME = r"%[A-Za-z$._-][A-Za-z0-9$._-]*"
 _RAW_ASSIGN_RE = re.compile(
     rf"^(?P<prefix>\s*)(?P<result>{_SSA_NAME})\s*=\s*"
-    rf"(?P<op>or|and|sub)\s+(?P<body>.+?)(?P<tail>\s*(?:;.*)?)$"
+    rf"(?P<op>or|and|xor|add|sub)\s+(?P<body>.+?)(?P<tail>\s*(?:;.*)?)$"
 )
 _SCALAR_BINARY_RE = re.compile(
     rf"^(?P<ty>i(?P<bits>\d+))\s+"
@@ -151,7 +155,10 @@ ProofChecker = Callable[[int], LlvmCustomProofResult]
 def run_d810_custom_passes(
     ir_text: str,
     *,
-    passes: Iterable[LlvmCustomPass] = (D810_MBA_XOR_OR_SUB_AND_PASS,),
+    passes: Iterable[LlvmCustomPass] = (
+        D810_MBA_XOR_OR_SUB_AND_PASS,
+        D810_MBA_OR_AND_XOR_ADD_PASS,
+    ),
     proof_checker: ProofChecker | None = None,
 ) -> LlvmCustomPassRunResult:
     """Run opt-in d810 custom passes over LLVM text.
@@ -163,7 +170,11 @@ def run_d810_custom_passes(
     pass_results: list[LlvmCustomPassResult] = []
     status = LlvmCustomPassStatus.NO_CHANGE
     for custom_pass in passes:
-        if custom_pass.pass_id != D810_MBA_XOR_OR_SUB_AND_PASS.pass_id:
+        if custom_pass.pass_id == D810_MBA_XOR_OR_SUB_AND_PASS.pass_id:
+            result = _run_xor_or_sub_and_pass(current, proof_checker=proof_checker)
+        elif custom_pass.pass_id == D810_MBA_OR_AND_XOR_ADD_PASS.pass_id:
+            result = _run_or_and_xor_add_pass(current, proof_checker=proof_checker)
+        else:
             result = LlvmCustomPassResult(
                 pass_id=custom_pass.pass_id,
                 status=LlvmCustomPassStatus.SKIPPED,
@@ -178,8 +189,6 @@ def run_d810_custom_passes(
                     ),
                 ),
             )
-        else:
-            result = _run_xor_or_sub_and_pass(current, proof_checker=proof_checker)
         pass_results.append(result)
         if result.failed:
             status = LlvmCustomPassStatus.FAILED
@@ -304,6 +313,116 @@ def _run_xor_or_sub_and_pass(
     )
 
 
+def _run_or_and_xor_add_pass(
+    ir_text: str,
+    *,
+    proof_checker: ProofChecker | None,
+) -> LlvmCustomPassResult:
+    pass_id = D810_MBA_OR_AND_XOR_ADD_PASS.pass_id
+    lines = ir_text.splitlines()
+    scopes = _function_scopes(lines)
+    line_scopes = {line_index: scope for scope in scopes for line_index in scope}
+    diagnostics: list[LlvmCustomPassDiagnostic] = []
+    candidates: list[
+        tuple[_ParsedInstruction, _ParsedInstruction, _ParsedInstruction, str]
+    ] = []
+    for scope in scopes:
+        scope_candidates, scope_diagnostics = _find_or_and_xor_add_candidates(
+            lines,
+            scope,
+            pass_id=pass_id,
+        )
+        candidates.extend(scope_candidates)
+        diagnostics.extend(scope_diagnostics)
+
+    if diagnostics:
+        return LlvmCustomPassResult(
+            pass_id=pass_id,
+            status=LlvmCustomPassStatus.FAILED,
+            before_ir=ir_text,
+            after_ir=ir_text,
+            rewrites=(),
+            diagnostics=tuple(diagnostics),
+        )
+    if not candidates:
+        return LlvmCustomPassResult(
+            pass_id=pass_id,
+            status=LlvmCustomPassStatus.NO_CHANGE,
+            before_ir=ir_text,
+            after_ir=ir_text,
+            rewrites=(),
+            diagnostics=(),
+        )
+
+    proof_cache: dict[int, LlvmCustomProofResult] = {}
+    rewritten_lines = list(lines)
+    removed_indexes: set[int] = set()
+    rewrites: list[LlvmCustomRewrite] = []
+    for add, and_insn, xor_insn, rule_name in candidates:
+        proof = proof_cache.get(add.bits)
+        if proof is None:
+            checker = proof_checker or _prove_or_and_xor_add
+            proof = checker(add.bits)
+            proof_cache[add.bits] = proof
+        if not proof.verified:
+            return _failed_result(
+                pass_id,
+                ir_text,
+                LlvmCustomPassDiagnostic(
+                    pass_id=pass_id,
+                    kind=(
+                        LlvmCustomPassDiagnosticKind.PROOF_FAILED
+                        if proof.reason
+                        else LlvmCustomPassDiagnosticKind.PROOF_UNAVAILABLE
+                    ),
+                    reason=proof.reason or "MBA/Z3 proof unavailable",
+                    line_number=add.raw.line_index + 1,
+                ),
+            )
+
+        replacement = (
+            f"{add.raw.prefix}{add.raw.result} = or "
+            f"{add.ty} {and_insn.lhs}, {and_insn.rhs}{add.raw.tail}"
+        )
+        rewritten_lines[add.raw.line_index] = replacement
+        removed: list[str] = []
+        for producer in (and_insn, xor_insn):
+            scope = line_scopes.get(producer.raw.line_index, range(0, len(lines)))
+            if _use_count(lines, producer.raw.result, scope) == 1:
+                removed_indexes.add(producer.raw.line_index)
+                removed.append(producer.raw.line)
+        rewrites.append(
+            LlvmCustomRewrite(
+                pass_id=pass_id,
+                rule_name=rule_name,
+                result_name=add.raw.result,
+                original_line=add.raw.line,
+                rewritten_line=replacement,
+                removed_lines=tuple(removed),
+                proof=LlvmCustomRewriteProof(
+                    rule_name=rule_name,
+                    engine="d810.backends.mba.z3",
+                    bit_width=add.bits,
+                    verified=True,
+                ),
+            )
+        )
+
+    after = "\n".join(
+        line for index, line in enumerate(rewritten_lines) if index not in removed_indexes
+    )
+    if ir_text.endswith("\n"):
+        after += "\n"
+    return LlvmCustomPassResult(
+        pass_id=pass_id,
+        status=LlvmCustomPassStatus.PASSED,
+        before_ir=ir_text,
+        after_ir=after,
+        rewrites=tuple(rewrites),
+        diagnostics=(),
+    )
+
+
 def _find_xor_or_sub_and_candidates(
     lines: list[str],
     scope: range,
@@ -400,6 +519,95 @@ def _find_xor_or_sub_and_candidates(
     return candidates, diagnostics
 
 
+def _find_or_and_xor_add_candidates(
+    lines: list[str],
+    scope: range,
+    *,
+    pass_id: str,
+) -> tuple[
+    list[tuple[_ParsedInstruction, _ParsedInstruction, _ParsedInstruction, str]],
+    list[LlvmCustomPassDiagnostic],
+]:
+    raw_defs: dict[str, _RawInstruction] = {}
+    parsed_defs: dict[str, _ParsedInstruction] = {}
+    invalid_defs: dict[str, LlvmCustomPassDiagnostic] = {}
+    diagnostics: list[LlvmCustomPassDiagnostic] = []
+    candidates: list[tuple[_ParsedInstruction, _ParsedInstruction, _ParsedInstruction, str]] = []
+
+    for index in scope:
+        raw = _parse_raw_instruction(index, lines[index])
+        if raw is None:
+            continue
+        if raw.result in raw_defs:
+            diagnostics.append(
+                LlvmCustomPassDiagnostic(
+                    pass_id=pass_id,
+                    kind=LlvmCustomPassDiagnosticKind.UNSUPPORTED_SHAPE,
+                    reason=f"duplicate SSA definition for {raw.result}",
+                    line_number=index + 1,
+                )
+            )
+            continue
+        raw_defs[raw.result] = raw
+        parsed, diagnostic = _parse_scalar_binary(raw, pass_id=pass_id)
+        if parsed is not None:
+            parsed_defs[raw.result] = parsed
+        elif diagnostic is not None:
+            invalid_defs[raw.result] = diagnostic
+
+    for parsed in parsed_defs.values():
+        if parsed.raw.op != "add":
+            continue
+        if parsed.lhs not in raw_defs or parsed.rhs not in raw_defs:
+            continue
+        if parsed.lhs in invalid_defs or parsed.rhs in invalid_defs:
+            for name in (parsed.lhs, parsed.rhs):
+                if name in invalid_defs:
+                    diagnostics.append(invalid_defs[name])
+            continue
+        lhs = parsed_defs[parsed.lhs]
+        rhs = parsed_defs[parsed.rhs]
+        if not _looks_like_or_and_xor_add_producers(lhs, rhs):
+            continue
+        if len({parsed.ty, lhs.ty, rhs.ty}) != 1:
+            diagnostics.append(
+                LlvmCustomPassDiagnostic(
+                    pass_id=pass_id,
+                    kind=LlvmCustomPassDiagnosticKind.WIDTH_MISMATCH,
+                    reason="MBA OR candidate producer/result widths must match",
+                    line_number=parsed.raw.line_index + 1,
+                )
+            )
+            continue
+        if (lhs.lhs, lhs.rhs) != (rhs.lhs, rhs.rhs):
+            diagnostics.append(
+                LlvmCustomPassDiagnostic(
+                    pass_id=pass_id,
+                    kind=LlvmCustomPassDiagnosticKind.UNSUPPORTED_SHAPE,
+                    reason="MBA OR candidate AND/XOR operands must match in order",
+                    line_number=parsed.raw.line_index + 1,
+                )
+            )
+            continue
+        if lhs.raw.op == "and":
+            candidates.append((parsed, lhs, rhs, "Or_MbaRule_1"))
+        else:
+            candidates.append((parsed, rhs, lhs, "Or_MbaRule_1_Commuted"))
+
+    for raw in raw_defs.values():
+        if raw.op != "add" or raw.result not in invalid_defs:
+            continue
+        operands = _extract_ssa_operands(raw.body)
+        if len(operands) != 2 or operands[0] not in raw_defs or operands[1] not in raw_defs:
+            continue
+        lhs_raw = raw_defs[operands[0]]
+        rhs_raw = raw_defs[operands[1]]
+        if _looks_like_or_and_xor_add_raw_producers(lhs_raw, rhs_raw):
+            diagnostics.append(invalid_defs[raw.result])
+
+    return candidates, diagnostics
+
+
 def _looks_like_xor_or_sub_and_producers(
     lhs: _ParsedInstruction,
     rhs: _ParsedInstruction,
@@ -407,11 +615,25 @@ def _looks_like_xor_or_sub_and_producers(
     return {lhs.raw.op, rhs.raw.op} == {"or", "and"}
 
 
+def _looks_like_or_and_xor_add_producers(
+    lhs: _ParsedInstruction,
+    rhs: _ParsedInstruction,
+) -> bool:
+    return {lhs.raw.op, rhs.raw.op} == {"and", "xor"}
+
+
 def _looks_like_xor_or_sub_and_raw_producers(
     lhs: _RawInstruction,
     rhs: _RawInstruction,
 ) -> bool:
     return {lhs.op, rhs.op} == {"or", "and"}
+
+
+def _looks_like_or_and_xor_add_raw_producers(
+    lhs: _RawInstruction,
+    rhs: _RawInstruction,
+) -> bool:
+    return {lhs.op, rhs.op} == {"and", "xor"}
 
 
 def _function_scopes(lines: list[str]) -> tuple[range, ...]:
@@ -496,6 +718,27 @@ def _prove_xor_or_sub_and(bit_width: int) -> LlvmCustomProofResult:
         verified, counterexample = prove_equivalence(
             (x | y) - (x & y),
             x ^ y,
+            bit_width=bit_width,
+        )
+    except Exception as exc:  # pragma: no cover - exercised via injected checker.
+        return LlvmCustomProofResult(
+            verified=False,
+            reason=f"MBA/Z3 proof unavailable: {exc}",
+        )
+    if not verified:
+        return LlvmCustomProofResult(
+            verified=False,
+            reason=f"MBA/Z3 proof failed; counterexample={counterexample}",
+        )
+    return LlvmCustomProofResult(verified=True)
+
+
+def _prove_or_and_xor_add(bit_width: int) -> LlvmCustomProofResult:
+    x, y = Var("x"), Var("y")
+    try:
+        verified, counterexample = prove_equivalence(
+            (x & y) + (x ^ y),
+            x | y,
             bit_width=bit_width,
         )
     except Exception as exc:  # pragma: no cover - exercised via injected checker.
