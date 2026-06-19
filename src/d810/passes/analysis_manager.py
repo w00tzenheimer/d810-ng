@@ -80,6 +80,17 @@ class AnalysisManager:
         """Return whether ``name`` is available as a published or live observation fact."""
         return self.get_fact(name, default=None) is not None
 
+    def available_facts(self) -> tuple[str, ...]:
+        """Return visible fact names without changing cache/provider state."""
+        names = set(self._facts)
+        names.update(
+            str(kind)
+            for observation in self.active_observations
+            if (kind := getattr(observation, "kind", None)) is not None
+            and self._live_observation_fact_visible(str(kind), observation)
+        )
+        return tuple(sorted(names))
+
     def _live_observation_fact_visible(self, name: str, observation: object) -> bool:
         """Return whether a live observation can satisfy fact ``name``."""
         if getattr(observation, "kind", None) != name:
@@ -116,6 +127,14 @@ class AnalysisManager:
         """Return whether ``name`` is available as published or observation evidence."""
         return self.get_evidence(name, default=None) is not None
 
+    def available_evidence(self) -> tuple[str, ...]:
+        """Return visible contract evidence names without treating raw evidence as tokens."""
+        names = set(self._evidence)
+        if self._live_evidence_visible:
+            for observation in self.active_observations:
+                names.update(contract_evidence_tokens(observation))
+        return tuple(sorted(names))
+
     def register_provider(
         self, name: str, compute: Callable[[object], object]
     ) -> None:
@@ -142,6 +161,10 @@ class AnalysisManager:
     def has_analysis(self, name: str) -> bool:
         """Return whether ``name`` is available as a published or cached analysis."""
         return name in self._derived or name in self._cache or name in self._providers
+
+    def available_analyses(self) -> tuple[str, ...]:
+        """Return known analysis names without computing lazy providers."""
+        return tuple(sorted(set(self._derived) | set(self._cache) | set(self._providers)))
 
     def view(self) -> "AnalysisManager":
         """Return the read handle passed to passes as ``ctx.facts``."""
