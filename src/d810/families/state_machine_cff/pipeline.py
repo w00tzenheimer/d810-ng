@@ -12,6 +12,12 @@ from __future__ import annotations
 
 from d810.passes.pass_pipeline import (
     AnalysisContract,
+    MaturityRange,
+    PassContract,
+    PassInvalidates,
+    PassOutputs,
+    PassRequires,
+    PassScope,
     PassSpec,
     default,
     golden,
@@ -19,6 +25,7 @@ from d810.passes.pass_pipeline import (
     no_caps,
 )
 from d810.passes.registry import PassRegistry
+from d810.ir.maturity import IRMaturity
 from d810.passes.unflatten.state_machine import (
     CleanupResidualDispatcher,
     LowerStateMachine,
@@ -34,6 +41,7 @@ __all__ = [
     "REGION_ANALYSES",
     "TRANSITION_ANALYSES",
     "register_state_machine_passes",
+    "state_machine_pass_spec",
     "standard_state_machine_passes",
     "state_machine_pass_registry",
 ]
@@ -73,6 +81,80 @@ LOWER_ANALYSES = AnalysisContract(
 )
 CLEANUP_ANALYSES = AnalysisContract()
 
+STATE_MACHINE_MATURITY = MaturityRange(
+    min=IRMaturity.CALL_MODELED,
+    max=IRMaturity.GLOBAL_ANALYZED,
+    preferred=IRMaturity.GLOBAL_ANALYZED,
+)
+
+
+def _state_machine_contract(
+    *,
+    requires_analyses: frozenset[str] = frozenset(),
+    outputs_facts: frozenset[str] = frozenset(),
+    invalidates_analyses: frozenset[str] = frozenset(),
+    invalidates_facts: frozenset[str] = frozenset(),
+) -> PassContract:
+    return PassContract(
+        scope=PassScope.FUNCTION,
+        # Standard CFF families declare GLOBAL_ANALYZED; indirect-table variants can
+        # enter at CALL_MODELED, so the native contract records the full supported range.
+        maturity=STATE_MACHINE_MATURITY,
+        requires=PassRequires(analyses=requires_analyses),
+        outputs=PassOutputs(facts=outputs_facts),
+        invalidates=PassInvalidates(
+            analyses=invalidates_analyses,
+            facts=invalidates_facts,
+        ),
+    )
+
+
+DISPATCHER_CONTRACT = _state_machine_contract(
+    outputs_facts=frozenset({"dispatcher_family"}),
+)
+TRANSITION_CONTRACT = _state_machine_contract(
+    requires_analyses=TRANSITION_ANALYSES.required,
+    outputs_facts=frozenset({"state_transition"}),
+)
+REGION_CONTRACT = _state_machine_contract(
+    requires_analyses=REGION_ANALYSES.required,
+    outputs_facts=frozenset({"semantic_region"}),
+)
+LOWER_CONTRACT = _state_machine_contract(
+    requires_analyses=LOWER_ANALYSES.required,
+    outputs_facts=frozenset({"recovered_cfg_edge"}),
+    invalidates_facts=frozenset({"stale_cfg_shape"}),
+)
+CLEANUP_CONTRACT = _state_machine_contract()
+
+
+_CONTRACTS_BY_PASS_ID = {
+    "recover_dispatcher": DISPATCHER_CONTRACT,
+    "recover_state_transitions": TRANSITION_CONTRACT,
+    "plan_semantic_regions": REGION_CONTRACT,
+    "lower_state_machine": LOWER_CONTRACT,
+    "cleanup_residual_dispatcher": CLEANUP_CONTRACT,
+}
+
+
+def state_machine_pass_spec(
+    pass_id: str,
+    pass_factory,
+    requirements,
+    safety_policy,
+    *,
+    analyses: AnalysisContract,
+) -> PassSpec:
+    """Build a canonical state-machine pass spec with native contract metadata."""
+    return PassSpec(
+        pass_id,
+        pass_factory,
+        requirements,
+        safety_policy,
+        analyses=analyses,
+        contract=_CONTRACTS_BY_PASS_ID[pass_id],
+    )
+
 
 def register_state_machine_passes(registry: PassRegistry) -> PassRegistry:
     """Register the canonical state-machine CFF pass factories."""
@@ -92,35 +174,35 @@ def state_machine_pass_registry() -> PassRegistry:
 def standard_state_machine_passes() -> tuple[PassSpec, ...]:
     """Return the canonical five-pass unflatten state-machine spine, in order."""
     return (
-        PassSpec(
+        state_machine_pass_spec(
             "recover_dispatcher",
             RecoverDispatcher,
             live_mba,
             default,
             analyses=DISPATCHER_ANALYSES,
         ),
-        PassSpec(
+        state_machine_pass_spec(
             "recover_state_transitions",
             RecoverStateTransitions,
             live_mba,
             default,
             analyses=TRANSITION_ANALYSES,
         ),
-        PassSpec(
+        state_machine_pass_spec(
             "plan_semantic_regions",
             PlanSemanticRegions,
             no_caps,
             default,
             analyses=REGION_ANALYSES,
         ),
-        PassSpec(
+        state_machine_pass_spec(
             "lower_state_machine",
             LowerStateMachine,
             no_caps,
             golden,
             analyses=LOWER_ANALYSES,
         ),
-        PassSpec(
+        state_machine_pass_spec(
             "cleanup_residual_dispatcher",
             CleanupResidualDispatcher,
             no_caps,
