@@ -116,6 +116,7 @@ from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle impor
     ComposedUnflatteningRule,
 )
 from d810.passes.function_pass_manager import FunctionPassManager
+from d810.passes.pipeline_config_parser import pipeline_v2_shadow_match_required
 from d810.passes.pipeline_shadow import compare_pipeline_v2_shadow
 from d810.passes.unflatten.state_machine import LOWER_STATE_MACHINE_PLAN_METADATA
 from d810.families.state_machine_cff.pipeline import (
@@ -761,6 +762,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     )
                 return 0
             self._log_pipeline_v2_shadow(project_config, family, source, backend)
+            require_shadow_match = pipeline_v2_shadow_match_required(project_config)
+            shadow_gate_kwargs = {}
+            if require_shadow_match:
+                shadow_gate_kwargs = {
+                    "pipeline_v2_shadow_registry": state_machine_pass_registry(),
+                    "require_pipeline_v2_shadow_match": True,
+                }
             self._pass_manager.run(
                 source=source,
                 family=family,
@@ -770,6 +778,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 capabilities=capabilities,
                 input_facts=fact_view,
                 analysis_seeds=analysis_seeds,
+                **shadow_gate_kwargs,
             )
             facts = self._pass_manager.analysis_manager_for(func_ea) or facts
         # Iteration diagnostics: where does the unflatten chain stand for this function?
