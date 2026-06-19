@@ -341,6 +341,68 @@ def test_evidence_store_reads_state_write_contract_token_from_live_observation()
     assert not am.has_evidence("dispatcher_predicates")
 
 
+def test_invalidate_to_clears_published_evidence_for_new_epoch():
+    am = AnalysisManager(graph="G0")
+    am.put_evidence("branch_targets", object())
+
+    assert am.has_evidence("branch_targets")
+
+    am.invalidate_to("G1", PreservedAnalyses.all())
+
+    assert not am.has_evidence("branch_targets")
+
+
+def test_invalidate_to_hides_live_observation_evidence_until_fresh_input_facts():
+    stale_observation = type(
+        "_Obs",
+        (),
+        {"payload": contract_evidence_payload("branch_targets")},
+    )()
+    fresh_observation = type(
+        "_Obs",
+        (),
+        {"payload": contract_evidence_payload("branch_targets")},
+    )()
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type(
+            "_Facts", (), {"active_observations": (stale_observation,)}
+        )(),
+    )
+
+    assert am.get_evidence("branch_targets") == (stale_observation,)
+
+    am.invalidate_to("G1", PreservedAnalyses.all())
+
+    assert not am.has_evidence("branch_targets")
+
+    am.set_input_facts(
+        type("_Facts", (), {"active_observations": (fresh_observation,)})()
+    )
+
+    assert am.get_evidence("branch_targets") == (fresh_observation,)
+
+
+def test_put_evidence_after_epoch_invalidation_is_visible_without_stale_observations():
+    stale_observation = type(
+        "_Obs",
+        (),
+        {"payload": contract_evidence_payload("branch_targets")},
+    )()
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type(
+            "_Facts", (), {"active_observations": (stale_observation,)}
+        )(),
+    )
+
+    am.invalidate_to("G1", PreservedAnalyses.none())
+    new_marker = object()
+    am.put_evidence("branch_targets", new_marker)
+
+    assert am.get_evidence("branch_targets") == (new_marker,)
+
+
 def test_contract_invalidation_keeps_analysis_and_fact_validity_separate():
     am = AnalysisManager(graph="G0")
     am.put_analysis("dominators", "D")
