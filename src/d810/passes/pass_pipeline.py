@@ -40,6 +40,12 @@ def _require_mapping(value: object, field_name: str) -> Mapping[str, object]:
     return value
 
 
+def _optional_mapping(value: object, field_name: str) -> Mapping[str, object]:
+    if value is None:
+        return {}
+    return _require_mapping(value, field_name)
+
+
 def _parse_enum(enum_type: type[_EnumT], value: object, field_name: str) -> _EnumT:
     if isinstance(value, enum_type):
         return value
@@ -74,6 +80,12 @@ def _parse_maturity_set(value: object, field_name: str) -> frozenset[IRMaturity]
     if isinstance(value, str) or not isinstance(value, (list, tuple, set, frozenset)):
         raise PipelineConfigError(f"{field_name} must be a sequence of maturities")
     return frozenset(_parse_enum(IRMaturity, item, field_name) for item in value)
+
+
+def _parse_optional_maturity(value: object, field_name: str) -> IRMaturity | None:
+    if value is None:
+        return None
+    return _parse_enum(IRMaturity, value, field_name)
 
 
 def _parse_bool(value: object, field_name: str) -> bool:
@@ -143,6 +155,21 @@ class PassGranularity(str, Enum):
     CFG = "cfg"
 
 
+class PassScope(str, Enum):
+    """Decompiler-native pass scope for D810 contract metadata."""
+
+    PROGRAM = "program"
+    IMAGE = "image"
+    SEGMENT = "segment"
+    FUNCTION = "function"
+    REGION = "region"
+    SCC = "scc"
+    BLOCK = "block"
+    INSTRUCTION = "instruction"
+    EXPRESSION = "expression"
+    FACT = "fact"
+
+
 class BackendRoute(str, Enum):
     """Backend apply route for a pass result."""
 
@@ -194,6 +221,238 @@ class AnalysisContract:
     provided: frozenset[str] = frozenset()
 
 
+_MATURITY_ORDER: Mapping[IRMaturity, int] = {
+    maturity: index for index, maturity in enumerate(IRMaturity)
+}
+
+
+@dataclass(frozen=True)
+class MaturityRange:
+    """Range/preference metadata for native D810 pass contracts."""
+
+    min: IRMaturity | None = None
+    max: IRMaturity | None = None
+    preferred: IRMaturity | None = None
+
+    def __post_init__(self) -> None:
+        if self.min is not None and self.max is not None:
+            if _MATURITY_ORDER[self.min] > _MATURITY_ORDER[self.max]:
+                raise PipelineConfigError("maturity.min must not be after maturity.max")
+        if self.preferred is not None and not self.contains(self.preferred):
+            raise PipelineConfigError("maturity.preferred must be inside maturity range")
+
+    def contains(self, maturity: IRMaturity) -> bool:
+        if self.min is not None and _MATURITY_ORDER[maturity] < _MATURITY_ORDER[self.min]:
+            return False
+        if self.max is not None and _MATURITY_ORDER[maturity] > _MATURITY_ORDER[self.max]:
+            return False
+        return True
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "min": None if self.min is None else self.min.value,
+            "max": None if self.max is None else self.max.value,
+            "preferred": None if self.preferred is None else self.preferred.value,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> "MaturityRange":
+        data = _optional_mapping(payload, "contract.maturity")
+        return cls(
+            min=_parse_optional_maturity(data.get("min"), "maturity.min"),
+            max=_parse_optional_maturity(data.get("max"), "maturity.max"),
+            preferred=_parse_optional_maturity(
+                data.get("preferred"), "maturity.preferred"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class FactRequirement:
+    """Required and optional fact inputs declared by a native pass contract."""
+
+    required: frozenset[str] = frozenset()
+    optional: frozenset[str] = frozenset()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "required": sorted(self.required),
+            "optional": sorted(self.optional),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> "FactRequirement":
+        data = _optional_mapping(payload, "requires.facts")
+        return cls(
+            required=_parse_string_set(
+                data.get("required", ()), "requires.facts.required"
+            ),
+            optional=_parse_string_set(
+                data.get("optional", ()), "requires.facts.optional"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class PassRequires:
+    """Analysis/evidence/fact inputs for a native D810 pass contract."""
+
+    analyses: frozenset[str] = frozenset()
+    evidence: frozenset[str] = frozenset()
+    facts: FactRequirement = field(default_factory=FactRequirement)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "analyses": sorted(self.analyses),
+            "evidence": sorted(self.evidence),
+            "facts": self.facts.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> "PassRequires":
+        data = _optional_mapping(payload, "requires")
+        return cls(
+            analyses=_parse_string_set(data.get("analyses", ()), "requires.analyses"),
+            evidence=_parse_string_set(data.get("evidence", ()), "requires.evidence"),
+            facts=FactRequirement.from_dict(data.get("facts", {})),
+        )
+
+
+@dataclass(frozen=True)
+class PassOutputs:
+    """Fact outputs produced by a native D810 pass contract."""
+
+    facts: frozenset[str] = frozenset()
+
+    def to_dict(self) -> dict[str, object]:
+        return {"facts": sorted(self.facts)}
+
+    @classmethod
+    def from_dict(cls, payload: object) -> "PassOutputs":
+        data = _optional_mapping(payload, "outputs")
+        return cls(facts=_parse_string_set(data.get("facts", ()), "outputs.facts"))
+
+
+@dataclass(frozen=True)
+class PassPreserves:
+    """Analysis and fact namespaces preserved by a native D810 pass contract."""
+
+    analyses: frozenset[str] = frozenset()
+    facts: frozenset[str] = frozenset()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "analyses": sorted(self.analyses),
+            "facts": sorted(self.facts),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object, field_name: str) -> "PassPreserves":
+        data = _optional_mapping(payload, field_name)
+        return cls(
+            analyses=_parse_string_set(
+                data.get("analyses", ()), f"{field_name}.analyses"
+            ),
+            facts=_parse_string_set(data.get("facts", ()), f"{field_name}.facts"),
+        )
+
+
+@dataclass(frozen=True)
+class PassInvalidates:
+    """Analysis and fact namespaces invalidated by a native D810 pass contract."""
+
+    analyses: frozenset[str] = frozenset()
+    facts: frozenset[str] = frozenset()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "analyses": sorted(self.analyses),
+            "facts": sorted(self.facts),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object, field_name: str) -> "PassInvalidates":
+        data = _optional_mapping(payload, field_name)
+        return cls(
+            analyses=_parse_string_set(
+                data.get("analyses", ()), f"{field_name}.analyses"
+            ),
+            facts=_parse_string_set(data.get("facts", ()), f"{field_name}.facts"),
+        )
+
+
+@dataclass(frozen=True)
+class PassSafety:
+    """Safety policy metadata for native D810 pass contracts."""
+
+    policy: str = "default"
+    requires_oracle: bool = False
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "policy": self.policy,
+            "requires_oracle": self.requires_oracle,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> "PassSafety":
+        data = _optional_mapping(payload, "safety")
+        return cls(
+            policy=_parse_nonempty_string(data.get("policy", "default"), "safety.policy"),
+            requires_oracle=_parse_bool(
+                data.get("requires_oracle", False), "safety.requires_oracle"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class PassContract:
+    """D810-native deobfuscation pass contract metadata.
+
+    Analysis validity is intentionally separate from evidence and fact validity.
+    For example, a pass may preserve ``dominators`` while invalidating raw
+    dispatcher evidence or stale CFG-shape facts.
+    """
+
+    scope: PassScope = PassScope.FUNCTION
+    maturity: MaturityRange = field(default_factory=MaturityRange)
+    requires: PassRequires = field(default_factory=PassRequires)
+    outputs: PassOutputs = field(default_factory=PassOutputs)
+    preserves: PassPreserves = field(default_factory=PassPreserves)
+    invalidates: PassInvalidates = field(default_factory=PassInvalidates)
+    safety: PassSafety = field(default_factory=PassSafety)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "scope": self.scope.value,
+            "maturity": self.maturity.to_dict(),
+            "requires": self.requires.to_dict(),
+            "outputs": self.outputs.to_dict(),
+            "preserves": self.preserves.to_dict(),
+            "invalidates": self.invalidates.to_dict(),
+            "safety": self.safety.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> "PassContract":
+        data = _optional_mapping(payload, "contract")
+        return cls(
+            scope=_parse_enum(
+                PassScope,
+                data.get("scope", PassScope.FUNCTION.value),
+                "scope",
+            ),
+            maturity=MaturityRange.from_dict(data.get("maturity", {})),
+            requires=PassRequires.from_dict(data.get("requires", {})),
+            outputs=PassOutputs.from_dict(data.get("outputs", {})),
+            preserves=PassPreserves.from_dict(data.get("preserves", {}), "preserves"),
+            invalidates=PassInvalidates.from_dict(
+                data.get("invalidates", {}), "invalidates"
+            ),
+            safety=PassSafety.from_dict(data.get("safety", {})),
+        )
+
+
 @dataclass(frozen=True)
 class PipelineConfig:
     """PipelineConfig v2: declarative pass-manager contract."""
@@ -207,9 +466,14 @@ class PipelineConfig:
     scheduler_policy: SchedulerPolicy = SchedulerPolicy.WORKLIST
     backend_route: BackendRoute = BackendRoute.MUTATION_BACKEND
     safety_policy: SafetyPolicy = field(default_factory=SafetyPolicy)
+    contract: PassContract = field(default_factory=PassContract)
 
     def enabled_at(self, maturity: IRMaturity | None) -> bool:
-        return not self.maturity_gates or maturity in self.maturity_gates
+        if self.maturity_gates:
+            return maturity in self.maturity_gates
+        if self.contract.maturity != MaturityRange():
+            return maturity is not None and self.contract.maturity.contains(maturity)
+        return True
 
     def to_dict(self) -> dict[str, object]:
         """Serialize this config using stable string values."""
@@ -234,6 +498,7 @@ class PipelineConfig:
                 "name": self.safety_policy.name,
                 "golden_required": self.safety_policy.golden_required,
             },
+            "contract": self.contract.to_dict(),
         }
 
     @classmethod
@@ -244,7 +509,7 @@ class PipelineConfig:
         (``worklist``). ``IRMaturity`` gates accept enum names or values too.
         """
         data = _require_mapping(payload, "pipeline config")
-        pass_id = data.get("pass_id")
+        pass_id = data.get("pass_id", data.get("pass"))
         if not isinstance(pass_id, str) or not pass_id:
             raise PipelineConfigError("pass_id must be a non-empty string")
 
@@ -258,6 +523,21 @@ class PipelineConfig:
         safety_policy_data = _require_mapping(
             data.get("safety_policy", {}), "safety_policy"
         )
+        contract_payload = data.get("contract")
+        if contract_payload is None:
+            contract_payload = {
+                key: data[key]
+                for key in (
+                    "scope",
+                    "maturity",
+                    "requires",
+                    "outputs",
+                    "preserves",
+                    "invalidates",
+                    "safety",
+                )
+                if key in data
+            }
 
         maturity_gates = _parse_maturity_set(
             data.get("maturity_gates", ()), "maturity_gates"
@@ -314,6 +594,7 @@ class PipelineConfig:
                     "safety_policy.golden_required",
                 ),
             ),
+            contract=PassContract.from_dict(contract_payload),
         )
 
 
@@ -392,6 +673,7 @@ class PassSpec:
     preservation: PreservedAnalyses = field(default_factory=PreservedAnalyses.all)
     scheduler_policy: SchedulerPolicy = SchedulerPolicy.WORKLIST
     backend_route: BackendRoute = BackendRoute.MUTATION_BACKEND
+    contract: PassContract = field(default_factory=PassContract)
 
     @property
     def pass_id(self) -> str:
@@ -409,6 +691,7 @@ class PassSpec:
             scheduler_policy=self.scheduler_policy,
             backend_route=self.backend_route,
             safety_policy=self.safety_policy,
+            contract=self.contract,
         )
 
     def enabled_at(self, maturity: IRMaturity | None) -> bool:

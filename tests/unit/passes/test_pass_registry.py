@@ -8,6 +8,7 @@ from d810.families.state_machine_cff.pipeline import (
     state_machine_pass_registry,
 )
 from d810.passes.pass_pipeline import PipelineConfig, PassResult
+from d810.passes import pass_pipeline as pp
 from d810.passes.registry import (
     DuplicatePassIdError,
     PassRegistry,
@@ -57,3 +58,26 @@ def test_state_machine_pass_ids_resolve_to_pass_specs():
     ]
     for spec in rebuilt_specs:
         assert spec.pass_factory().name == spec.pass_id
+
+
+def test_registry_build_spec_preserves_native_pass_contract():
+    registry = PassRegistry()
+    registry.register("fake", _FakePass)
+    contract = pp.PassContract(
+        scope=pp.PassScope.FACT,
+        requires=pp.PassRequires(
+            analyses=frozenset({"dominators"}),
+            evidence=frozenset({"dispatcher_predicates"}),
+        ),
+        invalidates=pp.PassInvalidates(facts=frozenset({"stale_cfg_shape"})),
+    )
+
+    spec = registry.build_spec(PipelineConfig(pass_id="fake", contract=contract))
+
+    assert spec.contract is contract
+    assert spec.config.contract is contract
+    assert spec.config.contract.requires.analyses == frozenset({"dominators"})
+    assert spec.config.contract.requires.evidence == frozenset(
+        {"dispatcher_predicates"}
+    )
+    assert spec.config.contract.invalidates.facts == frozenset({"stale_cfg_shape"})

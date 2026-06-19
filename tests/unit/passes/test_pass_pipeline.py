@@ -152,6 +152,174 @@ def test_pipeline_config_roundtrip_preserves_contract_fields():
     assert pp.PipelineConfig.from_dict(payload) == config
 
 
+def test_pipeline_config_roundtrip_preserves_native_pass_contract():
+    contract = pp.PassContract(
+        scope=pp.PassScope.FUNCTION,
+        maturity=pp.MaturityRange(
+            min=IRMaturity.CALL_MODELED,
+            max=IRMaturity.GLOBAL_ANALYZED,
+            preferred=IRMaturity.CALL_MODELED,
+        ),
+        requires=pp.PassRequires(
+            analyses=frozenset({"def_use", "dominators"}),
+            evidence=frozenset({"state_variable_writes"}),
+            facts=pp.FactRequirement(
+                required=frozenset({"dispatcher_family"}),
+                optional=frozenset({"carrier_store_candidates"}),
+            ),
+        ),
+        outputs=pp.PassOutputs(facts=frozenset({"state_transition"})),
+        preserves=pp.PassPreserves(
+            analyses=frozenset({"function_boundaries"}),
+            facts=frozenset({"raw_instruction_addresses"}),
+        ),
+        invalidates=pp.PassInvalidates(
+            analyses=frozenset({"dominators"}),
+            facts=frozenset({"stale_cfg_shape"}),
+        ),
+        safety=pp.PassSafety(policy="guarded-rewrite", requires_oracle=False),
+    )
+    config = pp.PipelineConfig(pass_id="recover-state-machine", contract=contract)
+
+    payload = config.to_dict()
+    assert payload["contract"]["requires"]["evidence"] == ["state_variable_writes"]
+    assert pp.PipelineConfig.from_dict(payload) == config
+
+
+def test_pipeline_config_accepts_direct_native_contract_yaml_shape():
+    config = pp.PipelineConfig.from_dict(
+        {
+            "pass": "recover-state-machine",
+            "scope": "function",
+            "maturity": {
+                "min": "ir.call.modeled",
+                "max": "ir.global.analyzed",
+                "preferred": "ir.call.modeled",
+            },
+            "requires": {
+                "analyses": ["dominators"],
+                "evidence": ["dispatcher_predicates"],
+                "facts": {
+                    "required": [],
+                    "optional": ["carrier_store_candidates"],
+                },
+            },
+            "outputs": {"facts": ["state_transition"]},
+            "preserves": {
+                "analyses": ["dominators"],
+                "facts": ["raw_instruction_addresses"],
+            },
+            "invalidates": {
+                "analyses": ["postdominators"],
+                "facts": ["stale_cfg_shape"],
+            },
+            "safety": {"policy": "guarded-rewrite", "requires_oracle": False},
+        }
+    )
+
+    assert config.pass_id == "recover-state-machine"
+    assert config.contract.scope is pp.PassScope.FUNCTION
+    assert config.contract.requires.analyses == frozenset({"dominators"})
+    assert config.contract.requires.evidence == frozenset({"dispatcher_predicates"})
+    assert config.contract.preserves.analyses == frozenset({"dominators"})
+    assert config.contract.invalidates.facts == frozenset({"stale_cfg_shape"})
+    assert config.safety_policy == pp.SafetyPolicy()
+    assert config.contract.safety == pp.PassSafety(
+        policy="guarded-rewrite",
+        requires_oracle=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("payload", "field_name"),
+    [
+        ({"pass": "x", "maturity": []}, "contract.maturity"),
+        ({"pass": "x", "requires": []}, "requires"),
+        ({"pass": "x", "requires": {"facts": []}}, "requires.facts"),
+        ({"pass": "x", "outputs": []}, "outputs"),
+        ({"pass": "x", "preserves": []}, "preserves"),
+        ({"pass": "x", "invalidates": []}, "invalidates"),
+        ({"pass": "x", "safety": []}, "safety"),
+        ({"pass": "x", "contract": []}, "contract"),
+    ],
+)
+def test_pipeline_config_rejects_malformed_native_contract_sections(
+    payload,
+    field_name,
+):
+    with pytest.raises(pp.PipelineConfigError, match=f"{field_name} must be a mapping"):
+        pp.PipelineConfig.from_dict(payload)
+
+
+def test_native_contract_keeps_analysis_evidence_and_fact_validity_separate():
+    contract = pp.PassContract(
+        preserves=pp.PassPreserves(analyses=frozenset({"dominators"})),
+        invalidates=pp.PassInvalidates(
+            facts=frozenset({"stale_cfg_shape", "raw_dispatcher_evidence"})
+        ),
+    )
+
+    assert "dominators" in contract.preserves.analyses
+    assert "dominators" not in contract.invalidates.facts
+    assert "stale_cfg_shape" in contract.invalidates.facts
+    assert contract.preserves.facts == frozenset()
+
+
+def test_maturity_range_contains_and_validates_preferred():
+    maturity = pp.MaturityRange(
+        min=IRMaturity.CALL_MODELED,
+        max=IRMaturity.GLOBAL_ANALYZED,
+        preferred=IRMaturity.CALL_MODELED,
+    )
+
+    assert maturity.contains(IRMaturity.CALL_MODELED) is True
+    assert maturity.contains(IRMaturity.GLOBAL_ANALYZED) is True
+    assert maturity.contains(IRMaturity.LOCAL_OPTIMIZED) is False
+    assert maturity.contains(IRMaturity.GLOBAL_OPTIMIZED) is False
+    with pytest.raises(pp.PipelineConfigError, match="preferred"):
+        pp.MaturityRange(
+            min=IRMaturity.CALL_MODELED,
+            max=IRMaturity.GLOBAL_ANALYZED,
+            preferred=IRMaturity.GLOBAL_OPTIMIZED,
+        )
+    with pytest.raises(pp.PipelineConfigError, match="min"):
+        pp.MaturityRange(
+            min=IRMaturity.GLOBAL_ANALYZED,
+            max=IRMaturity.CALL_MODELED,
+        )
+
+
+def test_pipeline_config_contract_maturity_range_does_not_break_legacy_gates():
+    range_config = pp.PipelineConfig(
+        pass_id="recover-state-machine",
+        contract=pp.PassContract(
+            maturity=pp.MaturityRange(
+                min=IRMaturity.CALL_MODELED,
+                max=IRMaturity.GLOBAL_ANALYZED,
+                preferred=IRMaturity.CALL_MODELED,
+            )
+        ),
+    )
+
+    assert range_config.enabled_at(IRMaturity.CALL_MODELED) is True
+    assert range_config.enabled_at(IRMaturity.GLOBAL_ANALYZED) is True
+    assert range_config.enabled_at(IRMaturity.LOCAL_OPTIMIZED) is False
+    assert range_config.enabled_at(IRMaturity.GLOBAL_OPTIMIZED) is False
+    assert range_config.enabled_at(None) is False
+
+    legacy_config = pp.PipelineConfig(
+        pass_id="legacy",
+        maturity_gates=frozenset({IRMaturity.GLOBAL_OPTIMIZED}),
+        contract=range_config.contract,
+    )
+
+    assert legacy_config.enabled_at(IRMaturity.CALL_MODELED) is False
+    assert legacy_config.enabled_at(IRMaturity.GLOBAL_OPTIMIZED) is True
+
+    default_config = pp.PipelineConfig(pass_id="legacy-default")
+    assert default_config.enabled_at(None) is True
+
+
 def test_pipeline_config_parses_enum_names_and_maturity_values():
     config = pp.PipelineConfig.from_dict(
         {
