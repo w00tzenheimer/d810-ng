@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from d810.passes.pass_pipeline import (
     AnalysisContract,
+    FactRequirement,
     MaturityRange,
     PassContract,
     PassInvalidates,
@@ -92,6 +93,7 @@ def _state_machine_contract(
     *,
     requires_analyses: frozenset[str] = frozenset(),
     requires_evidence: frozenset[str] = frozenset(),
+    requires_facts: frozenset[str] = frozenset(),
     outputs_facts: frozenset[str] = frozenset(),
     invalidates_analyses: frozenset[str] = frozenset(),
     invalidates_facts: frozenset[str] = frozenset(),
@@ -104,6 +106,7 @@ def _state_machine_contract(
         requires=PassRequires(
             analyses=requires_analyses,
             evidence=requires_evidence,
+            facts=FactRequirement(required=requires_facts),
         ),
         outputs=PassOutputs(facts=outputs_facts),
         invalidates=PassInvalidates(
@@ -119,14 +122,23 @@ DISPATCHER_CONTRACT = _state_machine_contract(
 TRANSITION_CONTRACT = _state_machine_contract(
     requires_analyses=TRANSITION_ANALYSES.required,
     requires_evidence=frozenset({"branch_targets", "state_variable_writes"}),
+    requires_facts=frozenset({"dispatcher_family"}),
     outputs_facts=frozenset({"state_transition"}),
 )
 REGION_CONTRACT = _state_machine_contract(
     requires_analyses=REGION_ANALYSES.required,
+    requires_facts=frozenset({"dispatcher_family", "state_transition"}),
     outputs_facts=frozenset({"semantic_region"}),
 )
 LOWER_CONTRACT = _state_machine_contract(
     requires_analyses=LOWER_ANALYSES.required,
+    requires_facts=frozenset(
+        {
+            "dispatcher_family",
+            "semantic_region",
+            "state_transition",
+        }
+    ),
     outputs_facts=frozenset({"recovered_cfg_edge"}),
     invalidates_facts=frozenset({"stale_cfg_shape"}),
 )
