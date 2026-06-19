@@ -11,9 +11,11 @@ import idaapi
 from d810.backends.hexrays.lifter import lift_function
 from d810.backends.llvm import (
     LLVM_M2A_STOCK_PIPELINE,
+    LlvmM2PipelineStatus,
     LlvmOptimizationStatus,
     LlvmVerificationStatus,
     emit_flowgraph_to_llvm,
+    run_llvm_m2_pipeline,
     run_llvm_opt_pipeline,
     verify_llvm_ir,
 )
@@ -120,3 +122,57 @@ class TestLLVMM2StockOptPipeline:
         assert (
             optimized.after_metrics.alloca_count < optimized.before_metrics.alloca_count
         ), collapse_summary
+
+
+class TestLLVMM2CustomPipelineComposition:
+    """Run the opt-in M2 custom+stock pipeline on a preferred-maturity live lift."""
+
+    binary_name = "restructuring_lab.dll"
+
+    def test_lab_flat_branchless_custom_stock_pipeline_verifies(
+        self, ida_database, configure_hexrays, tmp_path
+    ):
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+
+        func_ea = get_func_ea("lab_flat_branchless")
+        assert func_ea != idaapi.BADADDR
+        mba = gen_microcode_at_maturity(func_ea, int(ida_hexrays.MMAT_GLBOPT1))
+        assert mba is not None
+
+        flow_graph = lift_function(mba).flow_graph
+        lift = emit_flowgraph_to_llvm(flow_graph, function_name="lab_flat_branchless_m2c")
+        assert lift.supported, [reason.reason for reason in lift.unsupported]
+
+        result = run_llvm_m2_pipeline(
+            lift.ir_text,
+            tmp_dir=tmp_path / "m2c",
+            require_opt=os.environ.get("D810_REQUIRE_LLVM_OPT") == "1",
+        )
+        print("\n=== LLVM M2c custom+stock opt pipeline ===")
+        print(
+            "pipeline: "
+            f"status={result.status.value} custom_rewrites={result.custom_rewrite_count} "
+            f"reason={result.reason or '-'}"
+        )
+        for phase in result.phases:
+            print(
+                f"phase={phase.kind.value} name={phase.name} "
+                f"status={phase.status.value} reason={phase.reason or '-'}"
+            )
+            print(_metrics_summary("  before", phase.before_metrics))
+            print(_metrics_summary("  after", phase.after_metrics))
+            if phase.optimization_result is not None:
+                opt = phase.optimization_result.opt_path or "<none>"
+                print(f"  opt={opt}")
+            if phase.verification_result is not None:
+                opt = phase.verification_result.opt_path or "<none>"
+                print(f"  verification_opt={opt}")
+
+        if result.skipped and os.environ.get("D810_REQUIRE_LLVM_OPT") != "1":
+            pytest.skip(result.reason)
+        assert result.status is LlvmM2PipelineStatus.PASSED, result.reason
+        assert len(result.phases) == 3
+        assert result.phases[0].status is LlvmM2PipelineStatus.PASSED
+        assert result.phases[1].status is LlvmM2PipelineStatus.PASSED
+        assert result.phases[2].status is LlvmM2PipelineStatus.PASSED
