@@ -90,6 +90,15 @@ class AnalysisManager:
         """Publish an evidence token for later native contract checks."""
         self._evidence.setdefault(str(name), []).append(value)
 
+    def put_observation_evidence(self, observation: object) -> None:
+        """Publish canonical contract evidence carried by ``observation``.
+
+        Raw ``observation.evidence`` remains diagnostic provenance. Only
+        producer-side ``contract_evidence`` payload tokens are indexed here.
+        """
+        for name in contract_evidence_tokens(observation):
+            self.put_evidence(name, observation)
+
     def get_evidence(self, name: str, default: object = None) -> object:
         """Return evidence named ``name`` from published evidence or live observations."""
         values = list(self._evidence.get(name, ()))

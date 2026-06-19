@@ -39,6 +39,13 @@ from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.analyses.control_flow.branch_witness_provider import (
     build_static_equality_chain_witness_map,
 )
+from d810.analyses.control_flow.dispatcher_discovery_facts import (
+    PREDECESSOR_DISPATCHER_TARGET_FACT_TYPE,
+    collect_state_dispatcher_discovery_fact_observations,
+)
+from d810.analyses.control_flow.predecessor_dispatcher_target import (
+    collect_predecessor_dispatcher_target_facts,
+)
 from d810.analyses.control_flow.router_resolver import (
     RouterResolutionContext,
     default_resolvers,
@@ -145,6 +152,24 @@ def _analysis(ctx: FunctionPipelineContext, name: str, default=None):
 def _publish(ctx: FunctionPipelineContext, name: str, value) -> None:
     if hasattr(ctx.facts, "put_analysis"):
         ctx.facts.put_analysis(name, value)
+
+
+def _publish_observation_evidence(ctx: FunctionPipelineContext, observations) -> None:
+    put_observation_evidence = getattr(ctx.facts, "put_observation_evidence", None)
+    if not callable(put_observation_evidence):
+        return
+    for observation in observations:
+        put_observation_evidence(observation)
+
+
+def _maturity_label(ctx: FunctionPipelineContext) -> str:
+    maturity = getattr(ctx, "maturity", None)
+    value = getattr(maturity, "value", None)
+    if value is not None:
+        return str(value)
+    if maturity is not None:
+        return str(maturity)
+    return "unknown"
 
 
 def _make_live_block_for(live_function):
@@ -309,6 +334,16 @@ class RecoverDispatcher(PipelinePass):
             analysis_outputs = {}
         _publish(context, self.name, recovery)
         analysis_outputs[self.name] = recovery
+        dispatch_map = getattr(recovery, "dispatch_map", None)
+        if dispatch_map is not None:
+            _publish_observation_evidence(
+                context,
+                collect_state_dispatcher_discovery_fact_observations(
+                    state_dispatcher_map=dispatch_map,
+                    maturity=_maturity_label(context),
+                    phase=self.name,
+                ),
+            )
         # S2: build the consolidated ComparisonDispatcherModel for comparison
         # router kinds, folding in the pristine range/interval evidence so
         # interval-routed next-states resolve via WrappedInterval.contains. The
@@ -340,6 +375,31 @@ class RecoverStateTransitions(PipelinePass):
         transition_result = transition_result_from_resolutions(
             resolutions, dispatch_map=dispatch_map
         )
+        range_evidence = _analysis(context, "range_evidence")
+        if dispatch_map is not None:
+            predecessor_target_facts = collect_predecessor_dispatcher_target_facts(
+                transition_result=transition_result,
+                dispatcher_entry_serial=int(dispatch_map.dispatcher_entry_block),
+                state_dispatcher_map=dispatch_map,
+                range_evidence=range_evidence,
+                transition_resolutions=resolutions,
+                state_var_stkoff=getattr(recovery, "state_var_stkoff", None),
+            )
+            if predecessor_target_facts:
+                _publish_observation_evidence(
+                    context,
+                    tuple(
+                        observation
+                        for observation in collect_state_dispatcher_discovery_fact_observations(
+                            state_dispatcher_map=dispatch_map,
+                            maturity=_maturity_label(context),
+                            phase=self.name,
+                            predecessor_target_facts=predecessor_target_facts,
+                        )
+                        if observation.kind
+                        == PREDECESSOR_DISPATCHER_TARGET_FACT_TYPE
+                    ),
+                )
         # Consume the injected value-range capability (north-star
         # ``capabilities.optional(ValRangeCapability)``). For now this records a read-only
         # confirmation metric proving the live capability executes end-to-end; the substantive
