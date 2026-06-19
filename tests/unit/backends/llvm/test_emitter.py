@@ -11,6 +11,7 @@ from d810.backends.llvm import (
     LlvmLiftBoundary,
     LlvmLiftBoundaryInput,
     LlvmLiftBoundaryObservable,
+    LlvmLiftBoundaryReturnPolicy,
     LlvmLiftResult,
     LlvmOptimizationStatus,
     LlvmVerificationStatus,
@@ -335,6 +336,85 @@ def test_boundary_input_alias_initializes_low_byte_dependency():
     assert "ptr %r24_1, align 1" in result.ir_text
 
 
+def test_boundary_return_cell_fallback_does_not_override_explicit_return_payload():
+    flow = _graph(
+        _block(
+            0,
+            (),
+            (
+                _mov(_reg(24), _reg(8)),
+                _ret(_num(0)),
+            ),
+        )
+    )
+
+    result = emit_flowgraph_to_llvm(
+        flow,
+        function_name="boundary_return_fallback",
+        boundary=LlvmLiftBoundary(
+            inputs=(LlvmLiftBoundaryInput("token", Varnode(Space.REGISTER, 24, 4)),),
+            return_cell=Varnode(Space.REGISTER, 8, 4),
+        ),
+    )
+
+    assert result.supported
+    assert "ret i32 0" in result.ir_text
+    assert "ret i32 %t" not in result.ir_text
+
+
+def test_boundary_return_cell_override_uses_observable_return_cell():
+    flow = _graph(
+        _block(
+            0,
+            (),
+            (
+                _mov(_reg(24), _reg(8)),
+                _ret(_num(0)),
+            ),
+        )
+    )
+
+    result = emit_flowgraph_to_llvm(
+        flow,
+        function_name="boundary_return_override",
+        boundary=LlvmLiftBoundary(
+            inputs=(LlvmLiftBoundaryInput("token", Varnode(Space.REGISTER, 24, 4)),),
+            return_cell=Varnode(Space.REGISTER, 8, 4),
+            return_policy=LlvmLiftBoundaryReturnPolicy.OVERRIDE,
+        ),
+    )
+
+    assert result.supported
+    assert "ret i32 0" not in result.ir_text
+    assert "ret i32 %t" in result.ir_text
+    assert "ptr %r8_4" in result.ir_text
+
+
+def test_boundary_return_cell_handles_implicit_terminal_block():
+    flow = _graph(
+        _block(
+            0,
+            (1,),
+            (_mov(_reg(24), _reg(8)),),
+        ),
+        _block(1, (), ()),
+    )
+
+    result = emit_flowgraph_to_llvm(
+        flow,
+        function_name="boundary_implicit_return",
+        boundary=LlvmLiftBoundary(
+            inputs=(LlvmLiftBoundaryInput("token", Varnode(Space.REGISTER, 24, 4)),),
+            return_cell=Varnode(Space.REGISTER, 8, 4),
+        ),
+    )
+
+    assert result.supported
+    assert "bb1:\n  %t" in result.ir_text
+    assert "ret i32 %t" in result.ir_text
+    assert "ret i32 0" not in result.ir_text
+
+
 def test_boundary_observable_cell_emits_volatile_external_global_store():
     flow = _graph(
         _block(
@@ -494,6 +574,23 @@ def test_boundary_return_cell_must_be_i32(return_cell):
     assert any(
         reason.kind is UnsupportedLiftKind.RETURN_TYPE_UNSUPPORTED
         and reason.reason == "M2l boundary return_cell supports only i32 values"
+        for reason in result.unsupported
+    )
+
+
+def test_boundary_return_override_requires_return_cell():
+    flow = _graph(_block(0, (), (_ret(_num(0)),)))
+
+    result = emit_flowgraph_to_llvm(
+        flow,
+        boundary=LlvmLiftBoundary(return_policy=LlvmLiftBoundaryReturnPolicy.OVERRIDE),
+    )
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.RETURN_TYPE_UNSUPPORTED
+        and reason.reason == "M2n boundary return override requires return_cell"
         for reason in result.unsupported
     )
 
