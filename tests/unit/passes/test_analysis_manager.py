@@ -6,6 +6,7 @@ from d810.analyses.value_flow.contract_evidence import contract_evidence_payload
 from d810.passes.pass_pipeline import (
     PassContract,
     PassInvalidates,
+    PassPreserves,
     PreservedAnalyses,
 )
 
@@ -261,3 +262,113 @@ def test_contract_invalidation_can_drop_analysis_even_when_cached():
 
     assert not am.has_analysis("dominators")
     assert not am.has_analysis("value_ranges")
+
+
+def test_contract_fact_preservation_prunes_unpreserved_published_facts():
+    am = AnalysisManager(graph="G0")
+    raw = object()
+    stale = object()
+    am.put_fact("raw_instruction_addresses", raw)
+    am.put_fact("stale_cfg_shape", stale)
+
+    am.invalidate_contract(
+        PassContract(
+            preserves=PassPreserves(facts=frozenset({"raw_instruction_addresses"}))
+        )
+    )
+
+    assert am.get_fact("raw_instruction_addresses") == (raw,)
+    assert not am.has_fact("stale_cfg_shape")
+
+
+def test_contract_fact_invalidation_overrides_fact_preservation():
+    am = AnalysisManager(graph="G0")
+    am.put_fact("raw_instruction_addresses", object())
+    am.put_fact("stale_cfg_shape", object())
+
+    am.invalidate_contract(
+        PassContract(
+            preserves=PassPreserves(
+                facts=frozenset({"raw_instruction_addresses", "stale_cfg_shape"})
+            ),
+            invalidates=PassInvalidates(facts=frozenset({"stale_cfg_shape"})),
+        )
+    )
+
+    assert am.has_fact("raw_instruction_addresses")
+    assert not am.has_fact("stale_cfg_shape")
+
+
+def test_empty_contract_fact_preservation_keeps_legacy_fact_behavior():
+    am = AnalysisManager(graph="G0")
+    am.put_fact("raw_instruction_addresses", object())
+    am.put_fact("stale_cfg_shape", object())
+
+    am.invalidate_contract(PassContract())
+
+    assert am.has_fact("raw_instruction_addresses")
+    assert am.has_fact("stale_cfg_shape")
+
+
+def test_contract_fact_invalidation_hides_matching_live_observation_fact():
+    observation = type("_Obs", (), {"kind": "stale_cfg_shape"})()
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type("_Facts", (), {"active_observations": (observation,)})(),
+    )
+
+    assert am.has_fact("stale_cfg_shape")
+
+    am.invalidate_contract(
+        PassContract(invalidates=PassInvalidates(facts=frozenset({"stale_cfg_shape"})))
+    )
+
+    assert not am.has_fact("stale_cfg_shape")
+
+
+def test_contract_fact_preservation_hides_unpreserved_live_observation_fact():
+    raw = type("_Obs", (), {"kind": "raw_instruction_addresses"})()
+    stale = type("_Obs", (), {"kind": "stale_cfg_shape"})()
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type("_Facts", (), {"active_observations": (raw, stale)})(),
+    )
+
+    am.invalidate_contract(
+        PassContract(
+            preserves=PassPreserves(facts=frozenset({"raw_instruction_addresses"}))
+        )
+    )
+
+    assert am.has_fact("raw_instruction_addresses")
+    assert not am.has_fact("stale_cfg_shape")
+
+
+def test_empty_contract_fact_preservation_keeps_legacy_live_observation_behavior():
+    observation = type("_Obs", (), {"kind": "stale_cfg_shape"})()
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type("_Facts", (), {"active_observations": (observation,)})(),
+    )
+
+    am.invalidate_contract(PassContract())
+
+    assert am.has_fact("stale_cfg_shape")
+
+
+def test_new_published_fact_visible_after_live_observation_masking():
+    stale_observation = type("_Obs", (), {"kind": "stale_cfg_shape"})()
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type(
+            "_Facts", (), {"active_observations": (stale_observation,)}
+        )(),
+    )
+
+    am.invalidate_contract(
+        PassContract(invalidates=PassInvalidates(facts=frozenset({"stale_cfg_shape"})))
+    )
+    new_fact = type("_Fact", (), {"kind": "stale_cfg_shape"})()
+    am.put_fact("stale_cfg_shape", new_fact)
+
+    assert am.get_fact("stale_cfg_shape") == (new_fact,)

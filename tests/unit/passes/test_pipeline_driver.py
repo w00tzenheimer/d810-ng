@@ -758,6 +758,226 @@ def test_native_contract_invalidation_drops_fact_while_preserving_analysis():
     _run_specs(specs, facts=facts)
 
 
+def test_native_contract_preserves_analyses_when_result_omits_policy():
+    class _Mutator:
+        name = "mutator"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+
+    class _Reader:
+        name = "reader"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.has_analysis("dominators")
+            assert not ctx.facts.has_analysis("value_ranges")
+            return PassResult()
+
+    facts = AnalysisManager(_GRAPH)
+    facts.put_analysis("dominators", "D")
+    facts.put_analysis("value_ranges", "V")
+    specs = (
+        PassSpec(
+            "mutator",
+            _Mutator,
+            no_caps,
+            default,
+            contract=PassContract(
+                preserves=PassPreserves(analyses=frozenset({"dominators"}))
+            ),
+        ),
+        PassSpec("reader", _Reader, no_caps, default),
+    )
+
+    _run_specs(specs, facts=facts)
+
+
+def test_result_level_preservation_overrides_native_contract_preserves():
+    class _Mutator:
+        name = "mutator"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(
+                rewrite_plan=PatchPlan(planner_modifications=(object(),)),
+                preserved=PreservedAnalyses.preserving({"value_ranges"}),
+            )
+
+    class _Reader:
+        name = "reader"
+
+        def run(self, ctx) -> PassResult:
+            assert not ctx.facts.has_analysis("dominators")
+            assert ctx.facts.has_analysis("value_ranges")
+            return PassResult()
+
+    facts = AnalysisManager(_GRAPH)
+    facts.put_analysis("dominators", "D")
+    facts.put_analysis("value_ranges", "V")
+    specs = (
+        PassSpec(
+            "mutator",
+            _Mutator,
+            no_caps,
+            default,
+            contract=PassContract(
+                preserves=PassPreserves(analyses=frozenset({"dominators"}))
+            ),
+        ),
+        PassSpec("reader", _Reader, no_caps, default),
+    )
+
+    _run_specs(specs, facts=facts)
+
+
+def test_native_contract_preserves_facts_after_graph_changing_mutation():
+    class _Mutator:
+        name = "mutator"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+
+    class _Reader:
+        name = "reader"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.has_fact("raw_instruction_addresses")
+            assert not ctx.facts.has_fact("stale_cfg_shape")
+            return PassResult()
+
+    facts = AnalysisManager(_GRAPH)
+    facts.put_fact(
+        "raw_instruction_addresses",
+        type("_Fact", (), {"kind": "raw_instruction_addresses"})(),
+    )
+    facts.put_fact("stale_cfg_shape", type("_Fact", (), {"kind": "stale_cfg_shape"})())
+    specs = (
+        PassSpec(
+            "mutator",
+            _Mutator,
+            no_caps,
+            default,
+            contract=PassContract(
+                preserves=PassPreserves(facts=frozenset({"raw_instruction_addresses"}))
+            ),
+        ),
+        PassSpec("reader", _Reader, no_caps, default),
+    )
+
+    _run_specs(specs, facts=facts)
+
+
+def test_native_contract_invalidates_facts_override_preserves_facts():
+    class _Mutator:
+        name = "mutator"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+
+    class _Reader:
+        name = "reader"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.has_fact("raw_instruction_addresses")
+            assert not ctx.facts.has_fact("stale_cfg_shape")
+            return PassResult()
+
+    facts = AnalysisManager(_GRAPH)
+    facts.put_fact(
+        "raw_instruction_addresses",
+        type("_Fact", (), {"kind": "raw_instruction_addresses"})(),
+    )
+    facts.put_fact("stale_cfg_shape", type("_Fact", (), {"kind": "stale_cfg_shape"})())
+    specs = (
+        PassSpec(
+            "mutator",
+            _Mutator,
+            no_caps,
+            default,
+            contract=PassContract(
+                preserves=PassPreserves(
+                    facts=frozenset({"raw_instruction_addresses", "stale_cfg_shape"})
+                ),
+                invalidates=PassInvalidates(facts=frozenset({"stale_cfg_shape"})),
+            ),
+        ),
+        PassSpec("reader", _Reader, no_caps, default),
+    )
+
+    _run_specs(specs, facts=facts)
+
+
+def test_empty_native_fact_preservation_keeps_legacy_fact_behavior_on_mutation():
+    class _Mutator:
+        name = "mutator"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+
+    class _Reader:
+        name = "reader"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.has_fact("raw_instruction_addresses")
+            assert ctx.facts.has_fact("stale_cfg_shape")
+            return PassResult()
+
+    facts = AnalysisManager(_GRAPH)
+    facts.put_fact(
+        "raw_instruction_addresses",
+        type("_Fact", (), {"kind": "raw_instruction_addresses"})(),
+    )
+    facts.put_fact("stale_cfg_shape", type("_Fact", (), {"kind": "stale_cfg_shape"})())
+    specs = (
+        PassSpec(
+            "mutator",
+            _Mutator,
+            no_caps,
+            default,
+        ),
+        PassSpec("reader", _Reader, no_caps, default),
+    )
+
+    _run_specs(specs, facts=facts)
+
+
+def test_native_fact_preservation_does_not_preserve_analyses():
+    class _Mutator:
+        name = "mutator"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+
+    class _Reader:
+        name = "reader"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.has_fact("raw_instruction_addresses")
+            assert not ctx.facts.has_analysis("dominators")
+            return PassResult()
+
+    facts = AnalysisManager(_GRAPH)
+    facts.put_analysis("dominators", "D")
+    facts.put_fact(
+        "raw_instruction_addresses",
+        type("_Fact", (), {"kind": "raw_instruction_addresses"})(),
+    )
+    specs = (
+        PassSpec(
+            "mutator",
+            _Mutator,
+            no_caps,
+            default,
+            preservation=PreservedAnalyses.none(),
+            contract=PassContract(
+                preserves=PassPreserves(facts=frozenset({"raw_instruction_addresses"}))
+            ),
+        ),
+        PassSpec("reader", _Reader, no_caps, default),
+    )
+
+    _run_specs(specs, facts=facts)
+
+
 def test_legacy_pass_result_facts_without_native_contract_remain_allowed():
     class _LegacyFactPass:
         name = "legacy_fact_pass"

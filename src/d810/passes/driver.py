@@ -258,7 +258,11 @@ def effective_preserved_analyses(
     spec: PassSpec, result
 ) -> PreservedAnalyses:
     """Return the invalidation hint chosen by result override or spec default."""
-    return result.preserved if result.preserved_explicit else spec.preservation
+    if result.preserved_explicit:
+        return result.preserved
+    if spec.contract.preserves.analyses:
+        return PreservedAnalyses.preserving(spec.contract.preserves.analyses)
+    return spec.preservation
 
 
 def _run_pass_spec(
