@@ -34,6 +34,12 @@ def _fixture_ir() -> str:
     ).read_text(encoding="utf-8")
 
 
+def _or_fixture_ir() -> str:
+    return Path(
+        "tools/llvm_m2_custom_pass/fixtures/mba_or_and_xor.ll"
+    ).read_text(encoding="utf-8")
+
+
 def test_m2_pipeline_runs_custom_then_stock_then_verify(tmp_path):
     opt = _write_fake_opt(tmp_path)
 
@@ -62,6 +68,24 @@ def test_m2_pipeline_runs_custom_then_stock_then_verify(tmp_path):
     assert verification.status is LlvmVerificationStatus.PASSED
     assert result.phases[2].reason == ""
     assert verification.stdout
+
+
+def test_m2_pipeline_counts_or_custom_rewrite_before_stock_opt(tmp_path):
+    opt = _write_fake_opt(tmp_path)
+
+    result = run_llvm_m2_pipeline(
+        _or_fixture_ir(),
+        opt_path=opt,
+        tmp_dir=tmp_path / "work",
+        require_opt=True,
+    )
+
+    assert result.status is LlvmM2PipelineStatus.PASSED
+    assert result.custom_rewrite_count == 1
+    assert "  %out = or i32 %x, %y" in result.after_ir
+    custom = result.phases[0].custom_result
+    assert custom is not None
+    assert [len(pass_result.rewrites) for pass_result in custom.pass_results] == [0, 1]
 
 
 def test_m2_pipeline_custom_failure_stops_before_stock_opt(tmp_path):

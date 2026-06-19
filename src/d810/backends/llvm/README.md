@@ -64,6 +64,9 @@ M2b d810 MBA/Z3 custom pass socket:
 - The first pass is `d810_mba_xor_or_sub_and`, backed by the existing
   `Xor_HackersDelightRule_1` identity from d810's MBA rule surface:
   `(x | y) - (x & y) => x ^ y`.
+- The second pass is `d810_mba_or_and_xor_add`, backed by the existing
+  `Or_MbaRule_1` / `Or_MbaRule_1_Commuted` identities:
+  `(x & y) + (x ^ y) => x | y` and `(x ^ y) + (x & y) => x | y`.
 - Before rewriting, the pass proves the identity for the concrete scalar integer
   width through `d810.backends.mba.z3.prove_equivalence()` over the pure
   `d810.mba.dsl` expression tree. If the proof is unavailable or fails, the pass
@@ -71,12 +74,16 @@ M2b d810 MBA/Z3 custom pass socket:
 - The supported LLVM text shape is deliberately constrained to same-width scalar
   SSA instructions:
   `%or = or iN %x, %y`; `%and = and iN %x, %y`; `%out = sub iN %or, %and`.
+  The OR pass supports `%and = and iN %x, %y`; `%xor = xor iN %x, %y`;
+  `%out = add iN %and, %xor`, plus the commuted add operand order.
   Constants, vector/pointer types, width mismatches, operand-order mismatches,
   missing producers, and unsupported custom pass IDs fail closed or produce
   explicit no-change results.
 - This socket proves the d810 MBA/Z3 layer can be sequenced with M2a stock `opt`.
-  Full M2 remains open for the broader curated pipeline, stronger MBA/Z3
-  predicate folding, measured live collapse coverage, and oracle drift gates.
+  Live curated rows may still report zero custom rewrites when they do not
+  contain these narrow textual shapes. Full M2 remains open for the broader
+  curated pipeline, stronger MBA/Z3 predicate folding, measured live collapse
+  coverage, and oracle drift gates.
 
 M2c opt-in custom+stock pipeline policy:
 

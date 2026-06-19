@@ -12,6 +12,7 @@ from enum import Enum
 from pathlib import Path
 
 from .custom_passes import (
+    D810_MBA_OR_AND_XOR_ADD_PASS,
     D810_MBA_XOR_OR_SUB_AND_PASS,
     LlvmCustomPass,
     LlvmCustomPassRunResult,
@@ -87,7 +88,10 @@ class LlvmM2PipelineResult:
 def run_llvm_m2_pipeline(
     ir_text: str,
     *,
-    custom_passes: tuple[LlvmCustomPass, ...] = (D810_MBA_XOR_OR_SUB_AND_PASS,),
+    custom_passes: tuple[LlvmCustomPass, ...] = (
+        D810_MBA_XOR_OR_SUB_AND_PASS,
+        D810_MBA_OR_AND_XOR_ADD_PASS,
+    ),
     stock_pipeline: LlvmOptPipeline = LLVM_M2A_STOCK_PIPELINE,
     opt_path: Path | None = None,
     tmp_dir: Path | None = None,

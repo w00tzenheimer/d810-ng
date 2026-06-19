@@ -13,6 +13,7 @@ from .emitter import (
     emit_flowgraph_to_llvm,
 )
 from .custom_passes import (
+    D810_MBA_OR_AND_XOR_ADD_PASS,
     D810_MBA_XOR_OR_SUB_AND_PASS,
     LlvmCustomPass,
     LlvmCustomPassDiagnostic,
@@ -121,6 +122,7 @@ __all__ = [
     "LLVM_M1_ACCEPTED_MATURITIES",
     "LLVM_M1_PREFERRED_MATURITY",
     "LLVM_M2A_STOCK_PIPELINE",
+    "D810_MBA_OR_AND_XOR_ADD_PASS",
     "D810_MBA_XOR_OR_SUB_AND_PASS",
     "LlvmCustomPass",
     "LlvmCustomPassDiagnostic",
