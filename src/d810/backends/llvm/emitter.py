@@ -22,6 +22,9 @@ from d810.backends.llvm.identity_lowering import (
 
 __all__ = [
     "LlvmIdentityManifest",
+    "LlvmLiftBoundary",
+    "LlvmLiftBoundaryInput",
+    "LlvmLiftBoundaryObservable",
     "LlvmLiftResult",
     "UnsupportedLiftKind",
     "UnsupportedLiftReason",
@@ -102,6 +105,7 @@ class UnsupportedLiftKind(str, Enum):
     MALFORMED_TERMINATOR = "malformed_terminator"
     RETURN_SUCCESSOR = "return_successor"
     RETURN_TYPE_UNSUPPORTED = "return_type_unsupported"
+    BOUNDARY_SYMBOL_CONFLICT = "boundary_symbol_conflict"
     GOTO_SUCCESSOR_ARITY = "goto_successor_arity"
     BLOCK_TERMINATOR_MISSING = "block_terminator_missing"
     NESTED_EXPRESSION_UNSUPPORTED = "nested_expression_unsupported"
@@ -132,21 +136,66 @@ class LlvmLiftResult:
         return not self.unsupported
 
 
+@dataclass(frozen=True, slots=True)
+class LlvmLiftBoundaryInput:
+    """Opt-in function parameter mapped to one or more portable cells."""
+
+    name: str
+    cell: Varnode
+    aliases: tuple[Varnode, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "aliases", tuple(self.aliases))
+
+
+@dataclass(frozen=True, slots=True)
+class LlvmLiftBoundaryObservable:
+    """Opt-in observable cell mirrored to an external LLVM global."""
+
+    name: str
+    cell: Varnode
+    volatile: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class LlvmLiftBoundary:
+    """Explicit function-boundary policy for diagnostic/prototype lifts.
+
+    The default lift deliberately remains local and zero-argument.  Boundary
+    policies are opt-in so lab-specific ABI assumptions stay visible at the call
+    site instead of being inferred from generic portable cells.
+    """
+
+    inputs: tuple[LlvmLiftBoundaryInput, ...] = ()
+    observables: tuple[LlvmLiftBoundaryObservable, ...] = ()
+    return_cell: Varnode | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "inputs", tuple(self.inputs))
+        object.__setattr__(self, "observables", tuple(self.observables))
+
+
 def emit_flowgraph_to_llvm(
     flow_graph: FlowGraph,
     *,
     function_name: str = "d810_fn",
+    boundary: LlvmLiftBoundary | None = None,
 ) -> LlvmLiftResult:
     """Emit LLVM IR for the M1a supported subset.
 
     The whole graph is classified before emission.  If anything is unsupported,
     ``ir_text`` is empty and every reason is returned.
     """
-    classifier = _Classifier(flow_graph)
+    boundary = boundary or LlvmLiftBoundary()
+    classifier = _Classifier(flow_graph, boundary)
     unsupported = classifier.classify()
     if unsupported:
         return LlvmLiftResult(ir_text="", unsupported=tuple(unsupported))
-    emitter = _Emitter(flow_graph, sanitize_llvm_function_name(function_name))
+    emitter = _Emitter(
+        flow_graph,
+        sanitize_llvm_function_name(function_name),
+        boundary,
+    )
     return LlvmLiftResult(ir_text=emitter.emit(), identity_manifest=emitter.identity_manifest())
 
 
@@ -172,6 +221,14 @@ def _varnode_name(vn: Varnode) -> str:
     return f"{vn.space.value}{vn.offset}_{int(vn.size)}".replace("-", "n")
 
 
+def _symbol_name(name: str) -> str:
+    return sanitize_llvm_function_name(name)
+
+
+def _boundary_arg_name(name: str) -> str:
+    return f"arg_{_symbol_name(name)}"
+
+
 def _const_literal(vn: Varnode) -> str:
     ty = _llvm_type(vn)
     assert ty is not None
@@ -192,12 +249,14 @@ def _collect_instructions(flow_graph: FlowGraph) -> dict[int, tuple[Instruction,
 
 
 class _Classifier:
-    def __init__(self, flow_graph: FlowGraph) -> None:
+    def __init__(self, flow_graph: FlowGraph, boundary: LlvmLiftBoundary) -> None:
         self.flow_graph = flow_graph
+        self.boundary = boundary
         self.instructions = _collect_instructions(flow_graph)
         self.unsupported: list[UnsupportedLiftReason] = []
 
     def classify(self) -> list[UnsupportedLiftReason]:
+        self._check_boundary()
         for serial in sorted(self.flow_graph.blocks):
             block = self.flow_graph.blocks[serial]
             instructions = self.instructions[serial]
@@ -230,6 +289,92 @@ class _Classifier:
                 reason=reason,
             )
         )
+
+    def _check_boundary(self) -> None:
+        self._check_boundary_input_names()
+        self._check_boundary_observable_names()
+        for boundary_input in self.boundary.inputs:
+            self._check_boundary_cell(
+                boundary_input.cell,
+                f"boundary input {boundary_input.name!r}",
+            )
+            for alias in boundary_input.aliases:
+                self._check_boundary_cell(
+                    alias,
+                    f"boundary input alias for {boundary_input.name!r}",
+                )
+        for observable in self.boundary.observables:
+            self._check_boundary_cell(
+                observable.cell,
+                f"boundary observable {observable.name!r}",
+            )
+        if self.boundary.return_cell is None:
+            return
+        self._check_boundary_cell(self.boundary.return_cell, "boundary return cell")
+        if _llvm_type(self.boundary.return_cell) != "i32":
+            self._add(
+                int(self.flow_graph.entry_serial),
+                None,
+                None,
+                UnsupportedLiftKind.RETURN_TYPE_UNSUPPORTED,
+                "M2l boundary return_cell supports only i32 values",
+            )
+
+    def _check_boundary_input_names(self) -> None:
+        seen: dict[str, str] = {}
+        for boundary_input in self.boundary.inputs:
+            symbol = _boundary_arg_name(boundary_input.name)
+            previous = seen.get(symbol)
+            if previous is not None:
+                self._add(
+                    int(self.flow_graph.entry_serial),
+                    None,
+                    None,
+                    UnsupportedLiftKind.BOUNDARY_SYMBOL_CONFLICT,
+                    (
+                        f"boundary input names {previous!r} and {boundary_input.name!r} "
+                        f"both sanitize to %{symbol}"
+                    ),
+                )
+                continue
+            seen[symbol] = boundary_input.name
+
+    def _check_boundary_observable_names(self) -> None:
+        seen: dict[str, LlvmLiftBoundaryObservable] = {}
+        for observable in self.boundary.observables:
+            symbol = _symbol_name(observable.name)
+            previous = seen.get(symbol)
+            if previous is not None and previous.cell != observable.cell:
+                self._add(
+                    int(self.flow_graph.entry_serial),
+                    None,
+                    None,
+                    UnsupportedLiftKind.BOUNDARY_SYMBOL_CONFLICT,
+                    (
+                        f"boundary observables {previous.name!r} and {observable.name!r} "
+                        f"both sanitize to @{symbol} for different cells"
+                    ),
+                )
+                continue
+            seen[symbol] = observable
+
+    def _check_boundary_cell(self, vn: Varnode, description: str) -> None:
+        if _llvm_type(vn) is None:
+            self._add(
+                int(self.flow_graph.entry_serial),
+                None,
+                None,
+                UnsupportedLiftKind.VARNODE_WIDTH,
+                f"{description} has unsupported width {vn.size}; expected 1/2/4/8 bytes",
+            )
+        if vn.space in {Space.CONST, Space.UNKNOWN}:
+            self._add(
+                int(self.flow_graph.entry_serial),
+                None,
+                None,
+                UnsupportedLiftKind.VARNODE_SPACE,
+                f"{description} must be a concrete non-const cell",
+            )
 
     def _check_varnode(
         self,
@@ -885,29 +1030,46 @@ class _Classifier:
 
 
 class _Emitter:
-    def __init__(self, flow_graph: FlowGraph, function_name: str) -> None:
+    def __init__(
+        self,
+        flow_graph: FlowGraph,
+        function_name: str,
+        boundary: LlvmLiftBoundary,
+    ) -> None:
         self.flow_graph = flow_graph
         self.function_name = function_name
+        self.boundary = boundary
         self.instructions = _collect_instructions(flow_graph)
         self.varnodes = self._collect_varnodes()
         self.declarations: dict[str, str] = {}
         self._next_tmp = 0
 
     def emit(self) -> str:
+        args = ", ".join(
+            f"{_llvm_type(boundary_input.cell)} %{_boundary_arg_name(boundary_input.name)}"
+            for boundary_input in self.boundary.inputs
+        )
         body_lines: list[str] = [
             f"; ModuleID = 'd810.{self.function_name}'",
             'source_filename = "d810-portable-ir"',
             "",
-            f"define i32 @{self.function_name}() {{",
+            f"define i32 @{self.function_name}({args}) {{",
             "entry:",
         ]
         for vn in self.varnodes:
             body_lines.append(f"  %{_varnode_name(vn)} = alloca {_llvm_type(vn)}, align {vn.size}")
+        for boundary_input in self.boundary.inputs:
+            body_lines.extend(self._emit_boundary_input(boundary_input))
         body_lines.append(f"  br label %bb{self.flow_graph.entry_serial}")
         for serial in self._ordered_blocks():
             body_lines.extend(self._emit_block(serial))
         body_lines.append("}")
         lines = body_lines[:3]
+        for observable in self.boundary.observables:
+            ty = _llvm_type(observable.cell)
+            assert ty is not None
+            name = _symbol_name(observable.name)
+            self.declarations.setdefault(name, f"@{name} = external global {ty}")
         for name in sorted(self.declarations):
             lines.append(self.declarations[name])
         if self.declarations:
@@ -933,6 +1095,24 @@ class _Emitter:
     def _collect_varnodes(self) -> tuple[Varnode, ...]:
         found: set[Varnode] = set()
         ordered: list[Varnode] = []
+        for boundary_input in self.boundary.inputs:
+            for vn in (boundary_input.cell, *boundary_input.aliases):
+                if not _is_non_const(vn) or vn in found:
+                    continue
+                found.add(vn)
+                ordered.append(vn)
+        for observable in self.boundary.observables:
+            if not _is_non_const(observable.cell) or observable.cell in found:
+                continue
+            found.add(observable.cell)
+            ordered.append(observable.cell)
+        if (
+            self.boundary.return_cell is not None
+            and _is_non_const(self.boundary.return_cell)
+            and self.boundary.return_cell not in found
+        ):
+            found.add(self.boundary.return_cell)
+            ordered.append(self.boundary.return_cell)
         for serial in sorted(self.flow_graph.blocks):
             for instruction in self.instructions[serial]:
                 for vn in (*instruction.inputs, instruction.result):
@@ -961,6 +1141,25 @@ class _Emitter:
                         found.add(vn)
                         ordered.append(vn)
         return tuple(sorted(ordered, key=lambda vn: (vn.space.value, vn.offset, vn.size)))
+
+    def _emit_boundary_input(self, boundary_input: LlvmLiftBoundaryInput) -> list[str]:
+        lines: list[str] = []
+        source_ty = _llvm_type(boundary_input.cell)
+        assert source_ty is not None
+        source = f"%{_boundary_arg_name(boundary_input.name)}"
+        for target in (boundary_input.cell, *boundary_input.aliases):
+            target_ty = _llvm_type(target)
+            assert target_ty is not None
+            value = source
+            if target_ty != source_ty:
+                value = self._tmp()
+                op = "trunc" if int(target.size) < int(boundary_input.cell.size) else "zext"
+                lines.append(f"  {value} = {op} {source_ty} {source} to {target_ty}")
+            lines.append(
+                f"  store {target_ty} {value}, ptr %{_varnode_name(target)}, "
+                f"align {target.size}"
+            )
+        return lines
 
     def _emit_block(self, serial: int) -> list[str]:
         block = self.flow_graph.blocks[serial]
@@ -1069,6 +1268,7 @@ class _Emitter:
         lines.append(
             f"  store {target_ty} {value}, ptr %{_varnode_name(target)}, align {target.size}"
         )
+        lines.extend(self._emit_observable_store(target, value))
         return lines
 
     def _emit_value_instruction(self, instruction: Instruction) -> list[str]:
@@ -1138,6 +1338,21 @@ class _Emitter:
             f"  store {result_ty} {computed}, ptr %{_varnode_name(instruction.result)}, "
             f"align {instruction.result.size}"
         )
+        lines.extend(self._emit_observable_store(instruction.result, computed))
+        return lines
+
+    def _emit_observable_store(self, cell: Varnode, value: str) -> list[str]:
+        lines: list[str] = []
+        for observable in self.boundary.observables:
+            if observable.cell != cell:
+                continue
+            ty = _llvm_type(cell)
+            assert ty is not None
+            volatile = " volatile" if observable.volatile else ""
+            lines.append(
+                f"  store{volatile} {ty} {value}, ptr @{_symbol_name(observable.name)}, "
+                f"align {cell.size}"
+            )
         return lines
 
     def _emit_terminator(self, serial: int, instructions: tuple[Instruction, ...]) -> list[str]:
@@ -1191,9 +1406,17 @@ class _Emitter:
         return lines
 
     def _emit_return(self, instruction: Instruction) -> list[str]:
-        if instruction.control is None or instruction.control.return_value is None:
+        if (
+            instruction.control is None or instruction.control.return_value is None
+        ) and self.boundary.return_cell is None:
             return ["  ret i32 0"]
         lines: list[str] = []
-        _ty, value = self._emit_value(instruction.control.return_value, lines)
+        return_value = (
+            instruction.control.return_value
+            if instruction.control is not None and instruction.control.return_value is not None
+            else self.boundary.return_cell
+        )
+        assert return_value is not None
+        _ty, value = self._emit_value(return_value, lines)
         lines.append(f"  ret i32 {value}")
         return lines

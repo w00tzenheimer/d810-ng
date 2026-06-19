@@ -7,6 +7,9 @@ from __future__ import annotations
 
 from .emitter import (
     LlvmIdentityManifest,
+    LlvmLiftBoundary,
+    LlvmLiftBoundaryInput,
+    LlvmLiftBoundaryObservable,
     LlvmLiftResult,
     UnsupportedLiftKind,
     UnsupportedLiftReason,
@@ -148,6 +151,9 @@ __all__ = [
     "LlvmIdentityMismatch",
     "LlvmIdentityParityResult",
     "LlvmIdentityParityStatus",
+    "LlvmLiftBoundary",
+    "LlvmLiftBoundaryInput",
+    "LlvmLiftBoundaryObservable",
     "LlvmLiftResult",
     "LlvmBridgeBlock",
     "LlvmEdgeMove",
