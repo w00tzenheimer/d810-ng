@@ -139,7 +139,11 @@ def run_llvm_m2_pipeline(
         tmp_dir=opt_tmp,
     )
     stock_status = _optimization_status_to_phase_status(optimized.status, require_opt)
-    stock_reason = optimized.reason or optimized.stderr or optimized.stdout
+    stock_reason = (
+        ""
+        if optimized.passed
+        else optimized.reason or optimized.stderr or optimized.stdout
+    )
     phases.append(
         LlvmM2PipelinePhaseResult(
             kind=LlvmM2PipelinePhaseKind.STOCK_OPT,
@@ -190,7 +194,11 @@ def run_llvm_m2_pipeline(
         verification.status,
         require_opt,
     )
-    verify_reason = verification.reason or verification.stderr or verification.stdout
+    verify_reason = (
+        ""
+        if verification.passed
+        else verification.reason or verification.stderr or verification.stdout
+    )
     phases.append(
         LlvmM2PipelinePhaseResult(
             kind=LlvmM2PipelinePhaseKind.VERIFY_OPTIMIZED,
@@ -269,4 +277,3 @@ def _custom_reason(result: LlvmCustomPassRunResult) -> str:
         if pass_result.diagnostics:
             return pass_result.diagnostics[0].reason
     return "custom pre-pass failed"
-
