@@ -142,6 +142,25 @@ M3a lower-back contract policy:
   responsible for the real lower-back interface, Hex-Rays CFG/body emission,
   and zero-INTERR oracle gate.
 
+M3c optimized-LLVM readiness policy:
+
+- `d810.backends.llvm.lower_back_readiness` is the first bridge from M2
+  optimized LLVM text into the M3 lower-back contract model.
+- It is still IDA-free and deliberately not a general LLVM parser. It accepts
+  one constrained textual function, block labels, unconditional/conditional
+  branches, scalar returns, scalar PHIs, and a small explicitly enumerated
+  scalar body-instruction subset.
+- The readiness API parses into `LlvmLowerBackFunction`, calls
+  `plan_lower_back()`, and keeps parse diagnostics separate from lower-back plan
+  diagnostics. Malformed or unsupported input never becomes a fake planned
+  result.
+- `plan_lower_back()` also rejects unknown body opcodes directly with
+  `unsupported_instruction`, so future producers cannot bypass the readiness
+  parser and overclaim lower-back support.
+- M3c consumes M2 output for classification only. It does not mutate Hex-Rays
+  microcode, does not use IDAvator, does not integrate a deferred graph
+  modifier, and does not prove native oracle/decompile parity.
+
 Current freeze-maturity policy:
 
 - The target capture point is optimized/recovered microcode after d810 structural

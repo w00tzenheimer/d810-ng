@@ -151,6 +151,73 @@ def test_phi_incoming_must_name_a_real_predecessor():
     assert LlvmLowerBackUnsupportedKind.PHI_PREDECESSOR_MISMATCH in _kinds(result)
 
 
+def test_phi_must_cover_each_real_predecessor_exactly_once():
+    fn = _tiny_phi_function()
+    merge = fn.blocks[-1]
+    bad_merge = LlvmLowerBackBlock(
+        label=merge.label,
+        predecessors=merge.predecessors,
+        phis=(
+            LlvmPhiNode(
+                result=_value("x"),
+                incoming=(LlvmPhiIncoming(predecessor="then", value=_value("a")),),
+            ),
+        ),
+        terminator=merge.terminator,
+    )
+    bad = LlvmLowerBackFunction(name=fn.name, entry=fn.entry, blocks=(*fn.blocks[:-1], bad_merge))
+
+    result = plan_lower_back(bad)
+
+    assert result.status is LlvmLowerBackStatus.UNSUPPORTED
+    assert _kinds(result) == (LlvmLowerBackUnsupportedKind.PHI_PREDECESSOR_MISMATCH,)
+
+
+def test_duplicate_phi_incoming_predecessor_fails_as_phi_shape():
+    fn = _tiny_phi_function()
+    merge = fn.blocks[-1]
+    bad_merge = LlvmLowerBackBlock(
+        label=merge.label,
+        predecessors=merge.predecessors,
+        phis=(
+            LlvmPhiNode(
+                result=_value("x"),
+                incoming=(
+                    LlvmPhiIncoming(predecessor="then", value=_value("a")),
+                    LlvmPhiIncoming(predecessor="then", value=_value("b")),
+                ),
+            ),
+        ),
+        terminator=merge.terminator,
+    )
+    bad = LlvmLowerBackFunction(name=fn.name, entry=fn.entry, blocks=(*fn.blocks[:-1], bad_merge))
+
+    result = plan_lower_back(bad)
+
+    assert result.status is LlvmLowerBackStatus.UNSUPPORTED
+    assert _kinds(result) == (LlvmLowerBackUnsupportedKind.PHI_PREDECESSOR_MISMATCH,)
+
+
+def test_empty_phi_incoming_list_fails_as_phi_shape():
+    fn = LlvmLowerBackFunction(
+        name="empty_phi",
+        entry="entry",
+        blocks=(
+            LlvmLowerBackBlock(
+                label="entry",
+                predecessors=(),
+                phis=(LlvmPhiNode(result=_value("x"), incoming=()),),
+                terminator=_term(LlvmLowerBackTerminatorKind.RETURN),
+            ),
+        ),
+    )
+
+    result = plan_lower_back(fn)
+
+    assert result.status is LlvmLowerBackStatus.UNSUPPORTED
+    assert _kinds(result) == (LlvmLowerBackUnsupportedKind.PHI_PREDECESSOR_MISMATCH,)
+
+
 def test_phi_incoming_predecessor_must_have_real_edge_to_phi_block():
     fn = LlvmLowerBackFunction(
         name="bad_edge",
@@ -522,6 +589,84 @@ def test_unsupported_memory_and_call_are_diagnostics_not_plans():
         LlvmLowerBackUnsupportedKind.UNSUPPORTED_MEMORY,
         LlvmLowerBackUnsupportedKind.UNSUPPORTED_CALL,
     )
+
+
+def test_unknown_body_instruction_fails_closed():
+    fn = LlvmLowerBackFunction(
+        name="unknown_body",
+        entry="entry",
+        blocks=(
+            LlvmLowerBackBlock(
+                label="entry",
+                predecessors=(),
+                instructions=(
+                    LlvmLowerBackInstruction(
+                        opcode="fdiv",
+                        result=_value("x"),
+                        operands=(_value("a"), _value("b")),
+                    ),
+                ),
+                terminator=_term(LlvmLowerBackTerminatorKind.RETURN),
+            ),
+        ),
+    )
+
+    result = plan_lower_back(fn)
+
+    assert result.status is LlvmLowerBackStatus.UNSUPPORTED
+    assert _kinds(result) == (LlvmLowerBackUnsupportedKind.UNSUPPORTED_INSTRUCTION,)
+
+
+def test_malformed_binary_instruction_dto_fails_closed():
+    fn = LlvmLowerBackFunction(
+        name="bad_binary",
+        entry="entry",
+        blocks=(
+            LlvmLowerBackBlock(
+                label="entry",
+                predecessors=(),
+                instructions=(
+                    LlvmLowerBackInstruction(
+                        opcode="add",
+                        result=_value("x"),
+                        operands=(_value("a"),),
+                    ),
+                ),
+                terminator=_term(LlvmLowerBackTerminatorKind.RETURN),
+            ),
+        ),
+    )
+
+    result = plan_lower_back(fn)
+
+    assert result.status is LlvmLowerBackStatus.UNSUPPORTED
+    assert _kinds(result) == (LlvmLowerBackUnsupportedKind.UNSUPPORTED_INSTRUCTION,)
+
+
+def test_malformed_zext_instruction_dto_fails_closed():
+    fn = LlvmLowerBackFunction(
+        name="bad_zext",
+        entry="entry",
+        blocks=(
+            LlvmLowerBackBlock(
+                label="entry",
+                predecessors=(),
+                instructions=(
+                    LlvmLowerBackInstruction(
+                        opcode="zext",
+                        result=_value("wide", "i8"),
+                        operands=(_value("narrow", "i8"),),
+                    ),
+                ),
+                terminator=_term(LlvmLowerBackTerminatorKind.RETURN),
+            ),
+        ),
+    )
+
+    result = plan_lower_back(fn)
+
+    assert result.status is LlvmLowerBackStatus.UNSUPPORTED
+    assert _kinds(result) == (LlvmLowerBackUnsupportedKind.UNSUPPORTED_INSTRUCTION,)
 
 
 def test_unsupported_control_shapes_are_diagnostics():

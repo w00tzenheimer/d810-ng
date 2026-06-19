@@ -35,6 +35,17 @@ __all__ = [
 
 
 _SCALAR_TYPE_RE = re.compile(r"^i(?:1|8|16|32|64)$")
+_SUPPORTED_SCALAR_OPCODES = {
+    "add",
+    "and",
+    "icmp",
+    "mul",
+    "or",
+    "sub",
+    "xor",
+    "zext",
+}
+_BINARY_SCALAR_OPCODES = {"add", "and", "mul", "or", "sub", "xor"}
 
 
 class LlvmLowerBackStatus(str, Enum):
@@ -55,6 +66,7 @@ class LlvmLowerBackUnsupportedKind(str, Enum):
     UNKNOWN_BLOCK_TARGET = "unknown_block_target"
     UNSUPPORTED_CALL = "unsupported_call"
     UNSUPPORTED_CONTROL = "unsupported_control"
+    UNSUPPORTED_INSTRUCTION = "unsupported_instruction"
     UNSUPPORTED_MEMORY = "unsupported_memory"
 
 
@@ -286,13 +298,37 @@ def _check_instructions(
                     reason="call lowering is outside the M3a contract subset",
                 )
             )
-        elif opcode in {"load", "store", "atomicrmw", "cmpxchg"}:
+        elif opcode in {"alloca", "load", "store", "atomicrmw", "cmpxchg"}:
             unsupported.append(
                 LlvmLowerBackUnsupportedReason(
                     kind=LlvmLowerBackUnsupportedKind.UNSUPPORTED_MEMORY,
                     block_label=block.label,
                     operation=opcode,
                     reason="memory lowering is outside the M3a contract subset",
+                )
+            )
+        elif opcode not in _SUPPORTED_SCALAR_OPCODES:
+            unsupported.append(
+                LlvmLowerBackUnsupportedReason(
+                    kind=LlvmLowerBackUnsupportedKind.UNSUPPORTED_INSTRUCTION,
+                    block_label=block.label,
+                    operation=opcode,
+                    reason=(
+                        f"instruction opcode {opcode!r} is outside the M3c "
+                        "readiness body subset"
+                    ),
+                )
+            )
+        elif not _instruction_has_supported_shape(instruction):
+            unsupported.append(
+                LlvmLowerBackUnsupportedReason(
+                    kind=LlvmLowerBackUnsupportedKind.UNSUPPORTED_INSTRUCTION,
+                    block_label=block.label,
+                    operation=opcode,
+                    reason=(
+                        f"instruction opcode {opcode!r} has non-scalar or "
+                        "unsupported operand/result type"
+                    ),
                 )
             )
 
@@ -342,6 +378,26 @@ def _collect_phi_moves(
                 block_label=block.label,
                 operation="phi",
                 reason=f"PHI result {phi.result.name!r} has unsupported type {phi.result.type!r}",
+            )
+        )
+        return
+    incoming_predecessors = tuple(incoming.predecessor for incoming in phi.incoming)
+    expected_predecessors = tuple(block.predecessors)
+    if (
+        not incoming_predecessors
+        or len(set(expected_predecessors)) != len(expected_predecessors)
+        or len(set(incoming_predecessors)) != len(incoming_predecessors)
+        or set(incoming_predecessors) != set(expected_predecessors)
+    ):
+        unsupported.append(
+            LlvmLowerBackUnsupportedReason(
+                kind=LlvmLowerBackUnsupportedKind.PHI_PREDECESSOR_MISMATCH,
+                block_label=block.label,
+                operation="phi",
+                reason=(
+                    f"PHI for {phi.result.name!r} must have exactly one incoming "
+                    f"value for each predecessor of block {block.label!r}"
+                ),
             )
         )
         return
@@ -522,3 +578,39 @@ def _is_real_predecessor(
 
 def _is_supported_scalar(type_name: str) -> bool:
     return bool(_SCALAR_TYPE_RE.fullmatch(type_name.strip()))
+
+
+def _instruction_has_supported_shape(
+    instruction: LlvmLowerBackInstruction,
+) -> bool:
+    opcode = instruction.opcode
+    result = instruction.result
+    operands = instruction.operands
+    if result is None:
+        return False
+    if opcode in _BINARY_SCALAR_OPCODES:
+        if len(operands) != 2:
+            return False
+        if not _is_supported_scalar(result.type):
+            return False
+        return operands[0].type == result.type and operands[1].type == result.type
+    if opcode == "icmp":
+        if result.type != "i1" or len(operands) != 2:
+            return False
+        return (
+            _is_supported_scalar(operands[0].type)
+            and operands[0].type == operands[1].type
+        )
+    if opcode == "zext":
+        if len(operands) != 1:
+            return False
+        input_width = _scalar_width(operands[0].type)
+        result_width = _scalar_width(result.type)
+        return input_width is not None and result_width is not None and result_width > input_width
+    return False
+
+
+def _scalar_width(type_name: str) -> int | None:
+    if not _is_supported_scalar(type_name):
+        return None
+    return int(type_name.strip()[1:])
