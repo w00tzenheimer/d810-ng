@@ -72,6 +72,16 @@ from .m2_pipeline import (
     LlvmM2PipelineStatus,
     run_llvm_m2_pipeline,
 )
+from .m2_census import (
+    LlvmM2CensusRow,
+    LlvmM2CensusRowStatus,
+    LlvmM2CensusSummary,
+    LlvmM2MetricDelta,
+    m2_census_row_from_pipeline,
+    m2_lift_unsupported_row,
+    m2_missing_row,
+    summarize_m2_census,
+)
 from .optimization import (
     LLVM_M2A_STOCK_PIPELINE,
     LlvmIrMetrics,
@@ -132,6 +142,10 @@ __all__ = [
     "LlvmM2PipelinePhaseResult",
     "LlvmM2PipelineResult",
     "LlvmM2PipelineStatus",
+    "LlvmM2CensusRow",
+    "LlvmM2CensusRowStatus",
+    "LlvmM2CensusSummary",
+    "LlvmM2MetricDelta",
     "LlvmMaturityAssessment",
     "LlvmIrMetrics",
     "LlvmOptimizationResult",
@@ -151,10 +165,14 @@ __all__ = [
     "emit_flowgraph_to_llvm",
     "find_llvm_opt",
     "measure_llvm_ir",
+    "m2_census_row_from_pipeline",
+    "m2_lift_unsupported_row",
+    "m2_missing_row",
     "normalize_llvm_ir",
     "plan_lower_back",
     "run_d810_custom_passes",
     "run_llvm_m2_pipeline",
     "run_llvm_opt_pipeline",
+    "summarize_m2_census",
     "verify_llvm_ir",
 ]

@@ -11,12 +11,17 @@ import idaapi
 from d810.backends.hexrays.lifter import lift_function
 from d810.backends.llvm import (
     LLVM_M2A_STOCK_PIPELINE,
+    LlvmM2CensusRowStatus,
     LlvmM2PipelineStatus,
     LlvmOptimizationStatus,
     LlvmVerificationStatus,
     emit_flowgraph_to_llvm,
+    m2_census_row_from_pipeline,
+    m2_lift_unsupported_row,
+    m2_missing_row,
     run_llvm_m2_pipeline,
     run_llvm_opt_pipeline,
+    summarize_m2_census,
     verify_llvm_ir,
 )
 from tests.system.runtime.conftest import gen_microcode_at_maturity, get_func_ea
@@ -40,6 +45,10 @@ def _collapse_summary(before, after) -> str:
             _metrics_summary("after", after),
         )
     )
+
+
+def _histogram_summary(items) -> str:
+    return ",".join(f"{name}={count}" for name, count in items) or "-"
 
 
 class TestLLVMM2StockOptPipeline:
@@ -176,3 +185,133 @@ class TestLLVMM2CustomPipelineComposition:
         assert result.phases[0].status is LlvmM2PipelineStatus.PASSED
         assert result.phases[1].status is LlvmM2PipelineStatus.PASSED
         assert result.phases[2].status is LlvmM2PipelineStatus.PASSED
+
+
+class TestLLVMM2PipelineCensus:
+    """Run the opt-in M2 pipeline over curated preferred-maturity lab rows."""
+
+    binary_name = "restructuring_lab.dll"
+
+    FUNCTIONS = (
+        "lab_if_diamond",
+        "lab_flat_branchless",
+        "lab_flat_jtbl",
+        "lab_flat_mini",
+        "lab_flat_cond",
+        "lab_flat_loop",
+        "lab_flat_region",
+        "hexrays_lab_side_effect_boundary_anchor",
+    )
+
+    def test_preferred_maturity_live_m2_pipeline_census(
+        self, ida_database, configure_hexrays, tmp_path
+    ):
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+
+        rows = []
+        require_opt = os.environ.get("D810_REQUIRE_LLVM_OPT") == "1"
+        for func_name in self.FUNCTIONS:
+            func_ea = get_func_ea(func_name)
+            if func_ea == idaapi.BADADDR:
+                rows.append(
+                    m2_missing_row(
+                        func_name,
+                        "GLOBAL_ANALYZED",
+                        reason="function missing from restructuring_lab.dll",
+                    )
+                )
+                continue
+
+            mba = gen_microcode_at_maturity(func_ea, int(ida_hexrays.MMAT_GLBOPT1))
+            assert mba is not None, func_name
+            flow_graph = lift_function(mba).flow_graph
+            lift = emit_flowgraph_to_llvm(
+                flow_graph,
+                function_name=f"{func_name}_m2d",
+            )
+            if not lift.supported:
+                rows.append(
+                    m2_lift_unsupported_row(
+                        func_name,
+                        "GLOBAL_ANALYZED",
+                        reason="; ".join(reason.reason for reason in lift.unsupported),
+                        ir_text=lift.ir_text,
+                    )
+                )
+                continue
+
+            result = run_llvm_m2_pipeline(
+                lift.ir_text,
+                tmp_dir=tmp_path / func_name,
+                require_opt=require_opt,
+            )
+            rows.append(
+                m2_census_row_from_pipeline(
+                    func_name,
+                    "GLOBAL_ANALYZED",
+                    result,
+                )
+            )
+
+        summary = summarize_m2_census(tuple(rows))
+        print("\n=== LLVM M2d live pipeline census ===")
+        for row in summary.rows:
+            delta = row.metric_delta
+            print(
+                "row "
+                f"function={row.function_name} status={row.status.value} "
+                f"present={row.present} lift_supported={row.lift_supported} "
+                f"pipeline={row.pipeline_status or '-'} "
+                f"verification={row.verification_status or '-'} "
+                f"custom_rewrites={row.custom_rewrite_count} "
+                f"insns={row.before_metrics.instruction_count}"
+                f"->{row.after_metrics.instruction_count} "
+                f"loads={row.before_metrics.load_count}->{row.after_metrics.load_count} "
+                f"stores={row.before_metrics.store_count}->{row.after_metrics.store_count} "
+                f"allocas={row.before_metrics.alloca_count}"
+                f"->{row.after_metrics.alloca_count} "
+                f"delta=({delta.instruction_delta},"
+                f"{delta.load_delta},{delta.store_delta},{delta.alloca_delta}) "
+                f"reason={row.reason or '-'}"
+            )
+        print(
+            "summary "
+            f"present={summary.present_count} missing={summary.missing_count} "
+            f"passed={summary.passed_count} failed={summary.failed_count} "
+            f"skipped={summary.skipped_count} "
+            f"lift_unsupported={summary.lift_unsupported_count} "
+            f"custom_rewrites={summary.custom_rewrite_total}"
+        )
+        print(
+            "aggregate "
+            f"insns={summary.before_instruction_total}"
+            f"->{summary.after_instruction_total} "
+            f"loads={summary.before_load_total}->{summary.after_load_total} "
+            f"stores={summary.before_store_total}->{summary.after_store_total} "
+            f"allocas={summary.before_alloca_total}->{summary.after_alloca_total}"
+        )
+        print(f"status_histogram={_histogram_summary(summary.status_histogram)}")
+        print(f"collapse_histogram={_histogram_summary(summary.collapse_histogram)}")
+
+        present_non_passed = [
+            row
+            for row in summary.rows
+            if row.present and row.status is not LlvmM2CensusRowStatus.PASSED
+        ]
+        assert not present_non_passed, [
+            (row.function_name, row.status.value, row.reason)
+            for row in present_non_passed
+        ]
+
+        branchless = next(
+            row for row in summary.rows if row.function_name == "lab_flat_branchless"
+        )
+        collapse_summary = _collapse_summary(
+            branchless.before_metrics,
+            branchless.after_metrics,
+        )
+        assert branchless.metric_delta.collapsed_instruction_count, collapse_summary
+        assert branchless.metric_delta.collapsed_load_count, collapse_summary
+        assert branchless.metric_delta.collapsed_store_count, collapse_summary
+        assert branchless.metric_delta.collapsed_alloca_count, collapse_summary

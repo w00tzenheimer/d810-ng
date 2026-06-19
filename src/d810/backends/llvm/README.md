@@ -96,6 +96,20 @@ M2c opt-in custom+stock pipeline policy:
   predicate folding, larger live measured-collapse coverage, and native oracle
   drift gates.
 
+M2d live coverage/collapse census:
+
+- `d810.backends.llvm.m2_census` provides IDA-free row and summary DTOs for
+  reporting live M2 pipeline coverage without importing Hex-Rays.
+- The system census runs the opt-in M2c pipeline at the preferred
+  `GLOBAL_ANALYZED` maturity over curated `restructuring_lab.dll` rows, with
+  Docker-provisioned `opt` required.
+- Rows distinguish missing functions, unsupported lifts, skipped/failed
+  pipeline phases, verifier status, custom rewrite count, and before/after
+  coarse LLVM metrics.
+- The census is evidence for LLVM-level lift -> custom/stock opt -> verify
+  coverage and measured collapse. It is not native decompile/oracle equivalence,
+  does not consume M3 lower-back output, and does not close full M2.
+
 M3a lower-back contract policy:
 
 - `d810.backends.llvm.lower_back_contract` is an IDA-free risk-reduction

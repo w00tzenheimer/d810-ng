@@ -60,6 +60,8 @@ def test_m2_pipeline_runs_custom_then_stock_then_verify(tmp_path):
     assert stock is not None and stock.status is LlvmOptimizationStatus.PASSED
     assert verification is not None
     assert verification.status is LlvmVerificationStatus.PASSED
+    assert result.phases[2].reason == ""
+    assert verification.stdout
 
 
 def test_m2_pipeline_custom_failure_stops_before_stock_opt(tmp_path):
@@ -182,4 +184,3 @@ def test_m2a_stock_runner_default_behavior_remains_unchanged(tmp_path):
     assert result.status is LlvmOptimizationStatus.SKIPPED
     assert result.optimized_ir == ""
     assert result.command == ()
-
