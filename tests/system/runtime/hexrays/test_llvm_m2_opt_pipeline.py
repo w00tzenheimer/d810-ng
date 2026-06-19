@@ -377,9 +377,10 @@ class TestLLVMM2CuratedPipelineComparison:
                 )
                 continue
 
-            default_result = run_llvm_m2_pipeline(
+            m2a_result = run_llvm_m2_pipeline(
                 lift.ir_text,
-                tmp_dir=tmp_path / func_name / "default",
+                stock_pipeline=LLVM_M2A_STOCK_PIPELINE,
+                tmp_dir=tmp_path / func_name / "m2a",
                 require_opt=require_opt,
             )
             curated_result = run_llvm_m2_pipeline(
@@ -388,10 +389,11 @@ class TestLLVMM2CuratedPipelineComparison:
                 tmp_dir=tmp_path / func_name / "curated",
                 require_opt=require_opt,
             )
-            rows.append((func_name, default_result, curated_result))
+            rows.append((func_name, m2a_result, curated_result))
 
         assert rows, "no supported live M2 rows available for curated comparison"
         print("\n=== LLVM M2g curated pipeline comparison ===")
+        print(f"m2a_pipeline={LLVM_M2A_STOCK_PIPELINE.pass_spec}")
         print(f"curated_pipeline={LLVM_M2G_CURATED_PIPELINE.pass_spec}")
         for func_name, reason in missing_rows:
             print(f"row function={func_name} status=missing reason={reason}")
@@ -400,20 +402,20 @@ class TestLLVMM2CuratedPipelineComparison:
                 f"row function={func_name} status=lift_unsupported "
                 f"reasons={'; '.join(reasons) or '-'}"
             )
-        for func_name, default_result, curated_result in rows:
-            default_metrics = measure_llvm_ir(default_result.after_ir)
+        for func_name, m2a_result, curated_result in rows:
+            m2a_metrics = measure_llvm_ir(m2a_result.after_ir)
             curated_metrics = measure_llvm_ir(curated_result.after_ir)
             print(
                 "row "
                 f"function={func_name} "
-                f"default={default_result.status.value} "
+                f"m2a={m2a_result.status.value} "
                 f"curated={curated_result.status.value} "
-                f"insns={default_metrics.instruction_count}"
+                f"insns={m2a_metrics.instruction_count}"
                 f"->{curated_metrics.instruction_count} "
-                f"loads={default_metrics.load_count}->{curated_metrics.load_count} "
-                f"stores={default_metrics.store_count}->{curated_metrics.store_count} "
-                f"allocas={default_metrics.alloca_count}->{curated_metrics.alloca_count} "
-                f"default_reason={default_result.reason or '-'} "
+                f"loads={m2a_metrics.load_count}->{curated_metrics.load_count} "
+                f"stores={m2a_metrics.store_count}->{curated_metrics.store_count} "
+                f"allocas={m2a_metrics.alloca_count}->{curated_metrics.alloca_count} "
+                f"m2a_reason={m2a_result.reason or '-'} "
                 f"curated_reason={curated_result.reason or '-'}"
             )
 
@@ -432,18 +434,18 @@ class TestLLVMM2CuratedPipelineComparison:
             "unsupported": unsupported_rows,
         }
 
-        default_totals = _metric_totals(default_result for _, default_result, _ in rows)
+        m2a_totals = _metric_totals(m2a_result for _, m2a_result, _ in rows)
         curated_totals = _metric_totals(curated_result for _, _, curated_result in rows)
         print(
             "aggregate "
-            f"insns={default_totals['instruction']}"
+            f"insns={m2a_totals['instruction']}"
             f"->{curated_totals['instruction']} "
-            f"loads={default_totals['load']}->{curated_totals['load']} "
-            f"stores={default_totals['store']}->{curated_totals['store']} "
-            f"allocas={default_totals['alloca']}->{curated_totals['alloca']}"
+            f"loads={m2a_totals['load']}->{curated_totals['load']} "
+            f"stores={m2a_totals['store']}->{curated_totals['store']} "
+            f"allocas={m2a_totals['alloca']}->{curated_totals['alloca']}"
         )
 
-        default_failures = [
+        m2a_failures = [
             (func_name, result.status.value, result.reason)
             for func_name, result, _ in rows
             if result.status is not LlvmM2PipelineStatus.PASSED
@@ -453,23 +455,23 @@ class TestLLVMM2CuratedPipelineComparison:
             for func_name, _, result in rows
             if result.status is not LlvmM2PipelineStatus.PASSED
         ]
-        assert not default_failures, default_failures
+        assert not m2a_failures, m2a_failures
         assert not curated_failures, curated_failures
 
         non_regressed = {
-            metric: curated_totals[metric] <= default_totals[metric]
+            metric: curated_totals[metric] <= m2a_totals[metric]
             for metric in ("instruction", "load", "store", "alloca")
         }
         improved = {
-            metric: curated_totals[metric] < default_totals[metric]
+            metric: curated_totals[metric] < m2a_totals[metric]
             for metric in ("instruction", "load", "store", "alloca")
         }
         assert all(non_regressed.values()), {
-            "default": default_totals,
+            "m2a": m2a_totals,
             "curated": curated_totals,
         }
         assert any(improved.values()), {
-            "default": default_totals,
+            "m2a": m2a_totals,
             "curated": curated_totals,
         }
 

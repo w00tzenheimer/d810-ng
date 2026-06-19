@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from d810.backends.llvm import (
-    LLVM_M2G_CURATED_PIPELINE,
+    LLVM_M2_CURATED_PIPELINE,
+    LLVM_M2A_STOCK_PIPELINE,
     LlvmCustomProofResult,
     LlvmM2PipelinePhaseKind,
     LlvmM2PipelineStatus,
@@ -89,12 +90,11 @@ def test_m2_pipeline_counts_or_custom_rewrite_before_stock_opt(tmp_path):
     assert [len(pass_result.rewrites) for pass_result in custom.pass_results] == [0, 1]
 
 
-def test_m2_pipeline_accepts_curated_stock_pipeline(tmp_path):
+def test_m2_pipeline_default_uses_promoted_curated_stock_pipeline(tmp_path):
     opt = _write_fake_opt(tmp_path)
 
     result = run_llvm_m2_pipeline(
         _fixture_ir(),
-        stock_pipeline=LLVM_M2G_CURATED_PIPELINE,
         opt_path=opt,
         tmp_dir=tmp_path / "work",
         require_opt=True,
@@ -103,11 +103,33 @@ def test_m2_pipeline_accepts_curated_stock_pipeline(tmp_path):
     assert result.status is LlvmM2PipelineStatus.PASSED
     stock = result.phases[1].optimization_result
     assert stock is not None
-    assert stock.pipeline is LLVM_M2G_CURATED_PIPELINE
+    assert stock.pipeline is LLVM_M2_CURATED_PIPELINE
     assert stock.command[:3] == (
         str(opt),
         "-S",
-        f"-passes={LLVM_M2G_CURATED_PIPELINE.pass_spec}",
+        f"-passes={LLVM_M2_CURATED_PIPELINE.pass_spec}",
+    )
+
+
+def test_m2_pipeline_accepts_m2a_stock_pipeline_override(tmp_path):
+    opt = _write_fake_opt(tmp_path)
+
+    result = run_llvm_m2_pipeline(
+        _fixture_ir(),
+        stock_pipeline=LLVM_M2A_STOCK_PIPELINE,
+        opt_path=opt,
+        tmp_dir=tmp_path / "work",
+        require_opt=True,
+    )
+
+    assert result.status is LlvmM2PipelineStatus.PASSED
+    stock = result.phases[1].optimization_result
+    assert stock is not None
+    assert stock.pipeline is LLVM_M2A_STOCK_PIPELINE
+    assert stock.command[:3] == (
+        str(opt),
+        "-S",
+        f"-passes={LLVM_M2A_STOCK_PIPELINE.pass_spec}",
     )
 
 

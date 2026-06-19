@@ -1,7 +1,7 @@
-"""Opt-in M2 orchestration over d810 custom passes and stock LLVM opt.
+"""Opt-in M2 orchestration over d810 custom passes and curated LLVM opt.
 
 This module is IDA-free. It composes the M2b d810 MBA/Z3 custom-pass socket
-with the M2a stock ``opt`` runner and structured verifier without changing the
+with the curated M2 ``opt`` runner and structured verifier without changing the
 default behavior of either lower-level API.
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ from .custom_passes import (
     run_d810_custom_passes,
 )
 from .optimization import (
-    LLVM_M2A_STOCK_PIPELINE,
+    LLVM_M2_CURATED_PIPELINE,
     LlvmIrMetrics,
     LlvmOptimizationResult,
     LlvmOptimizationStatus,
@@ -92,7 +92,7 @@ def run_llvm_m2_pipeline(
         D810_MBA_XOR_OR_SUB_AND_PASS,
         D810_MBA_OR_AND_XOR_ADD_PASS,
     ),
-    stock_pipeline: LlvmOptPipeline = LLVM_M2A_STOCK_PIPELINE,
+    stock_pipeline: LlvmOptPipeline = LLVM_M2_CURATED_PIPELINE,
     opt_path: Path | None = None,
     tmp_dir: Path | None = None,
     require_opt: bool | None = None,

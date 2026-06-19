@@ -102,6 +102,7 @@ from .m2_oracle import (
     m2_oracle_unavailable,
 )
 from .optimization import (
+    LLVM_M2_CURATED_PIPELINE,
     LLVM_M2G_CURATED_PIPELINE,
     LLVM_M2A_STOCK_PIPELINE,
     LlvmIrMetrics,
@@ -122,6 +123,7 @@ from .verification import (
 __all__ = [
     "LLVM_M1_ACCEPTED_MATURITIES",
     "LLVM_M1_PREFERRED_MATURITY",
+    "LLVM_M2_CURATED_PIPELINE",
     "LLVM_M2A_STOCK_PIPELINE",
     "LLVM_M2G_CURATED_PIPELINE",
     "D810_MBA_OR_AND_XOR_ADD_PASS",
