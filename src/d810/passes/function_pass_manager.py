@@ -9,6 +9,7 @@ from d810.ir.maturity import IRMaturity
 from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.driver import run_pipeline
 from d810.passes.pass_pipeline import PreservedAnalyses
+from d810.passes.registry import PassRegistry
 from d810.passes.scheduler import PassScheduler
 
 
@@ -113,6 +114,8 @@ class FunctionPassManager:
         capabilities: CapabilitySet | None = None,
         input_facts: object | None = None,
         analysis_seeds: Mapping[str, object] | None = None,
+        pipeline_v2_shadow_registry: PassRegistry | None = None,
+        require_pipeline_v2_shadow_match: bool = False,
     ):
         """Run one family/function/maturity through the existing pipeline driver."""
         facts = self.facts_for(
@@ -129,4 +132,6 @@ class FunctionPassManager:
             maturity=maturity,
             capabilities=capabilities,
             scheduler=self.scheduler,
+            pipeline_v2_shadow_registry=pipeline_v2_shadow_registry,
+            require_pipeline_v2_shadow_match=require_pipeline_v2_shadow_match,
         )

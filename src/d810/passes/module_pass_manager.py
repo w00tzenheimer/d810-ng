@@ -117,8 +117,17 @@ class ModulePassManager:
         capabilities: CapabilitySet | None = None,
         input_facts: object | None = None,
         analysis_seeds: Mapping[str, object] | None = None,
+        pipeline_registry_name: str | None = None,
+        require_pipeline_v2_shadow_match: bool = False,
     ):
         """Run one function through its isolated FunctionPassManager."""
+        pipeline_registry = None
+        if require_pipeline_v2_shadow_match:
+            if pipeline_registry_name is None:
+                raise PassRegistryError(
+                    "pipeline_v2 shadow enforcement requires a registry name"
+                )
+            pipeline_registry = self.pass_registry_for(pipeline_registry_name)
         return self.function_manager_for(source.func_ea).run(
             source=source,
             family=family,
@@ -128,4 +137,6 @@ class ModulePassManager:
             capabilities=capabilities,
             input_facts=input_facts,
             analysis_seeds=analysis_seeds,
+            pipeline_v2_shadow_registry=pipeline_registry,
+            require_pipeline_v2_shadow_match=require_pipeline_v2_shadow_match,
         )
