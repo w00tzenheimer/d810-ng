@@ -33,7 +33,7 @@ from d810.ir.instructions import (
     InstructionMemoryAccessKind,
 )
 from d810.ir.maturity import IRMaturity
-from d810.ir.semantics import CallKind, PredicateKind
+from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.ir.varnode import Space, Varnode
 
 
@@ -151,7 +151,17 @@ def _ret(value: MopSnapshot | None = None) -> InsnSnapshot:
     return InsnSnapshot(opcode=0x42, ea=0x1010, operands=(), kind=InsnKind.RET, l=value)
 
 
-def _jcc(predicate: PredicateKind, lhs: MopSnapshot, rhs: MopSnapshot) -> InsnSnapshot:
+def _block_ref(serial: int) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.BLOCK, block_ref=serial)
+
+
+def _jcc(
+    predicate: PredicateKind,
+    lhs: MopSnapshot,
+    rhs: MopSnapshot,
+    *,
+    target: int | None = 1,
+) -> InsnSnapshot:
     return InsnSnapshot(
         opcode=0x2C,
         ea=0x2000,
@@ -160,6 +170,7 @@ def _jcc(predicate: PredicateKind, lhs: MopSnapshot, rhs: MopSnapshot) -> InsnSn
         branch_predicate=predicate,
         l=lhs,
         r=rhs,
+        d=_block_ref(target) if target is not None else None,
     )
 
 
@@ -534,6 +545,94 @@ def test_nested_extended_value_op_kind_emits_supported_temp():
     assert "nested_expression_unsupported" not in {
         reason.kind.value for reason in result.unsupported
     }
+
+
+@pytest.mark.parametrize("succs", ((2, 1), (1, 2)))
+def test_conditional_branch_uses_portable_taken_target_not_successor_order(
+    succs: tuple[int, int],
+):
+    flow = _graph(
+        _block(0, succs, (_jcc(PredicateKind.EQ, _reg(0), _num(7), target=1),)),
+        _block(1, (), (_ret(),)),
+        _block(2, (), (_ret(),)),
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert result.supported
+    assert "label %bb1, label %bb2" in result.ir_text
+
+
+def test_conditional_branch_missing_portable_target_fails_closed():
+    flow = _graph(
+        _block(0, (1, 2), (_jcc(PredicateKind.EQ, _reg(0), _num(7), target=None),)),
+        _block(1, (), (_ret(),)),
+        _block(2, (), (_ret(),)),
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.BRANCH_TARGET_UNSUPPORTED
+        and reason.reason == "conditional branch requires portable taken target"
+        for reason in result.unsupported
+    )
+
+
+def test_conditional_branch_non_successor_target_fails_closed():
+    flow = _graph(
+        _block(0, (1, 2), (_jcc(PredicateKind.EQ, _reg(0), _num(7), target=3),)),
+        _block(1, (), (_ret(),)),
+        _block(2, (), (_ret(),)),
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.BRANCH_TARGET_UNSUPPORTED
+        and reason.reason == "conditional branch target is not a block successor"
+        for reason in result.unsupported
+    )
+
+
+def test_conditional_branch_conflicting_fallthrough_fails_closed(monkeypatch):
+    bad_branch = Instruction(
+        operation=ControlTransferKind.CONDITIONAL_BRANCH,
+        inputs=(
+            Varnode(Space.REGISTER, 0, 4),
+            Varnode(Space.CONST, 7, 4),
+        ),
+        control=InstructionControl(
+            transfer=ControlTransferKind.CONDITIONAL_BRANCH,
+            predicate=PredicateKind.EQ,
+            target=1,
+            fallthrough=1,
+        ),
+    )
+    monkeypatch.setattr(
+        llvm_emitter,
+        "project_instruction_sequence",
+        lambda _insn: (bad_branch,),
+    )
+    flow = _graph(
+        _block(0, (1, 2), (_jcc(PredicateKind.EQ, _reg(0), _num(7), target=1),)),
+        _block(1, (), (_ret(),)),
+        _block(2, (), (_ret(),)),
+    )
+
+    result = emit_flowgraph_to_llvm(flow)
+
+    assert not result.supported
+    assert result.ir_text == ""
+    assert any(
+        reason.kind is UnsupportedLiftKind.BRANCH_TARGET_UNSUPPORTED
+        and reason.reason == "conditional branch fallthrough conflicts with target/successors"
+        for reason in result.unsupported
+    )
 
 
 def test_raw_opcode_attrs_do_not_authorize_conditional_branch():

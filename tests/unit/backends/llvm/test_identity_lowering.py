@@ -43,6 +43,10 @@ def _num(value: int, size: int = 4) -> MopSnapshot:
     return MopSnapshot(kind=OperandKind.NUMBER, value=value, size=size)
 
 
+def _block_ref(serial: int) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.BLOCK, block_ref=serial)
+
+
 def _case_list(cases: tuple[tuple[tuple[int, ...], int], ...]) -> MopSnapshot:
     return MopSnapshot(kind=OperandKind.CASE_LIST, switch_cases=cases)
 
@@ -76,6 +80,7 @@ def _jcc(predicate: PredicateKind, lhs: MopSnapshot, rhs: MopSnapshot) -> InsnSn
         branch_predicate=predicate,
         l=lhs,
         r=rhs,
+        d=_block_ref(1),
     )
 
 

@@ -251,6 +251,28 @@ def test_instruction_projection_conditional_branch_uses_control_operation():
     )
 
 
+def test_instruction_projection_conditional_branch_preserves_block_target():
+    insn = InsnSnapshot(
+        opcode=0x2C,
+        ea=0x1000,
+        operands=(),
+        kind=InsnKind.EQUALITY_JUMP,
+        branch_predicate=PredicateKind.EQ,
+        l=_stk(0x3C),
+        r=_num(7),
+        d=_block(12),
+    )
+
+    instruction = project_instruction(insn)
+
+    assert instruction.operation is ControlTransferKind.CONDITIONAL_BRANCH
+    assert instruction.control == InstructionControl(
+        transfer=ControlTransferKind.CONDITIONAL_BRANCH,
+        predicate=PredicateKind.EQ,
+        target=12,
+    )
+
+
 def test_conditional_branch_none_for_non_branch():
     assert project_conditional_branch(_mov(_num(1), _stk(0x10))) is None
 
