@@ -16,6 +16,7 @@ from d810.passes.pass_pipeline import (
     BackendRoute,
     FactRequirement,
     FunctionPipelineContext,
+    PipelineConfigError,
     PassContract,
     PassInvalidates,
     PassOutputs,
@@ -32,6 +33,7 @@ from d810.passes.pass_pipeline import (
     live_mba,
     no_caps,
 )
+from d810.passes.pipeline_shadow import PipelineShadowMismatchError
 from d810.passes.scheduler import PassScheduler, RunLater, RunLaterDomain
 from d810.passes.registry import PassRegistry
 from d810.transforms.plan import PatchPlan
@@ -138,6 +140,9 @@ def _run_specs(
     facts=None,
     backend=None,
     maturity=IRMaturity.CANONICAL,
+    project_config=None,
+    pipeline_v2_shadow_registry=None,
+    require_pipeline_v2_shadow_match=False,
 ):
     class _OneShot:
         name = "one_shot"
@@ -153,8 +158,10 @@ def _run_specs(
         family=_OneShot(),
         backend=backend if backend is not None else _Backend(),
         facts=facts if facts is not None else AnalysisManager(_GRAPH),
-        project_config=None,
+        project_config=project_config,
         maturity=maturity,
+        pipeline_v2_shadow_registry=pipeline_v2_shadow_registry,
+        require_pipeline_v2_shadow_match=require_pipeline_v2_shadow_match,
     )
 
 
@@ -165,6 +172,76 @@ class _MutatingPass:
         return PassResult(
             rewrite_plan=PatchPlan(planner_modifications=(object(),))
         )
+
+
+def _recording_pass(name: str, calls: list[str]):
+    def run(self, ctx) -> PassResult:
+        calls.append(name)
+        return PassResult()
+
+    return type("_RecordPass", (), {"name": name, "run": run})
+
+
+def test_pipeline_v2_shadow_gate_missing_config_runs_live_specs():
+    calls: list[str] = []
+    live_pass = _recording_pass("live", calls)
+    spec = PassSpec("live", live_pass, no_caps, default)
+    registry = PassRegistry()
+    registry.register("live", _recording_pass("configured", calls))
+
+    _run_specs(
+        (spec,),
+        project_config={},
+        pipeline_v2_shadow_registry=registry,
+        require_pipeline_v2_shadow_match=True,
+    )
+
+    assert calls == ["live"]
+
+
+def test_pipeline_v2_shadow_gate_matching_config_runs_live_not_configured_specs():
+    calls: list[str] = []
+    spec = PassSpec("live", _recording_pass("live", calls), no_caps, default)
+    registry = PassRegistry()
+    registry.register("live", _recording_pass("configured", calls))
+
+    _run_specs(
+        (spec,),
+        project_config={"pipeline_v2": [spec.config.to_dict()]},
+        pipeline_v2_shadow_registry=registry,
+        require_pipeline_v2_shadow_match=True,
+    )
+
+    assert calls == ["live"]
+
+
+def test_pipeline_v2_shadow_gate_drift_fails_before_pass_execution():
+    calls: list[str] = []
+    first = PassSpec("first", _recording_pass("first", calls), no_caps, default)
+    second = PassSpec("second", _recording_pass("second", calls), no_caps, default)
+    registry = PassRegistry()
+    registry.register("first", _recording_pass("configured_first", calls))
+    registry.register("second", _recording_pass("configured_second", calls))
+
+    with pytest.raises(PipelineShadowMismatchError):
+        _run_specs(
+            (first, second),
+            project_config={"pipeline_v2": [first.config.to_dict()]},
+            pipeline_v2_shadow_registry=registry,
+            require_pipeline_v2_shadow_match=True,
+        )
+
+    assert calls == []
+
+
+def test_pipeline_v2_shadow_gate_requires_registry_when_enabled():
+    calls: list[str] = []
+    spec = PassSpec("live", _recording_pass("live", calls), no_caps, default)
+
+    with pytest.raises(PipelineConfigError, match="requires a pass registry"):
+        _run_specs((spec,), require_pipeline_v2_shadow_match=True)
+
+    assert calls == []
 
 
 def test_run_pipeline_runs_all_five_passes_no_apply_on_empty_plans():

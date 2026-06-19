@@ -22,11 +22,16 @@ from d810.passes.pass_pipeline import (
     BackendRoute,
     CapabilityPolicy,
     FunctionPipelineContext,
+    PipelineConfigError,
     PassSpec,
     PreservedAnalyses,
     SafetyPolicy,
     SchedulerPolicy,
 )
+from d810.passes.pipeline_shadow import (
+    require_pipeline_v2_shadow_match as _require_pipeline_v2_shadow_match,
+)
+from d810.passes.registry import PassRegistry
 from d810.passes.scheduler import PassScheduler, RunLaterDomain
 from d810.transforms.plan import PatchPlan
 
@@ -366,6 +371,8 @@ def run_pipeline(
     maturity,
     capabilities=None,
     scheduler: PassScheduler | None = None,
+    pipeline_v2_shadow_registry: PassRegistry | None = None,
+    require_pipeline_v2_shadow_match: bool = False,
 ):
     """Run one family's pipeline over one function/maturity. Returns the final graph.
 
@@ -388,6 +395,16 @@ def run_pipeline(
         capabilities=capabilities if capabilities is not None else CapabilitySet(),
     )
     specs = family.pipeline_for(match, ctx)
+    if require_pipeline_v2_shadow_match:
+        if pipeline_v2_shadow_registry is None:
+            raise PipelineConfigError(
+                "pipeline_v2 shadow enforcement requires a pass registry"
+            )
+        _require_pipeline_v2_shadow_match(
+            project_config=project_config,
+            registry=pipeline_v2_shadow_registry,
+            live_specs=specs,
+        )
     worklist, replay_after_pipeline = _build_pass_worklists(
         specs=specs,
         scheduler=scheduler,

@@ -15,7 +15,7 @@ from d810.ir.maturity import IRMaturity
 from d810.passes.module_pass_manager import ModulePassManager
 from d810.passes.pass_pipeline import PassResult, PassSpec, default, no_caps
 from d810.passes.pipeline_shadow import PipelineShadowMismatchError
-from d810.passes.registry import PassRegistryError
+from d810.passes.registry import PassRegistry, PassRegistryError
 from d810.passes.scheduler import RunLater, RunLaterDomain
 
 
@@ -69,6 +69,14 @@ class _MatchingFamily:
 
     def pipeline_for(self, match, context):
         return self._specs
+
+
+def _recording_pass(name: str, calls: list[str]):
+    def run(self, ctx) -> PassResult:
+        calls.append(name)
+        return PassResult()
+
+    return type("_RecordPass", (), {"name": name, "run": run})
 
 
 def test_module_pass_manager_stays_backend_adapter_free():
@@ -260,3 +268,80 @@ def test_run_function_uses_isolated_function_manager_state():
     assert calls == [0x1000, 0x2000]
     assert manager.function_manager_for(0x1000).analysis_manager_for(0x1000)
     assert manager.function_manager_for(0x2000).analysis_manager_for(0x2000)
+
+
+def test_run_function_default_path_does_not_require_pipeline_registry():
+    calls: list[str] = []
+    spec = PassSpec("live", _recording_pass("live", calls), no_caps, default)
+    manager = ModulePassManager()
+
+    manager.run_function(
+        source=_Src(0x1000),
+        family=_MatchingFamily((spec,)),
+        backend=_Backend(),
+        project_config={"pipeline_v2": [{"pass_id": "drifted"}]},
+        maturity=IRMaturity.CANONICAL,
+    )
+
+    assert calls == ["live"]
+
+
+def test_run_function_pipeline_v2_shadow_gate_matching_config_runs_live_specs():
+    calls: list[str] = []
+    spec = PassSpec("live", _recording_pass("live", calls), no_caps, default)
+    registry = PassRegistry()
+    registry.register("live", _recording_pass("configured", calls))
+    manager = ModulePassManager(pass_registries={"state_machine_cff": registry})
+
+    manager.run_function(
+        source=_Src(0x1000),
+        family=_MatchingFamily((spec,)),
+        backend=_Backend(),
+        project_config={"pipeline_v2": [spec.config.to_dict()]},
+        maturity=IRMaturity.CANONICAL,
+        pipeline_registry_name="state_machine_cff",
+        require_pipeline_v2_shadow_match=True,
+    )
+
+    assert calls == ["live"]
+
+
+def test_run_function_pipeline_v2_shadow_gate_drift_fails_before_execution():
+    calls: list[str] = []
+    first = PassSpec("first", _recording_pass("first", calls), no_caps, default)
+    second = PassSpec("second", _recording_pass("second", calls), no_caps, default)
+    registry = PassRegistry()
+    registry.register("first", _recording_pass("configured_first", calls))
+    registry.register("second", _recording_pass("configured_second", calls))
+    manager = ModulePassManager(pass_registries={"state_machine_cff": registry})
+
+    with pytest.raises(PipelineShadowMismatchError):
+        manager.run_function(
+            source=_Src(0x1000),
+            family=_MatchingFamily((first, second)),
+            backend=_Backend(),
+            project_config={"pipeline_v2": [first.config.to_dict()]},
+            maturity=IRMaturity.CANONICAL,
+            pipeline_registry_name="state_machine_cff",
+            require_pipeline_v2_shadow_match=True,
+        )
+
+    assert calls == []
+
+
+def test_run_function_pipeline_v2_shadow_gate_requires_registry_name():
+    calls: list[str] = []
+    spec = PassSpec("live", _recording_pass("live", calls), no_caps, default)
+    manager = ModulePassManager()
+
+    with pytest.raises(PassRegistryError, match="requires a registry name"):
+        manager.run_function(
+            source=_Src(0x1000),
+            family=_MatchingFamily((spec,)),
+            backend=_Backend(),
+            project_config={},
+            maturity=IRMaturity.CANONICAL,
+            require_pipeline_v2_shadow_match=True,
+        )
+
+    assert calls == []
