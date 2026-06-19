@@ -4,6 +4,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from .m2_oracle import (
+    LlvmM2DriftCheckResult,
+    LlvmM2OracleStatus,
+    m2_oracle_not_applicable,
+)
 from .m2_pipeline import LlvmM2PipelinePhaseKind, LlvmM2PipelineResult
 from .optimization import LlvmIrMetrics, measure_llvm_ir
 
@@ -53,6 +58,9 @@ class LlvmM2CensusRow:
     before_metrics: LlvmIrMetrics
     after_metrics: LlvmIrMetrics
     reason: str = ""
+    oracle_status: LlvmM2OracleStatus = LlvmM2OracleStatus.NOT_APPLICABLE
+    oracle_id: str = ""
+    oracle_reason: str = ""
 
     @property
     def metric_delta(self) -> LlvmM2MetricDelta:
@@ -143,6 +151,13 @@ class LlvmM2CensusSummary:
         return tuple(sorted(counts.items()))
 
     @property
+    def oracle_status_histogram(self) -> tuple[tuple[str, int], ...]:
+        counts: dict[str, int] = {}
+        for row in self.rows:
+            counts[row.oracle_status.value] = counts.get(row.oracle_status.value, 0) + 1
+        return tuple(sorted(counts.items()))
+
+    @property
     def collapse_histogram(self) -> tuple[tuple[str, int], ...]:
         counts = {
             "instruction": 0,
@@ -165,8 +180,14 @@ def m2_census_row_from_pipeline(
     function_name: str,
     maturity: str,
     result: LlvmM2PipelineResult,
+    *,
+    oracle_result: LlvmM2DriftCheckResult | None = None,
 ) -> LlvmM2CensusRow:
     """Build a census row from the actual composed M2 pipeline result."""
+    oracle_result = oracle_result or m2_oracle_not_applicable(
+        subject=function_name,
+        reason="no M2 oracle configured for census row",
+    )
     verification_status = ""
     for phase in result.phases:
         if phase.kind is LlvmM2PipelinePhaseKind.VERIFY_OPTIMIZED:
@@ -190,6 +211,9 @@ def m2_census_row_from_pipeline(
         before_metrics=before_metrics,
         after_metrics=after_metrics,
         reason=result.reason,
+        oracle_status=oracle_result.status,
+        oracle_id=oracle_result.oracle_id,
+        oracle_reason=oracle_result.reason,
     )
 
 
@@ -211,6 +235,8 @@ def m2_missing_row(
         before_metrics=measure_llvm_ir(""),
         after_metrics=measure_llvm_ir(""),
         reason=reason,
+        oracle_status=LlvmM2OracleStatus.NOT_APPLICABLE,
+        oracle_reason="missing row has no applicable M2 oracle",
     )
 
 
@@ -233,6 +259,8 @@ def m2_lift_unsupported_row(
         before_metrics=measure_llvm_ir(ir_text),
         after_metrics=measure_llvm_ir(""),
         reason=reason,
+        oracle_status=LlvmM2OracleStatus.NOT_APPLICABLE,
+        oracle_reason="unsupported lift has no applicable M2 oracle",
     )
 
 

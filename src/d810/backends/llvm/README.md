@@ -110,6 +110,24 @@ M2d live coverage/collapse census:
   coverage and measured collapse. It is not native decompile/oracle equivalence,
   does not consume M3 lower-back output, and does not close full M2.
 
+M2e oracle/drift scaffold:
+
+- `d810.backends.llvm.m2_oracle` adds IDA-free DTOs for M2 oracle/drift
+  results with explicit `passed`, `failed`, `skipped`, `not_applicable`, and
+  `unavailable` statuses.
+- The first concrete oracle is fixture-level only: checked-in M0 optimized LLVM
+  text can be compared against a normalized optimized-function signature for
+  the corresponding expected fixture. This proves drift against that LLVM
+  artifact, not native pseudocode parity.
+- `d810.backends.llvm.m2_census` carries oracle status, oracle ID, oracle
+  reason, and an oracle-status histogram alongside pipeline/collapse metrics.
+  Live restructuring-lab census rows deliberately report `not_applicable` until
+  a real row-level M2 oracle exists.
+- This does not lower optimized LLVM into Hex-Rays microcode, mutate the
+  decompiler graph, use IDAvator, start M4/config cutover, or satisfy the
+  native decompile/oracle gate. Production native parity remains an M3/M4
+  boundary.
+
 M3a lower-back contract policy:
 
 - `d810.backends.llvm.lower_back_contract` is an IDA-free risk-reduction
