@@ -16,6 +16,14 @@ Sequence, steps 6-8) and the migration playbook for the relocation slices.
 from __future__ import annotations
 
 from d810.analyses.value_flow.observation import FactObservation
+from d810.analyses.value_flow.contract_evidence import (
+    CONTRACT_EVIDENCE_KEY,
+    CONTRACT_EVIDENCE_TOKENS,
+    CONTRACT_EVIDENCE_TOKENS_KEY,
+    ContractEvidenceToken,
+    contract_evidence_payload,
+    contract_evidence_tokens,
+)
 from d810.analyses.value_flow.projection import (
     LIFECYCLE_PRODUCTION_PROVEN,
     exact_source_identity,
@@ -102,10 +110,14 @@ VALUE_FLOW_FACT_TYPES = frozenset({
 __all__ = [
     "CALL_EFFECT_SUMMARY_FACT_TYPE",
     "CALL_RETURN_VALUE_FACT_TYPE",
+    "CONTRACT_EVIDENCE_KEY",
+    "CONTRACT_EVIDENCE_TOKENS",
+    "CONTRACT_EVIDENCE_TOKENS_KEY",
     "EFFECT_PATH_FACT_TYPE",
     "FACT_TYPE_ALIAS_REGISTRY",
     "FactObservation",
     "FactTypeAlias",
+    "ContractEvidenceToken",
     "INDUCTION_VARIABLE_FACT_TYPE",
     "LOOP_PREDICATE_VALUE_FACT_TYPE",
     "LIFECYCLE_PRODUCTION_PROVEN",
@@ -129,6 +141,8 @@ __all__ = [
     "all_canonical_fact_types",
     "canonical_fact_type",
     "canonical_fact_types",
+    "contract_evidence_payload",
+    "contract_evidence_tokens",
     "display_name_for",
     "exact_source_identity",
     "industry_term_for",

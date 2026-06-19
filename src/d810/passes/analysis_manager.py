@@ -14,6 +14,7 @@ Satisfies the driver's ``FactStore`` protocol (``view`` + ``invalidate_to``). Po
 from __future__ import annotations
 
 from d810.core.typing import Callable, Mapping
+from d810.analyses.value_flow.contract_evidence import contract_evidence_tokens
 from d810.passes.pass_pipeline import PreservedAnalyses
 
 
@@ -83,7 +84,7 @@ class AnalysisManager:
         values.extend(
             observation
             for observation in self.active_observations
-            if name in _observation_evidence_tokens(observation)
+            if name in contract_evidence_tokens(observation)
         )
         return tuple(values) if values else default
 
@@ -152,17 +153,3 @@ class AnalysisManager:
             self._derived.pop(name, None)
         for name in contract.invalidates.facts:
             self._facts.pop(name, None)
-
-
-def _observation_evidence_tokens(observation: object) -> frozenset[str]:
-    evidence = getattr(observation, "evidence", ())
-    if evidence is None:
-        return frozenset()
-    if isinstance(evidence, str):
-        return frozenset({evidence})
-    if isinstance(evidence, Mapping):
-        return frozenset(str(key) for key in evidence)
-    try:
-        return frozenset(str(item) for item in evidence)
-    except TypeError:
-        return frozenset({str(evidence)})

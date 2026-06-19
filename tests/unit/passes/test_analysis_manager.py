@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from d810.passes.analysis_manager import AnalysisManager
+from d810.analyses.value_flow.contract_evidence import contract_evidence_payload
 from d810.passes.pass_pipeline import (
     PassContract,
     PassInvalidates,
@@ -168,11 +169,17 @@ def test_fact_store_reads_published_and_live_observation_facts():
     assert am.get_fact("state_transition") == (fact, observation)
 
 
-def test_evidence_store_reads_published_and_live_observation_evidence():
+def test_evidence_store_reads_published_and_live_contract_evidence_tokens():
     observation = type(
         "_Obs",
         (),
-        {"evidence": ("dispatcher_predicates", "branch_targets")},
+        {
+            "payload": contract_evidence_payload(
+                "dispatcher_predicates",
+                "branch_targets",
+            ),
+            "evidence": ("mov #1, %var_10.4",),
+        },
     )()
     am = AnalysisManager(
         graph="G0",
@@ -186,6 +193,21 @@ def test_evidence_store_reads_published_and_live_observation_evidence():
     am.put_evidence("dispatcher_predicates", marker)
 
     assert am.get_evidence("dispatcher_predicates") == (marker, observation)
+
+
+def test_evidence_store_does_not_treat_raw_observation_evidence_as_contract_token():
+    observation = type(
+        "_Obs",
+        (),
+        {"evidence": ("dispatcher_predicates", "mov #1, %var_10.4")},
+    )()
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type("_Facts", (), {"active_observations": (observation,)})(),
+    )
+
+    assert not am.has_evidence("dispatcher_predicates")
+    assert am.get_evidence("dispatcher_predicates") is None
 
 
 def test_contract_invalidation_keeps_analysis_and_fact_validity_separate():

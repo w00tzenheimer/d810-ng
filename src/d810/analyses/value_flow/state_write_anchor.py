@@ -43,6 +43,10 @@ from d810.analyses.value_flow.induction_carrier import (
     _maturity_name,
 )
 from d810.analyses.value_flow.model import FactObservation
+from d810.analyses.value_flow.contract_evidence import (
+    ContractEvidenceToken,
+    contract_evidence_payload,
+)
 
 
 # State-write opcodes: plain ``m_mov`` (``op_4``) is the canonical OLLVM
@@ -282,6 +286,9 @@ class StateWriteAnchorFactCollector:
                 "block_dstr": ctx.opcode_fingerprint,
                 "successor_blocks": list(ctx.succs),
                 "opcode": insn.opcode_name,
+                **contract_evidence_payload(
+                    ContractEvidenceToken.STATE_VARIABLE_WRITES
+                ),
             }
 
             observations.append(

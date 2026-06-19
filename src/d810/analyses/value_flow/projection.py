@@ -12,6 +12,10 @@ from __future__ import annotations
 import hashlib
 
 from d810.core.typing import Any, Iterable
+from d810.analyses.value_flow.contract_evidence import (
+    ContractEvidenceToken,
+    contract_evidence_payload,
+)
 from d810.analyses.value_flow.observation import FactObservation, JsonMapping, canonical_json
 
 LIFECYCLE_PRODUCTION_PROVEN = "production_proven"
@@ -447,6 +451,10 @@ def _make_fact(
         "source_identity": dict(source_identity),
         "details": dict(details),
     }
+    if kind == STATE_WRITE_FACT_TYPE:
+        payload.update(
+            contract_evidence_payload(ContractEvidenceToken.STATE_VARIABLE_WRITES)
+        )
     if anchor_locator is not None:
         payload["anchor_locator"] = dict(anchor_locator)
     if storage_overlap_proof is not None:
