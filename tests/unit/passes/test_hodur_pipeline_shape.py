@@ -10,11 +10,11 @@ from __future__ import annotations
 from d810.passes.pass_pipeline import (
     FunctionPipelineContext,
     PassFact,
+    PassSafety,
     PassScope,
     PassResult,
     PipelinePass,
     default,
-    golden,
     live_mba,
     no_caps,
 )
@@ -26,8 +26,8 @@ EXPECTED = (
     ("recover_dispatcher", live_mba, default),
     ("recover_state_transitions", live_mba, default),
     ("plan_semantic_regions", no_caps, default),
-    ("lower_state_machine", no_caps, golden),
-    ("cleanup_residual_dispatcher", no_caps, golden),
+    ("lower_state_machine", no_caps, default),
+    ("cleanup_residual_dispatcher", no_caps, default),
 )
 
 
@@ -60,6 +60,7 @@ def test_each_spec_carries_native_state_machine_contract():
         {"raw_instruction_addresses", "recovered_cfg_edge"}
     )
     mutating_invalidated_facts = frozenset({"stale_cfg_shape"})
+    mutating_safety = PassSafety(policy="golden", requires_oracle=True)
 
     for spec in specs:
         assert spec.contract.scope is PassScope.FUNCTION
@@ -90,6 +91,7 @@ def test_each_spec_carries_native_state_machine_contract():
     assert contracts["recover_state_transitions"].outputs.facts == frozenset(
         {"state_transition"}
     )
+    assert contracts["recover_state_transitions"].safety == PassSafety()
     assert contracts["plan_semantic_regions"].requires.analyses == frozenset(
         {"recover_dispatcher", "transition_result"}
     )
@@ -99,6 +101,7 @@ def test_each_spec_carries_native_state_machine_contract():
     assert contracts["plan_semantic_regions"].outputs.facts == frozenset(
         {"semantic_region"}
     )
+    assert contracts["plan_semantic_regions"].safety == PassSafety()
     assert contracts["lower_state_machine"].requires.analyses == frozenset(
         {"plan_semantic_regions", "recover_dispatcher", "transition_result"}
     )
@@ -115,6 +118,7 @@ def test_each_spec_carries_native_state_machine_contract():
     )
     assert contracts["lower_state_machine"].preserves.facts == mutating_preserved_facts
     assert contracts["lower_state_machine"].invalidates.facts == mutating_invalidated_facts
+    assert contracts["lower_state_machine"].safety == mutating_safety
     assert contracts["cleanup_residual_dispatcher"].preserves.analyses == (
         mutating_preserved_analyses
     )
@@ -127,6 +131,7 @@ def test_each_spec_carries_native_state_machine_contract():
     assert contracts["cleanup_residual_dispatcher"].invalidates.facts == (
         mutating_invalidated_facts
     )
+    assert contracts["cleanup_residual_dispatcher"].safety == mutating_safety
 
 
 def test_state_machine_specs_are_maturity_range_gated():

@@ -19,10 +19,10 @@ from d810.passes.pass_pipeline import (
     PassOutputs,
     PassPreserves,
     PassRequires,
+    PassSafety,
     PassScope,
     PassSpec,
     default,
-    golden,
     live_mba,
     no_caps,
 )
@@ -100,6 +100,7 @@ def _state_machine_contract(
     preserves_facts: frozenset[str] = frozenset(),
     invalidates_analyses: frozenset[str] = frozenset(),
     invalidates_facts: frozenset[str] = frozenset(),
+    safety: PassSafety = PassSafety(),
 ) -> PassContract:
     return PassContract(
         scope=PassScope.FUNCTION,
@@ -120,6 +121,7 @@ def _state_machine_contract(
             analyses=invalidates_analyses,
             facts=invalidates_facts,
         ),
+        safety=safety,
     )
 
 
@@ -145,6 +147,7 @@ MUTATING_STATE_MACHINE_PRESERVED_FACTS = frozenset(
     {"raw_instruction_addresses", "recovered_cfg_edge"}
 )
 MUTATING_STATE_MACHINE_INVALIDATED_FACTS = frozenset({"stale_cfg_shape"})
+MUTATING_STATE_MACHINE_SAFETY = PassSafety(policy="golden", requires_oracle=True)
 
 LOWER_CONTRACT = _state_machine_contract(
     requires_analyses=LOWER_ANALYSES.required,
@@ -160,12 +163,14 @@ LOWER_CONTRACT = _state_machine_contract(
     preserves_facts=MUTATING_STATE_MACHINE_PRESERVED_FACTS,
     invalidates_analyses=MUTATING_STATE_MACHINE_INVALIDATED_ANALYSES,
     invalidates_facts=MUTATING_STATE_MACHINE_INVALIDATED_FACTS,
+    safety=MUTATING_STATE_MACHINE_SAFETY,
 )
 CLEANUP_CONTRACT = _state_machine_contract(
     preserves_analyses=MUTATING_STATE_MACHINE_PRESERVED_ANALYSES,
     preserves_facts=MUTATING_STATE_MACHINE_PRESERVED_FACTS,
     invalidates_analyses=MUTATING_STATE_MACHINE_INVALIDATED_ANALYSES,
     invalidates_facts=MUTATING_STATE_MACHINE_INVALIDATED_FACTS,
+    safety=MUTATING_STATE_MACHINE_SAFETY,
 )
 
 
@@ -240,14 +245,14 @@ def standard_state_machine_passes() -> tuple[PassSpec, ...]:
             "lower_state_machine",
             LowerStateMachine,
             no_caps,
-            golden,
+            default,
             analyses=LOWER_ANALYSES,
         ),
         state_machine_pass_spec(
             "cleanup_residual_dispatcher",
             CleanupResidualDispatcher,
             no_caps,
-            golden,
+            default,
             analyses=CLEANUP_ANALYSES,
         ),
     )

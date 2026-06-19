@@ -31,7 +31,6 @@ from __future__ import annotations
 from d810.passes.pass_pipeline import (
     CapabilityPolicy,
     default,
-    golden,
     live_mba,
     no_caps,
 )
@@ -151,14 +150,14 @@ class ApproovFamily(StateMachineCffFamily):
                         ),
                     ),
                     emulation,
-                    golden,
+                    default,
                     analyses=LOWER_ANALYSES,
                 ),
                 state_machine_pass_spec(
                     "cleanup_residual_dispatcher",
                     CleanupResidualDispatcher,
                     no_caps,
-                    golden,
+                    default,
                     analyses=CLEANUP_ANALYSES,
                 ),
             )
