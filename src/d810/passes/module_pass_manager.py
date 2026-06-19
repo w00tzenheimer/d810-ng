@@ -10,6 +10,10 @@ from d810.passes.pipeline_config_parser import (
     pipeline_configs_from_project_config,
     pass_specs_from_project_config,
 )
+from d810.passes.pipeline_shadow import (
+    compare_pipeline_v2_shadow,
+    require_pipeline_v2_shadow_match,
+)
 from d810.passes.registry import PassRegistry, PassRegistryError
 
 
@@ -50,6 +54,32 @@ class ModulePassManager:
         return pass_specs_from_project_config(
             project_config,
             self.pass_registry_for(registry_name),
+        )
+
+    def compare_pipeline_v2_shadow(
+        self,
+        project_config,
+        registry_name: str,
+        live_specs,
+    ):
+        """Compare explicit ``pipeline_v2`` config against live family specs."""
+        return compare_pipeline_v2_shadow(
+            project_config=project_config,
+            registry=self.pass_registry_for(registry_name),
+            live_specs=tuple(live_specs),
+        )
+
+    def require_pipeline_v2_shadow_match(
+        self,
+        project_config,
+        registry_name: str,
+        live_specs,
+    ):
+        """Fail loud when explicit ``pipeline_v2`` config drifts from live specs."""
+        return require_pipeline_v2_shadow_match(
+            project_config=project_config,
+            registry=self.pass_registry_for(registry_name),
+            live_specs=tuple(live_specs),
         )
 
     def function_manager_for(self, func_ea: int) -> FunctionPassManager:
