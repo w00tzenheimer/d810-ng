@@ -275,7 +275,11 @@ def _instruction_control(
 ) -> InstructionControl | None:
     transfer = insn.control_transfer_kind
     if transfer is ControlTransferKind.CONDITIONAL_BRANCH:
-        return InstructionControl(transfer=transfer, predicate=insn.predicate_kind)
+        return InstructionControl(
+            transfer=transfer,
+            predicate=insn.predicate_kind,
+            target=_block_target_from(insn.d),
+        )
     if transfer is ControlTransferKind.TABLE_BRANCH:
         return InstructionControl(transfer=transfer, switch_cases=_switch_cases_from(insn))
     if transfer is ControlTransferKind.GOTO:

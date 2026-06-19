@@ -93,6 +93,7 @@ class UnsupportedLiftKind(str, Enum):
     BRANCH_SUCCESSOR_ARITY = "branch_successor_arity"
     BRANCH_PREDICATE_UNSUPPORTED = "branch_predicate_unsupported"
     BRANCH_ARITY = "branch_arity"
+    BRANCH_TARGET_UNSUPPORTED = "branch_target_unsupported"
     TABLE_ARITY = "table_arity"
     TABLE_CASES_MISSING = "table_cases_missing"
     TABLE_DEFAULT_MISSING = "table_default_missing"
@@ -720,6 +721,7 @@ class _Classifier:
                 )
             else:
                 self._check_matching_widths(block_serial, len(instructions) - 1, tail)
+            self._check_conditional_branch_targets(block_serial, len(instructions) - 1, tail)
             return
         if tail is not None and tail.operation is ControlTransferKind.TABLE_BRANCH:
             if len(tail.inputs) != 1:
@@ -818,6 +820,67 @@ class _Classifier:
                 None,
                 UnsupportedLiftKind.BLOCK_TERMINATOR_MISSING,
                 "multi-successor block needs conditional terminator",
+            )
+
+    def _check_conditional_branch_targets(
+        self,
+        block_serial: int,
+        instruction_index: int,
+        instruction: Instruction,
+    ) -> None:
+        block = self.flow_graph.blocks[block_serial]
+        control = instruction.control
+        succs = tuple(int(succ) for succ in block.succs)
+        if len(succs) != 2 or control is None:
+            return
+        if control.target is None:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.BRANCH_TARGET_UNSUPPORTED,
+                "conditional branch requires portable taken target",
+            )
+            return
+        target = int(control.target)
+        if target not in succs:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.BRANCH_TARGET_UNSUPPORTED,
+                "conditional branch target is not a block successor",
+            )
+            return
+        false_candidates = tuple(succ for succ in succs if succ != target)
+        if len(false_candidates) != 1:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.BRANCH_TARGET_UNSUPPORTED,
+                "conditional branch target must identify one taken edge",
+            )
+            return
+        if control.fallthrough is None:
+            return
+        fallthrough = int(control.fallthrough)
+        if fallthrough not in succs:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.BRANCH_TARGET_UNSUPPORTED,
+                "conditional branch fallthrough is not a block successor",
+            )
+            return
+        if fallthrough == target or fallthrough != false_candidates[0]:
+            self._add(
+                block_serial,
+                instruction_index,
+                instruction,
+                UnsupportedLiftKind.BRANCH_TARGET_UNSUPPORTED,
+                "conditional branch fallthrough conflicts with target/successors",
             )
 
 
@@ -1098,10 +1161,17 @@ class _Emitter:
         lines: list[str] = []
         lhs_ty, lhs = self._emit_value(instruction.inputs[0], lines)
         _rhs_ty, rhs = self._emit_value(instruction.inputs[1], lines)
-        pred = instruction.control.predicate if instruction.control is not None else None
+        assert instruction.control is not None
+        pred = instruction.control.predicate
+        true_target = int(instruction.control.target)
+        false_target = (
+            int(instruction.control.fallthrough)
+            if instruction.control.fallthrough is not None
+            else next(succ for succ in succs if int(succ) != true_target)
+        )
         icmp = self._tmp()
         lines.append(f"  {icmp} = icmp {_PREDICATES[pred]} {lhs_ty} {lhs}, {rhs}")
-        lines.append(f"  br i1 {icmp}, label %bb{succs[0]}, label %bb{succs[1]}")
+        lines.append(f"  br i1 {icmp}, label %bb{true_target}, label %bb{false_target}")
         return lines
 
     def _emit_table_branch(self, instruction: Instruction) -> list[str]:
