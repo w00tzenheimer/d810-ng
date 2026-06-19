@@ -24,6 +24,7 @@ from d810.passes.pass_pipeline import (
     FunctionPipelineContext,
     PassSpec,
     PreservedAnalyses,
+    SafetyPolicy,
     SchedulerPolicy,
 )
 from d810.passes.scheduler import PassScheduler, RunLaterDomain
@@ -265,6 +266,17 @@ def effective_preserved_analyses(
     return spec.preservation
 
 
+def effective_safety_policy(spec: PassSpec) -> SafetyPolicy:
+    """Return the mutation-boundary safety policy for a pass spec."""
+    if spec.safety_policy != SafetyPolicy():
+        return spec.safety_policy
+    safety = spec.contract.safety
+    return SafetyPolicy(
+        name=safety.policy,
+        golden_required=safety.requires_oracle,
+    )
+
+
 def _run_pass_spec(
     *,
     spec: PassSpec,
@@ -293,7 +305,7 @@ def _run_pass_spec(
     publish_contract_fact_outputs(spec, ctx, result)
     if _plan_has_work(result.rewrite_plan):
         new_graph = backend.apply(
-            result.rewrite_plan, ctx.source.live_source, spec.safety_policy
+            result.rewrite_plan, ctx.source.live_source, effective_safety_policy(spec)
         )
         if _graph_changed(ctx.graph, new_graph):
             facts.invalidate_to(new_graph, effective_preserved_analyses(spec, result))
