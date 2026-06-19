@@ -37,6 +37,7 @@ class AnalysisManager:
         self._live_fact_allowlist: frozenset[str] | None = None
         self._live_fact_blocklist: set[str] = set()
         self._evidence: dict[str, list[object]] = {}
+        self._live_evidence_visible = True
         self._providers: dict[str, Callable[[object], object]] = dict(
             providers or {}
         )
@@ -55,6 +56,7 @@ class AnalysisManager:
         self._input_facts = input_facts
         self._live_fact_allowlist = None
         self._live_fact_blocklist.clear()
+        self._live_evidence_visible = True
 
     def put_analysis(self, name: str, value: object) -> None:
         """Publish a pass result for later passes (the LLVM ``AnalysisManager.getResult`` edge)."""
@@ -102,11 +104,12 @@ class AnalysisManager:
     def get_evidence(self, name: str, default: object = None) -> object:
         """Return evidence named ``name`` from published evidence or live observations."""
         values = list(self._evidence.get(name, ()))
-        values.extend(
-            observation
-            for observation in self.active_observations
-            if name in contract_evidence_tokens(observation)
-        )
+        if self._live_evidence_visible:
+            values.extend(
+                observation
+                for observation in self.active_observations
+                if name in contract_evidence_tokens(observation)
+            )
         return tuple(values) if values else default
 
     def has_evidence(self, name: str) -> bool:
@@ -166,6 +169,8 @@ class AnalysisManager:
             for name, result in self._derived.items()
             if preserved.preserves(name)
         }
+        self._evidence.clear()
+        self._live_evidence_visible = False
 
     def invalidate_contract(self, contract) -> None:
         """Apply native contract invalidation separate from analysis preservation."""

@@ -747,6 +747,39 @@ def test_native_contract_required_evidence_accepts_explicit_published_token():
     _run_specs((spec,), facts=facts)
 
 
+def test_graph_changing_mutation_clears_evidence_before_later_requirement():
+    class _Mutator:
+        name = "mutator"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.has_evidence("branch_targets")
+            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+
+    class _NeedsEvidence:
+        name = "needs_evidence"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult()
+
+    facts = AnalysisManager(_GRAPH)
+    facts.put_evidence("branch_targets", object())
+    specs = (
+        PassSpec("mutator", _Mutator, no_caps, default),
+        PassSpec(
+            "needs_evidence",
+            _NeedsEvidence,
+            no_caps,
+            default,
+            contract=PassContract(
+                requires=PassRequires(evidence=frozenset({"branch_targets"}))
+            ),
+        ),
+    )
+
+    with pytest.raises(PassContractError, match="branch_targets"):
+        _run_specs(specs, facts=facts)
+
+
 def test_native_contract_output_fact_publishes_for_later_required_fact():
     fact = type("_Fact", (), {"kind": "state_transition"})()
 
@@ -1079,6 +1112,48 @@ def test_native_fact_preservation_does_not_preserve_analyses():
             preservation=PreservedAnalyses.none(),
             contract=PassContract(
                 preserves=PassPreserves(facts=frozenset({"raw_instruction_addresses"}))
+            ),
+        ),
+        PassSpec("reader", _Reader, no_caps, default),
+    )
+
+    _run_specs(specs, facts=facts)
+
+
+def test_preserved_fact_and_analysis_do_not_preserve_evidence_after_mutation():
+    class _Mutator:
+        name = "mutator"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+
+    class _Reader:
+        name = "reader"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.has_analysis("dominators")
+            assert ctx.facts.has_fact("raw_instruction_addresses")
+            assert not ctx.facts.has_evidence("branch_targets")
+            return PassResult()
+
+    facts = AnalysisManager(_GRAPH)
+    facts.put_analysis("dominators", "D")
+    facts.put_fact(
+        "raw_instruction_addresses",
+        type("_Fact", (), {"kind": "raw_instruction_addresses"})(),
+    )
+    facts.put_evidence("branch_targets", object())
+    specs = (
+        PassSpec(
+            "mutator",
+            _Mutator,
+            no_caps,
+            default,
+            contract=PassContract(
+                preserves=PassPreserves(
+                    analyses=frozenset({"dominators"}),
+                    facts=frozenset({"raw_instruction_addresses"}),
+                )
             ),
         ),
         PassSpec("reader", _Reader, no_caps, default),
