@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from d810.backends.llvm import (
+    LLVM_M2_CURATED_PIPELINE,
     LLVM_M2G_CURATED_PIPELINE,
     LLVM_M2A_STOCK_PIPELINE,
     LlvmOptimizationStatus,
@@ -106,6 +107,11 @@ def test_m2g_curated_pipeline_has_stable_pass_spec():
         "correlated-propagation,gvn,dse,aggressive-instcombine,"
         "simplifycfg<no-switch-to-lookup>,adce"
     )
+
+
+def test_m2_curated_pipeline_promotes_m2g_candidate_alias():
+    assert LLVM_M2_CURATED_PIPELINE is LLVM_M2G_CURATED_PIPELINE
+    assert LLVM_M2_CURATED_PIPELINE.pass_spec == LLVM_M2G_CURATED_PIPELINE.pass_spec
 
 
 def test_run_llvm_opt_pipeline_uses_curated_pass_spec_with_fake_opt(tmp_path):

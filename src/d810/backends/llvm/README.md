@@ -60,16 +60,29 @@ M2g curated pipeline trial:
 - `LLVM_M2G_CURATED_PIPELINE` is an opt-in curated stock candidate with SSA
   promotion and extra scalar cleanup passes:
   `sroa,mem2reg,early-cse,instcombine,reassociate,sccp,correlated-propagation,gvn,dse,aggressive-instcombine,simplifycfg<no-switch-to-lookup>,adce`.
-- The existing `LLVM_M2A_STOCK_PIPELINE` default remains unchanged. M2g is a
-  comparison/trial path until live evidence justifies a deliberate promotion.
+- M2g was the comparison/trial path that measured the candidate against the
+  historical M2a stock baseline before changing composed M2 defaults.
 - Docker LLVM 19 does not accept every newer `simplifycfg` option. The M2g
   candidate therefore uses the supported constrained `no-switch-to-lookup`
   option rather than silently dropping unavailable pass parameters.
 - The live comparison selector requires every supported curated row to verify,
   no aggregate regression in instruction/load/store/alloca counts, and at least
-  one aggregate metric improvement over the default M2 pipeline. This remains
-  LLVM-level evidence only; live native oracle/decompile parity is still not
-  proven and full M2 remains open.
+  one aggregate metric improvement over the historical M2a stock pipeline. This
+  remains LLVM-level evidence only; live native oracle/decompile parity is still
+  not proven and full M2 remains open.
+
+M2h curated default promotion:
+
+- `LLVM_M2_CURATED_PIPELINE` is the promoted alias for
+  `LLVM_M2G_CURATED_PIPELINE`.
+- `run_llvm_m2_pipeline()` now defaults to `LLVM_M2_CURATED_PIPELINE`, so the
+  composed M2 runner applies d810 MBA/Z3 custom passes and the curated stock
+  pipeline by default.
+- `LLVM_M2A_STOCK_PIPELINE` remains available as the historical/baseline stock
+  pipeline, and the lower-level `run_llvm_opt_pipeline()` default remains M2a
+  for direct stock-opt tests and comparisons.
+- Full M2 remains open until live oracle/drift coverage is real; this promotion
+  is not a native Hex-Rays pseudocode parity claim.
 
 M2b d810 MBA/Z3 custom pass socket:
 

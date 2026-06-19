@@ -99,6 +99,8 @@ LLVM_M2G_CURATED_PIPELINE = LlvmOptPipeline(
     ),
 )
 
+LLVM_M2_CURATED_PIPELINE = LLVM_M2G_CURATED_PIPELINE
+
 _LABEL_RE = re.compile(r"^[A-Za-z$._-][A-Za-z0-9$._-]*:\s*(?:;.*)?$")
 _TERMINATORS = ("ret ", "br ", "switch ", "indirectbr ", "invoke ", "resume ", "unreachable")
 
