@@ -34,6 +34,8 @@ class AnalysisManager:
         self._input_facts = input_facts
         self._derived: dict[str, object] = {}
         self._facts: dict[str, list[object]] = {}
+        self._live_fact_allowlist: frozenset[str] | None = None
+        self._live_fact_blocklist: set[str] = set()
         self._evidence: dict[str, list[object]] = {}
         self._providers: dict[str, Callable[[object], object]] = dict(
             providers or {}
@@ -51,6 +53,8 @@ class AnalysisManager:
     def set_input_facts(self, input_facts: object | None) -> None:
         """Replace the live fact view for the next pipeline pass run."""
         self._input_facts = input_facts
+        self._live_fact_allowlist = None
+        self._live_fact_blocklist.clear()
 
     def put_analysis(self, name: str, value: object) -> None:
         """Publish a pass result for later passes (the LLVM ``AnalysisManager.getResult`` edge)."""
@@ -66,13 +70,21 @@ class AnalysisManager:
         values.extend(
             observation
             for observation in self.active_observations
-            if getattr(observation, "kind", None) == name
+            if self._live_observation_fact_visible(name, observation)
         )
         return tuple(values) if values else default
 
     def has_fact(self, name: str) -> bool:
         """Return whether ``name`` is available as a published or live observation fact."""
         return self.get_fact(name, default=None) is not None
+
+    def _live_observation_fact_visible(self, name: str, observation: object) -> bool:
+        """Return whether a live observation can satisfy fact ``name``."""
+        if getattr(observation, "kind", None) != name:
+            return False
+        if name in self._live_fact_blocklist:
+            return False
+        return self._live_fact_allowlist is None or name in self._live_fact_allowlist
 
     def put_evidence(self, name: str, value: object = True) -> None:
         """Publish an evidence token for later native contract checks."""
@@ -151,5 +163,18 @@ class AnalysisManager:
         for name in contract.invalidates.analyses:
             self._cache.pop(name, None)
             self._derived.pop(name, None)
+        if contract.preserves.facts:
+            preserved_facts = frozenset(contract.preserves.facts)
+            self._facts = {
+                name: facts
+                for name, facts in self._facts.items()
+                if name in preserved_facts
+            }
+            self._live_fact_allowlist = (
+                preserved_facts
+                if self._live_fact_allowlist is None
+                else self._live_fact_allowlist & preserved_facts
+            )
         for name in contract.invalidates.facts:
             self._facts.pop(name, None)
+            self._live_fact_blocklist.add(name)
