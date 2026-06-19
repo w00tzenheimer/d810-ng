@@ -32,6 +32,8 @@ class AnalysisManager:
         # observations (resolve_state_transitions) see them through this manager transparently.
         self._input_facts = input_facts
         self._derived: dict[str, object] = {}
+        self._facts: dict[str, list[object]] = {}
+        self._evidence: dict[str, list[object]] = {}
         self._providers: dict[str, Callable[[object], object]] = dict(
             providers or {}
         )
@@ -52,6 +54,42 @@ class AnalysisManager:
     def put_analysis(self, name: str, value: object) -> None:
         """Publish a pass result for later passes (the LLVM ``AnalysisManager.getResult`` edge)."""
         self._derived[name] = value
+
+    def put_fact(self, name: str, value: object) -> None:
+        """Publish a typed deobfuscation fact for later native contract checks."""
+        self._facts.setdefault(str(name), []).append(value)
+
+    def get_fact(self, name: str, default: object = None) -> object:
+        """Return facts named ``name`` from published facts or live observations."""
+        values = list(self._facts.get(name, ()))
+        values.extend(
+            observation
+            for observation in self.active_observations
+            if getattr(observation, "kind", None) == name
+        )
+        return tuple(values) if values else default
+
+    def has_fact(self, name: str) -> bool:
+        """Return whether ``name`` is available as a published or live observation fact."""
+        return self.get_fact(name, default=None) is not None
+
+    def put_evidence(self, name: str, value: object = True) -> None:
+        """Publish an evidence token for later native contract checks."""
+        self._evidence.setdefault(str(name), []).append(value)
+
+    def get_evidence(self, name: str, default: object = None) -> object:
+        """Return evidence named ``name`` from published evidence or live observations."""
+        values = list(self._evidence.get(name, ()))
+        values.extend(
+            observation
+            for observation in self.active_observations
+            if name in _observation_evidence_tokens(observation)
+        )
+        return tuple(values) if values else default
+
+    def has_evidence(self, name: str) -> bool:
+        """Return whether ``name`` is available as published or observation evidence."""
+        return self.get_evidence(name, default=None) is not None
 
     def register_provider(
         self, name: str, compute: Callable[[object], object]
@@ -106,3 +144,25 @@ class AnalysisManager:
             for name, result in self._derived.items()
             if preserved.preserves(name)
         }
+
+    def invalidate_contract(self, contract) -> None:
+        """Apply native contract invalidation separate from analysis preservation."""
+        for name in contract.invalidates.analyses:
+            self._cache.pop(name, None)
+            self._derived.pop(name, None)
+        for name in contract.invalidates.facts:
+            self._facts.pop(name, None)
+
+
+def _observation_evidence_tokens(observation: object) -> frozenset[str]:
+    evidence = getattr(observation, "evidence", ())
+    if evidence is None:
+        return frozenset()
+    if isinstance(evidence, str):
+        return frozenset({evidence})
+    if isinstance(evidence, Mapping):
+        return frozenset(str(key) for key in evidence)
+    try:
+        return frozenset(str(item) for item in evidence)
+    except TypeError:
+        return frozenset({str(evidence)})

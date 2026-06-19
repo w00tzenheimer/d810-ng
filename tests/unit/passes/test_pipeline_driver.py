@@ -13,9 +13,15 @@ from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.pass_pipeline import (
     AnalysisContract,
     BackendRoute,
+    FactRequirement,
     FunctionPipelineContext,
+    PassContract,
+    PassInvalidates,
+    PassOutputs,
     PassResult,
+    PassRequires,
     PassSpec,
+    PassPreserves,
     PreservedAnalyses,
     SafetyPolicy,
     SchedulerPolicy,
@@ -29,6 +35,7 @@ from d810.passes.driver import (
     AnalysisContractError,
     BackendRouteError,
     CapabilityError,
+    PassContractError,
     run_pipeline,
     validate_capabilities,
 )
@@ -115,6 +122,31 @@ class _MatchingHodur:
 
     def pipeline_for(self, match, context):
         return HodurFamily().pipeline_for(match, context)
+
+
+def _run_specs(
+    specs: tuple[PassSpec, ...],
+    *,
+    facts=None,
+    backend=None,
+):
+    class _OneShot:
+        name = "one_shot"
+
+        def detect(self, graph, capabilities, context=None):
+            return object()
+
+        def pipeline_for(self, match, context):
+            return specs
+
+    return run_pipeline(
+        source=_Src(),
+        family=_OneShot(),
+        backend=backend if backend is not None else _Backend(),
+        facts=facts if facts is not None else AnalysisManager(_GRAPH),
+        project_config=None,
+        maturity=IRMaturity.CANONICAL,
+    )
 
 
 def test_run_pipeline_runs_all_five_passes_no_apply_on_empty_plans():
@@ -295,6 +327,318 @@ def test_required_analysis_provider_runs():
 
     assert out is _GRAPH
     assert calls == [_GRAPH]
+
+
+def test_native_contract_required_analysis_missing_raises_contract_error():
+    class _NeedsDomtree:
+        name = "needs_domtree"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult()
+
+    spec = PassSpec(
+        "needs_domtree",
+        _NeedsDomtree,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(analyses=frozenset({"domtree"}))
+        ),
+    )
+
+    with pytest.raises(PassContractError, match="analyses"):
+        _run_specs((spec,))
+
+
+def test_native_contract_required_analysis_provider_runs():
+    calls: list[object] = []
+
+    class _NeedsDomtree:
+        name = "needs_domtree"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.get_analysis("domtree") == "D"
+            return PassResult()
+
+    spec = PassSpec(
+        "needs_domtree",
+        _NeedsDomtree,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(analyses=frozenset({"domtree"}))
+        ),
+    )
+    facts = AnalysisManager(
+        _GRAPH,
+        providers={"domtree": lambda graph: calls.append(graph) or "D"},
+    )
+
+    _run_specs((spec,), facts=facts)
+
+    assert calls == [_GRAPH]
+
+
+def test_native_contract_required_fact_missing_raises_contract_error():
+    class _NeedsFact:
+        name = "needs_fact"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult()
+
+    spec = PassSpec(
+        "needs_fact",
+        _NeedsFact,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(
+                facts=FactRequirement(required=frozenset({"state_transition"}))
+            )
+        ),
+    )
+
+    with pytest.raises(PassContractError, match="facts"):
+        _run_specs((spec,))
+
+
+def test_native_contract_required_fact_accepts_live_observation_kind():
+    observation = type("_Obs", (), {"kind": "state_transition"})()
+
+    class _NeedsFact:
+        name = "needs_fact"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.has_fact("state_transition")
+            return PassResult()
+
+    spec = PassSpec(
+        "needs_fact",
+        _NeedsFact,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(
+                facts=FactRequirement(required=frozenset({"state_transition"}))
+            )
+        ),
+    )
+    facts = AnalysisManager(
+        _GRAPH,
+        input_facts=type("_Facts", (), {"active_observations": (observation,)})(),
+    )
+
+    _run_specs((spec,), facts=facts)
+
+
+def test_native_contract_optional_fact_missing_still_runs():
+    ran = False
+
+    class _OptionalFact:
+        name = "optional_fact"
+
+        def run(self, ctx) -> PassResult:
+            nonlocal ran
+            ran = True
+            return PassResult()
+
+    spec = PassSpec(
+        "optional_fact",
+        _OptionalFact,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(
+                facts=FactRequirement(optional=frozenset({"carrier_store_candidates"}))
+            )
+        ),
+    )
+
+    _run_specs((spec,))
+
+    assert ran is True
+
+
+def test_native_contract_required_evidence_missing_raises_contract_error():
+    class _NeedsEvidence:
+        name = "needs_evidence"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult()
+
+    spec = PassSpec(
+        "needs_evidence",
+        _NeedsEvidence,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(evidence=frozenset({"dispatcher_predicates"}))
+        ),
+    )
+
+    with pytest.raises(PassContractError, match="evidence"):
+        _run_specs((spec,))
+
+
+def test_native_contract_required_evidence_accepts_live_observation_token():
+    observation = type(
+        "_Obs",
+        (),
+        {"evidence": ("dispatcher_predicates",)},
+    )()
+
+    class _NeedsEvidence:
+        name = "needs_evidence"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.has_evidence("dispatcher_predicates")
+            return PassResult()
+
+    spec = PassSpec(
+        "needs_evidence",
+        _NeedsEvidence,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(evidence=frozenset({"dispatcher_predicates"}))
+        ),
+    )
+    facts = AnalysisManager(
+        _GRAPH,
+        input_facts=type("_Facts", (), {"active_observations": (observation,)})(),
+    )
+
+    _run_specs((spec,), facts=facts)
+
+
+def test_native_contract_output_fact_publishes_for_later_required_fact():
+    fact = type("_Fact", (), {"kind": "state_transition"})()
+
+    class _PublishFact:
+        name = "publish_fact"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(facts=(fact,))
+
+    class _NeedsFact:
+        name = "needs_fact"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.get_fact("state_transition") == (fact,)
+            return PassResult()
+
+    specs = (
+        PassSpec(
+            "publish_fact",
+            _PublishFact,
+            no_caps,
+            default,
+            contract=PassContract(
+                outputs=PassOutputs(facts=frozenset({"state_transition"}))
+            ),
+        ),
+        PassSpec(
+            "needs_fact",
+            _NeedsFact,
+            no_caps,
+            default,
+            contract=PassContract(
+                requires=PassRequires(
+                    facts=FactRequirement(required=frozenset({"state_transition"}))
+                )
+            ),
+        ),
+    )
+
+    _run_specs(specs)
+
+
+def test_native_contract_output_fact_rejects_unexpected_kind():
+    class _PublishFact:
+        name = "publish_fact"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(facts=(type("_Fact", (), {"kind": "unexpected"})(),))
+
+    spec = PassSpec(
+        "publish_fact",
+        _PublishFact,
+        no_caps,
+        default,
+        contract=PassContract(
+            outputs=PassOutputs(facts=frozenset({"state_transition"}))
+        ),
+    )
+
+    with pytest.raises(PassContractError, match="undeclared contract facts"):
+        _run_specs((spec,))
+
+
+def test_native_contract_output_fact_rejects_missing_kind():
+    class _PublishFact:
+        name = "publish_fact"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(facts=(object(),))
+
+    spec = PassSpec(
+        "publish_fact",
+        _PublishFact,
+        no_caps,
+        default,
+        contract=PassContract(
+            outputs=PassOutputs(facts=frozenset({"state_transition"}))
+        ),
+    )
+
+    with pytest.raises(PassContractError, match="without a kind"):
+        _run_specs((spec,))
+
+
+def test_native_contract_invalidation_drops_fact_while_preserving_analysis():
+    class _Mutator:
+        name = "mutator"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+
+    class _Reader:
+        name = "reader"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.has_analysis("dominators")
+            assert not ctx.facts.has_fact("state_transition")
+            return PassResult()
+
+    facts = AnalysisManager(_GRAPH)
+    facts.put_analysis("dominators", "D")
+    facts.put_fact("state_transition", type("_Fact", (), {"kind": "state_transition"})())
+    specs = (
+        PassSpec(
+            "mutator",
+            _Mutator,
+            no_caps,
+            default,
+            preservation=PreservedAnalyses.preserving({"dominators"}),
+            contract=PassContract(
+                preserves=PassPreserves(analyses=frozenset({"dominators"})),
+                invalidates=PassInvalidates(facts=frozenset({"state_transition"})),
+            ),
+        ),
+        PassSpec("reader", _Reader, no_caps, default),
+    )
+
+    _run_specs(specs, facts=facts)
+
+
+def test_legacy_pass_result_facts_without_native_contract_remain_allowed():
+    class _LegacyFactPass:
+        name = "legacy_fact_pass"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(facts=(object(),))
+
+    _run_specs((PassSpec("legacy_fact_pass", _LegacyFactPass, no_caps, default),))
 
 
 def test_declared_analysis_output_is_visible_to_later_pass():

@@ -38,6 +38,10 @@ class AnalysisContractError(RuntimeError):
     """A pass violated its declared analysis contract."""
 
 
+class PassContractError(RuntimeError):
+    """A pass violated its native analysis/evidence/fact contract."""
+
+
 class BackendRouteError(RuntimeError):
     """A pass produced work incompatible with its declared backend route."""
 
@@ -104,6 +108,74 @@ def validate_required_analyses(spec: PassSpec, ctx: FunctionPipelineContext) -> 
         )
 
 
+def _require_contract_methods(
+    facts,
+    *,
+    pass_id: str,
+    method_names: tuple[str, ...],
+) -> None:
+    missing = tuple(name for name in method_names if not hasattr(facts, name))
+    if missing:
+        raise PassContractError(
+            f"pass {pass_id!r} declares native pass contracts but facts view "
+            f"does not support {sorted(missing)}"
+        )
+
+
+def validate_native_contract(spec: PassSpec, ctx: FunctionPipelineContext) -> None:
+    """Fail loud when native pass-contract prerequisites are unavailable."""
+    contract = spec.contract
+    method_names: list[str] = []
+    if contract.requires.analyses:
+        method_names.append("has_analysis")
+    if contract.requires.facts.required:
+        method_names.append("has_fact")
+    if contract.requires.evidence:
+        method_names.append("has_evidence")
+    if not method_names:
+        return
+
+    _require_contract_methods(
+        ctx.facts,
+        pass_id=spec.pass_id,
+        method_names=tuple(method_names),
+    )
+
+    missing_analyses = tuple(
+        sorted(
+            name
+            for name in contract.requires.analyses
+            if not ctx.facts.has_analysis(name)
+        )
+    )
+    missing_facts = tuple(
+        sorted(
+            name
+            for name in contract.requires.facts.required
+            if not ctx.facts.has_fact(name)
+        )
+    )
+    missing_evidence = tuple(
+        sorted(
+            name
+            for name in contract.requires.evidence
+            if not ctx.facts.has_evidence(name)
+        )
+    )
+    if missing_analyses or missing_facts or missing_evidence:
+        parts: list[str] = []
+        if missing_analyses:
+            parts.append(f"analyses {list(missing_analyses)}")
+        if missing_facts:
+            parts.append(f"facts {list(missing_facts)}")
+        if missing_evidence:
+            parts.append(f"evidence {list(missing_evidence)}")
+        raise PassContractError(
+            f"pass {spec.pass_id!r} missing native contract requirements: "
+            + "; ".join(parts)
+        )
+
+
 def validate_analysis_outputs(spec: PassSpec, result) -> None:
     """Fail when a pass publishes undeclared typed analysis outputs."""
     if not result.analysis_outputs:
@@ -112,6 +184,33 @@ def validate_analysis_outputs(spec: PassSpec, result) -> None:
     if undeclared:
         raise AnalysisContractError(
             f"pass {spec.pass_id!r} published undeclared analyses "
+            f"{sorted(undeclared)}"
+        )
+
+
+def validate_contract_fact_outputs(spec: PassSpec, result) -> None:
+    """Fail when a native-contract pass publishes undeclared or anonymous facts."""
+    declared = spec.contract.outputs.facts
+    if not declared:
+        return
+
+    undeclared: list[str] = []
+    anonymous = 0
+    for fact in result.facts:
+        kind = getattr(fact, "kind", None)
+        if kind is None:
+            anonymous += 1
+            continue
+        if str(kind) not in declared:
+            undeclared.append(str(kind))
+
+    if anonymous:
+        raise PassContractError(
+            f"pass {spec.pass_id!r} published facts without a kind"
+        )
+    if undeclared:
+        raise PassContractError(
+            f"pass {spec.pass_id!r} published undeclared contract facts "
             f"{sorted(undeclared)}"
         )
 
@@ -127,6 +226,21 @@ def publish_analysis_outputs(
     )
     for name, value in result.analysis_outputs.items():
         ctx.facts.put_analysis(name, value)
+
+
+def publish_contract_fact_outputs(
+    spec: PassSpec,
+    ctx: FunctionPipelineContext,
+    result,
+) -> None:
+    """Publish declared native-contract facts through the analysis manager edge."""
+    if not spec.contract.outputs.facts or not result.facts:
+        return
+    _require_contract_methods(
+        ctx.facts, pass_id=spec.pass_id, method_names=("put_fact",)
+    )
+    for fact in result.facts:
+        ctx.facts.put_fact(str(getattr(fact, "kind")), fact)
 
 
 def validate_backend_route(spec: PassSpec, result) -> None:
@@ -157,8 +271,10 @@ def _run_pass_spec(
 ) -> FunctionPipelineContext:
     validate_capabilities(backend, spec.requirements)
     validate_required_analyses(spec, ctx)
+    validate_native_contract(spec, ctx)
     result = spec.pass_factory().run(ctx)
     validate_analysis_outputs(spec, result)
+    validate_contract_fact_outputs(spec, result)
     validate_backend_route(spec, result)
     if scheduler is not None:
         for request in result.run_later:
@@ -170,12 +286,15 @@ def _run_pass_spec(
                 domain=RunLaterDomain.PIPELINE_PASS,
             )
     publish_analysis_outputs(spec, ctx, result)
+    publish_contract_fact_outputs(spec, ctx, result)
     if _plan_has_work(result.rewrite_plan):
         new_graph = backend.apply(
             result.rewrite_plan, ctx.source.live_source, spec.safety_policy
         )
         if _graph_changed(ctx.graph, new_graph):
             facts.invalidate_to(new_graph, effective_preserved_analyses(spec, result))
+            if hasattr(facts, "invalidate_contract"):
+                facts.invalidate_contract(spec.contract)
             ctx = replace(ctx, graph=new_graph)
     return ctx
 
