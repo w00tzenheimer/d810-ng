@@ -55,6 +55,29 @@ M2a stock optimization policy:
   `aggressive-instcombine`, and constrained `simplifycfg`) and then add the
   d810 MBA/Z3 Souper-role passes.
 
+M2b d810 MBA/Z3 custom pass socket:
+
+- `d810.backends.llvm.custom_passes` is the first IDA-free socket for sequencing
+  d810-verified MBA rewrites around the stock `opt` runner.
+- The socket is intentionally Python-side textual/DTO infrastructure, not a
+  compiled LLVM plugin and not a runtime project-config cutover.
+- The first pass is `d810_mba_xor_or_sub_and`, backed by the existing
+  `Xor_HackersDelightRule_1` identity from d810's MBA rule surface:
+  `(x | y) - (x & y) => x ^ y`.
+- Before rewriting, the pass proves the identity for the concrete scalar integer
+  width through `d810.backends.mba.z3.prove_equivalence()` over the pure
+  `d810.mba.dsl` expression tree. If the proof is unavailable or fails, the pass
+  returns structured failure diagnostics and leaves the IR unchanged.
+- The supported LLVM text shape is deliberately constrained to same-width scalar
+  SSA instructions:
+  `%or = or iN %x, %y`; `%and = and iN %x, %y`; `%out = sub iN %or, %and`.
+  Constants, vector/pointer types, width mismatches, operand-order mismatches,
+  missing producers, and unsupported custom pass IDs fail closed or produce
+  explicit no-change results.
+- This socket proves the d810 MBA/Z3 layer can be sequenced with M2a stock `opt`.
+  Full M2 remains open for the broader curated pipeline, stronger MBA/Z3
+  predicate folding, measured live collapse coverage, and oracle drift gates.
+
 M3a lower-back contract policy:
 
 - `d810.backends.llvm.lower_back_contract` is an IDA-free risk-reduction
