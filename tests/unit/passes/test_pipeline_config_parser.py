@@ -13,6 +13,7 @@ from d810.families.state_machine_cff.pipeline import (
 from d810.passes.pass_pipeline import BackendRoute, PipelineConfigError
 from d810.passes.pipeline_config_parser import (
     pipeline_configs_from_project_config,
+    pipeline_v2_shadow_match_required,
     pass_specs_from_project_config,
 )
 from d810.passes.pipeline_shadow import (
@@ -71,6 +72,45 @@ def test_missing_pipeline_v2_is_inert_for_existing_project_configs():
     assert pipeline_configs_from_project_config({}) == ()
     project = SimpleNamespace(additional_configuration={"enable_pass_pipeline": True})
     assert pipeline_configs_from_project_config(project) == ()
+
+
+def test_pipeline_v2_shadow_match_required_defaults_false_when_missing():
+    assert pipeline_v2_shadow_match_required({}) is False
+    project = SimpleNamespace(additional_configuration={"enable_pass_pipeline": True})
+    assert pipeline_v2_shadow_match_required(project) is False
+
+
+def test_pipeline_v2_shadow_match_required_reads_plain_mapping_and_project_object():
+    assert (
+        pipeline_v2_shadow_match_required(
+            {"require_pipeline_v2_shadow_match": True}
+        )
+        is True
+    )
+    project = SimpleNamespace(
+        additional_configuration={"require_pipeline_v2_shadow_match": False}
+    )
+    assert pipeline_v2_shadow_match_required(project) is False
+
+
+@pytest.mark.parametrize("value", ["true", 1, [], {}])
+def test_pipeline_v2_shadow_match_required_rejects_non_boolean_values(value):
+    with pytest.raises(
+        PipelineConfigError,
+        match="require_pipeline_v2_shadow_match must be a boolean",
+    ):
+        pipeline_v2_shadow_match_required(
+            {"require_pipeline_v2_shadow_match": value}
+        )
+
+
+def test_pipeline_v2_shadow_match_required_rejects_malformed_project_config():
+    project = SimpleNamespace(additional_configuration=[])
+    with pytest.raises(
+        PipelineConfigError,
+        match="project additional_configuration must be a mapping",
+    ):
+        pipeline_v2_shadow_match_required(project)
 
 
 def test_pipeline_v2_shadow_parse_from_project_like_object():
