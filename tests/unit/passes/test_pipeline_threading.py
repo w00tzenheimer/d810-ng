@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from d810.analyses.value_flow.contract_evidence import contract_evidence_payload
 from d810.ir.flowgraph import (
     BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot, MopSnapshot, OperandKind,
@@ -14,7 +16,7 @@ from d810.ir.flowgraph import (
 from d810.ir.semantics import PredicateKind
 from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.pass_pipeline import FunctionPipelineContext
-from d810.passes.driver import run_pipeline
+from d810.passes.driver import PassContractError, run_pipeline
 from d810.families.state_machine_cff.pipeline import standard_state_machine_passes
 from d810.ir.maturity import IRMaturity
 from d810.transforms.plan import PatchPlan
@@ -114,6 +116,16 @@ class _StandardFamily:
         return standard_state_machine_passes()
 
 
+class _TransitionOnlyFamily:
+    name = "transition-only"
+
+    def detect(self, graph, capabilities, context=None):
+        return object()
+
+    def pipeline_for(self, match, context):
+        return (standard_state_machine_passes()[1],)
+
+
 def test_map_threads_from_pass1_to_pass2_and_resolves():
     am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
     ctx = _ctx(am.graph, am.view())
@@ -188,6 +200,25 @@ def test_run_pipeline_publishes_state_machine_contract_facts():
     assert am.has_fact("recovered_cfg_edge")
     assert am.get_fact("dispatcher_family")[0].value.dispatch_map is not None
     assert am.get_fact("state_transition")[0].kind == "state_transition"
+    assert am.has_evidence("branch_targets")
+
+
+def test_transition_contract_requires_published_branch_target_evidence():
+    am = AnalysisManager(
+        _chain_graph(),
+        input_facts=_input_facts(),
+    )
+    am.put_analysis("recover_dispatcher", object())
+
+    with pytest.raises(PassContractError, match="branch_targets"):
+        run_pipeline(
+            source=_Src(),
+            family=_TransitionOnlyFamily(),
+            backend=_Backend(),
+            facts=am,
+            project_config=None,
+            maturity=IRMaturity.GLOBAL_ANALYZED,
+        )
 
 
 def test_out_of_range_maturity_skips_state_machine_contract_specs():
