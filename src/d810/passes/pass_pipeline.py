@@ -652,6 +652,14 @@ class PassResult:
         return self._preserved_explicit
 
 
+@dataclass(frozen=True)
+class PassFact:
+    """Typed fact wrapper for native pass-contract fact flow."""
+
+    kind: str
+    value: object
+
+
 @runtime_checkable
 class PipelinePass(Protocol):
     name: str

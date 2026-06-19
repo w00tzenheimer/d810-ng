@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from d810.core.typing import ClassVar
 from d810.passes.pass_pipeline import (
     FunctionPipelineContext,
+    PassFact,
     PassResult,
     PreservedAnalyses, PipelinePass,
 )
@@ -317,7 +318,7 @@ class RecoverDispatcher(PipelinePass):
         _publish(context, "dispatcher_model", model)
         analysis_outputs["dispatcher_model"] = model
         return PassResult(
-            facts=(recovery,),
+            facts=(PassFact("dispatcher_family", recovery),),
             preserved=PreservedAnalyses.all(),
             analysis_outputs=analysis_outputs,
         )
@@ -363,7 +364,7 @@ class RecoverStateTransitions(PipelinePass):
         _publish(context, self.name, resolutions)
         _publish(context, "transition_result", transition_result)
         return PassResult(
-            facts=(resolutions, transition_result),
+            facts=(PassFact("state_transition", transition_result),),
             preserved=PreservedAnalyses.all(),
             analysis_outputs=analysis_outputs,
         )
@@ -383,7 +384,7 @@ class PlanSemanticRegions(PipelinePass):
         )
         _publish(context, self.name, regions)
         return PassResult(
-            facts=(regions,),
+            facts=(PassFact("semantic_region", regions),),
             preserved=PreservedAnalyses.all(),
             analysis_outputs={self.name: regions},
         )
@@ -549,6 +550,7 @@ class LowerStateMachine(PipelinePass):
             plan_metadata = plan.metadata_dict()
             _publish(context, LOWER_STATE_MACHINE_PLAN_METADATA, plan_metadata)
             return PassResult(
+                facts=(PassFact("recovered_cfg_edge", plan_metadata),),
                 rewrite_plan=plan,
                 preserved=PreservedAnalyses.none(),
                 analysis_outputs={LOWER_STATE_MACHINE_PLAN_METADATA: plan_metadata},
@@ -571,6 +573,7 @@ class LowerStateMachine(PipelinePass):
         )
         _publish(context, LOWER_STATE_MACHINE_PLAN_METADATA, {})
         return PassResult(
+            facts=(PassFact("recovered_cfg_edge", {}),),
             rewrite_plan=plan,
             preserved=PreservedAnalyses.none(),
             analysis_outputs={LOWER_STATE_MACHINE_PLAN_METADATA: {}},

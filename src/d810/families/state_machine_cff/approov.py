@@ -30,7 +30,6 @@ from __future__ import annotations
 
 from d810.passes.pass_pipeline import (
     CapabilityPolicy,
-    PassSpec,
     default,
     golden,
     live_mba,
@@ -53,6 +52,7 @@ from d810.families.state_machine_cff.pipeline import (
     LOWER_ANALYSES,
     REGION_ANALYSES,
     TRANSITION_ANALYSES,
+    state_machine_pass_spec,
     standard_state_machine_passes,
 )
 
@@ -121,28 +121,28 @@ class ApproovFamily(StateMachineCffFamily):
             is TableProvenance.INDIRECT_JUMP_TABLE
         ):
             return (
-                PassSpec(
+                state_machine_pass_spec(
                     "recover_dispatcher",
                     RecoverDispatcher,
                     live_mba,
                     default,
                     analyses=DISPATCHER_ANALYSES,
                 ),
-                PassSpec(
+                state_machine_pass_spec(
                     "recover_state_transitions",
                     RecoverStateTransitions,
                     emulation,
                     default,
                     analyses=TRANSITION_ANALYSES,
                 ),
-                PassSpec(
+                state_machine_pass_spec(
                     "plan_semantic_regions",
                     PlanSemanticRegions,
                     no_caps,
                     default,
                     analyses=REGION_ANALYSES,
                 ),
-                PassSpec(
+                state_machine_pass_spec(
                     "lower_state_machine",
                     lambda: LowerStateMachine(
                         configured_kind=RouterKind.TABLE,
@@ -154,7 +154,7 @@ class ApproovFamily(StateMachineCffFamily):
                     golden,
                     analyses=LOWER_ANALYSES,
                 ),
-                PassSpec(
+                state_machine_pass_spec(
                     "cleanup_residual_dispatcher",
                     CleanupResidualDispatcher,
                     no_caps,

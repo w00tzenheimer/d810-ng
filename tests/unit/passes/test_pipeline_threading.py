@@ -13,6 +13,9 @@ from d810.ir.flowgraph import (
 from d810.ir.semantics import PredicateKind
 from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.pass_pipeline import FunctionPipelineContext
+from d810.passes.driver import run_pipeline
+from d810.families.state_machine_cff.pipeline import standard_state_machine_passes
+from d810.ir.maturity import IRMaturity
 from d810.transforms.plan import PatchPlan
 from d810.passes.unflatten.state_machine import (
     CleanupResidualDispatcher,
@@ -64,12 +67,36 @@ def _ctx(graph, facts):
         source=None, graph=graph, maturity=None, project_config=None, facts=facts)
 
 
+class _Src:
+    flow_graph = _chain_graph()
+    func_ea = 0x1000
+    live_source = None
+
+
+class _Backend:
+    def capabilities(self):
+        return frozenset({"live_mba"})
+
+    def apply(self, plan, live_source, safety_policy):
+        return _chain_graph()
+
+
+class _StandardFamily:
+    name = "standard"
+
+    def detect(self, graph, capabilities, context=None):
+        return object()
+
+    def pipeline_for(self, match, context):
+        return standard_state_machine_passes()
+
+
 def test_map_threads_from_pass1_to_pass2_and_resolves():
     am = AnalysisManager(_chain_graph(), input_facts=SimpleNamespace(active_observations=(_obs(),)))
     ctx = _ctx(am.graph, am.view())
     RecoverDispatcher().run(ctx)                 # publishes the dispatcher map
     result = RecoverStateTransitions().run(ctx)  # pulls it, resolves through it
-    resolutions = result.facts[0]
+    resolutions = result.analysis_outputs["recover_state_transitions"]
     assert len(resolutions) == 1
     assert resolutions[0].resolved_next_block_serial == 1  # C1 -> handler 1 via #1's map
     assert resolutions[0].resolution_reason == "resolved_exact_state"
@@ -92,11 +119,53 @@ def test_full_five_pass_chain_threads_and_completes():
     assert results[4].rewrite_plan == PatchPlan()  # cleanup_residual_dispatcher
 
 
+def test_run_pipeline_publishes_state_machine_contract_facts():
+    am = AnalysisManager(
+        _chain_graph(),
+        input_facts=SimpleNamespace(active_observations=(_obs(),)),
+    )
+
+    run_pipeline(
+        source=_Src(),
+        family=_StandardFamily(),
+        backend=_Backend(),
+        facts=am,
+        project_config=None,
+        maturity=IRMaturity.GLOBAL_ANALYZED,
+    )
+
+    assert am.has_fact("dispatcher_family")
+    assert am.has_fact("state_transition")
+    assert am.has_fact("semantic_region")
+    assert am.has_fact("recovered_cfg_edge")
+    assert am.get_fact("dispatcher_family")[0].value.dispatch_map is not None
+    assert am.get_fact("state_transition")[0].kind == "state_transition"
+
+
+def test_out_of_range_maturity_skips_state_machine_contract_specs():
+    am = AnalysisManager(
+        _chain_graph(),
+        input_facts=SimpleNamespace(active_observations=(_obs(),)),
+    )
+
+    run_pipeline(
+        source=_Src(),
+        family=_StandardFamily(),
+        backend=_Backend(),
+        facts=am,
+        project_config=None,
+        maturity=IRMaturity.LOCAL_OPTIMIZED,
+    )
+
+    assert not am.has_fact("dispatcher_family")
+    assert not am.has_analysis("recover_dispatcher")
+
+
 def test_without_manager_edge_pass2_is_unresolved():
     # ctx.facts is a plain view (no get_analysis) -> #2 has no map
     plain = SimpleNamespace(active_observations=(_obs(),))
     result = RecoverStateTransitions().run(_ctx(_chain_graph(), plain))
-    resolutions = result.facts[0]
+    resolutions = result.analysis_outputs["recover_state_transitions"]
     assert len(resolutions) == 1
     assert resolutions[0].resolved_next_block_serial is None
     assert resolutions[0].resolution_reason == "no_dispatcher_rows_available"
