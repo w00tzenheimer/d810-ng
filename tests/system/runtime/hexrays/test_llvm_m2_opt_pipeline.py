@@ -1,7 +1,11 @@
 """LLVM M2a stock opt pipeline probe over real Hex-Rays-lifted snapshots."""
 from __future__ import annotations
 
+import json
 import os
+import shutil
+from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 
@@ -12,11 +16,16 @@ from d810.backends.hexrays.lifter import lift_function
 from d810.backends.llvm import (
     LLVM_M2G_CURATED_PIPELINE,
     LLVM_M2A_STOCK_PIPELINE,
+    LlvmLiftBoundary,
+    LlvmLiftBoundaryInput,
+    LlvmLiftBoundaryObservable,
+    LlvmLiftBoundaryReturnPolicy,
     LlvmM2CensusRowStatus,
     LlvmM2OracleStatus,
     LlvmM2PipelineStatus,
     LlvmOptimizationStatus,
     LlvmVerificationStatus,
+    check_m2_post_d810_branchless_oracle,
     emit_flowgraph_to_llvm,
     m2_census_row_from_pipeline,
     m2_lift_unsupported_row,
@@ -27,7 +36,21 @@ from d810.backends.llvm import (
     summarize_m2_census,
     verify_llvm_ir,
 )
+from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+from d810.ir import Space, Varnode
 from tests.system.runtime.conftest import gen_microcode_at_maturity, get_func_ea
+from tests.system.runtime.hexrays.lowering_catalog import (
+    lower_conditional_synthesize,
+    recover_branchless,
+)
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+_POST_D810_BRANCHLESS_ORACLE = (
+    _REPO_ROOT
+    / "tools/llvm_m2_post_d810/fixtures/lab_flat_branchless.structured.after.ll"
+)
+_POST_D810_BRANCHLESS_ORACLE_ID = "post_d810_lab_flat_branchless_structured_ir"
 
 
 def _metrics_summary(prefix, metrics) -> str:
@@ -332,6 +355,100 @@ class TestLLVMM2PipelineCensus:
         assert branchless.metric_delta.collapsed_alloca_count, collapse_summary
 
 
+class TestLLVMM2PostD810StructuredOracle:
+    """Run the structure-first branchless feed against its post-D810 oracle."""
+
+    binary_name = "restructuring_lab.dll"
+
+    def test_branchless_post_d810_structured_oracle_passes(
+        self, ida_database, configure_hexrays, tmp_path
+    ):
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+
+        func_ea = get_func_ea("lab_flat_branchless")
+        assert func_ea != idaapi.BADADDR
+        expected_ir = _POST_D810_BRANCHLESS_ORACLE.read_text(encoding="utf-8")
+        require_opt = os.environ.get("D810_REQUIRE_LLVM_OPT") == "1"
+        artifact_dir = _REPO_ROOT / ".tmp/llvm-m2o-post-d810-structured-oracle"
+        shutil.rmtree(artifact_dir, ignore_errors=True)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+
+        lift = _lift_post_d810_branchless(func_ea)
+        artifact_dir.joinpath("post-d810-before-m2.ll").write_text(
+            lift["ir_text"],
+            encoding="utf-8",
+        )
+        assert lift["error"] is None, lift["error"]
+        assert lift["applied"] >= 1, lift
+        assert lift["supported"], lift["unsupported"]
+
+        result = run_llvm_m2_pipeline(
+            lift["ir_text"],
+            tmp_dir=tmp_path / "m2o",
+            require_opt=require_opt,
+        )
+        artifact_dir.joinpath("post-d810-after-m2.ll").write_text(
+            result.after_ir,
+            encoding="utf-8",
+        )
+        oracle = check_m2_post_d810_branchless_oracle(
+            subject="lab_flat_branchless",
+            actual_ir=result.after_ir,
+            expected_ir=expected_ir,
+            oracle_id=_POST_D810_BRANCHLESS_ORACLE_ID,
+        )
+        row = m2_census_row_from_pipeline(
+            "lab_flat_branchless",
+            "GLOBAL_ANALYZED_POST_D810",
+            result,
+            oracle_result=oracle,
+        )
+        summary = {
+            "applied": lift["applied"],
+            "lift_supported": lift["supported"],
+            "lift_unsupported": lift["unsupported"],
+            "pipeline_status": result.status.value,
+            "pipeline_reason": result.reason,
+            "oracle_status": oracle.status.value,
+            "oracle_id": oracle.oracle_id,
+            "oracle_reason": oracle.reason,
+            "expected_signature": list(oracle.expected_signature),
+            "actual_signature": list(oracle.actual_signature),
+            "before_metrics": asdict(measure_llvm_ir(lift["ir_text"])),
+            "after_metrics": asdict(measure_llvm_ir(result.after_ir)),
+        }
+        artifact_dir.joinpath("summary.json").write_text(
+            json.dumps(summary, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+        print("\n=== LLVM M2o post-D810 structured branchless oracle ===")
+        print(f"artifact_dir={artifact_dir}")
+        print(
+            "row "
+            f"function={row.function_name} status={row.status.value} "
+            f"oracle={row.oracle_status.value} "
+            f"oracle_id={row.oracle_id or '-'} "
+            f"pipeline={row.pipeline_status or '-'} "
+            f"custom_rewrites={row.custom_rewrite_count} "
+            f"reason={row.reason or '-'} "
+            f"oracle_reason={row.oracle_reason or '-'}"
+        )
+        print(f"expected_signature={oracle.expected_signature}")
+        print(f"actual_signature={oracle.actual_signature}")
+
+        assert result.status is LlvmM2PipelineStatus.PASSED, result.reason
+        assert oracle.status is LlvmM2OracleStatus.PASSED, (
+            oracle.reason,
+            oracle.expected_signature,
+            oracle.actual_signature,
+        )
+        assert row.oracle_status is LlvmM2OracleStatus.PASSED
+        assert "return:constant_zero" not in oracle.actual_signature
+        assert "return:phi:odd_even" in oracle.actual_signature
+
+
 class TestLLVMM2CuratedPipelineComparison:
     """Compare the opt-in M2g curated stock pipeline against the M2a default."""
 
@@ -490,3 +607,79 @@ def _metric_totals(results) -> dict[str, int]:
         totals["store"] += metrics.store_count
         totals["alloca"] += metrics.alloca_count
     return totals
+
+
+def _lift_post_d810_branchless(func_ea) -> dict[str, object]:
+    boundary = LlvmLiftBoundary(
+        inputs=(
+            LlvmLiftBoundaryInput(
+                "token",
+                Varnode(Space.REGISTER, 24, 4),
+                aliases=(Varnode(Space.REGISTER, 24, 1),),
+            ),
+        ),
+        observables=(
+            LlvmLiftBoundaryObservable(
+                "state_sink",
+                Varnode(Space.STACK, 16, 4),
+            ),
+            LlvmLiftBoundaryObservable(
+                "value_sink",
+                Varnode(Space.GLOBAL, 6442475664, 4),
+            ),
+        ),
+        return_cell=Varnode(Space.REGISTER, 8, 4),
+        return_policy=LlvmLiftBoundaryReturnPolicy.OVERRIDE,
+    )
+    box = {
+        "applied": 0,
+        "done": False,
+        "error": None,
+        "ir_text": "",
+        "supported": False,
+        "unsupported": (),
+    }
+
+    class _PostD810LiftOptblock(ida_hexrays.optblock_t):
+        def func(self, blk):
+            try:
+                mba = blk.mba
+                if (
+                    box["done"]
+                    or mba is None
+                    or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)
+                ):
+                    return 0
+                plan = recover_branchless(mba)
+                if plan is None:
+                    return 0
+                box["done"] = True
+                mod = DeferredGraphModifier(mba)
+                lower_conditional_synthesize(mod, plan)
+                mod.coalesce()
+                box["applied"] = mod.apply(run_optimize_local=True)
+                flow_graph = lift_function(mba).flow_graph
+                lift = emit_flowgraph_to_llvm(
+                    flow_graph,
+                    function_name="lab_flat_branchless_post_d810_m2o",
+                    boundary=boundary,
+                )
+                box["ir_text"] = lift.ir_text
+                box["supported"] = lift.supported
+                box["unsupported"] = tuple(
+                    reason.reason for reason in lift.unsupported
+                )
+                return box["applied"]
+            except Exception as exc:  # noqa: BLE001
+                box["error"] = repr(exc)
+                return 0
+
+    opt = _PostD810LiftOptblock()
+    opt.install()
+    hf = ida_hexrays.hexrays_failure_t()
+    try:
+        ida_hexrays.mark_cfunc_dirty(func_ea)
+        ida_hexrays.decompile(func_ea, hf)
+    finally:
+        opt.remove()
+    return box
