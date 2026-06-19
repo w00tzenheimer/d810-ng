@@ -126,6 +126,16 @@ class _TransitionOnlyFamily:
         return (standard_state_machine_passes()[1],)
 
 
+class _RegionOnlyFamily:
+    name = "region-only"
+
+    def detect(self, graph, capabilities, context=None):
+        return object()
+
+    def pipeline_for(self, match, context):
+        return (standard_state_machine_passes()[2],)
+
+
 def test_map_threads_from_pass1_to_pass2_and_resolves():
     am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
     ctx = _ctx(am.graph, am.view())
@@ -214,6 +224,45 @@ def test_transition_contract_requires_published_branch_target_evidence():
         run_pipeline(
             source=_Src(),
             family=_TransitionOnlyFamily(),
+            backend=_Backend(),
+            facts=am,
+            project_config=None,
+            maturity=IRMaturity.GLOBAL_ANALYZED,
+        )
+
+
+def test_transition_contract_requires_dispatcher_family_fact_not_just_analysis():
+    am = AnalysisManager(
+        _chain_graph(),
+        input_facts=_input_facts(),
+    )
+    am.put_analysis("recover_dispatcher", object())
+    am.put_evidence("branch_targets", object())
+
+    with pytest.raises(PassContractError, match="dispatcher_family"):
+        run_pipeline(
+            source=_Src(),
+            family=_TransitionOnlyFamily(),
+            backend=_Backend(),
+            facts=am,
+            project_config=None,
+            maturity=IRMaturity.GLOBAL_ANALYZED,
+        )
+
+
+def test_region_contract_requires_state_transition_fact_not_just_analysis():
+    am = AnalysisManager(
+        _chain_graph(),
+        input_facts=_input_facts(),
+    )
+    am.put_analysis("recover_dispatcher", object())
+    am.put_analysis("transition_result", object())
+    am.put_fact("dispatcher_family", object())
+
+    with pytest.raises(PassContractError, match="state_transition"):
+        run_pipeline(
+            source=_Src(),
+            family=_RegionOnlyFamily(),
             backend=_Backend(),
             facts=am,
             project_config=None,

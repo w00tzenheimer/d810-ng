@@ -76,17 +76,26 @@ def test_each_spec_carries_native_state_machine_contract():
     assert contracts["recover_state_transitions"].requires.analyses == frozenset(
         {"recover_dispatcher"}
     )
+    assert contracts[
+        "recover_state_transitions"
+    ].requires.facts.required == frozenset({"dispatcher_family"})
     assert contracts["recover_state_transitions"].outputs.facts == frozenset(
         {"state_transition"}
     )
     assert contracts["plan_semantic_regions"].requires.analyses == frozenset(
         {"recover_dispatcher", "transition_result"}
     )
+    assert contracts["plan_semantic_regions"].requires.facts.required == frozenset(
+        {"dispatcher_family", "state_transition"}
+    )
     assert contracts["plan_semantic_regions"].outputs.facts == frozenset(
         {"semantic_region"}
     )
     assert contracts["lower_state_machine"].requires.analyses == frozenset(
         {"plan_semantic_regions", "recover_dispatcher", "transition_result"}
+    )
+    assert contracts["lower_state_machine"].requires.facts.required == frozenset(
+        {"dispatcher_family", "semantic_region", "state_transition"}
     )
     assert contracts["lower_state_machine"].outputs.facts == frozenset(
         {"recovered_cfg_edge"}
