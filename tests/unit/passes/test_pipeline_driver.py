@@ -285,6 +285,58 @@ def test_registry_config_contract_safety_is_used_by_runtime_bridge():
     ]
 
 
+def test_state_machine_mutators_use_native_golden_safety_contract():
+    specs = standard_state_machine_passes()
+    lower = specs[3]
+    cleanup = specs[4]
+
+    assert lower.name == "lower_state_machine"
+    assert cleanup.name == "cleanup_residual_dispatcher"
+    assert lower.safety_policy == SafetyPolicy()
+    assert cleanup.safety_policy == SafetyPolicy()
+    assert lower.contract.safety == PassSafety(policy="golden", requires_oracle=True)
+    assert cleanup.contract.safety == PassSafety(policy="golden", requires_oracle=True)
+    assert effective_safety_policy(lower) == SafetyPolicy(
+        name="golden",
+        golden_required=True,
+    )
+    assert effective_safety_policy(cleanup) == SafetyPolicy(
+        name="golden",
+        golden_required=True,
+    )
+
+
+def test_real_lower_contract_native_safety_reaches_backend():
+    backend = _Backend()
+    facts = AnalysisManager(_GRAPH)
+    for name in (
+        "plan_semantic_regions",
+        "recover_dispatcher",
+        "transition_result",
+    ):
+        facts.put_analysis(name, object())
+    for name in (
+        "dispatcher_family",
+        "semantic_region",
+        "state_transition",
+    ):
+        facts.put_fact(name, type("_Fact", (), {"kind": name})())
+
+    spec = PassSpec(
+        "lower_like_mutator",
+        _MutatingPass,
+        no_caps,
+        default,
+        contract=standard_state_machine_passes()[3].contract,
+    )
+
+    _run_specs((spec,), facts=facts, backend=backend, maturity=IRMaturity.GLOBAL_ANALYZED)
+
+    assert backend.safety_policies == [
+        SafetyPolicy(name="golden", golden_required=True)
+    ]
+
+
 def test_run_pipeline_no_match_is_a_noop():
     backend = _Backend()
     out = run_pipeline(
@@ -1831,6 +1883,15 @@ def test_approov_pipeline_for_switch_is_standard_no_emulation():
     by_name = {s.name: s for s in specs}
     assert "emulation" not in by_name["recover_state_transitions"].requirements.required
     assert "emulation" not in by_name["lower_state_machine"].requirements.required
+    assert by_name["lower_state_machine"].safety_policy == SafetyPolicy()
+    assert by_name["cleanup_residual_dispatcher"].safety_policy == SafetyPolicy()
+    assert effective_safety_policy(by_name["lower_state_machine"]) == SafetyPolicy(
+        name="golden",
+        golden_required=True,
+    )
+    assert effective_safety_policy(
+        by_name["cleanup_residual_dispatcher"]
+    ) == SafetyPolicy(name="golden", golden_required=True)
 
 
 def test_approov_pipeline_for_indirect_is_emulation_gated():
@@ -1842,6 +1903,15 @@ def test_approov_pipeline_for_indirect_is_emulation_gated():
     by_name = {s.name: s for s in specs}
     assert "emulation" in by_name["recover_state_transitions"].requirements.required
     assert "emulation" in by_name["lower_state_machine"].requirements.required
+    assert by_name["lower_state_machine"].safety_policy == SafetyPolicy()
+    assert by_name["cleanup_residual_dispatcher"].safety_policy == SafetyPolicy()
+    assert effective_safety_policy(by_name["lower_state_machine"]) == SafetyPolicy(
+        name="golden",
+        golden_required=True,
+    )
+    assert effective_safety_policy(
+        by_name["cleanup_residual_dispatcher"]
+    ) == SafetyPolicy(name="golden", golden_required=True)
     assert by_name["lower_state_machine"].pass_factory().configured_kind == RouterKind.TABLE
     assert (
         by_name["lower_state_machine"]
@@ -1905,6 +1975,15 @@ def test_tigress_pipeline_for_switch_is_standard_no_emulation():
     by_name = {s.name: s for s in specs}
     assert "emulation" not in by_name["recover_state_transitions"].requirements.required
     assert "emulation" not in by_name["lower_state_machine"].requirements.required
+    assert by_name["lower_state_machine"].safety_policy == SafetyPolicy()
+    assert by_name["cleanup_residual_dispatcher"].safety_policy == SafetyPolicy()
+    assert effective_safety_policy(by_name["lower_state_machine"]) == SafetyPolicy(
+        name="golden",
+        golden_required=True,
+    )
+    assert effective_safety_policy(
+        by_name["cleanup_residual_dispatcher"]
+    ) == SafetyPolicy(name="golden", golden_required=True)
 
 
 def test_tigress_pipeline_for_indirect_is_emulation_gated():
@@ -1916,6 +1995,15 @@ def test_tigress_pipeline_for_indirect_is_emulation_gated():
     by_name = {s.name: s for s in specs}
     assert "emulation" in by_name["recover_state_transitions"].requirements.required
     assert "emulation" in by_name["lower_state_machine"].requirements.required
+    assert by_name["lower_state_machine"].safety_policy == SafetyPolicy()
+    assert by_name["cleanup_residual_dispatcher"].safety_policy == SafetyPolicy()
+    assert effective_safety_policy(by_name["lower_state_machine"]) == SafetyPolicy(
+        name="golden",
+        golden_required=True,
+    )
+    assert effective_safety_policy(
+        by_name["cleanup_residual_dispatcher"]
+    ) == SafetyPolicy(name="golden", golden_required=True)
     assert by_name["lower_state_machine"].pass_factory().configured_kind == RouterKind.TABLE
     assert (
         by_name["lower_state_machine"]
