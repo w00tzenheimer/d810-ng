@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from d810.backends.llvm import (
+    LLVM_M2G_CURATED_PIPELINE,
     LLVM_M2A_STOCK_PIPELINE,
     LlvmOptimizationStatus,
     find_llvm_opt,
@@ -80,6 +81,51 @@ def test_run_llvm_opt_pipeline_reports_passed_status_with_fake_opt(tmp_path):
     assert result.optimized_ir == ir
     assert result.before_metrics == result.after_metrics
     assert result.pipeline is LLVM_M2A_STOCK_PIPELINE
+
+
+def test_m2g_curated_pipeline_has_stable_pass_spec():
+    assert LLVM_M2G_CURATED_PIPELINE.name == (
+        "m2g_curated_ssa_cse_gvn_dse_aggressive_instcombine_simplifycfg_adce"
+    )
+    assert LLVM_M2G_CURATED_PIPELINE.passes == (
+        "sroa",
+        "mem2reg",
+        "early-cse",
+        "instcombine",
+        "reassociate",
+        "sccp",
+        "correlated-propagation",
+        "gvn",
+        "dse",
+        "aggressive-instcombine",
+        "simplifycfg<no-switch-to-lookup>",
+        "adce",
+    )
+    assert LLVM_M2G_CURATED_PIPELINE.pass_spec == (
+        "sroa,mem2reg,early-cse,instcombine,reassociate,sccp,"
+        "correlated-propagation,gvn,dse,aggressive-instcombine,"
+        "simplifycfg<no-switch-to-lookup>,adce"
+    )
+
+
+def test_run_llvm_opt_pipeline_uses_curated_pass_spec_with_fake_opt(tmp_path):
+    opt = _write_fake_opt(tmp_path, 'printf "%s\\n" "$2" > "$5"\nexit 0\n')
+
+    result = run_llvm_opt_pipeline(
+        "define i32 @x() {\nentry:\n  ret i32 0\n}\n",
+        pipeline=LLVM_M2G_CURATED_PIPELINE,
+        opt_path=opt,
+        tmp_dir=tmp_path / "work",
+    )
+
+    assert result.status is LlvmOptimizationStatus.PASSED
+    assert result.command[:3] == (
+        str(opt),
+        "-S",
+        f"-passes={LLVM_M2G_CURATED_PIPELINE.pass_spec}",
+    )
+    assert result.optimized_ir == f"-passes={LLVM_M2G_CURATED_PIPELINE.pass_spec}\n"
+    assert result.pipeline is LLVM_M2G_CURATED_PIPELINE
 
 
 def test_run_llvm_opt_pipeline_reports_failed_status_with_fake_opt(tmp_path):

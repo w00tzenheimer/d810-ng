@@ -81,6 +81,24 @@ LLVM_M2A_STOCK_PIPELINE = LlvmOptPipeline(
     passes=("instcombine", "reassociate", "sccp", "simplifycfg", "adce"),
 )
 
+LLVM_M2G_CURATED_PIPELINE = LlvmOptPipeline(
+    name="m2g_curated_ssa_cse_gvn_dse_aggressive_instcombine_simplifycfg_adce",
+    passes=(
+        "sroa",
+        "mem2reg",
+        "early-cse",
+        "instcombine",
+        "reassociate",
+        "sccp",
+        "correlated-propagation",
+        "gvn",
+        "dse",
+        "aggressive-instcombine",
+        "simplifycfg<no-switch-to-lookup>",
+        "adce",
+    ),
+)
+
 _LABEL_RE = re.compile(r"^[A-Za-z$._-][A-Za-z0-9$._-]*:\s*(?:;.*)?$")
 _TERMINATORS = ("ret ", "br ", "switch ", "indirectbr ", "invoke ", "resume ", "unreachable")
 

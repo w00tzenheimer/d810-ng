@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from d810.backends.llvm import (
+    LLVM_M2G_CURATED_PIPELINE,
     LlvmCustomProofResult,
     LlvmM2PipelinePhaseKind,
     LlvmM2PipelineStatus,
@@ -86,6 +87,28 @@ def test_m2_pipeline_counts_or_custom_rewrite_before_stock_opt(tmp_path):
     custom = result.phases[0].custom_result
     assert custom is not None
     assert [len(pass_result.rewrites) for pass_result in custom.pass_results] == [0, 1]
+
+
+def test_m2_pipeline_accepts_curated_stock_pipeline(tmp_path):
+    opt = _write_fake_opt(tmp_path)
+
+    result = run_llvm_m2_pipeline(
+        _fixture_ir(),
+        stock_pipeline=LLVM_M2G_CURATED_PIPELINE,
+        opt_path=opt,
+        tmp_dir=tmp_path / "work",
+        require_opt=True,
+    )
+
+    assert result.status is LlvmM2PipelineStatus.PASSED
+    stock = result.phases[1].optimization_result
+    assert stock is not None
+    assert stock.pipeline is LLVM_M2G_CURATED_PIPELINE
+    assert stock.command[:3] == (
+        str(opt),
+        "-S",
+        f"-passes={LLVM_M2G_CURATED_PIPELINE.pass_spec}",
+    )
 
 
 def test_m2_pipeline_custom_failure_stops_before_stock_opt(tmp_path):

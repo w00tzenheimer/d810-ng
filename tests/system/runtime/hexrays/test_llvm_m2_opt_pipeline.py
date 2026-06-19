@@ -10,6 +10,7 @@ import idaapi
 
 from d810.backends.hexrays.lifter import lift_function
 from d810.backends.llvm import (
+    LLVM_M2G_CURATED_PIPELINE,
     LLVM_M2A_STOCK_PIPELINE,
     LlvmM2CensusRowStatus,
     LlvmM2OracleStatus,
@@ -20,6 +21,7 @@ from d810.backends.llvm import (
     m2_census_row_from_pipeline,
     m2_lift_unsupported_row,
     m2_missing_row,
+    measure_llvm_ir,
     run_llvm_m2_pipeline,
     run_llvm_opt_pipeline,
     summarize_m2_census,
@@ -328,3 +330,161 @@ class TestLLVMM2PipelineCensus:
         assert branchless.metric_delta.collapsed_load_count, collapse_summary
         assert branchless.metric_delta.collapsed_store_count, collapse_summary
         assert branchless.metric_delta.collapsed_alloca_count, collapse_summary
+
+
+class TestLLVMM2CuratedPipelineComparison:
+    """Compare the opt-in M2g curated stock pipeline against the M2a default."""
+
+    binary_name = "restructuring_lab.dll"
+
+    FUNCTIONS = TestLLVMM2PipelineCensus.FUNCTIONS
+    KNOWN_MISSING = frozenset({"hexrays_lab_side_effect_boundary_anchor"})
+
+    def test_preferred_maturity_curated_pipeline_verifies_and_improves(
+        self, ida_database, configure_hexrays, tmp_path
+    ):
+        if not idaapi.init_hexrays_plugin():
+            pytest.skip("Hex-Rays decompiler plugin not available")
+
+        rows = []
+        missing_rows = []
+        unsupported_rows = []
+        require_opt = os.environ.get("D810_REQUIRE_LLVM_OPT") == "1"
+        for func_name in self.FUNCTIONS:
+            func_ea = get_func_ea(func_name)
+            if func_ea == idaapi.BADADDR:
+                missing_rows.append(
+                    (
+                        func_name,
+                        "function missing from restructuring_lab.dll",
+                    )
+                )
+                continue
+
+            mba = gen_microcode_at_maturity(func_ea, int(ida_hexrays.MMAT_GLBOPT1))
+            assert mba is not None, func_name
+            flow_graph = lift_function(mba).flow_graph
+            lift = emit_flowgraph_to_llvm(
+                flow_graph,
+                function_name=f"{func_name}_m2g",
+            )
+            if not lift.supported:
+                unsupported_rows.append(
+                    (
+                        func_name,
+                        tuple(reason.reason for reason in lift.unsupported),
+                    )
+                )
+                continue
+
+            default_result = run_llvm_m2_pipeline(
+                lift.ir_text,
+                tmp_dir=tmp_path / func_name / "default",
+                require_opt=require_opt,
+            )
+            curated_result = run_llvm_m2_pipeline(
+                lift.ir_text,
+                stock_pipeline=LLVM_M2G_CURATED_PIPELINE,
+                tmp_dir=tmp_path / func_name / "curated",
+                require_opt=require_opt,
+            )
+            rows.append((func_name, default_result, curated_result))
+
+        assert rows, "no supported live M2 rows available for curated comparison"
+        print("\n=== LLVM M2g curated pipeline comparison ===")
+        print(f"curated_pipeline={LLVM_M2G_CURATED_PIPELINE.pass_spec}")
+        for func_name, reason in missing_rows:
+            print(f"row function={func_name} status=missing reason={reason}")
+        for func_name, reasons in unsupported_rows:
+            print(
+                f"row function={func_name} status=lift_unsupported "
+                f"reasons={'; '.join(reasons) or '-'}"
+            )
+        for func_name, default_result, curated_result in rows:
+            default_metrics = measure_llvm_ir(default_result.after_ir)
+            curated_metrics = measure_llvm_ir(curated_result.after_ir)
+            print(
+                "row "
+                f"function={func_name} "
+                f"default={default_result.status.value} "
+                f"curated={curated_result.status.value} "
+                f"insns={default_metrics.instruction_count}"
+                f"->{curated_metrics.instruction_count} "
+                f"loads={default_metrics.load_count}->{curated_metrics.load_count} "
+                f"stores={default_metrics.store_count}->{curated_metrics.store_count} "
+                f"allocas={default_metrics.alloca_count}->{curated_metrics.alloca_count} "
+                f"default_reason={default_result.reason or '-'} "
+                f"curated_reason={curated_result.reason or '-'}"
+            )
+
+        unexpected_missing = [
+            row for row in missing_rows if row[0] not in self.KNOWN_MISSING
+        ]
+        compared_names = {func_name for func_name, _, _ in rows}
+        missing_names = {func_name for func_name, _ in missing_rows}
+        expected_compared = set(self.FUNCTIONS) - missing_names
+        assert not unexpected_missing, unexpected_missing
+        assert not unsupported_rows, unsupported_rows
+        assert compared_names == expected_compared, {
+            "compared": sorted(compared_names),
+            "expected": sorted(expected_compared),
+            "missing": missing_rows,
+            "unsupported": unsupported_rows,
+        }
+
+        default_totals = _metric_totals(default_result for _, default_result, _ in rows)
+        curated_totals = _metric_totals(curated_result for _, _, curated_result in rows)
+        print(
+            "aggregate "
+            f"insns={default_totals['instruction']}"
+            f"->{curated_totals['instruction']} "
+            f"loads={default_totals['load']}->{curated_totals['load']} "
+            f"stores={default_totals['store']}->{curated_totals['store']} "
+            f"allocas={default_totals['alloca']}->{curated_totals['alloca']}"
+        )
+
+        default_failures = [
+            (func_name, result.status.value, result.reason)
+            for func_name, result, _ in rows
+            if result.status is not LlvmM2PipelineStatus.PASSED
+        ]
+        curated_failures = [
+            (func_name, result.status.value, result.reason)
+            for func_name, _, result in rows
+            if result.status is not LlvmM2PipelineStatus.PASSED
+        ]
+        assert not default_failures, default_failures
+        assert not curated_failures, curated_failures
+
+        non_regressed = {
+            metric: curated_totals[metric] <= default_totals[metric]
+            for metric in ("instruction", "load", "store", "alloca")
+        }
+        improved = {
+            metric: curated_totals[metric] < default_totals[metric]
+            for metric in ("instruction", "load", "store", "alloca")
+        }
+        assert all(non_regressed.values()), {
+            "default": default_totals,
+            "curated": curated_totals,
+        }
+        assert any(improved.values()), {
+            "default": default_totals,
+            "curated": curated_totals,
+        }
+
+
+def _metric_totals(results) -> dict[str, int]:
+    totals = {
+        "instruction": 0,
+        "load": 0,
+        "store": 0,
+        "alloca": 0,
+    }
+    for result in results:
+        metrics = measure_llvm_ir(result.after_ir)
+        totals["instruction"] += metrics.instruction_count
+        totals["load"] += metrics.load_count
+        totals["store"] += metrics.store_count
+        totals["alloca"] += metrics.alloca_count
+    return totals
