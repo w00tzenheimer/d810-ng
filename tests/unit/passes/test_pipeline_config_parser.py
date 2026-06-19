@@ -22,6 +22,49 @@ from d810.passes.pipeline_shadow import (
 from d810.passes.registry import UnknownPassIdError
 
 
+def _recover_state_machine_contract_payload():
+    return {
+        "pass": "recover-state-machine",
+        "scope": "function",
+        "maturity": {
+            "min": "ir.call.modeled",
+            "max": "ir.global.analyzed",
+            "preferred": "ir.call.modeled",
+        },
+        "requires": {
+            "analyses": ["def_use", "dominators", "value_ranges"],
+            "evidence": [
+                "state_variable_writes",
+                "dispatcher_predicates",
+                "branch_targets",
+            ],
+            "facts": {
+                "optional": ["carrier_store_candidates"],
+                "required": [],
+            },
+        },
+        "outputs": {
+            "facts": [
+                "state_transition",
+                "recovered_cfg_edge",
+                "dispatcher_family",
+            ],
+        },
+        "preserves": {
+            "analyses": ["function_boundaries"],
+            "facts": ["raw_instruction_addresses"],
+        },
+        "invalidates": {
+            "analyses": ["dominators", "postdominators", "loop_info", "regions"],
+            "facts": ["stale_cfg_shape"],
+        },
+        "safety": {
+            "policy": "guarded-rewrite",
+            "requires_oracle": False,
+        },
+    }
+
+
 def test_missing_pipeline_v2_is_inert_for_existing_project_configs():
     assert pipeline_configs_from_project_config({}) == ()
     project = SimpleNamespace(additional_configuration={"enable_pass_pipeline": True})
@@ -47,6 +90,41 @@ def test_pipeline_v2_shadow_parse_from_project_like_object():
     assert configs[0].pass_id == "recover_dispatcher"
     assert configs[0].maturity_gates == frozenset({IRMaturity.GLOBAL_ANALYZED})
     assert configs[0].backend_route is BackendRoute.ANALYSIS_ONLY
+
+
+def test_pipeline_v2_parses_native_deobfuscation_contract_shape():
+    configs = pipeline_configs_from_project_config(
+        {"pipeline_v2": [_recover_state_machine_contract_payload()]}
+    )
+
+    assert len(configs) == 1
+    config = configs[0]
+    assert config.pass_id == "recover-state-machine"
+    assert config.contract.scope.value == "function"
+    assert config.contract.maturity.min is IRMaturity.CALL_MODELED
+    assert config.contract.maturity.max is IRMaturity.GLOBAL_ANALYZED
+    assert config.contract.maturity.preferred is IRMaturity.CALL_MODELED
+    assert config.contract.requires.analyses == frozenset(
+        {"def_use", "dominators", "value_ranges"}
+    )
+    assert config.contract.requires.evidence == frozenset(
+        {"state_variable_writes", "dispatcher_predicates", "branch_targets"}
+    )
+    assert config.contract.requires.facts.required == frozenset()
+    assert config.contract.requires.facts.optional == frozenset(
+        {"carrier_store_candidates"}
+    )
+    assert config.contract.outputs.facts == frozenset(
+        {"state_transition", "recovered_cfg_edge", "dispatcher_family"}
+    )
+    assert config.contract.preserves.analyses == frozenset({"function_boundaries"})
+    assert config.contract.preserves.facts == frozenset({"raw_instruction_addresses"})
+    assert config.contract.invalidates.analyses == frozenset(
+        {"dominators", "postdominators", "loop_info", "regions"}
+    )
+    assert config.contract.invalidates.facts == frozenset({"stale_cfg_shape"})
+    assert config.contract.safety.policy == "guarded-rewrite"
+    assert config.contract.safety.requires_oracle is False
 
 
 def test_malformed_pipeline_v2_fails_clearly():
