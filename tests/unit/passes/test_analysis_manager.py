@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 from d810.passes.analysis_manager import AnalysisManager
-from d810.passes.pass_pipeline import PreservedAnalyses
+from d810.passes.pass_pipeline import (
+    PassContract,
+    PassInvalidates,
+    PreservedAnalyses,
+)
 
 
 def test_get_computes_once_and_caches():
@@ -146,3 +150,69 @@ def test_set_input_facts_none_clears_active_observations():
     am.set_input_facts(None)
 
     assert am.active_observations == ()
+
+
+def test_fact_store_reads_published_and_live_observation_facts():
+    observation = type("_Obs", (), {"kind": "state_transition"})()
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type("_Facts", (), {"active_observations": (observation,)})(),
+    )
+
+    assert am.has_fact("state_transition")
+    assert am.get_fact("state_transition") == (observation,)
+
+    fact = type("_Fact", (), {"kind": "state_transition"})()
+    am.put_fact("state_transition", fact)
+
+    assert am.get_fact("state_transition") == (fact, observation)
+
+
+def test_evidence_store_reads_published_and_live_observation_evidence():
+    observation = type(
+        "_Obs",
+        (),
+        {"evidence": ("dispatcher_predicates", "branch_targets")},
+    )()
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type("_Facts", (), {"active_observations": (observation,)})(),
+    )
+
+    assert am.has_evidence("dispatcher_predicates")
+    assert am.get_evidence("dispatcher_predicates") == (observation,)
+
+    marker = object()
+    am.put_evidence("dispatcher_predicates", marker)
+
+    assert am.get_evidence("dispatcher_predicates") == (marker, observation)
+
+
+def test_contract_invalidation_keeps_analysis_and_fact_validity_separate():
+    am = AnalysisManager(graph="G0")
+    am.put_analysis("dominators", "D")
+    am.put_fact("state_transition", object())
+
+    am.invalidate_contract(
+        PassContract(invalidates=PassInvalidates(facts=frozenset({"state_transition"})))
+    )
+
+    assert am.has_analysis("dominators")
+    assert not am.has_fact("state_transition")
+
+
+def test_contract_invalidation_can_drop_analysis_even_when_cached():
+    am = AnalysisManager(graph="G0")
+    am.get("dominators", lambda graph: "D")
+    am.put_analysis("value_ranges", "V")
+
+    am.invalidate_contract(
+        PassContract(
+            invalidates=PassInvalidates(
+                analyses=frozenset({"dominators", "value_ranges"})
+            )
+        )
+    )
+
+    assert not am.has_analysis("dominators")
+    assert not am.has_analysis("value_ranges")
