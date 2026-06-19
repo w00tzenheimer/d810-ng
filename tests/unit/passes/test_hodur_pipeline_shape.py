@@ -61,8 +61,11 @@ def test_each_spec_carries_native_state_machine_contract():
 
     assert not contracts["recover_dispatcher"].requires.evidence
     assert contracts["recover_state_transitions"].requires.evidence == frozenset(
-        {"state_variable_writes"}
+        {"branch_targets", "state_variable_writes"}
     )
+    assert "dispatcher_predicates" not in contracts[
+        "recover_state_transitions"
+    ].requires.evidence
     assert not contracts["plan_semantic_regions"].requires.evidence
     assert not contracts["lower_state_machine"].requires.evidence
     assert not contracts["cleanup_residual_dispatcher"].requires.evidence

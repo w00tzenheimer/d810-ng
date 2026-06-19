@@ -118,7 +118,7 @@ DISPATCHER_CONTRACT = _state_machine_contract(
 )
 TRANSITION_CONTRACT = _state_machine_contract(
     requires_analyses=TRANSITION_ANALYSES.required,
-    requires_evidence=frozenset({"state_variable_writes"}),
+    requires_evidence=frozenset({"branch_targets", "state_variable_writes"}),
     outputs_facts=frozenset({"state_transition"}),
 )
 REGION_CONTRACT = _state_machine_contract(
