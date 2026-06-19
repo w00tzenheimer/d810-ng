@@ -210,6 +210,29 @@ def test_evidence_store_does_not_treat_raw_observation_evidence_as_contract_toke
     assert am.get_evidence("dispatcher_predicates") is None
 
 
+def test_evidence_store_reads_state_write_contract_token_from_live_observation():
+    observation = type(
+        "_Obs",
+        (),
+        {
+            "kind": "StateWriteAnchorFact",
+            "payload": {
+                "state_var_stkoff": 0x10,
+                **contract_evidence_payload("state_variable_writes"),
+            },
+            "evidence": ("state_variable_writes", "mov #1, %var_10.4"),
+        },
+    )()
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type("_Facts", (), {"active_observations": (observation,)})(),
+    )
+
+    assert am.has_evidence("state_variable_writes")
+    assert am.get_evidence("state_variable_writes") == (observation,)
+    assert not am.has_evidence("dispatcher_predicates")
+
+
 def test_contract_invalidation_keeps_analysis_and_fact_validity_separate():
     am = AnalysisManager(graph="G0")
     am.put_analysis("dominators", "D")

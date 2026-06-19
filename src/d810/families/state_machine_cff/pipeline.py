@@ -91,6 +91,7 @@ STATE_MACHINE_MATURITY = MaturityRange(
 def _state_machine_contract(
     *,
     requires_analyses: frozenset[str] = frozenset(),
+    requires_evidence: frozenset[str] = frozenset(),
     outputs_facts: frozenset[str] = frozenset(),
     invalidates_analyses: frozenset[str] = frozenset(),
     invalidates_facts: frozenset[str] = frozenset(),
@@ -100,7 +101,10 @@ def _state_machine_contract(
         # Standard CFF families declare GLOBAL_ANALYZED; indirect-table variants can
         # enter at CALL_MODELED, so the native contract records the full supported range.
         maturity=STATE_MACHINE_MATURITY,
-        requires=PassRequires(analyses=requires_analyses),
+        requires=PassRequires(
+            analyses=requires_analyses,
+            evidence=requires_evidence,
+        ),
         outputs=PassOutputs(facts=outputs_facts),
         invalidates=PassInvalidates(
             analyses=invalidates_analyses,
@@ -114,6 +118,7 @@ DISPATCHER_CONTRACT = _state_machine_contract(
 )
 TRANSITION_CONTRACT = _state_machine_contract(
     requires_analyses=TRANSITION_ANALYSES.required,
+    requires_evidence=frozenset({"state_variable_writes"}),
     outputs_facts=frozenset({"state_transition"}),
 )
 REGION_CONTRACT = _state_machine_contract(

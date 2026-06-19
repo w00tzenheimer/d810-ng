@@ -546,6 +546,75 @@ def test_native_contract_required_evidence_rejects_raw_diagnostic_observation_te
         _run_specs((spec,), facts=facts)
 
 
+def test_native_contract_state_write_evidence_accepts_canonical_state_write_fact():
+    observation = type(
+        "_Obs",
+        (),
+        {
+            "kind": "StateWriteAnchorFact",
+            "payload": {
+                "state_var_stkoff": 0x10,
+                **contract_evidence_payload("state_variable_writes"),
+            },
+            "evidence": ("mov #1, %var_10.4",),
+        },
+    )()
+
+    class _NeedsStateWriteEvidence:
+        name = "needs_state_write_evidence"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.has_evidence("state_variable_writes")
+            return PassResult()
+
+    spec = PassSpec(
+        "needs_state_write_evidence",
+        _NeedsStateWriteEvidence,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(evidence=frozenset({"state_variable_writes"}))
+        ),
+    )
+    facts = AnalysisManager(
+        _GRAPH,
+        input_facts=type("_Facts", (), {"active_observations": (observation,)})(),
+    )
+
+    _run_specs((spec,), facts=facts)
+
+
+def test_native_contract_state_write_evidence_rejects_raw_matching_text():
+    observation = type(
+        "_Obs",
+        (),
+        {"evidence": ("state_variable_writes", "mov #1, %var_10.4")},
+    )()
+
+    class _NeedsStateWriteEvidence:
+        name = "needs_state_write_evidence"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult()
+
+    spec = PassSpec(
+        "needs_state_write_evidence",
+        _NeedsStateWriteEvidence,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(evidence=frozenset({"state_variable_writes"}))
+        ),
+    )
+    facts = AnalysisManager(
+        _GRAPH,
+        input_facts=type("_Facts", (), {"active_observations": (observation,)})(),
+    )
+
+    with pytest.raises(PassContractError, match="evidence"):
+        _run_specs((spec,), facts=facts)
+
+
 def test_native_contract_required_evidence_accepts_explicit_published_token():
     class _NeedsEvidence:
         name = "needs_evidence"

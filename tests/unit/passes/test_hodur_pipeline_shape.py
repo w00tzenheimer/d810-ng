@@ -58,7 +58,14 @@ def test_each_spec_carries_native_state_machine_contract():
         assert spec.contract.maturity.min is IRMaturity.CALL_MODELED
         assert spec.contract.maturity.max is IRMaturity.GLOBAL_ANALYZED
         assert spec.contract.maturity.preferred is IRMaturity.GLOBAL_ANALYZED
-        assert not spec.contract.requires.evidence
+
+    assert not contracts["recover_dispatcher"].requires.evidence
+    assert contracts["recover_state_transitions"].requires.evidence == frozenset(
+        {"state_variable_writes"}
+    )
+    assert not contracts["plan_semantic_regions"].requires.evidence
+    assert not contracts["lower_state_machine"].requires.evidence
+    assert not contracts["cleanup_residual_dispatcher"].requires.evidence
 
     assert contracts["recover_dispatcher"].outputs.facts == frozenset(
         {"dispatcher_family"}
