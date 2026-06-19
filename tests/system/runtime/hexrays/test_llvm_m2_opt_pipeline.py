@@ -12,6 +12,7 @@ from d810.backends.hexrays.lifter import lift_function
 from d810.backends.llvm import (
     LLVM_M2A_STOCK_PIPELINE,
     LlvmM2CensusRowStatus,
+    LlvmM2OracleStatus,
     LlvmM2PipelineStatus,
     LlvmOptimizationStatus,
     LlvmVerificationStatus,
@@ -255,12 +256,14 @@ class TestLLVMM2PipelineCensus:
             )
 
         summary = summarize_m2_census(tuple(rows))
-        print("\n=== LLVM M2d live pipeline census ===")
+        print("\n=== LLVM M2e live pipeline census ===")
         for row in summary.rows:
             delta = row.metric_delta
             print(
                 "row "
                 f"function={row.function_name} status={row.status.value} "
+                f"oracle={row.oracle_status.value} "
+                f"oracle_id={row.oracle_id or '-'} "
                 f"present={row.present} lift_supported={row.lift_supported} "
                 f"pipeline={row.pipeline_status or '-'} "
                 f"verification={row.verification_status or '-'} "
@@ -273,7 +276,8 @@ class TestLLVMM2PipelineCensus:
                 f"->{row.after_metrics.alloca_count} "
                 f"delta=({delta.instruction_delta},"
                 f"{delta.load_delta},{delta.store_delta},{delta.alloca_delta}) "
-                f"reason={row.reason or '-'}"
+                f"reason={row.reason or '-'} "
+                f"oracle_reason={row.oracle_reason or '-'}"
             )
         print(
             "summary "
@@ -292,6 +296,10 @@ class TestLLVMM2PipelineCensus:
             f"allocas={summary.before_alloca_total}->{summary.after_alloca_total}"
         )
         print(f"status_histogram={_histogram_summary(summary.status_histogram)}")
+        print(
+            "oracle_histogram="
+            f"{_histogram_summary(summary.oracle_status_histogram)}"
+        )
         print(f"collapse_histogram={_histogram_summary(summary.collapse_histogram)}")
 
         present_non_passed = [
@@ -303,6 +311,11 @@ class TestLLVMM2PipelineCensus:
             (row.function_name, row.status.value, row.reason)
             for row in present_non_passed
         ]
+        assert all(
+            row.oracle_status is LlvmM2OracleStatus.NOT_APPLICABLE
+            for row in summary.rows
+        ), [(row.function_name, row.oracle_status.value) for row in summary.rows]
+        assert ("not_applicable", len(summary.rows)) in summary.oracle_status_histogram
 
         branchless = next(
             row for row in summary.rows if row.function_name == "lab_flat_branchless"
