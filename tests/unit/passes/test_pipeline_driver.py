@@ -23,6 +23,8 @@ from d810.passes.pass_pipeline import (
     PassRequires,
     PassSpec,
     PassPreserves,
+    PassSafety,
+    PipelineConfig,
     PreservedAnalyses,
     SafetyPolicy,
     SchedulerPolicy,
@@ -31,12 +33,14 @@ from d810.passes.pass_pipeline import (
     no_caps,
 )
 from d810.passes.scheduler import PassScheduler, RunLater, RunLaterDomain
+from d810.passes.registry import PassRegistry
 from d810.transforms.plan import PatchPlan
 from d810.passes.driver import (
     AnalysisContractError,
     BackendRouteError,
     CapabilityError,
     PassContractError,
+    effective_safety_policy,
     run_pipeline,
     validate_capabilities,
 )
@@ -90,12 +94,14 @@ class _Backend:
     def __init__(self, caps=("live_mba",)):
         self._caps = frozenset(caps)
         self.applied = 0
+        self.safety_policies = []
 
     def capabilities(self):
         return self._caps
 
     def apply(self, plan, live_source, safety_policy):
         self.applied += 1
+        self.safety_policies.append(safety_policy)
         return "G1"  # fresh snapshot identity
 
 
@@ -150,6 +156,15 @@ def _run_specs(
     )
 
 
+class _MutatingPass:
+    name = "mutating"
+
+    def run(self, ctx) -> PassResult:
+        return PassResult(
+            rewrite_plan=PatchPlan(planner_modifications=(object(),))
+        )
+
+
 def test_run_pipeline_runs_all_five_passes_no_apply_on_empty_plans():
     backend = _Backend()
     facts = AnalysisManager(_GRAPH)
@@ -172,6 +187,100 @@ def test_run_pipeline_does_not_record_empty_run_later_requests():
         scheduler=scheduler,
     )
     assert scheduler.requests == []
+
+
+def test_default_safety_policy_still_reaches_backend_for_specs_without_native_safety():
+    backend = _Backend()
+
+    _run_specs((PassSpec("mutating", _MutatingPass, no_caps, default),), backend=backend)
+
+    assert backend.safety_policies == [SafetyPolicy()]
+
+
+def test_native_contract_safety_policy_reaches_backend_when_legacy_default():
+    backend = _Backend()
+    spec = PassSpec(
+        "mutating",
+        _MutatingPass,
+        no_caps,
+        default,
+        contract=PassContract(
+            safety=PassSafety(policy="guarded-rewrite", requires_oracle=False)
+        ),
+    )
+
+    assert effective_safety_policy(spec) == SafetyPolicy(
+        name="guarded-rewrite",
+        golden_required=False,
+    )
+
+    _run_specs((spec,), backend=backend)
+
+    assert backend.safety_policies == [
+        SafetyPolicy(name="guarded-rewrite", golden_required=False)
+    ]
+
+
+def test_native_contract_safety_requires_oracle_maps_to_golden_required():
+    backend = _Backend()
+    spec = PassSpec(
+        "mutating",
+        _MutatingPass,
+        no_caps,
+        default,
+        contract=PassContract(
+            safety=PassSafety(policy="guarded-rewrite", requires_oracle=True)
+        ),
+    )
+
+    _run_specs((spec,), backend=backend)
+
+    assert backend.safety_policies == [
+        SafetyPolicy(name="guarded-rewrite", golden_required=True)
+    ]
+
+
+def test_legacy_safety_policy_takes_precedence_over_native_contract_safety():
+    backend = _Backend()
+    legacy = SafetyPolicy(name="legacy-golden", golden_required=True)
+    spec = PassSpec(
+        "mutating",
+        _MutatingPass,
+        no_caps,
+        legacy,
+        contract=PassContract(
+            safety=PassSafety(policy="guarded-rewrite", requires_oracle=False)
+        ),
+    )
+
+    assert effective_safety_policy(spec) == legacy
+
+    _run_specs((spec,), backend=backend)
+
+    assert backend.safety_policies == [legacy]
+
+
+def test_registry_config_contract_safety_is_used_by_runtime_bridge():
+    registry = PassRegistry()
+    registry.register("mutating", _MutatingPass)
+    config = PipelineConfig(
+        pass_id="mutating",
+        contract=PassContract(
+            safety=PassSafety(policy="guarded-rewrite", requires_oracle=True)
+        ),
+    )
+    spec = registry.build_spec(config)
+    backend = _Backend()
+
+    _run_specs((spec,), backend=backend)
+
+    assert spec.contract.safety == PassSafety(
+        policy="guarded-rewrite",
+        requires_oracle=True,
+    )
+    assert backend.safety_policies == [
+        SafetyPolicy(name="guarded-rewrite", golden_required=True)
+    ]
 
 
 def test_run_pipeline_no_match_is_a_noop():
