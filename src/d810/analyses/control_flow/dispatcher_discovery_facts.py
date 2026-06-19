@@ -13,6 +13,7 @@ from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap,
 from d810.analyses.control_flow.predecessor_dispatcher_target import (
     PredecessorDispatcherTargetFact,
 )
+from d810.analyses.value_flow.contract_evidence import contract_evidence_payload
 
 STATE_DISPATCHER_TOPOLOGY_FACT_TYPE = "state_dispatcher_topology"
 STATE_VARIABLE_IDENTITY_FACT_TYPE = "state_variable_identity"
@@ -60,6 +61,11 @@ class DispatcherTopologyFact:
                 "row_count": self.row_count,
                 "dispatcher_source": self.dispatcher_source,
                 "profile_name": self.profile_name,
+                **(
+                    contract_evidence_payload("branch_targets")
+                    if self.handler_targets
+                    else {}
+                ),
             },
             evidence=("state_dispatcher_map",),
         )
@@ -436,9 +442,23 @@ def predecessor_dispatcher_target_observation(
         payload={
             **fact.to_dict(),
             "profile_name": profile_name,
+            **_predecessor_dispatcher_target_contract_evidence(fact),
         },
         evidence=(fact.resolver_kind,),
     )
+
+
+def _predecessor_dispatcher_target_contract_evidence(
+    fact: PredecessorDispatcherTargetFact,
+) -> dict[str, list[str]]:
+    tokens = ["branch_targets"]
+    if (
+        fact.branch_kind is not None
+        or fact.compare_block_serial is not None
+        or fact.condition_block_serial is not None
+    ):
+        tokens.append("dispatcher_predicates")
+    return contract_evidence_payload(*tokens)
 
 
 def _artifact_facts_from_dispatcher_map(

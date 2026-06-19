@@ -1,8 +1,19 @@
 """AnalysisManager — LLVM-style lazy caching + PreservedAnalyses invalidation."""
 from __future__ import annotations
 
-from d810.passes.analysis_manager import AnalysisManager
+from d810.analyses.control_flow.dispatcher_discovery_facts import (
+    collect_state_dispatcher_discovery_fact_observations,
+)
+from d810.analyses.control_flow.dispatcher_resolution import (
+    StateDispatcherMap,
+    StateDispatcherRow,
+)
+from d810.analyses.control_flow.predecessor_dispatcher_target import (
+    resolve_predecessor_dispatcher_target,
+)
 from d810.analyses.value_flow.contract_evidence import contract_evidence_payload
+from d810.capabilities.dispatcher import RouterKind
+from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.pass_pipeline import (
     PassContract,
     PassInvalidates,
@@ -194,6 +205,53 @@ def test_evidence_store_reads_published_and_live_contract_evidence_tokens():
     am.put_evidence("dispatcher_predicates", marker)
 
     assert am.get_evidence("dispatcher_predicates") == (marker, observation)
+
+
+def test_evidence_store_reads_dispatcher_projection_contract_tokens():
+    dispatch_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=0x10,
+                target_block=5,
+                dispatcher_block=2,
+                compare_block=2,
+                branch_kind="switch_case",
+                router_kind=RouterKind.TABLE,
+            ),
+        ),
+        dispatcher_entry_block=2,
+        dispatcher_blocks=frozenset({2}),
+        state_var_stkoff=0x3C,
+        state_var_lvar_idx=None,
+        router_kind=RouterKind.TABLE,
+    )
+    predecessor_fact = resolve_predecessor_dispatcher_target(
+        predecessor_block_serial=9,
+        dispatcher_entry_serial=2,
+        state_const=0x10,
+        state_dispatcher_map=dispatch_map,
+    )
+    assert predecessor_fact is not None
+    observations = collect_state_dispatcher_discovery_fact_observations(
+        state_dispatcher_map=dispatch_map,
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+        predecessor_target_facts=(predecessor_fact,),
+    )
+    predecessor_observation = next(
+        observation
+        for observation in observations
+        if observation.kind == "predecessor_dispatcher_target"
+    )
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type("_Facts", (), {"active_observations": observations})(),
+    )
+
+    assert am.has_evidence("branch_targets")
+    assert am.has_evidence("dispatcher_predicates")
+    assert predecessor_observation in am.get_evidence("branch_targets")
+    assert predecessor_observation in am.get_evidence("dispatcher_predicates")
 
 
 def test_evidence_store_does_not_treat_raw_observation_evidence_as_contract_token():
