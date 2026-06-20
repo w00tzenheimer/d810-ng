@@ -416,6 +416,122 @@ def test_default_instruction_only_pipeline_v2_shadow_is_not_registry_buildable_y
         pass_specs_from_project_config(shadow, state_machine_pass_registry())
 
 
+def test_example_libobfuscated_legacy_config_remains_runtime_source():
+    project = ProjectConfiguration.from_file(_CONF_DIR / "example_libobfuscated.json")
+
+    assert len([rule for rule in project.ins_rules if rule.is_activated]) == 186
+    assert [rule.name for rule in project.blk_rules if rule.is_activated] == [
+        "BlockLevelEgglogOptimizer",
+        "GlobalConstantInliner",
+        "ForwardConstantPropagationRule",
+        "MbaStatePreconditioner",
+        "StateMachineCffUnflattener",
+        "JumpFixer",
+    ]
+    assert project.additional_configuration == {"enable_pass_pipeline": True}
+    assert pipeline_configs_from_project_config(project) == ()
+
+
+def test_example_libobfuscated_pipeline_v2_shadow_parses_and_roundtrips():
+    legacy_path = _CONF_DIR / "example_libobfuscated.json"
+    shadow_path = _CONF_DIR / "example_libobfuscated.pipeline_v2.json"
+    legacy_raw = json.loads(legacy_path.read_text())
+    shadow_raw = json.loads(shadow_path.read_text())
+    shadow = ProjectConfiguration.from_file(shadow_path)
+
+    legacy_ins_rules = [
+        rule for rule in legacy_raw["ins_rules"] if rule["is_activated"]
+    ]
+    legacy_blk_rules = [
+        rule for rule in legacy_raw["blk_rules"] if rule["is_activated"]
+    ]
+    configs = pipeline_configs_from_project_config(shadow)
+
+    assert shadow.ins_rules == []
+    assert shadow.blk_rules == []
+    assert shadow.additional_configuration["pipeline_v2_shadow"] == {
+        "source_config": "example_libobfuscated.json",
+        "runtime_source": "legacy",
+        "enable_pass_pipeline": True,
+    }
+    assert [config.pass_id for config in configs] == [
+        "mba-simplify",
+        "block-level-egglog-optimizer",
+        "global-constant-inliner",
+        "forward-constant-propagation",
+        "mba-state-preconditioner",
+        "state-machine-cff-unflattener",
+        "jump-fixer",
+    ]
+
+    mba_config = configs[0]
+    assert mba_config.contract.scope is PassScope.EXPRESSION
+    assert mba_config.contract.requires.capabilities == frozenset(
+        {"local_instruction_rewrite", "z3_solver"}
+    )
+    assert mba_config.rules.include_groups == frozenset(
+        {"legacy.example_libobfuscated.ins_rules"}
+    )
+    shadow_rule_names = shadow_raw["additional_configuration"]["pipeline_v2"][0][
+        "rules"
+    ]["include"]
+    assert shadow_rule_names == [rule["name"] for rule in legacy_ins_rules]
+    assert mba_config.rules.include == frozenset(
+        rule["name"] for rule in legacy_ins_rules
+    )
+    assert mba_config.rules.options == {
+        rule["name"]: rule["config"]
+        for rule in legacy_ins_rules
+        if rule["config"]
+    }
+
+    block_configs_by_legacy = {
+        config.options["legacy_rule"]: config for config in configs[1:]
+    }
+    assert list(block_configs_by_legacy) == [
+        rule["name"] for rule in legacy_blk_rules
+    ]
+    for rule in legacy_blk_rules:
+        config = block_configs_by_legacy[rule["name"]]
+        options = dict(config.options)
+        assert options.pop("legacy_rule") == rule["name"]
+        native_pipeline = options.pop("native_pipeline", None)
+        assert options == rule["config"]
+        if rule["name"] == "StateMachineCffUnflattener":
+            assert native_pipeline == [
+                "recover_dispatcher",
+                "recover_state_transitions",
+                "plan_semantic_regions",
+                "lower_state_machine",
+                "cleanup_residual_dispatcher",
+            ]
+            assert config.contract.scope is PassScope.FUNCTION
+        else:
+            assert native_pipeline is None
+            assert config.contract.scope is PassScope.BLOCK
+
+    for entry in shadow_raw["additional_configuration"]["pipeline_v2"]:
+        assert "target" not in entry
+        assert "safety" not in entry
+        assert "preferred" not in entry.get("maturity", {})
+        assert "preferred" not in entry.get("maturity", {}).get("range", {})
+        assert PipelineConfig.from_dict(entry).to_dict()["pass_id"] == entry["pass"]
+
+    roundtripped_configs = tuple(
+        PipelineConfig.from_dict(config.to_dict()) for config in configs
+    )
+    assert roundtripped_configs == configs
+
+
+def test_example_libobfuscated_pipeline_v2_shadow_is_not_registry_buildable_yet():
+    shadow = ProjectConfiguration.from_file(
+        _CONF_DIR / "example_libobfuscated.pipeline_v2.json"
+    )
+
+    with pytest.raises(UnknownPassIdError, match="mba-simplify"):
+        pass_specs_from_project_config(shadow, state_machine_pass_registry())
+
+
 def test_pipeline_spec_comparison_reports_ordered_differences():
     live_specs = standard_state_machine_passes()
     short_specs = live_specs[:1]

@@ -96,6 +96,16 @@ def _copy_json_value(value: object, field_name: str) -> object:
     raise PipelineConfigError(f"{field_name} must be JSON-compatible")
 
 
+def _copy_json_mapping(value: object, field_name: str) -> Mapping[str, object]:
+    data = _optional_mapping(value, field_name)
+    result: dict[str, object] = {}
+    for key, item in data.items():
+        if not isinstance(key, str) or not key:
+            raise PipelineConfigError(f"{field_name} keys must be non-empty strings")
+        result[key] = _copy_json_value(item, f"{field_name}.{key}")
+    return MappingProxyType(result)
+
+
 def _parse_contract_string_set(value: object, field_name: str) -> frozenset[str]:
     result = _parse_string_set(value, field_name)
     warn_legacy_contract_names(field_name, result)
@@ -666,6 +676,10 @@ class PipelineConfig:
     safety_policy: SafetyPolicy = field(default_factory=SafetyPolicy)
     contract: PassContract = field(default_factory=PassContract)
     rules: RuleSelection = field(default_factory=RuleSelection)
+    options: Mapping[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "options", _copy_json_mapping(self.options, "options"))
 
     def enabled_at(self, maturity: IRMaturity | None) -> bool:
         if self.maturity_gates:
@@ -699,6 +713,7 @@ class PipelineConfig:
             },
             "contract": self.contract.to_dict(),
             "rules": self.rules.to_dict(),
+            "options": _copy_json_value(self.options, "options"),
         }
 
     @classmethod
@@ -796,6 +811,7 @@ class PipelineConfig:
             ),
             contract=PassContract.from_dict(contract_payload),
             rules=RuleSelection.from_dict(data.get("rules", {})),
+            options=_copy_json_mapping(data.get("options", {}), "options"),
         )
 
 
@@ -891,6 +907,10 @@ class PassSpec:
     backend_route: BackendRoute = BackendRoute.MUTATION_BACKEND
     contract: PassContract = field(default_factory=PassContract)
     rules: RuleSelection = field(default_factory=RuleSelection)
+    options: Mapping[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "options", _copy_json_mapping(self.options, "options"))
 
     @property
     def pass_id(self) -> str:
@@ -910,6 +930,7 @@ class PassSpec:
             safety_policy=self.safety_policy,
             contract=self.contract,
             rules=self.rules,
+            options=self.options,
         )
 
     def enabled_at(self, maturity: IRMaturity | None) -> bool:

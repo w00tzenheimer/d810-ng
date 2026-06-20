@@ -99,3 +99,14 @@ def test_registry_build_spec_preserves_rule_selection_metadata():
         {"legacy.default_instruction_only"}
     )
     assert spec.config.rules.include == frozenset({"FoldReadonlyDataRule"})
+
+
+def test_registry_build_spec_preserves_pass_options_metadata():
+    registry = PassRegistry()
+    registry.register("fake", _FakePass)
+    options = {"legacy_rule": "JumpFixer", "enabled_rules": ["JnzRule1"]}
+
+    spec = registry.build_spec(PipelineConfig(pass_id="fake", options=options))
+
+    assert spec.options == options
+    assert spec.config.options == options
