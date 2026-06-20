@@ -1,18 +1,26 @@
 """Shadow parsing for optional PipelineConfig v2 project payloads."""
 from __future__ import annotations
 
+import json
 import warnings
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from d810.core.config import ProjectConfiguration
 from d810.ir.maturity import IRMaturity
 from d810.families.state_machine_cff.pipeline import (
     standard_state_machine_passes,
     state_machine_pass_registry,
 )
 from d810.passes.contract_vocabulary import ContractVocabularyWarning
-from d810.passes.pass_pipeline import BackendRoute, PipelineConfigError
+from d810.passes.pass_pipeline import (
+    BackendRoute,
+    PassScope,
+    PipelineConfig,
+    PipelineConfigError,
+)
 from d810.passes.pipeline_config_parser import (
     pipeline_configs_from_project_config,
     pipeline_v2_shadow_match_required,
@@ -25,6 +33,10 @@ from d810.passes.pipeline_shadow import (
     require_pipeline_v2_shadow_match,
 )
 from d810.passes.registry import UnknownPassIdError
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_CONF_DIR = _REPO_ROOT / "src" / "d810" / "conf"
 
 
 def _legacy_recover_state_machine_contract_payload():
@@ -326,6 +338,82 @@ def test_pipeline_v2_configs_build_specs_from_registry():
     assert tuple(spec.config for spec in rebuilt_specs) == tuple(
         spec.config for spec in live_specs
     )
+
+
+def test_default_instruction_only_legacy_config_remains_runtime_source():
+    project = ProjectConfiguration.from_file(
+        _CONF_DIR / "default_instruction_only.json"
+    )
+
+    assert len(project.ins_rules) == 179
+    assert [rule.name for rule in project.blk_rules] == [
+        "GlobalConstantInliner",
+        "JumpFixer",
+    ]
+    fold = next(rule for rule in project.ins_rules if rule.name == "FoldReadonlyDataRule")
+    assert fold.config == {"fold_writable_constants": True}
+    assert pipeline_configs_from_project_config(project) == ()
+
+
+def test_default_instruction_only_pipeline_v2_shadow_parses_and_roundtrips():
+    shadow_path = _CONF_DIR / "default_instruction_only.pipeline_v2.json"
+    raw = json.loads(shadow_path.read_text())
+    project = ProjectConfiguration.from_file(shadow_path)
+
+    configs = pipeline_configs_from_project_config(project)
+
+    assert project.ins_rules == []
+    assert project.blk_rules == []
+    assert len(configs) == 1
+    config = configs[0]
+    assert config.pass_id == "mba-simplify"
+    assert config.contract.scope is PassScope.EXPRESSION
+    assert config.contract.maturity.min is IRMaturity.CANONICAL
+    assert config.contract.maturity.max is IRMaturity.GLOBAL_OPTIMIZED
+    assert config.contract.maturity.preferred is None
+    assert config.contract.requires.capabilities == frozenset(
+        {"local_instruction_rewrite", "z3_solver"}
+    )
+    assert config.rules.include_groups == frozenset(
+        {"legacy.default_instruction_only"}
+    )
+    assert len(config.rules.include) == 179
+    assert {
+        "FoldReadonlyDataRule",
+        "Add_OllvmRule_1",
+        "Z3ConstantOptimization",
+        "ExampleGuessingRule",
+    } <= config.rules.include
+    assert config.rules.exclude_groups == frozenset()
+    assert config.rules.exclude == frozenset()
+    assert config.rules.options["FoldReadonlyDataRule"] == {
+        "fold_writable_constants": True
+    }
+    assert config.rules.options["Z3ConstantOptimization"] == {
+        "min_nb_opcode": 4,
+        "min_nb_constant": 3,
+    }
+    assert config.rules.options["ExampleGuessingRule"] == {
+        "min_nb_var": 1,
+        "max_nb_var": 3,
+        "min_nb_diff_opcodes": 3,
+        "max_nb_diff_opcodes": 6,
+    }
+    assert PipelineConfig.from_dict(config.to_dict()) == config
+
+    pass_payload = raw["additional_configuration"]["pipeline_v2"][0]
+    assert "target" not in pass_payload
+    assert "safety" not in pass_payload
+    assert "preferred" not in pass_payload["maturity"]
+
+
+def test_default_instruction_only_pipeline_v2_shadow_is_not_registry_buildable_yet():
+    shadow = ProjectConfiguration.from_file(
+        _CONF_DIR / "default_instruction_only.pipeline_v2.json"
+    )
+
+    with pytest.raises(UnknownPassIdError, match="mba-simplify"):
+        pass_specs_from_project_config(shadow, state_machine_pass_registry())
 
 
 def test_pipeline_spec_comparison_reports_ordered_differences():

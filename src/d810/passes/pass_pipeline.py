@@ -75,6 +75,27 @@ def _parse_string_set(value: object, field_name: str) -> frozenset[str]:
     return frozenset(result)
 
 
+def _copy_json_value(value: object, field_name: str) -> object:
+    """Return a JSON-compatible copy of ``value`` for inert config metadata."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, ABCMapping):
+        result: dict[str, object] = {}
+        for key, item in value.items():
+            if not isinstance(key, str) or not key:
+                raise PipelineConfigError(
+                    f"{field_name} mapping keys must be non-empty strings"
+                )
+            result[key] = _copy_json_value(item, f"{field_name}.{key}")
+        return result
+    if isinstance(value, (list, tuple)):
+        return [
+            _copy_json_value(item, f"{field_name}[]")
+            for item in value
+        ]
+    raise PipelineConfigError(f"{field_name} must be JSON-compatible")
+
+
 def _parse_contract_string_set(value: object, field_name: str) -> frozenset[str]:
     result = _parse_string_set(value, field_name)
     warn_legacy_contract_names(field_name, result)
@@ -189,6 +210,107 @@ class SchedulerPolicy(str, Enum):
 
     WORKLIST = "worklist"
     REPLAY_AFTER_PIPELINE = "replay_after_pipeline"
+
+
+@dataclass(frozen=True)
+class RuleSelection:
+    """Rule include/exclude metadata for config-v2 instruction rewrite passes."""
+
+    include_groups: frozenset[str] = frozenset()
+    include: frozenset[str] = frozenset()
+    exclude_groups: frozenset[str] = frozenset()
+    exclude: frozenset[str] = frozenset()
+    options: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "include_groups",
+            _parse_string_set(self.include_groups, "rules.include_groups"),
+        )
+        object.__setattr__(
+            self,
+            "include",
+            _parse_string_set(self.include, "rules.include"),
+        )
+        object.__setattr__(
+            self,
+            "exclude_groups",
+            _parse_string_set(self.exclude_groups, "rules.exclude_groups"),
+        )
+        object.__setattr__(
+            self,
+            "exclude",
+            _parse_string_set(self.exclude, "rules.exclude"),
+        )
+        copied_options: dict[str, Mapping[str, object]] = {}
+        for rule_name, options in self.options.items():
+            if not isinstance(rule_name, str) or not rule_name:
+                raise PipelineConfigError(
+                    "rules.options keys must be non-empty strings"
+                )
+            option_mapping = _require_mapping(options, f"rules.options.{rule_name}")
+            copied_options[rule_name] = MappingProxyType(
+                {
+                    key: _copy_json_value(value, f"rules.options.{rule_name}.{key}")
+                    for key, value in option_mapping.items()
+                    if isinstance(key, str) and key
+                }
+            )
+            if len(copied_options[rule_name]) != len(option_mapping):
+                raise PipelineConfigError(
+                    f"rules.options.{rule_name} keys must be non-empty strings"
+                )
+        object.__setattr__(self, "options", MappingProxyType(copied_options))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "include_groups": sorted(self.include_groups),
+            "include": sorted(self.include),
+            "exclude_groups": sorted(self.exclude_groups),
+            "exclude": sorted(self.exclude),
+            "options": {
+                rule_name: dict(self.options[rule_name])
+                for rule_name in sorted(self.options)
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> "RuleSelection":
+        data = _optional_mapping(payload, "rules")
+        options_data = _optional_mapping(data.get("options", {}), "rules.options")
+        options: dict[str, Mapping[str, object]] = {}
+        for rule_name, rule_options in options_data.items():
+            if not isinstance(rule_name, str) or not rule_name:
+                raise PipelineConfigError(
+                    "rules.options keys must be non-empty strings"
+                )
+            option_mapping = _require_mapping(
+                rule_options,
+                f"rules.options.{rule_name}",
+            )
+            parsed_options: dict[str, object] = {}
+            for key, value in option_mapping.items():
+                if not isinstance(key, str) or not key:
+                    raise PipelineConfigError(
+                        f"rules.options.{rule_name} keys must be non-empty strings"
+                    )
+                parsed_options[key] = _copy_json_value(
+                    value,
+                    f"rules.options.{rule_name}.{key}",
+                )
+            options[rule_name] = parsed_options
+        return cls(
+            include_groups=_parse_string_set(
+                data.get("include_groups", ()), "rules.include_groups"
+            ),
+            include=_parse_string_set(data.get("include", ()), "rules.include"),
+            exclude_groups=_parse_string_set(
+                data.get("exclude_groups", ()), "rules.exclude_groups"
+            ),
+            exclude=_parse_string_set(data.get("exclude", ()), "rules.exclude"),
+            options=options,
+        )
 
 
 @dataclass(frozen=True)
@@ -543,6 +665,7 @@ class PipelineConfig:
     backend_route: BackendRoute = BackendRoute.MUTATION_BACKEND
     safety_policy: SafetyPolicy = field(default_factory=SafetyPolicy)
     contract: PassContract = field(default_factory=PassContract)
+    rules: RuleSelection = field(default_factory=RuleSelection)
 
     def enabled_at(self, maturity: IRMaturity | None) -> bool:
         if self.maturity_gates:
@@ -575,6 +698,7 @@ class PipelineConfig:
                 "golden_required": self.safety_policy.golden_required,
             },
             "contract": self.contract.to_dict(),
+            "rules": self.rules.to_dict(),
         }
 
     @classmethod
@@ -671,6 +795,7 @@ class PipelineConfig:
                 ),
             ),
             contract=PassContract.from_dict(contract_payload),
+            rules=RuleSelection.from_dict(data.get("rules", {})),
         )
 
 
@@ -765,6 +890,7 @@ class PassSpec:
     scheduler_policy: SchedulerPolicy = SchedulerPolicy.WORKLIST
     backend_route: BackendRoute = BackendRoute.MUTATION_BACKEND
     contract: PassContract = field(default_factory=PassContract)
+    rules: RuleSelection = field(default_factory=RuleSelection)
 
     @property
     def pass_id(self) -> str:
@@ -783,6 +909,7 @@ class PassSpec:
             backend_route=self.backend_route,
             safety_policy=self.safety_policy,
             contract=self.contract,
+            rules=self.rules,
         )
 
     def enabled_at(self, maturity: IRMaturity | None) -> bool:

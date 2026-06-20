@@ -54,4 +54,5 @@ class PassRegistry:
             scheduler_policy=config.scheduler_policy,
             backend_route=config.backend_route,
             contract=config.contract,
+            rules=config.rules,
         )

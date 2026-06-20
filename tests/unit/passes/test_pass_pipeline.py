@@ -19,6 +19,13 @@ def test_defaults():
     assert pp.CapabilityPolicy().required == frozenset()
     assert pp.SafetyPolicy().name == "default"
     assert pp.SafetyPolicy().golden_required is False
+    assert pp.RuleSelection().to_dict() == {
+        "include_groups": [],
+        "include": [],
+        "exclude_groups": [],
+        "exclude": [],
+        "options": {},
+    }
 
 
 def test_pass_result_analysis_outputs_is_read_only():
@@ -206,6 +213,80 @@ def test_pipeline_config_roundtrip_preserves_native_pass_contract():
         "ir.branch_cond.candidate",
     ]
     assert pp.PipelineConfig.from_dict(payload) == config
+
+
+def test_pipeline_config_roundtrip_preserves_rule_selection_metadata():
+    config = pp.PipelineConfig(
+        pass_id="mba-simplify",
+        contract=pp.PassContract(scope=pp.PassScope.EXPRESSION),
+        rules=pp.RuleSelection(
+            include_groups=frozenset({"legacy.default_instruction_only"}),
+            include=frozenset({"FoldReadonlyDataRule", "Add_OllvmRule_1"}),
+            exclude_groups=frozenset({"experimental"}),
+            exclude=frozenset({"UnsafeRule"}),
+            options={
+                "FoldReadonlyDataRule": {"fold_writable_constants": True},
+                "Z3ConstantOptimization": {
+                    "min_nb_opcode": 4,
+                    "min_nb_constant": 3,
+                },
+            },
+        ),
+    )
+
+    payload = config.to_dict()
+
+    assert payload["rules"] == {
+        "include_groups": ["legacy.default_instruction_only"],
+        "include": ["Add_OllvmRule_1", "FoldReadonlyDataRule"],
+        "exclude_groups": ["experimental"],
+        "exclude": ["UnsafeRule"],
+        "options": {
+            "FoldReadonlyDataRule": {"fold_writable_constants": True},
+            "Z3ConstantOptimization": {
+                "min_nb_opcode": 4,
+                "min_nb_constant": 3,
+            },
+        },
+    }
+    assert pp.PipelineConfig.from_dict(payload) == config
+
+
+@pytest.mark.parametrize(
+    ("payload", "field_name"),
+    [
+        ({"pass": "x", "rules": []}, "rules"),
+        (
+            {"pass": "x", "rules": {"include_groups": [1]}},
+            "rules.include_groups",
+        ),
+        ({"pass": "x", "rules": {"include": "Add_OllvmRule_1"}}, "rules.include"),
+        ({"pass": "x", "rules": {"exclude_groups": [1]}}, "rules.exclude_groups"),
+        ({"pass": "x", "rules": {"exclude": [1]}}, "rules.exclude"),
+        ({"pass": "x", "rules": {"options": []}}, "rules.options"),
+        (
+            {"pass": "x", "rules": {"options": {"FoldReadonlyDataRule": []}}},
+            "rules.options.FoldReadonlyDataRule",
+        ),
+        (
+            {
+                "pass": "x",
+                "rules": {
+                    "options": {
+                        "FoldReadonlyDataRule": {"fold_writable_constants": object()}
+                    }
+                },
+            },
+            "rules.options.FoldReadonlyDataRule.fold_writable_constants",
+        ),
+    ],
+)
+def test_pipeline_config_rejects_malformed_rule_selection_metadata(
+    payload,
+    field_name,
+):
+    with pytest.raises(pp.PipelineConfigError, match=field_name):
+        pp.PipelineConfig.from_dict(payload)
 
 
 def test_pipeline_config_accepts_direct_native_contract_yaml_shape():
