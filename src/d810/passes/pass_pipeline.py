@@ -21,6 +21,7 @@ from d810.ir.flowgraph import FlowGraph
 from d810.ir.maturity import IRMaturity
 from d810.analyses.value_flow.model import ValidatedFactView
 from d810.capabilities.resolver import CapabilitySet
+from d810.passes.contract_vocabulary import warn_legacy_contract_names
 from d810.passes.scheduler import RunLater
 from d810.transforms.plan import PatchPlan
 
@@ -72,6 +73,12 @@ def _parse_string_set(value: object, field_name: str) -> frozenset[str]:
             raise PipelineConfigError(f"{field_name} must contain only strings")
         result.append(item)
     return frozenset(result)
+
+
+def _parse_contract_string_set(value: object, field_name: str) -> frozenset[str]:
+    result = _parse_string_set(value, field_name)
+    warn_legacy_contract_names(field_name, result)
+    return result
 
 
 def _parse_maturity_set(value: object, field_name: str) -> frozenset[IRMaturity]:
@@ -284,10 +291,10 @@ class FactRequirement:
     def from_dict(cls, payload: object) -> "FactRequirement":
         data = _optional_mapping(payload, "requires.facts")
         return cls(
-            required=_parse_string_set(
+            required=_parse_contract_string_set(
                 data.get("required", ()), "requires.facts.required"
             ),
-            optional=_parse_string_set(
+            optional=_parse_contract_string_set(
                 data.get("optional", ()), "requires.facts.optional"
             ),
         )
@@ -312,8 +319,12 @@ class PassRequires:
     def from_dict(cls, payload: object) -> "PassRequires":
         data = _optional_mapping(payload, "requires")
         return cls(
-            analyses=_parse_string_set(data.get("analyses", ()), "requires.analyses"),
-            evidence=_parse_string_set(data.get("evidence", ()), "requires.evidence"),
+            analyses=_parse_contract_string_set(
+                data.get("analyses", ()), "requires.analyses"
+            ),
+            evidence=_parse_contract_string_set(
+                data.get("evidence", ()), "requires.evidence"
+            ),
             facts=FactRequirement.from_dict(data.get("facts", {})),
         )
 
@@ -330,7 +341,11 @@ class PassOutputs:
     @classmethod
     def from_dict(cls, payload: object) -> "PassOutputs":
         data = _optional_mapping(payload, "outputs")
-        return cls(facts=_parse_string_set(data.get("facts", ()), "outputs.facts"))
+        return cls(
+            facts=_parse_contract_string_set(
+                data.get("facts", ()), "outputs.facts"
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -350,10 +365,12 @@ class PassPreserves:
     def from_dict(cls, payload: object, field_name: str) -> "PassPreserves":
         data = _optional_mapping(payload, field_name)
         return cls(
-            analyses=_parse_string_set(
+            analyses=_parse_contract_string_set(
                 data.get("analyses", ()), f"{field_name}.analyses"
             ),
-            facts=_parse_string_set(data.get("facts", ()), f"{field_name}.facts"),
+            facts=_parse_contract_string_set(
+                data.get("facts", ()), f"{field_name}.facts"
+            ),
         )
 
 
@@ -374,10 +391,12 @@ class PassInvalidates:
     def from_dict(cls, payload: object, field_name: str) -> "PassInvalidates":
         data = _optional_mapping(payload, field_name)
         return cls(
-            analyses=_parse_string_set(
+            analyses=_parse_contract_string_set(
                 data.get("analyses", ()), f"{field_name}.analyses"
             ),
-            facts=_parse_string_set(data.get("facts", ()), f"{field_name}.facts"),
+            facts=_parse_contract_string_set(
+                data.get("facts", ()), f"{field_name}.facts"
+            ),
         )
 
 
