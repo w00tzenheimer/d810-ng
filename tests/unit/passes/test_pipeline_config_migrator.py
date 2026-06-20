@@ -19,6 +19,17 @@ from d810.passes.pipeline_config_migrator import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _CONF_DIR = _REPO_ROOT / "src" / "d810" / "conf"
+_OLLVM_CONFIGS = (
+    "default_unflattening_ollvm",
+    "default_unflattening_ollvm_s1a_fair",
+)
+_OLLVM_BLOCK_RULES = (
+    "IndirectCallResolver",
+    "MbaStatePreconditioner",
+    "StateMachineCffUnflattener",
+    "SimpleFlatteningCleanupUnflattener",
+    "JumpFixer",
+)
 
 
 def _load_json(path: Path) -> dict[str, object]:
@@ -356,6 +367,37 @@ def test_repo_inventory_surfaces_unsupported_reasons():
         in inventory["example_libobfuscated_no_fixprecedessor.json"].reason
     )
     assert "IdentityCallResolver" in inventory["identity_call.json"].reason
+
+
+@pytest.mark.parametrize("config_name", _OLLVM_CONFIGS)
+def test_ollvm_configs_remain_inventory_unsupported_pending_adapters(config_name):
+    inventory = _inventory_by_name()
+    item = inventory[f"{config_name}.json"]
+
+    assert item.status is LegacyConfigMigrationStatus.UNSUPPORTED
+    assert item.active_instruction_rules == 180
+    assert item.active_block_rules == _OLLVM_BLOCK_RULES
+    assert (
+        "IndirectCallResolver "
+        "(requires an IDA-backed indirect-call FlowOptimizationRule adapter)"
+        in item.reason
+    )
+    assert (
+        "SimpleFlatteningCleanupUnflattener "
+        "(requires a cleanup-family planner/executor adapter)"
+        in item.reason
+    )
+
+    with pytest.raises(
+        PipelineConfigError,
+        match="IndirectCallResolver",
+    ):
+        legacy_project_file_to_pipeline_v2_shadow(_CONF_DIR / f"{config_name}.json")
+
+
+def test_ollvm_pipeline_v2_shadows_are_not_generated_while_unsupported():
+    for config_name in _OLLVM_CONFIGS:
+        assert not (_CONF_DIR / f"{config_name}.pipeline_v2.json").exists()
 
 
 @pytest.mark.parametrize(
