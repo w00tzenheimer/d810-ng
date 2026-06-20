@@ -7,15 +7,21 @@ from d810.capabilities.resolver import CapabilitySet
 from d810.ir.maturity import IRMaturity
 from d810.passes.function_pass_manager import FunctionPassManager
 from d810.passes.pipeline_config_parser import (
+    PipelineV2Mode,
     pipeline_configs_from_project_config,
+    pipeline_v2_mode_from_project_config,
     pass_specs_from_project_config,
 )
 from d810.passes.pipeline_shadow import (
     compare_pipeline_v2_shadow,
     require_pipeline_v2_shadow_match,
 )
-from d810.passes.operational_config_v2 import default_pass_registries
+from d810.passes.operational_config_v2 import (
+    CONFIG_V2_OPERATIONAL_REGISTRY_NAME,
+    default_pass_registries,
+)
 from d810.passes.registry import PassRegistry, PassRegistryError
+from d810.passes.pass_pipeline import PipelineConfigError
 
 
 class ModulePassManager:
@@ -123,13 +129,39 @@ class ModulePassManager:
         require_pipeline_v2_shadow_match: bool = False,
     ):
         """Run one function through its isolated FunctionPassManager."""
+        pipeline_mode = pipeline_v2_mode_from_project_config(project_config)
         pipeline_registry = None
+        pipeline_v2_specs = None
+        require_shadow_match = require_pipeline_v2_shadow_match
+        if require_pipeline_v2_shadow_match and pipeline_mode is PipelineV2Mode.CONFIG_V2:
+            raise PipelineConfigError(
+                "require_pipeline_v2_shadow_match conflicts with "
+                "pipeline_v2_mode='config-v2'"
+            )
         if require_pipeline_v2_shadow_match:
             if pipeline_registry_name is None:
                 raise PassRegistryError(
                     "pipeline_v2 shadow enforcement requires a registry name"
                 )
             pipeline_registry = self.pass_registry_for(pipeline_registry_name)
+        elif pipeline_mode is PipelineV2Mode.SHADOW_CHECK:
+            pipeline_registry = self.pass_registry_for(
+                pipeline_registry_name or CONFIG_V2_OPERATIONAL_REGISTRY_NAME
+            )
+            require_shadow_match = True
+        elif pipeline_mode is PipelineV2Mode.CONFIG_V2:
+            effective_registry_name = (
+                pipeline_registry_name or CONFIG_V2_OPERATIONAL_REGISTRY_NAME
+            )
+            pipeline_registry = self.pass_registry_for(effective_registry_name)
+            pipeline_v2_specs = pass_specs_from_project_config(
+                project_config,
+                pipeline_registry,
+            )
+            if not pipeline_v2_specs:
+                raise PipelineConfigError(
+                    "pipeline_v2_mode='config-v2' requires a pipeline_v2 payload"
+                )
         return self.function_manager_for(source.func_ea).run(
             source=source,
             family=family,
@@ -140,5 +172,6 @@ class ModulePassManager:
             input_facts=input_facts,
             analysis_seeds=analysis_seeds,
             pipeline_v2_shadow_registry=pipeline_registry,
-            require_pipeline_v2_shadow_match=require_pipeline_v2_shadow_match,
+            require_pipeline_v2_shadow_match=require_shadow_match,
+            pipeline_v2_specs=pipeline_v2_specs,
         )
