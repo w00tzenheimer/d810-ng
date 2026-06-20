@@ -9,9 +9,11 @@ import pytest
 from d810.core.config import ProjectConfiguration, RuleConfiguration
 from d810.passes.pass_pipeline import PipelineConfigError
 from d810.passes.pipeline_config_migrator import (
+    LegacyBlockRuleAdapterKind,
     LegacyConfigMigrationStatus,
     inventory_legacy_config_directory,
     inventory_legacy_project_config,
+    legacy_block_rule_adapter_boundary,
     legacy_project_config_to_pipeline_v2_shadow,
     legacy_project_file_to_pipeline_v2_shadow,
 )
@@ -41,6 +43,78 @@ def _inventory_by_name():
         item.config_name: item
         for item in inventory_legacy_config_directory(_CONF_DIR)
     }
+
+
+@pytest.mark.parametrize(
+    ("rule_name", "pass_id"),
+    [
+        ("BlockLevelEgglogOptimizer", "block-level-egglog-optimizer"),
+        ("GlobalConstantInliner", "global-constant-inliner"),
+        ("ForwardConstantPropagationRule", "forward-constant-propagation"),
+        ("MbaStatePreconditioner", "mba-state-preconditioner"),
+        ("StateMachineCffUnflattener", "state-machine-cff-unflattener"),
+        ("JumpFixer", "jump-fixer"),
+    ],
+)
+def test_legacy_block_rule_adapter_boundary_classifies_shadow_passes(
+    rule_name,
+    pass_id,
+):
+    boundary = legacy_block_rule_adapter_boundary(rule_name)
+
+    assert boundary.rule_name == rule_name
+    assert boundary.adapter_kind is (
+        LegacyBlockRuleAdapterKind.PIPELINE_V2_SHADOW_PASS
+    )
+    assert boundary.supported is True
+    assert boundary.pass_id == pass_id
+    assert boundary.reason == ""
+    assert boundary.to_dict() == {
+        "rule": rule_name,
+        "adapter_kind": "pipeline_v2_shadow_pass",
+        "supported": True,
+        "pass_id": pass_id,
+        "reason": "",
+    }
+
+
+@pytest.mark.parametrize(
+    ("rule_name", "adapter_kind", "reason"),
+    [
+        (
+            "IndirectCallResolver",
+            LegacyBlockRuleAdapterKind.LEGACY_FLOW_RULE_ADAPTER,
+            "IDA-backed indirect-call FlowOptimizationRule adapter",
+        ),
+        (
+            "SimpleFlatteningCleanupUnflattener",
+            LegacyBlockRuleAdapterKind.CLEANUP_FAMILY_ADAPTER,
+            "cleanup-family planner/executor adapter",
+        ),
+    ],
+)
+def test_legacy_block_rule_adapter_boundary_classifies_ollvm_blockers(
+    rule_name,
+    adapter_kind,
+    reason,
+):
+    boundary = legacy_block_rule_adapter_boundary(rule_name)
+
+    assert boundary.rule_name == rule_name
+    assert boundary.adapter_kind is adapter_kind
+    assert boundary.supported is False
+    assert boundary.pass_id is None
+    assert reason in boundary.reason
+
+
+def test_legacy_block_rule_adapter_boundary_fails_unknown_rules_closed():
+    boundary = legacy_block_rule_adapter_boundary("UnsupportedLegacyRule")
+
+    assert boundary.rule_name == "UnsupportedLegacyRule"
+    assert boundary.adapter_kind is LegacyBlockRuleAdapterKind.UNKNOWN
+    assert boundary.supported is False
+    assert boundary.pass_id is None
+    assert boundary.reason == "no config-v2 adapter boundary registered"
 
 
 @pytest.mark.parametrize(
