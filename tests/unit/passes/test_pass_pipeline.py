@@ -102,6 +102,26 @@ def test_pass_spec_factory_builds_a_pass():
     assert spec.safety_policy.name == "default"
 
 
+def test_rule_selection_preserves_include_and_exclude_order():
+    config = pp.PipelineConfig.from_dict(
+        {
+            "pass": "mba-simplify",
+            "rules": {
+                "include": ["RuleB", "RuleA", "RuleC"],
+                "exclude": ["RuleC", "RuleA"],
+            },
+        }
+    )
+
+    assert config.rules.include == frozenset({"RuleA", "RuleB", "RuleC"})
+    assert config.rules.include_order == ("RuleB", "RuleA", "RuleC")
+    assert config.rules.exclude == frozenset({"RuleA", "RuleC"})
+    assert config.rules.exclude_order == ("RuleC", "RuleA")
+    assert config.to_dict()["rules"]["include"] == ["RuleB", "RuleA", "RuleC"]
+    assert config.to_dict()["rules"]["exclude"] == ["RuleC", "RuleA"]
+    assert pp.PipelineConfig.from_dict(config.to_dict()) == config
+
+
 def test_pass_spec_exposes_pipeline_config_v2_defaults():
     class _FakePass:
         name = "fake"
@@ -287,6 +307,8 @@ def test_pipeline_config_roundtrip_preserves_pass_options_metadata():
             {"pass": "x", "rules": {"options": {"FoldReadonlyDataRule": []}}},
             "rules.options.FoldReadonlyDataRule",
         ),
+        ({"pass": "x", "rules": {"include": ["RuleA", "RuleA"]}}, "rules.include"),
+        ({"pass": "x", "rules": {"exclude": ["RuleA", "RuleA"]}}, "rules.exclude"),
         (
             {
                 "pass": "x",

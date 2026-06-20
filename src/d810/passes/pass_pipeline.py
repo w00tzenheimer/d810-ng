@@ -75,6 +75,23 @@ def _parse_string_set(value: object, field_name: str) -> frozenset[str]:
     return frozenset(result)
 
 
+def _parse_string_tuple(value: object, field_name: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str) or not isinstance(value, (list, tuple, set, frozenset)):
+        raise PipelineConfigError(f"{field_name} must be a sequence of strings")
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise PipelineConfigError(f"{field_name} must contain only strings")
+        if item in seen:
+            raise PipelineConfigError(f"{field_name} must not contain duplicate names")
+        seen.add(item)
+        result.append(item)
+    return tuple(result)
+
+
 def _copy_json_value(value: object, field_name: str) -> object:
     """Return a JSON-compatible copy of ``value`` for inert config metadata."""
     if value is None or isinstance(value, (str, int, float, bool)):
@@ -228,8 +245,10 @@ class RuleSelection:
 
     include_groups: frozenset[str] = frozenset()
     include: frozenset[str] = frozenset()
+    include_order: tuple[str, ...] = ()
     exclude_groups: frozenset[str] = frozenset()
     exclude: frozenset[str] = frozenset()
+    exclude_order: tuple[str, ...] = ()
     options: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -243,6 +262,17 @@ class RuleSelection:
             "include",
             _parse_string_set(self.include, "rules.include"),
         )
+        include_order = _parse_string_tuple(
+            self.include_order, "rules.include_order"
+        )
+        if include_order:
+            if frozenset(include_order) != self.include:
+                raise PipelineConfigError(
+                    "rules.include_order must contain the same names as rules.include"
+                )
+        else:
+            include_order = tuple(sorted(self.include))
+        object.__setattr__(self, "include_order", include_order)
         object.__setattr__(
             self,
             "exclude_groups",
@@ -253,6 +283,17 @@ class RuleSelection:
             "exclude",
             _parse_string_set(self.exclude, "rules.exclude"),
         )
+        exclude_order = _parse_string_tuple(
+            self.exclude_order, "rules.exclude_order"
+        )
+        if exclude_order:
+            if frozenset(exclude_order) != self.exclude:
+                raise PipelineConfigError(
+                    "rules.exclude_order must contain the same names as rules.exclude"
+                )
+        else:
+            exclude_order = tuple(sorted(self.exclude))
+        object.__setattr__(self, "exclude_order", exclude_order)
         copied_options: dict[str, Mapping[str, object]] = {}
         for rule_name, options in self.options.items():
             if not isinstance(rule_name, str) or not rule_name:
@@ -276,9 +317,9 @@ class RuleSelection:
     def to_dict(self) -> dict[str, object]:
         return {
             "include_groups": sorted(self.include_groups),
-            "include": sorted(self.include),
+            "include": list(self.include_order),
             "exclude_groups": sorted(self.exclude_groups),
-            "exclude": sorted(self.exclude),
+            "exclude": list(self.exclude_order),
             "options": {
                 rule_name: dict(self.options[rule_name])
                 for rule_name in sorted(self.options)
@@ -310,15 +351,19 @@ class RuleSelection:
                     f"rules.options.{rule_name}.{key}",
                 )
             options[rule_name] = parsed_options
+        include = _parse_string_tuple(data.get("include", ()), "rules.include")
+        exclude = _parse_string_tuple(data.get("exclude", ()), "rules.exclude")
         return cls(
             include_groups=_parse_string_set(
                 data.get("include_groups", ()), "rules.include_groups"
             ),
-            include=_parse_string_set(data.get("include", ()), "rules.include"),
+            include=frozenset(include),
+            include_order=include,
             exclude_groups=_parse_string_set(
                 data.get("exclude_groups", ()), "rules.exclude_groups"
             ),
-            exclude=_parse_string_set(data.get("exclude", ()), "rules.exclude"),
+            exclude=frozenset(exclude),
+            exclude_order=exclude,
             options=options,
         )
 

@@ -63,6 +63,18 @@ def _expected_unknown_pass(pass_ids):
     return None
 
 
+def _unique_active_instruction_rule_names(raw_rules):
+    names = []
+    seen = set()
+    for rule in raw_rules:
+        rule_name = rule["name"]
+        if not rule["is_activated"] or rule_name in seen:
+            continue
+        seen.add(rule_name)
+        names.append(rule_name)
+    return names
+
+
 def _assert_entry_shape(entry):
     assert "include_groups" not in entry.get("rules", {})
     assert "exclude_groups" not in entry.get("rules", {})
@@ -811,9 +823,9 @@ def test_hodur_pipeline_v2_shadows_parse_and_roundtrip(
             rule for rule in legacy_raw["ins_rules"] if rule["is_activated"]
         ]
         instruction_entry = shadow_raw["additional_configuration"]["pipeline_v2"][0]
-        assert instruction_entry["rules"]["include"] == [
-            rule["name"] for rule in active_instruction_rules
-        ]
+        assert instruction_entry["rules"]["include"] == (
+            _unique_active_instruction_rule_names(active_instruction_rules)
+        )
         assert "include_groups" not in instruction_entry["rules"]
         assert "exclude_groups" not in instruction_entry["rules"]
         assert configs[0].rules.include_groups == frozenset()
@@ -962,9 +974,9 @@ def test_tigress_switch_pipeline_v2_shadows_parse_and_roundtrip(
             rule for rule in legacy_raw["ins_rules"] if rule["is_activated"]
         ]
         instruction_entry = shadow_raw["additional_configuration"]["pipeline_v2"][0]
-        assert instruction_entry["rules"]["include"] == [
-            rule["name"] for rule in active_instruction_rules
-        ]
+        assert instruction_entry["rules"]["include"] == (
+            _unique_active_instruction_rule_names(active_instruction_rules)
+        )
         assert "include_groups" not in instruction_entry["rules"]
         assert "exclude_groups" not in instruction_entry["rules"]
         assert configs[0].rules.include_groups == frozenset()
@@ -1090,9 +1102,9 @@ def test_remaining_pipeline_v2_shadows_parse_and_roundtrip(
         ]
         instruction_entry = shadow_raw["additional_configuration"]["pipeline_v2"][0]
         assert len(active_instruction_rules) == expected_instruction_rules
-        assert instruction_entry["rules"]["include"] == [
-            rule["name"] for rule in active_instruction_rules
-        ]
+        assert instruction_entry["rules"]["include"] == (
+            _unique_active_instruction_rule_names(active_instruction_rules)
+        )
         assert "include_groups" not in instruction_entry["rules"]
         assert "exclude_groups" not in instruction_entry["rules"]
         assert configs[0].rules.include_groups == frozenset()

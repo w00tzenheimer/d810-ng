@@ -167,6 +167,32 @@ def _active_instruction_rules(
     return _active_rules(project_config.ins_rules)
 
 
+def _deduplicated_instruction_rules(
+    rules: list[RuleConfiguration],
+) -> list[RuleConfiguration]:
+    """Return first-seen active instruction rules by name for executable v2 order.
+
+    Legacy configs can contain repeated entries for the same rule name. Config-v2
+    selects executable rules by rule identity, so exact duplicates collapse to the
+    first occurrence. Conflicting duplicate configs fail closed because one
+    ``rules.options`` mapping cannot represent two option payloads for a rule.
+    """
+    result: list[RuleConfiguration] = []
+    seen_configs: dict[str, object] = {}
+    for rule in rules:
+        rule_name = _rule_name(rule, "ins_rules")
+        if rule_name in seen_configs:
+            if seen_configs[rule_name] != rule.config:
+                raise PipelineConfigError(
+                    "duplicate active instruction rule has conflicting config: "
+                    f"{rule_name}"
+                )
+            continue
+        seen_configs[rule_name] = rule.config
+        result.append(rule)
+    return result
+
+
 def _active_block_rules(project_config: ProjectConfiguration) -> list[RuleConfiguration]:
     return _active_rules(project_config.blk_rules)
 
@@ -209,7 +235,7 @@ def _instruction_pass(
     *,
     source_config: str,
 ) -> dict[str, object]:
-    active_rules = _active_rules(rules)
+    active_rules = _deduplicated_instruction_rules(_active_rules(rules))
     return {
         "pass": "mba-simplify",
         "scope": "expression",

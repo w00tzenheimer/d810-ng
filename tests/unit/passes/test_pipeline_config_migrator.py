@@ -116,6 +116,17 @@ def _inventory_by_name():
     }
 
 
+def _unique_active_instruction_rule_names(rules):
+    names = []
+    seen = set()
+    for rule in rules:
+        if not rule.is_activated or rule.name in seen:
+            continue
+        seen.add(rule.name)
+        names.append(rule.name)
+    return names
+
+
 def _assert_block_entries_preserve_legacy_rules(
     block_entries,
     active_block_rules,
@@ -375,6 +386,63 @@ def test_legacy_migrator_adds_z3_capability_for_solver_backed_rules(rule_name):
     ]
 
 
+def test_legacy_migrator_collapses_exact_duplicate_instruction_rules():
+    project = ProjectConfiguration(
+        path=Path("duplicate_rules.json"),
+        ins_rules=[
+            RuleConfiguration(
+                name="Add_OllvmRule_1",
+                is_activated=True,
+                config={"dump_intermediate_microcode": None},
+            ),
+            RuleConfiguration(
+                name="Add_OllvmRule_1",
+                is_activated=True,
+                config={"dump_intermediate_microcode": None},
+            ),
+            RuleConfiguration(
+                name="Add_OllvmRule_2",
+                is_activated=True,
+            ),
+        ],
+    )
+
+    generated = legacy_project_config_to_pipeline_v2_shadow(project)
+
+    instruction_entry = generated["additional_configuration"]["pipeline_v2"][0]
+    assert instruction_entry["rules"]["include"] == [
+        "Add_OllvmRule_1",
+        "Add_OllvmRule_2",
+    ]
+    assert instruction_entry["rules"]["options"] == {
+        "Add_OllvmRule_1": {"dump_intermediate_microcode": None}
+    }
+
+
+def test_legacy_migrator_rejects_conflicting_duplicate_instruction_rules():
+    project = ProjectConfiguration(
+        path=Path("duplicate_rules.json"),
+        ins_rules=[
+            RuleConfiguration(
+                name="Add_OllvmRule_1",
+                is_activated=True,
+                config={"dump_intermediate_microcode": None},
+            ),
+            RuleConfiguration(
+                name="Add_OllvmRule_1",
+                is_activated=True,
+                config={"dump_intermediate_microcode": True},
+            ),
+        ],
+    )
+
+    with pytest.raises(
+        PipelineConfigError,
+        match="duplicate active instruction rule has conflicting config: Add_OllvmRule_1",
+    ):
+        legacy_project_config_to_pipeline_v2_shadow(project)
+
+
 def test_legacy_migrator_preserves_example_additional_pipeline_metadata():
     generated = legacy_project_file_to_pipeline_v2_shadow(
         _CONF_DIR / "example_libobfuscated.json"
@@ -619,9 +687,9 @@ def test_remaining_generated_shadows_preserve_legacy_rule_shape(
     if active_instruction_rules:
         instruction_entry = pipeline_v2[0]
         assert instruction_entry["pass"] == "mba-simplify"
-        assert instruction_entry["rules"]["include"] == [
-            rule.name for rule in active_instruction_rules
-        ]
+        assert instruction_entry["rules"]["include"] == (
+            _unique_active_instruction_rule_names(active_instruction_rules)
+        )
         assert instruction_entry["rules"]["options"] == {
             rule.name: rule.config
             for rule in active_instruction_rules
@@ -681,9 +749,9 @@ def test_hodur_generated_shadows_preserve_legacy_rule_shape(
     if active_instruction_rules:
         instruction_entry = pipeline_v2[0]
         assert instruction_entry["pass"] == "mba-simplify"
-        assert instruction_entry["rules"]["include"] == [
-            rule.name for rule in active_instruction_rules
-        ]
+        assert instruction_entry["rules"]["include"] == (
+            _unique_active_instruction_rule_names(active_instruction_rules)
+        )
         assert instruction_entry["rules"]["options"] == {
             rule.name: rule.config
             for rule in active_instruction_rules
@@ -748,9 +816,9 @@ def test_tigress_switch_generated_shadows_preserve_legacy_rule_shape(
     if active_instruction_rules:
         instruction_entry = pipeline_v2[0]
         assert instruction_entry["pass"] == "mba-simplify"
-        assert instruction_entry["rules"]["include"] == [
-            rule.name for rule in active_instruction_rules
-        ]
+        assert instruction_entry["rules"]["include"] == (
+            _unique_active_instruction_rule_names(active_instruction_rules)
+        )
         assert instruction_entry["rules"]["options"] == {
             rule.name: rule.config
             for rule in active_instruction_rules

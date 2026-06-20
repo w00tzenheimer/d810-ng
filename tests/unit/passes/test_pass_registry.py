@@ -31,6 +31,17 @@ def test_registry_rejects_duplicate_pass_ids():
         registry.register("fake", _FakePass)
 
 
+def test_registry_rejects_duplicate_configured_pass_ids():
+    registry = PassRegistry()
+    registry.register_configured("fake", lambda config: _FakePass())
+
+    with pytest.raises(DuplicatePassIdError, match="duplicate pass id"):
+        registry.register("fake", _FakePass)
+
+    with pytest.raises(DuplicatePassIdError, match="duplicate pass id"):
+        registry.register_configured("fake", lambda config: _FakePass())
+
+
 def test_registry_rejects_unknown_pass_ids():
     registry = PassRegistry()
 
@@ -115,3 +126,38 @@ def test_registry_build_spec_preserves_pass_options_metadata():
 
     assert spec.options == options
     assert spec.config.options == options
+
+
+def test_registry_configured_factory_receives_full_pipeline_config():
+    seen = []
+
+    class _ConfiguredPass:
+        name = "configured"
+
+        def __init__(self, config):
+            self.config = config
+
+        def run(self, ctx):
+            return PassResult()
+
+    registry = PassRegistry()
+    registry.register_configured(
+        "configured",
+        lambda config: seen.append(config) or _ConfiguredPass(config),
+    )
+    config = PipelineConfig(
+        pass_id="configured",
+        rules=pp.RuleSelection(
+            include=frozenset({"B", "A"}),
+            include_order=("B", "A"),
+        ),
+    )
+
+    spec = registry.build_spec(config)
+    assert seen == [config]
+    built = spec.pass_factory()
+
+    assert isinstance(built, _ConfiguredPass)
+    assert seen == [config, config]
+    assert built.config.rules.include_order == ("B", "A")
+    assert spec.rules is config.rules
