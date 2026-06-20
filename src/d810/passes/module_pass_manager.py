@@ -14,6 +14,7 @@ from d810.passes.pipeline_shadow import (
     compare_pipeline_v2_shadow,
     require_pipeline_v2_shadow_match,
 )
+from d810.passes.operational_config_v2 import default_pass_registries
 from d810.passes.registry import PassRegistry, PassRegistryError
 
 
@@ -26,7 +27,8 @@ class ModulePassManager:
         pass_registries: Mapping[str, PassRegistry] | None = None,
         analysis_providers: Mapping[str, Callable[[object], object]] | None = None,
     ) -> None:
-        self._pass_registries: dict[str, PassRegistry] = dict(pass_registries or {})
+        self._pass_registries: dict[str, PassRegistry] = default_pass_registries()
+        self._pass_registries.update(pass_registries or {})
         self._analysis_providers: dict[str, Callable[[object], object]] = dict(
             analysis_providers or {}
         )
