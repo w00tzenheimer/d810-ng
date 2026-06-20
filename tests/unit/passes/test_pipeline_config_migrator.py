@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from d810.core.config import ProjectConfiguration, RuleConfiguration
+from d810.passes.legacy_flow_rules import LEGACY_FLOW_RULE_ADAPTER_CAPABILITY
 from d810.passes.pass_pipeline import PipelineConfigError
 from d810.passes.pipeline_config_migrator import (
     LegacyBlockRuleAdapterKind,
@@ -383,6 +384,19 @@ def test_legacy_migrator_adds_z3_capability_for_solver_backed_rules(rule_name):
     assert instruction_entry["requires"]["capabilities"] == [
         "local_instruction_rewrite",
         "z3_solver",
+    ]
+
+
+def test_legacy_migrator_marks_simple_block_rules_with_adapter_capability():
+    generated = legacy_project_file_to_pipeline_v2_shadow(
+        _CONF_DIR / "hodur_flag2.json"
+    )
+
+    jump_entry = generated["additional_configuration"]["pipeline_v2"][-1]
+
+    assert jump_entry["pass"] == "jump-fixer"
+    assert jump_entry["requires"]["capabilities"] == [
+        LEGACY_FLOW_RULE_ADAPTER_CAPABILITY
     ]
 
 

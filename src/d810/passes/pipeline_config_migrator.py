@@ -7,6 +7,7 @@ from enum import Enum
 from pathlib import Path
 
 from d810.core.config import ConfigConstants, ProjectConfiguration, RuleConfiguration
+from d810.passes.legacy_flow_rules import LEGACY_FLOW_RULE_ADAPTER_CAPABILITY
 from d810.passes.pass_pipeline import MaturityRange, PipelineConfigError, PassSpec
 from d810.passes.state_machine_spine import standard_state_machine_passes
 
@@ -296,6 +297,9 @@ def _block_pass(
             "pass": pass_id,
             "scope": scope,
             "maturity": _json_copy(maturity, "maturity"),
+            "requires": {
+                "capabilities": [LEGACY_FLOW_RULE_ADAPTER_CAPABILITY],
+            },
             "migration": {
                 "source_config": source_config,
                 "source_section": "blk_rules",

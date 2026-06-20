@@ -680,6 +680,11 @@
             "max": "ir.global.optimized"
           }
         },
+        "requires": {
+          "capabilities": [
+            "legacy_flow_rule_adapter"
+          ]
+        },
         "migration": {
           "source_config": "flatfold.json",
           "source_section": "blk_rules",
@@ -699,6 +704,11 @@
             "max": "ir.global.optimized"
           }
         },
+        "requires": {
+          "capabilities": [
+            "legacy_flow_rule_adapter"
+          ]
+        },
         "migration": {
           "source_config": "flatfold.json",
           "source_section": "blk_rules",
@@ -716,6 +726,11 @@
             "min": "ir.canonical",
             "max": "ir.global.optimized"
           }
+        },
+        "requires": {
+          "capabilities": [
+            "legacy_flow_rule_adapter"
+          ]
         },
         "migration": {
           "source_config": "flatfold.json",
