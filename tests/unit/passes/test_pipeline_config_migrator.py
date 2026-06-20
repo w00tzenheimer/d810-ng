@@ -225,6 +225,11 @@ def test_legacy_block_rule_adapter_boundary_classifies_state_machine_spine():
     ("rule_name", "adapter_kind", "reason"),
     [
         (
+            "IndirectBranchResolver",
+            LegacyBlockRuleAdapterKind.LEGACY_FLOW_RULE_ADAPTER,
+            "IDA-backed indirect-branch FlowOptimizationRule adapter",
+        ),
+        (
             "IndirectCallResolver",
             LegacyBlockRuleAdapterKind.LEGACY_FLOW_RULE_ADAPTER,
             "IDA-backed indirect-call FlowOptimizationRule adapter",
@@ -234,9 +239,14 @@ def test_legacy_block_rule_adapter_boundary_classifies_state_machine_spine():
             LegacyBlockRuleAdapterKind.CLEANUP_FAMILY_ADAPTER,
             "cleanup-family planner/executor adapter",
         ),
+        (
+            "IdentityCallResolver",
+            LegacyBlockRuleAdapterKind.LEGACY_FLOW_RULE_ADAPTER,
+            "explicit opt-in identity-call FlowOptimizationRule adapter",
+        ),
     ],
 )
-def test_legacy_block_rule_adapter_boundary_classifies_ollvm_blockers(
+def test_legacy_block_rule_adapter_boundary_classifies_unsupported_boundaries(
     rule_name,
     adapter_kind,
     reason,
@@ -630,7 +640,16 @@ def test_repo_inventory_excludes_options_and_existing_shadow_configs():
 def test_repo_inventory_surfaces_unsupported_reasons():
     inventory = _inventory_by_name()
 
-    assert "IndirectCallResolver" in inventory["default.json"].reason
+    assert (
+        "IndirectBranchResolver "
+        "(requires an IDA-backed indirect-branch FlowOptimizationRule adapter)"
+        in inventory["default.json"].reason
+    )
+    assert (
+        "IndirectCallResolver "
+        "(requires an IDA-backed indirect-call FlowOptimizationRule adapter)"
+        in inventory["default.json"].reason
+    )
     assert inventory["default_unflattening_ollvm.json"].status is (
         LegacyConfigMigrationStatus.UNSUPPORTED
     )
@@ -642,7 +661,11 @@ def test_repo_inventory_surfaces_unsupported_reasons():
         "SimpleFlatteningCleanupUnflattener"
         in inventory["example_libobfuscated_no_fixprecedessor.json"].reason
     )
-    assert "IdentityCallResolver" in inventory["identity_call.json"].reason
+    assert (
+        "IdentityCallResolver "
+        "(requires an explicit opt-in identity-call FlowOptimizationRule adapter)"
+        in inventory["identity_call.json"].reason
+    )
 
 
 @pytest.mark.parametrize("config_name", _OLLVM_CONFIGS)

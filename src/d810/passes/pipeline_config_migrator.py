@@ -86,6 +86,12 @@ _SUPPORTED_BLOCK_RULE_ADAPTERS["StateMachineCffUnflattener"] = (
 # represented. Inventory reports the concrete gap instead of emitting fake
 # pass ids.
 _UNSUPPORTED_BLOCK_RULE_ADAPTERS = {
+    "IndirectBranchResolver": LegacyBlockRuleAdapterBoundary(
+        rule_name="IndirectBranchResolver",
+        adapter_kind=LegacyBlockRuleAdapterKind.LEGACY_FLOW_RULE_ADAPTER,
+        supported=False,
+        reason="requires an IDA-backed indirect-branch FlowOptimizationRule adapter",
+    ),
     "IndirectCallResolver": LegacyBlockRuleAdapterBoundary(
         rule_name="IndirectCallResolver",
         adapter_kind=LegacyBlockRuleAdapterKind.LEGACY_FLOW_RULE_ADAPTER,
@@ -97,6 +103,12 @@ _UNSUPPORTED_BLOCK_RULE_ADAPTERS = {
         adapter_kind=LegacyBlockRuleAdapterKind.CLEANUP_FAMILY_ADAPTER,
         supported=False,
         reason="requires a cleanup-family planner/executor adapter",
+    ),
+    "IdentityCallResolver": LegacyBlockRuleAdapterBoundary(
+        rule_name="IdentityCallResolver",
+        adapter_kind=LegacyBlockRuleAdapterKind.LEGACY_FLOW_RULE_ADAPTER,
+        supported=False,
+        reason="requires an explicit opt-in identity-call FlowOptimizationRule adapter",
     ),
 }
 
