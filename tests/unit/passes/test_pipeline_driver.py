@@ -649,6 +649,80 @@ def test_native_contract_missing_multiple_namespaces_reports_structured_diagnost
     )
 
 
+def test_native_contract_required_capability_missing_raises_capability_error():
+    class _NeedsCapability:
+        name = "needs_capability"
+
+        def run(self, ctx) -> PassResult:
+            raise AssertionError("missing capability should stop execution")
+
+    spec = PassSpec(
+        "needs_capability",
+        _NeedsCapability,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(capabilities=frozenset({"live_mba"}))
+        ),
+    )
+
+    with pytest.raises(CapabilityError, match="requires.capabilities") as exc:
+        _run_specs((spec,), backend=_Backend(caps=()))
+
+    assert "live_mba" in str(exc.value)
+
+
+def test_native_contract_required_capability_present_runs():
+    calls: list[str] = []
+
+    class _NeedsCapability:
+        name = "needs_capability"
+
+        def run(self, ctx) -> PassResult:
+            calls.append("ran")
+            return PassResult()
+
+    spec = PassSpec(
+        "needs_capability",
+        _NeedsCapability,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(capabilities=frozenset({"live_mba"}))
+        ),
+    )
+
+    _run_specs((spec,), backend=_Backend(caps=("live_mba",)))
+
+    assert calls == ["ran"]
+
+
+def test_native_contract_capability_does_not_satisfy_analysis_requirement():
+    class _NeedsAnalysis:
+        name = "needs_analysis"
+
+        def run(self, ctx) -> PassResult:
+            raise AssertionError("missing analysis should stop execution")
+
+    spec = PassSpec(
+        "needs_analysis",
+        _NeedsAnalysis,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(
+                capabilities=frozenset({"domtree"}),
+                analyses=frozenset({"domtree"}),
+            )
+        ),
+    )
+
+    with pytest.raises(PassContractError, match="analyses") as exc:
+        _run_specs((spec,), backend=_Backend(caps=("domtree",)))
+
+    assert exc.value.diagnostics[0].namespace == "requires.analyses"
+
+
 def test_native_contract_required_analysis_provider_runs():
     calls: list[object] = []
 

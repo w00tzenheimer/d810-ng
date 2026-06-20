@@ -106,6 +106,20 @@ def validate_capabilities(backend, requirements: CapabilityPolicy) -> None:
         )
 
 
+def validate_contract_capabilities(spec: PassSpec, backend) -> None:
+    """Fail loud if native ``requires.capabilities`` are unavailable."""
+    required = spec.contract.requires.capabilities
+    if not required:
+        return
+    have = frozenset(backend.capabilities())
+    missing = tuple(sorted(required - have))
+    if missing:
+        raise CapabilityError(
+            f"pass {spec.pass_id!r} missing backend capabilities {list(missing)} "
+            "declared in requires.capabilities"
+        )
+
+
 def _require_analysis_methods(facts, *, pass_id: str, method_names: tuple[str, ...]) -> None:
     missing = tuple(name for name in method_names if not hasattr(facts, name))
     if missing:
@@ -397,6 +411,7 @@ def _run_pass_spec(
     scheduler: PassScheduler | None,
 ) -> FunctionPipelineContext:
     validate_capabilities(backend, spec.requirements)
+    validate_contract_capabilities(spec, backend)
     validate_required_analyses(spec, ctx)
     validate_native_contract(spec, ctx)
     result = spec.pass_factory().run(ctx)

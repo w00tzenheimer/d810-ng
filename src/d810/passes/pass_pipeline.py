@@ -304,12 +304,14 @@ class FactRequirement:
 class PassRequires:
     """Analysis/evidence/fact inputs for a native D810 pass contract."""
 
+    capabilities: frozenset[str] = frozenset()
     analyses: frozenset[str] = frozenset()
     evidence: frozenset[str] = frozenset()
     facts: FactRequirement = field(default_factory=FactRequirement)
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "capabilities": sorted(self.capabilities),
             "analyses": sorted(self.analyses),
             "evidence": sorted(self.evidence),
             "facts": self.facts.to_dict(),
@@ -319,6 +321,9 @@ class PassRequires:
     def from_dict(cls, payload: object) -> "PassRequires":
         data = _optional_mapping(payload, "requires")
         return cls(
+            capabilities=_parse_string_set(
+                data.get("capabilities", ()), "requires.capabilities"
+            ),
             analyses=_parse_contract_string_set(
                 data.get("analyses", ()), "requires.analyses"
             ),
