@@ -1,6 +1,7 @@
 """Shadow parsing for optional PipelineConfig v2 project payloads."""
 from __future__ import annotations
 
+import warnings
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,7 @@ from d810.families.state_machine_cff.pipeline import (
     standard_state_machine_passes,
     state_machine_pass_registry,
 )
+from d810.passes.contract_vocabulary import ContractVocabularyWarning
 from d810.passes.pass_pipeline import BackendRoute, PipelineConfigError
 from d810.passes.pipeline_config_parser import (
     pipeline_configs_from_project_config,
@@ -135,11 +137,20 @@ def test_pipeline_v2_shadow_parse_from_project_like_object():
 
 
 def test_pipeline_v2_parses_native_deobfuscation_contract_shape():
-    configs = pipeline_configs_from_project_config(
-        {"pipeline_v2": [_recover_state_machine_contract_payload()]}
-    )
+    with pytest.warns(ContractVocabularyWarning) as warnings:
+        configs = pipeline_configs_from_project_config(
+            {"pipeline_v2": [_recover_state_machine_contract_payload()]}
+        )
 
     assert len(configs) == 1
+    warning_text = "\n".join(str(warning.message) for warning in warnings)
+    assert "state_variable_writes->ir.state_variable_write" in warning_text
+    assert "dispatcher_predicates->role.dispatcher_predicate" in warning_text
+    assert "branch_targets->ir.branch_target" in warning_text
+    assert "dispatcher_family->role.dispatcher" in warning_text
+    assert "state_transition->recovered.state_transition" in warning_text
+    assert "recovered_cfg_edge->recovered.cfg_edge" in warning_text
+    assert "stale_cfg_shape->ir.cfg_shape.stale" in warning_text
     config = configs[0]
     assert config.pass_id == "recover-state-machine"
     assert config.contract.scope.value == "function"
@@ -167,6 +178,38 @@ def test_pipeline_v2_parses_native_deobfuscation_contract_shape():
     assert config.contract.invalidates.facts == frozenset({"stale_cfg_shape"})
     assert config.contract.safety.policy == "guarded-rewrite"
     assert config.contract.safety.requires_oracle is False
+
+
+def test_pipeline_v2_canonical_contract_names_do_not_warn():
+    payload = _recover_state_machine_contract_payload()
+    payload["requires"]["evidence"] = [
+        "ir.state_variable_write",
+        "role.dispatcher_predicate",
+        "ir.branch_target",
+    ]
+    payload["requires"]["facts"]["optional"] = ["effect.memory_def.observable"]
+    payload["outputs"]["facts"] = [
+        "recovered.state_transition",
+        "recovered.cfg_edge",
+        "role.dispatcher",
+    ]
+    payload["invalidates"]["facts"] = ["ir.cfg_shape.stale"]
+
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        configs = pipeline_configs_from_project_config({"pipeline_v2": [payload]})
+
+    assert configs[0].contract.requires.evidence == frozenset(
+        {"ir.state_variable_write", "role.dispatcher_predicate", "ir.branch_target"}
+    )
+    assert configs[0].contract.outputs.facts == frozenset(
+        {"recovered.state_transition", "recovered.cfg_edge", "role.dispatcher"}
+    )
+    assert not [
+        warning
+        for warning in recorded
+        if issubclass(warning.category, ContractVocabularyWarning)
+    ]
 
 
 def test_malformed_pipeline_v2_fails_clearly():
