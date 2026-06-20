@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
-from d810.core.config import ProjectConfiguration, RuleConfiguration
+from d810.core.config import ConfigConstants, ProjectConfiguration, RuleConfiguration
 from d810.passes.pass_pipeline import PipelineConfigError
 
 
@@ -34,6 +36,7 @@ _BLOCK_RULE_PASS_IDS = {
     "StateMachineCffUnflattener": "state-machine-cff-unflattener",
     "JumpFixer": "jump-fixer",
 }
+_SUPPORTED_BLOCK_RULES = frozenset(_BLOCK_RULE_PASS_IDS)
 
 _STATE_MACHINE_NATIVE_PIPELINE = [
     "recover_dispatcher",
@@ -48,6 +51,36 @@ _Z3_INSTRUCTION_RULES = frozenset(
         "Z3ConstantOptimization",
     }
 )
+
+
+class LegacyConfigMigrationStatus(str, Enum):
+    """Dry-run classification for a legacy ProjectConfiguration."""
+
+    MIGRATABLE = "migratable"
+    EMPTY = "empty"
+    UNSUPPORTED = "unsupported"
+
+
+@dataclass(frozen=True)
+class LegacyConfigMigrationInventoryItem:
+    """One deterministic legacy config-v2 migration dry-run result."""
+
+    config_name: str
+    path: Path
+    status: LegacyConfigMigrationStatus
+    active_instruction_rules: int
+    active_block_rules: tuple[str, ...]
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "config": self.config_name,
+            "path": str(self.path),
+            "status": self.status.value,
+            "active_instruction_rules": self.active_instruction_rules,
+            "active_block_rules": list(self.active_block_rules),
+            "reason": self.reason,
+        }
 
 
 def _json_copy(value: object, field_name: str) -> object:
@@ -65,6 +98,22 @@ def _rule_name(rule: RuleConfiguration, field_name: str) -> str:
 
 def _active_rules(rules: list[RuleConfiguration]) -> list[RuleConfiguration]:
     return [rule for rule in rules if rule.is_activated]
+
+
+def _active_instruction_rules(
+    project_config: ProjectConfiguration,
+) -> list[RuleConfiguration]:
+    return _active_rules(project_config.ins_rules)
+
+
+def _active_block_rules(project_config: ProjectConfiguration) -> list[RuleConfiguration]:
+    return _active_rules(project_config.blk_rules)
+
+
+def _active_block_rule_names(
+    rules: list[RuleConfiguration],
+) -> tuple[str, ...]:
+    return tuple(_rule_name(rule, "blk_rules") for rule in rules)
 
 
 def _non_empty_rule_options(
@@ -197,12 +246,19 @@ def legacy_project_config_to_pipeline_v2_shadow(
     renders deterministic shadow metadata that the parser can inspect.
     """
     source_name = source_config or Path(project_config.path).name
+    active_instruction_rules = _active_instruction_rules(project_config)
+    active_block_rules = _active_block_rules(project_config)
+    if not active_instruction_rules and not active_block_rules:
+        raise PipelineConfigError(
+            f"{source_name} has no active legacy rules; no pipeline_v2 shadow generated"
+        )
+
     pipeline_v2: list[dict[str, object]] = []
-    if _active_rules(project_config.ins_rules):
+    if active_instruction_rules:
         pipeline_v2.append(
             _instruction_pass(project_config.ins_rules, source_config=source_name)
         )
-    for rule in _active_rules(project_config.blk_rules):
+    for rule in active_block_rules:
         pipeline_v2.append(_block_pass(rule, source_config=source_name))
 
     return {
@@ -226,4 +282,81 @@ def legacy_project_file_to_pipeline_v2_shadow(path: Path | str) -> dict[str, obj
     """Load ``path`` and return its deterministic PipelineConfig v2 shadow."""
     return legacy_project_config_to_pipeline_v2_shadow(
         ProjectConfiguration.from_file(path)
+    )
+
+
+def inventory_legacy_project_config(
+    project_config: ProjectConfiguration,
+    *,
+    source_config: str | None = None,
+) -> LegacyConfigMigrationInventoryItem:
+    """Classify one legacy project config without writing a shadow file."""
+    source_name = source_config or Path(project_config.path).name
+    active_instruction_rules = _active_instruction_rules(project_config)
+    active_block_rules = _active_block_rules(project_config)
+    active_block_rule_names = _active_block_rule_names(active_block_rules)
+    if not active_instruction_rules and not active_block_rules:
+        return LegacyConfigMigrationInventoryItem(
+            config_name=source_name,
+            path=Path(project_config.path),
+            status=LegacyConfigMigrationStatus.EMPTY,
+            active_instruction_rules=0,
+            active_block_rules=(),
+            reason="no active legacy rules",
+        )
+    unsupported_block_rules = tuple(
+        rule_name
+        for rule_name in active_block_rule_names
+        if rule_name not in _SUPPORTED_BLOCK_RULES
+    )
+    if unsupported_block_rules:
+        return LegacyConfigMigrationInventoryItem(
+            config_name=source_name,
+            path=Path(project_config.path),
+            status=LegacyConfigMigrationStatus.UNSUPPORTED,
+            active_instruction_rules=len(active_instruction_rules),
+            active_block_rules=active_block_rule_names,
+            reason=(
+                "unsupported legacy block rules for pipeline_v2 shadow: "
+                + ", ".join(unsupported_block_rules)
+            ),
+        )
+    try:
+        legacy_project_config_to_pipeline_v2_shadow(
+            project_config,
+            source_config=source_name,
+        )
+    except PipelineConfigError as exc:
+        return LegacyConfigMigrationInventoryItem(
+            config_name=source_name,
+            path=Path(project_config.path),
+            status=LegacyConfigMigrationStatus.UNSUPPORTED,
+            active_instruction_rules=len(active_instruction_rules),
+            active_block_rules=active_block_rule_names,
+            reason=str(exc),
+        )
+    return LegacyConfigMigrationInventoryItem(
+        config_name=source_name,
+        path=Path(project_config.path),
+        status=LegacyConfigMigrationStatus.MIGRATABLE,
+        active_instruction_rules=len(active_instruction_rules),
+        active_block_rules=active_block_rule_names,
+    )
+
+
+def inventory_legacy_project_file(path: Path | str) -> LegacyConfigMigrationInventoryItem:
+    """Load and classify one legacy project config without writing a shadow file."""
+    return inventory_legacy_project_config(ProjectConfiguration.from_file(path))
+
+
+def inventory_legacy_config_directory(
+    config_dir: Path | str,
+) -> tuple[LegacyConfigMigrationInventoryItem, ...]:
+    """Classify legacy project JSON configs under ``config_dir`` deterministically."""
+    root = Path(config_dir)
+    return tuple(
+        inventory_legacy_project_file(path)
+        for path in sorted(root.glob("*.json"))
+        if path.name != ConfigConstants.OPTIONS_FILENAME
+        and not path.name.endswith(".pipeline_v2.json")
     )
