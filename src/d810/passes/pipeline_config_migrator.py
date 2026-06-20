@@ -10,6 +10,35 @@ from d810.core.config import ConfigConstants, ProjectConfiguration, RuleConfigur
 from d810.passes.pass_pipeline import PipelineConfigError
 
 
+class LegacyBlockRuleAdapterKind(str, Enum):
+    """Config-v2 adapter boundary for a legacy block/flow rule."""
+
+    PIPELINE_V2_SHADOW_PASS = "pipeline_v2_shadow_pass"
+    LEGACY_FLOW_RULE_ADAPTER = "legacy_flow_rule_adapter"
+    CLEANUP_FAMILY_ADAPTER = "cleanup_family_adapter"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class LegacyBlockRuleAdapterBoundary:
+    """Buildability classification for one legacy block rule name."""
+
+    rule_name: str
+    adapter_kind: LegacyBlockRuleAdapterKind
+    supported: bool
+    pass_id: str | None = None
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "rule": self.rule_name,
+            "adapter_kind": self.adapter_kind.value,
+            "supported": self.supported,
+            "pass_id": self.pass_id,
+            "reason": self.reason,
+        }
+
+
 _EXPRESSION_MATURITY = {
     "range": {
         "min": "ir.canonical",
@@ -36,18 +65,32 @@ _BLOCK_RULE_PASS_IDS = {
     "StateMachineCffUnflattener": "state-machine-cff-unflattener",
     "JumpFixer": "jump-fixer",
 }
-_SUPPORTED_BLOCK_RULES = frozenset(_BLOCK_RULE_PASS_IDS)
+_SUPPORTED_BLOCK_RULE_ADAPTERS = {
+    rule_name: LegacyBlockRuleAdapterBoundary(
+        rule_name=rule_name,
+        adapter_kind=LegacyBlockRuleAdapterKind.PIPELINE_V2_SHADOW_PASS,
+        supported=True,
+        pass_id=pass_id,
+    )
+    for rule_name, pass_id in _BLOCK_RULE_PASS_IDS.items()
+}
 
 # These legacy FlowOptimizationRule implementations are intentionally not
 # rendered as config-v2 shadows until their live IDA-backed adapter boundary is
 # represented. Inventory reports the concrete gap instead of emitting fake
 # pass ids.
-_UNSUPPORTED_BLOCK_RULE_DETAILS = {
-    "IndirectCallResolver": (
-        "requires an IDA-backed indirect-call FlowOptimizationRule adapter"
+_UNSUPPORTED_BLOCK_RULE_ADAPTERS = {
+    "IndirectCallResolver": LegacyBlockRuleAdapterBoundary(
+        rule_name="IndirectCallResolver",
+        adapter_kind=LegacyBlockRuleAdapterKind.LEGACY_FLOW_RULE_ADAPTER,
+        supported=False,
+        reason="requires an IDA-backed indirect-call FlowOptimizationRule adapter",
     ),
-    "SimpleFlatteningCleanupUnflattener": (
-        "requires a cleanup-family planner/executor adapter"
+    "SimpleFlatteningCleanupUnflattener": LegacyBlockRuleAdapterBoundary(
+        rule_name="SimpleFlatteningCleanupUnflattener",
+        adapter_kind=LegacyBlockRuleAdapterKind.CLEANUP_FAMILY_ADAPTER,
+        supported=False,
+        reason="requires a cleanup-family planner/executor adapter",
     ),
 }
 
@@ -193,10 +236,14 @@ def _block_pass(
     source_config: str,
 ) -> dict[str, object]:
     rule_name = _rule_name(rule, "blk_rules")
-    try:
-        pass_id = _BLOCK_RULE_PASS_IDS[rule_name]
-    except KeyError as exc:
-        raise PipelineConfigError(_unsupported_block_rule_message(rule_name)) from exc
+    boundary = legacy_block_rule_adapter_boundary(rule_name)
+    if not boundary.supported:
+        raise PipelineConfigError(_unsupported_block_rule_message(rule_name))
+    pass_id = boundary.pass_id
+    if pass_id is None:
+        raise PipelineConfigError(
+            f"legacy block rule has no pipeline_v2 pass id: {rule_name}"
+        )
 
     if rule_name == "StateMachineCffUnflattener":
         scope = "function"
@@ -229,13 +276,29 @@ def _block_pass(
     }
 
 
+def legacy_block_rule_adapter_boundary(
+    rule_name: str,
+) -> LegacyBlockRuleAdapterBoundary:
+    """Return the config-v2 adapter boundary for a legacy block rule name."""
+    if rule_name in _SUPPORTED_BLOCK_RULE_ADAPTERS:
+        return _SUPPORTED_BLOCK_RULE_ADAPTERS[rule_name]
+    if rule_name in _UNSUPPORTED_BLOCK_RULE_ADAPTERS:
+        return _UNSUPPORTED_BLOCK_RULE_ADAPTERS[rule_name]
+    return LegacyBlockRuleAdapterBoundary(
+        rule_name=rule_name,
+        adapter_kind=LegacyBlockRuleAdapterKind.UNKNOWN,
+        supported=False,
+        reason="no config-v2 adapter boundary registered",
+    )
+
+
 def _unsupported_block_rule_message(rule_name: str) -> str:
-    detail = _UNSUPPORTED_BLOCK_RULE_DETAILS.get(rule_name)
-    if detail is None:
+    boundary = legacy_block_rule_adapter_boundary(rule_name)
+    if not boundary.reason:
         return f"unsupported legacy block rule for pipeline_v2 shadow: {rule_name}"
     return (
         "unsupported legacy block rule for pipeline_v2 shadow: "
-        f"{rule_name} ({detail})"
+        f"{rule_name} ({boundary.reason})"
     )
 
 
@@ -340,7 +403,7 @@ def inventory_legacy_project_config(
     unsupported_block_rules = tuple(
         rule_name
         for rule_name in active_block_rule_names
-        if rule_name not in _SUPPORTED_BLOCK_RULES
+        if not legacy_block_rule_adapter_boundary(rule_name).supported
     )
     if unsupported_block_rules:
         return LegacyConfigMigrationInventoryItem(
