@@ -1,0 +1,104 @@
+{
+  "description": "Config-v2 shadow representation of default_unflattening_tigress_indirect.json. The legacy JSON remains the runtime source of truth.",
+  "ins_rules": [],
+  "blk_rules": [],
+  "additional_configuration": {
+    "pipeline_v2_shadow": {
+      "source_config": "default_unflattening_tigress_indirect.json",
+      "runtime_source": "legacy"
+    },
+    "pipeline_v2": [
+      {
+        "pass": "mba-simplify",
+        "scope": "expression",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "local_instruction_rewrite"
+          ]
+        },
+        "migration": {
+          "source_config": "default_unflattening_tigress_indirect.json",
+          "source_section": "ins_rules"
+        },
+        "rules": {
+          "include": [
+            "TigressIncrementRule",
+            "TigressXorViaOrMinusAndRule",
+            "TigressAddViaXorOrRule",
+            "TigressXorViaSubOrRule",
+            "TigressNotEqualSignBitRule",
+            "TigressNotEqualSignBitRule64",
+            "TigressMultiplyBitPartitionRule"
+          ],
+          "exclude": [],
+          "options": {}
+        }
+      },
+      {
+        "pass": "state-machine-cff-unflattener",
+        "scope": "function",
+        "maturity": {
+          "runs_at": "ir.global.analyzed"
+        },
+        "migration": {
+          "source_config": "default_unflattening_tigress_indirect.json",
+          "source_section": "blk_rules",
+          "source_rule": "StateMachineCffUnflattener"
+        },
+        "options": {
+          "legacy_rule": "StateMachineCffUnflattener",
+          "max_state_constants": 100,
+          "min_state_constant": 16777216,
+          "profile": "tigress_indirect",
+          "native_pipeline": [
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher"
+          ]
+        }
+      },
+      {
+        "pass": "jump-fixer",
+        "scope": "block",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "migration": {
+          "source_config": "default_unflattening_tigress_indirect.json",
+          "source_section": "blk_rules",
+          "source_rule": "JumpFixer"
+        },
+        "options": {
+          "legacy_rule": "JumpFixer",
+          "enabled_rules": [
+            "CompareConstantRule1",
+            "CompareConstantRule2",
+            "CompareConstantRule3",
+            "JaeRule1",
+            "JbRule1",
+            "JnzRule1",
+            "JnzRule2",
+            "JnzRule3",
+            "JnzRule4",
+            "JnzRule5",
+            "JnzRule6",
+            "JnzRule7",
+            "JnzRule8",
+            "JmpRuleZ3Const"
+          ]
+        }
+      }
+    ]
+  }
+}
