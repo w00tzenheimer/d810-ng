@@ -38,6 +38,13 @@ def test_registry_rejects_unknown_pass_ids():
         registry.build_spec(PipelineConfig(pass_id="missing"))
 
 
+def test_state_machine_wrapper_pass_id_remains_unregistered():
+    registry = state_machine_pass_registry()
+
+    with pytest.raises(UnknownPassIdError, match="state-machine-cff-unflattener"):
+        registry.build_spec(PipelineConfig(pass_id="state-machine-cff-unflattener"))
+
+
 def test_state_machine_pass_ids_resolve_to_pass_specs():
     registry = state_machine_pass_registry()
     original_specs = standard_state_machine_passes()

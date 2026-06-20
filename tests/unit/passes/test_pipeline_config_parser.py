@@ -37,6 +37,99 @@ from d810.passes.registry import UnknownPassIdError
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _CONF_DIR = _REPO_ROOT / "src" / "d810" / "conf"
+_STATE_MACHINE_NATIVE_PIPELINE = [
+    "recover_dispatcher",
+    "recover_state_transitions",
+    "plan_semantic_regions",
+    "lower_state_machine",
+    "cleanup_residual_dispatcher",
+]
+
+
+def _expand_state_machine_pass_ids(pass_ids):
+    expanded = []
+    for pass_id in pass_ids:
+        if pass_id == "state-machine-cff-unflattener":
+            expanded.extend(_STATE_MACHINE_NATIVE_PIPELINE)
+        else:
+            expanded.append(pass_id)
+    return expanded
+
+
+def _expected_unknown_pass(pass_ids):
+    for pass_id in pass_ids:
+        if pass_id not in _STATE_MACHINE_NATIVE_PIPELINE:
+            return pass_id
+    return None
+
+
+def _assert_entry_shape(entry):
+    assert "include_groups" not in entry.get("rules", {})
+    assert "exclude_groups" not in entry.get("rules", {})
+    assert "target" not in entry
+    assert "preferred" not in entry.get("maturity", {})
+    assert "preferred" not in entry.get("maturity", {}).get("range", {})
+    if entry.get("migration", {}).get("expansion") == "native_state_machine_spine":
+        assert "safety" in entry
+    else:
+        assert "safety" not in entry
+    assert PipelineConfig.from_dict(entry).to_dict()["pass_id"] == entry["pass"]
+
+
+def _assert_block_configs_preserve_legacy_rules(
+    block_configs,
+    active_block_rules,
+    *,
+    shadow_entries,
+    source_config,
+):
+    cursor = 0
+    for rule in active_block_rules:
+        if rule["name"] == "StateMachineCffUnflattener":
+            config_group = block_configs[
+                cursor: cursor + len(_STATE_MACHINE_NATIVE_PIPELINE)
+            ]
+            entry_group = shadow_entries[
+                cursor: cursor + len(_STATE_MACHINE_NATIVE_PIPELINE)
+            ]
+            assert [config.pass_id for config in config_group] == (
+                _STATE_MACHINE_NATIVE_PIPELINE
+            )
+            for index, (config, entry) in enumerate(zip(config_group, entry_group)):
+                options = dict(config.options)
+                assert options.pop("legacy_rule") == rule["name"]
+                assert options.pop("legacy_rule_options") == rule["config"]
+                assert options.pop("native_pipeline") == _STATE_MACHINE_NATIVE_PIPELINE
+                assert options == {}
+                assert config.contract.scope is PassScope.FUNCTION
+                assert entry["migration"] == {
+                    "source_config": source_config,
+                    "source_section": "blk_rules",
+                    "source_rule": "StateMachineCffUnflattener",
+                    "expansion": "native_state_machine_spine",
+                    "stage_index": index,
+                    "stage_count": len(_STATE_MACHINE_NATIVE_PIPELINE),
+                }
+            cursor += len(_STATE_MACHINE_NATIVE_PIPELINE)
+            continue
+
+        config = block_configs[cursor]
+        entry = shadow_entries[cursor]
+        options = dict(config.options)
+        assert options.pop("legacy_rule") == rule["name"]
+        assert options == rule["config"]
+        assert config.contract.scope is PassScope.BLOCK
+        assert entry["migration"] == {
+            "source_config": source_config,
+            "source_section": "blk_rules",
+            "source_rule": rule["name"],
+        }
+        cursor += 1
+
+    assert cursor == len(block_configs)
+    assert cursor == len(shadow_entries)
+
+
 _REMAINING_GENERATED_SHADOWS = (
     (
         "bogus_loops",
@@ -52,7 +145,7 @@ _REMAINING_GENERATED_SHADOWS = (
         [
             "mba-simplify",
             "mba-state-preconditioner",
-            "state-machine-cff-unflattener",
+            *_STATE_MACHINE_NATIVE_PIPELINE,
             "jump-fixer",
         ],
         "mba-simplify",
@@ -64,7 +157,7 @@ _REMAINING_GENERATED_SHADOWS = (
         [
             "mba-simplify",
             "mba-state-preconditioner",
-            "state-machine-cff-unflattener",
+            *_STATE_MACHINE_NATIVE_PIPELINE,
             "jump-fixer",
         ],
         "mba-simplify",
@@ -84,7 +177,7 @@ _REMAINING_GENERATED_SHADOWS = (
         [
             "mba-simplify",
             "forward-constant-propagation",
-            "state-machine-cff-unflattener",
+            *_STATE_MACHINE_NATIVE_PIPELINE,
             "jump-fixer",
         ],
         "mba-simplify",
@@ -96,7 +189,7 @@ _REMAINING_GENERATED_SHADOWS = (
         [
             "mba-simplify",
             "forward-constant-propagation",
-            "state-machine-cff-unflattener",
+            *_STATE_MACHINE_NATIVE_PIPELINE,
             "jump-fixer",
         ],
         "mba-simplify",
@@ -115,7 +208,7 @@ _REMAINING_GENERATED_SHADOWS = (
             "mba-state-preconditioner",
             "global-constant-inliner",
             "jump-fixer",
-            "state-machine-cff-unflattener",
+            *_STATE_MACHINE_NATIVE_PIPELINE,
         ],
         "mba-simplify",
     ),
@@ -132,7 +225,7 @@ _REMAINING_GENERATED_SHADOWS = (
         ["StateMachineCffUnflattener", "JumpFixer", "ForwardConstantPropagationRule"],
         [
             "mba-simplify",
-            "state-machine-cff-unflattener",
+            *_STATE_MACHINE_NATIVE_PIPELINE,
             "jump-fixer",
             "forward-constant-propagation",
         ],
@@ -142,8 +235,8 @@ _REMAINING_GENERATED_SHADOWS = (
         "hodur_glbopt2_only",
         0,
         ["StateMachineCffUnflattener"],
-        ["state-machine-cff-unflattener"],
-        "state-machine-cff-unflattener",
+        [*_STATE_MACHINE_NATIVE_PIPELINE],
+        None,
     ),
 )
 
@@ -587,7 +680,7 @@ def test_example_libobfuscated_pipeline_v2_shadow_parses_and_roundtrips():
         "global-constant-inliner",
         "forward-constant-propagation",
         "mba-state-preconditioner",
-        "state-machine-cff-unflattener",
+        *_STATE_MACHINE_NATIVE_PIPELINE,
         "jump-fixer",
     ]
 
@@ -616,37 +709,15 @@ def test_example_libobfuscated_pipeline_v2_shadow_parses_and_roundtrips():
         if rule["config"]
     }
 
-    block_configs_by_legacy = {
-        config.options["legacy_rule"]: config for config in configs[1:]
-    }
-    assert list(block_configs_by_legacy) == [
-        rule["name"] for rule in legacy_blk_rules
-    ]
-    for rule in legacy_blk_rules:
-        config = block_configs_by_legacy[rule["name"]]
-        options = dict(config.options)
-        assert options.pop("legacy_rule") == rule["name"]
-        native_pipeline = options.pop("native_pipeline", None)
-        assert options == rule["config"]
-        if rule["name"] == "StateMachineCffUnflattener":
-            assert native_pipeline == [
-                "recover_dispatcher",
-                "recover_state_transitions",
-                "plan_semantic_regions",
-                "lower_state_machine",
-                "cleanup_residual_dispatcher",
-            ]
-            assert config.contract.scope is PassScope.FUNCTION
-        else:
-            assert native_pipeline is None
-            assert config.contract.scope is PassScope.BLOCK
+    _assert_block_configs_preserve_legacy_rules(
+        configs[1:],
+        legacy_blk_rules,
+        shadow_entries=shadow_raw["additional_configuration"]["pipeline_v2"][1:],
+        source_config="example_libobfuscated.json",
+    )
 
     for entry in shadow_raw["additional_configuration"]["pipeline_v2"]:
-        assert "target" not in entry
-        assert "safety" not in entry
-        assert "preferred" not in entry.get("maturity", {})
-        assert "preferred" not in entry.get("maturity", {}).get("range", {})
-        assert PipelineConfig.from_dict(entry).to_dict()["pass_id"] == entry["pass"]
+        _assert_entry_shape(entry)
 
     roundtripped_configs = tuple(
         PipelineConfig.from_dict(config.to_dict()) for config in configs
@@ -704,11 +775,11 @@ def test_hodur_legacy_configs_remain_runtime_source(
     [
         (
             "hodur_flag2",
-            ["state-machine-cff-unflattener", "jump-fixer"],
+            [*_STATE_MACHINE_NATIVE_PIPELINE, "jump-fixer"],
         ),
         (
             "hodur_flag2_s1a",
-            ["state-machine-cff-unflattener", "jump-fixer"],
+            [*_STATE_MACHINE_NATIVE_PIPELINE, "jump-fixer"],
         ),
         (
             "hodur_deobfuscation",
@@ -761,34 +832,17 @@ def test_hodur_pipeline_v2_shadows_parse_and_roundtrip(
     active_block_rules = [
         rule for rule in legacy_raw["blk_rules"] if rule["is_activated"]
     ]
-    assert [
-        config.options["legacy_rule"]
-        for config in block_configs
-    ] == [rule["name"] for rule in active_block_rules]
-    for config, rule in zip(block_configs, active_block_rules):
-        options = dict(config.options)
-        assert options.pop("legacy_rule") == rule["name"]
-        native_pipeline = options.pop("native_pipeline", None)
-        assert options == rule["config"]
-        if rule["name"] == "StateMachineCffUnflattener":
-            assert native_pipeline == [
-                "recover_dispatcher",
-                "recover_state_transitions",
-                "plan_semantic_regions",
-                "lower_state_machine",
-                "cleanup_residual_dispatcher",
-            ]
-            assert config.contract.scope is PassScope.FUNCTION
-        else:
-            assert native_pipeline is None
-            assert config.contract.scope is PassScope.BLOCK
+    _assert_block_configs_preserve_legacy_rules(
+        block_configs,
+        active_block_rules,
+        shadow_entries=shadow_raw["additional_configuration"]["pipeline_v2"][
+            len(configs) - len(block_configs):
+        ],
+        source_config=f"{config_name}.json",
+    )
 
     for entry in shadow_raw["additional_configuration"]["pipeline_v2"]:
-        assert "target" not in entry
-        assert "safety" not in entry
-        assert "preferred" not in entry.get("maturity", {})
-        assert "preferred" not in entry.get("maturity", {}).get("range", {})
-        assert PipelineConfig.from_dict(entry).to_dict()["pass_id"] == entry["pass"]
+        _assert_entry_shape(entry)
     assert tuple(PipelineConfig.from_dict(config.to_dict()) for config in configs) == (
         configs
     )
@@ -797,8 +851,8 @@ def test_hodur_pipeline_v2_shadows_parse_and_roundtrip(
 @pytest.mark.parametrize(
     ("config_name", "expected_unknown_pass"),
     [
-        ("hodur_flag2", "state-machine-cff-unflattener"),
-        ("hodur_flag2_s1a", "state-machine-cff-unflattener"),
+        ("hodur_flag2", "jump-fixer"),
+        ("hodur_flag2_s1a", "jump-fixer"),
         ("hodur_deobfuscation", "mba-simplify"),
     ],
 )
@@ -810,8 +864,12 @@ def test_hodur_pipeline_v2_shadows_are_not_registry_buildable_yet(
         _CONF_DIR / f"{config_name}.pipeline_v2.json"
     )
 
-    with pytest.raises(UnknownPassIdError, match=expected_unknown_pass):
-        pass_specs_from_project_config(shadow, state_machine_pass_registry())
+    if expected_unknown_pass is None:
+        specs = pass_specs_from_project_config(shadow, state_machine_pass_registry())
+        assert [spec.pass_id for spec in specs] == _STATE_MACHINE_NATIVE_PIPELINE
+    else:
+        with pytest.raises(UnknownPassIdError, match=expected_unknown_pass):
+            pass_specs_from_project_config(shadow, state_machine_pass_registry())
 
 
 @pytest.mark.parametrize(
@@ -860,19 +918,19 @@ def test_tigress_switch_legacy_configs_remain_runtime_source(
     [
         (
             "default_unflattening_tigress_engine",
-            ["state-machine-cff-unflattener"],
+            [*_STATE_MACHINE_NATIVE_PIPELINE],
         ),
         (
             "default_unflattening_tigress_engine_transition_facts",
             [
                 "mba-simplify",
                 "forward-constant-propagation",
-                "state-machine-cff-unflattener",
+                *_STATE_MACHINE_NATIVE_PIPELINE,
             ],
         ),
         (
             "default_unflattening_tigress_indirect",
-            ["mba-simplify", "state-machine-cff-unflattener", "jump-fixer"],
+            ["mba-simplify", *_STATE_MACHINE_NATIVE_PIPELINE, "jump-fixer"],
         ),
         (
             "default_unflattening_switch_case",
@@ -925,34 +983,17 @@ def test_tigress_switch_pipeline_v2_shadows_parse_and_roundtrip(
     active_block_rules = [
         rule for rule in legacy_raw["blk_rules"] if rule["is_activated"]
     ]
-    assert [
-        config.options["legacy_rule"]
-        for config in block_configs
-    ] == [rule["name"] for rule in active_block_rules]
-    for config, rule in zip(block_configs, active_block_rules):
-        options = dict(config.options)
-        assert options.pop("legacy_rule") == rule["name"]
-        native_pipeline = options.pop("native_pipeline", None)
-        assert options == rule["config"]
-        if rule["name"] == "StateMachineCffUnflattener":
-            assert native_pipeline == [
-                "recover_dispatcher",
-                "recover_state_transitions",
-                "plan_semantic_regions",
-                "lower_state_machine",
-                "cleanup_residual_dispatcher",
-            ]
-            assert config.contract.scope is PassScope.FUNCTION
-        else:
-            assert native_pipeline is None
-            assert config.contract.scope is PassScope.BLOCK
+    _assert_block_configs_preserve_legacy_rules(
+        block_configs,
+        active_block_rules,
+        shadow_entries=shadow_raw["additional_configuration"]["pipeline_v2"][
+            len(configs) - len(block_configs):
+        ],
+        source_config=f"{config_name}.json",
+    )
 
     for entry in shadow_raw["additional_configuration"]["pipeline_v2"]:
-        assert "target" not in entry
-        assert "safety" not in entry
-        assert "preferred" not in entry.get("maturity", {})
-        assert "preferred" not in entry.get("maturity", {}).get("range", {})
-        assert PipelineConfig.from_dict(entry).to_dict()["pass_id"] == entry["pass"]
+        _assert_entry_shape(entry)
     assert tuple(PipelineConfig.from_dict(config.to_dict()) for config in configs) == (
         configs
     )
@@ -961,7 +1002,7 @@ def test_tigress_switch_pipeline_v2_shadows_parse_and_roundtrip(
 @pytest.mark.parametrize(
     ("config_name", "expected_unknown_pass"),
     [
-        ("default_unflattening_tigress_engine", "state-machine-cff-unflattener"),
+        ("default_unflattening_tigress_engine", None),
         ("default_unflattening_tigress_engine_transition_facts", "mba-simplify"),
         ("default_unflattening_tigress_indirect", "mba-simplify"),
         ("default_unflattening_switch_case", "mba-simplify"),
@@ -975,8 +1016,12 @@ def test_tigress_switch_pipeline_v2_shadows_are_not_registry_buildable_yet(
         _CONF_DIR / f"{config_name}.pipeline_v2.json"
     )
 
-    with pytest.raises(UnknownPassIdError, match=expected_unknown_pass):
-        pass_specs_from_project_config(shadow, state_machine_pass_registry())
+    if expected_unknown_pass is None:
+        specs = pass_specs_from_project_config(shadow, state_machine_pass_registry())
+        assert [spec.pass_id for spec in specs] == _STATE_MACHINE_NATIVE_PIPELINE
+    else:
+        with pytest.raises(UnknownPassIdError, match=expected_unknown_pass):
+            pass_specs_from_project_config(shadow, state_machine_pass_registry())
 
 
 @pytest.mark.parametrize(
@@ -1067,36 +1112,17 @@ def test_remaining_pipeline_v2_shadows_parse_and_roundtrip(
         rule for rule in legacy_raw["blk_rules"] if rule["is_activated"]
     ]
     assert [rule["name"] for rule in active_block_rules] == expected_block_rules
-    assert [
-        config.options["legacy_rule"]
-        for config in block_configs
-    ] == expected_block_rules
-    for config, rule in zip(block_configs, active_block_rules):
-        options = dict(config.options)
-        assert options.pop("legacy_rule") == rule["name"]
-        native_pipeline = options.pop("native_pipeline", None)
-        assert options == rule["config"]
-        if rule["name"] == "StateMachineCffUnflattener":
-            assert native_pipeline == [
-                "recover_dispatcher",
-                "recover_state_transitions",
-                "plan_semantic_regions",
-                "lower_state_machine",
-                "cleanup_residual_dispatcher",
-            ]
-            assert config.contract.scope is PassScope.FUNCTION
-        else:
-            assert native_pipeline is None
-            assert config.contract.scope is PassScope.BLOCK
+    _assert_block_configs_preserve_legacy_rules(
+        block_configs,
+        active_block_rules,
+        shadow_entries=shadow_raw["additional_configuration"]["pipeline_v2"][
+            len(configs) - len(block_configs):
+        ],
+        source_config=f"{config_name}.json",
+    )
 
     for entry in shadow_raw["additional_configuration"]["pipeline_v2"]:
-        assert "include_groups" not in entry.get("rules", {})
-        assert "exclude_groups" not in entry.get("rules", {})
-        assert "target" not in entry
-        assert "safety" not in entry
-        assert "preferred" not in entry.get("maturity", {})
-        assert "preferred" not in entry.get("maturity", {}).get("range", {})
-        assert PipelineConfig.from_dict(entry).to_dict()["pass_id"] == entry["pass"]
+        _assert_entry_shape(entry)
     assert tuple(PipelineConfig.from_dict(config.to_dict()) for config in configs) == (
         configs
     )
@@ -1123,8 +1149,12 @@ def test_remaining_pipeline_v2_shadows_are_not_registry_buildable_yet(
         _CONF_DIR / f"{config_name}.pipeline_v2.json"
     )
 
-    with pytest.raises(UnknownPassIdError, match=expected_unknown_pass):
-        pass_specs_from_project_config(shadow, state_machine_pass_registry())
+    if expected_unknown_pass is None:
+        specs = pass_specs_from_project_config(shadow, state_machine_pass_registry())
+        assert [spec.pass_id for spec in specs] == _STATE_MACHINE_NATIVE_PIPELINE
+    else:
+        with pytest.raises(UnknownPassIdError, match=expected_unknown_pass):
+            pass_specs_from_project_config(shadow, state_machine_pass_registry())
 
 
 def test_pipeline_spec_comparison_reports_ordered_differences():
