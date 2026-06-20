@@ -24,10 +24,11 @@
             "z3_solver"
           ]
         },
+        "migration": {
+          "source_config": "example_libobfuscated.json",
+          "source_section": "ins_rules"
+        },
         "rules": {
-          "include_groups": [
-            "legacy.example_libobfuscated.ins_rules"
-          ],
           "include": [
             "RotateHelperInlineRule",
             "FoldReadonlyDataRule",
@@ -216,7 +217,6 @@
             "SetGlobalVariablesToZeroIfDetectedReadOnly",
             "ExampleGuessingRule"
           ],
-          "exclude_groups": [],
           "exclude": [],
           "options": {
             "FoldReadonlyDataRule": {
@@ -250,6 +250,11 @@
             "max": "ir.global.optimized"
           }
         },
+        "migration": {
+          "source_config": "example_libobfuscated.json",
+          "source_section": "blk_rules",
+          "source_rule": "BlockLevelEgglogOptimizer"
+        },
         "options": {
           "legacy_rule": "BlockLevelEgglogOptimizer"
         }
@@ -262,6 +267,11 @@
             "min": "ir.canonical",
             "max": "ir.global.optimized"
           }
+        },
+        "migration": {
+          "source_config": "example_libobfuscated.json",
+          "source_section": "blk_rules",
+          "source_rule": "GlobalConstantInliner"
         },
         "options": {
           "legacy_rule": "GlobalConstantInliner"
@@ -276,6 +286,11 @@
             "max": "ir.global.optimized"
           }
         },
+        "migration": {
+          "source_config": "example_libobfuscated.json",
+          "source_section": "blk_rules",
+          "source_rule": "ForwardConstantPropagationRule"
+        },
         "options": {
           "legacy_rule": "ForwardConstantPropagationRule"
         }
@@ -289,6 +304,11 @@
             "max": "ir.global.optimized"
           }
         },
+        "migration": {
+          "source_config": "example_libobfuscated.json",
+          "source_section": "blk_rules",
+          "source_rule": "MbaStatePreconditioner"
+        },
         "options": {
           "legacy_rule": "MbaStatePreconditioner",
           "max_optimize_local_rounds": 3
@@ -299,6 +319,11 @@
         "scope": "function",
         "maturity": {
           "runs_at": "ir.global.analyzed"
+        },
+        "migration": {
+          "source_config": "example_libobfuscated.json",
+          "source_section": "blk_rules",
+          "source_rule": "StateMachineCffUnflattener"
         },
         "options": {
           "legacy_rule": "StateMachineCffUnflattener",
@@ -322,6 +347,11 @@
             "min": "ir.canonical",
             "max": "ir.global.optimized"
           }
+        },
+        "migration": {
+          "source_config": "example_libobfuscated.json",
+          "source_section": "blk_rules",
+          "source_rule": "JumpFixer"
         },
         "options": {
           "legacy_rule": "JumpFixer",

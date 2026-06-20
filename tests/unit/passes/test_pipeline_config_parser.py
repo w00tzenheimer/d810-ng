@@ -364,7 +364,15 @@ def test_default_instruction_only_pipeline_v2_shadow_parses_and_roundtrips():
 
     assert project.ins_rules == []
     assert project.blk_rules == []
-    assert len(configs) == 1
+    assert project.additional_configuration["pipeline_v2_shadow"] == {
+        "source_config": "default_instruction_only.json",
+        "runtime_source": "legacy",
+    }
+    assert [config.pass_id for config in configs] == [
+        "mba-simplify",
+        "global-constant-inliner",
+        "jump-fixer",
+    ]
     config = configs[0]
     assert config.pass_id == "mba-simplify"
     assert config.contract.scope is PassScope.EXPRESSION
@@ -374,9 +382,7 @@ def test_default_instruction_only_pipeline_v2_shadow_parses_and_roundtrips():
     assert config.contract.requires.capabilities == frozenset(
         {"local_instruction_rewrite", "z3_solver"}
     )
-    assert config.rules.include_groups == frozenset(
-        {"legacy.default_instruction_only"}
-    )
+    assert config.rules.include_groups == frozenset()
     assert len(config.rules.include) == 179
     assert {
         "FoldReadonlyDataRule",
@@ -402,9 +408,21 @@ def test_default_instruction_only_pipeline_v2_shadow_parses_and_roundtrips():
     assert PipelineConfig.from_dict(config.to_dict()) == config
 
     pass_payload = raw["additional_configuration"]["pipeline_v2"][0]
+    assert "include_groups" not in pass_payload["rules"]
+    assert "exclude_groups" not in pass_payload["rules"]
     assert "target" not in pass_payload
     assert "safety" not in pass_payload
     assert "preferred" not in pass_payload["maturity"]
+
+    assert configs[1].pass_id == "global-constant-inliner"
+    assert configs[1].contract.scope is PassScope.BLOCK
+    assert dict(configs[1].options) == {
+        "legacy_rule": "GlobalConstantInliner"
+    }
+    assert configs[2].pass_id == "jump-fixer"
+    assert configs[2].contract.scope is PassScope.BLOCK
+    assert configs[2].options["legacy_rule"] == "JumpFixer"
+    assert "JmpRuleZ3Const" in configs[2].options["enabled_rules"]
 
 
 def test_default_instruction_only_pipeline_v2_shadow_is_not_registry_buildable_yet():
@@ -469,13 +487,17 @@ def test_example_libobfuscated_pipeline_v2_shadow_parses_and_roundtrips():
     assert mba_config.contract.requires.capabilities == frozenset(
         {"local_instruction_rewrite", "z3_solver"}
     )
-    assert mba_config.rules.include_groups == frozenset(
-        {"legacy.example_libobfuscated.ins_rules"}
-    )
+    assert mba_config.rules.include_groups == frozenset()
     shadow_rule_names = shadow_raw["additional_configuration"]["pipeline_v2"][0][
         "rules"
     ]["include"]
     assert shadow_rule_names == [rule["name"] for rule in legacy_ins_rules]
+    assert "include_groups" not in shadow_raw["additional_configuration"][
+        "pipeline_v2"
+    ][0]["rules"]
+    assert "exclude_groups" not in shadow_raw["additional_configuration"][
+        "pipeline_v2"
+    ][0]["rules"]
     assert mba_config.rules.include == frozenset(
         rule["name"] for rule in legacy_ins_rules
     )

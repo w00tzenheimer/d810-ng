@@ -220,7 +220,7 @@ def test_pipeline_config_roundtrip_preserves_rule_selection_metadata():
         pass_id="mba-simplify",
         contract=pp.PassContract(scope=pp.PassScope.EXPRESSION),
         rules=pp.RuleSelection(
-            include_groups=frozenset({"legacy.default_instruction_only"}),
+            include_groups=frozenset({"compat.metadata"}),
             include=frozenset({"FoldReadonlyDataRule", "Add_OllvmRule_1"}),
             exclude_groups=frozenset({"experimental"}),
             exclude=frozenset({"UnsafeRule"}),
@@ -237,7 +237,7 @@ def test_pipeline_config_roundtrip_preserves_rule_selection_metadata():
     payload = config.to_dict()
 
     assert payload["rules"] == {
-        "include_groups": ["legacy.default_instruction_only"],
+        "include_groups": ["compat.metadata"],
         "include": ["Add_OllvmRule_1", "FoldReadonlyDataRule"],
         "exclude_groups": ["experimental"],
         "exclude": ["UnsafeRule"],
