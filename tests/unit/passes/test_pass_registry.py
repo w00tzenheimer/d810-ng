@@ -81,3 +81,21 @@ def test_registry_build_spec_preserves_native_pass_contract():
         {"dispatcher_predicates"}
     )
     assert spec.config.contract.invalidates.facts == frozenset({"stale_cfg_shape"})
+
+
+def test_registry_build_spec_preserves_rule_selection_metadata():
+    registry = PassRegistry()
+    registry.register("fake", _FakePass)
+    rules = pp.RuleSelection(
+        include_groups=frozenset({"legacy.default_instruction_only"}),
+        include=frozenset({"FoldReadonlyDataRule"}),
+    )
+
+    spec = registry.build_spec(PipelineConfig(pass_id="fake", rules=rules))
+
+    assert spec.rules is rules
+    assert spec.config.rules is rules
+    assert spec.config.rules.include_groups == frozenset(
+        {"legacy.default_instruction_only"}
+    )
+    assert spec.config.rules.include == frozenset({"FoldReadonlyDataRule"})
