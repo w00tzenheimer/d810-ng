@@ -243,22 +243,389 @@
         }
       },
       {
-        "pass": "state-machine-cff-unflattener",
+        "pass": "recover_dispatcher",
         "scope": "function",
         "maturity": {
-          "runs_at": "ir.global.analyzed"
+          "range": {
+            "min": "ir.call.modeled",
+            "max": "ir.global.analyzed"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "live_mba"
+          ],
+          "analyses": [],
+          "evidence": [],
+          "facts": {
+            "required": [],
+            "optional": []
+          }
+        },
+        "outputs": {
+          "facts": [
+            "role.dispatcher"
+          ],
+          "evidence": []
+        },
+        "preserves": {
+          "analyses": [],
+          "facts": []
+        },
+        "invalidates": {
+          "analyses": [],
+          "facts": []
+        },
+        "safety": {
+          "policy": "default",
+          "requires_oracle": false
+        },
+        "analyses": {
+          "required": [],
+          "provided": [
+            "dispatcher_model",
+            "recover_dispatcher",
+            "recovered_machine"
+          ]
         },
         "migration": {
           "source_config": "default_unflattening_approov_s1a.json",
           "source_section": "blk_rules",
-          "source_rule": "StateMachineCffUnflattener"
+          "source_rule": "StateMachineCffUnflattener",
+          "expansion": "native_state_machine_spine",
+          "stage_index": 0,
+          "stage_count": 5
         },
         "options": {
           "legacy_rule": "StateMachineCffUnflattener",
-          "max_state_constants": 100,
-          "min_state_constant": 983040,
-          "enable_transition_validator": true,
-          "enable_transition_uddu_validator": true,
+          "legacy_rule_options": {
+            "max_state_constants": 100,
+            "min_state_constant": 983040,
+            "enable_transition_validator": true,
+            "enable_transition_uddu_validator": true
+          },
+          "native_pipeline": [
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher"
+          ]
+        }
+      },
+      {
+        "pass": "recover_state_transitions",
+        "scope": "function",
+        "maturity": {
+          "range": {
+            "min": "ir.call.modeled",
+            "max": "ir.global.analyzed"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "live_mba"
+          ],
+          "analyses": [
+            "recover_dispatcher"
+          ],
+          "evidence": [
+            "ir.branch_target",
+            "ir.state_variable_write"
+          ],
+          "facts": {
+            "required": [
+              "role.dispatcher"
+            ],
+            "optional": []
+          }
+        },
+        "outputs": {
+          "facts": [
+            "recovered.state_transition"
+          ],
+          "evidence": []
+        },
+        "preserves": {
+          "analyses": [],
+          "facts": []
+        },
+        "invalidates": {
+          "analyses": [],
+          "facts": []
+        },
+        "safety": {
+          "policy": "default",
+          "requires_oracle": false
+        },
+        "analyses": {
+          "required": [
+            "recover_dispatcher"
+          ],
+          "provided": [
+            "recover_state_transitions",
+            "transition_result",
+            "valrange_confirmable_count"
+          ]
+        },
+        "migration": {
+          "source_config": "default_unflattening_approov_s1a.json",
+          "source_section": "blk_rules",
+          "source_rule": "StateMachineCffUnflattener",
+          "expansion": "native_state_machine_spine",
+          "stage_index": 1,
+          "stage_count": 5
+        },
+        "options": {
+          "legacy_rule": "StateMachineCffUnflattener",
+          "legacy_rule_options": {
+            "max_state_constants": 100,
+            "min_state_constant": 983040,
+            "enable_transition_validator": true,
+            "enable_transition_uddu_validator": true
+          },
+          "native_pipeline": [
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher"
+          ]
+        }
+      },
+      {
+        "pass": "plan_semantic_regions",
+        "scope": "function",
+        "maturity": {
+          "range": {
+            "min": "ir.call.modeled",
+            "max": "ir.global.analyzed"
+          }
+        },
+        "requires": {
+          "capabilities": [],
+          "analyses": [
+            "recover_dispatcher",
+            "transition_result"
+          ],
+          "evidence": [],
+          "facts": {
+            "required": [
+              "recovered.state_transition",
+              "role.dispatcher"
+            ],
+            "optional": []
+          }
+        },
+        "outputs": {
+          "facts": [
+            "recovered.region"
+          ],
+          "evidence": []
+        },
+        "preserves": {
+          "analyses": [],
+          "facts": []
+        },
+        "invalidates": {
+          "analyses": [],
+          "facts": []
+        },
+        "safety": {
+          "policy": "default",
+          "requires_oracle": false
+        },
+        "analyses": {
+          "required": [
+            "recover_dispatcher",
+            "transition_result"
+          ],
+          "provided": [
+            "plan_semantic_regions"
+          ]
+        },
+        "migration": {
+          "source_config": "default_unflattening_approov_s1a.json",
+          "source_section": "blk_rules",
+          "source_rule": "StateMachineCffUnflattener",
+          "expansion": "native_state_machine_spine",
+          "stage_index": 2,
+          "stage_count": 5
+        },
+        "options": {
+          "legacy_rule": "StateMachineCffUnflattener",
+          "legacy_rule_options": {
+            "max_state_constants": 100,
+            "min_state_constant": 983040,
+            "enable_transition_validator": true,
+            "enable_transition_uddu_validator": true
+          },
+          "native_pipeline": [
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher"
+          ]
+        }
+      },
+      {
+        "pass": "lower_state_machine",
+        "scope": "function",
+        "maturity": {
+          "range": {
+            "min": "ir.call.modeled",
+            "max": "ir.global.analyzed"
+          }
+        },
+        "requires": {
+          "capabilities": [],
+          "analyses": [
+            "plan_semantic_regions",
+            "recover_dispatcher",
+            "transition_result"
+          ],
+          "evidence": [],
+          "facts": {
+            "required": [
+              "recovered.region",
+              "recovered.state_transition",
+              "role.dispatcher"
+            ],
+            "optional": []
+          }
+        },
+        "outputs": {
+          "facts": [
+            "recovered.cfg_edge"
+          ],
+          "evidence": []
+        },
+        "preserves": {
+          "analyses": [
+            "function_boundaries"
+          ],
+          "facts": [
+            "raw_instruction_addresses",
+            "recovered.cfg_edge"
+          ]
+        },
+        "invalidates": {
+          "analyses": [
+            "dominators",
+            "loop_info",
+            "postdominators",
+            "regions"
+          ],
+          "facts": [
+            "ir.cfg_shape.stale"
+          ]
+        },
+        "safety": {
+          "policy": "golden",
+          "requires_oracle": true
+        },
+        "analyses": {
+          "required": [
+            "plan_semantic_regions",
+            "recover_dispatcher",
+            "transition_result"
+          ],
+          "provided": [
+            "lower_state_machine_plan_metadata"
+          ]
+        },
+        "migration": {
+          "source_config": "default_unflattening_approov_s1a.json",
+          "source_section": "blk_rules",
+          "source_rule": "StateMachineCffUnflattener",
+          "expansion": "native_state_machine_spine",
+          "stage_index": 3,
+          "stage_count": 5
+        },
+        "options": {
+          "legacy_rule": "StateMachineCffUnflattener",
+          "legacy_rule_options": {
+            "max_state_constants": 100,
+            "min_state_constant": 983040,
+            "enable_transition_validator": true,
+            "enable_transition_uddu_validator": true
+          },
+          "native_pipeline": [
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher"
+          ]
+        }
+      },
+      {
+        "pass": "cleanup_residual_dispatcher",
+        "scope": "function",
+        "maturity": {
+          "range": {
+            "min": "ir.call.modeled",
+            "max": "ir.global.analyzed"
+          }
+        },
+        "requires": {
+          "capabilities": [],
+          "analyses": [],
+          "evidence": [],
+          "facts": {
+            "required": [],
+            "optional": []
+          }
+        },
+        "outputs": {
+          "facts": [],
+          "evidence": []
+        },
+        "preserves": {
+          "analyses": [
+            "function_boundaries"
+          ],
+          "facts": [
+            "raw_instruction_addresses",
+            "recovered.cfg_edge"
+          ]
+        },
+        "invalidates": {
+          "analyses": [
+            "dominators",
+            "loop_info",
+            "postdominators",
+            "regions"
+          ],
+          "facts": [
+            "ir.cfg_shape.stale"
+          ]
+        },
+        "safety": {
+          "policy": "golden",
+          "requires_oracle": true
+        },
+        "analyses": {
+          "required": [],
+          "provided": []
+        },
+        "migration": {
+          "source_config": "default_unflattening_approov_s1a.json",
+          "source_section": "blk_rules",
+          "source_rule": "StateMachineCffUnflattener",
+          "expansion": "native_state_machine_spine",
+          "stage_index": 4,
+          "stage_count": 5
+        },
+        "options": {
+          "legacy_rule": "StateMachineCffUnflattener",
+          "legacy_rule_options": {
+            "max_state_constants": 100,
+            "min_state_constant": 983040,
+            "enable_transition_validator": true,
+            "enable_transition_uddu_validator": true
+          },
           "native_pipeline": [
             "recover_dispatcher",
             "recover_state_transitions",

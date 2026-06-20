@@ -32,6 +32,13 @@ _OLLVM_BLOCK_RULES = (
     "SimpleFlatteningCleanupUnflattener",
     "JumpFixer",
 )
+_STATE_MACHINE_NATIVE_PIPELINE = (
+    "recover_dispatcher",
+    "recover_state_transitions",
+    "plan_semantic_regions",
+    "lower_state_machine",
+    "cleanup_residual_dispatcher",
+)
 _GENERATED_SHADOW_CONFIGS = (
     "bogus_loops",
     "default_instruction_only",
@@ -109,6 +116,50 @@ def _inventory_by_name():
     }
 
 
+def _assert_block_entries_preserve_legacy_rules(
+    block_entries,
+    active_block_rules,
+    *,
+    source_config,
+):
+    cursor = 0
+    for rule in active_block_rules:
+        if rule.name == "StateMachineCffUnflattener":
+            expanded = block_entries[
+                cursor: cursor + len(_STATE_MACHINE_NATIVE_PIPELINE)
+            ]
+            assert [entry["pass"] for entry in expanded] == list(
+                _STATE_MACHINE_NATIVE_PIPELINE
+            )
+            for index, entry in enumerate(expanded):
+                assert entry["migration"] == {
+                    "source_config": source_config,
+                    "source_section": "blk_rules",
+                    "source_rule": "StateMachineCffUnflattener",
+                    "expansion": "native_state_machine_spine",
+                    "stage_index": index,
+                    "stage_count": len(_STATE_MACHINE_NATIVE_PIPELINE),
+                }
+                options = dict(entry["options"])
+                assert options.pop("legacy_rule") == rule.name
+                assert options.pop("legacy_rule_options") == rule.config
+                assert options.pop("native_pipeline") == list(
+                    _STATE_MACHINE_NATIVE_PIPELINE
+                )
+                assert options == {}
+            cursor += len(_STATE_MACHINE_NATIVE_PIPELINE)
+            continue
+
+        entry = block_entries[cursor]
+        assert entry["migration"]["source_rule"] == rule.name
+        options = dict(entry["options"])
+        assert options.pop("legacy_rule") == rule.name
+        assert options == rule.config
+        cursor += 1
+
+    assert cursor == len(block_entries)
+
+
 @pytest.mark.parametrize(
     ("rule_name", "pass_id"),
     [
@@ -116,7 +167,6 @@ def _inventory_by_name():
         ("GlobalConstantInliner", "global-constant-inliner"),
         ("ForwardConstantPropagationRule", "forward-constant-propagation"),
         ("MbaStatePreconditioner", "mba-state-preconditioner"),
-        ("StateMachineCffUnflattener", "state-machine-cff-unflattener"),
         ("JumpFixer", "jump-fixer"),
     ],
 )
@@ -139,6 +189,23 @@ def test_legacy_block_rule_adapter_boundary_classifies_shadow_passes(
         "supported": True,
         "pass_id": pass_id,
         "reason": "",
+    }
+
+
+def test_legacy_block_rule_adapter_boundary_classifies_state_machine_spine():
+    boundary = legacy_block_rule_adapter_boundary("StateMachineCffUnflattener")
+
+    assert boundary.rule_name == "StateMachineCffUnflattener"
+    assert boundary.adapter_kind is LegacyBlockRuleAdapterKind.NATIVE_STATE_MACHINE_SPINE
+    assert boundary.supported is True
+    assert boundary.pass_id is None
+    assert boundary.reason == "expands to the native state-machine spine"
+    assert boundary.to_dict() == {
+        "rule": "StateMachineCffUnflattener",
+        "adapter_kind": "native_state_machine_spine",
+        "supported": True,
+        "pass_id": None,
+        "reason": "expands to the native state-machine spine",
     }
 
 
@@ -566,15 +633,11 @@ def test_remaining_generated_shadows_preserve_legacy_rule_shape(
     else:
         block_entries = pipeline_v2
 
-    assert tuple(
-        entry["migration"]["source_rule"]
-        for entry in block_entries
-    ) == expected_block_rules
-    for entry, rule in zip(block_entries, active_block_rules):
-        options = dict(entry["options"])
-        assert options.pop("legacy_rule") == rule.name
-        options.pop("native_pipeline", None)
-        assert options == rule.config
+    _assert_block_entries_preserve_legacy_rules(
+        block_entries,
+        active_block_rules,
+        source_config=f"{config_name}.json",
+    )
 
 
 @pytest.mark.parametrize(
@@ -632,15 +695,11 @@ def test_hodur_generated_shadows_preserve_legacy_rule_shape(
     else:
         block_entries = pipeline_v2
 
-    assert [
-        entry["migration"]["source_rule"]
-        for entry in block_entries
-    ] == expected_block_rules
-    for entry, rule in zip(block_entries, active_block_rules):
-        options = dict(entry["options"])
-        assert options.pop("legacy_rule") == rule.name
-        options.pop("native_pipeline", None)
-        assert options == rule.config
+    _assert_block_entries_preserve_legacy_rules(
+        block_entries,
+        active_block_rules,
+        source_config=f"{config_name}.json",
+    )
 
 
 @pytest.mark.parametrize(
@@ -703,12 +762,8 @@ def test_tigress_switch_generated_shadows_preserve_legacy_rule_shape(
     else:
         block_entries = pipeline_v2
 
-    assert [
-        entry["migration"]["source_rule"]
-        for entry in block_entries
-    ] == expected_block_rules
-    for entry, rule in zip(block_entries, active_block_rules):
-        options = dict(entry["options"])
-        assert options.pop("legacy_rule") == rule.name
-        options.pop("native_pipeline", None)
-        assert options == rule.config
+    _assert_block_entries_preserve_legacy_rules(
+        block_entries,
+        active_block_rules,
+        source_config=f"{config_name}.json",
+    )

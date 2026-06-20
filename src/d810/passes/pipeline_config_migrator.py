@@ -7,13 +7,15 @@ from enum import Enum
 from pathlib import Path
 
 from d810.core.config import ConfigConstants, ProjectConfiguration, RuleConfiguration
-from d810.passes.pass_pipeline import PipelineConfigError
+from d810.passes.pass_pipeline import MaturityRange, PipelineConfigError, PassSpec
+from d810.passes.state_machine_spine import standard_state_machine_passes
 
 
 class LegacyBlockRuleAdapterKind(str, Enum):
     """Config-v2 adapter boundary for a legacy block/flow rule."""
 
     PIPELINE_V2_SHADOW_PASS = "pipeline_v2_shadow_pass"
+    NATIVE_STATE_MACHINE_SPINE = "native_state_machine_spine"
     LEGACY_FLOW_RULE_ADAPTER = "legacy_flow_rule_adapter"
     CLEANUP_FAMILY_ADAPTER = "cleanup_family_adapter"
     UNKNOWN = "unknown"
@@ -53,16 +55,11 @@ _BLOCK_MATURITY = {
     }
 }
 
-_STATE_MACHINE_MATURITY = {
-    "runs_at": "ir.global.analyzed",
-}
-
 _BLOCK_RULE_PASS_IDS = {
     "BlockLevelEgglogOptimizer": "block-level-egglog-optimizer",
     "GlobalConstantInliner": "global-constant-inliner",
     "ForwardConstantPropagationRule": "forward-constant-propagation",
     "MbaStatePreconditioner": "mba-state-preconditioner",
-    "StateMachineCffUnflattener": "state-machine-cff-unflattener",
     "JumpFixer": "jump-fixer",
 }
 _SUPPORTED_BLOCK_RULE_ADAPTERS = {
@@ -74,6 +71,14 @@ _SUPPORTED_BLOCK_RULE_ADAPTERS = {
     )
     for rule_name, pass_id in _BLOCK_RULE_PASS_IDS.items()
 }
+_SUPPORTED_BLOCK_RULE_ADAPTERS["StateMachineCffUnflattener"] = (
+    LegacyBlockRuleAdapterBoundary(
+        rule_name="StateMachineCffUnflattener",
+        adapter_kind=LegacyBlockRuleAdapterKind.NATIVE_STATE_MACHINE_SPINE,
+        supported=True,
+        reason="expands to the native state-machine spine",
+    )
+)
 
 # These legacy FlowOptimizationRule implementations are intentionally not
 # rendered as config-v2 shadows until their live IDA-backed adapter boundary is
@@ -234,23 +239,22 @@ def _block_pass(
     rule: RuleConfiguration,
     *,
     source_config: str,
-) -> dict[str, object]:
+) -> tuple[dict[str, object], ...]:
     rule_name = _rule_name(rule, "blk_rules")
     boundary = legacy_block_rule_adapter_boundary(rule_name)
     if not boundary.supported:
         raise PipelineConfigError(_unsupported_block_rule_message(rule_name))
+    if rule_name == "StateMachineCffUnflattener":
+        return _state_machine_spine_passes(rule, source_config=source_config)
+
     pass_id = boundary.pass_id
     if pass_id is None:
         raise PipelineConfigError(
             f"legacy block rule has no pipeline_v2 pass id: {rule_name}"
         )
 
-    if rule_name == "StateMachineCffUnflattener":
-        scope = "function"
-        maturity = _STATE_MACHINE_MATURITY
-    else:
-        scope = "block"
-        maturity = _BLOCK_MATURITY
+    scope = "block"
+    maturity = _BLOCK_MATURITY
 
     copied_config = _json_copy(rule.config, f"blk_rules.{rule_name}")
     if not isinstance(copied_config, dict):
@@ -260,20 +264,90 @@ def _block_pass(
         "legacy_rule": rule_name,
         **copied_config,
     }
-    if rule_name == "StateMachineCffUnflattener":
-        options["native_pipeline"] = list(_STATE_MACHINE_NATIVE_PIPELINE)
 
-    return {
-        "pass": pass_id,
-        "scope": scope,
-        "maturity": _json_copy(maturity, "maturity"),
-        "migration": {
-            "source_config": source_config,
-            "source_section": "blk_rules",
-            "source_rule": rule_name,
+    return (
+        {
+            "pass": pass_id,
+            "scope": scope,
+            "maturity": _json_copy(maturity, "maturity"),
+            "migration": {
+                "source_config": source_config,
+                "source_section": "blk_rules",
+                "source_rule": rule_name,
+            },
+            "options": options,
         },
-        "options": options,
+    )
+
+
+def _maturity_to_user_shape(maturity: MaturityRange) -> dict[str, object]:
+    if maturity.min is None or maturity.max is None:
+        raise PipelineConfigError(
+            "state-machine native spine maturity must have min and max"
+        )
+    if maturity.min is maturity.max:
+        return {"runs_at": maturity.min.value}
+    return {
+        "range": {
+            "min": maturity.min.value,
+            "max": maturity.max.value,
+        }
     }
+
+
+def _pass_contract_payload(spec: PassSpec) -> dict[str, object]:
+    contract = spec.contract
+    requires = contract.requires.to_dict()
+    capability_names = set(requires.get("capabilities", ()))
+    capability_names.update(spec.requirements.required)
+    requires["capabilities"] = sorted(str(name) for name in capability_names)
+    return {
+        "scope": contract.scope.value,
+        "maturity": _maturity_to_user_shape(contract.maturity),
+        "requires": requires,
+        "outputs": contract.outputs.to_dict(),
+        "preserves": contract.preserves.to_dict(),
+        "invalidates": contract.invalidates.to_dict(),
+        "safety": contract.safety.to_dict(),
+        "analyses": {
+            "required": sorted(spec.analyses.required),
+            "provided": sorted(spec.analyses.provided),
+        },
+    }
+
+
+def _state_machine_spine_passes(
+    rule: RuleConfiguration,
+    *,
+    source_config: str,
+) -> tuple[dict[str, object], ...]:
+    rule_name = _rule_name(rule, "blk_rules")
+    copied_config = _json_copy(rule.config, f"blk_rules.{rule_name}")
+    if not isinstance(copied_config, dict):
+        raise PipelineConfigError(f"blk_rules.{rule_name} config must be a mapping")
+
+    result: list[dict[str, object]] = []
+    spine_specs = standard_state_machine_passes()
+    for index, spec in enumerate(spine_specs):
+        entry = {
+            "pass": spec.pass_id,
+            **_pass_contract_payload(spec),
+            "migration": {
+                "source_config": source_config,
+                "source_section": "blk_rules",
+                "source_rule": rule_name,
+                "expansion": "native_state_machine_spine",
+                "stage_index": index,
+                "stage_count": len(spine_specs),
+            },
+            "options": {
+                "legacy_rule": rule_name,
+                "legacy_rule_options": copied_config,
+                "native_pipeline": list(_STATE_MACHINE_NATIVE_PIPELINE),
+            },
+        }
+        result.append(entry)
+    return tuple(result)
 
 
 def legacy_block_rule_adapter_boundary(
@@ -355,7 +429,7 @@ def legacy_project_config_to_pipeline_v2_shadow(
             _instruction_pass(project_config.ins_rules, source_config=source_name)
         )
     for rule in active_block_rules:
-        pipeline_v2.append(_block_pass(rule, source_config=source_name))
+        pipeline_v2.extend(_block_pass(rule, source_config=source_name))
 
     return {
         "description": (
