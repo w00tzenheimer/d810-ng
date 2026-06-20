@@ -516,6 +516,7 @@ def run_pipeline(
     scheduler: PassScheduler | None = None,
     pipeline_v2_shadow_registry: PassRegistry | None = None,
     require_pipeline_v2_shadow_match: bool = False,
+    pipeline_v2_specs: tuple[PassSpec, ...] | None = None,
 ):
     """Run one family's pipeline over one function/maturity. Returns the final graph.
 
@@ -525,10 +526,6 @@ def run_pipeline(
     ``optional`` are unaffected).
     """
     graph = source.flow_graph
-    match = family.detect(graph, backend.capabilities(), context=project_config)
-    if match is None:
-        return graph
-
     ctx = FunctionPipelineContext(
         source=source,
         graph=graph,
@@ -537,7 +534,18 @@ def run_pipeline(
         facts=facts.view(),
         capabilities=capabilities if capabilities is not None else CapabilitySet(),
     )
-    specs = family.pipeline_for(match, ctx)
+    if pipeline_v2_specs is None:
+        match = family.detect(graph, backend.capabilities(), context=project_config)
+        if match is None:
+            return graph
+        specs = family.pipeline_for(match, ctx)
+    else:
+        specs = tuple(pipeline_v2_specs)
+        if not specs:
+            raise PipelineConfigError(
+                "config-v2 execution requires at least one configured pass"
+            )
+
     if require_pipeline_v2_shadow_match:
         if pipeline_v2_shadow_registry is None:
             raise PipelineConfigError(

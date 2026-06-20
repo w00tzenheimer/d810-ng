@@ -246,6 +246,59 @@ def test_pipeline_v2_shadow_gate_requires_registry_when_enabled():
     assert calls == []
 
 
+def test_config_v2_specs_execute_configured_pipeline_without_family_detection():
+    calls: list[str] = []
+    configured = PassSpec(
+        "configured",
+        _recording_pass("configured", calls),
+        no_caps,
+        default,
+    )
+
+    class _NoDetect:
+        name = "no_detect"
+
+        def detect(self, graph, capabilities, context=None):
+            raise AssertionError("config-v2 execution should not detect a live family")
+
+        def pipeline_for(self, match, context):
+            raise AssertionError("config-v2 execution should not use live specs")
+
+    run_pipeline(
+        source=_Src(),
+        family=_NoDetect(),
+        backend=_Backend(),
+        facts=AnalysisManager(_GRAPH),
+        project_config={"pipeline_v2_mode": "config-v2"},
+        maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=(configured,),
+    )
+
+    assert calls == ["configured"]
+
+
+def test_config_v2_specs_reject_empty_configured_pipeline():
+    class _NoDetect:
+        name = "no_detect"
+
+        def detect(self, graph, capabilities, context=None):
+            raise AssertionError("config-v2 execution should not detect a live family")
+
+        def pipeline_for(self, match, context):
+            raise AssertionError("config-v2 execution should not use live specs")
+
+    with pytest.raises(PipelineConfigError, match="requires at least one configured"):
+        run_pipeline(
+            source=_Src(),
+            family=_NoDetect(),
+            backend=_Backend(),
+            facts=AnalysisManager(_GRAPH),
+            project_config={"pipeline_v2_mode": "config-v2"},
+            maturity=IRMaturity.CANONICAL,
+            pipeline_v2_specs=(),
+        )
+
+
 def test_run_pipeline_runs_all_five_passes_no_apply_on_empty_plans():
     backend = _Backend()
     facts = AnalysisManager(_GRAPH)
