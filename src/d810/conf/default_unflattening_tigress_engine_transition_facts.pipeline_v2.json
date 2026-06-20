@@ -1,0 +1,93 @@
+{
+  "description": "Config-v2 shadow representation of default_unflattening_tigress_engine_transition_facts.json. The legacy JSON remains the runtime source of truth.",
+  "ins_rules": [],
+  "blk_rules": [],
+  "additional_configuration": {
+    "pipeline_v2_shadow": {
+      "source_config": "default_unflattening_tigress_engine_transition_facts.json",
+      "runtime_source": "legacy"
+    },
+    "pipeline_v2": [
+      {
+        "pass": "mba-simplify",
+        "scope": "expression",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "local_instruction_rewrite",
+            "z3_solver"
+          ]
+        },
+        "migration": {
+          "source_config": "default_unflattening_tigress_engine_transition_facts.json",
+          "source_section": "ins_rules"
+        },
+        "rules": {
+          "include": [
+            "ConstantSubtreeFoldRule",
+            "Z3ConstantOptimization",
+            "Z3setnzRuleGeneric",
+            "Z3setzRuleGeneric"
+          ],
+          "exclude": [],
+          "options": {
+            "Z3ConstantOptimization": {
+              "min_nb_opcode": 4,
+              "min_nb_constant": 3
+            }
+          }
+        }
+      },
+      {
+        "pass": "forward-constant-propagation",
+        "scope": "block",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "migration": {
+          "source_config": "default_unflattening_tigress_engine_transition_facts.json",
+          "source_section": "blk_rules",
+          "source_rule": "ForwardConstantPropagationRule"
+        },
+        "options": {
+          "legacy_rule": "ForwardConstantPropagationRule"
+        }
+      },
+      {
+        "pass": "state-machine-cff-unflattener",
+        "scope": "function",
+        "maturity": {
+          "runs_at": "ir.global.analyzed"
+        },
+        "migration": {
+          "source_config": "default_unflattening_tigress_engine_transition_facts.json",
+          "source_section": "blk_rules",
+          "source_rule": "StateMachineCffUnflattener"
+        },
+        "options": {
+          "legacy_rule": "StateMachineCffUnflattener",
+          "maturities": [
+            "MMAT_GLBOPT1"
+          ],
+          "profile": "tigress_switch",
+          "prefer_switch_transition_facts": true,
+          "native_pipeline": [
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher"
+          ]
+        }
+      }
+    ]
+  }
+}

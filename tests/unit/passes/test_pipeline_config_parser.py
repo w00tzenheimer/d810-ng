@@ -705,6 +705,171 @@ def test_hodur_pipeline_v2_shadows_are_not_registry_buildable_yet(
         pass_specs_from_project_config(shadow, state_machine_pass_registry())
 
 
+@pytest.mark.parametrize(
+    ("config_name", "expected_instruction_rules", "expected_block_rules"),
+    [
+        (
+            "default_unflattening_tigress_engine",
+            0,
+            ["StateMachineCffUnflattener"],
+        ),
+        (
+            "default_unflattening_tigress_engine_transition_facts",
+            4,
+            ["ForwardConstantPropagationRule", "StateMachineCffUnflattener"],
+        ),
+        (
+            "default_unflattening_tigress_indirect",
+            7,
+            ["StateMachineCffUnflattener", "JumpFixer"],
+        ),
+        (
+            "default_unflattening_switch_case",
+            178,
+            ["MbaStatePreconditioner", "JumpFixer"],
+        ),
+    ],
+)
+def test_tigress_switch_legacy_configs_remain_runtime_source(
+    config_name,
+    expected_instruction_rules,
+    expected_block_rules,
+):
+    project = ProjectConfiguration.from_file(_CONF_DIR / f"{config_name}.json")
+
+    assert len([rule for rule in project.ins_rules if rule.is_activated]) == (
+        expected_instruction_rules
+    )
+    assert [rule.name for rule in project.blk_rules if rule.is_activated] == (
+        expected_block_rules
+    )
+    assert pipeline_configs_from_project_config(project) == ()
+
+
+@pytest.mark.parametrize(
+    ("config_name", "expected_pass_ids"),
+    [
+        (
+            "default_unflattening_tigress_engine",
+            ["state-machine-cff-unflattener"],
+        ),
+        (
+            "default_unflattening_tigress_engine_transition_facts",
+            [
+                "mba-simplify",
+                "forward-constant-propagation",
+                "state-machine-cff-unflattener",
+            ],
+        ),
+        (
+            "default_unflattening_tigress_indirect",
+            ["mba-simplify", "state-machine-cff-unflattener", "jump-fixer"],
+        ),
+        (
+            "default_unflattening_switch_case",
+            ["mba-simplify", "mba-state-preconditioner", "jump-fixer"],
+        ),
+    ],
+)
+def test_tigress_switch_pipeline_v2_shadows_parse_and_roundtrip(
+    config_name,
+    expected_pass_ids,
+):
+    legacy_path = _CONF_DIR / f"{config_name}.json"
+    shadow_path = _CONF_DIR / f"{config_name}.pipeline_v2.json"
+    legacy_raw = json.loads(legacy_path.read_text())
+    shadow_raw = json.loads(shadow_path.read_text())
+    shadow = ProjectConfiguration.from_file(shadow_path)
+
+    configs = pipeline_configs_from_project_config(shadow)
+    assert shadow.ins_rules == []
+    assert shadow.blk_rules == []
+    assert shadow.additional_configuration["pipeline_v2_shadow"] == {
+        "source_config": f"{config_name}.json",
+        "runtime_source": "legacy",
+    }
+    assert [config.pass_id for config in configs] == expected_pass_ids
+
+    if expected_pass_ids[0] == "mba-simplify":
+        active_instruction_rules = [
+            rule for rule in legacy_raw["ins_rules"] if rule["is_activated"]
+        ]
+        instruction_entry = shadow_raw["additional_configuration"]["pipeline_v2"][0]
+        assert instruction_entry["rules"]["include"] == [
+            rule["name"] for rule in active_instruction_rules
+        ]
+        assert "include_groups" not in instruction_entry["rules"]
+        assert "exclude_groups" not in instruction_entry["rules"]
+        assert configs[0].rules.include_groups == frozenset()
+        assert configs[0].rules.include == frozenset(
+            rule["name"] for rule in active_instruction_rules
+        )
+        assert configs[0].rules.options == {
+            rule["name"]: rule["config"]
+            for rule in active_instruction_rules
+            if rule["config"]
+        }
+        block_configs = configs[1:]
+    else:
+        block_configs = configs
+
+    active_block_rules = [
+        rule for rule in legacy_raw["blk_rules"] if rule["is_activated"]
+    ]
+    assert [
+        config.options["legacy_rule"]
+        for config in block_configs
+    ] == [rule["name"] for rule in active_block_rules]
+    for config, rule in zip(block_configs, active_block_rules):
+        options = dict(config.options)
+        assert options.pop("legacy_rule") == rule["name"]
+        native_pipeline = options.pop("native_pipeline", None)
+        assert options == rule["config"]
+        if rule["name"] == "StateMachineCffUnflattener":
+            assert native_pipeline == [
+                "recover_dispatcher",
+                "recover_state_transitions",
+                "plan_semantic_regions",
+                "lower_state_machine",
+                "cleanup_residual_dispatcher",
+            ]
+            assert config.contract.scope is PassScope.FUNCTION
+        else:
+            assert native_pipeline is None
+            assert config.contract.scope is PassScope.BLOCK
+
+    for entry in shadow_raw["additional_configuration"]["pipeline_v2"]:
+        assert "target" not in entry
+        assert "safety" not in entry
+        assert "preferred" not in entry.get("maturity", {})
+        assert "preferred" not in entry.get("maturity", {}).get("range", {})
+        assert PipelineConfig.from_dict(entry).to_dict()["pass_id"] == entry["pass"]
+    assert tuple(PipelineConfig.from_dict(config.to_dict()) for config in configs) == (
+        configs
+    )
+
+
+@pytest.mark.parametrize(
+    ("config_name", "expected_unknown_pass"),
+    [
+        ("default_unflattening_tigress_engine", "state-machine-cff-unflattener"),
+        ("default_unflattening_tigress_engine_transition_facts", "mba-simplify"),
+        ("default_unflattening_tigress_indirect", "mba-simplify"),
+        ("default_unflattening_switch_case", "mba-simplify"),
+    ],
+)
+def test_tigress_switch_pipeline_v2_shadows_are_not_registry_buildable_yet(
+    config_name,
+    expected_unknown_pass,
+):
+    shadow = ProjectConfiguration.from_file(
+        _CONF_DIR / f"{config_name}.pipeline_v2.json"
+    )
+
+    with pytest.raises(UnknownPassIdError, match=expected_unknown_pass):
+        pass_specs_from_project_config(shadow, state_machine_pass_registry())
+
+
 def test_pipeline_spec_comparison_reports_ordered_differences():
     live_specs = standard_state_machine_passes()
     short_specs = live_specs[:1]

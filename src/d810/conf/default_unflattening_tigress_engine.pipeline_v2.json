@@ -1,0 +1,36 @@
+{
+  "description": "Config-v2 shadow representation of default_unflattening_tigress_engine.json. The legacy JSON remains the runtime source of truth.",
+  "ins_rules": [],
+  "blk_rules": [],
+  "additional_configuration": {
+    "pipeline_v2_shadow": {
+      "source_config": "default_unflattening_tigress_engine.json",
+      "runtime_source": "legacy"
+    },
+    "pipeline_v2": [
+      {
+        "pass": "state-machine-cff-unflattener",
+        "scope": "function",
+        "maturity": {
+          "runs_at": "ir.global.analyzed"
+        },
+        "migration": {
+          "source_config": "default_unflattening_tigress_engine.json",
+          "source_section": "blk_rules",
+          "source_rule": "StateMachineCffUnflattener"
+        },
+        "options": {
+          "legacy_rule": "StateMachineCffUnflattener",
+          "profile": "tigress_switch",
+          "native_pipeline": [
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher"
+          ]
+        }
+      }
+    ]
+  }
+}
