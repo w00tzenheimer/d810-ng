@@ -23,6 +23,9 @@ def test_contract_vocabulary_registry_contains_initial_namespaces():
         "recovered",
     }
     assert contract_vocabulary_entry("ir.branch_target").kind == "evidence"
+    assert contract_vocabulary_entry("ir.memory_def.candidate").kind == "evidence"
+    assert contract_vocabulary_entry("ir.branch_cond.candidate").kind == "evidence"
+    assert contract_vocabulary_entry("ir.induction_var.candidate").kind == "evidence"
     assert contract_vocabulary_entry("role.dispatcher").kind == "role"
     assert contract_vocabulary_entry("recovered.state_transition").kind == "recovered"
 
@@ -38,6 +41,7 @@ def test_contract_vocabulary_legacy_aliases_are_centralized():
     assert aliases["state_variable_writes"] == "ir.state_variable_write"
     assert aliases["dispatcher_predicates"] == "role.dispatcher_predicate"
     assert aliases["stale_cfg_shape"] == "ir.cfg_shape.stale"
+    assert aliases["carrier_store_candidates"] == "ir.memory_def.candidate"
 
 
 def test_contract_vocabulary_resolves_known_aliases_only():
@@ -55,6 +59,28 @@ def test_contract_vocabulary_exposes_alias_equivalence_helpers():
         {"ir.branch_target", "branch_targets"}
     )
     assert contract_names_equivalent("branch_targets", "ir.branch_target")
+    assert contract_names_equivalent(
+        "carrier_store_candidates",
+        "ir.memory_def.candidate",
+    )
     assert contract_name_in("branch_targets", {"ir.branch_target"})
     assert contract_name_in("ir.branch_target", {"branch_targets"})
+    assert contract_name_in(
+        "ir.memory_def.candidate",
+        {"carrier_store_candidates"},
+    )
     assert not contract_name_in("ir.branch_target", {"state_variable_writes"})
+
+
+def test_ollvm_raw_carrier_roles_remain_internal_not_public_aliases():
+    aliases = legacy_contract_aliases()
+
+    for raw_role in (
+        "LOCAL_WORKING_STORE_CANDIDATE",
+        "ARG_OUTPUT_STORE_CANDIDATE",
+        "LOOP_INDEX_CARRIER",
+        "PASSWORD_COMPARE_RESULT",
+    ):
+        assert raw_role not in aliases
+        assert contract_vocabulary_entry(raw_role) is None
+        assert resolve_contract_name(raw_role) == raw_role

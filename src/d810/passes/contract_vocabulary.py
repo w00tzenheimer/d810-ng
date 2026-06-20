@@ -36,6 +36,13 @@ _ENTRIES: tuple[ContractVocabularyEntry, ...] = (
         description="Memory definition fact.",
     ),
     ContractVocabularyEntry(
+        name="ir.memory_def.candidate",
+        namespace="ir",
+        kind="evidence",
+        description="Candidate memory definition observation.",
+        legacy_aliases=("carrier_store_candidates",),
+    ),
+    ContractVocabularyEntry(
         name="ir.memory_use",
         namespace="ir",
         kind="fact",
@@ -52,6 +59,12 @@ _ENTRIES: tuple[ContractVocabularyEntry, ...] = (
         namespace="ir",
         kind="evidence",
         description="Branch condition observation or candidate.",
+    ),
+    ContractVocabularyEntry(
+        name="ir.branch_cond.candidate",
+        namespace="ir",
+        kind="evidence",
+        description="Candidate branch condition observation.",
     ),
     ContractVocabularyEntry(
         name="ir.branch_target",
@@ -72,6 +85,12 @@ _ENTRIES: tuple[ContractVocabularyEntry, ...] = (
         namespace="ir",
         kind="evidence",
         description="Induction variable candidate or observation.",
+    ),
+    ContractVocabularyEntry(
+        name="ir.induction_var.candidate",
+        namespace="ir",
+        kind="evidence",
+        description="Candidate induction variable observation.",
     ),
     ContractVocabularyEntry(
         name="ir.loop_carried",

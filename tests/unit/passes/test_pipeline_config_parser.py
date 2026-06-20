@@ -27,7 +27,7 @@ from d810.passes.pipeline_shadow import (
 from d810.passes.registry import UnknownPassIdError
 
 
-def _recover_state_machine_contract_payload():
+def _legacy_recover_state_machine_contract_payload():
     return {
         "pass": "recover-state-machine",
         "scope": "function",
@@ -140,10 +140,10 @@ def test_pipeline_v2_shadow_parse_from_project_like_object():
     assert configs[0].backend_route is BackendRoute.ANALYSIS_ONLY
 
 
-def test_pipeline_v2_parses_native_deobfuscation_contract_shape():
+def test_pipeline_v2_warns_for_legacy_native_deobfuscation_contract_aliases():
     with pytest.warns(ContractVocabularyWarning) as warnings:
         configs = pipeline_configs_from_project_config(
-            {"pipeline_v2": [_recover_state_machine_contract_payload()]}
+            {"pipeline_v2": [_legacy_recover_state_machine_contract_payload()]}
         )
 
     assert len(configs) == 1
@@ -152,6 +152,7 @@ def test_pipeline_v2_parses_native_deobfuscation_contract_shape():
     assert "dispatcher_predicates->role.dispatcher_predicate" in warning_text
     assert "branch_targets->ir.branch_target" in warning_text
     assert "dispatcher_family->role.dispatcher" in warning_text
+    assert "carrier_store_candidates->ir.memory_def.candidate" in warning_text
     assert "state_transition->recovered.state_transition" in warning_text
     assert "recovered_cfg_edge->recovered.cfg_edge" in warning_text
     assert "stale_cfg_shape->ir.cfg_shape.stale" in warning_text
@@ -189,11 +190,13 @@ def test_pipeline_v2_parses_native_deobfuscation_contract_shape():
 
 
 def test_pipeline_v2_canonical_contract_names_do_not_warn():
-    payload = _recover_state_machine_contract_payload()
+    payload = _legacy_recover_state_machine_contract_payload()
     payload["requires"]["evidence"] = [
         "ir.state_variable_write",
         "role.dispatcher_predicate",
         "ir.branch_target",
+        "ir.memory_def.candidate",
+        "ir.branch_cond.candidate",
     ]
     payload["requires"]["facts"]["optional"] = ["effect.memory_def.observable"]
     payload["outputs"]["facts"] = [
@@ -201,7 +204,10 @@ def test_pipeline_v2_canonical_contract_names_do_not_warn():
         "recovered.cfg_edge",
         "role.dispatcher",
     ]
-    payload["outputs"]["evidence"] = ["ir.branch_target"]
+    payload["outputs"]["evidence"] = [
+        "ir.branch_target",
+        "ir.induction_var.candidate",
+    ]
     payload["invalidates"]["facts"] = ["ir.cfg_shape.stale"]
 
     with warnings.catch_warnings(record=True) as recorded:
@@ -209,12 +215,20 @@ def test_pipeline_v2_canonical_contract_names_do_not_warn():
         configs = pipeline_configs_from_project_config({"pipeline_v2": [payload]})
 
     assert configs[0].contract.requires.evidence == frozenset(
-        {"ir.state_variable_write", "role.dispatcher_predicate", "ir.branch_target"}
+        {
+            "ir.state_variable_write",
+            "role.dispatcher_predicate",
+            "ir.branch_target",
+            "ir.memory_def.candidate",
+            "ir.branch_cond.candidate",
+        }
     )
     assert configs[0].contract.outputs.facts == frozenset(
         {"recovered.state_transition", "recovered.cfg_edge", "role.dispatcher"}
     )
-    assert configs[0].contract.outputs.evidence == frozenset({"ir.branch_target"})
+    assert configs[0].contract.outputs.evidence == frozenset(
+        {"ir.branch_target", "ir.induction_var.candidate"}
+    )
     assert not [
         warning
         for warning in recorded
