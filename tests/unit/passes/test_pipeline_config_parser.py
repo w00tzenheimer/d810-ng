@@ -37,6 +37,7 @@ def _recover_state_machine_contract_payload():
             "preferred": "ir.call.modeled",
         },
         "requires": {
+            "capabilities": ["live_mba", "z3_solver"],
             "analyses": ["def_use", "dominators", "value_ranges"],
             "evidence": [
                 "state_variable_writes",
@@ -160,6 +161,9 @@ def test_pipeline_v2_parses_native_deobfuscation_contract_shape():
     assert config.contract.maturity.min is IRMaturity.CALL_MODELED
     assert config.contract.maturity.max is IRMaturity.GLOBAL_ANALYZED
     assert config.contract.maturity.preferred is IRMaturity.CALL_MODELED
+    assert config.contract.requires.capabilities == frozenset(
+        {"live_mba", "z3_solver"}
+    )
     assert config.contract.requires.analyses == frozenset(
         {"def_use", "dominators", "value_ranges"}
     )

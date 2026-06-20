@@ -169,6 +169,7 @@ def test_pipeline_config_roundtrip_preserves_native_pass_contract():
             preferred=IRMaturity.CALL_MODELED,
         ),
         requires=pp.PassRequires(
+            capabilities=frozenset({"live_mba"}),
             analyses=frozenset({"def_use", "dominators"}),
             evidence=frozenset({"state_variable_writes"}),
             facts=pp.FactRequirement(
@@ -193,6 +194,7 @@ def test_pipeline_config_roundtrip_preserves_native_pass_contract():
     config = pp.PipelineConfig(pass_id="recover-state-machine", contract=contract)
 
     payload = config.to_dict()
+    assert payload["contract"]["requires"]["capabilities"] == ["live_mba"]
     assert payload["contract"]["requires"]["evidence"] == ["state_variable_writes"]
     assert payload["contract"]["outputs"]["evidence"] == ["branch_targets"]
     assert pp.PipelineConfig.from_dict(payload) == config
@@ -209,6 +211,7 @@ def test_pipeline_config_accepts_direct_native_contract_yaml_shape():
                 "preferred": "ir.call.modeled",
             },
             "requires": {
+                "capabilities": ["live_mba"],
                 "analyses": ["dominators"],
                 "evidence": ["dispatcher_predicates"],
                 "facts": {
@@ -234,6 +237,7 @@ def test_pipeline_config_accepts_direct_native_contract_yaml_shape():
 
     assert config.pass_id == "recover-state-machine"
     assert config.contract.scope is pp.PassScope.FUNCTION
+    assert config.contract.requires.capabilities == frozenset({"live_mba"})
     assert config.contract.requires.analyses == frozenset({"dominators"})
     assert config.contract.requires.evidence == frozenset({"dispatcher_predicates"})
     assert config.contract.outputs.evidence == frozenset({"branch_targets"})
@@ -264,6 +268,21 @@ def test_pipeline_config_rejects_malformed_native_contract_sections(
     field_name,
 ):
     with pytest.raises(pp.PipelineConfigError, match=f"{field_name} must be a mapping"):
+        pp.PipelineConfig.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    ("payload", "field_name"),
+    [
+        ({"pass": "x", "requires": {"capabilities": "live_mba"}}, "requires.capabilities"),
+        ({"pass": "x", "requires": {"capabilities": [1]}}, "requires.capabilities"),
+    ],
+)
+def test_pipeline_config_rejects_malformed_capability_requirements(
+    payload,
+    field_name,
+):
+    with pytest.raises(pp.PipelineConfigError, match=field_name):
         pp.PipelineConfig.from_dict(payload)
 
 

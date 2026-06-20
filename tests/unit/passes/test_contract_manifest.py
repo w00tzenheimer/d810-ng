@@ -49,6 +49,7 @@ def test_transition_contract_manifest_uses_direct_yaml_shape():
         "preferred": IRMaturity.GLOBAL_ANALYZED.value,
     }
     assert manifest["requires"] == {
+        "capabilities": [],
         "analyses": ["recover_dispatcher"],
         "evidence": ["branch_targets", "state_variable_writes"],
         "facts": {
@@ -116,6 +117,7 @@ def test_manifest_keeps_analysis_evidence_and_fact_namespaces_separate():
     manifest = pass_contract_manifest(spec)
 
     assert manifest["requires"] == {
+        "capabilities": [],
         "analyses": [],
         "evidence": [],
         "facts": {
