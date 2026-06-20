@@ -37,6 +37,9 @@ def test_public_contract_evidence_vocabulary_matches_native_yaml_names():
             "state_variable_writes",
             "dispatcher_predicates",
             "branch_targets",
+            "ir.memory_def.candidate",
+            "ir.branch_cond.candidate",
+            "ir.induction_var.candidate",
         }
     )
 
@@ -58,6 +61,25 @@ def test_payload_contract_evidence_tokens_are_canonical_contract_tokens():
 def test_contract_evidence_payload_rejects_unknown_tokens():
     with pytest.raises(ValueError, match="unknown contract evidence token"):
         contract_evidence_payload("typo_token")
+
+
+def test_ollvm_candidate_contract_evidence_uses_canonical_public_names():
+    observation = _observation(
+        payload=contract_evidence_payload(
+            ContractEvidenceToken.MEMORY_DEF_CANDIDATE,
+            "ir.branch_cond.candidate",
+            "ir.induction_var.candidate",
+        ),
+        evidence=("LOCAL_WORKING_STORE_CANDIDATE",),
+    )
+
+    assert contract_evidence_tokens(observation) == frozenset(
+        {
+            "ir.memory_def.candidate",
+            "ir.branch_cond.candidate",
+            "ir.induction_var.candidate",
+        }
+    )
 
 
 def test_raw_diagnostic_evidence_is_not_a_contract_token():

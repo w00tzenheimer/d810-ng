@@ -171,15 +171,17 @@ def test_pipeline_config_roundtrip_preserves_native_pass_contract():
         requires=pp.PassRequires(
             capabilities=frozenset({"live_mba"}),
             analyses=frozenset({"def_use", "dominators"}),
-            evidence=frozenset({"state_variable_writes"}),
+            evidence=frozenset(
+                {"state_variable_writes", "ir.memory_def.candidate"}
+            ),
             facts=pp.FactRequirement(
                 required=frozenset({"dispatcher_family"}),
-                optional=frozenset({"carrier_store_candidates"}),
+                optional=frozenset({"effect.memory_def.observable"}),
             ),
         ),
         outputs=pp.PassOutputs(
             facts=frozenset({"state_transition"}),
-            evidence=frozenset({"branch_targets"}),
+            evidence=frozenset({"branch_targets", "ir.branch_cond.candidate"}),
         ),
         preserves=pp.PassPreserves(
             analyses=frozenset({"function_boundaries"}),
@@ -195,8 +197,14 @@ def test_pipeline_config_roundtrip_preserves_native_pass_contract():
 
     payload = config.to_dict()
     assert payload["contract"]["requires"]["capabilities"] == ["live_mba"]
-    assert payload["contract"]["requires"]["evidence"] == ["state_variable_writes"]
-    assert payload["contract"]["outputs"]["evidence"] == ["branch_targets"]
+    assert payload["contract"]["requires"]["evidence"] == [
+        "ir.memory_def.candidate",
+        "state_variable_writes",
+    ]
+    assert payload["contract"]["outputs"]["evidence"] == [
+        "branch_targets",
+        "ir.branch_cond.candidate",
+    ]
     assert pp.PipelineConfig.from_dict(payload) == config
 
 
@@ -213,15 +221,19 @@ def test_pipeline_config_accepts_direct_native_contract_yaml_shape():
             "requires": {
                 "capabilities": ["live_mba"],
                 "analyses": ["dominators"],
-                "evidence": ["dispatcher_predicates"],
+                "evidence": [
+                    "dispatcher_predicates",
+                    "ir.memory_def.candidate",
+                    "ir.branch_cond.candidate",
+                ],
                 "facts": {
                     "required": [],
-                    "optional": ["carrier_store_candidates"],
+                    "optional": ["effect.memory_def.observable"],
                 },
             },
             "outputs": {
                 "facts": ["state_transition"],
-                "evidence": ["branch_targets"],
+                "evidence": ["branch_targets", "ir.induction_var.candidate"],
             },
             "preserves": {
                 "analyses": ["dominators"],
@@ -239,8 +251,16 @@ def test_pipeline_config_accepts_direct_native_contract_yaml_shape():
     assert config.contract.scope is pp.PassScope.FUNCTION
     assert config.contract.requires.capabilities == frozenset({"live_mba"})
     assert config.contract.requires.analyses == frozenset({"dominators"})
-    assert config.contract.requires.evidence == frozenset({"dispatcher_predicates"})
-    assert config.contract.outputs.evidence == frozenset({"branch_targets"})
+    assert config.contract.requires.evidence == frozenset(
+        {
+            "dispatcher_predicates",
+            "ir.memory_def.candidate",
+            "ir.branch_cond.candidate",
+        }
+    )
+    assert config.contract.outputs.evidence == frozenset(
+        {"branch_targets", "ir.induction_var.candidate"}
+    )
     assert config.contract.preserves.analyses == frozenset({"dominators"})
     assert config.contract.invalidates.facts == frozenset({"stale_cfg_shape"})
     assert config.safety_policy == pp.SafetyPolicy()

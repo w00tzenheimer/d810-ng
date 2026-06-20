@@ -160,7 +160,9 @@ def test_preflight_optional_facts_missing_do_not_fail():
         _spec(
             "optional_carrier",
             requires=PassRequires(
-                facts=FactRequirement(optional=frozenset({"carrier_store_candidates"}))
+                facts=FactRequirement(
+                    optional=frozenset({"effect.memory_def.observable"})
+                )
             ),
         ),
         object(),
@@ -224,6 +226,28 @@ def test_pipeline_preflight_declared_outputs_can_satisfy_later_evidence_requirem
 
     assert result.satisfied
     assert [item.satisfied for item in result.results] == [True, True]
+    assert facts.available_evidence() == ()
+
+
+def test_pipeline_preflight_declared_ollvm_candidate_evidence_feeds_later_validation():
+    facts = AnalysisManager("G0")
+    first = _spec(
+        "publish_memory_candidate",
+        outputs=PassOutputs(evidence=frozenset({"ir.memory_def.candidate"})),
+    )
+    second = _spec(
+        "validate_memory_candidate",
+        requires=PassRequires(evidence=frozenset({"ir.memory_def.candidate"})),
+    )
+
+    result = preflight_pipeline_contract((first, second), facts)
+
+    assert result.satisfied
+    assert result.results[0].declared_output_evidence == (
+        "ir.memory_def.candidate",
+    )
+    assert [item.satisfied for item in result.results] == [True, True]
+    assert facts.available_facts() == ()
     assert facts.available_evidence() == ()
 
 

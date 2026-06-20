@@ -22,6 +22,9 @@ class ContractEvidenceToken(str, Enum):
     STATE_VARIABLE_WRITES = "state_variable_writes"
     DISPATCHER_PREDICATES = "dispatcher_predicates"
     BRANCH_TARGETS = "branch_targets"
+    MEMORY_DEF_CANDIDATE = "ir.memory_def.candidate"
+    BRANCH_COND_CANDIDATE = "ir.branch_cond.candidate"
+    INDUCTION_VAR_CANDIDATE = "ir.induction_var.candidate"
 
 
 CONTRACT_EVIDENCE_TOKENS = frozenset(token.value for token in ContractEvidenceToken)

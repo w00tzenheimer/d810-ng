@@ -281,12 +281,16 @@ def test_evidence_store_matches_legacy_and_canonical_contract_names():
         input_facts=type("_Facts", (), {"active_observations": (observation,)})(),
     )
     marker = object()
+    candidate_marker = object()
 
     am.put_evidence("state_variable_writes", marker)
+    am.put_evidence("carrier_store_candidates", candidate_marker)
 
     assert am.get_evidence("ir.branch_target") == (observation,)
     assert am.get_evidence("ir.state_variable_write") == (marker,)
     assert am.get_evidence("state_variable_writes") == (marker,)
+    assert am.get_evidence("ir.memory_def.candidate") == (candidate_marker,)
+    assert am.get_evidence("carrier_store_candidates") == (candidate_marker,)
 
 
 def test_available_evidence_respects_published_and_visible_live_tokens():
@@ -342,7 +346,14 @@ def test_put_observation_evidence_ignores_raw_diagnostic_evidence():
     observation = type(
         "_Obs",
         (),
-        {"evidence": ("dispatcher_predicates", "branch_targets")},
+        {
+            "evidence": (
+                "dispatcher_predicates",
+                "branch_targets",
+                "ir.memory_def.candidate",
+                "carrier_store_candidates",
+            )
+        },
     )()
     am = AnalysisManager(graph="G0")
 
@@ -350,6 +361,8 @@ def test_put_observation_evidence_ignores_raw_diagnostic_evidence():
 
     assert not am.has_evidence("dispatcher_predicates")
     assert not am.has_evidence("branch_targets")
+    assert not am.has_evidence("ir.memory_def.candidate")
+    assert not am.has_evidence("carrier_store_candidates")
 
 
 def test_evidence_store_reads_dispatcher_projection_contract_tokens():

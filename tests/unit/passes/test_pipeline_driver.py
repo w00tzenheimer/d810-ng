@@ -830,7 +830,9 @@ def test_native_contract_optional_fact_missing_still_runs():
         default,
         contract=PassContract(
             requires=PassRequires(
-                facts=FactRequirement(optional=frozenset({"carrier_store_candidates"}))
+                facts=FactRequirement(
+                    optional=frozenset({"effect.memory_def.observable"})
+                )
             )
         ),
     )
@@ -1245,6 +1247,46 @@ def test_native_contract_output_evidence_publishes_for_later_required_evidence()
     _run_specs(specs)
 
 
+def test_ollvm_candidate_output_evidence_feeds_later_validation_as_evidence():
+    marker = object()
+
+    class _PublishCandidate:
+        name = "publish_candidate"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(evidence_outputs={"ir.memory_def.candidate": marker})
+
+    class _ValidateCandidate:
+        name = "validate_candidate"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.get_evidence("ir.memory_def.candidate") == (marker,)
+            return PassResult()
+
+    specs = (
+        PassSpec(
+            "publish_candidate",
+            _PublishCandidate,
+            no_caps,
+            default,
+            contract=PassContract(
+                outputs=PassOutputs(evidence=frozenset({"ir.memory_def.candidate"}))
+            ),
+        ),
+        PassSpec(
+            "validate_candidate",
+            _ValidateCandidate,
+            no_caps,
+            default,
+            contract=PassContract(
+                requires=PassRequires(evidence=frozenset({"ir.memory_def.candidate"}))
+            ),
+        ),
+    )
+
+    _run_specs(specs)
+
+
 def test_native_contract_output_evidence_allows_legacy_key_for_canonical_contract():
     marker = object()
 
@@ -1321,7 +1363,7 @@ def test_native_contract_output_evidence_does_not_satisfy_fact_requirement():
         name = "publish_evidence"
 
         def run(self, ctx) -> PassResult:
-            return PassResult(evidence_outputs={"branch_targets": object()})
+            return PassResult(evidence_outputs={"ir.memory_def.candidate": object()})
 
     class _NeedsFact:
         name = "needs_fact"
@@ -1336,7 +1378,7 @@ def test_native_contract_output_evidence_does_not_satisfy_fact_requirement():
             no_caps,
             default,
             contract=PassContract(
-                outputs=PassOutputs(evidence=frozenset({"branch_targets"}))
+                outputs=PassOutputs(evidence=frozenset({"ir.memory_def.candidate"}))
             ),
         ),
         PassSpec(
@@ -1346,7 +1388,9 @@ def test_native_contract_output_evidence_does_not_satisfy_fact_requirement():
             default,
             contract=PassContract(
                 requires=PassRequires(
-                    facts=FactRequirement(required=frozenset({"branch_targets"}))
+                    facts=FactRequirement(
+                        required=frozenset({"ir.memory_def.candidate"})
+                    )
                 )
             ),
         ),
@@ -1356,11 +1400,11 @@ def test_native_contract_output_evidence_does_not_satisfy_fact_requirement():
         _run_specs(specs)
 
     assert exc.value.diagnostics[0].namespace == "requires.facts.required"
-    assert exc.value.diagnostics[0].missing == ("branch_targets",)
+    assert exc.value.diagnostics[0].missing == ("ir.memory_def.candidate",)
 
 
 def test_native_contract_output_fact_does_not_satisfy_evidence_requirement():
-    fact = type("_Fact", (), {"kind": "branch_targets"})()
+    fact = type("_Fact", (), {"kind": "ir.memory_def.candidate"})()
 
     class _PublishFact:
         name = "publish_fact"
@@ -1381,7 +1425,7 @@ def test_native_contract_output_fact_does_not_satisfy_evidence_requirement():
             no_caps,
             default,
             contract=PassContract(
-                outputs=PassOutputs(facts=frozenset({"branch_targets"}))
+                outputs=PassOutputs(facts=frozenset({"ir.memory_def.candidate"}))
             ),
         ),
         PassSpec(
@@ -1390,7 +1434,7 @@ def test_native_contract_output_fact_does_not_satisfy_evidence_requirement():
             no_caps,
             default,
             contract=PassContract(
-                requires=PassRequires(evidence=frozenset({"branch_targets"}))
+                requires=PassRequires(evidence=frozenset({"ir.memory_def.candidate"}))
             ),
         ),
     )
@@ -1399,7 +1443,7 @@ def test_native_contract_output_fact_does_not_satisfy_evidence_requirement():
         _run_specs(specs)
 
     assert exc.value.diagnostics[0].namespace == "requires.evidence"
-    assert exc.value.diagnostics[0].missing == ("branch_targets",)
+    assert exc.value.diagnostics[0].missing == ("ir.memory_def.candidate",)
 
 
 def test_raw_observation_evidence_does_not_satisfy_required_evidence():
