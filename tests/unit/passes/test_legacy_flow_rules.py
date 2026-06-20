@@ -19,7 +19,7 @@ from d810.passes.legacy_flow_rules import (
     legacy_flow_rule_pass_registry,
     register_legacy_flow_rule_passes,
 )
-from d810.passes.mba_simplify import register_mba_simplify_pass
+from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import (
     FunctionPipelineContext,
     PipelineConfig,
@@ -31,7 +31,6 @@ from d810.passes.pipeline_config_parser import (
     pipeline_configs_from_project_config,
 )
 from d810.passes.registry import PassRegistry, UnknownPassIdError
-from d810.passes.state_machine_spine import register_state_machine_passes
 
 _CONF_DIR = Path("src/d810/conf")
 
@@ -123,14 +122,6 @@ def _context(
         facts=_Facts(),
         capabilities=capabilities,
     )
-
-
-def _operational_registry() -> PassRegistry:
-    registry = PassRegistry()
-    register_mba_simplify_pass(registry)
-    register_state_machine_passes(registry)
-    register_legacy_flow_rule_passes(registry)
-    return registry
 
 
 def test_legacy_flow_rule_pass_invokes_capability_with_options():
@@ -312,7 +303,10 @@ def test_operational_registry_builds_mba_spine_and_simple_block_shadow():
         _CONF_DIR / "default_unflattening_tigress_indirect.pipeline_v2.json"
     )
 
-    specs = pass_specs_from_project_config(shadow, _operational_registry())
+    specs = pass_specs_from_project_config(
+        shadow,
+        operational_config_v2_pass_registry(),
+    )
 
     assert [spec.pass_id for spec in specs] == [
         "mba-simplify",
@@ -331,4 +325,4 @@ def test_operational_registry_still_fails_on_unregistered_block_level_egglog():
     )
 
     with pytest.raises(UnknownPassIdError, match="block-level-egglog-optimizer"):
-        pass_specs_from_project_config(shadow, _operational_registry())
+        pass_specs_from_project_config(shadow, operational_config_v2_pass_registry())
