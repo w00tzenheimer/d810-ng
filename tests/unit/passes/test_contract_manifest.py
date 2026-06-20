@@ -56,7 +56,7 @@ def test_transition_contract_manifest_uses_direct_yaml_shape():
             "optional": [],
         },
     }
-    assert manifest["outputs"] == {"facts": ["state_transition"]}
+    assert manifest["outputs"] == {"facts": ["state_transition"], "evidence": []}
     assert "runtime" in manifest
     assert "contract" not in manifest
     assert "pass_id" not in manifest
@@ -194,6 +194,7 @@ def test_pass_preflight_manifest_preserves_contract_shape_and_adds_status_only()
     assert manifest["preflight"] == {
         "satisfied": False,
         "declared_output_facts": ["state_transition"],
+        "declared_output_evidence": [],
         "diagnostics": [
             {
                 "pass": "needs_transition",
@@ -215,6 +216,9 @@ def test_pipeline_preflight_manifest_preserves_spec_order():
                 pass_id=spec.pass_id,
                 satisfied=True,
                 declared_output_facts=tuple(sorted(spec.contract.outputs.facts)),
+                declared_output_evidence=tuple(
+                    sorted(spec.contract.outputs.evidence)
+                ),
             )
             for spec in specs
         ),
@@ -294,6 +298,7 @@ def test_preflight_manifest_does_not_instantiate_pass_factory_and_roundtrips_con
     assert manifest["preflight"] == {
         "satisfied": True,
         "declared_output_facts": [],
+        "declared_output_evidence": [],
         "diagnostics": [],
     }
     assert config.pass_id == spec.pass_id

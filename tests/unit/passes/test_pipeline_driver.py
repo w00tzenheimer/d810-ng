@@ -6,6 +6,7 @@ detect -> pipeline_for -> validate_capabilities -> pass.run -> (apply on non-emp
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 
@@ -1083,6 +1084,234 @@ def test_native_contract_output_fact_rejects_missing_kind():
             detail="published facts lacked kind",
         ),
     )
+
+
+def test_native_contract_output_evidence_publishes_for_later_required_evidence():
+    marker = object()
+
+    class _PublishEvidence:
+        name = "publish_evidence"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(evidence_outputs={"branch_targets": marker})
+
+    class _NeedsEvidence:
+        name = "needs_evidence"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.get_evidence("branch_targets") == (marker,)
+            return PassResult()
+
+    specs = (
+        PassSpec(
+            "publish_evidence",
+            _PublishEvidence,
+            no_caps,
+            default,
+            contract=PassContract(
+                outputs=PassOutputs(evidence=frozenset({"branch_targets"}))
+            ),
+        ),
+        PassSpec(
+            "needs_evidence",
+            _NeedsEvidence,
+            no_caps,
+            default,
+            contract=PassContract(
+                requires=PassRequires(evidence=frozenset({"branch_targets"}))
+            ),
+        ),
+    )
+
+    _run_specs(specs)
+
+
+def test_native_contract_output_evidence_rejects_undeclared_key():
+    class _PublishEvidence:
+        name = "publish_evidence"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(evidence_outputs={"branch_targets": object()})
+
+    spec = PassSpec(
+        "publish_evidence",
+        _PublishEvidence,
+        no_caps,
+        default,
+        contract=PassContract(
+            outputs=PassOutputs(evidence=frozenset({"state_variable_writes"}))
+        ),
+    )
+
+    with pytest.raises(PassContractError, match="undeclared contract evidence") as exc:
+        _run_specs((spec,))
+
+    assert exc.value.diagnostics == (
+        PassContractDiagnostic(
+            pass_id="publish_evidence",
+            namespace="outputs.evidence",
+            undeclared=("branch_targets",),
+            available=("state_variable_writes",),
+        ),
+    )
+
+
+def test_native_contract_output_evidence_does_not_satisfy_fact_requirement():
+    class _PublishEvidence:
+        name = "publish_evidence"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(evidence_outputs={"branch_targets": object()})
+
+    class _NeedsFact:
+        name = "needs_fact"
+
+        def run(self, ctx) -> PassResult:
+            raise AssertionError("missing fact requirement should stop execution")
+
+    specs = (
+        PassSpec(
+            "publish_evidence",
+            _PublishEvidence,
+            no_caps,
+            default,
+            contract=PassContract(
+                outputs=PassOutputs(evidence=frozenset({"branch_targets"}))
+            ),
+        ),
+        PassSpec(
+            "needs_fact",
+            _NeedsFact,
+            no_caps,
+            default,
+            contract=PassContract(
+                requires=PassRequires(
+                    facts=FactRequirement(required=frozenset({"branch_targets"}))
+                )
+            ),
+        ),
+    )
+
+    with pytest.raises(PassContractError, match="facts") as exc:
+        _run_specs(specs)
+
+    assert exc.value.diagnostics[0].namespace == "requires.facts.required"
+    assert exc.value.diagnostics[0].missing == ("branch_targets",)
+
+
+def test_native_contract_output_fact_does_not_satisfy_evidence_requirement():
+    fact = type("_Fact", (), {"kind": "branch_targets"})()
+
+    class _PublishFact:
+        name = "publish_fact"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(facts=(fact,))
+
+    class _NeedsEvidence:
+        name = "needs_evidence"
+
+        def run(self, ctx) -> PassResult:
+            raise AssertionError("missing evidence requirement should stop execution")
+
+    specs = (
+        PassSpec(
+            "publish_fact",
+            _PublishFact,
+            no_caps,
+            default,
+            contract=PassContract(
+                outputs=PassOutputs(facts=frozenset({"branch_targets"}))
+            ),
+        ),
+        PassSpec(
+            "needs_evidence",
+            _NeedsEvidence,
+            no_caps,
+            default,
+            contract=PassContract(
+                requires=PassRequires(evidence=frozenset({"branch_targets"}))
+            ),
+        ),
+    )
+
+    with pytest.raises(PassContractError, match="evidence") as exc:
+        _run_specs(specs)
+
+    assert exc.value.diagnostics[0].namespace == "requires.evidence"
+    assert exc.value.diagnostics[0].missing == ("branch_targets",)
+
+
+def test_raw_observation_evidence_does_not_satisfy_required_evidence():
+    observation = SimpleNamespace(evidence=("branch_targets",))
+    facts = AnalysisManager(
+        _GRAPH,
+        input_facts=SimpleNamespace(active_observations=(observation,)),
+    )
+
+    class _NeedsEvidence:
+        name = "needs_evidence"
+
+        def run(self, ctx) -> PassResult:
+            raise AssertionError("raw observation evidence must not satisfy contract")
+
+    spec = PassSpec(
+        "needs_evidence",
+        _NeedsEvidence,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(evidence=frozenset({"branch_targets"}))
+        ),
+    )
+
+    with pytest.raises(PassContractError, match="branch_targets"):
+        _run_specs((spec,), facts=facts)
+
+
+def test_output_evidence_is_cleared_after_graph_epoch_mutation():
+    class _PublishEvidence:
+        name = "publish_evidence"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(evidence_outputs={"branch_targets": object()})
+
+    class _Mutator:
+        name = "mutator"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+
+    class _NeedsEvidence:
+        name = "needs_evidence"
+
+        def run(self, ctx) -> PassResult:
+            raise AssertionError("epoch-local evidence should be invalidated")
+
+    specs = (
+        PassSpec(
+            "publish_evidence",
+            _PublishEvidence,
+            no_caps,
+            default,
+            contract=PassContract(
+                outputs=PassOutputs(evidence=frozenset({"branch_targets"}))
+            ),
+        ),
+        PassSpec("mutator", _Mutator, no_caps, default),
+        PassSpec(
+            "needs_evidence",
+            _NeedsEvidence,
+            no_caps,
+            default,
+            contract=PassContract(
+                requires=PassRequires(evidence=frozenset({"branch_targets"}))
+            ),
+        ),
+    )
+
+    with pytest.raises(PassContractError, match="branch_targets"):
+        _run_specs(specs)
 
 
 def test_native_contract_invalidation_drops_fact_while_preserving_analysis():

@@ -15,6 +15,7 @@ def test_defaults():
     assert pp.PassResult().rewrite_plan == PatchPlan()
     assert pp.PassResult().run_later == ()
     assert pp.PassResult().analysis_outputs == {}
+    assert pp.PassResult().evidence_outputs == {}
     assert pp.CapabilityPolicy().required == frozenset()
     assert pp.SafetyPolicy().name == "default"
     assert pp.SafetyPolicy().golden_required is False
@@ -25,6 +26,13 @@ def test_pass_result_analysis_outputs_is_read_only():
     assert result.analysis_outputs["domtree"] == "D"
     with pytest.raises(TypeError):
         result.analysis_outputs["domtree"] = "changed"
+
+
+def test_pass_result_evidence_outputs_is_read_only():
+    result = pp.PassResult(evidence_outputs={"branch_targets": "E"})
+    assert result.evidence_outputs["branch_targets"] == "E"
+    with pytest.raises(TypeError):
+        result.evidence_outputs["branch_targets"] = "changed"
 
 
 def test_rewriteplan_alias_is_patchplan():
@@ -168,7 +176,10 @@ def test_pipeline_config_roundtrip_preserves_native_pass_contract():
                 optional=frozenset({"carrier_store_candidates"}),
             ),
         ),
-        outputs=pp.PassOutputs(facts=frozenset({"state_transition"})),
+        outputs=pp.PassOutputs(
+            facts=frozenset({"state_transition"}),
+            evidence=frozenset({"branch_targets"}),
+        ),
         preserves=pp.PassPreserves(
             analyses=frozenset({"function_boundaries"}),
             facts=frozenset({"raw_instruction_addresses"}),
@@ -183,6 +194,7 @@ def test_pipeline_config_roundtrip_preserves_native_pass_contract():
 
     payload = config.to_dict()
     assert payload["contract"]["requires"]["evidence"] == ["state_variable_writes"]
+    assert payload["contract"]["outputs"]["evidence"] == ["branch_targets"]
     assert pp.PipelineConfig.from_dict(payload) == config
 
 
@@ -204,7 +216,10 @@ def test_pipeline_config_accepts_direct_native_contract_yaml_shape():
                     "optional": ["carrier_store_candidates"],
                 },
             },
-            "outputs": {"facts": ["state_transition"]},
+            "outputs": {
+                "facts": ["state_transition"],
+                "evidence": ["branch_targets"],
+            },
             "preserves": {
                 "analyses": ["dominators"],
                 "facts": ["raw_instruction_addresses"],
@@ -221,6 +236,7 @@ def test_pipeline_config_accepts_direct_native_contract_yaml_shape():
     assert config.contract.scope is pp.PassScope.FUNCTION
     assert config.contract.requires.analyses == frozenset({"dominators"})
     assert config.contract.requires.evidence == frozenset({"dispatcher_predicates"})
+    assert config.contract.outputs.evidence == frozenset({"branch_targets"})
     assert config.contract.preserves.analyses == frozenset({"dominators"})
     assert config.contract.invalidates.facts == frozenset({"stale_cfg_shape"})
     assert config.safety_policy == pp.SafetyPolicy()
@@ -248,6 +264,21 @@ def test_pipeline_config_rejects_malformed_native_contract_sections(
     field_name,
 ):
     with pytest.raises(pp.PipelineConfigError, match=f"{field_name} must be a mapping"):
+        pp.PipelineConfig.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    ("payload", "field_name"),
+    [
+        ({"pass": "x", "outputs": {"evidence": "branch_targets"}}, "outputs.evidence"),
+        ({"pass": "x", "outputs": {"evidence": [1]}}, "outputs.evidence"),
+    ],
+)
+def test_pipeline_config_rejects_malformed_evidence_outputs(
+    payload,
+    field_name,
+):
+    with pytest.raises(pp.PipelineConfigError, match=field_name):
         pp.PipelineConfig.from_dict(payload)
 
 

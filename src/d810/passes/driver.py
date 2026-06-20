@@ -290,6 +290,28 @@ def validate_contract_fact_outputs(spec: PassSpec, result) -> None:
         )
 
 
+def validate_contract_evidence_outputs(spec: PassSpec, result) -> None:
+    """Fail when a native-contract pass publishes undeclared evidence."""
+    if not result.evidence_outputs:
+        return
+
+    declared = spec.contract.outputs.evidence
+    undeclared = tuple(sorted(frozenset(result.evidence_outputs) - declared))
+    if undeclared:
+        raise PassContractError(
+            f"pass {spec.pass_id!r} published undeclared contract evidence "
+            f"{list(undeclared)}",
+            diagnostics=(
+                PassContractDiagnostic(
+                    pass_id=spec.pass_id,
+                    namespace="outputs.evidence",
+                    undeclared=undeclared,
+                    available=tuple(sorted(declared)),
+                ),
+            ),
+        )
+
+
 def publish_analysis_outputs(
     spec: PassSpec, ctx: FunctionPipelineContext, result
 ) -> None:
@@ -316,6 +338,21 @@ def publish_contract_fact_outputs(
     )
     for fact in result.facts:
         ctx.facts.put_fact(str(getattr(fact, "kind")), fact)
+
+
+def publish_contract_evidence_outputs(
+    spec: PassSpec,
+    ctx: FunctionPipelineContext,
+    result,
+) -> None:
+    """Publish declared native-contract evidence through the analysis manager edge."""
+    if not result.evidence_outputs:
+        return
+    _require_contract_methods(
+        ctx.facts, pass_id=spec.pass_id, method_names=("put_evidence",)
+    )
+    for name, value in result.evidence_outputs.items():
+        ctx.facts.put_evidence(str(name), value)
 
 
 def validate_backend_route(spec: PassSpec, result) -> None:
@@ -365,6 +402,7 @@ def _run_pass_spec(
     result = spec.pass_factory().run(ctx)
     validate_analysis_outputs(spec, result)
     validate_contract_fact_outputs(spec, result)
+    validate_contract_evidence_outputs(spec, result)
     validate_backend_route(spec, result)
     if scheduler is not None:
         for request in result.run_later:
@@ -377,6 +415,7 @@ def _run_pass_spec(
             )
     publish_analysis_outputs(spec, ctx, result)
     publish_contract_fact_outputs(spec, ctx, result)
+    publish_contract_evidence_outputs(spec, ctx, result)
     if _plan_has_work(result.rewrite_plan):
         new_graph = backend.apply(
             result.rewrite_plan, ctx.source.live_source, effective_safety_policy(spec)

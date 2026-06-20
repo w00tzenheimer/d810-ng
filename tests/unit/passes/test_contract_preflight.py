@@ -161,6 +161,24 @@ def test_pipeline_preflight_declared_outputs_can_satisfy_later_fact_requirement(
     assert facts.available_facts() == ()
 
 
+def test_pipeline_preflight_declared_outputs_can_satisfy_later_evidence_requirement():
+    facts = AnalysisManager("G0")
+    first = _spec(
+        "produce_branch_targets",
+        outputs=PassOutputs(evidence=frozenset({"branch_targets"})),
+    )
+    second = _spec(
+        "consume_branch_targets",
+        requires=PassRequires(evidence=frozenset({"branch_targets"})),
+    )
+
+    result = preflight_pipeline_contract((first, second), facts)
+
+    assert result.satisfied
+    assert [item.satisfied for item in result.results] == [True, True]
+    assert facts.available_evidence() == ()
+
+
 def test_pipeline_preflight_can_disable_declared_output_overlay():
     first = _spec(
         "produce_transition",
@@ -183,6 +201,28 @@ def test_pipeline_preflight_can_disable_declared_output_overlay():
     assert result.diagnostics[0].pass_id == "consume_transition"
     assert result.diagnostics[0].namespace == "requires.facts.required"
     assert result.diagnostics[0].missing == ("state_transition",)
+
+
+def test_pipeline_preflight_can_disable_declared_evidence_output_overlay():
+    first = _spec(
+        "produce_branch_targets",
+        outputs=PassOutputs(evidence=frozenset({"branch_targets"})),
+    )
+    second = _spec(
+        "consume_branch_targets",
+        requires=PassRequires(evidence=frozenset({"branch_targets"})),
+    )
+
+    result = preflight_pipeline_contract(
+        (first, second),
+        AnalysisManager("G0"),
+        include_declared_outputs=False,
+    )
+
+    assert not result.satisfied
+    assert result.diagnostics[0].pass_id == "consume_branch_targets"
+    assert result.diagnostics[0].namespace == "requires.evidence"
+    assert result.diagnostics[0].missing == ("branch_targets",)
 
 
 def test_pipeline_preflight_existing_fact_satisfies_when_declared_overlay_disabled():

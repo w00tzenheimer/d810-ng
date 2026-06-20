@@ -331,12 +331,16 @@ class PassRequires:
 
 @dataclass(frozen=True)
 class PassOutputs:
-    """Fact outputs produced by a native D810 pass contract."""
+    """Fact and evidence outputs produced by a native D810 pass contract."""
 
     facts: frozenset[str] = frozenset()
+    evidence: frozenset[str] = frozenset()
 
     def to_dict(self) -> dict[str, object]:
-        return {"facts": sorted(self.facts)}
+        return {
+            "facts": sorted(self.facts),
+            "evidence": sorted(self.evidence),
+        }
 
     @classmethod
     def from_dict(cls, payload: object) -> "PassOutputs":
@@ -344,7 +348,10 @@ class PassOutputs:
         return cls(
             facts=_parse_contract_string_set(
                 data.get("facts", ()), "outputs.facts"
-            )
+            ),
+            evidence=_parse_contract_string_set(
+                data.get("evidence", ()), "outputs.evidence"
+            ),
         )
 
 
@@ -635,6 +642,7 @@ class PassResult:
     preserved: PreservedAnalyses
     run_later: tuple[RunLater, ...]
     analysis_outputs: Mapping[str, object]
+    evidence_outputs: Mapping[str, object]
     _preserved_explicit: bool = field(default=False, repr=False, compare=False)
 
     def __init__(
@@ -645,6 +653,7 @@ class PassResult:
         preserved: PreservedAnalyses | object = _PRESERVED_UNSET,
         run_later: tuple[RunLater, ...] = (),
         analysis_outputs: Mapping[str, object] | None = None,
+        evidence_outputs: Mapping[str, object] | None = None,
     ) -> None:
         preserved_explicit = preserved is not _PRESERVED_UNSET
         preserved_value = (
@@ -662,6 +671,11 @@ class PassResult:
             self,
             "analysis_outputs",
             MappingProxyType({} if analysis_outputs is None else dict(analysis_outputs)),
+        )
+        object.__setattr__(
+            self,
+            "evidence_outputs",
+            MappingProxyType({} if evidence_outputs is None else dict(evidence_outputs)),
         )
         object.__setattr__(self, "_preserved_explicit", preserved_explicit)
 
