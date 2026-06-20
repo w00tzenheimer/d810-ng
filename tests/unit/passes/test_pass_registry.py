@@ -87,7 +87,7 @@ def test_registry_build_spec_preserves_rule_selection_metadata():
     registry = PassRegistry()
     registry.register("fake", _FakePass)
     rules = pp.RuleSelection(
-        include_groups=frozenset({"legacy.default_instruction_only"}),
+        include_groups=frozenset({"compat.metadata"}),
         include=frozenset({"FoldReadonlyDataRule"}),
     )
 
@@ -95,9 +95,7 @@ def test_registry_build_spec_preserves_rule_selection_metadata():
 
     assert spec.rules is rules
     assert spec.config.rules is rules
-    assert spec.config.rules.include_groups == frozenset(
-        {"legacy.default_instruction_only"}
-    )
+    assert spec.config.rules.include_groups == frozenset({"compat.metadata"})
     assert spec.config.rules.include == frozenset({"FoldReadonlyDataRule"})
 
 

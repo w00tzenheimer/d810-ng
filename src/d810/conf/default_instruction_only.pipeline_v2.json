@@ -3,6 +3,10 @@
   "ins_rules": [],
   "blk_rules": [],
   "additional_configuration": {
+    "pipeline_v2_shadow": {
+      "source_config": "default_instruction_only.json",
+      "runtime_source": "legacy"
+    },
     "pipeline_v2": [
       {
         "pass": "mba-simplify",
@@ -19,10 +23,11 @@
             "z3_solver"
           ]
         },
+        "migration": {
+          "source_config": "default_instruction_only.json",
+          "source_section": "ins_rules"
+        },
         "rules": {
-          "include_groups": [
-            "legacy.default_instruction_only"
-          ],
           "include": [
             "FoldReadonlyDataRule",
             "AddXor_Rule_1",
@@ -204,7 +209,6 @@
             "Z3setzRuleGeneric",
             "ExampleGuessingRule"
           ],
-          "exclude_groups": [],
           "exclude": [],
           "options": {
             "FoldReadonlyDataRule": {
@@ -221,6 +225,58 @@
               "max_nb_diff_opcodes": 6
             }
           }
+        }
+      },
+      {
+        "pass": "global-constant-inliner",
+        "scope": "block",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "migration": {
+          "source_config": "default_instruction_only.json",
+          "source_section": "blk_rules",
+          "source_rule": "GlobalConstantInliner"
+        },
+        "options": {
+          "legacy_rule": "GlobalConstantInliner"
+        }
+      },
+      {
+        "pass": "jump-fixer",
+        "scope": "block",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "migration": {
+          "source_config": "default_instruction_only.json",
+          "source_section": "blk_rules",
+          "source_rule": "JumpFixer"
+        },
+        "options": {
+          "legacy_rule": "JumpFixer",
+          "enabled_rules": [
+            "CompareConstantRule1",
+            "CompareConstantRule2",
+            "CompareConstantRule3",
+            "JaeRule1",
+            "JbRule1",
+            "JnzRule1",
+            "JnzRule2",
+            "JnzRule3",
+            "JnzRule4",
+            "JnzRule5",
+            "JnzRule6",
+            "JnzRule7",
+            "JnzRule8",
+            "JmpRuleZ3Const"
+          ]
         }
       }
     ]
