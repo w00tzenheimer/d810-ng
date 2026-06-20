@@ -16,6 +16,7 @@ class PassContractPreflightResult:
     diagnostics: tuple[PassContractDiagnostic, ...] = ()
     satisfied: bool = True
     declared_output_facts: tuple[str, ...] = ()
+    declared_output_evidence: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -59,8 +60,11 @@ def _has_with_overlay(
     name: str,
     *,
     fact_overlay: frozenset[str],
+    evidence_overlay: frozenset[str],
 ) -> bool:
     if method_name == "has_fact" and name in fact_overlay:
+        return True
+    if method_name == "has_evidence" and name in evidence_overlay:
         return True
     method = getattr(facts, method_name, None)
     return bool(callable(method) and method(name))
@@ -71,6 +75,7 @@ def _diagnose_missing_requirements(
     facts,
     *,
     fact_overlay: frozenset[str],
+    evidence_overlay: frozenset[str],
 ) -> tuple[PassContractDiagnostic, ...]:
     contract = spec.contract
     diagnostics: list[PassContractDiagnostic] = []
@@ -116,6 +121,7 @@ def _diagnose_missing_requirements(
                     "has_fact",
                     name,
                     fact_overlay=fact_overlay,
+                    evidence_overlay=evidence_overlay,
                 )
             )
         )
@@ -144,24 +150,31 @@ def _diagnose_missing_requirements(
 
     if contract.requires.evidence:
         method = getattr(facts, "has_evidence", None)
-        if not callable(method):
-            diagnostics.append(
-                PassContractDiagnostic(
-                    pass_id=spec.pass_id,
-                    namespace="requires.evidence",
-                    missing=tuple(sorted(contract.requires.evidence)),
-                    detail="facts view does not support has_evidence",
+        missing = tuple(
+            sorted(
+                name
+                for name in contract.requires.evidence
+                if not _has_with_overlay(
+                    facts,
+                    "has_evidence",
+                    name,
+                    fact_overlay=fact_overlay,
+                    evidence_overlay=evidence_overlay,
                 )
             )
-        else:
-            missing = tuple(
-                sorted(
-                    name
-                    for name in contract.requires.evidence
-                    if not method(name)
+        )
+        if missing:
+            if not callable(method):
+                diagnostics.append(
+                    PassContractDiagnostic(
+                        pass_id=spec.pass_id,
+                        namespace="requires.evidence",
+                        missing=missing,
+                        available=tuple(sorted(evidence_overlay)),
+                        detail="facts view does not support has_evidence",
+                    )
                 )
-            )
-            if missing:
+            else:
                 diagnostics.append(
                     _requirement_diagnostic(
                         spec=spec,
@@ -169,6 +182,7 @@ def _diagnose_missing_requirements(
                         missing=missing,
                         facts=facts,
                         available_method_name="available_evidence",
+                        extra_available=evidence_overlay,
                     )
                 )
 
@@ -180,19 +194,23 @@ def preflight_pass_contract(
     facts,
     *,
     _declared_fact_overlay: frozenset[str] = frozenset(),
+    _declared_evidence_overlay: frozenset[str] = frozenset(),
 ) -> PassContractPreflightResult:
     """Check one pass contract without constructing or running its pass."""
     diagnostics = _diagnose_missing_requirements(
         spec,
         facts,
         fact_overlay=frozenset(str(name) for name in _declared_fact_overlay),
+        evidence_overlay=frozenset(str(name) for name in _declared_evidence_overlay),
     )
     declared_output_facts = tuple(sorted(spec.contract.outputs.facts))
+    declared_output_evidence = tuple(sorted(spec.contract.outputs.evidence))
     return PassContractPreflightResult(
         pass_id=spec.pass_id,
         diagnostics=diagnostics,
         satisfied=not diagnostics,
         declared_output_facts=declared_output_facts,
+        declared_output_evidence=declared_output_evidence,
     )
 
 
@@ -209,7 +227,8 @@ def preflight_pipeline_contract(
     This is only a static declaration check; it does not prove those passes will
     actually publish the facts at runtime.
     """
-    overlay: frozenset[str] = frozenset()
+    fact_overlay: frozenset[str] = frozenset()
+    evidence_overlay: frozenset[str] = frozenset()
     results: list[PassContractPreflightResult] = []
     diagnostics: list[PassContractDiagnostic] = []
 
@@ -217,12 +236,16 @@ def preflight_pipeline_contract(
         result = preflight_pass_contract(
             spec,
             facts,
-            _declared_fact_overlay=overlay,
+            _declared_fact_overlay=fact_overlay,
+            _declared_evidence_overlay=evidence_overlay,
         )
         results.append(result)
         diagnostics.extend(result.diagnostics)
         if include_declared_outputs and result.satisfied:
-            overlay = overlay | frozenset(result.declared_output_facts)
+            fact_overlay = fact_overlay | frozenset(result.declared_output_facts)
+            evidence_overlay = evidence_overlay | frozenset(
+                result.declared_output_evidence
+            )
 
     return PipelineContractPreflightResult(
         results=tuple(results),

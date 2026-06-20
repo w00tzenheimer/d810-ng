@@ -54,6 +54,9 @@ def _recover_state_machine_contract_payload():
                 "recovered_cfg_edge",
                 "dispatcher_family",
             ],
+            "evidence": [
+                "branch_targets",
+            ],
         },
         "preserves": {
             "analyses": ["function_boundaries"],
@@ -170,6 +173,7 @@ def test_pipeline_v2_parses_native_deobfuscation_contract_shape():
     assert config.contract.outputs.facts == frozenset(
         {"state_transition", "recovered_cfg_edge", "dispatcher_family"}
     )
+    assert config.contract.outputs.evidence == frozenset({"branch_targets"})
     assert config.contract.preserves.analyses == frozenset({"function_boundaries"})
     assert config.contract.preserves.facts == frozenset({"raw_instruction_addresses"})
     assert config.contract.invalidates.analyses == frozenset(
@@ -193,6 +197,7 @@ def test_pipeline_v2_canonical_contract_names_do_not_warn():
         "recovered.cfg_edge",
         "role.dispatcher",
     ]
+    payload["outputs"]["evidence"] = ["ir.branch_target"]
     payload["invalidates"]["facts"] = ["ir.cfg_shape.stale"]
 
     with warnings.catch_warnings(record=True) as recorded:
@@ -205,6 +210,7 @@ def test_pipeline_v2_canonical_contract_names_do_not_warn():
     assert configs[0].contract.outputs.facts == frozenset(
         {"recovered.state_transition", "recovered.cfg_edge", "role.dispatcher"}
     )
+    assert configs[0].contract.outputs.evidence == frozenset({"ir.branch_target"})
     assert not [
         warning
         for warning in recorded
