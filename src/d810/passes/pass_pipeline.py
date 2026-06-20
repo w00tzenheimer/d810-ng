@@ -265,6 +265,51 @@ class MaturityRange:
     @classmethod
     def from_dict(cls, payload: object) -> "MaturityRange":
         data = _optional_mapping(payload, "contract.maturity")
+        if "runs_at" in data:
+            conflicting = {
+                key
+                for key in ("range", "min", "max", "preferred")
+                if key in data
+            }
+            if conflicting:
+                raise PipelineConfigError(
+                    "maturity.runs_at must not be combined with "
+                    f"{sorted(conflicting)}"
+                )
+            runs_at = _parse_enum(IRMaturity, data["runs_at"], "maturity.runs_at")
+            return cls(min=runs_at, max=runs_at, preferred=runs_at)
+        if "range" in data:
+            conflicting = {
+                key
+                for key in ("min", "max", "preferred")
+                if key in data
+            }
+            if conflicting:
+                raise PipelineConfigError(
+                    "maturity.range must not be combined with "
+                    f"{sorted(conflicting)}"
+                )
+            range_data = _require_mapping(data["range"], "maturity.range")
+            if "min" not in range_data:
+                raise PipelineConfigError("maturity.range.min is required")
+            if "max" not in range_data:
+                raise PipelineConfigError("maturity.range.max is required")
+            min_stage = _parse_enum(
+                IRMaturity, range_data["min"], "maturity.range.min"
+            )
+            max_stage = _parse_enum(
+                IRMaturity, range_data["max"], "maturity.range.max"
+            )
+            if (
+                _MATURITY_ORDER[min_stage] > _MATURITY_ORDER[max_stage]
+            ):
+                raise PipelineConfigError(
+                    "maturity.range.min must not be after maturity.range.max"
+                )
+            return cls(
+                min=min_stage,
+                max=max_stage,
+            )
         return cls(
             min=_parse_optional_maturity(data.get("min"), "maturity.min"),
             max=_parse_optional_maturity(data.get("max"), "maturity.max"),
