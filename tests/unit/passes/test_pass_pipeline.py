@@ -252,6 +252,25 @@ def test_pipeline_config_roundtrip_preserves_rule_selection_metadata():
     assert pp.PipelineConfig.from_dict(payload) == config
 
 
+def test_pipeline_config_roundtrip_preserves_pass_options_metadata():
+    config = pp.PipelineConfig(
+        pass_id="jump-fixer",
+        contract=pp.PassContract(scope=pp.PassScope.BLOCK),
+        options={
+            "legacy_rule": "JumpFixer",
+            "enabled_rules": ["JnzRule1", "JnzRule2"],
+        },
+    )
+
+    payload = config.to_dict()
+
+    assert payload["options"] == {
+        "legacy_rule": "JumpFixer",
+        "enabled_rules": ["JnzRule1", "JnzRule2"],
+    }
+    assert pp.PipelineConfig.from_dict(payload) == config
+
+
 @pytest.mark.parametrize(
     ("payload", "field_name"),
     [
@@ -282,6 +301,23 @@ def test_pipeline_config_roundtrip_preserves_rule_selection_metadata():
     ],
 )
 def test_pipeline_config_rejects_malformed_rule_selection_metadata(
+    payload,
+    field_name,
+):
+    with pytest.raises(pp.PipelineConfigError, match=field_name):
+        pp.PipelineConfig.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    ("payload", "field_name"),
+    [
+        ({"pass": "x", "options": []}, "options"),
+        ({"pass": "x", "options": {"": True}}, "options"),
+        ({"pass": "x", "options": {1: True}}, "options"),
+        ({"pass": "x", "options": {"enabled_rules": object()}}, "options.enabled_rules"),
+    ],
+)
+def test_pipeline_config_rejects_malformed_pass_options_metadata(
     payload,
     field_name,
 ):

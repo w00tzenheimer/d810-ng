@@ -55,4 +55,5 @@ class PassRegistry:
             backend_route=config.backend_route,
             contract=config.contract,
             rules=config.rules,
+            options=config.options,
         )
