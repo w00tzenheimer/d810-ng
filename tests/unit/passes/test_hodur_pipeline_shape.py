@@ -57,9 +57,9 @@ def test_each_spec_carries_native_state_machine_contract():
         {"dominators", "loop_info", "postdominators", "regions"}
     )
     mutating_preserved_facts = frozenset(
-        {"raw_instruction_addresses", "recovered_cfg_edge"}
+        {"raw_instruction_addresses", "recovered.cfg_edge"}
     )
-    mutating_invalidated_facts = frozenset({"stale_cfg_shape"})
+    mutating_invalidated_facts = frozenset({"ir.cfg_shape.stale"})
     mutating_safety = PassSafety(policy="golden", requires_oracle=True)
 
     for spec in specs:
@@ -70,7 +70,7 @@ def test_each_spec_carries_native_state_machine_contract():
 
     assert not contracts["recover_dispatcher"].requires.evidence
     assert contracts["recover_state_transitions"].requires.evidence == frozenset(
-        {"branch_targets", "state_variable_writes"}
+        {"ir.branch_target", "ir.state_variable_write"}
     )
     assert "dispatcher_predicates" not in contracts[
         "recover_state_transitions"
@@ -80,36 +80,36 @@ def test_each_spec_carries_native_state_machine_contract():
     assert not contracts["cleanup_residual_dispatcher"].requires.evidence
 
     assert contracts["recover_dispatcher"].outputs.facts == frozenset(
-        {"dispatcher_family"}
+        {"role.dispatcher"}
     )
     assert contracts["recover_state_transitions"].requires.analyses == frozenset(
         {"recover_dispatcher"}
     )
     assert contracts[
         "recover_state_transitions"
-    ].requires.facts.required == frozenset({"dispatcher_family"})
+    ].requires.facts.required == frozenset({"role.dispatcher"})
     assert contracts["recover_state_transitions"].outputs.facts == frozenset(
-        {"state_transition"}
+        {"recovered.state_transition"}
     )
     assert contracts["recover_state_transitions"].safety == PassSafety()
     assert contracts["plan_semantic_regions"].requires.analyses == frozenset(
         {"recover_dispatcher", "transition_result"}
     )
     assert contracts["plan_semantic_regions"].requires.facts.required == frozenset(
-        {"dispatcher_family", "state_transition"}
+        {"recovered.state_transition", "role.dispatcher"}
     )
     assert contracts["plan_semantic_regions"].outputs.facts == frozenset(
-        {"semantic_region"}
+        {"recovered.region"}
     )
     assert contracts["plan_semantic_regions"].safety == PassSafety()
     assert contracts["lower_state_machine"].requires.analyses == frozenset(
         {"plan_semantic_regions", "recover_dispatcher", "transition_result"}
     )
     assert contracts["lower_state_machine"].requires.facts.required == frozenset(
-        {"dispatcher_family", "semantic_region", "state_transition"}
+        {"recovered.region", "recovered.state_transition", "role.dispatcher"}
     )
     assert contracts["lower_state_machine"].outputs.facts == frozenset(
-        {"recovered_cfg_edge"}
+        {"recovered.cfg_edge"}
     )
     assert contracts["lower_state_machine"].preserves.analyses == mutating_preserved_analyses
     assert (

@@ -194,6 +194,32 @@ def test_fact_store_reads_published_and_live_observation_facts():
     assert am.get_fact("state_transition") == (fact, observation)
 
 
+def test_fact_store_matches_legacy_and_canonical_contract_names():
+    legacy_fact = type("_Fact", (), {"kind": "state_transition"})()
+    canonical_fact = type("_Fact", (), {"kind": "recovered.state_transition"})()
+    legacy_observation = type("_Obs", (), {"kind": "dispatcher_family"})()
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type(
+            "_Facts", (), {"active_observations": (legacy_observation,)}
+        )(),
+    )
+
+    am.put_fact("state_transition", legacy_fact)
+    am.put_fact("recovered.state_transition", canonical_fact)
+
+    assert set(am.get_fact("recovered.state_transition")) == {
+        canonical_fact,
+        legacy_fact,
+    }
+    assert set(am.get_fact("state_transition")) == {
+        canonical_fact,
+        legacy_fact,
+    }
+    assert am.has_fact("role.dispatcher")
+    assert am.get_fact("role.dispatcher") == (legacy_observation,)
+
+
 def test_available_facts_respects_published_and_visible_live_observation_names():
     raw = type("_Obs", (), {"kind": "raw_instruction_addresses"})()
     stale = type("_Obs", (), {"kind": "stale_cfg_shape"})()
@@ -242,6 +268,25 @@ def test_evidence_store_reads_published_and_live_contract_evidence_tokens():
     am.put_evidence("dispatcher_predicates", marker)
 
     assert am.get_evidence("dispatcher_predicates") == (marker, observation)
+
+
+def test_evidence_store_matches_legacy_and_canonical_contract_names():
+    observation = type(
+        "_Obs",
+        (),
+        {"payload": contract_evidence_payload("branch_targets")},
+    )()
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type("_Facts", (), {"active_observations": (observation,)})(),
+    )
+    marker = object()
+
+    am.put_evidence("state_variable_writes", marker)
+
+    assert am.get_evidence("ir.branch_target") == (observation,)
+    assert am.get_evidence("ir.state_variable_write") == (marker,)
+    assert am.get_evidence("state_variable_writes") == (marker,)
 
 
 def test_available_evidence_respects_published_and_visible_live_tokens():
@@ -513,6 +558,28 @@ def test_contract_fact_preservation_prunes_unpreserved_published_facts():
     )
 
     assert am.get_fact("raw_instruction_addresses") == (raw,)
+    assert not am.has_fact("stale_cfg_shape")
+
+
+def test_contract_fact_preservation_and_invalidation_match_aliases():
+    am = AnalysisManager(graph="G0")
+    edge = object()
+    stale = object()
+    am.put_fact("recovered_cfg_edge", edge)
+    am.put_fact("stale_cfg_shape", stale)
+
+    am.invalidate_contract(
+        PassContract(
+            preserves=PassPreserves(
+                facts=frozenset({"recovered.cfg_edge", "ir.cfg_shape.stale"})
+            ),
+            invalidates=PassInvalidates(facts=frozenset({"ir.cfg_shape.stale"})),
+        )
+    )
+
+    assert am.get_fact("recovered.cfg_edge") == (edge,)
+    assert am.get_fact("recovered_cfg_edge") == (edge,)
+    assert not am.has_fact("ir.cfg_shape.stale")
     assert not am.has_fact("stale_cfg_shape")
 
 

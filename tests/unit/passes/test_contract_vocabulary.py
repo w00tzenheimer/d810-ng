@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from d810.passes.contract_vocabulary import (
+    contract_name_in,
+    contract_name_variants,
+    contract_names_equivalent,
     contract_vocabulary_entries,
     contract_vocabulary_entry,
     is_legacy_contract_name,
@@ -42,3 +45,16 @@ def test_contract_vocabulary_resolves_known_aliases_only():
     assert resolve_contract_name("branch_targets") == "ir.branch_target"
     assert resolve_contract_name("ir.branch_target") == "ir.branch_target"
     assert resolve_contract_name("custom.experimental") == "custom.experimental"
+
+
+def test_contract_vocabulary_exposes_alias_equivalence_helpers():
+    assert contract_name_variants("ir.branch_target") == frozenset(
+        {"ir.branch_target", "branch_targets"}
+    )
+    assert contract_name_variants("branch_targets") == frozenset(
+        {"ir.branch_target", "branch_targets"}
+    )
+    assert contract_names_equivalent("branch_targets", "ir.branch_target")
+    assert contract_name_in("branch_targets", {"ir.branch_target"})
+    assert contract_name_in("ir.branch_target", {"branch_targets"})
+    assert not contract_name_in("ir.branch_target", {"state_variable_writes"})

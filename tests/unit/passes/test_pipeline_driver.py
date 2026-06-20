@@ -1101,6 +1101,51 @@ def test_native_contract_output_fact_publishes_for_later_required_fact():
     _run_specs(specs)
 
 
+def test_native_contract_output_fact_allows_legacy_kind_for_canonical_contract():
+    fact = type("_Fact", (), {"kind": "state_transition"})()
+
+    class _PublishFact:
+        name = "publish_fact"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(facts=(fact,))
+
+    class _NeedsCanonicalFact:
+        name = "needs_canonical_fact"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.get_fact("recovered.state_transition") == (fact,)
+            assert ctx.facts.get_fact("state_transition") == (fact,)
+            return PassResult()
+
+    specs = (
+        PassSpec(
+            "publish_fact",
+            _PublishFact,
+            no_caps,
+            default,
+            contract=PassContract(
+                outputs=PassOutputs(facts=frozenset({"recovered.state_transition"}))
+            ),
+        ),
+        PassSpec(
+            "needs_canonical_fact",
+            _NeedsCanonicalFact,
+            no_caps,
+            default,
+            contract=PassContract(
+                requires=PassRequires(
+                    facts=FactRequirement(
+                        required=frozenset({"recovered.state_transition"})
+                    )
+                )
+            ),
+        ),
+    )
+
+    _run_specs(specs)
+
+
 def test_native_contract_output_fact_rejects_unexpected_kind():
     class _PublishFact:
         name = "publish_fact"
@@ -1193,6 +1238,47 @@ def test_native_contract_output_evidence_publishes_for_later_required_evidence()
             default,
             contract=PassContract(
                 requires=PassRequires(evidence=frozenset({"branch_targets"}))
+            ),
+        ),
+    )
+
+    _run_specs(specs)
+
+
+def test_native_contract_output_evidence_allows_legacy_key_for_canonical_contract():
+    marker = object()
+
+    class _PublishEvidence:
+        name = "publish_evidence"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(evidence_outputs={"branch_targets": marker})
+
+    class _NeedsCanonicalEvidence:
+        name = "needs_canonical_evidence"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.get_evidence("ir.branch_target") == (marker,)
+            assert ctx.facts.get_evidence("branch_targets") == (marker,)
+            return PassResult()
+
+    specs = (
+        PassSpec(
+            "publish_evidence",
+            _PublishEvidence,
+            no_caps,
+            default,
+            contract=PassContract(
+                outputs=PassOutputs(evidence=frozenset({"ir.branch_target"}))
+            ),
+        ),
+        PassSpec(
+            "needs_canonical_evidence",
+            _NeedsCanonicalEvidence,
+            no_caps,
+            default,
+            contract=PassContract(
+                requires=PassRequires(evidence=frozenset({"ir.branch_target"}))
             ),
         ),
     )
