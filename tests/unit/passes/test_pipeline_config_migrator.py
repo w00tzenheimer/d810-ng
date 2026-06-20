@@ -9,6 +9,9 @@ import pytest
 from d810.core.config import ProjectConfiguration, RuleConfiguration
 from d810.passes.pass_pipeline import PipelineConfigError
 from d810.passes.pipeline_config_migrator import (
+    LegacyConfigMigrationStatus,
+    inventory_legacy_config_directory,
+    inventory_legacy_project_config,
     legacy_project_config_to_pipeline_v2_shadow,
     legacy_project_file_to_pipeline_v2_shadow,
 )
@@ -20,6 +23,13 @@ _CONF_DIR = _REPO_ROOT / "src" / "d810" / "conf"
 
 def _load_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _inventory_by_name():
+    return {
+        item.config_name: item
+        for item in inventory_legacy_config_directory(_CONF_DIR)
+    }
 
 
 @pytest.mark.parametrize(
@@ -202,6 +212,27 @@ def test_legacy_migrator_rejects_unknown_active_block_rules():
         legacy_project_config_to_pipeline_v2_shadow(project)
 
 
+def test_legacy_inventory_reports_unknown_active_block_rules_structurally():
+    project = ProjectConfiguration(
+        path=Path("unknown.json"),
+        blk_rules=[
+            RuleConfiguration(
+                name="UnsupportedLegacyRule",
+                is_activated=True,
+            )
+        ],
+    )
+
+    item = inventory_legacy_project_config(project)
+
+    assert item.status is LegacyConfigMigrationStatus.UNSUPPORTED
+    assert item.config_name == "unknown.json"
+    assert item.active_instruction_rules == 0
+    assert item.active_block_rules == ("UnsupportedLegacyRule",)
+    assert "UnsupportedLegacyRule" in item.reason
+    assert item.to_dict()["status"] == "unsupported"
+
+
 def test_legacy_migrator_ignores_unknown_inactive_block_rules():
     project = ProjectConfiguration(
         path=Path("inactive.json"),
@@ -223,3 +254,91 @@ def test_legacy_migrator_ignores_unknown_inactive_block_rules():
 
     pipeline_v2 = generated["additional_configuration"]["pipeline_v2"]
     assert [entry["pass"] for entry in pipeline_v2] == ["mba-simplify"]
+
+
+def test_empty_legacy_config_is_inventory_empty_and_not_generated():
+    project = ProjectConfiguration(path=Path("empty.json"))
+
+    item = inventory_legacy_project_config(project)
+
+    assert item.status is LegacyConfigMigrationStatus.EMPTY
+    assert item.active_instruction_rules == 0
+    assert item.active_block_rules == ()
+    assert item.reason == "no active legacy rules"
+    with pytest.raises(PipelineConfigError, match="no active legacy rules"):
+        legacy_project_config_to_pipeline_v2_shadow(project)
+
+
+def test_checked_in_pipeline_v2_shadows_are_not_empty_pipeline_payloads():
+    for path in sorted(_CONF_DIR.glob("*.pipeline_v2.json")):
+        payload = _load_json(path)
+        assert payload["additional_configuration"]["pipeline_v2"]
+
+
+def test_repo_legacy_config_inventory_reports_current_state():
+    inventory = _inventory_by_name()
+
+    assert len(inventory) == 27
+    assert [
+        item.config_name
+        for item in inventory.values()
+        if item.status is LegacyConfigMigrationStatus.EMPTY
+    ] == []
+    assert {
+        item.config_name
+        for item in inventory.values()
+        if item.status is LegacyConfigMigrationStatus.UNSUPPORTED
+    } == {
+        "default.json",
+        "default_indirect_resolution.json",
+        "default_unflattening_ollvm.json",
+        "default_unflattening_ollvm_s1a_fair.json",
+        "example_libobfuscated_no_fixprecedessor.json",
+        "identity_call.json",
+        "state_machine_loops.json",
+    }
+    assert {
+        item.config_name
+        for item in inventory.values()
+        if item.status is LegacyConfigMigrationStatus.MIGRATABLE
+    } == {
+        "bogus_loops.json",
+        "default_instruction_only.json",
+        "default_unflattening_approov.json",
+        "default_unflattening_approov_s1a.json",
+        "default_unflattening_switch_case.json",
+        "default_unflattening_tigress_engine.json",
+        "default_unflattening_tigress_engine_transition_facts.json",
+        "default_unflattening_tigress_indirect.json",
+        "eidolon.json",
+        "example_anel.json",
+        "example_hodur.json",
+        "example_libobfuscated.json",
+        "example_libobfuscated_abc.json",
+        "flatfold.json",
+        "flatfold_no_predicate_loop_fix.json",
+        "hodur_deobfuscation.json",
+        "hodur_flag2.json",
+        "hodur_flag2_s1a.json",
+        "hodur_flag2_with_fcp.json",
+        "hodur_glbopt2_only.json",
+    }
+
+
+def test_repo_inventory_excludes_options_and_existing_shadow_configs():
+    inventory = _inventory_by_name()
+
+    assert "options.json" not in inventory
+    assert "default_instruction_only.pipeline_v2.json" not in inventory
+    assert "example_libobfuscated.pipeline_v2.json" not in inventory
+
+
+def test_repo_inventory_surfaces_unsupported_reasons():
+    inventory = _inventory_by_name()
+
+    assert "IndirectCallResolver" in inventory["default.json"].reason
+    assert (
+        "SimpleFlatteningCleanupUnflattener"
+        in inventory["example_libobfuscated_no_fixprecedessor.json"].reason
+    )
+    assert "IdentityCallResolver" in inventory["identity_call.json"].reason
