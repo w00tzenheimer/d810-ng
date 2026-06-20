@@ -1,0 +1,39 @@
+{
+  "description": "Config-v2 shadow representation of hodur_glbopt2_only.json. The legacy JSON remains the runtime source of truth.",
+  "ins_rules": [],
+  "blk_rules": [],
+  "additional_configuration": {
+    "pipeline_v2_shadow": {
+      "source_config": "hodur_glbopt2_only.json",
+      "runtime_source": "legacy"
+    },
+    "pipeline_v2": [
+      {
+        "pass": "state-machine-cff-unflattener",
+        "scope": "function",
+        "maturity": {
+          "runs_at": "ir.global.analyzed"
+        },
+        "migration": {
+          "source_config": "hodur_glbopt2_only.json",
+          "source_section": "blk_rules",
+          "source_rule": "StateMachineCffUnflattener"
+        },
+        "options": {
+          "legacy_rule": "StateMachineCffUnflattener",
+          "max_state_constants": 100,
+          "min_state_constant": 16777216,
+          "enable_transition_validator": true,
+          "enable_transition_uddu_validator": true,
+          "native_pipeline": [
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher"
+          ]
+        }
+      }
+    ]
+  }
+}

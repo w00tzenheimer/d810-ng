@@ -32,6 +32,70 @@ _OLLVM_BLOCK_RULES = (
     "SimpleFlatteningCleanupUnflattener",
     "JumpFixer",
 )
+_GENERATED_SHADOW_CONFIGS = (
+    "bogus_loops",
+    "default_instruction_only",
+    "default_unflattening_approov",
+    "default_unflattening_approov_s1a",
+    "default_unflattening_switch_case",
+    "default_unflattening_tigress_engine",
+    "default_unflattening_tigress_engine_transition_facts",
+    "default_unflattening_tigress_indirect",
+    "eidolon",
+    "example_anel",
+    "example_hodur",
+    "example_libobfuscated",
+    "example_libobfuscated_abc",
+    "flatfold",
+    "flatfold_no_predicate_loop_fix",
+    "hodur_deobfuscation",
+    "hodur_flag2",
+    "hodur_flag2_s1a",
+    "hodur_flag2_with_fcp",
+    "hodur_glbopt2_only",
+)
+_REMAINING_GENERATED_SHADOWS = (
+    ("bogus_loops", 0, ("MbaStatePreconditioner", "JumpFixer")),
+    (
+        "default_unflattening_approov",
+        178,
+        ("MbaStatePreconditioner", "StateMachineCffUnflattener", "JumpFixer"),
+    ),
+    (
+        "default_unflattening_approov_s1a",
+        178,
+        ("MbaStatePreconditioner", "StateMachineCffUnflattener", "JumpFixer"),
+    ),
+    ("eidolon", 172, ()),
+    ("example_anel", 179, ("JumpFixer",)),
+    (
+        "example_hodur",
+        185,
+        ("ForwardConstantPropagationRule", "StateMachineCffUnflattener", "JumpFixer"),
+    ),
+    (
+        "example_libobfuscated_abc",
+        198,
+        ("ForwardConstantPropagationRule", "StateMachineCffUnflattener", "JumpFixer"),
+    ),
+    (
+        "flatfold",
+        157,
+        (
+            "MbaStatePreconditioner",
+            "GlobalConstantInliner",
+            "JumpFixer",
+            "StateMachineCffUnflattener",
+        ),
+    ),
+    ("flatfold_no_predicate_loop_fix", 177, ("JumpFixer",)),
+    (
+        "hodur_flag2_with_fcp",
+        3,
+        ("StateMachineCffUnflattener", "JumpFixer", "ForwardConstantPropagationRule"),
+    ),
+    ("hodur_glbopt2_only", 0, ("StateMachineCffUnflattener",)),
+)
 
 
 def _load_json(path: Path) -> dict[str, object]:
@@ -119,17 +183,7 @@ def test_legacy_block_rule_adapter_boundary_fails_unknown_rules_closed():
 
 @pytest.mark.parametrize(
     "config_name",
-    [
-        "default_unflattening_switch_case",
-        "default_unflattening_tigress_engine",
-        "default_unflattening_tigress_engine_transition_facts",
-        "default_unflattening_tigress_indirect",
-        "default_instruction_only",
-        "example_libobfuscated",
-        "hodur_deobfuscation",
-        "hodur_flag2",
-        "hodur_flag2_s1a",
-    ],
+    _GENERATED_SHADOW_CONFIGS,
 )
 def test_legacy_migrator_matches_checked_in_shadow(config_name):
     legacy_path = _CONF_DIR / f"{config_name}.json"
@@ -472,6 +526,56 @@ def test_ollvm_configs_remain_inventory_unsupported_pending_adapters(config_name
 def test_ollvm_pipeline_v2_shadows_are_not_generated_while_unsupported():
     for config_name in _OLLVM_CONFIGS:
         assert not (_CONF_DIR / f"{config_name}.pipeline_v2.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("config_name", "expected_instruction_rules", "expected_block_rules"),
+    _REMAINING_GENERATED_SHADOWS,
+)
+def test_remaining_generated_shadows_preserve_legacy_rule_shape(
+    config_name,
+    expected_instruction_rules,
+    expected_block_rules,
+):
+    legacy_path = _CONF_DIR / f"{config_name}.json"
+    legacy = ProjectConfiguration.from_file(legacy_path)
+    generated = legacy_project_file_to_pipeline_v2_shadow(legacy_path)
+    pipeline_v2 = generated["additional_configuration"]["pipeline_v2"]
+    active_instruction_rules = [
+        rule for rule in legacy.ins_rules if rule.is_activated
+    ]
+    active_block_rules = [
+        rule for rule in legacy.blk_rules if rule.is_activated
+    ]
+
+    assert len(active_instruction_rules) == expected_instruction_rules
+    assert tuple(rule.name for rule in active_block_rules) == expected_block_rules
+    if active_instruction_rules:
+        instruction_entry = pipeline_v2[0]
+        assert instruction_entry["pass"] == "mba-simplify"
+        assert instruction_entry["rules"]["include"] == [
+            rule.name for rule in active_instruction_rules
+        ]
+        assert instruction_entry["rules"]["options"] == {
+            rule.name: rule.config
+            for rule in active_instruction_rules
+            if rule.config
+        }
+        assert "include_groups" not in instruction_entry["rules"]
+        assert "exclude_groups" not in instruction_entry["rules"]
+        block_entries = pipeline_v2[1:]
+    else:
+        block_entries = pipeline_v2
+
+    assert tuple(
+        entry["migration"]["source_rule"]
+        for entry in block_entries
+    ) == expected_block_rules
+    for entry, rule in zip(block_entries, active_block_rules):
+        options = dict(entry["options"])
+        assert options.pop("legacy_rule") == rule.name
+        options.pop("native_pipeline", None)
+        assert options == rule.config
 
 
 @pytest.mark.parametrize(
