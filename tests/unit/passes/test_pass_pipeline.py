@@ -250,6 +250,53 @@ def test_pipeline_config_accepts_direct_native_contract_yaml_shape():
     )
 
 
+def test_pipeline_config_accepts_user_facing_maturity_runs_at_shape():
+    config = pp.PipelineConfig.from_dict(
+        {
+            "pass": "recover-state-machine",
+            "maturity": {"runs_at": "ir.call.modeled"},
+        }
+    )
+
+    assert config.contract.maturity == pp.MaturityRange(
+        min=IRMaturity.CALL_MODELED,
+        max=IRMaturity.CALL_MODELED,
+        preferred=IRMaturity.CALL_MODELED,
+    )
+    assert config.enabled_at(IRMaturity.CALL_MODELED) is True
+    assert config.enabled_at(IRMaturity.GLOBAL_ANALYZED) is False
+    assert config.to_dict()["contract"]["maturity"] == {
+        "min": "ir.call.modeled",
+        "max": "ir.call.modeled",
+        "preferred": "ir.call.modeled",
+    }
+    assert pp.PipelineConfig.from_dict(config.to_dict()) == config
+
+
+def test_pipeline_config_accepts_user_facing_maturity_range_shape():
+    config = pp.PipelineConfig.from_dict(
+        {
+            "pass": "recover-state-machine",
+            "maturity": {
+                "range": {
+                    "min": "ir.call.modeled",
+                    "max": "ir.global.analyzed",
+                },
+            },
+        }
+    )
+
+    assert config.contract.maturity == pp.MaturityRange(
+        min=IRMaturity.CALL_MODELED,
+        max=IRMaturity.GLOBAL_ANALYZED,
+        preferred=None,
+    )
+    assert config.enabled_at(IRMaturity.CALL_MODELED) is True
+    assert config.enabled_at(IRMaturity.GLOBAL_ANALYZED) is True
+    assert config.enabled_at(IRMaturity.LOCAL_OPTIMIZED) is False
+    assert pp.PipelineConfig.from_dict(config.to_dict()) == config
+
+
 @pytest.mark.parametrize(
     ("payload", "field_name"),
     [
@@ -261,6 +308,7 @@ def test_pipeline_config_accepts_direct_native_contract_yaml_shape():
         ({"pass": "x", "invalidates": []}, "invalidates"),
         ({"pass": "x", "safety": []}, "safety"),
         ({"pass": "x", "contract": []}, "contract"),
+        ({"pass": "x", "maturity": {"range": []}}, "maturity.range"),
     ],
 )
 def test_pipeline_config_rejects_malformed_native_contract_sections(
@@ -269,6 +317,144 @@ def test_pipeline_config_rejects_malformed_native_contract_sections(
 ):
     with pytest.raises(pp.PipelineConfigError, match=f"{field_name} must be a mapping"):
         pp.PipelineConfig.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    ("payload", "field_name"),
+    [
+        (
+            {"pass": "x", "maturity": {"runs_at": "MMAT_GLBOPT1"}},
+            "maturity.runs_at",
+        ),
+        (
+            {
+                "pass": "x",
+                "maturity": {
+                    "runs_at": "ir.call.modeled",
+                    "range": {"min": "ir.call.modeled"},
+                },
+            },
+            "maturity.runs_at",
+        ),
+        (
+            {"pass": "x", "maturity": {"range": {}}},
+            "maturity.range.min",
+        ),
+        (
+            {
+                "pass": "x",
+                "maturity": {
+                    "range": {"max": "ir.global.analyzed"},
+                },
+            },
+            "maturity.range.min",
+        ),
+        (
+            {
+                "pass": "x",
+                "maturity": {
+                    "range": {"min": "ir.call.modeled"},
+                },
+            },
+            "maturity.range.max",
+        ),
+        (
+            {
+                "pass": "x",
+                "maturity": {
+                    "range": {
+                        "min": None,
+                        "max": "ir.global.analyzed",
+                    },
+                },
+            },
+            "maturity.range.min",
+        ),
+        (
+            {
+                "pass": "x",
+                "maturity": {
+                    "range": {
+                        "min": "ir.call.modeled",
+                        "max": None,
+                    },
+                },
+            },
+            "maturity.range.max",
+        ),
+        (
+            {
+                "pass": "x",
+                "maturity": {
+                    "range": {
+                        "min": None,
+                        "max": None,
+                    },
+                },
+            },
+            "maturity.range.min",
+        ),
+        (
+            {
+                "pass": "x",
+                "maturity": {
+                    "range": {
+                        "min": "MMAT_GLBOPT1",
+                        "max": "ir.global.analyzed",
+                    },
+                },
+            },
+            "maturity.range.min",
+        ),
+        (
+            {
+                "pass": "x",
+                "maturity": {
+                    "range": {
+                        "min": "ir.global.analyzed",
+                        "max": "ir.call.modeled",
+                    },
+                },
+            },
+            "maturity.range.min",
+        ),
+        (
+            {
+                "pass": "x",
+                "maturity": {
+                    "range": {"min": "ir.call.modeled"},
+                    "preferred": "ir.call.modeled",
+                },
+            },
+            "maturity.range",
+        ),
+    ],
+)
+def test_pipeline_config_rejects_malformed_user_facing_maturity_shapes(
+    payload,
+    field_name,
+):
+    with pytest.raises(pp.PipelineConfigError, match=field_name):
+        pp.PipelineConfig.from_dict(payload)
+
+
+def test_pipeline_config_keeps_legacy_maturity_null_endpoint_compatibility():
+    config = pp.PipelineConfig.from_dict(
+        {
+            "pass": "legacy",
+            "maturity": {
+                "min": None,
+                "max": "ir.global.analyzed",
+                "preferred": None,
+            },
+        }
+    )
+
+    assert config.contract.maturity == pp.MaturityRange(
+        min=None,
+        max=IRMaturity.GLOBAL_ANALYZED,
+        preferred=None,
+    )
 
 
 @pytest.mark.parametrize(
