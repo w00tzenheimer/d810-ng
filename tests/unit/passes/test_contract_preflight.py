@@ -126,6 +126,35 @@ def test_preflight_published_and_visible_live_facts_and_evidence_satisfy_require
     assert result.diagnostics == ()
 
 
+def test_preflight_aliases_legacy_facts_and_evidence_to_canonical_requirements():
+    observation = SimpleNamespace(
+        kind="dispatcher_family",
+        payload=contract_evidence_payload("branch_targets"),
+    )
+    facts = AnalysisManager(
+        "G0",
+        input_facts=SimpleNamespace(active_observations=(observation,)),
+    )
+    facts.put_fact("state_transition", object())
+    facts.put_evidence("state_variable_writes")
+    spec = _spec(
+        "needs_canonical_context",
+        requires=PassRequires(
+            facts=FactRequirement(
+                required=frozenset(
+                    {"recovered.state_transition", "role.dispatcher"}
+                )
+            ),
+            evidence=frozenset({"ir.branch_target", "ir.state_variable_write"}),
+        ),
+    )
+
+    result = preflight_pass_contract(spec, facts)
+
+    assert result.satisfied
+    assert result.diagnostics == ()
+
+
 def test_preflight_optional_facts_missing_do_not_fail():
     result = preflight_pass_contract(
         _spec(
@@ -159,6 +188,25 @@ def test_pipeline_preflight_declared_outputs_can_satisfy_later_fact_requirement(
     assert result.satisfied
     assert [item.satisfied for item in result.results] == [True, True]
     assert facts.available_facts() == ()
+
+
+def test_pipeline_preflight_declared_canonical_outputs_satisfy_legacy_requirement():
+    facts = AnalysisManager("G0")
+    first = _spec(
+        "produce_transition",
+        outputs=PassOutputs(facts=frozenset({"recovered.state_transition"})),
+    )
+    second = _spec(
+        "consume_transition",
+        requires=PassRequires(
+            facts=FactRequirement(required=frozenset({"state_transition"}))
+        ),
+    )
+
+    result = preflight_pipeline_contract((first, second), facts)
+
+    assert result.satisfied
+    assert [item.satisfied for item in result.results] == [True, True]
 
 
 def test_pipeline_preflight_declared_outputs_can_satisfy_later_evidence_requirement():

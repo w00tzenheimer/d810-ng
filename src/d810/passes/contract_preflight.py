@@ -4,6 +4,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from d810.passes.contract_vocabulary import (
+    contract_name_in,
+    contract_name_variants,
+)
 from d810.passes.driver import PassContractDiagnostic
 from d810.passes.pass_pipeline import PassSpec
 
@@ -62,12 +66,15 @@ def _has_with_overlay(
     fact_overlay: frozenset[str],
     evidence_overlay: frozenset[str],
 ) -> bool:
-    if method_name == "has_fact" and name in fact_overlay:
+    if method_name == "has_fact" and contract_name_in(name, fact_overlay):
         return True
-    if method_name == "has_evidence" and name in evidence_overlay:
+    if method_name == "has_evidence" and contract_name_in(name, evidence_overlay):
         return True
     method = getattr(facts, method_name, None)
-    return bool(callable(method) and method(name))
+    return bool(
+        callable(method)
+        and any(bool(method(variant)) for variant in contract_name_variants(name))
+    )
 
 
 def _diagnose_missing_requirements(

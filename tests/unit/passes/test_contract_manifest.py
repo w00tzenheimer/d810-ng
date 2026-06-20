@@ -51,13 +51,16 @@ def test_transition_contract_manifest_uses_direct_yaml_shape():
     assert manifest["requires"] == {
         "capabilities": [],
         "analyses": ["recover_dispatcher"],
-        "evidence": ["branch_targets", "state_variable_writes"],
+        "evidence": ["ir.branch_target", "ir.state_variable_write"],
         "facts": {
-            "required": ["dispatcher_family"],
+            "required": ["role.dispatcher"],
             "optional": [],
         },
     }
-    assert manifest["outputs"] == {"facts": ["state_transition"], "evidence": []}
+    assert manifest["outputs"] == {
+        "facts": ["recovered.state_transition"],
+        "evidence": [],
+    }
     assert "runtime" in manifest
     assert "contract" not in manifest
     assert "pass_id" not in manifest
@@ -68,11 +71,11 @@ def test_lower_contract_manifest_exports_mutating_metadata():
 
     assert manifest["preserves"] == {
         "analyses": ["function_boundaries"],
-        "facts": ["raw_instruction_addresses", "recovered_cfg_edge"],
+        "facts": ["raw_instruction_addresses", "recovered.cfg_edge"],
     }
     assert manifest["invalidates"] == {
         "analyses": ["dominators", "loop_info", "postdominators", "regions"],
-        "facts": ["stale_cfg_shape"],
+        "facts": ["ir.cfg_shape.stale"],
     }
     assert manifest["safety"] == {
         "policy": "golden",

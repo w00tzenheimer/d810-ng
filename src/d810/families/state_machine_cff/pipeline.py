@@ -88,6 +88,13 @@ STATE_MACHINE_MATURITY = MaturityRange(
     max=IRMaturity.GLOBAL_ANALYZED,
     preferred=IRMaturity.GLOBAL_ANALYZED,
 )
+ROLE_DISPATCHER_FACT = "role.dispatcher"
+IR_BRANCH_TARGET_EVIDENCE = "ir.branch_target"
+IR_STATE_VARIABLE_WRITE_EVIDENCE = "ir.state_variable_write"
+RECOVERED_STATE_TRANSITION_FACT = "recovered.state_transition"
+RECOVERED_REGION_FACT = "recovered.region"
+RECOVERED_CFG_EDGE_FACT = "recovered.cfg_edge"
+STALE_CFG_SHAPE_FACT = "ir.cfg_shape.stale"
 
 
 def _state_machine_contract(
@@ -126,39 +133,43 @@ def _state_machine_contract(
 
 
 DISPATCHER_CONTRACT = _state_machine_contract(
-    outputs_facts=frozenset({"dispatcher_family"}),
+    outputs_facts=frozenset({ROLE_DISPATCHER_FACT}),
 )
 TRANSITION_CONTRACT = _state_machine_contract(
     requires_analyses=TRANSITION_ANALYSES.required,
-    requires_evidence=frozenset({"branch_targets", "state_variable_writes"}),
-    requires_facts=frozenset({"dispatcher_family"}),
-    outputs_facts=frozenset({"state_transition"}),
+    requires_evidence=frozenset(
+        {IR_BRANCH_TARGET_EVIDENCE, IR_STATE_VARIABLE_WRITE_EVIDENCE}
+    ),
+    requires_facts=frozenset({ROLE_DISPATCHER_FACT}),
+    outputs_facts=frozenset({RECOVERED_STATE_TRANSITION_FACT}),
 )
 REGION_CONTRACT = _state_machine_contract(
     requires_analyses=REGION_ANALYSES.required,
-    requires_facts=frozenset({"dispatcher_family", "state_transition"}),
-    outputs_facts=frozenset({"semantic_region"}),
+    requires_facts=frozenset(
+        {ROLE_DISPATCHER_FACT, RECOVERED_STATE_TRANSITION_FACT}
+    ),
+    outputs_facts=frozenset({RECOVERED_REGION_FACT}),
 )
 MUTATING_STATE_MACHINE_PRESERVED_ANALYSES = frozenset({"function_boundaries"})
 MUTATING_STATE_MACHINE_INVALIDATED_ANALYSES = frozenset(
     {"dominators", "loop_info", "postdominators", "regions"}
 )
 MUTATING_STATE_MACHINE_PRESERVED_FACTS = frozenset(
-    {"raw_instruction_addresses", "recovered_cfg_edge"}
+    {"raw_instruction_addresses", RECOVERED_CFG_EDGE_FACT}
 )
-MUTATING_STATE_MACHINE_INVALIDATED_FACTS = frozenset({"stale_cfg_shape"})
+MUTATING_STATE_MACHINE_INVALIDATED_FACTS = frozenset({STALE_CFG_SHAPE_FACT})
 MUTATING_STATE_MACHINE_SAFETY = PassSafety(policy="golden", requires_oracle=True)
 
 LOWER_CONTRACT = _state_machine_contract(
     requires_analyses=LOWER_ANALYSES.required,
     requires_facts=frozenset(
         {
-            "dispatcher_family",
-            "semantic_region",
-            "state_transition",
+            ROLE_DISPATCHER_FACT,
+            RECOVERED_REGION_FACT,
+            RECOVERED_STATE_TRANSITION_FACT,
         }
     ),
-    outputs_facts=frozenset({"recovered_cfg_edge"}),
+    outputs_facts=frozenset({RECOVERED_CFG_EDGE_FACT}),
     preserves_analyses=MUTATING_STATE_MACHINE_PRESERVED_ANALYSES,
     preserves_facts=MUTATING_STATE_MACHINE_PRESERVED_FACTS,
     invalidates_analyses=MUTATING_STATE_MACHINE_INVALIDATED_ANALYSES,

@@ -205,12 +205,17 @@ def test_run_pipeline_publishes_state_machine_contract_facts():
     )
 
     assert am.has_fact("dispatcher_family")
+    assert am.has_fact("role.dispatcher")
     assert am.has_fact("state_transition")
+    assert am.has_fact("recovered.state_transition")
     assert am.has_fact("semantic_region")
+    assert am.has_fact("recovered.region")
     assert am.has_fact("recovered_cfg_edge")
+    assert am.has_fact("recovered.cfg_edge")
     assert am.get_fact("dispatcher_family")[0].value.dispatch_map is not None
     assert am.get_fact("state_transition")[0].kind == "state_transition"
     assert am.has_evidence("branch_targets")
+    assert am.has_evidence("ir.branch_target")
 
 
 def test_transition_contract_requires_published_branch_target_evidence():
@@ -220,7 +225,7 @@ def test_transition_contract_requires_published_branch_target_evidence():
     )
     am.put_analysis("recover_dispatcher", object())
 
-    with pytest.raises(PassContractError, match="branch_targets"):
+    with pytest.raises(PassContractError, match="ir.branch_target"):
         run_pipeline(
             source=_Src(),
             family=_TransitionOnlyFamily(),
@@ -239,7 +244,7 @@ def test_transition_contract_requires_dispatcher_family_fact_not_just_analysis()
     am.put_analysis("recover_dispatcher", object())
     am.put_evidence("branch_targets", object())
 
-    with pytest.raises(PassContractError, match="dispatcher_family"):
+    with pytest.raises(PassContractError, match="role.dispatcher"):
         run_pipeline(
             source=_Src(),
             family=_TransitionOnlyFamily(),
@@ -259,7 +264,7 @@ def test_region_contract_requires_state_transition_fact_not_just_analysis():
     am.put_analysis("transition_result", object())
     am.put_fact("dispatcher_family", object())
 
-    with pytest.raises(PassContractError, match="state_transition"):
+    with pytest.raises(PassContractError, match="recovered.state_transition"):
         run_pipeline(
             source=_Src(),
             family=_RegionOnlyFamily(),

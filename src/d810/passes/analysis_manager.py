@@ -15,6 +15,10 @@ from __future__ import annotations
 
 from d810.core.typing import Callable, Mapping
 from d810.analyses.value_flow.contract_evidence import contract_evidence_tokens
+from d810.passes.contract_vocabulary import (
+    contract_name_variants,
+    resolve_contract_name,
+)
 from d810.passes.pass_pipeline import PreservedAnalyses
 
 
@@ -68,7 +72,9 @@ class AnalysisManager:
 
     def get_fact(self, name: str, default: object = None) -> object:
         """Return facts named ``name`` from published facts or live observations."""
-        values = list(self._facts.get(name, ()))
+        values: list[object] = []
+        for variant in contract_name_variants(str(name)):
+            values.extend(self._facts.get(variant, ()))
         values.extend(
             observation
             for observation in self.active_observations
@@ -93,11 +99,18 @@ class AnalysisManager:
 
     def _live_observation_fact_visible(self, name: str, observation: object) -> bool:
         """Return whether a live observation can satisfy fact ``name``."""
-        if getattr(observation, "kind", None) != name:
+        observation_kind = getattr(observation, "kind", None)
+        if observation_kind is None:
             return False
-        if name in self._live_fact_blocklist:
+        canonical_name = resolve_contract_name(str(name))
+        if resolve_contract_name(str(observation_kind)) != canonical_name:
             return False
-        return self._live_fact_allowlist is None or name in self._live_fact_allowlist
+        if canonical_name in self._live_fact_blocklist:
+            return False
+        return (
+            self._live_fact_allowlist is None
+            or canonical_name in self._live_fact_allowlist
+        )
 
     def put_evidence(self, name: str, value: object = True) -> None:
         """Publish an evidence token for later native contract checks."""
@@ -114,12 +127,18 @@ class AnalysisManager:
 
     def get_evidence(self, name: str, default: object = None) -> object:
         """Return evidence named ``name`` from published evidence or live observations."""
-        values = list(self._evidence.get(name, ()))
+        canonical_name = resolve_contract_name(str(name))
+        values: list[object] = []
+        for variant in contract_name_variants(str(name)):
+            values.extend(self._evidence.get(variant, ()))
         if self._live_evidence_visible:
             values.extend(
                 observation
                 for observation in self.active_observations
-                if name in contract_evidence_tokens(observation)
+                if any(
+                    resolve_contract_name(token) == canonical_name
+                    for token in contract_evidence_tokens(observation)
+                )
             )
         return tuple(values) if values else default
 
@@ -201,11 +220,13 @@ class AnalysisManager:
             self._cache.pop(name, None)
             self._derived.pop(name, None)
         if contract.preserves.facts:
-            preserved_facts = frozenset(contract.preserves.facts)
+            preserved_facts = frozenset(
+                resolve_contract_name(str(name)) for name in contract.preserves.facts
+            )
             self._facts = {
                 name: facts
                 for name, facts in self._facts.items()
-                if name in preserved_facts
+                if resolve_contract_name(name) in preserved_facts
             }
             self._live_fact_allowlist = (
                 preserved_facts
@@ -213,5 +234,10 @@ class AnalysisManager:
                 else self._live_fact_allowlist & preserved_facts
             )
         for name in contract.invalidates.facts:
-            self._facts.pop(name, None)
-            self._live_fact_blocklist.add(name)
+            canonical_name = resolve_contract_name(str(name))
+            self._facts = {
+                fact_name: facts
+                for fact_name, facts in self._facts.items()
+                if resolve_contract_name(fact_name) != canonical_name
+            }
+            self._live_fact_blocklist.add(canonical_name)

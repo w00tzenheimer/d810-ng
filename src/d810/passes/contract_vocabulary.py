@@ -1,6 +1,7 @@
 """Canonical native pass-contract vocabulary and legacy aliases."""
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from warnings import warn
 
@@ -206,6 +207,9 @@ _BY_NAME: dict[str, ContractVocabularyEntry] = {
 _ALIASES: dict[str, str] = {
     alias: entry.name for entry in _ENTRIES for alias in entry.legacy_aliases
 }
+_ALIASES_BY_CANONICAL: dict[str, tuple[str, ...]] = {
+    entry.name: entry.legacy_aliases for entry in _ENTRIES
+}
 
 
 def contract_vocabulary_entries() -> tuple[ContractVocabularyEntry, ...]:
@@ -231,6 +235,32 @@ def is_legacy_contract_name(name: str) -> bool:
 def resolve_contract_name(name: str) -> str:
     """Return the canonical vocabulary name for ``name`` when known."""
     return _ALIASES.get(name, name)
+
+
+def resolve_contract_names(names: Iterable[str]) -> frozenset[str]:
+    """Return canonical vocabulary names for ``names`` when known."""
+    return frozenset(resolve_contract_name(str(name)) for name in names)
+
+
+def contract_name_variants(name: str) -> frozenset[str]:
+    """Return the known spellings for ``name`` across canonical and legacy forms."""
+    canonical = resolve_contract_name(str(name))
+    aliases = _ALIASES_BY_CANONICAL.get(canonical, ())
+    return frozenset((canonical, *aliases))
+
+
+def contract_names_equivalent(left: str, right: str) -> bool:
+    """Return whether two contract vocabulary names refer to the same term."""
+    return resolve_contract_name(str(left)) == resolve_contract_name(str(right))
+
+
+def contract_name_in(name: str, candidates: Iterable[str]) -> bool:
+    """Return whether ``candidates`` contains ``name`` or one of its aliases."""
+    canonical = resolve_contract_name(str(name))
+    return any(
+        resolve_contract_name(str(candidate)) == canonical
+        for candidate in candidates
+    )
 
 
 def warn_legacy_contract_names(

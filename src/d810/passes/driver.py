@@ -18,6 +18,12 @@ from dataclasses import dataclass, replace
 
 from d810.core.typing import Protocol, runtime_checkable
 from d810.capabilities.resolver import CapabilitySet
+from d810.passes.contract_vocabulary import (
+    contract_name_in,
+    contract_name_variants,
+    resolve_contract_name,
+    resolve_contract_names,
+)
 from d810.passes.pass_pipeline import (
     BackendRoute,
     CapabilityPolicy,
@@ -170,6 +176,13 @@ def _available_names(facts, method_name: str) -> tuple[str, ...]:
     return tuple(str(name) for name in method())
 
 
+def _has_contract_name(facts, method_name: str, name: str) -> bool:
+    method = getattr(facts, method_name, None)
+    if not callable(method):
+        return False
+    return any(bool(method(variant)) for variant in contract_name_variants(name))
+
+
 def validate_native_contract(spec: PassSpec, ctx: FunctionPipelineContext) -> None:
     """Fail loud when native pass-contract prerequisites are unavailable."""
     contract = spec.contract
@@ -200,14 +213,14 @@ def validate_native_contract(spec: PassSpec, ctx: FunctionPipelineContext) -> No
         sorted(
             name
             for name in contract.requires.facts.required
-            if not ctx.facts.has_fact(name)
+            if not _has_contract_name(ctx.facts, "has_fact", name)
         )
     )
     missing_evidence = tuple(
         sorted(
             name
             for name in contract.requires.evidence
-            if not ctx.facts.has_evidence(name)
+            if not _has_contract_name(ctx.facts, "has_evidence", name)
         )
     )
     if missing_analyses or missing_facts or missing_evidence:
@@ -275,7 +288,7 @@ def validate_contract_fact_outputs(spec: PassSpec, result) -> None:
         if kind is None:
             anonymous += 1
             continue
-        if str(kind) not in declared:
+        if not contract_name_in(str(kind), declared):
             undeclared.append(str(kind))
 
     if anonymous:
@@ -310,7 +323,14 @@ def validate_contract_evidence_outputs(spec: PassSpec, result) -> None:
         return
 
     declared = spec.contract.outputs.evidence
-    undeclared = tuple(sorted(frozenset(result.evidence_outputs) - declared))
+    declared_names = resolve_contract_names(declared)
+    undeclared = tuple(
+        sorted(
+            name
+            for name in result.evidence_outputs
+            if resolve_contract_name(str(name)) not in declared_names
+        )
+    )
     if undeclared:
         raise PassContractError(
             f"pass {spec.pass_id!r} published undeclared contract evidence "
