@@ -37,6 +37,9 @@ def _inventory_by_name():
     [
         "default_instruction_only",
         "example_libobfuscated",
+        "hodur_deobfuscation",
+        "hodur_flag2",
+        "hodur_flag2_s1a",
     ],
 )
 def test_legacy_migrator_matches_checked_in_shadow(config_name):
@@ -337,8 +340,81 @@ def test_repo_inventory_surfaces_unsupported_reasons():
     inventory = _inventory_by_name()
 
     assert "IndirectCallResolver" in inventory["default.json"].reason
+    assert inventory["default_unflattening_ollvm.json"].status is (
+        LegacyConfigMigrationStatus.UNSUPPORTED
+    )
+    assert (
+        "SimpleFlatteningCleanupUnflattener"
+        in inventory["default_unflattening_ollvm.json"].reason
+    )
     assert (
         "SimpleFlatteningCleanupUnflattener"
         in inventory["example_libobfuscated_no_fixprecedessor.json"].reason
     )
     assert "IdentityCallResolver" in inventory["identity_call.json"].reason
+
+
+@pytest.mark.parametrize(
+    ("config_name", "expected_instruction_rules", "expected_block_rules"),
+    [
+        (
+            "hodur_flag2",
+            0,
+            ["StateMachineCffUnflattener", "JumpFixer"],
+        ),
+        (
+            "hodur_flag2_s1a",
+            0,
+            ["StateMachineCffUnflattener", "JumpFixer"],
+        ),
+        (
+            "hodur_deobfuscation",
+            182,
+            ["JumpFixer"],
+        ),
+    ],
+)
+def test_hodur_generated_shadows_preserve_legacy_rule_shape(
+    config_name,
+    expected_instruction_rules,
+    expected_block_rules,
+):
+    legacy_path = _CONF_DIR / f"{config_name}.json"
+    legacy = ProjectConfiguration.from_file(legacy_path)
+    generated = legacy_project_file_to_pipeline_v2_shadow(legacy_path)
+    pipeline_v2 = generated["additional_configuration"]["pipeline_v2"]
+    active_instruction_rules = [
+        rule for rule in legacy.ins_rules if rule.is_activated
+    ]
+    active_block_rules = [
+        rule for rule in legacy.blk_rules if rule.is_activated
+    ]
+
+    assert len(active_instruction_rules) == expected_instruction_rules
+    assert [rule.name for rule in active_block_rules] == expected_block_rules
+    if active_instruction_rules:
+        instruction_entry = pipeline_v2[0]
+        assert instruction_entry["pass"] == "mba-simplify"
+        assert instruction_entry["rules"]["include"] == [
+            rule.name for rule in active_instruction_rules
+        ]
+        assert instruction_entry["rules"]["options"] == {
+            rule.name: rule.config
+            for rule in active_instruction_rules
+            if rule.config
+        }
+        assert "include_groups" not in instruction_entry["rules"]
+        assert "exclude_groups" not in instruction_entry["rules"]
+        block_entries = pipeline_v2[1:]
+    else:
+        block_entries = pipeline_v2
+
+    assert [
+        entry["migration"]["source_rule"]
+        for entry in block_entries
+    ] == expected_block_rules
+    for entry, rule in zip(block_entries, active_block_rules):
+        options = dict(entry["options"])
+        assert options.pop("legacy_rule") == rule.name
+        options.pop("native_pipeline", None)
+        assert options == rule.config
