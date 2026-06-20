@@ -424,7 +424,7 @@ def test_checked_in_pipeline_v2_shadows_are_not_empty_pipeline_payloads():
 def test_repo_legacy_config_inventory_reports_current_state():
     inventory = _inventory_by_name()
 
-    assert len(inventory) == 27
+    assert len(inventory) == 26
     assert [
         item.config_name
         for item in inventory.values()
@@ -441,7 +441,6 @@ def test_repo_legacy_config_inventory_reports_current_state():
         "default_unflattening_ollvm_s1a_fair.json",
         "example_libobfuscated_no_fixprecedessor.json",
         "identity_call.json",
-        "state_machine_loops.json",
     }
     assert {
         item.config_name
