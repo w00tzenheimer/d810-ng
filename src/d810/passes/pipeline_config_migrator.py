@@ -38,6 +38,19 @@ _BLOCK_RULE_PASS_IDS = {
 }
 _SUPPORTED_BLOCK_RULES = frozenset(_BLOCK_RULE_PASS_IDS)
 
+# These legacy FlowOptimizationRule implementations are intentionally not
+# rendered as config-v2 shadows until their live IDA-backed adapter boundary is
+# represented. Inventory reports the concrete gap instead of emitting fake
+# pass ids.
+_UNSUPPORTED_BLOCK_RULE_DETAILS = {
+    "IndirectCallResolver": (
+        "requires an IDA-backed indirect-call FlowOptimizationRule adapter"
+    ),
+    "SimpleFlatteningCleanupUnflattener": (
+        "requires a cleanup-family planner/executor adapter"
+    ),
+}
+
 _STATE_MACHINE_NATIVE_PIPELINE = [
     "recover_dispatcher",
     "recover_state_transitions",
@@ -183,9 +196,7 @@ def _block_pass(
     try:
         pass_id = _BLOCK_RULE_PASS_IDS[rule_name]
     except KeyError as exc:
-        raise PipelineConfigError(
-            f"unsupported legacy block rule for pipeline_v2 shadow: {rule_name}"
-        ) from exc
+        raise PipelineConfigError(_unsupported_block_rule_message(rule_name)) from exc
 
     if rule_name == "StateMachineCffUnflattener":
         scope = "function"
@@ -216,6 +227,28 @@ def _block_pass(
         },
         "options": options,
     }
+
+
+def _unsupported_block_rule_message(rule_name: str) -> str:
+    detail = _UNSUPPORTED_BLOCK_RULE_DETAILS.get(rule_name)
+    if detail is None:
+        return f"unsupported legacy block rule for pipeline_v2 shadow: {rule_name}"
+    return (
+        "unsupported legacy block rule for pipeline_v2 shadow: "
+        f"{rule_name} ({detail})"
+    )
+
+
+def _unsupported_block_rules_message(rule_names: tuple[str, ...]) -> str:
+    return (
+        "unsupported legacy block rules for pipeline_v2 shadow: "
+        + ", ".join(
+            _unsupported_block_rule_message(rule_name).removeprefix(
+                "unsupported legacy block rule for pipeline_v2 shadow: "
+            )
+            for rule_name in rule_names
+        )
+    )
 
 
 def _shadow_metadata(
@@ -316,10 +349,7 @@ def inventory_legacy_project_config(
             status=LegacyConfigMigrationStatus.UNSUPPORTED,
             active_instruction_rules=len(active_instruction_rules),
             active_block_rules=active_block_rule_names,
-            reason=(
-                "unsupported legacy block rules for pipeline_v2 shadow: "
-                + ", ".join(unsupported_block_rules)
-            ),
+            reason=_unsupported_block_rules_message(unsupported_block_rules),
         )
     try:
         legacy_project_config_to_pipeline_v2_shadow(
