@@ -15,6 +15,7 @@ from d810.families.state_machine_cff.pipeline import (
     state_machine_pass_registry,
 )
 from d810.passes.contract_vocabulary import ContractVocabularyWarning
+from d810.passes.legacy_flow_rules import LEGACY_FLOW_RULE_ADAPTER_CAPABILITY
 from d810.passes.pass_pipeline import (
     BackendRoute,
     PassScope,
@@ -131,6 +132,9 @@ def _assert_block_configs_preserve_legacy_rules(
         assert options.pop("legacy_rule") == rule["name"]
         assert options == rule["config"]
         assert config.contract.scope is PassScope.BLOCK
+        assert config.contract.requires.capabilities == frozenset(
+            {LEGACY_FLOW_RULE_ADAPTER_CAPABILITY}
+        )
         assert entry["migration"] == {
             "source_config": source_config,
             "source_section": "blk_rules",

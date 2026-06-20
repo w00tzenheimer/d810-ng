@@ -437,6 +437,11 @@
             "max": "ir.global.optimized"
           }
         },
+        "requires": {
+          "capabilities": [
+            "legacy_flow_rule_adapter"
+          ]
+        },
         "migration": {
           "source_config": "default_unflattening_tigress_indirect.json",
           "source_section": "blk_rules",

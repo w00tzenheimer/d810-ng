@@ -236,6 +236,11 @@
             "max": "ir.global.optimized"
           }
         },
+        "requires": {
+          "capabilities": [
+            "legacy_flow_rule_adapter"
+          ]
+        },
         "migration": {
           "source_config": "hodur_deobfuscation.json",
           "source_section": "blk_rules",
