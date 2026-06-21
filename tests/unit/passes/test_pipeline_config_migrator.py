@@ -1,13 +1,16 @@
 """Legacy ProjectConfiguration to PipelineConfig v2 shadow migration tests."""
 from __future__ import annotations
 
+import ast
 import json
+import re
 from pathlib import Path
 
 import pytest
 
 from d810.core.config import ProjectConfiguration, RuleConfiguration
 from d810.passes.legacy_flow_rules import LEGACY_FLOW_RULE_ADAPTER_CAPABILITY
+from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import PipelineConfigError
 from d810.passes.pipeline_config_migrator import (
     LegacyBlockRuleAdapterKind,
@@ -19,12 +22,17 @@ from d810.passes.pipeline_config_migrator import (
     legacy_project_config_to_pipeline_v2_shadow,
     legacy_project_file_to_pipeline_v2_shadow,
 )
+from d810.passes.pipeline_config_parser import pass_specs_from_project_config
+from d810.passes.registry import UnknownPassIdError
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _CONF_DIR = _REPO_ROOT / "src" / "d810" / "conf"
 _RUNTIME_SUPPORT_MATRIX = (
     _REPO_ROOT / "src" / "d810" / "passes" / "config_v2_runtime_support_matrix.json"
+)
+_RUNTIME_PARITY_TEST = _REPO_ROOT / "tests" / "system" / "e2e" / (
+    "test_config_v2_runtime_parity.py"
 )
 _OLLVM_CONFIGS = (
     "default_unflattening_ollvm",
@@ -117,11 +125,58 @@ def _load_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _load_runtime_support_matrix() -> dict[str, object]:
+    return _load_json(_RUNTIME_SUPPORT_MATRIX)
+
+
 def _inventory_by_name():
     return {
         item.config_name: item
         for item in inventory_legacy_config_directory(_CONF_DIR)
     }
+
+
+def _parity_test_row_ids() -> set[str]:
+    tree = ast.parse(_RUNTIME_PARITY_TEST.read_text(encoding="utf-8"))
+    row_ids: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Name):
+            continue
+        if node.func.id != "ConfigV2ParityRow":
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "row_id":
+                continue
+            if isinstance(keyword.value, ast.Constant) and isinstance(
+                keyword.value.value, str
+            ):
+                row_ids.add(keyword.value.value)
+    return row_ids
+
+
+def _assert_builds_with_operational_registry(config_name: str):
+    project = ProjectConfiguration.from_file(_CONF_DIR / config_name)
+    specs = pass_specs_from_project_config(project, operational_config_v2_pass_registry())
+
+    assert specs
+    return specs
+
+
+def _expected_unsupported_reason_tokens(config_name: str) -> tuple[str, ...]:
+    if config_name in {"default.json", "default_indirect_resolution.json"}:
+        return ("IndirectBranchResolver", "IndirectCallResolver")
+    if config_name in {
+        "default_unflattening_ollvm.json",
+        "default_unflattening_ollvm_s1a_fair.json",
+    }:
+        return ("IndirectCallResolver", "SimpleFlatteningCleanupUnflattener")
+    if config_name == "example_libobfuscated_no_fixprecedessor.json":
+        return ("SimpleFlatteningCleanupUnflattener",)
+    if config_name == "identity_call.json":
+        return ("IdentityCallResolver",)
+    raise AssertionError(f"unsupported config lacks explicit matrix expectation: {config_name}")
 
 
 def _unique_active_instruction_rule_names(rules):
@@ -690,7 +745,7 @@ def test_repo_inventory_surfaces_unsupported_reasons():
 
 
 def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
-    matrix = _load_json(_RUNTIME_SUPPORT_MATRIX)
+    matrix = _load_runtime_support_matrix()
     inventory = _inventory_by_name()
 
     migratable = {
@@ -794,6 +849,93 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
     assert {
         item["config"] for item in matrix["unsupported_adapter_boundaries"]
     } == unsupported
+
+
+def test_config_v2_runtime_support_matrix_parity_rows_are_executable_contracts():
+    matrix = _load_runtime_support_matrix()
+    parity_rows = matrix["parity_evidence"]["rows"]
+    parity_test_row_ids = _parity_test_row_ids()
+
+    assert parity_rows
+    for row in parity_rows:
+        assert row["id"] in parity_test_row_ids
+        assert row["ast_stats_match"] is True
+        assert row["stable_diag_parity"] is True
+        assert set(row["allowed_diag_drift"]) <= {"fact_observations"}
+
+        legacy_path = _CONF_DIR / row["legacy_config"]
+        shadow_path = _CONF_DIR / row["shadow_config"]
+        assert legacy_path.exists()
+        assert shadow_path.exists()
+        _assert_builds_with_operational_registry(row["shadow_config"])
+
+        runtime_config = row.get("runtime_config")
+        if runtime_config is not None:
+            runtime_path = _CONF_DIR / runtime_config
+            assert runtime_path.exists()
+            _assert_builds_with_operational_registry(runtime_config)
+
+
+def test_config_v2_runtime_support_matrix_supported_shadows_build():
+    matrix = _load_runtime_support_matrix()
+    operational_exceptions = {
+        exception["shadow_config"]
+        for exception in matrix["generated_shadows"]["operational_exceptions"]
+    }
+    supported_shadows = {
+        row["shadow_config"] for row in matrix["parity_evidence"]["rows"]
+    }
+    supported_shadows.update(
+        lane["representative_shadow"] for lane in matrix["runtime_lanes"]
+    )
+    supported_shadows.update(
+        canary["source_shadow"] for canary in matrix["canary_configs"]
+    )
+    supported_shadows.update(
+        config_name.replace(".json", ".pipeline_v2.json")
+        for config_name in matrix["generated_shadows"]["migratable_configs"]
+        if config_name.replace(".json", ".pipeline_v2.json")
+        not in operational_exceptions
+    )
+
+    for shadow_config in sorted(supported_shadows):
+        specs = _assert_builds_with_operational_registry(shadow_config)
+        assert tuple(spec.pass_id for spec in specs)
+
+    for shadow_config in sorted(operational_exceptions):
+        with pytest.raises(UnknownPassIdError):
+            _assert_builds_with_operational_registry(shadow_config)
+
+
+def test_config_v2_runtime_support_matrix_unsupported_configs_fail_closed():
+    matrix = _load_runtime_support_matrix()
+    inventory = _inventory_by_name()
+
+    for entry in matrix["unsupported_adapter_boundaries"]:
+        config_name = entry["config"]
+        item = inventory[config_name]
+
+        assert item.status is LegacyConfigMigrationStatus.UNSUPPORTED
+        assert entry["blocked_boundary"]
+        for token in _expected_unsupported_reason_tokens(config_name):
+            assert token in item.reason
+        assert not (_CONF_DIR / config_name.replace(".json", ".pipeline_v2.json")).exists()
+        with pytest.raises(PipelineConfigError):
+            legacy_project_file_to_pipeline_v2_shadow(_CONF_DIR / config_name)
+
+
+def test_config_v2_runtime_support_matrix_docker_evidence_metadata_is_well_formed():
+    matrix = _load_runtime_support_matrix()
+    evidence = matrix["parity_evidence"]
+    log_path = Path(evidence["docker_log"])
+    summary = evidence["summary"]
+
+    assert log_path.parts[:2] == (".tmp", "logs")
+    assert log_path.name.endswith(".log")
+    assert re.fullmatch(
+        r"\d+ passed, \d+ skipped, \d+ deselected, \d+ warnings",
+        summary,
+    )
 
 
 @pytest.mark.parametrize("config_name", _OLLVM_CONFIGS)
