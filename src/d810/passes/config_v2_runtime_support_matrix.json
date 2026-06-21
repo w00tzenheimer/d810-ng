@@ -271,8 +271,8 @@
     ],
     "selection_model": "When the switch is explicitly enabled, the system DSL runner maps supported source project configs to checked-in config-v2 canary ProjectConfigurations. Unsupported project configs fail closed.",
     "rollback": "Unset D810_CONFIG_V2_CI_REHEARSAL or set it to 0/false/no/off to return the system runner to the existing project configuration path.",
-    "docker_selector": "test_chained_add",
-    "docker_log": ".tmp/logs/config-v2-ci-runtime-switch-rehearsal-v1.log",
+    "docker_selector": "TestConfigV2CIRehearsalCoverage",
+    "docker_log": ".tmp/logs/config-v2-ci-runtime-switch-rehearsal-coverage-v2.log",
     "supported_mappings": [
       {
         "source_config": "default_instruction_only.json",
