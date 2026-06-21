@@ -21,6 +21,13 @@ from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 main_logger = getLogger("D810")
 optimizer_logger = getLogger("D810.optimizer")
 _RUN_LATER_DOMAIN_OPTIMIZER_RULE = "optimizer_rule"
+_PROJECT_CONFIG_KEYS = frozenset(
+    {
+        "pipeline_v2",
+        "pipeline_v2_mode",
+        "require_pipeline_v2_shadow_match",
+    }
+)
 
 if typing.TYPE_CHECKING:
     from d810.core import OptimizationStatistics
@@ -82,6 +89,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._post_d810_pipeline_last_maturity: int = -1
         self._impossible_return_artifact_rewrite_applied: set[tuple[int, int]] = set()
         self._terminal_zero_literal_rewrite_applied: set[tuple[int, int]] = set()
+        self._project_config: dict[str, typing.Any] = {}
         # When the PassPipeline fires and applies changes, we must skip all
         # remaining block optimizer rule calls for the rest of this maturity.
         # IDA will re-enter at the next maturity with fresh block pointers.
@@ -833,6 +841,19 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         if callable(set_pass_scheduler):
             set_pass_scheduler(self._run_later_scheduler)
 
+    def _configure_rule_project_config(self, cfg_rule: FlowOptimizationRule) -> None:
+        set_project_config = getattr(cfg_rule, "set_project_config", None)
+        if callable(set_project_config):
+            set_project_config(self._project_config)
+
+    @staticmethod
+    def _extract_project_config(kwargs: dict[str, typing.Any]) -> dict[str, typing.Any]:
+        return {
+            key: value
+            for key, value in kwargs.items()
+            if key in _PROJECT_CONFIG_KEYS
+        }
+
     def optimize(self, blk: ida_hexrays.mblock_t):
         active_rules = self._resolve_active_rules(blk)
         rules = active_rules if active_rules is not None else tuple(self.cfg_rules)
@@ -1043,8 +1064,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         if cfg_rule not in self.cfg_rules:
             self.cfg_rules.append(cfg_rule)
         self._configure_rule_scheduler(cfg_rule)
+        self._configure_rule_project_config(cfg_rule)
 
     def configure(self, **kwargs):
+        if "project_name" in kwargs or any(key in kwargs for key in _PROJECT_CONFIG_KEYS):
+            self._project_config = self._extract_project_config(kwargs)
         self._recon_phase = kwargs.get("recon_phase", self._recon_phase)
         self._recon_runtime = kwargs.get("recon_runtime", self._recon_runtime)
         self._function_priors_provider = kwargs.get(
@@ -1058,6 +1082,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         )
         for cfg_rule in self.cfg_rules:
             self._configure_rule_scheduler(cfg_rule)
+            self._configure_rule_project_config(cfg_rule)
         self._rule_scope_service = kwargs.get(
             "rule_scope_service", self._rule_scope_service
         )

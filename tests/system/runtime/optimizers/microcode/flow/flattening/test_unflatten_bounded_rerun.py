@@ -239,6 +239,198 @@ class TestUnflattenBoundedRerunGate:
         assert captured["prepared_analysis_seeds"] == {"range_evidence": None}
         assert captured["reset_func"] == _EA
 
+    def test_config_v2_mode_executes_configured_pass_specs(self, monkeypatch) -> None:
+        """Config-v2 mode runs configured specs while preserving rule-local options."""
+        from d810.hexrays.preanalysis import indirect_jump_labels
+        from d810.optimizers.microcode.flow.flattening import (
+            state_machine_cff_unflattener as unflat_mod,
+        )
+
+        class _Family:
+            name = "fake"
+            recovery_maturities = (IRMaturity.GLOBAL_ANALYZED,)
+
+        class _Backend:
+            def capabilities(self):
+                return frozenset()
+
+        class _Facts:
+            def __init__(self):
+                self._values = {}
+
+            def put_analysis(self, name, value):
+                self._values[name] = value
+
+            def get_analysis(self, name, default=None):
+                return self._values.get(name, default)
+
+        class _FunctionPassManager:
+            def __init__(self):
+                self.facts = _Facts()
+
+            def reset_all(self):
+                pass
+
+            def reset_func(self, func_ea):
+                captured["reset_func"] = int(func_ea)
+
+            def facts_for(self, source, *, input_facts=None, analysis_seeds=None):
+                for name, value in (analysis_seeds or {}).items():
+                    self.facts.put_analysis(name, value)
+                return self.facts
+
+            def run(self, **kwargs):
+                captured.update(kwargs)
+                return kwargs["source"].flow_graph
+
+            def analysis_manager_for(self, func_ea):
+                captured["analysis_manager_for"] = int(func_ea)
+                return self.facts
+
+        captured: dict[str, object] = {}
+        family = _Family()
+        rule_config = {
+            "min_state_constant": 16777216,
+            "enable_transition_validator": True,
+        }
+        project_config = {
+            "pipeline_v2_mode": "config-v2",
+            "pipeline_v2": [
+                {"pass": "recover_dispatcher"},
+                {"pass": "recover_state_transitions"},
+                {"pass": "plan_semantic_regions"},
+                {"pass": "lower_state_machine"},
+                {"pass": "cleanup_residual_dispatcher"},
+            ],
+        }
+
+        monkeypatch.setattr(
+            indirect_jump_labels,
+            "is_materialized_indirect_dispatcher",
+            lambda _ea: False,
+        )
+        monkeypatch.setattr(
+            StateMachineCffUnflattener,
+            "_should_run_unflatten_round",
+            lambda self, func_ea, *, is_indirect, maturity: True,
+        )
+        monkeypatch.setattr(
+            StateMachineCffUnflattener,
+            "_publish_unflat_diagnostics",
+            lambda self, *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            StateMachineCffUnflattener,
+            "_log_pipeline_v2_shadow",
+            lambda self, *args, **kwargs: None,
+        )
+        monkeypatch.setattr(unflat_mod, "FunctionPassManager", _FunctionPassManager)
+        monkeypatch.setattr(
+            unflat_mod,
+            "lift_function",
+            lambda mba, maturity: SimpleNamespace(
+                flow_graph=object(),
+                func_ea=int(mba.entry_ea),
+                live_source=mba,
+            ),
+        )
+        monkeypatch.setattr(
+            unflat_mod,
+            "register_extra_dispatcher_resolver",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            unflat_mod,
+            "recover_dispatcher",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                dispatcher_block_serial=None,
+                state_var_stkoff=None,
+            ),
+        )
+        monkeypatch.setattr(unflat_mod, "select_family", lambda *_args, **_kwargs: family)
+        monkeypatch.setattr(unflat_mod, "HexRaysMutationBackend", _Backend)
+        monkeypatch.setattr(unflat_mod, "HexRaysValRangeCapability", lambda _mba: object())
+        monkeypatch.setattr(unflat_mod, "HexRaysUseDefSafetyBackend", lambda: object())
+        monkeypatch.setattr(
+            unflat_mod,
+            "HexRaysMachineRecoveryEnginesCapability",
+            lambda **_kwargs: object(),
+        )
+
+        rule = StateMachineCffUnflattener()
+        rule.config = rule_config
+        rule.set_project_config(project_config)
+        rule.flow_context = SimpleNamespace(
+            validated_fact_view=lambda _maturity: SimpleNamespace(
+                active_observations=()
+            )
+        )
+        rule._union_maturities_cache = frozenset({ida_hexrays.MMAT_GLBOPT1})
+
+        mba = SimpleNamespace(
+            entry_ea=_EA,
+            maturity=ida_hexrays.MMAT_GLBOPT1,
+        )
+        assert rule.optimize(SimpleNamespace(mba=mba, serial=0)) == 0
+
+        pipeline_v2_specs = captured["pipeline_v2_specs"]
+        assert tuple(spec.pass_id for spec in pipeline_v2_specs) == (
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+        )
+        assert captured["project_config"] is rule_config
+        assert "pipeline_v2_shadow_registry" not in captured
+        assert captured["reset_func"] == _EA
+        assert rule._last_pipeline_v2_mode == "config-v2"
+        assert rule._last_config_v2_pass_ids == (
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+        )
+
+    def test_block_optimizer_manager_forwards_project_config_to_rules(self, tmp_path):
+        """Project additional config reaches rules after legacy rule configuration."""
+        from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
+
+        class _Rule:
+            def __init__(self):
+                self.project_configs: list[dict[str, object]] = []
+                self.scheduler = None
+
+            def set_project_config(self, config):
+                self.project_configs.append(dict(config))
+
+            def set_pass_scheduler(self, scheduler):
+                self.scheduler = scheduler
+
+        rule = _Rule()
+        manager = BlockOptimizerManager(
+            stats=SimpleNamespace(),
+            log_dir=tmp_path,
+            ctx_cls=object,
+        )
+        manager.add_rule(rule)
+        manager.configure(
+            pipeline_v2_mode="config-v2",
+            pipeline_v2=(
+                {"pass": "recover_dispatcher"},
+            ),
+        )
+
+        assert rule.project_configs[-1] == {
+            "pipeline_v2_mode": "config-v2",
+            "pipeline_v2": (
+                {"pass": "recover_dispatcher"},
+            ),
+        }
+        manager.configure(project_name="legacy.json")
+        assert rule.project_configs[-1] == {}
+
 
 class TestTigressIndirectMaterializationConfig:
     def test_non_tigress_profile_does_not_register_materialization(self, monkeypatch) -> None:
