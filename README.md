@@ -463,6 +463,13 @@ configurations:
 
 Each canary sets `pipeline_v2_mode: config-v2`.
 
+To rehearse the supported config-v2 path through the normal Docker system
+runner, use:
+
+```bash
+./tools/scripts/run_config_v2_ci_rehearsal.sh -w <target-worktree>
+```
+
 These canaries do not enable unsupported adapter families. OLLVM, indirect
 branch/call, and cleanup-family configurations remain fail-closed until their
 adapters are implemented and validated.

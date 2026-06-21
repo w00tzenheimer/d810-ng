@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -1002,10 +1003,40 @@ def test_config_v2_runtime_support_matrix_ci_rehearsal_switch_is_explicit():
     assert set(rehearsal["enabled_values"]) == set(CONFIG_V2_CI_REHEARSAL_ENABLED_VALUES)
     assert "existing project configuration path" in rehearsal["rollback"]
     assert "fail closed" in rehearsal["selection_model"]
+    assert rehearsal["job_name"] == "config-v2-ci-rehearsal"
+    assert rehearsal["script"] == "tools/scripts/run_config_v2_ci_rehearsal.sh"
+    assert rehearsal["named_command"] == (
+        "./tools/scripts/run_config_v2_ci_rehearsal.sh -w <target-worktree>"
+    )
+    assert "<target-worktree>" in rehearsal["named_command"]
+    assert "llvm-lisa-restructure" not in rehearsal["named_command"]
     assert rehearsal["docker_selector"] == "TestConfigV2CIRehearsalCoverage"
     assert rehearsal["docker_log"] == (
         ".tmp/logs/config-v2-ci-runtime-switch-rehearsal-coverage-v2.log"
     )
+
+    script_path = _REPO_ROOT / rehearsal["script"]
+    assert script_path.exists()
+    assert script_path.stat().st_mode & 0o111
+    script_text = script_path.read_text()
+    assert CONFIG_V2_CI_REHEARSAL_ENV in script_text
+    assert "run_system_tests_docker.sh" in script_text
+    assert "pytest tests/system" not in script_text
+    assert rehearsal["docker_selector"] in script_text
+    assert rehearsal["docker_log"].removeprefix(".tmp/") in script_text
+    assert "llvm-lisa-restructure" not in script_text
+    for forbidden_args in (("-k", "OtherSelector"), ("--keyword=OtherSelector",)):
+        proc = subprocess.run(
+            [str(script_path), "--", *forbidden_args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 2
+        assert "cannot override the fixed selector" in proc.stderr
+
+    readme_text = _README.read_text()
+    assert rehearsal["named_command"] in readme_text
 
     expected_mappings = [
         {
