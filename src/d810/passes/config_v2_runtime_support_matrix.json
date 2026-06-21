@@ -251,6 +251,67 @@
     ],
     "unsupported_policy": "Unsupported adapter boundaries stay fail-closed until explicit adapter work lands; opt-in rollout does not make OLLVM, indirect branch/call, or cleanup-family configs runnable."
   },
+  "ci_runtime_rehearsal": {
+    "status": "explicit-test-switch",
+    "switch_env": "D810_CONFIG_V2_CI_REHEARSAL",
+    "default_enabled": false,
+    "enabled_values": [
+      "1",
+      "true",
+      "yes",
+      "on",
+      "config-v2"
+    ],
+    "disabled_values": [
+      "",
+      "0",
+      "false",
+      "no",
+      "off"
+    ],
+    "selection_model": "When the switch is explicitly enabled, the system DSL runner maps supported source project configs to checked-in config-v2 canary ProjectConfigurations. Unsupported project configs fail closed.",
+    "rollback": "Unset D810_CONFIG_V2_CI_REHEARSAL or set it to 0/false/no/off to return the system runner to the existing project configuration path.",
+    "docker_selector": "test_chained_add",
+    "docker_log": ".tmp/logs/config-v2-ci-runtime-switch-rehearsal-v1.log",
+    "supported_mappings": [
+      {
+        "source_config": "default_instruction_only.json",
+        "runtime_config": "default_instruction_only_config_v2_canary.json",
+        "parity_row": "default_instruction_only_config_v2_canary_mba",
+        "expected_pass_ids": [
+          "mba-simplify",
+          "global-constant-inliner",
+          "jump-fixer"
+        ]
+      },
+      {
+        "source_config": "default_unflattening_tigress_engine.json",
+        "runtime_config": "default_unflattening_tigress_engine_config_v2_canary.json",
+        "parity_row": "tigress_engine_config_v2_canary_spine",
+        "expected_pass_ids": [
+          "recover_dispatcher",
+          "recover_state_transitions",
+          "plan_semantic_regions",
+          "lower_state_machine",
+          "cleanup_residual_dispatcher"
+        ]
+      },
+      {
+        "source_config": "hodur_flag2.json",
+        "runtime_config": "hodur_flag2_config_v2_canary.json",
+        "parity_row": "hodur_flag2_config_v2_canary_mixed",
+        "expected_pass_ids": [
+          "recover_dispatcher",
+          "recover_state_transitions",
+          "plan_semantic_regions",
+          "lower_state_machine",
+          "cleanup_residual_dispatcher",
+          "jump-fixer"
+        ]
+      }
+    ],
+    "unsupported_policy": "Any project config outside supported_mappings fails closed when the switch is enabled; the switch does not imply OLLVM, indirect branch/call, or cleanup-family support."
+  },
   "generated_shadows": {
     "legacy_config_count": 26,
     "migratable_count": 21,

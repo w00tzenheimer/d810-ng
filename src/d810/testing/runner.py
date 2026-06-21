@@ -35,8 +35,17 @@ from .assertions import (
     assert_rules_fired,
 )
 from .cases import DeobfuscationCase
+from .config_v2_rehearsal import (
+    config_v2_ci_rehearsal_selection,
+    format_config_v2_ci_rehearsal_status,
+    validate_config_v2_ci_rehearsal_state,
+)
 from .skip_controls import should_skip_reason
 from d810.core.config import ProjectConfiguration
+from d810.core.logging import getLogger
+
+
+logger = getLogger("D810.testing.runner")
 
 
 def _resolve_test_project_index(state: Any, project_name: str) -> int:
@@ -159,9 +168,28 @@ def run_deobfuscation_test(
     with d810_state() as state:
         # Configure project if specified
         if effective_case.project:
+            rehearsal_selection = config_v2_ci_rehearsal_selection(
+                effective_case.project
+            )
+            project_name = (
+                rehearsal_selection.runtime_config
+                if rehearsal_selection is not None
+                else effective_case.project
+            )
             # Load the project by name using deterministic test resolution.
-            project_index = _resolve_test_project_index(state, effective_case.project)
+            project_index = _resolve_test_project_index(state, project_name)
             state.load_project(project_index)
+            if rehearsal_selection is not None:
+                validate_config_v2_ci_rehearsal_state(
+                    state=state,
+                    selection=rehearsal_selection,
+                )
+                logger.info(
+                    "%s",
+                    format_config_v2_ci_rehearsal_status(
+                        selection=rehearsal_selection,
+                    ),
+                )
 
         # ==========================================
         # BEFORE: Decompile without d810 (obfuscated)
