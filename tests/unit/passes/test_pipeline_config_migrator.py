@@ -718,11 +718,38 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
     }
     assert set(parity_rows) == {
         "default_instruction_only_mba",
+        "eidolon_mba_instruction_heavy",
+        "tigress_engine_spine",
+        "approov_mixed_spine_flow",
         "hodur_glbopt2_only_spine",
         "hodur_flag2_mixed",
         "hodur_flag2_s1a_mixed",
         "hodur_flag2_with_fcp_mixed",
         "hodur_flag2_config_v2_canary_mixed",
+    }
+    assert parity_rows["eidolon_mba_instruction_heavy"] == {
+        "id": "eidolon_mba_instruction_heavy",
+        "legacy_config": "eidolon.json",
+        "shadow_config": "eidolon.pipeline_v2.json",
+        "ast_stats_match": True,
+        "stable_diag_parity": True,
+        "allowed_diag_drift": [],
+    }
+    assert parity_rows["tigress_engine_spine"] == {
+        "id": "tigress_engine_spine",
+        "legacy_config": "default_unflattening_tigress_engine.json",
+        "shadow_config": "default_unflattening_tigress_engine.pipeline_v2.json",
+        "ast_stats_match": True,
+        "stable_diag_parity": True,
+        "allowed_diag_drift": [],
+    }
+    assert parity_rows["approov_mixed_spine_flow"] == {
+        "id": "approov_mixed_spine_flow",
+        "legacy_config": "default_unflattening_approov.json",
+        "shadow_config": "default_unflattening_approov.pipeline_v2.json",
+        "ast_stats_match": True,
+        "stable_diag_parity": True,
+        "allowed_diag_drift": [],
     }
     assert parity_rows["hodur_flag2_mixed"]["allowed_diag_drift"] == []
     assert parity_rows["hodur_flag2_s1a_mixed"]["allowed_diag_drift"] == []
@@ -740,7 +767,7 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         f"{len(parity_rows)} passed,"
     )
     assert matrix["parity_evidence"]["docker_log"].endswith(
-        "config-v2-parity-gate-canary-v1.log"
+        "config-v2-representative-supported-shadow-parity-v1.log"
     )
 
     canaries = {
