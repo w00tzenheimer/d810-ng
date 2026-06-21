@@ -49,16 +49,48 @@
         "cleanup_residual_dispatcher",
         "jump-fixer"
       ]
+    },
+    {
+      "id": "mixed_spine_instruction_simple_flow_rule",
+      "description": "MBA/instruction hook lane plus native state-machine spine and simple legacy flow-rule hooks",
+      "representative_row": "hodur_flag2_with_fcp_mixed",
+      "representative_shadow": "hodur_flag2_with_fcp.pipeline_v2.json",
+      "pass_ids": [
+        "mba-simplify",
+        "recover_dispatcher",
+        "recover_state_transitions",
+        "plan_semantic_regions",
+        "lower_state_machine",
+        "cleanup_residual_dispatcher",
+        "jump-fixer",
+        "forward-constant-propagation"
+      ]
     }
   ],
   "parity_evidence": {
-    "docker_log": ".tmp/logs/config-v2-runtime-support-matrix-v1-parity.log",
-    "summary": "3 passed, 1 skipped, 2481 deselected, 117 warnings",
+    "docker_log": ".tmp/logs/config-v2-expanded-parity-evidence-v1.log",
+    "summary": "5 passed, 1 skipped, 2481 deselected, 117 warnings",
     "rows": [
       {
         "id": "default_instruction_only_mba",
         "legacy_config": "default_instruction_only.json",
         "shadow_config": "default_instruction_only.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
+      },
+      {
+        "id": "hodur_flag2_s1a_mixed",
+        "legacy_config": "hodur_flag2_s1a.json",
+        "shadow_config": "hodur_flag2_s1a.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
+      },
+      {
+        "id": "hodur_flag2_with_fcp_mixed",
+        "legacy_config": "hodur_flag2_with_fcp.json",
+        "shadow_config": "hodur_flag2_with_fcp.pipeline_v2.json",
         "ast_stats_match": true,
         "stable_diag_parity": true,
         "allowed_diag_drift": []
