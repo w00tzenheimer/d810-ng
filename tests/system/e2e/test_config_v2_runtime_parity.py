@@ -149,6 +149,18 @@ _PARITY_ROWS = (
         ),
         id="hodur_flag2_config_v2_canary_mixed",
     ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="identity_call_explicit_adapter",
+            legacy_config="identity_call.json",
+            shadow_config="identity_call.pipeline_v2.json",
+            function_name="identity_call_trampoline_chain",
+            expected_pass_ids=("identity-call-resolver",),
+            expects_state_machine=False,
+            required_snapshot_label=None,
+        ),
+        id="identity_call_explicit_adapter",
+    ),
 )
 
 

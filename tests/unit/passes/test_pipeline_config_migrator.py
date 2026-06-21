@@ -77,6 +77,7 @@ _GENERATED_SHADOW_CONFIGS = (
     "hodur_flag2_s1a",
     "hodur_flag2_with_fcp",
     "hodur_glbopt2_only",
+    "identity_call",
 )
 _REMAINING_GENERATED_SHADOWS = (
     ("bogus_loops", 0, ("MbaStatePreconditioner", "JumpFixer")),
@@ -119,6 +120,7 @@ _REMAINING_GENERATED_SHADOWS = (
         ("StateMachineCffUnflattener", "JumpFixer", "ForwardConstantPropagationRule"),
     ),
     ("hodur_glbopt2_only", 0, ("StateMachineCffUnflattener",)),
+    ("identity_call", 0, ("IdentityCallResolver",)),
 )
 
 
@@ -175,8 +177,6 @@ def _expected_unsupported_reason_tokens(config_name: str) -> tuple[str, ...]:
         return ("IndirectCallResolver", "SimpleFlatteningCleanupUnflattener")
     if config_name == "example_libobfuscated_no_fixprecedessor.json":
         return ("SimpleFlatteningCleanupUnflattener",)
-    if config_name == "identity_call.json":
-        return ("IdentityCallResolver",)
     raise AssertionError(f"unsupported config lacks explicit matrix expectation: {config_name}")
 
 
@@ -241,6 +241,7 @@ def _assert_block_entries_preserve_legacy_rules(
         ("BlockLevelEgglogOptimizer", "block-level-egglog-optimizer"),
         ("GlobalConstantInliner", "global-constant-inliner"),
         ("ForwardConstantPropagationRule", "forward-constant-propagation"),
+        ("IdentityCallResolver", "identity-call-resolver"),
         ("MbaStatePreconditioner", "mba-state-preconditioner"),
         ("JumpFixer", "jump-fixer"),
     ],
@@ -301,11 +302,6 @@ def test_legacy_block_rule_adapter_boundary_classifies_state_machine_spine():
             "SimpleFlatteningCleanupUnflattener",
             LegacyBlockRuleAdapterKind.CLEANUP_FAMILY_ADAPTER,
             "cleanup-family planner/executor adapter",
-        ),
-        (
-            "IdentityCallResolver",
-            LegacyBlockRuleAdapterKind.LEGACY_FLOW_RULE_ADAPTER,
-            "explicit opt-in identity-call FlowOptimizationRule adapter",
         ),
     ],
 )
@@ -674,7 +670,6 @@ def test_repo_legacy_config_inventory_reports_current_state():
         "default_unflattening_ollvm.json",
         "default_unflattening_ollvm_s1a_fair.json",
         "example_libobfuscated_no_fixprecedessor.json",
-        "identity_call.json",
     }
     assert {
         item.config_name
@@ -701,6 +696,7 @@ def test_repo_legacy_config_inventory_reports_current_state():
         "hodur_flag2_s1a.json",
         "hodur_flag2_with_fcp.json",
         "hodur_glbopt2_only.json",
+        "identity_call.json",
     }
 
 
@@ -750,11 +746,7 @@ def test_repo_inventory_surfaces_unsupported_reasons():
         "SimpleFlatteningCleanupUnflattener"
         in inventory["example_libobfuscated_no_fixprecedessor.json"].reason
     )
-    assert (
-        "IdentityCallResolver "
-        "(requires an explicit opt-in identity-call FlowOptimizationRule adapter)"
-        in inventory["identity_call.json"].reason
-    )
+    assert inventory["identity_call.json"].status is LegacyConfigMigrationStatus.MIGRATABLE
 
 
 def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
@@ -794,6 +786,7 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "hodur_flag2_s1a_mixed",
         "hodur_flag2_with_fcp_mixed",
         "hodur_flag2_config_v2_canary_mixed",
+        "identity_call_explicit_adapter",
     }
     assert parity_rows["eidolon_mba_instruction_heavy"] == {
         "id": "eidolon_mba_instruction_heavy",
@@ -831,11 +824,19 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "stable_diag_parity": True,
         "allowed_diag_drift": [],
     }
+    assert parity_rows["identity_call_explicit_adapter"] == {
+        "id": "identity_call_explicit_adapter",
+        "legacy_config": "identity_call.json",
+        "shadow_config": "identity_call.pipeline_v2.json",
+        "ast_stats_match": True,
+        "stable_diag_parity": True,
+        "allowed_diag_drift": [],
+    }
     assert matrix["parity_evidence"]["summary"].startswith(
         f"{len(parity_rows)} passed,"
     )
     assert matrix["parity_evidence"]["docker_log"].endswith(
-        "config-v2-representative-supported-shadow-parity-v1.log"
+        "config-v2-identity-call-adapter-v1-parity.log"
     )
 
     canaries = {
@@ -874,6 +875,7 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "native_state_machine_spine",
         "mixed_spine_simple_flow_rule",
         "mixed_spine_instruction_simple_flow_rule",
+        "identity_call_flow_rule",
     }
     assert {
         item["config"] for item in matrix["unsupported_adapter_boundaries"]
@@ -939,8 +941,9 @@ def test_readme_documents_config_v2_canary_selection_note():
 
     for config in rollout["user_selectable_configs"]:
         assert config["config"] in readme
-    for boundary in ("OLLVM", "indirect branch/call", "cleanup-family", "identity-call"):
+    for boundary in ("OLLVM", "indirect branch/call", "cleanup-family"):
         assert boundary in normalized_readme
+    assert "identity-call remains unsupported" not in normalized_readme
 
 
 def test_config_v2_runtime_support_matrix_parity_rows_are_executable_contracts():

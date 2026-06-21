@@ -65,11 +65,20 @@
         "jump-fixer",
         "forward-constant-propagation"
       ]
+    },
+    {
+      "id": "identity_call_flow_rule",
+      "description": "Explicit identity-call legacy flow-rule hook lane",
+      "representative_row": "identity_call_explicit_adapter",
+      "representative_shadow": "identity_call.pipeline_v2.json",
+      "pass_ids": [
+        "identity-call-resolver"
+      ]
     }
   ],
   "parity_evidence": {
-    "docker_log": ".tmp/logs/config-v2-representative-supported-shadow-parity-v1.log",
-    "summary": "9 passed, 1 skipped, 2481 deselected, 117 warnings",
+    "docker_log": ".tmp/logs/config-v2-identity-call-adapter-v1-parity.log",
+    "summary": "10 passed, 1 skipped, 2481 deselected, 117 warnings",
     "rows": [
       {
         "id": "default_instruction_only_mba",
@@ -145,6 +154,14 @@
         "ast_stats_match": true,
         "stable_diag_parity": true,
         "allowed_diag_drift": []
+      },
+      {
+        "id": "identity_call_explicit_adapter",
+        "legacy_config": "identity_call.json",
+        "shadow_config": "identity_call.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
       }
     ]
   },
@@ -178,12 +195,12 @@
         ]
       }
     ],
-    "unsupported_policy": "Unsupported adapter boundaries stay fail-closed until explicit adapter work lands; opt-in rollout does not make OLLVM, indirect branch/call, cleanup-family, or identity-call configs runnable."
+    "unsupported_policy": "Unsupported adapter boundaries stay fail-closed until explicit adapter work lands; opt-in rollout does not make OLLVM, indirect branch/call, or cleanup-family configs runnable."
   },
   "generated_shadows": {
     "legacy_config_count": 26,
-    "migratable_count": 20,
-    "unsupported_count": 6,
+    "migratable_count": 21,
+    "unsupported_count": 5,
     "migratable_missing_shadow_count": 0,
     "migratable_configs": [
       "bogus_loops.json",
@@ -205,7 +222,8 @@
       "hodur_flag2.json",
       "hodur_flag2_s1a.json",
       "hodur_flag2_with_fcp.json",
-      "hodur_glbopt2_only.json"
+      "hodur_glbopt2_only.json",
+      "identity_call.json"
     ],
     "operational_exceptions": [
       {
@@ -234,10 +252,6 @@
     {
       "config": "example_libobfuscated_no_fixprecedessor.json",
       "blocked_boundary": "cleanup-family adapter boundary"
-    },
-    {
-      "config": "identity_call.json",
-      "blocked_boundary": "experimental identity-call adapter boundary"
     }
   ],
   "non_goals": [
@@ -245,7 +259,6 @@
     "no OLLVM runtime support",
     "no indirect branch/call adapter",
     "no cleanup-family adapter",
-    "no identity-call adapter",
     "no fake pass registration",
     "no LLVM M3/M4/lower-back/drop work"
   ]

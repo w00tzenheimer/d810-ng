@@ -457,8 +457,8 @@ sets `pipeline_v2_mode: config-v2` and exercises the Hodur native
 state-machine spine plus the supported simple flow-rule lane.
 
 This canary does not enable unsupported adapter families. OLLVM, indirect
-branch/call, cleanup-family, and identity-call configurations remain
-fail-closed until their adapters are implemented and validated.
+branch/call, and cleanup-family configurations remain fail-closed until their
+adapters are implemented and validated.
 
 When you want to disable deobfuscation, just click on the `Stop` button or use the context menus:
 
