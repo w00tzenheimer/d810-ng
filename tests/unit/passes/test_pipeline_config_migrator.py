@@ -702,10 +702,14 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "default_instruction_only_mba",
         "hodur_glbopt2_only_spine",
         "hodur_flag2_mixed",
+        "hodur_flag2_s1a_mixed",
+        "hodur_flag2_with_fcp_mixed",
     }
     assert parity_rows["hodur_flag2_mixed"]["allowed_diag_drift"] == []
+    assert parity_rows["hodur_flag2_s1a_mixed"]["allowed_diag_drift"] == []
+    assert parity_rows["hodur_flag2_with_fcp_mixed"]["allowed_diag_drift"] == []
     assert matrix["parity_evidence"]["docker_log"].endswith(
-        "config-v2-runtime-support-matrix-v1-parity.log"
+        "config-v2-expanded-parity-evidence-v1.log"
     )
 
     lane_ids = {lane["id"] for lane in matrix["runtime_lanes"]}
@@ -713,6 +717,7 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "mba_instruction_hook",
         "native_state_machine_spine",
         "mixed_spine_simple_flow_rule",
+        "mixed_spine_instruction_simple_flow_rule",
     }
     assert {
         item["config"] for item in matrix["unsupported_adapter_boundaries"]

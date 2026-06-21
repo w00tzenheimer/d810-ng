@@ -102,6 +102,38 @@ _PARITY_ROWS = (
         ),
         id="hodur_flag2_mixed",
     ),
+    pytest.param(
+        _ParityRow(
+            row_id="hodur_flag2_s1a_mixed",
+            legacy_config="hodur_flag2_s1a.json",
+            shadow_config="hodur_flag2_s1a.pipeline_v2.json",
+            function_name="hodur_func",
+            expected_pass_ids=(
+                *STATE_MACHINE_NATIVE_PASS_IDS,
+                "jump-fixer",
+            ),
+            expects_state_machine=True,
+            required_snapshot_label=_FINAL_POST_D810_SNAPSHOT_LABEL,
+        ),
+        id="hodur_flag2_s1a_mixed",
+    ),
+    pytest.param(
+        _ParityRow(
+            row_id="hodur_flag2_with_fcp_mixed",
+            legacy_config="hodur_flag2_with_fcp.json",
+            shadow_config="hodur_flag2_with_fcp.pipeline_v2.json",
+            function_name="hodur_func",
+            expected_pass_ids=(
+                "mba-simplify",
+                *STATE_MACHINE_NATIVE_PASS_IDS,
+                "jump-fixer",
+                "forward-constant-propagation",
+            ),
+            expects_state_machine=True,
+            required_snapshot_label=_FINAL_POST_D810_SNAPSHOT_LABEL,
+        ),
+        id="hodur_flag2_with_fcp_mixed",
+    ),
 )
 
 
