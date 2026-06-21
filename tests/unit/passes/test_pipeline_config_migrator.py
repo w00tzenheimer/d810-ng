@@ -41,6 +41,7 @@ _RUNTIME_SUPPORT_MATRIX = (
 _RUNTIME_PARITY_TEST = _REPO_ROOT / "tests" / "system" / "e2e" / (
     "test_config_v2_runtime_parity.py"
 )
+_CI_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "python.yml"
 _OLLVM_CONFIGS = (
     "default_unflattening_ollvm",
     "default_unflattening_ollvm_s1a_fair",
@@ -138,6 +139,15 @@ def _load_json(path: Path) -> dict[str, object]:
 
 def _load_runtime_support_matrix() -> dict[str, object]:
     return _load_json(_RUNTIME_SUPPORT_MATRIX)
+
+
+def _github_actions_job_block(workflow_text: str, job_id: str) -> str:
+    marker = f"    {job_id}:\n"
+    start = workflow_text.index(marker)
+    next_job = re.search(r"\n    [A-Za-z0-9_-]+:\n", workflow_text[start + 1 :])
+    if next_job is None:
+        return workflow_text[start:]
+    return workflow_text[start : start + 1 + next_job.start()]
 
 
 def _inventory_by_name():
@@ -1010,6 +1020,27 @@ def test_config_v2_runtime_support_matrix_ci_rehearsal_switch_is_explicit():
     )
     assert "<target-worktree>" in rehearsal["named_command"]
     assert "llvm-lisa-restructure" not in rehearsal["named_command"]
+    ci_job = rehearsal["ci_job"]
+    assert ci_job == {
+        "workflow": ".github/workflows/python.yml",
+        "job_id": "config-v2-ci-rehearsal",
+        "job_name": "config-v2 CI rehearsal (supported mappings)",
+        "status": "wired-non-blocking",
+        "blocking": False,
+        "command": (
+            "./tools/scripts/run_config_v2_ci_rehearsal.sh "
+            "-w config-v2-ci-rehearsal"
+        ),
+        "worktree": "config-v2-ci-rehearsal",
+        "stabilization_policy": (
+            "Keep visible but non-blocking until the supported-mapping rehearsal "
+            "job is stable in CI, then make the job blocking in a separate change."
+        ),
+        "rollback": (
+            "Disable or remove this job, or unset D810_CONFIG_V2_CI_REHEARSAL "
+            "in the named rehearsal command; product default runtime is unchanged."
+        ),
+    }
     assert rehearsal["docker_selector"] == "TestConfigV2CIRehearsalCoverage"
     assert rehearsal["docker_log"] == (
         ".tmp/logs/config-v2-ci-runtime-switch-rehearsal-coverage-v2.log"
@@ -1037,6 +1068,18 @@ def test_config_v2_runtime_support_matrix_ci_rehearsal_switch_is_explicit():
 
     readme_text = _README.read_text()
     assert rehearsal["named_command"] in readme_text
+
+    assert _CI_WORKFLOW == _REPO_ROOT / ci_job["workflow"]
+    workflow_text = _CI_WORKFLOW.read_text(encoding="utf-8")
+    job_block = _github_actions_job_block(workflow_text, ci_job["job_id"])
+    assert f'name: "{ci_job["job_name"]}"' in job_block
+    assert "continue-on-error: true" in job_block
+    assert "D810_DOCKER_IMAGE:" in job_block
+    assert "mkdir -p .worktrees" in job_block
+    assert f'git worktree add .worktrees/{ci_job["worktree"]} HEAD' in job_block
+    assert "D810_REPO_ROOT=\"${{ github.workspace }}\"" in job_block
+    assert ci_job["command"] in job_block
+    assert "pytest tests/system" not in job_block
 
     expected_mappings = [
         {
