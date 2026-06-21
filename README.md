@@ -448,15 +448,22 @@ D810_BUILD_SPEEDUPS=1 pip install --no-build-isolation -e ".[dev]"
 2. Click on the `Start` button to enable deobfuscation
 3. Decompile an obfuscated function, the code should be simplified (hopefully)
 
-### Config-v2 opt-in canary
+### Config-v2 opt-in canaries
 
 The default runtime remains the existing project configuration path. To try
-the supported config-v2 runtime path explicitly, select
-`hodur_flag2_config_v2_canary.json` as the project configuration. That canary
-sets `pipeline_v2_mode: config-v2` and exercises the Hodur native
-state-machine spine plus the supported simple flow-rule lane.
+the supported config-v2 runtime path explicitly, select one of these project
+configurations:
 
-This canary does not enable unsupported adapter families. OLLVM, indirect
+- `default_instruction_only_config_v2_canary.json` exercises the
+  MBA/instruction plus supported simple flow-rule lane.
+- `default_unflattening_tigress_engine_config_v2_canary.json` exercises a
+  non-Hodur native state-machine spine lane.
+- `hodur_flag2_config_v2_canary.json` exercises the Hodur native
+  state-machine spine plus the supported simple flow-rule lane.
+
+Each canary sets `pipeline_v2_mode: config-v2`.
+
+These canaries do not enable unsupported adapter families. OLLVM, indirect
 branch/call, and cleanup-family configurations remain fail-closed until their
 adapters are implemented and validated.
 

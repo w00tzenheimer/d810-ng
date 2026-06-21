@@ -77,12 +77,21 @@
     }
   ],
   "parity_evidence": {
-    "docker_log": ".tmp/logs/config-v2-identity-call-adapter-v1-parity.log",
-    "summary": "10 passed, 1 skipped, 2481 deselected, 117 warnings",
+    "docker_log": ".tmp/logs/config-v2-canary-expansion-v1-parity.log",
+    "summary": "12 passed, 1 skipped, 2481 deselected, 117 warnings",
     "rows": [
       {
         "id": "default_instruction_only_mba",
         "legacy_config": "default_instruction_only.json",
+        "shadow_config": "default_instruction_only.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
+      },
+      {
+        "id": "default_instruction_only_config_v2_canary_mba",
+        "legacy_config": "default_instruction_only.json",
+        "runtime_config": "default_instruction_only_config_v2_canary.json",
         "shadow_config": "default_instruction_only.pipeline_v2.json",
         "ast_stats_match": true,
         "stable_diag_parity": true,
@@ -99,6 +108,15 @@
       {
         "id": "tigress_engine_spine",
         "legacy_config": "default_unflattening_tigress_engine.json",
+        "shadow_config": "default_unflattening_tigress_engine.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
+      },
+      {
+        "id": "tigress_engine_config_v2_canary_spine",
+        "legacy_config": "default_unflattening_tigress_engine.json",
+        "runtime_config": "default_unflattening_tigress_engine_config_v2_canary.json",
         "shadow_config": "default_unflattening_tigress_engine.pipeline_v2.json",
         "ast_stats_match": true,
         "stable_diag_parity": true,
@@ -167,6 +185,22 @@
   },
   "canary_configs": [
     {
+      "id": "default_instruction_only_config_v2_canary",
+      "config": "default_instruction_only_config_v2_canary.json",
+      "source_config": "default_instruction_only.json",
+      "source_shadow": "default_instruction_only.pipeline_v2.json",
+      "representative_row": "default_instruction_only_config_v2_canary_mba",
+      "runtime_mode": "config-v2"
+    },
+    {
+      "id": "default_unflattening_tigress_engine_config_v2_canary",
+      "config": "default_unflattening_tigress_engine_config_v2_canary.json",
+      "source_config": "default_unflattening_tigress_engine.json",
+      "source_shadow": "default_unflattening_tigress_engine.pipeline_v2.json",
+      "representative_row": "tigress_engine_config_v2_canary_spine",
+      "runtime_mode": "config-v2"
+    },
+    {
       "id": "hodur_flag2_config_v2_canary",
       "config": "hodur_flag2_config_v2_canary.json",
       "source_config": "hodur_flag2.json",
@@ -176,13 +210,33 @@
     }
   ],
   "opt_in_rollout": {
-    "status": "supported-canary",
+    "status": "supported-canaries",
     "default_runtime_mode": "legacy",
     "required_mode": "config-v2",
-    "selection_model": "Users select a checked-in canary ProjectConfiguration by name; generated shadows remain migration artifacts and existing project configs remain the default runtime source.",
-    "docker_log": ".tmp/logs/config-v2-opt-in-rollout-v1-canary.log",
-    "summary": "1 passed, 1 skipped, 2489 deselected, 117 warnings",
+    "selection_model": "Users select checked-in canary ProjectConfigurations by name; generated shadows remain migration artifacts and existing project configs remain the default runtime source.",
+    "docker_log": ".tmp/logs/config-v2-canary-expansion-v1-parity.log",
+    "summary": "12 passed, 1 skipped, 2481 deselected, 117 warnings",
     "user_selectable_configs": [
+      {
+        "config": "default_instruction_only_config_v2_canary.json",
+        "source_config": "default_instruction_only.json",
+        "source_shadow": "default_instruction_only.pipeline_v2.json",
+        "parity_row": "default_instruction_only_config_v2_canary_mba",
+        "normal_project_config_loading_path": true,
+        "lanes": [
+          "mba_instruction_hook"
+        ]
+      },
+      {
+        "config": "default_unflattening_tigress_engine_config_v2_canary.json",
+        "source_config": "default_unflattening_tigress_engine.json",
+        "source_shadow": "default_unflattening_tigress_engine.pipeline_v2.json",
+        "parity_row": "tigress_engine_config_v2_canary_spine",
+        "normal_project_config_loading_path": true,
+        "lanes": [
+          "native_state_machine_spine"
+        ]
+      },
       {
         "config": "hodur_flag2_config_v2_canary.json",
         "source_config": "hodur_flag2.json",

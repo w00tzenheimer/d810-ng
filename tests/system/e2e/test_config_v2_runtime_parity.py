@@ -35,6 +35,23 @@ _PARITY_ROWS = (
     ),
     pytest.param(
         ConfigV2ParityRow(
+            row_id="default_instruction_only_config_v2_canary_mba",
+            legacy_config="default_instruction_only.json",
+            shadow_config="default_instruction_only.pipeline_v2.json",
+            runtime_config="default_instruction_only_config_v2_canary.json",
+            function_name="test_chained_add",
+            expected_pass_ids=(
+                "mba-simplify",
+                "global-constant-inliner",
+                "jump-fixer",
+            ),
+            expects_state_machine=False,
+            required_snapshot_label=None,
+        ),
+        id="default_instruction_only_config_v2_canary_mba",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
             row_id="eidolon_mba_instruction_heavy",
             legacy_config="eidolon.json",
             shadow_config="eidolon.pipeline_v2.json",
@@ -56,6 +73,19 @@ _PARITY_ROWS = (
             required_snapshot_label=None,
         ),
         id="tigress_engine_spine",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="tigress_engine_config_v2_canary_spine",
+            legacy_config="default_unflattening_tigress_engine.json",
+            shadow_config="default_unflattening_tigress_engine.pipeline_v2.json",
+            runtime_config="default_unflattening_tigress_engine_config_v2_canary.json",
+            function_name="tigress_minmaxarray",
+            expected_pass_ids=STATE_MACHINE_NATIVE_PASS_IDS,
+            expects_state_machine=True,
+            required_snapshot_label=None,
+        ),
+        id="tigress_engine_config_v2_canary_spine",
     ),
     pytest.param(
         ConfigV2ParityRow(
