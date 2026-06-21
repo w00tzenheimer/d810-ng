@@ -1,0 +1,155 @@
+{
+  "version": 1,
+  "status_commit": "d34c2dbcd Add config-v2 legacy hook runtime bridge",
+  "default_runtime_mode": "legacy",
+  "explicit_runtime_mode": "config-v2",
+  "source_of_truth": "pipeline_v2",
+  "compiler_bridge_model": {
+    "parse": "pipeline_configs_from_project_config parses JSON-compatible pass entries; malformed payloads fail closed",
+    "build": "config_v2_operational resolves executable pass ids; unsupported ids raise UnknownPassIdError",
+    "live_hook_bridge": "pipeline_v2_hook_activation derives live Hex-Rays hook rules from pipeline_v2 instead of copied legacy ins_rules or blk_rules",
+    "state_machine_lane": "StateMachineCffUnflattener receives only native spine specs for config-v2 execution; shadow comparison is shadow-check only",
+    "evidence": "Docker parity compares pseudocode, AST stats, diagnostic tables, stable counts, and snapshot labels"
+  },
+  "runtime_lanes": [
+    {
+      "id": "mba_instruction_hook",
+      "description": "MBA/instruction hook lane via mba-simplify and simple flow-rule entries",
+      "representative_row": "default_instruction_only_mba",
+      "representative_shadow": "default_instruction_only.pipeline_v2.json",
+      "pass_ids": [
+        "mba-simplify",
+        "global-constant-inliner",
+        "jump-fixer"
+      ]
+    },
+    {
+      "id": "native_state_machine_spine",
+      "description": "Native state-machine spine lane",
+      "representative_row": "hodur_glbopt2_only_spine",
+      "representative_shadow": "hodur_glbopt2_only.pipeline_v2.json",
+      "pass_ids": [
+        "recover_dispatcher",
+        "recover_state_transitions",
+        "plan_semantic_regions",
+        "lower_state_machine",
+        "cleanup_residual_dispatcher"
+      ]
+    },
+    {
+      "id": "mixed_spine_simple_flow_rule",
+      "description": "Native state-machine spine plus simple legacy flow-rule hook lane",
+      "representative_row": "hodur_flag2_mixed",
+      "representative_shadow": "hodur_flag2.pipeline_v2.json",
+      "pass_ids": [
+        "recover_dispatcher",
+        "recover_state_transitions",
+        "plan_semantic_regions",
+        "lower_state_machine",
+        "cleanup_residual_dispatcher",
+        "jump-fixer"
+      ]
+    }
+  ],
+  "parity_evidence": {
+    "docker_log": ".tmp/logs/config-v2-runtime-support-matrix-v1-parity.log",
+    "summary": "3 passed, 1 skipped, 2481 deselected, 117 warnings",
+    "rows": [
+      {
+        "id": "default_instruction_only_mba",
+        "legacy_config": "default_instruction_only.json",
+        "shadow_config": "default_instruction_only.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
+      },
+      {
+        "id": "hodur_glbopt2_only_spine",
+        "legacy_config": "hodur_glbopt2_only.json",
+        "shadow_config": "hodur_glbopt2_only.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": [
+          "fact_observations"
+        ]
+      },
+      {
+        "id": "hodur_flag2_mixed",
+        "legacy_config": "hodur_flag2.json",
+        "shadow_config": "hodur_flag2.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
+      }
+    ]
+  },
+  "generated_shadows": {
+    "legacy_config_count": 26,
+    "migratable_count": 20,
+    "unsupported_count": 6,
+    "migratable_missing_shadow_count": 0,
+    "migratable_configs": [
+      "bogus_loops.json",
+      "default_instruction_only.json",
+      "default_unflattening_approov.json",
+      "default_unflattening_approov_s1a.json",
+      "default_unflattening_switch_case.json",
+      "default_unflattening_tigress_engine.json",
+      "default_unflattening_tigress_engine_transition_facts.json",
+      "default_unflattening_tigress_indirect.json",
+      "eidolon.json",
+      "example_anel.json",
+      "example_hodur.json",
+      "example_libobfuscated.json",
+      "example_libobfuscated_abc.json",
+      "flatfold.json",
+      "flatfold_no_predicate_loop_fix.json",
+      "hodur_deobfuscation.json",
+      "hodur_flag2.json",
+      "hodur_flag2_s1a.json",
+      "hodur_flag2_with_fcp.json",
+      "hodur_glbopt2_only.json"
+    ],
+    "operational_exceptions": [
+      {
+        "shadow_config": "example_libobfuscated.pipeline_v2.json",
+        "reason": "contains unsupported block-level-egglog-optimizer pass id"
+      }
+    ]
+  },
+  "unsupported_adapter_boundaries": [
+    {
+      "config": "default.json",
+      "blocked_boundary": "indirect branch/call adapter boundaries"
+    },
+    {
+      "config": "default_indirect_resolution.json",
+      "blocked_boundary": "indirect branch/call adapter boundaries"
+    },
+    {
+      "config": "default_unflattening_ollvm.json",
+      "blocked_boundary": "indirect call plus cleanup-family adapter boundaries"
+    },
+    {
+      "config": "default_unflattening_ollvm_s1a_fair.json",
+      "blocked_boundary": "indirect call plus cleanup-family adapter boundaries"
+    },
+    {
+      "config": "example_libobfuscated_no_fixprecedessor.json",
+      "blocked_boundary": "cleanup-family adapter boundary"
+    },
+    {
+      "config": "identity_call.json",
+      "blocked_boundary": "experimental identity-call adapter boundary"
+    }
+  ],
+  "non_goals": [
+    "no default runtime cutover",
+    "no OLLVM runtime support",
+    "no indirect branch/call adapter",
+    "no cleanup-family adapter",
+    "no identity-call adapter",
+    "no fake pass registration",
+    "no LLVM M3/M4/lower-back/drop work"
+  ]
+}

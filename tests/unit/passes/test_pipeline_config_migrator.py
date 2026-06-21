@@ -22,6 +22,9 @@ from d810.passes.pipeline_config_migrator import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _CONF_DIR = _REPO_ROOT / "src" / "d810" / "conf"
+_RUNTIME_SUPPORT_MATRIX = (
+    _REPO_ROOT / "src" / "d810" / "passes" / "config_v2_runtime_support_matrix.json"
+)
 _OLLVM_CONFIGS = (
     "default_unflattening_ollvm",
     "default_unflattening_ollvm_s1a_fair",
@@ -666,6 +669,54 @@ def test_repo_inventory_surfaces_unsupported_reasons():
         "(requires an explicit opt-in identity-call FlowOptimizationRule adapter)"
         in inventory["identity_call.json"].reason
     )
+
+
+def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
+    matrix = _load_json(_RUNTIME_SUPPORT_MATRIX)
+    inventory = _inventory_by_name()
+
+    migratable = {
+        item.config_name
+        for item in inventory.values()
+        if item.status is LegacyConfigMigrationStatus.MIGRATABLE
+    }
+    unsupported = {
+        item.config_name
+        for item in inventory.values()
+        if item.status is LegacyConfigMigrationStatus.UNSUPPORTED
+    }
+
+    assert matrix["default_runtime_mode"] == "legacy"
+    assert matrix["explicit_runtime_mode"] == "config-v2"
+    assert matrix["source_of_truth"] == "pipeline_v2"
+    assert set(matrix["generated_shadows"]["migratable_configs"]) == migratable
+    assert matrix["generated_shadows"]["legacy_config_count"] == len(inventory)
+    assert matrix["generated_shadows"]["migratable_count"] == len(migratable)
+    assert matrix["generated_shadows"]["unsupported_count"] == len(unsupported)
+    assert matrix["generated_shadows"]["migratable_missing_shadow_count"] == 0
+
+    parity_rows = {
+        row["id"]: row for row in matrix["parity_evidence"]["rows"]
+    }
+    assert set(parity_rows) == {
+        "default_instruction_only_mba",
+        "hodur_glbopt2_only_spine",
+        "hodur_flag2_mixed",
+    }
+    assert parity_rows["hodur_flag2_mixed"]["allowed_diag_drift"] == []
+    assert matrix["parity_evidence"]["docker_log"].endswith(
+        "config-v2-runtime-support-matrix-v1-parity.log"
+    )
+
+    lane_ids = {lane["id"] for lane in matrix["runtime_lanes"]}
+    assert lane_ids == {
+        "mba_instruction_hook",
+        "native_state_machine_spine",
+        "mixed_spine_simple_flow_rule",
+    }
+    assert {
+        item["config"] for item in matrix["unsupported_adapter_boundaries"]
+    } == unsupported
 
 
 @pytest.mark.parametrize("config_name", _OLLVM_CONFIGS)
