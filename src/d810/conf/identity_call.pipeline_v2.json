@@ -1,0 +1,39 @@
+{
+  "description": "Config-v2 shadow representation of identity_call.json. The source project JSON remains the default runtime source.",
+  "ins_rules": [],
+  "blk_rules": [],
+  "additional_configuration": {
+    "pipeline_v2_shadow": {
+      "source_config": "identity_call.json",
+      "runtime_source": "legacy"
+    },
+    "pipeline_v2": [
+      {
+        "pass": "identity-call-resolver",
+        "scope": "block",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "legacy_flow_rule_adapter"
+          ]
+        },
+        "migration": {
+          "source_config": "identity_call.json",
+          "source_section": "blk_rules",
+          "source_rule": "IdentityCallResolver"
+        },
+        "options": {
+          "legacy_rule": "IdentityCallResolver",
+          "enable_experimental": true,
+          "max_trampoline_depth": 32,
+          "max_search_instructions": 30
+        }
+      }
+    ]
+  }
+}

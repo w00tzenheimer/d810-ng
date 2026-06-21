@@ -103,6 +103,23 @@ def test_hodur_bridge_derives_unflattener_trigger_and_simple_flow_rule():
     assert unflattener.config["enable_transition_uddu_validator"] is True
 
 
+def test_identity_call_bridge_derives_explicit_opt_in_rule_config():
+    project = _config_v2_project("identity_call")
+
+    activation = pipeline_v2_hook_activation(project)
+
+    assert activation.enabled is True
+    assert activation.configured_pass_ids == ("identity-call-resolver",)
+    assert activation.native_state_machine_pass_ids == ()
+    assert activation.instruction_rules == ()
+    assert [rule.name for rule in activation.block_rules] == ["IdentityCallResolver"]
+    assert activation.block_rules[0].config == {
+        "enable_experimental": True,
+        "max_trampoline_depth": 32,
+        "max_search_instructions": 30,
+    }
+
+
 def test_native_state_machine_config_filter_excludes_live_hook_passes():
     project = _config_v2_project("hodur_flag2")
 

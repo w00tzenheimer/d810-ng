@@ -19,6 +19,7 @@ LEGACY_FLOW_RULE_ADAPTER_CAPABILITY = "legacy_flow_rule_adapter"
 _SIMPLE_FLOW_RULE_PASS_IDS: Mapping[str, str] = {
     "global-constant-inliner": "GlobalConstantInliner",
     "forward-constant-propagation": "ForwardConstantPropagationRule",
+    "identity-call-resolver": "IdentityCallResolver",
     "mba-state-preconditioner": "MbaStatePreconditioner",
     "jump-fixer": "JumpFixer",
 }

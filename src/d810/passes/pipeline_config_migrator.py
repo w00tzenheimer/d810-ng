@@ -60,6 +60,7 @@ _BLOCK_RULE_PASS_IDS = {
     "BlockLevelEgglogOptimizer": "block-level-egglog-optimizer",
     "GlobalConstantInliner": "global-constant-inliner",
     "ForwardConstantPropagationRule": "forward-constant-propagation",
+    "IdentityCallResolver": "identity-call-resolver",
     "MbaStatePreconditioner": "mba-state-preconditioner",
     "JumpFixer": "jump-fixer",
 }
@@ -103,12 +104,6 @@ _UNSUPPORTED_BLOCK_RULE_ADAPTERS = {
         adapter_kind=LegacyBlockRuleAdapterKind.CLEANUP_FAMILY_ADAPTER,
         supported=False,
         reason="requires a cleanup-family planner/executor adapter",
-    ),
-    "IdentityCallResolver": LegacyBlockRuleAdapterBoundary(
-        rule_name="IdentityCallResolver",
-        adapter_kind=LegacyBlockRuleAdapterKind.LEGACY_FLOW_RULE_ADAPTER,
-        supported=False,
-        reason="requires an explicit opt-in identity-call FlowOptimizationRule adapter",
     ),
 }
 

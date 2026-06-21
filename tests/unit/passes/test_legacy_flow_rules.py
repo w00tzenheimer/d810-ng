@@ -179,6 +179,7 @@ def test_legacy_flow_rule_registry_builds_jump_fixer_shadow_entry():
     [
         ("global-constant-inliner", "GlobalConstantInliner"),
         ("forward-constant-propagation", "ForwardConstantPropagationRule"),
+        ("identity-call-resolver", "IdentityCallResolver"),
         ("mba-state-preconditioner", "MbaStatePreconditioner"),
         ("jump-fixer", "JumpFixer"),
     ],
@@ -326,3 +327,22 @@ def test_operational_registry_still_fails_on_unregistered_block_level_egglog():
 
     with pytest.raises(UnknownPassIdError, match="block-level-egglog-optimizer"):
         pass_specs_from_project_config(shadow, operational_config_v2_pass_registry())
+
+
+def test_operational_registry_builds_identity_call_shadow():
+    shadow = ProjectConfiguration.from_file(_CONF_DIR / "identity_call.pipeline_v2.json")
+
+    specs = pass_specs_from_project_config(
+        shadow,
+        operational_config_v2_pass_registry(),
+    )
+
+    assert [spec.pass_id for spec in specs] == ["identity-call-resolver"]
+    adapter = specs[0].pass_factory()
+    assert isinstance(adapter, LegacyFlowRuleAdapterPass)
+    assert adapter.legacy_rule == "IdentityCallResolver"
+    assert adapter.rule_options == {
+        "enable_experimental": True,
+        "max_trampoline_depth": 32,
+        "max_search_instructions": 30,
+    }
