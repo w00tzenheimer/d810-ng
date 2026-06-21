@@ -35,6 +35,47 @@ _PARITY_ROWS = (
     ),
     pytest.param(
         ConfigV2ParityRow(
+            row_id="eidolon_mba_instruction_heavy",
+            legacy_config="eidolon.json",
+            shadow_config="eidolon.pipeline_v2.json",
+            function_name="test_mba_guessing",
+            expected_pass_ids=("mba-simplify",),
+            expects_state_machine=False,
+            required_snapshot_label=None,
+        ),
+        id="eidolon_mba_instruction_heavy",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="tigress_engine_spine",
+            legacy_config="default_unflattening_tigress_engine.json",
+            shadow_config="default_unflattening_tigress_engine.pipeline_v2.json",
+            function_name="tigress_minmaxarray",
+            expected_pass_ids=STATE_MACHINE_NATIVE_PASS_IDS,
+            expects_state_machine=True,
+            required_snapshot_label=None,
+        ),
+        id="tigress_engine_spine",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="approov_mixed_spine_flow",
+            legacy_config="default_unflattening_approov.json",
+            shadow_config="default_unflattening_approov.pipeline_v2.json",
+            function_name="approov_vm_dispatcher",
+            expected_pass_ids=(
+                "mba-simplify",
+                "mba-state-preconditioner",
+                *STATE_MACHINE_NATIVE_PASS_IDS,
+                "jump-fixer",
+            ),
+            expects_state_machine=True,
+            required_snapshot_label=None,
+        ),
+        id="approov_mixed_spine_flow",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
             row_id="hodur_glbopt2_only_spine",
             legacy_config="hodur_glbopt2_only.json",
             shadow_config="hodur_glbopt2_only.pipeline_v2.json",

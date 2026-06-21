@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "status_commit": "89010067e Add config-v2 expanded parity evidence",
+  "status_commit": "7f9714119 Add config-v2 parity gate canary",
   "default_runtime_mode": "legacy",
   "explicit_runtime_mode": "config-v2",
   "source_of_truth": "pipeline_v2",
@@ -68,13 +68,37 @@
     }
   ],
   "parity_evidence": {
-    "docker_log": ".tmp/logs/config-v2-parity-gate-canary-v1.log",
-    "summary": "6 passed, 1 skipped, 2481 deselected, 117 warnings",
+    "docker_log": ".tmp/logs/config-v2-representative-supported-shadow-parity-v1.log",
+    "summary": "9 passed, 1 skipped, 2481 deselected, 117 warnings",
     "rows": [
       {
         "id": "default_instruction_only_mba",
         "legacy_config": "default_instruction_only.json",
         "shadow_config": "default_instruction_only.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
+      },
+      {
+        "id": "eidolon_mba_instruction_heavy",
+        "legacy_config": "eidolon.json",
+        "shadow_config": "eidolon.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
+      },
+      {
+        "id": "tigress_engine_spine",
+        "legacy_config": "default_unflattening_tigress_engine.json",
+        "shadow_config": "default_unflattening_tigress_engine.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
+      },
+      {
+        "id": "approov_mixed_spine_flow",
+        "legacy_config": "default_unflattening_approov.json",
+        "shadow_config": "default_unflattening_approov.pipeline_v2.json",
         "ast_stats_match": true,
         "stable_diag_parity": true,
         "allowed_diag_drift": []
