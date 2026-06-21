@@ -1002,7 +1002,10 @@ def test_config_v2_runtime_support_matrix_ci_rehearsal_switch_is_explicit():
     assert set(rehearsal["enabled_values"]) == set(CONFIG_V2_CI_REHEARSAL_ENABLED_VALUES)
     assert "existing project configuration path" in rehearsal["rollback"]
     assert "fail closed" in rehearsal["selection_model"]
-    assert rehearsal["docker_selector"] == "test_chained_add"
+    assert rehearsal["docker_selector"] == "TestConfigV2CIRehearsalCoverage"
+    assert rehearsal["docker_log"] == (
+        ".tmp/logs/config-v2-ci-runtime-switch-rehearsal-coverage-v2.log"
+    )
 
     expected_mappings = [
         {
