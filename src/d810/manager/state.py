@@ -24,6 +24,7 @@ from d810.core.typing import TYPE_CHECKING
 from d810.mba.rules import VerifiableRule
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
+from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
 
 if TYPE_CHECKING:
     from d810.manager import D810Manager
@@ -73,6 +74,8 @@ class D810State(metaclass=SingletonMeta):
         self.current_blk_rules: typing.List = []
         self.known_ins_rules: typing.List = []
         self.known_blk_rules: typing.List = []
+        self.last_pipeline_v2_hook_pass_ids: tuple[str, ...] = ()
+        self.last_pipeline_v2_hook_mode: str | None = None
         self._is_loaded: bool = False
         self.gui = None
         self.log_dir = self.d810_config.log_dir / D810_LOG_DIR_NAME
@@ -109,9 +112,21 @@ class D810State(metaclass=SingletonMeta):
         self.current_project = next_project
         self.current_ins_rules = []
         self.current_blk_rules = []
+        self.last_pipeline_v2_hook_pass_ids = ()
+        self.last_pipeline_v2_hook_mode = None
+
+        hook_activation = pipeline_v2_hook_activation(self.current_project)
+        if hook_activation.enabled:
+            self.last_pipeline_v2_hook_mode = "config-v2"
+            self.last_pipeline_v2_hook_pass_ids = hook_activation.configured_pass_ids
+            project_ins_rules = hook_activation.instruction_rules
+            project_blk_rules = hook_activation.block_rules
+        else:
+            project_ins_rules = tuple(self.current_project.ins_rules)
+            project_blk_rules = tuple(self.current_project.blk_rules)
 
         for rule in self.known_ins_rules:
-            for rule_conf in self.current_project.ins_rules:
+            for rule_conf in project_ins_rules:
                 if not rule_conf.is_activated:
                     continue
                 if rule.name == rule_conf.name:
@@ -124,7 +139,7 @@ class D810State(metaclass=SingletonMeta):
                     self.current_ins_rules.append(rule)
         logger.debug("Instruction rules configured")
         for blk_rule in self.known_blk_rules:
-            for rule_conf in self.current_project.blk_rules:
+            for rule_conf in project_blk_rules:
                 if not rule_conf.is_activated:
                     continue
                 if blk_rule.name == rule_conf.name:

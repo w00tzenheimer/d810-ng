@@ -123,6 +123,7 @@ from d810.passes.pipeline_config_parser import (
     pipeline_v2_mode_from_project_config,
     pipeline_v2_shadow_match_required,
 )
+from d810.passes.pipeline_v2_hook_bridge import STATE_MACHINE_NATIVE_PASS_IDS
 from d810.passes.pipeline_shadow import compare_pipeline_v2_shadow
 from d810.passes.unflatten.state_machine import LOWER_STATE_MACHINE_PLAN_METADATA
 from d810.families.state_machine_cff.pipeline import (
@@ -267,6 +268,8 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         """Reset manager-owned pipeline facts/scheduler state for a fresh session."""
         self._pass_manager.reset_all()
         self._pass_manager_session_by_func.clear()
+        self._unflat_round_count.clear()
+        self._unflat_done_eas.clear()
 
     def _reset_pass_manager_if_new_session(self, mba: object) -> None:
         func_ea = int(getattr(mba, "entry_ea", 0) or 0)
@@ -328,6 +331,11 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         family_context=None,
     ) -> None:
         """Compare optional project PipelineConfig v2 against the live family pipeline."""
+        if (
+            pipeline_v2_mode_from_project_config(project_config)
+            is not PipelineV2Mode.SHADOW_CHECK
+        ):
+            return
         config = (
             project_config
             if isinstance(project_config, ABCMapping)
@@ -806,6 +814,18 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 )
                 configured_pass_ids = tuple(spec.pass_id for spec in configured_specs)
                 self._last_config_v2_pass_ids = configured_pass_ids
+                native_specs = tuple(
+                    spec
+                    for spec in configured_specs
+                    if spec.pass_id in STATE_MACHINE_NATIVE_PASS_IDS
+                )
+                if not native_specs:
+                    logger.warning(
+                        "unflat: config-v2 project activated the live unflattener "
+                        "without native state-machine spine specs for func=0x%x",
+                        int(mba.entry_ea),
+                    )
+                    return 0
                 if logger.debug_on:
                     logger.debug(
                         "unflat: executing config-v2 pipeline for func=0x%x passes=%s",
@@ -813,7 +833,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         list(configured_pass_ids),
                     )
                 shadow_gate_kwargs = {
-                    "pipeline_v2_specs": configured_specs,
+                    "pipeline_v2_specs": native_specs,
                 }
             elif require_shadow_match:
                 shadow_gate_kwargs = {
@@ -869,7 +889,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             rec is not None
             and getattr(rec, "dispatcher_block_serial", None) is not None
         )
-        if not dispatcher_present:
+        if family is not None and not dispatcher_present:
             self._mark_ea_converged(func_ea)
         # Report 0 to IDA's optblock callback (historical contract): convergence is driven by
         # IDA's own optblock re-invocation cadence (it re-calls ``optimize`` per block per
