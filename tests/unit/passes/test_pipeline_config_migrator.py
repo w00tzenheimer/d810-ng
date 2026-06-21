@@ -40,6 +40,8 @@ _OLLVM_CONFIGS = (
     "default_unflattening_ollvm_s1a_fair",
 )
 _CONFIG_V2_CANARY_CONFIGS = (
+    "default_instruction_only_config_v2_canary",
+    "default_unflattening_tigress_engine_config_v2_canary",
     "hodur_flag2_config_v2_canary",
 )
 _OLLVM_BLOCK_RULES = (
@@ -706,7 +708,8 @@ def test_repo_inventory_excludes_options_and_existing_shadow_configs():
     assert "options.json" not in inventory
     assert "default_instruction_only.pipeline_v2.json" not in inventory
     assert "example_libobfuscated.pipeline_v2.json" not in inventory
-    assert "hodur_flag2_config_v2_canary.json" not in inventory
+    for config_name in _CONFIG_V2_CANARY_CONFIGS:
+        assert f"{config_name}.json" not in inventory
 
 
 @pytest.mark.parametrize("config_name", _CONFIG_V2_CANARY_CONFIGS)
@@ -778,8 +781,10 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
     }
     assert set(parity_rows) == {
         "default_instruction_only_mba",
+        "default_instruction_only_config_v2_canary_mba",
         "eidolon_mba_instruction_heavy",
         "tigress_engine_spine",
+        "tigress_engine_config_v2_canary_spine",
         "approov_mixed_spine_flow",
         "hodur_glbopt2_only_spine",
         "hodur_flag2_mixed",
@@ -799,6 +804,24 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
     assert parity_rows["tigress_engine_spine"] == {
         "id": "tigress_engine_spine",
         "legacy_config": "default_unflattening_tigress_engine.json",
+        "shadow_config": "default_unflattening_tigress_engine.pipeline_v2.json",
+        "ast_stats_match": True,
+        "stable_diag_parity": True,
+        "allowed_diag_drift": [],
+    }
+    assert parity_rows["default_instruction_only_config_v2_canary_mba"] == {
+        "id": "default_instruction_only_config_v2_canary_mba",
+        "legacy_config": "default_instruction_only.json",
+        "runtime_config": "default_instruction_only_config_v2_canary.json",
+        "shadow_config": "default_instruction_only.pipeline_v2.json",
+        "ast_stats_match": True,
+        "stable_diag_parity": True,
+        "allowed_diag_drift": [],
+    }
+    assert parity_rows["tigress_engine_config_v2_canary_spine"] == {
+        "id": "tigress_engine_config_v2_canary_spine",
+        "legacy_config": "default_unflattening_tigress_engine.json",
+        "runtime_config": "default_unflattening_tigress_engine_config_v2_canary.json",
         "shadow_config": "default_unflattening_tigress_engine.pipeline_v2.json",
         "ast_stats_match": True,
         "stable_diag_parity": True,
@@ -836,13 +859,29 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         f"{len(parity_rows)} passed,"
     )
     assert matrix["parity_evidence"]["docker_log"].endswith(
-        "config-v2-identity-call-adapter-v1-parity.log"
+        "config-v2-canary-expansion-v1-parity.log"
     )
 
     canaries = {
         item["config"]: item for item in matrix["canary_configs"]
     }
     assert canaries == {
+        "default_instruction_only_config_v2_canary.json": {
+            "id": "default_instruction_only_config_v2_canary",
+            "config": "default_instruction_only_config_v2_canary.json",
+            "source_config": "default_instruction_only.json",
+            "source_shadow": "default_instruction_only.pipeline_v2.json",
+            "representative_row": "default_instruction_only_config_v2_canary_mba",
+            "runtime_mode": "config-v2",
+        },
+        "default_unflattening_tigress_engine_config_v2_canary.json": {
+            "id": "default_unflattening_tigress_engine_config_v2_canary",
+            "config": "default_unflattening_tigress_engine_config_v2_canary.json",
+            "source_config": "default_unflattening_tigress_engine.json",
+            "source_shadow": "default_unflattening_tigress_engine.pipeline_v2.json",
+            "representative_row": "tigress_engine_config_v2_canary_spine",
+            "runtime_mode": "config-v2",
+        },
         "hodur_flag2_config_v2_canary.json": {
             "id": "hodur_flag2_config_v2_canary",
             "config": "hodur_flag2_config_v2_canary.json",
@@ -852,10 +891,30 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
             "runtime_mode": "config-v2",
         }
     }
-    assert matrix["opt_in_rollout"]["status"] == "supported-canary"
+    assert matrix["opt_in_rollout"]["status"] == "supported-canaries"
     assert matrix["opt_in_rollout"]["default_runtime_mode"] == "legacy"
     assert matrix["opt_in_rollout"]["required_mode"] == "config-v2"
     assert matrix["opt_in_rollout"]["user_selectable_configs"] == [
+        {
+            "config": "default_instruction_only_config_v2_canary.json",
+            "source_config": "default_instruction_only.json",
+            "source_shadow": "default_instruction_only.pipeline_v2.json",
+            "parity_row": "default_instruction_only_config_v2_canary_mba",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "mba_instruction_hook",
+            ],
+        },
+        {
+            "config": "default_unflattening_tigress_engine_config_v2_canary.json",
+            "source_config": "default_unflattening_tigress_engine.json",
+            "source_shadow": "default_unflattening_tigress_engine.pipeline_v2.json",
+            "parity_row": "tigress_engine_config_v2_canary_spine",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "native_state_machine_spine",
+            ],
+        },
         {
             "config": "hodur_flag2_config_v2_canary.json",
             "source_config": "hodur_flag2.json",
@@ -932,7 +991,7 @@ def test_readme_documents_config_v2_canary_selection_note():
     normalized_readme = " ".join(readme.split())
     rollout = matrix["opt_in_rollout"]
 
-    assert "Config-v2 opt-in canary" in readme
+    assert "Config-v2 opt-in canaries" in readme
     assert rollout["default_runtime_mode"] == "legacy"
     assert "default runtime remains the existing project configuration path" in (
         normalized_readme
