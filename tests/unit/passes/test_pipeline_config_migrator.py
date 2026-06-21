@@ -838,6 +838,22 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
             "runtime_mode": "config-v2",
         }
     }
+    assert matrix["opt_in_rollout"]["status"] == "supported-canary"
+    assert matrix["opt_in_rollout"]["default_runtime_mode"] == "legacy"
+    assert matrix["opt_in_rollout"]["required_mode"] == "config-v2"
+    assert matrix["opt_in_rollout"]["user_selectable_configs"] == [
+        {
+            "config": "hodur_flag2_config_v2_canary.json",
+            "source_config": "hodur_flag2.json",
+            "source_shadow": "hodur_flag2.pipeline_v2.json",
+            "parity_row": "hodur_flag2_config_v2_canary_mixed",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "native_state_machine_spine",
+                "mixed_spine_simple_flow_rule",
+            ],
+        }
+    ]
 
     lane_ids = {lane["id"] for lane in matrix["runtime_lanes"]}
     assert lane_ids == {
@@ -849,6 +865,48 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
     assert {
         item["config"] for item in matrix["unsupported_adapter_boundaries"]
     } == unsupported
+
+
+def test_config_v2_runtime_support_matrix_opt_in_configs_are_selectable():
+    matrix = _load_runtime_support_matrix()
+    parity_rows = {row["id"]: row for row in matrix["parity_evidence"]["rows"]}
+    lane_ids = {lane["id"] for lane in matrix["runtime_lanes"]}
+    canary_configs = {item["config"] for item in matrix["canary_configs"]}
+
+    rollout = matrix["opt_in_rollout"]
+    assert rollout["default_runtime_mode"] == matrix["default_runtime_mode"]
+    assert rollout["required_mode"] == matrix["explicit_runtime_mode"]
+    assert "default runtime source" in rollout["selection_model"]
+    assert "Unsupported adapter boundaries stay fail-closed" in (
+        rollout["unsupported_policy"]
+    )
+    rollout_log_path = Path(rollout["docker_log"])
+    assert rollout_log_path.parts[:2] == (".tmp", "logs")
+    assert rollout_log_path.name.endswith(".log")
+    assert re.fullmatch(
+        r"\d+ passed, \d+ skipped, \d+ deselected, \d+ warnings",
+        rollout["summary"],
+    )
+
+    user_selectable_configs = rollout["user_selectable_configs"]
+    assert user_selectable_configs
+    for config in user_selectable_configs:
+        assert config["config"] in canary_configs
+        assert set(config["lanes"]) <= lane_ids
+        assert config["normal_project_config_loading_path"] is True
+
+        project = ProjectConfiguration.from_file(_CONF_DIR / config["config"])
+        assert is_config_v2_runtime_project(project)
+        assert project.ins_rules == []
+        assert project.blk_rules == []
+
+        row = parity_rows[config["parity_row"]]
+        assert row["legacy_config"] == config["source_config"]
+        assert row["shadow_config"] == config["source_shadow"]
+        assert row["runtime_config"] == config["config"]
+
+        specs = _assert_builds_with_operational_registry(config["config"])
+        assert tuple(spec.pass_id for spec in specs)
 
 
 def test_config_v2_runtime_support_matrix_parity_rows_are_executable_contracts():
