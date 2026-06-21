@@ -1,5 +1,5 @@
 {
-  "description": "Config-v2 shadow representation of flatfold.json. The legacy JSON remains the runtime source of truth.",
+  "description": "Config-v2 shadow representation of flatfold.json. The source project JSON remains the default runtime source.",
   "ins_rules": [],
   "blk_rules": [],
   "additional_configuration": {

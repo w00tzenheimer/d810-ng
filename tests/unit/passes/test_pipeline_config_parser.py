@@ -953,8 +953,13 @@ def test_hodur_config_v2_canary_is_explicit_opt_in_and_operational():
     canary_configs = pipeline_configs_from_project_config(canary)
     shadow_configs = pipeline_configs_from_project_config(shadow)
 
+    normalized_description = " ".join(canary.description.split())
     assert canary.ins_rules == []
     assert canary.blk_rules == []
+    assert "existing project configuration path remains the default runtime" in (
+        normalized_description
+    )
+    assert "Legacy remains the default runtime" not in normalized_description
     assert canary.additional_configuration["pipeline_v2_mode"] == "config-v2"
     assert "pipeline_v2_shadow" not in canary.additional_configuration
     assert canary.additional_configuration["config_v2_canary"] == {
