@@ -158,6 +158,28 @@
       "runtime_mode": "config-v2"
     }
   ],
+  "opt_in_rollout": {
+    "status": "supported-canary",
+    "default_runtime_mode": "legacy",
+    "required_mode": "config-v2",
+    "selection_model": "Users select a checked-in canary ProjectConfiguration by name; generated shadows remain migration artifacts and legacy configs remain the default runtime source.",
+    "docker_log": ".tmp/logs/config-v2-opt-in-rollout-v1-canary.log",
+    "summary": "1 passed, 1 skipped, 2489 deselected, 117 warnings",
+    "user_selectable_configs": [
+      {
+        "config": "hodur_flag2_config_v2_canary.json",
+        "source_config": "hodur_flag2.json",
+        "source_shadow": "hodur_flag2.pipeline_v2.json",
+        "parity_row": "hodur_flag2_config_v2_canary_mixed",
+        "normal_project_config_loading_path": true,
+        "lanes": [
+          "native_state_machine_spine",
+          "mixed_spine_simple_flow_rule"
+        ]
+      }
+    ],
+    "unsupported_policy": "Unsupported adapter boundaries stay fail-closed until explicit adapter work lands; opt-in rollout does not make OLLVM, indirect branch/call, cleanup-family, or identity-call configs runnable."
+  },
   "generated_shadows": {
     "legacy_config_count": 26,
     "migratable_count": 20,
