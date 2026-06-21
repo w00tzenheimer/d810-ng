@@ -24,6 +24,11 @@ from d810.passes.pipeline_config_migrator import (
 )
 from d810.passes.pipeline_config_parser import pass_specs_from_project_config
 from d810.passes.registry import UnknownPassIdError
+from d810.testing.config_v2_rehearsal import (
+    CONFIG_V2_CI_REHEARSAL_ENABLED_VALUES,
+    CONFIG_V2_CI_REHEARSAL_ENV,
+    CONFIG_V2_CI_REHEARSAL_MAPPINGS,
+)
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -983,6 +988,39 @@ def test_config_v2_runtime_support_matrix_opt_in_configs_are_selectable():
 
         specs = _assert_builds_with_operational_registry(config["config"])
         assert tuple(spec.pass_id for spec in specs)
+
+
+def test_config_v2_runtime_support_matrix_ci_rehearsal_switch_is_explicit():
+    matrix = _load_runtime_support_matrix()
+    rehearsal = matrix["ci_runtime_rehearsal"]
+    canary_configs = {item["config"] for item in matrix["canary_configs"]}
+    parity_rows = {row["id"] for row in matrix["parity_evidence"]["rows"]}
+
+    assert rehearsal["status"] == "explicit-test-switch"
+    assert rehearsal["switch_env"] == CONFIG_V2_CI_REHEARSAL_ENV
+    assert rehearsal["default_enabled"] is False
+    assert set(rehearsal["enabled_values"]) == set(CONFIG_V2_CI_REHEARSAL_ENABLED_VALUES)
+    assert "existing project configuration path" in rehearsal["rollback"]
+    assert "fail closed" in rehearsal["selection_model"]
+    assert rehearsal["docker_selector"] == "test_chained_add"
+
+    expected_mappings = [
+        {
+            "source_config": mapping.source_config,
+            "runtime_config": mapping.runtime_config,
+            "parity_row": mapping.parity_row,
+            "expected_pass_ids": list(mapping.expected_pass_ids),
+        }
+        for mapping in CONFIG_V2_CI_REHEARSAL_MAPPINGS
+    ]
+    assert rehearsal["supported_mappings"] == expected_mappings
+    for mapping in rehearsal["supported_mappings"]:
+        assert mapping["runtime_config"] in canary_configs
+        assert mapping["parity_row"] in parity_rows
+        project = ProjectConfiguration.from_file(_CONF_DIR / mapping["runtime_config"])
+        assert is_config_v2_runtime_project(project)
+        assert project.ins_rules == []
+        assert project.blk_rules == []
 
 
 def test_config_v2_default_cutover_criteria_are_defined_without_switching_defaults():
