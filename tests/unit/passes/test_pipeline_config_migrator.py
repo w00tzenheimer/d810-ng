@@ -27,6 +27,7 @@ from d810.passes.registry import UnknownPassIdError
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+_README = _REPO_ROOT / "README.md"
 _CONF_DIR = _REPO_ROOT / "src" / "d810" / "conf"
 _RUNTIME_SUPPORT_MATRIX = (
     _REPO_ROOT / "src" / "d810" / "passes" / "config_v2_runtime_support_matrix.json"
@@ -907,6 +908,25 @@ def test_config_v2_runtime_support_matrix_opt_in_configs_are_selectable():
 
         specs = _assert_builds_with_operational_registry(config["config"])
         assert tuple(spec.pass_id for spec in specs)
+
+
+def test_readme_documents_config_v2_canary_selection_note():
+    matrix = _load_runtime_support_matrix()
+    readme = _README.read_text(encoding="utf-8")
+    normalized_readme = " ".join(readme.split())
+    rollout = matrix["opt_in_rollout"]
+
+    assert "Config-v2 opt-in canary" in readme
+    assert rollout["default_runtime_mode"] == "legacy"
+    assert "default runtime remains the existing project configuration path" in (
+        normalized_readme
+    )
+    assert f"pipeline_v2_mode: {rollout['required_mode']}" in normalized_readme
+
+    for config in rollout["user_selectable_configs"]:
+        assert config["config"] in readme
+    for boundary in ("OLLVM", "indirect branch/call", "cleanup-family", "identity-call"):
+        assert boundary in normalized_readme
 
 
 def test_config_v2_runtime_support_matrix_parity_rows_are_executable_contracts():
