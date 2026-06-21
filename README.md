@@ -467,6 +467,27 @@ These canaries do not enable unsupported adapter families. OLLVM, indirect
 branch/call, and cleanup-family configurations remain fail-closed until their
 adapters are implemented and validated.
 
+### Config-v2 default cutover criteria
+
+D810 does not default to config-v2 today. The default runtime remains the
+existing project configuration path unless a separate cutover change satisfies
+all of these criteria:
+
+- Docker wrapper parity/canary coverage stays green for every supported
+  user-selectable config-v2 canary and representative runtime lane.
+- The support matrix lists all supported generated shadows, all selectable
+  canaries, all parity rows, and all remaining unsupported adapter boundaries.
+- A reviewed rollback path lets users return to the existing project
+  configuration path if a config-v2 default change regresses behavior.
+- Unsupported adapter boundaries stay explicit and fail-closed; default-cutover
+  planning does not imply OLLVM, indirect branch/call, or cleanup-family
+  support.
+- Always-on unit checks depend only on tracked support-matrix metadata. Docker
+  log contents must be regenerated through the wrapper gate, not required from
+  ignored `.tmp` paths in a clean checkout.
+- CI gates include support-matrix unit guards, JSON validation,
+  import/architecture checks, and Docker wrapper parity evidence.
+
 When you want to disable deobfuscation, just click on the `Stop` button or use the context menus:
 
 !["Disassembly context menu"](./resources/assets/disasmview_context_menu.png "Disassembly context menu")

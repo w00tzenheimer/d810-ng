@@ -985,6 +985,49 @@ def test_config_v2_runtime_support_matrix_opt_in_configs_are_selectable():
         assert tuple(spec.pass_id for spec in specs)
 
 
+def test_config_v2_default_cutover_criteria_are_defined_without_switching_defaults():
+    matrix = _load_runtime_support_matrix()
+    criteria = matrix["default_cutover_criteria"]
+
+    assert criteria["status"] == "criteria-defined-no-cutover"
+    assert criteria["current_default_runtime_mode"] == matrix["default_runtime_mode"]
+    assert criteria["future_default_runtime_mode"] == matrix["explicit_runtime_mode"]
+    assert criteria["default_switch_allowed"] is False
+    assert "existing project configuration path" in criteria["decision"]
+
+    criterion_ids = {item["id"] for item in criteria["required_criteria"]}
+    assert criterion_ids == {
+        "stable_docker_parity_canary_coverage",
+        "support_matrix_completeness",
+        "rollback_path",
+        "unsupported_boundary_matrix",
+        "no_ignored_log_dependency",
+        "ci_gate_expectations",
+    }
+
+    by_id = {item["id"]: item for item in criteria["required_criteria"]}
+    assert "Docker wrapper parity/canary coverage" in (
+        by_id["stable_docker_parity_canary_coverage"]["description"]
+    )
+    assert "support matrix lists every supported generated shadow" in (
+        by_id["support_matrix_completeness"]["description"]
+    )
+    assert "rollback path" in by_id["rollback_path"]["description"]
+    assert "fail-closed" in by_id["unsupported_boundary_matrix"]["description"]
+    assert ".tmp" in by_id["no_ignored_log_dependency"]["description"]
+    assert "CI gates" in by_id["ci_gate_expectations"]["description"]
+
+    gates = criteria["minimum_ci_gates"]
+    assert "tests/unit/passes/test_pipeline_config_migrator.py" in gates
+    assert "tests/unit/passes/test_pipeline_config_parser.py" in gates
+    assert any("json.tool" in gate for gate in gates)
+    assert any("lint-imports" in gate for gate in gates)
+    assert any("sg scan" in gate for gate in gates)
+    assert any("run_system_tests_docker.sh" in gate for gate in gates)
+    assert any("<target-worktree>" in gate for gate in gates)
+    assert not any("llvm-lisa-restructure" in gate for gate in gates)
+
+
 def test_readme_documents_config_v2_canary_selection_note():
     matrix = _load_runtime_support_matrix()
     readme = _README.read_text(encoding="utf-8")
@@ -1003,6 +1046,29 @@ def test_readme_documents_config_v2_canary_selection_note():
     for boundary in ("OLLVM", "indirect branch/call", "cleanup-family"):
         assert boundary in normalized_readme
     assert "identity-call remains unsupported" not in normalized_readme
+
+
+def test_readme_documents_config_v2_default_cutover_criteria():
+    matrix = _load_runtime_support_matrix()
+    readme = _README.read_text(encoding="utf-8")
+    normalized_readme = " ".join(readme.split())
+    criteria = matrix["default_cutover_criteria"]
+
+    assert "Config-v2 default cutover criteria" in readme
+    assert criteria["default_switch_allowed"] is False
+    assert "does not default to config-v2 today" in normalized_readme
+    assert "default runtime remains the existing project configuration path" in (
+        normalized_readme
+    )
+    for phrase in (
+        "Docker wrapper parity/canary coverage",
+        "support matrix lists all supported generated shadows",
+        "reviewed rollback path",
+        "Unsupported adapter boundaries stay explicit and fail-closed",
+        "ignored `.tmp` paths",
+        "CI gates include support-matrix unit guards",
+    ):
+        assert phrase in normalized_readme
 
 
 def test_config_v2_runtime_support_matrix_parity_rows_are_executable_contracts():
