@@ -154,6 +154,7 @@ class D810State(metaclass=SingletonMeta):
                 pass_scheduler=self.manager.instruction_pass_scheduler,
             )
             self.manager.block_optimizer.configure(
+                **cfg,
                 rule_scope_service=self.manager.rule_scope_service,
                 rule_scope_project_name=self.current_project.path.name,
                 rule_scope_idb_key=str(

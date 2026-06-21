@@ -116,7 +116,13 @@ from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle impor
     ComposedUnflatteningRule,
 )
 from d810.passes.function_pass_manager import FunctionPassManager
-from d810.passes.pipeline_config_parser import pipeline_v2_shadow_match_required
+from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
+from d810.passes.pipeline_config_parser import (
+    PipelineV2Mode,
+    pass_specs_from_project_config,
+    pipeline_v2_mode_from_project_config,
+    pipeline_v2_shadow_match_required,
+)
 from d810.passes.pipeline_shadow import compare_pipeline_v2_shadow
 from d810.passes.unflatten.state_machine import LOWER_STATE_MACHINE_PLAN_METADATA
 from d810.families.state_machine_cff.pipeline import (
@@ -243,9 +249,16 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         #: Per-ea (not per-maturity): once a function is fully unflattened at ANY
         #: maturity, no later maturity should reprocess it.
         self._unflat_done_eas: set[int] = set()
+        self._project_config: dict[str, object] = {}
+        self._last_pipeline_v2_mode: str | None = None
+        self._last_config_v2_pass_ids: tuple[str, ...] = ()
         self._pass_scheduler = None
         self._pass_manager = FunctionPassManager()
         self._pass_manager_session_by_func: dict[int, int] = {}
+
+    def set_project_config(self, config: object | None) -> None:
+        """Attach project-level config-v2 options without changing rule options."""
+        self._project_config = dict(config) if isinstance(config, ABCMapping) else {}
 
     def set_pass_scheduler(self, scheduler: object | None) -> None:
         self._pass_scheduler = scheduler
@@ -305,7 +318,15 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         """Mark ``func_ea`` terminal — recovery found no dispatcher (graph fully unflattened)."""
         self._unflat_done_eas.add(func_ea)
 
-    def _log_pipeline_v2_shadow(self, project_config, family, source, backend) -> None:
+    def _log_pipeline_v2_shadow(
+        self,
+        project_config,
+        family,
+        source,
+        backend,
+        *,
+        family_context=None,
+    ) -> None:
         """Compare optional project PipelineConfig v2 against the live family pipeline."""
         config = (
             project_config
@@ -316,7 +337,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             return
         try:
             match = family.detect(
-                source.flow_graph, backend.capabilities(), context=project_config
+                source.flow_graph,
+                backend.capabilities(),
+                context=family_context if family_context is not None else project_config,
             )
             if match is None:
                 return
@@ -694,10 +717,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # graph; the selected profile's pipeline_for drives the pass manager. The rule's
         # JSON config is threaded so a project may override the choice via the
         # router_resolution policy (llr-11du); empty config preserves registration order.
-        project_config = getattr(self, "config", None)
+        rule_config = getattr(self, "config", None)
+        project_config = self._project_config or (
+            rule_config if isinstance(rule_config, dict) else {}
+        )
         family = select_family(
             source.flow_graph,
-            project_config=project_config,
+            project_config=rule_config,
             capabilities=backend.capabilities(),
         )
         # Reduced-product family-gate bypass (ticket llr-iy9i): the static select_family
@@ -712,8 +738,8 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # synthetic family is instantiated directly (never auto-registered), so every other
         # config (hodur/approov/tigress/ollvm -- which sets no such key) is byte-identical.
         if family is None and (
-            isinstance(project_config, dict)
-            and project_config.get("recovery_engine") == "reduced_product"
+            isinstance(rule_config, dict)
+            and rule_config.get("recovery_engine") == "reduced_product"
         ):
             if logger.debug_on:
                 logger.debug(
@@ -761,10 +787,35 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         maturity_to_string(int(mba.maturity)),
                     )
                 return 0
-            self._log_pipeline_v2_shadow(project_config, family, source, backend)
+            self._log_pipeline_v2_shadow(
+                project_config,
+                family,
+                source,
+                backend,
+                family_context=rule_config,
+            )
+            pipeline_mode = pipeline_v2_mode_from_project_config(project_config)
+            self._last_pipeline_v2_mode = pipeline_mode.value
+            self._last_config_v2_pass_ids = ()
             require_shadow_match = pipeline_v2_shadow_match_required(project_config)
             shadow_gate_kwargs = {}
-            if require_shadow_match:
+            if pipeline_mode is PipelineV2Mode.CONFIG_V2:
+                configured_specs = pass_specs_from_project_config(
+                    project_config,
+                    operational_config_v2_pass_registry(),
+                )
+                configured_pass_ids = tuple(spec.pass_id for spec in configured_specs)
+                self._last_config_v2_pass_ids = configured_pass_ids
+                if logger.debug_on:
+                    logger.debug(
+                        "unflat: executing config-v2 pipeline for func=0x%x passes=%s",
+                        int(mba.entry_ea),
+                        list(configured_pass_ids),
+                    )
+                shadow_gate_kwargs = {
+                    "pipeline_v2_specs": configured_specs,
+                }
+            elif require_shadow_match:
                 shadow_gate_kwargs = {
                     "pipeline_v2_shadow_registry": state_machine_pass_registry(),
                     "require_pipeline_v2_shadow_match": True,
@@ -773,7 +824,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 source=source,
                 family=family,
                 backend=backend,
-                project_config=project_config,
+                project_config=rule_config,
                 maturity=current_ir_maturity,
                 capabilities=capabilities,
                 input_facts=fact_view,
