@@ -454,8 +454,8 @@ def legacy_project_config_to_pipeline_v2_shadow(
 ) -> dict[str, object]:
     """Return a JSON-compatible PipelineConfig v2 shadow for a legacy config.
 
-    The legacy config remains the runtime source of truth; this migrator only
-    renders deterministic shadow metadata that the parser can inspect.
+    The source project config remains the default runtime source; this migrator
+    only renders deterministic shadow metadata that the parser can inspect.
     """
     source_name = source_config or Path(project_config.path).name
     active_instruction_rules = _active_instruction_rules(project_config)
@@ -476,7 +476,7 @@ def legacy_project_config_to_pipeline_v2_shadow(
     return {
         "description": (
             f"Config-v2 shadow representation of {source_name}. "
-            "The legacy JSON remains the runtime source of truth."
+            "The source project JSON remains the default runtime source."
         ),
         "ins_rules": [],
         "blk_rules": [],

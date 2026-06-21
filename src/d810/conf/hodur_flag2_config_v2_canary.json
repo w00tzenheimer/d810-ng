@@ -1,5 +1,5 @@
 {
-  "description": "Config-v2 explicit opt-in canary for hodur_flag2.json. Legacy remains the default runtime; this project is selectable only when explicit config-v2 mode is desired.",
+  "description": "Config-v2 explicit opt-in canary for hodur_flag2.json. The existing project configuration path remains the default runtime; this project is selectable only when explicit config-v2 mode is desired.",
   "ins_rules": [],
   "blk_rules": [],
   "additional_configuration": {

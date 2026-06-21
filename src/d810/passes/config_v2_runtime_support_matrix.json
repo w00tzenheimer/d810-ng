@@ -162,7 +162,7 @@
     "status": "supported-canary",
     "default_runtime_mode": "legacy",
     "required_mode": "config-v2",
-    "selection_model": "Users select a checked-in canary ProjectConfiguration by name; generated shadows remain migration artifacts and legacy configs remain the default runtime source.",
+    "selection_model": "Users select a checked-in canary ProjectConfiguration by name; generated shadows remain migration artifacts and existing project configs remain the default runtime source.",
     "docker_log": ".tmp/logs/config-v2-opt-in-rollout-v1-canary.log",
     "summary": "1 passed, 1 skipped, 2489 deselected, 117 warnings",
     "user_selectable_configs": [

@@ -348,6 +348,18 @@ def test_legacy_migrator_matches_checked_in_shadow(config_name):
 
 @pytest.mark.parametrize(
     "config_name",
+    _GENERATED_SHADOW_CONFIGS,
+)
+def test_generated_shadow_description_uses_default_runtime_wording(config_name):
+    shadow = _load_json(_CONF_DIR / f"{config_name}.pipeline_v2.json")
+    description = shadow["description"]
+
+    assert "source project JSON remains the default runtime source" in description
+    assert "legacy JSON remains" not in description
+
+
+@pytest.mark.parametrize(
+    "config_name",
     [
         "default_instruction_only",
         "example_libobfuscated",
@@ -878,6 +890,8 @@ def test_config_v2_runtime_support_matrix_opt_in_configs_are_selectable():
     assert rollout["default_runtime_mode"] == matrix["default_runtime_mode"]
     assert rollout["required_mode"] == matrix["explicit_runtime_mode"]
     assert "default runtime source" in rollout["selection_model"]
+    assert "existing project configs remain" in rollout["selection_model"]
+    assert "legacy configs remain" not in rollout["selection_model"]
     assert "Unsupported adapter boundaries stay fail-closed" in (
         rollout["unsupported_policy"]
     )
