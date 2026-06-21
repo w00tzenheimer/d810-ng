@@ -448,6 +448,18 @@ D810_BUILD_SPEEDUPS=1 pip install --no-build-isolation -e ".[dev]"
 2. Click on the `Start` button to enable deobfuscation
 3. Decompile an obfuscated function, the code should be simplified (hopefully)
 
+### Config-v2 opt-in canary
+
+The default runtime remains the existing project configuration path. To try
+the supported config-v2 runtime path explicitly, select
+`hodur_flag2_config_v2_canary.json` as the project configuration. That canary
+sets `pipeline_v2_mode: config-v2` and exercises the Hodur native
+state-machine spine plus the supported simple flow-rule lane.
+
+This canary does not enable unsupported adapter families. OLLVM, indirect
+branch/call, cleanup-family, and identity-call configurations remain
+fail-closed until their adapters are implemented and validated.
+
 When you want to disable deobfuscation, just click on the `Stop` button or use the context menus:
 
 !["Disassembly context menu"](./resources/assets/disasmview_context_menu.png "Disassembly context menu")
