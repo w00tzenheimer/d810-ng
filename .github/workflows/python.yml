@@ -175,6 +175,60 @@ jobs:
                   IMAGE_ID=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep idapro-linux | head -1)
                   docker save "$IMAGE_ID" -o /tmp/docker-cache/idapro-tests-9.2.tar || echo "Failed to save image."
 
+    config-v2-ci-rehearsal:
+        name: "config-v2 CI rehearsal (supported mappings)"
+        runs-on: ubuntu-24.04
+        continue-on-error: true
+        env:
+            PYTHONPATH: ${{ github.workspace }}
+            D810_DOCKER_IMAGE: ghcr.io/w00tzenheimer/idapro-linux:idapro-tests-9.2-py312
+        steps:
+            - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
+              uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+
+            - name: Create rehearsal worktree
+              run: |
+                  mkdir -p .worktrees
+                  git worktree add .worktrees/config-v2-ci-rehearsal HEAD
+
+            - name: Login to GHCR
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GHCR_TOKEN }}
+
+            - name: Cache Docker image
+              id: docker-cache
+              uses: actions/cache@v4
+              with:
+                  path: /tmp/docker-cache
+                  key: docker-image-${{ runner.os }}-idapro-tests-9.2-${{ hashFiles('docker-compose.yml') }}
+                  restore-keys: |
+                      docker-image-${{ runner.os }}-idapro-tests-9.2-
+
+            - name: Load cached Docker image
+              if: steps.docker-cache.outputs.cache-hit == 'true'
+              run: |
+                  echo "Loading Docker image from cache..."
+                  docker load -i /tmp/docker-cache/idapro-tests-9.2.tar || echo "No cached image to load."
+
+            - name: Run config-v2 CI rehearsal coverage
+              run: |
+                  set -e
+                  D810_REPO_ROOT="${{ github.workspace }}" \
+                    ./tools/scripts/run_config_v2_ci_rehearsal.sh -w config-v2-ci-rehearsal
+
+            - name: Save Docker image to cache
+              if: steps.docker-cache.outputs.cache-hit != 'true'
+              run: |
+                  echo "Caching docker image for next run..."
+                  mkdir -p /tmp/docker-cache
+                  IMAGE_ID=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep idapro-linux | head -1)
+                  docker save "$IMAGE_ID" -o /tmp/docker-cache/idapro-tests-9.2.tar || echo "Failed to save image."
+
     system-tests-speedups:
         name: "system-tests (idapro-9.2, speedups)"
         runs-on: ubuntu-24.04
