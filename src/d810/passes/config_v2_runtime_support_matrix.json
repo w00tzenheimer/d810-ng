@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "status_commit": "d34c2dbcd Add config-v2 legacy hook runtime bridge",
+  "status_commit": "89010067e Add config-v2 expanded parity evidence",
   "default_runtime_mode": "legacy",
   "explicit_runtime_mode": "config-v2",
   "source_of_truth": "pipeline_v2",
@@ -68,8 +68,8 @@
     }
   ],
   "parity_evidence": {
-    "docker_log": ".tmp/logs/config-v2-expanded-parity-evidence-v1.log",
-    "summary": "5 passed, 1 skipped, 2481 deselected, 117 warnings",
+    "docker_log": ".tmp/logs/config-v2-parity-gate-canary-v1.log",
+    "summary": "6 passed, 1 skipped, 2481 deselected, 117 warnings",
     "rows": [
       {
         "id": "default_instruction_only_mba",
@@ -96,6 +96,15 @@
         "allowed_diag_drift": []
       },
       {
+        "id": "hodur_flag2_config_v2_canary_mixed",
+        "legacy_config": "hodur_flag2.json",
+        "runtime_config": "hodur_flag2_config_v2_canary.json",
+        "shadow_config": "hodur_flag2.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
+      },
+      {
         "id": "hodur_glbopt2_only_spine",
         "legacy_config": "hodur_glbopt2_only.json",
         "shadow_config": "hodur_glbopt2_only.pipeline_v2.json",
@@ -115,6 +124,16 @@
       }
     ]
   },
+  "canary_configs": [
+    {
+      "id": "hodur_flag2_config_v2_canary",
+      "config": "hodur_flag2_config_v2_canary.json",
+      "source_config": "hodur_flag2.json",
+      "source_shadow": "hodur_flag2.pipeline_v2.json",
+      "representative_row": "hodur_flag2_config_v2_canary_mixed",
+      "runtime_mode": "config-v2"
+    }
+  ],
   "generated_shadows": {
     "legacy_config_count": 26,
     "migratable_count": 20,

@@ -558,14 +558,34 @@ def inventory_legacy_project_file(path: Path | str) -> LegacyConfigMigrationInve
     return inventory_legacy_project_config(ProjectConfiguration.from_file(path))
 
 
+def is_config_v2_runtime_project(project_config: ProjectConfiguration) -> bool:
+    """Return whether ``project_config`` is an explicit config-v2 runtime project."""
+    config = project_config.additional_configuration
+    return (
+        config.get("pipeline_v2_mode") == "config-v2"
+        and "pipeline_v2" in config
+    )
+
+
 def inventory_legacy_config_directory(
     config_dir: Path | str,
 ) -> tuple[LegacyConfigMigrationInventoryItem, ...]:
     """Classify legacy project JSON configs under ``config_dir`` deterministically."""
     root = Path(config_dir)
-    return tuple(
-        inventory_legacy_project_file(path)
-        for path in sorted(root.glob("*.json"))
-        if path.name != ConfigConstants.OPTIONS_FILENAME
-        and not path.name.endswith(".pipeline_v2.json")
-    )
+    results: list[LegacyConfigMigrationInventoryItem] = []
+    for path in sorted(root.glob("*.json")):
+        if (
+            path.name == ConfigConstants.OPTIONS_FILENAME
+            or path.name.endswith(".pipeline_v2.json")
+        ):
+            continue
+        project_config = ProjectConfiguration.from_file(path)
+        if is_config_v2_runtime_project(project_config):
+            continue
+        results.append(
+            inventory_legacy_project_config(
+                project_config,
+                source_config=path.name,
+            )
+        )
+    return tuple(results)

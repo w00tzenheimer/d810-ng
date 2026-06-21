@@ -29,6 +29,7 @@ from d810.passes.pipeline_config_parser import (
     pipeline_v2_shadow_match_required,
     pass_specs_from_project_config,
 )
+from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pipeline_shadow import (
     PipelineShadowMismatchError,
     compare_pipeline_specs,
@@ -941,6 +942,37 @@ def test_hodur_pipeline_v2_shadows_are_not_registry_buildable_yet(
     else:
         with pytest.raises(UnknownPassIdError, match=expected_unknown_pass):
             pass_specs_from_project_config(shadow, state_machine_pass_registry())
+
+
+def test_hodur_config_v2_canary_is_explicit_opt_in_and_operational():
+    canary = ProjectConfiguration.from_file(
+        _CONF_DIR / "hodur_flag2_config_v2_canary.json"
+    )
+    shadow = ProjectConfiguration.from_file(_CONF_DIR / "hodur_flag2.pipeline_v2.json")
+
+    canary_configs = pipeline_configs_from_project_config(canary)
+    shadow_configs = pipeline_configs_from_project_config(shadow)
+
+    assert canary.ins_rules == []
+    assert canary.blk_rules == []
+    assert canary.additional_configuration["pipeline_v2_mode"] == "config-v2"
+    assert "pipeline_v2_shadow" not in canary.additional_configuration
+    assert canary.additional_configuration["config_v2_canary"] == {
+        "source_config": "hodur_flag2.json",
+        "source_shadow": "hodur_flag2.pipeline_v2.json",
+        "representative_row": "hodur_flag2_config_v2_canary_mixed",
+        "runtime_source": "pipeline_v2",
+    }
+    assert canary_configs == shadow_configs
+
+    specs = pass_specs_from_project_config(
+        canary,
+        operational_config_v2_pass_registry(),
+    )
+    assert [spec.pass_id for spec in specs] == [
+        *_STATE_MACHINE_NATIVE_PIPELINE,
+        "jump-fixer",
+    ]
 
 
 @pytest.mark.parametrize(

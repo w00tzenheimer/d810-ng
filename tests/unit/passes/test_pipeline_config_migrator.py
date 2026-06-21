@@ -14,6 +14,7 @@ from d810.passes.pipeline_config_migrator import (
     LegacyConfigMigrationStatus,
     inventory_legacy_config_directory,
     inventory_legacy_project_config,
+    is_config_v2_runtime_project,
     legacy_block_rule_adapter_boundary,
     legacy_project_config_to_pipeline_v2_shadow,
     legacy_project_file_to_pipeline_v2_shadow,
@@ -28,6 +29,9 @@ _RUNTIME_SUPPORT_MATRIX = (
 _OLLVM_CONFIGS = (
     "default_unflattening_ollvm",
     "default_unflattening_ollvm_s1a_fair",
+)
+_CONFIG_V2_CANARY_CONFIGS = (
+    "hodur_flag2_config_v2_canary",
 )
 _OLLVM_BLOCK_RULES = (
     "IndirectCallResolver",
@@ -638,6 +642,20 @@ def test_repo_inventory_excludes_options_and_existing_shadow_configs():
     assert "options.json" not in inventory
     assert "default_instruction_only.pipeline_v2.json" not in inventory
     assert "example_libobfuscated.pipeline_v2.json" not in inventory
+    assert "hodur_flag2_config_v2_canary.json" not in inventory
+
+
+@pytest.mark.parametrize("config_name", _CONFIG_V2_CANARY_CONFIGS)
+def test_config_v2_canaries_are_not_legacy_migration_inputs(config_name):
+    project = ProjectConfiguration.from_file(_CONF_DIR / f"{config_name}.json")
+    inventory = _inventory_by_name()
+
+    assert is_config_v2_runtime_project(project)
+    assert f"{config_name}.json" not in inventory
+    assert project.ins_rules == []
+    assert project.blk_rules == []
+    assert project.additional_configuration["pipeline_v2_mode"] == "config-v2"
+    assert project.additional_configuration["pipeline_v2"]
 
 
 def test_repo_inventory_surfaces_unsupported_reasons():
@@ -704,13 +722,40 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "hodur_flag2_mixed",
         "hodur_flag2_s1a_mixed",
         "hodur_flag2_with_fcp_mixed",
+        "hodur_flag2_config_v2_canary_mixed",
     }
     assert parity_rows["hodur_flag2_mixed"]["allowed_diag_drift"] == []
     assert parity_rows["hodur_flag2_s1a_mixed"]["allowed_diag_drift"] == []
     assert parity_rows["hodur_flag2_with_fcp_mixed"]["allowed_diag_drift"] == []
-    assert matrix["parity_evidence"]["docker_log"].endswith(
-        "config-v2-expanded-parity-evidence-v1.log"
+    assert parity_rows["hodur_flag2_config_v2_canary_mixed"] == {
+        "id": "hodur_flag2_config_v2_canary_mixed",
+        "legacy_config": "hodur_flag2.json",
+        "runtime_config": "hodur_flag2_config_v2_canary.json",
+        "shadow_config": "hodur_flag2.pipeline_v2.json",
+        "ast_stats_match": True,
+        "stable_diag_parity": True,
+        "allowed_diag_drift": [],
+    }
+    assert matrix["parity_evidence"]["summary"].startswith(
+        f"{len(parity_rows)} passed,"
     )
+    assert matrix["parity_evidence"]["docker_log"].endswith(
+        "config-v2-parity-gate-canary-v1.log"
+    )
+
+    canaries = {
+        item["config"]: item for item in matrix["canary_configs"]
+    }
+    assert canaries == {
+        "hodur_flag2_config_v2_canary.json": {
+            "id": "hodur_flag2_config_v2_canary",
+            "config": "hodur_flag2_config_v2_canary.json",
+            "source_config": "hodur_flag2.json",
+            "source_shadow": "hodur_flag2.pipeline_v2.json",
+            "representative_row": "hodur_flag2_config_v2_canary_mixed",
+            "runtime_mode": "config-v2",
+        }
+    }
 
     lane_ids = {lane["id"] for lane in matrix["runtime_lanes"]}
     assert lane_ids == {
