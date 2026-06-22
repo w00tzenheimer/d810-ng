@@ -61,6 +61,8 @@ _BLOCK_RULE_PASS_IDS = {
     "GlobalConstantInliner": "global-constant-inliner",
     "ForwardConstantPropagationRule": "forward-constant-propagation",
     "IdentityCallResolver": "identity-call-resolver",
+    "IndirectBranchResolver": "indirect-branch-resolver",
+    "IndirectCallResolver": "indirect-call-resolver",
     "MbaStatePreconditioner": "mba-state-preconditioner",
     "JumpFixer": "jump-fixer",
 }
@@ -73,6 +75,24 @@ _SUPPORTED_BLOCK_RULE_ADAPTERS = {
     )
     for rule_name, pass_id in _BLOCK_RULE_PASS_IDS.items()
 }
+_SUPPORTED_BLOCK_RULE_ADAPTERS["IndirectBranchResolver"] = (
+    LegacyBlockRuleAdapterBoundary(
+        rule_name="IndirectBranchResolver",
+        adapter_kind=LegacyBlockRuleAdapterKind.LEGACY_FLOW_RULE_ADAPTER,
+        supported=True,
+        pass_id="indirect-branch-resolver",
+        reason="routes through the live indirect-branch FlowOptimizationRule adapter",
+    )
+)
+_SUPPORTED_BLOCK_RULE_ADAPTERS["IndirectCallResolver"] = (
+    LegacyBlockRuleAdapterBoundary(
+        rule_name="IndirectCallResolver",
+        adapter_kind=LegacyBlockRuleAdapterKind.LEGACY_FLOW_RULE_ADAPTER,
+        supported=True,
+        pass_id="indirect-call-resolver",
+        reason="routes through the live indirect-call FlowOptimizationRule adapter",
+    )
+)
 _SUPPORTED_BLOCK_RULE_ADAPTERS["StateMachineCffUnflattener"] = (
     LegacyBlockRuleAdapterBoundary(
         rule_name="StateMachineCffUnflattener",
@@ -82,23 +102,7 @@ _SUPPORTED_BLOCK_RULE_ADAPTERS["StateMachineCffUnflattener"] = (
     )
 )
 
-# These legacy FlowOptimizationRule implementations are intentionally not
-# rendered as config-v2 shadows until their live IDA-backed adapter boundary is
-# represented. Inventory reports the concrete gap instead of emitting fake
-# pass ids.
 _UNSUPPORTED_BLOCK_RULE_ADAPTERS = {
-    "IndirectBranchResolver": LegacyBlockRuleAdapterBoundary(
-        rule_name="IndirectBranchResolver",
-        adapter_kind=LegacyBlockRuleAdapterKind.LEGACY_FLOW_RULE_ADAPTER,
-        supported=False,
-        reason="requires an IDA-backed indirect-branch FlowOptimizationRule adapter",
-    ),
-    "IndirectCallResolver": LegacyBlockRuleAdapterBoundary(
-        rule_name="IndirectCallResolver",
-        adapter_kind=LegacyBlockRuleAdapterKind.LEGACY_FLOW_RULE_ADAPTER,
-        supported=False,
-        reason="requires an IDA-backed indirect-call FlowOptimizationRule adapter",
-    ),
     "SimpleFlatteningCleanupUnflattener": LegacyBlockRuleAdapterBoundary(
         rule_name="SimpleFlatteningCleanupUnflattener",
         adapter_kind=LegacyBlockRuleAdapterKind.CLEANUP_FAMILY_ADAPTER,

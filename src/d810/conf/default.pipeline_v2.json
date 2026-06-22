@@ -1,0 +1,59 @@
+{
+  "description": "Config-v2 shadow representation of default.json. The source project JSON remains the default runtime source.",
+  "ins_rules": [],
+  "blk_rules": [],
+  "additional_configuration": {
+    "pipeline_v2_shadow": {
+      "source_config": "default.json",
+      "runtime_source": "legacy"
+    },
+    "pipeline_v2": [
+      {
+        "pass": "indirect-branch-resolver",
+        "scope": "block",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "legacy_flow_rule_adapter"
+          ]
+        },
+        "migration": {
+          "source_config": "default.json",
+          "source_section": "blk_rules",
+          "source_rule": "IndirectBranchResolver"
+        },
+        "options": {
+          "legacy_rule": "IndirectBranchResolver"
+        }
+      },
+      {
+        "pass": "indirect-call-resolver",
+        "scope": "block",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "legacy_flow_rule_adapter"
+          ]
+        },
+        "migration": {
+          "source_config": "default.json",
+          "source_section": "blk_rules",
+          "source_rule": "IndirectCallResolver"
+        },
+        "options": {
+          "legacy_rule": "IndirectCallResolver"
+        }
+      }
+    ]
+  }
+}

@@ -20,6 +20,8 @@ _SIMPLE_FLOW_RULE_PASS_IDS: Mapping[str, str] = {
     "global-constant-inliner": "GlobalConstantInliner",
     "forward-constant-propagation": "ForwardConstantPropagationRule",
     "identity-call-resolver": "IdentityCallResolver",
+    "indirect-branch-resolver": "IndirectBranchResolver",
+    "indirect-call-resolver": "IndirectCallResolver",
     "mba-state-preconditioner": "MbaStatePreconditioner",
     "jump-fixer": "JumpFixer",
 }

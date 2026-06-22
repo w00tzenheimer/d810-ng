@@ -191,6 +191,36 @@ _PARITY_ROWS = (
         ),
         id="identity_call_explicit_adapter",
     ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="default_indirect_resolution_branch_call_branch",
+            legacy_config="default_indirect_resolution.json",
+            shadow_config="default_indirect_resolution.pipeline_v2.json",
+            function_name="indirect_jump_table_xor",
+            expected_pass_ids=(
+                "indirect-branch-resolver",
+                "indirect-call-resolver",
+            ),
+            expects_state_machine=False,
+            required_snapshot_label=None,
+        ),
+        id="default_indirect_resolution_branch_call_branch",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="default_indirect_resolution_branch_call_call",
+            legacy_config="default_indirect_resolution.json",
+            shadow_config="default_indirect_resolution.pipeline_v2.json",
+            function_name="indirect_call_hikari_mov_sub",
+            expected_pass_ids=(
+                "indirect-branch-resolver",
+                "indirect-call-resolver",
+            ),
+            expects_state_machine=False,
+            required_snapshot_label=None,
+        ),
+        id="default_indirect_resolution_branch_call_call",
+    ),
 )
 
 

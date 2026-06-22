@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import idaapi
 import idc
 
 from d810.core.config import ProjectConfiguration
+from d810.core.config_v2_defaults import CONFIG_V2_SUPPORTED_DEFAULTS_ENV
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -97,6 +99,20 @@ def temporary_project(state, project: ProjectConfiguration):
                 manager._projects.pop(name, None)
             else:
                 manager._projects[name] = previous
+
+
+@contextlib.contextmanager
+def supported_defaults_disabled_for_baseline():
+    """Collect the existing-project baseline without supported-default routing."""
+    previous = os.environ.get(CONFIG_V2_SUPPORTED_DEFAULTS_ENV)
+    os.environ[CONFIG_V2_SUPPORTED_DEFAULTS_ENV] = "0"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(CONFIG_V2_SUPPORTED_DEFAULTS_ENV, None)
+        else:
+            os.environ[CONFIG_V2_SUPPORTED_DEFAULTS_ENV] = previous
 
 
 def find_state_machine_rule(state):
@@ -286,7 +302,7 @@ def assert_config_v2_runtime_parity(
                 pseudocode_to_string=pseudocode_to_string,
             )
 
-    with d810_state() as state:
+    with d810_state() as state, supported_defaults_disabled_for_baseline():
         legacy_result = decompile_with_project(
             state=state,
             project_name=row.legacy_config,
