@@ -1032,6 +1032,24 @@ def test_config_v2_runtime_support_matrix_ci_rehearsal_switch_is_explicit():
             "-w config-v2-ci-rehearsal"
         ),
         "worktree": "config-v2-ci-rehearsal",
+        "evidence": {
+            "log_path": (
+                ".worktrees/config-v2-ci-rehearsal/.tmp/logs/"
+                "config-v2-ci-runtime-switch-rehearsal-coverage-v2.log"
+            ),
+            "proof_line_pattern": "CONFIG_V2_CI_REHEARSAL",
+            "required_source_proof_lines": [
+                "CONFIG_V2_CI_REHEARSAL "
+                "source_project='default_instruction_only.json'",
+                "CONFIG_V2_CI_REHEARSAL "
+                "source_project='default_unflattening_tigress_engine.json'",
+                "CONFIG_V2_CI_REHEARSAL source_project='hodur_flag2.json'",
+            ],
+            "pytest_summary_pattern": "[0-9]+ passed.*deselected.*warnings",
+            "summary_step": "Expose config-v2 CI rehearsal evidence",
+            "artifact_step": "Upload config-v2 CI rehearsal log",
+            "artifact_name": "config-v2-ci-rehearsal-log",
+        },
         "stabilization_policy": (
             "Keep visible but non-blocking until the supported-mapping rehearsal "
             "job is stable in CI, then make the job blocking in a separate change."
@@ -1079,6 +1097,24 @@ def test_config_v2_runtime_support_matrix_ci_rehearsal_switch_is_explicit():
     assert f'git worktree add .worktrees/{ci_job["worktree"]} HEAD' in job_block
     assert "D810_REPO_ROOT=\"${{ github.workspace }}\"" in job_block
     assert ci_job["command"] in job_block
+    evidence = ci_job["evidence"]
+    assert evidence["summary_step"] in job_block
+    assert evidence["artifact_step"] in job_block
+    assert f'REHEARSAL_LOG="{evidence["log_path"]}"' in job_block
+    for proof_line in evidence["required_source_proof_lines"]:
+        assert f'grep -F "{proof_line}" "$REHEARSAL_LOG"' in job_block
+    assert (
+        f'grep -F "{evidence["proof_line_pattern"]}" "$REHEARSAL_LOG"'
+        not in job_block
+    )
+    assert (
+        f'grep -E "{evidence["pytest_summary_pattern"]}" "$REHEARSAL_LOG"'
+        in job_block
+    )
+    assert "actions/upload-artifact@v4" in job_block
+    assert f'name: {evidence["artifact_name"]}' in job_block
+    assert f'path: {evidence["log_path"]}' in job_block
+    assert "if-no-files-found: error" in job_block
     assert "pytest tests/system" not in job_block
 
     expected_mappings = [

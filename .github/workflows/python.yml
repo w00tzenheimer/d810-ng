@@ -221,6 +221,28 @@ jobs:
                   D810_REPO_ROOT="${{ github.workspace }}" \
                     ./tools/scripts/run_config_v2_ci_rehearsal.sh -w config-v2-ci-rehearsal
 
+            - name: Expose config-v2 CI rehearsal evidence
+              run: |
+                  set -euo pipefail
+                  REHEARSAL_LOG=".worktrees/config-v2-ci-rehearsal/.tmp/logs/config-v2-ci-runtime-switch-rehearsal-coverage-v2.log"
+                  if [ ! -f "$REHEARSAL_LOG" ]; then
+                      echo "Missing config-v2 CI rehearsal log: $REHEARSAL_LOG" >&2
+                      exit 1
+                  fi
+                  echo "config-v2 CI rehearsal proof lines:"
+                  grep -F "CONFIG_V2_CI_REHEARSAL source_project='default_instruction_only.json'" "$REHEARSAL_LOG"
+                  grep -F "CONFIG_V2_CI_REHEARSAL source_project='default_unflattening_tigress_engine.json'" "$REHEARSAL_LOG"
+                  grep -F "CONFIG_V2_CI_REHEARSAL source_project='hodur_flag2.json'" "$REHEARSAL_LOG"
+                  echo "config-v2 CI rehearsal pytest summary:"
+                  grep -E "[0-9]+ passed.*deselected.*warnings" "$REHEARSAL_LOG" | tail -n 1
+
+            - name: Upload config-v2 CI rehearsal log
+              uses: actions/upload-artifact@v4
+              with:
+                  name: config-v2-ci-rehearsal-log
+                  path: .worktrees/config-v2-ci-rehearsal/.tmp/logs/config-v2-ci-runtime-switch-rehearsal-coverage-v2.log
+                  if-no-files-found: error
+
             - name: Save Docker image to cache
               if: steps.docker-cache.outputs.cache-hit != 'true'
               run: |
