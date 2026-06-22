@@ -674,6 +674,7 @@ def test_unsupported_control_shapes_are_diagnostics():
         LlvmLowerBackTerminatorKind.INDIRECTBR,
         LlvmLowerBackTerminatorKind.INVOKE,
         LlvmLowerBackTerminatorKind.LANDINGPAD,
+        LlvmLowerBackTerminatorKind.UNREACHABLE,
     ):
         fn = LlvmLowerBackFunction(
             name=kind.value,

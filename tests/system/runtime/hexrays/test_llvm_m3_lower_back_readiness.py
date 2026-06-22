@@ -11,6 +11,7 @@ import idaapi
 from d810.backends.hexrays.lifter import lift_function
 from d810.backends.llvm import (
     LlvmLowerBackReadinessStatus,
+    LlvmLowerBackUnsupportedKind,
     LlvmM2PipelineStatus,
     assess_lower_back_readiness,
     emit_flowgraph_to_llvm,
@@ -24,7 +25,7 @@ class TestLLVMM3LowerBackReadiness:
 
     binary_name = "restructuring_lab.dll"
 
-    def test_lab_if_diamond_optimized_ir_is_lower_back_planned(
+    def test_lab_if_diamond_optimized_ir_has_lower_back_readiness_classification(
         self, ida_database, configure_hexrays, tmp_path
     ):
         if not idaapi.init_hexrays_plugin():
@@ -75,8 +76,22 @@ class TestLLVMM3LowerBackReadiness:
                 f"bridges={len(plan.bridge_blocks)}"
             )
 
-        assert readiness.status is LlvmLowerBackReadinessStatus.PLANNED, (
-            parse_diags,
-            plan_diags,
-            m2.after_ir,
+        has_unreachable_terminator = any(
+            line.strip() == "unreachable" for line in m2.after_ir.splitlines()
         )
+        if has_unreachable_terminator:
+            assert readiness.status is LlvmLowerBackReadinessStatus.UNSUPPORTED, (
+                parse_diags,
+                plan_diags,
+                m2.after_ir,
+            )
+            assert readiness.plan_result is not None
+            assert tuple(reason.kind for reason in readiness.plan_result.unsupported) == (
+                LlvmLowerBackUnsupportedKind.UNSUPPORTED_CONTROL,
+            )
+        else:
+            assert readiness.status is LlvmLowerBackReadinessStatus.PLANNED, (
+                parse_diags,
+                plan_diags,
+                m2.after_ir,
+            )
