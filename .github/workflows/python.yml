@@ -172,6 +172,18 @@ jobs:
                   docker compose run --rm --entrypoint bash idapro-tests-9.2 -c "
                       set -e
                       cd /work
+                      if ! command -v opt >/dev/null 2>&1; then
+                          apt-get update -qq && apt-get install -y -qq --no-install-recommends llvm >/dev/null
+                      fi
+                      LLVM_OPT_PATH=\"\$(command -v opt || find /usr/lib/llvm-*/bin -name opt -type f -perm /111 2>/dev/null | sort -V | tail -1)\"
+                      if [ -z \"\$LLVM_OPT_PATH\" ]; then
+                          echo 'ERROR: system tests require LLVM opt for verifier coverage' >&2
+                          exit 1
+                      fi
+                      export LLVM_OPT=\"\$LLVM_OPT_PATH\"
+                      export D810_REQUIRE_LLVM_OPT=1
+                      echo \"LLVM opt: \$LLVM_OPT\"
+                      \"\$LLVM_OPT\" --version | head -n 1
                       pip install -e .[dev] -q
                       pip install 'z3-solver>=4.13,<4.15.5' -q
                       D810_TEST_BINARY=libobfuscated.dll pytest tests/system/ -v --tb=short --forked
@@ -298,6 +310,18 @@ jobs:
                   set -e
                   docker compose run --rm --entrypoint bash idapro-tests-9.2 -c "
                       set -e
+                      if ! command -v opt >/dev/null 2>&1; then
+                          apt-get update -qq && apt-get install -y -qq --no-install-recommends llvm >/dev/null
+                      fi
+                      LLVM_OPT_PATH=\"\$(command -v opt || find /usr/lib/llvm-*/bin -name opt -type f -perm /111 2>/dev/null | sort -V | tail -1)\"
+                      if [ -z \"\$LLVM_OPT_PATH\" ]; then
+                          echo 'ERROR: system tests require LLVM opt for verifier coverage' >&2
+                          exit 1
+                      fi
+                      export LLVM_OPT=\"\$LLVM_OPT_PATH\"
+                      export D810_REQUIRE_LLVM_OPT=1
+                      echo \"LLVM opt: \$LLVM_OPT\"
+                      \"\$LLVM_OPT\" --version | head -n 1
                       apt-get update -qq && apt-get install -y -qq g++ >/dev/null
                       cd /work
                       pip install setuptools wheel Cython>=3.0.0 -q
