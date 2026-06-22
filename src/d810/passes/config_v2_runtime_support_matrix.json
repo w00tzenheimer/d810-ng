@@ -100,7 +100,7 @@
     },
     {
       "id": "ollvm_generated_shadow_parity",
-      "description": "OLLVM generated-shadow config-v2 runtime parity lane; not a canary/default route",
+      "description": "OLLVM generated-shadow config-v2 runtime parity lane; one selectable canary exists, but OLLVM is not default-routed",
       "representative_row": "default_unflattening_ollvm_generated_shadow",
       "representative_shadow": "default_unflattening_ollvm.pipeline_v2.json",
       "pass_ids": [
@@ -118,8 +118,8 @@
     }
   ],
   "parity_evidence": {
-    "docker_log": ".tmp/logs/config-v2-ollvm-generated-shadow-parity-v1-parity.log",
-    "summary": "17 passed, 1 skipped, 2487 deselected, 117 warnings",
+    "docker_log": ".tmp/logs/config-v2-ollvm-opt-in-rollout-v1-parity.log",
+    "summary": "18 passed, 1 skipped, 2487 deselected, 117 warnings",
     "rows": [
       {
         "id": "default_instruction_only_mba",
@@ -255,6 +255,15 @@
         "allowed_diag_drift": []
       },
       {
+        "id": "default_unflattening_ollvm_config_v2_canary",
+        "legacy_config": "default_unflattening_ollvm.json",
+        "runtime_config": "default_unflattening_ollvm_config_v2_canary.json",
+        "shadow_config": "default_unflattening_ollvm.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
+      },
+      {
         "id": "default_unflattening_ollvm_s1a_fair_generated_shadow",
         "legacy_config": "default_unflattening_ollvm_s1a_fair.json",
         "shadow_config": "default_unflattening_ollvm_s1a_fair.pipeline_v2.json",
@@ -288,6 +297,14 @@
       "source_shadow": "hodur_flag2.pipeline_v2.json",
       "representative_row": "hodur_flag2_config_v2_canary_mixed",
       "runtime_mode": "config-v2"
+    },
+    {
+      "id": "default_unflattening_ollvm_config_v2_canary",
+      "config": "default_unflattening_ollvm_config_v2_canary.json",
+      "source_config": "default_unflattening_ollvm.json",
+      "source_shadow": "default_unflattening_ollvm.pipeline_v2.json",
+      "representative_row": "default_unflattening_ollvm_config_v2_canary",
+      "runtime_mode": "config-v2"
     }
   ],
   "opt_in_rollout": {
@@ -295,8 +312,8 @@
     "default_runtime_mode": "supported-config-v2-defaults",
     "required_mode": "config-v2",
     "selection_model": "Users may select checked-in canary ProjectConfigurations by name; supported bundled source configs also route to those canaries by default. Generated shadows remain migration artifacts and unsupported project configs remain on the existing project configuration path.",
-    "docker_log": ".tmp/logs/config-v2-canary-expansion-v1-parity.log",
-    "summary": "12 passed, 1 skipped, 2481 deselected, 117 warnings",
+    "docker_log": ".tmp/logs/config-v2-ollvm-opt-in-rollout-v1-parity.log",
+    "summary": "18 passed, 1 skipped, 2487 deselected, 117 warnings",
     "user_selectable_configs": [
       {
         "config": "default_instruction_only_config_v2_canary.json",
@@ -327,6 +344,16 @@
         "lanes": [
           "native_state_machine_spine",
           "mixed_spine_simple_flow_rule"
+        ]
+      },
+      {
+        "config": "default_unflattening_ollvm_config_v2_canary.json",
+        "source_config": "default_unflattening_ollvm.json",
+        "source_shadow": "default_unflattening_ollvm.pipeline_v2.json",
+        "parity_row": "default_unflattening_ollvm_config_v2_canary",
+        "normal_project_config_loading_path": true,
+        "lanes": [
+          "ollvm_generated_shadow_parity"
         ]
       }
     ],
@@ -528,7 +555,7 @@
   "unsupported_adapter_boundaries": [],
   "non_goals": [
     "no unsupported runtime cutover",
-    "no OLLVM canary or supported-default route",
+    "no OLLVM supported-default route or second OLLVM canary",
     "no indirect branch/call default routing or canary rollout",
     "no cleanup-family default routing or canary rollout",
     "no fake pass registration",

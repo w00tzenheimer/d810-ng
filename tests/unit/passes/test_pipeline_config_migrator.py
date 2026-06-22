@@ -55,6 +55,7 @@ _CONFIG_V2_CANARY_CONFIGS = (
     "default_instruction_only_config_v2_canary",
     "default_unflattening_tigress_engine_config_v2_canary",
     "hodur_flag2_config_v2_canary",
+    "default_unflattening_ollvm_config_v2_canary",
 )
 _OLLVM_BLOCK_RULES = (
     "IndirectCallResolver",
@@ -855,6 +856,7 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "default_indirect_resolution_branch_call_call",
         "example_libobfuscated_no_fixprecedessor_cleanup",
         "default_unflattening_ollvm_generated_shadow",
+        "default_unflattening_ollvm_config_v2_canary",
         "default_unflattening_ollvm_s1a_fair_generated_shadow",
     }
     assert parity_rows["eidolon_mba_instruction_heavy"] == {
@@ -943,6 +945,15 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "stable_diag_parity": True,
         "allowed_diag_drift": [],
     }
+    assert parity_rows["default_unflattening_ollvm_config_v2_canary"] == {
+        "id": "default_unflattening_ollvm_config_v2_canary",
+        "legacy_config": "default_unflattening_ollvm.json",
+        "runtime_config": "default_unflattening_ollvm_config_v2_canary.json",
+        "shadow_config": "default_unflattening_ollvm.pipeline_v2.json",
+        "ast_stats_match": True,
+        "stable_diag_parity": True,
+        "allowed_diag_drift": [],
+    }
     assert parity_rows["default_unflattening_ollvm_s1a_fair_generated_shadow"] == {
         "id": "default_unflattening_ollvm_s1a_fair_generated_shadow",
         "legacy_config": "default_unflattening_ollvm_s1a_fair.json",
@@ -955,7 +966,7 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         f"{len(parity_rows)} passed,"
     )
     assert matrix["parity_evidence"]["docker_log"].endswith(
-        "config-v2-ollvm-generated-shadow-parity-v1-parity.log"
+        "config-v2-ollvm-opt-in-rollout-v1-parity.log"
     )
 
     canaries = {
@@ -984,6 +995,14 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
             "source_config": "hodur_flag2.json",
             "source_shadow": "hodur_flag2.pipeline_v2.json",
             "representative_row": "hodur_flag2_config_v2_canary_mixed",
+            "runtime_mode": "config-v2",
+        },
+        "default_unflattening_ollvm_config_v2_canary.json": {
+            "id": "default_unflattening_ollvm_config_v2_canary",
+            "config": "default_unflattening_ollvm_config_v2_canary.json",
+            "source_config": "default_unflattening_ollvm.json",
+            "source_shadow": "default_unflattening_ollvm.pipeline_v2.json",
+            "representative_row": "default_unflattening_ollvm_config_v2_canary",
             "runtime_mode": "config-v2",
         }
     }
@@ -1022,6 +1041,16 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
             "lanes": [
                 "native_state_machine_spine",
                 "mixed_spine_simple_flow_rule",
+            ],
+        },
+        {
+            "config": "default_unflattening_ollvm_config_v2_canary.json",
+            "source_config": "default_unflattening_ollvm.json",
+            "source_shadow": "default_unflattening_ollvm.pipeline_v2.json",
+            "parity_row": "default_unflattening_ollvm_config_v2_canary",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "ollvm_generated_shadow_parity",
             ],
         }
     ]
@@ -1502,19 +1531,52 @@ def test_ollvm_configs_are_generated_shadow_supported_after_reassessment(config_
     assert "exclude_groups" not in pipeline_v2[0]["rules"]
 
 
-def test_ollvm_pipeline_v2_shadows_are_generated_without_canary_or_default_route():
+def test_ollvm_canary_rollout_stays_single_selectable_and_not_default_routed():
     matrix = _load_runtime_support_matrix()
     canary_sources = {item["source_config"] for item in matrix["canary_configs"]}
+    canary_configs = {item["config"]: item for item in matrix["canary_configs"]}
     default_sources = {
         item["source_config"]
         for item in matrix["supported_default_routing"]["supported_mappings"]
     }
+    parity_rows = {row["id"]: row for row in matrix["parity_evidence"]["rows"]}
 
     for config_name in _OLLVM_CONFIGS:
         source_config = f"{config_name}.json"
         assert (_CONF_DIR / f"{config_name}.pipeline_v2.json").exists()
-        assert source_config not in canary_sources
         assert source_config not in default_sources
+
+    assert "default_unflattening_ollvm.json" in canary_sources
+    assert "default_unflattening_ollvm_s1a_fair.json" not in canary_sources
+    assert "default_unflattening_ollvm_config_v2_canary.json" in canary_configs
+    assert not (_CONF_DIR / "default_unflattening_ollvm_s1a_fair_config_v2_canary.json").exists()
+
+    canary = canary_configs["default_unflattening_ollvm_config_v2_canary.json"]
+    assert canary == {
+        "id": "default_unflattening_ollvm_config_v2_canary",
+        "config": "default_unflattening_ollvm_config_v2_canary.json",
+        "source_config": "default_unflattening_ollvm.json",
+        "source_shadow": "default_unflattening_ollvm.pipeline_v2.json",
+        "representative_row": "default_unflattening_ollvm_config_v2_canary",
+        "runtime_mode": "config-v2",
+    }
+    assert parity_rows["default_unflattening_ollvm_config_v2_canary"][
+        "runtime_config"
+    ] == "default_unflattening_ollvm_config_v2_canary.json"
+
+    shadow = _load_json(_CONF_DIR / "default_unflattening_ollvm.pipeline_v2.json")
+    canary_project = _load_json(_CONF_DIR / "default_unflattening_ollvm_config_v2_canary.json")
+    assert canary_project["ins_rules"] == []
+    assert canary_project["blk_rules"] == []
+    canary_additional = canary_project["additional_configuration"]
+    assert canary_additional["pipeline_v2_mode"] == "config-v2"
+    assert canary_additional["recon_fact_profile_modules"] == [
+        "d810.families.state_machine_cff.ollvm_carrier_profile"
+    ]
+    assert (
+        canary_additional["pipeline_v2"]
+        == shadow["additional_configuration"]["pipeline_v2"]
+    )
 
 
 @pytest.mark.parametrize(
