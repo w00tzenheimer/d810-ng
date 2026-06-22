@@ -7,6 +7,7 @@ import json
 from d810.core.diag.models import FactObservation, Snapshot, StateTransitionDispatchResolution
 from d810.core.diag.snapshot import snapshot_state_dispatcher_rows
 from d810.diagnostics.state_dispatcher_resolution import (
+    StateDispatchResolution,
     load_latest_state_dispatcher_map_from_db,
     persist_state_dispatch_resolutions,
     resolve_state_transition_facts_with_dispatcher,
@@ -231,3 +232,32 @@ def test_persist_idempotent() -> None:
     persist_state_dispatch_resolutions(conn, resolutions)
 
     assert StateTransitionDispatchResolution.select().count() == 1
+
+
+def test_persist_normalizes_unsigned_next_state_const() -> None:
+    conn = _make_db()
+
+    count = persist_state_dispatch_resolutions(
+        conn,
+        [
+            StateDispatchResolution(
+                snapshot_id=1,
+                fact_id="state_transition_anchor:blk=100",
+                source_block_serial=100,
+                source_state_const_hex="0xffffffffffffffff",
+                resolved_next_block_serial=76,
+                resolved_next_state_const_hex="0xffffffffffffff80",
+                resolved_next_state_const_u64=0xFFFFFFFFFFFFFF80,
+                resolution_kind="state_dispatcher_row",
+                resolution_reason="resolved_exact_state",
+                resolution_maturity="MMAT_GLBOPT1",
+            )
+        ],
+    )
+
+    row = conn.execute(
+        "SELECT resolved_next_state_const_hex, resolved_next_state_const_u64 "
+        "FROM state_transition_dispatch_resolutions"
+    ).fetchone()
+    assert count == 1
+    assert row == ("0xffffffffffffff80", -128)

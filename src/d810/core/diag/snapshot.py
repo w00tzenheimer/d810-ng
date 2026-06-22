@@ -1261,8 +1261,8 @@ def snapshot_state_transition_dispatch_resolutions(
             "resolved_next_state_const_hex": _mapping_value(
                 row, "resolved_next_state_const_hex"
             ),
-            "resolved_next_state_const_u64": _mapping_value(
-                row, "resolved_next_state_const_u64"
+            "resolved_next_state_const_u64": _safe_int(
+                _int_from_any(_mapping_value(row, "resolved_next_state_const_u64"))
             ),
             "resolution_kind": str(resolution_kind),
             "resolution_reason": str(resolution_reason),

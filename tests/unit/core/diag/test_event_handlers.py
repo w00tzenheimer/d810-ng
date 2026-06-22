@@ -324,6 +324,45 @@ def test_state_transition_dispatch_resolutions_write_under_snapshot(fake_conn):
     )
 
 
+def test_state_transition_dispatch_resolutions_normalize_u64(fake_conn):
+    snap = request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="L",
+        func_ea=0x401000,
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+    )
+    assert snap is not None
+
+    observe_state_transition_dispatch_resolutions(
+        snap,
+        [
+            {
+                "fact_id": "state_transition_anchor:blk=100",
+                "source_block_serial": 100,
+                "source_state_const_hex": "0xffffffffffffffff",
+                "resolved_next_block_serial": 76,
+                "resolved_next_state_const_hex": "0xffffffffffffff80",
+                "resolved_next_state_const_u64": 0xFFFFFFFFFFFFFF80,
+                "resolution_kind": "ollvm_state_dispatcher_map",
+                "resolution_reason": "resolved_exact_state",
+                "resolution_maturity": "MMAT_GLBOPT1",
+            },
+        ],
+    )
+
+    row = fake_conn.execute(
+        "SELECT source_state_const_hex, resolved_next_state_const_hex, "
+        "resolved_next_state_const_u64 "
+        "FROM state_transition_dispatch_resolutions"
+    ).fetchone()
+    assert row == (
+        "0xffffffffffffffff",
+        "0xffffffffffffff80",
+        -128,
+    )
+
+
 def test_branch_ownership_proofs_write_under_snapshot(fake_conn):
     snap = request_capture_mba_snapshot(
         blocks=_make_snap_blocks(),
@@ -537,6 +576,37 @@ def test_cfg_provenance_buffers_until_next_capture(fake_conn):
     )
     assert '"block_label": "blk[10]@0x401010"' in detail[6]
     assert '"target_label": "blk[20]@0x401020"' in detail[6]
+
+
+def test_cfg_provenance_normalizes_unsigned_eas_before_insert(fake_conn):
+    observe_cfg_provenance(
+        pass_name="cfg_mutations",
+        action="REDIRECT_EDGE",
+        block_serial=10,
+        target_serial=20,
+        block_ea=0xFFFFFFFFFFFFFFFF,
+        target_ea=0xFFFFFFFFFFFFFF80,
+        reason="badaddr_like_edge",
+    )
+
+    request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="L", func_ea=1, maturity="M", phase="post_d810",
+    )
+
+    detail = fake_conn.execute(
+        """
+        SELECT block_ea_hex, block_ea_i64, target_ea_hex, target_ea_i64
+        FROM cfg_provenance
+        WHERE action='REDIRECT_EDGE'
+        """
+    ).fetchone()
+    assert detail == (
+        "0xffffffffffffffff",
+        -1,
+        "0xffffffffffffff80",
+        -128,
+    )
 
 
 def test_cfg_provenance_latest_writes_to_current_function_snapshot(fake_conn):
