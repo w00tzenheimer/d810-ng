@@ -29,6 +29,7 @@ _MOV_CONST_RE = re.compile(
     r"(?P<var>%var_[0-9A-Fa-f]+)\.\d+",
 )
 _BRANCH_TARGET_RE = re.compile(r"@(?P<target>\d+)\b")
+_SOURCE_BYTE_BUFFERS = ("%var_190", "%var_678")
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +209,19 @@ def _site_mentions_exact_source_byte(site: TerminalByteEmitSite) -> bool:
     return any(needle in site.source_expression for needle in needles)
 
 
+def _site_mentions_source_byte_buffer(site: TerminalByteEmitSite) -> bool:
+    haystack = "\n".join((site.source_expression, site.destination))
+    if site.byte_index == 0:
+        return any(buffer in haystack for buffer in _SOURCE_BYTE_BUFFERS)
+    for buffer in _SOURCE_BYTE_BUFFERS:
+        pattern = re.compile(
+            rf"{re.escape(buffer)}(?:\.8)?\s*\+\s*#{site.byte_index}(?:\.8)?"
+        )
+        if pattern.search(haystack):
+            return True
+    return False
+
+
 def _site_score(site: TerminalByteEmitSite) -> tuple[int, float, int]:
     """Prefer the site most likely to represent the real byte emit."""
     score = 0
@@ -238,6 +252,19 @@ def _select_sites_by_byte(
     selected: dict[int, TerminalByteEmitSite] = {}
     for site in sites:
         if not site.is_terminal_tail and not _site_mentions_exact_source_byte(site):
+            continue
+        current = selected.get(site.byte_index)
+        if current is None or _site_score(site) > _site_score(current):
+            selected[site.byte_index] = site
+    return selected
+
+
+def _select_next_target_sites_by_byte(
+    sites: Iterable[TerminalByteEmitSite],
+) -> dict[int, TerminalByteEmitSite]:
+    selected: dict[int, TerminalByteEmitSite] = {}
+    for site in sites:
+        if site.is_terminal_tail or not _site_mentions_source_byte_buffer(site):
             continue
         current = selected.get(site.byte_index)
         if current is None or _site_score(site) > _site_score(current):
@@ -557,7 +584,9 @@ class TerminalTailCascadeEgressPlanner:
         sites: Iterable[TerminalByteEmitSite],
     ) -> None:
         self._blocks = {int(serial): block for serial, block in blocks.items()}
-        self._sites_by_byte = _select_sites_by_byte(sites)
+        site_list = tuple(sites)
+        self._sites_by_byte = _select_sites_by_byte(site_list)
+        self._next_target_sites_by_byte = _select_next_target_sites_by_byte(site_list)
 
     def build_plan(self) -> TerminalTailCascadeEgressPlan:
         block_succs = {
@@ -582,7 +611,9 @@ class TerminalTailCascadeEgressPlanner:
         largest_before: int,
     ) -> tuple[TerminalTailCascadeEgressRow, dict[int, tuple[int, ...]]]:
         site = self._sites_by_byte.get(byte_index)
-        next_site = self._sites_by_byte.get(byte_index + 1)
+        next_site = self._sites_by_byte.get(
+            byte_index + 1,
+        ) or self._next_target_sites_by_byte.get(byte_index + 1)
         source_block = site.block_serial if site is not None else None
         block = self._blocks.get(source_block) if source_block is not None else None
         intended_target = next_site.block_serial if next_site is not None else None

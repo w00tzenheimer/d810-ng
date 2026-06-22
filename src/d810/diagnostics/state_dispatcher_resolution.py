@@ -8,6 +8,18 @@ from dataclasses import dataclass
 from d810.core.diag.models import FactObservation, StateDispatcherRow
 from d810.core.typing import Iterable
 
+_SIGNED64_MAX = 0x7FFFFFFFFFFFFFFF
+_MASK64 = 0xFFFFFFFFFFFFFFFF
+
+
+def _sqlite_i64_from_u64(value: int | None) -> int | None:
+    if value is None:
+        return None
+    normalized = int(value) & _MASK64
+    if normalized > _SIGNED64_MAX:
+        return normalized - (1 << 64)
+    return normalized
+
 
 @dataclass(frozen=True)
 class StateDispatchResolution:
@@ -32,7 +44,7 @@ class StateDispatchResolution:
             self.source_state_const_hex,
             self.resolved_next_block_serial,
             self.resolved_next_state_const_hex,
-            self.resolved_next_state_const_u64,
+            _sqlite_i64_from_u64(self.resolved_next_state_const_u64),
             self.resolution_kind,
             self.resolution_reason,
             self.resolution_maturity,

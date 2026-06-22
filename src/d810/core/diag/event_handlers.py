@@ -37,6 +37,7 @@ from d810.core.diag import active_diag_db, diag_models_on, get_diag_conn
 from d810.core.diag.models import CfgProvenance, FactConsumer, Snapshot
 from d810.core.formatting import format_block_id
 from d810.core.diag.snapshot import (
+    _dual,
     snapshot_branch_witness_decisions,
     snapshot_branch_ownership_proofs,
     snapshot_condition_chain_interval_dispatcher_rows,
@@ -710,9 +711,8 @@ def _provenance_block_diag(
 ) -> dict[str, str | int | None]:
     if serial is None:
         return {"label": None, "ea_hex": None, "ea_i64": None}
-    ea_i64 = int(ea) if ea is not None else None
-    ea_hex = f"0x{ea_i64 & 0xFFFFFFFFFFFFFFFF:016x}" if ea_i64 is not None else None
-    if ea_i64 is None:
+    ea_hex, ea_i64 = _dual(int(ea)) if ea is not None else (None, None)
+    if ea is None:
         ea_hex, ea_i64 = _lookup_provenance_block_ea(conn, snap_id, int(serial))
     if label is None or label.endswith("@?") or label.endswith("@unknown"):
         label = format_block_id(int(serial), start_ea=ea_hex or ea_i64)

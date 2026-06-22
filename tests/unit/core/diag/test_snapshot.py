@@ -208,6 +208,44 @@ def test_snapshot_state_transition_dispatch_resolutions_round_trip() -> None:
     assert row == ("fact-1", 20, "resolved_exact_state")
 
 
+def test_snapshot_state_transition_dispatch_resolutions_normalizes_u64() -> None:
+    conn = create_diag_database(":memory:").connection()
+    conn.execute(
+        "INSERT INTO snapshots VALUES "
+        "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', "
+        "'unknown', 0, 0.0)"
+    )
+
+    snapshot_state_transition_dispatch_resolutions(
+        conn,
+        1,
+        [
+            {
+                "fact_id": "fact-1",
+                "source_block_serial": 10,
+                "source_state_const_hex": "0xffffffffffffffff",
+                "resolved_next_block_serial": 20,
+                "resolved_next_state_const_hex": "0xffffffffffffff80",
+                "resolved_next_state_const_u64": 0xFFFFFFFFFFFFFF80,
+                "resolution_kind": "state_dispatcher_row",
+                "resolution_reason": "resolved_exact_state",
+                "resolution_maturity": "MMAT_GLBOPT1",
+            }
+        ],
+    )
+
+    row = conn.execute(
+        "SELECT source_state_const_hex, resolved_next_state_const_hex, "
+        "resolved_next_state_const_u64 "
+        "FROM state_transition_dispatch_resolutions"
+    ).fetchone()
+    assert row == (
+        "0xffffffffffffffff",
+        "0xffffffffffffff80",
+        -128,
+    )
+
+
 def test_snapshot_state_transition_dispatch_resolutions_deduplicates_rows() -> None:
     conn = create_diag_database(":memory:").connection()
     conn.execute(

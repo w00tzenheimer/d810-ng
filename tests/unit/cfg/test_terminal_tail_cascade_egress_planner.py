@@ -225,6 +225,60 @@ class TestTerminalTailCascadeEgressPlanner:
         assert plan.rows[5].source_block == 5
         assert plan.rows[5].current_continuation_target == 50
 
+    def test_nonterminal_source_byte_buffer_can_recover_next_target_without_overriding_tail_source(
+        self,
+    ) -> None:
+        blocks = {
+            4: _block(4, (40, 5)),
+            5: _block(5, (50, 90)),
+            6: _block(6, (60,)),
+            40: _block(40, ()),
+            50: _block(50, ()),
+            60: _block(60, ()),
+            90: _block(90, (5,)),
+        }
+        byte5_terminal_tail = _site(5, 5, continuation=90, return_edge=50)
+        byte5_nonterminal = TerminalByteEmitSite(
+            byte_index=5,
+            block_serial=90,
+            opcode="m_stx",
+            emitter_role="memory_store",
+            corridor_role="non_terminal_byte_emitter",
+            destination="[ds.2:(%var_678.8+#5.8)]",
+            source_expression="xdu.8([ds.2:(%var_678.8+#5.8)].1)",
+            continuation_edge=91,
+            return_edge=None,
+            confidence=0.8,
+        )
+        byte6_nonterminal = TerminalByteEmitSite(
+            byte_index=6,
+            block_serial=6,
+            opcode="m_stx",
+            emitter_role="memory_store",
+            corridor_role="non_terminal_byte_emitter",
+            destination="[ds.2:(%var_678.8+#6.8)]",
+            source_expression="xdu.8([ds.2:(%var_678.8+#6.8)].1)",
+            continuation_edge=60,
+            return_edge=None,
+            confidence=0.8,
+        )
+
+        plan = TerminalTailCascadeEgressPlanner(
+            blocks,
+            [
+                _site(4, 4, continuation=5, return_edge=40),
+                byte5_terminal_tail,
+                byte5_nonterminal,
+                byte6_nonterminal,
+            ],
+        ).build_plan()
+
+        assert plan.rows[4].intended_target == 5
+        assert plan.rows[5].source_block == 5
+        assert plan.rows[5].current_continuation_target == 90
+        assert plan.rows[5].intended_target == 6
+        assert plan.rows[5].reason != "terminal_byte_has_no_next_emit_target"
+
     def test_state_proof_marks_post_guard_target_safe(self) -> None:
         blocks = {
             5: _block(5, (50, 6)),
