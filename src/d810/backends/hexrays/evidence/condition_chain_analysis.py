@@ -19,8 +19,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import ida_hexrays
-
 from d810.analyses.value_flow import state_write
 from d810.backends.hexrays import condition_chain_runtime as _hexrays_condition_chain_runtime
 from d810.capabilities.providers import (
@@ -41,10 +39,15 @@ from d810.core.typing import (
 from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult
 from d810.analyses.control_flow.condition_chain_model import ConditionChainNodeMap
 from d810.analyses.control_flow.condition_chain_model import resolve_target_via_condition_chain
-from d810.backends.hexrays.evidence.decision_dag_extract import extract_decision_dag
 from d810.analyses.control_flow.interval_map import Node, NodeKind, emit_dispatch_intervals, IntervalDispatcher
 
 logger = getLogger(__name__)
+
+
+def _ida_hexrays():
+    import ida_hexrays
+
+    return ida_hexrays
 
 
 def _ensure_ida_imports() -> None:
@@ -1763,6 +1766,10 @@ def analyze_condition_chain_dispatcher(
     # Best-effort: any failure leaves decision_dag=None -> legacy routing remains.
     if state_var_stkoff is not None:
         try:
+            from d810.backends.hexrays.evidence.decision_dag_extract import (
+                extract_decision_dag,
+            )
+
             result.decision_dag = extract_decision_dag(
                 mba,
                 dispatcher_entry_serial=int(dispatcher_entry_serial),
@@ -2340,16 +2347,19 @@ def _block_adjacency(mba: Any, qty: int) -> dict[int, tuple[int, ...]]:
 
 def _is_glbopt1(mba: Any) -> bool:
     """GLBOPT1 maturity gate. Byte-identical to ``mba.maturity == MMAT_GLBOPT1``."""
+    ida_hexrays = _ida_hexrays()
     return int(mba.maturity) == ida_hexrays.MMAT_GLBOPT1
 
 
 def _glbopt1_maturity(mba: Any) -> int:
     """Return the raw ``MMAT_GLBOPT1`` constant (for allowed-maturity tuples)."""
+    ida_hexrays = _ida_hexrays()
     return int(ida_hexrays.MMAT_GLBOPT1)
 
 
 def _mmat_zero(mba: Any) -> int:
     """Return the raw ``MMAT_ZERO`` constant (the missing-maturity default)."""
+    ida_hexrays = _ida_hexrays()
     return int(ida_hexrays.MMAT_ZERO)
 
 
@@ -2360,6 +2370,7 @@ def _microcode_constants(mba: Any = None) -> MicrocodeConstants:
     replaces; the ``mba`` argument is accepted for provider-call uniformity but
     unused (the constants are object-independent).
     """
+    ida_hexrays = _ida_hexrays()
     return MicrocodeConstants(
         m_mov=int(ida_hexrays.m_mov),
         m_goto=int(ida_hexrays.m_goto),
@@ -2388,6 +2399,7 @@ def _microcode_constants(mba: Any = None) -> MicrocodeConstants:
 
 def _counter_hoist_rmw_arith_opcodes() -> frozenset[int]:
     """RMW-eligible arithmetic opcodes (``m_add``/``m_sub``/``m_xor``/``m_or``/``m_and``)."""
+    ida_hexrays = _ida_hexrays()
     return frozenset(
         {
             int(ida_hexrays.m_add),
@@ -2407,6 +2419,7 @@ def _counter_hoist_embedded_load_side(
     Byte-identical port of ``CounterHoistStrategy._embedded_load_side``; prefers
     the ``l`` operand when both carry loads (canonical OLLVM induction shape).
     """
+    ida_hexrays = _ida_hexrays()
     for side in ("l", "r"):
         mop = getattr(host, side)
         if mop is None:
@@ -2428,6 +2441,7 @@ def _counter_hoist_mops_equivalent(a: object, b: object) -> bool:
     eq = getattr(a, "equal_mops", None)
     if eq is not None:
         try:
+            ida_hexrays = _ida_hexrays()
             # EQ_IGNSIZE = 0x01 in hexrays.hpp; tolerate int/flag drift.
             eq_ignsize = getattr(ida_hexrays, "EQ_IGNSIZE", 0x01)
             return bool(eq(b, eq_ignsize))
@@ -2449,6 +2463,7 @@ def _counter_hoist_match_load_arith_store(
     """
     if host is None:
         return None
+    ida_hexrays = _ida_hexrays()
     if int(host.opcode) not in rmw_arith_opcodes:
         return None
 
@@ -2532,6 +2547,7 @@ def _mbl_keep_flag(mba: Any = None) -> int:
     Byte-identical to the inlined ``getattr(ida_hexrays, "MBL_KEEP", 0x10000)``;
     the ``mba`` argument is accepted for provider-call uniformity but unused.
     """
+    ida_hexrays = _ida_hexrays()
     return int(getattr(ida_hexrays, "MBL_KEEP", 0x10000))
 
 
