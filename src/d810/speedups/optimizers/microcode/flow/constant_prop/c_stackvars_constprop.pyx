@@ -83,7 +83,6 @@ cdef bool _process_operand_impl(object root_py_mop, object consts):
     See: fold_readonlydata.py _fold_readonly_operands_in_expr post-fixup
     and forward_const_prop.py _slow_rewrite_instruction for the reference
     implementations.
-    """
 
     We maintain Python lists (`worklist`, `post_order`) containing mop_t
     proxies.  The real C++ pointer is borrowed only when we need to access
