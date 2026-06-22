@@ -472,6 +472,9 @@ project configurations:
   non-Hodur native state-machine spine lane.
 - `hodur_flag2_config_v2_canary.json` exercises the Hodur native
   state-machine spine plus the supported simple flow-rule lane.
+- `default_unflattening_ollvm_config_v2_canary.json` exercises the OLLVM
+  generated-shadow lane with MBA/instruction, indirect-call, native
+  state-machine spine, cleanup-family, and simple flow-rule hooks.
 
 Each canary sets `pipeline_v2_mode: config-v2`.
 
@@ -489,9 +492,10 @@ runner, use:
 ./tools/scripts/run_config_v2_ci_rehearsal.sh -w <target-worktree>
 ```
 
-These canaries do not enable every generated shadow. Indirect branch/call,
-cleanup-family, and OLLVM config-v2 paths are available through generated
-shadows, but they are not part of the supported-default or canary rollout.
+These canaries do not default-route every generated shadow. Indirect
+branch/call, cleanup-family, and OLLVM config-v2 paths outside the listed
+canaries remain generated-shadow artifacts unless a canary or default route is
+explicitly added.
 
 ### Config-v2 default cutover criteria
 
