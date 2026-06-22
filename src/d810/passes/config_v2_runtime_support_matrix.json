@@ -278,8 +278,8 @@
       "workflow": ".github/workflows/python.yml",
       "job_id": "config-v2-ci-rehearsal",
       "job_name": "config-v2 CI rehearsal (supported mappings)",
-      "status": "wired-non-blocking",
-      "blocking": false,
+      "status": "blocking",
+      "blocking": true,
       "command": "./tools/scripts/run_config_v2_ci_rehearsal.sh -w config-v2-ci-rehearsal",
       "worktree": "config-v2-ci-rehearsal",
       "evidence": {
@@ -295,8 +295,8 @@
         "artifact_step": "Upload config-v2 CI rehearsal log",
         "artifact_name": "config-v2-ci-rehearsal-log"
       },
-      "stabilization_policy": "Keep visible but non-blocking until the supported-mapping rehearsal job is stable in CI, then make the job blocking in a separate change.",
-      "rollback": "Disable or remove this job, or unset D810_CONFIG_V2_CI_REHEARSAL in the named rehearsal command; product default runtime is unchanged."
+      "stabilization_policy": "Blocking after GitHub-visible proof lines and the rehearsal log artifact were observed green for all supported mappings.",
+      "rollback": "Restore continue-on-error for this job, disable or remove this job, or unset D810_CONFIG_V2_CI_REHEARSAL in the named rehearsal command; product default runtime is unchanged."
     },
     "docker_selector": "TestConfigV2CIRehearsalCoverage",
     "docker_log": ".tmp/logs/config-v2-ci-runtime-switch-rehearsal-coverage-v2.log",
