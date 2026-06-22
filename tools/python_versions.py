@@ -128,10 +128,15 @@ def _select_syntax_interpreter(
     return None
 
 
-def _run_supported_python_syntax_check(paths: tuple[str, ...], *, interpreter: str | None) -> int:
-    command = _select_syntax_interpreter(interpreter)
+def _run_supported_python_syntax_check(
+    paths: tuple[str, ...],
+    *,
+    interpreter: str | None,
+    target_versions: tuple[tuple[int, int], ...] = SUPPORTED_SYNTAX_VERSIONS,
+) -> int:
+    command = _select_syntax_interpreter(interpreter, target_versions=target_versions)
     if command is None:
-        versions = ", ".join(f"{major}.{minor}" for major, minor in SUPPORTED_SYNTAX_VERSIONS)
+        versions = ", ".join(f"{major}.{minor}" for major, minor in target_versions)
         print(
             f"warning: no supported Python syntax interpreter found ({versions}); skipped target parser syntax check",
             file=sys.stderr,

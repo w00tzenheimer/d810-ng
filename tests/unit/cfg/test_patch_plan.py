@@ -875,30 +875,32 @@ def test_ensure_patch_plan_is_idempotent():
 
 
 def test_patch_remove_edge_exists_but_unused_in_strategies():
-    """Document that PatchRemoveEdge/RemoveEdge exist but no Hodur strategy emits them.
-
-    Scans every .py file under hodur/strategies/ for any reference to RemoveEdge.
-    This is a meta-test: if it breaks, a strategy started using RemoveEdge and the
-    executor / edit-simulator must be audited for correctness.
-    """
-    strategies_dir = (
-        Path(__file__).resolve().parents[3]
-        / "src"
-        / "d810"
-        / "optimizers"
-        / "microcode"
-        / "flow"
-        / "flattening"
-        / "hodur"
-        / "strategies"
+    """Document that PatchRemoveEdge/RemoveEdge exist but no Hodur strategy emits them."""
+    root = Path(__file__).resolve().parents[3]
+    strategy_paths = (
+        root / "src/d810/backends/hexrays/evidence/conditional_fork_fallback.py",
+        root / "src/d810/backends/hexrays/evidence/counter_hoist.py",
+        root / "src/d810/backends/hexrays/evidence/dead_state_variable_elimination.py",
+        root / "src/d810/backends/hexrays/evidence/inner_merge_duplication.py",
+        root / "src/d810/backends/hexrays/evidence/spurious_backedge_redirect.py",
+        root / "src/d810/backends/hexrays/evidence/state_constant_return_fixup.py",
+        root / "src/d810/backends/hexrays/evidence/terminal_loop_cleanup.py",
+        root / "src/d810/backends/hexrays/evidence/topological_sort.py",
+        root / "src/d810/backends/hexrays/evidence/valrange_resolution.py",
+        root / "src/d810/transforms/edge_split_conflict.py",
     )
-    assert strategies_dir.is_dir(), f"strategies dir not found: {strategies_dir}"
 
     violations: list[str] = []
-    for py_file in sorted(strategies_dir.glob("*.py")):
-        source = py_file.read_text()
-        if "RemoveEdge" in source:
-            violations.append(py_file.name)
+    for py_file in strategy_paths:
+        assert py_file.is_file(), f"Hodur strategy source not found: {py_file}"
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id in {"RemoveEdge", "PatchRemoveEdge"}:
+                violations.append(py_file.name)
+                break
+            if isinstance(node, ast.Attribute) and node.attr in {"RemoveEdge", "PatchRemoveEdge"}:
+                violations.append(py_file.name)
+                break
 
     assert violations == [], (
         f"Hodur strategies referencing RemoveEdge: {violations}. "
