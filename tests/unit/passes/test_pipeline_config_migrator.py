@@ -1083,9 +1083,10 @@ def test_config_v2_runtime_support_matrix_opt_in_configs_are_selectable():
     assert "supported bundled source configs" in rollout["selection_model"]
     assert "unsupported project configs remain" in rollout["selection_model"]
     assert "legacy configs remain" not in rollout["selection_model"]
-    assert "Unsupported adapter boundaries stay fail-closed" in (
+    assert "Non-default-routed generated shadows" in (
         rollout["unsupported_policy"]
     )
+    assert "future unsupported adapter boundaries" in rollout["unsupported_policy"]
     rollout_log_path = Path(rollout["docker_log"])
     assert rollout_log_path.parts[:2] == (".tmp", "logs")
     assert rollout_log_path.name.endswith(".log")
@@ -1296,7 +1297,8 @@ def test_config_v2_supported_default_routing_metadata_is_scoped_and_guarded():
         routing["user_override_policy"]
     )
     assert "existing project configuration path" in routing["unsupported_policy"]
-    assert "OLLVM" in routing["unsupported_policy"]
+    assert "non-default-routed generated shadows" in routing["unsupported_policy"]
+    assert "explicit supported-default mapping" in routing["unsupported_policy"]
 
     assert routing["supported_mappings"] == expected_mappings
     for mapping in routing["supported_mappings"]:
@@ -1333,7 +1335,13 @@ def test_config_v2_default_cutover_criteria_are_defined_for_supported_defaults()
     assert "support matrix lists every supported generated shadow" in (
         by_id["support_matrix_completeness"]["description"]
     )
+    assert "operational exception" in (
+        by_id["support_matrix_completeness"]["description"]
+    )
     assert "rollback path" in by_id["rollback_path"]["description"]
+    assert "Non-default-routed generated shadows" in (
+        by_id["unsupported_boundary_matrix"]["description"]
+    )
     assert "fail-closed" in by_id["unsupported_boundary_matrix"]["description"]
     assert ".tmp" in by_id["no_ignored_log_dependency"]["description"]
     assert "Docker wrapper evidence" in by_id["ci_gate_expectations"]["description"]
@@ -1377,7 +1385,7 @@ def test_readme_documents_config_v2_canary_selection_note():
     for boundary in ("OLLVM", "cleanup-family"):
         assert boundary in normalized_readme
     assert (
-        "indirect branch/call, cleanup-family, or OLLVM generated-shadow support is not default-routed"
+        "Non-default-routed generated shadows, including indirect branch/call, cleanup-family, and OLLVM paths"
         in normalized_readme
     )
     assert "identity-call remains unsupported" not in normalized_readme
@@ -1401,13 +1409,42 @@ def test_readme_documents_config_v2_default_cutover_criteria():
     for phrase in (
         "Docker wrapper parity/canary coverage",
         "support matrix lists all supported generated shadows",
+        "all operational exceptions",
         "reviewed rollback path",
-        "Unsupported adapter boundaries stay explicit and fail-closed",
+        "Non-default-routed generated shadows stay explicit",
         "indirect branch/call, cleanup-family, or OLLVM generated-shadow support is not default-routed",
+        "Future unsupported adapter boundaries stay fail-closed",
         "ignored `.tmp` paths",
         "CI gates include support-matrix unit guards",
     ):
         assert phrase in normalized_readme
+
+
+def test_config_v2_runtime_support_matrix_wording_separates_current_shadows_from_future_boundaries():
+    matrix = _load_runtime_support_matrix()
+
+    assert matrix["generated_shadows"]["unsupported_count"] == 0
+    assert matrix["unsupported_adapter_boundaries"] == []
+    assert matrix["generated_shadows"]["operational_exceptions"]
+
+    current_status_text = " ".join(
+        [
+            matrix["opt_in_rollout"]["unsupported_policy"],
+            matrix["supported_default_routing"]["unsupported_policy"],
+            matrix["ci_runtime_rehearsal"]["unsupported_policy"],
+            *(
+                criterion["description"]
+                for criterion in matrix["default_cutover_criteria"]["required_criteria"]
+                if criterion["id"]
+                in {"support_matrix_completeness", "unsupported_boundary_matrix"}
+            ),
+        ]
+    )
+    assert "non-default-routed generated shadows" in current_status_text
+    assert "operational exception" in current_status_text
+    assert "future unsupported adapter boundaries" in current_status_text
+    assert "Unsupported adapter boundaries stay fail-closed" not in current_status_text
+    assert "every remaining unsupported adapter boundary" not in current_status_text
 
 
 def test_config_v2_runtime_support_matrix_parity_rows_are_executable_contracts():
