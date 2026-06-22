@@ -69,6 +69,40 @@ def _sdk_lib_dir(sdk_path: pathlib.Path, *sub: str) -> pathlib.Path:
     return sdk_path / "lib" / pathlib.Path(*sub) if sub else sdk_path / "lib"
 
 
+def _linux_sdk_lib_subdir(library: str = LIBRARY, is_64bit: bool = x64) -> str:
+    """Return the IDA SDK Linux library subdirectory for this architecture."""
+    if library in ("aarch64", "arm64"):
+        return "arm64_linux_64"
+    if is_64bit:
+        return "x64_linux_64"
+    return "x86_linux_32"
+
+
+def _select_linux_sdk_lib_dir(sdk_path: pathlib.Path) -> pathlib.Path:
+    """Return the best Linux SDK library directory, with legacy SDK fallback."""
+    current = _sdk_lib_dir(sdk_path, _linux_sdk_lib_subdir())
+    if current.exists():
+        return current
+
+    legacy = _sdk_lib_dir(sdk_path, "x64_linux_gcc_64")
+    if legacy.exists():
+        return legacy
+
+    return current
+
+
+def _ida_runtime_lib_dir() -> pathlib.Path | None:
+    """Return the live IDA runtime library directory when available."""
+    install_dir = os.environ.get("IDA_INSTALL_DIR") or os.environ.get("IDA_PREFIX")
+    if not install_dir:
+        return None
+
+    runtime_dir = pathlib.Path(install_dir)
+    if (runtime_dir / "libida.so").exists():
+        return runtime_dir
+    return None
+
+
 def get_ida_sdk_version(sdk_path: pathlib.Path) -> int:
     """Read the IDA SDK version number from pro.h.
 
@@ -228,10 +262,15 @@ def get_ext_modules():
         library_dirs.append(str(_sdk_lib_dir(IDA_SDK, subdir)))
         libraries = []
     else:  # Linux
-        linux_lib_dir = str(_sdk_lib_dir(IDA_SDK, "x64_linux_gcc_64"))
+        runtime_lib_dir = _ida_runtime_lib_dir()
+        if runtime_lib_dir is not None:
+            library_dirs.append(str(runtime_lib_dir))
+            runtime_library_dirs.append(str(runtime_lib_dir))
+
+        linux_lib_dir = str(_select_linux_sdk_lib_dir(IDA_SDK))
         library_dirs.append(linux_lib_dir)
         libraries = ["ida"]
-        runtime_library_dirs = [linux_lib_dir]
+        runtime_library_dirs.append(linux_lib_dir)
 
     macros = [("__EA64__", "1")] if x64 else []
     if DEBUG:
