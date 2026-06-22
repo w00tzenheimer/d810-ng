@@ -492,10 +492,10 @@ runner, use:
 ./tools/scripts/run_config_v2_ci_rehearsal.sh -w <target-worktree>
 ```
 
-These canaries do not default-route every generated shadow. Indirect
-branch/call, cleanup-family, and OLLVM config-v2 paths outside the listed
-canaries remain generated-shadow artifacts unless a canary or default route is
-explicitly added.
+These canaries do not default-route every generated shadow. Non-default-routed
+generated shadows, including indirect branch/call, cleanup-family, and OLLVM
+paths outside the listed canaries, remain generated-shadow artifacts unless a
+canary or supported-default mapping is explicitly added.
 
 ### Config-v2 default cutover criteria
 
@@ -508,13 +508,15 @@ bounded by these criteria:
 - Docker wrapper parity/canary coverage stays green for every supported
   user-selectable config-v2 canary and representative runtime lane.
 - The support matrix lists all supported generated shadows, all selectable
-  canaries, all parity rows, and all remaining unsupported adapter boundaries.
+  canaries, all parity rows, all operational exceptions, and any future
+  unsupported adapter boundaries.
 - A reviewed rollback path lets users return supported bundled configs to the
   existing project configuration path if config-v2 default routing regresses
   behavior.
-- Unsupported adapter boundaries stay explicit and fail-closed; indirect
-  branch/call, cleanup-family, or OLLVM generated-shadow support is not
-  default-routed without a canary.
+- Non-default-routed generated shadows stay explicit; indirect branch/call,
+  cleanup-family, or OLLVM generated-shadow support is not default-routed
+  without a supported-default mapping. Future unsupported adapter boundaries
+  stay fail-closed until executable adapter work lands.
 - Always-on unit checks depend only on tracked support-matrix metadata. Docker
   log contents must be regenerated through the wrapper gate, not required from
   ignored `.tmp` paths in a clean checkout.

@@ -357,7 +357,7 @@
         ]
       }
     ],
-    "unsupported_policy": "Unsupported adapter boundaries stay fail-closed until explicit adapter work lands; opt-in rollout does not default-route generated indirect branch/call, cleanup-family, or OLLVM shadows."
+    "unsupported_policy": "Non-default-routed generated shadows stay generated-shadow-only until a canary or supported-default mapping is explicitly added; future unsupported adapter boundaries stay fail-closed until executable adapter work lands."
   },
   "supported_default_routing": {
     "status": "enabled-supported-bundled-configs-only",
@@ -422,7 +422,7 @@
       }
     ],
     "user_override_policy": "A user ProjectConfiguration named like a supported source or canary config is not trusted for default routing unless it independently opts into explicit pipeline_v2_mode=config-v2 and passes existing fail-closed config-v2 validation.",
-    "unsupported_policy": "Project configs outside supported_mappings stay on the existing project configuration path by default; indirect branch/call, cleanup-family, and OLLVM generated shadows are not default-routed without a canary."
+    "unsupported_policy": "Project configs outside supported_mappings stay on the existing project configuration path by default; non-default-routed generated shadows are not default-routed without an explicit supported-default mapping."
   },
   "ci_runtime_rehearsal": {
     "status": "explicit-test-switch",
@@ -510,7 +510,7 @@
         ]
       }
     ],
-    "unsupported_policy": "Any project config outside supported_mappings fails closed when the switch is enabled; the switch does not imply indirect branch/call, cleanup-family, or OLLVM default routing."
+    "unsupported_policy": "Any project config outside supported_mappings fails closed when the switch is enabled; the switch does not imply default routing for non-default-routed generated shadows or future unsupported adapter boundaries."
   },
   "generated_shadows": {
     "legacy_config_count": 26,
@@ -574,7 +574,7 @@
       },
       {
         "id": "support_matrix_completeness",
-        "description": "The support matrix lists every supported generated shadow, every user-selectable canary, every parity row, and every remaining unsupported adapter boundary if any remain."
+        "description": "The support matrix lists every supported generated shadow, every user-selectable canary, every parity row, every operational exception, and any future unsupported adapter boundary."
       },
       {
         "id": "rollback_path",
@@ -582,7 +582,7 @@
       },
       {
         "id": "unsupported_boundary_matrix",
-        "description": "Unsupported adapter boundaries remain explicit and fail-closed; indirect branch/call, cleanup-family, or OLLVM generated-shadow support is not default-routed without a canary."
+        "description": "Non-default-routed generated shadows remain explicit and are not default-routed without a supported-default mapping; future unsupported adapter boundaries remain fail-closed until executable adapter work lands."
       },
       {
         "id": "no_ignored_log_dependency",
