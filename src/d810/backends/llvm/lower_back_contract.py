@@ -80,6 +80,7 @@ class LlvmLowerBackTerminatorKind(str, Enum):
     INDIRECTBR = "indirectbr"
     INVOKE = "invoke"
     LANDINGPAD = "landingpad"
+    UNREACHABLE = "unreachable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,6 +344,7 @@ def _check_terminator(
         LlvmLowerBackTerminatorKind.INDIRECTBR,
         LlvmLowerBackTerminatorKind.INVOKE,
         LlvmLowerBackTerminatorKind.LANDINGPAD,
+        LlvmLowerBackTerminatorKind.UNREACHABLE,
     }:
         unsupported.append(
             LlvmLowerBackUnsupportedReason(

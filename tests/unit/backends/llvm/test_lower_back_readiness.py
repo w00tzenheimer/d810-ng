@@ -7,6 +7,7 @@ from d810.backends.llvm import (
     LlvmLowerBackParseStatus,
     LlvmLowerBackReadinessStatus,
     LlvmLowerBackStatus,
+    LlvmLowerBackTerminatorKind,
     LlvmLowerBackUnsupportedKind,
     assess_lower_back_readiness,
     parse_lower_back_function,
@@ -70,6 +71,31 @@ def test_ret_only_optimized_function_parses_and_plans():
     assert readiness.plan_result is not None
     assert readiness.plan_result.plan is not None
     assert readiness.plan_result.plan.block_order == ("entry",)
+
+
+def test_unreachable_optimized_function_parses_but_fails_closed():
+    cases = (
+        "define i32 @dead() { unreachable }\n",
+        """define i32 @dead() {
+entry:
+  unreachable
+}
+""",
+    )
+
+    for ir in cases:
+        readiness = assess_lower_back_readiness(ir)
+
+        assert readiness.status is LlvmLowerBackReadinessStatus.UNSUPPORTED
+        assert readiness.parse_result.diagnostics == ()
+        assert readiness.parse_result.function is not None
+        assert (
+            readiness.parse_result.function.blocks[0].terminator.kind
+            is LlvmLowerBackTerminatorKind.UNREACHABLE
+        )
+        assert _unsupported_kinds(readiness) == (
+            LlvmLowerBackUnsupportedKind.UNSUPPORTED_CONTROL,
+        )
 
 
 def test_unsupported_return_types_fail_closed():

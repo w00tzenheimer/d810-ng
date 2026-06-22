@@ -376,6 +376,8 @@ def _parse_terminator(
         return LlvmLowerBackTerminator(LlvmLowerBackTerminatorKind.INVOKE)
     if line.startswith("landingpad"):
         return LlvmLowerBackTerminator(LlvmLowerBackTerminatorKind.LANDINGPAD)
+    if line == "unreachable":
+        return LlvmLowerBackTerminator(LlvmLowerBackTerminatorKind.UNREACHABLE)
     diagnostics.append(
         LlvmLowerBackParseDiagnostic(
             kind=LlvmLowerBackParseDiagnosticKind.UNKNOWN_TERMINATOR,
