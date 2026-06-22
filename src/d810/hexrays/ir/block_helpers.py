@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 from d810.core.cymode import CythonMode
 
+
 def get_block_serial(py_blk: "ida_hexrays.mblock_t") -> int:
     """Get the serial number of a block.
 
@@ -124,21 +125,60 @@ def block_has_successor(py_blk: "ida_hexrays.mblock_t", succ_serial: int) -> boo
     return False
 
 
+_py_get_block_serial = get_block_serial
+_py_get_block_info = get_block_info
+_py_get_pred_serials = get_pred_serials
+_py_get_succ_serials = get_succ_serials
+_py_get_pred_serial_set = get_pred_serial_set
+_py_get_succ_serial_set = get_succ_serial_set
+_py_block_has_predecessor = block_has_predecessor
+_py_block_has_successor = block_has_successor
+
+
+def _is_swig_wrapped_block(py_blk: object) -> bool:
+    return hasattr(py_blk, "this")
+
+
+def _make_block_helper(cython_func, fallback_func):
+    def _helper(py_blk, *args, **kwargs):
+        if _is_swig_wrapped_block(py_blk):
+            return cython_func(py_blk, *args, **kwargs)
+        return fallback_func(py_blk, *args, **kwargs)
+
+    return _helper
+
+
 # Try to import Cython speedups if CythonMode is enabled
 if CythonMode().is_enabled():
     try:
-        from d810.speedups.cythxr._cblock_helpers import (
-            get_block_serial,
-            get_block_info,
-            get_pred_serials,
-            get_succ_serials,
-            get_pred_serial_set,
-            get_succ_serial_set,
-            block_has_predecessor,
-            block_has_successor,
-        )
+        from d810.speedups.cythxr import _cblock_helpers
     except ImportError:
         pass
+    else:
+        get_block_serial = _make_block_helper(
+            _cblock_helpers.get_block_serial, _py_get_block_serial,
+        )
+        get_block_info = _make_block_helper(
+            _cblock_helpers.get_block_info, _py_get_block_info,
+        )
+        get_pred_serials = _make_block_helper(
+            _cblock_helpers.get_pred_serials, _py_get_pred_serials,
+        )
+        get_succ_serials = _make_block_helper(
+            _cblock_helpers.get_succ_serials, _py_get_succ_serials,
+        )
+        get_pred_serial_set = _make_block_helper(
+            _cblock_helpers.get_pred_serial_set, _py_get_pred_serial_set,
+        )
+        get_succ_serial_set = _make_block_helper(
+            _cblock_helpers.get_succ_serial_set, _py_get_succ_serial_set,
+        )
+        block_has_predecessor = _make_block_helper(
+            _cblock_helpers.block_has_predecessor, _py_block_has_predecessor,
+        )
+        block_has_successor = _make_block_helper(
+            _cblock_helpers.block_has_successor, _py_block_has_successor,
+        )
 
 
 __all__ = [
