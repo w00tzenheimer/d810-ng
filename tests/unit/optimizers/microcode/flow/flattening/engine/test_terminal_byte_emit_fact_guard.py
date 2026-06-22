@@ -3,6 +3,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
+pytest.importorskip(
+    "ida_hexrays",
+    reason="terminal byte-emit fact guard compares live Hex-Rays opcode constants",
+)
+
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.transforms.graph_modification import (
     ExitPathLoweringGroup,

@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip(
+    "ida_hexrays",
+    reason="pseudocode_render is a live Hex-Rays renderer; system tests cover IDA-free CI gaps",
+)
+
 from d810.hexrays.utils.pseudocode_render import _format_memory_expr
 
 

@@ -42,8 +42,6 @@ from dataclasses import dataclass
 
 import pytest
 
-import idapro
-
 from d810.core import logging
 
 # Configure logging
