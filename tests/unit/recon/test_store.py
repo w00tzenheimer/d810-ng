@@ -414,3 +414,22 @@ def test_migration_idempotent_on_fresh_db() -> None:
         assert loaded.recommended_inferences == ()
     finally:
         store.close()
+
+
+def test_opening_corrupt_generated_db_recreates_store(tmp_path: Path) -> None:
+    """Malformed generated recon DB state is discarded before opening."""
+    db_path = tmp_path / "d810_recon.db"
+    db_path.write_bytes(b"not a sqlite database")
+    for suffix in ("-wal", "-shm"):
+        Path(str(db_path) + suffix).write_bytes(b"stale sidecar")
+
+    store = ReconStore(db_path)
+    try:
+        assert store.count_functions_with_hints() == 0
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(str(db_path) + suffix)
+            if sidecar.exists():
+                assert sidecar.read_bytes() != b"stale sidecar"
+        assert store._conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+    finally:
+        store.close()

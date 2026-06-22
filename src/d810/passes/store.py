@@ -121,6 +121,48 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _delete_sqlite_database(db_path: Path) -> None:
+    """Remove a SQLite database and its WAL/SHM sidecars."""
+    for suffix in ("", "-wal", "-shm"):
+        path = Path(str(db_path) + suffix)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("recon store: failed to delete %s", path, exc_info=True)
+
+
+def _ensure_readable_database(db_path: Path) -> None:
+    """Discard generated recon DB state when SQLite reports corruption.
+
+    The recon DB is a generated runtime cache. Keeping a malformed file is worse
+    than losing cached observations because a read failure can suppress later
+    optimizer passes for the whole maturity.
+    """
+    if not db_path.exists() or db_path.stat().st_size == 0:
+        return
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute("PRAGMA quick_check").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        logger.warning(
+            "recon store: deleting unreadable DB %s before open: %s",
+            db_path,
+            exc,
+        )
+        _delete_sqlite_database(db_path)
+        return
+    if row is None or str(row[0]).lower() != "ok":
+        logger.warning(
+            "recon store: deleting corrupt DB %s before open: %s",
+            db_path,
+            row[0] if row else "no quick_check row",
+        )
+        _delete_sqlite_database(db_path)
+
+
 def _candidate_to_dict(c: CandidateFlag) -> dict:
     return {
         "kind": c.kind,
@@ -151,6 +193,7 @@ class ReconStore:
 
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
+        _ensure_readable_database(self.db_path)
         self._conn: sqlite3.Connection = sqlite3.connect(str(self.db_path))
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.row_factory = sqlite3.Row
