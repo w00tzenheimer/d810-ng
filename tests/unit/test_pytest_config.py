@@ -71,3 +71,14 @@ def test_codemod_tool_tests_have_libcst_in_dev_and_ci_dependencies() -> None:
     assert '"libcst>=1.0.0"' in pyproject
     assert "pytest pytest-cov import-linter vermin libcst" in workflow
     assert "pytest pytest-cov libcst" in workflow
+
+
+def test_unit_ci_provisions_llvm_opt_for_real_verifier_coverage() -> None:
+    workflow = (_REPO_ROOT / ".github" / "workflows" / "python.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Install LLVM opt" in workflow
+    assert "sudo apt-get install -y -qq llvm" in workflow
+    assert 'echo "LLVM_OPT=$(command -v opt)" >> "$GITHUB_ENV"' in workflow
+    assert workflow.count('echo "LLVM_OPT=$(command -v opt)" >> "$GITHUB_ENV"') >= 2

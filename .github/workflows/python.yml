@@ -45,6 +45,12 @@ jobs:
               with:
                   python-version: ${{ matrix.python-version }}
                   cache: pip
+            - name: Install LLVM opt
+              run: |
+                  sudo apt-get update -qq
+                  sudo apt-get install -y -qq llvm
+                  echo "LLVM_OPT=$(command -v opt)" >> "$GITHUB_ENV"
+                  opt --version
             - name: Install dependencies
               run: |
                   pip install --upgrade pip setuptools wheel uv
@@ -94,6 +100,10 @@ jobs:
 
             - name: Install build dependencies
               run: |
+                  sudo apt-get update -qq
+                  sudo apt-get install -y -qq llvm
+                  echo "LLVM_OPT=$(command -v opt)" >> "$GITHUB_ENV"
+                  opt --version
                   pip install --upgrade pip setuptools wheel uv
                   uv pip install --system Cython>=3.0.0
 
