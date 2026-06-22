@@ -1,7 +1,8 @@
 {
   "version": 1,
   "status_commit": "7f9714119 Add config-v2 parity gate canary",
-  "default_runtime_mode": "legacy",
+  "default_runtime_mode": "supported-config-v2-defaults",
+  "existing_project_runtime_mode": "legacy",
   "explicit_runtime_mode": "config-v2",
   "source_of_truth": "pipeline_v2",
   "compiler_bridge_model": {
@@ -211,9 +212,9 @@
   ],
   "opt_in_rollout": {
     "status": "supported-canaries",
-    "default_runtime_mode": "legacy",
+    "default_runtime_mode": "supported-config-v2-defaults",
     "required_mode": "config-v2",
-    "selection_model": "Users select checked-in canary ProjectConfigurations by name; generated shadows remain migration artifacts and existing project configs remain the default runtime source.",
+    "selection_model": "Users may select checked-in canary ProjectConfigurations by name; supported bundled source configs also route to those canaries by default. Generated shadows remain migration artifacts and unsupported project configs remain on the existing project configuration path.",
     "docker_log": ".tmp/logs/config-v2-canary-expansion-v1-parity.log",
     "summary": "12 passed, 1 skipped, 2481 deselected, 117 warnings",
     "user_selectable_configs": [
@@ -251,6 +252,71 @@
     ],
     "unsupported_policy": "Unsupported adapter boundaries stay fail-closed until explicit adapter work lands; opt-in rollout does not make OLLVM, indirect branch/call, or cleanup-family configs runnable."
   },
+  "supported_default_routing": {
+    "status": "enabled-supported-bundled-configs-only",
+    "switch_env": "D810_CONFIG_V2_SUPPORTED_DEFAULTS",
+    "default_enabled": true,
+    "enabled_values": [
+      "1",
+      "true",
+      "yes",
+      "on",
+      "config-v2"
+    ],
+    "disabled_values": [
+      "",
+      "0",
+      "false",
+      "no",
+      "off",
+      "legacy",
+      "existing"
+    ],
+    "selection_model": "When enabled, only known bundled source configs under d810/conf route to their bundled config-v2 canary ProjectConfigurations. User config overrides with matching basenames stay on the existing project configuration path.",
+    "proof_line_pattern": "CONFIG_V2_SUPPORTED_DEFAULT",
+    "docker_selector": "TestConfigV2SupportedDefaultRouting",
+    "docker_log": ".tmp/logs/config-v2-supported-default-switch-v1.log",
+    "rollback": "Set D810_CONFIG_V2_SUPPORTED_DEFAULTS=0/false/no/off/legacy/existing or revert the supported default routing commit to return supported bundled source configs to the existing project configuration path.",
+    "supported_mappings": [
+      {
+        "source_config": "default_instruction_only.json",
+        "runtime_config": "default_instruction_only_config_v2_canary.json",
+        "parity_row": "default_instruction_only_config_v2_canary_mba",
+        "expected_pass_ids": [
+          "mba-simplify",
+          "global-constant-inliner",
+          "jump-fixer"
+        ]
+      },
+      {
+        "source_config": "default_unflattening_tigress_engine.json",
+        "runtime_config": "default_unflattening_tigress_engine_config_v2_canary.json",
+        "parity_row": "tigress_engine_config_v2_canary_spine",
+        "expected_pass_ids": [
+          "recover_dispatcher",
+          "recover_state_transitions",
+          "plan_semantic_regions",
+          "lower_state_machine",
+          "cleanup_residual_dispatcher"
+        ]
+      },
+      {
+        "source_config": "hodur_flag2.json",
+        "runtime_config": "hodur_flag2_config_v2_canary.json",
+        "parity_row": "hodur_flag2_config_v2_canary_mixed",
+        "expected_pass_ids": [
+          "recover_dispatcher",
+          "recover_state_transitions",
+          "plan_semantic_regions",
+          "lower_state_machine",
+          "cleanup_residual_dispatcher",
+          "jump-fixer"
+        ]
+      }
+    ],
+    "user_override_policy": "A user ProjectConfiguration named like a supported source or canary config is not trusted for default routing unless it independently opts into explicit pipeline_v2_mode=config-v2 and passes existing fail-closed config-v2 validation.",
+    "unsupported_policy": "Project configs outside supported_mappings stay on the existing project configuration path by default; OLLVM, indirect branch/call, and cleanup-family configs remain unsupported until real adapters land."
+  },
   "ci_runtime_rehearsal": {
     "status": "explicit-test-switch",
     "switch_env": "D810_CONFIG_V2_CI_REHEARSAL",
@@ -270,7 +336,7 @@
       "off"
     ],
     "selection_model": "When the switch is explicitly enabled, the system DSL runner maps supported source project configs to checked-in config-v2 canary ProjectConfigurations. Unsupported project configs fail closed.",
-    "rollback": "Unset D810_CONFIG_V2_CI_REHEARSAL or set it to 0/false/no/off to return the system runner to the existing project configuration path.",
+    "rollback": "Unset D810_CONFIG_V2_CI_REHEARSAL or set it to 0/false/no/off to return the system runner to the product runtime selection policy.",
     "job_name": "config-v2-ci-rehearsal",
     "script": "tools/scripts/run_config_v2_ci_rehearsal.sh",
     "named_command": "./tools/scripts/run_config_v2_ci_rehearsal.sh -w <target-worktree>",
@@ -296,7 +362,7 @@
         "artifact_name": "config-v2-ci-rehearsal-log"
       },
       "stabilization_policy": "Blocking after GitHub-visible proof lines and the rehearsal log artifact were observed green for all supported mappings.",
-      "rollback": "Restore continue-on-error for this job, disable or remove this job, or unset D810_CONFIG_V2_CI_REHEARSAL in the named rehearsal command; product default runtime is unchanged."
+      "rollback": "Restore continue-on-error for this job, disable or remove this job, or unset D810_CONFIG_V2_CI_REHEARSAL in the named rehearsal command; supported default routing is controlled separately by D810_CONFIG_V2_SUPPORTED_DEFAULTS."
     },
     "docker_selector": "TestConfigV2CIRehearsalCoverage",
     "docker_log": ".tmp/logs/config-v2-ci-runtime-switch-rehearsal-coverage-v2.log",
@@ -397,7 +463,7 @@
     }
   ],
   "non_goals": [
-    "no default runtime cutover",
+    "no unsupported runtime cutover",
     "no OLLVM runtime support",
     "no indirect branch/call adapter",
     "no cleanup-family adapter",
@@ -405,11 +471,11 @@
     "no LLVM M3/M4/lower-back/drop work"
   ],
   "default_cutover_criteria": {
-    "status": "criteria-defined-no-cutover",
-    "current_default_runtime_mode": "legacy",
+    "status": "supported-config-cutover-active",
+    "current_default_runtime_mode": "supported-config-v2-defaults",
     "future_default_runtime_mode": "config-v2",
-    "default_switch_allowed": false,
-    "decision": "Keep the existing project configuration path as the default runtime until every required criterion is satisfied in CI and reviewed as a separate cutover change.",
+    "default_switch_allowed": true,
+    "decision": "Enable config-v2 by default only for known bundled source configs with CI-backed canaries. Unsupported and user override configs remain on the existing project configuration path unless they explicitly opt into config-v2 and pass fail-closed validation.",
     "required_criteria": [
       {
         "id": "stable_docker_parity_canary_coverage",
@@ -421,11 +487,11 @@
       },
       {
         "id": "rollback_path",
-        "description": "A reviewed rollback path keeps users able to select the existing project configuration path if a config-v2 default change regresses behavior."
+        "description": "A reviewed rollback path keeps users able to return supported bundled source configs to the existing project configuration path if config-v2 default routing regresses behavior."
       },
       {
         "id": "unsupported_boundary_matrix",
-        "description": "Unsupported adapter boundaries remain explicit and fail-closed; no OLLVM, indirect branch/call, or cleanup-family support is implied by default-cutover planning."
+        "description": "Unsupported adapter boundaries remain explicit and fail-closed; no OLLVM, indirect branch/call, or cleanup-family support is implied by supported default routing."
       },
       {
         "id": "no_ignored_log_dependency",
@@ -433,7 +499,7 @@
       },
       {
         "id": "ci_gate_expectations",
-        "description": "CI gates include support-matrix unit guards, JSON validation, import/architecture checks, and Docker wrapper parity evidence before any default switch is reviewed."
+        "description": "CI gates include support-matrix unit guards, JSON validation, import/architecture checks, and Docker wrapper evidence for supported default routing."
       }
     ],
     "minimum_ci_gates": [
@@ -442,7 +508,8 @@
       "python3 -m json.tool src/d810/passes/config_v2_runtime_support_matrix.json",
       "PYTHONPATH=src lint-imports --config .importlinter",
       "sg scan --config sgconfig.yml --report-style short",
-      "./tools/scripts/run_system_tests_docker.sh system -w <target-worktree> -l -o logs/<cutover-evidence>.log -- -k TestConfigV2RuntimeParity -s"
-    ]
+      "./tools/scripts/run_system_tests_docker.sh system -w <target-worktree> -l -o logs/<cutover-evidence>.log -- -k TestConfigV2SupportedDefaultRouting -s"
+    ],
+    "rollback": "Set D810_CONFIG_V2_SUPPORTED_DEFAULTS=0/false/no/off/legacy/existing or revert the supported default routing commit."
   }
 }

@@ -10,6 +10,11 @@ from d810.backends.hexrays.registration import register_hexrays_backend_provider
 from d810.backends.mba.ida import adapt_rules
 from d810.core import typing
 from d810.core.config import D810Configuration, ProjectConfiguration
+from d810.core.config_v2_defaults import (
+    ConfigV2DefaultSelection,
+    format_config_v2_default_selection_status,
+    select_config_v2_default_project,
+)
 from d810.core.logging import clear_logs, configure_loggers, getLogger
 from d810.core.platform import resolve_arch_config
 from d810.core.project import (
@@ -50,6 +55,7 @@ class D810State(metaclass=SingletonMeta):
     manager: D810Manager
     gui: D810GUI
     current_project: ProjectConfiguration
+    current_runtime_project: ProjectConfiguration | None
 
     def __init__(self):
         self.gui = None  # Set by load(gui=True)
@@ -76,6 +82,8 @@ class D810State(metaclass=SingletonMeta):
         self.known_blk_rules: typing.List = []
         self.last_pipeline_v2_hook_pass_ids: tuple[str, ...] = ()
         self.last_pipeline_v2_hook_mode: str | None = None
+        self.last_config_v2_default_selection: ConfigV2DefaultSelection | None = None
+        self.current_runtime_project: ProjectConfiguration | None = None
         self._is_loaded: bool = False
         self.gui = None
         self.log_dir = self.d810_config.log_dir / D810_LOG_DIR_NAME
@@ -104,26 +112,42 @@ class D810State(metaclass=SingletonMeta):
             else None
         )
         next_project = self.project_manager.get(project_index)
+        default_selection = select_config_v2_default_project(next_project)
+        runtime_project = (
+            default_selection.runtime_project
+            if default_selection is not None
+            else next_project
+        )
         emit_project_reloading(
             old_project_name=old_project_name,
             new_project_name=next_project.path.name,
         )
         self.current_project_index = project_index
         self.current_project = next_project
+        self.current_runtime_project = runtime_project
         self.current_ins_rules = []
         self.current_blk_rules = []
         self.last_pipeline_v2_hook_pass_ids = ()
         self.last_pipeline_v2_hook_mode = None
+        self.last_config_v2_default_selection = default_selection
 
-        hook_activation = pipeline_v2_hook_activation(self.current_project)
+        if default_selection is not None:
+            logger.info(
+                "%s",
+                format_config_v2_default_selection_status(
+                    selection=default_selection,
+                ),
+            )
+
+        hook_activation = pipeline_v2_hook_activation(runtime_project)
         if hook_activation.enabled:
             self.last_pipeline_v2_hook_mode = "config-v2"
             self.last_pipeline_v2_hook_pass_ids = hook_activation.configured_pass_ids
             project_ins_rules = hook_activation.instruction_rules
             project_blk_rules = hook_activation.block_rules
         else:
-            project_ins_rules = tuple(self.current_project.ins_rules)
-            project_blk_rules = tuple(self.current_project.blk_rules)
+            project_ins_rules = tuple(runtime_project.ins_rules)
+            project_blk_rules = tuple(runtime_project.blk_rules)
 
         for rule in self.known_ins_rules:
             for rule_conf in project_ins_rules:
@@ -151,8 +175,9 @@ class D810State(metaclass=SingletonMeta):
                     blk_rule.set_log_dir(self.log_dir)
                     self.current_blk_rules.append(blk_rule)
         logger.debug("Block rules configured")
-        cfg = dict(self.current_project.additional_configuration)
+        cfg = dict(runtime_project.additional_configuration)
         cfg.setdefault("project_name", self.current_project.path.name)
+        cfg.setdefault("runtime_project_name", runtime_project.path.name)
         self.manager.configure(**cfg)
         self.manager.emit_rule_scope_invalidation(
             RuleScopeEvent.PROJECT_RULES_RELOADED,
@@ -192,6 +217,12 @@ class D810State(metaclass=SingletonMeta):
             self.current_project.description,
             self.current_project.path,
         )
+        if runtime_project.path != self.current_project.path:
+            logger.debug(
+                "Runtime project %s selected from %s",
+                runtime_project.path.name,
+                runtime_project.path,
+            )
         return self.current_project
 
     def _register_backend_analysis_providers(self) -> None:
@@ -200,17 +231,18 @@ class D810State(metaclass=SingletonMeta):
 
     def start_d810(self):
         self._register_backend_analysis_providers()
+        runtime_project = self.current_runtime_project or self.current_project
         self.manager.configure_instruction_optimizer(
             [rule for rule in self.current_ins_rules],
             generate_z3_code=self.d810_config.get("generate_z3_code"),
             dump_intermediate_microcode=self.d810_config.get(
                 "dump_intermediate_microcode"
             ),
-            **self.current_project.additional_configuration,
+            **runtime_project.additional_configuration,
         )
         self.manager.configure_block_optimizer(
             [rule for rule in self.current_blk_rules],
-            **self.current_project.additional_configuration,
+            **runtime_project.additional_configuration,
         )
         self.manager.start()
         logger.info("D-810 ready to deobfuscate...")

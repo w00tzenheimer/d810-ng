@@ -10,6 +10,10 @@ from pathlib import Path
 import pytest
 
 from d810.core.config import ProjectConfiguration, RuleConfiguration
+from d810.core.config_v2_defaults import (
+    CONFIG_V2_SUPPORTED_DEFAULTS_ENV,
+    CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS,
+)
 from d810.passes.legacy_flow_rules import LEGACY_FLOW_RULE_ADAPTER_CAPABILITY
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import PipelineConfigError
@@ -783,7 +787,8 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         if item.status is LegacyConfigMigrationStatus.UNSUPPORTED
     }
 
-    assert matrix["default_runtime_mode"] == "legacy"
+    assert matrix["default_runtime_mode"] == "supported-config-v2-defaults"
+    assert matrix["existing_project_runtime_mode"] == "legacy"
     assert matrix["explicit_runtime_mode"] == "config-v2"
     assert matrix["source_of_truth"] == "pipeline_v2"
     assert set(matrix["generated_shadows"]["migratable_configs"]) == migratable
@@ -908,7 +913,9 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         }
     }
     assert matrix["opt_in_rollout"]["status"] == "supported-canaries"
-    assert matrix["opt_in_rollout"]["default_runtime_mode"] == "legacy"
+    assert matrix["opt_in_rollout"]["default_runtime_mode"] == (
+        "supported-config-v2-defaults"
+    )
     assert matrix["opt_in_rollout"]["required_mode"] == "config-v2"
     assert matrix["opt_in_rollout"]["user_selectable_configs"] == [
         {
@@ -966,8 +973,8 @@ def test_config_v2_runtime_support_matrix_opt_in_configs_are_selectable():
     rollout = matrix["opt_in_rollout"]
     assert rollout["default_runtime_mode"] == matrix["default_runtime_mode"]
     assert rollout["required_mode"] == matrix["explicit_runtime_mode"]
-    assert "default runtime source" in rollout["selection_model"]
-    assert "existing project configs remain" in rollout["selection_model"]
+    assert "supported bundled source configs" in rollout["selection_model"]
+    assert "unsupported project configs remain" in rollout["selection_model"]
     assert "legacy configs remain" not in rollout["selection_model"]
     assert "Unsupported adapter boundaries stay fail-closed" in (
         rollout["unsupported_policy"]
@@ -1011,7 +1018,7 @@ def test_config_v2_runtime_support_matrix_ci_rehearsal_switch_is_explicit():
     assert rehearsal["switch_env"] == CONFIG_V2_CI_REHEARSAL_ENV
     assert rehearsal["default_enabled"] is False
     assert set(rehearsal["enabled_values"]) == set(CONFIG_V2_CI_REHEARSAL_ENABLED_VALUES)
-    assert "existing project configuration path" in rehearsal["rollback"]
+    assert "product runtime selection policy" in rehearsal["rollback"]
     assert "fail closed" in rehearsal["selection_model"]
     assert rehearsal["job_name"] == "config-v2-ci-rehearsal"
     assert rehearsal["script"] == "tools/scripts/run_config_v2_ci_rehearsal.sh"
@@ -1057,7 +1064,8 @@ def test_config_v2_runtime_support_matrix_ci_rehearsal_switch_is_explicit():
         "rollback": (
             "Restore continue-on-error for this job, disable or remove this job, "
             "or unset D810_CONFIG_V2_CI_REHEARSAL in the named rehearsal command; "
-            "product default runtime is unchanged."
+            "supported default routing is controlled separately by "
+            "D810_CONFIG_V2_SUPPORTED_DEFAULTS."
         ),
     }
     assert rehearsal["docker_selector"] == "TestConfigV2CIRehearsalCoverage"
@@ -1128,6 +1136,15 @@ def test_config_v2_runtime_support_matrix_ci_rehearsal_switch_is_explicit():
         for mapping in CONFIG_V2_CI_REHEARSAL_MAPPINGS
     ]
     assert rehearsal["supported_mappings"] == expected_mappings
+    assert rehearsal["supported_mappings"] == [
+        {
+            "source_config": mapping.source_config,
+            "runtime_config": mapping.runtime_config,
+            "parity_row": mapping.parity_row,
+            "expected_pass_ids": list(mapping.expected_pass_ids),
+        }
+        for mapping in CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS
+    ]
     for mapping in rehearsal["supported_mappings"]:
         assert mapping["runtime_config"] in canary_configs
         assert mapping["parity_row"] in parity_rows
@@ -1137,15 +1154,60 @@ def test_config_v2_runtime_support_matrix_ci_rehearsal_switch_is_explicit():
         assert project.blk_rules == []
 
 
-def test_config_v2_default_cutover_criteria_are_defined_without_switching_defaults():
+def test_config_v2_supported_default_routing_metadata_is_scoped_and_guarded():
+    matrix = _load_runtime_support_matrix()
+    routing = matrix["supported_default_routing"]
+    canary_configs = {item["config"] for item in matrix["canary_configs"]}
+    parity_rows = {row["id"] for row in matrix["parity_evidence"]["rows"]}
+    expected_mappings = [
+        {
+            "source_config": mapping.source_config,
+            "runtime_config": mapping.runtime_config,
+            "parity_row": mapping.parity_row,
+            "expected_pass_ids": list(mapping.expected_pass_ids),
+        }
+        for mapping in CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS
+    ]
+
+    assert matrix["default_runtime_mode"] == "supported-config-v2-defaults"
+    assert matrix["existing_project_runtime_mode"] == "legacy"
+    assert routing["status"] == "enabled-supported-bundled-configs-only"
+    assert routing["switch_env"] == CONFIG_V2_SUPPORTED_DEFAULTS_ENV
+    assert routing["default_enabled"] is True
+    assert "0" in routing["disabled_values"]
+    assert "legacy" in routing["disabled_values"]
+    assert "bundled source configs under d810/conf" in routing["selection_model"]
+    assert "User config overrides" in routing["selection_model"]
+    assert routing["proof_line_pattern"] == "CONFIG_V2_SUPPORTED_DEFAULT"
+    assert routing["docker_selector"] == "TestConfigV2SupportedDefaultRouting"
+    assert routing["docker_log"] == (
+        ".tmp/logs/config-v2-supported-default-switch-v1.log"
+    )
+    assert CONFIG_V2_SUPPORTED_DEFAULTS_ENV in routing["rollback"]
+    assert "user ProjectConfiguration" in routing["user_override_policy"]
+    assert "named like a supported source or canary config" in (
+        routing["user_override_policy"]
+    )
+    assert "existing project configuration path" in routing["unsupported_policy"]
+    assert "OLLVM" in routing["unsupported_policy"]
+
+    assert routing["supported_mappings"] == expected_mappings
+    for mapping in routing["supported_mappings"]:
+        assert mapping["runtime_config"] in canary_configs
+        assert mapping["parity_row"] in parity_rows
+
+
+def test_config_v2_default_cutover_criteria_are_defined_for_supported_defaults():
     matrix = _load_runtime_support_matrix()
     criteria = matrix["default_cutover_criteria"]
 
-    assert criteria["status"] == "criteria-defined-no-cutover"
+    assert criteria["status"] == "supported-config-cutover-active"
     assert criteria["current_default_runtime_mode"] == matrix["default_runtime_mode"]
     assert criteria["future_default_runtime_mode"] == matrix["explicit_runtime_mode"]
-    assert criteria["default_switch_allowed"] is False
-    assert "existing project configuration path" in criteria["decision"]
+    assert criteria["default_switch_allowed"] is True
+    assert "known bundled source configs" in criteria["decision"]
+    assert "user override configs remain" in criteria["decision"]
+    assert CONFIG_V2_SUPPORTED_DEFAULTS_ENV in criteria["rollback"]
 
     criterion_ids = {item["id"] for item in criteria["required_criteria"]}
     assert criterion_ids == {
@@ -1167,7 +1229,7 @@ def test_config_v2_default_cutover_criteria_are_defined_without_switching_defaul
     assert "rollback path" in by_id["rollback_path"]["description"]
     assert "fail-closed" in by_id["unsupported_boundary_matrix"]["description"]
     assert ".tmp" in by_id["no_ignored_log_dependency"]["description"]
-    assert "CI gates" in by_id["ci_gate_expectations"]["description"]
+    assert "Docker wrapper evidence" in by_id["ci_gate_expectations"]["description"]
 
     gates = criteria["minimum_ci_gates"]
     assert "tests/unit/passes/test_pipeline_config_migrator.py" in gates
@@ -1175,7 +1237,14 @@ def test_config_v2_default_cutover_criteria_are_defined_without_switching_defaul
     assert any("json.tool" in gate for gate in gates)
     assert any("lint-imports" in gate for gate in gates)
     assert any("sg scan" in gate for gate in gates)
-    assert any("run_system_tests_docker.sh" in gate for gate in gates)
+    docker_gates = [gate for gate in gates if "run_system_tests_docker.sh" in gate]
+    assert docker_gates
+    assert any("TestConfigV2SupportedDefaultRouting" in gate for gate in docker_gates)
+    assert not any(
+        "TestConfigV2RuntimeParity" in gate
+        and "TestConfigV2SupportedDefaultRouting" not in gate
+        for gate in docker_gates
+    )
     assert any("<target-worktree>" in gate for gate in gates)
     assert not any("llvm-lisa-restructure" in gate for gate in gates)
 
@@ -1186,15 +1255,18 @@ def test_readme_documents_config_v2_canary_selection_note():
     normalized_readme = " ".join(readme.split())
     rollout = matrix["opt_in_rollout"]
 
-    assert "Config-v2 opt-in canaries" in readme
-    assert rollout["default_runtime_mode"] == "legacy"
-    assert "default runtime remains the existing project configuration path" in (
+    assert "Config-v2 supported defaults and canaries" in readme
+    assert rollout["default_runtime_mode"] == "supported-config-v2-defaults"
+    assert "routes these bundled project configurations" in normalized_readme
+    assert "User configs that override those filenames remain on the existing project configuration path" in (
         normalized_readme
     )
     assert f"pipeline_v2_mode: {rollout['required_mode']}" in normalized_readme
+    assert CONFIG_V2_SUPPORTED_DEFAULTS_ENV in normalized_readme
 
     for config in rollout["user_selectable_configs"]:
         assert config["config"] in readme
+        assert config["source_config"] in readme
     for boundary in ("OLLVM", "indirect branch/call", "cleanup-family"):
         assert boundary in normalized_readme
     assert "identity-call remains unsupported" not in normalized_readme
@@ -1207,10 +1279,13 @@ def test_readme_documents_config_v2_default_cutover_criteria():
     criteria = matrix["default_cutover_criteria"]
 
     assert "Config-v2 default cutover criteria" in readme
-    assert criteria["default_switch_allowed"] is False
-    assert "does not default to config-v2 today" in normalized_readme
-    assert "default runtime remains the existing project configuration path" in (
+    assert criteria["default_switch_allowed"] is True
+    assert "defaults to config-v2 only for the supported bundled configs" in (
         normalized_readme
+    )
+    assert (
+        "Other project configurations remain on the existing project configuration path"
+        in normalized_readme
     )
     for phrase in (
         "Docker wrapper parity/canary coverage",

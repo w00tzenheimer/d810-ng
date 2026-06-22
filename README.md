@@ -448,11 +448,23 @@ D810_BUILD_SPEEDUPS=1 pip install --no-build-isolation -e ".[dev]"
 2. Click on the `Start` button to enable deobfuscation
 3. Decompile an obfuscated function, the code should be simplified (hopefully)
 
-### Config-v2 opt-in canaries
+### Config-v2 supported defaults and canaries
 
-The default runtime remains the existing project configuration path. To try
-the supported config-v2 runtime path explicitly, select one of these project
-configurations:
+D810 routes these bundled project configurations to the supported config-v2
+runtime path by default:
+
+- `default_instruction_only.json` routes to
+  `default_instruction_only_config_v2_canary.json`.
+- `default_unflattening_tigress_engine.json` routes to
+  `default_unflattening_tigress_engine_config_v2_canary.json`.
+- `hodur_flag2.json` routes to `hodur_flag2_config_v2_canary.json`.
+
+User configs that override those filenames remain on the existing project
+configuration path by default. The default routing only trusts checked-in
+bundled configs under `d810/conf`.
+
+To select the supported config-v2 runtime path explicitly, choose one of these
+project configurations:
 
 - `default_instruction_only_config_v2_canary.json` exercises the
   MBA/instruction plus supported simple flow-rule lane.
@@ -462,6 +474,13 @@ configurations:
   state-machine spine plus the supported simple flow-rule lane.
 
 Each canary sets `pipeline_v2_mode: config-v2`.
+
+To disable supported default routing and return those bundled source configs
+to the existing project configuration path, set:
+
+```bash
+D810_CONFIG_V2_SUPPORTED_DEFAULTS=0
+```
 
 To rehearse the supported config-v2 path through the normal Docker system
 runner, use:
@@ -476,18 +495,21 @@ adapters are implemented and validated.
 
 ### Config-v2 default cutover criteria
 
-D810 does not default to config-v2 today. The default runtime remains the
-existing project configuration path unless a separate cutover change satisfies
-all of these criteria:
+D810 defaults to config-v2 only for the supported bundled configs listed
+above. Other project configurations remain on the existing project
+configuration path unless they explicitly set `pipeline_v2_mode: config-v2`
+and pass fail-closed config-v2 validation. The supported default routing stays
+bounded by these criteria:
 
 - Docker wrapper parity/canary coverage stays green for every supported
   user-selectable config-v2 canary and representative runtime lane.
 - The support matrix lists all supported generated shadows, all selectable
   canaries, all parity rows, and all remaining unsupported adapter boundaries.
-- A reviewed rollback path lets users return to the existing project
-  configuration path if a config-v2 default change regresses behavior.
-- Unsupported adapter boundaries stay explicit and fail-closed; default-cutover
-  planning does not imply OLLVM, indirect branch/call, or cleanup-family
+- A reviewed rollback path lets users return supported bundled configs to the
+  existing project configuration path if config-v2 default routing regresses
+  behavior.
+- Unsupported adapter boundaries stay explicit and fail-closed; supported
+  default routing does not imply OLLVM, indirect branch/call, or cleanup-family
   support.
 - Always-on unit checks depend only on tracked support-matrix metadata. Docker
   log contents must be regenerated through the wrapper gate, not required from

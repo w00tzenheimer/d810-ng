@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from d810.core.config_v2_defaults import CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS
 from d810.core.typing import Mapping
 
 CONFIG_V2_CI_REHEARSAL_ENV = "D810_CONFIG_V2_CI_REHEARSAL"
@@ -26,40 +27,14 @@ class ConfigV2RehearsalSelection:
 
 
 CONFIG_V2_CI_REHEARSAL_MAPPINGS: tuple[ConfigV2RehearsalSelection, ...] = (
-    ConfigV2RehearsalSelection(
-        source_config="default_instruction_only.json",
-        runtime_config="default_instruction_only_config_v2_canary.json",
-        parity_row="default_instruction_only_config_v2_canary_mba",
-        expected_pass_ids=(
-            "mba-simplify",
-            "global-constant-inliner",
-            "jump-fixer",
-        ),
-    ),
-    ConfigV2RehearsalSelection(
-        source_config="default_unflattening_tigress_engine.json",
-        runtime_config="default_unflattening_tigress_engine_config_v2_canary.json",
-        parity_row="tigress_engine_config_v2_canary_spine",
-        expected_pass_ids=(
-            "recover_dispatcher",
-            "recover_state_transitions",
-            "plan_semantic_regions",
-            "lower_state_machine",
-            "cleanup_residual_dispatcher",
-        ),
-    ),
-    ConfigV2RehearsalSelection(
-        source_config="hodur_flag2.json",
-        runtime_config="hodur_flag2_config_v2_canary.json",
-        parity_row="hodur_flag2_config_v2_canary_mixed",
-        expected_pass_ids=(
-            "recover_dispatcher",
-            "recover_state_transitions",
-            "plan_semantic_regions",
-            "lower_state_machine",
-            "cleanup_residual_dispatcher",
-            "jump-fixer",
-        ),
+    *(
+        ConfigV2RehearsalSelection(
+            source_config=mapping.source_config,
+            runtime_config=mapping.runtime_config,
+            parity_row=mapping.parity_row,
+            expected_pass_ids=mapping.expected_pass_ids,
+        )
+        for mapping in CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS
     ),
 )
 
