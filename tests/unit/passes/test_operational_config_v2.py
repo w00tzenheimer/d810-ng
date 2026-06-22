@@ -24,6 +24,8 @@ _STATE_MACHINE_NATIVE_PIPELINE = [
 ]
 _BUILDABLE_GENERATED_SHADOWS = [
     "bogus_loops",
+    "default",
+    "default_indirect_resolution",
     "default_instruction_only",
     "default_unflattening_approov",
     "default_unflattening_approov_s1a",
@@ -51,6 +53,10 @@ _BUILDABLE_GENERATED_SHADOWS = [
         (
             "default_instruction_only",
             ["mba-simplify", "global-constant-inliner", "jump-fixer"],
+        ),
+        (
+            "default_indirect_resolution",
+            ["indirect-branch-resolver", "indirect-call-resolver"],
         ),
         (
             "default_unflattening_tigress_indirect",

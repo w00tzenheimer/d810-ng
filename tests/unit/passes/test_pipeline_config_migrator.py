@@ -71,6 +71,8 @@ _STATE_MACHINE_NATIVE_PIPELINE = (
 )
 _GENERATED_SHADOW_CONFIGS = (
     "bogus_loops",
+    "default",
+    "default_indirect_resolution",
     "default_instruction_only",
     "default_unflattening_approov",
     "default_unflattening_approov_s1a",
@@ -94,6 +96,12 @@ _GENERATED_SHADOW_CONFIGS = (
 )
 _REMAINING_GENERATED_SHADOWS = (
     ("bogus_loops", 0, ("MbaStatePreconditioner", "JumpFixer")),
+    ("default", 0, ("IndirectBranchResolver", "IndirectCallResolver")),
+    (
+        "default_indirect_resolution",
+        0,
+        ("IndirectBranchResolver", "IndirectCallResolver"),
+    ),
     (
         "default_unflattening_approov",
         178,
@@ -190,13 +198,11 @@ def _assert_builds_with_operational_registry(config_name: str):
 
 
 def _expected_unsupported_reason_tokens(config_name: str) -> tuple[str, ...]:
-    if config_name in {"default.json", "default_indirect_resolution.json"}:
-        return ("IndirectBranchResolver", "IndirectCallResolver")
     if config_name in {
         "default_unflattening_ollvm.json",
         "default_unflattening_ollvm_s1a_fair.json",
     }:
-        return ("IndirectCallResolver", "SimpleFlatteningCleanupUnflattener")
+        return ("SimpleFlatteningCleanupUnflattener",)
     if config_name == "example_libobfuscated_no_fixprecedessor.json":
         return ("SimpleFlatteningCleanupUnflattener",)
     raise AssertionError(f"unsupported config lacks explicit matrix expectation: {config_name}")
@@ -290,6 +296,42 @@ def test_legacy_block_rule_adapter_boundary_classifies_shadow_passes(
     }
 
 
+@pytest.mark.parametrize(
+    ("rule_name", "pass_id", "reason"),
+    [
+        (
+            "IndirectBranchResolver",
+            "indirect-branch-resolver",
+            "live indirect-branch FlowOptimizationRule adapter",
+        ),
+        (
+            "IndirectCallResolver",
+            "indirect-call-resolver",
+            "live indirect-call FlowOptimizationRule adapter",
+        ),
+    ],
+)
+def test_legacy_block_rule_adapter_boundary_classifies_live_flow_rule_adapters(
+    rule_name,
+    pass_id,
+    reason,
+):
+    boundary = legacy_block_rule_adapter_boundary(rule_name)
+
+    assert boundary.rule_name == rule_name
+    assert boundary.adapter_kind is LegacyBlockRuleAdapterKind.LEGACY_FLOW_RULE_ADAPTER
+    assert boundary.supported is True
+    assert boundary.pass_id == pass_id
+    assert reason in boundary.reason
+    assert boundary.to_dict() == {
+        "rule": rule_name,
+        "adapter_kind": "legacy_flow_rule_adapter",
+        "supported": True,
+        "pass_id": pass_id,
+        "reason": boundary.reason,
+    }
+
+
 def test_legacy_block_rule_adapter_boundary_classifies_state_machine_spine():
     boundary = legacy_block_rule_adapter_boundary("StateMachineCffUnflattener")
 
@@ -310,16 +352,6 @@ def test_legacy_block_rule_adapter_boundary_classifies_state_machine_spine():
 @pytest.mark.parametrize(
     ("rule_name", "adapter_kind", "reason"),
     [
-        (
-            "IndirectBranchResolver",
-            LegacyBlockRuleAdapterKind.LEGACY_FLOW_RULE_ADAPTER,
-            "IDA-backed indirect-branch FlowOptimizationRule adapter",
-        ),
-        (
-            "IndirectCallResolver",
-            LegacyBlockRuleAdapterKind.LEGACY_FLOW_RULE_ADAPTER,
-            "IDA-backed indirect-call FlowOptimizationRule adapter",
-        ),
         (
             "SimpleFlatteningCleanupUnflattener",
             LegacyBlockRuleAdapterKind.CLEANUP_FAMILY_ADAPTER,
@@ -687,8 +719,6 @@ def test_repo_legacy_config_inventory_reports_current_state():
         for item in inventory.values()
         if item.status is LegacyConfigMigrationStatus.UNSUPPORTED
     } == {
-        "default.json",
-        "default_indirect_resolution.json",
         "default_unflattening_ollvm.json",
         "default_unflattening_ollvm_s1a_fair.json",
         "example_libobfuscated_no_fixprecedessor.json",
@@ -699,6 +729,8 @@ def test_repo_legacy_config_inventory_reports_current_state():
         if item.status is LegacyConfigMigrationStatus.MIGRATABLE
     } == {
         "bogus_loops.json",
+        "default.json",
+        "default_indirect_resolution.json",
         "default_instruction_only.json",
         "default_unflattening_approov.json",
         "default_unflattening_approov_s1a.json",
@@ -748,15 +780,9 @@ def test_config_v2_canaries_are_not_legacy_migration_inputs(config_name):
 def test_repo_inventory_surfaces_unsupported_reasons():
     inventory = _inventory_by_name()
 
-    assert (
-        "IndirectBranchResolver "
-        "(requires an IDA-backed indirect-branch FlowOptimizationRule adapter)"
-        in inventory["default.json"].reason
-    )
-    assert (
-        "IndirectCallResolver "
-        "(requires an IDA-backed indirect-call FlowOptimizationRule adapter)"
-        in inventory["default.json"].reason
+    assert inventory["default.json"].status is LegacyConfigMigrationStatus.MIGRATABLE
+    assert inventory["default_indirect_resolution.json"].status is (
+        LegacyConfigMigrationStatus.MIGRATABLE
     )
     assert inventory["default_unflattening_ollvm.json"].status is (
         LegacyConfigMigrationStatus.UNSUPPORTED
@@ -813,6 +839,8 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "hodur_flag2_with_fcp_mixed",
         "hodur_flag2_config_v2_canary_mixed",
         "identity_call_explicit_adapter",
+        "default_indirect_resolution_branch_call_branch",
+        "default_indirect_resolution_branch_call_call",
     }
     assert parity_rows["eidolon_mba_instruction_heavy"] == {
         "id": "eidolon_mba_instruction_heavy",
@@ -876,11 +904,27 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "stable_diag_parity": True,
         "allowed_diag_drift": [],
     }
+    assert parity_rows["default_indirect_resolution_branch_call_branch"] == {
+        "id": "default_indirect_resolution_branch_call_branch",
+        "legacy_config": "default_indirect_resolution.json",
+        "shadow_config": "default_indirect_resolution.pipeline_v2.json",
+        "ast_stats_match": True,
+        "stable_diag_parity": True,
+        "allowed_diag_drift": [],
+    }
+    assert parity_rows["default_indirect_resolution_branch_call_call"] == {
+        "id": "default_indirect_resolution_branch_call_call",
+        "legacy_config": "default_indirect_resolution.json",
+        "shadow_config": "default_indirect_resolution.pipeline_v2.json",
+        "ast_stats_match": True,
+        "stable_diag_parity": True,
+        "allowed_diag_drift": [],
+    }
     assert matrix["parity_evidence"]["summary"].startswith(
         f"{len(parity_rows)} passed,"
     )
     assert matrix["parity_evidence"]["docker_log"].endswith(
-        "config-v2-canary-expansion-v1-parity.log"
+        "config-v2-indirect-branch-call-adapter-v1-parity.log"
     )
 
     canaries = {
@@ -958,6 +1002,7 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "mixed_spine_simple_flow_rule",
         "mixed_spine_instruction_simple_flow_rule",
         "identity_call_flow_rule",
+        "indirect_branch_call_flow_rule",
     }
     assert {
         item["config"] for item in matrix["unsupported_adapter_boundaries"]
@@ -1267,8 +1312,9 @@ def test_readme_documents_config_v2_canary_selection_note():
     for config in rollout["user_selectable_configs"]:
         assert config["config"] in readme
         assert config["source_config"] in readme
-    for boundary in ("OLLVM", "indirect branch/call", "cleanup-family"):
+    for boundary in ("OLLVM", "cleanup-family"):
         assert boundary in normalized_readme
+    assert "indirect branch/call support is not default-routed" in normalized_readme
     assert "identity-call remains unsupported" not in normalized_readme
 
 
@@ -1292,6 +1338,7 @@ def test_readme_documents_config_v2_default_cutover_criteria():
         "support matrix lists all supported generated shadows",
         "reviewed rollback path",
         "Unsupported adapter boundaries stay explicit and fail-closed",
+        "indirect branch/call support is not default-routed",
         "ignored `.tmp` paths",
         "CI gates include support-matrix unit guards",
     ):
@@ -1393,11 +1440,7 @@ def test_ollvm_configs_remain_inventory_unsupported_pending_adapters(config_name
     assert item.status is LegacyConfigMigrationStatus.UNSUPPORTED
     assert item.active_instruction_rules == 180
     assert item.active_block_rules == _OLLVM_BLOCK_RULES
-    assert (
-        "IndirectCallResolver "
-        "(requires an IDA-backed indirect-call FlowOptimizationRule adapter)"
-        in item.reason
-    )
+    assert "IndirectCallResolver (requires" not in item.reason
     assert (
         "SimpleFlatteningCleanupUnflattener "
         "(requires a cleanup-family planner/executor adapter)"
@@ -1406,7 +1449,7 @@ def test_ollvm_configs_remain_inventory_unsupported_pending_adapters(config_name
 
     with pytest.raises(
         PipelineConfigError,
-        match="IndirectCallResolver",
+        match="SimpleFlatteningCleanupUnflattener",
     ):
         legacy_project_file_to_pipeline_v2_shadow(_CONF_DIR / f"{config_name}.json")
 

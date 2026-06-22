@@ -120,6 +120,26 @@ def test_identity_call_bridge_derives_explicit_opt_in_rule_config():
     }
 
 
+def test_indirect_branch_call_bridge_derives_explicit_flow_rules():
+    project = _config_v2_project("default_indirect_resolution")
+
+    activation = pipeline_v2_hook_activation(project)
+
+    assert activation.enabled is True
+    assert activation.configured_pass_ids == (
+        "indirect-branch-resolver",
+        "indirect-call-resolver",
+    )
+    assert activation.native_state_machine_pass_ids == ()
+    assert activation.instruction_rules == ()
+    assert [rule.name for rule in activation.block_rules] == [
+        "IndirectBranchResolver",
+        "IndirectCallResolver",
+    ]
+    assert [rule.config for rule in activation.block_rules] == [{}, {}]
+    assert all(rule.name != "CopiedLegacyBlockRule" for rule in activation.block_rules)
+
+
 def test_native_state_machine_config_filter_excludes_live_hook_passes():
     project = _config_v2_project("hodur_flag2")
 

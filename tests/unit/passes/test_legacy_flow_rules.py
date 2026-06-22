@@ -180,6 +180,8 @@ def test_legacy_flow_rule_registry_builds_jump_fixer_shadow_entry():
         ("global-constant-inliner", "GlobalConstantInliner"),
         ("forward-constant-propagation", "ForwardConstantPropagationRule"),
         ("identity-call-resolver", "IdentityCallResolver"),
+        ("indirect-branch-resolver", "IndirectBranchResolver"),
+        ("indirect-call-resolver", "IndirectCallResolver"),
         ("mba-state-preconditioner", "MbaStatePreconditioner"),
         ("jump-fixer", "JumpFixer"),
     ],
@@ -346,3 +348,25 @@ def test_operational_registry_builds_identity_call_shadow():
         "max_trampoline_depth": 32,
         "max_search_instructions": 30,
     }
+
+
+@pytest.mark.parametrize("config_name", ["default", "default_indirect_resolution"])
+def test_operational_registry_builds_indirect_branch_call_shadow(config_name):
+    shadow = ProjectConfiguration.from_file(_CONF_DIR / f"{config_name}.pipeline_v2.json")
+
+    specs = pass_specs_from_project_config(
+        shadow,
+        operational_config_v2_pass_registry(),
+    )
+
+    assert [spec.pass_id for spec in specs] == [
+        "indirect-branch-resolver",
+        "indirect-call-resolver",
+    ]
+    adapters = [spec.pass_factory() for spec in specs]
+    assert all(isinstance(adapter, LegacyFlowRuleAdapterPass) for adapter in adapters)
+    assert [adapter.legacy_rule for adapter in adapters] == [
+        "IndirectBranchResolver",
+        "IndirectCallResolver",
+    ]
+    assert [adapter.rule_options for adapter in adapters] == [{}, {}]
