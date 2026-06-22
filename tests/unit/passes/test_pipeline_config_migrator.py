@@ -1025,8 +1025,8 @@ def test_config_v2_runtime_support_matrix_ci_rehearsal_switch_is_explicit():
         "workflow": ".github/workflows/python.yml",
         "job_id": "config-v2-ci-rehearsal",
         "job_name": "config-v2 CI rehearsal (supported mappings)",
-        "status": "wired-non-blocking",
-        "blocking": False,
+        "status": "blocking",
+        "blocking": True,
         "command": (
             "./tools/scripts/run_config_v2_ci_rehearsal.sh "
             "-w config-v2-ci-rehearsal"
@@ -1051,12 +1051,13 @@ def test_config_v2_runtime_support_matrix_ci_rehearsal_switch_is_explicit():
             "artifact_name": "config-v2-ci-rehearsal-log",
         },
         "stabilization_policy": (
-            "Keep visible but non-blocking until the supported-mapping rehearsal "
-            "job is stable in CI, then make the job blocking in a separate change."
+            "Blocking after GitHub-visible proof lines and the rehearsal log "
+            "artifact were observed green for all supported mappings."
         ),
         "rollback": (
-            "Disable or remove this job, or unset D810_CONFIG_V2_CI_REHEARSAL "
-            "in the named rehearsal command; product default runtime is unchanged."
+            "Restore continue-on-error for this job, disable or remove this job, "
+            "or unset D810_CONFIG_V2_CI_REHEARSAL in the named rehearsal command; "
+            "product default runtime is unchanged."
         ),
     }
     assert rehearsal["docker_selector"] == "TestConfigV2CIRehearsalCoverage"
@@ -1091,7 +1092,7 @@ def test_config_v2_runtime_support_matrix_ci_rehearsal_switch_is_explicit():
     workflow_text = _CI_WORKFLOW.read_text(encoding="utf-8")
     job_block = _github_actions_job_block(workflow_text, ci_job["job_id"])
     assert f'name: "{ci_job["job_name"]}"' in job_block
-    assert "continue-on-error: true" in job_block
+    assert "continue-on-error:" not in job_block
     assert "D810_DOCKER_IMAGE:" in job_block
     assert "mkdir -p .worktrees" in job_block
     assert f'git worktree add .worktrees/{ci_job["worktree"]} HEAD' in job_block

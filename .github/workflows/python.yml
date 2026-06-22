@@ -178,7 +178,6 @@ jobs:
     config-v2-ci-rehearsal:
         name: "config-v2 CI rehearsal (supported mappings)"
         runs-on: ubuntu-24.04
-        continue-on-error: true
         env:
             PYTHONPATH: ${{ github.workspace }}
             D810_DOCKER_IMAGE: ghcr.io/w00tzenheimer/idapro-linux:idapro-tests-9.2-py312
