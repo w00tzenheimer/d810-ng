@@ -60,3 +60,14 @@ mod.build_condition_chain_walker_provider()
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_codemod_tool_tests_have_libcst_in_dev_and_ci_dependencies() -> None:
+    pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    workflow = (_REPO_ROOT / ".github" / "workflows" / "python.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"libcst>=1.0.0"' in pyproject
+    assert "pytest pytest-cov import-linter vermin libcst" in workflow
+    assert "pytest pytest-cov libcst" in workflow
