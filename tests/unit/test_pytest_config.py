@@ -82,3 +82,18 @@ def test_unit_ci_provisions_llvm_opt_for_real_verifier_coverage() -> None:
     assert "sudo apt-get install -y -qq llvm" in workflow
     assert 'echo "LLVM_OPT=$(command -v opt)" >> "$GITHUB_ENV"' in workflow
     assert workflow.count('echo "LLVM_OPT=$(command -v opt)" >> "$GITHUB_ENV"') >= 2
+
+
+def test_system_ci_provisions_llvm_opt_for_required_verifier_coverage() -> None:
+    workflow = (_REPO_ROOT / ".github" / "workflows" / "python.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "system-tests (idapro-9.2, pure-python)" in workflow
+    assert "system-tests (idapro-9.2, speedups)" in workflow
+    assert "ERROR: system tests require LLVM opt for verifier coverage" in workflow
+    assert "LLVM_OPT_PATH=\\\"\\$(command -v opt" in workflow
+    assert workflow.count("LLVM_OPT_PATH=\\\"\\$(command -v opt") >= 2
+    assert "export LLVM_OPT=\\\"\\$LLVM_OPT_PATH\\\"" in workflow
+    assert "export D810_REQUIRE_LLVM_OPT=1" in workflow
+    assert workflow.count("export D810_REQUIRE_LLVM_OPT=1") >= 2
