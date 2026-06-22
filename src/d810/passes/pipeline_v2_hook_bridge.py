@@ -11,6 +11,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from d810.core.config import ProjectConfiguration, RuleConfiguration
+from d810.passes.cleanup_family_adapter import (
+    SIMPLE_FLATTENING_CLEANUP_PASS_ID,
+    build_cleanup_family_adapter_pass,
+)
 from d810.passes.legacy_flow_rules import build_legacy_flow_rule_pass
 from d810.passes.mba_simplify import MBA_SIMPLIFY_PASS_ID, build_mba_simplify_pass
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
@@ -110,6 +114,11 @@ def _flow_rule_from(config: PipelineConfig) -> RuleConfiguration:
     return _rule_config(adapter.legacy_rule, adapter.rule_options)
 
 
+def _cleanup_family_rule_from(config: PipelineConfig) -> RuleConfiguration:
+    adapter = build_cleanup_family_adapter_pass(config)
+    return _rule_config(adapter.legacy_rule, adapter.rule_options)
+
+
 def _dedupe_rule_configs(
     rules: list[RuleConfiguration],
     *,
@@ -164,6 +173,9 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
             instruction_rules.extend(_instruction_rules_from(config))
             continue
         if pass_id in STATE_MACHINE_NATIVE_PASS_IDS:
+            continue
+        if pass_id == SIMPLE_FLATTENING_CLEANUP_PASS_ID:
+            block_rules.append(_cleanup_family_rule_from(config))
             continue
         block_rules.append(_flow_rule_from(config))
 

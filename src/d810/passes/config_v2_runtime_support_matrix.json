@@ -85,11 +85,23 @@
         "indirect-branch-resolver",
         "indirect-call-resolver"
       ]
+    },
+    {
+      "id": "cleanup_family_adapter",
+      "description": "Explicit cleanup-family planner/executor hook lane",
+      "representative_row": "example_libobfuscated_no_fixprecedessor_cleanup",
+      "representative_shadow": "example_libobfuscated_no_fixprecedessor.pipeline_v2.json",
+      "pass_ids": [
+        "mba-simplify",
+        "forward-constant-propagation",
+        "simple-flattening-cleanup-unflattener",
+        "jump-fixer"
+      ]
     }
   ],
   "parity_evidence": {
-    "docker_log": ".tmp/logs/config-v2-indirect-branch-call-adapter-v1-parity.log",
-    "summary": "14 passed, 1 skipped, 2487 deselected, 117 warnings",
+    "docker_log": ".tmp/logs/config-v2-cleanup-family-adapter-v1-parity.log",
+    "summary": "15 passed, 1 skipped, 2487 deselected, 117 warnings",
     "rows": [
       {
         "id": "default_instruction_only_mba",
@@ -207,6 +219,14 @@
         "ast_stats_match": true,
         "stable_diag_parity": true,
         "allowed_diag_drift": []
+      },
+      {
+        "id": "example_libobfuscated_no_fixprecedessor_cleanup",
+        "legacy_config": "example_libobfuscated_no_fixprecedessor.json",
+        "shadow_config": "example_libobfuscated_no_fixprecedessor.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
       }
     ]
   },
@@ -276,7 +296,7 @@
         ]
       }
     ],
-    "unsupported_policy": "Unsupported adapter boundaries stay fail-closed until explicit adapter work lands; opt-in rollout does not make OLLVM or cleanup-family configs runnable."
+    "unsupported_policy": "Unsupported adapter boundaries stay fail-closed until explicit adapter work lands; opt-in rollout does not make OLLVM configs runnable and does not default-route generated cleanup-family shadows."
   },
   "supported_default_routing": {
     "status": "enabled-supported-bundled-configs-only",
@@ -341,7 +361,7 @@
       }
     ],
     "user_override_policy": "A user ProjectConfiguration named like a supported source or canary config is not trusted for default routing unless it independently opts into explicit pipeline_v2_mode=config-v2 and passes existing fail-closed config-v2 validation.",
-    "unsupported_policy": "Project configs outside supported_mappings stay on the existing project configuration path by default; OLLVM and cleanup-family configs remain unsupported until real adapters land."
+    "unsupported_policy": "Project configs outside supported_mappings stay on the existing project configuration path by default; OLLVM configs remain unsupported pending targeted parity reassessment, and cleanup-family generated shadows are not default-routed without a canary."
   },
   "ci_runtime_rehearsal": {
     "status": "explicit-test-switch",
@@ -429,12 +449,12 @@
         ]
       }
     ],
-    "unsupported_policy": "Any project config outside supported_mappings fails closed when the switch is enabled; the switch does not imply OLLVM or cleanup-family support."
+    "unsupported_policy": "Any project config outside supported_mappings fails closed when the switch is enabled; the switch does not imply OLLVM support or cleanup-family default routing."
   },
   "generated_shadows": {
     "legacy_config_count": 26,
-    "migratable_count": 23,
-    "unsupported_count": 3,
+    "migratable_count": 24,
+    "unsupported_count": 2,
     "migratable_missing_shadow_count": 0,
     "migratable_configs": [
       "bogus_loops.json",
@@ -452,6 +472,7 @@
       "example_hodur.json",
       "example_libobfuscated.json",
       "example_libobfuscated_abc.json",
+      "example_libobfuscated_no_fixprecedessor.json",
       "flatfold.json",
       "flatfold_no_predicate_loop_fix.json",
       "hodur_deobfuscation.json",
@@ -471,22 +492,18 @@
   "unsupported_adapter_boundaries": [
     {
       "config": "default_unflattening_ollvm.json",
-      "blocked_boundary": "cleanup-family adapter boundary"
+      "blocked_boundary": "OLLVM cleanup-family reassessment boundary"
     },
     {
       "config": "default_unflattening_ollvm_s1a_fair.json",
-      "blocked_boundary": "cleanup-family adapter boundary"
-    },
-    {
-      "config": "example_libobfuscated_no_fixprecedessor.json",
-      "blocked_boundary": "cleanup-family adapter boundary"
+      "blocked_boundary": "OLLVM cleanup-family reassessment boundary"
     }
   ],
   "non_goals": [
     "no unsupported runtime cutover",
     "no OLLVM runtime support",
     "no indirect branch/call default routing or canary rollout",
-    "no cleanup-family adapter",
+    "no OLLVM cleanup-family support claim",
     "no fake pass registration",
     "no LLVM M3/M4/lower-back/drop work"
   ],
@@ -511,7 +528,7 @@
       },
       {
         "id": "unsupported_boundary_matrix",
-        "description": "Unsupported adapter boundaries remain explicit and fail-closed; no OLLVM or cleanup-family support is implied by supported default routing, and indirect branch/call support is not default-routed without a canary."
+        "description": "Unsupported adapter boundaries remain explicit and fail-closed; no OLLVM support is implied by supported default routing, and indirect branch/call or cleanup-family generated-shadow support is not default-routed without a canary."
       },
       {
         "id": "no_ignored_log_dependency",

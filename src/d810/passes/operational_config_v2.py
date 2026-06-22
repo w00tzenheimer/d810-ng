@@ -1,6 +1,7 @@
 """Named operational registry composition for config-v2 pass execution."""
 from __future__ import annotations
 
+from d810.passes.cleanup_family_adapter import register_cleanup_family_adapter_passes
 from d810.passes.legacy_flow_rules import register_legacy_flow_rule_passes
 from d810.passes.mba_simplify import register_mba_simplify_pass
 from d810.passes.registry import PassRegistry
@@ -14,6 +15,7 @@ def register_operational_config_v2_passes(registry: PassRegistry) -> PassRegistr
     register_mba_simplify_pass(registry)
     register_state_machine_passes(registry)
     register_legacy_flow_rule_passes(registry)
+    register_cleanup_family_adapter_passes(registry)
     return registry
 
 

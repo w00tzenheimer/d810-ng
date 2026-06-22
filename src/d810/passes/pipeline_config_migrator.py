@@ -7,6 +7,10 @@ from enum import Enum
 from pathlib import Path
 
 from d810.core.config import ConfigConstants, ProjectConfiguration, RuleConfiguration
+from d810.passes.cleanup_family_adapter import (
+    CLEANUP_FAMILY_ADAPTER_CAPABILITY,
+    SIMPLE_FLATTENING_CLEANUP_PASS_ID,
+)
 from d810.passes.legacy_flow_rules import LEGACY_FLOW_RULE_ADAPTER_CAPABILITY
 from d810.passes.pass_pipeline import MaturityRange, PipelineConfigError, PassSpec
 from d810.passes.state_machine_spine import standard_state_machine_passes
@@ -101,15 +105,24 @@ _SUPPORTED_BLOCK_RULE_ADAPTERS["StateMachineCffUnflattener"] = (
         reason="expands to the native state-machine spine",
     )
 )
-
-_UNSUPPORTED_BLOCK_RULE_ADAPTERS = {
-    "SimpleFlatteningCleanupUnflattener": LegacyBlockRuleAdapterBoundary(
+_SUPPORTED_BLOCK_RULE_ADAPTERS["SimpleFlatteningCleanupUnflattener"] = (
+    LegacyBlockRuleAdapterBoundary(
         rule_name="SimpleFlatteningCleanupUnflattener",
         adapter_kind=LegacyBlockRuleAdapterKind.CLEANUP_FAMILY_ADAPTER,
-        supported=False,
-        reason="requires a cleanup-family planner/executor adapter",
-    ),
-}
+        supported=True,
+        pass_id=SIMPLE_FLATTENING_CLEANUP_PASS_ID,
+        reason="routes through the live cleanup-family planner/executor adapter",
+    )
+)
+
+_UNSUPPORTED_BLOCK_RULE_ADAPTERS: dict[str, LegacyBlockRuleAdapterBoundary] = {}
+
+_OLLVM_CLEANUP_REASSESSMENT_CONFIGS = frozenset(
+    {
+        "default_unflattening_ollvm.json",
+        "default_unflattening_ollvm_s1a_fair.json",
+    }
+)
 
 _STATE_MACHINE_NATIVE_PIPELINE = [
     "recover_dispatcher",
@@ -302,6 +315,11 @@ def _block_pass(
         "legacy_rule": rule_name,
         **copied_config,
     }
+    capabilities = (
+        [CLEANUP_FAMILY_ADAPTER_CAPABILITY]
+        if rule_name == "SimpleFlatteningCleanupUnflattener"
+        else [LEGACY_FLOW_RULE_ADAPTER_CAPABILITY]
+    )
 
     return (
         {
@@ -309,7 +327,7 @@ def _block_pass(
             "scope": scope,
             "maturity": _json_copy(maturity, "maturity"),
             "requires": {
-                "capabilities": [LEGACY_FLOW_RULE_ADAPTER_CAPABILITY],
+                "capabilities": capabilities,
             },
             "migration": {
                 "source_config": source_config,
@@ -429,6 +447,23 @@ def _unsupported_block_rules_message(rule_names: tuple[str, ...]) -> str:
     )
 
 
+def _config_level_holdback_reason(
+    *,
+    source_config: str,
+    active_block_rule_names: tuple[str, ...],
+) -> str:
+    if (
+        source_config in _OLLVM_CLEANUP_REASSESSMENT_CONFIGS
+        and "SimpleFlatteningCleanupUnflattener" in active_block_rule_names
+    ):
+        return (
+            "SimpleFlatteningCleanupUnflattener is representable, but OLLVM "
+            "cleanup-family support requires separate targeted parity "
+            "reassessment before generating a pipeline_v2 shadow"
+        )
+    return ""
+
+
 def _shadow_metadata(
     project_config: ProjectConfiguration,
     *,
@@ -459,9 +494,19 @@ def legacy_project_config_to_pipeline_v2_shadow(
     source_name = source_config or Path(project_config.path).name
     active_instruction_rules = _active_instruction_rules(project_config)
     active_block_rules = _active_block_rules(project_config)
+    active_block_rule_names = _active_block_rule_names(active_block_rules)
     if not active_instruction_rules and not active_block_rules:
         raise PipelineConfigError(
             f"{source_name} has no active legacy rules; no pipeline_v2 shadow generated"
+        )
+    config_holdback_reason = _config_level_holdback_reason(
+        source_config=source_name,
+        active_block_rule_names=active_block_rule_names,
+    )
+    if config_holdback_reason:
+        raise PipelineConfigError(
+            "unsupported legacy config for pipeline_v2 shadow: "
+            f"{source_name} ({config_holdback_reason})"
         )
 
     pipeline_v2: list[dict[str, object]] = []
@@ -514,6 +559,19 @@ def inventory_legacy_project_config(
             active_instruction_rules=0,
             active_block_rules=(),
             reason="no active legacy rules",
+        )
+    config_holdback_reason = _config_level_holdback_reason(
+        source_config=source_name,
+        active_block_rule_names=active_block_rule_names,
+    )
+    if config_holdback_reason:
+        return LegacyConfigMigrationInventoryItem(
+            config_name=source_name,
+            path=Path(project_config.path),
+            status=LegacyConfigMigrationStatus.UNSUPPORTED,
+            active_instruction_rules=len(active_instruction_rules),
+            active_block_rules=active_block_rule_names,
+            reason=config_holdback_reason,
         )
     unsupported_block_rules = tuple(
         rule_name

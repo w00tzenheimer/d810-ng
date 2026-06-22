@@ -37,6 +37,7 @@ _BUILDABLE_GENERATED_SHADOWS = [
     "example_anel",
     "example_hodur",
     "example_libobfuscated_abc",
+    "example_libobfuscated_no_fixprecedessor",
     "flatfold",
     "flatfold_no_predicate_loop_fix",
     "hodur_deobfuscation",
@@ -57,6 +58,15 @@ _BUILDABLE_GENERATED_SHADOWS = [
         (
             "default_indirect_resolution",
             ["indirect-branch-resolver", "indirect-call-resolver"],
+        ),
+        (
+            "example_libobfuscated_no_fixprecedessor",
+            [
+                "mba-simplify",
+                "forward-constant-propagation",
+                "simple-flattening-cleanup-unflattener",
+                "jump-fixer",
+            ],
         ),
         (
             "default_unflattening_tigress_indirect",
