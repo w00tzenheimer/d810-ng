@@ -489,10 +489,9 @@ runner, use:
 ./tools/scripts/run_config_v2_ci_rehearsal.sh -w <target-worktree>
 ```
 
-These canaries do not enable every adapter family. Indirect branch/call and the
-isolated cleanup-family config-v2 paths are available through generated shadows,
-but they are not part of the supported-default or canary rollout. OLLVM
-configurations remain fail-closed until OLLVM-specific parity is reassessed.
+These canaries do not enable every generated shadow. Indirect branch/call,
+cleanup-family, and OLLVM config-v2 paths are available through generated
+shadows, but they are not part of the supported-default or canary rollout.
 
 ### Config-v2 default cutover criteria
 
@@ -509,10 +508,9 @@ bounded by these criteria:
 - A reviewed rollback path lets users return supported bundled configs to the
   existing project configuration path if config-v2 default routing regresses
   behavior.
-- Unsupported adapter boundaries stay explicit and fail-closed; supported
-  default routing does not imply OLLVM support, and indirect branch/call or
-  cleanup-family generated-shadow support is not default-routed without a
-  canary.
+- Unsupported adapter boundaries stay explicit and fail-closed; indirect
+  branch/call, cleanup-family, or OLLVM generated-shadow support is not
+  default-routed without a canary.
 - Always-on unit checks depend only on tracked support-matrix metadata. Docker
   log contents must be regenerated through the wrapper gate, not required from
   ignored `.tmp` paths in a clean checkout.

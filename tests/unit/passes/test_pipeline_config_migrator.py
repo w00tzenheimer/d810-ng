@@ -75,6 +75,8 @@ _GENERATED_SHADOW_CONFIGS = (
     "default",
     "default_indirect_resolution",
     "default_instruction_only",
+    "default_unflattening_ollvm",
+    "default_unflattening_ollvm_s1a_fair",
     "default_unflattening_approov",
     "default_unflattening_approov_s1a",
     "default_unflattening_switch_case",
@@ -103,6 +105,16 @@ _REMAINING_GENERATED_SHADOWS = (
         "default_indirect_resolution",
         0,
         ("IndirectBranchResolver", "IndirectCallResolver"),
+    ),
+    (
+        "default_unflattening_ollvm",
+        180,
+        _OLLVM_BLOCK_RULES,
+    ),
+    (
+        "default_unflattening_ollvm_s1a_fair",
+        180,
+        _OLLVM_BLOCK_RULES,
     ),
     (
         "default_unflattening_approov",
@@ -209,11 +221,6 @@ def _assert_builds_with_operational_registry(config_name: str):
 
 
 def _expected_unsupported_reason_tokens(config_name: str) -> tuple[str, ...]:
-    if config_name in {
-        "default_unflattening_ollvm.json",
-        "default_unflattening_ollvm_s1a_fair.json",
-    }:
-        return ("SimpleFlatteningCleanupUnflattener", "targeted parity reassessment")
     raise AssertionError(f"unsupported config lacks explicit matrix expectation: {config_name}")
 
 
@@ -726,10 +733,7 @@ def test_repo_legacy_config_inventory_reports_current_state():
         item.config_name
         for item in inventory.values()
         if item.status is LegacyConfigMigrationStatus.UNSUPPORTED
-    } == {
-        "default_unflattening_ollvm.json",
-        "default_unflattening_ollvm_s1a_fair.json",
-    }
+    } == set()
     assert {
         item.config_name
         for item in inventory.values()
@@ -739,6 +743,8 @@ def test_repo_legacy_config_inventory_reports_current_state():
         "default.json",
         "default_indirect_resolution.json",
         "default_instruction_only.json",
+        "default_unflattening_ollvm.json",
+        "default_unflattening_ollvm_s1a_fair.json",
         "default_unflattening_approov.json",
         "default_unflattening_approov_s1a.json",
         "default_unflattening_switch_case.json",
@@ -793,11 +799,10 @@ def test_repo_inventory_surfaces_unsupported_reasons():
         LegacyConfigMigrationStatus.MIGRATABLE
     )
     assert inventory["default_unflattening_ollvm.json"].status is (
-        LegacyConfigMigrationStatus.UNSUPPORTED
+        LegacyConfigMigrationStatus.MIGRATABLE
     )
-    assert (
-        "SimpleFlatteningCleanupUnflattener"
-        in inventory["default_unflattening_ollvm.json"].reason
+    assert inventory["default_unflattening_ollvm_s1a_fair.json"].status is (
+        LegacyConfigMigrationStatus.MIGRATABLE
     )
     assert inventory["example_libobfuscated_no_fixprecedessor.json"].status is (
         LegacyConfigMigrationStatus.MIGRATABLE
@@ -849,6 +854,8 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "default_indirect_resolution_branch_call_branch",
         "default_indirect_resolution_branch_call_call",
         "example_libobfuscated_no_fixprecedessor_cleanup",
+        "default_unflattening_ollvm_generated_shadow",
+        "default_unflattening_ollvm_s1a_fair_generated_shadow",
     }
     assert parity_rows["eidolon_mba_instruction_heavy"] == {
         "id": "eidolon_mba_instruction_heavy",
@@ -928,11 +935,27 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "stable_diag_parity": True,
         "allowed_diag_drift": [],
     }
+    assert parity_rows["default_unflattening_ollvm_generated_shadow"] == {
+        "id": "default_unflattening_ollvm_generated_shadow",
+        "legacy_config": "default_unflattening_ollvm.json",
+        "shadow_config": "default_unflattening_ollvm.pipeline_v2.json",
+        "ast_stats_match": True,
+        "stable_diag_parity": True,
+        "allowed_diag_drift": [],
+    }
+    assert parity_rows["default_unflattening_ollvm_s1a_fair_generated_shadow"] == {
+        "id": "default_unflattening_ollvm_s1a_fair_generated_shadow",
+        "legacy_config": "default_unflattening_ollvm_s1a_fair.json",
+        "shadow_config": "default_unflattening_ollvm_s1a_fair.pipeline_v2.json",
+        "ast_stats_match": True,
+        "stable_diag_parity": True,
+        "allowed_diag_drift": [],
+    }
     assert matrix["parity_evidence"]["summary"].startswith(
         f"{len(parity_rows)} passed,"
     )
     assert matrix["parity_evidence"]["docker_log"].endswith(
-        "config-v2-cleanup-family-adapter-v1-parity.log"
+        "config-v2-ollvm-generated-shadow-parity-v1-parity.log"
     )
 
     canaries = {
@@ -1012,6 +1035,7 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "identity_call_flow_rule",
         "indirect_branch_call_flow_rule",
         "cleanup_family_adapter",
+        "ollvm_generated_shadow_parity",
     }
     assert {
         item["config"] for item in matrix["unsupported_adapter_boundaries"]
@@ -1324,7 +1348,7 @@ def test_readme_documents_config_v2_canary_selection_note():
     for boundary in ("OLLVM", "cleanup-family"):
         assert boundary in normalized_readme
     assert (
-        "indirect branch/call or cleanup-family generated-shadow support is not default-routed"
+        "indirect branch/call, cleanup-family, or OLLVM generated-shadow support is not default-routed"
         in normalized_readme
     )
     assert "identity-call remains unsupported" not in normalized_readme
@@ -1350,7 +1374,7 @@ def test_readme_documents_config_v2_default_cutover_criteria():
         "support matrix lists all supported generated shadows",
         "reviewed rollback path",
         "Unsupported adapter boundaries stay explicit and fail-closed",
-        "indirect branch/call or cleanup-family generated-shadow support is not default-routed",
+        "indirect branch/call, cleanup-family, or OLLVM generated-shadow support is not default-routed",
         "ignored `.tmp` paths",
         "CI gates include support-matrix unit guards",
     ):
@@ -1445,27 +1469,52 @@ def test_config_v2_runtime_support_matrix_docker_evidence_metadata_is_well_forme
 
 
 @pytest.mark.parametrize("config_name", _OLLVM_CONFIGS)
-def test_ollvm_configs_remain_inventory_unsupported_pending_adapters(config_name):
+def test_ollvm_configs_are_generated_shadow_supported_after_reassessment(config_name):
     inventory = _inventory_by_name()
     item = inventory[f"{config_name}.json"]
 
-    assert item.status is LegacyConfigMigrationStatus.UNSUPPORTED
+    assert item.status is LegacyConfigMigrationStatus.MIGRATABLE
     assert item.active_instruction_rules == 180
     assert item.active_block_rules == _OLLVM_BLOCK_RULES
-    assert "IndirectCallResolver (requires" not in item.reason
-    assert "SimpleFlatteningCleanupUnflattener is representable" in item.reason
-    assert "targeted parity reassessment" in item.reason
+    assert item.reason == ""
 
-    with pytest.raises(
-        PipelineConfigError,
-        match="targeted parity reassessment",
-    ):
-        legacy_project_file_to_pipeline_v2_shadow(_CONF_DIR / f"{config_name}.json")
+    legacy = ProjectConfiguration.from_file(_CONF_DIR / f"{config_name}.json")
+    generated = legacy_project_file_to_pipeline_v2_shadow(
+        _CONF_DIR / f"{config_name}.json"
+    )
+    pipeline_v2 = generated["additional_configuration"]["pipeline_v2"]
+    active_instruction_rules = [
+        rule for rule in legacy.ins_rules if rule.is_activated
+    ]
+
+    assert [entry["pass"] for entry in pipeline_v2] == [
+        "mba-simplify",
+        "indirect-call-resolver",
+        "mba-state-preconditioner",
+        *_STATE_MACHINE_NATIVE_PIPELINE,
+        "simple-flattening-cleanup-unflattener",
+        "jump-fixer",
+    ]
+    assert pipeline_v2[0]["rules"]["include"] == (
+        _unique_active_instruction_rule_names(active_instruction_rules)
+    )
+    assert "include_groups" not in pipeline_v2[0]["rules"]
+    assert "exclude_groups" not in pipeline_v2[0]["rules"]
 
 
-def test_ollvm_pipeline_v2_shadows_are_not_generated_while_unsupported():
+def test_ollvm_pipeline_v2_shadows_are_generated_without_canary_or_default_route():
+    matrix = _load_runtime_support_matrix()
+    canary_sources = {item["source_config"] for item in matrix["canary_configs"]}
+    default_sources = {
+        item["source_config"]
+        for item in matrix["supported_default_routing"]["supported_mappings"]
+    }
+
     for config_name in _OLLVM_CONFIGS:
-        assert not (_CONF_DIR / f"{config_name}.pipeline_v2.json").exists()
+        source_config = f"{config_name}.json"
+        assert (_CONF_DIR / f"{config_name}.pipeline_v2.json").exists()
+        assert source_config not in canary_sources
+        assert source_config not in default_sources
 
 
 @pytest.mark.parametrize(

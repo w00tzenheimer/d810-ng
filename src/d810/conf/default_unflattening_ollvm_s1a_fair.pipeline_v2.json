@@ -1,0 +1,749 @@
+{
+  "description": "Config-v2 shadow representation of default_unflattening_ollvm_s1a_fair.json. The source project JSON remains the default runtime source.",
+  "ins_rules": [],
+  "blk_rules": [],
+  "additional_configuration": {
+    "pipeline_v2_shadow": {
+      "source_config": "default_unflattening_ollvm_s1a_fair.json",
+      "runtime_source": "legacy"
+    },
+    "pipeline_v2": [
+      {
+        "pass": "mba-simplify",
+        "scope": "expression",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "local_instruction_rewrite",
+            "z3_solver"
+          ]
+        },
+        "migration": {
+          "source_config": "default_unflattening_ollvm_s1a_fair.json",
+          "source_section": "ins_rules"
+        },
+        "rules": {
+          "include": [
+            "FoldReadonlyDataRule",
+            "ConstantSubtreeFoldRule",
+            "AddXor_Rule_1",
+            "AddXor_Rule_2",
+            "Add_HackersDelightRule_1",
+            "Add_HackersDelightRule_2",
+            "Add_HackersDelightRule_3",
+            "Add_HackersDelightRule_4",
+            "Add_HackersDelightRule_5",
+            "Add_OllvmRule_1",
+            "Add_OllvmRule_2",
+            "Add_OllvmRule_3",
+            "Add_OllvmRule_4",
+            "Add_SpecialConstantRule_1",
+            "Add_SpecialConstantRule_2",
+            "Add_SpecialConstantRule_3",
+            "And1_MbaRule_1",
+            "AndBnot_FactorRule_1",
+            "AndBnot_FactorRule_2",
+            "AndBnot_FactorRule_3",
+            "AndBnot_FactorRule_4",
+            "AndBnot_HackersDelightRule_1",
+            "AndBnot_HackersDelightRule_2",
+            "AndGetUpperBits_FactorRule_1",
+            "AndOr_FactorRule_1",
+            "AndXor_FactorRule_1",
+            "And_FactorRule_1",
+            "And_FactorRule_2",
+            "And_HackersDelightRule_1",
+            "And_HackersDelightRule_2",
+            "And_HackersDelightRule_3",
+            "And_HackersDelightRule_4",
+            "And_OllvmRule_1",
+            "And_OllvmRule_2",
+            "And_OllvmRule_3",
+            "BnotAdd_MbaRule_1",
+            "BnotAnd_FactorRule_1",
+            "BnotAnd_FactorRule_2",
+            "BnotAnd_FactorRule_3",
+            "BnotAnd_FactorRule_4",
+            "BnotOr_FactorRule_1",
+            "BnotXor_FactorRule_1",
+            "BnotXor_Rule_1",
+            "BnotXor_Rule_2",
+            "BnotXor_Rule_3",
+            "Bnot_FactorRule_1",
+            "Bnot_FactorRule_2",
+            "Bnot_FactorRule_3",
+            "Bnot_FactorRule_4",
+            "Bnot_FactorRule_5",
+            "Bnot_HackersDelightRule_1",
+            "Bnot_HackersDelightRule_2",
+            "Bnot_MbaRule_1",
+            "Bnot_Rule_1",
+            "Bnot_XorRule_1",
+            "CstSimplificationRule1",
+            "CstSimplificationRule10",
+            "CstSimplificationRule11",
+            "CstSimplificationRule12",
+            "CstSimplificationRule13",
+            "CstSimplificationRule14",
+            "CstSimplificationRule15",
+            "CstSimplificationRule16",
+            "CstSimplificationRule17",
+            "CstSimplificationRule18",
+            "CstSimplificationRule19",
+            "CstSimplificationRule2",
+            "CstSimplificationRule20",
+            "CstSimplificationRule21",
+            "CstSimplificationRule22",
+            "CstSimplificationRule3",
+            "CstSimplificationRule4",
+            "CstSimplificationRule5",
+            "CstSimplificationRule6",
+            "CstSimplificationRule7",
+            "CstSimplificationRule8",
+            "CstSimplificationRule9",
+            "GetIdentRule1",
+            "GetIdentRule2",
+            "GetIdentRule3",
+            "Mul_FactorRule_1",
+            "Mul_FactorRule_2",
+            "Mul_MbaRule_1",
+            "Mul_MbaRule_2",
+            "Mul_MbaRule_3",
+            "Mul_MbaRule_4",
+            "NegAdd_HackersDelightRule_1",
+            "NegAdd_HackersDelightRule_2",
+            "NegOr_HackersDelightRule_1",
+            "NegXor_HackersDelightRule_1",
+            "NegXor_HackersDelightRule_2",
+            "Neg_HackersDelightRule_1",
+            "Neg_HackersDelightRule_2",
+            "OrBnot_FactorRule_1",
+            "OrBnot_FactorRule_2",
+            "OrBnot_FactorRule_3",
+            "OrBnot_FactorRule_4",
+            "Or_FactorRule_2",
+            "Or_FactorRule_3",
+            "Or_HackersDelightRule_1",
+            "Or_HackersDelightRule_2",
+            "Or_HackersDelightRule_2_variant_1",
+            "Or_MbaRule_1",
+            "Or_MbaRule_2",
+            "Or_MbaRule_3",
+            "Or_OllvmRule_1",
+            "Or_Rule_1",
+            "Or_Rule_2",
+            "Or_Rule_3",
+            "Or_Rule_4",
+            "Pred0Rule1",
+            "Pred0Rule2",
+            "Pred0Rule3",
+            "Pred0Rule4",
+            "Pred0Rule5",
+            "PredFFRule1",
+            "PredFFRule2",
+            "PredFFRule3",
+            "PredFFRule4",
+            "PredOdd1",
+            "PredOdd2",
+            "PredOr1_Rule_1",
+            "PredOr2_Rule_1",
+            "PredSetbRule1",
+            "PredSetnzRule1",
+            "PredSetnzRule2",
+            "PredSetnzRule3",
+            "PredSetnzRule4",
+            "PredSetnzRule5",
+            "PredSetnzRule6",
+            "PredSetnzRule8",
+            "PredSetzRule1",
+            "PredSetzRule2",
+            "PredSetzRule3",
+            "Sub1Add_HackersDelightRule_1",
+            "Sub1And1_MbaRule_1",
+            "Sub1And_HackersDelightRule_1",
+            "Sub1Or_MbaRule_1",
+            "Sub1_FactorRule_1",
+            "Sub1_FactorRule_2",
+            "Sub_HackersDelightRule_1",
+            "Sub_HackersDelightRule_2",
+            "Sub_HackersDelightRule_3",
+            "Sub_HackersDelightRule_4",
+            "WeirdRule1",
+            "WeirdRule2",
+            "WeirdRule3",
+            "WeirdRule4",
+            "WeirdRule5",
+            "WeirdRule6",
+            "Xor1_MbaRule_1",
+            "XorAlmost_Rule_1",
+            "Xor_FactorRule_1",
+            "Xor_FactorRule_2",
+            "Xor_FactorRule_3",
+            "Xor_HackersDelightRule_1",
+            "Xor_HackersDelightRule_2",
+            "Xor_HackersDelightRule_3",
+            "Xor_HackersDelightRule_4",
+            "Xor_HackersDelightRule_5",
+            "Xor_MbaRule_1",
+            "Xor_MbaRule_2",
+            "Xor_MbaRule_3",
+            "Xor_NestedStuff",
+            "Xor_Rule_1",
+            "Xor_Rule_2",
+            "Xor_Rule_3",
+            "Xor_SpecialConstantRule_1",
+            "Xor_SpecialConstantRule_2",
+            "AndChain",
+            "ArithmeticChain",
+            "OrChain",
+            "XorChain",
+            "Z3ConstantOptimization",
+            "Z3SmodRuleGeneric",
+            "UnsignedMagicModulo3Rule",
+            "Z3lnotRuleGeneric",
+            "Z3setnzRuleGeneric",
+            "Z3setzRuleGeneric",
+            "ExampleGuessingRule"
+          ],
+          "exclude": [],
+          "options": {
+            "FoldReadonlyDataRule": {
+              "fold_writable_constants": true
+            },
+            "Z3ConstantOptimization": {
+              "min_nb_opcode": 4,
+              "min_nb_constant": 3
+            },
+            "ExampleGuessingRule": {
+              "min_nb_var": 1,
+              "max_nb_var": 3,
+              "min_nb_diff_opcodes": 3,
+              "max_nb_diff_opcodes": 6
+            }
+          }
+        }
+      },
+      {
+        "pass": "indirect-call-resolver",
+        "scope": "block",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "legacy_flow_rule_adapter"
+          ]
+        },
+        "migration": {
+          "source_config": "default_unflattening_ollvm_s1a_fair.json",
+          "source_section": "blk_rules",
+          "source_rule": "IndirectCallResolver"
+        },
+        "options": {
+          "legacy_rule": "IndirectCallResolver"
+        }
+      },
+      {
+        "pass": "mba-state-preconditioner",
+        "scope": "block",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "legacy_flow_rule_adapter"
+          ]
+        },
+        "migration": {
+          "source_config": "default_unflattening_ollvm_s1a_fair.json",
+          "source_section": "blk_rules",
+          "source_rule": "MbaStatePreconditioner"
+        },
+        "options": {
+          "legacy_rule": "MbaStatePreconditioner",
+          "max_optimize_local_rounds": 1
+        }
+      },
+      {
+        "pass": "recover_dispatcher",
+        "scope": "function",
+        "maturity": {
+          "range": {
+            "min": "ir.call.modeled",
+            "max": "ir.global.analyzed"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "live_mba"
+          ],
+          "analyses": [],
+          "evidence": [],
+          "facts": {
+            "required": [],
+            "optional": []
+          }
+        },
+        "outputs": {
+          "facts": [
+            "role.dispatcher"
+          ],
+          "evidence": []
+        },
+        "preserves": {
+          "analyses": [],
+          "facts": []
+        },
+        "invalidates": {
+          "analyses": [],
+          "facts": []
+        },
+        "safety": {
+          "policy": "default",
+          "requires_oracle": false
+        },
+        "analyses": {
+          "required": [],
+          "provided": [
+            "dispatcher_model",
+            "recover_dispatcher",
+            "recovered_machine"
+          ]
+        },
+        "migration": {
+          "source_config": "default_unflattening_ollvm_s1a_fair.json",
+          "source_section": "blk_rules",
+          "source_rule": "StateMachineCffUnflattener",
+          "expansion": "native_state_machine_spine",
+          "stage_index": 0,
+          "stage_count": 5
+        },
+        "options": {
+          "legacy_rule": "StateMachineCffUnflattener",
+          "legacy_rule_options": {
+            "max_state_constants": 100,
+            "min_state_constant": 16777216,
+            "enable_transition_validator": true,
+            "enable_transition_uddu_validator": true
+          },
+          "native_pipeline": [
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher"
+          ]
+        }
+      },
+      {
+        "pass": "recover_state_transitions",
+        "scope": "function",
+        "maturity": {
+          "range": {
+            "min": "ir.call.modeled",
+            "max": "ir.global.analyzed"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "live_mba"
+          ],
+          "analyses": [
+            "recover_dispatcher"
+          ],
+          "evidence": [
+            "ir.branch_target",
+            "ir.state_variable_write"
+          ],
+          "facts": {
+            "required": [
+              "role.dispatcher"
+            ],
+            "optional": []
+          }
+        },
+        "outputs": {
+          "facts": [
+            "recovered.state_transition"
+          ],
+          "evidence": []
+        },
+        "preserves": {
+          "analyses": [],
+          "facts": []
+        },
+        "invalidates": {
+          "analyses": [],
+          "facts": []
+        },
+        "safety": {
+          "policy": "default",
+          "requires_oracle": false
+        },
+        "analyses": {
+          "required": [
+            "recover_dispatcher"
+          ],
+          "provided": [
+            "recover_state_transitions",
+            "transition_result",
+            "valrange_confirmable_count"
+          ]
+        },
+        "migration": {
+          "source_config": "default_unflattening_ollvm_s1a_fair.json",
+          "source_section": "blk_rules",
+          "source_rule": "StateMachineCffUnflattener",
+          "expansion": "native_state_machine_spine",
+          "stage_index": 1,
+          "stage_count": 5
+        },
+        "options": {
+          "legacy_rule": "StateMachineCffUnflattener",
+          "legacy_rule_options": {
+            "max_state_constants": 100,
+            "min_state_constant": 16777216,
+            "enable_transition_validator": true,
+            "enable_transition_uddu_validator": true
+          },
+          "native_pipeline": [
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher"
+          ]
+        }
+      },
+      {
+        "pass": "plan_semantic_regions",
+        "scope": "function",
+        "maturity": {
+          "range": {
+            "min": "ir.call.modeled",
+            "max": "ir.global.analyzed"
+          }
+        },
+        "requires": {
+          "capabilities": [],
+          "analyses": [
+            "recover_dispatcher",
+            "transition_result"
+          ],
+          "evidence": [],
+          "facts": {
+            "required": [
+              "recovered.state_transition",
+              "role.dispatcher"
+            ],
+            "optional": []
+          }
+        },
+        "outputs": {
+          "facts": [
+            "recovered.region"
+          ],
+          "evidence": []
+        },
+        "preserves": {
+          "analyses": [],
+          "facts": []
+        },
+        "invalidates": {
+          "analyses": [],
+          "facts": []
+        },
+        "safety": {
+          "policy": "default",
+          "requires_oracle": false
+        },
+        "analyses": {
+          "required": [
+            "recover_dispatcher",
+            "transition_result"
+          ],
+          "provided": [
+            "plan_semantic_regions"
+          ]
+        },
+        "migration": {
+          "source_config": "default_unflattening_ollvm_s1a_fair.json",
+          "source_section": "blk_rules",
+          "source_rule": "StateMachineCffUnflattener",
+          "expansion": "native_state_machine_spine",
+          "stage_index": 2,
+          "stage_count": 5
+        },
+        "options": {
+          "legacy_rule": "StateMachineCffUnflattener",
+          "legacy_rule_options": {
+            "max_state_constants": 100,
+            "min_state_constant": 16777216,
+            "enable_transition_validator": true,
+            "enable_transition_uddu_validator": true
+          },
+          "native_pipeline": [
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher"
+          ]
+        }
+      },
+      {
+        "pass": "lower_state_machine",
+        "scope": "function",
+        "maturity": {
+          "range": {
+            "min": "ir.call.modeled",
+            "max": "ir.global.analyzed"
+          }
+        },
+        "requires": {
+          "capabilities": [],
+          "analyses": [
+            "plan_semantic_regions",
+            "recover_dispatcher",
+            "transition_result"
+          ],
+          "evidence": [],
+          "facts": {
+            "required": [
+              "recovered.region",
+              "recovered.state_transition",
+              "role.dispatcher"
+            ],
+            "optional": []
+          }
+        },
+        "outputs": {
+          "facts": [
+            "recovered.cfg_edge"
+          ],
+          "evidence": []
+        },
+        "preserves": {
+          "analyses": [
+            "function_boundaries"
+          ],
+          "facts": [
+            "raw_instruction_addresses",
+            "recovered.cfg_edge"
+          ]
+        },
+        "invalidates": {
+          "analyses": [
+            "dominators",
+            "loop_info",
+            "postdominators",
+            "regions"
+          ],
+          "facts": [
+            "ir.cfg_shape.stale"
+          ]
+        },
+        "safety": {
+          "policy": "golden",
+          "requires_oracle": true
+        },
+        "analyses": {
+          "required": [
+            "plan_semantic_regions",
+            "recover_dispatcher",
+            "transition_result"
+          ],
+          "provided": [
+            "lower_state_machine_plan_metadata"
+          ]
+        },
+        "migration": {
+          "source_config": "default_unflattening_ollvm_s1a_fair.json",
+          "source_section": "blk_rules",
+          "source_rule": "StateMachineCffUnflattener",
+          "expansion": "native_state_machine_spine",
+          "stage_index": 3,
+          "stage_count": 5
+        },
+        "options": {
+          "legacy_rule": "StateMachineCffUnflattener",
+          "legacy_rule_options": {
+            "max_state_constants": 100,
+            "min_state_constant": 16777216,
+            "enable_transition_validator": true,
+            "enable_transition_uddu_validator": true
+          },
+          "native_pipeline": [
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher"
+          ]
+        }
+      },
+      {
+        "pass": "cleanup_residual_dispatcher",
+        "scope": "function",
+        "maturity": {
+          "range": {
+            "min": "ir.call.modeled",
+            "max": "ir.global.analyzed"
+          }
+        },
+        "requires": {
+          "capabilities": [],
+          "analyses": [],
+          "evidence": [],
+          "facts": {
+            "required": [],
+            "optional": []
+          }
+        },
+        "outputs": {
+          "facts": [],
+          "evidence": []
+        },
+        "preserves": {
+          "analyses": [
+            "function_boundaries"
+          ],
+          "facts": [
+            "raw_instruction_addresses",
+            "recovered.cfg_edge"
+          ]
+        },
+        "invalidates": {
+          "analyses": [
+            "dominators",
+            "loop_info",
+            "postdominators",
+            "regions"
+          ],
+          "facts": [
+            "ir.cfg_shape.stale"
+          ]
+        },
+        "safety": {
+          "policy": "golden",
+          "requires_oracle": true
+        },
+        "analyses": {
+          "required": [],
+          "provided": []
+        },
+        "migration": {
+          "source_config": "default_unflattening_ollvm_s1a_fair.json",
+          "source_section": "blk_rules",
+          "source_rule": "StateMachineCffUnflattener",
+          "expansion": "native_state_machine_spine",
+          "stage_index": 4,
+          "stage_count": 5
+        },
+        "options": {
+          "legacy_rule": "StateMachineCffUnflattener",
+          "legacy_rule_options": {
+            "max_state_constants": 100,
+            "min_state_constant": 16777216,
+            "enable_transition_validator": true,
+            "enable_transition_uddu_validator": true
+          },
+          "native_pipeline": [
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher"
+          ]
+        }
+      },
+      {
+        "pass": "simple-flattening-cleanup-unflattener",
+        "scope": "block",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "cleanup_family_adapter"
+          ]
+        },
+        "migration": {
+          "source_config": "default_unflattening_ollvm_s1a_fair.json",
+          "source_section": "blk_rules",
+          "source_rule": "SimpleFlatteningCleanupUnflattener"
+        },
+        "options": {
+          "legacy_rule": "SimpleFlatteningCleanupUnflattener"
+        }
+      },
+      {
+        "pass": "jump-fixer",
+        "scope": "block",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "legacy_flow_rule_adapter"
+          ]
+        },
+        "migration": {
+          "source_config": "default_unflattening_ollvm_s1a_fair.json",
+          "source_section": "blk_rules",
+          "source_rule": "JumpFixer"
+        },
+        "options": {
+          "legacy_rule": "JumpFixer",
+          "preserve_z3_discarded_side_effects": true,
+          "preserve_z3_discarded_side_effect_depth": 3,
+          "preserve_z3_discarded_side_effect_constants": [
+            "0xE8CF9C3E",
+            "0x173063C1",
+            "0xCD536960",
+            "0x32AC969F",
+            "0x259CF55E"
+          ],
+          "enabled_rules": [
+            "CompareConstantRule1",
+            "CompareConstantRule2",
+            "CompareConstantRule3",
+            "JaeRule1",
+            "JbRule1",
+            "JnzRule1",
+            "JnzRule2",
+            "JnzRule3",
+            "JnzRule4",
+            "JnzRule5",
+            "JnzRule6",
+            "JnzRule7",
+            "JnzRule8",
+            "JnzRuleModIdentity",
+            "JnzRuleSmodSubIdentity",
+            "JnzRuleUmodAddIdentity",
+            "JnzRuleUmodSubIdentity",
+            "JmpRuleReachingConst",
+            "JmpRuleZ3Const"
+          ]
+        }
+      }
+    ]
+  }
+}

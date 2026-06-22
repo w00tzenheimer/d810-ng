@@ -97,11 +97,29 @@
         "simple-flattening-cleanup-unflattener",
         "jump-fixer"
       ]
+    },
+    {
+      "id": "ollvm_generated_shadow_parity",
+      "description": "OLLVM generated-shadow config-v2 runtime parity lane; not a canary/default route",
+      "representative_row": "default_unflattening_ollvm_generated_shadow",
+      "representative_shadow": "default_unflattening_ollvm.pipeline_v2.json",
+      "pass_ids": [
+        "mba-simplify",
+        "indirect-call-resolver",
+        "mba-state-preconditioner",
+        "recover_dispatcher",
+        "recover_state_transitions",
+        "plan_semantic_regions",
+        "lower_state_machine",
+        "cleanup_residual_dispatcher",
+        "simple-flattening-cleanup-unflattener",
+        "jump-fixer"
+      ]
     }
   ],
   "parity_evidence": {
-    "docker_log": ".tmp/logs/config-v2-cleanup-family-adapter-v1-parity.log",
-    "summary": "15 passed, 1 skipped, 2487 deselected, 117 warnings",
+    "docker_log": ".tmp/logs/config-v2-ollvm-generated-shadow-parity-v1-parity.log",
+    "summary": "17 passed, 1 skipped, 2487 deselected, 117 warnings",
     "rows": [
       {
         "id": "default_instruction_only_mba",
@@ -227,6 +245,22 @@
         "ast_stats_match": true,
         "stable_diag_parity": true,
         "allowed_diag_drift": []
+      },
+      {
+        "id": "default_unflattening_ollvm_generated_shadow",
+        "legacy_config": "default_unflattening_ollvm.json",
+        "shadow_config": "default_unflattening_ollvm.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
+      },
+      {
+        "id": "default_unflattening_ollvm_s1a_fair_generated_shadow",
+        "legacy_config": "default_unflattening_ollvm_s1a_fair.json",
+        "shadow_config": "default_unflattening_ollvm_s1a_fair.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
       }
     ]
   },
@@ -296,7 +330,7 @@
         ]
       }
     ],
-    "unsupported_policy": "Unsupported adapter boundaries stay fail-closed until explicit adapter work lands; opt-in rollout does not make OLLVM configs runnable and does not default-route generated cleanup-family shadows."
+    "unsupported_policy": "Unsupported adapter boundaries stay fail-closed until explicit adapter work lands; opt-in rollout does not default-route generated indirect branch/call, cleanup-family, or OLLVM shadows."
   },
   "supported_default_routing": {
     "status": "enabled-supported-bundled-configs-only",
@@ -361,7 +395,7 @@
       }
     ],
     "user_override_policy": "A user ProjectConfiguration named like a supported source or canary config is not trusted for default routing unless it independently opts into explicit pipeline_v2_mode=config-v2 and passes existing fail-closed config-v2 validation.",
-    "unsupported_policy": "Project configs outside supported_mappings stay on the existing project configuration path by default; OLLVM configs remain unsupported pending targeted parity reassessment, and cleanup-family generated shadows are not default-routed without a canary."
+    "unsupported_policy": "Project configs outside supported_mappings stay on the existing project configuration path by default; indirect branch/call, cleanup-family, and OLLVM generated shadows are not default-routed without a canary."
   },
   "ci_runtime_rehearsal": {
     "status": "explicit-test-switch",
@@ -449,12 +483,12 @@
         ]
       }
     ],
-    "unsupported_policy": "Any project config outside supported_mappings fails closed when the switch is enabled; the switch does not imply OLLVM support or cleanup-family default routing."
+    "unsupported_policy": "Any project config outside supported_mappings fails closed when the switch is enabled; the switch does not imply indirect branch/call, cleanup-family, or OLLVM default routing."
   },
   "generated_shadows": {
     "legacy_config_count": 26,
-    "migratable_count": 24,
-    "unsupported_count": 2,
+    "migratable_count": 26,
+    "unsupported_count": 0,
     "migratable_missing_shadow_count": 0,
     "migratable_configs": [
       "bogus_loops.json",
@@ -463,6 +497,8 @@
       "default_instruction_only.json",
       "default_unflattening_approov.json",
       "default_unflattening_approov_s1a.json",
+      "default_unflattening_ollvm.json",
+      "default_unflattening_ollvm_s1a_fair.json",
       "default_unflattening_switch_case.json",
       "default_unflattening_tigress_engine.json",
       "default_unflattening_tigress_engine_transition_facts.json",
@@ -489,21 +525,12 @@
       }
     ]
   },
-  "unsupported_adapter_boundaries": [
-    {
-      "config": "default_unflattening_ollvm.json",
-      "blocked_boundary": "OLLVM cleanup-family reassessment boundary"
-    },
-    {
-      "config": "default_unflattening_ollvm_s1a_fair.json",
-      "blocked_boundary": "OLLVM cleanup-family reassessment boundary"
-    }
-  ],
+  "unsupported_adapter_boundaries": [],
   "non_goals": [
     "no unsupported runtime cutover",
-    "no OLLVM runtime support",
+    "no OLLVM canary or supported-default route",
     "no indirect branch/call default routing or canary rollout",
-    "no OLLVM cleanup-family support claim",
+    "no cleanup-family default routing or canary rollout",
     "no fake pass registration",
     "no LLVM M3/M4/lower-back/drop work"
   ],
@@ -520,7 +547,7 @@
       },
       {
         "id": "support_matrix_completeness",
-        "description": "The support matrix lists every supported generated shadow, every user-selectable canary, every parity row, and every remaining unsupported adapter boundary."
+        "description": "The support matrix lists every supported generated shadow, every user-selectable canary, every parity row, and every remaining unsupported adapter boundary if any remain."
       },
       {
         "id": "rollback_path",
@@ -528,7 +555,7 @@
       },
       {
         "id": "unsupported_boundary_matrix",
-        "description": "Unsupported adapter boundaries remain explicit and fail-closed; no OLLVM support is implied by supported default routing, and indirect branch/call or cleanup-family generated-shadow support is not default-routed without a canary."
+        "description": "Unsupported adapter boundaries remain explicit and fail-closed; indirect branch/call, cleanup-family, or OLLVM generated-shadow support is not default-routed without a canary."
       },
       {
         "id": "no_ignored_log_dependency",
