@@ -6,6 +6,10 @@ from pathlib import Path
 import pytest
 
 from d810.core.config import ProjectConfiguration, RuleConfiguration
+from d810.passes.cleanup_family_adapter import (
+    SIMPLE_FLATTENING_CLEANUP_PASS_ID,
+    SIMPLE_FLATTENING_CLEANUP_RULE,
+)
 from d810.passes.pass_pipeline import PipelineConfigError
 from d810.passes.pipeline_v2_hook_bridge import (
     STATE_MACHINE_NATIVE_PASS_IDS,
@@ -137,6 +141,28 @@ def test_indirect_branch_call_bridge_derives_explicit_flow_rules():
         "IndirectCallResolver",
     ]
     assert [rule.config for rule in activation.block_rules] == [{}, {}]
+    assert all(rule.name != "CopiedLegacyBlockRule" for rule in activation.block_rules)
+
+
+def test_cleanup_family_bridge_derives_explicit_cleanup_rule():
+    project = _config_v2_project("example_libobfuscated_no_fixprecedessor")
+
+    activation = pipeline_v2_hook_activation(project)
+
+    assert activation.enabled is True
+    assert activation.configured_pass_ids == (
+        "mba-simplify",
+        "forward-constant-propagation",
+        SIMPLE_FLATTENING_CLEANUP_PASS_ID,
+        "jump-fixer",
+    )
+    assert activation.native_state_machine_pass_ids == ()
+    assert [rule.name for rule in activation.block_rules] == [
+        "ForwardConstantPropagationRule",
+        SIMPLE_FLATTENING_CLEANUP_RULE,
+        "JumpFixer",
+    ]
+    assert activation.block_rules[1].config == {}
     assert all(rule.name != "CopiedLegacyBlockRule" for rule in activation.block_rules)
 
 

@@ -193,6 +193,23 @@ _PARITY_ROWS = (
     ),
     pytest.param(
         ConfigV2ParityRow(
+            row_id="example_libobfuscated_no_fixprecedessor_cleanup",
+            legacy_config="example_libobfuscated_no_fixprecedessor.json",
+            shadow_config="example_libobfuscated_no_fixprecedessor.pipeline_v2.json",
+            function_name="abc_f6_sub_dispatch",
+            expected_pass_ids=(
+                "mba-simplify",
+                "forward-constant-propagation",
+                "simple-flattening-cleanup-unflattener",
+                "jump-fixer",
+            ),
+            expects_state_machine=False,
+            required_snapshot_label=None,
+        ),
+        id="example_libobfuscated_no_fixprecedessor_cleanup",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
             row_id="default_indirect_resolution_branch_call_branch",
             legacy_config="default_indirect_resolution.json",
             shadow_config="default_indirect_resolution.pipeline_v2.json",

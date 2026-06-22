@@ -14,6 +14,7 @@ from d810.core.config_v2_defaults import (
     CONFIG_V2_SUPPORTED_DEFAULTS_ENV,
     CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS,
 )
+from d810.passes.cleanup_family_adapter import CLEANUP_FAMILY_ADAPTER_CAPABILITY
 from d810.passes.legacy_flow_rules import LEGACY_FLOW_RULE_ADAPTER_CAPABILITY
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import PipelineConfigError
@@ -85,6 +86,7 @@ _GENERATED_SHADOW_CONFIGS = (
     "example_hodur",
     "example_libobfuscated",
     "example_libobfuscated_abc",
+    "example_libobfuscated_no_fixprecedessor",
     "flatfold",
     "flatfold_no_predicate_loop_fix",
     "hodur_deobfuscation",
@@ -123,6 +125,15 @@ _REMAINING_GENERATED_SHADOWS = (
         "example_libobfuscated_abc",
         198,
         ("ForwardConstantPropagationRule", "StateMachineCffUnflattener", "JumpFixer"),
+    ),
+    (
+        "example_libobfuscated_no_fixprecedessor",
+        198,
+        (
+            "ForwardConstantPropagationRule",
+            "SimpleFlatteningCleanupUnflattener",
+            "JumpFixer",
+        ),
     ),
     (
         "flatfold",
@@ -202,9 +213,7 @@ def _expected_unsupported_reason_tokens(config_name: str) -> tuple[str, ...]:
         "default_unflattening_ollvm.json",
         "default_unflattening_ollvm_s1a_fair.json",
     }:
-        return ("SimpleFlatteningCleanupUnflattener",)
-    if config_name == "example_libobfuscated_no_fixprecedessor.json":
-        return ("SimpleFlatteningCleanupUnflattener",)
+        return ("SimpleFlatteningCleanupUnflattener", "targeted parity reassessment")
     raise AssertionError(f"unsupported config lacks explicit matrix expectation: {config_name}")
 
 
@@ -258,6 +267,12 @@ def _assert_block_entries_preserve_legacy_rules(
         options = dict(entry["options"])
         assert options.pop("legacy_rule") == rule.name
         assert options == rule.config
+        expected_capability = (
+            CLEANUP_FAMILY_ADAPTER_CAPABILITY
+            if rule.name == "SimpleFlatteningCleanupUnflattener"
+            else LEGACY_FLOW_RULE_ADAPTER_CAPABILITY
+        )
+        assert entry["requires"]["capabilities"] == [expected_capability]
         cursor += 1
 
     assert cursor == len(block_entries)
@@ -349,28 +364,21 @@ def test_legacy_block_rule_adapter_boundary_classifies_state_machine_spine():
     }
 
 
-@pytest.mark.parametrize(
-    ("rule_name", "adapter_kind", "reason"),
-    [
-        (
-            "SimpleFlatteningCleanupUnflattener",
-            LegacyBlockRuleAdapterKind.CLEANUP_FAMILY_ADAPTER,
-            "cleanup-family planner/executor adapter",
-        ),
-    ],
-)
-def test_legacy_block_rule_adapter_boundary_classifies_unsupported_boundaries(
-    rule_name,
-    adapter_kind,
-    reason,
-):
-    boundary = legacy_block_rule_adapter_boundary(rule_name)
+def test_legacy_block_rule_adapter_boundary_classifies_cleanup_family_adapter():
+    boundary = legacy_block_rule_adapter_boundary("SimpleFlatteningCleanupUnflattener")
 
-    assert boundary.rule_name == rule_name
-    assert boundary.adapter_kind is adapter_kind
-    assert boundary.supported is False
-    assert boundary.pass_id is None
-    assert reason in boundary.reason
+    assert boundary.rule_name == "SimpleFlatteningCleanupUnflattener"
+    assert boundary.adapter_kind is LegacyBlockRuleAdapterKind.CLEANUP_FAMILY_ADAPTER
+    assert boundary.supported is True
+    assert boundary.pass_id == "simple-flattening-cleanup-unflattener"
+    assert "live cleanup-family planner/executor adapter" in boundary.reason
+    assert boundary.to_dict() == {
+        "rule": "SimpleFlatteningCleanupUnflattener",
+        "adapter_kind": "cleanup_family_adapter",
+        "supported": True,
+        "pass_id": "simple-flattening-cleanup-unflattener",
+        "reason": boundary.reason,
+    }
 
 
 def test_legacy_block_rule_adapter_boundary_fails_unknown_rules_closed():
@@ -721,7 +729,6 @@ def test_repo_legacy_config_inventory_reports_current_state():
     } == {
         "default_unflattening_ollvm.json",
         "default_unflattening_ollvm_s1a_fair.json",
-        "example_libobfuscated_no_fixprecedessor.json",
     }
     assert {
         item.config_name
@@ -743,6 +750,7 @@ def test_repo_legacy_config_inventory_reports_current_state():
         "example_hodur.json",
         "example_libobfuscated.json",
         "example_libobfuscated_abc.json",
+        "example_libobfuscated_no_fixprecedessor.json",
         "flatfold.json",
         "flatfold_no_predicate_loop_fix.json",
         "hodur_deobfuscation.json",
@@ -791,9 +799,8 @@ def test_repo_inventory_surfaces_unsupported_reasons():
         "SimpleFlatteningCleanupUnflattener"
         in inventory["default_unflattening_ollvm.json"].reason
     )
-    assert (
-        "SimpleFlatteningCleanupUnflattener"
-        in inventory["example_libobfuscated_no_fixprecedessor.json"].reason
+    assert inventory["example_libobfuscated_no_fixprecedessor.json"].status is (
+        LegacyConfigMigrationStatus.MIGRATABLE
     )
     assert inventory["identity_call.json"].status is LegacyConfigMigrationStatus.MIGRATABLE
 
@@ -841,6 +848,7 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "identity_call_explicit_adapter",
         "default_indirect_resolution_branch_call_branch",
         "default_indirect_resolution_branch_call_call",
+        "example_libobfuscated_no_fixprecedessor_cleanup",
     }
     assert parity_rows["eidolon_mba_instruction_heavy"] == {
         "id": "eidolon_mba_instruction_heavy",
@@ -924,7 +932,7 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         f"{len(parity_rows)} passed,"
     )
     assert matrix["parity_evidence"]["docker_log"].endswith(
-        "config-v2-indirect-branch-call-adapter-v1-parity.log"
+        "config-v2-cleanup-family-adapter-v1-parity.log"
     )
 
     canaries = {
@@ -1003,6 +1011,7 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "mixed_spine_instruction_simple_flow_rule",
         "identity_call_flow_rule",
         "indirect_branch_call_flow_rule",
+        "cleanup_family_adapter",
     }
     assert {
         item["config"] for item in matrix["unsupported_adapter_boundaries"]
@@ -1314,7 +1323,10 @@ def test_readme_documents_config_v2_canary_selection_note():
         assert config["source_config"] in readme
     for boundary in ("OLLVM", "cleanup-family"):
         assert boundary in normalized_readme
-    assert "indirect branch/call support is not default-routed" in normalized_readme
+    assert (
+        "indirect branch/call or cleanup-family generated-shadow support is not default-routed"
+        in normalized_readme
+    )
     assert "identity-call remains unsupported" not in normalized_readme
 
 
@@ -1338,7 +1350,7 @@ def test_readme_documents_config_v2_default_cutover_criteria():
         "support matrix lists all supported generated shadows",
         "reviewed rollback path",
         "Unsupported adapter boundaries stay explicit and fail-closed",
-        "indirect branch/call support is not default-routed",
+        "indirect branch/call or cleanup-family generated-shadow support is not default-routed",
         "ignored `.tmp` paths",
         "CI gates include support-matrix unit guards",
     ):
@@ -1441,15 +1453,12 @@ def test_ollvm_configs_remain_inventory_unsupported_pending_adapters(config_name
     assert item.active_instruction_rules == 180
     assert item.active_block_rules == _OLLVM_BLOCK_RULES
     assert "IndirectCallResolver (requires" not in item.reason
-    assert (
-        "SimpleFlatteningCleanupUnflattener "
-        "(requires a cleanup-family planner/executor adapter)"
-        in item.reason
-    )
+    assert "SimpleFlatteningCleanupUnflattener is representable" in item.reason
+    assert "targeted parity reassessment" in item.reason
 
     with pytest.raises(
         PipelineConfigError,
-        match="SimpleFlatteningCleanupUnflattener",
+        match="targeted parity reassessment",
     ):
         legacy_project_file_to_pipeline_v2_shadow(_CONF_DIR / f"{config_name}.json")
 
