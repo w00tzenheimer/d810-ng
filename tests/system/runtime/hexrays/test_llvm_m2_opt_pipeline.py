@@ -43,6 +43,13 @@ from tests.system.runtime.hexrays.lowering_catalog import (
     lower_conditional_synthesize,
     recover_branchless,
 )
+from tests.system.runtime.hexrays._llvm_opt_skip import (
+    LLVM_OPT_SKIP_REASON,
+    llvm_opt_missing,
+)
+
+
+pytestmark = pytest.mark.skipif(llvm_opt_missing(), reason=LLVM_OPT_SKIP_REASON)
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]

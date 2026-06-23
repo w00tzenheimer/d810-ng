@@ -6,6 +6,13 @@ from pathlib import Path
 
 import pytest
 
+from tests.system.runtime.hexrays._llvm_opt_skip import (
+    LLVM_OPT_SKIP_REASON,
+    llvm_opt_missing,
+)
+
+pytestmark = pytest.mark.skipif(llvm_opt_missing(), reason=LLVM_OPT_SKIP_REASON)
+
 ida_hexrays = pytest.importorskip("ida_hexrays")
 import idaapi
 
