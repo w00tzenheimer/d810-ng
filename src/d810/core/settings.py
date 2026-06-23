@@ -13,6 +13,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field, fields
 
+from d810.core.maturity_labels import MaturityNumbering, mmat_value
+
 
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name, "")
@@ -35,29 +37,6 @@ def _env_int(name: str, default: int | None = None) -> int | None:
         return default
 
 
-# Symbolic Hex-Rays maturity names accepted in addition to integers.
-# Kept in sync with ``d810.core.stats._MATURITY_NAMES`` -- duplicated here to
-# avoid importing IDA-coupled modules from settings.py.
-_MATURITY_NAME_TO_INT = {
-    "MMAT_GENERATED":     0,
-    "GENERATED":          0,
-    "MMAT_PREOPTIMIZED":  1,
-    "PREOPTIMIZED":       1,
-    "MMAT_LOCOPT":        2,
-    "LOCOPT":             2,
-    "MMAT_CALLS":         3,
-    "CALLS":              3,
-    "MMAT_GLBOPT1":       4,
-    "GLBOPT1":            4,
-    "MMAT_GLBOPT2":       5,
-    "GLBOPT2":            5,
-    "MMAT_GLBOPT3":       6,
-    "GLBOPT3":            6,
-    "MMAT_LVARS":         7,
-    "LVARS":              7,
-}
-
-
 def _env_maturity(name: str, default: int | None = None) -> int | None:
     """Parse a maturity env var that accepts either an int or a symbolic name.
 
@@ -69,16 +48,13 @@ def _env_maturity(name: str, default: int | None = None) -> int | None:
     raw = os.environ.get(name, "")
     if not raw:
         return default
-    try:
-        return int(raw)
-    except ValueError:
-        pass
-    key = raw.strip().upper()
-    if key in _MATURITY_NAME_TO_INT:
-        return _MATURITY_NAME_TO_INT[key]
+    parsed = mmat_value(raw, numbering=MaturityNumbering.IDA)
+    if parsed is not None:
+        return parsed
     raise ValueError(
         f"{name}={raw!r} is not an integer and not a known maturity name "
-        f"(expected one of: {sorted(set(_MATURITY_NAME_TO_INT))})"
+        "(expected one of: GENERATED, PREOPTIMIZED, LOCOPT, CALLS, "
+        "GLBOPT1, GLBOPT2, GLBOPT3, LVARS)"
     )
 
 

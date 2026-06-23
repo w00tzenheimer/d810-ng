@@ -11,7 +11,11 @@ from d810.core.logging import getLogger
 from d810.core.typing import TYPE_CHECKING, Callable
 
 from d810.hexrays.contracts import CfgContractViolationError, IDACfgContract
-from d810.hexrays.ir_maturity import hexrays_maturity_envelope, ida_maturity_to_ir
+from d810.hexrays.ir_maturity import (
+    hexrays_maturity_envelope,
+    ida_maturity_to_ir,
+    maturity_name_to_ida,
+)
 
 from d810.transforms.graph_modification import (
     CloneConditionalAsGoto,
@@ -36,7 +40,7 @@ from d810.ir.flowgraph import (
     InsnSnapshot,
     OperandKind,
 )
-from d810.ir.maturity import IRMaturity, SnapshotForm, snapshot_form_for_maturity
+from d810.ir.maturity import SnapshotForm, snapshot_form_for_maturity
 from d810.ir.flowgraph import MopSnapshot as CfgMopSnapshot
 from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.transforms.plan import (
@@ -614,26 +618,11 @@ def lift_block(blk: "ida_hexrays.mblock_t") -> BlockSnapshot:
     )
 
 
-# Diagnostic/test convenience for callers that start from Hex-Rays maturity
-# names instead of the raw maturity integer available on ``mba_t``.
-_MATURITY_NAME_TO_IR_MATURITY = {
-    "MMAT_ZERO": IRMaturity.LIFTED,
-    "MMAT_GENERATED": IRMaturity.LIFTED,
-    "MMAT_PREOPTIMIZED": IRMaturity.CANONICAL,
-    "MMAT_LOCOPT": IRMaturity.LOCAL_OPTIMIZED,
-    "MMAT_CALLS": IRMaturity.CALL_MODELED,
-    "MMAT_GLBOPT1": IRMaturity.GLOBAL_ANALYZED,
-    "MMAT_GLBOPT2": IRMaturity.GLOBAL_OPTIMIZED,
-    "MMAT_GLBOPT3": IRMaturity.STRUCTURED,
-    "MMAT_LVARS": IRMaturity.VARIABLE_RECOVERED,
-}
-
-
 def _snapshot_form_for_maturity_name(maturity_name: str) -> SnapshotForm:
-    maturity = _MATURITY_NAME_TO_IR_MATURITY.get(maturity_name)
-    if maturity is None:
+    maturity_id = maturity_name_to_ida(maturity_name)
+    if maturity_id is None:
         return SnapshotForm.UNKNOWN
-    return snapshot_form_for_maturity(maturity)
+    return _snapshot_form_for_maturity_int(maturity_id)
 
 
 def _snapshot_form_for_maturity_int(maturity: int) -> SnapshotForm:
@@ -704,7 +693,7 @@ def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
             "ir_maturity": ir_maturity,
             "snapshot_form": snapshot_form,
             "snapshot_stage": snapshot_form,
-            "maturity_envelope": maturity_envelope,
+            "maturity_envelope": maturity_envelope.to_dict(),
             "cpu_arch_name": cpu_arch_name,
             # E2b transition aliases (retained for legacy callers; proven
             # equal to the neutral fields by the lifter parity test).

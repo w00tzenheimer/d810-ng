@@ -8,8 +8,8 @@ from __future__ import annotations
 import re
 
 from d810.core.typing import Any
+from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
 from d810.analyses.value_flow.induction_carrier import (
-    _MATURITY_VALUES,
     _InstructionView,
     _iter_instruction_views,
     _maturity_name,
@@ -19,12 +19,7 @@ from d810.analyses.value_flow.terminal_byte_emitter import (
 )
 from d810.analyses.value_flow.model import FactObservation
 
-_TARGET_MATURITIES = frozenset({
-    _MATURITY_VALUES["MMAT_PREOPTIMIZED"],
-    _MATURITY_VALUES["MMAT_LOCOPT"],
-    _MATURITY_VALUES["MMAT_CALLS"],
-    _MATURITY_VALUES["MMAT_GLBOPT1"],
-})
+_TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 
 _ZERO_LITERAL_RE = re.compile(r"(?:^|[\s,(])#0(?:x0)?(?:\.\d+)?(?:[,\s)]|$)", re.IGNORECASE)
 _BLOB_RE = re.compile(r"\b(?:unk_|off_|byte_|qword_|xmmword_)[0-9a-fA-F]+", re.IGNORECASE)

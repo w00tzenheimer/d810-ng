@@ -11,20 +11,15 @@ from dataclasses import dataclass
 import re
 
 from d810.core.typing import Any, Iterable
+from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
 from d810.analyses.value_flow.induction_carrier import (
-    _MATURITY_VALUES,
     _InstructionView,
     _iter_instruction_views,
     _maturity_name,
 )
 from d810.analyses.value_flow.model import FactObservation
 
-_TARGET_MATURITIES = frozenset({
-    _MATURITY_VALUES["MMAT_PREOPTIMIZED"],
-    _MATURITY_VALUES["MMAT_LOCOPT"],
-    _MATURITY_VALUES["MMAT_CALLS"],
-    _MATURITY_VALUES["MMAT_GLBOPT1"],
-})
+_TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 
 _STX_OPCODES = frozenset({"m_stx", "op_1", "store"})
 _STORE_TEXT_RE = re.compile(r"^\s*stx\s+(.+?),\s*ds\.\d+,\s*(.+)$", re.IGNORECASE)

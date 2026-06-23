@@ -56,6 +56,19 @@ _VENDOR_ENUM_PREFIXES = ("mop_", "m_")
 _MMAT_TOKEN = "MMAT_"
 # Accepted portable metadata boundary -- reading stage from a dict is NOT a leak.
 _BOUNDARY_KEYS = {"producer_stage_id", "maturity", "snapshot_id", "phase"}
+_PORTABLE_MATURITY_ANNOTATIONS = (
+    "IRMaturity",
+    "MaturityRange",
+    "SnapshotForm",
+    "Callable",
+)
+
+
+def _is_boundary_maturity_annotation(annotation: str) -> bool:
+    ann = annotation.strip().strip("'\"")
+    if ann.startswith(("str", "bool")):
+        return True
+    return any(token in ann for token in _PORTABLE_MATURITY_ANNOTATIONS)
 
 
 @dataclass(frozen=True)
@@ -78,9 +91,14 @@ class _Visitor(ast.NodeVisitor):
     def _maturity_annotation(self, name: str, ann: ast.expr | None, line: int) -> None:
         if ann is None or "maturity" not in name.lower():
             return
-        # ``maturity: int`` threaded as logic = leak; ``: str`` rehydrate = OK.
+        # ``maturity: int`` threaded as logic = leak.  Portable vocabulary
+        # annotations and boundary callables/strings are compatible metadata.
         ann_txt = ast.unparse(ann)
-        verdict = "BOUNDARY-OK" if ann_txt.strip().lstrip('"').startswith("str") else "REAL-LEAK"
+        verdict = (
+            "BOUNDARY-OK"
+            if _is_boundary_maturity_annotation(ann_txt)
+            else "REAL-LEAK"
+        )
         self.findings.append(Finding(self.rel, line, "A", f"{name}: {ann_txt}", verdict))
 
     def visit_Constant(self, node: ast.Constant) -> None:

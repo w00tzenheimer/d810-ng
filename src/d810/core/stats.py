@@ -4,6 +4,7 @@ import dataclasses
 from collections import defaultdict
 from enum import Enum, auto
 
+from d810.core.maturity_labels import MaturityNumbering, mmat_name
 from d810.core.typing import Any, Dict, List, Optional
 
 from .logging import getLogger
@@ -11,23 +12,9 @@ from .registry import EventEmitter
 
 logger = getLogger(__name__)
 
-# Lightweight maturity-int → name mapping that avoids importing ida_hexrays.
-# Values match MMAT_* constants defined in ida_hexrays (stable since IDA 7.x).
-_MATURITY_NAMES: Dict[int, str] = {
-    0: "MMAT_GENERATED",
-    1: "MMAT_PREOPTIMIZED",
-    2: "MMAT_LOCOPT",
-    3: "MMAT_CALLS",
-    4: "MMAT_GLBOPT1",
-    5: "MMAT_GLBOPT2",
-    6: "MMAT_GLBOPT3",
-    7: "MMAT_LVARS",
-}
-
-
 def _maturity_name(maturity: int) -> str:
     """Return a short readable name for a microcode maturity level integer."""
-    return _MATURITY_NAMES.get(maturity, f"MMAT_{maturity}")
+    return mmat_name(maturity, numbering=MaturityNumbering.IDA)
 
 
 class OptimizationEvent(Enum):

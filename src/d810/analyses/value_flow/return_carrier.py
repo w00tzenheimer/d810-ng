@@ -20,8 +20,8 @@ from __future__ import annotations
 import re
 
 from d810.core.typing import Any
+from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
 from d810.analyses.value_flow.induction_carrier import (
-    _MATURITY_VALUES,
     _InstructionView,
     _iter_instruction_views,
     _maturity_name,
@@ -38,12 +38,7 @@ from d810.analyses.value_flow.model import FactObservation
 # enumerated without re-parsing the operand tree.
 _VAR_REF_RE = re.compile(r"%var_([0-9A-Fa-f]+)")
 
-_TARGET_MATURITIES = frozenset({
-    _MATURITY_VALUES["MMAT_PREOPTIMIZED"],
-    _MATURITY_VALUES["MMAT_LOCOPT"],
-    _MATURITY_VALUES["MMAT_CALLS"],
-    _MATURITY_VALUES["MMAT_GLBOPT1"],
-})
+_TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 
 _RETURN_SLOT_TO_RAX_RE = re.compile(
     r"\bmov\s+%var_8\.\d+\s*,\s*rax\.\d+",
