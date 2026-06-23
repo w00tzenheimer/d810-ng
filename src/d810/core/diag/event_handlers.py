@@ -188,6 +188,7 @@ def _handle_capture_mba(ev: CaptureMbaSnapshotRequested) -> None:
         func_ea=snap.func_ea,
         maturity=snap.maturity,
         phase=snap.phase,
+        maturity_json=snap.maturity_json,
     )
     _bind_snapshot_id(snap, snap_id)
     # Flush any CfgProvenanceObserved events that arrived between the

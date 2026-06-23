@@ -699,6 +699,40 @@ class TestSnapshotMba:
         ).fetchone()
         assert row[0] == "MMAT_GLBOPT1"
 
+    def test_maturity_json_persisted(
+        self,
+        mock_mba_3_blocks: list[BlockSnapshot],
+    ) -> None:
+        conn = create_diag_database(":memory:").connection()
+        snapshot_mba(
+            conn,
+            mock_mba_3_blocks,
+            label="test",
+            func_ea=0x1000,
+            maturity="MMAT_GLBOPT1",
+            maturity_json={
+                "ir": "GLOBAL_ANALYZED",
+                "snapshot_form": "OPTIMIZED_IR",
+                "provider": "hexrays",
+                "provider_id": 4,
+                "provider_name": "MMAT_GLBOPT1",
+            },
+        )
+        row = conn.execute(
+            "SELECT s.maturity, sm.maturity_json "
+            "FROM snapshots s "
+            "JOIN snapshot_maturity sm ON sm.snapshot_id=s.id "
+            "WHERE s.id=1"
+        ).fetchone()
+        assert row[0] == "MMAT_GLBOPT1"
+        assert json.loads(row[1]) == {
+            "ir": "GLOBAL_ANALYZED",
+            "snapshot_form": "OPTIMIZED_IR",
+            "provider": "hexrays",
+            "provider_id": 4,
+            "provider_name": "MMAT_GLBOPT1",
+        }
+
     def test_phase_stored(self, mock_mba_3_blocks: list[BlockSnapshot]) -> None:
         conn = create_diag_database(":memory:").connection()
         snapshot_mba(
