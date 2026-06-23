@@ -890,32 +890,79 @@ def test_terminal_tail_bridge_refuses_without_planner_source_block(monkeypatch):
     assert adapter.redirects == []
 
 
-def test_terminal_tail_without_explicit_cascade_priors_skips(monkeypatch):
+def test_terminal_tail_without_explicit_cascade_priors_avoids_row_redirects(monkeypatch):
+    import d810.transforms.terminal_tail_cascade_egress_planner as planner_module
     import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
     from d810.hexrays.mutation.byte_tail_runtime_evidence import (
         ByteTailRuntimeEvidence,
+        TerminalTailPlannerEvidence,
     )
 
-    provider = _FakeEvidenceProvider(ByteTailRuntimeEvidence(fact_view=object()))
+    provider = _FakeEvidenceProvider(
+        ByteTailRuntimeEvidence(
+            terminal_tail_planner=TerminalTailPlannerEvidence(
+                blocks={161: _RuntimePlannerBlock(serial=161)},
+                sites=(_RuntimePlannerSite(byte_index=5, block_serial=161),),
+            )
+        )
+    )
+    calls = {}
 
-    def fail_load_planner_blocks_from_mba(mba):
-        raise AssertionError("terminal tail cascade should require explicit priors")
+    class FakePlanner:
+        def __init__(self, planner_blocks, planner_sites):
+            calls["blocks"] = planner_blocks
+            calls["sites"] = planner_sites
+
+        def build_plan(self):
+            return type("Plan", (), {"rows": (_FakePlanRow(byte_index=5),)})()
+
+    class FakeAdapter:
+        def apply_dispatcher_state_return_carrier_artifact_plan(self, block_serial):
+            calls["artifact_block"] = int(block_serial)
+            return (int(block_serial), 197, 3)
+
+    def fail_row_lowering(**kwargs):
+        raise AssertionError("unconstrained discovery must not redirect rows")
 
     monkeypatch.delenv("D810_TAIL_DISTINCT_BYTE", raising=False)
     monkeypatch.delenv("D810_TAIL_DUPLICATE_CONVERGENCE_BYTE", raising=False)
     monkeypatch.delenv("D810_TERMINAL_TAIL_STATE_CASCADE_PAIR", raising=False)
     monkeypatch.setattr(
+        planner_module,
+        "TerminalTailCascadeEgressPlanner",
+        FakePlanner,
+    )
+    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba: FakeAdapter())
+    monkeypatch.setattr(
         runtime,
-        "_load_planner_blocks_from_mba",
-        fail_load_planner_blocks_from_mba,
+        "_bridge_plan_row_to_live_mba",
+        lambda row, **kwargs: (row, "ok"),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "execute_terminal_tail_cascade_egress_lowering",
+        fail_row_lowering,
     )
 
-    runtime.maybe_run_terminal_tail_cascade_egress_lowering(
+    applied = runtime.maybe_run_terminal_tail_cascade_egress_lowering(
         object(),
         evidence_provider=provider,
     )
 
+    assert applied is True
     assert provider.seen_mba is not None
+    assert calls["artifact_block"] == 42
+
+
+def test_terminal_tail_inferred_egress_excludes_return_target_rows():
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+
+    assert runtime._infer_terminal_tail_egress_byte_indices(
+        (
+            _FakePlanRow(byte_index=2, intended_target=18, early_return_target=184),
+            _FakePlanRow(byte_index=3, intended_target=19, early_return_target=19),
+        )
+    ) == (2,)
 
 
 def test_tail_state_cascade_missing_provider_skips_without_diag(monkeypatch):

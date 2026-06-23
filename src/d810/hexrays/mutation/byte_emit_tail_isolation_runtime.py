@@ -3638,6 +3638,48 @@ def _rewrite_terminal_tail_return_carrier_artifacts(
     return tuple(applied)
 
 
+def _infer_terminal_tail_egress_byte_indices(rows: Iterable[Any]) -> tuple[int, ...]:
+    """Return byte rows that are structurally ready for ordinary egress lowering."""
+    out: list[int] = []
+    for row in rows:
+        byte_index = getattr(row, "byte_index", None)
+        source = getattr(row, "source_block", None)
+        current = getattr(row, "current_continuation_target", None)
+        intended = getattr(row, "intended_target", None)
+        early_return = getattr(row, "early_return_target", None)
+        if byte_index is None or source is None or current is None or intended is None:
+            continue
+        try:
+            source_i = int(source)
+            current_i = int(current)
+            intended_i = int(intended)
+        except (TypeError, ValueError):
+            continue
+        if early_return is not None:
+            try:
+                if int(early_return) == intended_i:
+                    continue
+            except (TypeError, ValueError):
+                continue
+        if intended_i == source_i or intended_i == current_i:
+            continue
+        if not bool(getattr(row, "preserves_early_return", False)):
+            continue
+        verdict = str(getattr(row, "state_update_verdict", ""))
+        if verdict == "NEEDS_STATE_WRITE" and not bool(
+            getattr(row, "state_write_bypassed", False)
+        ):
+            continue
+        if verdict not in {
+            "SAFE_TARGET_POST_GUARD",
+            "SAFE_STATE_ALREADY_SET",
+            "NEEDS_STATE_WRITE",
+        }:
+            continue
+        out.append(int(byte_index))
+    return tuple(dict.fromkeys(out))
+
+
 def maybe_rewrite_impossible_return_artifact_edges(
     mba: Any,
     *,
@@ -4144,7 +4186,7 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
     cascade_priors: Any | None = None,
     dispatcher_artifact_planner: Any | None = None,
 ) -> bool:
-    """Materialize a terminal byte-tail cascade from explicit function priors."""
+    """Materialize a terminal byte-tail cascade from discovered planner facts."""
     raw = os.environ.get("D810_TERMINAL_TAIL_CASCADE_EGRESS", "1")
     if str(raw).lower() not in {"1", "true", "yes", "on"}:
         return False
@@ -4163,9 +4205,8 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
     evidence = normalize_byte_tail_runtime_evidence(evidence_provider, mba)
     if cascade_priors is None:
         cascade_priors = evidence.terminal_tail_cascade_egress
-    if cascade_priors is None or bool(getattr(cascade_priors, "is_empty", True)):
-        logger.info("terminal_tail_cascade_egress: skipped reason=no_priors")
-        return False
+    if cascade_priors is not None and bool(getattr(cascade_priors, "is_empty", True)):
+        cascade_priors = None
 
     planner_evidence = None
     if fact_view is None or dag is None:
@@ -4214,8 +4255,16 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
         return False
 
     rows_by_byte = {int(row.byte_index): row for row in plan.rows}
+    configured_byte_indices = tuple(
+        int(byte_index)
+        for byte_index in (getattr(cascade_priors, "byte_indices", ()) or ())
+    )
+    inferred_byte_indices = _infer_terminal_tail_egress_byte_indices(plan.rows)
+    active_byte_indices = configured_byte_indices
     logger.info(
-        "terminal_tail_cascade_egress: planner rows=%s dag_loaded=%s",
+        "terminal_tail_cascade_egress: planner rows=%s dag_loaded=%s "
+        "configured_byte_indices=%s inferred_byte_indices=%s "
+        "active_byte_indices=%s",
         tuple(
             (
                 int(row.byte_index),
@@ -4228,6 +4277,9 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
             for row in plan.rows
         ),
         dag is not None,
+        configured_byte_indices,
+        inferred_byte_indices,
+        active_byte_indices,
     )
     for override in getattr(cascade_priors, "row_target_overrides", ()) or ():
         row = rows_by_byte.get(int(override.byte_index))
@@ -4297,7 +4349,7 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
         return bool(return_artifact_applied)
 
     mapped_rows = []
-    for byte_index in tuple(getattr(cascade_priors, "byte_indices", ()) or ()):
+    for byte_index in active_byte_indices:
         row = rows_by_byte.get(int(byte_index))
         if row is None:
             continue
@@ -4321,7 +4373,7 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
         report = execute_terminal_tail_cascade_egress_lowering(
             plan_rows=tuple(mapped_rows),
             adapter=adapter,
-            byte_indices=tuple(getattr(cascade_priors, "byte_indices", ()) or ()),
+            byte_indices=active_byte_indices,
             split_byte_indices=(),
         )
     except Exception:

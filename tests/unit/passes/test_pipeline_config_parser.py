@@ -982,21 +982,7 @@ def test_hodur_config_v2_canary_is_explicit_opt_in_and_operational():
     )
     assert len(priors.return_frontier_artifacts.impossible_return_artifact_edges) == 1
     terminal_priors = priors.terminal_tail_cascade_egress
-    assert terminal_priors.byte_indices == (1, 2, 4, 5)
-    assert terminal_priors.split_byte_indices == (3,)
-    assert len(terminal_priors.row_target_overrides) == 1
-    assert terminal_priors.row_target_overrides[0].byte_index == 2
-    assert terminal_priors.row_target_overrides[0].target_entry_byte_index == 3
-    assert len(terminal_priors.continuation_bridges) == 1
-    assert terminal_priors.continuation_bridges[0].continuation_byte_index == 3
-    assert terminal_priors.continuation_bridges[0].source_byte_index == 4
-    assert terminal_priors.continuation_bridges[0].target_store_guard_byte_index == 5
-    assert terminal_priors.equality_frontier is not None
-    assert terminal_priors.equality_frontier.return_frontier_byte_index == 2
-    assert terminal_priors.equality_frontier.row_byte_indices == (2, 3)
-    assert terminal_priors.equality_frontier.shared_store_guard_byte_indices == (3, 5)
-    assert terminal_priors.entry_frontier is not None
-    assert terminal_priors.entry_frontier.first_byte_index == 1
+    assert terminal_priors.is_empty
     assert canary_configs == shadow_configs
 
     specs = pass_specs_from_project_config(

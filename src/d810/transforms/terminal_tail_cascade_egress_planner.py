@@ -280,6 +280,39 @@ def _select_guard_only_sites_by_byte(
     return selected
 
 
+def _observed_byte_domain(
+    *site_maps: Mapping[int, TerminalByteEmitSite],
+) -> tuple[int, ...]:
+    observed = sorted(
+        {
+            int(byte_index)
+            for site_map in site_maps
+            for byte_index in site_map
+            if int(byte_index) >= 0
+        }
+    )
+    if not observed:
+        return ()
+    return tuple(range(0, observed[-1] + 1))
+
+
+def _next_observed_byte_by_byte(
+    *site_maps: Mapping[int, TerminalByteEmitSite],
+) -> dict[int, int]:
+    observed = sorted(
+        {
+            int(byte_index)
+            for site_map in site_maps
+            for byte_index in site_map
+            if int(byte_index) >= 0
+        }
+    )
+    return {
+        int(byte_index): int(next_byte)
+        for byte_index, next_byte in zip(observed, observed[1:])
+    }
+
+
 def _block_has_call(block: TerminalTailBlock) -> bool:
     return any(
         opcode in {"m_call", "op_56"} or text.lstrip().startswith("call")
@@ -569,6 +602,15 @@ class TerminalTailCascadeEgressPlanner:
         self._sites_by_byte = _select_sites_by_byte(site_list)
         self._next_target_sites_by_byte = _select_next_target_sites_by_byte(site_list)
         self._guard_only_sites_by_byte = _select_guard_only_sites_by_byte(site_list)
+        self._byte_domain = _observed_byte_domain(
+            self._sites_by_byte,
+            self._next_target_sites_by_byte,
+            self._guard_only_sites_by_byte,
+        )
+        self._next_byte_by_byte = _next_observed_byte_by_byte(
+            self._sites_by_byte,
+            self._next_target_sites_by_byte,
+        )
 
     def build_plan(self) -> TerminalTailCascadeEgressPlan:
         block_succs = {
@@ -577,7 +619,7 @@ class TerminalTailCascadeEgressPlanner:
         largest_before = _largest_cyclic_scc_size(block_succs)
         projected = dict(block_succs)
         rows: list[TerminalTailCascadeEgressRow] = []
-        for byte_index in range(7):
+        for byte_index in self._byte_domain:
             row, projected = self._build_row(byte_index, projected, largest_before)
             rows.append(row)
         return TerminalTailCascadeEgressPlan(
@@ -593,9 +635,12 @@ class TerminalTailCascadeEgressPlanner:
         largest_before: int,
     ) -> tuple[TerminalTailCascadeEgressRow, dict[int, tuple[int, ...]]]:
         site = self._sites_by_byte.get(byte_index)
-        next_site = self._sites_by_byte.get(
-            byte_index + 1,
-        ) or self._next_target_sites_by_byte.get(byte_index + 1)
+        next_byte = self._next_byte_by_byte.get(int(byte_index))
+        next_site = None
+        if next_byte is not None:
+            next_site = self._sites_by_byte.get(
+                next_byte,
+            ) or self._next_target_sites_by_byte.get(next_byte)
         source_block = site.block_serial if site is not None else None
         block = self._blocks.get(source_block) if source_block is not None else None
         intended_target = next_site.block_serial if next_site is not None else None

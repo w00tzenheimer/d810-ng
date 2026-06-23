@@ -158,6 +158,26 @@ class TestTerminalTailCascadeEgressPlanner:
         assert plan.rows[1].explicit_store
         assert plan.rows[1].confidence == 0.82
 
+    def test_observed_byte_order_drives_next_target_not_fixed_successor(self) -> None:
+        blocks = {
+            2: _block(2, (20, 90)),
+            20: _block(20, ()),
+            40: _block(40, ()),
+            90: _block(90, (2,)),
+        }
+        sites = [
+            _site(2, 2, continuation=90, return_edge=20),
+            _site(4, 40, continuation=None, return_edge=None, corridor_role="body"),
+        ]
+
+        plan = TerminalTailCascadeEgressPlanner(blocks, sites).build_plan()
+
+        assert tuple(row.byte_index for row in plan.rows) == (0, 1, 2, 3, 4)
+        assert plan.rows[2].source_block == 2
+        assert plan.rows[2].intended_target == 40
+        assert 5 not in plan.gap_bytes
+        assert 6 not in plan.gap_bytes
+
     def test_same_block_next_byte_is_reported_as_split_requirement(self) -> None:
         blocks = {
             3: _block(3, (30, 31)),

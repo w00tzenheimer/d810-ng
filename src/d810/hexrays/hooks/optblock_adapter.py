@@ -1073,23 +1073,19 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 priors = None
         else:
             optimizer_logger.debug(
-                "terminal tail cascade egress skipped for func=0x%x: "
-                "no function priors provider",
+                "terminal tail cascade egress has no function priors provider "
+                "for func=0x%x; using discovered facts",
                 func_ea,
             )
         cascade_priors = getattr(priors, "terminal_tail_cascade_egress", None)
-        if cascade_priors is None or bool(getattr(cascade_priors, "is_empty", True)):
-            optimizer_logger.debug(
-                "terminal tail cascade egress skipped for func=0x%x: "
-                "no terminal-tail cascade priors",
-                func_ea,
-            )
-            return 0
+        configured_byte_indices = tuple(
+            getattr(cascade_priors, "byte_indices", ()) or ()
+        )
         optimizer_logger.debug(
             "terminal tail cascade egress candidate for func=0x%x: "
-            "byte_indices=%s split_byte_indices=%s",
+            "configured_byte_indices=%s split_byte_indices=%s",
             func_ea,
-            tuple(getattr(cascade_priors, "byte_indices", ()) or ()),
+            configured_byte_indices,
             tuple(getattr(cascade_priors, "split_byte_indices", ()) or ()),
         )
 

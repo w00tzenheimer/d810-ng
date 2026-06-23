@@ -31,45 +31,6 @@
               ]
             }
           ]
-        },
-        "terminal_tail_cascade_egress": {
-          "byte_indices": [
-            1,
-            2,
-            4,
-            5
-          ],
-          "split_byte_indices": [
-            3
-          ],
-          "row_target_overrides": [
-            {
-              "byte_index": 2,
-              "target_entry_byte_index": 3
-            }
-          ],
-          "continuation_bridges": [
-            {
-              "continuation_byte_index": 3,
-              "source_byte_index": 4,
-              "target_store_guard_byte_index": 5,
-              "max_depth": 8
-            }
-          ],
-          "equality_frontier": {
-            "return_frontier_byte_index": 2,
-            "row_byte_indices": [
-              2,
-              3
-            ],
-            "shared_store_guard_byte_indices": [
-              3,
-              5
-            ]
-          },
-          "entry_frontier": {
-            "first_byte_index": 1
-          }
         }
       }
     },
