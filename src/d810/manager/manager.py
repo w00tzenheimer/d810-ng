@@ -28,6 +28,9 @@ from d810.backends.hexrays.registration import (
     ensure_hexrays_fact_lifter_registered,
 )
 from d810.diagnostics.post_d810_handoff import detect_post_d810_handoff_violations
+from d810.evaluator.hexrays_microcode.dispatcher_artifacts import (
+    plan_dispatcher_state_return_carrier_artifact,
+)
 from d810.hexrays.hooks.ctree_hooks import CtreeOptimizerManager
 from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
@@ -422,6 +425,7 @@ class D810Manager:
             rule_scope_idb_key=idb_key,
             pass_scheduler=self.block_pass_scheduler,
             function_priors_provider=self.function_analysis_priors_for_ea,
+            dispatcher_artifact_planner=plan_dispatcher_state_return_carrier_artifact,
         )
         for rule in self.instruction_optimizer_rules:
             rule.log_dir = self.log_dir

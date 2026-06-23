@@ -11,6 +11,7 @@ planner that already owns the report shape.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -21,6 +22,8 @@ from d810.transforms.terminal_tail_cascade_egress_planner import (
     TerminalByteEmitSite,
     TerminalTailBlock,
     TerminalTailCascadeEgressPlanner,
+    TerminalTailConstWrite,
+    TerminalTailGuardRequirement,
     format_cascade_egress_plan,
     terminal_byte_emit_site_from_payload,
 )
@@ -46,6 +49,72 @@ def _json_int_tuple(value: str | None) -> tuple[int, ...]:
         except (TypeError, ValueError):
             continue
     return tuple(out)
+
+
+_DIAG_GUARD_COMPARE_RE = re.compile(
+    r"\b(?:jnz|jz|jcnd)\s+"
+    r"(?P<var>%var_[0-9A-Fa-f]+)\.\d+\s*,\s*"
+    r"#(?P<value>[-+]?(?:0x[0-9A-Fa-f]+|\d+))\.\d+",
+)
+_DIAG_MOV_CONST_RE = re.compile(
+    r"\bmov\s+#(?P<value>[-+]?(?:0x[0-9A-Fa-f]+|\d+))\.\d+\s*,\s*"
+    r"(?P<var>%var_[0-9A-Fa-f]+)\.\d+",
+)
+_DIAG_BRANCH_TARGET_RE = re.compile(r"@(?P<target>\d+)\b")
+
+
+def _parse_diag_int_literal(text: str | None) -> int | None:
+    if text is None:
+        return None
+    try:
+        return int(str(text), 0)
+    except ValueError:
+        return None
+
+
+def _diag_block_state_views(
+    opcodes: tuple[str, ...],
+    text: tuple[str, ...],
+) -> tuple[tuple[TerminalTailGuardRequirement, ...], tuple[TerminalTailConstWrite, ...]]:
+    guards: list[TerminalTailGuardRequirement] = []
+    writes: list[TerminalTailConstWrite] = []
+    seen_store = False
+    for index, (opcode, dstr) in enumerate(zip(opcodes, text)):
+        if opcode in {"m_stx", "op_1"} or str(dstr).lstrip().startswith("stx"):
+            seen_store = True
+        mov = _DIAG_MOV_CONST_RE.search(str(dstr))
+        if mov is not None:
+            value = _parse_diag_int_literal(mov.group("value"))
+            if value is not None:
+                writes.append(
+                    TerminalTailConstWrite(
+                        variable=mov.group("var"),
+                        value=value,
+                        insn_index=index,
+                    )
+                )
+        guard = _DIAG_GUARD_COMPARE_RE.search(str(dstr))
+        if guard is None:
+            continue
+        value = _parse_diag_int_literal(guard.group("value"))
+        if value is None:
+            continue
+        branch = _DIAG_BRANCH_TARGET_RE.search(str(dstr))
+        branch_target = (
+            _parse_diag_int_literal(branch.group("target"))
+            if branch is not None
+            else None
+        )
+        guards.append(
+            TerminalTailGuardRequirement(
+                variable=guard.group("var"),
+                value=value,
+                branch_target=branch_target,
+                insn_index=index,
+                has_prior_store=seen_store,
+            )
+        )
+    return (tuple(guards), tuple(writes))
 
 
 def choose_fact_snapshot(conn: sqlite3.Connection) -> int:
@@ -172,14 +241,19 @@ def load_blocks(
     blocks: dict[int, TerminalTailBlock] = {}
     for serial, type_name, start_ea_hex, succs, preds in rows:
         s = int(serial)
+        opcodes = tuple(opcodes_by_block.get(s, ()))
+        text = tuple(text_by_block.get(s, ()))
+        guards, writes = _diag_block_state_views(opcodes, text)
         blocks[s] = TerminalTailBlock(
             serial=s,
             succs=_json_int_tuple(succs),
             preds=_json_int_tuple(preds),
             type_name=str(type_name or ""),
             start_ea_hex=start_ea_hex,
-            insn_opcodes=tuple(opcodes_by_block.get(s, ())),
-            insn_text=tuple(text_by_block.get(s, ())),
+            insn_opcodes=opcodes,
+            insn_text=text,
+            guard_requirements=guards,
+            const_writes=writes,
         )
     return blocks
 

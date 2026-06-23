@@ -79,11 +79,19 @@ class _DagSemantics:
     edges: tuple[_DagEdge, ...]
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class _SourceByteAddressFamily:
+    key: str
+    base_operand: Any | None
+    observed_indices: tuple[int, ...]
+
+
 # Local MBL_KEEP value used by the DGM copy helpers. See memory
 # ``ida_optimize_global_cfg_kill``: ``mba.copy_block`` does not
 # inherit MBL_KEEP, and ``optimize_global``'s structural sweep culls clones
 # without it.
 _MBL_KEEP = 0x10000
+_SOURCE_BYTE_MAX_INDEX = 6
 
 def _terminal_zero_guard_literal_return_values(mba: Any) -> tuple[int, ...]:
     return terminal_zero_guard_literal_return_values(mba)
@@ -110,9 +118,15 @@ class LiveMbaAdapter:
     internal state.
     """
 
-    def __init__(self, mba) -> None:  # mba: ida_hexrays.mba_t
+    def __init__(
+        self,
+        mba,
+        *,
+        dispatcher_artifact_planner: Any | None = None,
+    ) -> None:  # mba: ida_hexrays.mba_t
         self._mba = mba
         self._serial_remap: dict[int, int] = {}
+        self._dispatcher_artifact_planner = dispatcher_artifact_planner
 
     def resolve_live_serial(self, serial: int) -> int:
         return int(self._serial_remap.get(int(serial), int(serial)))
@@ -648,6 +662,73 @@ class LiveMbaAdapter:
             int(block_serial),
         )
 
+    def apply_dispatcher_state_return_carrier_artifact_plan(
+        self,
+        block_serial: int,
+    ) -> tuple[int, int, int] | None:
+        planner = self._dispatcher_artifact_planner
+        if not callable(planner):
+            return None
+        plan = planner(
+            self._mba,
+            self.resolve_live_serial(int(block_serial)),
+        )
+        if plan is None:
+            return None
+        return self._apply_dispatcher_state_return_carrier_artifact_plan(plan)
+
+    def _apply_dispatcher_state_return_carrier_artifact_plan(
+        self,
+        plan: Any,
+    ) -> tuple[int, int, int] | None:
+        import ida_hexrays
+
+        from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+
+        mba = self._mba
+        block_serial = self.resolve_live_serial(int(plan.block_serial))
+        join_serial = self.resolve_live_serial(int(plan.join_serial))
+        dispatcher_serial = self.resolve_live_serial(int(plan.dispatcher_serial))
+        join = mba.get_mblock(join_serial)
+        if join is None:
+            return None
+        join_body = _non_control_body_insns(ida_hexrays, join)
+        if len(join_body) != 1:
+            return None
+        dispatcher_dst = getattr(join_body[0], "d", None)
+        if dispatcher_dst is None or getattr(dispatcher_dst, "t", None) == ida_hexrays.mop_z:
+            return None
+
+        size = int(getattr(plan, "state_size", 0) or getattr(dispatcher_dst, "size", 0) or 4)
+        mask = (1 << (size * 8)) - 1
+        modifier = DeferredGraphModifier(mba)
+        modifier.queue_const_mov_and_nop_pair(
+            block_serial=int(block_serial),
+            replacement_body_index=int(plan.replacement_body_index),
+            nop_body_index=int(plan.nop_body_index),
+            const_value=int(plan.state_value) & mask,
+            replacement_dest=ida_hexrays.mop_t(dispatcher_dst),
+            value_size=size,
+            description="apply evaluator-planned dispatcher-state carrier fold",
+        )
+        modifier.queue_goto_change(
+            int(block_serial),
+            int(dispatcher_serial),
+            description="apply evaluator-planned dispatcher-state redirect",
+        )
+        if modifier.apply(defer_post_apply_maintenance=True) <= 0:
+            return None
+        logger.info(
+            "dispatcher_state_return_carrier_artifact: applied plan block=%d "
+            "join=%d dispatcher=%d selector=0x%X abstract_state=0x%X",
+            int(block_serial),
+            int(join_serial),
+            int(dispatcher_serial),
+            int(plan.selector_value),
+            int(plan.state_value) & mask,
+        )
+        return (int(block_serial), int(join_serial), int(dispatcher_serial))
+
     # ------------------------------------------------------------------
     # Byte-store anchor (Track D byte_store mechanism — reference-style
     # buffer write replication for bytes 2-6).
@@ -655,9 +736,9 @@ class LiveMbaAdapter:
 
     def _find_byte_emit_template_block(self, byte_index: int):
         """Search the entire mba for the BLOCK containing an m_stx
-        instance whose dstr references v190 at the given byte_index.
-        Returns the mblock_t (so the ENTIRE block can be cloned via
-        copy_block), or None.
+        instance whose operand tree reads the source byte at
+        ``byte_index``. Returns the mblock_t (so the ENTIRE block can be
+        cloned via copy_block), or None.
 
         This is the right granularity for byte_store: the entire
         byte_emit block has a self-contained def chain (m_sar
@@ -668,10 +749,13 @@ class LiveMbaAdapter:
         """
         import ida_hexrays as _ih
 
-        if byte_index == 0:
-            needles = ("[ds.2:%var_190.8].1",)
-        else:
-            needles = (f"%var_190.8+#{byte_index}.8",)
+        family = _discover_source_byte_address_family(
+            self._mba,
+            int(byte_index),
+            _ih,
+        )
+        if family is None:
+            return None
         qty = int(getattr(self._mba, "qty", 0) or 0)
         for serial in range(qty):
             blk = self._mba.get_mblock(serial)
@@ -679,19 +763,22 @@ class LiveMbaAdapter:
                 continue
             insn = blk.head
             while insn is not None:
-                if int(insn.opcode) == int(_ih.m_stx):
-                    try:
-                        ds = insn.dstr() if callable(getattr(insn, "dstr", None)) else ""
-                    except Exception:
-                        ds = ""
-                    if any(n in ds for n in needles):
-                        return blk
+                if (
+                    int(insn.opcode) == int(_ih.m_stx)
+                    and _find_source_byte_ldx_in_insn(
+                        insn,
+                        int(byte_index),
+                        family,
+                    )
+                    is not None
+                ):
+                    return blk
                 insn = insn.next
         return None
 
     def _find_byte_emit_stx_template(self, byte_index: int):
-        """Search the entire mba for an m_stx instance whose dstr
-        references v190 at the given byte_index. Returns the minsn_t
+        """Search the entire mba for an m_stx instance whose operand tree
+        reads the source byte at the given byte_index. Returns the minsn_t
         directly (so it can be cloned), or None.
 
         Used by insert_byte_emit_replica_anchor: the host block doesn't
@@ -701,10 +788,13 @@ class LiveMbaAdapter:
         """
         import ida_hexrays as _ih
 
-        if byte_index == 0:
-            needles = ("[ds.2:%var_190.8].1",)
-        else:
-            needles = (f"%var_190.8+#{byte_index}.8",)
+        family = _discover_source_byte_address_family(
+            self._mba,
+            int(byte_index),
+            _ih,
+        )
+        if family is None:
+            return None
         qty = int(getattr(self._mba, "qty", 0) or 0)
         for serial in range(qty):
             blk = self._mba.get_mblock(serial)
@@ -712,13 +802,16 @@ class LiveMbaAdapter:
                 continue
             insn = blk.head
             while insn is not None:
-                if int(insn.opcode) == int(_ih.m_stx):
-                    try:
-                        ds = insn.dstr() if callable(getattr(insn, "dstr", None)) else ""
-                    except Exception:
-                        ds = ""
-                    if any(n in ds for n in needles):
-                        return insn
+                if (
+                    int(insn.opcode) == int(_ih.m_stx)
+                    and _find_source_byte_ldx_in_insn(
+                        insn,
+                        int(byte_index),
+                        family,
+                    )
+                    is not None
+                ):
+                    return insn
                 insn = insn.next
         return None
 
@@ -777,7 +870,17 @@ class LiveMbaAdapter:
         if template_block is None:
             raise RuntimeError(
                 f"insert_byte_emit_replica_anchor: no template block "
-                f"containing m_stx for v190+#{template_byte_index}.8"
+                f"containing source-byte[{template_byte_index}] m_stx"
+            )
+        source_family = _discover_source_byte_address_family(
+            mba,
+            int(template_byte_index),
+            _ih,
+        )
+        if source_family is None:
+            raise RuntimeError(
+                "insert_byte_emit_replica_anchor: source-byte address "
+                f"family for byte {template_byte_index} is not resolvable"
             )
 
         # Build the cloned anchor body outside the live CFG. DGM owns the
@@ -815,8 +918,12 @@ class LiveMbaAdapter:
                 # Patch byte_index in operand trees.
                 for op in (cloned.l, cloned.r, cloned.d):
                     if op is not None:
-                        if _patch_v190_byte_const(
-                            op, template_byte_index, target_byte_index, _ih,
+                        if _patch_source_byte_index_const(
+                            op,
+                            template_byte_index,
+                            target_byte_index,
+                            source_family,
+                            _ih,
                         ):
                             patch_count += 1
                 # Add (k-1)*8 to the m_stx ADDRESS operand so each
@@ -882,20 +989,24 @@ class LiveMbaAdapter:
     # LiveUseAnchorAdapter (Track D byte 6 split-XOR anchor probe)
     # ------------------------------------------------------------------
 
-    def find_byte_emit_block_by_v190_offset(self, byte_index: int):
+    def find_byte_emit_block_by_source_byte_index(self, byte_index: int):
         """Walk every block; for each block walk every top-level minsn
         and its full operand-tree recursively, seeking an m_ldx whose
-        r operand resolves to v190+#byte_index. Return that block.
-
-        Fallback: textual dstr match.
+        r operand belongs to the discovered source-byte address family at
+        ``byte_index``. Return that block.
         """
         import ida_hexrays as _ih
 
         mba = self._mba
+        family = _discover_source_byte_address_family(mba, int(byte_index), _ih)
+        if family is None:
+            logger.info(
+                "byte_anchor: no source-byte address family found for byte %d",
+                int(byte_index),
+            )
+            return None
         qty = int(getattr(mba, "qty", 0) or 0)
         insn_count = 0
-        v190_byte_indices_seen: set[int] = set()
-        dstr_match_serial: int | None = None
         for serial in range(qty):
             blk = mba.get_mblock(serial)
             if blk is None:
@@ -903,63 +1014,51 @@ class LiveMbaAdapter:
             insn = blk.head
             while insn is not None:
                 insn_count += 1
-                found = _find_v190_ldx_in_insn(insn, byte_index, v190_byte_indices_seen)
+                found = _find_source_byte_ldx_in_insn(
+                    insn,
+                    int(byte_index),
+                    family,
+                )
                 if found is not None:
                     return self.find_block_by_ea(
                         int(getattr(blk, "start", 0) or 0),
                     )
-                try:
-                    dstr = insn.dstr() if callable(getattr(insn, "dstr", None)) else ""
-                except Exception:
-                    dstr = ""
-                # Byte 0's form has no '+#0.8' suffix (IDA folds the
-                # zero); look for the bare '[ds.2:%var_190.8].1' load.
-                if byte_index == 0:
-                    needle_match = "[ds.2:%var_190.8].1" in dstr
-                else:
-                    needle = f"%var_190.8+#{byte_index}.8"
-                    needle_match = needle in dstr
-                if needle_match and dstr_match_serial is None:
-                    dstr_match_serial = serial
                 insn = insn.next
-        if dstr_match_serial is not None:
-            logger.warning(
-                "byte_anchor: structural walker missed byte %d but dstr "
-                "matches in block %d (insns walked: %d, byte indices the "
-                "structural walker DID find: %s). Falling back.",
-                byte_index, dstr_match_serial, insn_count,
-                sorted(v190_byte_indices_seen),
-            )
-            blk = mba.get_mblock(dstr_match_serial)
-            return self.find_block_by_ea(
-                int(getattr(blk, "start", 0) or 0),
-            )
         logger.info(
-            "byte_anchor: no insn found with m_ldx of v190+#%d "
-            "(walked %d insns, structural byte indices found: %s).",
-            byte_index, insn_count, sorted(v190_byte_indices_seen),
+            "byte_anchor: no insn found with source-byte[%d] m_ldx "
+            "(walked %d insns, discovered family indices: %s).",
+            int(byte_index),
+            insn_count,
+            list(family.observed_indices),
         )
         return None
 
-    def extract_v190_indexed_operand(
+    def extract_source_byte_indexed_operand(
         self, byte_emit_serial: int, byte_index: int,
     ):
-        """Find an operand whose dstr equals ``(%var_190.8+#k.8)``
-        anywhere in any insn's operand tree (in the byte_emit block
-        first, then any other block as fallback). Return a clone.
-
-        We dstr-match rather than structural-match because the operand
-        is stored in a wide variety of nested mop_t/minsn_t shapes the
-        structural recognizer doesn't fully cover, but ``mop_t.dstr()``
-        always renders to a stable textual form.
+        """Find the source-byte address operand for ``byte_index`` in any
+        nested m_ldx operand tree. Search the byte_emit block first, then
+        any other block as fallback. Return a clone.
         """
         import ida_hexrays as _ih
 
-        target = f"(%var_190.8+#{byte_index}.8)"
+        family = _discover_source_byte_address_family(
+            self._mba,
+            int(byte_index),
+            _ih,
+        )
+        if family is None:
+            raise RuntimeError(
+                f"no source-byte address family found for byte {byte_index}"
+            )
         # First pass: search the named byte_emit block.
         blk = self._mba.get_mblock(int(byte_emit_serial))
         if blk is not None:
-            found = _find_mop_by_dstr_in_block(blk, target, _ih)
+            found = _find_source_byte_operand_in_block(
+                blk,
+                int(byte_index),
+                family,
+            )
             if found is not None:
                 clone = _ih.mop_t()
                 clone.assign(found)
@@ -970,18 +1069,22 @@ class LiveMbaAdapter:
             blk = self._mba.get_mblock(serial)
             if blk is None:
                 continue
-            found = _find_mop_by_dstr_in_block(blk, target, _ih)
+            found = _find_source_byte_operand_in_block(
+                blk,
+                int(byte_index),
+                family,
+            )
             if found is not None:
                 logger.warning(
-                    "byte_anchor: extract_v190_indexed_operand: target "
-                    "%s found in block %d (not the byte_emit block %d).",
-                    target, serial, byte_emit_serial,
+                    "byte_anchor: source-byte[%d] operand found in block "
+                    "%d (not the byte_emit block %d).",
+                    int(byte_index), serial, byte_emit_serial,
                 )
                 clone = _ih.mop_t()
                 clone.assign(found)
                 return clone
         raise RuntimeError(
-            f"no operand matching {target!r} found anywhere in mba"
+            f"no source-byte[{byte_index}] operand found anywhere in mba"
         )
 
     def find_pre_return_block(self) -> int:
@@ -1292,167 +1395,229 @@ def _wrap_address_with_offset(op, delta: int, _ih, ea: int = 0) -> bool:
         return False
 
 
-def _is_v190_mop_S(op, _ih) -> bool:
-    """Return True if op is the mop_S rendering as '%var_190.8'.
-
-    The internal stkoff for var_190 is function-specific (e.g. 0x668
-    in sub_7FFD3338C040 -- the s.off field uses a different offset
-    convention than the displayed name). dstr-based matching is the
-    only reliable way to identify the byte-source-pointer stkvar.
-    """
-    if op is None:
-        return False
-    if int(getattr(op, "t", -1)) != int(_ih.mop_S):
-        return False
+def _mop_number_value(op, _ih) -> int | None:
+    if op is None or int(getattr(op, "t", -1)) != int(_ih.mop_n):
+        return None
+    nnn = getattr(op, "nnn", None)
+    if nnn is None:
+        return None
     try:
-        ds = op.dstr() if callable(getattr(op, "dstr", None)) else ""
-    except Exception:
-        return False
-    return ds == "%var_190.8"
+        return int(getattr(nnn, "value"))
+    except (TypeError, ValueError):
+        return None
 
 
-def _patch_v190_byte_const(op, old_index: int, new_index: int, _ih) -> bool:
-    """Walk a mop_t tree; find any reference to (v190+#old_index.8) and
-    rewrite it to (v190+#new_index.8).
+def _source_base_key(op, _ih) -> str | None:
+    if op is None:
+        return None
+    t = int(getattr(op, "t", -1))
+    if t == int(_ih.mop_S):
+        stkvar = getattr(op, "s", None)
+        if stkvar is not None:
+            try:
+                return f"stk:{int(getattr(stkvar, 'off'))}"
+            except (TypeError, ValueError):
+                return None
+    if t == int(_ih.mop_l):
+        lref = getattr(op, "l", None)
+        idx = getattr(lref, "idx", None) if lref is not None else None
+        if idx is not None:
+            try:
+                return f"lvar:{int(idx)}"
+            except (TypeError, ValueError):
+                return None
+    if t == int(_ih.mop_r):
+        try:
+            return f"reg:{int(getattr(op, 'r'))}"
+        except (TypeError, ValueError):
+            return None
+    if t == int(_ih.mop_v):
+        try:
+            return f"global:{int(getattr(op, 'g'))}"
+        except (TypeError, ValueError):
+            return None
+    return None
 
-    The operand shape we look for is mop_d wrapping m_add(v190, #k),
-    where v190 is identified by mop_t.dstr()=='%var_190.8' (not by
-    stkoff -- the internal stkoff doesn't match the displayed-name
-    offset).
 
-    Returns True if any patch was applied.
+def _source_address_candidates(op, _ih) -> tuple[tuple[str, int, Any | None], ...]:
+    if op is None:
+        return ()
+    candidates: list[tuple[str, int, Any | None]] = []
+    t = int(getattr(op, "t", -1))
+    if t == int(_ih.mop_d):
+        sub = getattr(op, "d", None)
+        if (
+            sub is not None
+            and int(getattr(sub, "opcode", -1)) == int(_ih.m_add)
+        ):
+            l = getattr(sub, "l", None)
+            r = getattr(sub, "r", None)
+            for base, index_op in ((l, r), (r, l)):
+                index = _mop_number_value(index_op, _ih)
+                if index is None or not (0 <= int(index) <= _SOURCE_BYTE_MAX_INDEX):
+                    continue
+                key = _source_base_key(base, _ih)
+                if key is not None:
+                    candidates.append((key, int(index), base))
+    if t == int(_ih.mop_S):
+        key = _source_base_key(op, _ih)
+        if key is not None:
+            candidates.append((key, 0, op))
+        stkvar = getattr(op, "s", None)
+        if stkvar is not None:
+            try:
+                off = int(getattr(stkvar, "off"))
+            except (TypeError, ValueError):
+                off = None
+            if off is not None:
+                for index in range(_SOURCE_BYTE_MAX_INDEX + 1):
+                    candidates.append((f"stkfold:{off - index}", index, None))
+    return tuple(candidates)
+
+
+def _iter_nested_minsns(insn, _ih, depth: int = 15):
+    if depth <= 0 or insn is None:
+        return
+    yield insn
+    for op in (
+        getattr(insn, "l", None),
+        getattr(insn, "r", None),
+        getattr(insn, "d", None),
+    ):
+        if op is None or int(getattr(op, "t", -1)) != int(_ih.mop_d):
+            continue
+        sub = getattr(op, "d", None)
+        if sub is not None:
+            yield from _iter_nested_minsns(sub, _ih, depth - 1)
+
+
+def _iter_mba_minsns(mba, _ih):
+    qty = int(getattr(mba, "qty", 0) or 0)
+    for serial in range(qty):
+        blk = mba.get_mblock(serial)
+        if blk is None:
+            continue
+        insn = blk.head
+        while insn is not None:
+            yield serial, insn
+            insn = insn.next
+
+
+def _discover_source_byte_address_family(
+    mba,
+    byte_index: int,
+    _ih,
+) -> _SourceByteAddressFamily | None:
+    by_key: dict[str, dict[int, Any | None]] = {}
+    for _, insn in _iter_mba_minsns(mba, _ih):
+        for nested in _iter_nested_minsns(insn, _ih):
+            if int(getattr(nested, "opcode", -1)) != int(_ih.m_ldx):
+                continue
+            address = getattr(nested, "r", None)
+            for key, index, base in _source_address_candidates(address, _ih):
+                by_key.setdefault(key, {}).setdefault(int(index), base)
+    candidates: list[tuple[int, int, str, Any | None, tuple[int, ...]]] = []
+    for key, observed_by_index in by_key.items():
+        if int(byte_index) not in observed_by_index:
+            continue
+        observed = tuple(sorted(observed_by_index))
+        has_base = any(base is not None for base in observed_by_index.values())
+        base = next(
+            (base for base in observed_by_index.values() if base is not None),
+            None,
+        )
+        candidates.append((
+            len(observed),
+            1 if has_base else 0,
+            key,
+            base,
+            observed,
+        ))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    _, _, key, base, observed = candidates[0]
+    return _SourceByteAddressFamily(
+        key=key,
+        base_operand=base,
+        observed_indices=observed,
+    )
+
+
+def _source_address_matches_family(
+    op,
+    byte_index: int,
+    family: _SourceByteAddressFamily,
+    _ih,
+) -> bool:
+    return any(
+        key == family.key and int(index) == int(byte_index)
+        for key, index, _ in _source_address_candidates(op, _ih)
+    )
+
+
+def _patch_source_byte_index_const(
+    op,
+    old_index: int,
+    new_index: int,
+    family: _SourceByteAddressFamily,
+    _ih,
+) -> bool:
+    """Patch source-byte address operands from one index to another.
+
+    The matched base is the discovered source-byte address family, not a
+    hardcoded local variable name. Folded stack references fail closed; the
+    byte-store anchor needs an explicit add operand so the index can be edited.
     """
     if op is None:
         return False
-    t = int(getattr(op, "t", -1))
     patched = False
-
-    # NOTE: byte 0 -> byte k transform attempted (replacing bare mop_S
-    # with mop_d(m_add(stkvar, #k))) but byte 0 template block doesn't
-    # actually contain an m_stx at MMAT_GLBOPT1 -- the m_stx for byte 0
-    # is generated by IDA during optimize_global as part of block 47.
-    # So host_byte=0 isn't a viable byte_store host in this binary's
-    # pre-optimize state. Leaving the transformation disabled.
-
-    # Match: mop_d wrapping m_add(v190, mop_n=old_index). The v190 leaf
-    # is identified by dstr=='%var_190.8' (the displayed-name offset
-    # convention differs from the internal mop_S.s.off; only dstr is
-    # a reliable identifier).
-    if t == int(_ih.mop_d):
+    if int(getattr(op, "t", -1)) == int(_ih.mop_d):
         sub = getattr(op, "d", None)
         if sub is not None:
             if int(getattr(sub, "opcode", -1)) == int(_ih.m_add):
                 l = getattr(sub, "l", None)
                 r = getattr(sub, "r", None)
-                # Standard order: l=v190, r=mop_n
-                if (
-                    _is_v190_mop_S(l, _ih)
-                    and r is not None
-                    and int(getattr(r, "t", -1)) == int(_ih.mop_n)
-                    and getattr(r, "nnn", None) is not None
-                    and int(r.nnn.value) == int(old_index)
-                ):
-                    r.make_number(int(new_index), int(r.size or 8))
+                for base, index_op in ((l, r), (r, l)):
+                    index = _mop_number_value(index_op, _ih)
+                    if index is None or int(index) != int(old_index):
+                        continue
+                    base_key = _source_base_key(base, _ih)
+                    if base_key != family.key:
+                        continue
+                    index_op.make_number(
+                        int(new_index),
+                        int(getattr(index_op, "size", 0) or 8),
+                    )
                     patched = True
-                # Reversed order (commutative)
-                if (
-                    _is_v190_mop_S(r, _ih)
-                    and l is not None
-                    and int(getattr(l, "t", -1)) == int(_ih.mop_n)
-                    and getattr(l, "nnn", None) is not None
-                    and int(l.nnn.value) == int(old_index)
-                ):
-                    l.make_number(int(new_index), int(l.size or 8))
-                    patched = True
-            # Recurse into sub-instruction's operands.
-            for child in (sub.l, sub.r, sub.d):
-                if _patch_v190_byte_const(child, old_index, new_index, _ih):
-                    patched = True
-    return patched
-
-
-def _mop_dstr(mop) -> str:
-    """Best-effort textual rendering of a mop_t (returns '' on failure)."""
-    try:
-        ds = mop.dstr() if callable(getattr(mop, "dstr", None)) else ""
-        return ds if isinstance(ds, str) else ""
-    except Exception:
-        return ""
-
-
-def _find_mop_by_dstr_in_block(blk, target: str, _ih):
-    """Walk every minsn in the block and every nested mop_t operand
-    tree; return the first mop_t whose dstr() equals or contains
-    ``target``. Returns None if no match.
-    """
-    insn = blk.head
-    while insn is not None:
-        for op in (
-            getattr(insn, "l", None),
-            getattr(insn, "r", None),
-            getattr(insn, "d", None),
-        ):
-            found = _find_mop_by_dstr(op, target, _ih)
-            if found is not None:
-                return found
-        insn = insn.next
-    return None
-
-
-def _find_mop_by_dstr(mop, target: str, _ih, depth: int = 15):
-    """Walk a mop_t recursively (descending into mop_d sub-instructions
-    and their operand trees) seeking a mop whose dstr matches target.
-    """
-    if depth <= 0 or mop is None:
-        return None
-    ds = _mop_dstr(mop)
-    if target in ds:
-        # Prefer the most specific match: the operand whose own dstr
-        # equals target exactly. If we found a parent containing target
-        # as a substring, descend to find a tighter match.
-        if ds == target:
-            return mop
-        # Descend.
-        if int(getattr(mop, "t", -1)) == int(_ih.mop_d):
-            sub = getattr(mop, "d", None)
-            if sub is not None:
-                for child in (
-                    getattr(sub, "l", None),
-                    getattr(sub, "r", None),
-                    getattr(sub, "d", None),
-                ):
-                    inner = _find_mop_by_dstr(child, target, _ih, depth - 1)
-                    if inner is not None:
-                        return inner
-        # No tighter match -> return the substring-matching parent.
-        return mop
-    # Target not in this mop's dstr; still descend into sub-insns in
-    # case the operand tree's dstr collapsed the inner form.
-    if int(getattr(mop, "t", -1)) == int(_ih.mop_d):
-        sub = getattr(mop, "d", None)
-        if sub is not None:
             for child in (
                 getattr(sub, "l", None),
                 getattr(sub, "r", None),
                 getattr(sub, "d", None),
             ):
-                inner = _find_mop_by_dstr(child, target, _ih, depth - 1)
-                if inner is not None:
-                    return inner
-    return None
+                if _patch_source_byte_index_const(
+                    child,
+                    old_index,
+                    new_index,
+                    family,
+                    _ih,
+                ):
+                    patched = True
+    return patched
 
 
-def _find_v190_ldx_in_insn(
+def _find_source_byte_ldx_in_insn(
     insn,
     byte_index: int,
+    family: _SourceByteAddressFamily,
     observed_byte_indices: set[int] | None = None,
     depth: int = 15,
 ):
     """Recursively walk an minsn_t and every nested mop_d/sub-instruction
-    seeking an m_ldx whose r operand is v190+#byte_index.
+    seeking an m_ldx whose r operand belongs to ``family`` at byte_index.
 
     ``observed_byte_indices`` (optional) is populated with any byte index
-    k for which a v190+#k m_ldx was seen during the walk -- a diagnostic
+    k for which a same-family m_ldx was seen during the walk -- a diagnostic
     aid so the caller can log "we saw bytes 0,1,2 but not 6".
     """
     import ida_hexrays as _ih
@@ -1461,11 +1626,14 @@ def _find_v190_ldx_in_insn(
         return None
     if int(getattr(insn, "opcode", -1)) == int(_ih.m_ldx):
         r = getattr(insn, "r", None)
-        if r is not None and _is_v190_plus_k(r, byte_index):
+        if (
+            r is not None
+            and _source_address_matches_family(r, byte_index, family, _ih)
+        ):
             return r
         if observed_byte_indices is not None and r is not None:
-            for k in range(7):
-                if _is_v190_plus_k(r, k):
+            for k in range(_SOURCE_BYTE_MAX_INDEX + 1):
+                if _source_address_matches_family(r, k, family, _ih):
                     observed_byte_indices.add(k)
     for op in (
         getattr(insn, "l", None),
@@ -1479,11 +1647,29 @@ def _find_v190_ldx_in_insn(
         sub = getattr(op, "d", None)
         if sub is None:
             continue
-        found = _find_v190_ldx_in_insn(
-            sub, byte_index, observed_byte_indices, depth - 1,
+        found = _find_source_byte_ldx_in_insn(
+            sub,
+            byte_index,
+            family,
+            observed_byte_indices,
+            depth - 1,
         )
         if found is not None:
             return found
+    return None
+
+
+def _find_source_byte_operand_in_block(
+    blk,
+    byte_index: int,
+    family: _SourceByteAddressFamily,
+):
+    insn = blk.head
+    while insn is not None:
+        found = _find_source_byte_ldx_in_insn(insn, byte_index, family)
+        if found is not None:
+            return found
+        insn = insn.next
     return None
 
 
@@ -1515,106 +1701,6 @@ def _find_segment_operand_template(mba, _ih):
                     return clone
             insn = insn.next
     return None
-
-
-def _synthesize_v190_plus_k_operand(mba, byte_index: int, _ih):
-    """Build a fresh ``mop_d(m_add(stkvar@0x190, #byte_index.8))`` mop_t.
-
-    Used as a fallback when the structural walker can't find an existing
-    m_ldx of v190+#k to clone (which happens when IDA materializes the
-    intermediate through a temp kreg, dropping the inline form).
-
-    The synthetic operand is semantically equivalent to the original
-    byte_emit's address operand for IDA's alias analysis purposes.
-    """
-    add_insn = _ih.minsn_t(int(getattr(mba, "entry_ea", 0) or 0))
-    add_insn.opcode = _ih.m_add
-    add_insn.l = _ih.mop_t()
-    add_insn.l.make_stkvar(mba, 0x190)
-    add_insn.l.size = 8
-    add_insn.r = _ih.mop_t()
-    add_insn.r.make_number(int(byte_index), 8)
-    add_insn.d = _ih.mop_t()
-    add_insn.d.erase()
-
-    result = _ih.mop_t()
-    result.create_from_insn(add_insn)
-    return result
-
-
-def _walk_mop_for_v190_ldx(addr_op, byte_index: int, depth: int = 8):
-    """Recursively search ``addr_op`` for an m_ldx whose r operand
-    matches v190 + #byte_index. Returns that r operand (the address)
-    or None.
-    """
-    import ida_hexrays as _ih
-
-    if depth <= 0 or addr_op is None:
-        return None
-    if int(getattr(addr_op, "t", -1)) != int(_ih.mop_d):
-        return None
-    sub = getattr(addr_op, "d", None)
-    if sub is None:
-        return None
-    if int(getattr(sub, "opcode", -1)) == int(_ih.m_ldx):
-        r = getattr(sub, "r", None)
-        if r is not None and _is_v190_plus_k(r, byte_index):
-            return r
-    for child in (getattr(sub, "l", None), getattr(sub, "r", None), getattr(sub, "d", None)):
-        found = _walk_mop_for_v190_ldx(child, byte_index, depth - 1)
-        if found is not None:
-            return found
-    return None
-
-
-def _is_v190_plus_k(op, byte_index: int) -> bool:
-    """True if ``op`` algebraically equals ``v190 + #byte_index``.
-
-    Accepts two folded forms produced by IDA microcode:
-      1. mop_S with stkoff == 0x190 + byte_index  (constant-folded)
-      2. mop_d/m_add(mop_S@0x190, mop_n=byte_index)  (unfolded)
-    """
-    import ida_hexrays as _ih
-
-    if op is None:
-        return False
-    t = int(getattr(op, "t", -1))
-    if t == int(_ih.mop_S):
-        stkvar = getattr(op, "s", None)
-        if stkvar is None:
-            return False
-        if int(getattr(stkvar, "off", 0)) == 0x190 + int(byte_index):
-            return True
-        return False
-    if t == int(_ih.mop_d):
-        sub = getattr(op, "d", None)
-        if sub is None:
-            return False
-        if int(getattr(sub, "opcode", -1)) != int(_ih.m_add):
-            return False
-        l = getattr(sub, "l", None)
-        r = getattr(sub, "r", None)
-        if l is None or r is None:
-            return False
-        if (
-            int(getattr(l, "t", -1)) == int(_ih.mop_S)
-            and getattr(l, "s", None) is not None
-            and int(l.s.off) == 0x190
-            and int(getattr(r, "t", -1)) == int(_ih.mop_n)
-            and getattr(r, "nnn", None) is not None
-            and int(r.nnn.value) == int(byte_index)
-        ):
-            return True
-        if (
-            int(getattr(r, "t", -1)) == int(_ih.mop_S)
-            and getattr(r, "s", None) is not None
-            and int(r.s.off) == 0x190
-            and int(getattr(l, "t", -1)) == int(_ih.mop_n)
-            and getattr(l, "nnn", None) is not None
-            and int(l.nnn.value) == int(byte_index)
-        ):
-            return True
-    return False
 
 
 class _ValidatedFactViewAdapter:
@@ -1840,7 +1926,11 @@ def _json_int_tuple(value) -> tuple[int, ...]:
 
 def _load_planner_blocks_from_mba(mba):
     """Build planner block views directly from the live MBA."""
-    from d810.transforms.terminal_tail_cascade_egress_planner import TerminalTailBlock
+    from d810.transforms.terminal_tail_cascade_egress_planner import (
+        TerminalTailBlock,
+        TerminalTailConstWrite,
+        TerminalTailGuardRequirement,
+    )
 
     blocks = {}
     try:
@@ -1871,6 +1961,103 @@ def _load_planner_blocks_from_mba(mba):
         }
         return names.get(int(block_type), f"BLT_{int(block_type)}")
 
+    def _state_mop_key(op) -> str | None:
+        if ida_hexrays is None or op is None:
+            return None
+        t = int(getattr(op, "t", -1))
+        if t == int(ida_hexrays.mop_S):
+            stkvar = getattr(op, "s", None)
+            if stkvar is None:
+                return None
+            try:
+                return f"stk:{int(getattr(stkvar, 'off'))}"
+            except (TypeError, ValueError):
+                return None
+        if t == int(ida_hexrays.mop_l):
+            lref = getattr(op, "l", None)
+            idx = getattr(lref, "idx", None) if lref is not None else None
+            if idx is None:
+                return None
+            try:
+                return f"lvar:{int(idx)}"
+            except (TypeError, ValueError):
+                return None
+        if t == int(ida_hexrays.mop_r):
+            try:
+                return f"reg:{int(getattr(op, 'r'))}"
+            except (TypeError, ValueError):
+                return None
+        if t == int(ida_hexrays.mop_v):
+            try:
+                return f"global:{int(getattr(op, 'g'))}"
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _branch_target(op) -> int | None:
+        if ida_hexrays is None or op is None:
+            return None
+        try:
+            if int(getattr(op, "t", -1)) != int(ida_hexrays.mop_b):
+                return None
+            return int(getattr(op, "b"))
+        except (TypeError, ValueError, AttributeError):
+            return None
+
+    def _guard_requirement(insn, index: int, has_prior_store: bool):
+        if ida_hexrays is None:
+            return None
+        try:
+            if int(getattr(insn, "opcode", -1)) not in {
+                int(ida_hexrays.m_jcnd),
+                int(ida_hexrays.m_jz),
+                int(ida_hexrays.m_jnz),
+            }:
+                return None
+        except Exception:
+            return None
+        left = getattr(insn, "l", None)
+        right = getattr(insn, "r", None)
+        left_const = _mop_const_value(left)
+        right_const = _mop_const_value(right)
+        if left_const is not None and right_const is None:
+            variable = _state_mop_key(right)
+            value = left_const
+        elif right_const is not None and left_const is None:
+            variable = _state_mop_key(left)
+            value = right_const
+        else:
+            return None
+        if variable is None:
+            return None
+        return TerminalTailGuardRequirement(
+            variable=variable,
+            value=int(value),
+            branch_target=_branch_target(getattr(insn, "d", None)),
+            insn_index=int(index),
+            has_prior_store=bool(has_prior_store),
+        )
+
+    def _const_write(insn, index: int):
+        if ida_hexrays is None:
+            return None
+        try:
+            if int(getattr(insn, "opcode", -1)) != int(ida_hexrays.m_mov):
+                return None
+        except Exception:
+            return None
+        value = _mop_const_value(getattr(insn, "l", None))
+        if value is None:
+            return None
+        variable = _state_mop_key(getattr(insn, "d", None))
+        if variable is None:
+            return None
+        return TerminalTailConstWrite(
+            variable=variable,
+            value=int(value),
+            insn_index=int(index),
+        )
+
     qty = int(getattr(mba, "qty", 0) or 0)
     for serial in range(qty):
         block = mba.get_mblock(serial)
@@ -1880,17 +2067,37 @@ def _load_planner_blocks_from_mba(mba):
         preds = tuple(int(block.pred(i)) for i in range(int(block.npred())))
         opcodes: list[str] = []
         text: list[str] = []
+        guards: list[TerminalTailGuardRequirement] = []
+        writes: list[TerminalTailConstWrite] = []
+        seen_store = False
+        insn_index = 0
         insn = getattr(block, "head", None)
         while insn is not None:
             try:
-                opcodes.append(_opcode_name(int(insn.opcode)))
+                opcode = int(insn.opcode)
+            except Exception:
+                opcode = -1
+            try:
+                opcodes.append(_opcode_name(opcode))
             except Exception:
                 opcodes.append("")
             try:
                 text.append(str(insn.dstr() or ""))
             except Exception:
                 text.append("")
+            write = _const_write(insn, insn_index)
+            if write is not None:
+                writes.append(write)
+            guard = _guard_requirement(insn, insn_index, seen_store)
+            if guard is not None:
+                guards.append(guard)
+            try:
+                if ida_hexrays is not None and opcode == int(ida_hexrays.m_stx):
+                    seen_store = True
+            except Exception:
+                pass
             insn = getattr(insn, "next", None)
+            insn_index += 1
         blocks[serial] = TerminalTailBlock(
             serial=serial,
             succs=succs,
@@ -1899,6 +2106,8 @@ def _load_planner_blocks_from_mba(mba):
             start_ea_hex=f"0x{int(getattr(block, 'start', 0) or 0) & ((1 << 64) - 1):016x}",
             insn_opcodes=tuple(opcodes),
             insn_text=tuple(text),
+            guard_requirements=tuple(guards),
+            const_writes=tuple(writes),
         )
     return blocks
 
@@ -2156,42 +2365,26 @@ def _map_snap_serial_to_live(
     )
 
 
-def _block_mentions_source_byte(block, byte_index: int) -> bool:
-    if block is None:
-        return False
-    if byte_index == 0:
-        needles = ("%var_190",)
-    else:
-        needles = (
-            f"%var_190.8+#{int(byte_index)}.8",
-            f"%var_190+#{int(byte_index)}",
-            f"%var_190.8 + #{int(byte_index)}.8",
-        )
-    return any(
-        any(needle in text for needle in needles)
-        for text in getattr(block, "insn_text", ()) or ()
-    )
-
-
-def _shortest_path_to_source_byte(
+def _shortest_path_to_block(
     blocks,
     *,
     start_serial: int | None,
-    byte_index: int,
+    target_serial: int | None,
     max_depth: int = 10,
 ) -> tuple[int, ...]:
-    if start_serial is None:
+    if start_serial is None or target_serial is None:
         return ()
     start = int(start_serial)
+    target = int(target_serial)
     queue: list[tuple[int, tuple[int, ...]]] = [(start, (start,))]
     seen = {start}
     while queue:
         serial, path = queue.pop(0)
         if len(path) > max_depth:
             continue
-        block = blocks.get(serial)
-        if _block_mentions_source_byte(block, byte_index):
+        if serial == target:
             return path
+        block = blocks.get(serial)
         for succ in getattr(block, "succs", ()) if block is not None else ():
             succ_i = int(succ)
             if succ_i in seen:
@@ -2201,18 +2394,33 @@ def _shortest_path_to_source_byte(
     return ()
 
 
-def _site_mentions_exact_source_byte(site, byte_index: int) -> bool:
-    text = str(getattr(site, "source_expression", "") or "")
-    if byte_index == 0:
-        return "%var_190" in text
-    return any(
-        needle in text
-        for needle in (
-            f"%var_190.8+#{int(byte_index)}.8",
-            f"%var_190+#{int(byte_index)}",
-            f"%var_190.8 + #{int(byte_index)}.8",
-        )
+def _site_is_memory_store(site) -> bool:
+    return (
+        getattr(site, "emitter_role", "") == "memory_store"
+        or getattr(site, "opcode", "") in {"store", "m_stx"}
     )
+
+
+def _site_is_terminal_source_candidate(site, byte_index: int) -> bool:
+    return (
+        int(getattr(site, "byte_index", -1)) == int(byte_index)
+        and getattr(site, "corridor_role", "") == "terminal_tail"
+        and getattr(site, "emitter_role", "") != "guard_only"
+        and _site_is_memory_store(site)
+    )
+
+
+def _row_source_block(rows_by_byte: dict[int, Any], byte_index: int) -> int | None:
+    row = rows_by_byte.get(int(byte_index))
+    if row is None:
+        return None
+    source = getattr(row, "source_block", None)
+    if source is None:
+        return None
+    try:
+        return int(source)
+    except (TypeError, ValueError):
+        return None
 
 
 def _select_terminal_entry_site_block(
@@ -2223,20 +2431,15 @@ def _select_terminal_entry_site_block(
 ) -> int | None:
     candidates: list[tuple[int, int]] = []
     for site in sites:
-        if int(getattr(site, "byte_index", -1)) != int(byte_index):
-            continue
-        if getattr(site, "corridor_role", "") != "terminal_tail":
+        if not _site_is_terminal_source_candidate(site, byte_index):
             continue
         block = int(getattr(site, "block_serial", -1))
         if exclude_block is not None and block == int(exclude_block):
             continue
-        exact = _site_mentions_exact_source_byte(site, byte_index)
-        candidates.append((1 if exact else 0, block))
+        candidates.append((block, block))
     if not candidates:
         return None
-    # Entry blocks are the non-exact terminal-tail facts. If every candidate
-    # is exact, use the lowest serial as the earliest local entry.
-    candidates.sort(key=lambda item: (item[0], item[1]))
+    candidates.sort()
     return int(candidates[0][1])
 
 
@@ -2244,15 +2447,10 @@ def _select_terminal_store_guard_block(
     sites,
     *,
     byte_index: int,
-    exclude_exact_source: bool = True,
 ) -> int | None:
     candidates: list[tuple[int, int]] = []
     for site in sites:
-        if int(getattr(site, "byte_index", -1)) != int(byte_index):
-            continue
-        if getattr(site, "corridor_role", "") != "terminal_tail":
-            continue
-        if exclude_exact_source and _site_mentions_exact_source_byte(site, byte_index):
+        if not _site_is_terminal_source_candidate(site, byte_index):
             continue
         block = int(getattr(site, "block_serial", -1))
         candidates.append((block, block))
@@ -2267,6 +2465,17 @@ def _live_single_successor(adapter, live_serial: int) -> int | None:
     if len(succs) != 1:
         return None
     return int(succs[0])
+
+
+def _non_control_body_insns(ida_hexrays: Any, block: Any) -> list[Any]:
+    insns: list[Any] = []
+    cur = getattr(block, "head", None)
+    while cur is not None:
+        opcode = int(getattr(cur, "opcode", -1))
+        if opcode not in {int(ida_hexrays.m_nop), int(ida_hexrays.m_goto)}:
+            insns.append(cur)
+        cur = getattr(cur, "next", None)
+    return insns
 
 
 def _live_block_is_state_frontier_only(adapter, live_serial: int) -> bool:
@@ -2977,7 +3186,6 @@ def _resolve_byte4_equality_frontier(
     byte4_guard = _select_terminal_store_guard_block(
         sites,
         byte_index=5,
-        exclude_exact_source=True,
     )
     if byte4_guard is None:
         return None
@@ -3130,7 +3338,6 @@ def _close_terminal_equality_frontiers(
         guard_snap = _select_terminal_store_guard_block(
             sites,
             byte_index=byte_index,
-            exclude_exact_source=True,
         )
         if guard_snap is None or source_snap is None:
             continue
@@ -3396,6 +3603,38 @@ def _rewrite_terminal_zero_guard_literal_return_edges(
                 continue
             applied.append((int(source), int(return_arm), literal))
             break
+    return tuple(applied)
+
+
+def _rewrite_terminal_tail_return_carrier_artifacts(
+    adapter,
+    rows: Iterable[Any],
+) -> tuple[tuple[int, int, int], ...]:
+    rewrite = getattr(
+        adapter,
+        "apply_dispatcher_state_return_carrier_artifact_plan",
+        None,
+    )
+    if not callable(rewrite):
+        return ()
+    applied: list[tuple[int, int, int]] = []
+    seen: set[int] = set()
+    for row in rows:
+        early_return_target = getattr(row, "early_return_target", None)
+        if early_return_target is None:
+            continue
+        early_return_target = int(early_return_target)
+        if early_return_target in seen:
+            continue
+        seen.add(early_return_target)
+        result = rewrite(early_return_target)
+        if result is None:
+            continue
+        logger.info(
+            "terminal_tail_return_carrier_artifact: evaluator-planned block=%d",
+            int(early_return_target),
+        )
+        applied.append(tuple(int(item) for item in result))
     return tuple(applied)
 
 
@@ -3903,11 +4142,12 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
     dag: Any | None = None,
     evidence_provider: ByteTailRuntimeEvidenceProvider | None = None,
     cascade_priors: Any | None = None,
-) -> None:
+    dispatcher_artifact_planner: Any | None = None,
+) -> bool:
     """Materialize a terminal byte-tail cascade from explicit function priors."""
     raw = os.environ.get("D810_TERMINAL_TAIL_CASCADE_EGRESS", "1")
     if str(raw).lower() not in {"1", "true", "yes", "on"}:
-        return
+        return False
 
     if (
         os.environ.get("D810_TAIL_DISTINCT_BYTE")
@@ -3918,14 +4158,14 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
             "terminal_tail_cascade_egress: another tail-shaping probe is "
             "enabled; refusing to combine mutations"
         )
-        return
+        return False
 
     evidence = normalize_byte_tail_runtime_evidence(evidence_provider, mba)
     if cascade_priors is None:
         cascade_priors = evidence.terminal_tail_cascade_egress
     if cascade_priors is None or bool(getattr(cascade_priors, "is_empty", True)):
         logger.info("terminal_tail_cascade_egress: skipped reason=no_priors")
-        return
+        return False
 
     planner_evidence = None
     if fact_view is None or dag is None:
@@ -3939,12 +4179,18 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
         logger.warning(
             "terminal_tail_cascade_egress: fact view unavailable; skipping"
         )
-        return
+        return False
 
     diag_conn = None
     target_snap: int | None = None
 
-    adapter = LiveMbaAdapter(mba)
+    if dispatcher_artifact_planner is None:
+        adapter = LiveMbaAdapter(mba)
+    else:
+        adapter = LiveMbaAdapter(
+            mba,
+            dispatcher_artifact_planner=dispatcher_artifact_planner,
+        )
 
     try:
         from d810.transforms.terminal_tail_cascade_egress_planner import (
@@ -3965,9 +4211,24 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
         logger.exception(
             "terminal_tail_cascade_egress: planner failed; skipping"
         )
-        return
+        return False
 
     rows_by_byte = {int(row.byte_index): row for row in plan.rows}
+    logger.info(
+        "terminal_tail_cascade_egress: planner rows=%s dag_loaded=%s",
+        tuple(
+            (
+                int(row.byte_index),
+                getattr(row, "source_block", None),
+                getattr(row, "current_continuation_target", None),
+                getattr(row, "intended_target", None),
+                getattr(row, "early_return_target", None),
+                getattr(row, "reason", ""),
+            )
+            for row in plan.rows
+        ),
+        dag is not None,
+    )
     for override in getattr(cascade_priors, "row_target_overrides", ()) or ():
         row = rows_by_byte.get(int(override.byte_index))
         target_row = rows_by_byte.get(int(override.target_entry_byte_index))
@@ -3983,6 +4244,57 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
                 row,
                 intended_target=int(target_entry),
             )
+
+    return_artifact_applied = _rewrite_terminal_tail_return_carrier_artifacts(
+        adapter,
+        rows_by_byte.values(),
+    )
+    if return_artifact_applied:
+        logger.info(
+            "terminal_tail_return_carrier_artifact: applied=%s",
+            return_artifact_applied,
+        )
+
+    bridge_preflight_failures: list[tuple[int, str]] = []
+    for bridge in getattr(cascade_priors, "continuation_bridges", ()) or ():
+        continuation_row = rows_by_byte.get(int(bridge.continuation_byte_index))
+        continuation_start = (
+            getattr(continuation_row, "current_continuation_target", None)
+            if continuation_row is not None
+            else None
+        )
+        source_target = _row_source_block(
+            rows_by_byte,
+            int(bridge.source_byte_index),
+        )
+        path = _shortest_path_to_block(
+            blocks,
+            start_serial=continuation_start,
+            target_serial=source_target,
+            max_depth=int(bridge.max_depth),
+        )
+        source_block = path[-1] if path else None
+        target_block = _select_terminal_store_guard_block(
+            sites,
+            byte_index=int(bridge.target_store_guard_byte_index),
+        )
+        if source_block is None:
+            bridge_preflight_failures.append((
+                int(bridge.source_byte_index),
+                "source_loader_not_found_on_continuation",
+            ))
+        elif target_block is None:
+            bridge_preflight_failures.append((
+                int(bridge.source_byte_index),
+                "store_guard_target_not_found",
+            ))
+    if bridge_preflight_failures:
+        logger.info(
+            "terminal_tail_cascade_egress: skipped reason=bridge_preflight_failed "
+            "failures=%s",
+            tuple(bridge_preflight_failures),
+        )
+        return bool(return_artifact_applied)
 
     mapped_rows = []
     for byte_index in tuple(getattr(cascade_priors, "byte_indices", ()) or ()):
@@ -4021,21 +4333,35 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
     bridge_results: list[tuple[int, bool, str]] = []
     for bridge in getattr(cascade_priors, "continuation_bridges", ()) or ():
         continuation_row = rows_by_byte.get(int(bridge.continuation_byte_index))
-        path = _shortest_path_to_source_byte(
+        continuation_start = (
+            getattr(continuation_row, "current_continuation_target", None)
+            if continuation_row is not None
+            else None
+        )
+        source_target = _row_source_block(
+            rows_by_byte,
+            int(bridge.source_byte_index),
+        )
+        path = _shortest_path_to_block(
             blocks,
-            start_serial=(
-                getattr(continuation_row, "current_continuation_target", None)
-                if continuation_row is not None
-                else None
-            ),
-            byte_index=int(bridge.source_byte_index),
+            start_serial=continuation_start,
+            target_serial=source_target,
             max_depth=int(bridge.max_depth),
         )
         source_block = path[-1] if path else None
         target_block = _select_terminal_store_guard_block(
             sites,
             byte_index=int(bridge.target_store_guard_byte_index),
-            exclude_exact_source=True,
+        )
+        logger.info(
+            "terminal_tail_cascade_egress: bridge byte=%s "
+            "continuation_byte=%s start=%s path=%s source=%s target=%s",
+            int(bridge.source_byte_index),
+            int(bridge.continuation_byte_index),
+            continuation_start,
+            path,
+            source_block,
+            target_block,
         )
         if source_block is None:
             bridge_results.append(
@@ -4224,6 +4550,14 @@ def maybe_run_terminal_tail_cascade_egress_lowering(
         entry_applied,
         entry_skipped,
         split_report,
+    )
+    return bool(
+        getattr(report, "applied", False)
+        or getattr(split_report, "applied", False)
+        or any(ok for _, ok, _ in bridge_results)
+        or equality_applied
+        or entry_applied
+        or return_artifact_applied
     )
 
 

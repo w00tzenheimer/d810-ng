@@ -534,6 +534,7 @@ class ModificationType(Enum):
     BLOCK_NOP_INSNS = auto()          # NOP instructions in a block
     INSN_REMOVE = auto()              # Remove a specific instruction
     INSN_NOP = auto()                 # NOP a specific instruction
+    INSN_CONST_MOV_AND_NOP_PAIR = auto()  # Replace one body insn with const mov and NOP another
     INSN_ZERO_STATE_WRITE = auto()    # Zero source operand of state variable write
     INSN_PROMOTE_OPERAND_TO_SCALAR = auto()  # Hoist a fused mop_d sub-instruction to a fresh kreg
     INSN_SCALARIZE_LOCAL_ALIAS_ACCESS = auto()  # Rewrite proven local pointer alias ldx/stx through its base local
@@ -630,6 +631,7 @@ _STAGED_ATOMIC_CLASS_MAP: "dict[ModificationType, StagedAtomicClassification]" =
     # Instruction-only: never touches block topology.
     ModificationType.INSN_REMOVE: StagedAtomicClassification.INSTRUCTION_ONLY,
     ModificationType.INSN_NOP: StagedAtomicClassification.INSTRUCTION_ONLY,
+    ModificationType.INSN_CONST_MOV_AND_NOP_PAIR: StagedAtomicClassification.INSTRUCTION_ONLY,
     ModificationType.INSN_ZERO_STATE_WRITE: StagedAtomicClassification.INSTRUCTION_ONLY,
     ModificationType.INSN_PROMOTE_OPERAND_TO_SCALAR: StagedAtomicClassification.INSTRUCTION_ONLY,
     ModificationType.INSN_SCALARIZE_LOCAL_ALIAS_ACCESS: StagedAtomicClassification.INSTRUCTION_ONLY,
@@ -879,6 +881,11 @@ class GraphModification:
     new_target: int | None = None
     # For instruction-level operations
     insn_ea: int | None = None
+    # For instruction-level operations that address payload-body ordinals
+    insn_body_index: int | None = None
+    secondary_insn_body_index: int | None = None
+    const_value: int | None = None
+    replacement_dest: object | None = None
     # Priority for ordering (lower = earlier)
     priority: int = 100
     # Description for logging
@@ -1482,6 +1489,47 @@ class DeferredGraphModifier:
             description=description or f"nop insn at {hex(insn_ea)} in block {block_serial}",
         ))
         logger.debug("Queued insn nop: block %d, ea=%s", block_serial, hex(insn_ea))
+        if self.event_emitter is not None:
+            self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
+
+    def queue_const_mov_and_nop_pair(
+        self,
+        block_serial: int,
+        replacement_body_index: int,
+        nop_body_index: int,
+        const_value: int,
+        replacement_dest: object,
+        value_size: int | None = None,
+        description: str = "",
+    ) -> None:
+        """Queue replacement of one payload instruction and NOP a paired one.
+
+        Body indices are counted over non-NOP, non-goto instructions in the
+        target block. This avoids relying on microcode EAs, which are often
+        shared by several synthetic instructions in one block.
+        """
+        if replacement_body_index == nop_body_index:
+            raise ValueError("replacement and NOP body indices must differ")
+        self.modifications.append(GraphModification(
+            mod_type=ModificationType.INSN_CONST_MOV_AND_NOP_PAIR,
+            block_serial=int(block_serial),
+            insn_body_index=int(replacement_body_index),
+            secondary_insn_body_index=int(nop_body_index),
+            const_value=int(const_value),
+            replacement_dest=replacement_dest,
+            value_size=int(value_size or 0) or None,
+            priority=900,
+            description=description or (
+                f"replace body insn {replacement_body_index} with const mov "
+                f"and NOP body insn {nop_body_index} in block {block_serial}"
+            ),
+        ))
+        logger.debug(
+            "Queued const_mov_and_nop_pair: block %d replace=%d nop=%d",
+            block_serial,
+            replacement_body_index,
+            nop_body_index,
+        )
         if self.event_emitter is not None:
             self._emit(DeferredEvent.DEFERRED_QUEUE_ADDED, self._mod_payload(self.modifications[-1]))
 
@@ -5701,6 +5749,16 @@ class DeferredGraphModifier:
         elif mod.mod_type == ModificationType.INSN_NOP:
             return self._apply_insn_nop(blk, mod.insn_ea)
 
+        elif mod.mod_type == ModificationType.INSN_CONST_MOV_AND_NOP_PAIR:
+            return self._apply_const_mov_and_nop_pair(
+                blk,
+                mod.insn_body_index,
+                mod.secondary_insn_body_index,
+                mod.const_value,
+                mod.replacement_dest,
+                mod.value_size,
+            )
+
         elif mod.mod_type == ModificationType.INSN_ZERO_STATE_WRITE:
             return self._apply_zero_state_write(blk, mod.insn_ea)
 
@@ -6092,6 +6150,82 @@ class DeferredGraphModifier:
             hex(insn_ea), blk.serial
         )
         return False
+
+    def _payload_body_insns(self, blk: ida_hexrays.mblock_t) -> list:
+        """Return non-NOP, non-goto payload instructions for ordinal addressing."""
+        body = []
+        insn = blk.head
+        while insn is not None:
+            opcode = int(getattr(insn, "opcode", -1))
+            if opcode not in {
+                int(ida_hexrays.m_nop),
+                int(ida_hexrays.m_goto),
+            }:
+                body.append(insn)
+            insn = getattr(insn, "next", None)
+        return body
+
+    def _apply_const_mov_and_nop_pair(
+        self,
+        blk: ida_hexrays.mblock_t,
+        replacement_body_index: int | None,
+        nop_body_index: int | None,
+        const_value: int | None,
+        replacement_dest: object | None,
+        value_size: int | None,
+    ) -> bool:
+        """Replace one payload instruction with ``m_mov #const, dest`` and NOP another."""
+        if (
+            replacement_body_index is None
+            or nop_body_index is None
+            or const_value is None
+            or replacement_dest is None
+        ):
+            logger.warning(
+                "const_mov_and_nop_pair: incomplete payload for block %d",
+                blk.serial,
+            )
+            return False
+        body = self._payload_body_insns(blk)
+        try:
+            target = body[int(replacement_body_index)]
+            paired_nop = body[int(nop_body_index)]
+        except (IndexError, TypeError, ValueError):
+            logger.warning(
+                "const_mov_and_nop_pair: body index out of range for block %d "
+                "(replace=%s nop=%s body_len=%d)",
+                blk.serial,
+                replacement_body_index,
+                nop_body_index,
+                len(body),
+            )
+            return False
+
+        size = int(value_size or getattr(replacement_dest, "size", 0) or 4)
+        mask = (1 << (size * 8)) - 1
+        blk.make_nop(target)
+        target.opcode = ida_hexrays.m_mov
+        target.ea = int(getattr(self.mba, "entry_ea", 0) or 0)
+        target.l = ida_hexrays.mop_t()
+        target.l.make_number(
+            int(const_value) & mask,
+            size,
+            int(getattr(self.mba, "entry_ea", 0) or 0),
+        )
+        target.r = ida_hexrays.mop_t()
+        target.r.erase()
+        target.d = ida_hexrays.mop_t(replacement_dest)
+        blk.make_nop(paired_nop)
+        blk.mark_lists_dirty()
+        self.mba.mark_chains_dirty()
+        logger.info(
+            "CONST_MOV_AND_NOP_PAIR: blk[%d] replace=%d nop=%d value=0x%x",
+            blk.serial,
+            int(replacement_body_index),
+            int(nop_body_index),
+            int(const_value) & mask,
+        )
+        return True
 
     def _apply_zero_state_write(self, blk: ida_hexrays.mblock_t, insn_ea: int) -> bool:
         """Zero the source operand of a state variable write instruction.

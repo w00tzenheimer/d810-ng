@@ -219,6 +219,9 @@ def load_function_analysis_priors_from_config(
         )
         if not priors.is_empty:
             _add_function_analysis_priors(priors_by_key, function, priors)
+            aliases = raw_priors.get("aliases", ())
+            for alias in _coerce_prior_constants(aliases):
+                _add_function_analysis_priors(priors_by_key, alias, priors)
     return priors_by_key
 
 

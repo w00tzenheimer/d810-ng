@@ -446,6 +446,7 @@ __all__ = [
     "recognize_derived_xor_dispatcher_model",
     "recognize_derived_xor_dispatcher_models",
     "recognize_global_or_state_write_transition",
+    "resolve_predecessor_seeded_write_value",
     "resolve_state_write_value_set",
 ]
 
@@ -741,6 +742,60 @@ def fold_block_state_write(
     if result is None:
         return TOP
     folded = vd.to_const(result)
+    return TOP if folded is None else Const(folded & 0xFFFFFFFF, 4)
+
+
+def resolve_predecessor_seeded_write_value(
+    *,
+    mba,
+    block_serial: int,
+    predecessor_serial: int,
+    dest_mop,
+    cross_block_resolver=None,
+) -> AbstractValue:
+    """Fold a destination write using constants seeded from one predecessor.
+
+    This is the read-only evaluator path for split materializations such as:
+
+    ``pred: mov #A, r1; mov #B, r2`` then ``block: xor r1, r2, state``.
+
+    The caller supplies the destination mop from the target write. The evaluator
+    populates the normal KnownBits environment from the predecessor's writes,
+    then folds the target block with that environment. Ambiguity or missing
+    destinations return ``TOP``.
+    """
+    dest_key = _dest_key(dest_mop)
+    if dest_key is None:
+        return TOP
+    try:
+        pred_blk = mba.get_mblock(int(predecessor_serial))
+        target_blk = mba.get_mblock(int(block_serial))
+    except Exception:
+        return TOP
+    if pred_blk is None or target_blk is None:
+        return TOP
+
+    vd = KnownBitsValueDomain()
+    env: dict = {}
+    resolver = cross_block_resolver
+
+    def _seed_block(block, use_block: int, *, capture_result: bool) -> AbstractValue | None:
+        result = None
+        ins = getattr(block, "head", None)
+        while ins is not None:
+            value = _eval_insn(ins, env, vd, resolver, int(use_block))
+            key = _dest_key(getattr(ins, "d", None))
+            if key is not None and value is not None:
+                env[key] = value
+            if capture_result and key == dest_key:
+                result = value
+            ins = getattr(ins, "next", None)
+        return result
+
+    _seed_block(pred_blk, int(predecessor_serial), capture_result=False)
+    folded = vd.to_const(
+        _seed_block(target_blk, int(block_serial), capture_result=True)
+    )
     return TOP if folded is None else Const(folded & 0xFFFFFFFF, 4)
 
 

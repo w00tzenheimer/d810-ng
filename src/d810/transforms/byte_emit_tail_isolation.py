@@ -429,22 +429,25 @@ class LiveUseAnchorAdapter(Protocol):
     call order contract.
     """
 
-    def find_byte_emit_block_by_v190_offset(self, byte_index: int) -> BlockView | None:
-        """Return the live byte_emit[k] block by matching its
-        ``[ds.2 : %var_190.8 + #k.8]`` indexed store.
+    def find_byte_emit_block_by_source_byte_index(
+        self,
+        byte_index: int,
+    ) -> BlockView | None:
+        """Return the live byte_emit[k] block by matching its indexed
+        source-byte load/store shape.
 
         Returns None if no block in the live mba carries that store.
         """
         ...
 
-    def extract_v190_indexed_operand(
+    def extract_source_byte_indexed_operand(
         self, byte_emit_serial: int, byte_index: int,
     ) -> Any:
         """Return the exact source-address ``mop_t`` operand-tree from
-        the byte_emit block's existing ``xdu([ds.2 : v190 + #k.8].1)``
-        sub-expression. The returned operand is later passed unchanged
-        as the source of two new ``m_ldx`` instructions, guaranteeing
-        both reads target the same memory as byte_emit's own load.
+        the byte_emit block's existing indexed source-byte sub-expression.
+        The returned operand is later passed unchanged as the source of two
+        new ``m_ldx`` instructions, guaranteeing both reads target the same
+        memory as byte_emit's own load.
 
         Raises if the indexed-load sub-expression is not present.
         """
