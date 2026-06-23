@@ -23,7 +23,7 @@ That single test folds `BST`→`CONDITION_CHAIN` and `SWITCH`/`INDIRECT_TABLE`�
 
 ## Part A — Operation vocabulary (Option 1: one normalized op, raw in attrs)
 
-Three complementary enums (two already exist and already embody the decisions):
+Complementary enums (most already exist and already embody the decisions):
 
 * `ValueOpKind` (`ir/expressions.py`) — value-producing ops. GROW it.
 * `PredicateKind` (`ir/semantics.py:60`) — compares. DONE (signedness already in
@@ -33,7 +33,7 @@ Three complementary enums (two already exist and already embody the decisions):
   separate `CallKind` family; do **not** add `ControlTransferKind.CALL` unless
   that contract is deliberately reopened.
 
-There is NO monolithic "OpKind"; these three together ARE the op vocabulary.
+There is NO monolithic "OpKind"; these families together ARE the op vocabulary.
 
 ### A1. Grow `ValueOpKind` (P-Code altitude: machine-near, typeless)
 Add: `MUL`, `UDIV/SDIV`, `UMOD/SMOD`, `OR`, `XOR`, `NOT`, `NEG`, `SHL`, `SHR/SAR`
@@ -61,11 +61,14 @@ has a dedicated expression dataclass.
 Status 2026-06-18: implemented. `CallKind.{DIRECT,INDIRECT,INTRINSIC}` is live,
 Hex-Rays `m_call` / `m_icall` classify as direct / indirect calls, and
 `ControlTransferKind` remains transfer-only. Ticket `llr-a5b7` is closed for
-this vocabulary slice; the remaining open `llr-epu0` work is the larger
-Operation-record projection, not a vocabulary blocker.
+this vocabulary slice. Ticket `llr-epu0` is also closed as of the 2026-06-23
+closeout check: `d810.ir.instructions.Instruction` carries `operation` as a
+field, `d810.ir.insn_projection.project_instruction()` projects Hex-Rays-shaped
+snapshots to Varnode-backed inputs/results/effects/control/memory, and raw
+backend opcode data stays in provenance attrs.
 
 ### A3. Provenance & lift
-`Operation.attrs` carries `raw_opcode_int` + `raw_opcode_name` + backend id
+`Instruction.attrs` carries `raw_opcode_int` + `raw_opcode_name` + backend id
 (diagnostics only; the `op_<N>` fallback disappears). Per-backend lift table in
 `d810/backends/<vendor>/opcode_lift.py`: `lift_opcode(raw) -> (kind, attrs)`.
 Hex-Rays first; `pcode`/`vex`/`llvm` later reuse the SAME three enums.
@@ -168,15 +171,21 @@ Status 2026-06-17:
   `--dump-condition-chain-maturity`. This was an intentional hard rename, not a
   persisted-schema compatibility shim.
 
-Remaining gaps:
+Closure status 2026-06-23:
 
-* Stale comments/scripts/tests can still teach retired router taxonomy even when
-  source behavior is already moved. Ticket `llr-zkju` owns this breadcrumb
-  cleanup and classification.
+* Ticket `llr-zkju` is closed. A narrow live-source breadcrumb check for
+  `BST`, `extract_bst`, `DispatcherType`, `INDIRECT_TABLE`,
+  `DERIVED_DISPATCH_KEY`, `StateDispatcherMap.source`, and `dispatcher_type`
+  leaves only a unit regression proving legacy `dispatcher_type` metadata is
+  not accepted as canonical router kind.
 * Persisted diagnostic schema still has physical compatibility names such as
   `state_dispatcher_rows.dispatcher_kind`. Those names are schema/storage
   compatibility only. Current writer semantics encode router shape as `TABLE`
   and put table origin in `payload_json["table_provenance"]`.
+* `switch_table_*`, `SwitchCase*`, and `DispatchPattern.SWITCH_TABLE` names are
+  not the retired router taxonomy by themselves. They name source/table-branch
+  facts, strategy classification, or `TableProvenance.SWITCH` evidence. Do not
+  treat them as a reason to resurrect `RouterKind.SWITCH`.
 * Historical migration docs can mention old names when they are explicitly
   describing past slices. Current-roadmap docs must not describe `BST`,
   `SWITCH`, `INDIRECT_TABLE`, or `DERIVED_DISPATCH_KEY` as live contracts.
@@ -226,6 +235,68 @@ Current migration gap: some collectors and fact lifecycle code still carry raw
 Hex-Rays maturity integers / `MMAT_*` strings. Those should move behind the same
 adapter boundary over time, but the vocabulary axis itself does not need a new
 design.
+
+### C1. Hex-Rays maturity integer/string cleanup plan
+
+Plan first; do not implement this cleanup until the plan has been reviewed.
+
+Measured 2026-06-23 with
+`PYTHONPATH=src pyenv exec python tools/scripts/codemod_portable_ir_audit.py --category A --real-only --sites --json`:
+the deterministic portable-IR audit reports 176 category-A maturity findings.
+That count is intentionally conservative and currently overcounts legitimate
+portable vocabulary annotations such as `IRMaturity` / `MaturityRange`, so the
+first slice is calibration, not mechanical replacement.
+
+Boundary rule:
+
+* Raw `ida_hexrays.MMAT_*` integers are allowed only at Hex-Rays adapter and
+  hook/runtime edges.
+* Portable pass scheduling and family declarations use `IRMaturity`.
+* Broad read-only snapshot consumers use `SnapshotForm`.
+* Persisted diagnostic DB labels and CLI/user-facing snapshot selectors may keep
+  `MMAT_*` strings as compatibility names, but those strings must be parsed and
+  formatted by one adapter helper instead of each portable module carrying its
+  own name table.
+* Historical docs/tests may mention `MMAT_*`; live portable production logic
+  should not branch on provider strings.
+
+Ordered implementation slices:
+
+1. **Calibrate the audit gate.** Update `tools/scripts/codemod_portable_ir_audit.py`
+   so `IRMaturity`, `MaturityRange`, and other portable maturity-type annotations
+   are not counted as leaks. Keep `maturity: int`, raw `MMAT_*` tables, and
+   string comparisons as findings. Record the post-calibration category-A
+   baseline by package before changing behavior.
+2. **Centralize Hex-Rays maturity labels.** Extend the Hex-Rays adapter seam
+   (`d810.hexrays.ir_maturity`, or a sibling under `d810.hexrays`) with helpers
+   for raw maturity integer -> `MMAT_*` label, label normalization, ordering, and
+   snapshot-label construction. Replace duplicate name tables in manager/runtime
+   code with dependency-injected label providers where portable layers cannot
+   import Hex-Rays.
+3. **Move fact-collector scheduling to `IRMaturity`.** Change collector
+   declarations from `frozenset[int]` / local `_MATURITY_VALUES` tables to
+   `frozenset[IRMaturity]`; map the live `mba.maturity` to `IRMaturity` once at
+   the Hex-Rays runtime boundary. Preserve the persisted fact row's provider
+   label as diagnostic metadata.
+4. **Normalize fact lifecycle ranking.** Replace local `MMAT_*` rank tables in
+   `FactLifecycleRuntime`, induction/terminal/return-carrier analyses, and
+   terminal-tail region matching with a shared maturity-order abstraction. The
+   ranking input may be a provider label only when reading persisted diagnostics.
+5. **Classify diagnostic storage compatibility.** Keep physical schema fields
+   such as `snapshots.maturity` and existing labels like
+   `maturity_MMAT_GLBOPT1_post_d810` until a separate schema migration is
+   justified. Add comments/tests that mark them as storage compatibility, not
+   portable scheduling vocabulary.
+6. **Install the guardrail.** After the calibrated baseline is down to expected
+   compatibility surfaces, add a category-A `--fail-over` threshold to the local
+   architecture checks so new raw maturity tables or provider strings cannot
+   re-enter portable production code unnoticed.
+
+Validation for the eventual implementation slices: focused unit tests for the
+adapter helpers and fact lifecycle ranking, the portable-IR audit count for
+category A, `sg scan`, `PYTHONPATH=src pyenv exec lint-imports --config
+.importlinter`, and targeted Docker system selectors through
+`./tools/scripts/run_system_tests_docker.sh system -w llvm-lisa-restructure -l -o <log>`.
 
 ---
 
@@ -290,12 +361,11 @@ design.
 7. **Detector provenance becomes metadata**, not enum identity (the standing
    rule that prevents the debt recurring).
 
-   Breadcrumb cleanup ticket: `llr-zkju` classifies or removes stale comments,
-   scripts, and tests that still teach retired router taxonomy. Residual names
-   are allowed only when classified as persisted DB/schema compatibility or
-   historical migration context; live source, tests, and current roadmap text
-   should use `RouterKind.TABLE`, `TableProvenance`, and
-   `DispatchKeyTransformKind`.
+   Status 2026-06-23: closed. Breadcrumb cleanup ticket `llr-zkju` is closed.
+   Residual old-vocabulary strings are classified as persisted DB/schema
+   compatibility, historical migration context, or tests that prove legacy
+   metadata is ignored. Live source, tests, and current roadmap text should use
+   `RouterKind.TABLE`, `TableProvenance`, and `DispatchKeyTransformKind`.
 8. **Post-vocabulary / pre-LLVM: normalize maturity-to-form ranges.**
 
    Status 2026-06-18: implemented under ticket `llr-nix5`. `SnapshotForm` is the
@@ -306,6 +376,29 @@ design.
    `snapshot_stage`/`SnapshotStage` as a narrow alias for the current event and
    metadata contract. Tests cover mapping totality and guard pass gates against
    importing the coarse form.
+
+9. **Burn down remaining maturity integer/string drift.**
+
+   Status 2026-06-23: plan written only; implementation intentionally deferred
+   pending review. See C1. This wraps the remaining raw `MMAT_*` / maturity-int
+   cleanup into calibrated audit, adapter-label centralization,
+   `IRMaturity`-based collector scheduling, fact-lifecycle ranking cleanup, and
+   diagnostic-storage compatibility classification.
+
+## Closure tracker
+
+* Operation vocabulary: closed. `llr-epu0` is closed; the portable
+  `Instruction` projection exists, and operation kind is a field on the
+  instruction record. Future consumer migration is adoption work, not a
+  vocabulary blocker.
+* Router taxonomy and dispatch-key vocabulary: closed for live contracts.
+  Residual `BST`, `SWITCH`, `INDIRECT_TABLE`, and derived-key wording belongs to
+  historical migration text, persisted-schema compatibility, or explicit
+  regression tests. `llr-zkju` is closed.
+* Maturity/form vocabulary: closed for enum design. Remaining work is the C1
+  cleanup plan, not a new maturity vocabulary.
+* Persisted diagnostic schema names: compatibility surface, not live vocabulary.
+  Do not rename physical DB columns opportunistically.
 
 Each phase: golden suite green via the Docker runner (NEVER local `pytest
 tests/system` — false-red). Unit + `lint-imports` locally.
