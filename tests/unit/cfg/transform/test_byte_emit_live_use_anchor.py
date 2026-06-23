@@ -2,7 +2,7 @@
 
 No IDA. Fake adapter records every call. The point of these tests is
 the *control flow* of the orchestrator, not the IR shape of the anchor
-(that is verified end-to-end by the snap18 v190 count experiment).
+(that is verified end-to-end by the snap18 source-byte count experiment).
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class _AnchorInsertFailure(RuntimeError):
 
 @dataclass(slots=True)
 class _OperandStub:
-    label: str = "v190+#6.8"
+    label: str = "source_bytes+#6.8"
 
 
 @dataclass(slots=True)
@@ -46,11 +46,18 @@ class FakeAnchorAdapter:
     calls_find_pre_return: int = 0
     calls_insert: list[dict] = field(default_factory=list)
 
-    def find_byte_emit_block_by_v190_offset(self, byte_index: int) -> BlockView | None:
+    def find_byte_emit_block_by_source_byte_index(
+        self,
+        byte_index: int,
+    ) -> BlockView | None:
         self.calls_find_byte_emit.append(byte_index)
         return self.byte_emit_block
 
-    def extract_v190_indexed_operand(self, byte_emit_serial: int, byte_index: int) -> Any:
+    def extract_source_byte_indexed_operand(
+        self,
+        byte_emit_serial: int,
+        byte_index: int,
+    ) -> Any:
         self.calls_extract.append((byte_emit_serial, byte_index))
         if self.raise_on_extract is not None:
             raise self.raise_on_extract

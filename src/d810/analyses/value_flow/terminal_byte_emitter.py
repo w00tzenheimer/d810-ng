@@ -29,7 +29,6 @@ _TARGET_MATURITIES = frozenset({
 _STX_OPCODES = frozenset({"m_stx", "op_1", "store"})
 _STORE_TEXT_RE = re.compile(r"^\s*stx\s+(.+?),\s*ds\.\d+,\s*(.+)$", re.IGNORECASE)
 _DS_ADDRESS_RE = re.compile(r"\[ds\.[^\]]+\]")
-_VAR_TOKEN_RE = re.compile(r"%var_([0-9a-fA-F]+)\.\d+(?:\{[^}]*\})?")
 _BYTE_INDEX_RE = re.compile(
     r"(?:v52\s*\[\s*(?P<v52>[0-6])\s*\]|"
     r"byte(?:_index)?\s*[=:]\s*(?P<label>[0-6])|"
@@ -278,10 +277,7 @@ def _terminal_family_id(
     if (
         candidate.byte_index == 6
         and candidate.counter == "unknown-counter"
-        and (
-            bool(set(candidate.block.preds) & terminal_blocks)
-            or "%var_188" in candidate.destination
-        )
+        and bool(set(candidate.block.preds) & terminal_blocks)
     ):
         return "terminal_tail"
     return "non_terminal_byte_emitter"

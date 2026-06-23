@@ -1,6 +1,7 @@
 """Tests for TerminalByteEmitterFactCollector."""
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
@@ -497,6 +498,120 @@ def test_terminal_family_includes_byte1_continuation_on_terminal_destination() -
     assert len(byte1) == 1
     assert byte1[0].payload["family_id"] == "terminal_tail"
     assert "family=terminal_tail" in byte1[0].semantic_key
+
+
+def test_byte6_unknown_counter_is_not_promoted_by_destination_temp_name() -> None:
+    collector = TerminalByteEmitterFactCollector()
+
+    facts = collector.collect(
+        _target(
+            _insn(
+                index=1,
+                opcode_name="op_1",
+                src_l_type="mop_S",
+                src_l_stkoff=0x688,
+                dstr=(
+                    "stx ([ds.2:(%var_380.8 & #-8.8)+%var_188.8].8 | "
+                    "(xdu.8([ds.2:(%var_src.8+#6.8)].1) <<l #8.1)), "
+                    "ds.2, ((%var_380.8 & #-8.8)+%var_188.8)"
+                ),
+            ),
+            serial=206,
+            succs=(207,),
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_GLBOPT1"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    assert facts[0].payload["byte_index"] == 6
+    assert facts[0].payload["family_id"] == "non_terminal_byte_emitter"
+
+
+def test_byte6_unknown_counter_can_follow_terminal_tail_predecessor() -> None:
+    collector = TerminalByteEmitterFactCollector()
+
+    facts = collector.collect(
+        SimpleNamespace(
+            blocks={
+                101: BlockSnapshot(
+                    serial=101,
+                    block_type=2,
+                    type_name="BLT_2WAY",
+                    start_ea=0x180014101,
+                    nsucc=2,
+                    npred=1,
+                    succs=[102, 241],
+                    preds=[99],
+                    instructions=[
+                        _insn(
+                            index=0,
+                            opcode_name="m_jcnd",
+                            dstr="jnz %var_tail.8, #0.8, @241",
+                        ),
+                    ],
+                ),
+                102: BlockSnapshot(
+                    serial=102,
+                    block_type=2,
+                    type_name="BLT_2WAY",
+                    start_ea=0x180014102,
+                    nsucc=2,
+                    npred=1,
+                    succs=[206, 241],
+                    preds=[101],
+                    instructions=[
+                        _insn(
+                            index=0,
+                            opcode_name="m_jcnd",
+                            dstr="jnz %var_tail.8, #5.8, @241",
+                        ),
+                        _insn(
+                            index=1,
+                            opcode_name="m_stx",
+                            dstr="stx v52[5], ds.1, %var_dst.8",
+                        ),
+                    ],
+                ),
+                206: BlockSnapshot(
+                    serial=206,
+                    block_type=1,
+                    type_name="BLT_1WAY",
+                    start_ea=0x180014206,
+                    nsucc=1,
+                    npred=1,
+                    succs=[207],
+                    preds=[102],
+                    instructions=[
+                        _insn(
+                            index=1,
+                            opcode_name="op_1",
+                            dstr=(
+                                "stx (xdu.8([ds.2:(%var_src.8+#6.8)].1) <<l #8.1), "
+                                "ds.2, %some_destination.8"
+                            ),
+                        ),
+                    ],
+                ),
+            }
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_GLBOPT1"],
+        phase="pre_d810",
+    )
+
+    by_block = {fact.source_block: fact for fact in facts}
+    assert by_block[102].payload["family_id"] == "terminal_tail"
+    assert by_block[206].payload["family_id"] == "terminal_tail"
+
+
+def test_collector_does_not_hardcode_hodur_destination_temp_name() -> None:
+    source = Path(
+        "src/d810/analyses/value_flow/terminal_byte_emitter.py"
+    ).read_text(encoding="utf-8")
+
+    assert "%var_188" not in source
 
 
 def test_ignores_source_byte_load_shift_without_store() -> None:

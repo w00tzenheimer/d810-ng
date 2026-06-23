@@ -113,7 +113,7 @@ SUB_7FFD_RETURN_ARTIFACT_EDGE_PROOFS = (
 )
 SUB_7FFD_TERMINAL_TAIL_CASCADE_EGRESS_PRIORS = (
     TerminalTailCascadeEgressPriors(
-        byte_indices=(1, 2, 5),
+        byte_indices=(1, 2, 4, 5),
         split_byte_indices=(3,),
         row_target_overrides=(
             TerminalTailRowTargetOverride(

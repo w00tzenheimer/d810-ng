@@ -8,7 +8,6 @@ can the current D810 graph be rewired into that cascade shape?
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
 from d810.analyses.control_flow.scc import compute_live_cfg_sccs
@@ -19,17 +18,25 @@ SAFE_TARGET_POST_GUARD = "SAFE_TARGET_POST_GUARD"
 NEEDS_STATE_WRITE = "NEEDS_STATE_WRITE"
 AMBIGUOUS_STATE_UPDATE = "AMBIGUOUS_STATE_UPDATE"
 
-_GUARD_COMPARE_RE = re.compile(
-    r"\b(?:jnz|jz|jcnd)\s+"
-    r"(?P<var>%var_[0-9A-Fa-f]+)\.\d+\s*,\s*"
-    r"#(?P<value>[-+]?(?:0x[0-9A-Fa-f]+|\d+))\.\d+",
-)
-_MOV_CONST_RE = re.compile(
-    r"\bmov\s+#(?P<value>[-+]?(?:0x[0-9A-Fa-f]+|\d+))\.\d+\s*,\s*"
-    r"(?P<var>%var_[0-9A-Fa-f]+)\.\d+",
-)
-_BRANCH_TARGET_RE = re.compile(r"@(?P<target>\d+)\b")
-_SOURCE_BYTE_BUFFERS = ("%var_190", "%var_678")
+
+@dataclass(frozen=True, slots=True)
+class TerminalTailGuardRequirement:
+    """Structured guard comparison seen in a terminal-tail block."""
+
+    variable: str
+    value: int
+    branch_target: int | None = None
+    insn_index: int = -1
+    has_prior_store: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalTailConstWrite:
+    """Structured constant write to a dispatcher-state carrier."""
+
+    variable: str
+    value: int
+    insn_index: int = -1
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +50,8 @@ class TerminalTailBlock:
     start_ea_hex: str | None = None
     insn_opcodes: tuple[str, ...] = ()
     insn_text: tuple[str, ...] = ()
+    guard_requirements: tuple[TerminalTailGuardRequirement, ...] = ()
+    const_writes: tuple[TerminalTailConstWrite, ...] = ()
 
     @property
     def has_explicit_store(self) -> bool:
@@ -198,35 +207,25 @@ def terminal_byte_emit_site_from_payload(
     )
 
 
-def _site_mentions_exact_source_byte(site: TerminalByteEmitSite) -> bool:
-    if site.byte_index == 0:
-        return "%var_190" in site.source_expression
-    needles = (
-        f"%var_190.8+#{site.byte_index}.8",
-        f"%var_190+#{site.byte_index}",
-        f"%var_190.8 + #{site.byte_index}.8",
+def _site_is_memory_store(site: TerminalByteEmitSite) -> bool:
+    return site.emitter_role == "memory_store" or site.explicit_store
+
+
+def _site_is_terminal_source_candidate(site: TerminalByteEmitSite) -> bool:
+    return site.is_terminal_tail and not site.is_guard_only and _site_is_memory_store(site)
+
+
+def _site_is_next_target_candidate(site: TerminalByteEmitSite) -> bool:
+    return (
+        not site.is_terminal_tail
+        and not site.is_guard_only
+        and _site_is_memory_store(site)
     )
-    return any(needle in site.source_expression for needle in needles)
-
-
-def _site_mentions_source_byte_buffer(site: TerminalByteEmitSite) -> bool:
-    haystack = "\n".join((site.source_expression, site.destination))
-    if site.byte_index == 0:
-        return any(buffer in haystack for buffer in _SOURCE_BYTE_BUFFERS)
-    for buffer in _SOURCE_BYTE_BUFFERS:
-        pattern = re.compile(
-            rf"{re.escape(buffer)}(?:\.8)?\s*\+\s*#{site.byte_index}(?:\.8)?"
-        )
-        if pattern.search(haystack):
-            return True
-    return False
 
 
 def _site_score(site: TerminalByteEmitSite) -> tuple[int, float, int]:
     """Prefer the site most likely to represent the real byte emit."""
     score = 0
-    if _site_mentions_exact_source_byte(site):
-        score += 60
     if site.is_terminal_tail:
         score += 40
     if site.explicit_store:
@@ -237,10 +236,6 @@ def _site_score(site: TerminalByteEmitSite) -> tuple[int, float, int]:
         score += 8
     if site.continuation_edge is not None:
         score += 8
-    if "%var_188" in site.destination or "%var_190" in site.source_expression:
-        score += 8
-    if site.destination == "%var_178.8":
-        score -= 4
     if site.is_guard_only:
         score -= 18
     return (score, site.confidence, -site.block_serial)
@@ -251,7 +246,7 @@ def _select_sites_by_byte(
 ) -> dict[int, TerminalByteEmitSite]:
     selected: dict[int, TerminalByteEmitSite] = {}
     for site in sites:
-        if not site.is_terminal_tail and not _site_mentions_exact_source_byte(site):
+        if not _site_is_terminal_source_candidate(site):
             continue
         current = selected.get(site.byte_index)
         if current is None or _site_score(site) > _site_score(current):
@@ -264,7 +259,20 @@ def _select_next_target_sites_by_byte(
 ) -> dict[int, TerminalByteEmitSite]:
     selected: dict[int, TerminalByteEmitSite] = {}
     for site in sites:
-        if site.is_terminal_tail or not _site_mentions_source_byte_buffer(site):
+        if not _site_is_next_target_candidate(site):
+            continue
+        current = selected.get(site.byte_index)
+        if current is None or _site_score(site) > _site_score(current):
+            selected[site.byte_index] = site
+    return selected
+
+
+def _select_guard_only_sites_by_byte(
+    sites: Iterable[TerminalByteEmitSite],
+) -> dict[int, TerminalByteEmitSite]:
+    selected: dict[int, TerminalByteEmitSite] = {}
+    for site in sites:
+        if not site.is_guard_only:
             continue
         current = selected.get(site.byte_index)
         if current is None or _site_score(site) > _site_score(current):
@@ -280,7 +288,7 @@ def _block_has_call(block: TerminalTailBlock) -> bool:
 
 
 def _block_has_guard(block: TerminalTailBlock) -> bool:
-    return any(_GUARD_COMPARE_RE.search(text) for text in block.insn_text)
+    return bool(block.guard_requirements)
 
 
 def _entry_predecessor_score(
@@ -393,46 +401,22 @@ def _mutated_succs(
     return out
 
 
-def _parse_int_literal(text: str) -> int | None:
-    try:
-        return int(text, 0)
-    except ValueError:
-        return None
-
-
 def _guard_state_requirement(
     block: TerminalTailBlock | None,
 ) -> tuple[str | None, int | None]:
     if block is None:
         return (None, None)
-    for index in range(len(block.insn_text) - 1, -1, -1):
-        text = block.insn_text[index]
-        match = _GUARD_COMPARE_RE.search(text)
-        if match is None:
+    for guard in reversed(block.guard_requirements):
+        if guard.has_prior_store:
             continue
-        has_prior_store = any(
-            opcode in {"m_stx", "op_1"} or prior_text.lstrip().startswith("stx")
-            for opcode, prior_text in zip(
-                block.insn_opcodes[:index],
-                block.insn_text[:index],
-            )
-        )
-        if has_prior_store:
-            # This is the byte block's own post-emit early-return guard,
-            # not a precondition that the predecessor must synthesize.
-            continue
-        return (match.group("var"), _parse_int_literal(match.group("value")))
+        return (guard.variable, guard.value)
     return (None, None)
 
 
 def _tail_branch_target(block: TerminalTailBlock) -> int | None:
-    for text in reversed(block.insn_text):
-        if not _GUARD_COMPARE_RE.search(text):
-            continue
-        match = _BRANCH_TARGET_RE.search(text)
-        if match is None:
-            continue
-        return _parse_int_literal(match.group("target"))
+    for guard in reversed(block.guard_requirements):
+        if guard.branch_target is not None:
+            return guard.branch_target
     return None
 
 
@@ -443,11 +427,8 @@ def _state_write_in_block(
 ) -> bool:
     if block is None or variable is None or required_value is None:
         return False
-    for text in block.insn_text:
-        match = _MOV_CONST_RE.search(text)
-        if match is None or match.group("var") != variable:
-            continue
-        if _parse_int_literal(match.group("value")) == required_value:
+    for write in block.const_writes:
+        if write.variable == variable and write.value == required_value:
             return True
     return False
 
@@ -587,6 +568,7 @@ class TerminalTailCascadeEgressPlanner:
         site_list = tuple(sites)
         self._sites_by_byte = _select_sites_by_byte(site_list)
         self._next_target_sites_by_byte = _select_next_target_sites_by_byte(site_list)
+        self._guard_only_sites_by_byte = _select_guard_only_sites_by_byte(site_list)
 
     def build_plan(self) -> TerminalTailCascadeEgressPlan:
         block_succs = {
@@ -619,6 +601,7 @@ class TerminalTailCascadeEgressPlanner:
         intended_target = next_site.block_serial if next_site is not None else None
 
         if block is None or site is None:
+            diagnostic_site = site or self._guard_only_sites_by_byte.get(byte_index)
             (
                 state_variable,
                 state_required_value,
@@ -649,7 +632,7 @@ class TerminalTailCascadeEgressPlanner:
                     state_update_verdict=state_update_verdict,
                     confidence=0.0,
                     reason=_reason(
-                        site=site,
+                        site=diagnostic_site,
                         block=block,
                         intended_target=intended_target,
                         preserves_early_return=False,

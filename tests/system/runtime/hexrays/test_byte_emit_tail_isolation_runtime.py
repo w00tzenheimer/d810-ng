@@ -79,6 +79,24 @@ class _FakeEvidenceProvider:
         return self.evidence
 
 
+@dataclass(frozen=True)
+class _RuntimePlannerBlock:
+    serial: int
+    succs: tuple[int, ...] = ()
+    insn_text: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _RuntimePlannerSite:
+    source_expression: str = ""
+    byte_index: int = 0
+    block_serial: int = 0
+    corridor_role: str = "terminal_tail"
+    emitter_role: str = "memory_store"
+    opcode: str = "m_stx"
+    confidence: float = 0.8
+
+
 @dataclass
 class _FakeLiveBlock:
     succs: tuple[int, ...] = ()
@@ -108,6 +126,35 @@ class _FakeLiveMba:
 
     def get_mblock(self, serial):
         return self.blocks.get(int(serial))
+
+
+def test_source_byte_family_key_requires_structural_identity_not_dstr():
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+
+    class _FakeHexrays:
+        mop_r = 1
+        mop_S = 5
+        mop_v = 6
+        mop_l = 9
+
+    class _FakeStackRef:
+        off = 0x190
+
+    class _FakeStackOp:
+        t = _FakeHexrays.mop_S
+        s = _FakeStackRef()
+
+        def dstr(self):
+            return "%var_678.8"
+
+    class _FakeTextOnlyOp:
+        t = 99
+
+        def dstr(self):
+            return "%var_190.8"
+
+    assert runtime._source_base_key(_FakeStackOp(), _FakeHexrays) == "stk:400"
+    assert runtime._source_base_key(_FakeTextOnlyOp(), _FakeHexrays) is None
 
 
 @dataclass
@@ -150,6 +197,22 @@ def test_bridge_plan_row_rejects_diag_bridge_inputs():
 
     assert mapped is None
     assert reason == "live_block_not_resolvable:diag_bridge_disabled"
+
+
+def test_runtime_shortest_path_finds_structured_target_block():
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+
+    blocks = {
+        199: _RuntimePlannerBlock(serial=199, succs=(200,)),
+        200: _RuntimePlannerBlock(serial=200, succs=(207,)),
+        207: _RuntimePlannerBlock(serial=207),
+    }
+
+    assert runtime._shortest_path_to_block(
+        blocks,
+        start_serial=199,
+        target_serial=207,
+    ) == (199, 200, 207)
 
 
 def test_bridge_plan_row_identity_mode_uses_live_serials():
@@ -210,7 +273,7 @@ def test_load_planner_sites_from_fact_view_uses_observation_source_block():
             "byte_index": 2,
             "corridor_role": "terminal_tail",
             "emitter_role": "memory_store",
-            "source_byte_expression": "xdu.8([ds.2:(%var_190.8+#2.8)].1)",
+            "source_byte_expression": "xdu.8([ds.2:(source_bytes+#2)].1)",
             "destination_buffer_expression": "[ds.2:%var_178]",
         },
     )
@@ -244,7 +307,7 @@ def test_load_planner_sites_remaps_stale_source_block_by_live_instruction_ea():
             "corridor_role": "terminal_tail",
             "emitter_role": "memory_store",
             "opcode": "m_stx",
-            "source_byte_expression": "xdu.8([ds.2:(%var_190.8+#3.8)].1)",
+            "source_byte_expression": "xdu.8([ds.2:(source_bytes+#3)].1)",
             "destination_buffer_expression": "[ds.2:%var_188]",
             "source_block": 164,
             "destination_block": 164,
@@ -475,7 +538,7 @@ def test_terminal_tail_uses_provider_planner_evidence_without_fact_view(monkeypa
     monkeypatch.setattr(
         runtime,
         "execute_terminal_tail_cascade_egress_lowering",
-        lambda **kwargs: "report",
+        lambda **kwargs: type("Report", (), {"applied": True})(),
     )
     monkeypatch.setattr(
         runtime,
@@ -489,14 +552,342 @@ def test_terminal_tail_uses_provider_planner_evidence_without_fact_view(monkeypa
     )
 
     mba = object()
-    runtime.maybe_run_terminal_tail_cascade_egress_lowering(
+    applied = runtime.maybe_run_terminal_tail_cascade_egress_lowering(
         mba,
         evidence_provider=provider,
     )
 
+    assert applied is True
     assert provider.seen_mba is mba
     assert calls["blocks"] == blocks
     assert calls["sites"] == sites
+
+
+def test_terminal_tail_bridge_preflight_blocks_partial_row_lowering(monkeypatch):
+    import d810.transforms.terminal_tail_cascade_egress_planner as planner_module
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+    from d810.analyses.control_flow.terminal_tail_priors import (
+        TerminalTailCascadeEgressPriors,
+        TerminalTailContinuationBridgePrior,
+    )
+    from d810.hexrays.mutation.byte_tail_runtime_evidence import (
+        ByteTailRuntimeEvidence,
+        TerminalTailPlannerEvidence,
+    )
+
+    blocks = {
+        67: _RuntimePlannerBlock(serial=67, succs=(68,)),
+        68: _RuntimePlannerBlock(serial=68, succs=()),
+    }
+    sites = [
+        _RuntimePlannerSite(
+            source_expression="xdu.8([ds.2:%var_180].1)",
+            byte_index=5,
+            block_serial=51,
+        )
+    ]
+    provider = _FakeEvidenceProvider(
+        ByteTailRuntimeEvidence(
+            terminal_tail_planner=TerminalTailPlannerEvidence(
+                blocks=blocks,
+                sites=sites,
+                dag=object(),
+            ),
+            terminal_tail_cascade_egress=TerminalTailCascadeEgressPriors(
+                byte_indices=(1,),
+                continuation_bridges=(
+                    TerminalTailContinuationBridgePrior(
+                        continuation_byte_index=3,
+                        source_byte_index=4,
+                        target_store_guard_byte_index=5,
+                    ),
+                ),
+            ),
+        )
+    )
+
+    class FakePlanner:
+        def __init__(self, planner_blocks, planner_sites):
+            assert planner_blocks == blocks
+            assert planner_sites == sites
+
+        def build_plan(self):
+            return type(
+                "Plan",
+                (),
+                {
+                    "rows": (
+                        _FakePlanRow(byte_index=1),
+                        _FakePlanRow(byte_index=3, current_continuation_target=67),
+                    ),
+                },
+            )()
+
+    def fail_row_lowering(**kwargs):
+        raise AssertionError("row lowering must not run without bridge evidence")
+
+    monkeypatch.delenv("D810_TAIL_DISTINCT_BYTE", raising=False)
+    monkeypatch.delenv("D810_TAIL_DUPLICATE_CONVERGENCE_BYTE", raising=False)
+    monkeypatch.delenv("D810_TERMINAL_TAIL_STATE_CASCADE_PAIR", raising=False)
+    monkeypatch.setattr(
+        planner_module,
+        "TerminalTailCascadeEgressPlanner",
+        FakePlanner,
+    )
+    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba: object())
+    monkeypatch.setattr(
+        runtime,
+        "execute_terminal_tail_cascade_egress_lowering",
+        fail_row_lowering,
+    )
+
+    applied = runtime.maybe_run_terminal_tail_cascade_egress_lowering(
+        object(),
+        evidence_provider=provider,
+    )
+
+    assert applied is False
+
+
+def test_terminal_tail_bridge_uses_planner_source_block(monkeypatch):
+    import d810.transforms.terminal_tail_cascade_egress_planner as planner_module
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+    from d810.analyses.control_flow.terminal_tail_priors import (
+        TerminalTailCascadeEgressPriors,
+        TerminalTailContinuationBridgePrior,
+    )
+    from d810.hexrays.mutation.byte_tail_runtime_evidence import (
+        ByteTailRuntimeEvidence,
+        TerminalTailPlannerEvidence,
+    )
+
+    blocks = {
+        67: _RuntimePlannerBlock(serial=67, succs=(68,)),
+        68: _RuntimePlannerBlock(serial=68, succs=(69,)),
+        69: _RuntimePlannerBlock(serial=69, succs=()),
+    }
+    sites = [
+        _RuntimePlannerSite(
+            byte_index=5,
+            block_serial=51,
+        )
+    ]
+
+    provider = _FakeEvidenceProvider(
+        ByteTailRuntimeEvidence(
+            terminal_tail_planner=TerminalTailPlannerEvidence(
+                blocks=blocks,
+                sites=sites,
+            ),
+            terminal_tail_cascade_egress=TerminalTailCascadeEgressPriors(
+                byte_indices=(4,),
+                continuation_bridges=(
+                    TerminalTailContinuationBridgePrior(
+                        continuation_byte_index=3,
+                        source_byte_index=4,
+                        target_store_guard_byte_index=5,
+                    ),
+                ),
+            ),
+        )
+    )
+
+    class FakePlanner:
+        def __init__(self, planner_blocks, planner_sites):
+            assert planner_blocks == blocks
+            assert planner_sites == sites
+
+        def build_plan(self):
+            return type(
+                "Plan",
+                (),
+                {
+                    "rows": (
+                        _FakePlanRow(
+                            byte_index=3,
+                            current_continuation_target=67,
+                            early_return_target=None,
+                        ),
+                        _FakePlanRow(
+                            byte_index=4,
+                            source_block=68,
+                            current_continuation_target=201,
+                            intended_target=185,
+                            early_return_target=20,
+                        ),
+                    ),
+                },
+            )()
+
+    @dataclass
+    class FakeAdapter:
+        _mba: _FakeLiveMba
+        redirects: list[tuple[int, int, int]] = field(default_factory=list)
+
+        def redirect_advance_edge(
+            self,
+            *,
+            source_serial,
+            old_target_serial,
+            new_target_serial,
+        ):
+            self.redirects.append(
+                (
+                    int(source_serial),
+                    int(old_target_serial),
+                    int(new_target_serial),
+                )
+            )
+
+    def fake_row_lowering(**kwargs):
+        return type("Report", (), {"applied": False})()
+
+    adapter = FakeAdapter(
+        _FakeLiveMba(
+            blocks={
+                51: _FakeLiveBlock(),
+                67: _FakeLiveBlock(succs=(68,)),
+                68: _FakeLiveBlock(succs=(69,)),
+                69: _FakeLiveBlock(),
+            }
+        )
+    )
+    monkeypatch.delenv("D810_TAIL_DISTINCT_BYTE", raising=False)
+    monkeypatch.delenv("D810_TAIL_DUPLICATE_CONVERGENCE_BYTE", raising=False)
+    monkeypatch.delenv("D810_TERMINAL_TAIL_STATE_CASCADE_PAIR", raising=False)
+    monkeypatch.setattr(
+        planner_module,
+        "TerminalTailCascadeEgressPlanner",
+        FakePlanner,
+    )
+    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba: adapter)
+    monkeypatch.setattr(
+        runtime,
+        "execute_terminal_tail_cascade_egress_lowering",
+        fake_row_lowering,
+    )
+
+    applied = runtime.maybe_run_terminal_tail_cascade_egress_lowering(
+        object(),
+        evidence_provider=provider,
+    )
+
+    assert applied is True
+    assert adapter.redirects == [(68, 69, 51)]
+
+
+def test_terminal_tail_bridge_refuses_without_planner_source_block(monkeypatch):
+    import d810.transforms.terminal_tail_cascade_egress_planner as planner_module
+    import d810.hexrays.mutation.byte_emit_tail_isolation_runtime as runtime
+    from d810.analyses.control_flow.terminal_tail_priors import (
+        TerminalTailCascadeEgressPriors,
+        TerminalTailContinuationBridgePrior,
+    )
+    from d810.hexrays.mutation.byte_tail_runtime_evidence import (
+        ByteTailRuntimeEvidence,
+        TerminalTailPlannerEvidence,
+    )
+
+    blocks = {
+        67: _RuntimePlannerBlock(serial=67, succs=(68,)),
+        68: _RuntimePlannerBlock(serial=68, succs=(69,)),
+    }
+    sites = [
+        _RuntimePlannerSite(
+            byte_index=5,
+            block_serial=51,
+        )
+    ]
+    provider = _FakeEvidenceProvider(
+        ByteTailRuntimeEvidence(
+            terminal_tail_planner=TerminalTailPlannerEvidence(
+                blocks=blocks,
+                sites=sites,
+            ),
+            terminal_tail_cascade_egress=TerminalTailCascadeEgressPriors(
+                byte_indices=(4,),
+                continuation_bridges=(
+                    TerminalTailContinuationBridgePrior(
+                        continuation_byte_index=3,
+                        source_byte_index=4,
+                        target_store_guard_byte_index=5,
+                    ),
+                ),
+            ),
+        )
+    )
+
+    class FakePlanner:
+        def __init__(self, planner_blocks, planner_sites):
+            assert planner_blocks == blocks
+            assert planner_sites == sites
+
+        def build_plan(self):
+            return type(
+                "Plan",
+                (),
+                {
+                    "rows": (
+                        _FakePlanRow(
+                            byte_index=3,
+                            current_continuation_target=67,
+                            early_return_target=None,
+                        ),
+                        _FakePlanRow(
+                            byte_index=4,
+                            source_block=None,
+                            early_return_target=20,
+                        ),
+                    ),
+                },
+            )()
+
+    @dataclass
+    class FakeAdapter:
+        _mba: _FakeLiveMba
+        redirects: list[tuple[int, int, int]] = field(default_factory=list)
+
+        def redirect_advance_edge(
+            self,
+            *,
+            source_serial,
+            old_target_serial,
+            new_target_serial,
+        ):
+            self.redirects.append(
+                (
+                    int(source_serial),
+                    int(old_target_serial),
+                    int(new_target_serial),
+                )
+            )
+
+    def fake_row_lowering(**kwargs):
+        return type("Report", (), {"applied": False})()
+
+    adapter = FakeAdapter(_FakeLiveMba(blocks={}))
+    monkeypatch.delenv("D810_TAIL_DISTINCT_BYTE", raising=False)
+    monkeypatch.delenv("D810_TAIL_DUPLICATE_CONVERGENCE_BYTE", raising=False)
+    monkeypatch.delenv("D810_TERMINAL_TAIL_STATE_CASCADE_PAIR", raising=False)
+    monkeypatch.setattr(
+        planner_module,
+        "TerminalTailCascadeEgressPlanner",
+        FakePlanner,
+    )
+    monkeypatch.setattr(runtime, "LiveMbaAdapter", lambda mba: adapter)
+    monkeypatch.setattr(
+        runtime,
+        "execute_terminal_tail_cascade_egress_lowering",
+        fake_row_lowering,
+    )
+
+    applied = runtime.maybe_run_terminal_tail_cascade_egress_lowering(
+        object(),
+        evidence_provider=provider,
+    )
+
+    assert applied is False
+    assert adapter.redirects == []
 
 
 def test_terminal_tail_without_explicit_cascade_priors_skips(monkeypatch):

@@ -81,6 +81,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         # Used to reset recon state when a new function is decompiled.
         self._recon_runtime = None  # ReconAnalysisRuntime | None
         self._function_priors_provider = None
+        self._dispatcher_artifact_planner = None
         # Optional PassPipeline - set via configure(pass_pipeline=...). None
         # means the pipeline is disabled (zero overhead). When set, fires once
         # at MMAT_GLBOPT2 (after the unflattener has finished at MMAT_GLBOPT1).
@@ -89,6 +90,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._post_d810_pipeline_last_maturity: int = -1
         self._impossible_return_artifact_rewrite_applied: set[tuple[int, int]] = set()
         self._terminal_zero_literal_rewrite_applied: set[tuple[int, int]] = set()
+        self._terminal_tail_cascade_egress_applied: set[tuple[int, int]] = set()
         self._project_config: dict[str, typing.Any] = {}
         # When the PassPipeline fires and applies changes, we must skip all
         # remaining block optimizer rule calls for the rest of this maturity.
@@ -130,6 +132,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._pipeline_just_fired = False
         self._impossible_return_artifact_rewrite_applied.clear()
         self._terminal_zero_literal_rewrite_applied.clear()
+        self._terminal_tail_cascade_egress_applied.clear()
         self._reset_run_later_state()
         for cfg_rule in self.cfg_rules:
             reset_pass_manager = getattr(cfg_rule, "reset_pass_manager_state", None)
@@ -361,9 +364,6 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     maturity_to_string(mba.maturity),
                 )
 
-            # Notify listeners that D810 just finished running for the previous
-            # maturity level. Policy decisions (capture/logging/etc.) are handled
-            # by subscribers in the manager layer.
             # --- Diagnostic: post_d810 snapshot for the PREVIOUS maturity ---
             _post_snap_ref = None
             if self.current_maturity is not None:
@@ -602,6 +602,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             "ReconRuntime analyze_and_persist (block) failed for func=0x%x",
                             mba_ea,
                         )
+
+            self._run_glbopt1_recon_backed_extensions(mba)
 
             # PassPipeline: fire once at MMAT_GLBOPT2, after the unflattener
             # has already run at MMAT_GLBOPT1.  Runs at most once per maturity
@@ -1024,6 +1026,135 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             )
         return len(applied)
 
+    def _run_glbopt1_recon_backed_extensions(self, mba: ida_hexrays.mba_t) -> None:
+        """Run whole-function GLBOPT1 rewrites that consume recon evidence.
+
+        This is intentionally not a normal ``FlowOptimizationRule`` callback:
+        terminal-tail egress consumes whole-function facts emitted by
+        ``FLOWGRAPH_READY`` / ``analyze_and_persist`` above and then mutates
+        multiple blocks. Running it at the next maturity is too late because
+        IDA may already have collapsed the CFG shape that those facts describe.
+        """
+        terminal_tail_patch_count = (
+            self._maybe_run_terminal_tail_cascade_egress_lowering(mba)
+        )
+        if terminal_tail_patch_count <= 0:
+            return
+        self._generation += 1
+        self._invalidate_flow_context(
+            "terminal tail cascade egress applied "
+            f"{terminal_tail_patch_count} patch(es)"
+        )
+
+    def _maybe_run_terminal_tail_cascade_egress_lowering(
+        self,
+        mba: ida_hexrays.mba_t,
+    ) -> int:
+        if mba is None or self.current_maturity is None:
+            return 0
+        current_maturity_name = maturity_to_string(self.current_maturity)
+        if current_maturity_name != "MMAT_GLBOPT1":
+            return 0
+        func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        key = (func_ea, int(self.current_maturity))
+        if key in self._terminal_tail_cascade_egress_applied:
+            return 0
+
+        priors = None
+        if self._function_priors_provider is not None:
+            try:
+                priors = self._function_priors_provider(func_ea)
+            except Exception:
+                optimizer_logger.exception(
+                    "terminal tail cascade egress prior lookup failed "
+                    "for func=0x%x",
+                    func_ea,
+                )
+                priors = None
+        else:
+            optimizer_logger.debug(
+                "terminal tail cascade egress skipped for func=0x%x: "
+                "no function priors provider",
+                func_ea,
+            )
+        cascade_priors = getattr(priors, "terminal_tail_cascade_egress", None)
+        if cascade_priors is None or bool(getattr(cascade_priors, "is_empty", True)):
+            optimizer_logger.debug(
+                "terminal tail cascade egress skipped for func=0x%x: "
+                "no terminal-tail cascade priors",
+                func_ea,
+            )
+            return 0
+        optimizer_logger.debug(
+            "terminal tail cascade egress candidate for func=0x%x: "
+            "byte_indices=%s split_byte_indices=%s",
+            func_ea,
+            tuple(getattr(cascade_priors, "byte_indices", ()) or ()),
+            tuple(getattr(cascade_priors, "split_byte_indices", ()) or ()),
+        )
+
+        fact_view = None
+        if self._recon_runtime is not None:
+            try:
+                fact_view = self._recon_runtime.validated_fact_view(
+                    func_ea,
+                    current_maturity_name,
+                )
+            except Exception:
+                optimizer_logger.exception(
+                    "terminal tail cascade egress fact lookup failed "
+                    "for func=0x%x",
+                    func_ea,
+                )
+                fact_view = None
+
+        try:
+            from d810.analyses.control_flow.runtime_evidence import (
+                ensure_terminal_byte_fact_view,
+                get_latest_reconstruction_dag,
+            )
+            from d810.analyses.control_flow.persisted_recon_dag import (
+                get_persisted_recon_dag,
+            )
+            from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
+                maybe_run_terminal_tail_cascade_egress_lowering,
+            )
+
+            fact_view = ensure_terminal_byte_fact_view(
+                mba,
+                func_ea=func_ea,
+                maturity=int(self.current_maturity),
+                fact_view=fact_view,
+                phase="post_d810",
+            )
+            dag = get_latest_reconstruction_dag(func_ea)
+            if dag is None:
+                dag = get_persisted_recon_dag(func_ea)
+            applied = maybe_run_terminal_tail_cascade_egress_lowering(
+                mba,
+                fact_view=fact_view,
+                dag=dag,
+                cascade_priors=cascade_priors,
+                dispatcher_artifact_planner=self._dispatcher_artifact_planner,
+            )
+        except Exception:
+            optimizer_logger.exception(
+                "terminal tail cascade egress lowering failed for func=0x%x",
+                func_ea,
+            )
+            return 0
+
+        self._terminal_tail_cascade_egress_applied.add(key)
+        if not applied:
+            return 0
+        if self.stats is not None:
+            self.stats.record_cfg_rule_patches(
+                "terminal_tail_cascade_egress",
+                1,
+                maturity=self.current_maturity,
+            )
+        return 1
+
     def _maybe_rewrite_terminal_zero_guard_literal_edges(
         self,
         blk: ida_hexrays.mblock_t,
@@ -1074,6 +1205,10 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._function_priors_provider = kwargs.get(
             "function_priors_provider",
             self._function_priors_provider,
+        )
+        self._dispatcher_artifact_planner = kwargs.get(
+            "dispatcher_artifact_planner",
+            self._dispatcher_artifact_planner,
         )
         self._pass_pipeline = kwargs.get("pass_pipeline", self._pass_pipeline)
         self._run_later_scheduler = kwargs.get(

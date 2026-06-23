@@ -1,6 +1,8 @@
 """Tests for read-only terminal-tail cascade egress planning."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from d810.transforms.terminal_tail_cascade_egress_planner import (
     AMBIGUOUS_STATE_UPDATE,
     NEEDS_STATE_WRITE,
@@ -9,6 +11,8 @@ from d810.transforms.terminal_tail_cascade_egress_planner import (
     TerminalByteEmitSite,
     TerminalTailBlock,
     TerminalTailCascadeEgressPlanner,
+    TerminalTailConstWrite,
+    TerminalTailGuardRequirement,
     format_cascade_egress_plan,
     select_effective_terminal_tail_entry_block,
     terminal_byte_emit_site_from_payload,
@@ -20,13 +24,36 @@ def _block(
     succs: tuple[int, ...],
     *,
     text: tuple[str, ...] = (),
+    guards: tuple[TerminalTailGuardRequirement, ...] = (),
+    writes: tuple[TerminalTailConstWrite, ...] = (),
 ) -> TerminalTailBlock:
     return TerminalTailBlock(
         serial=serial,
         succs=succs,
         insn_opcodes=("m_stx", "m_jnz") if serial < 10 else ("m_mov",),
         insn_text=text,
+        guard_requirements=guards,
+        const_writes=writes,
     )
+
+
+def _guard(
+    variable: str = "state:tail",
+    value: int = 2,
+    *,
+    branch_target: int | None = None,
+    has_prior_store: bool = False,
+) -> TerminalTailGuardRequirement:
+    return TerminalTailGuardRequirement(
+        variable=variable,
+        value=value,
+        branch_target=branch_target,
+        has_prior_store=has_prior_store,
+    )
+
+
+def _write(variable: str = "state:tail", value: int = 2) -> TerminalTailConstWrite:
+    return TerminalTailConstWrite(variable=variable, value=value)
 
 
 def _site(
@@ -37,14 +64,15 @@ def _site(
     return_edge: int | None,
     role: str = "memory_store",
     opcode: str = "m_stx",
-    destination: str = "[ds.2:(%var_190+#1.8)]",
+    destination: str = "byte-store",
+    corridor_role: str = "terminal_tail",
 ) -> TerminalByteEmitSite:
     return TerminalByteEmitSite(
         byte_index=byte_index,
         block_serial=block,
         opcode=opcode,
         emitter_role=role,
-        corridor_role="terminal_tail",
+        corridor_role=corridor_role,
         destination=destination,
         return_edge=return_edge,
         continuation_edge=continuation,
@@ -111,14 +139,16 @@ class TestTerminalTailCascadeEgressPlanner:
             1,
             continuation=90,
             return_edge=10,
-            destination="%var_178.8",
+            role="guard_only",
+            opcode="m_mov",
+            destination="counter-store",
         )
         real_byte_store = _site(
             1,
             1,
             continuation=90,
             return_edge=10,
-            destination="[ds.2:((%var_190+#1.8)+%var_188.8)]",
+            destination="byte-store",
         )
         plan = TerminalTailCascadeEgressPlanner(
             blocks,
@@ -147,7 +177,12 @@ class TestTerminalTailCascadeEgressPlanner:
 
     def test_tail_branch_target_overrides_swapped_fact_edges(self) -> None:
         blocks = {
-            1: _block(1, (10, 20), text=("jnz    %var_198.8, #1.8, @20",)),
+            1: _block(
+                1,
+                (10, 20),
+                text=("jnz    %var_198.8, #1.8, @20",),
+                guards=(_guard(value=1, branch_target=20),),
+            ),
             2: _block(2, (), text=("stx    %x, ds.2, %y",)),
             10: _block(10, ()),
             20: _block(20, ()),
@@ -172,6 +207,7 @@ class TestTerminalTailCascadeEgressPlanner:
                     "stx    %byte, ds.2, %dst",
                     "jnz    %var_198.8, #2.8, @20",
                 ),
+                guards=(_guard(has_prior_store=True, branch_target=20),),
             ),
             10: _block(10, ()),
             90: _block(90, (2,)),
@@ -186,7 +222,7 @@ class TestTerminalTailCascadeEgressPlanner:
         assert plan.rows[1].state_update_verdict == SAFE_TARGET_POST_GUARD
         assert plan.rows[1].state_variable is None
 
-    def test_exact_source_byte_site_can_beat_terminal_tail_counter_fact(self) -> None:
+    def test_nonterminal_site_does_not_override_terminal_tail_source(self) -> None:
         blocks = {
             4: _block(4, (40, 41)),
             5: _block(5, (50,)),
@@ -200,15 +236,13 @@ class TestTerminalTailCascadeEgressPlanner:
             4,
             continuation=40,
             return_edge=41,
-            destination="%var_178.8",
         )
-        exact_source_fact = TerminalByteEmitSite(
+        nonterminal_fact = TerminalByteEmitSite(
             byte_index=5,
             block_serial=5,
             opcode="m_stx",
             emitter_role="memory_store",
             corridor_role="non_terminal_byte_emitter",
-            source_expression="xdu.8([ds.2:(%var_190.8+#5.8)].1)",
             continuation_edge=50,
             return_edge=None,
             confidence=0.6,
@@ -217,15 +251,15 @@ class TestTerminalTailCascadeEgressPlanner:
             blocks,
             [
                 counter_fact,
-                exact_source_fact,
+                nonterminal_fact,
                 _site(6, 6, continuation=None, return_edge=None),
             ],
         ).build_plan()
 
-        assert plan.rows[5].source_block == 5
-        assert plan.rows[5].current_continuation_target == 50
+        assert plan.rows[5].source_block == 4
+        assert plan.rows[5].current_continuation_target == 40
 
-    def test_nonterminal_source_byte_buffer_can_recover_next_target_without_overriding_tail_source(
+    def test_nonterminal_byte_site_can_recover_next_target_without_overriding_tail_source(
         self,
     ) -> None:
         blocks = {
@@ -244,8 +278,6 @@ class TestTerminalTailCascadeEgressPlanner:
             opcode="m_stx",
             emitter_role="memory_store",
             corridor_role="non_terminal_byte_emitter",
-            destination="[ds.2:(%var_678.8+#5.8)]",
-            source_expression="xdu.8([ds.2:(%var_678.8+#5.8)].1)",
             continuation_edge=91,
             return_edge=None,
             confidence=0.8,
@@ -256,8 +288,6 @@ class TestTerminalTailCascadeEgressPlanner:
             opcode="m_stx",
             emitter_role="memory_store",
             corridor_role="non_terminal_byte_emitter",
-            destination="[ds.2:(%var_678.8+#6.8)]",
-            source_expression="xdu.8([ds.2:(%var_678.8+#6.8)].1)",
             continuation_edge=60,
             return_edge=None,
             confidence=0.8,
@@ -296,8 +326,18 @@ class TestTerminalTailCascadeEgressPlanner:
 
     def test_state_proof_marks_source_write_safe(self) -> None:
         blocks = {
-            1: _block(1, (10, 2), text=("mov    #2.8, %var_198.8",)),
-            2: _block(2, (), text=("jnz    %var_198.8, #2.8, @20",)),
+            1: _block(
+                1,
+                (10, 2),
+                text=("mov    #2.8, %var_198.8",),
+                writes=(_write(),),
+            ),
+            2: _block(
+                2,
+                (),
+                text=("jnz    %var_198.8, #2.8, @20",),
+                guards=(_guard(branch_target=20),),
+            ),
             10: _block(10, ()),
         }
         sites = [
@@ -313,9 +353,19 @@ class TestTerminalTailCascadeEgressPlanner:
     def test_state_proof_marks_bypassed_dispatcher_write_needed(self) -> None:
         blocks = {
             1: _block(1, (10, 90)),
-            2: _block(2, (), text=("jnz    %var_198.8, #2.8, @20",)),
+            2: _block(
+                2,
+                (),
+                text=("jnz    %var_198.8, #2.8, @20",),
+                guards=(_guard(branch_target=20),),
+            ),
             10: _block(10, ()),
-            90: _block(90, (2,), text=("mov    #2.8, %var_198.8",)),
+            90: _block(
+                90,
+                (2,),
+                text=("mov    #2.8, %var_198.8",),
+                writes=(_write(),),
+            ),
         }
         sites = [
             _site(1, 1, continuation=90, return_edge=10),
@@ -331,7 +381,12 @@ class TestTerminalTailCascadeEgressPlanner:
     def test_state_proof_marks_missing_write_ambiguous(self) -> None:
         blocks = {
             1: _block(1, (10, 90)),
-            2: _block(2, (), text=("jnz    %var_198.8, #2.8, @20",)),
+            2: _block(
+                2,
+                (),
+                text=("jnz    %var_198.8, #2.8, @20",),
+                guards=(_guard(branch_target=20),),
+            ),
             10: _block(10, ()),
             90: _block(90, (2,)),
         }
@@ -436,3 +491,12 @@ class TestTerminalTailCascadeEgressPlanner:
         sites = [_site(1, 143, continuation=145, return_edge=144)]
 
         assert select_effective_terminal_tail_entry_block(blocks, sites) == 143
+
+
+def test_planner_does_not_parse_hexrays_temp_names_from_text() -> None:
+    source = Path(
+        "src/d810/transforms/terminal_tail_cascade_egress_planner.py"
+    ).read_text(encoding="utf-8")
+
+    assert "%var_" not in source
+    assert "re.compile" not in source

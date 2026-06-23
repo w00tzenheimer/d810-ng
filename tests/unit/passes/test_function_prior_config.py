@@ -84,14 +84,26 @@ def test_load_function_analysis_priors_from_config_expands_keys_and_parses_prior
             },
             "empty": {},
             "invalid": "not-a-dict",
+            "named_function": {
+                "aliases": ("0x180014BE0",),
+                "known_impossible_return_constants": ("0x1234",),
+            },
         }
     )
 
-    assert set(priors_by_key) == {
+    assert {
         "0x180012b60",
         "6442527584",
         "sub_180012b60",
-    }
+    } <= set(priors_by_key)
+    assert {
+        "0x180014be0",
+        "6442535904",
+        "sub_180014be0",
+        "named_function",
+    } <= set(priors_by_key)
+    assert priors_by_key["0x180014be0"] == priors_by_key["named_function"]
+    assert priors_by_key["sub_180014be0"] == priors_by_key["named_function"]
     priors = priors_by_key["0x180012b60"]
     assert priors.return_frontier_artifacts.known_impossible_return_constants == (
         frozenset({0xFFFFFFFFFFFFFFFF, 5})

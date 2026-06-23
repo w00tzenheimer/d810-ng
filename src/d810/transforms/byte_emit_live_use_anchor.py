@@ -4,8 +4,8 @@ A strict-bar-A (bit-identical) probe that inserts two new microcode
 blocks ("anchor reads") consuming byte 6's source-byte read in opposite
 directions:
 
-  ANCHOR_A: var_8 ^= *(v190 + #6.8)
-  ANCHOR_B: var_8 ^= *(v190 + #6.8)   # net no-op on var_8
+  ANCHOR_A: var_8 ^= *(source_bytes + #6.8)
+  ANCHOR_B: var_8 ^= *(source_bytes + #6.8)   # net no-op on var_8
 
 The two reads dataflow-pin the source operand so IDA's optimize_global()
 cannot DCE byte 6's source read at the snap17 -> snap18 transition. Net
@@ -227,7 +227,7 @@ def execute_split_xor_anchor(
             reason="probe_byte6_only",
         )
 
-    block = adapter.find_byte_emit_block_by_v190_offset(byte_index)
+    block = adapter.find_byte_emit_block_by_source_byte_index(byte_index)
     if block is None:
         return ByteEmitAnchorReport(
             applied=False,
@@ -237,7 +237,7 @@ def execute_split_xor_anchor(
         )
 
     try:
-        source_operand = adapter.extract_v190_indexed_operand(
+        source_operand = adapter.extract_source_byte_indexed_operand(
             block.serial, byte_index,
         )
     except Exception:  # noqa: BLE001 — adapter contract: raise on extraction failure
@@ -334,7 +334,7 @@ def execute_single_xor_anchor(
             reason="probe_byte6_only",
         )
 
-    block = adapter.find_byte_emit_block_by_v190_offset(byte_index)
+    block = adapter.find_byte_emit_block_by_source_byte_index(byte_index)
     if block is None:
         return ByteEmitAnchorReport(
             applied=False,
@@ -344,7 +344,7 @@ def execute_single_xor_anchor(
         )
 
     try:
-        source_operand = adapter.extract_v190_indexed_operand(
+        source_operand = adapter.extract_source_byte_indexed_operand(
             block.serial, byte_index,
         )
     except Exception:  # noqa: BLE001
@@ -397,7 +397,7 @@ def execute_live_host_anchor(
     accumulator_stkoff: int = _ACCUMULATOR_STKOFF,
 ) -> ByteEmitAnchorReport:
     """Insert ANCHOR_A as a successor of byte_HOST's emit block,
-    reading byte_READ from `(v190+#read_byte_index.8)`.
+    reading byte_READ from the source-byte buffer at byte_READ.
 
     Rationale: in sub_7FFD3338C040, hodur's linearization makes byte 6's
     emit block unreachable, so IDA's optimize_global DCEs it (and any
@@ -423,7 +423,7 @@ def execute_live_host_anchor(
             reason="read_byte_must_be_6",
         )
 
-    host_block = adapter.find_byte_emit_block_by_v190_offset(host_byte_index)
+    host_block = adapter.find_byte_emit_block_by_source_byte_index(host_byte_index)
     if host_block is None:
         return ByteEmitAnchorReport(
             applied=False,
@@ -435,7 +435,7 @@ def execute_live_host_anchor(
     try:
         # Searches host_block first, then any block in mba; falls back
         # to the cross-block byte_6 reference (likely block 217).
-        source_operand = adapter.extract_v190_indexed_operand(
+        source_operand = adapter.extract_source_byte_indexed_operand(
             host_block.serial, read_byte_index,
         )
     except Exception:  # noqa: BLE001
@@ -489,7 +489,7 @@ def execute_multi_byte_live_host_anchor(
 ) -> MultiByteAnchorReport:
     """Insert one ANCHOR per read_byte_index, all hosted as successors of
     byte_HOST's emit block. Each anchor reads its byte from
-    (v190+#k.8) and XORs into the shared accumulator slot.
+    source-byte[k] and XORs into the shared accumulator slot.
 
     Because each anchor is inserted with predecessor=host_block, IDA's
     block-insertion semantics chain them: subsequent insertions wedge
@@ -574,7 +574,7 @@ def execute_reconnect_byte_emits(
             reason="empty_byte_list",
         )
 
-    host_block = adapter.find_byte_emit_block_by_v190_offset(host_byte_index)
+    host_block = adapter.find_byte_emit_block_by_source_byte_index(host_byte_index)
     if host_block is None:
         return MultiByteAnchorReport(
             applied=False,
@@ -590,7 +590,7 @@ def execute_reconnect_byte_emits(
             # Re-fetch host_block each iteration so we get its CURRENT
             # successor (the previous anchor in the chain, if any). The
             # BlockView captured at find-time goes stale once we mutate.
-            host_block_fresh = adapter.find_byte_emit_block_by_v190_offset(
+            host_block_fresh = adapter.find_byte_emit_block_by_source_byte_index(
                 host_byte_index,
             )
             if host_block_fresh is None:
@@ -680,7 +680,7 @@ def execute_byte_store_replica_anchor(
         this_host = int(overrides.get(target_byte, host_byte_index))
         host_block = host_cache.get(this_host)
         if host_block is None:
-            host_block = adapter.find_byte_emit_block_by_v190_offset(this_host)
+            host_block = adapter.find_byte_emit_block_by_source_byte_index(this_host)
             host_cache[this_host] = host_block
         if host_block is None:
             sub_reports.append(ByteEmitAnchorReport(
@@ -755,7 +755,7 @@ def _execute_live_host_anchor_relaxed(
             reason="read_byte_out_of_range",
         )
 
-    host_block = adapter.find_byte_emit_block_by_v190_offset(host_byte_index)
+    host_block = adapter.find_byte_emit_block_by_source_byte_index(host_byte_index)
     if host_block is None:
         return ByteEmitAnchorReport(
             applied=False,
@@ -765,7 +765,7 @@ def _execute_live_host_anchor_relaxed(
         )
 
     try:
-        source_operand = adapter.extract_v190_indexed_operand(
+        source_operand = adapter.extract_source_byte_indexed_operand(
             host_block.serial, read_byte_index,
         )
     except Exception:  # noqa: BLE001
