@@ -30,13 +30,6 @@ from d810.analyses.control_flow.return_frontier_artifacts import (
     ReturnFrontierArtifactEdgeProof,
     ReturnFrontierArtifactPriors,
 )
-from d810.analyses.control_flow.terminal_tail_priors import (
-    TerminalTailCascadeEgressPriors,
-    TerminalTailContinuationBridgePrior,
-    TerminalTailEntryFrontierPriors,
-    TerminalTailEqualityFrontierPriors,
-    TerminalTailRowTargetOverride,
-)
 from d810.passes.function_priors import FunctionAnalysisPriors
 
 
@@ -111,32 +104,6 @@ SUB_7FFD_RETURN_ARTIFACT_EDGE_PROOFS = (
         ),
     ),
 )
-SUB_7FFD_TERMINAL_TAIL_CASCADE_EGRESS_PRIORS = (
-    TerminalTailCascadeEgressPriors(
-        byte_indices=(1, 2, 4, 5),
-        split_byte_indices=(3,),
-        row_target_overrides=(
-            TerminalTailRowTargetOverride(
-                byte_index=2,
-                target_entry_byte_index=3,
-            ),
-        ),
-        continuation_bridges=(
-            TerminalTailContinuationBridgePrior(
-                continuation_byte_index=3,
-                source_byte_index=4,
-                target_store_guard_byte_index=5,
-                max_depth=8,
-            ),
-        ),
-        equality_frontier=TerminalTailEqualityFrontierPriors(
-            return_frontier_byte_index=2,
-            row_byte_indices=(2, 3),
-            shared_store_guard_byte_indices=(3, 5),
-        ),
-        entry_frontier=TerminalTailEntryFrontierPriors(first_byte_index=1),
-    )
-)
 SUB_7FFD_FUNCTION_PRIORS = FunctionAnalysisPriors(
     return_frontier_artifacts=(
         ReturnFrontierArtifactPriors.from_known_impossible_return_constants(
@@ -145,7 +112,6 @@ SUB_7FFD_FUNCTION_PRIORS = FunctionAnalysisPriors(
             SUB_7FFD_RETURN_ARTIFACT_EDGE_PROOFS
         )
     ),
-    terminal_tail_cascade_egress=SUB_7FFD_TERMINAL_TAIL_CASCADE_EGRESS_PRIORS,
 )
 
 
