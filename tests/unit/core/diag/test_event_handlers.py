@@ -60,6 +60,7 @@ def request_capture_mba_snapshot(
     func_ea: int,
     maturity: str,
     phase: str,
+    maturity_json: str | None = None,
 ) -> SnapshotRef | None:
     """Test-side request_capture wrapper that does not import hexrays.
 
@@ -75,6 +76,7 @@ def request_capture_mba_snapshot(
         label=label,
         maturity=maturity,
         phase=phase,
+        maturity_json=maturity_json,
     )
     emit(CaptureMbaSnapshotRequested(snapshot=snap, blocks=tuple(blocks)))
     return snap
@@ -157,6 +159,33 @@ def test_capture_inserts_snapshots_row_and_binds_mapping(fake_conn):
     ).fetchall()
     assert len(rows) == 1
     assert rows[0] == ("MMAT_GLBOPT1_post_d810", "MMAT_GLBOPT1", "post_d810", 1)
+
+
+def test_capture_persists_maturity_json(fake_conn):
+    maturity_json = json.dumps({
+        "ir": "GLOBAL_ANALYZED",
+        "snapshot_form": "OPTIMIZED_IR",
+        "provider": "hexrays",
+        "provider_id": 4,
+        "provider_name": "MMAT_GLBOPT1",
+    })
+    snap = request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="MMAT_GLBOPT1_post_d810",
+        func_ea=0x401000,
+        maturity="MMAT_GLBOPT1",
+        phase="post_d810",
+        maturity_json=maturity_json,
+    )
+    assert snap is not None
+
+    row = fake_conn.execute(
+        "SELECT s.maturity, sm.maturity_json "
+        "FROM snapshots s "
+        "JOIN snapshot_maturity sm ON sm.snapshot_id=s.id"
+    ).fetchone()
+    assert row[0] == "MMAT_GLBOPT1"
+    assert json.loads(row[1]) == json.loads(maturity_json)
 
 
 def test_followup_event_writes_under_correct_snapshot_id(fake_conn):

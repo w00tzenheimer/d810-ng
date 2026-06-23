@@ -45,6 +45,8 @@ def request_capture_mba_snapshot(
     label: str,
     func_ea: int,
     maturity: str = "UNKNOWN",
+    maturity_id: int | None = None,
+    maturity_json: str | None = None,
     phase: str = "unknown",
 ) -> SnapshotRef | None:
     """Request a full MBA capture; return a :class:`SnapshotRef` or ``None``.
@@ -70,12 +72,22 @@ def request_capture_mba_snapshot(
     """
     if not _has_subscribers(CaptureMbaSnapshotRequested):
         return None
+    if maturity_json is None:
+        try:
+            from d810.hexrays.ir_maturity import hexrays_maturity_envelope_json
+
+            maturity_json = hexrays_maturity_envelope_json(
+                int(maturity_id) if maturity_id is not None else str(maturity)
+            )
+        except Exception:
+            maturity_json = None
     snap = SnapshotRef(
         key=new_snapshot_key(),
         func_ea=int(func_ea),
         label=str(label),
         maturity=str(maturity),
         phase=str(phase),
+        maturity_json=maturity_json,
     )
     _emit(CaptureMbaSnapshotRequested(snapshot=snap, blocks=tuple(blocks)))
     return snap

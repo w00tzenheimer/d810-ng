@@ -53,6 +53,7 @@ class SnapshotRef:
     label: str
     maturity: str
     phase: str
+    maturity_json: str | None = None
 
 
 def new_snapshot_key() -> str:

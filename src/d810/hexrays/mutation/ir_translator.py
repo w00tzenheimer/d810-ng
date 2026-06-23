@@ -11,7 +11,7 @@ from d810.core.logging import getLogger
 from d810.core.typing import TYPE_CHECKING, Callable
 
 from d810.hexrays.contracts import CfgContractViolationError, IDACfgContract
-from d810.hexrays.ir_maturity import ida_maturity_to_ir
+from d810.hexrays.ir_maturity import hexrays_maturity_envelope, ida_maturity_to_ir
 
 from d810.transforms.graph_modification import (
     CloneConditionalAsGoto,
@@ -683,6 +683,7 @@ def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
 
     maturity_int = int(mba.maturity)
     maturity_name = maturity_to_string(maturity_int)
+    maturity_envelope = hexrays_maturity_envelope(maturity_int)
     try:
         ir_maturity = ida_maturity_to_ir(maturity_int)
     except ValueError:
@@ -703,6 +704,7 @@ def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
             "ir_maturity": ir_maturity,
             "snapshot_form": snapshot_form,
             "snapshot_stage": snapshot_form,
+            "maturity_envelope": maturity_envelope,
             "cpu_arch_name": cpu_arch_name,
             # E2b transition aliases (retained for legacy callers; proven
             # equal to the neutral fields by the lifter parity test).

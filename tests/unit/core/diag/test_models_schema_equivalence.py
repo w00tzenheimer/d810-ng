@@ -103,6 +103,10 @@ EXPECTED_TABLE_INFO = {
         ("operand_fingerprint", "TEXT", 1, 0),
         ("body_fingerprint", "TEXT", 1, 0),
     ],
+    "snapshot_maturity": [
+        ("snapshot_id", "INTEGER", 1, 1),
+        ("maturity_json", "TEXT", 1, 0),
+    ],
     "instructions": [
         ("snapshot_id", "INTEGER", 1, 1),
         ("block_serial", "INTEGER", 1, 2),
@@ -809,4 +813,4 @@ class TestModeledSchemaEquivalence:
 
     def test_modeled_count(self) -> None:
         # Phase A models the non-slice-1, non-view tables.
-        assert len(EXPECTED_TABLE_INFO) == 32
+        assert len(EXPECTED_TABLE_INFO) == 33

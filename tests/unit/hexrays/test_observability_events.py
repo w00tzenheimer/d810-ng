@@ -1,6 +1,8 @@
 """Tests for the hexrays observability event API (Phase 2)."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from d810.core.observability import (
@@ -52,6 +54,31 @@ def test_request_capture_returns_snapshot_ref_when_subscribed():
     assert snap.maturity == "MMAT_GLBOPT1"
     assert snap.phase == "post_d810"
     assert snap.key  # non-empty uuid hex
+
+
+def test_request_capture_carries_maturity_json_when_supplied():
+    captured: list[CaptureMbaSnapshotRequested] = []
+    subscribe(CaptureMbaSnapshotRequested, captured.append)
+    maturity_json = json.dumps({
+        "ir": "GLOBAL_ANALYZED",
+        "snapshot_form": "OPTIMIZED_IR",
+        "provider": "hexrays",
+        "provider_id": 4,
+        "provider_name": "MMAT_GLBOPT1",
+    })
+
+    snap = request_capture_mba_snapshot(
+        blocks=[],
+        label="post_d810",
+        func_ea=0x401000,
+        maturity="MMAT_GLBOPT1",
+        maturity_json=maturity_json,
+        phase="post_d810",
+    )
+
+    assert snap is not None
+    assert snap.maturity_json == maturity_json
+    assert captured[0].snapshot.maturity_json == maturity_json
 
 
 def test_request_capture_publishes_event_with_blocks_tuple():

@@ -256,7 +256,11 @@ Boundary rule:
 * Persisted diagnostic DB labels and CLI/user-facing snapshot selectors may keep
   `MMAT_*` strings as compatibility names, but those strings must be parsed and
   formatted by one adapter helper instead of each portable module carrying its
-  own name table.
+  own name table. Persisted diagnostics must also carry the full maturity
+  envelope as JSON:
+  `{"ir": "GLOBAL_ANALYZED", "snapshot_form": "OPTIMIZED_IR",
+  "provider": "hexrays", "provider_id": 4,
+  "provider_name": "MMAT_GLBOPT1"}`.
 * Historical docs/tests may mention `MMAT_*`; live portable production logic
   should not branch on provider strings.
 
@@ -291,6 +295,17 @@ Ordered implementation slices:
    compatibility surfaces, add a category-A `--fail-over` threshold to the local
    architecture checks so new raw maturity tables or provider strings cannot
    re-enter portable production code unnoticed.
+
+Accepted/implemented first slice 2026-06-23:
+
+* `d810.hexrays.ir_maturity` is the shared Hex-Rays mapper for native
+  `MMAT_*` ids/names -> `IRMaturity` + `SnapshotForm` maturity envelopes.
+* Hex-Rays snapshot emission carries canonical maturity JSON on `SnapshotRef`
+  while preserving the legacy flat `maturity` label.
+* Diagnostic persistence keeps `snapshots.maturity` as the compatibility
+  selector and persists the whole maturity object in `snapshot_maturity`.
+  Snapshot-linked diagnostic rows can recover the full maturity envelope through
+  `snapshot_id` without duplicating it on every child row.
 
 Validation for the eventual implementation slices: focused unit tests for the
 adapter helpers and fact lifecycle ranking, the portable-IR audit count for
@@ -379,11 +394,11 @@ category A, `sg scan`, `PYTHONPATH=src pyenv exec lint-imports --config
 
 9. **Burn down remaining maturity integer/string drift.**
 
-   Status 2026-06-23: plan written only; implementation intentionally deferred
-   pending review. See C1. This wraps the remaining raw `MMAT_*` / maturity-int
-   cleanup into calibrated audit, adapter-label centralization,
+   Status 2026-06-23: maturity-envelope persistence is implemented; the
+   remaining raw `MMAT_*` / maturity-int cleanup is still scoped by C1. The
+   remaining work is calibrated audit, broader adapter-label centralization,
    `IRMaturity`-based collector scheduling, fact-lifecycle ranking cleanup, and
-   diagnostic-storage compatibility classification.
+   guardrail installation.
 
 ## Closure tracker
 
@@ -395,10 +410,12 @@ category A, `sg scan`, `PYTHONPATH=src pyenv exec lint-imports --config
   Residual `BST`, `SWITCH`, `INDIRECT_TABLE`, and derived-key wording belongs to
   historical migration text, persisted-schema compatibility, or explicit
   regression tests. `llr-zkju` is closed.
-* Maturity/form vocabulary: closed for enum design. Remaining work is the C1
-  cleanup plan, not a new maturity vocabulary.
+* Maturity/form vocabulary: closed for enum design. Maturity-envelope
+  persistence is implemented; remaining C1 work is cleanup and guardrails, not
+  a new maturity vocabulary.
 * Persisted diagnostic schema names: compatibility surface, not live vocabulary.
-  Do not rename physical DB columns opportunistically.
+  Do not rename physical DB columns opportunistically; use `snapshot_maturity`
+  for the durable maturity JSON.
 
 Each phase: golden suite green via the Docker runner (NEVER local `pytest
 tests/system` — false-red). Unit + `lint-imports` locally.

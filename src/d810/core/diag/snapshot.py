@@ -32,6 +32,7 @@ from d810.core.diag.models import (
     RenderedProgramLine,
     RenderedProgramNode,
     Snapshot,
+    SnapshotMaturity,
     StateCfgFrontierClosureDiagnostic,
     StateCfgEdge,
     StateCfgLocalEdge,
@@ -153,6 +154,18 @@ def _body_fingerprint(block: BlockSnapshot) -> str:
     return f"fnv1a64:0x{_fnv1a_64(payload):016x}"
 
 
+def _maturity_json_text(value: str | Mapping[str, Any] | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        payload = json.loads(value)
+    else:
+        payload = dict(value)
+    if not isinstance(payload, MappingABC):
+        return None
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
 def _block_observation_row(
     snapshot_id: int,
     block: BlockSnapshot,
@@ -183,6 +196,7 @@ def snapshot_mba(
     func_ea: int,
     maturity: str = "UNKNOWN",
     phase: str = "unknown",
+    maturity_json: str | Mapping[str, Any] | None = None,
 ) -> int:
     """Snapshot MBA blocks and instructions into SQLite.
 
@@ -212,6 +226,12 @@ def snapshot_mba(
         )
         snap_id = snapshot.id
         assert snap_id is not None
+        maturity_json_text = _maturity_json_text(maturity_json)
+        if maturity_json_text is not None:
+            SnapshotMaturity.create(
+                snapshot=snap_id,
+                maturity_json=maturity_json_text,
+            )
 
         # Bulk insert blocks
         block_rows = []

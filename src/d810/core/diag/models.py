@@ -79,6 +79,21 @@ class Snapshot(BaseModel):
         table_name = "snapshots"
 
 
+class SnapshotMaturity(BaseModel):
+    snapshot = ForeignKeyField(
+        Snapshot,
+        field="id",
+        column_name="snapshot_id",
+        primary_key=True,
+        index=False,
+        null=False,
+    )
+    maturity_json = TextField()
+
+    class Meta:
+        table_name = "snapshot_maturity"
+
+
 class Block(BaseModel):
     snapshot = _snapshot_fk()
     serial = IntegerField()
@@ -874,6 +889,7 @@ class TerminalTailDceCause(BaseModel):
 # ``snapshot_id`` FK points only at Snapshot, so the remaining order is free.
 MODELS = (
     Snapshot,
+    SnapshotMaturity,
     # Layer 1
     Block,
     BlockObservation,
