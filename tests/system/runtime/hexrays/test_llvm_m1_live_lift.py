@@ -23,6 +23,13 @@ from d810.backends.llvm import (
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.ir.maturity import IRMaturity
 from tests.system.runtime.conftest import gen_microcode_at_maturity, get_func_ea
+from tests.system.runtime.hexrays._llvm_opt_skip import (
+    LLVM_OPT_SKIP_REASON,
+    llvm_opt_missing,
+)
+
+
+pytestmark = pytest.mark.skipif(llvm_opt_missing(), reason=LLVM_OPT_SKIP_REASON)
 
 
 _PROBED_MATURITIES = (
