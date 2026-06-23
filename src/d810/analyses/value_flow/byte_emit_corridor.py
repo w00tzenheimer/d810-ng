@@ -8,8 +8,8 @@ the whole corridor.
 from __future__ import annotations
 
 from d810.core.typing import Any
+from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
 from d810.analyses.value_flow.induction_carrier import (
-    _MATURITY_VALUES,
     _maturity_name,
 )
 from d810.analyses.value_flow.terminal_byte_emitter import (
@@ -17,12 +17,7 @@ from d810.analyses.value_flow.terminal_byte_emitter import (
 )
 from d810.analyses.value_flow.model import FactObservation
 
-_TARGET_MATURITIES = frozenset({
-    _MATURITY_VALUES["MMAT_PREOPTIMIZED"],
-    _MATURITY_VALUES["MMAT_LOCOPT"],
-    _MATURITY_VALUES["MMAT_CALLS"],
-    _MATURITY_VALUES["MMAT_GLBOPT1"],
-})
+_TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 
 
 def _step_sort_key(observation: FactObservation) -> tuple[int, int, int]:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.core.typing import Protocol, runtime_checkable
+from d810.core.typing import Any, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -18,6 +18,7 @@ class ProviderPhase(Protocol):
     provider_name: str
     provider_level: int
     friendly_provider_level: str
+    ir_maturity: Any | None
 
 
 @dataclass(frozen=True)
@@ -27,3 +28,4 @@ class ProviderPhaseSnapshot:
     provider_name: str
     provider_level: int
     friendly_provider_level: str
+    ir_maturity: Any | None = None

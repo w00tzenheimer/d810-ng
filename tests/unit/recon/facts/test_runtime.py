@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import d810.passes.fact_runtime as facts_runtime_module
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+from d810.ir.maturity import IRMaturity
 from d810.core import ProviderPhaseSnapshot
 from d810.core.observability import SnapshotRef
 from d810.core.settings import configure_settings, reset_settings
@@ -96,6 +97,34 @@ class _MappingCollector:
                 ),
             )
         )
+
+
+def test_capture_supports_ir_maturity_collector_schedule() -> None:
+    configure_settings(fact_lifecycle=True)
+    seen: list[int] = []
+
+    class _IrScheduledCollector:
+        name = "ir-scheduled"
+        fact_kinds = frozenset({"IrScheduledFact"})
+        maturities = frozenset({IRMaturity.GLOBAL_ANALYZED})
+
+        def collect(self, target, *, func_ea: int, maturity: int, phase: str):
+            del target, func_ea, phase
+            seen.append(int(maturity))
+            return ()
+
+    runtime = FactLifecycleRuntime()
+    runtime.register(_IrScheduledCollector())
+
+    summary = runtime.capture(
+        object(),
+        func_ea=0x401000,
+        provider_phase=_phase(_MATURITY_GLBOPT1, "MMAT_GLBOPT1"),
+    )
+
+    assert summary.invoked is True
+    assert summary.collector_count == 1
+    assert seen == [_MATURITY_GLBOPT1]
 
 
 def teardown_function() -> None:

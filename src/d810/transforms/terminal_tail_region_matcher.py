@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from d810.core.logging import getLogger
+from d810.core.maturity_labels import is_glbopt1_post_d810, maturity_phase_rank
 from d810.core.typing import Iterable
 
 logger = getLogger(__name__)
@@ -140,30 +141,9 @@ class TerminalTailReport:
     glbopt1_post_d810_entry: TimelineEntry | None
 
 
-# Ordering used to walk the maturity/phase timeline.
-_TIMELINE_ORDER: dict[tuple[str, str], int] = {
-    ("MMAT_LOCOPT", "pre_d810"): 0,
-    ("MMAT_LOCOPT", "post_d810"): 1,
-    ("MMAT_CALLS", "pre_d810"): 2,
-    ("MMAT_CALLS", "post_d810"): 3,
-    ("MMAT_GLBOPT1", "pre_d810"): 4,
-    ("MMAT_GLBOPT1", "post_apply"): 5,
-    ("MMAT_GLBOPT1", "post_gut_wire"): 6,
-    ("MMAT_GLBOPT1", "post_pipeline"): 7,
-    ("MMAT_GLBOPT1", "post_d810"): 8,
-    ("MMAT_GLBOPT2", "pre_d810"): 9,
-    ("MMAT_GLBOPT2", "post_apply"): 10,
-    ("MMAT_GLBOPT2", "post_d810"): 11,
-    ("MMAT_GLBOPT3", "pre_d810"): 12,
-    ("MMAT_GLBOPT3", "post_d810"): 13,
-    ("MMAT_LVARS", "pre_d810"): 14,
-    ("MMAT_LVARS", "post_d810"): 15,
-}
-
-
 def _timeline_rank(meta: SnapshotMeta) -> tuple[int, int]:
     """Total ordering key for snapshot timeline."""
-    base = _TIMELINE_ORDER.get(meta.key(), 99)
+    base = maturity_phase_rank(meta.maturity, meta.phase)
     return (base, int(meta.snapshot_id))
 
 
@@ -255,7 +235,7 @@ def aggregate_byte_emit_timeline(
     for entry in timeline:
         if entry.snapshot.phase == "post_d810":
             last_d810 = entry
-        if entry.snapshot.maturity == "MMAT_GLBOPT1" and entry.snapshot.phase == "post_d810":
+        if is_glbopt1_post_d810(entry.snapshot.maturity, entry.snapshot.phase):
             glbopt1_post = entry
 
     return TerminalTailReport(

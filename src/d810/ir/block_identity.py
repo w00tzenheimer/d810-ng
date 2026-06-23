@@ -10,20 +10,9 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 
+from d810.core.maturity_labels import MaturityNumbering, mmat_label
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, OperandKind
 
-
-_MATURITY_NAMES = {
-    0: "MMAT_ZERO",
-    1: "MMAT_GENERATED",
-    2: "MMAT_PREOPTIMIZED",
-    3: "MMAT_LOCOPT",
-    4: "MMAT_CALLS",
-    5: "MMAT_GLBOPT1",
-    6: "MMAT_GLBOPT2",
-    7: "MMAT_GLBOPT3",
-    8: "MMAT_LVARS",
-}
 _MASK64 = 0xFFFFFFFFFFFFFFFF
 _SIGNED64_MAX = 0x7FFFFFFFFFFFFFFF
 
@@ -68,7 +57,7 @@ def maturity_label(value: object | None) -> str:
         value_int = int(value)
     except Exception:
         return f"maturity={value}"
-    return f"maturity={_MATURITY_NAMES.get(value_int, f'MMAT_{value_int}')}"
+    return mmat_label(value_int, numbering=MaturityNumbering.WITH_ZERO)
 
 
 def flow_graph_context_label(flow_graph: FlowGraph | None) -> str:

@@ -35,6 +35,15 @@ def _default_maturity_name(maturity: int) -> str:
         return f"MMAT_{maturity}"
 
 
+def _ir_maturity_for_hexrays_maturity(maturity: int) -> Any | None:
+    try:
+        from d810.hexrays.ir_maturity import ida_maturity_to_ir
+
+        return ida_maturity_to_ir(int(maturity))
+    except Exception:
+        return None
+
+
 @dataclass(eq=False, slots=True)
 class HexRaysPostD810Runtime:
     """Owns post-D810 live Hex-Rays capture and probe subscribers."""
@@ -91,6 +100,7 @@ class HexRaysPostD810Runtime:
                 provider_name="hexrays_microcode",
                 provider_level=int(maturity),
                 friendly_provider_level=self._maturity_name(int(maturity)),
+                ir_maturity=_ir_maturity_for_hexrays_maturity(int(maturity)),
             )
             try:
                 from d810.hexrays.fact_target import mba_to_fact_target

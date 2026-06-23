@@ -10,9 +10,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from d810.core.logging import getLogger
+from d810.core.maturity_labels import MaturityNumbering, mmat_rank, mmat_value
 from d810.core.provider_phase import ProviderPhase
 from d810.core.settings import get_settings
 from d810.core.typing import Any, Callable, Protocol, runtime_checkable
+from d810.ir.maturity import IRMaturity, IR_MATURITY_ORDER
 from d810.analyses.value_flow.model import (
     FactConflict,
     FactMapping,
@@ -49,7 +51,7 @@ class FactCollector(Protocol):
 
     name: str
     fact_kinds: frozenset[str]
-    maturities: frozenset[int] | None
+    maturities: frozenset[int | IRMaturity] | None
 
     def collect(
         self,
@@ -149,8 +151,60 @@ class FactLifecycleRuntime:
     def _collector_runs_at_maturity(
         collector: FactCollector,
         maturity: int,
+        ir_maturity: IRMaturity | None,
     ) -> bool:
-        return collector.maturities is None or maturity in collector.maturities
+        if collector.maturities is None:
+            return True
+        for candidate in collector.maturities:
+            if isinstance(candidate, IRMaturity):
+                if ir_maturity is candidate:
+                    return True
+                continue
+            try:
+                if int(candidate) == int(maturity):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    @staticmethod
+    def _coerce_ir_maturity(value: Any) -> IRMaturity | None:
+        if isinstance(value, IRMaturity):
+            return value
+        if value is None:
+            return None
+        text = str(value)
+        try:
+            return IRMaturity(text)
+        except ValueError:
+            pass
+        try:
+            return IRMaturity[text]
+        except KeyError:
+            return None
+
+    @classmethod
+    def _provider_phase_ir_maturity(
+        cls,
+        provider_phase: ProviderPhase,
+    ) -> IRMaturity | None:
+        direct = cls._coerce_ir_maturity(
+            getattr(provider_phase, "ir_maturity", None)
+        )
+        if direct is not None:
+            return direct
+        provider_rank = mmat_value(
+            getattr(provider_phase, "friendly_provider_level", None),
+            numbering=MaturityNumbering.IDA,
+        )
+        if provider_rank is None:
+            try:
+                provider_rank = int(provider_phase.provider_level)
+            except Exception:
+                return None
+        if 0 <= provider_rank < len(IR_MATURITY_ORDER):
+            return IR_MATURITY_ORDER[int(provider_rank)]
+        return None
 
     @staticmethod
     def _normalize_result(
@@ -168,30 +222,7 @@ class FactLifecycleRuntime:
 
     @staticmethod
     def _maturity_rank(maturity: int | str) -> int:
-        names = (
-            "MMAT_GENERATED",
-            "MMAT_PREOPTIMIZED",
-            "MMAT_LOCOPT",
-            "MMAT_CALLS",
-            "MMAT_GLBOPT1",
-            "MMAT_GLBOPT2",
-            "MMAT_GLBOPT3",
-            "MMAT_LVARS",
-        )
-        if isinstance(maturity, int):
-            maturity_text = FactLifecycleRuntime._maturity_text(maturity)
-        else:
-            maturity_text = str(maturity)
-        if maturity_text in names:
-            return names.index(maturity_text)
-        if maturity_text.startswith("MMAT_"):
-            suffix = maturity_text.removeprefix("MMAT_")
-            if suffix.isdigit():
-                resolved = FactLifecycleRuntime._maturity_text(int(suffix))
-                if resolved != maturity_text:
-                    return FactLifecycleRuntime._maturity_rank(resolved)
-                return int(suffix)
-        return len(names)
+        return mmat_rank(maturity, numbering=MaturityNumbering.IDA, default=8)
 
     def validated_view(self, func_ea: int, maturity: int | str) -> ValidatedFactView:
         """Return the validated fact view for one function as of ``maturity``.
@@ -1297,6 +1328,7 @@ class FactLifecycleRuntime:
     ) -> FactCaptureSummary:
         maturity = int(provider_phase.provider_level)
         maturity_text = str(provider_phase.friendly_provider_level)
+        ir_maturity = self._provider_phase_ir_maturity(provider_phase)
         settings = get_settings()
         if not settings.fact_lifecycle:
             return FactCaptureSummary(
@@ -1332,7 +1364,9 @@ class FactLifecycleRuntime:
         conflicts: list[FactConflict] = []
         ran_fact_kinds: set[str] = set()
         for collector in self._collectors:
-            if not self._collector_runs_at_maturity(collector, maturity):
+            if not self._collector_runs_at_maturity(
+                collector, maturity, ir_maturity
+            ):
                 continue
             try:
                 result = self._normalize_result(

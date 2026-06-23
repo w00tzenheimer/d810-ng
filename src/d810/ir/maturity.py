@@ -16,9 +16,13 @@ from enum import Enum
 from types import MappingProxyType
 
 __all__ = [
+    "EARLY_FACT_COLLECTION_IR_MATURITIES",
     "IRMaturity",
+    "IR_MATURITY_ORDER",
     "SnapshotForm",
     "IR_MATURITY_TO_SNAPSHOT_FORM",
+    "LOCAL_FACT_COLLECTION_IR_MATURITIES",
+    "ir_maturity_rank",
     "snapshot_form_for_maturity",
 ]
 
@@ -71,6 +75,31 @@ class SnapshotForm(str, Enum):
     FINAL_PRE_RENDER = "final_pre_render"
 
 
+IR_MATURITY_ORDER = (
+    IRMaturity.LIFTED,
+    IRMaturity.CANONICAL,
+    IRMaturity.LOCAL_OPTIMIZED,
+    IRMaturity.CALL_MODELED,
+    IRMaturity.GLOBAL_ANALYZED,
+    IRMaturity.GLOBAL_OPTIMIZED,
+    IRMaturity.STRUCTURED,
+    IRMaturity.VARIABLE_RECOVERED,
+)
+EARLY_FACT_COLLECTION_IR_MATURITIES = frozenset(
+    {
+        IRMaturity.CANONICAL,
+        IRMaturity.LOCAL_OPTIMIZED,
+        IRMaturity.CALL_MODELED,
+        IRMaturity.GLOBAL_ANALYZED,
+    }
+)
+LOCAL_FACT_COLLECTION_IR_MATURITIES = frozenset(
+    {
+        IRMaturity.CANONICAL,
+        IRMaturity.LOCAL_OPTIMIZED,
+    }
+)
+
 IR_MATURITY_TO_SNAPSHOT_FORM = MappingProxyType(
     {
         IRMaturity.LIFTED: SnapshotForm.RAW_IR,
@@ -83,6 +112,15 @@ IR_MATURITY_TO_SNAPSHOT_FORM = MappingProxyType(
         IRMaturity.VARIABLE_RECOVERED: SnapshotForm.LVAR_RECOVERED,
     }
 )
+
+
+def ir_maturity_rank(maturity: IRMaturity) -> int:
+    """Return the canonical ordering rank for a portable IR maturity."""
+
+    try:
+        return IR_MATURITY_ORDER.index(maturity)
+    except ValueError as exc:
+        raise ValueError(f"No IRMaturity rank for {maturity!r}") from exc
 
 
 def snapshot_form_for_maturity(maturity: IRMaturity) -> SnapshotForm:

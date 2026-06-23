@@ -32,8 +32,8 @@ from dataclasses import dataclass
 
 from d810.core.typing import Any
 from d810.ir.flowgraph import InsnKind, OperandKind
+from d810.ir.maturity import LOCAL_FACT_COLLECTION_IR_MATURITIES
 from d810.analyses.value_flow.induction_carrier import (
-    _MATURITY_VALUES,
     _InstructionView,
     _classify_induction_update,
     _iter_instruction_views,
@@ -50,10 +50,7 @@ from d810.analyses.value_flow.model import FactObservation
 # LOCOPT is the load-bearing maturity (the guard is folded by CALLS), but
 # observing at every state-machine maturity is harmless: later maturities
 # simply find no folded guard once the loop is gone.
-_TARGET_MATURITIES = frozenset({
-    _MATURITY_VALUES["MMAT_PREOPTIMIZED"],
-    _MATURITY_VALUES["MMAT_LOCOPT"],
-})
+_TARGET_MATURITIES = LOCAL_FACT_COLLECTION_IR_MATURITIES
 
 # Opcode names that hold a ``counter <cmp> bound`` predicate over a structured
 # (induction-var, const) operand pair.  Both the diag ``m_*`` names and the

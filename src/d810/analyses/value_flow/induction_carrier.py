@@ -12,8 +12,14 @@ from dataclasses import dataclass
 import re
 
 from d810.capabilities.source_lifter import select_lifter
-from d810.ir.flowgraph import InsnKind, OperandKind
+from d810.core.maturity_labels import (
+    MaturityNumbering,
+    WITH_ZERO_MATURITY_VALUES,
+    mmat_name,
+)
 from d810.core.typing import Any, Iterable
+from d810.ir.flowgraph import InsnKind, OperandKind
+from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
 from d810.analyses.value_flow.model import FactObservation
 
 _ADD_OPCODES = frozenset({"m_add", "op_12", InsnKind.ADD.value})
@@ -28,24 +34,8 @@ _STACK_MOV_RE = re.compile(
 _DS_ADDRESS_RE = re.compile(r"\[ds\.[^\]]+\]")
 
 
-_MATURITY_VALUES = {
-    "MMAT_GENERATED": 1,
-    "MMAT_PREOPTIMIZED": 2,
-    "MMAT_LOCOPT": 3,
-    "MMAT_CALLS": 4,
-    "MMAT_GLBOPT1": 5,
-    "MMAT_GLBOPT2": 6,
-    "MMAT_GLBOPT3": 7,
-    "MMAT_LVARS": 8,
-}
-
-_MATURITY_NAMES = {value: name for name, value in _MATURITY_VALUES.items()}
-_TARGET_MATURITIES = frozenset({
-    _MATURITY_VALUES["MMAT_PREOPTIMIZED"],
-    _MATURITY_VALUES["MMAT_LOCOPT"],
-    _MATURITY_VALUES["MMAT_CALLS"],
-    _MATURITY_VALUES["MMAT_GLBOPT1"],
-})
+_MATURITY_VALUES = dict(WITH_ZERO_MATURITY_VALUES)
+_TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 
 
 @dataclass(frozen=True)
@@ -108,7 +98,7 @@ class _WritebackTailUpdate:
 
 
 def _maturity_name(maturity: int) -> str:
-    return _MATURITY_NAMES.get(int(maturity), f"MMAT_{int(maturity)}")
+    return mmat_name(int(maturity), numbering=MaturityNumbering.WITH_ZERO)
 
 
 def _signed_step(value: int) -> int:

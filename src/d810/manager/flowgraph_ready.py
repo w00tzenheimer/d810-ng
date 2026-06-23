@@ -45,6 +45,7 @@ class FlowGraphReadySubscriber:
             provider_name=self.provider_name,
             provider_level=int(maturity),
             friendly_provider_level=str(maturity_name),
+            ir_maturity=getattr(flow_graph, "metadata", {}).get("ir_maturity"),
         )
         if self.recon_phase is not None:
             try:

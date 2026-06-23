@@ -247,6 +247,18 @@ That count is intentionally conservative and currently overcounts legitimate
 portable vocabulary annotations such as `IRMaturity` / `MaturityRange`, so the
 first slice is calibration, not mechanical replacement.
 
+Re-measured after the 2026-06-23 C1 cleanup:
+
+```json
+{"total": 68, "real_leak": 68, "by_category": {"A": 68}, "by_category_real": {"A": 68}}
+```
+
+The calibrated count now excludes portable maturity vocabulary (`IRMaturity`,
+`MaturityRange`, `SnapshotForm`), storage strings, and boundary provider
+capabilities. The remaining count is raw provider maturity compatibility
+surface: legacy `maturity: int` payload parameters, persisted/provider labels,
+and older collectors that still use provider-level integers.
+
 Boundary rule:
 
 * Raw `ida_hexrays.MMAT_*` integers are allowed only at Hex-Rays adapter and
@@ -270,31 +282,43 @@ Ordered implementation slices:
    so `IRMaturity`, `MaturityRange`, and other portable maturity-type annotations
    are not counted as leaks. Keep `maturity: int`, raw `MMAT_*` tables, and
    string comparisons as findings. Record the post-calibration category-A
-   baseline by package before changing behavior.
+   baseline by package before changing behavior. **Done 2026-06-23; baseline is
+   68 category-A real sites and the local guardrail is
+   `--category A --real-only --sites --fail-over 68`.**
 2. **Centralize Hex-Rays maturity labels.** Extend the Hex-Rays adapter seam
    (`d810.hexrays.ir_maturity`, or a sibling under `d810.hexrays`) with helpers
    for raw maturity integer -> `MMAT_*` label, label normalization, ordering, and
    snapshot-label construction. Replace duplicate name tables in manager/runtime
    code with dependency-injected label providers where portable layers cannot
-   import Hex-Rays.
+   import Hex-Rays. **Done for dependency-free compatibility paths through
+   `d810.core.maturity_labels`; Hex-Rays DTO/enum mapping remains in
+   `d810.hexrays.ir_maturity`.**
 3. **Move fact-collector scheduling to `IRMaturity`.** Change collector
    declarations from `frozenset[int]` / local `_MATURITY_VALUES` tables to
    `frozenset[IRMaturity]`; map the live `mba.maturity` to `IRMaturity` once at
    the Hex-Rays runtime boundary. Preserve the persisted fact row's provider
-   label as diagnostic metadata.
+   label as diagnostic metadata. **Done for the value-flow/state-transition fact
+   collectors migrated in this slice. `FactLifecycleRuntime` now accepts
+   `IRMaturity` schedules and keeps legacy integer schedules working for older
+   collectors.**
 4. **Normalize fact lifecycle ranking.** Replace local `MMAT_*` rank tables in
    `FactLifecycleRuntime`, induction/terminal/return-carrier analyses, and
    terminal-tail region matching with a shared maturity-order abstraction. The
    ranking input may be a provider label only when reading persisted diagnostics.
+   **Done for fact lifecycle ranking, block labels, settings/stats labels, and
+   terminal-tail diagnostic timeline ranking.**
 5. **Classify diagnostic storage compatibility.** Keep physical schema fields
    such as `snapshots.maturity` and existing labels like
    `maturity_MMAT_GLBOPT1_post_d810` until a separate schema migration is
    justified. Add comments/tests that mark them as storage compatibility, not
-   portable scheduling vocabulary.
+   portable scheduling vocabulary. **Done for the maturity envelope path and
+   maintained by tests covering the persisted DTO and compatibility labels.**
 6. **Install the guardrail.** After the calibrated baseline is down to expected
    compatibility surfaces, add a category-A `--fail-over` threshold to the local
    architecture checks so new raw maturity tables or provider strings cannot
-   re-enter portable production code unnoticed.
+   re-enter portable production code unnoticed. **Done as a checked local command
+   with threshold 68; wire it into a broader always-on architecture check only
+   after the remaining legacy raw-int collectors are retired.**
 
 Accepted/implemented first slice 2026-06-23:
 
@@ -306,6 +330,26 @@ Accepted/implemented first slice 2026-06-23:
   selector and persists the whole maturity object in `snapshot_maturity`.
   Snapshot-linked diagnostic rows can recover the full maturity envelope through
   `snapshot_id` without duplicating it on every child row.
+
+Accepted/implemented C1 cleanup slice 2026-06-23:
+
+* `d810.core.maturity_labels` centralizes dependency-free provider maturity
+  name parsing, formatting, numbering schemes (`IDA` vs `WITH_ZERO`), rank
+  helpers, and diagnostic timeline ordering.
+* `d810.ir.maturity` exposes `IR_MATURITY_ORDER`,
+  `EARLY_FACT_COLLECTION_IR_MATURITIES`, and
+  `LOCAL_FACT_COLLECTION_IR_MATURITIES`.
+* `ProviderPhaseSnapshot` can carry optional `ir_maturity`; the
+  `FLOWGRAPH_READY` subscriber passes the lifted graph's `ir_maturity` through
+  to fact runtime, while post-D810 Hex-Rays capture fills it opportunistically.
+* `FactLifecycleRuntime` schedules collectors by `IRMaturity` when present and
+  falls back to legacy raw integer schedules for older collectors.
+* Migrated value-flow/state-transition fact collectors declare portable
+  `IRMaturity` schedules; their `collect(..., maturity: int)` payload parameter
+  remains a provider compatibility value so existing fact rows and diagnostics
+  do not churn.
+* The calibrated audit baseline is 68 category-A real sites, enforced locally by
+  `PYTHONPATH=src pyenv exec python tools/scripts/codemod_portable_ir_audit.py --category A --real-only --sites --fail-over 68 --json`.
 
 Validation for the eventual implementation slices: focused unit tests for the
 adapter helpers and fact lifecycle ranking, the portable-IR audit count for

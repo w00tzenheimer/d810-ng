@@ -12,6 +12,7 @@ event payload use the exact same label strings (no drift).
 from __future__ import annotations
 
 from d810.core.formatting import format_block_id
+from d810.core.maturity_labels import MaturityNumbering, mmat_name
 from d810.core.typing import Any
 
 
@@ -31,18 +32,7 @@ def live_maturity_label(source: Any | None) -> str:
         value = int(getattr(source, "maturity"))
     except Exception:
         return "maturity=?"
-    names = {
-        0: "MMAT_ZERO",
-        1: "MMAT_GENERATED",
-        2: "MMAT_PREOPTIMIZED",
-        3: "MMAT_LOCOPT",
-        4: "MMAT_CALLS",
-        5: "MMAT_GLBOPT1",
-        6: "MMAT_GLBOPT2",
-        7: "MMAT_GLBOPT3",
-        8: "MMAT_LVARS",
-    }
-    return names.get(value, f"MMAT_{value}")
+    return mmat_name(value, numbering=MaturityNumbering.WITH_ZERO)
 
 
 def live_block_label(source: Any | None, serial: int | None) -> str:
