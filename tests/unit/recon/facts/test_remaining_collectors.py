@@ -431,6 +431,143 @@ def test_zero_blob_ignores_legacy_text_only_shapes() -> None:
     assert facts == ()
 
 
+# --- llr-3b41 S3: zero_blob canonical-lift coverage for the diag-row source ---
+#
+# The pre-S3 zero_blob tests covered only the FlowGraph (meta-rich, canonical)
+# and the meta-less legacy ``_target`` flat source.  The S3 port also routes a
+# production diag row carrying a parseable ``meta`` operand tree through the
+# SAME canonical lift, so its facts become canonical-faithful.  These tests pin
+# that third source (a ``core.diag.snapshot.InstructionSnapshot`` with an
+# ``_instruction_operands_meta``-shaped ``meta`` JSON) AND re-confirm the
+# meta-less attrs-only row stays byte-identical (zero observations).
+
+
+def _meta_stack(stkoff: int, size: int = 8) -> dict:
+    return {"type": "mop_S", "type_num": 5, "size": size, "dstr": "x", "stkoff": stkoff}
+
+
+def _meta_const(value: int, size: int = 8) -> dict:
+    return {
+        "type": "mop_n",
+        "type_num": 2,
+        "size": size,
+        "dstr": f"#{value:#x}",
+        "value": value,
+    }
+
+
+def _meta_global(address: int, size: int = 8) -> dict:
+    return {
+        "type": "mop_v",
+        "type_num": 6,
+        "size": size,
+        "dstr": "g",
+        "global_ea": f"{address:#x}",
+    }
+
+
+def test_zero_blob_lifts_zero_store_from_diag_meta_operand_tree() -> None:
+    # ``m_stx #0x0, ds, %var_dst`` -- serializer meta: l=value, r=segment,
+    # d=target.  The canonical lift recovers operation=STORE + memory operands
+    # off the operand tree, so the meta-rich diag row yields the same
+    # ``zero_store`` fact the FlowGraph source does.
+    collector = ZeroBlobFactCollector()
+
+    facts = collector.collect(
+        _target(
+            _block(
+                40,
+                _insn(
+                    index=0,
+                    opcode_name="m_stx",
+                    dstr="stx #0x0.8, ds.2, %var_dst.8",
+                    ea=0x180014A00,
+                    meta={
+                        "l": _meta_const(0),
+                        "r": _meta_const(2),
+                        "d": _meta_stack(0x300),
+                    },
+                ),
+                succs=(41,),
+            )
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_GLBOPT1"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact.kind == "ZeroBlobFact"
+    assert fact.payload["init_kind"] == "zero_store"
+    assert fact.payload["destination"] == "mop_S:0x300"
+    assert fact.payload["source"] == "#0x0"
+    assert fact.payload["source_ea"] == "0x180014a00"
+    assert "ea=0x180014a00" in fact.semantic_key
+
+
+def test_zero_blob_lifts_blob_store_from_diag_meta_operand_tree() -> None:
+    # ``m_stx $0x180018e95, ds, %var_dst`` -- a static global blob store.
+    collector = ZeroBlobFactCollector()
+
+    facts = collector.collect(
+        _target(
+            _block(
+                40,
+                _insn(
+                    index=0,
+                    opcode_name="m_stx",
+                    dstr="stx unk_180018E95, ds.2, %var_dst.8",
+                    ea=0x180014A10,
+                    meta={
+                        "l": _meta_global(0x180018E95),
+                        "r": _meta_const(2),
+                        "d": _meta_stack(0x300),
+                    },
+                ),
+                succs=(41,),
+            )
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_GLBOPT1"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact.payload["init_kind"] == "blob_store"
+    assert fact.payload["destination"] == "mop_S:0x300"
+    assert fact.payload["source"] == "$0x180018e95"
+    assert fact.confidence == 0.72
+
+
+def test_zero_blob_ignores_meta_less_attrs_only_row() -> None:
+    # A meta-less row whose ``meta`` carries only attrs (no operand tree) stays
+    # on the byte-identical legacy flat path: zero_blob reads only canonical
+    # memory/call fields the flat path never populates -> zero observations.
+    collector = ZeroBlobFactCollector()
+
+    facts = collector.collect(
+        _target(
+            _block(
+                40,
+                _insn(
+                    index=0,
+                    opcode_name="m_stx",
+                    dstr="stx v52[1], ds.1, %var_dst.8",
+                    meta={"byte_index": 1},
+                ),
+                succs=(41,),
+            )
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_GLBOPT1"],
+        phase="pre_d810",
+    )
+
+    assert facts == ()
+
+
 def test_return_frontier_records_nearby_return_carrier_writers() -> None:
     collector = ReturnFrontierFactCollector()
 
