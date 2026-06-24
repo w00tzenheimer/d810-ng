@@ -70,6 +70,12 @@ class ConditionChainWalkerProvider:
     # (``None`` -> initializer folding disabled) so existing provider/test
     # fixtures construct unchanged.
     fetch_idb_value: Optional[Callable[[int, int], Any]] = None
+    # Live operand/opcode compatibility helpers.  Portable analyses must prefer
+    # canonical Varnode / ValueRef evidence first; these optional fallbacks keep
+    # live Hex-Rays-shaped operands owned by the registered backend provider.
+    operand_stack_offset: Optional[Callable[[object], Any]] = None
+    operand_number_value: Optional[Callable[[object], Any]] = None
+    is_move_opcode: Optional[Callable[[object], Any]] = None
 
 
 @dataclass(frozen=True)
