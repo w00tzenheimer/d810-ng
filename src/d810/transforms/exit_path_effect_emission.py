@@ -8,6 +8,10 @@ from d810.analyses.control_flow.recovered_machine import (
 )
 from d810.ir.flowgraph import InsnKind, OperandKind
 from d810.ir.semantics import PredicateKind
+from d810.ir.storage_identity import (
+    StorageIdentityKind,
+    storage_identity_from_mop_snapshot,
+)
 from d810.transforms.graph_modification import (
     ExitPathLoweringKind,
     ExitPathLoweringGroup,
@@ -179,9 +183,9 @@ def plan_direct_terminal_lowering_execution(
 def _stack_offset_from_address(operand: object | None) -> int | None:
     if operand is None:
         return None
-    if getattr(operand, "kind", None) is OperandKind.STACK:
-        off = getattr(operand, "stkoff", None)
-        return int(off) if off is not None else None
+    identity = storage_identity_from_mop_snapshot(operand)
+    if identity is not None and identity.kind is StorageIdentityKind.STACK:
+        return int(identity.offset)
     if getattr(operand, "kind", None) is OperandKind.ADDRESS:
         inner = getattr(operand, "sub_l", None)
         if inner is not None:

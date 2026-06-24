@@ -211,7 +211,7 @@ class DispatcherTrampolineSkipStrategy:
                             fact_refs = frozenset(
                                 str(ref).lower()
                                 for ref in (site.payload or {}).get(
-                                    "upstream_writer_var_refs", ()
+                                    "upstream_writer_source_storage_keys", ()
                                 )
                             )
                             overlap = introduced & fact_refs

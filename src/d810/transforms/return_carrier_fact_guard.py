@@ -44,27 +44,20 @@ def _payload(site: Any) -> dict:
     return {}
 
 
-def _offset_token(value: Any) -> str | None:
-    try:
-        return f"{int(value):x}"
-    except (TypeError, ValueError):
-        return None
-
-
 def _return_carrier_read_refs(site: Any) -> frozenset[str]:
     payload = _payload(site)
-    raw_refs = payload.get("upstream_writer_var_refs")
+    raw_refs = payload.get("upstream_writer_source_storage_keys")
     if not isinstance(raw_refs, (tuple, list)):
         return frozenset()
     refs = {str(ref).lower() for ref in raw_refs if str(ref)}
     for key in (
-        "return_slot_stkoff",
-        "carrier_dst_stkoff",
-        "upstream_writer_dest_stkoff",
+        "return_slot_storage_key",
+        "carrier_dst_storage_key",
+        "upstream_writer_dest_storage_key",
     ):
-        token = _offset_token(payload.get(key))
+        token = payload.get(key)
         if token is not None:
-            refs.discard(token)
+            refs.discard(str(token).lower())
     return frozenset(refs)
 
 

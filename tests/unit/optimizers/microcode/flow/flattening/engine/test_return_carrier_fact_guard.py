@@ -38,7 +38,7 @@ def _return_carrier_fact(
     *,
     block_serial: int = 93,
     return_writer_block_serial: int | None = None,
-    refs: tuple[str, ...] = ("228", "650"),
+    refs: tuple[str, ...] = ("S552", "S1616"),
 ) -> FactObservation:
     if return_writer_block_serial is None:
         return_writer_block_serial = block_serial
@@ -57,7 +57,8 @@ def _return_carrier_fact(
             "upstream_writer_block_serial": block_serial,
             "upstream_writer_ea": 0x401020,
             "upstream_writer_dest_stkoff": 0x30,
-            "upstream_writer_var_refs": list(refs),
+            "upstream_writer_dest_storage_key": "S48",
+            "upstream_writer_source_storage_keys": list(refs),
         },
     )
 
@@ -71,7 +72,7 @@ def _patch_const_refs(monkeypatch, refs: frozenset[str]) -> None:
 
 
 def test_active_return_carrier_fact_rejects_redirect(monkeypatch) -> None:
-    _patch_const_refs(monkeypatch, frozenset({"228"}))
+    _patch_const_refs(monkeypatch, frozenset({"s552"}))
     fact = _return_carrier_fact("return:active")
     view = ValidatedFactView(maturity="MMAT_LOCOPT", observations=(fact,))
 
@@ -85,7 +86,7 @@ def test_active_return_carrier_fact_rejects_redirect(monkeypatch) -> None:
     assert filtered == []
     assert len(rejections) == 1
     assert rejections[0].fact_status == "active"
-    assert rejections[0].overlap == ("228",)
+    assert rejections[0].overlap == ("s552",)
 
 
 def test_carrier_writer_bypass_requires_explicit_loop_recovery_gate(monkeypatch) -> None:
@@ -153,7 +154,7 @@ def test_carrier_writer_bypass_uses_return_slot_writer_block(monkeypatch) -> Non
 
 
 def test_identity_lost_fact_without_target_block_is_ignored(monkeypatch) -> None:
-    _patch_const_refs(monkeypatch, frozenset({"650"}))
+    _patch_const_refs(monkeypatch, frozenset({"s1616"}))
     fact = _return_carrier_fact("return:stale")
     redirect = RedirectGoto(from_serial=132, old_target=2, new_target=93)
     view = ValidatedFactView(
@@ -182,7 +183,7 @@ def test_identity_lost_fact_without_target_block_is_ignored(monkeypatch) -> None
 
 
 def test_stale_hazard_on_immediate_successor_rejects_redirect(monkeypatch) -> None:
-    _patch_const_refs(monkeypatch, frozenset({"650"}))
+    _patch_const_refs(monkeypatch, frozenset({"s1616"}))
     fact = _return_carrier_fact("return:stale", block_serial=254)
     view = ValidatedFactView(
         maturity="MMAT_GLBOPT1",
@@ -214,7 +215,7 @@ def test_stale_hazard_on_immediate_successor_rejects_redirect(monkeypatch) -> No
 
 
 def test_dag_frontier_override_bypasses_only_matching_stale_hazard(monkeypatch) -> None:
-    _patch_const_refs(monkeypatch, frozenset({"650"}))
+    _patch_const_refs(monkeypatch, frozenset({"s1616"}))
     fact = _return_carrier_fact("return:stale", block_serial=254)
     redirect = RedirectGoto(from_serial=132, old_target=2, new_target=93)
     view = ValidatedFactView(
@@ -246,7 +247,7 @@ def test_dag_frontier_override_bypasses_only_matching_stale_hazard(monkeypatch) 
 
 
 def test_dag_frontier_override_does_not_bypass_active_hazard(monkeypatch) -> None:
-    _patch_const_refs(monkeypatch, frozenset({"228"}))
+    _patch_const_refs(monkeypatch, frozenset({"s552"}))
     fact = _return_carrier_fact("return:active")
     redirect = RedirectGoto(from_serial=132, old_target=2, new_target=93)
     view = ValidatedFactView(maturity="MMAT_LOCOPT", observations=(fact,))
@@ -265,7 +266,7 @@ def test_dag_frontier_override_does_not_bypass_active_hazard(monkeypatch) -> Non
 
 
 def test_contradicted_stale_hazard_is_ignored(monkeypatch) -> None:
-    _patch_const_refs(monkeypatch, frozenset({"228"}))
+    _patch_const_refs(monkeypatch, frozenset({"s552"}))
     fact = _return_carrier_fact("return:contradicted")
     redirect = RedirectGoto(from_serial=132, old_target=2, new_target=93)
     view = ValidatedFactView(
@@ -301,7 +302,7 @@ def test_contradicted_stale_hazard_is_ignored(monkeypatch) -> None:
 
 
 def test_unrelated_lost_fact_is_ignored(monkeypatch) -> None:
-    _patch_const_refs(monkeypatch, frozenset({"228"}))
+    _patch_const_refs(monkeypatch, frozenset({"s552"}))
     fact = _return_carrier_fact("return:unrelated", block_serial=94)
     redirect = RedirectGoto(from_serial=132, old_target=2, new_target=93)
     view = ValidatedFactView(
@@ -330,7 +331,7 @@ def test_unrelated_lost_fact_is_ignored(monkeypatch) -> None:
 
 
 def test_no_fact_view_is_noop(monkeypatch) -> None:
-    _patch_const_refs(monkeypatch, frozenset({"228"}))
+    _patch_const_refs(monkeypatch, frozenset({"s552"}))
     redirect = RedirectGoto(from_serial=132, old_target=2, new_target=93)
 
     filtered, rejections = filter_return_carrier_fact_redirects(

@@ -120,8 +120,8 @@ def _xdu_state_to_stack(dst_stkoff: int) -> SimpleNamespace:
         opcode=int(terminal_byte_emit_fact_guard.ida_hexrays.m_xdu),
         l=SimpleNamespace(
             t=int(terminal_byte_emit_fact_guard.ida_hexrays.mop_S),
-            stkoff=100,
-            dstr="%var_7BC.4{6}",
+            stkoff=1980,
+            dstr="%var_DEAD.4{6}",
             size=4,
         ),
         d=_mop_stack(dst_stkoff),
@@ -183,10 +183,10 @@ def _fake_flow_graph(blocks: dict[int, SimpleNamespace]) -> FlowGraph:
 
 
 def test_state_flow_source_into_terminal_byte_emit_target_rejects(monkeypatch) -> None:
-    """Source block 108 has ``mov #0x393685BA, %var_7BC`` -- the byte-emit
+    """Source block 108 writes the state storage identity ``S1980`` -- the byte-emit
     target 143 is a known ``terminal_tail`` with byte_index=1.  The
     redirect must be filtered out and recorded."""
-    _patch_state_const_refs(monkeypatch, frozenset({"7bc"}))
+    _patch_state_const_refs(monkeypatch, frozenset({"s1980"}))
     fact = _terminal_byte_emit_fact("byte_emit:active", destination_block=143)
     view = ValidatedFactView(maturity="MMAT_LOCOPT", observations=(fact,))
 
@@ -219,14 +219,14 @@ def test_state_flow_source_into_terminal_byte_emit_target_rejects(monkeypatch) -
     assert rejected_targets == {143, 161}
     rejected_sources = {r.source_block for r in rejections}
     assert rejected_sources == {39, 108, 129}
-    assert all("7bc" in r.state_const_writes for r in rejections)
+    assert all("s1980" in r.state_const_writes for r in rejections)
 
 
 def test_dag_frontier_override_keeps_exact_terminal_byte_redirect(monkeypatch) -> None:
     """DAG-authoritative frontier closure may prove that a state-flow
     scaffold is the required predecessor for a terminal byte emitter.  The
     terminal guard accepts only that exact redirect key."""
-    _patch_state_const_refs(monkeypatch, frozenset({"7bc"}))
+    _patch_state_const_refs(monkeypatch, frozenset({"s1980"}))
     fact = _terminal_byte_emit_fact(
         "byte_emit:byte6",
         destination_block=217,
@@ -250,7 +250,7 @@ def test_dag_frontier_override_keeps_exact_terminal_byte_redirect(monkeypatch) -
 def test_dag_frontier_override_is_exact_keyed(monkeypatch) -> None:
     """A DAG-frontier override is not a blanket bypass for nearby terminal
     byte redirects."""
-    _patch_state_const_refs(monkeypatch, frozenset({"7bc"}))
+    _patch_state_const_refs(monkeypatch, frozenset({"s1980"}))
     fact = _terminal_byte_emit_fact(
         "byte_emit:byte6",
         destination_block=217,
@@ -490,12 +490,11 @@ def test_zero_guard_retargeter_falls_back_to_unique_constant_sibling(
     assert rejections[0].replacement_target == 27
 
 
-def test_zero_guard_retargeter_matches_display_named_state_var(
+def test_zero_guard_retargeter_matches_state_storage_identity(
     monkeypatch,
 ) -> None:
-    """Live microcode may name the state slot ``%var_7BC`` while the physical
-    stack offset is unrelated.  Match the display token so the source return
-    slot can disambiguate the constant sibling."""
+    """Match the source state slot by storage identity so the source return
+    slot can disambiguate the constant sibling without display-name parsing."""
     _patch_state_const_refs(monkeypatch, frozenset())
     blocks = {
         27: SimpleNamespace(
@@ -622,10 +621,10 @@ def test_protected_non_carrier_return_writer_fact_does_not_duplicate_existing_lo
 
 
 def test_non_state_flow_source_permits_redirect(monkeypatch) -> None:
-    """Source has only data-var writes (no ``%var_7BC`` constant write)
+    """Source has only data-var writes (no ``S1980`` constant write)
     -- the redirect must pass through unchanged because the source is
     not state-flow scaffolding."""
-    _patch_state_const_refs(monkeypatch, frozenset({"650", "228"}))
+    _patch_state_const_refs(monkeypatch, frozenset({"s1616", "s552"}))
     fact = _terminal_byte_emit_fact("byte_emit:active", destination_block=143)
     view = ValidatedFactView(maturity="MMAT_LOCOPT", observations=(fact,))
 
@@ -644,8 +643,8 @@ def test_non_state_flow_source_permits_redirect(monkeypatch) -> None:
 
 def test_no_fact_view_is_noop(monkeypatch) -> None:
     """When the validated fact view is absent, the guard must be a no-op
-    even for sources that do contain ``%var_7BC`` writes."""
-    _patch_state_const_refs(monkeypatch, frozenset({"7bc"}))
+    even for sources that do contain ``S1980`` writes."""
+    _patch_state_const_refs(monkeypatch, frozenset({"s1980"}))
     redirects: list = [
         RedirectGoto(from_serial=39, old_target=2, new_target=161),
         RedirectBranch(from_serial=108, old_target=110, new_target=143),

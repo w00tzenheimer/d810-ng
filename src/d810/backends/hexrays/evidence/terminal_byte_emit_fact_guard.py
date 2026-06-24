@@ -4,7 +4,7 @@ This guard is the byte-emit analogue of
 :mod:`d810.transforms.return_carrier_fact_guard`.
 It rejects ``RedirectGoto`` / ``RedirectBranch`` candidates that would
 attach a *state-flow scaffolding block* (one that constant-defines the
-state variable ``%var_7BC``) as a predecessor of a known
+state variable stack identity ``S1980``) as a predecessor of a known
 ``terminal_tail`` byte-emit destination block.
 
 Why this is necessary
@@ -55,11 +55,10 @@ from d810.analyses.control_flow.return_frontier_artifacts import (
 
 logger = logging.getLogger("D810.unflat.hodur.terminal_byte_emit_fact_guard")
 
-# State variable whose ``%var_7BC.4`` constant write marks a block as
-# state-flow scaffolding for the OLLVM-style flattened functions we
-# protect.  Stored lower-cased to match the token format produced by
-# :func:`collect_const_var_refs_in_block`.
-_STATE_VAR_REF_TOKEN: str = "7bc"
+# State variable whose stack identity marks a block as state-flow scaffolding
+# for the OLLVM-style flattened functions we protect.  Stored lower-cased to
+# match the key format produced by :func:`collect_const_var_refs_in_block`.
+_STATE_VAR_REF_TOKEN: str = "s1980"
 
 
 @dataclass(frozen=True)
@@ -117,7 +116,7 @@ def _is_state_flow_scaffolding(
     """Return ``(is_scaffolding, const_writes)`` for ``source_block``.
 
     ``is_scaffolding`` is true iff the source block contains a
-    ``m_mov #const, %var_7BC`` write -- the identifying shape of an
+    ``m_mov #const, S1980`` write -- the identifying shape of an
     OLLVM state-machine constant write.
     """
     refs = collect_const_var_refs_in_block(
@@ -192,18 +191,6 @@ def _const_value(mop: Any) -> int | None:
     return None
 
 
-def _mop_text(mop: Any) -> str:
-    dstr = getattr(mop, "dstr", None)
-    if callable(dstr):
-        try:
-            return str(dstr())
-        except Exception:
-            return ""
-    if dstr is not None:
-        return str(dstr)
-    return ""
-
-
 def _mov_const_to_stack_slot(insn: Any) -> int | None:
     if getattr(insn, "opcode", None) != int(ida_hexrays.m_mov):
         return None
@@ -222,10 +209,8 @@ def _xdu_state_to_stack_slot(insn: Any, *, state_var_token: str) -> int | None:
     dst_stkoff = _stkoff(_insn_slot(insn, "d"))
     if src_stkoff is None or dst_stkoff is None:
         return None
-    src_token = f"{src_stkoff:x}".lower()
-    src_dstr = _mop_text(src).lower()
-    state_var_name = f"%var_{state_var_token.lower()}"
-    if src_token != state_var_token and state_var_name not in src_dstr:
+    src_token = f"s{src_stkoff}".lower()
+    if src_token != state_var_token:
         return None
     if src_stkoff == dst_stkoff:
         return None

@@ -16,6 +16,10 @@ from d810.analyses.control_flow.branch_witness import (
 from d810.core import logging
 from d810.ir.block_identity import block_label
 from d810.ir.flowgraph import InsnKind, PredicateKind
+from d810.ir.storage_identity import (
+    StorageIdentityKind,
+    storage_identity_from_mop_snapshot,
+)
 
 logger = logging.getLogger("D810.transforms.exit_path_liveness_policy")
 
@@ -48,12 +52,11 @@ def _variable_key(operand: object) -> tuple[str, int] | None:
     """Canonical identity for a directly named non-state operand."""
     if operand is None:
         return None
-    stkoff = _int_or_none(getattr(operand, "stkoff", None))
-    if stkoff is not None:
-        return ("stk", int(stkoff))
-    reg = _int_or_none(getattr(operand, "reg", None))
-    if reg is not None:
-        return ("reg", int(reg))
+    identity = storage_identity_from_mop_snapshot(operand)
+    if identity is not None and identity.kind is StorageIdentityKind.STACK:
+        return ("stk", int(identity.offset))
+    if identity is not None and identity.kind is StorageIdentityKind.REGISTER:
+        return ("reg", int(identity.offset))
     refs = getattr(operand, "stack_refs", ()) or ()
     if refs:
         return ("stk", int(refs[0]))

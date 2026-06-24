@@ -533,6 +533,19 @@ def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
             switch_cases=tuple(case_rows),
             kind=kind,
         )
+    if t == ida_hexrays.mop_f:
+        call_info = getattr(mop, "f", None)
+        args = getattr(call_info, "args", ()) if call_info is not None else ()
+        return CfgMopSnapshot(
+            t=t,
+            size=size,
+            args=tuple(
+                arg_snapshot
+                for arg in args
+                if (arg_snapshot := capture_mop_snapshot(arg)) is not None
+            ),
+            kind=kind,
+        )
     return CfgMopSnapshot(t=t, size=size, kind=kind)
 
 

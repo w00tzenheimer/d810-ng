@@ -7,6 +7,8 @@ from d810.analyses.control_flow.switch_case_transition_analysis import (
     SwitchCaseTransitionFact,
     collect_switch_case_transition_facts,
 )
+from d810.analyses.control_flow.state_machine_analysis import build_mba_view_from_flow_graph
+from d810.hexrays.mutation.ir_translator import lift as lift_flow_graph
 
 
 def collect_switch_case_transition_facts_from_mba(
@@ -32,18 +34,28 @@ def collect_switch_case_transition_facts_from_mba(
 
     handler_rows = tuple(row for row in dispatch_map.rows if row.is_handler_row)
     handler_entry_blocks = {int(row.target_block) for row in handler_rows}
+    try:
+        flow_graph = lift_flow_graph(mba)
+        path_eval_mba = build_mba_view_from_flow_graph(flow_graph)
+    except Exception:
+        flow_graph = None
+        path_eval_mba = mba
     case_bodies: list[SwitchCaseBody] = []
     for row in handler_rows:
         source_state = int(row.state_const)
         entry_block = int(row.target_block)
         try:
+            eval_kwargs = {}
+            if flow_graph is not None:
+                eval_kwargs["flow_graph"] = flow_graph
             path_results = evaluate_handler_paths(
-                mba,
+                path_eval_mba,
                 entry_serial=entry_block,
                 incoming_state=source_state,
                 condition_chain_blocks=set(dispatch_map.dispatcher_blocks),
                 state_var_stkoff=int(dispatch_map.state_var_stkoff),
                 handler_entry_blocks=handler_entry_blocks,
+                **eval_kwargs,
             )
         except Exception:
             case_bodies.append(

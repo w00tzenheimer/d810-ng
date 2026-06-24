@@ -7,11 +7,18 @@ from d810.passes.fake_jump import (
     FAKE_JUMP_FIXES_METADATA_KEY,
     PAYLOAD_FAKE_JUMP_FIXES_METADATA_KEY,
     FakeJumpPredFix,
+    FakeJumpResolution,
     FakeJumpStrategy,
     PayloadFakeJumpFix,
     extract_fake_jump_fixes,
     extract_payload_fake_jump_fixes,
+    resolve_fake_jump_target,
 )
+from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
+
+
+class _UnusableProvenanceOperand:
+    pass
 
 
 @dataclass
@@ -19,6 +26,7 @@ class _Block:
     serial: int
     succs: tuple[int, ...]
     preds: tuple[int, ...] = ()
+    insn_snapshots: tuple[object, ...] = ()
 
     @property
     def nsucc(self) -> int:
@@ -145,3 +153,114 @@ def test_fake_jump_plan_records_planner_entry_reachability() -> None:
     assert fragment is not None
     assert fragment.metadata["planner_entry_serial"] == 0
     assert fragment.metadata["planner_entry_reachable_count"] == 6
+
+
+def test_resolve_fake_jump_target_uses_portable_predicate_mapping() -> None:
+    resolution = resolve_fake_jump_target(
+        opcode=77,
+        compared_value=9,
+        pred_comparison_values=(9, 10, 11),
+        taken_target=100,
+        fallthrough_target=200,
+        jz_opcode=11,
+        jnz_opcode=12,
+        jae_opcode=77,
+    )
+
+    assert resolution == FakeJumpResolution(
+        new_target=100,
+        always_taken=True,
+        always_not_taken=False,
+    )
+
+
+def test_resolve_fake_jump_target_handles_signed_predicates() -> None:
+    resolution = resolve_fake_jump_target(
+        opcode=88,
+        compared_value=0,
+        pred_comparison_values=(0xFFFFFFFF, 0xFFFFFFFE),
+        taken_target=100,
+        fallthrough_target=200,
+        jz_opcode=11,
+        jnz_opcode=12,
+        jl_opcode=88,
+        operand_size=4,
+    )
+
+    assert resolution == FakeJumpResolution(
+        new_target=100,
+        always_taken=True,
+        always_not_taken=False,
+    )
+
+
+def test_payload_fake_jump_prefers_canonical_operands_over_provenance_slots() -> None:
+    tail = InsnSnapshot(
+        opcode=43,
+        ea=0x401000,
+        operands=(_UnusableProvenanceOperand(),),
+        operand_slots=(
+            ("l", _UnusableProvenanceOperand()),
+            ("r", _UnusableProvenanceOperand()),
+            ("d", _UnusableProvenanceOperand()),
+        ),
+        l=MopSnapshot(t=1, size=4, reg=7, kind=OperandKind.REGISTER),
+        r=MopSnapshot(t=2, size=4, value=0x10, kind=OperandKind.NUMBER),
+        d=MopSnapshot(t=4, size=0, block_ref=3, kind=OperandKind.BLOCK),
+        kind=InsnKind.EQUALITY_JUMP,
+    )
+    pred_taken = _Block(
+        1,
+        (2,),
+        insn_snapshots=(
+            InsnSnapshot(
+                opcode=1,
+                ea=0x400FF0,
+                operands=(),
+                d=MopSnapshot(t=1, size=4, reg=7, kind=OperandKind.REGISTER),
+                l=MopSnapshot(t=2, size=4, value=0x10, kind=OperandKind.NUMBER),
+                kind=InsnKind.MOV,
+            ),
+        ),
+    )
+    pred_fallthrough = _Block(
+        6,
+        (2,),
+        insn_snapshots=(
+            InsnSnapshot(
+                opcode=1,
+                ea=0x400FE0,
+                operands=(),
+                d=MopSnapshot(t=1, size=4, reg=7, kind=OperandKind.REGISTER),
+                l=MopSnapshot(t=2, size=4, value=0x20, kind=OperandKind.NUMBER),
+                kind=InsnKind.MOV,
+            ),
+        ),
+    )
+    fake = _Block(
+        2,
+        (3, 4),
+        (1, 6),
+        (tail,),
+    )
+    graph = _FlowGraph(
+        {
+            1: pred_taken,
+            6: pred_fallthrough,
+            2: fake,
+            3: _Block(3, (5,), (2,)),
+            4: _Block(4, (5,), (2,)),
+            5: _Block(5, (7,), (3, 4)),
+            7: _Block(7, (), (5,)),
+        },
+        metadata={},
+        entry_serial=1,
+    )
+
+    assert extract_payload_fake_jump_fixes(graph) == (
+        PayloadFakeJumpFix(
+            fake_block=2,
+            original_target=3,
+            clone_redirects=((1, 4),),
+        ),
+    )

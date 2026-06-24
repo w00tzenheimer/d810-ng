@@ -10,8 +10,12 @@ from d810.backends.hexrays.evidence.datamodel import (
 from d810.backends.hexrays.evidence.dispatcher.switch_table import (
     analyze_switch_table_dispatcher,
 )
-from d810.analyses.control_flow.state_machine_analysis import evaluate_handler_paths
+from d810.analyses.control_flow.state_machine_analysis import (
+    build_mba_view_from_flow_graph,
+    evaluate_handler_paths,
+)
 from d810.analyses.control_flow.transition_builder import StateHandler, StateTransition
+from d810.hexrays.mutation.ir_translator import lift as lift_flow_graph
 
 
 @dataclass(frozen=True)
@@ -48,6 +52,8 @@ def detect_switch_table_state_machine(
 
     handler_entry_blocks = set(handler_map.handler_state_map.keys())
     dispatcher_blocks_set = set(handler_map.dispatcher_blocks)
+    flow_graph = lift_flow_graph(mba)
+    projected_mba = build_mba_view_from_flow_graph(flow_graph)
 
     for handler_serial, state_const in handler_map.handler_state_map.items():
         state_machine.add_handler(
@@ -61,12 +67,13 @@ def detect_switch_table_state_machine(
     for handler_serial, state_const in handler_map.handler_state_map.items():
         try:
             paths = evaluate_handler_paths(
-                mba,
+                projected_mba,
                 entry_serial=handler_serial,
                 incoming_state=state_const,
                 condition_chain_blocks=dispatcher_blocks_set,
                 state_var_stkoff=handler_map.state_var_stkoff,
                 handler_entry_blocks=handler_entry_blocks,
+                flow_graph=flow_graph,
             )
         except Exception:
             if logger is not None:

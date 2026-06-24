@@ -9,6 +9,29 @@ from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
 from d810.analyses.control_flow.equality_chain_dispatcher import (
     extract_state_dispatcher_map_from_mba,
 )
+from d810.ir.flowgraph import InsnKind, OperandKind
+from d810.ir.semantics import PredicateKind
+
+
+_OPERAND_KIND_BY_MOP_NAME = {
+    "mop_r": OperandKind.REGISTER,
+    "mop_n": OperandKind.NUMBER,
+    "mop_S": OperandKind.STACK,
+    "mop_v": OperandKind.GLOBAL,
+    "mop_b": OperandKind.BLOCK,
+    "mop_l": OperandKind.LVAR,
+}
+
+_INSN_KIND_BY_OPCODE_NAME = {
+    "m_mov": InsnKind.MOV,
+    "m_jz": InsnKind.EQUALITY_JUMP,
+    "m_jnz": InsnKind.EQUALITY_JUMP,
+}
+
+_PREDICATE_BY_OPCODE_NAME = {
+    "m_jz": PredicateKind.EQ,
+    "m_jnz": PredicateKind.NE,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +46,74 @@ class _MopView:
             return self._mop_type_names.get(int(raw_type), raw_type)
         except Exception:
             return raw_type
+
+    @property
+    def kind(self) -> OperandKind:
+        return _OPERAND_KIND_BY_MOP_NAME.get(str(self.t), OperandKind.UNKNOWN)
+
+    @property
+    def size(self) -> int:
+        return int(getattr(self._mop, "size", 0) or 0)
+
+    @property
+    def value(self) -> int | None:
+        if self.kind is not OperandKind.NUMBER:
+            return None
+        return _first_int(
+            getattr(self._mop, "value", None),
+            getattr(self._mop, "nnn_value", None),
+            getattr(getattr(self._mop, "nnn", None), "value", None),
+        )
+
+    @property
+    def stkoff(self) -> int | None:
+        if self.kind is not OperandKind.STACK:
+            return None
+        return _first_int(
+            getattr(self._mop, "stkoff", None),
+            getattr(getattr(self._mop, "s", None), "off", None),
+        )
+
+    @property
+    def reg(self) -> int | None:
+        if self.kind is not OperandKind.REGISTER:
+            return None
+        return _first_int(
+            getattr(self._mop, "reg", None),
+            getattr(self._mop, "r", None),
+        )
+
+    @property
+    def block_ref(self) -> int | None:
+        if self.kind is not OperandKind.BLOCK:
+            return None
+        return _first_int(
+            getattr(self._mop, "block_ref", None),
+            getattr(self._mop, "block_num", None),
+            getattr(self._mop, "b", None),
+        )
+
+    @property
+    def gaddr(self) -> int | None:
+        if self.kind is not OperandKind.GLOBAL:
+            return None
+        return _first_int(
+            getattr(self._mop, "gaddr", None),
+            getattr(self._mop, "g", None),
+        )
+
+    @property
+    def lvar_off(self) -> int | None:
+        if self.kind is not OperandKind.LVAR:
+            return None
+        lvar = getattr(self._mop, "l", None)
+        return _first_int(
+            getattr(self._mop, "lvar_off", None),
+            getattr(self._mop, "idx", None),
+            getattr(lvar, "off", None),
+            getattr(lvar, "idx", None),
+            _call_lvar_idx(lvar),
+        )
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._mop, name)
@@ -41,6 +132,14 @@ class _InsnView:
             return self._opcode_names.get(int(raw_opcode), raw_opcode)
         except Exception:
             return raw_opcode
+
+    @property
+    def kind(self) -> InsnKind:
+        return _INSN_KIND_BY_OPCODE_NAME.get(str(self.opcode), InsnKind.UNKNOWN)
+
+    @property
+    def predicate(self) -> PredicateKind | None:
+        return _PREDICATE_BY_OPCODE_NAME.get(str(self.opcode))
 
     @property
     def l(self) -> object | None:
@@ -225,3 +324,33 @@ def _maturity_name(maturity: int) -> str:
         7: "MMAT_LVARS",
     }
     return names.get(int(maturity), f"MMAT_{int(maturity)}")
+
+
+def _first_int(*values: object) -> int | None:
+    for value in values:
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                value = None
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _call_lvar_idx(lvar: object | None) -> int | None:
+    var = getattr(lvar, "var", None)
+    if not callable(var):
+        return None
+    try:
+        resolved = var()
+    except Exception:
+        return None
+    return _first_int(
+        getattr(resolved, "idx", None),
+        getattr(resolved, "off", None),
+    )
