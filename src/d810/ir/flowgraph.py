@@ -121,11 +121,16 @@ class MopSnapshot:
     value: int | None = None      # mop_n: nnn.value
     stkoff: int | None = None     # mop_S/mop_str: s.off
     reg: int | None = None        # mop_r: r
-    block_ref: int | None = None  # mop_b: b
+    block_ref: int | None = None  # mop_b: b (rich variant calls this ``block_num``)
     # E2a portable identity for dispatcher state-variable analysis.
-    # Field names intentionally match the rich
+    # Field names mostly match the rich
     # ``d810.hexrays.ir.mop_snapshot.MopSnapshot`` variant so the
-    # structural-superset claim in the docstring above stays true.
+    # structural-superset claim in the docstring above stays true. The one
+    # deliberate exception is the mop_b reference: ``block_ref`` here vs
+    # ``block_num`` there. The bridge (``hexrays.mutation.ir_translator``)
+    # builds this type straight from the live ``mop.b``, so it never relies on
+    # name parity for this field -- do NOT add a generic field-by-field copy
+    # between the two variants without remapping ``block_ref`` <-> ``block_num``.
     gaddr: int | None = None      # mop_v: g (global address)
     lvar_off: int | None = None   # mop_l: l.off (lvar offset)
     # Switch-table case rows. Each row is ``(case_values, target_block)``;
