@@ -23,9 +23,10 @@ This module follows the same idioms as
 :func:`d810.analyses.control_flow.linearized_state_dag.detect_side_effect_corridors`:
 - It runs against the FlowGraph snapshot (no live mba access).
 - It introspects ``BlockSnapshot.kind`` / ``InsnSnapshot.kind`` and classifies
-  each operand over the portable :class:`~d810.ir.varnode.Varnode` /
-  :class:`~d810.ir.storage_identity.StorageIdentity` surface (space + offset),
-  never over a raw backend operand type.
+  each operand over the portable storage views produced by
+  :mod:`d810.ir.insn_projection` (``Varnode`` for register / stack-known / lvar /
+  const operands, :class:`~d810.ir.locations.WeakStackSlot` for a stack operand
+  whose offset was not recovered), never over a raw backend operand slot.
 - It is conservative: when the carrier cannot be cleanly captured (no
   lvar / stack-identity source on the writer), no fact is emitted.
 
@@ -44,15 +45,15 @@ from d810.ir.flowgraph import (
     FlowGraph,
     InsnKind,
     InsnSnapshot,
-    OperandKind,
 )
-from d810.ir.varnode import Space, varnode_from_mop_snapshot
-from d810.ir.storage_identity import (
-    StorageIdentityKind,
-    storage_identity_from_mop_snapshot,
-)
+from d810.ir.varnode import Space, Varnode
 from d810.ir.expressions import Move
-from d810.ir.insn_projection import project_assignment
+from d810.ir.insn_projection import (
+    operand_storages,
+    primary_source_storage,
+    project_assignment,
+    result_storage,
+)
 from d810.ir.locations import RegisterLocation, StackSlot, WeakStackSlot
 from d810.ir.value_refs import DefinitionRef
 from d810.core import logging
@@ -87,52 +88,35 @@ _RETURN_WRITER_KINDS = frozenset(
 
 
 # ---------------------------------------------------------------------------
-# Operand classification over the canonical Varnode / StorageIdentity surface.
+# Operand classification over the canonical storage-view surface.
 #
-# Each predicate adapts a lifted operand snapshot into a portable
-# ``Varnode`` (space + offset + size) via ``varnode_from_mop_snapshot`` and
-# decides on the varnode space, never on a raw backend ``mop_t::t`` integer.
-# The ``OperandKind`` fall-throughs cover the accept-on-unknown cases where the
-# varnode adapter cannot recover a concrete identity (e.g. a stack operand whose
-# offset was not captured collapses to ``Space.UNKNOWN``); these keep the
-# detector's existing conservative acceptance without re-deriving operand shape.
+# Each predicate consumes a portable storage view -- a ``Varnode``
+# (space + offset + size) for register / stack-known / lvar / const operands, or
+# a :class:`~d810.ir.locations.WeakStackSlot` for a stack operand whose concrete
+# offset was not recovered -- produced by
+# :mod:`d810.ir.insn_projection`.  The detector never reads a raw backend
+# ``InsnSnapshot.l/.r/.d`` operand slot: the projection layer owns that read and
+# the accept-on-unknown stack case is now an explicit ``WeakStackSlot`` instead
+# of a ``Space.UNKNOWN`` collapse.
 # ---------------------------------------------------------------------------
 
-
-def _operand_space(mop: object | None) -> Space | None:
-    """Portable ``Varnode`` space for a lifted operand snapshot, else ``None``."""
-    if mop is None:
-        return None
-    varnode = varnode_from_mop_snapshot(mop)
-    return None if varnode is None else varnode.space
+def _is_register_storage(view: object | None) -> bool:
+    return isinstance(view, Varnode) and view.space is Space.REGISTER
 
 
-def _is_register_mop(mop: object | None) -> bool:
-    return mop is not None and (
-        getattr(mop, "kind", None) is OperandKind.REGISTER
-        or _operand_space(mop) is Space.REGISTER
+def _is_number_storage(view: object | None) -> bool:
+    return isinstance(view, Varnode) and view.space is Space.CONST
+
+
+def _is_stack_storage(view: object | None) -> bool:
+    """True for both a concrete stack ``Varnode`` and a weak stack slot."""
+    return isinstance(view, WeakStackSlot) or (
+        isinstance(view, Varnode) and view.space is Space.STACK
     )
 
 
-def _is_number_mop(mop: object | None) -> bool:
-    return mop is not None and (
-        getattr(mop, "kind", None) is OperandKind.NUMBER
-        or _operand_space(mop) is Space.CONST
-    )
-
-
-def _is_stack_mop(mop: object | None) -> bool:
-    return mop is not None and (
-        getattr(mop, "kind", None) is OperandKind.STACK
-        or _operand_space(mop) is Space.STACK
-    )
-
-
-def _is_lvar_mop(mop: object | None) -> bool:
-    return mop is not None and (
-        getattr(mop, "kind", None) is OperandKind.LVAR
-        or _operand_space(mop) is Space.LVAR
-    )
+def _is_lvar_storage(view: object | None) -> bool:
+    return isinstance(view, Varnode) and view.space is Space.LVAR
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,15 +182,15 @@ def _dest_is_return_slot(
     standard return register on x64 and OLLVM's pre-finalize lowering uses an
     lvar/stkvar intermediate.  This matches the audit's ``_dest_is_return_slot``.
     """
-    dst = insn.d
-    if _is_register_mop(dst):
+    dst = result_storage(insn)
+    if _is_register_storage(dst):
         return True
-    if _is_stack_mop(dst):
+    if _is_stack_storage(dst):
         dst_off = _operand_stack_offset(dst)
         if dst_off is None:
-            return True  # accept-on-unknown
+            return True  # accept-on-unknown (WeakStackSlot or no captured offset)
         return dst_off == int(return_stkoff)
-    if _is_lvar_mop(dst):
+    if _is_lvar_storage(dst):
         # The portable lvar identity does not expose the live lvar table index;
         # accept any lvar destination as a candidate (filtered downstream by
         # carrier capture).
@@ -277,70 +261,51 @@ def _find_writer_in_block(
     return last
 
 
-def _operand_stack_offset(mop: object | None) -> int | None:
-    """Return the canonical STACK storage offset of an operand, else ``None``.
+def _operand_stack_offset(view: object | None) -> int | None:
+    """Return the canonical STACK storage offset of a storage view, else ``None``.
 
-    Adapts the lifted operand snapshot into a portable
-    :class:`~d810.ir.storage_identity.StorageIdentity` and returns its offset
-    only for a recovered stack identity; an operand whose stack offset was not
-    captured (or that is not a stack operand) yields ``None``.
+    Returns the offset only for a concrete stack ``Varnode``; a
+    :class:`~d810.ir.locations.WeakStackSlot` (stack, unknown offset) or a
+    non-stack view yields ``None``.
     """
-    identity = storage_identity_from_mop_snapshot(mop)
-    if identity is None or identity.kind is not StorageIdentityKind.STACK:
-        return None
-    return int(identity.offset)
+    if isinstance(view, Varnode) and view.space is Space.STACK:
+        return int(view.offset)
+    return None
 
 
 def _writer_carrier_identity(
     writer: InsnSnapshot,
 ) -> tuple[int | None, int | None]:
     """Return ``(carrier_lvar_idx, carrier_stkoff)`` from the writer's
-    source operand (``writer.l``).  Both None means the carrier cannot
-    be captured (writer was a const / sub-instruction / arithmetic).
+    source operand.  Both None means the carrier cannot be captured (writer
+    was a const / sub-instruction / arithmetic).
 
-    The portable operand snapshot does NOT carry an lvar *index* directly (the
-    portable ``Varnode`` LVAR identity is a frame *offset*, not the live lvar
-    table index).  When a richer capture exposes an lvar index via private
-    attribute conventions, we read it with a ``getattr`` fall-through; when
-    unavailable we record only the canonical stack offset.
+    The portable storage view does NOT carry an lvar *table index* (the portable
+    ``Varnode`` LVAR identity is a frame *offset*, not the live lvar table
+    index), so ``carrier_lvar_idx`` is always ``None`` on this FlowGraph-snapshot
+    path; only the canonical stack offset is recorded.  Exposing the live lvar
+    table index would require a projection extension and is intentionally out of
+    scope here (the live-mba audit in ``return_frontier_carrier_audit`` reads it
+    directly).
     """
-    src = writer.l
+    src = primary_source_storage(writer)
     if src is None:
         return None, None
-    carrier_lvar_idx: int | None = None
     carrier_stkoff: int | None = None
-    if _is_lvar_mop(src):
-        # Try several conventional attribute names for the lvar index.
-        for attr in ("lvar_idx", "l_idx", "idx", "value"):
-            cand = getattr(src, attr, None)
-            if cand is not None:
-                try:
-                    carrier_lvar_idx = int(cand)
-                    break
-                except (TypeError, ValueError):
-                    continue
-    elif _is_stack_mop(src):
+    if _is_stack_storage(src):
         carrier_stkoff = _operand_stack_offset(src)
-    return carrier_lvar_idx, carrier_stkoff
+    return None, carrier_stkoff
 
 
 def _writer_const_value(writer: InsnSnapshot) -> int | None:
-    src = writer.l
-    if src is None:
-        return None
-    if not _is_number_mop(src):
-        return None
-    try:
-        varnode = varnode_from_mop_snapshot(src)
-    except (AttributeError, TypeError, ValueError):
-        varnode = None
-    if varnode is not None and varnode.space is Space.CONST:
-        return int(varnode.offset)
-    if src.value is not None:
-        try:
-            return int(src.value)
-        except (TypeError, ValueError):
-            return None
+    """Return the constant value of the writer's source operand, else ``None``.
+
+    A number source projects to a ``Varnode`` in ``Space.CONST`` whose
+    ``offset`` carries the constant value.
+    """
+    src = primary_source_storage(writer)
+    if _is_number_storage(src):
+        return int(src.offset)
     return None
 
 
@@ -351,9 +316,9 @@ def _writer_is_state_variable_return_writer(
 ) -> bool:
     if state_var_stkoff is None:
         return False
-    src = writer.l
-    dst = writer.d
-    if not _is_stack_mop(src) or not _is_stack_mop(dst):
+    src = primary_source_storage(writer)
+    dst = result_storage(writer)
+    if not _is_stack_storage(src) or not _is_stack_storage(dst):
         return False
     src_off = _operand_stack_offset(src)
     dst_off = _operand_stack_offset(dst)
@@ -368,23 +333,20 @@ def _insn_references_carrier(
     carrier_lvar_idx: int | None,
     carrier_stkoff: int | None,
 ) -> bool:
-    """True iff any operand of ``insn`` references the carrier by lvar identity
-    (idx match) or canonical STACK storage offset (stkoff match)."""
-    for mop in (insn.l, insn.r, insn.d):
-        if mop is None:
-            continue
-        if carrier_lvar_idx is not None and _is_lvar_mop(mop):
-            for attr in ("lvar_idx", "l_idx", "idx", "value"):
-                cand = getattr(mop, attr, None)
-                if cand is not None:
-                    try:
-                        if int(cand) == int(carrier_lvar_idx):
-                            return True
-                    except (TypeError, ValueError):
-                        continue
-        if carrier_stkoff is not None and _is_stack_mop(mop):
-            mop_off = _operand_stack_offset(mop)
-            if mop_off is not None and mop_off == int(carrier_stkoff):
+    """True iff any operand of ``insn`` references the carrier by canonical
+    STACK storage offset (stkoff match).
+
+    ``carrier_lvar_idx`` is accepted for signature parity but never matchable on
+    the FlowGraph-snapshot path: the portable storage view exposes an lvar frame
+    *offset*, not the live lvar table index, so carrier identity here is keyed
+    only on the canonical stack offset (see ``_writer_carrier_identity``).
+    """
+    if carrier_stkoff is None:
+        return False
+    for view in operand_storages(insn):
+        if _is_stack_storage(view):
+            view_off = _operand_stack_offset(view)
+            if view_off is not None and view_off == int(carrier_stkoff):
                 return True
     return False
 
@@ -578,10 +540,11 @@ def detect_return_frontier_carrier_facts(
         for ins in ret_blk.insn_snapshots:
             if ins.kind is not InsnKind.MOV:
                 continue
-            s, d = ins.l, ins.d
+            s = primary_source_storage(ins)
+            d = result_storage(ins)
             if s is None or d is None:
                 continue
-            if _is_stack_mop(s) and _is_register_mop(d):
+            if _is_stack_storage(s) and _is_register_storage(d):
                 src_off = _operand_stack_offset(s)
                 if src_off is not None:
                     return_stkoff = src_off
