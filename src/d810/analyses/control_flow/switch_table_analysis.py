@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, MopSnapshot
-from d810.ir.varnode import Space, varnode_from_mop_snapshot
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind
+from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
 from d810.core.logging import getLogger
 from d810.core.typing import Callable
 from d810.capabilities.dispatcher import RouterKind, TableProvenance
@@ -31,12 +31,14 @@ ObserveDispatcherRows = Callable[..., None]
 class SwitchTableResult:
     """Bundled result from switch-table dispatcher analysis.
 
-    Couples the exact dispatcher map with the portable operand snapshot for
-    the state variable used by the table jump.
+    Couples the exact dispatcher map with the canonical operand identity
+    (:class:`~d810.ir.varnode.Varnode`) of the state variable used by the table
+    jump -- a typeless ``(space, offset, size)`` slice, not a backend operand
+    snapshot.
     """
 
     state_dispatcher_map: StateDispatcherMap
-    state_var_operand: MopSnapshot
+    state_var_operand: Varnode
 
 
 def build_state_dispatcher_map_from_cases(
@@ -109,20 +111,26 @@ def build_state_dispatcher_map_from_cases(
 
 
 def _find_state_var_stkoff(
-    operand: MopSnapshot | None,
+    operand: object | None,
 ) -> int | None:
-    """Return the stack offset referenced by a table-jump state operand."""
+    """Return the stack offset referenced by a table-jump state operand.
+
+    ``operand`` is the lifted operand-snapshot provenance from the table-jump
+    tail; only its portable ``stack_refs`` / ``stkoff`` identity is read here.
+    """
     if operand is None:
         return None
-    if operand.stack_refs:
-        return int(operand.stack_refs[0])
-    if operand.stkoff is not None:
-        return int(operand.stkoff)
+    stack_refs = getattr(operand, "stack_refs", ())
+    if stack_refs:
+        return int(stack_refs[0])
+    stkoff = getattr(operand, "stkoff", None)
+    if stkoff is not None:
+        return int(stkoff)
     return None
 
 
 def _extract_cases_from_switch_operand(
-    switch_operand: MopSnapshot | None,
+    switch_operand: object | None,
     dispatcher_serial: int,
 ) -> list[tuple[int | None, int]]:
     """Extract ``(case_value, target_serial)`` pairs from switch cases.
@@ -135,7 +143,7 @@ def _extract_cases_from_switch_operand(
     _ = dispatcher_serial
     if switch_operand is None:
         return cases
-    for values, target in switch_operand.switch_cases:
+    for values, target in getattr(switch_operand, "switch_cases", ()):
         if len(values) == 0:
             cases.append((None, int(target)))
             continue
@@ -174,14 +182,16 @@ def _mop_const_value(mop: object | None) -> int | None:
 
 
 def _mop_contains_stkoff(
-    mop: MopSnapshot | None,
+    mop: object | None,
     state_var_stkoff: int,
 ) -> bool:
     if mop is None:
         return False
-    if int(state_var_stkoff) in {int(ref) for ref in mop.stack_refs}:
+    stack_refs = getattr(mop, "stack_refs", ())
+    if int(state_var_stkoff) in {int(ref) for ref in stack_refs}:
         return True
-    if mop.stkoff is not None and int(mop.stkoff) == int(state_var_stkoff):
+    stkoff = getattr(mop, "stkoff", None)
+    if stkoff is not None and int(stkoff) == int(state_var_stkoff):
         return True
     return False
 
@@ -292,14 +302,20 @@ def analyze_switch_table_flow_graph(
         if blk.tail is None or blk.tail_kind is not InsnKind.TABLE_JUMP:
             continue
 
-        state_var_operand = blk.tail.l
-        stkoff = _find_state_var_stkoff(state_var_operand)
+        state_operand_snapshot = blk.tail.l
+        stkoff = _find_state_var_stkoff(state_operand_snapshot)
         if stkoff is None:
             logger.debug(
                 "table jump at blk[%d]: could not identify state variable stkoff",
                 serial,
             )
             continue
+
+        state_var_operand = Varnode(
+            Space.STACK,
+            int(stkoff),
+            int(getattr(state_operand_snapshot, "size", 0) or 0),
+        )
 
         cases = _extract_cases_from_switch_operand(blk.tail.r, serial)
         if len(cases) < 2:

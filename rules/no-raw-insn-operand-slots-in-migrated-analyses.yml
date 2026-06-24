@@ -19,6 +19,7 @@ severity: error
 
 files:
   - "src/d810/analyses/control_flow/dispatcher_analysis.py"
+  - "src/d810/analyses/control_flow/dispatcher_facts.py"
   - "src/d810/analyses/control_flow/dispatcher_discovery_extractors.py"
   - "src/d810/analyses/control_flow/instruction_semantics.py"
   - "src/d810/analyses/control_flow/terminal_family.py"

@@ -9,6 +9,7 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
+from d810.ir.varnode import Space, Varnode
 from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.switch_table_analysis import (
     analyze_switch_table_flow_graph,
@@ -157,7 +158,7 @@ def test_analyze_switch_table_flow_graph_extracts_cases_and_guard_block():
     result = analyze_switch_table_flow_graph(flow_graph)
 
     assert result is not None
-    assert result.state_var_operand is state_operand
+    assert result.state_var_operand == Varnode(Space.STACK, 0x10, 0)
     dispatch_map = result.state_dispatcher_map
     assert dispatch_map.dispatcher_entry_block == 3
     assert dispatch_map.dispatcher_blocks == frozenset({2, 3})

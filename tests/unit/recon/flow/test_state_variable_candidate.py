@@ -1,8 +1,9 @@
 """Unit cover for ``StateVariableCandidate`` (E3-schema).
 
 Pure-Python tests -- ``StateVariableCandidate`` now lives in
-``d810.analyses.control_flow.dispatcher_facts`` with portable ``MopSnapshot``
-instead of live ``ida_hexrays.mop_t``.
+``d810.analyses.control_flow.dispatcher_facts`` and carries a portable
+``StorageIdentity`` (size-agnostic ``(kind, offset)``) as its operand identity,
+not a backend operand snapshot or a live ``ida_hexrays.mop_t``.
 
 These tests don't import ``d810.hexrays.*`` -- the
 ``unit-tests-no-hexrays`` import-linter contract forbids that for
@@ -11,39 +12,38 @@ These tests don't import ``d810.hexrays.*`` -- the
 
 from __future__ import annotations
 
-from d810.ir.flowgraph import MopSnapshot, OperandKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.analyses.control_flow.dispatcher_facts import StateVariableCandidate
 
 
 class TestStateVariableCandidateConstruction:
-    """Constructor accepts a portable ``MopSnapshot`` -- not a live
-    ``ida_hexrays.mop_t`` -- as the operand identity."""
+    """Constructor carries a portable ``StorageIdentity`` -- not a live
+    ``ida_hexrays.mop_t`` or a backend operand snapshot -- as the operand
+    identity."""
 
-    def test_stack_candidate_holds_portable_snapshot(self) -> None:
-        snap = MopSnapshot(t=4, size=4, stkoff=0x40, kind=OperandKind.STACK)
+    def test_stack_candidate_holds_storage_identity(self) -> None:
+        identity = StorageIdentity(StorageIdentityKind.STACK, 0x40)
         cand = StateVariableCandidate(
-            mop=snap, mop_type=4, mop_offset=0x40, mop_size=4
+            storage_identity=identity, mop_type=4, mop_offset=0x40, mop_size=4
         )
-        assert cand.mop is snap
-        assert cand.mop.kind is OperandKind.STACK
-        assert cand.mop.stkoff == 0x40
-        assert cand.storage_identity == StorageIdentity(StorageIdentityKind.STACK, 0x40)
+        assert cand.storage_identity is identity
+        assert cand.storage_identity.kind is StorageIdentityKind.STACK
+        assert cand.storage_identity.offset == 0x40
 
-    def test_register_candidate_holds_portable_snapshot(self) -> None:
-        snap = MopSnapshot(t=2, size=4, reg=3, kind=OperandKind.REGISTER)
+    def test_register_candidate_holds_storage_identity(self) -> None:
+        identity = StorageIdentity(StorageIdentityKind.REGISTER, 3)
         cand = StateVariableCandidate(
-            mop=snap, mop_type=2, mop_offset=3, mop_size=4
+            storage_identity=identity, mop_type=2, mop_offset=3, mop_size=4
         )
-        assert cand.mop.kind is OperandKind.REGISTER
-        assert cand.mop.reg == 3
+        assert cand.storage_identity.kind is StorageIdentityKind.REGISTER
+        assert cand.storage_identity.offset == 3
 
     def test_default_field_values(self) -> None:
         """Backward-compat default values pin the contract for
         existing consumers (init_value=None, score=0.0,
         empty collections)."""
-        snap = MopSnapshot(t=2, size=4, reg=3, kind=OperandKind.REGISTER)
-        cand = StateVariableCandidate(mop=snap)
+        identity = StorageIdentity(StorageIdentityKind.REGISTER, 3)
+        cand = StateVariableCandidate(storage_identity=identity)
         assert cand.storage_identity == StorageIdentity(StorageIdentityKind.REGISTER, 3)
         assert cand.mop_type == 0
         assert cand.mop_offset == 0
@@ -56,54 +56,52 @@ class TestStateVariableCandidateConstruction:
         assert cand.assignment_blocks == []
         assert cand.score == 0.0
 
-    def test_explicit_storage_identity_is_preserved(self) -> None:
-        snap = MopSnapshot(t=4, size=1, stkoff=0x40, kind=OperandKind.STACK)
+    def test_lvar_candidate_holds_storage_identity(self) -> None:
+        identity = StorageIdentity(StorageIdentityKind.LVAR, 0x8)
+        cand = StateVariableCandidate(storage_identity=identity)
+        assert cand.storage_identity.kind is StorageIdentityKind.LVAR
+        assert cand.storage_identity.offset == 0x8
+
+    def test_explicit_mirror_fields_are_preserved(self) -> None:
+        """The diagnostic mirror fields (``mop_type`` / ``mop_offset`` /
+        ``mop_size``) are stored verbatim when supplied by the caller."""
         identity = StorageIdentity(StorageIdentityKind.STACK, 0x40)
-
-        cand = StateVariableCandidate(mop=snap, storage_identity=identity)
-
-        assert cand.storage_identity is identity
+        cand = StateVariableCandidate(
+            storage_identity=identity, mop_type=5, mop_offset=0x40, mop_size=1
+        )
+        assert cand.mop_type == 5
+        assert cand.mop_offset == 0x40
+        assert cand.mop_size == 1
 
 
 class TestGetNativeStackOffset:
-    """``get_native_stack_offset`` keys off ``OperandKind.STACK``,
+    """``get_native_stack_offset`` keys off ``StorageIdentityKind.STACK``,
     NOT a vendor ``mop_S`` integer.  This is the visible portability
     change in the method body."""
 
     def test_stack_kind_returns_negated_display_offset(self) -> None:
         """Native offset = -(frame_size - stkoff).  Mirrors the
         legacy live-IDA implementation."""
-        snap = MopSnapshot(t=4, size=4, stkoff=0x40, kind=OperandKind.STACK)
-        cand = StateVariableCandidate(mop=snap)
+        identity = StorageIdentity(StorageIdentityKind.STACK, 0x40)
+        cand = StateVariableCandidate(storage_identity=identity)
         # frame_size=0x80 -> display=0x80-0x40=0x40 -> native=-0x40
         assert cand.get_native_stack_offset(frame_size=0x80) == -0x40
 
     def test_register_kind_returns_none(self) -> None:
-        snap = MopSnapshot(t=2, size=4, reg=3, kind=OperandKind.REGISTER)
-        cand = StateVariableCandidate(mop=snap)
+        identity = StorageIdentity(StorageIdentityKind.REGISTER, 3)
+        cand = StateVariableCandidate(storage_identity=identity)
         assert cand.get_native_stack_offset(frame_size=0x80) is None
 
     def test_global_kind_returns_none(self) -> None:
-        snap = MopSnapshot(
-            t=8, size=8, gaddr=0x140002000, kind=OperandKind.GLOBAL
-        )
-        cand = StateVariableCandidate(mop=snap)
-        assert cand.get_native_stack_offset(frame_size=0x80) is None
-
-    def test_stack_kind_without_stkoff_returns_none(self) -> None:
-        """Defensive: if the snapshot has ``STACK`` kind but
-        ``stkoff`` was never populated (a buggy lifter would have
-        to do this), the method returns ``None`` rather than
-        computing nonsense."""
-        snap = MopSnapshot(t=4, size=4, kind=OperandKind.STACK)
-        cand = StateVariableCandidate(mop=snap)
+        identity = StorageIdentity(StorageIdentityKind.GLOBAL, 0x140002000)
+        cand = StateVariableCandidate(storage_identity=identity)
         assert cand.get_native_stack_offset(frame_size=0x80) is None
 
     def test_native_offset_at_frame_top(self) -> None:
         """Sanity check: a stkoff equal to the frame size lands at
         offset 0 from the frame base."""
-        snap = MopSnapshot(t=4, size=4, stkoff=0x100, kind=OperandKind.STACK)
-        cand = StateVariableCandidate(mop=snap)
+        identity = StorageIdentity(StorageIdentityKind.STACK, 0x100)
+        cand = StateVariableCandidate(storage_identity=identity)
         assert cand.get_native_stack_offset(frame_size=0x100) == 0
 
 
@@ -130,10 +128,8 @@ class TestPureModuleBoundary:
         )
         assert "import idaapi" not in src
         assert "from d810.hexrays" not in src
-        # Allowed: pure flowgraph snapshot symbols only. Post-dissolution the
-        # canonical pure home is ``d810.ir.flowgraph`` (the cfg.flowgraph path
-        # is a migration shim onto it).
-        assert (
-            "from d810.ir.flowgraph import" in src
-            or "from d810.ir.flowgraph import" in src
-        )
+        # Allowed: pure portable identity symbols only. The state-variable
+        # identity is held as ``d810.ir.storage_identity.StorageIdentity``;
+        # ``dispatcher_facts`` no longer depends on the operand-snapshot layer.
+        assert "from d810.ir.storage_identity import" in src
+        assert "MopSnapshot" not in src

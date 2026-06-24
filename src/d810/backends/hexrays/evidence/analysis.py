@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 import ida_hexrays
 
 from d810.analyses.control_flow.dominator import compute_dom_tree
-from d810.ir.mop_identity import mop_snapshot_key
+from d810.ir.storage_identity import storage_identity_key
 from d810.core import logging
 from d810.core.bits import unsigned_to_signed
 from d810.evaluator.evaluators import evaluate_concrete
@@ -222,10 +222,10 @@ class HodurStateMachineDetector:
 
         # Step 2: Find the state variable (the operand being compared).
         #
-        # E3-schema (dispatcher_facts): ``analysis.state_variable.mop``
-        # is now a portable ``MopSnapshot``, not a live
-        # ``ida_hexrays.mop_t``.  We can't
-        # just pull ``.mop`` out and pass it to live-mop operations
+        # E3-schema (dispatcher_facts): ``analysis.state_variable`` now carries a
+        # portable ``StorageIdentity`` (size-agnostic ``(kind, offset)``), not a
+        # live ``ida_hexrays.mop_t`` or any backend operand snapshot.  We can't
+        # pull a live mop out of it and pass it to live-mop operations
         # (``format_mop_t``, downstream walking).
         #
         # BUT: dispatcher analysis' selection logic ("operand with the most
@@ -236,12 +236,12 @@ class HodurStateMachineDetector:
         # diverge, so we MUST preserve the cache-driven selection.
         #
         # We bridge dispatcher analysis' portable identity to a live operand
-        # by matching the snapshot key against the live operands in
+        # by matching the storage-identity key against the live operands in
         # our own ``state_check_blocks``: find the check whose
-        # non-constant operand has the same ``mop_snapshot_key`` as
+        # non-constant operand has the same identity key as
         # the cache's candidate, and use that block's live mop.
         # This preserves the cache's "most comparisons" wisdom while
-        # keeping ``StateVariableCandidate.mop`` schema-pure.
+        # keeping ``StateVariableCandidate`` schema-pure (StorageIdentity-only).
         #
         # SCOPE INVARIANT: we iterate ``state_check_blocks`` --
         # hodur's already-filtered candidate set -- NOT
@@ -256,7 +256,7 @@ class HodurStateMachineDetector:
         if self._dispatcher_analysis is not None:
             cached = self._dispatcher_analysis.state_variable
             if cached is not None:
-                cached_key = mop_snapshot_key(cached.mop)
+                cached_key = storage_identity_key(cached.storage_identity)
                 if cached_key is not None:
                     for blk_serial, _, _ in state_check_blocks:
                         blk = self.mba.get_mblock(blk_serial)
@@ -274,7 +274,7 @@ class HodurStateMachineDetector:
                                     "Using dispatcher-cache state-variable "
                                     "(kind=%s, comparisons=%d) located in "
                                     "block %d",
-                                    cached.mop.kind.name,
+                                    cached.storage_identity.kind.name,
                                     cached.comparison_count,
                                     blk_serial,
                                 )

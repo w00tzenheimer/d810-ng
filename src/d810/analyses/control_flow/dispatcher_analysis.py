@@ -14,17 +14,12 @@ from d810.ir.flowgraph import (
     PredicateKind,
     BlockSnapshot,
     FlowGraph,
-    MopSnapshot,
-    OperandKind,
 )
 from d810.ir.expressions import Const
 from d810.ir.instructions import Instruction
 from d810.ir.insn_projection import InstructionProjection, project_assignment
 from d810.ir.semantics import ControlTransferKind
-from d810.ir.storage_identity import (
-    StorageIdentity,
-    StorageIdentityKind,
-)
+from d810.ir.storage_identity import StorageIdentity
 from d810.analyses.control_flow.instruction_semantics import (
     split_const_storage_identity_from_branch,
 )
@@ -243,33 +238,6 @@ def _split_const_state_instruction(
     )
 
 
-_IDENTITY_OPERAND_KIND: dict[StorageIdentityKind, tuple[OperandKind, int]] = {
-    StorageIdentityKind.REGISTER: (OperandKind.REGISTER, 1),
-    StorageIdentityKind.STACK: (OperandKind.STACK, 5),
-    StorageIdentityKind.GLOBAL: (OperandKind.GLOBAL, 7),
-    StorageIdentityKind.LVAR: (OperandKind.LVAR, 9),
-}
-
-
-def _compat_mop_for_identity(
-    identity: StorageIdentity,
-) -> MopSnapshot | None:
-    kind_and_type = _IDENTITY_OPERAND_KIND.get(identity.kind)
-    if kind_and_type is None:
-        return None
-    kind, raw_type = kind_and_type
-    kwargs: dict[str, int] = {}
-    if identity.kind is StorageIdentityKind.REGISTER:
-        kwargs["reg"] = int(identity.offset)
-    elif identity.kind is StorageIdentityKind.STACK:
-        kwargs["stkoff"] = int(identity.offset)
-    elif identity.kind is StorageIdentityKind.GLOBAL:
-        kwargs["gaddr"] = int(identity.offset)
-    elif identity.kind is StorageIdentityKind.LVAR:
-        kwargs["lvar_off"] = int(identity.offset)
-    return MopSnapshot(t=raw_type, size=4, kind=kind, **kwargs)
-
-
 def _analyze_state_comparisons(
     flow_graph: FlowGraph, analysis: DispatcherAnalysis
 ) -> None:
@@ -306,18 +274,12 @@ def _analyze_state_comparisons(
         or best_identity is None
     ):
         return
-    best_mop = _compat_mop_for_identity(best_identity)
-    if best_mop is None:
-        return
 
     unique_constants = {constant for _, constant in best_comparisons}
     comparison_blocks = [serial for serial, _ in best_comparisons]
     analysis.state_variable = StateVariableCandidate(
-        mop=best_mop,
         storage_identity=best_identity,
-        mop_type=int(best_mop.t),
         mop_offset=best_identity.offset,
-        mop_size=int(best_mop.size),
         comparison_count=len(best_comparisons),
         unique_constants=unique_constants,
         comparison_blocks=comparison_blocks,
