@@ -21,6 +21,7 @@ they need.
 """
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from types import MappingProxyType
 
@@ -52,9 +53,11 @@ __all__ = [
     "InstructionProjection",
     "iter_operand_exprs",
     "operand_storages",
+    "parse_diag_meta_operand",
     "primary_source_storage",
     "project_assignment",
     "project_conditional_branch",
+    "project_diag_instruction",
     "project_instruction",
     "project_instruction_sequence",
     "project_operand_expr",
@@ -714,3 +717,275 @@ def project_conditional_branch(
         taken=taken,
         fallthrough=fallthrough,
     )
+
+
+# ---------------------------------------------------------------------------
+# Diag-DB row -> canonical Instruction lift (llr-3b41 S0 spike).
+#
+# The production diag ``meta`` JSON (built by
+# ``d810.hexrays.mba_serializer._instruction_operands_meta`` /
+# ``_mop_to_meta``) is a recursive operand tree keyed by ``l`` / ``r`` / ``d``.
+# It is isomorphic to ``MopSnapshot`` / ``InsnSnapshot``, so a diag row (a
+# ``d810.core.observability_models.InstructionSnapshot`` or the equivalent
+# SQLite row) can be projected onto the SAME canonical ``Instruction`` the live
+# block path produces -- without any Hex-Rays import.  This stays in ``d810.ir``
+# (a leaf below ``d810.analyses`` / ``d810.hexrays``), so it must reach for no
+# layer above it; the int->OperandKind map below is kept in lock-step with the
+# serializer's ``mop.t`` (``_mop_type_name``) source by literal value.
+# ---------------------------------------------------------------------------
+
+# ``type_num`` is ``int(mop.t)`` from the serializer; the values below MUST
+# track the Hex-Rays ``mopt_t`` enum the serializer reads (see
+# ``hexrays.hpp`` ``mop_z..mop_sc`` 0..15 and ``_mop_type_name``).
+_TYPE_NUM_TO_OPERAND_KIND: Mapping[int, OperandKind] = MappingProxyType(
+    {
+        0: OperandKind.EMPTY,      # mop_z
+        1: OperandKind.REGISTER,   # mop_r
+        2: OperandKind.NUMBER,     # mop_n
+        3: OperandKind.STRING,     # mop_str
+        4: OperandKind.SUBINSN,    # mop_d
+        5: OperandKind.STACK,      # mop_S
+        6: OperandKind.GLOBAL,     # mop_v
+        7: OperandKind.BLOCK,      # mop_b
+        8: OperandKind.ARG_LIST,   # mop_f
+        9: OperandKind.LVAR,       # mop_l
+        10: OperandKind.ADDRESS,   # mop_a
+        11: OperandKind.HELPER,    # mop_h
+        12: OperandKind.CASE_LIST, # mop_c
+        13: OperandKind.FP_CONST,  # mop_fn
+        14: OperandKind.PAIR,      # mop_p
+        15: OperandKind.SCATTERED, # mop_sc
+    }
+)
+
+# opcode_name (diag string) -> portable InsnKind.  Accepts both the Hex-Rays
+# ``m_*`` spelling captured by the serializer and the portable enum spellings,
+# so a diag row resolves to the same semantic operation the live path infers.
+_OPCODE_NAME_TO_INSN_KIND: Mapping[str, InsnKind] = MappingProxyType(
+    {
+        "m_mov": InsnKind.MOV,
+        "mov": InsnKind.MOV,
+        "m_ldx": InsnKind.LOAD,
+        "load": InsnKind.LOAD,
+        "m_stx": InsnKind.STORE,
+        "store": InsnKind.STORE,
+        "m_add": InsnKind.ADD,
+        "add": InsnKind.ADD,
+        "m_sub": InsnKind.SUB,
+        "sub": InsnKind.SUB,
+        "m_and": InsnKind.AND,
+        "and": InsnKind.AND,
+        "m_xdu": InsnKind.XDU,
+        "xdu": InsnKind.XDU,
+        "m_xds": InsnKind.XDS,
+        "xds": InsnKind.XDS,
+        "m_goto": InsnKind.GOTO,
+        "goto": InsnKind.GOTO,
+        "m_ret": InsnKind.RET,
+        "ret": InsnKind.RET,
+    }
+)
+
+
+def _coerce_global_ea(value: object) -> int | None:
+    """Coerce a serializer ``global_ea`` field (``"0x%x"`` string) to int."""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value, 0)
+        except ValueError:
+            return None
+    return None
+
+
+def parse_diag_meta_operand(meta_node: Mapping | None) -> MopSnapshot | None:
+    """Project one diag ``meta`` operand node onto a portable ``MopSnapshot``.
+
+    ``meta_node`` is one ``l`` / ``r`` / ``d`` (or nested ``sub_instruction`` /
+    ``sub_operand`` / ``args``) dict produced by the serializer's
+    ``_mop_to_meta``.  Recurses through ``sub_instruction`` (mop_d) and
+    ``sub_operand`` (mop_a); ``args`` (mop_f) lists become nested portable
+    operands.  Returns ``None`` for an empty / absent node.
+    """
+    if not isinstance(meta_node, Mapping):
+        return None
+    type_num = meta_node.get("type_num")
+    if type_num is None:
+        return None
+    type_num = int(type_num)
+    kind = _TYPE_NUM_TO_OPERAND_KIND.get(type_num, OperandKind.UNKNOWN)
+    if kind is OperandKind.EMPTY:
+        return None
+    size = int(meta_node.get("size") or 0)
+
+    value = meta_node.get("value")
+    register = meta_node.get("register")
+    stkoff = meta_node.get("stkoff")
+    block_num = meta_node.get("block_num")
+    lvar_idx = meta_node.get("lvar_idx")
+    gaddr = _coerce_global_ea(meta_node.get("global_ea"))
+
+    sub_l: MopSnapshot | None = None
+    sub_r: MopSnapshot | None = None
+    sub_kind: InsnKind | None = None
+    sub_value_op_kind: ValueOpKind | None = None
+    if kind is OperandKind.SUBINSN:
+        sub_insn = meta_node.get("sub_instruction")
+        if isinstance(sub_insn, Mapping):
+            sub_kind = _OPCODE_NAME_TO_INSN_KIND.get(
+                str(sub_insn.get("opcode_name") or "")
+            )
+            if sub_kind is not None:
+                sub_value_op_kind = _SUBINSN_VALUE_OPS.get(sub_kind)
+            sub_l = parse_diag_meta_operand(sub_insn.get("l"))
+            sub_r = parse_diag_meta_operand(sub_insn.get("r"))
+    elif kind is OperandKind.ADDRESS:
+        # mop_a wraps a single inner operand under ``sub_operand``.
+        sub_l = parse_diag_meta_operand(meta_node.get("sub_operand"))
+
+    args: tuple[MopSnapshot, ...] = ()
+    if kind is OperandKind.ARG_LIST:
+        raw_args = meta_node.get("args")
+        if isinstance(raw_args, (list, tuple)):
+            args = tuple(
+                arg
+                for arg in (parse_diag_meta_operand(node) for node in raw_args)
+                if arg is not None
+            )
+
+    stack_refs = _collect_stack_refs(kind, stkoff, sub_l, sub_r, args)
+
+    return MopSnapshot(
+        t=type_num,
+        size=size,
+        value=int(value) if value is not None else None,
+        stkoff=int(stkoff) if stkoff is not None else None,
+        reg=int(register) if register is not None else None,
+        block_ref=int(block_num) if block_num is not None else None,
+        gaddr=gaddr,
+        lvar_off=int(lvar_idx) if lvar_idx is not None else None,
+        stack_refs=stack_refs,
+        kind=kind,
+        sub_kind=sub_kind,
+        sub_value_op_kind=sub_value_op_kind,
+        sub_l=sub_l,
+        sub_r=sub_r,
+        args=args,
+    )
+
+
+def _collect_stack_refs(
+    kind: OperandKind,
+    stkoff: object,
+    sub_l: MopSnapshot | None,
+    sub_r: MopSnapshot | None,
+    args: tuple[MopSnapshot, ...],
+) -> tuple[int, ...]:
+    """Flatten stack offsets reachable from a (possibly nested) operand."""
+    refs: list[int] = []
+    if kind is OperandKind.STACK and stkoff is not None:
+        refs.append(int(stkoff))
+    for child in (sub_l, sub_r, *args):
+        if child is not None:
+            refs.extend(child.stack_refs)
+            if child.kind is OperandKind.STACK and child.stkoff is not None:
+                refs.append(int(child.stkoff))
+    return tuple(dict.fromkeys(refs))
+
+
+def _row_field(row: object, name: str) -> object:
+    """Read ``name`` from a diag row (dataclass attr or mapping key)."""
+    if isinstance(row, Mapping):
+        return row.get(name)
+    return getattr(row, name, None)
+
+
+def _row_int(row: object, name: str) -> int | None:
+    value = _row_field(row, name)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _row_value(row: object, hex_name: str, i64_name: str, plain_name: str) -> int | None:
+    """Coerce a diag value field to int across both row origins.
+
+    DB-origin rows carry a dual ``*_hex`` (``"0x%x"`` string) + ``*_i64`` pair;
+    the in-memory ``observability_models.InstructionSnapshot`` carries a single
+    plain ``*`` int.  The hex column is authoritative for unsigned 64-bit
+    fidelity; fall back to the i64 column then the plain field.
+    """
+    hex_value = _row_field(row, hex_name)
+    if isinstance(hex_value, str) and hex_value:
+        try:
+            return int(hex_value, 0)
+        except ValueError:
+            pass
+    i64_value = _row_field(row, i64_name)
+    if i64_value is not None:
+        try:
+            return int(i64_value)
+        except (TypeError, ValueError):
+            pass
+    return _row_int(row, plain_name)
+
+
+def _diag_meta_payload(row: object) -> Mapping[str, object]:
+    raw = _row_field(row, "meta")
+    if isinstance(raw, Mapping):
+        return raw
+    if isinstance(raw, str) and raw:
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        return payload if isinstance(payload, Mapping) else {}
+    return {}
+
+
+def project_diag_instruction(row: object) -> Instruction:
+    """Project a production diag instruction row onto the canonical
+    ``Instruction``.
+
+    ``row`` is a ``d810.core.observability_models.InstructionSnapshot`` (or the
+    equivalent SQLite ``instructions`` row -- dataclass *or* mapping).  Flat
+    fields plus the recursive ``meta`` ``l`` / ``r`` / ``d`` operand tree are
+    rebuilt into an :class:`~d810.ir.flowgraph.InsnSnapshot`, then projected
+    through the existing :func:`project_instruction` machinery so the result is
+    byte-for-byte the canonical projection the live block path produces.
+    """
+    meta = _diag_meta_payload(row)
+    l = parse_diag_meta_operand(meta.get("l"))
+    r = parse_diag_meta_operand(meta.get("r"))
+    d = parse_diag_meta_operand(meta.get("d"))
+
+    opcode_name = str(_row_field(row, "opcode_name") or "")
+    kind = _OPCODE_NAME_TO_INSN_KIND.get(opcode_name, InsnKind.UNKNOWN)
+    opcode = _row_int(row, "opcode")
+    if opcode is None:
+        opcode = -1
+    ea = _row_int(row, "ea")
+    if ea is None:
+        ea = 0
+    dstr = str(_row_field(row, "dstr") or "")
+
+    opcode_attrs = {"raw_opcode_name": opcode_name} if opcode_name else {}
+
+    insn = InsnSnapshot(
+        opcode=opcode,
+        ea=ea,
+        operands=(),
+        display_text=dstr,
+        l=l,
+        r=r,
+        d=d,
+        kind=kind,
+        opcode_attrs=opcode_attrs,
+    )
+    return project_instruction(insn)
