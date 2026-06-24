@@ -38,7 +38,8 @@ from itertools import product
 
 from d810.core.typing import Callable, Mapping, Optional
 
-from d810.ir.flowgraph import BlockSnapshot, InsnKind, MopSnapshot, OperandKind
+from d810.ir.flowgraph import BlockSnapshot, InsnKind, OperandKind
+from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
 from d810.ir.semantics import PredicateKind
 from d810.analyses.control_flow.instruction_semantics import branch_predicate
 from d810.analyses.control_flow.state_machine_analysis import (
@@ -52,6 +53,7 @@ from d810.analyses.control_flow.deffai.powerset_store import PowersetStore
 __all__ = [
     "ArmTransfer",
     "mop_cell",
+    "operand_cell",
     "scalar_block_evaluator",
     "transfer_block_set",
 ]
@@ -66,24 +68,46 @@ BlockEvaluator = Callable[
 ]
 
 
-def mop_cell(mop: MopSnapshot | None) -> LocationRef | None:
-    """Map an operand snapshot to the storage cell it names, or ``None``.
+def mop_cell(vn: Varnode | None) -> LocationRef | None:
+    """Map a canonical :class:`~d810.ir.varnode.Varnode` to the storage cell it
+    names, or ``None``.
 
-    A ``mop_S`` / stack-referencing operand -> ``LocationRef.stack(off, width)``;
-    a ``mop_r`` register operand -> ``LocationRef.reg(reg, width)``.  Width
-    defaults to 8 (u64) when the operand carries no size, matching the u64 mask
-    state constants already use.  Returns ``None`` for a constant / block-ref /
-    unrecognized operand (it names no tracked cell).
+    A ``STACK`` varnode -> ``LocationRef.stack(off, width)``; a ``REGISTER``
+    varnode -> ``LocationRef.reg(reg, width)``.  Width defaults to 8 (u64) when
+    the varnode carries no size, matching the u64 mask state constants already
+    use.  Returns ``None`` for a constant / unrecognized varnode (it names no
+    tracked cell).
+    """
+    if vn is None:
+        return None
+    width = int(vn.size or 0) or 8
+    if vn.space is Space.STACK:
+        return LocationRef.stack(int(vn.offset), width)
+    if vn.space is Space.REGISTER:
+        return LocationRef.reg(int(vn.offset), width)
+    return None
+
+
+def operand_cell(mop: object | None) -> LocationRef | None:
+    """Lift-boundary adapter: project a lifted operand snapshot to the storage
+    cell it names, via the canonical ``Varnode`` surface.
+
+    Stack/register operands convert directly through
+    :func:`varnode_from_mop_snapshot`.  A nested expression operand that names
+    no top-level varnode but carries flattened ``stack_refs`` (e.g.
+    ``(state & mask)``) still resolves to its first referenced stack slot, so
+    the read/write cell discovery keeps the same superset behavior it had over
+    raw operand fields.
     """
     if mop is None:
         return None
-    width = int(getattr(mop, "size", 0) or 0) or 8
-    if mop.stkoff is not None:
-        return LocationRef.stack(int(mop.stkoff), width)
-    if mop.stack_refs:
-        return LocationRef.stack(int(mop.stack_refs[0]), width)
-    if mop.reg is not None:
-        return LocationRef.reg(int(mop.reg), width)
+    cell = mop_cell(varnode_from_mop_snapshot(mop))
+    if cell is not None:
+        return cell
+    stack_refs = getattr(mop, "stack_refs", ())
+    if stack_refs:
+        size = int(getattr(mop, "size", 0) or 0)
+        return mop_cell(Varnode(Space.STACK, int(stack_refs[0]), size))
     return None
 
 
@@ -145,7 +169,7 @@ def _compare_const_and_cell(
             and const_op.kind is OperandKind.NUMBER
             and const_op.value is not None
         ):
-            return int(const_op.value) & _U32_MASK, mop_cell(cell_op)
+            return int(const_op.value) & _U32_MASK, operand_cell(cell_op)
     return None, None
 
 
@@ -160,7 +184,7 @@ def _read_cells(block: BlockSnapshot) -> frozenset[LocationRef]:
     cells: set[LocationRef] = set()
     for insn in block.insn_snapshots:
         for operand in (getattr(insn, "l", None), getattr(insn, "r", None)):
-            cell = mop_cell(operand)
+            cell = operand_cell(operand)
             if cell is not None:
                 cells.add(cell)
     return frozenset(cells)
@@ -177,7 +201,7 @@ def _written_cells(block: BlockSnapshot) -> frozenset[LocationRef]:
     """
     cells: set[LocationRef] = set()
     for insn in block.insn_snapshots:
-        cell = mop_cell(getattr(insn, "d", None))
+        cell = operand_cell(getattr(insn, "d", None))
         if cell is not None:
             cells.add(cell)
     return frozenset(cells)

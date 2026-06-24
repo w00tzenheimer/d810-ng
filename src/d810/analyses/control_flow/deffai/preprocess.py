@@ -35,7 +35,7 @@ from d810.ir.flowgraph import (
 )
 from d810.analyses.data_flow.concolic.refs import LocationRef
 
-from d810.analyses.control_flow.deffai.transfer import mop_cell
+from d810.analyses.control_flow.deffai.transfer import operand_cell
 
 __all__ = [
     "PRUNE_BLOCK_META_KEY",
@@ -72,7 +72,7 @@ def condvar_cells_of(
         for operand in (getattr(tail, "l", None), getattr(tail, "r", None)):
             if operand is None or operand.kind is OperandKind.NUMBER:
                 continue
-            cell = mop_cell(operand)
+            cell = operand_cell(operand)
             if cell is not None:
                 cells.add(cell)
     return frozenset(cells)
@@ -81,7 +81,7 @@ def condvar_cells_of(
 def _block_defines_any(blk: BlockSnapshot, cells: frozenset[LocationRef]) -> bool:
     """``True`` iff any instruction in ``blk`` writes one of ``cells``."""
     for insn in blk.insn_snapshots:
-        dest_cell = mop_cell(getattr(insn, "d", None))
+        dest_cell = operand_cell(getattr(insn, "d", None))
         if dest_cell is not None and dest_cell in cells:
             return True
     return False

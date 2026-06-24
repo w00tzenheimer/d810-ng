@@ -15,8 +15,10 @@ from d810.analyses.control_flow.state_transition_domain import StateValue
 from d810.analyses.data_flow.concolic.refs import LocationRef
 
 from d810.analyses.control_flow.deffai.powerset_store import PowersetStore
+from d810.ir.varnode import Space, Varnode
 from d810.analyses.control_flow.deffai.transfer import (
     mop_cell,
+    operand_cell,
     transfer_block_set,
 )
 
@@ -52,9 +54,20 @@ def _transfer(blk, in_store, **kw):
 
 
 def test_mop_cell_maps_stack_and_reg():
-    assert mop_cell(stk(0x10)) == LocationRef.stack(0x10, 8)
-    assert mop_cell(reg(5)) == LocationRef.reg(5, 8)
-    assert mop_cell(num(3)) is None  # a constant names no cell
+    # ``mop_cell`` now consumes a canonical Varnode (space/offset/size).
+    assert mop_cell(Varnode(Space.STACK, 0x10, 8)) == LocationRef.stack(0x10, 8)
+    assert mop_cell(Varnode(Space.REGISTER, 5, 8)) == LocationRef.reg(5, 8)
+    assert mop_cell(Varnode(Space.CONST, 3, 8)) is None  # a const names no cell
+    assert mop_cell(None) is None
+
+
+def test_operand_cell_maps_lifted_operand_snapshots():
+    # ``operand_cell`` is the lift-boundary adapter from an operand snapshot
+    # through the canonical Varnode surface to a tracked cell.
+    assert operand_cell(stk(0x10)) == LocationRef.stack(0x10, 8)
+    assert operand_cell(reg(5)) == LocationRef.reg(5, 8)
+    assert operand_cell(num(3)) is None  # a constant names no cell
+    assert operand_cell(None) is None
 
 
 def test_singleton_fold_writes_constant_to_state_cell():
