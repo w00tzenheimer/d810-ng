@@ -79,4 +79,7 @@ class TestConditionChainWalkerProvider:
             "get_block",
             "block_successors",
             "fetch_idb_value",
+            "operand_stack_offset",
+            "operand_number_value",
+            "is_move_opcode",
         }
