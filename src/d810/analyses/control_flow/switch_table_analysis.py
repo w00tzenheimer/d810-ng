@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, MopSnapshot
+from d810.ir.varnode import Space, varnode_from_mop_snapshot
 from d810.core.logging import getLogger
 from d810.core.typing import Callable
 from d810.capabilities.dispatcher import RouterKind, TableProvenance
@@ -160,11 +161,12 @@ def _maturity_label(flow_graph: FlowGraph) -> str:
 def _mop_const_value(mop: object | None) -> int | None:
     if mop is None:
         return None
-    nnn = getattr(mop, "nnn", None)
-    if nnn is not None:
-        value = getattr(nnn, "value", None)
-        if value is not None:
-            return int(value)
+    try:
+        varnode = varnode_from_mop_snapshot(mop)  # type: ignore[arg-type]
+    except (AttributeError, TypeError, ValueError):
+        varnode = None
+    if varnode is not None and varnode.space is Space.CONST:
+        return int(varnode.offset)
     value = getattr(mop, "value", None)
     if value is not None:
         return int(value)

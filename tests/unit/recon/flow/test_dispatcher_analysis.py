@@ -9,6 +9,7 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.analyses.control_flow.dispatcher_analysis import analyze_dispatcher
 from d810.analyses.control_flow.dispatcher_facts import DispatcherStrategy
 from d810.capabilities.dispatcher import RouterKind
@@ -42,8 +43,8 @@ def _number(value: int) -> MopSnapshot:
     return _mop(OperandKind.NUMBER, value=value)
 
 
-def _stack(offset: int = 0x20) -> MopSnapshot:
-    return _mop(OperandKind.STACK, stkoff=offset)
+def _stack(offset: int = 0x20, *, size: int = 4) -> MopSnapshot:
+    return _mop(OperandKind.STACK, stkoff=offset, size=size)
 
 
 def _insn(
@@ -52,6 +53,7 @@ def _insn(
     l: MopSnapshot | None = None,
     r: MopSnapshot | None = None,
     branch_predicate: PredicateKind | None = None,
+    predicate_kind: PredicateKind | None = None,
 ) -> InsnSnapshot:
     return InsnSnapshot(
         opcode=0,
@@ -61,6 +63,7 @@ def _insn(
         r=r,
         kind=kind,
         branch_predicate=branch_predicate,
+        predicate_kind=predicate_kind,
     )
 
 
@@ -97,6 +100,21 @@ def _comparison_block(serial: int, constant: int) -> BlockSnapshot:
     tail = _insn(
         InsnKind.EQUALITY_JUMP,
         l=_stack(),
+        r=_number(constant),
+        branch_predicate=PredicateKind.EQ,
+    )
+    return _block(serial, insns=(tail,))
+
+
+def _comparison_block_with_stack_size(
+    serial: int,
+    constant: int,
+    *,
+    size: int,
+) -> BlockSnapshot:
+    tail = _insn(
+        InsnKind.EQUALITY_JUMP,
+        l=_stack(size=size),
         r=_number(constant),
         branch_predicate=PredicateKind.EQ,
     )
@@ -144,6 +162,9 @@ def test_state_comparisons_pick_most_common_portable_operand() -> None:
     assert analysis.router_kind == RouterKind.CONDITION_CHAIN
     assert analysis.state_variable is not None
     assert analysis.state_variable.mop.kind is OperandKind.STACK
+    assert analysis.state_variable.storage_identity == (
+        StorageIdentity(StorageIdentityKind.STACK, 0x20)
+    )
     assert analysis.state_variable.mop_offset == 0x20
     assert analysis.state_variable.comparison_count == 6
     assert analysis.state_variable.comparison_blocks == [0, 1, 2, 3, 4, 5]
@@ -159,6 +180,53 @@ def test_state_comparisons_pick_most_common_portable_operand() -> None:
         block = analysis.blocks[serial]
         assert DispatcherStrategy.STATE_COMPARISON in block.strategies
         assert DispatcherStrategy.CONSTANT_FREQUENCY in block.strategies
+
+
+def test_state_comparison_identity_is_size_agnostic() -> None:
+    flow_graph = _flow([
+        _comparison_block_with_stack_size(
+            serial,
+            0x200 + serial,
+            size=(1 if serial % 2 else 4),
+        )
+        for serial in range(6)
+    ])
+
+    analysis = analyze_dispatcher(flow_graph)
+
+    assert analysis.state_variable is not None
+    assert analysis.state_variable.storage_identity == (
+        StorageIdentity(StorageIdentityKind.STACK, 0x20)
+    )
+    assert analysis.state_variable.comparison_count == 6
+    assert analysis.state_variable.mop_offset == 0x20
+
+
+def test_state_comparisons_use_canonical_predicate_payload() -> None:
+    def comparison(serial: int) -> BlockSnapshot:
+        tail = _insn(
+            InsnKind.EQUALITY_JUMP,
+            l=_stack(),
+            r=_number(0x300 + serial),
+            predicate_kind=PredicateKind.EQ,
+        )
+        return _block(serial, insns=(tail,))
+
+    flow_graph = _flow([comparison(serial) for serial in range(6)])
+
+    analysis = analyze_dispatcher(flow_graph)
+
+    assert analysis.router_kind == RouterKind.CONDITION_CHAIN
+    assert analysis.state_variable is not None
+    assert analysis.state_variable.comparison_count == 6
+    assert analysis.state_constants == {
+        0x300,
+        0x301,
+        0x302,
+        0x303,
+        0x304,
+        0x305,
+    }
 
 
 def test_initial_state_is_found_from_early_state_assignment() -> None:

@@ -14,14 +14,20 @@ from d810.ir.flowgraph import (
     PredicateKind,
     BlockSnapshot,
     FlowGraph,
-    InsnKind,
-    InsnSnapshot,
     MopSnapshot,
     OperandKind,
 )
 from d810.ir.expressions import Const
-from d810.ir.insn_projection import project_assignment, project_conditional_branch
-from d810.ir.mop_identity import mop_snapshot_key, mop_snapshot_offset
+from d810.ir.instructions import Instruction
+from d810.ir.insn_projection import InstructionProjection, project_assignment
+from d810.ir.semantics import ControlTransferKind
+from d810.ir.storage_identity import (
+    StorageIdentity,
+    StorageIdentityKind,
+)
+from d810.analyses.control_flow.instruction_semantics import (
+    split_const_storage_identity_from_branch,
+)
 from d810.analyses.control_flow.dispatcher_facts import (
     BlockAnalysis,
     DispatcherStrategy,
@@ -143,22 +149,37 @@ def _get_or_create_block(
     return analysis.blocks[serial]
 
 
-def _tail(block: BlockSnapshot) -> InsnSnapshot | None:
-    return block.tail
-
-
-def _tail_kind(block: BlockSnapshot) -> InsnKind | None:
-    if block.tail_kind is not None:
-        return block.tail_kind
-    tail = block.tail
-    return tail.kind if tail is not None else None
-
-
 def _has_table_jump(flow_graph: FlowGraph) -> bool:
     return any(
-        _tail_kind(block) is InsnKind.TABLE_JUMP
+        _block_has_control_transfer(block, ControlTransferKind.TABLE_BRANCH)
         for _, block in _iter_blocks(flow_graph)
     )
+
+
+def _block_has_control_transfer(
+    block: BlockSnapshot,
+    transfer: ControlTransferKind,
+) -> bool:
+    return any(
+        instruction.control is not None
+        and instruction.control.transfer is transfer
+        for instruction in InstructionProjection.from_block(block)
+    )
+
+
+def _block_ends_with_unconditional_exit(block: BlockSnapshot) -> bool:
+    instructions = InstructionProjection.from_block(block)
+    if not instructions:
+        return len(block.succs) == 1
+    control = instructions[-1].control
+    if control is None:
+        return len(block.succs) == 1
+    return control.transfer in {
+        ControlTransferKind.GOTO,
+        ControlTransferKind.INDIRECT_BRANCH,
+        ControlTransferKind.TABLE_BRANCH,
+        ControlTransferKind.RETURN,
+    }
 
 
 def _analyze_block_predecessors(
@@ -178,9 +199,7 @@ def _analyze_block_predecessors(
             pred_block = flow_graph.get_block(pred_serial)
             if pred_block is None:
                 continue
-            if _tail_kind(pred_block) is InsnKind.GOTO:
-                uncond_count += 1
-            elif len(pred_block.succs) == 1:
+            if _block_ends_with_unconditional_exit(pred_block):
                 uncond_count += 1
 
         block_info.unconditional_pred_count = uncond_count
@@ -191,58 +210,113 @@ def _analyze_block_predecessors(
             block_info.strategies |= DispatcherStrategy.PREDECESSOR_UNIFORM
 
 
-def _is_state_comparison_tail(insn: InsnSnapshot | None) -> bool:
-    # Read the portable projected branch (llr-lxas): a conditional jump whose
-    # predicate is a real comparison, not the bare TRUTHY of m_jcnd.
-    branch = project_conditional_branch(insn)
-    if branch is None or branch.predicate is PredicateKind.TRUTHY:
+def _conditional_branch_instruction(
+    block: BlockSnapshot,
+) -> tuple[int | None, Instruction | None]:
+    instructions = InstructionProjection.from_block(block)
+    for index in range(len(instructions) - 1, -1, -1):
+        instruction = instructions[index]
+        control = instruction.control
+        if (
+            control is not None
+            and control.transfer is ControlTransferKind.CONDITIONAL_BRANCH
+        ):
+            return index, instruction
+    return None, None
+
+
+def _is_state_comparison_instruction(instruction: Instruction | None) -> bool:
+    control = instruction.control if instruction is not None else None
+    if control is None or control.predicate is PredicateKind.TRUTHY:
         return False
-    return insn.kind in {InsnKind.EQUALITY_JUMP, InsnKind.COND_JUMP}
+    return control.predicate is not None
+
+
+def _split_const_state_instruction(
+    block: BlockSnapshot,
+    branch_index: int,
+) -> tuple[int | None, StorageIdentity | None]:
+    return split_const_storage_identity_from_branch(
+        InstructionProjection.from_block(block),
+        int(branch_index),
+        min_const=MIN_STATE_CONSTANT,
+    )
+
+
+_IDENTITY_OPERAND_KIND: dict[StorageIdentityKind, tuple[OperandKind, int]] = {
+    StorageIdentityKind.REGISTER: (OperandKind.REGISTER, 1),
+    StorageIdentityKind.STACK: (OperandKind.STACK, 5),
+    StorageIdentityKind.GLOBAL: (OperandKind.GLOBAL, 7),
+    StorageIdentityKind.LVAR: (OperandKind.LVAR, 9),
+}
+
+
+def _compat_mop_for_identity(
+    identity: StorageIdentity,
+) -> MopSnapshot | None:
+    kind_and_type = _IDENTITY_OPERAND_KIND.get(identity.kind)
+    if kind_and_type is None:
+        return None
+    kind, raw_type = kind_and_type
+    kwargs: dict[str, int] = {}
+    if identity.kind is StorageIdentityKind.REGISTER:
+        kwargs["reg"] = int(identity.offset)
+    elif identity.kind is StorageIdentityKind.STACK:
+        kwargs["stkoff"] = int(identity.offset)
+    elif identity.kind is StorageIdentityKind.GLOBAL:
+        kwargs["gaddr"] = int(identity.offset)
+    elif identity.kind is StorageIdentityKind.LVAR:
+        kwargs["lvar_off"] = int(identity.offset)
+    return MopSnapshot(t=raw_type, size=4, kind=kind, **kwargs)
 
 
 def _analyze_state_comparisons(
     flow_graph: FlowGraph, analysis: DispatcherAnalysis
 ) -> None:
-    var_comparisons: dict[str, tuple[MopSnapshot, list[tuple[int, int]]]] = {}
+    var_comparisons: dict[StorageIdentity, list[tuple[int, int]]] = {}
 
     for serial, block in _iter_blocks(flow_graph):
-        tail = _tail(block)
-        if not _is_state_comparison_tail(tail):
+        branch_index, instruction = _conditional_branch_instruction(block)
+        if not _is_state_comparison_instruction(instruction):
             continue
-        if tail is None or tail.r is None or tail.r.kind is not OperandKind.NUMBER:
-            continue
-        const_val = tail.r.value
-        if const_val is None or const_val <= MIN_STATE_CONSTANT:
-            continue
-
-        var_key = mop_snapshot_key(tail.l)
-        if var_key is None or tail.l is None:
+        const_val, var_identity = _split_const_state_instruction(
+            block,
+            int(branch_index),
+        )
+        if const_val is None or var_identity is None:
             continue
 
-        if var_key not in var_comparisons:
-            var_comparisons[var_key] = (tail.l, [])
-        var_comparisons[var_key][1].append((serial, int(const_val)))
+        if var_identity not in var_comparisons:
+            var_comparisons[var_identity] = []
+        var_comparisons[var_identity].append((serial, int(const_val)))
 
         block_info = _get_or_create_block(analysis, serial)
         block_info.state_constants.add(int(const_val))
         analysis.state_constants.add(int(const_val))
 
-    best_mop: MopSnapshot | None = None
+    best_identity: StorageIdentity | None = None
     best_comparisons: list[tuple[int, int]] = []
-    for mop, comparisons in var_comparisons.values():
+    for identity, comparisons in var_comparisons.items():
         if len(comparisons) > len(best_comparisons):
-            best_mop = mop
+            best_identity = identity
             best_comparisons = comparisons
 
-    if len(best_comparisons) < MIN_UNIQUE_CONSTANTS or best_mop is None:
+    if (
+        len(best_comparisons) < MIN_UNIQUE_CONSTANTS
+        or best_identity is None
+    ):
+        return
+    best_mop = _compat_mop_for_identity(best_identity)
+    if best_mop is None:
         return
 
     unique_constants = {constant for _, constant in best_comparisons}
     comparison_blocks = [serial for serial, _ in best_comparisons]
     analysis.state_variable = StateVariableCandidate(
         mop=best_mop,
+        storage_identity=best_identity,
         mop_type=int(best_mop.t),
-        mop_offset=mop_snapshot_offset(best_mop),
+        mop_offset=best_identity.offset,
         mop_size=int(best_mop.size),
         comparison_count=len(best_comparisons),
         unique_constants=unique_constants,
@@ -305,10 +379,9 @@ def _analyze_state_assignments(
     for serial, block in _iter_blocks(flow_graph):
         for insn in block.iter_insns():
             # Proof-of-shape (llr-lxas): consume the portable projected
-            # assignment instead of the Hex-Rays-shaped ``l``/``d`` operands.
-            # ``value`` is a ``Const`` exactly when the MOV source is a number
-            # operand, so this matches the prior
-            # ``insn.l.kind is OperandKind.NUMBER`` guard byte-for-byte.
+            # assignment instead of the Hex-Rays-shaped operand slots.
+            # ``value`` is a ``Const`` exactly when the MOV source is a
+            # numeric constant, so this keeps the old selectivity.
             assignment = project_assignment(insn)
             if assignment is None or not isinstance(assignment.value, Const):
                 continue
@@ -331,20 +404,21 @@ def _analyze_block_sizes(flow_graph: FlowGraph, analysis: DispatcherAnalysis) ->
 
 def _analyze_switch_jumps(flow_graph: FlowGraph, analysis: DispatcherAnalysis) -> None:
     for serial, block in _iter_blocks(flow_graph):
-        tail = _tail(block)
-        if tail is None:
-            continue
-
-        is_switch = False
-        if tail.kind is InsnKind.TABLE_JUMP:
-            is_switch = True
-        elif tail.kind is InsnKind.GOTO and tail.l is not None:
-            if tail.l.kind is OperandKind.SUBINSN:
-                is_switch = True
-
-        if is_switch:
+        if any(_is_switch_jump_instruction(instruction) for instruction in InstructionProjection.from_block(block)):
             block_info = _get_or_create_block(analysis, serial)
             block_info.strategies |= DispatcherStrategy.SWITCH_JUMP
+
+
+def _is_switch_jump_instruction(instruction: Instruction) -> bool:
+    control = instruction.control
+    if control is None:
+        return False
+    if control.transfer in {
+        ControlTransferKind.TABLE_BRANCH,
+        ControlTransferKind.INDIRECT_BRANCH,
+    }:
+        return True
+    return control.transfer is ControlTransferKind.GOTO and control.target is None
 
 
 def _score_blocks(analysis: DispatcherAnalysis) -> None:
@@ -425,11 +499,10 @@ def _find_initial_state(
         if block is None:
             continue
         for insn in block.iter_insns():
-            if insn.kind is not InsnKind.MOV:
+            assignment = project_assignment(insn)
+            if assignment is None or not isinstance(assignment.value, Const):
                 continue
-            if insn.l is None or insn.l.kind is not OperandKind.NUMBER:
-                continue
-            const_val = insn.l.value
+            const_val = assignment.value.value
             if const_val in analysis.state_constants:
                 analysis.initial_state = int(const_val)
                 if analysis.state_variable is not None:

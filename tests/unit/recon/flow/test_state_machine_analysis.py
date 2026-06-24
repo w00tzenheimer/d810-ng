@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 from types import SimpleNamespace
 
-from d810.ir.flowgraph import PredicateKind, InsnKind, OperandKind
+from d810.ir.flowgraph import PredicateKind, InsnKind, MopSnapshot, OperandKind
 from d810.analyses.control_flow import state_machine_analysis as sma
 
 
@@ -15,11 +15,11 @@ def test_state_machine_analysis_does_not_import_live_hexrays():
 
 
 def _mop_s(off: int):
-    return SimpleNamespace(t="mop_S", kind=OperandKind.STACK, size=4, stkoff=off)
+    return MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=off)
 
 
 def _mop_n(value: int):
-    return SimpleNamespace(t="mop_n", kind=OperandKind.NUMBER, size=4, nnn_value=value)
+    return MopSnapshot(kind=OperandKind.NUMBER, size=4, value=value)
 
 
 class _SnapshotBlock:

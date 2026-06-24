@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from d810.capabilities.providers import get_condition_chain_walkers
 from d810.ir.flowgraph import InsnKind, OperandKind
+from d810.ir.varnode import Space, varnode_from_mop_snapshot
 from d810.analyses.control_flow.recon_dag_index import build_dag_node_maps
 from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
@@ -1094,22 +1095,13 @@ def mop_stkoff(mop: object | None) -> int | None:
     """Extract a stack offset from a live or snapshotted mop-like object."""
     if mop is None:
         return None
-    stack_ref = getattr(mop, "s", None)
-    if stack_ref is not None:
-        off = getattr(stack_ref, "off", None)
-        if callable(off):
-            try:
-                off = off()
-            except Exception:
-                off = None
-        if off is not None:
-            return int(off)
+    try:
+        varnode = varnode_from_mop_snapshot(mop)  # type: ignore[arg-type]
+    except (AttributeError, TypeError, ValueError):
+        varnode = None
+    if varnode is not None and varnode.space is Space.STACK:
+        return int(varnode.offset)
     stkoff = getattr(mop, "stkoff", None)
-    if callable(stkoff):
-        try:
-            stkoff = stkoff()
-        except Exception:
-            stkoff = None
     if stkoff is not None:
         return int(stkoff)
     return None
@@ -1119,16 +1111,12 @@ def mop_const_value(mop: object | None) -> int | None:
     """Extract an integer literal from a live or snapshotted mop-like object."""
     if mop is None:
         return None
-    nnn = getattr(mop, "nnn", None)
-    if nnn is not None:
-        value = getattr(nnn, "value", None)
-        if callable(value):
-            try:
-                value = value()
-            except Exception:
-                value = None
-        if value is not None:
-            return int(value)
+    try:
+        varnode = varnode_from_mop_snapshot(mop)  # type: ignore[arg-type]
+    except (AttributeError, TypeError, ValueError):
+        varnode = None
+    if varnode is not None and varnode.space is Space.CONST:
+        return int(varnode.offset)
     value = getattr(mop, "value", None)
     if callable(value):
         try:
@@ -1142,7 +1130,6 @@ def mop_const_value(mop: object | None) -> int | None:
 
 def _kind_matches(
     value: object,
-    legacy_name: str,
     numeric_value: int,
     portable_kind: object,
 ) -> bool:
@@ -1150,8 +1137,6 @@ def _kind_matches(
         return True
     portable_value = getattr(portable_kind, "value", portable_kind)
     if isinstance(portable_value, str) and value == portable_value:
-        return True
-    if value == legacy_name or str(value) == legacy_name:
         return True
     try:
         return int(value) == int(numeric_value)
@@ -1161,11 +1146,10 @@ def _kind_matches(
 
 def _is_move_insn(insn: object) -> bool:
     kind = getattr(insn, "kind", None)
-    if _kind_matches(kind, "m_mov", _MOVE_OPCODE, InsnKind.MOV):
+    if _kind_matches(kind, _MOVE_OPCODE, InsnKind.MOV):
         return True
     return _kind_matches(
         getattr(insn, "opcode", None),
-        "m_mov",
         _MOVE_OPCODE,
         InsnKind.MOV,
     )
@@ -1174,29 +1158,31 @@ def _is_move_insn(insn: object) -> bool:
 def _is_stack_operand(mop: object | None) -> bool:
     if mop is None:
         return False
+    try:
+        varnode = varnode_from_mop_snapshot(mop)  # type: ignore[arg-type]
+    except (AttributeError, TypeError, ValueError):
+        varnode = None
+    if varnode is not None:
+        return varnode.space is Space.STACK
     kind = getattr(mop, "kind", None)
-    if _kind_matches(kind, "mop_S", _STACK_OPERAND, OperandKind.STACK):
+    if _kind_matches(kind, _STACK_OPERAND, OperandKind.STACK):
         return True
-    return _kind_matches(
-        getattr(mop, "t", None),
-        "mop_S",
-        _STACK_OPERAND,
-        OperandKind.STACK,
-    )
+    return False
 
 
 def _is_number_operand(mop: object | None) -> bool:
     if mop is None:
         return False
+    try:
+        varnode = varnode_from_mop_snapshot(mop)  # type: ignore[arg-type]
+    except (AttributeError, TypeError, ValueError):
+        varnode = None
+    if varnode is not None:
+        return varnode.space is Space.CONST
     kind = getattr(mop, "kind", None)
-    if _kind_matches(kind, "mop_n", _NUMBER_OPERAND, OperandKind.NUMBER):
+    if _kind_matches(kind, _NUMBER_OPERAND, OperandKind.NUMBER):
         return True
-    return _kind_matches(
-        getattr(mop, "t", None),
-        "mop_n",
-        _NUMBER_OPERAND,
-        OperandKind.NUMBER,
-    )
+    return False
 
 
 def is_state_var_dest(dest: object | None, state_var_stkoff: int) -> bool:
@@ -1503,12 +1489,9 @@ def resolve_assignment_map_handoff_target(
         src = getattr(insn, "l", None)
         if not _is_number_operand(src):
             continue
-        try:
-            value = int(src.nnn.value) & 0xFFFFFFFF
-        except Exception:
-            value = mop_const_value(src)
-            if value is not None:
-                value &= 0xFFFFFFFF
+        value = mop_const_value(src)
+        if value is not None:
+            value &= 0xFFFFFFFF
         if value is None:
             continue
         if state_value is None:
@@ -2138,7 +2121,6 @@ __all__ = [
     "iter_residual_prefix_handoffs",
     "iter_live_block_insns",
     "mop_const_value",
-    "mop_stkoff",
     "resolve_assignment_map_handoff_target",
     "resolve_path_lead_entry_from_node",
     "resolve_contextual_dag_entry_for_state",

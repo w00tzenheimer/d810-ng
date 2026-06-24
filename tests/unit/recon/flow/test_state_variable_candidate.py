@@ -12,6 +12,7 @@ These tests don't import ``d810.hexrays.*`` -- the
 from __future__ import annotations
 
 from d810.ir.flowgraph import MopSnapshot, OperandKind
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.analyses.control_flow.dispatcher_facts import StateVariableCandidate
 
 
@@ -27,6 +28,7 @@ class TestStateVariableCandidateConstruction:
         assert cand.mop is snap
         assert cand.mop.kind is OperandKind.STACK
         assert cand.mop.stkoff == 0x40
+        assert cand.storage_identity == StorageIdentity(StorageIdentityKind.STACK, 0x40)
 
     def test_register_candidate_holds_portable_snapshot(self) -> None:
         snap = MopSnapshot(t=2, size=4, reg=3, kind=OperandKind.REGISTER)
@@ -42,6 +44,7 @@ class TestStateVariableCandidateConstruction:
         empty collections)."""
         snap = MopSnapshot(t=2, size=4, reg=3, kind=OperandKind.REGISTER)
         cand = StateVariableCandidate(mop=snap)
+        assert cand.storage_identity == StorageIdentity(StorageIdentityKind.REGISTER, 3)
         assert cand.mop_type == 0
         assert cand.mop_offset == 0
         assert cand.mop_size == 4
@@ -52,6 +55,14 @@ class TestStateVariableCandidateConstruction:
         assert cand.comparison_blocks == []
         assert cand.assignment_blocks == []
         assert cand.score == 0.0
+
+    def test_explicit_storage_identity_is_preserved(self) -> None:
+        snap = MopSnapshot(t=4, size=1, stkoff=0x40, kind=OperandKind.STACK)
+        identity = StorageIdentity(StorageIdentityKind.STACK, 0x40)
+
+        cand = StateVariableCandidate(mop=snap, storage_identity=identity)
+
+        assert cand.storage_identity is identity
 
 
 class TestGetNativeStackOffset:

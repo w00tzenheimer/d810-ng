@@ -62,6 +62,10 @@ from d810.analyses.data_flow.concolic import (
 from d810.capabilities.providers import get_condition_chain_walkers
 from d810.ir.flowgraph import InsnKind, OperandKind
 from d810.ir.semantics import PredicateKind
+from d810.ir.storage_identity import (
+    StorageIdentityKind,
+    storage_identity_from_mop_snapshot,
+)
 
 logger = getLogger(__name__)
 
@@ -347,16 +351,14 @@ def _resolve_state_var_alias(
 
 
 def _operand_gaddr(mop) -> int | None:
-    """Return the global address an operand names (mop_v), or ``None``."""
-    if mop is None:
-        return None
-    g = getattr(mop, "gaddr", None)
-    if g is None:
-        g = getattr(mop, "g", None)
+    """Return the lifted global address an operand names, or ``None``."""
     try:
-        return int(g) if g else None
-    except (TypeError, ValueError):
+        identity = storage_identity_from_mop_snapshot(mop)
+    except (AttributeError, TypeError, ValueError):
         return None
+    if identity is None or identity.kind is not StorageIdentityKind.GLOBAL:
+        return None
+    return int(identity.offset)
 
 
 def _detect_global_state_var(flow_graph, dispatcher_entry_serial: int) -> int | None:
@@ -375,11 +377,15 @@ def _detect_global_state_var(flow_graph, dispatcher_entry_serial: int) -> int | 
     if blk is None:
         return None
     for insn in getattr(blk, "insn_snapshots", ()):
-        view = _eval_insn_view_snapshot(insn)
+        if not (
+            getattr(insn, "is_conditional_jump", False)
+            or getattr(insn, "kind", None) in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}
+        ):
+            continue
         # The dispatcher head compares the state var: its LEFT operand (or a
         # nested compared subexpression) names the global.
         for slot in ("l", "r"):
-            mop = getattr(view, slot, None)
+            mop = getattr(insn, slot, None)
             g = _operand_gaddr(mop)
             if g is not None:
                 return g
@@ -830,9 +836,12 @@ class _ResolverContext:
 def _stack_offset_from_address(operand: object | None) -> int | None:
     if operand is None:
         return None
-    if getattr(operand, "kind", None) is OperandKind.STACK:
-        off = getattr(operand, "stkoff", None)
-        return int(off) if off is not None else None
+    try:
+        identity = storage_identity_from_mop_snapshot(operand)
+    except (AttributeError, TypeError, ValueError):
+        identity = None
+    if identity is not None and identity.kind is StorageIdentityKind.STACK:
+        return int(identity.offset)
     if getattr(operand, "kind", None) is OperandKind.ADDRESS:
         inner = getattr(operand, "sub_l", None)
         if inner is not None:

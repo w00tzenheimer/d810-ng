@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import d810.analyses.control_flow.residual_handoff_discovery as residual_handoff_discovery
+from d810.ir.flowgraph import InsnKind, MopSnapshot, OperandKind
 from d810.analyses.control_flow.linearized_state_dag import (
     RedirectSourceKind,
     SemanticEdgeKind,
@@ -33,6 +34,18 @@ from d810.analyses.control_flow.residual_handoff_discovery import (
 _MOVE_OPCODE = 4
 _NUMBER_OPERAND = 2
 _STACK_OPERAND = 5
+
+
+def _stack_operand(stkoff: int) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.STACK, stkoff=int(stkoff), size=4)
+
+
+def _const_operand(value: int) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.NUMBER, value=int(value), size=4)
+
+
+def _move_insn(src: MopSnapshot, dest: MopSnapshot) -> SimpleNamespace:
+    return SimpleNamespace(kind=InsnKind.MOV, l=src, d=dest, next=None)
 
 
 def _node(
@@ -322,11 +335,8 @@ class TestResidualTargetDiscovery:
             assignment_map={
                 10: (
                     SimpleNamespace(
-                        opcode=_MOVE_OPCODE,
-                        l=SimpleNamespace(
-                            t=_NUMBER_OPERAND,
-                            nnn=SimpleNamespace(value=0x33),
-                        ),
+                        kind=InsnKind.MOV,
+                        l=_const_operand(0x33),
                     ),
                 )
             }
@@ -442,15 +452,7 @@ class TestResidualTargetDiscovery:
         dispatcher = SimpleNamespace(
             _rows=(SimpleNamespace(lo=0x33, hi=0x34, target=2),),
         )
-        insn = SimpleNamespace(
-            opcode=_MOVE_OPCODE,
-            d=SimpleNamespace(t=_STACK_OPERAND, stkoff=0x88),
-            l=SimpleNamespace(
-                t=_NUMBER_OPERAND,
-                nnn=SimpleNamespace(value=0x33),
-            ),
-            next=None,
-        )
+        insn = _move_insn(_const_operand(0x33), _stack_operand(0x88))
         mba = _DummyMba({10: _DummyMblock(insn)})
         flow_graph = SimpleNamespace(
             get_block=lambda serial: SimpleNamespace(insn_snapshots=(insn,)) if serial == 10 else None

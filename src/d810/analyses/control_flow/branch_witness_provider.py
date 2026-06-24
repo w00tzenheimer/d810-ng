@@ -20,6 +20,10 @@ from d810.analyses.control_flow.branch_witness import (
     static_witness_for_state,
 )
 from d810.capabilities.dispatcher import RouterKind
+from d810.ir.storage_identity import (
+    StorageIdentityKind,
+    storage_identity_from_mop_snapshot,
+)
 
 
 def build_static_equality_chain_witness_map(
@@ -117,8 +121,12 @@ def build_static_equality_chain_witness_map(
 def _mop_references_stack(mop: object, stkoff: int) -> bool:
     if mop is None:
         return False
-    direct = _int_or_none(getattr(mop, "stkoff", None))
-    if direct is not None and int(direct) == int(stkoff):
+    identity = storage_identity_from_mop_snapshot(mop)
+    if (
+        identity is not None
+        and identity.kind is StorageIdentityKind.STACK
+        and int(identity.offset) == int(stkoff)
+    ):
         return True
     for ref in getattr(mop, "stack_refs", ()) or ():
         ref_i = _int_or_none(ref)

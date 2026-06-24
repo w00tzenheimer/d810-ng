@@ -15,8 +15,19 @@ from __future__ import annotations
 
 from d810.core.typing import Mapping
 
-from d810.ir.flowgraph import FlowGraph, OperandKind
-from d810.ir.semantics import PredicateKind
+from d810.ir.expressions import ValueOpKind
+from d810.ir.flowgraph import FlowGraph
+from d810.ir.insn_projection import InstructionProjection
+from d810.ir.semantics import ControlTransferKind, PredicateKind
+from d810.ir.storage_identity import (
+    StorageIdentity,
+    StorageIdentityKind,
+    storage_identity_from_varnode,
+)
+from d810.ir.varnode import Space
+from d810.analyses.control_flow.instruction_semantics import (
+    split_const_storage_identity_from_branch,
+)
 from d810.analyses.control_flow.state_transition_domain import StateValue
 from d810.analyses.control_flow.dispatcher_discovery_fixpoint import (
     StateArmComparison,
@@ -34,26 +45,30 @@ MIN_STATE_CONSTANT = 0x01000000
 _EQUALITY = (PredicateKind.EQ, PredicateKind.NE)
 
 
-def _split_const_state(left, right, min_const: int):
-    for const_op, state_op in ((left, right), (right, left)):
-        if (
-            const_op is not None
-            and const_op.kind is OperandKind.NUMBER
-            and const_op.value is not None
-            and int(const_op.value) > min_const
-        ):
-            return int(const_op.value), state_op
-    return None, None
+def _stack_identity(offset: int) -> StorageIdentity:
+    return StorageIdentity(StorageIdentityKind.STACK, int(offset))
 
 
-def _state_offset(operand) -> int | None:
-    if operand is None:
+def _constant_move_value(instruction) -> int | None:
+    if instruction.operation is not ValueOpKind.MOVE or len(instruction.inputs) != 1:
         return None
-    if operand.stkoff is not None:
-        return int(operand.stkoff)
-    if operand.stack_refs:
-        return int(operand.stack_refs[0])
-    return None
+    source = instruction.inputs[0]
+    if source.space is not Space.CONST:
+        return None
+    return int(source.offset)
+
+
+def _conditional_branch_instruction(block):
+    instructions = InstructionProjection.from_block(block)
+    for index in range(len(instructions) - 1, -1, -1):
+        instruction = instructions[index]
+        control = instruction.control
+        if (
+            control is not None
+            and control.transfer is ControlTransferKind.CONDITIONAL_BRANCH
+        ):
+            return index, instruction
+    return None, None
 
 
 def extract_state_arm_comparisons(
@@ -69,21 +84,32 @@ def extract_state_arm_comparisons(
     """
     comparisons: dict[int, StateArmComparison] = {}
     for serial, blk in graph.blocks.items():
-        tail = blk.tail
-        if tail is None or not tail.is_conditional_jump:
+        branch_index, branch = _conditional_branch_instruction(blk)
+        control = branch.control if branch is not None else None
+        if control is None:
             continue
-        pred = tail.branch_predicate
+        pred = control.predicate
         if pred not in _EQUALITY:
             continue
-        const, state_op = _split_const_state(tail.l, tail.r, min_state_constant)
+        expected_identity = (
+            _stack_identity(int(state_var_stkoff))
+            if state_var_stkoff is not None
+            else None
+        )
+        const, state_identity = split_const_storage_identity_from_branch(
+            InstructionProjection.from_block(blk),
+            int(branch_index),
+            min_const=min_state_constant,
+            expected_identity=expected_identity,
+        )
         if const is None:
             continue
         if (
             state_var_stkoff is not None
-            and _state_offset(state_op) != int(state_var_stkoff)
+            and state_identity != expected_identity
         ):
             continue
-        taken = tail.d.block_ref if tail.d is not None else None
+        taken = control.target
         fallthrough = next((s for s in blk.succs if s != taken), None)
         if taken is None or fallthrough is None:
             continue
@@ -107,17 +133,16 @@ def extract_state_writes(
     register-sourced / MBA-obfuscated) yields ``⊤`` -- the value is unknown, made explicit rather
     than dropped.  Blocks with no write to the state slot are absent (the domain passes through).
     """
-    target = int(state_var_stkoff)
+    target = _stack_identity(int(state_var_stkoff))
     writes: dict[int, StateValue] = {}
     for serial, blk in graph.blocks.items():
         block_write: StateValue | None = None
-        for insn in blk.insn_snapshots:
-            dest = insn.d
-            if dest is None or dest.stkoff is None or int(dest.stkoff) != target:
+        for instruction in InstructionProjection.from_block(blk):
+            if storage_identity_from_varnode(instruction.result) != target:
                 continue
-            src = insn.l
-            if src is not None and src.kind is OperandKind.NUMBER and src.value is not None:
-                block_write = StateValue.of(int(src.value))
+            const_value = _constant_move_value(instruction)
+            if const_value is not None:
+                block_write = StateValue.of(const_value)
             else:
                 block_write = StateValue.top()
         if block_write is not None:
