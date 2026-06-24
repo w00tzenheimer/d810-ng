@@ -21,8 +21,18 @@ they need.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
+
 from d810.ir.expressions import Add, And, Const, ExprRef, Move, Sub, ValueOpKind
-from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
+from d810.ir.flowgraph import (
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
 from d810.ir.instructions import (
     Instruction,
     InstructionControl,
@@ -39,10 +49,13 @@ from d810.ir.value_refs import DefinitionRef
 from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
 
 __all__ = [
+    "InstructionProjection",
+    "iter_operand_exprs",
     "project_assignment",
     "project_conditional_branch",
     "project_instruction",
     "project_instruction_sequence",
+    "project_operand_expr",
 ]
 
 
@@ -50,10 +63,63 @@ def _instruction_attrs(insn: InsnSnapshot) -> dict[str, object]:
     """Provenance attrs for the canonical instruction projection."""
     attrs = dict(insn.opcode_attrs)
     attrs["ea"] = int(insn.ea)
+    if insn.display_text:
+        attrs["display_text"] = str(insn.display_text)
     raw_opcode = insn.raw_opcode if insn.raw_opcode is not None else insn.opcode
     if raw_opcode >= 0:
         attrs.setdefault("raw_opcode_int", int(raw_opcode))
+    address_refs = _address_stack_refs_from_operands(insn)
+    if address_refs:
+        attrs["address_stack_refs"] = address_refs
+    address_consts = _address_const_values_from_operands(insn)
+    if address_consts:
+        attrs["address_const_values"] = address_consts
     return attrs
+
+
+def _address_stack_refs_from_mop(
+    mop: MopSnapshot | None,
+) -> tuple[int, ...]:
+    """Return stack identities used inside address operands."""
+    if mop is None:
+        return ()
+    refs: list[int] = []
+    if mop.kind is OperandKind.ADDRESS:
+        refs.extend(int(offset) for offset in mop.stack_refs)
+    for child in (mop.sub_l, mop.sub_r, *mop.args):
+        refs.extend(_address_stack_refs_from_mop(child))
+    return tuple(dict.fromkeys(refs))
+
+
+def _address_stack_refs_from_operands(insn: InsnSnapshot) -> tuple[int, ...]:
+    refs: list[int] = []
+    for mop in (insn.l, insn.r, insn.d):
+        refs.extend(_address_stack_refs_from_mop(mop))
+    return tuple(dict.fromkeys(refs))
+
+
+def _address_const_values_from_mop(
+    mop: MopSnapshot | None,
+    *,
+    in_address: bool = False,
+) -> tuple[int, ...]:
+    """Return constants used inside address operands."""
+    if mop is None:
+        return ()
+    values: list[int] = []
+    if in_address and mop.kind is OperandKind.NUMBER and mop.value is not None:
+        values.append(int(mop.value))
+    child_in_address = in_address or mop.kind is OperandKind.ADDRESS
+    for child in (mop.sub_l, mop.sub_r, *mop.args):
+        values.extend(_address_const_values_from_mop(child, in_address=child_in_address))
+    return tuple(dict.fromkeys(values))
+
+
+def _address_const_values_from_operands(insn: InsnSnapshot) -> tuple[int, ...]:
+    values: list[int] = []
+    for mop in (insn.l, insn.r, insn.d):
+        values.extend(_address_const_values_from_mop(mop))
+    return tuple(dict.fromkeys(values))
 
 
 def _operation_of(insn: InsnSnapshot) -> OperationKind:
@@ -108,13 +174,22 @@ class _VarnodeProjector:
     def input_nodes(self, mop: MopSnapshot | None) -> tuple[Varnode, ...]:
         if mop is None:
             return ()
+        if mop.kind is OperandKind.ARG_LIST:
+            return tuple(
+                node
+                for arg in mop.args
+                for node in self.input_nodes(arg)
+            )
         if mop.kind is OperandKind.SUBINSN:
             nodes: list[Varnode] = []
             temp = self.one(mop)
             if temp is not None:
                 nodes.append(temp)
-            nodes.extend(self.input_nodes(mop.sub_l))
-            nodes.extend(self.input_nodes(mop.sub_r))
+            child_nodes = (*self.input_nodes(mop.sub_l), *self.input_nodes(mop.sub_r))
+            if child_nodes:
+                nodes.extend(child_nodes)
+            else:
+                nodes.extend(_stack_ref_nodes(mop))
             return tuple(nodes)
         vn = self.one(mop)
         return (vn,) if vn is not None else ()
@@ -126,6 +201,12 @@ _SUBINSN_VALUE_OPS = {
     InsnKind.SUB: ValueOpKind.SUB,
     InsnKind.AND: ValueOpKind.AND,
 }
+
+
+def _stack_ref_nodes(mop: MopSnapshot) -> tuple[Varnode, ...]:
+    """Expose lifted stack-ref evidence from opaque nested operands."""
+    size = int(mop.size or 0)
+    return tuple(Varnode(Space.STACK, int(offset), size) for offset in mop.stack_refs)
 
 
 def _subinsn_value_op(mop: MopSnapshot) -> ValueOpKind:
@@ -155,6 +236,12 @@ class _SequenceProjector:
         return vn
 
     def input_nodes(self, mop: MopSnapshot | None) -> tuple[Varnode, ...]:
+        if mop is not None and mop.kind is OperandKind.ARG_LIST:
+            return tuple(
+                node
+                for arg in mop.args
+                for node in self.input_nodes(arg)
+            )
         vn = self.one(mop)
         return (vn,) if vn is not None else ()
 
@@ -179,6 +266,8 @@ class _SequenceProjector:
             inputs = tuple(vn for vn in (left,) if vn is not None)
         else:
             inputs = tuple(vn for vn in (left, right) if vn is not None)
+        if not inputs:
+            inputs = _stack_ref_nodes(mop)
         attrs = _instruction_attrs(self._parent)
         attrs["nested_sub_kind"] = mop.sub_kind.value if mop.sub_kind is not None else None
         attrs["nested_sub_value_op_kind"] = (
@@ -219,7 +308,10 @@ def _source_operands_for_instruction(insn: InsnSnapshot) -> tuple[MopSnapshot | 
     }:
         return (insn.l, insn.r)
     if insn.call_kind is not None:
-        return (insn.l, insn.r)
+        call_operands = [insn.l, insn.r]
+        if insn.d is not None and insn.d.kind is OperandKind.ARG_LIST:
+            call_operands.append(insn.d)
+        return tuple(call_operands)
     if insn.value_op_kind is ValueOpKind.STORE:
         return (insn.l, insn.r, insn.d)
     if insn.value_op_kind is not None or insn.predicate_kind is not None:
@@ -237,6 +329,8 @@ def _instruction_result(insn: InsnSnapshot, projector: _VarnodeProjector) -> Var
         or insn.predicate_kind is not None
         or insn.call_kind is not None
     ):
+        if insn.call_kind is not None and insn.d is not None and insn.d.kind is OperandKind.ARG_LIST:
+            return None
         return projector.one(insn.d)
     return None
 
@@ -269,6 +363,15 @@ def _first_varnode(
     return None
 
 
+def _call_args_from(insn: InsnSnapshot, projector: _VarnodeProjector) -> tuple[Varnode, ...]:
+    args: list[Varnode] = []
+    for mop in (insn.r, insn.d):
+        if mop is None or mop.kind is not OperandKind.ARG_LIST:
+            continue
+        args.extend(projector.input_nodes(mop))
+    return tuple(args)
+
+
 def _instruction_control(
     insn: InsnSnapshot,
     projector: _VarnodeProjector,
@@ -298,6 +401,7 @@ def _instruction_control(
         return InstructionControl(
             call_kind=insn.call_kind,
             call_target=_first_varnode(projector, insn.l, insn.r),
+            call_args=_call_args_from(insn, projector),
         )
     return None
 
@@ -312,6 +416,7 @@ def _instruction_effects(
                 kind=InstructionEffectKind.CALL,
                 target=_first_varnode(projector, insn.l, insn.r),
                 value=projector.one(insn.d),
+                args=_call_args_from(insn, projector),
             ),
         )
     if insn.value_op_kind is ValueOpKind.STORE:
@@ -420,6 +525,39 @@ def project_instruction_sequence(insn: InsnSnapshot) -> tuple[Instruction, ...]:
     return (*projector.instructions, parent)
 
 
+class InstructionProjection:
+    """Explicit projection of a block's Hex-Rays-shaped instruction snapshots
+    onto the portable canonical ``Instruction`` stream.
+
+    ``BlockSnapshot.insn_snapshots`` is lift provenance.  The portable
+    ``Instruction`` stream is a *projection* of that provenance, not stored
+    block state, so it is produced here -- through an explicitly named entry
+    point -- rather than exposed as a ``BlockSnapshot`` attribute.  Homing it in
+    the projection layer also keeps ``d810.ir.flowgraph`` a leaf the projection
+    consumes (the projection imports flowgraph, never the reverse).
+    """
+
+    __slots__ = ()
+
+    @classmethod
+    def from_block(cls, block: BlockSnapshot) -> tuple[Instruction, ...]:
+        """Canonical portable instruction stream for ``block``."""
+        return tuple(
+            instruction
+            for insn in block.insn_snapshots
+            for instruction in project_instruction_sequence(insn)
+        )
+
+    @classmethod
+    def from_flowgraph(
+        cls, graph: FlowGraph
+    ) -> Mapping[int, tuple[Instruction, ...]]:
+        """Canonical portable instruction stream keyed by block serial."""
+        return MappingProxyType(
+            {serial: cls.from_block(block) for serial, block in graph.blocks.items()}
+        )
+
+
 def _location_of(mop: MopSnapshot | None) -> StorageLocation | None:
     """Portable storage location for a stack/register operand, else ``None``.
 
@@ -470,6 +608,29 @@ def _value_of(mop: MopSnapshot | None) -> ExprRef | None:
         return node(left=left, right=right)
     location = _location_of(mop)
     return Move(source=DefinitionRef(location=location)) if location is not None else None
+
+
+def project_operand_expr(mop: MopSnapshot | None) -> ExprRef | None:
+    """Project a lifted operand snapshot to a portable expression, if supported."""
+    return _value_of(mop)
+
+
+def iter_operand_exprs(mop: MopSnapshot | None) -> tuple[ExprRef, ...]:
+    """Return projected expression fragments contained in an operand tree.
+
+    Unsupported wrapper nodes stay provenance-only, but any supported child
+    expression below them is still exposed to portable analyses.
+    """
+    if mop is None:
+        return ()
+    exprs: list[ExprRef] = []
+    expr = project_operand_expr(mop)
+    if expr is not None:
+        exprs.append(expr)
+    if mop.kind is OperandKind.SUBINSN:
+        exprs.extend(iter_operand_exprs(mop.sub_l))
+        exprs.extend(iter_operand_exprs(mop.sub_r))
+    return tuple(exprs)
 
 
 def project_assignment(insn: InsnSnapshot) -> Assignment | None:

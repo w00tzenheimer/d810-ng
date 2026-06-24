@@ -1,9 +1,9 @@
-"""Portable identity helpers for ``MopSnapshot``.
+"""Compatibility helpers for ``MopSnapshot`` identity.
 
-These helpers are the canonical operand-identity functions for
-dispatcher-state analyses -- they replaced the live-IDA operand-keying
-methods from the retired dispatcher-analysis owner. Portable analyses no
-longer need a live ``ida_hexrays.mop_t`` to key operands.
+The named portable identity boundary is
+``d810.ir.storage_identity.StorageIdentity``.  This module keeps the older
+``mop_snapshot_key`` / ``mop_snapshot_offset`` API byte-compatible for existing
+diagnostics and transitional callers.
 
 This is the *Identifier* layer (LiSA-style abstract location id / LLVM
 Value-identity / VEX guest-offset): a size-AGNOSTIC, kind-prefixed key over
@@ -48,9 +48,21 @@ module is what portable consumers will import):
 from __future__ import annotations
 
 from d810.ir.flowgraph import InsnSnapshot, MopSnapshot
-from d810.ir.varnode import varnode_from_mop_snapshot, varnode_key, varnode_offset
+from d810.ir.storage_identity import (
+    StorageIdentity,
+    operand_storage_identities,
+    storage_identity_from_mop_snapshot,
+    storage_identity_key,
+    storage_identity_offset,
+)
 
-__all__ = ["cfg_operand_slots", "mop_snapshot_key", "mop_snapshot_offset"]
+__all__ = [
+    "cfg_operand_slots",
+    "mop_snapshot_key",
+    "mop_snapshot_offset",
+    "mop_storage_identity",
+    "operand_storage_identities",
+]
 
 
 def cfg_operand_slots(
@@ -87,7 +99,7 @@ def mop_snapshot_key(mop: MopSnapshot | None) -> str | None:
     Returns ``None`` if the operand is ``None``, has unknown kind, or
     is a kind that has no stable identity (number, block ref, etc.).
     """
-    return varnode_key(varnode_from_mop_snapshot(mop))
+    return storage_identity_key(mop_storage_identity(mop))
 
 
 def mop_snapshot_offset(mop: MopSnapshot | None) -> int:
@@ -95,4 +107,9 @@ def mop_snapshot_offset(mop: MopSnapshot | None) -> int:
     offset, global address, lvar offset) with a ``0`` fallback for
     kinds that don't carry a portable identifier.
     """
-    return varnode_offset(varnode_from_mop_snapshot(mop))
+    return storage_identity_offset(mop_storage_identity(mop))
+
+
+def mop_storage_identity(mop: MopSnapshot | None) -> StorageIdentity | None:
+    """Compatibility adapter from ``MopSnapshot`` to ``StorageIdentity``."""
+    return storage_identity_from_mop_snapshot(mop)
