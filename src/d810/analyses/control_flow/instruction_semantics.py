@@ -1,10 +1,18 @@
 """Backend-neutral instruction semantic helpers for recon collectors."""
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from d810.ir.flowgraph import PredicateKind, InsnKind
+from d810.ir.instructions import Instruction
+from d810.ir.semantics import ControlTransferKind
+from d810.ir.storage_identity import StorageIdentity, storage_identity_from_varnode
+from d810.ir.varnode import Space, Varnode
 
 
 def kind_name(insn: object | None) -> str:
+    if isinstance(insn, Instruction):
+        return getattr(insn.operation, "value", str(insn.operation))
     kind = getattr(insn, "kind", None)
     if isinstance(kind, InsnKind):
         return kind.value
@@ -22,6 +30,10 @@ def is_kind(insn: object | None, kind: InsnKind, *names: str) -> bool:
 
 
 def branch_predicate(insn: object | None) -> PredicateKind | None:
+    if isinstance(insn, Instruction):
+        control = insn.control
+        raw = control.predicate if control is not None else None
+        return raw if isinstance(raw, PredicateKind) else None
     raw = getattr(insn, "branch_predicate", None)
     if isinstance(raw, PredicateKind):
         return raw
@@ -34,6 +46,12 @@ def branch_predicate(insn: object | None) -> PredicateKind | None:
 
 
 def is_branch(insn: object | None) -> bool:
+    if isinstance(insn, Instruction):
+        control = insn.control
+        return (
+            control is not None
+            and control.transfer is ControlTransferKind.CONDITIONAL_BRANCH
+        )
     return (
         branch_predicate(insn) is not None
         or bool(getattr(insn, "is_conditional_jump", False))
@@ -59,22 +77,16 @@ def is_call(insn: object | None) -> bool:
 
 
 def comparison_width(insn: object | None) -> int | None:
+    if isinstance(insn, Instruction):
+        widths = [int(vn.size) for vn in insn.inputs if int(vn.size) > 0]
+        return max(widths) if widths else None
     try:
         width = int(getattr(insn, "compare_width", 0) or 0)
     except (TypeError, ValueError):
         width = 0
     if width > 0:
         return width
-    widths: list[int] = []
-    for operand_name in ("l", "r"):
-        operand = getattr(insn, operand_name, None)
-        try:
-            operand_width = int(getattr(operand, "size", 0) or 0)
-        except (TypeError, ValueError):
-            operand_width = 0
-        if operand_width > 0:
-            widths.append(operand_width)
-    return max(widths) if widths else None
+    return None
 
 
 def _mask_for_width(width: int | None) -> int | None:
@@ -143,9 +155,101 @@ def evaluate_branch_predicate(
     return None
 
 
+def _producer_storage_identities(
+    instructions: Sequence[Instruction],
+    value: Varnode,
+    *,
+    before_index: int | None,
+    seen: frozenset[Varnode],
+) -> frozenset[StorageIdentity]:
+    identity = storage_identity_from_varnode(value)
+    if identity is not None:
+        return frozenset({identity})
+    if value.space is not Space.TEMP or value in seen:
+        return frozenset()
+
+    search_limit = len(instructions) if before_index is None else int(before_index)
+    next_seen = frozenset((*seen, value))
+    for index in range(search_limit - 1, -1, -1):
+        producer = instructions[index]
+        if producer.result != value:
+            continue
+        identities: set[StorageIdentity] = set()
+        for source in producer.inputs:
+            identities.update(
+                _producer_storage_identities(
+                    instructions,
+                    source,
+                    before_index=index,
+                    seen=next_seen,
+                )
+            )
+        return frozenset(identities)
+    return frozenset()
+
+
+def storage_identities_for_instruction_input(
+    instructions: Sequence[Instruction],
+    value: Varnode,
+    *,
+    before_index: int | None = None,
+) -> frozenset[StorageIdentity]:
+    """Resolve canonical input storage identities through local temp producers."""
+    return _producer_storage_identities(
+        instructions,
+        value,
+        before_index=before_index,
+        seen=frozenset(),
+    )
+
+
+def split_const_storage_identity_from_branch(
+    instructions: Sequence[Instruction],
+    branch_index: int,
+    *,
+    min_const: int,
+    expected_identity: StorageIdentity | None = None,
+) -> tuple[int | None, StorageIdentity | None]:
+    """Return the large compared constant and storage identity for a branch.
+
+    The branch itself supplies the compared constant.  The storage identity can
+    be a direct branch input or a temp input defined by an earlier canonical
+    instruction in the same block.
+    """
+    if branch_index < 0 or branch_index >= len(instructions):
+        return None, None
+    branch = instructions[int(branch_index)]
+    constants = {
+        int(source.offset)
+        for source in branch.inputs
+        if source.space is Space.CONST and int(source.offset) > int(min_const)
+    }
+    if len(constants) != 1:
+        return None, None
+    identities: set[StorageIdentity] = set()
+    for source in branch.inputs:
+        if source.space is Space.CONST:
+            continue
+        identities.update(
+            storage_identities_for_instruction_input(
+                instructions,
+                source,
+                before_index=int(branch_index),
+            )
+        )
+    const_value = next(iter(constants))
+    if expected_identity is not None:
+        return const_value, expected_identity if expected_identity in identities else None
+    if len(identities) == 1:
+        return const_value, next(iter(identities))
+    return const_value, None
+
+
 __all__ = [
     "branch_predicate",
     "comparison_width",
+    "split_const_storage_identity_from_branch",
+    "storage_identities_for_instruction_input",
     "evaluate_branch_predicate",
     "is_branch",
     "is_call",

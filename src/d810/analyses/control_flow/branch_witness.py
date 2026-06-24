@@ -14,6 +14,10 @@ from enum import Enum
 from d810.core import logging
 from d810.core.typing import Any, Protocol
 from d810.ir.flowgraph import FlowGraph
+from d810.ir.storage_identity import (
+    StorageIdentityKind,
+    storage_identity_from_mop_snapshot,
+)
 
 logger = logging.getLogger("D810.analyses.control_flow.branch_witness")
 
@@ -145,8 +149,9 @@ def _compare_successors(block: object) -> tuple[int | None, int | None]:
 def _operand_is_state_var(operand: object, state_var_stkoff: int) -> bool:
     if operand is None:
         return False
-    if getattr(operand, "stkoff", None) is not None:
-        return int(operand.stkoff) == int(state_var_stkoff)
+    identity = storage_identity_from_mop_snapshot(operand)
+    if identity is not None and identity.kind is StorageIdentityKind.STACK:
+        return int(identity.offset) == int(state_var_stkoff)
     refs = getattr(operand, "stack_refs", ()) or ()
     return any(int(r) == int(state_var_stkoff) for r in refs)
 

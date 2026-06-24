@@ -45,6 +45,7 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
+from d810.ir.varnode import Space, varnode_from_mop_snapshot
 from d810.ir.expressions import Move
 from d810.ir.insn_projection import project_assignment
 from d810.ir.locations import RegisterLocation, StackSlot, WeakStackSlot
@@ -314,19 +315,17 @@ def _writer_const_value(writer: InsnSnapshot) -> int | None:
         return None
     if not _is_number_mop(src):
         return None
+    try:
+        varnode = varnode_from_mop_snapshot(src)
+    except (AttributeError, TypeError, ValueError):
+        varnode = None
+    if varnode is not None and varnode.space is Space.CONST:
+        return int(varnode.offset)
     if src.value is not None:
         try:
             return int(src.value)
         except (TypeError, ValueError):
             return None
-    nnn = getattr(src, "nnn", None)
-    if nnn is not None:
-        value = getattr(nnn, "value", None)
-        if value is not None:
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                return None
     return None
 
 

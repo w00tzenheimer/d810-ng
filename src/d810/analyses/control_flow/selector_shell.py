@@ -10,7 +10,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, OperandKind
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind
+from d810.ir.storage_identity import StorageIdentityKind, storage_identity_from_varnode
+from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
 from d810.analyses.control_flow.instruction_semantics import (
     branch_predicate,
     comparison_width,
@@ -25,6 +27,11 @@ SELECTOR_SHELL_FACTS_METADATA_KEY = "selector_shell_facts"
 
 VarId = tuple[str, int]
 Env = dict[VarId, int]
+_VAR_ID_KIND_LABELS = {
+    StorageIdentityKind.REGISTER: "reg",
+    StorageIdentityKind.STACK: "stack",
+    StorageIdentityKind.LVAR: "lvar",
+}
 
 
 @dataclass(frozen=True)
@@ -59,17 +66,19 @@ def _operand(insn: object | None, slot: str) -> object | None:
     return getattr(insn, slot, None)
 
 
-def _const_value(mop: object | None) -> int | None:
-    if mop is None:
+def _varnode(mop: object | None) -> Varnode | None:
+    try:
+        return varnode_from_mop_snapshot(mop)
+    except (AttributeError, TypeError, ValueError):
         return None
-    value = getattr(mop, "value", None)
-    if value is None:
-        nnn = getattr(mop, "nnn", None)
-        value = getattr(nnn, "value", None)
-    if value is None:
+
+
+def _const_value(mop: object | None) -> int | None:
+    vn = _varnode(mop)
+    if vn is None or vn.space is not Space.CONST:
         return None
     try:
-        return int(value) & 0xFFFFFFFFFFFFFFFF
+        return int(vn.offset) & 0xFFFFFFFFFFFFFFFF
     except (TypeError, ValueError):
         return None
 
@@ -89,28 +98,13 @@ def _block_ref(mop: object | None) -> int | None:
 
 
 def _var_id(mop: object | None) -> VarId | None:
-    if mop is None:
+    identity = storage_identity_from_varnode(_varnode(mop))
+    if identity is None:
         return None
-    kind = getattr(mop, "kind", None)
-    reg = getattr(mop, "reg", None)
-    if reg is not None or kind is OperandKind.REGISTER:
-        try:
-            return ("reg", int(reg))
-        except (TypeError, ValueError):
-            return None
-    stkoff = getattr(mop, "stkoff", None)
-    if stkoff is not None or kind is OperandKind.STACK:
-        try:
-            return ("stack", int(stkoff))
-        except (TypeError, ValueError):
-            return None
-    lvar_idx = getattr(mop, "lvar_idx", None)
-    if lvar_idx is not None:
-        try:
-            return ("lvar", int(lvar_idx))
-        except (TypeError, ValueError):
-            return None
-    return None
+    label = _VAR_ID_KIND_LABELS.get(identity.kind)
+    if label is None:
+        return None
+    return (label, int(identity.offset))
 
 
 def _is_simple_assign(insn: object | None) -> bool:

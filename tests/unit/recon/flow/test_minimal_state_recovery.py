@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 
+import d810.analyses.control_flow.minimal_state_recovery as minimal_state_recovery
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.analyses.control_flow.minimal_state_recovery import (
     StateWriteTransition,
@@ -38,6 +39,7 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
+from d810.ir.expressions import ValueOpKind
 from d810.ir.semantics import PredicateKind
 
 _OP_MOV = 4
@@ -48,6 +50,7 @@ _T_NUM = 2
 _T_STK = 4
 _T_REG = 1
 _T_ADDR = 10
+_T_GLOBAL = 7
 _OPCODE_NAMES = {_OP_MOV: "m_mov", _OP_XOR: "m_xor", _OP_STORE: "m_stx"}
 _OPCODE_VALUES = {"m_mov": _OP_MOV, "m_xor": _OP_XOR, "m_stx": _OP_STORE}
 _MOP_NAMES = {_T_NUM: "mop_n", _T_STK: "mop_S", _T_REG: "mop_r"}
@@ -116,6 +119,15 @@ def _stk(off: int) -> MopSnapshot:
     )
 
 
+def _global(gaddr: int) -> MopSnapshot:
+    return MopSnapshot(
+        t=_T_GLOBAL,
+        size=8,
+        gaddr=gaddr,
+        kind=OperandKind.GLOBAL,
+    )
+
+
 def _addr(off: int) -> MopSnapshot:
     return MopSnapshot(
         t=_T_ADDR,
@@ -142,7 +154,16 @@ def _store(ea: int, src: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
 
 
 def _xor(ea: int, l: MopSnapshot, r: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
-    return InsnSnapshot(opcode=_OP_XOR, ea=ea, operands=(), l=l, r=r, d=dst, kind=InsnKind.AND)
+    return InsnSnapshot(
+        opcode=_OP_XOR,
+        ea=ea,
+        operands=(),
+        l=l,
+        r=r,
+        d=dst,
+        kind=InsnKind.UNKNOWN,
+        value_op_kind=ValueOpKind.XOR,
+    )
 
 
 def _jz_stack_const(ea: int, stkoff: int, const: int, target: int) -> InsnSnapshot:
@@ -164,11 +185,29 @@ _OP_OR = 22   # m_or  (portable evaluator default)
 
 
 def _and(ea: int, l: MopSnapshot, r: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
-    return InsnSnapshot(opcode=_OP_AND, ea=ea, operands=(), l=l, r=r, d=dst, kind=InsnKind.AND)
+    return InsnSnapshot(
+        opcode=_OP_AND,
+        ea=ea,
+        operands=(),
+        l=l,
+        r=r,
+        d=dst,
+        kind=InsnKind.AND,
+        value_op_kind=ValueOpKind.AND,
+    )
 
 
 def _or(ea: int, l: MopSnapshot, r: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
-    return InsnSnapshot(opcode=_OP_OR, ea=ea, operands=(), l=l, r=r, d=dst, kind=InsnKind.AND)
+    return InsnSnapshot(
+        opcode=_OP_OR,
+        ea=ea,
+        operands=(),
+        l=l,
+        r=r,
+        d=dst,
+        kind=InsnKind.UNKNOWN,
+        value_op_kind=ValueOpKind.OR,
+    )
 
 
 def _blk(serial, succs, preds, insns, *, ea=None, kind=BlockKind.UNKNOWN) -> BlockSnapshot:
@@ -184,6 +223,21 @@ def _stop(serial, preds) -> BlockSnapshot:
         serial=serial, block_type=0, succs=(), preds=tuple(preds), flags=0,
         start_ea=0x9000 + serial, insn_snapshots=(), kind=BlockKind.STOP,
     )
+
+
+class _PoisonProvenanceOperand:
+    def __getattr__(self, name: str):
+        raise AssertionError(f"provenance operand should not be read: {name}")
+
+
+class _RawLiveGlobalFieldOperand:
+    kind = OperandKind.GLOBAL
+    size = 8
+    gaddr = None
+
+    @property
+    def g(self):
+        raise AssertionError("raw live global field should not be read")
 
 
 def _dispatcher(point_targets: dict[int, int], *, exit_block: int, domain_hi: int = 0x100000000) -> IntervalDispatcher:
@@ -204,6 +258,73 @@ def _dispatcher(point_targets: dict[int, int], *, exit_block: int, domain_hi: in
 
 
 # --- tests ----------------------------------------------------------------
+
+
+def test_global_state_var_detector_ignores_rich_operand_slot_provenance() -> None:
+    insn = InsnSnapshot(
+        opcode=_OP_JZ,
+        ea=0x1010,
+        operands=(_PoisonProvenanceOperand(),),
+        operand_slots=(("l", _PoisonProvenanceOperand()),),
+        l=_global(0x180021320),
+        r=_num(0),
+        d=MopSnapshot(t=-1, size=0, block_ref=10, kind=OperandKind.BLOCK),
+        kind=InsnKind.EQUALITY_JUMP,
+        branch_predicate=PredicateKind.EQ,
+        is_conditional_jump=True,
+    )
+    fg = FlowGraph(
+        blocks={2: _blk(2, (10, 99), (), (insn,))},
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+
+    assert minimal_state_recovery._detect_global_state_var(fg, 2) == 0x180021320
+
+
+def test_global_state_var_detector_ignores_non_branch_globals() -> None:
+    call_like = InsnSnapshot(
+        opcode=_OP_MOV,
+        ea=0x1008,
+        operands=(),
+        l=MopSnapshot(
+            t=-1,
+            size=8,
+            kind=OperandKind.SUBINSN,
+            sub_l=_global(0x180000000),
+        ),
+        d=_reg(8),
+        kind=InsnKind.MOV,
+    )
+    branch = _jz_stack_const(0x1010, _STATE_OFF, 0x22, 10)
+    fg = FlowGraph(
+        blocks={2: _blk(2, (10, 99), (), (call_like, branch))},
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+
+    assert minimal_state_recovery._detect_global_state_var(fg, 2) is None
+
+
+def test_global_state_var_detector_ignores_raw_live_global_field() -> None:
+    insn = InsnSnapshot(
+        opcode=_OP_JZ,
+        ea=0x1010,
+        operands=(),
+        l=_RawLiveGlobalFieldOperand(),
+        r=_num(0),
+        d=MopSnapshot(t=-1, size=0, block_ref=10, kind=OperandKind.BLOCK),
+        kind=InsnKind.EQUALITY_JUMP,
+        branch_predicate=PredicateKind.EQ,
+        is_conditional_jump=True,
+    )
+    fg = FlowGraph(
+        blocks={2: _blk(2, (10, 99), (), (insn,))},
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+
+    assert minimal_state_recovery._detect_global_state_var(fg, 2) is None
 
 
 def test_unconditional_literal_transition(_seam) -> None:

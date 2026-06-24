@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from d810.ir.flowgraph import PredicateKind
+
 
 @dataclass(frozen=True, slots=True)
 class ConditionalJumpOutcome:
@@ -14,34 +16,40 @@ class ConditionalJumpOutcome:
     always_not_taken: bool
 
 
-_JUMP_ALIASES = {
-    "m_jz": "jz",
-    "jz": "jz",
+_SHORT_TO_PREDICATE = {
+    "jz": PredicateKind.EQ,
+    "jnz": PredicateKind.NE,
+    "jcnd": PredicateKind.TRUTHY,
+    "jae": PredicateKind.UGE,
+    "jb": PredicateKind.ULT,
+    "ja": PredicateKind.UGT,
+    "jbe": PredicateKind.ULE,
+    "jg": PredicateKind.SGT,
+    "jge": PredicateKind.SGE,
+    "jl": PredicateKind.SLT,
+    "jle": PredicateKind.SLE,
+}
+
+_PREDICATE_TO_SHORT = {
+    PredicateKind.EQ: "jz",
+    PredicateKind.NE: "jnz",
+    PredicateKind.TRUTHY: "jcnd",
+    PredicateKind.UGE: "jae",
+    PredicateKind.ULT: "jb",
+    PredicateKind.UGT: "ja",
+    PredicateKind.ULE: "jbe",
+    PredicateKind.SGT: "jg",
+    PredicateKind.SGE: "jge",
+    PredicateKind.SLT: "jl",
+    PredicateKind.SLE: "jle",
+}
+
+_NUMERIC_JUMP_ALIASES = {
     "op_44": "jz",
-    "m_jnz": "jnz",
-    "jnz": "jnz",
     "op_45": "jnz",
-    "m_jcnd": "jcnd",
-    "jcnd": "jcnd",
-    "m_jae": "jae",
-    "jae": "jae",
-    "m_jb": "jb",
-    "jb": "jb",
-    "m_ja": "ja",
-    "ja": "ja",
-    "m_jbe": "jbe",
-    "jbe": "jbe",
-    "m_jg": "jg",
-    "jg": "jg",
     "op_49": "jg",
-    "m_jge": "jge",
-    "jge": "jge",
     "op_50": "jge",
-    "m_jl": "jl",
-    "jl": "jl",
     "op_47": "jl",
-    "m_jle": "jle",
-    "jle": "jle",
     "op_48": "jle",
 }
 
@@ -62,12 +70,18 @@ def conditional_operand_size(*mops: object | None) -> int:
 def conditional_jump_opcode_name(
     opcode: object,
     *,
-    opcode_names: Mapping[object, str] | None = None,
+    opcode_names: Mapping[object, object] | None = None,
 ) -> str | None:
-    """Normalize a conditional-jump opcode token to a canonical short name."""
+    """Normalize a portable predicate token to a canonical short branch name.
+
+    Backend adapters may pass numeric opcode aliases through ``opcode_names``.
+    Portable consumers should pass :class:`PredicateKind` directly.
+    """
 
     if opcode_names is not None and opcode in opcode_names:
         opcode = opcode_names[opcode]
+    if isinstance(opcode, PredicateKind):
+        return _PREDICATE_TO_SHORT.get(opcode)
     if isinstance(opcode, str):
         token = opcode.lower()
     else:
@@ -75,7 +89,9 @@ def conditional_jump_opcode_name(
             token = f"op_{int(opcode)}"
         except (TypeError, ValueError):
             return None
-    return _JUMP_ALIASES.get(token)
+    if token in _SHORT_TO_PREDICATE:
+        return token
+    return _NUMERIC_JUMP_ALIASES.get(token)
 
 
 def conditional_jump_taken(
@@ -127,6 +143,63 @@ def conditional_jump_taken(
     return None
 
 
+def predicate_jump_taken(
+    predicate: PredicateKind | str | None,
+    left_value: int,
+    right_value: int = 0,
+    *,
+    operand_size: int = 4,
+) -> bool | None:
+    """Evaluate whether a portable predicate branch is taken.
+
+    This is the canonical analysis surface. Backend adapters may still
+    translate raw jump opcodes into :class:`PredicateKind`, but portable passes
+    should not traffic in vendor opcode names.
+    """
+    if predicate is None:
+        return None
+    if not isinstance(predicate, PredicateKind):
+        try:
+            predicate = PredicateKind(str(predicate))
+        except ValueError:
+            return None
+
+    left = int(left_value)
+    right = int(right_value)
+
+    if predicate is PredicateKind.EQ:
+        return left == right
+    if predicate is PredicateKind.NE:
+        return left != right
+    if predicate is PredicateKind.TRUTHY:
+        return left != 0
+
+    mask = _mask_for_size(operand_size)
+    left_unsigned = left & mask
+    right_unsigned = right & mask
+
+    if predicate is PredicateKind.UGE:
+        return left_unsigned >= right_unsigned
+    if predicate is PredicateKind.ULT:
+        return left_unsigned < right_unsigned
+    if predicate is PredicateKind.UGT:
+        return left_unsigned > right_unsigned
+    if predicate is PredicateKind.ULE:
+        return left_unsigned <= right_unsigned
+
+    left_signed = _signed(left, operand_size)
+    right_signed = _signed(right, operand_size)
+    if predicate is PredicateKind.SGT:
+        return left_signed > right_signed
+    if predicate is PredicateKind.SGE:
+        return left_signed >= right_signed
+    if predicate is PredicateKind.SLT:
+        return left_signed < right_signed
+    if predicate is PredicateKind.SLE:
+        return left_signed <= right_signed
+    return None
+
+
 def conditional_jump_outcome_for_values(
     opcode: object,
     observed_values: Sequence[int],
@@ -159,6 +232,35 @@ def conditional_jump_outcome_for_values(
     )
 
 
+def conditional_jump_outcome_for_predicate(
+    predicate: PredicateKind | str | None,
+    observed_values: Sequence[int],
+    compared_value: int,
+    *,
+    operand_size: int = 4,
+) -> ConditionalJumpOutcome | None:
+    """Classify whether every observed value chooses the same predicate arm."""
+    if not observed_values:
+        return None
+
+    decisions: list[bool] = []
+    for value in observed_values:
+        taken = predicate_jump_taken(
+            predicate,
+            int(value),
+            int(compared_value),
+            operand_size=operand_size,
+        )
+        if taken is None:
+            return None
+        decisions.append(taken)
+
+    return ConditionalJumpOutcome(
+        always_taken=all(decisions),
+        always_not_taken=not any(decisions),
+    )
+
+
 def _signed(value: int, size: int) -> int:
     bits = max(1, int(size)) * 8
     mask = (1 << bits) - 1
@@ -175,7 +277,9 @@ def _mask_for_size(size: int) -> int:
 __all__ = [
     "ConditionalJumpOutcome",
     "conditional_jump_opcode_name",
+    "conditional_jump_outcome_for_predicate",
     "conditional_jump_outcome_for_values",
     "conditional_jump_taken",
     "conditional_operand_size",
+    "predicate_jump_taken",
 ]

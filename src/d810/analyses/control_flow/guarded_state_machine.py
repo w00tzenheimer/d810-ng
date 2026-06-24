@@ -4,10 +4,17 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, OperandKind
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind
+from d810.ir.storage_identity import StorageIdentityKind, storage_identity_from_varnode
+from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
 
 
 GUARDED_STATE_MACHINE_FIXES_METADATA_KEY = "guarded_state_machine_fixes"
+_VAR_KEY_KIND_LABELS = {
+    StorageIdentityKind.REGISTER: "reg",
+    StorageIdentityKind.STACK: "stack",
+    StorageIdentityKind.LVAR: "lvar",
+}
 
 
 @dataclass(frozen=True)
@@ -33,45 +40,32 @@ def _operand(insn: object | None, slot: str) -> object | None:
     return getattr(insn, slot, None)
 
 
-def _const_value(mop: object | None) -> int | None:
-    if mop is None:
+def _varnode(mop: object | None) -> Varnode | None:
+    try:
+        return varnode_from_mop_snapshot(mop)
+    except (AttributeError, TypeError, ValueError):
         return None
-    value = getattr(mop, "value", None)
-    if value is None:
-        nnn = getattr(mop, "nnn", None)
-        value = getattr(nnn, "value", None)
-    if value is None:
+
+
+def _const_value(mop: object | None) -> int | None:
+    vn = _varnode(mop)
+    if vn is None or vn.space is not Space.CONST:
         return None
     try:
-        return int(value) & 0xFFFFFFFF
+        return int(vn.offset) & 0xFFFFFFFF
     except (TypeError, ValueError):
         return None
 
 
 def _var_key(mop: object | None) -> tuple[str, int, int] | None:
-    if mop is None:
+    vn = _varnode(mop)
+    identity = storage_identity_from_varnode(vn)
+    if identity is None or vn is None:
         return None
-    size = int(getattr(mop, "size", 0) or 0)
-    kind = getattr(mop, "kind", None)
-    reg = getattr(mop, "reg", None)
-    if reg is not None or kind is OperandKind.REGISTER:
-        try:
-            return ("reg", int(reg), size)
-        except (TypeError, ValueError):
-            return None
-    stkoff = getattr(mop, "stkoff", None)
-    if stkoff is not None or kind is OperandKind.STACK:
-        try:
-            return ("stack", int(stkoff), size)
-        except (TypeError, ValueError):
-            return None
-    lvar_idx = getattr(mop, "lvar_idx", None)
-    if lvar_idx is not None:
-        try:
-            return ("lvar", int(lvar_idx), size)
-        except (TypeError, ValueError):
-            return None
-    return None
+    label = _VAR_KEY_KIND_LABELS.get(identity.kind)
+    if label is None:
+        return None
+    return (label, int(identity.offset), int(vn.size))
 
 
 def _is_mov(insn: object | None) -> bool:

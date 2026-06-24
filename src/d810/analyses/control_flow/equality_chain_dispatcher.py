@@ -1,23 +1,22 @@
 """Recover exact dispatcher rows from equality/inequality chains."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from d810.core import logging
 from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
     StateDispatcherRow,
 )
+from d810.ir.storage_identity import (
+    StorageIdentity,
+    StorageIdentityKind,
+    storage_identity_from_varnode,
+)
+from d810.ir.flowgraph import InsnKind
+from d810.ir.semantics import PredicateKind
+from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
 
 logger = logging.getLogger("D810.recon.flow.equality_chain_dispatcher", logging.INFO)
-
-
-@dataclass(frozen=True, slots=True)
-class _StateVarIdentity:
-    kind: str
-    identifier: int
-    size: int
 
 
 def extract_state_dispatcher_map_from_mba(
@@ -42,7 +41,7 @@ def extract_state_dispatcher_map_from_mba(
             continue
         two_way_count += 1
         tail = getattr(blk, "tail", None)
-        opcode = getattr(tail, "opcode", getattr(blk, "tail_opcode", None))
+        predicate = _branch_predicate(blk)
         left = getattr(tail, "l", None)
         right = getattr(tail, "r", None)
         extracted = _extract_compare(blk)
@@ -51,9 +50,9 @@ def extract_state_dispatcher_map_from_mba(
             sample_two_way.append(
                 (
                     int(getattr(blk, "serial", serial)),
-                    opcode,
-                    getattr(left, "t", None),
-                    getattr(right, "t", None),
+                    predicate,
+                    _operand_space(left),
+                    _operand_space(right),
                     _const_value(right),
                     jump_and_fallthrough,
                 )
@@ -91,7 +90,7 @@ def extract_state_dispatcher_map_from_mba(
 
     rows: list[StateDispatcherRow] = []
     seen: dict[int, int] = {}
-    state_var: _StateVarIdentity | None = None
+    state_var: StorageIdentity | None = None
     state_aliases = _state_var_aliases(mba, ordered_blocks)
     dispatcher_blocks: set[int] = set()
     ordered_dispatcher_blocks = set(int(block) for block in ordered_blocks)
@@ -109,7 +108,7 @@ def extract_state_dispatcher_map_from_mba(
         extracted = _extract_compare(blk)
         if extracted is None:
             continue
-        var, const, opcode = extracted
+        var, const, predicate = extracted
         var = _canonical_state_var(var, state_aliases)
         if state_var is None:
             state_var = var
@@ -129,10 +128,10 @@ def extract_state_dispatcher_map_from_mba(
         jump_target, fallthrough = _jump_and_fallthrough(blk)
         if jump_target is None or fallthrough is None:
             continue
-        if _is_jz(opcode):
+        if _is_eq(predicate):
             target = jump_target
             branch_kind = "jz_taken"
-        elif _is_jnz(opcode):
+        elif _is_ne(predicate):
             target = fallthrough
             branch_kind = "jnz_fallthrough"
         else:
@@ -185,10 +184,14 @@ def extract_state_dispatcher_map_from_mba(
         dispatcher_entry_block=int(entry),
         dispatcher_blocks=frozenset(dispatcher_blocks),
         state_var_stkoff=(
-            state_var.identifier if state_var.kind == "stack" else None
+            state_var.offset
+            if state_var.kind is StorageIdentityKind.STACK
+            else None
         ),
         state_var_lvar_idx=(
-            state_var.identifier if state_var.kind == "lvar" else None
+            state_var.offset
+            if state_var.kind is StorageIdentityKind.LVAR
+            else None
         ),
         router_kind=RouterKind.CONDITION_CHAIN,
     )
@@ -275,10 +278,10 @@ def _walk_chain(
         jump_target, fallthrough = _jump_and_fallthrough(blk)
         if extracted is None or jump_target is None or fallthrough is None:
             break
-        _var, _const, opcode = extracted
-        if _is_jz(opcode):
+        _var, _const, predicate = extracted
+        if _is_eq(predicate):
             next_serial = fallthrough
-        elif _is_jnz(opcode):
+        elif _is_ne(predicate):
             next_serial = jump_target
         else:
             break
@@ -291,14 +294,14 @@ def _walk_chain(
 def _state_var_aliases(
     mba: object,
     ordered_blocks: list[int],
-) -> dict[_StateVarIdentity, _StateVarIdentity]:
-    aliases: dict[_StateVarIdentity, _StateVarIdentity] = {}
+) -> dict[StorageIdentity, StorageIdentity]:
+    aliases: dict[StorageIdentity, StorageIdentity] = {}
     for serial in ordered_blocks:
         blk = _get_block(mba, serial)
         if blk is None:
             continue
         for insn in _iter_block_insns(blk):
-            if not _is_mov(getattr(insn, "opcode", None)):
+            if not _is_mov(insn):
                 continue
             dst = _state_var_identity(getattr(insn, "d", None))
             src = _state_var_identity(getattr(insn, "l", None))
@@ -309,11 +312,11 @@ def _state_var_aliases(
 
 
 def _canonical_state_var(
-    var: _StateVarIdentity,
-    aliases: dict[_StateVarIdentity, _StateVarIdentity],
-) -> _StateVarIdentity:
+    var: StorageIdentity,
+    aliases: dict[StorageIdentity, StorageIdentity],
+) -> StorageIdentity:
     current = var
-    seen: set[_StateVarIdentity] = set()
+    seen: set[StorageIdentity] = set()
     while current in aliases and current not in seen:
         seen.add(current)
         current = aliases[current]
@@ -345,12 +348,12 @@ def _iter_block_insns(blk: object):
 
 def _extract_compare(
     blk: object,
-) -> tuple[_StateVarIdentity, int, object] | None:
+) -> tuple[StorageIdentity, int, PredicateKind] | None:
     tail = getattr(blk, "tail", None)
     if tail is None:
         return None
-    opcode = getattr(tail, "opcode", getattr(blk, "tail_opcode", None))
-    if not (_is_jz(opcode) or _is_jnz(opcode)):
+    predicate = _branch_predicate(blk)
+    if not (_is_eq(predicate) or _is_ne(predicate)):
         return None
     left = getattr(tail, "l", None)
     right = getattr(tail, "r", None)
@@ -359,9 +362,9 @@ def _extract_compare(
     left_var = _state_var_identity(left)
     right_var = _state_var_identity(right)
     if left_var is not None and right_const is not None:
-        return left_var, int(right_const), opcode
+        return left_var, int(right_const), predicate
     if right_var is not None and left_const is not None:
-        return right_var, int(left_const), opcode
+        return right_var, int(left_const), predicate
     return None
 
 
@@ -398,80 +401,75 @@ def _block_ref(mop: object | None) -> int | None:
 
 
 def _const_value(mop: object | None) -> int | None:
-    if mop is None or not _is_mop(mop, "mop_n"):
+    vn = _varnode(mop)
+    if vn is None or vn.space is not Space.CONST:
         return None
-    nnn = getattr(mop, "nnn", None)
-    candidates = (
-        getattr(mop, "nnn_value", None),
-        getattr(nnn, "value", None),
-        getattr(mop, "value", None),
-    )
-    for value in candidates:
-        if callable(value):
-            try:
-                value = value()
-            except Exception:
-                value = None
-        if value is None:
-            continue
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            continue
-    return None
+    return int(vn.offset)
 
 
 def _state_var_identity(
     mop: object | None,
-) -> _StateVarIdentity | None:
+) -> StorageIdentity | None:
     if mop is None:
         return None
-    size = int(getattr(mop, "size", 0) or 0)
-    if _is_mop(mop, "mop_S"):
-        s = getattr(mop, "s", None)
-        off = getattr(s, "off", getattr(mop, "stkoff", None))
-        if off is None:
-            return None
-        return _StateVarIdentity("stack", int(off), size)
-    if _is_mop(mop, "mop_l"):
-        lv = getattr(mop, "l", None)
-        idx = getattr(lv, "idx", getattr(mop, "idx", None))
-        if idx is None:
-            var = getattr(lv, "var", None)
-            if callable(var):
-                v = var()
-                idx = getattr(v, "idx", None)
-        if idx is None:
-            return None
-        return _StateVarIdentity("lvar", int(idx), size)
+    identity = storage_identity_from_varnode(_varnode(mop))
+    if identity is None:
+        return None
+    if identity.kind not in {
+        StorageIdentityKind.STACK,
+        StorageIdentityKind.LVAR,
+    }:
+        return None
+    return identity
+
+
+def _varnode(mop: object | None) -> Varnode | None:
+    try:
+        return varnode_from_mop_snapshot(mop)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _operand_space(mop: object | None) -> str | None:
+    vn = _varnode(mop)
+    if vn is None:
+        return None
+    return vn.space.name.lower()
+
+
+def _branch_predicate(blk: object) -> PredicateKind | None:
+    tail = getattr(blk, "tail", None)
+    if tail is None:
+        return None
+    for attr in ("predicate", "predicate_kind"):
+        predicate = _coerce_predicate(getattr(tail, attr, None))
+        if predicate is not None:
+            return predicate
     return None
 
 
-def _is_mop(
-    mop: object,
-    name: str,
-) -> bool:
-    t = getattr(mop, "t", None)
-    return t == name or str(t) == name
+def _coerce_predicate(value: object | None) -> PredicateKind | None:
+    if isinstance(value, PredicateKind):
+        return value
+    if value is None:
+        return None
+    raw = getattr(value, "value", value)
+    try:
+        return PredicateKind(str(raw))
+    except ValueError:
+        return None
 
 
-def _is_jz(opcode: object) -> bool:
-    return _is_opcode(opcode, "m_jz")
+def _is_eq(predicate: PredicateKind | None) -> bool:
+    return predicate is PredicateKind.EQ
 
 
-def _is_jnz(opcode: object) -> bool:
-    return _is_opcode(opcode, "m_jnz")
+def _is_ne(predicate: PredicateKind | None) -> bool:
+    return predicate is PredicateKind.NE
 
 
-def _is_mov(opcode: object) -> bool:
-    return _is_opcode(opcode, "m_mov")
-
-
-def _is_opcode(
-    opcode: object,
-    name: str,
-) -> bool:
-    return opcode == name or str(opcode) == name
+def _is_mov(insn: object) -> bool:
+    return getattr(insn, "kind", None) is InsnKind.MOV
 
 
 __all__ = ["extract_state_dispatcher_map_from_mba"]

@@ -126,7 +126,7 @@ def _edge(
 
 
 def _mop(value: int | None = None):
-    return SimpleNamespace(t="mop_n" if value is not None else "mop_r", value=value, size=4)
+    return SimpleNamespace(value=value, size=4)
 
 
 def _block_ref(serial: int):
@@ -150,12 +150,12 @@ def _chain(*insns: object) -> object | None:
 def test_opcode_name_uses_injected_resolver_for_numeric_opcode():
     assert _opcode_name(
         SimpleNamespace(opcode=object()),
-        lambda _insn: "m_jz",
-    ) == "m_jz"
+        lambda _insn: "jz",
+    ) == "jz"
 
 
 def test_opcode_name_normalizes_known_conditional_opcode_without_live_ida():
-    assert _opcode_name(SimpleNamespace(opcode=44)) == "m_jz"
+    assert _opcode_name(SimpleNamespace(opcode=44)) == "jz"
 
 
 def test_branch_ownership_oracle_does_not_import_live_hexrays():
@@ -228,7 +228,7 @@ def _proofs_for(
     *edges: object,
     result: PredicateOwnershipResult,
 ):
-    tail = SimpleNamespace(opcode="m_jz")
+    tail = SimpleNamespace(opcode="jz")
     mba = _FakeMba({5: _FakeBlock(tail)})
     oracle = MopTrackerBranchOwnershipOracle(
         mba=mba,
@@ -921,14 +921,14 @@ def test_ollvm_carrier_oracle_marks_password_compare_predicate_semantic():
     )
     derive = "or     %var_58.4, #1.4, %var_18.4"
     tail = SimpleNamespace(
-        opcode="m_jnz",
+        opcode="jnz",
         text="jnz    %var_18.4, #0.4, @9",
     )
     mba = _FakeMba({
         5: _FakeBlock(
             tail,
             head=_chain(
-                _insn("m_call", text=compare),
+                _insn("call", text=compare),
                 _insn("m_or", text=derive),
             ),
         ),
@@ -973,14 +973,14 @@ def test_ollvm_carrier_oracle_ignores_raw_profile_evidence():
     )
     derive = "or     %var_58.4, #1.4, %var_18.4"
     tail = SimpleNamespace(
-        opcode="m_jnz",
+        opcode="jnz",
         text="jnz    %var_18.4, #0.4, @9",
     )
     mba = _FakeMba({
         5: _FakeBlock(
             tail,
             head=_chain(
-                _insn("m_call", text=compare),
+                _insn("call", text=compare),
                 _insn("m_or", text=derive),
             ),
         ),
@@ -1009,7 +1009,7 @@ def test_ollvm_carrier_oracle_ignores_raw_profile_evidence():
 def test_ollvm_carrier_oracle_marks_loop_index_predicate_semantic():
     bound = "setb   [ds.2:%var_398.8].4, #0x64.4, %var_3A1.1"
     tail = SimpleNamespace(
-        opcode="m_jz",
+        opcode="jz",
         text="jz     %var_3A1.1, #0.1, @9",
     )
     mba = _FakeMba({
@@ -1051,7 +1051,7 @@ def test_ollvm_carrier_oracle_marks_loop_index_predicate_semantic():
 def test_ollvm_carrier_oracle_preserves_semantic_branch_to_return_frontier():
     bound = "setb   [ds.2:%var_398.8].4, #0x64.4, %var_3A1.1"
     tail = SimpleNamespace(
-        opcode="m_jz",
+        opcode="jz",
         text="jz     %var_3A1.1, #0.1, @9",
     )
     mba = _FakeMba({
@@ -1096,7 +1096,7 @@ def test_ollvm_carrier_oracle_preserves_semantic_branch_to_return_frontier():
 
 def test_ollvm_carrier_oracle_leaves_unrelated_predicate_unresolved():
     tail = SimpleNamespace(
-        opcode="m_jz",
+        opcode="jz",
         text="jz     %var_DEAD.1, #0.1, @9",
     )
     mba = _FakeMba({
@@ -1147,7 +1147,7 @@ def test_incomplete_edge_identity_does_not_create_trusted_rewrite_proof():
 
 def test_z3_jz_equal_chooses_jump_target_arm():
     proofs = _proofs_for_z3(
-        tail=_tail("m_jz", jump_target=9, left=_mop(), right=_mop()),
+        tail=_tail("jz", jump_target=9, left=_mop(), right=_mop()),
         prover=_FakeProver(equal=True),
     )
 
@@ -1166,7 +1166,7 @@ def test_z3_jz_equal_chooses_jump_target_arm():
 
 def test_z3_jnz_equal_chooses_fallthrough_arm():
     proofs = _proofs_for_z3(
-        tail=_tail("m_jnz", jump_target=9, left=_mop(), right=_mop()),
+        tail=_tail("jnz", jump_target=9, left=_mop(), right=_mop()),
         prover=_FakeProver(equal=True),
     )
 
@@ -1182,7 +1182,7 @@ def test_z3_jnz_equal_chooses_fallthrough_arm():
 
 def test_z3_jcnd_constant_nonzero_chooses_jump_target_arm():
     proofs = _proofs_for_z3(
-        tail=_tail("m_jcnd", jump_target=9, left=_mop(1)),
+        tail=_tail("jcnd", jump_target=9, left=_mop(1)),
     )
 
     fallthrough = _proof_by_arm(proofs, 0)
@@ -1195,7 +1195,7 @@ def test_z3_jcnd_constant_nonzero_chooses_jump_target_arm():
 
 def test_z3_sibling_arm_proof_does_not_authorize_wrong_edge():
     proofs = _proofs_for_z3(
-        tail=_tail("m_jz", jump_target=9, left=_mop(), right=_mop()),
+        tail=_tail("jz", jump_target=9, left=_mop(), right=_mop()),
         prover=_FakeProver(equal=True),
     )
 
@@ -1213,9 +1213,9 @@ def test_z3_sibling_arm_proof_does_not_authorize_wrong_edge():
 
 def test_z3_discarded_payload_store_blocks_rewrite_authority():
     proofs = _proofs_for_z3(
-        tail=_tail("m_jz", jump_target=9, left=_mop(), right=_mop()),
+        tail=_tail("jz", jump_target=9, left=_mop(), right=_mop()),
         prover=_FakeProver(equal=True),
-        discarded_head=_insn("m_stx", text="stx #1.1, [payload]"),
+        discarded_head=_insn("store", text="stx #1.1, [payload]"),
     )
 
     fallthrough = _proof_by_arm(proofs, 0)

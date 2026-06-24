@@ -18,11 +18,28 @@ from d810.analyses.control_flow.branch_ownership import (
 )
 from d810.analyses.control_flow.conditional_jump_eval import (
     conditional_jump_opcode_name,
-    conditional_jump_taken,
     conditional_operand_size,
+    predicate_jump_taken,
 )
+from d810.ir.expressions import ValueOpKind
+from d810.ir.flowgraph import PredicateKind
+from d810.ir.semantics import CallKind
+from d810.ir.varnode import Space, varnode_from_mop_snapshot
 
 _MASK64 = 0xFFFFFFFFFFFFFFFF
+_SHORT_JUMP_PREDICATES = {
+    "jz": PredicateKind.EQ,
+    "jnz": PredicateKind.NE,
+    "jcnd": PredicateKind.TRUTHY,
+    "jae": PredicateKind.UGE,
+    "jb": PredicateKind.ULT,
+    "ja": PredicateKind.UGT,
+    "jbe": PredicateKind.ULE,
+    "jg": PredicateKind.SGT,
+    "jge": PredicateKind.SGE,
+    "jl": PredicateKind.SLT,
+    "jle": PredicateKind.SLE,
+}
 
 
 class PredicateOwnershipKind(str, Enum):
@@ -47,7 +64,7 @@ PredicateResolver = Callable[
     [object, object | None, int | None],
     PredicateOwnershipResult,
 ]
-OpcodeLabelResolver = Callable[[object], str | None]
+OpcodeLabelResolver = Callable[[object], object | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,8 +372,8 @@ class Z3BranchOwnershipOracle:
         )
 
     def _prove_jump_taken(self, block: object, tail: object) -> bool | None:
-        opcode = _opcode_name(tail, self._opcode_label_resolver)
-        if opcode in {"m_jcnd", "jcnd"}:
+        predicate = _predicate_kind(tail, self._opcode_label_resolver)
+        if predicate is PredicateKind.TRUTHY:
             return self._prove_jcnd_taken(block, tail)
 
         left = getattr(tail, "l", None)
@@ -372,14 +389,14 @@ class Z3BranchOwnershipOracle:
         if direct is not None:
             return direct
 
-        if opcode in {"m_jz", "jz", "m_jnz", "jnz"}:
+        if predicate in {PredicateKind.EQ, PredicateKind.NE}:
             prover = self._make_prover()
             if prover is None:
                 return None
             if _z3_are_equal(prover, left, right, block=block, tail=tail):
-                return opcode in {"m_jz", "jz"}
+                return predicate is PredicateKind.EQ
             if _z3_are_unequal(prover, left, right, block=block, tail=tail):
-                return opcode in {"m_jnz", "jnz"}
+                return predicate is PredicateKind.NE
         return None
 
     def _prove_jcnd_taken(self, block: object, tail: object) -> bool | None:
@@ -642,21 +659,15 @@ def _resolve_mop_value(
 
 
 def _constant_mop_value(mop: object) -> int | None:
+    try:
+        vn = varnode_from_mop_snapshot(mop)
+    except (AttributeError, TypeError, ValueError):
+        vn = None
+    if vn is not None and vn.space is Space.CONST:
+        return int(vn.offset)
+
     value = getattr(mop, "nnn_value", None)
     if value is not None:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
-    nnn = getattr(mop, "nnn", None)
-    value = getattr(nnn, "value", None)
-    if value is not None:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
-    value = getattr(mop, "value", None)
-    if value is not None and _mop_type_name(mop) in {"mop_n", "2"}:
         try:
             return int(value)
         except (TypeError, ValueError):
@@ -670,9 +681,34 @@ def _eval_conditional_tail(
     right: int,
     opcode_label_resolver: OpcodeLabelResolver | None = None,
 ) -> bool | None:
-    opcode = _opcode_name(tail, opcode_label_resolver)
+    predicate = _predicate_kind(tail, opcode_label_resolver)
     size = conditional_operand_size(getattr(tail, "l", None), getattr(tail, "r", None))
-    return conditional_jump_taken(opcode, left, right, operand_size=size)
+    return predicate_jump_taken(predicate, left, right, operand_size=size)
+
+
+def _predicate_kind(
+    tail: object,
+    opcode_label_resolver: OpcodeLabelResolver | None = None,
+) -> PredicateKind | None:
+    raw = getattr(tail, "predicate_kind", None)
+    if raw is None:
+        raw = getattr(tail, "branch_predicate", None)
+    if isinstance(raw, PredicateKind):
+        return raw
+    if raw is not None:
+        try:
+            return PredicateKind(str(raw))
+        except ValueError:
+            pass
+
+    resolved = _resolved_opcode_label(tail, opcode_label_resolver)
+    if isinstance(resolved, PredicateKind):
+        return resolved
+
+    canonical = conditional_jump_opcode_name(
+        _opcode_name(tail, opcode_label_resolver)
+    )
+    return _SHORT_JUMP_PREDICATES.get(canonical)
 
 
 def _eval_conditional_from_constants(
@@ -710,23 +746,35 @@ def _opcode_name(
     kind = getattr(tail, "kind", None)
     kind_value = getattr(kind, "value", kind)
     if isinstance(kind_value, str):
-        semantic_name = {
-            "store": "m_stx",
-            "call": "m_call",
-        }.get(kind_value)
-        if semantic_name is not None:
-            return semantic_name
-    if opcode_label_resolver is not None:
-        try:
-            resolved = opcode_label_resolver(tail)
-        except Exception:
-            resolved = None
-        if isinstance(resolved, str) and resolved:
-            return resolved
+        return kind_value
+    resolved = _resolved_opcode_label(tail, opcode_label_resolver)
+    resolved_text = _semantic_label_text(resolved)
+    if resolved_text is not None:
+        return resolved_text
     canonical = conditional_jump_opcode_name(opcode)
     if canonical is not None:
-        return f"m_{canonical}"
+        return canonical
     return f"op_{opcode}"
+
+
+def _resolved_opcode_label(
+    insn: object,
+    opcode_label_resolver: OpcodeLabelResolver | None = None,
+) -> object | None:
+    if opcode_label_resolver is None:
+        return None
+    try:
+        return opcode_label_resolver(insn)
+    except Exception:
+        return None
+
+
+def _semantic_label_text(value: object | None) -> str | None:
+    if isinstance(value, (PredicateKind, ValueOpKind, CallKind)):
+        return value.value
+    if isinstance(value, str) and value:
+        return value
+    return None
 
 
 def _opcode_sense(opcode: str) -> str:
@@ -920,10 +968,17 @@ def _block_side_effect_reason(
     opcode_label_resolver: OpcodeLabelResolver | None = None,
 ) -> str | None:
     for insn in _iter_block_insns(block):
-        opcode = _opcode_name(insn, opcode_label_resolver)
-        if opcode in {"m_call", "m_icall", "call", "icall"}:
+        label = _resolved_opcode_label(insn, opcode_label_resolver)
+        if isinstance(label, CallKind) or _opcode_name(
+            insn,
+            opcode_label_resolver,
+        ) in {"call", "icall"}:
             return "discarded_arm_contains_unknown_call_side_effect"
-        if opcode not in {"m_stx", "stx"}:
+        if label is ValueOpKind.STORE:
+            is_store = True
+        else:
+            is_store = _opcode_name(insn, opcode_label_resolver) in {"store", "stx"}
+        if not is_store:
             continue
         if not required_constant_markers:
             return "discarded_arm_contains_payload_store"
@@ -988,12 +1043,6 @@ def _block_nsucc(block: object) -> int | None:
         except (TypeError, ValueError):
             return None
     return None
-
-
-def _mop_type_name(mop: object) -> str:
-    t = getattr(mop, "t", None)
-    name = getattr(t, "name", None)
-    return str(name if name is not None else t)
 
 
 def _hex_state(value: int | None) -> str | None:

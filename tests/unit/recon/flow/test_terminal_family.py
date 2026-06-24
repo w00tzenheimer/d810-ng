@@ -3,17 +3,25 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
+from d810.ir.insn_projection import project_instruction_sequence
+from d810.ir.expressions import ValueOpKind
+from d810.ir.instructions import Instruction
+from d810.ir.varnode import Space, Varnode
 from d810.analyses.control_flow.terminal_family import (
     TerminalFamilyCandidate,
     TerminalFamilySeed,
     TerminalFamilySeedProbe,
+    TerminalValueWrite,
     build_terminal_family_candidates,
     candidate_shared_suffix_entries,
+    is_state_var_dest,
     probe_terminal_family_seed,
     resolve_terminal_source_arm_entry,
+    resolve_terminal_value_chain,
     seed_terminal_family_probes,
-    terminal_locator_key,
-    terminal_source_signature,
+    terminal_varnode_locator_key,
+    terminal_varnode_source_signature,
+    terminal_value_family_signature,
     terminal_write_signature,
 )
 
@@ -36,6 +44,47 @@ class _DummyFlowGraph:
 
     def get_block(self, serial: int):
         return self.blocks.get(int(serial))
+
+
+class _InstructionBlock(_DummyBlock):
+    def __init__(
+        self,
+        preds: tuple[int, ...],
+        succs: tuple[int, ...],
+        insn_snapshots: tuple[InsnSnapshot, ...],
+    ):
+        super().__init__(preds, succs, insn_snapshots)
+
+    @property
+    def instructions(self):
+        return tuple(
+            instruction
+            for insn in self.insn_snapshots
+            for instruction in project_instruction_sequence(insn)
+        )
+
+
+def _const(value: int, *, size: int = 4) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.NUMBER, value=int(value), size=size)
+
+
+def _reg(reg: int, *, size: int = 4) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.REGISTER, reg=int(reg), size=size)
+
+
+def _stack(off: int, *, size: int = 4) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.STACK, stkoff=int(off), size=size)
+
+
+def _mov(src: MopSnapshot, dst: MopSnapshot, *, ea: int) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=0,
+        ea=int(ea),
+        operands=(src, dst),
+        kind=InsnKind.MOV,
+        l=src,
+        d=dst,
+    )
 
 
 class _DummyDag:
@@ -189,38 +238,92 @@ class TestBuildTerminalFamilyCandidates:
 
 
 class TestTerminalValueSignatures:
-    def test_terminal_locator_key_uses_portable_operand_kind(self):
-        stack_mop = MopSnapshot(kind=OperandKind.STACK, stkoff=0x20, size=4)
-        reg_mop = MopSnapshot(kind=OperandKind.REGISTER, reg=7, size=8)
+    def test_terminal_locator_key_uses_canonical_storage_identity(self):
+        stack_vn = Varnode(Space.STACK, 0x20, 4)
+        reg_vn = Varnode(Space.REGISTER, 7, 8)
 
-        assert terminal_locator_key(stack_mop) == ("stk", 0x20, 4)
-        assert terminal_locator_key(reg_mop) == ("reg", 7, 8)
+        assert terminal_varnode_locator_key(stack_vn) == ("stk", 0x20, 4)
+        assert terminal_varnode_locator_key(reg_vn) == ("reg", 7, 8)
 
-    def test_terminal_source_signature_uses_portable_operand_kind(self):
-        assert terminal_source_signature(
-            MopSnapshot(kind=OperandKind.NUMBER, value=0x42, size=4)
+    def test_state_var_dest_uses_storage_identity(self):
+        insn = Instruction(
+            operation=ValueOpKind.MOVE,
+            inputs=(Varnode(Space.CONST, 0xAA, 1),),
+            result=Varnode(Space.STACK, 0x20, 1),
+        )
+
+        assert is_state_var_dest(insn, 0x20)
+        assert not is_state_var_dest(insn, 0x24)
+
+    def test_terminal_source_signature_uses_canonical_varnodes(self):
+        assert terminal_varnode_source_signature(
+            Varnode(Space.CONST, 0x42, 4)
         ) == ("const", 0x42)
-        assert terminal_source_signature(
-            MopSnapshot(kind=OperandKind.BLOCK, block_ref=17)
-        ) == ("block", 17)
+        assert terminal_varnode_source_signature(
+            Varnode(Space.TEMP, 17, 4)
+        ) == ("varnode", "t", 17, 4)
 
-    def test_terminal_write_signature_uses_portable_instruction_kind(self):
-        insn = InsnSnapshot(
-            opcode=0,
-            ea=0,
-            operands=(),
-            kind=InsnKind.MOV,
-            d=MopSnapshot(kind=OperandKind.STACK, stkoff=0x10, size=4),
-            l=MopSnapshot(kind=OperandKind.NUMBER, value=3, size=4),
+    def test_terminal_write_signature_uses_canonical_instruction(self):
+        insn = Instruction(
+            operation=ValueOpKind.MOVE,
+            inputs=(Varnode(Space.CONST, 3, 4),),
+            result=Varnode(Space.STACK, 0x10, 4),
         )
 
         assert terminal_write_signature(insn) == (
             "op",
-            "mov",
+            "move",
             "dst",
             ("stk", 0x10, 4),
             "src_l",
             ("const", 3),
             "src_r",
             ("none",),
+        )
+
+    def test_terminal_value_chain_uses_canonical_write_records(self):
+        block = _InstructionBlock(
+            preds=(),
+            succs=(),
+            insn_snapshots=(
+                _mov(_const(3), _reg(7), ea=0x1000),
+                _mov(_reg(7), _stack(0x10), ea=0x1004),
+                _mov(_const(0xAA), _stack(0x20), ea=0x1008),
+            ),
+        )
+        flow_graph = SimpleNamespace(get_block=lambda serial: block if int(serial) == 90 else None)
+
+        chain = resolve_terminal_value_chain(
+            flow_graph,
+            path=(90,),
+            state_var_stkoff=0x20,
+        )
+
+        assert all(isinstance(write, TerminalValueWrite) for write in chain)
+        assert [write.block_serial for write in chain] == [90, 90]
+        assert [write.ea for write in chain] == [0x1000, 0x1004]
+        assert terminal_value_family_signature(chain) == (
+            "terminal_value_chain",
+            (
+                (
+                    "op",
+                    "move",
+                    "dst",
+                    ("reg", 7, 4),
+                    "src_l",
+                    ("const", 3),
+                    "src_r",
+                    ("none",),
+                ),
+                (
+                    "op",
+                    "move",
+                    "dst",
+                    ("stk", 0x10, 4),
+                    "src_l",
+                    ("reg", 7, 4),
+                    "src_r",
+                    ("none",),
+                ),
+            ),
         )

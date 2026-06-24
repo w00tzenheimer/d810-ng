@@ -3,7 +3,13 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, replace
 
-from d810.ir.flowgraph import InsnKind, OperandKind
+from d810.ir.expressions import ValueOpKind
+from d810.ir.instructions import Instruction
+from d810.ir.storage_identity import (
+    StorageIdentityKind,
+    storage_identity_from_varnode,
+)
+from d810.ir.varnode import Space, Varnode
 from d810.analyses.control_flow.linearized_state_dag import SemanticEdgeKind, StateDagEdge
 
 
@@ -51,92 +57,112 @@ class TerminalFamilySeedProbe:
     rejection_reason: str
 
 
-def terminal_locator_key(mop: object | None) -> tuple[object, ...] | None:
-    if mop is None:
+@dataclass(frozen=True, slots=True)
+class TerminalValueWrite:
+    """Canonical terminal-value write with lift provenance attached."""
+
+    block_serial: int
+    instruction_index: int
+    instruction: Instruction
+    provenance: object | None = None
+
+    @property
+    def ea(self) -> int:
+        value = self.instruction.attrs.get("ea")
+        if value is None and self.provenance is not None:
+            value = getattr(self.provenance, "ea", 0)
+        return int(value or 0)
+
+
+def _locator_key_for_identity(
+    identity,
+    *,
+    size: int,
+) -> tuple[object, ...] | None:
+    if identity is None:
         return None
-    mop_kind = getattr(mop, "kind", OperandKind.UNKNOWN)
-    if mop_kind == OperandKind.STACK:
-        stkoff = getattr(mop, "stkoff", None)
-        if stkoff is None:
-            stack_ref = getattr(mop, "s", None)
-            stkoff = getattr(stack_ref, "off", None) if stack_ref is not None else None
-        if stkoff is not None:
-            return ("stk", int(stkoff), int(getattr(mop, "size", 0) or 0))
-        return None
-    if mop_kind == OperandKind.REGISTER:
-        reg = getattr(mop, "reg", None)
-        if reg is None:
-            reg = getattr(mop, "r", None)
-        if reg is not None:
-            return ("reg", int(reg), int(getattr(mop, "size", 0) or 0))
-        return None
+    if identity.kind is StorageIdentityKind.STACK:
+        return ("stk", int(identity.offset), int(size))
+    if identity.kind is StorageIdentityKind.REGISTER:
+        return ("reg", int(identity.offset), int(size))
     return None
 
 
-def terminal_source_signature(mop: object | None) -> tuple[object, ...]:
-    if mop is None:
-        return ("none",)
+def terminal_varnode_locator_key(vn: Varnode | None) -> tuple[object, ...] | None:
+    if vn is None:
+        return None
+    return _locator_key_for_identity(
+        storage_identity_from_varnode(vn),
+        size=int(vn.size),
+    )
 
-    locator = terminal_locator_key(mop)
+
+def terminal_varnode_source_signature(vn: Varnode | None) -> tuple[object, ...]:
+    if vn is None:
+        return ("none",)
+    locator = terminal_varnode_locator_key(vn)
     if locator is not None:
         return locator
+    if vn.space is Space.CONST:
+        return ("const", int(vn.offset))
+    return ("varnode", vn.space.value, int(vn.offset), int(vn.size))
 
-    mop_kind = getattr(mop, "kind", OperandKind.UNKNOWN)
-    if mop_kind == OperandKind.NUMBER:
-        value = getattr(mop, "value", None)
-        if value is None:
-            nnn = getattr(mop, "nnn", None)
-            value = getattr(nnn, "value", None) if nnn is not None else None
-        if value is not None:
-            return ("const", int(value))
-        return ("const", None)
 
-    if mop_kind == OperandKind.ADDRESS:
-        return ("ptr", int(getattr(mop, "size", 0) or 0))
-    if mop_kind == OperandKind.BLOCK:
-        block_ref = getattr(mop, "block_ref", None)
-        if block_ref is None:
-            block_ref = getattr(mop, "b", None)
-        return ("block", int(block_ref) if block_ref is not None else None)
-    raw_operand_type = getattr(mop, "raw_operand_type", getattr(mop, "t", None))
+def terminal_instruction_write_signature(instruction: Instruction) -> tuple[object, ...]:
+    inputs = instruction.inputs
     return (
-        "mop",
-        int(raw_operand_type) if raw_operand_type is not None else None,
-        int(getattr(mop, "size", 0) or 0),
+        "op",
+        getattr(instruction.operation, "value", str(instruction.operation)),
+        "dst",
+        terminal_varnode_locator_key(instruction.result)
+        or terminal_varnode_source_signature(instruction.result),
+        "src_l",
+        terminal_varnode_source_signature(inputs[0] if len(inputs) >= 1 else None),
+        "src_r",
+        terminal_varnode_source_signature(inputs[1] if len(inputs) >= 2 else None),
     )
 
 
 def terminal_write_signature(insn: object) -> tuple[object, ...]:
-    return (
-        "op",
-        getattr(getattr(insn, "kind", InsnKind.UNKNOWN), "value", "unknown"),
-        "dst",
-        terminal_locator_key(getattr(insn, "d", None))
-        or terminal_source_signature(getattr(insn, "d", None)),
-        "src_l",
-        terminal_source_signature(getattr(insn, "l", None)),
-        "src_r",
-        terminal_source_signature(getattr(insn, "r", None)),
-    )
+    if isinstance(insn, TerminalValueWrite):
+        return terminal_instruction_write_signature(insn.instruction)
+    if isinstance(insn, Instruction):
+        return terminal_instruction_write_signature(insn)
+    return ("unsupported_terminal_write", type(insn).__name__)
 
 
 def insn_is_copy_like(insn: object) -> bool:
-    return getattr(insn, "kind", InsnKind.UNKNOWN) in {InsnKind.MOV, InsnKind.XDU}
+    if isinstance(insn, TerminalValueWrite):
+        return terminal_instruction_is_copy_like(insn.instruction)
+    if isinstance(insn, Instruction):
+        return terminal_instruction_is_copy_like(insn)
+    return False
+
+
+def terminal_instruction_is_copy_like(instruction: Instruction) -> bool:
+    return instruction.operation in {ValueOpKind.MOVE, ValueOpKind.ZEXT}
+
+
+def instruction_writes_state_var(
+    instruction: Instruction,
+    state_var_stkoff: int | None,
+) -> bool:
+    if state_var_stkoff is None:
+        return False
+    identity = storage_identity_from_varnode(instruction.result)
+    return (
+        identity is not None
+        and identity.kind is StorageIdentityKind.STACK
+        and int(identity.offset) == int(state_var_stkoff)
+    )
 
 
 def is_state_var_dest(insn: object, state_var_stkoff: int | None) -> bool:
-    if state_var_stkoff is None:
-        return False
-    dest = getattr(insn, "d", None)
-    if dest is None:
-        return False
-    if getattr(dest, "kind", OperandKind.UNKNOWN) != OperandKind.STACK:
-        return False
-    stkoff = getattr(dest, "stkoff", None)
-    if stkoff is None:
-        stack_ref = getattr(dest, "s", None)
-        stkoff = getattr(stack_ref, "off", None) if stack_ref is not None else None
-    return stkoff is not None and int(stkoff) == int(state_var_stkoff)
+    if isinstance(insn, TerminalValueWrite):
+        return instruction_writes_state_var(insn.instruction, state_var_stkoff)
+    if isinstance(insn, Instruction):
+        return instruction_writes_state_var(insn, state_var_stkoff)
+    return False
 
 
 def resolve_terminal_source_arm_entry(
@@ -428,20 +454,23 @@ def find_last_terminal_write(
     *,
     path: tuple[int, ...],
     state_var_stkoff: int | None,
-) -> tuple[int, int, object] | None:
+) -> TerminalValueWrite | None:
     for block_serial in reversed(path):
         block = projected_flow_graph.get_block(block_serial)
         if block is None:
             continue
-        for insn_index in range(len(block.insn_snapshots) - 1, -1, -1):
-            insn = block.insn_snapshots[insn_index]
-            if getattr(insn, "kind", InsnKind.UNKNOWN) == InsnKind.GOTO:
+        instructions = tuple(getattr(block, "instructions", ()))
+        for insn_index in range(len(instructions) - 1, -1, -1):
+            instruction = instructions[insn_index]
+            if instruction.result is None:
                 continue
-            if getattr(insn, "d", None) is None:
+            if instruction_writes_state_var(instruction, state_var_stkoff):
                 continue
-            if is_state_var_dest(insn, state_var_stkoff):
-                continue
-            return int(block_serial), int(insn_index), insn
+            return TerminalValueWrite(
+                block_serial=int(block_serial),
+                instruction_index=int(insn_index),
+                instruction=instruction,
+            )
     return None
 
 
@@ -453,7 +482,7 @@ def find_prev_terminal_write_to_locator(
     before_block: int,
     before_insn_index: int,
     state_var_stkoff: int | None,
-) -> tuple[int, int, object] | None:
+) -> TerminalValueWrite | None:
     try:
         before_path_index = path.index(int(before_block))
     except ValueError:
@@ -464,20 +493,23 @@ def find_prev_terminal_write_to_locator(
         block = projected_flow_graph.get_block(block_serial)
         if block is None:
             continue
-        start_index = len(block.insn_snapshots) - 1
+        instructions = tuple(getattr(block, "instructions", ()))
+        start_index = len(instructions) - 1
         if path_index == before_path_index:
             start_index = int(before_insn_index) - 1
         for insn_index in range(start_index, -1, -1):
-            insn = block.insn_snapshots[insn_index]
-            if getattr(insn, "kind", InsnKind.UNKNOWN) == InsnKind.GOTO:
+            instruction = instructions[insn_index]
+            if instruction.result is None:
                 continue
-            if getattr(insn, "d", None) is None:
+            if instruction_writes_state_var(instruction, state_var_stkoff):
                 continue
-            if is_state_var_dest(insn, state_var_stkoff):
+            if terminal_varnode_locator_key(instruction.result) != locator:
                 continue
-            if terminal_locator_key(getattr(insn, "d", None)) != locator:
-                continue
-            return block_serial, int(insn_index), insn
+            return TerminalValueWrite(
+                block_serial=block_serial,
+                instruction_index=int(insn_index),
+                instruction=instruction,
+            )
     return None
 
 
@@ -486,7 +518,7 @@ def resolve_terminal_value_chain(
     *,
     path: tuple[int, ...],
     state_var_stkoff: int | None,
-) -> tuple[tuple[int, int, object], ...]:
+) -> tuple[TerminalValueWrite, ...]:
     materializer = find_last_terminal_write(
         projected_flow_graph,
         path=path,
@@ -500,10 +532,11 @@ def resolve_terminal_value_chain(
     visited_locators: set[tuple[object, ...]] = set()
 
     while True:
-        _block_serial, _insn_index, insn = current
-        if not insn_is_copy_like(insn):
+        if not terminal_instruction_is_copy_like(current.instruction):
             break
-        locator = terminal_locator_key(getattr(insn, "l", None))
+        locator = terminal_varnode_locator_key(
+            current.instruction.inputs[0] if current.instruction.inputs else None
+        )
         if locator is None or locator in visited_locators:
             break
         visited_locators.add(locator)
@@ -511,8 +544,8 @@ def resolve_terminal_value_chain(
             projected_flow_graph,
             path=path,
             locator=locator,
-            before_block=int(_block_serial),
-            before_insn_index=int(_insn_index),
+            before_block=int(current.block_serial),
+            before_insn_index=int(current.instruction_index),
             state_var_stkoff=state_var_stkoff,
         )
         if previous is None:
@@ -525,13 +558,13 @@ def resolve_terminal_value_chain(
 
 
 def terminal_value_family_signature(
-    chain: tuple[tuple[int, int, object], ...],
+    chain: tuple[TerminalValueWrite, ...],
 ) -> tuple[object, ...]:
     if not chain:
         return ("unresolved_terminal_value",)
     semantic_chain = tuple(
-        terminal_write_signature(insn)
-        for _block_serial, _insn_index, insn in chain
+        terminal_write_signature(write)
+        for write in chain
     )
     return ("terminal_value_chain", semantic_chain)
 
@@ -603,12 +636,12 @@ def build_terminal_family_candidates(
             path=path,
             state_var_stkoff=state_var_stkoff,
         )
-        materializer_block = int(chain[-1][0]) if chain else None
-        writer_block = int(chain[0][0]) if chain else None
+        materializer_block = int(chain[-1].block_serial) if chain else None
+        writer_block = int(chain[0].block_serial) if chain else None
         materializer_chain_blocks = tuple(
-            int(block_serial) for block_serial, _idx, _insn in chain
+            int(write.block_serial) for write in chain
         )
-        lineage_eas = tuple(int(getattr(insn, "ea", 0)) for _blk, _idx, insn in chain)
+        lineage_eas = tuple(int(write.ea) for write in chain)
         signature = terminal_value_family_signature(chain)
 
         candidate = TerminalFamilyCandidate(
@@ -637,6 +670,7 @@ __all__ = [
     "TerminalFamilyCandidate",
     "TerminalFamilySeed",
     "TerminalFamilySeedProbe",
+    "TerminalValueWrite",
     "build_terminal_family_candidates",
     "candidate_shared_suffix_entries",
     "collect_linear_terminal_path",
@@ -651,8 +685,8 @@ __all__ = [
     "resolve_terminal_value_chain",
     "seed_terminal_family_probes",
     "terminal_candidate_key",
-    "terminal_locator_key",
-    "terminal_source_signature",
+    "terminal_varnode_locator_key",
+    "terminal_varnode_source_signature",
     "terminal_value_family_signature",
     "terminal_write_signature",
 ]

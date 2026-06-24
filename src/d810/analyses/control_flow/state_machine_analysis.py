@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from types import SimpleNamespace
 
 from d810.ir.flowgraph import (
     BlockKind,
@@ -18,6 +17,12 @@ from d810.core import logging
 from d810.core.typing import Optional
 from d810.capabilities.providers import get_condition_chain_walkers
 from d810.ir.results import ConstantFixpointResult
+from d810.ir.storage_identity import (
+    StorageIdentity,
+    StorageIdentityKind,
+    storage_identity_from_mop_snapshot,
+)
+from d810.ir.varnode import Space, varnode_from_mop_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -40,35 +45,14 @@ _CONDITION_CHAIN_BRANCH_PREDICATES = frozenset(
     }
 )
 _LEGACY_BLT_STOP = 1
-_LEGACY_CONDITION_CHAIN_STACK_OPERAND = 3
-_LEGACY_INSN_KIND_OPCODES = {
-    InsnKind.NOP: frozenset({0x00}),
-    InsnKind.STORE: frozenset({0x01}),
-    InsnKind.MOV: frozenset({0x04}),
-    InsnKind.GOTO: frozenset({0x37}),
-    InsnKind.CALL: frozenset({0x38, 0x39}),
-    InsnKind.RET: frozenset({0x3A}),
-}
-_LEGACY_BRANCH_PREDICATE_OPCODES = {
-    0x2B: PredicateKind.NE,
-    0x2C: PredicateKind.EQ,
-    0x2D: PredicateKind.UGE,
-    0x2E: PredicateKind.ULT,
-    0x2F: PredicateKind.UGT,
-    0x30: PredicateKind.ULE,
-}
-
-
 def _semantic_value(value: object) -> object:
     return getattr(value, "value", value)
 
 
-def _kind_matches(value: object, expected: object, *legacy_names: str) -> bool:
+def _kind_matches(value: object, expected: object) -> bool:
     actual = _semantic_value(value)
     target = _semantic_value(expected)
     if actual == target or value is expected:
-        return True
-    if isinstance(actual, str) and actual in legacy_names:
         return True
     return False
 
@@ -76,103 +60,61 @@ def _kind_matches(value: object, expected: object, *legacy_names: str) -> bool:
 def _operand_kind_matches(
     operand: object | None,
     expected: OperandKind,
-    *legacy_names: str,
 ) -> bool:
     if operand is None:
         return False
-    if _kind_matches(getattr(operand, "kind", None), expected, *legacy_names):
-        return True
-    operand_type = getattr(operand, "t", None)
-    if isinstance(operand_type, str) and operand_type in legacy_names:
-        return True
-    if expected is OperandKind.STACK:
-        return (
-            getattr(operand, "stkoff", None) is not None
-            or getattr(operand, "s", None) is not None
-        )
-    if expected is OperandKind.REGISTER:
-        return (
-            getattr(operand, "reg", None) is not None
-            or getattr(operand, "r", None) is not None
-        )
-    if expected is OperandKind.NUMBER:
-        return (
-            getattr(operand, "value", None) is not None
-            or getattr(operand, "nnn_value", None) is not None
-        )
-    if expected is OperandKind.LVAR:
-        return (
-            getattr(operand, "l", None) is not None
-            or getattr(operand, "lvar_off", None) is not None
-            or getattr(operand, "lvar_idx", None) is not None
-        )
-    return False
+    return _kind_matches(getattr(operand, "kind", None), expected)
 
 
 def _is_stack_operand(operand: object | None) -> bool:
-    return _operand_kind_matches(operand, OperandKind.STACK, "mop_S")
+    return _operand_kind_matches(operand, OperandKind.STACK)
 
 
 def _is_lvar_operand(operand: object | None) -> bool:
-    return _operand_kind_matches(operand, OperandKind.LVAR, "mop_l")
+    return _operand_kind_matches(operand, OperandKind.LVAR)
 
 
 def _is_register_operand(operand: object | None) -> bool:
-    return _operand_kind_matches(operand, OperandKind.REGISTER, "mop_r")
+    return _operand_kind_matches(operand, OperandKind.REGISTER)
 
 
 def _is_number_operand(operand: object | None) -> bool:
-    return _operand_kind_matches(operand, OperandKind.NUMBER, "mop_n")
+    return _operand_kind_matches(operand, OperandKind.NUMBER)
 
 
 def _insn_kind_matches(
     insn: object | None,
     expected: InsnKind,
-    *legacy_names: str,
 ) -> bool:
     if insn is None:
         return False
-    if _kind_matches(getattr(insn, "kind", None), expected, *legacy_names):
-        return True
-    opcode_name = getattr(insn, "opcode_name", None)
-    if isinstance(opcode_name, str) and opcode_name in legacy_names:
-        return True
-    opcode = getattr(insn, "opcode", None)
-    if isinstance(opcode, str) and opcode in legacy_names:
-        return True
-    try:
-        return int(opcode) in _LEGACY_INSN_KIND_OPCODES.get(expected, frozenset())
-    except (TypeError, ValueError):
-        return False
+    return _kind_matches(getattr(insn, "kind", None), expected)
 
 
 def _is_call_insn(insn: object | None) -> bool:
     return bool(getattr(insn, "is_call", False)) or _insn_kind_matches(
         insn,
         InsnKind.CALL,
-        "m_call",
-        "m_icall",
     )
 
 
 def _is_store_insn(insn: object | None) -> bool:
-    return _insn_kind_matches(insn, InsnKind.STORE, "m_stx")
+    return _insn_kind_matches(insn, InsnKind.STORE)
 
 
 def _is_goto_insn(insn: object | None) -> bool:
     return bool(getattr(insn, "is_unconditional_jump", False)) or _insn_kind_matches(
         insn,
         InsnKind.GOTO,
-        "m_goto",
     )
 
 
 def _is_nop_insn(insn: object | None) -> bool:
-    return _insn_kind_matches(insn, InsnKind.NOP, "m_nop")
+    return _insn_kind_matches(insn, InsnKind.NOP)
 
 
 def _is_ret_insn(insn: object | None) -> bool:
-    return _insn_kind_matches(insn, InsnKind.RET, "m_ret")
+    return _insn_kind_matches(insn, InsnKind.RET)
 
 
 def _block_has_ret_tail(block: object | None) -> bool:
@@ -180,20 +122,17 @@ def _block_has_ret_tail(block: object | None) -> bool:
         return False
     if _is_ret_insn(_tail_insn(block)):
         return True
-    if _kind_matches(getattr(block, "tail_kind", None), InsnKind.RET, "m_ret"):
+    if _kind_matches(getattr(block, "tail_kind", None), InsnKind.RET):
         return True
-    tail_opcode = getattr(block, "tail_opcode", None)
-    return _insn_kind_matches(SimpleNamespace(opcode=tail_opcode), InsnKind.RET, "m_ret")
+    return False
 
 
 def _is_stop_block(block: object | None) -> bool:
     if block is None:
         return False
-    if _kind_matches(getattr(block, "kind", None), BlockKind.STOP, "BLT_STOP"):
+    if _kind_matches(getattr(block, "kind", None), BlockKind.STOP):
         return True
     block_type = getattr(block, "block_type", None)
-    if isinstance(block_type, str):
-        return block_type == "BLT_STOP"
     try:
         return int(block_type) == _LEGACY_BLT_STOP
     except (TypeError, ValueError):
@@ -214,83 +153,43 @@ def _branch_predicate_for_tail(tail: object | None) -> PredicateKind | object | 
     if tail is None:
         return None
     predicate = getattr(tail, "branch_predicate", None)
-    if predicate is not None:
+    if isinstance(predicate, PredicateKind):
         return predicate
-    opcode_name = getattr(tail, "opcode_name", None)
-    if not isinstance(opcode_name, str):
-        opcode = getattr(tail, "opcode", None)
-        opcode_name = opcode if isinstance(opcode, str) else None
-        try:
-            return _LEGACY_BRANCH_PREDICATE_OPCODES.get(int(opcode))
-        except (TypeError, ValueError):
-            return None
-    return {
-        "m_jnz": PredicateKind.NE,
-        "m_jz": PredicateKind.EQ,
-        "m_jbe": PredicateKind.ULE,
-        "m_ja": PredicateKind.UGT,
-        "m_jb": PredicateKind.ULT,
-        "m_jae": PredicateKind.UGE,
-    }.get(opcode_name)
+    return None
 
 
 def _condition_chain_condition_key_for_tail(tail: object | None) -> object | None:
-    if tail is None:
-        return None
-    raw_opcode = getattr(tail, "opcode", None)
-    if raw_opcode in _CONDITION_CHAIN_CMP_OPCODES:
-        return raw_opcode
     return _branch_predicate_for_tail(tail)
 
 
 def _constant_operand_value(operand: object | None) -> int | None:
-    if operand is None:
+    varnode = varnode_from_mop_snapshot(operand)  # type: ignore[arg-type]
+    if varnode is None or varnode.space is not Space.CONST:
         return None
-    value = getattr(operand, "nnn_value", None)
-    if value is None:
-        value = getattr(operand, "value", None)
-    if value is None:
-        return None
-    return int(value)
+    return int(varnode.offset)
 
 
 def _stack_offset(operand: object | None) -> int | None:
-    if operand is None:
+    identity = storage_identity_from_mop_snapshot(operand)  # type: ignore[arg-type]
+    if identity is None or identity.kind is not StorageIdentityKind.STACK:
         return None
-    stkoff = getattr(operand, "stkoff", None)
-    if stkoff is None:
-        stack_ref = getattr(operand, "s", None)
-        stkoff = getattr(stack_ref, "off", None) if stack_ref is not None else None
-    return int(stkoff) if stkoff is not None else None
+    return int(identity.offset)
 
 
 def _register_id(operand: object | None) -> int | None:
-    if operand is None:
+    identity = storage_identity_from_mop_snapshot(operand)  # type: ignore[arg-type]
+    if identity is None or identity.kind is not StorageIdentityKind.REGISTER:
         return None
-    reg = getattr(operand, "r", None)
-    if reg is None:
-        reg = getattr(operand, "reg", None)
-    return int(reg) if reg is not None else None
+    return int(identity.offset)
 
 
-def _state_var_ref(operand: object) -> tuple[object, int | None]:
-    raw_type = getattr(operand, "t", None)
-    if raw_type is not None:
-        return (raw_type, getattr(operand, "size", None))
-    kind = getattr(operand, "kind", None)
-    return (_semantic_value(kind), getattr(operand, "size", None))
+def _state_var_ref(operand: object) -> StorageIdentity | None:
+    return storage_identity_from_mop_snapshot(operand)  # type: ignore[arg-type]
 
 
 def _tracks_condition_chain_stack_offset(operand: object | None) -> bool:
-    raw_type = getattr(operand, "t", None)
-    if raw_type is None:
-        return _is_stack_operand(operand)
-    if raw_type == "mop_S":
-        return True
-    try:
-        return int(raw_type) == _LEGACY_CONDITION_CHAIN_STACK_OPERAND
-    except (TypeError, ValueError):
-        return False
+    identity = storage_identity_from_mop_snapshot(operand)  # type: ignore[arg-type]
+    return identity is not None and identity.kind is StorageIdentityKind.STACK
 
 __all__ = [
     "CarrierResolutionResult",
@@ -330,6 +229,7 @@ __all__ = [
 # live in portable-core, not as portable vocabulary.
 class _InsnView:
     __slots__ = (
+        "snapshot",
         "opcode",
         "ea",
         "l",
@@ -343,6 +243,7 @@ class _InsnView:
     )
 
     def __init__(self, insn: InsnSnapshot):
+        self.snapshot = insn
         self.opcode = insn.opcode
         self.ea = insn.ea
         self.l = insn.l
@@ -712,30 +613,17 @@ def _constant_dest_locator_snapshot(dest: object | None) -> tuple[str, int] | No
     return None
 
 
-def _eval_insn_view_snapshot(insn: InsnSnapshot) -> object:
-    """Build an evaluator view that prefers rich operand-slot snapshots.
+def _eval_insn_view_snapshot(insn: InsnSnapshot) -> InsnSnapshot:
+    """Return the canonical instruction snapshot for state-write evaluation.
 
-    ``InsnSnapshot.l/r/d`` intentionally use lightweight cfg operands that omit
-    nested expression structure. ``operand_slots`` retains the richer
-    ``hexrays.ir.mop_snapshot.MopSnapshot`` objects, which can expose ``mop_d``
-    trees through their owned-mop fallback. The forward evaluator needs those
-    rich operands to fold live formula state writes.
+    Live capture now lifts nested ``mop_d`` expression structure into
+    ``InsnSnapshot.l/r/d`` via portable ``MopSnapshot.sub_*`` fields.  Returning
+    the snapshot itself keeps the fixpoint on the canonical projection path;
+    wrapping it as a generic object makes the backend evaluator treat it like
+    live microcode and lose the typed operation/effect metadata.
     """
 
-    if not insn.operand_slots:
-        return insn
-
-    slot_map = {name: operand for name, operand in insn.operand_slots}
-    if not slot_map:
-        return insn
-
-    return SimpleNamespace(
-        opcode=insn.opcode,
-        ea=insn.ea,
-        l=slot_map.get("l", insn.l),
-        r=slot_map.get("r", insn.r),
-        d=slot_map.get("d", insn.d),
-    )
+    return insn
 
 
 def _classify_truncation_side_effect_snapshot(
@@ -1131,37 +1019,29 @@ def find_terminal_exit_target_snapshot(
 
 
 def init_condition_chain_cmp_opcodes() -> frozenset:
-    """Build the set of comparison opcodes for condition-chain walking.
+    """Build the set of portable predicates for condition-chain walking.
 
-    The default remains the legacy numeric opcode set; portable callers may
-    monkeypatch ``_CONDITION_CHAIN_CMP_OPCODES`` with synthetic opcode integers.
-    ``PredicateKind`` values are accepted in the walkers as an additive snapshot
-    path.
+    Backend adapters are responsible for lifting raw branch opcodes to
+    ``PredicateKind`` before portable condition-chain walking.
     """
 
-    return frozenset(_LEGACY_BRANCH_PREDICATE_OPCODES)
+    return frozenset(_CONDITION_CHAIN_BRANCH_PREDICATES)
 
 
-def eval_condition_chain_condition(opcode: object, state: int, cmp_val: int) -> bool:
+def eval_condition_chain_condition(predicate: object, state: int, cmp_val: int) -> bool:
     """Evaluate a condition-chain comparison: does the condition cause a jump?"""
 
-    if not isinstance(opcode, str):
-        try:
-            opcode = _LEGACY_BRANCH_PREDICATE_OPCODES.get(int(opcode), opcode)
-        except (TypeError, ValueError):
-            pass
-
-    if _kind_matches(opcode, PredicateKind.NE, "m_jnz"):
+    if _kind_matches(predicate, PredicateKind.NE):
         return state != cmp_val
-    if _kind_matches(opcode, PredicateKind.EQ, "m_jz"):
+    if _kind_matches(predicate, PredicateKind.EQ):
         return state == cmp_val
-    if _kind_matches(opcode, PredicateKind.ULE, "m_jbe"):
+    if _kind_matches(predicate, PredicateKind.ULE):
         return state <= cmp_val
-    if _kind_matches(opcode, PredicateKind.UGT, "m_ja"):
+    if _kind_matches(predicate, PredicateKind.UGT):
         return state > cmp_val
-    if _kind_matches(opcode, PredicateKind.ULT, "m_jb"):
+    if _kind_matches(predicate, PredicateKind.ULT):
         return state < cmp_val
-    if _kind_matches(opcode, PredicateKind.UGE, "m_jae"):
+    if _kind_matches(predicate, PredicateKind.UGE):
         return state >= cmp_val
     return False
 
@@ -1181,8 +1061,6 @@ def _is_condition_chain_comparison_snapshot(
         return False
     tail = _tail_insn(block)
     condition_key = _condition_chain_condition_key_for_tail(tail)
-    if condition_key is None:
-        condition_key = getattr(tail, "opcode", getattr(block, "tail_opcode", None))
     if (
         condition_key not in _CONDITION_CHAIN_CMP_OPCODES
         and condition_key not in _CONDITION_CHAIN_BRANCH_PREDICATES
@@ -1273,8 +1151,6 @@ def resolve_exit_via_condition_chain_default_snapshot(
 
         tail = _tail_insn(blk_snap)
         condition_key = _condition_chain_condition_key_for_tail(tail)
-        if condition_key is None:
-            condition_key = getattr(tail, "opcode", None)
         if tail is None or (
             condition_key not in _CONDITION_CHAIN_CMP_OPCODES
             and condition_key not in _CONDITION_CHAIN_BRANCH_PREDICATES
@@ -1296,10 +1172,10 @@ def resolve_exit_via_condition_chain_default_snapshot(
         else:
             if _state_var_ref(l_mop) != state_var_ref:
                 logger.info(
-                    "  exit %#x: blk[%d] compares non-state-var (mop_t=%d), stopping",
+                    "  exit %#x: blk[%d] compares non-state-var (%s), stopping",
                     exit_state,
                     current_serial,
-                    l_mop.t,
+                    _state_var_ref(l_mop),
                 )
                 return current_serial if current_serial != condition_chain_default_serial else None
             if (
@@ -1310,7 +1186,7 @@ def resolve_exit_via_condition_chain_default_snapshot(
                     "  exit %#x: blk[%d] compares different stkoff=%s, stopping",
                     exit_state,
                     current_serial,
-                    getattr(l_mop, "stkoff", None),
+                    _stack_offset(l_mop),
                 )
                 return current_serial if current_serial != condition_chain_default_serial else None
 

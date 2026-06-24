@@ -7,6 +7,8 @@ from d810.core import getLogger
 from d810.core.typing import Dict, List, Optional, Protocol
 
 from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult
+from d810.capabilities.providers import get_condition_chain_walkers
+from d810.ir.varnode import Space, varnode_from_mop_snapshot
 
 logger = getLogger(__name__)
 
@@ -147,12 +149,27 @@ def _get_state_var_stkoff(detector) -> Optional[int]:
     sm = getattr(detector, "state_machine", None)
     if sm is None or sm.state_var is None:
         return None
+    try:
+        varnode = varnode_from_mop_snapshot(sm.state_var)
+    except (AttributeError, TypeError, ValueError):
+        varnode = None
+    if varnode is not None and varnode.space is Space.STACK:
+        return int(varnode.offset)
     stkoff = getattr(sm.state_var, "stkoff", None)
     if stkoff is not None:
         return int(stkoff)
-    stack_ref = getattr(sm.state_var, "s", None)
-    stack_off = getattr(stack_ref, "off", None)
-    return int(stack_off) if stack_off is not None else None
+    try:
+        operand_stack_offset = get_condition_chain_walkers().operand_stack_offset
+    except LookupError:
+        operand_stack_offset = None
+    if operand_stack_offset is not None:
+        try:
+            provider_stkoff = operand_stack_offset(sm.state_var)
+        except Exception:
+            provider_stkoff = None
+        if provider_stkoff is not None:
+            return int(provider_stkoff)
+    return None
 
 
 def _convert_condition_chain_to_result(

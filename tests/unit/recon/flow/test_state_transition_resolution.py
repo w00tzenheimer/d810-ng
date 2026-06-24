@@ -28,6 +28,7 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
+from d810.ir.expressions import ValueOpKind
 
 
 def _dispatch_map() -> StateDispatcherMap:
@@ -266,7 +267,14 @@ def _mov(ea: int, src: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
 
 def _xor(ea: int, l: MopSnapshot, r: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
     return InsnSnapshot(
-        opcode=_OP_XOR, ea=ea, operands=(), l=l, r=r, d=dst, kind=InsnKind.AND
+        opcode=_OP_XOR,
+        ea=ea,
+        operands=(),
+        l=l,
+        r=r,
+        d=dst,
+        kind=InsnKind.UNKNOWN,
+        value_op_kind=ValueOpKind.XOR,
     )
 
 

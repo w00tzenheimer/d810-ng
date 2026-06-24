@@ -8,36 +8,76 @@ import d810.analyses.control_flow.equality_chain_dispatcher as equality_chain_di
 from d810.analyses.control_flow.equality_chain_dispatcher import (
     extract_state_dispatcher_map_from_mba,
 )
+from d810.ir.flowgraph import InsnKind, MopSnapshot, OperandKind
+from d810.ir.semantics import PredicateKind
 
 
 def _mop_n(value: int):
-    return SimpleNamespace(t="mop_n", value=value, size=4)
+    return MopSnapshot(kind=OperandKind.NUMBER, value=value, size=4)
 
 
-def _mop_n_snapshot(value: int):
-    return SimpleNamespace(t="mop_n", nnn_value=value, size=4)
+class _CanonicalConstWithoutRawNnn:
+    kind = OperandKind.NUMBER
+    value = 0x44
+    size = 4
+
+    @property
+    def nnn(self):  # pragma: no cover - test fails if accessed
+        raise AssertionError("equality-chain dispatcher read raw .nnn")
+
+    @property
+    def nnn_value(self):  # pragma: no cover - test fails if accessed
+        raise AssertionError("equality-chain dispatcher read raw .nnn_value")
+
+
+class _CanonicalStackWithoutRawS:
+    kind = OperandKind.STACK
+    stkoff = 0x3C
+    size = 4
+
+    @property
+    def s(self):  # pragma: no cover - test fails if accessed
+        raise AssertionError("equality-chain dispatcher read raw .s")
+
+    @property
+    def t(self):  # pragma: no cover - test fails if accessed
+        raise AssertionError("equality-chain dispatcher read raw .t")
+
+
+class _CanonicalLvarWithoutRawL:
+    kind = OperandKind.LVAR
+    lvar_off = 5
+    size = 4
+
+    @property
+    def l(self):  # pragma: no cover - test fails if accessed
+        raise AssertionError("equality-chain dispatcher read raw .l")
+
+    @property
+    def t(self):  # pragma: no cover - test fails if accessed
+        raise AssertionError("equality-chain dispatcher read raw .t")
 
 
 def _mop_s(off: int):
-    return SimpleNamespace(t="mop_S", s=SimpleNamespace(off=off), size=4)
+    return MopSnapshot(kind=OperandKind.STACK, stkoff=off, size=4)
 
 
 def _mop_l(idx: int):
-    return SimpleNamespace(t="mop_l", l=SimpleNamespace(idx=idx), size=4)
+    return MopSnapshot(kind=OperandKind.LVAR, lvar_off=idx, size=4)
 
 
 def _mop_b(serial: int):
-    return SimpleNamespace(t="mop_b", b=serial, block_ref=serial)
+    return MopSnapshot(kind=OperandKind.BLOCK, block_ref=serial)
 
 
 def _mov(src, dst):
-    return SimpleNamespace(opcode="m_mov", l=src, d=dst)
+    return SimpleNamespace(kind=InsnKind.MOV, l=src, d=dst)
 
 
 def _block(
     serial: int,
     *,
-    opcode: str = "m_jz",
+    predicate: PredicateKind = PredicateKind.EQ,
     state_mop=None,
     const: int = 0,
     jump_target: int = 0,
@@ -50,7 +90,8 @@ def _block(
         succset=succs,
         insns=insns,
         tail=SimpleNamespace(
-            opcode=opcode,
+            kind=InsnKind.EQUALITY_JUMP,
+            predicate=predicate,
             l=state_mop if state_mop is not None else _mop_s(0x3C),
             r=_mop_n(const),
             d=_mop_b(jump_target),
@@ -93,7 +134,7 @@ def test_canonicalizes_direct_dispatcher_state_scratch_alias() -> None:
         {
             2: _block(
                 2,
-                opcode="m_jnz",
+                predicate=PredicateKind.NE,
                 state_mop=state_var,
                 const=0x10,
                 jump_target=3,
@@ -120,7 +161,7 @@ def test_canonicalizes_direct_dispatcher_state_scratch_alias() -> None:
     assert dispatch_map.state_var_stkoff == 0x364
 
 
-def test_extracts_snapshot_constants_from_nnn_value() -> None:
+def test_extracts_snapshot_constants_from_canonical_value() -> None:
     mba = _Mba(
         {
             2: _block(
@@ -131,7 +172,8 @@ def test_extracts_snapshot_constants_from_nnn_value() -> None:
             ),
         }
     )
-    mba.blocks[2].tail.r = _mop_n_snapshot(0x44)
+    mba.blocks[2].tail.l = _CanonicalStackWithoutRawS()
+    mba.blocks[2].tail.r = _CanonicalConstWithoutRawNnn()
 
     dispatch_map = extract_state_dispatcher_map_from_mba(
         mba,
@@ -147,7 +189,6 @@ def test_backend_specific_numeric_names_belong_in_adapter_not_recon() -> None:
         {
             2: _block(
                 2,
-                opcode=444,
                 state_mop=SimpleNamespace(t=55, s=SimpleNamespace(off=0x3C), size=4),
                 const=0,
                 jump_target=7,
@@ -156,6 +197,8 @@ def test_backend_specific_numeric_names_belong_in_adapter_not_recon() -> None:
         }
     )
     mba.blocks[2].type = 4
+    mba.blocks[2].tail.predicate = None
+    mba.blocks[2].tail.opcode = 444
     mba.blocks[2].tail.r = SimpleNamespace(t=22, nnn_value=0x55, size=4)
 
     signature = inspect.signature(extract_state_dispatcher_map_from_mba)
@@ -173,7 +216,6 @@ def test_hexrays_numeric_constants_require_adapter_normalization() -> None:
         {
             2: _block(
                 2,
-                opcode=44,
                 state_mop=SimpleNamespace(t=5, s=SimpleNamespace(off=0x3C), size=4),
                 const=0,
                 jump_target=7,
@@ -181,6 +223,8 @@ def test_hexrays_numeric_constants_require_adapter_normalization() -> None:
             ),
         }
     )
+    mba.blocks[2].tail.predicate = None
+    mba.blocks[2].tail.opcode = 44
     mba.blocks[2].tail.r = SimpleNamespace(t=2, nnn_value=0x55, size=4)
 
     assert (
@@ -198,7 +242,7 @@ def test_extracts_jnz_exact_row_from_fallthrough() -> None:
         {
             2: _block(
                 2,
-                opcode="m_jnz",
+                predicate=PredicateKind.NE,
                 const=0x10,
                 jump_target=3,
                 succs=(7, 3),
@@ -250,6 +294,28 @@ def test_supports_promoted_lvar_state() -> None:
             2: _block(
                 2,
                 state_mop=_mop_l(5),
+                const=0x10,
+                jump_target=7,
+                succs=(3, 7),
+            ),
+        }
+    )
+
+    dispatch_map = extract_state_dispatcher_map_from_mba(
+        mba,
+        dispatcher_entry_block=2,
+    )
+
+    assert dispatch_map is not None
+    assert dispatch_map.state_var_lvar_idx == 5
+
+
+def test_lvar_state_uses_canonical_identity_not_raw_lvar_shape() -> None:
+    mba = _Mba(
+        {
+            2: _block(
+                2,
+                state_mop=_CanonicalLvarWithoutRawL(),
                 const=0x10,
                 jump_target=7,
                 succs=(3, 7),

@@ -8,6 +8,8 @@ from d810.analyses.control_flow.condition_chain_model import resolve_target_via_
 from d810.capabilities.providers import get_condition_chain_walkers
 from d810.analyses.control_flow.state_machine_analysis import evaluate_handler_paths
 from d810.analyses.control_flow.transition_builder import _get_state_var_stkoff
+from d810.ir.expressions import ValueOpKind
+from d810.ir.varnode import Space, varnode_from_mop_snapshot
 
 
 # Registry-backed seam (see ``d810.capabilities.providers``, ticket d81-1w16):
@@ -16,9 +18,7 @@ from d810.analyses.control_flow.transition_builder import _get_state_var_stkoff
 def resolve_via_condition_chain_walk(*args, **kwargs):
     return get_condition_chain_walkers().resolve_via_condition_chain_walk(*args, **kwargs)
 
-_MOVE_OPCODE = 4
-_NUMBER_OPERAND = 2
-_STACK_OPERAND = 5
+_MOVE_OPS = frozenset({"move", ValueOpKind.MOVE.value, ValueOpKind.MOVE.name, 4})
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,8 +76,7 @@ def resolve_state_var_stkoff(
             pass
     if stkoff is None and state_var is not None:
         try:
-            if _is_stack_operand(state_var):
-                stkoff = state_var.s.off
+            stkoff = _stack_offset(state_var)
         except Exception:
             pass
     return stkoff
@@ -210,15 +209,10 @@ def collect_exit_transition_candidates(
             while insn is not None:
                 if _is_move_opcode(getattr(insn, "opcode", None)):
                     d = insn.d
-                    if (
-                        d is not None
-                        and _is_stack_operand(d)
-                        and d.s is not None
-                        and d.s.off == stkoff
-                        and insn.l is not None
-                        and _is_number_operand(insn.l)
-                    ):
-                        found_writes.append((int(blk_serial), int(insn.l.nnn.value)))
+                    dest_stkoff = _stack_offset(d)
+                    literal = _number_value(getattr(insn, "l", None))
+                    if dest_stkoff == stkoff and literal is not None:
+                        found_writes.append((int(blk_serial), int(literal)))
                 insn = insn.next
 
             if depth < max_bfs_depth:
@@ -246,25 +240,73 @@ def collect_exit_transition_candidates(
     return tuple(candidates)
 
 
-def _kind_matches(value: object, legacy_name: str, numeric_value: int) -> bool:
-    if value == legacy_name or str(value) == legacy_name:
+def _is_move_opcode(opcode: object) -> bool:
+    if opcode in _MOVE_OPS or str(opcode) in _MOVE_OPS:
         return True
     try:
-        return int(value) == int(numeric_value)
+        if int(opcode) in _MOVE_OPS:
+            return True
+    except Exception:
+        pass
+    try:
+        is_move_opcode = get_condition_chain_walkers().is_move_opcode
+    except LookupError:
+        is_move_opcode = None
+    if is_move_opcode is None:
+        return False
+    try:
+        return bool(is_move_opcode(opcode))
     except Exception:
         return False
 
 
-def _is_move_opcode(opcode: object) -> bool:
-    return _kind_matches(opcode, "m_mov", _MOVE_OPCODE)
+def _varnode(mop: object | None):
+    if mop is None:
+        return None
+    try:
+        return varnode_from_mop_snapshot(mop)  # type: ignore[arg-type]
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
-def _is_number_operand(mop: object) -> bool:
-    return _kind_matches(getattr(mop, "t", None), "mop_n", _NUMBER_OPERAND)
+def _stack_offset(mop: object | None) -> int | None:
+    varnode = _varnode(mop)
+    if varnode is not None and varnode.space is Space.STACK:
+        return int(varnode.offset)
+    stkoff = getattr(mop, "stkoff", None) if mop is not None else None
+    if stkoff is not None:
+        return int(stkoff)
+    try:
+        operand_stack_offset = get_condition_chain_walkers().operand_stack_offset
+    except LookupError:
+        operand_stack_offset = None
+    if operand_stack_offset is None or mop is None:
+        return None
+    try:
+        provider_stkoff = operand_stack_offset(mop)
+    except Exception:
+        provider_stkoff = None
+    return int(provider_stkoff) if provider_stkoff is not None else None
 
 
-def _is_stack_operand(mop: object) -> bool:
-    return _kind_matches(getattr(mop, "t", None), "mop_S", _STACK_OPERAND)
+def _number_value(mop: object | None) -> int | None:
+    varnode = _varnode(mop)
+    if varnode is not None and varnode.space is Space.CONST:
+        return int(varnode.offset)
+    value = getattr(mop, "value", None) if mop is not None else None
+    if value is not None:
+        return int(value)
+    try:
+        operand_number_value = get_condition_chain_walkers().operand_number_value
+    except LookupError:
+        operand_number_value = None
+    if operand_number_value is None or mop is None:
+        return None
+    try:
+        provider_value = operand_number_value(mop)
+    except Exception:
+        provider_value = None
+    return int(provider_value) if provider_value is not None else None
 
 
 def collect_condition_chain_default_transition_candidates(

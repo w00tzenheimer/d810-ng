@@ -15,9 +15,9 @@ Companion modules:
   live adapter (``analyze_dispatcher_live``: mba lift + explicit
   cross-maturity history store).
 
-This module imports only ``d810.ir.flowgraph``; all dependencies
-flow upward (recon-flow facts -> recon-flow analyzer -> optimizers
-live adapter), never the reverse.
+This module imports only portable ``d810.ir`` data; all dependencies flow upward
+(recon-flow facts -> recon-flow analyzer -> optimizers live adapter), never the
+reverse.
 """
 
 from __future__ import annotations
@@ -26,6 +26,10 @@ from dataclasses import dataclass, field
 from enum import IntFlag
 
 from d810.ir.flowgraph import MopSnapshot, OperandKind
+from d810.ir.storage_identity import (
+    StorageIdentity,
+    storage_identity_from_mop_snapshot,
+)
 
 __all__ = ["BlockAnalysis", "DispatcherStrategy", "StateVariableCandidate"]
 
@@ -77,8 +81,10 @@ class BlockAnalysis:
 class StateVariableCandidate:
     """A candidate for the state variable (portable -- E3-schema).
 
-    The operand identity is held as a portable
-    ``d810.ir.flowgraph.MopSnapshot``, NOT a live ``ida_hexrays.mop_t``.
+    The decision identity is held as a portable
+    ``d810.ir.storage_identity.StorageIdentity``.  ``mop`` remains the lifted
+    operand provenance needed by legacy consumers and lowerers; it is NOT a live
+    ``ida_hexrays.mop_t``.
     The live adapter at
     ``d810.backends.hexrays.evidence.dispatcher.dispatcher_history`` is
     the only construction site -- ``analyze_dispatcher_live`` lifts the mba via
@@ -89,11 +95,11 @@ class StateVariableCandidate:
     Field names ``mop_type`` / ``mop_offset`` / ``mop_size`` are kept
     for backward compatibility with existing consumers; their values
     mirror what the live-IDA helpers used to compute and can also be
-    derived from ``mop`` directly via ``mop.kind`` /
-    ``d810.ir.mop_identity.mop_snapshot_offset(mop)`` / ``mop.size``.
+    derived from ``storage_identity`` / ``mop.kind`` / ``mop.size``.
     """
 
     mop: MopSnapshot
+    storage_identity: StorageIdentity | None = None
     mop_type: int = 0  # Mirror of mop.t (raw backend operand type; diagnostic)
     mop_offset: int = 0  # For STACK: stack offset; for REGISTER: register number
     mop_size: int = 4  # Operand size in bytes (mirrors mop.size)
@@ -104,6 +110,10 @@ class StateVariableCandidate:
     comparison_blocks: list[int] = field(default_factory=list)
     assignment_blocks: list[int] = field(default_factory=list)
     score: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.storage_identity is None:
+            self.storage_identity = storage_identity_from_mop_snapshot(self.mop)
 
     def get_native_stack_offset(self, frame_size: int) -> int | None:
         """Convert microcode stack offset to native stack offset.

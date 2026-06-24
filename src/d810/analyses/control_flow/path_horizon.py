@@ -12,6 +12,7 @@ from d810.analyses.control_flow.state_machine_analysis import (
     find_last_state_write_site_on_path_snapshot,
     find_state_write_sites_snapshot,
 )
+from d810.ir.varnode import Space, varnode_from_mop_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,6 @@ def resolve_transition_path_horizon(
                 break
 
     if resolved is None and edge.kind == SemanticEdgeKind.CONDITIONAL_TRANSITION:
-        mop_s = 3
         for path_serial in reversed(ordered_path):
             block_snap = flow_graph.get_block(path_serial)
             if block_snap is None:
@@ -92,16 +92,15 @@ def resolve_transition_path_horizon(
                 dest = getattr(insn, "d", None)
                 if dest is None:
                     continue
-                if getattr(dest, "t", None) != mop_s:
-                    continue
-                dest_stkoff = getattr(dest, "stkoff", None)
-                if dest_stkoff is None:
-                    s_ref = getattr(dest, "s", None)
-                    dest_stkoff = (
-                        getattr(s_ref, "off", None)
-                        if s_ref is not None
-                        else None
-                    )
+                try:
+                    dest_varnode = varnode_from_mop_snapshot(dest)
+                except (AttributeError, TypeError, ValueError):
+                    dest_varnode = None
+                dest_stkoff = (
+                    int(dest_varnode.offset)
+                    if dest_varnode is not None and dest_varnode.space is Space.STACK
+                    else None
+                )
                 if dest_stkoff is None or int(dest_stkoff) != int(state_var_stkoff):
                     continue
                 actual_insn_idx = len(block_snap.insn_snapshots) - 1 - insn_idx
