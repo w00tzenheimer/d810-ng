@@ -180,7 +180,7 @@ Copy the contents of this repository to `.idapro/plugins` or `%appdata%\Hex-Rays
 To activate [Cython](https://cython.org) speedups, install the pre-built wheels for your platform and then run the helper that keeps Z3 isolated from IDA:
 
 ```bash
-pip3 install d810-ng[speedups]
+pip3 install "d810-ng[speedups]"
 python -m d810.speedups.install
 ```
 
