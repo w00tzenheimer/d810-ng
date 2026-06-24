@@ -42,6 +42,7 @@ from d810.analyses.control_flow.deffai.preprocess import (
 )
 from d810.analyses.control_flow.deffai.transfer import (
     mop_cell,
+    operand_cell,
     scalar_block_evaluator,
     transfer_block_set,
 )
@@ -54,6 +55,7 @@ __all__ = [
     # transfer
     "transfer_block_set",
     "mop_cell",
+    "operand_cell",
     "scalar_block_evaluator",
     # preprocess
     "slice_on_condvars",
