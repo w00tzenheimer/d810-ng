@@ -16,7 +16,11 @@ from d810.core.maturity_labels import WITH_ZERO_MATURITY_VALUES
 from d810.core.typing import Any, Iterable
 from d810.ir.expressions import ValueOpKind
 from d810.ir.instructions import Instruction, InstructionEffectKind
-from d810.ir.insn_projection import InstructionProjection
+from d810.ir.insn_projection import (
+    InstructionProjection,
+    diag_row_has_operand_tree,
+    project_diag_instruction,
+)
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
 from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.ir.varnode import Space, Varnode
@@ -440,6 +444,24 @@ def _iter_portable_instructions(target: Any) -> Iterable[_InstructionView]:
                 )
             continue
         for index, insn in enumerate(getattr(blk, "instructions", ())):
+            # llr-3b41 S2: a diag Branch-B row that carries a parseable ``meta``
+            # operand tree (DB-replay / ``InstructionSnapshot`` rows) is lifted
+            # through the SAME canonical projection Branch-A uses, so its
+            # operand facts become canonical-faithful (real ``operation``,
+            # recursive ``address_stkoffs``).  Meta-less rows -- the production
+            # ``mba_to_fact_target`` ``SimpleNamespace`` (flat fields only) and
+            # attrs-only ``meta`` rows -- fall through to the byte-identical
+            # legacy flat-field path below (canonical reads only the operand
+            # tree, never the flat fields, so it cannot reproduce them).
+            if diag_row_has_operand_tree(insn):
+                canonical = project_diag_instruction(insn)
+                view = _instruction_view_from_canonical(
+                    block_serial=block_serial,
+                    index=int(getattr(insn, "index", index)),
+                    instruction=canonical,
+                )
+                yield view
+                continue
             dest_stkoff = (
                 int(getattr(insn, "dest_stkoff"))
                 if getattr(insn, "dest_stkoff", None) is not None
