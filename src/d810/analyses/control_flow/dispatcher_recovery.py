@@ -4,7 +4,8 @@ LLVM-analysis / LiSA-CFG style: an analysis pass that reads only the portable ``
 produces an immutable result (``DispatcherRecovery``) — no microcode patching, no live ``mba``.
 
 This is the portable hand-port of ``HodurStateMachineDetector`` (which reads live ``mop_t``): the
-same equality-chain detection expressed over ``BlockSnapshot``/``MopSnapshot``. A state-check block
+same equality-chain detection expressed over ``BlockSnapshot`` and the canonical operand identity
+surface (``Varnode`` / ``StorageIdentity``). A state-check block
 is a conditional jump comparing a state variable to a large constant; the constant routes to the
 handler taken when ``state == const`` (``EQ`` -> jump target, ``NE`` -> fall-through). The dominant
 compared variable (most comparisons) is the state variable, à la the live detector's cache-driven

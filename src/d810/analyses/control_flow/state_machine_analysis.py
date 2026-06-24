@@ -617,8 +617,8 @@ def _eval_insn_view_snapshot(insn: InsnSnapshot) -> InsnSnapshot:
     """Return the canonical instruction snapshot for state-write evaluation.
 
     Live capture now lifts nested ``mop_d`` expression structure into
-    ``InsnSnapshot.l/r/d`` via portable ``MopSnapshot.sub_*`` fields.  Returning
-    the snapshot itself keeps the fixpoint on the canonical projection path;
+    ``InsnSnapshot`` operands via the portable nested-sub-operation fields.
+    Returning the snapshot itself keeps the fixpoint on the canonical projection path;
     wrapping it as a generic object makes the backend evaluator treat it like
     live microcode and lose the typed operation/effect metadata.
     """

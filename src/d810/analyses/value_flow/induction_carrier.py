@@ -69,14 +69,14 @@ class _InstructionView:
     dest_temp: int | None = None
     src_temps: tuple[int, ...] = ()
     # Register identity for operands carried in a register rather than a
-    # stack slot (``mop_r``).  ``None`` when the operand is not a register;
-    # ``stkoff`` is likewise ``None`` for register operands.  Populated from the
-    # snapshot ``MopSnapshot.reg`` field, or a ``*_reg`` attribute on a
-    # diag-style instruction when present.
+    # stack slot (a ``Varnode`` in ``Space.REGISTER``).  ``None`` when the
+    # operand is not a register; ``stkoff`` is likewise ``None`` for register
+    # operands.  Populated from the lifted operand snapshot's register field, or
+    # a ``*_reg`` attribute on a diag-style instruction when present.
     dest_reg: int | None = None
     src_l_reg: int | None = None
     src_r_reg: int | None = None
-    # Raw operand SUBTREE snapshots (``MopSnapshot``) for the left/right
+    # Lifted operand SUBTREE provenance for the left/right
     # operands, retained so operand-tree walkers can inspect a nested
     # sub-operation (e.g. a ``(%var - #N)`` subtract buried inside an
     # ``m_xdu`` / ``m_jge`` expression) at ANY depth.  The flat
