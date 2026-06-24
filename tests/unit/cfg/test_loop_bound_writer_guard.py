@@ -392,10 +392,8 @@ class TestDetectLoopCounterWritebackTail:
         assert detect_loop_counter_writeback_tail(None, tail_block_serial=2) is None
 
 
-# Extended ``_Mop`` shim with a ``dstr`` attribute so the
-# ``collect_const_var_refs_in_block`` helper can extract ``%var_NNN``
-# tokens from the destination operand.  The helper inspects the dest
-# mop's ``dstr`` (either a callable or a string).
+# Extended ``_Mop`` shim with a ``dstr`` attribute.  The const-writer helper
+# should ignore it and use the structured stack offset instead.
 class _MopWithDstr(_Mop):
     def __init__(self, t: int, *, s=None, nnn=None, d=None, dstr_text: str = ""):
         super().__init__(t, s=s, nnn=nnn, d=d)
@@ -407,7 +405,7 @@ class TestCollectConstVarRefsInBlock:
         self,
         const_pairs: tuple[tuple[int, str], ...],
     ) -> _Mblock:
-        """Build a block with ``m_mov #const, %var_NNN`` per pair."""
+        """Build a block with ``m_mov #const, stack`` per pair."""
         insns: list[_Insn] = []
         for stkoff, var_token in const_pairs:
             src = _Mop(OperandKind.NUMBER, nnn=_NumValue(0xC0FFEE0000 + stkoff))
@@ -417,7 +415,7 @@ class TestCollectConstVarRefsInBlock:
             insns.append(_Insn(InsnKind.MOV, l=src, d=dst))
         return _Mblock(_chain(*insns))
 
-    def test_returns_var_refs_for_const_writes(self):
+    def test_returns_storage_keys_for_const_writes(self):
         from d810.transforms.loop_bound_writer_guard import (
             collect_const_var_refs_in_block,
         )
@@ -434,7 +432,7 @@ class TestCollectConstVarRefsInBlock:
 
         refs = collect_const_var_refs_in_block(mba, block_serial=0)
 
-        assert refs == frozenset({"228", "650", "658", "660"})
+        assert refs == frozenset({"s552", "s1616", "s1624", "s1632"})
 
     def test_accepts_semantic_kind_classifiers_for_live_shaped_objects(self):
         from d810.transforms.loop_bound_writer_guard import (
@@ -475,9 +473,9 @@ class TestCollectConstVarRefsInBlock:
             }.get(getattr(obj, "t", None)),
         )
 
-        assert refs == frozenset({"228"})
+        assert refs == frozenset({"s552"})
 
-    def test_falls_back_to_instruction_text_for_const_write_dest(self):
+    def test_ignores_instruction_text_for_const_write_dest(self):
         from d810.transforms.loop_bound_writer_guard import (
             collect_const_var_refs_in_block,
         )
@@ -485,11 +483,11 @@ class TestCollectConstVarRefsInBlock:
         src = _Mop(OperandKind.NUMBER, nnn=_NumValue(0xC0FFEE))
         dst = _Mop(OperandKind.STACK, s=_StkOff(0x648))
         insn = _Insn(InsnKind.MOV, l=src, d=dst)
-        insn.dstr = lambda: "mov    #0xC0FFEE.8, %var_648.8"
+        insn.dstr = lambda: "mov    #0xC0FFEE.8, %var_DEAD.8"
         mba = _Mba([_Mblock(_chain(insn))])
 
         assert collect_const_var_refs_in_block(mba, block_serial=0) == frozenset({
-            "648",
+            "s1608",
         })
 
     def test_returns_empty_when_block_has_no_const_writes(self):

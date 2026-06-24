@@ -4,7 +4,12 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from d810.ir.flowgraph import FlowGraph, InsnKind, OperandKind
+from d810.ir.flowgraph import FlowGraph, InsnKind, PredicateKind
+from d810.ir.storage_identity import (
+    StorageIdentityKind,
+    storage_identity_from_mop_snapshot,
+)
+from d810.ir.varnode import Space, varnode_from_mop_snapshot
 from d810.transforms.graph_modification import (
     CloneConditionalAsGoto,
     CloneConditionalAsGotoFromBranchArm,
@@ -21,7 +26,7 @@ from d810.transforms.plan_fragment import (
     PlanFragment,
 )
 from d810.analyses.control_flow.conditional_jump_eval import (
-    conditional_jump_outcome_for_values,
+    conditional_jump_outcome_for_predicate,
 )
 from d810.analyses.control_flow.graph_checks import reachable_from_adjacency
 
@@ -93,27 +98,26 @@ def resolve_fake_jump_target(
     operand_size: int = 4,
 ) -> FakeJumpResolution:
     """Resolve the deterministic target for a fake conditional jump."""
-    opcode_names = {
-        jz_opcode: "m_jz",
-        jnz_opcode: "m_jnz",
-        jae_opcode: "m_jae",
-        jb_opcode: "m_jb",
-        ja_opcode: "m_ja",
-        jbe_opcode: "m_jbe",
-        jg_opcode: "m_jg",
-        jge_opcode: "m_jge",
-        jl_opcode: "m_jl",
-        jle_opcode: "m_jle",
+    opcode_predicates = {
+        jz_opcode: PredicateKind.EQ,
+        jnz_opcode: PredicateKind.NE,
+        jae_opcode: PredicateKind.UGE,
+        jb_opcode: PredicateKind.ULT,
+        ja_opcode: PredicateKind.UGT,
+        jbe_opcode: PredicateKind.ULE,
+        jg_opcode: PredicateKind.SGT,
+        jge_opcode: PredicateKind.SGE,
+        jl_opcode: PredicateKind.SLT,
+        jle_opcode: PredicateKind.SLE,
     }
-    opcode_names = {
-        key: value for key, value in opcode_names.items() if key is not None
+    opcode_predicates = {
+        key: value for key, value in opcode_predicates.items() if key is not None
     }
-    outcome = conditional_jump_outcome_for_values(
-        opcode,
+    outcome = conditional_jump_outcome_for_predicate(
+        opcode_predicates.get(opcode),
         pred_comparison_values,
         compared_value,
         operand_size=operand_size,
-        opcode_names=opcode_names,
     )
     if outcome is None:
         return FakeJumpResolution(new_target=None)
@@ -136,25 +140,20 @@ def resolve_fake_jump_target(
 def _operand(insn: object | None, slot: str) -> object | None:
     if insn is None:
         return None
+    canonical = getattr(insn, slot, None)
+    if canonical is not None:
+        return canonical
     for slot_name, operand in getattr(insn, "operand_slots", ()) or ():
         if slot_name == slot:
             return operand
-    return getattr(insn, slot, None)
+    return None
 
 
 def _const_value(mop: object | None) -> int | None:
-    if mop is None:
+    varnode = varnode_from_mop_snapshot(mop)
+    if varnode is None or varnode.space is not Space.CONST:
         return None
-    value = getattr(mop, "value", None)
-    if value is None:
-        nnn = getattr(mop, "nnn", None)
-        value = getattr(nnn, "value", None)
-    if value is None:
-        return None
-    try:
-        return int(value) & 0xFFFFFFFFFFFFFFFF
-    except (TypeError, ValueError):
-        return None
+    return int(varnode.offset) & 0xFFFFFFFFFFFFFFFF
 
 
 def _block_ref(mop: object | None) -> int | None:
@@ -172,27 +171,15 @@ def _block_ref(mop: object | None) -> int | None:
 
 
 def _var_id(mop: object | None) -> VarId | None:
-    if mop is None:
+    identity = storage_identity_from_mop_snapshot(mop)
+    if identity is None:
         return None
-    kind = getattr(mop, "kind", None)
-    reg = getattr(mop, "reg", None)
-    if reg is not None or kind is OperandKind.REGISTER:
-        try:
-            return ("reg", int(reg))
-        except (TypeError, ValueError):
-            return None
-    stkoff = getattr(mop, "stkoff", None)
-    if stkoff is not None or kind is OperandKind.STACK:
-        try:
-            return ("stack", int(stkoff))
-        except (TypeError, ValueError):
-            return None
-    lvar_idx = getattr(mop, "lvar_idx", None)
-    if lvar_idx is not None:
-        try:
-            return ("lvar", int(lvar_idx))
-        except (TypeError, ValueError):
-            return None
+    if identity.kind is StorageIdentityKind.REGISTER:
+        return ("reg", int(identity.offset))
+    if identity.kind is StorageIdentityKind.STACK:
+        return ("stack", int(identity.offset))
+    if identity.kind is StorageIdentityKind.LVAR:
+        return ("lvar", int(identity.offset))
     return None
 
 

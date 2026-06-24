@@ -24,13 +24,17 @@ import re
 from d810.core.logging import getLogger
 from d810.core.project import register_recon_fact_collector_registration_handler
 from d810.core.typing import Any, Iterable
+from d810.backends.hexrays.evidence.opcode_semantics import (
+    microcode_semantic_label_resolver,
+)
+from d810.ir.expressions import ValueOpKind
 from d810.ir.maturity import IRMaturity
 from d810.analyses.fact_collection_context import (
     FactCollectionContext,
     coerce_fact_collection_context,
     fact_provider_label,
 )
-from d810.capabilities.providers import get_condition_chain_walkers, get_microcode_evidence
+from d810.capabilities.providers import get_condition_chain_walkers
 from d810.capabilities.source_lifter import select_lifter
 from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipProof,
@@ -411,7 +415,7 @@ def _iter_carrier_hits(instructions: tuple[_InstructionView, ...]) -> Iterable[_
                     details=details,
                 )
 
-        if insn.opcode_name in {"m_stx", "op_1", "store"}:
+        if insn.operation is ValueOpKind.STORE:
             target = _store_target_token(dstr)
             if target is None:
                 continue
@@ -802,51 +806,12 @@ def collect_ollvm_profile_fact_observations(mba: object) -> tuple[object, ...]:
     return (*raw_facts, *projected_facts)
 
 
-def _microcode_opcode_label_resolver(mba: object):
-    try:
-        constants = get_microcode_evidence().microcode_constants(mba)
-    except Exception:
-        return None
-    opcode_names = {
-        int(getattr(constants, name)): name
-        for name in (
-            "m_jz",
-            "m_jnz",
-            "m_jge",
-            "m_jg",
-            "m_jle",
-            "m_jl",
-            "m_jae",
-            "m_ja",
-            "m_jbe",
-            "m_jb",
-            "m_jcnd",
-            "m_stx",
-            "m_call",
-            "m_icall",
-        )
-        if getattr(constants, name, -1) is not None
-        and int(getattr(constants, name, -1)) >= 0
-    }
-    if not opcode_names:
-        return None
-
-    def _resolve(insn_or_opcode: object) -> str | None:
-        opcode = getattr(insn_or_opcode, "opcode", insn_or_opcode)
-        try:
-            return opcode_names.get(int(opcode))
-        except (TypeError, ValueError):
-            return None
-
-    return _resolve
-
-
 def collect_ollvm_branch_ownership_refiners(
     mba: object,
     logger: object,
 ) -> tuple[object, ...]:
     try:
-        opcode_label_resolver = _microcode_opcode_label_resolver(mba)
+        opcode_label_resolver = microcode_semantic_label_resolver(mba)
         return (
             OllvmCarrierBranchOwnershipOracle(
                 mba=mba,

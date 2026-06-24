@@ -22,16 +22,13 @@ Both detectors are read-only and return ``None`` on any failure so the
 surrounding code can keep its existing fast-path semantics.
 
 This module also exposes :func:`collect_const_var_refs_in_block`, a
-neutral helper that returns the set of ``%var_NNN`` *name tokens*
-(matching the format used by ``ReturnCarrierFact.payload
-['upstream_writer_var_refs']``) that the given block writes via the
-canonical ``m_mov #const, %var_NNN`` shape.  It exists here because the
-existing fakes/conventions for this file cover the same opcode/mop
-surface.
+neutral helper that returns portable stack-storage identity keys
+(``S<offset>``) written via the canonical ``m_mov #const, stack`` shape.
+It exists here because the existing fakes/conventions for this file cover the
+same opcode/mop surface.
 """
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -639,14 +636,6 @@ def detect_loop_counter_writeback_tail(
     )
 
 
-# Match ``%var_NNN`` references in microcode dstr text.  Mirrors the
-# pattern used by ``ReturnCarrierFactCollector._extract_var_refs`` so
-# the result of :func:`collect_const_var_refs_in_block` can be
-# intersected directly with the
-# ``ReturnCarrierFact.payload["upstream_writer_var_refs"]`` payload.
-_VAR_REF_RE = re.compile(r"%var_([0-9A-Fa-f]+)")
-
-
 def collect_const_var_refs_in_block(
     mba,
     block_serial: int,
@@ -654,14 +643,12 @@ def collect_const_var_refs_in_block(
     insn_kind_classifier: InsnKindClassifier | None = None,
     operand_kind_classifier: OperandKindClassifier | None = None,
 ) -> frozenset[str]:
-    """Return the set of ``%var_NNN`` name tokens written via
-    ``m_mov #const, %var_NNN`` in the given block.
+    """Return storage identity keys written via ``m_mov #const, stack``.
 
-    Names are parsed from the destination operand's ``dstr`` (the
-    textual rendering used by the IDA microcode dump) rather than from
-    raw ``mop_S.s.off``.  This matches the format stored in
-    ``ReturnCarrierFact.payload["upstream_writer_var_refs"]``, so the
-    two sets can be intersected without an additional translation step.
+    The key format matches
+    ``ReturnCarrierFact.payload["upstream_writer_source_storage_keys"]``.
+    This helper deliberately reads the live destination stack offset rather
+    than parsing rendered ``%var`` names from ``dstr``.
 
     The walk is read-only and returns an empty set on any failure
     (missing block, missing instructions, bad opcodes, parse errors).
@@ -695,29 +682,9 @@ def collect_const_var_refs_in_block(
             or _operand_kind(d, operand_kind_classifier) != OperandKind.STACK
         ):
             continue
-        # Parse %var_NNN from the destination's dstr so the result
-        # matches the ReturnCarrierFact upstream_writer_var_refs format.
-        dstr_method = getattr(d, "dstr", None)
-        text: str | None = None
-        if callable(dstr_method):
-            try:
-                text = dstr_method()
-            except Exception:
-                text = None
-        elif isinstance(dstr_method, str):
-            text = dstr_method
-        if not text:
-            insn_dstr = getattr(insn, "dstr", None)
-            if callable(insn_dstr):
-                try:
-                    text = insn_dstr()
-                except Exception:
-                    text = None
-            elif isinstance(insn_dstr, str):
-                text = insn_dstr
-        if text:
-            for match in _VAR_REF_RE.finditer(text):
-                found.add(match.group(1).lower())
+        stkoff = _operand_stkoff(d, operand_kind_classifier)
+        if stkoff is not None:
+            found.add(f"S{int(stkoff)}".lower())
     return frozenset(found)
 
 

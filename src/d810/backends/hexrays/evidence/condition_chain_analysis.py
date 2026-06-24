@@ -40,6 +40,8 @@ from d810.analyses.control_flow.condition_chain_model import ConditionChainAnaly
 from d810.analyses.control_flow.condition_chain_model import ConditionChainNodeMap
 from d810.analyses.control_flow.condition_chain_model import resolve_target_via_condition_chain
 from d810.analyses.control_flow.interval_map import Node, NodeKind, emit_dispatch_intervals, IntervalDispatcher
+from d810.ir.flowgraph import InsnSnapshot, MopSnapshot, OperandKind
+from d810.ir.varnode import Space, varnode_from_mop_snapshot
 
 logger = getLogger(__name__)
 
@@ -299,15 +301,151 @@ def resolve_via_condition_chain_walk(
 # -----------------------------------------------------------------------------
 
 
+def _fallback_mop_snapshot(mop: object) -> MopSnapshot | None:
+    """Best-effort lifted operand for live-shaped tests and adapter shims."""
+    if mop is None:
+        return None
+    if isinstance(mop, MopSnapshot):
+        return mop
+
+    mop_type = getattr(mop, "t", None)
+    mop_name = _mop_type_name(mop_type)
+    size = int(getattr(mop, "size", 0) or 0)
+
+    if mop_name == "mop_n":
+        nnn = getattr(mop, "nnn", None)
+        value = getattr(nnn, "value", None) if nnn is not None else None
+        if value is None:
+            value = getattr(mop, "value", None)
+        if value is None:
+            return None
+        return MopSnapshot(t=int(mop_type), size=size, value=int(value), kind=OperandKind.NUMBER)
+
+    if mop_name == "mop_S":
+        stack_ref = getattr(mop, "s", None)
+        stkoff = getattr(stack_ref, "off", None) if stack_ref is not None else None
+        if stkoff is None:
+            stkoff = getattr(mop, "stkoff", None)
+        if stkoff is None:
+            return None
+        return MopSnapshot(
+            t=int(mop_type),
+            size=size,
+            stkoff=int(stkoff),
+            stack_refs=(int(stkoff),),
+            kind=OperandKind.STACK,
+        )
+
+    if mop_name == "mop_r":
+        reg = getattr(mop, "r", None)
+        if reg is None:
+            reg = getattr(mop, "reg", None)
+        if reg is None:
+            return None
+        return MopSnapshot(t=int(mop_type), size=size, reg=int(reg), kind=OperandKind.REGISTER)
+
+    if mop_name == "mop_v":
+        gaddr = getattr(mop, "g", None)
+        if gaddr is None:
+            gaddr = getattr(mop, "gaddr", None)
+        if gaddr is None:
+            return None
+        return MopSnapshot(t=int(mop_type), size=size, gaddr=int(gaddr), kind=OperandKind.GLOBAL)
+
+    if mop_name == "mop_l":
+        lref = getattr(mop, "l", None)
+        lvar_off = getattr(lref, "off", None) if lref is not None else None
+        if lvar_off is None:
+            lvar_off = getattr(mop, "lvar_off", None)
+        if lvar_off is None:
+            return None
+        return MopSnapshot(t=int(mop_type), size=size, lvar_off=int(lvar_off), kind=OperandKind.LVAR)
+
+    if mop_name == "mop_b":
+        block_ref = getattr(mop, "b", None)
+        if block_ref is None:
+            block_ref = getattr(mop, "block_ref", None)
+        if block_ref is None:
+            return None
+        return MopSnapshot(t=int(mop_type), size=size, block_ref=int(block_ref), kind=OperandKind.BLOCK)
+
+    return None
+
+
+def _snapshot_mop_for_eval(mop: object) -> MopSnapshot | None:
+    if isinstance(mop, MopSnapshot):
+        return mop
+
+    import importlib
+
+    try:
+        translator = importlib.import_module("d810.hexrays.mutation.ir_translator")
+        capture_mop_snapshot = translator.capture_mop_snapshot
+    except Exception:
+        capture_mop_snapshot = None
+
+    snapshot = None
+    if capture_mop_snapshot is not None:
+        try:
+            snapshot = capture_mop_snapshot(mop)
+        except Exception:
+            snapshot = None
+    if snapshot is not None:
+        return snapshot
+    return _fallback_mop_snapshot(mop)
+
+
 def _get_mop_const_value(mop: object) -> Optional[int]:
     """Extract a constant integer value from a microcode operand if it is a number operand.
 
     Thin wrapper over the portable core in
-    ``d810.analyses.value_flow.state_write`` (LS6 S5); supplies the live
-    operand-type name resolver.
+    ``d810.analyses.value_flow.state_write`` (LS6 S5); captures the live
+    operand into the portable snapshot boundary before delegating.
     """
-    _init_constants()
-    return state_write.get_mop_const_value(mop, mop_type_name=_mop_type_name)
+    snapshot = _snapshot_mop_for_eval(mop)
+    return state_write.get_mop_const_value(snapshot)
+
+
+def _operand_stack_offset(mop: object) -> int | None:
+    """Backend-owned live operand stack-offset extraction."""
+    snapshot = _snapshot_mop_for_eval(mop)
+    try:
+        varnode = varnode_from_mop_snapshot(snapshot)
+    except (AttributeError, TypeError, ValueError):
+        varnode = None
+    if varnode is not None and varnode.space is Space.STACK:
+        return int(varnode.offset)
+
+    stack_ref = getattr(mop, "s", None)
+    stkoff = getattr(stack_ref, "off", None) if stack_ref is not None else None
+    if stkoff is None:
+        stkoff = getattr(mop, "stkoff", None)
+    return int(stkoff) if stkoff is not None else None
+
+
+def _operand_number_value(mop: object) -> int | None:
+    """Backend-owned live operand constant extraction."""
+    value = _get_mop_const_value(mop)
+    if value is not None:
+        return int(value)
+
+    nnn = getattr(mop, "nnn", None)
+    value = getattr(nnn, "value", None) if nnn is not None else None
+    if value is None:
+        value = getattr(mop, "value", None)
+    return int(value) if value is not None else None
+
+
+def _is_move_opcode(opcode: object) -> bool:
+    """Backend-owned live opcode check for move-like state writes."""
+    name = _opcode_name(opcode)
+    if name == "m_mov":
+        return True
+    value = _opcode_value("m_mov", 4)
+    try:
+        return value is not None and int(opcode) == int(value)
+    except (TypeError, ValueError):
+        return False
 
 
 def _dump_dispatcher_node(
@@ -1058,11 +1196,14 @@ def _resolve_mop_from_maps(
     """Resolve a microcode operand to a concrete value using accumulated forward-eval maps.
 
     Thin wrapper over the portable core in
-    ``d810.analyses.value_flow.state_write`` (LS6 S5).
+    ``d810.analyses.value_flow.state_write`` (LS6 S5).  Live operands are
+    captured here so the portable evaluator only receives lifted snapshots.
     """
-    _init_constants()
+    snapshot = _snapshot_mop_for_eval(mop)
+    if snapshot is None:
+        return None
     return state_write.resolve_mop_from_maps(
-        mop,
+        snapshot,
         stk_map,
         reg_map,
         seams=_EVAL_SEAMS,
@@ -1086,15 +1227,42 @@ def _forward_eval_insn(
     """Evaluate one instruction, updating stk_map/reg_map in-place.
 
     Thin wrapper over the portable core in
-    ``d810.analyses.value_flow.state_write`` (LS6 S5).  Returns the resolved
-    constant if this instruction writes the state variable; otherwise returns
-    None and updates the maps.  ``state_var_gaddr`` / ``foldable_global_reads``
-    enable a *global* dispatcher state variable with reaching-defs-sound
-    static-initializer folding of data-dependent global reads.
+    ``d810.analyses.value_flow.state_write`` (LS6 S5).  Live instructions are
+    captured here so the portable evaluator only receives lifted snapshots.
+    Returns the resolved constant if this instruction writes the state variable;
+    otherwise returns None and updates the maps.  ``state_var_gaddr`` /
+    ``foldable_global_reads`` enable a *global* dispatcher state variable with
+    reaching-defs-sound static-initializer folding of data-dependent global
+    reads.
     """
-    _init_constants()
+    source_snapshot = getattr(insn, "snapshot", None)
+    if isinstance(source_snapshot, InsnSnapshot):
+        insn = source_snapshot
+
+    if isinstance(insn, InsnSnapshot):
+        return state_write.forward_eval_insn(
+            insn,
+            stk_map,
+            reg_map,
+            state_var_stkoff,
+            seams=_EVAL_SEAMS,
+            mba=mba,
+            state_var_lvar_idx=state_var_lvar_idx,
+            diag_lines=diag_lines,
+            state_var_gaddr=state_var_gaddr,
+            foldable_global_reads=foldable_global_reads,
+        )
+
+    try:
+        import importlib
+
+        translator = importlib.import_module("d810.hexrays.mutation.ir_translator")
+        capture_insn_snapshot = translator.capture_insn_snapshot
+        snapshot = capture_insn_snapshot(insn)
+    except Exception:
+        return None
     return state_write.forward_eval_insn(
-        insn,
+        snapshot,
         stk_map,
         reg_map,
         state_var_stkoff,
@@ -2306,6 +2474,9 @@ def build_condition_chain_walker_provider() -> ConditionChainWalkerProvider:
         get_block=_get_block,
         block_successors=_block_successors,
         fetch_idb_value=_fetch_idb_value,
+        operand_stack_offset=_operand_stack_offset,
+        operand_number_value=_operand_number_value,
+        is_move_opcode=_is_move_opcode,
     )
 
 
