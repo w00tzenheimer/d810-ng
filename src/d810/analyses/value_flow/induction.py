@@ -29,10 +29,10 @@ __all__ = [
     "InstructionView",
 ]
 
-# Opcode forms accepted for the additive families.  cfg-free: Hex-Rays mnemonic
-# ("m_add"), generic ("op_12"), and the portable ValueOpKind name ("ADD").
-_ADD_OPCODES = frozenset({"m_add", "op_12", ValueOpKind.ADD.name})
-_SUB_OPCODES = frozenset({"m_sub", "op_13", ValueOpKind.SUB.name})
+# Opcode forms accepted for the additive families. cfg-free: generic numeric
+# compatibility aliases plus the portable ValueOpKind names.
+_ADD_OPCODES = frozenset({"op_12", ValueOpKind.ADD.name, ValueOpKind.ADD.value})
+_SUB_OPCODES = frozenset({"op_13", ValueOpKind.SUB.name, ValueOpKind.SUB.value})
 
 
 def _signed_step(value: int) -> int:

@@ -1,14 +1,15 @@
 """Call-anchor fact collector.
 
-Records m_call/m_icall-shaped anchors and the local CFG context around them.
-This is diagnostic-only substrate for later call-preservation work.
+Records canonical call anchors and the local CFG context around them. Backend
+opcode/rendering details remain evidence only; call behavior is authorized by
+``Instruction.control.call_kind``.
 """
 from __future__ import annotations
 
-import re
-
 from d810.core.typing import Any
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
+from d810.ir.semantics import CallKind
+from d810.ir.varnode import Space, Varnode
 from d810.analyses.fact_collection_context import (
     FactCollectionContext,
     coerce_fact_collection_context,
@@ -25,30 +26,31 @@ from d810.analyses.value_flow.model import FactObservation
 
 _TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 
-_CALL_OPCODES = frozenset({"m_call", "m_icall", "op_56", "op_57", "call"})
-_CALL_TARGET_RE = re.compile(r"\bcall\s+([^<,\s]+)")
-
 
 def _is_call(insn: _InstructionView) -> bool:
-    text = insn.dstr.lower().lstrip()
-    return insn.opcode_name in _CALL_OPCODES or text.startswith("call ")
+    return insn.call_kind is not None
 
 
 def _call_kind(insn: _InstructionView) -> str:
-    opcode = insn.opcode_name.lower()
-    if opcode == "m_icall" or opcode == "op_57":
+    if insn.call_kind is CallKind.INDIRECT:
         return "indirect_call"
-    target = _call_target(insn)
-    if target in {"unknown-call-target", "indirect"}:
-        return "indirect_call"
+    if insn.call_kind is CallKind.INTRINSIC:
+        return "intrinsic_call"
     return "direct_call"
 
 
-def _call_target(insn: _InstructionView) -> str:
-    match = _CALL_TARGET_RE.search(insn.dstr)
-    if match is None:
+def _call_target_signature(target: Varnode | None) -> str:
+    if target is None:
         return "unknown-call-target"
-    return match.group(1)
+    if target.space is Space.GLOBAL:
+        return f"$0x{int(target.offset):x}"
+    if target.space is Space.CONST:
+        return f"#0x{int(target.offset):x}"
+    return f"{target.space.value}{int(target.offset)}"
+
+
+def _call_target(insn: _InstructionView) -> str:
+    return _call_target_signature(insn.call_target)
 
 
 def _copy_state(start_ea: int | None) -> str:

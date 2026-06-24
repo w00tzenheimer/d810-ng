@@ -4,7 +4,7 @@ Encodes the sub_7FFD ``0x298372CC`` carrier scenario on a synthetic graph whose
 stubs mirror the real ``FlowGraph`` / ``InsnSnapshot`` / ``MopSnapshot``
 structural interface (the provider reads ``blocks``, ``successors`` /
 ``predecessors``, ``entry_serial``, ``insn_snapshots``, ``insn.d/l/r``,
-``mop.stkoff`` -- all by attribute).
+and portable stack ``MopSnapshot`` identity).
 """
 from __future__ import annotations
 
@@ -17,13 +17,13 @@ from d810.analyses.value_flow.stack_value_flow import (
     build_reaching_facts,
     carrier_terminal_returns,
 )
+from d810.ir.flowgraph import MopSnapshot, OperandKind
 
 RET, CARRIER, STATE = 0x7F0, 0x178, 0x3C
 
 
-@dataclass(frozen=True)
-class _Mop:
-    stkoff: int | None = None
+def _stack(off: int) -> MopSnapshot:
+    return MopSnapshot(t=4, size=4, stkoff=int(off), kind=OperandKind.STACK)
 
 
 @dataclass(frozen=True)
@@ -59,14 +59,14 @@ class _Graph:
 def _carrier_graph():
     # 0 entry: ret <- entry-default(state); v49 <- carrier(a5+0xD0); state <- x  -> {1, 2}
     b0 = _Block(0, (1, 2), (), (
-        _Insn(0x100, d=_Mop(RET)),
-        _Insn(0x104, d=_Mop(CARRIER)),
-        _Insn(0x108, d=_Mop(STATE)),
+        _Insn(0x100, d=_stack(RET)),
+        _Insn(0x104, d=_stack(CARRIER)),
+        _Insn(0x108, d=_stack(STATE)),
     ))
     # 1 aligned terminal: returns ret (uses ret), defines nothing
-    b1 = _Block(1, (), (0,), (_Insn(0x200, l=_Mop(RET)),))
+    b1 = _Block(1, (), (0,), (_Insn(0x200, l=_stack(RET)),))
     # 2 byte path: uses state, redefines ret
-    b2 = _Block(2, (), (0,), (_Insn(0x300, l=_Mop(STATE), d=_Mop(RET)),))
+    b2 = _Block(2, (), (0,), (_Insn(0x300, l=_stack(STATE), d=_stack(RET)),))
     return _Graph([b0, b1, b2], entry_serial=0)
 
 

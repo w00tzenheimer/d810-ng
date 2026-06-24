@@ -18,7 +18,7 @@ from d810.analyses.value_flow import induction_carrier
 def _portable_target():
     """A flow-graph-like target the default _iter_portable_instructions handles."""
     insn = SimpleNamespace(
-        opcode_name="m_add",
+        opcode_name="add",
         dest_stkoff=0x20,
         src_l_stkoff=0x20,
         src_r_value=1,

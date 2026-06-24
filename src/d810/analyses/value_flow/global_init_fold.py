@@ -42,6 +42,7 @@ from d810.analyses.value_flow.reaching_defs import (
     reaching_defs_of,
 )
 from d810.analyses.data_flow.worklist import run_fixpoint
+from d810.ir.varnode import Space, varnode_from_mop_snapshot
 
 logger = getLogger(__name__)
 
@@ -59,15 +60,10 @@ FoldableGlobalReads = Mapping[int, Mapping[int, int]]
 
 def _operand_gaddr(mop: object) -> Optional[int]:
     """Return the global address an operand names, or ``None``."""
-    if mop is None:
+    varnode = varnode_from_mop_snapshot(mop)
+    if varnode is None or varnode.space is not Space.GLOBAL:
         return None
-    g = getattr(mop, "gaddr", None)
-    if g is None:
-        g = getattr(mop, "g", None)
-    try:
-        return int(g) if g else None
-    except (TypeError, ValueError):
-        return None
+    return int(varnode.offset) if int(varnode.offset) else None
 
 
 def _iter_source_gaddrs(insn: object):

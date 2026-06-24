@@ -8,18 +8,16 @@ planner or CFG decisions.
 When the return-slot write's source is a stkvar ``K`` (a one-step
 ``stack_identity_carrier``), the collector also performs a single-step backward
 trace to locate the upstream instruction that defines ``K`` and records that
-instruction's EA, block, opcode, full dstr, and the set of ``%var_NNN``
-references it reads.  Later passes consult this payload at GLBOPT1+ to know
-that a target block / stkvar set corresponds to a return-carrier MBA
-materialization site even after IDA's CALLS phase has folded the canonical
-``add ... -> %var_K; mov %var_K -> %var_8`` chain into a sub-instruction
-operand tree.
+instruction's EA, block, opcode, full dstr, and source storage identities. Later
+passes consult this payload at GLBOPT1+ to know that a target block / stkvar set
+corresponds to a return-carrier MBA materialization site even after IDA's CALLS
+phase has folded the canonical ``add ... -> %var_K; mov %var_K -> %var_8``
+chain into a sub-instruction operand tree.
 """
 from __future__ import annotations
 
-import re
-
 from d810.core.typing import Any
+from d810.ir.expressions import ValueOpKind
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
 from d810.analyses.fact_collection_context import (
     FactCollectionContext,
@@ -29,6 +27,7 @@ from d810.analyses.fact_collection_context import (
 from d810.analyses.value_flow.induction_carrier import (
     _InstructionView,
     _iter_instruction_views,
+    _operation_of_view,
 )
 from d810.analyses.value_flow import (
     RETURN_VALUE_FACT_TYPE,
@@ -37,25 +36,22 @@ from d810.analyses.value_flow import (
 from d810.analyses.value_flow.model import FactObservation
 
 
-# Match ``%var_NNN`` references in microcode dstr text.  The hex/decimal
-# offset suffix is captured so the upstream MBA's stkvar reads can be
-# enumerated without re-parsing the operand tree.
-_VAR_REF_RE = re.compile(r"%var_([0-9A-Fa-f]+)")
-
 _TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 
-_RETURN_SLOT_TO_RAX_RE = re.compile(
-    r"\bmov\s+%var_8\.\d+\s*,\s*rax\.\d+",
-    re.IGNORECASE,
-)
+# Current live evidence is x86-64 Hex-Rays microcode, where IDA uses register
+# id 0 for the integer return register (rax/eax). Keep this as a structural
+# register identity instead of parsing the rendered "rax" spelling.
+_INTEGER_RETURN_REGISTER_IDS = frozenset({0})
 
 
 def _is_return_register_read(insn: _InstructionView) -> bool:
+    if _operation_of_view(insn) is not ValueOpKind.MOVE:
+        return False
     if insn.src_l_stkoff is None:
         return False
-    if insn.dest_type != "mop_r":
+    if insn.dest_reg not in _INTEGER_RETURN_REGISTER_IDS:
         return False
-    return bool(_RETURN_SLOT_TO_RAX_RE.search(insn.dstr))
+    return True
 
 
 def _return_slot_offsets(instructions: tuple[_InstructionView, ...]) -> frozenset[int]:
@@ -128,7 +124,7 @@ def _find_upstream_writer(
             break
         if ins_block == anchor_block and ins_idx >= anchor_index:
             break
-        if insn.dest_stkoff is None or insn.dest_type != "mop_S":
+        if insn.dest_stkoff is None:
             continue
         if int(insn.dest_stkoff) != int(target_stkoff):
             continue
@@ -136,25 +132,42 @@ def _find_upstream_writer(
     return last
 
 
-def _extract_var_refs(dstr: str) -> tuple[str, ...]:
-    """Return the set of ``%var_NNN`` token suffixes referenced in
-    ``dstr``, in stable lexical order.  Used to expose the upstream
-    MBA's stkvar reads in the fact payload without parsing the operand
-    tree.  Names (not numeric stkoffs) because the dstr does not
-    record the raw mop_S offsets for nested operands.
-    """
-    seen: set[str] = set()
-    for match in _VAR_REF_RE.finditer(dstr):
-        seen.add(match.group(1).lower())
-    return tuple(sorted(seen))
+def _stack_storage_key(offset: int) -> str:
+    return f"S{int(offset)}"
+
+
+def _stack_storage_record(offset: int) -> dict[str, int | str]:
+    return {
+        "kind": "stack",
+        "prefix": "S",
+        "offset": int(offset),
+        "key": _stack_storage_key(offset),
+    }
+
+
+def _source_storage_offsets(insn: _InstructionView) -> tuple[int, ...]:
+    seen: set[int] = set()
+    offsets: list[int] = []
+    for offset in (
+        *insn.source_stkoffs,
+        insn.src_l_stkoff,
+        insn.src_r_stkoff,
+    ):
+        if offset is None:
+            continue
+        value = int(offset)
+        if value in seen:
+            continue
+        seen.add(value)
+        offsets.append(value)
+    return tuple(offsets)
 
 
 def _carrier_class(insn: _InstructionView) -> str:
-    opcode = insn.opcode_name.lower()
-    text = insn.dstr.lower()
-    if "xdu" in opcode or text.lstrip().startswith("xdu"):
+    operation = _operation_of_view(insn)
+    if operation is ValueOpKind.ZEXT:
         return "protected_non_carrier_return_writer_candidate"
-    if opcode in {"m_mov", "op_4", "mov"} and insn.src_l_stkoff is not None:
+    if operation is ValueOpKind.MOVE and insn.src_l_stkoff is not None:
         return "stack_identity_carrier"
     if insn.src_l_value is not None or insn.src_r_value is not None:
         return "constant_or_offset_return"
@@ -208,8 +221,6 @@ class ReturnSlotFactCollector:
         for insn in instructions:
             if insn.dest_stkoff is None or int(insn.dest_stkoff) not in return_slots:
                 continue
-            if insn.dest_type != "mop_S":
-                continue
             dest_size = int(insn.dest_size or 0)
             dedupe = (insn.block_serial, insn.insn_index, int(insn.dest_stkoff))
             if dedupe in seen:
@@ -229,6 +240,8 @@ class ReturnSlotFactCollector:
             )
             payload: dict[str, Any] = {
                 "return_slot_stkoff": slot,
+                "return_slot_storage_key": _stack_storage_key(slot),
+                "return_slot_storage_identity": _stack_storage_record(slot),
                 "dest_size": dest_size,
                 "opcode": insn.opcode_name,
                 "carrier_class": carrier_class,
@@ -262,16 +275,42 @@ class ReturnSlotFactCollector:
                     exclude=insn,
                 )
                 if upstream is not None:
-                    upstream_var_refs = _extract_var_refs(upstream.dstr)
+                    upstream_source_offsets = _source_storage_offsets(upstream)
+                    upstream_source_keys = tuple(
+                        _stack_storage_key(offset)
+                        for offset in upstream_source_offsets
+                    )
                     payload.update({
                         "carrier_dst_stkoff": int(insn.src_l_stkoff),
+                        "carrier_dst_storage_key": _stack_storage_key(
+                            int(insn.src_l_stkoff)
+                        ),
+                        "carrier_dst_storage_identity": _stack_storage_record(
+                            int(insn.src_l_stkoff)
+                        ),
                         "upstream_writer_block_serial": upstream.block_serial,
                         "upstream_writer_insn_index": upstream.insn_index,
                         "upstream_writer_ea": upstream.ea,
                         "upstream_writer_opcode": upstream.opcode_name,
                         "upstream_writer_dest_stkoff": upstream.dest_stkoff,
+                        "upstream_writer_dest_storage_key": (
+                            _stack_storage_key(upstream.dest_stkoff)
+                            if upstream.dest_stkoff is not None
+                            else None
+                        ),
+                        "upstream_writer_dest_storage_identity": (
+                            _stack_storage_record(upstream.dest_stkoff)
+                            if upstream.dest_stkoff is not None
+                            else None
+                        ),
                         "upstream_writer_dstr": upstream.dstr,
-                        "upstream_writer_var_refs": list(upstream_var_refs),
+                        "upstream_writer_source_storage_keys": list(
+                            upstream_source_keys
+                        ),
+                        "upstream_writer_source_storage_identities": [
+                            _stack_storage_record(offset)
+                            for offset in upstream_source_offsets
+                        ],
                     })
                     evidence = (insn.dstr, upstream.dstr)
 

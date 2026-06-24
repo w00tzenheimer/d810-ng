@@ -7,6 +7,25 @@ from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
 from d810.analyses.control_flow.state_transition_anchor import StateTransitionAnchorFactCollector
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
+_OPCODE_ALIASES = {
+    "m_mov": "move",
+}
+
+_OPERAND_TYPE_ALIASES = {
+    "mop_S": "S",
+    "mop_n": "c",
+}
+
+
+def _opcode_name(value: str) -> str:
+    return _OPCODE_ALIASES.get(value, value)
+
+
+def _operand_type(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return _OPERAND_TYPE_ALIASES.get(value, value)
+
 
 def _state_insn(
     *,
@@ -19,11 +38,11 @@ def _state_insn(
         index=index,
         ea=ea,
         opcode=0,
-        opcode_name="m_mov",
-        dest_type="mop_S",
+        opcode_name=_opcode_name("m_mov"),
+        dest_type=_operand_type("mop_S"),
         dest_stkoff=stkoff,
         dest_size=4,
-        src_l_type="mop_n",
+        src_l_type=_operand_type("mop_n"),
         src_l_stkoff=None,
         src_l_value=state_const,
         src_r_type=None,
@@ -45,11 +64,11 @@ def _filler_insn(
         index=index,
         ea=ea,
         opcode=0,
-        opcode_name="m_mov",
-        dest_type="mop_S",
+        opcode_name=_opcode_name("m_mov"),
+        dest_type=_operand_type("mop_S"),
         dest_stkoff=stkoff,
         dest_size=8,
-        src_l_type="mop_n",
+        src_l_type=_operand_type("mop_n"),
         src_l_stkoff=None,
         src_l_value=0xDEADBEEF,
         src_r_type=None,

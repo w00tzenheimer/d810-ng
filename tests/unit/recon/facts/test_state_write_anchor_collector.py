@@ -3,9 +3,38 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from d810.ir.expressions import ValueOpKind
+from d810.ir.flowgraph import (
+    BlockSnapshot as CfgBlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
 from d810.analyses.value_flow.state_write_anchor import StateWriteAnchorFactCollector
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
+
+_OPCODE_ALIASES = {
+    "m_mov": "move",
+}
+
+_OPERAND_TYPE_ALIASES = {
+    "mop_S": "S",
+    "mop_n": "c",
+    "mop_r": "r",
+}
+
+
+def _opcode_name(value: str) -> str:
+    return _OPCODE_ALIASES.get(value, value)
+
+
+def _operand_type(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return _OPERAND_TYPE_ALIASES.get(value, value)
 
 
 def _insn(
@@ -25,11 +54,11 @@ def _insn(
         index=index,
         ea=0x180014100 + index if ea is None else ea,
         opcode=0,
-        opcode_name=opcode_name,
-        dest_type=dest_type,
+        opcode_name=_opcode_name(opcode_name),
+        dest_type=_operand_type(dest_type),
         dest_stkoff=dest_stkoff,
         dest_size=dest_size,
-        src_l_type=src_l_type,
+        src_l_type=_operand_type(src_l_type),
         src_l_stkoff=src_l_stkoff,
         src_l_value=src_l_value,
         src_r_type=None,
@@ -62,6 +91,32 @@ def _target(*blocks: BlockSnapshot) -> SimpleNamespace:
     return SimpleNamespace(blocks={blk.serial: blk for blk in blocks})
 
 
+def _cfg_stack(stkoff: int, *, size: int = 4) -> MopSnapshot:
+    return MopSnapshot(t=5, size=size, stkoff=stkoff, kind=OperandKind.STACK)
+
+
+def _cfg_number(value: int, *, size: int = 4) -> MopSnapshot:
+    return MopSnapshot(t=2, size=size, value=value, kind=OperandKind.NUMBER)
+
+
+def _cfg_target(*instructions: InsnSnapshot) -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            100: CfgBlockSnapshot(
+                serial=100,
+                block_type=0,
+                succs=(101,),
+                preds=(99,),
+                flags=0,
+                start_ea=0x180014000,
+                insn_snapshots=tuple(instructions),
+            )
+        },
+        entry_serial=100,
+        func_ea=0x180012CF0,
+    )
+
+
 def test_collects_state_const_write_basic() -> None:
     collector = StateWriteAnchorFactCollector()
     facts = collector.collect(
@@ -92,13 +147,46 @@ def test_collects_state_const_write_basic() -> None:
     assert fact.payload["state_var_stkoff_hex"] == "0x3c"
     assert fact.payload["dest_var_signature"] == "%var_7BC.4"
     assert fact.payload["successor_blocks"] == [101]
-    assert fact.payload["opcode"] == "m_mov"
+    assert fact.payload["opcode"] == "move"
     assert fact.semantic_key == fact.fact_id
     assert (
         fact.semantic_key
         == "state_write_anchor:blk=100:insn=0:ea=0x180014155:stkoff=0x3c"
     )
     assert fact.mop_signature == "state_write:mop_S:0x3c:4"
+
+
+def test_collects_state_const_write_from_canonical_move_operation() -> None:
+    collector = StateWriteAnchorFactCollector()
+
+    facts = collector.collect(
+        _cfg_target(
+            InsnSnapshot(
+                opcode=0,
+                ea=0x180014155,
+                operands=(),
+                kind=InsnKind.UNKNOWN,
+                d=_cfg_stack(0x3C),
+                l=_cfg_number(0x5A21D9DB),
+                r=None,
+                display_text="mov #0x5A21D9DB.4, %var_7BC.4",
+                value_op_kind=ValueOpKind.MOVE,
+            )
+        ),
+        func_ea=0x180012CF0,
+        maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact.kind == "StateWriteAnchorFact"
+    assert fact.source_block == 100
+    assert fact.source_ea == 0x180014155
+    assert fact.payload["state_const"] == 0x5A21D9DB
+    assert fact.payload["state_var_stkoff"] == 0x3C
+    assert fact.payload["opcode"] == "move"
+    assert fact.evidence == ("mov #0x5A21D9DB.4, %var_7BC.4",)
 
 
 def test_ignores_non_const_writes() -> None:

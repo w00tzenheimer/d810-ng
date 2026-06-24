@@ -5,10 +5,10 @@ diffs can separate renderer artifacts from true initialization changes.
 """
 from __future__ import annotations
 
-import re
-
 from d810.core.typing import Any
+from d810.ir.expressions import ValueOpKind
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
+from d810.ir.varnode import Space, Varnode
 from d810.analyses.fact_collection_context import (
     FactCollectionContext,
     coerce_fact_collection_context,
@@ -18,45 +18,84 @@ from d810.analyses.value_flow.induction_carrier import (
     _InstructionView,
     _iter_instruction_views,
 )
-from d810.analyses.value_flow.terminal_byte_emitter import (
-    _memory_destination_signature,
-)
 from d810.analyses.value_flow.model import FactObservation
 
 _TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 
-_ZERO_LITERAL_RE = re.compile(r"(?:^|[\s,(])#0(?:x0)?(?:\.\d+)?(?:[,\s)]|$)", re.IGNORECASE)
-_BLOB_RE = re.compile(r"\b(?:unk_|off_|byte_|qword_|xmmword_)[0-9a-fA-F]+", re.IGNORECASE)
-_COPY_SIZE_RE = re.compile(r"#(?P<size>0x[0-9a-fA-F]+|\d+)(?:\.\d+)?")
-
 
 def _is_store(insn: _InstructionView) -> bool:
-    text = insn.dstr.lower().lstrip()
-    return insn.opcode_name in {"m_stx", "op_1", "store"} or text.startswith("stx ")
+    return insn.operation is ValueOpKind.STORE
+
+
+def _varnode_signature(vn: Varnode | None) -> str:
+    if vn is None:
+        return "unknown"
+    if vn.space is Space.GLOBAL:
+        return f"$0x{int(vn.offset):x}"
+    if vn.space is Space.CONST:
+        return f"#0x{int(vn.offset):x}"
+    if vn.space is Space.STACK:
+        return f"mop_S:0x{int(vn.offset):x}"
+    if vn.space is Space.REGISTER:
+        return f"mop_r:{int(vn.offset)}"
+    if vn.space is Space.LVAR:
+        return f"mop_l:0x{int(vn.offset):x}"
+    return f"{vn.space.value}{int(vn.offset)}"
+
+
+def _static_blob_arg(insn: _InstructionView) -> Varnode | None:
+    for arg in insn.call_args:
+        if arg.space is Space.GLOBAL:
+            return arg
+    return None
+
+
+def _call_destination(insn: _InstructionView) -> Varnode | None:
+    for arg in insn.call_args:
+        if arg.space not in {Space.CONST, Space.GLOBAL}:
+            return arg
+    return None
 
 
 def _zero_blob_kind(insn: _InstructionView) -> str | None:
-    text = insn.dstr
-    lower = text.lower()
-    if _is_store(insn) and _ZERO_LITERAL_RE.search(text):
-        return "zero_store"
-    if _is_store(insn) and _BLOB_RE.search(text):
-        return "blob_store"
-    if lower.startswith("call ") and ("memcpy" in lower or _BLOB_RE.search(text)):
+    if _is_store(insn) and insn.memory_value is not None:
+        if insn.memory_value.space is Space.CONST and int(insn.memory_value.offset) == 0:
+            return "zero_store"
+        if insn.memory_value.space is Space.GLOBAL:
+            return "blob_store"
+    if insn.call_kind is not None and _static_blob_arg(insn) is not None and _copy_size(insn):
         return "blob_copy_call"
     return None
 
 
+def _destination_signature(insn: _InstructionView) -> str:
+    if _is_store(insn):
+        return _varnode_signature(insn.memory_target)
+    return _varnode_signature(_call_destination(insn))
+
+
 def _copy_size(insn: _InstructionView) -> int | None:
-    if insn.src_r_value is not None:
-        return int(insn.src_r_value)
-    matches = tuple(_COPY_SIZE_RE.finditer(insn.dstr))
-    if not matches:
-        return None
-    try:
-        return int(matches[-1].group("size"), 0)
-    except ValueError:
-        return None
+    for arg in reversed(insn.call_args):
+        if arg.space is Space.CONST:
+            return int(arg.offset)
+    return None
+
+
+def _source_signature(insn: _InstructionView) -> str:
+    if _is_store(insn):
+        return _varnode_signature(insn.memory_value)
+    blob_arg = _static_blob_arg(insn)
+    if blob_arg is not None:
+        return _varnode_signature(blob_arg)
+    return "unknown"
+
+
+def _confidence(init_kind: str) -> float:
+    if init_kind == "zero_store":
+        return 0.78
+    if init_kind == "blob_store":
+        return 0.72
+    return 0.68
 
 
 def _ea_text(ea: int | None) -> str:
@@ -94,11 +133,12 @@ class ZeroBlobFactCollector:
             init_kind = _zero_blob_kind(insn)
             if init_kind is None:
                 continue
-            destination = _memory_destination_signature(insn)
+            destination = _destination_signature(insn)
+            source = _source_signature(insn)
             size = _copy_size(insn)
             semantic_key = (
                 f"zero_blob_init:kind={init_kind}:dest={destination}:"
-                f"size={size if size is not None else 'unknown'}:"
+                f"source={source}:size={size if size is not None else 'unknown'}:"
                 f"ea={_ea_text(insn.ea)}"
             )
             dedupe = (insn.block_serial, insn.insn_index, semantic_key)
@@ -116,18 +156,19 @@ class ZeroBlobFactCollector:
                     semantic_key=semantic_key,
                     maturity=maturity_text,
                     phase=phase,
-                    confidence=0.78 if init_kind == "zero_store" else 0.68,
+                    confidence=_confidence(init_kind),
                     source_block=insn.block_serial,
                     source_ea=insn.ea,
                     block_fingerprint=(
                         f"blk[{insn.block_serial}].{insn.insn_index}:{insn.opcode_name}"
                     ),
                     mop_signature=(
-                        f"zero_blob:{init_kind}:dest={destination}:size={size}"
+                        f"zero_blob:{init_kind}:dest={destination}:source={source}:size={size}"
                     ),
                     payload={
                         "init_kind": init_kind,
                         "destination": destination,
+                        "source": source,
                         "size": size,
                         "opcode": insn.opcode_name,
                         "block_serial": insn.block_serial,

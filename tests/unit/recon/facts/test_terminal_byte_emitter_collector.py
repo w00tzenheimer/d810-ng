@@ -1,12 +1,42 @@
 """Tests for TerminalByteEmitterFactCollector."""
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
+from d810.ir.semantics import ControlTransferKind, PredicateKind
 from d810.analyses.value_flow.terminal_byte_emitter import TerminalByteEmitterFactCollector
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
+
+_OPCODE_ALIASES = {
+    "m_stx": "store",
+    "m_mov": "move",
+    "m_add": "add",
+    "m_sub": "sub",
+}
+
+_OPERAND_TYPE_ALIASES = {
+    "mop_S": "S",
+    "mop_n": "c",
+    "mop_r": "r",
+}
+
+
+def _opcode_name(value: str) -> str:
+    return _OPCODE_ALIASES.get(value, value)
+
+
+def _operand_type(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return _OPERAND_TYPE_ALIASES.get(value, value)
+
+
+def _meta(**fields: object) -> str:
+    return json.dumps(fields)
 
 
 def _insn(
@@ -24,23 +54,42 @@ def _insn(
     src_r_type: str | None = None,
     src_r_stkoff: int | None = None,
     src_r_value: int | None = None,
+    meta: str | Mapping[str, object] | None = None,
+    predicate_kind: PredicateKind | None = None,
+    control_target: int | None = None,
+    control_transfer: ControlTransferKind | None = None,
+    branch_opcode: str | None = None,
 ) -> InstructionSnapshot:
-    return InstructionSnapshot(
+    if isinstance(meta, Mapping):
+        meta = json.dumps(dict(meta))
+    insn = InstructionSnapshot(
         index=index,
         ea=0x180010000 + index if ea is None else ea,
         opcode=0,
-        opcode_name=opcode_name,
-        dest_type=dest_type,
+        opcode_name=_opcode_name(opcode_name),
+        dest_type=_operand_type(dest_type),
         dest_stkoff=dest_stkoff,
         dest_size=dest_size,
-        src_l_type=src_l_type,
+        src_l_type=_operand_type(src_l_type),
         src_l_stkoff=src_l_stkoff,
         src_l_value=src_l_value,
-        src_r_type=src_r_type,
+        src_r_type=_operand_type(src_r_type),
         src_r_stkoff=src_r_stkoff,
         src_r_value=src_r_value,
         dstr=dstr,
+        meta=meta,
     )
+    if predicate_kind is not None:
+        insn.predicate_kind = predicate_kind
+    if control_target is not None:
+        insn.control_target = int(control_target)
+    if control_transfer is not None:
+        insn.control_transfer = control_transfer
+    if branch_opcode is not None:
+        payload = json.loads(meta) if isinstance(meta, str) and meta else {}
+        payload.setdefault("branch_opcode", branch_opcode)
+        insn.meta = json.dumps(payload)
+    return insn
 
 
 def _target(
@@ -74,12 +123,22 @@ def test_collects_terminal_byte_emit_with_explicit_byte_index() -> None:
                 index=0,
                 opcode_name="m_jcnd",
                 dstr="jcnd %var_53.8 == #2.8, @241",
+                src_l_type="mop_S",
+                src_l_stkoff=0x53,
+                src_r_type="mop_n",
+                src_r_value=2,
+                predicate_kind=PredicateKind.EQ,
+                control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
+                control_target=241,
             ),
             _insn(
                 index=1,
                 opcode_name="m_stx",
+                dest_type="mop_S",
+                dest_stkoff=0x700,
                 src_l_type="mop_S",
                 src_l_stkoff=0x520,
+                meta=_meta(byte_index=2, source_byte_expression="byte[2]"),
                 dstr="stx v52[2], ds.1, %var_dst.8",
             ),
         ),
@@ -92,16 +151,16 @@ def test_collects_terminal_byte_emit_with_explicit_byte_index() -> None:
     fact = facts[0]
     assert fact.kind == "TerminalByteEmitterFact"
     assert "byte_index=2" in fact.semantic_key
-    assert "dest=%var_dst.8" in fact.semantic_key
-    assert "counter=%var_53.8" in fact.semantic_key
+    assert "dest=S1792" in fact.semantic_key
+    assert "counter=S83" in fact.semantic_key
     assert fact.maturity == "MMAT_LOCOPT"
     assert fact.source_block == 101
     assert fact.source_ea == 0x180010001
     assert fact.payload["byte_index"] == 2
-    assert fact.payload["source_byte_expression"] == "v52[2]"
-    assert fact.payload["destination_buffer_expression"] == "%var_dst.8"
-    assert fact.payload["counter_carrier"] == "%var_53.8"
-    assert fact.payload["guard_condition"] == "jcnd %var_53.8 == #2.8, @241"
+    assert fact.payload["source_byte_expression"] == "byte[2]"
+    assert fact.payload["destination_buffer_expression"] == "S1792"
+    assert fact.payload["counter_carrier"] == "S83"
+    assert fact.payload["guard_condition"] == "S83 eq 2"
     assert fact.payload["continuation_edge"] == 102
     assert fact.payload["return_edge"] == 241
     assert fact.payload["family_id"] == "non_terminal_byte_emitter"
@@ -117,10 +176,18 @@ def test_infers_byte_index_from_guard_when_store_uses_temp() -> None:
                 index=0,
                 opcode_name="m_jcnd",
                 dstr="jnz %var_tail.8, #4.8, @return",
+                src_l_type="mop_S",
+                src_l_stkoff=0x54,
+                src_r_type="mop_n",
+                src_r_value=4,
+                predicate_kind=PredicateKind.NE,
+                control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
             ),
             _insn(
                 index=1,
                 opcode_name="op_1",
+                dest_type="mop_S",
+                dest_stkoff=0x700,
                 src_l_type="mop_S",
                 src_l_stkoff=0x688,
                 dstr="stx %var_tmp.1, ds.1, %var_dst.8",
@@ -133,8 +200,8 @@ def test_infers_byte_index_from_guard_when_store_uses_temp() -> None:
 
     assert len(facts) == 1
     assert facts[0].payload["byte_index"] == 4
-    assert facts[0].payload["source_byte_expression"] == "%var_tmp.1"
-    assert facts[0].payload["counter_carrier"] == "%var_tail.8"
+    assert facts[0].payload["source_byte_expression"] == "S1672"
+    assert facts[0].payload["counter_carrier"] == "S84"
     assert facts[0].payload["return_edge"] is None
     assert facts[0].payload["continuation_edge"] is None
 
@@ -147,8 +214,11 @@ def test_infers_byte_index_from_source_byte_offset_without_guard() -> None:
             _insn(
                 index=1,
                 opcode_name="op_1",
+                dest_type="mop_S",
+                dest_stkoff=0x700,
                 src_l_type="mop_S",
                 src_l_stkoff=0x688,
+                meta=_meta(address_const_values=[6]),
                 dstr=(
                     "stx ([ds.2:%var_dst.8].8 | "
                     "(xdu.8([ds.2:(%var_src.8+#6.8)].1) <<l #8.1)), "
@@ -165,6 +235,7 @@ def test_infers_byte_index_from_source_byte_offset_without_guard() -> None:
     assert len(facts) == 1
     assert facts[0].payload["byte_index"] == 6
     assert facts[0].payload["counter_carrier"] == "unknown-counter"
+    assert facts[0].payload["source_byte_expression"] == "byte[6]"
     assert facts[0].payload["return_edge"] is None
 
 
@@ -176,8 +247,14 @@ def test_semantic_key_strips_hexrays_ssa_suffixes() -> None:
             _insn(
                 index=1,
                 opcode_name="op_1",
+                dest_type="mop_S",
+                dest_stkoff=0x700,
                 src_l_type="mop_S",
                 src_l_stkoff=0x688,
+                meta=_meta(
+                    address_const_values=[6],
+                    destination_buffer_expression="S1792",
+                ),
                 dstr=(
                     "stx ([ds.2{403}:((%var_380.8{406} & #-8.8){405}+"
                     "%var_188.8{407}){404}].8 | "
@@ -196,9 +273,7 @@ def test_semantic_key_strips_hexrays_ssa_suffixes() -> None:
     assert len(facts) == 1
     assert "{403}" not in facts[0].semantic_key
     assert "{406}" not in facts[0].mop_signature
-    assert facts[0].payload["destination_buffer_expression"] == (
-        "[ds.2:((%var_380.8 & #-8.8)+%var_188.8)]"
-    )
+    assert facts[0].payload["destination_buffer_expression"] == "S1792"
 
 
 def test_collects_guard_only_zero_edge_fact() -> None:
@@ -221,6 +296,12 @@ def test_collects_guard_only_zero_edge_fact() -> None:
                             index=0,
                             opcode_name="m_jcnd",
                             dstr="jnz %var_tail.8, #0.8, @return",
+                            src_l_type="mop_S",
+                            src_l_stkoff=0x54,
+                            src_r_type="mop_n",
+                            src_r_value=0,
+                            predicate_kind=PredicateKind.NE,
+                            control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
                         ),
                     ],
                 ),
@@ -238,10 +319,19 @@ def test_collects_guard_only_zero_edge_fact() -> None:
                             index=0,
                             opcode_name="m_jcnd",
                             dstr="jnz %var_tail.8, #1.8, @return",
+                            src_l_type="mop_S",
+                            src_l_stkoff=0x54,
+                            src_r_type="mop_n",
+                            src_r_value=1,
+                            predicate_kind=PredicateKind.NE,
+                            control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
                         ),
                         _insn(
                             index=1,
                             opcode_name="m_stx",
+                            dest_type="mop_S",
+                            dest_stkoff=0x700,
+                            meta=_meta(byte_index=1),
                             dstr="stx v52[1], ds.1, %var_dst.8",
                         ),
                     ],
@@ -285,6 +375,13 @@ def test_guard_only_zero_jnz_marks_fallthrough_as_return_edge() -> None:
                             index=0,
                             opcode_name="m_jcnd",
                             dstr="jnz %var_198.8, #0.8, @208",
+                            src_l_type="mop_S",
+                            src_l_stkoff=0x198,
+                            src_r_type="mop_n",
+                            src_r_value=0,
+                            predicate_kind=PredicateKind.NE,
+                            control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
+                            control_target=208,
                         ),
                     ],
                 ),
@@ -302,10 +399,20 @@ def test_guard_only_zero_jnz_marks_fallthrough_as_return_edge() -> None:
                             index=0,
                             opcode_name="m_jcnd",
                             dstr="jnz %var_198.8, #6.8, @132",
+                            src_l_type="mop_S",
+                            src_l_stkoff=0x198,
+                            src_r_type="mop_n",
+                            src_r_value=6,
+                            predicate_kind=PredicateKind.NE,
+                            control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
+                            control_target=132,
                         ),
                         _insn(
                             index=1,
                             opcode_name="m_stx",
+                            dest_type="mop_S",
+                            dest_stkoff=0x700,
+                            meta=_meta(byte_index=6),
                             dstr="stx v52[6], ds.1, %var_dst.8",
                         ),
                     ],
@@ -347,6 +454,13 @@ def test_terminal_family_is_separate_from_non_terminal_byte_emitters() -> None:
                             index=0,
                             opcode_name="m_jcnd",
                             dstr="jnz %var_tail.8, #0.8, @241",
+                            src_l_type="mop_S",
+                            src_l_stkoff=0x54,
+                            src_r_type="mop_n",
+                            src_r_value=0,
+                            predicate_kind=PredicateKind.NE,
+                            control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
+                            control_target=241,
                         ),
                     ],
                 ),
@@ -364,10 +478,20 @@ def test_terminal_family_is_separate_from_non_terminal_byte_emitters() -> None:
                             index=0,
                             opcode_name="m_jcnd",
                             dstr="jnz %var_tail.8, #2.8, @241",
+                            src_l_type="mop_S",
+                            src_l_stkoff=0x54,
+                            src_r_type="mop_n",
+                            src_r_value=2,
+                            predicate_kind=PredicateKind.NE,
+                            control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
+                            control_target=241,
                         ),
                         _insn(
                             index=1,
                             opcode_name="m_stx",
+                            dest_type="mop_S",
+                            dest_stkoff=0x700,
+                            meta=_meta(byte_index=2),
                             dstr="stx v52[2], ds.1, %var_dst.8",
                         ),
                     ],
@@ -386,10 +510,20 @@ def test_terminal_family_is_separate_from_non_terminal_byte_emitters() -> None:
                             index=0,
                             opcode_name="m_jcnd",
                             dstr="jnz %var_loop.8, #2.8, @203",
+                            src_l_type="mop_S",
+                            src_l_stkoff=0x55,
+                            src_r_type="mop_n",
+                            src_r_value=2,
+                            predicate_kind=PredicateKind.NE,
+                            control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
+                            control_target=203,
                         ),
                         _insn(
                             index=1,
                             opcode_name="m_stx",
+                            dest_type="mop_S",
+                            dest_stkoff=0x701,
+                            meta=_meta(byte_index=2),
                             dstr="stx v52[2], ds.1, %var_dst.8",
                         ),
                     ],
@@ -436,6 +570,13 @@ def test_terminal_family_includes_byte1_continuation_on_terminal_destination() -
                             index=0,
                             opcode_name="m_jcnd",
                             dstr="jnz %var_tail.8, #0.8, @241",
+                            src_l_type="mop_S",
+                            src_l_stkoff=0x54,
+                            src_r_type="mop_n",
+                            src_r_value=0,
+                            predicate_kind=PredicateKind.NE,
+                            control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
+                            control_target=241,
                         ),
                     ],
                 ),
@@ -453,10 +594,20 @@ def test_terminal_family_includes_byte1_continuation_on_terminal_destination() -
                             index=0,
                             opcode_name="m_jcnd",
                             dstr="jnz %var_tail.8, #2.8, @241",
+                            src_l_type="mop_S",
+                            src_l_stkoff=0x54,
+                            src_r_type="mop_n",
+                            src_r_value=2,
+                            predicate_kind=PredicateKind.NE,
+                            control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
+                            control_target=241,
                         ),
                         _insn(
                             index=1,
                             opcode_name="m_stx",
+                            dest_type="mop_S",
+                            dest_stkoff=0x700,
+                            meta=_meta(byte_index=2),
                             dstr="stx v52[2], ds.1, %var_dst.8",
                         ),
                     ],
@@ -475,10 +626,22 @@ def test_terminal_family_includes_byte1_continuation_on_terminal_destination() -
                             index=0,
                             opcode_name="m_jcnd",
                             dstr="jnz %var_other.8, #1.8, @145",
+                            src_l_type="mop_S",
+                            src_l_stkoff=0x55,
+                            src_r_type="mop_n",
+                            src_r_value=1,
+                            predicate_kind=PredicateKind.NE,
+                            control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
+                            control_target=145,
                         ),
                         _insn(
                             index=1,
                             opcode_name="m_stx",
+                            dest_type="mop_S",
+                            dest_stkoff=0x700,
+                            src_l_type="mop_n",
+                            src_l_value=0x80,
+                            meta=_meta(byte_index=1),
                             dstr="stx #0x80.8, ds.2, %var_dst.8",
                         ),
                     ],
@@ -508,8 +671,11 @@ def test_byte6_unknown_counter_is_not_promoted_by_destination_temp_name() -> Non
             _insn(
                 index=1,
                 opcode_name="op_1",
+                dest_type="mop_S",
+                dest_stkoff=0x700,
                 src_l_type="mop_S",
                 src_l_stkoff=0x688,
+                meta=_meta(address_const_values=[6]),
                 dstr=(
                     "stx ([ds.2:(%var_380.8 & #-8.8)+%var_188.8].8 | "
                     "(xdu.8([ds.2:(%var_src.8+#6.8)].1) <<l #8.1)), "
@@ -549,6 +715,13 @@ def test_byte6_unknown_counter_can_follow_terminal_tail_predecessor() -> None:
                             index=0,
                             opcode_name="m_jcnd",
                             dstr="jnz %var_tail.8, #0.8, @241",
+                            src_l_type="mop_S",
+                            src_l_stkoff=0x54,
+                            src_r_type="mop_n",
+                            src_r_value=0,
+                            predicate_kind=PredicateKind.NE,
+                            control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
+                            control_target=241,
                         ),
                     ],
                 ),
@@ -566,10 +739,20 @@ def test_byte6_unknown_counter_can_follow_terminal_tail_predecessor() -> None:
                             index=0,
                             opcode_name="m_jcnd",
                             dstr="jnz %var_tail.8, #5.8, @241",
+                            src_l_type="mop_S",
+                            src_l_stkoff=0x54,
+                            src_r_type="mop_n",
+                            src_r_value=5,
+                            predicate_kind=PredicateKind.NE,
+                            control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
+                            control_target=241,
                         ),
                         _insn(
                             index=1,
                             opcode_name="m_stx",
+                            dest_type="mop_S",
+                            dest_stkoff=0x700,
+                            meta=_meta(byte_index=5),
                             dstr="stx v52[5], ds.1, %var_dst.8",
                         ),
                     ],
@@ -587,6 +770,9 @@ def test_byte6_unknown_counter_can_follow_terminal_tail_predecessor() -> None:
                         _insn(
                             index=1,
                             opcode_name="op_1",
+                            dest_type="mop_S",
+                            dest_stkoff=0x700,
+                            meta=_meta(address_const_values=[6]),
                             dstr=(
                                 "stx (xdu.8([ds.2:(%var_src.8+#6.8)].1) <<l #8.1), "
                                 "ds.2, %some_destination.8"
@@ -642,6 +828,12 @@ def test_ignores_guard_only_zero_edge_without_related_store_counter() -> None:
             _insn(
                 index=0,
                 opcode_name="m_jcnd",
+                src_l_type="mop_S",
+                src_l_stkoff=0x7BC,
+                src_r_type="mop_n",
+                src_r_value=0,
+                predicate_kind=PredicateKind.NE,
+                control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
                 dstr="jnz %var_7BC.4, #0.8, @return",
             ),
         ),
@@ -664,6 +856,32 @@ def test_ignores_store_without_byte_index_or_guard() -> None:
                 src_l_type="mop_S",
                 src_l_stkoff=0x688,
                 dstr="stx %var_tmp.1, ds.1, %var_dst.8",
+            ),
+            succs=(102,),
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_GLBOPT1"],
+        phase="pre_d810",
+    )
+
+    assert facts == ()
+
+
+def test_rendered_byte_store_text_does_not_authorize_byte_index() -> None:
+    collector = TerminalByteEmitterFactCollector()
+
+    facts = collector.collect(
+        _target(
+            _insn(
+                index=0,
+                opcode_name="m_stx",
+                dest_type="mop_S",
+                dest_stkoff=0x700,
+                dstr=(
+                    "stx ([ds.2:%var_dst.8].8 | "
+                    "(xdu.8([ds.2:(%var_src.8+#3.8)].1) <<l #8.1)), "
+                    "ds.2, %var_dst.8"
+                ),
             ),
             succs=(102,),
         ),

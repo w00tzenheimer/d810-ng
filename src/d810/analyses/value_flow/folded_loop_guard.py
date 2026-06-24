@@ -31,8 +31,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from d810.core.typing import Any
-from d810.ir.flowgraph import InsnKind, OperandKind
+from d810.ir.expressions import Const, ExprRef, Move, Sub, ValueOpKind
+from d810.ir.insn_projection import iter_operand_exprs
+from d810.ir.locations import RegisterLocation, StackSlot
 from d810.ir.maturity import LOCAL_FACT_COLLECTION_IR_MATURITIES
+from d810.ir.semantics import PredicateKind
+from d810.ir.value_refs import DefinitionRef
 from d810.analyses.fact_collection_context import (
     FactCollectionContext,
     coerce_fact_collection_context,
@@ -42,6 +46,7 @@ from d810.analyses.value_flow.induction_carrier import (
     _InstructionView,
     _classify_induction_update,
     _iter_instruction_views,
+    _operation_of_view,
 )
 from d810.analyses.value_flow.state_write_anchor import (
     _block_start_ea_lookup,
@@ -56,53 +61,23 @@ from d810.analyses.value_flow.model import FactObservation
 # simply find no folded guard once the loop is gone.
 _TARGET_MATURITIES = LOCAL_FACT_COLLECTION_IR_MATURITIES
 
-# Opcode names that hold a ``counter <cmp> bound`` predicate over a structured
-# (induction-var, const) operand pair.  Both the diag ``m_*`` names and the
-# portable ``InsnKind.value`` lowercase aliases are accepted so the operand
-# match works on either fact-target path.
-#
-# ``m_sub`` is the sign-bit form: a folded ``i < N`` guard materializes the
-# predicate as ``(i - N) < 0`` (a dead subtract whose result feeds a sign test),
-# so matching ``m_sub`` over (induction-var, const) covers the Tigress shape.
-# A direct ``m_setl``/``m_jl`` over (counter, #N) is the same operand match.
-_SUB_GUARD_OPCODES = frozenset({"m_sub", "sub", "op_13"})
-
-# Signed less/greater comparison families => render ``setl``.
-_SIGNED_CMP_OPCODES = frozenset({
-    "m_setl", "m_setle", "m_setg", "m_setge",
-    "m_jl", "m_jle", "m_jg", "m_jge",
-})
-# Unsigned below/above comparison families => render ``setb``.
-_UNSIGNED_CMP_OPCODES = frozenset({
-    "m_setb", "m_setbe", "m_seta", "m_setae",
-    "m_jb", "m_jbe", "m_ja", "m_jae",
-})
-
-# All compare/set/jump opcodes whose (counter, const) operand pair anchors a
-# folded guard, plus the sign-bit subtract form.
-_GUARD_CMP_OPCODES = _SIGNED_CMP_OPCODES | _UNSIGNED_CMP_OPCODES | _SUB_GUARD_OPCODES
-
-# Widen/extend and compare opcodes that, in a FOLDED ``i < N`` guard, do NOT
-# carry the ``(counter - bound)`` pair as a flat top-level operand: the
-# subtract is a sub-node BURIED inside an ``m_xdu`` widen or an ``m_jge``
-# sign-bit predicate tree (the real Tigress LOCOPT shape, e.g.
-# ``xdu (%var - #0x64)`` / ``jge ((bnot(%var - #0x64) | ...) & ...), #0``).
-# These anchor the OPERAND-TREE walk in ``_guard_counter``; the buried SUB
-# child is the signed ``(i - N) < 0`` idiom regardless of the host opcode.
-_TREE_HOST_OPCODES = frozenset({
-    "m_xdu", "xdu", "op_9",
-    "m_xds", "xds",
-    "m_jge", "m_jg", "m_jle", "m_jl",
-    "m_jae", "m_ja", "m_jbe", "m_jb",
-    "m_setl", "m_setle", "m_setg", "m_setge",
-    "m_setb", "m_setbe", "m_seta", "m_setae",
-})
-
-# Opcodes whose buried-subtract sign-bit form renders as an UNSIGNED compare.
-_UNSIGNED_TREE_HOST_OPCODES = frozenset({
-    "m_jae", "m_ja", "m_jbe", "m_jb",
-    "m_setb", "m_setbe", "m_seta", "m_setae",
-})
+_SIGNED_GUARD_PREDICATES = frozenset(
+    {
+        PredicateKind.SLT,
+        PredicateKind.SLE,
+        PredicateKind.SGT,
+        PredicateKind.SGE,
+    }
+)
+_UNSIGNED_GUARD_PREDICATES = frozenset(
+    {
+        PredicateKind.ULT,
+        PredicateKind.ULE,
+        PredicateKind.UGT,
+        PredicateKind.UGE,
+    }
+)
+_BURIED_SUB_HOST_OPERATIONS = frozenset({ValueOpKind.ZEXT, ValueOpKind.SEXT})
 
 
 def _block_preds(target: Any, block_serial: int) -> tuple[int, ...]:
@@ -323,26 +298,24 @@ class FoldedLoopGuardFactCollector:
     ) -> tuple[_InductionVar, int, bool] | None:
         """Return ``(counter, bound, signed)`` for a folded induction compare.
 
-        Detection is microcode-OPERAND based, not text based, and works at
-        ANY nesting depth.  Two shapes are recognised:
+        Detection is portable-IR based and works at any nesting depth.  Two
+        shapes are recognised:
 
-        1. FLAT top-level compare/subtract (``_GUARD_CMP_OPCODES``) where ONE
-           operand identity matches a known induction var (stack slot OR
-           register) and the OTHER operand is a constant; both operand orders
-           handled.  ``signed`` from the opcode.
+        1. Flat top-level compare/subtract where one operand identity matches a
+           known induction var (stack slot or register) and the other operand
+           is a constant.  Compare signedness comes from ``PredicateKind``; the
+           sign-bit subtract form is represented by ``ValueOpKind.SUB`` and
+           defaults to signed.
 
-        2. NESTED ``(induction-var - #N)`` subtract buried inside an
-           ``m_xdu`` widen or an ``m_jge`` / ``m_setl`` sign-bit predicate
-           tree (``_TREE_HOST_OPCODES``).  The real Tigress LOCOPT shape:
-           ``xdu (%var_1E0 - #0x64)`` / ``jge ((bnot(%var_1D0 - #0x64) | ...)
-           & ...), #0``.  The collector walks the structured operand SUBTREE
-           (``MopSnapshot.sub_kind`` / ``sub_l`` / ``sub_r``) to find a binary
-           ``SUB`` node whose one child leaf is a known induction var and the
-           other is a constant.  This is the signed ``(i - N) < 0`` idiom.
+        2. Nested ``(induction-var - #N)`` subtract buried inside a portable
+           extend operation or compare predicate tree.  The collector consumes
+           projected ``ExprRef`` fragments to find a binary ``Sub`` node whose
+           one child leaf is a known induction var and the other is a constant.
         """
         # Shape 1: flat top-level operand match (non-nested case).
         for insn in block_insns:
-            if insn.opcode_name not in _GUARD_CMP_OPCODES:
+            signed = FoldedLoopGuardFactCollector._flat_guard_signedness(insn)
+            if signed is None:
                 continue
             match = FoldedLoopGuardFactCollector._match_counter_bound(
                 insn, induction
@@ -350,14 +323,12 @@ class FoldedLoopGuardFactCollector:
             if match is None:
                 continue
             counter, bound = match
-            signed = FoldedLoopGuardFactCollector._opcode_signedness(
-                insn.opcode_name
-            )
             return counter, bound, signed
 
         # Shape 2: nested ``(induction-var - #N)`` buried in an operand tree.
         for insn in block_insns:
-            if insn.opcode_name not in _TREE_HOST_OPCODES:
+            signed = FoldedLoopGuardFactCollector._nested_sub_signedness(insn)
+            if signed is None:
                 continue
             match = FoldedLoopGuardFactCollector._match_buried_sub(
                 insn, induction
@@ -365,8 +336,31 @@ class FoldedLoopGuardFactCollector:
             if match is None:
                 continue
             counter, bound = match
-            signed = insn.opcode_name not in _UNSIGNED_TREE_HOST_OPCODES
             return counter, bound, signed
+        return None
+
+    @staticmethod
+    def _flat_guard_signedness(insn: _InstructionView) -> bool | None:
+        """Return compare signedness for a semantic flat guard candidate."""
+        predicate = insn.predicate_kind
+        if predicate in _UNSIGNED_GUARD_PREDICATES:
+            return False
+        if predicate in _SIGNED_GUARD_PREDICATES:
+            return True
+        if _operation_of_view(insn) is ValueOpKind.SUB:
+            return True
+        return None
+
+    @staticmethod
+    def _nested_sub_signedness(insn: _InstructionView) -> bool | None:
+        """Return compare signedness for a semantic buried-subtract host."""
+        predicate = insn.predicate_kind
+        if predicate in _UNSIGNED_GUARD_PREDICATES:
+            return False
+        if predicate in _SIGNED_GUARD_PREDICATES:
+            return True
+        if _operation_of_view(insn) in _BURIED_SUB_HOST_OPERATIONS:
+            return True
         return None
 
     @staticmethod
@@ -376,88 +370,69 @@ class FoldedLoopGuardFactCollector:
     ) -> tuple[_InductionVar, int] | None:
         """Walk the operand subtree of ``insn`` for a buried ``(counter - #N)``.
 
-        Recurses the structured ``MopSnapshot`` subtree carried by the
-        instruction (``src_l_mop`` / ``src_r_mop``) to find a binary ``SUB``
-        sub-operation whose one child leaf is a known induction var and the
-        other child is a positive numeric constant.  Returns ``(counter,
-        bound)`` for the first match, else ``None``.
+        The structured operand snapshots are projected into ``ExprRef``
+        fragments by the IR layer.  Unsupported vendor wrappers remain
+        provenance-only there, but supported child expressions below them still
+        reach this analysis as portable expression nodes.
         """
         for root in (insn.src_l_mop, insn.src_r_mop):
-            match = FoldedLoopGuardFactCollector._walk_for_sub(root, induction)
-            if match is not None:
-                return match
+            for expr in iter_operand_exprs(root):
+                match = FoldedLoopGuardFactCollector._match_sub_expr(
+                    expr, induction
+                )
+                if match is not None:
+                    return match
         return None
 
     @staticmethod
-    def _walk_for_sub(
-        mop: Any,
+    def _match_sub_expr(
+        expr: ExprRef,
         induction: tuple[_InductionVar, ...],
     ) -> tuple[_InductionVar, int] | None:
-        """Depth-first search a ``MopSnapshot`` tree for ``(counter - #N)``.
-
-        A node is a nested sub-operation when ``sub_kind`` is set; its operand
-        children are ``sub_l`` / ``sub_r``.  When the node is a ``SUB`` whose
-        children pair a known induction-var leaf with a positive constant, the
-        match is returned; otherwise the search recurses into the children.
-        """
-        if mop is None:
+        """Match an ``ExprRef`` subtract as ``(counter - #N)``."""
+        if not isinstance(expr, Sub):
             return None
-        sub_kind = getattr(mop, "sub_kind", None)
-        sub_l = getattr(mop, "sub_l", None)
-        sub_r = getattr(mop, "sub_r", None)
-        if sub_kind is InsnKind.SUB:
-            match = FoldedLoopGuardFactCollector._pair_counter_const(
-                sub_l, sub_r, induction
-            )
-            if match is not None:
-                return match
-        for child in (sub_l, sub_r):
-            match = FoldedLoopGuardFactCollector._walk_for_sub(child, induction)
-            if match is not None:
-                return match
-        return None
+        return FoldedLoopGuardFactCollector._pair_counter_const_expr(
+            expr.left, expr.right, induction
+        )
 
     @staticmethod
-    def _leaf_identity(mop: Any) -> tuple[int | None, int | None]:
-        """Return ``(stkoff, reg)`` operand identity for a ``MopSnapshot`` leaf."""
-        if mop is None:
+    def _expr_identity(expr: ExprRef) -> tuple[int | None, int | None]:
+        """Return ``(stkoff, reg)`` identity for a portable expression leaf."""
+        if not isinstance(expr, Move):
             return None, None
-        kind = getattr(mop, "kind", None)
-        if kind is OperandKind.STACK:
-            stkoff = getattr(mop, "stkoff", None)
-            return (int(stkoff) if stkoff is not None else None), None
-        if kind is OperandKind.REGISTER:
-            reg = getattr(mop, "reg", None)
-            return None, (int(reg) if reg is not None else None)
+        source = expr.source
+        if not isinstance(source, DefinitionRef):
+            return None, None
+        location = source.location
+        if isinstance(location, StackSlot):
+            return int(location.offset), None
+        if isinstance(location, RegisterLocation):
+            return None, int(location.register_id)
         return None, None
 
     @staticmethod
-    def _leaf_const(mop: Any) -> int | None:
-        """Return the numeric value of a ``MopSnapshot`` constant leaf, else None."""
-        if mop is None:
-            return None
-        if getattr(mop, "kind", None) is OperandKind.NUMBER:
-            value = getattr(mop, "value", None)
-            return int(value) if value is not None else None
-        return None
+    def _expr_const(expr: ExprRef) -> int | None:
+        """Return the numeric value of a portable constant leaf, else None."""
+        return int(expr.value) if isinstance(expr, Const) else None
 
     @staticmethod
-    def _pair_counter_const(
-        left: Any,
-        right: Any,
+    def _pair_counter_const_expr(
+        left: ExprRef,
+        right: ExprRef,
         induction: tuple[_InductionVar, ...],
     ) -> tuple[_InductionVar, int] | None:
-        """Match a ``SUB`` node's children as ``(induction-var, const)``.
+        """Match a ``Sub`` node's children as ``(induction-var, const)``.
 
         For an ``(i - N)`` sign-bit guard the induction var is the minuend
         (left) and the bound is the subtrahend (right); the swapped order is
         also accepted defensively.  Returns ``(counter, bound)`` with a
         positive bound, else ``None``.
         """
-        left_stk, left_reg = FoldedLoopGuardFactCollector._leaf_identity(left)
-        right_stk, right_reg = FoldedLoopGuardFactCollector._leaf_identity(right)
-        left_const = FoldedLoopGuardFactCollector._leaf_const(left)
-        right_const = FoldedLoopGuardFactCollector._leaf_const(right)
+        left_stk, left_reg = FoldedLoopGuardFactCollector._expr_identity(left)
+        right_stk, right_reg = FoldedLoopGuardFactCollector._expr_identity(right)
+        left_const = FoldedLoopGuardFactCollector._expr_const(left)
+        right_const = FoldedLoopGuardFactCollector._expr_const(right)
         for var in induction:
             if var.matches_operand(stkoff=left_stk, reg=left_reg) and right_const:
                 if right_const > 0:
@@ -466,14 +441,6 @@ class FoldedLoopGuardFactCollector:
                 if left_const > 0:
                     return var, int(left_const)
         return None
-
-    @staticmethod
-    def _opcode_signedness(opcode_name: str) -> bool:
-        """Derive compare signedness from the opcode (defaults to signed for the
-        ``m_sub`` sign-bit form)."""
-        if opcode_name in _UNSIGNED_CMP_OPCODES:
-            return False
-        return True
 
     @staticmethod
     def _match_counter_bound(
@@ -485,8 +452,8 @@ class FoldedLoopGuardFactCollector:
         Returns ``(counter, bound)`` when one operand is a known induction var
         and the other is a positive numeric constant; else ``None``.
         """
-        left_const = insn.src_l_value if insn.src_l_type in (None, "mop_n") else None
-        right_const = insn.src_r_value if insn.src_r_type in (None, "mop_n") else None
+        left_const = insn.src_l_value
+        right_const = insn.src_r_value
         for var in induction:
             # induction var on the LEFT, constant on the RIGHT
             if (

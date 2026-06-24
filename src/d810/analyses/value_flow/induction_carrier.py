@@ -8,14 +8,18 @@ pipeline is proven end-to-end.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
-import re
+from dataclasses import dataclass, field
+import json
 
 from d810.capabilities.source_lifter import select_lifter
 from d810.core.maturity_labels import WITH_ZERO_MATURITY_VALUES
 from d810.core.typing import Any, Iterable
-from d810.ir.flowgraph import InsnKind, OperandKind
+from d810.ir.expressions import ValueOpKind
+from d810.ir.instructions import Instruction, InstructionEffectKind
+from d810.ir.insn_projection import InstructionProjection
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
+from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
+from d810.ir.varnode import Space, Varnode
 from d810.analyses.fact_collection_context import (
     FactCollectionContext,
     coerce_fact_collection_context,
@@ -23,16 +27,10 @@ from d810.analyses.fact_collection_context import (
 )
 from d810.analyses.value_flow.model import FactObservation
 
-_ADD_OPCODES = frozenset({"m_add", "op_12", InsnKind.ADD.value})
-_SUB_OPCODES = frozenset({"m_sub", "op_13", InsnKind.SUB.value})
-_STX_OPCODES = frozenset({"m_stx", "op_1", InsnKind.STORE.value})
-
-_DEREF_BASE_RE = re.compile(r"\[ds\.\d+:%var_([0-9a-fA-F]+)\.\d+\]")
-_STX_BASE_RE = re.compile(r"^\s*stx\s+%var_[0-9a-fA-F]+\.\d+,\s*ds\.\d+,\s*%var_([0-9a-fA-F]+)\.\d+")
-_STACK_MOV_RE = re.compile(
-    r"^\s*mov\s+%var_([0-9a-fA-F]+)\.\d+(?:\{[^}]*\})?\s*,\s*%var_([0-9a-fA-F]+)\.\d+(?:\{[^}]*\})?"
-)
-_DS_ADDRESS_RE = re.compile(r"\[ds\.[^\]]+\]")
+_ADD_OPCODES = frozenset({"op_12", ValueOpKind.ADD.value, ValueOpKind.ADD.name})
+_SUB_OPCODES = frozenset({"op_13", ValueOpKind.SUB.value, ValueOpKind.SUB.name})
+_STX_OPCODES = frozenset({"op_1", ValueOpKind.STORE.value, ValueOpKind.STORE.name})
+_MOV_OPCODES = frozenset({"op_4", "mov", ValueOpKind.MOVE.value, ValueOpKind.MOVE.name})
 
 
 _MATURITY_VALUES = dict(WITH_ZERO_MATURITY_VALUES)
@@ -55,6 +53,21 @@ class _InstructionView:
     src_r_stkoff: int | None
     src_r_value: int | None
     dstr: str
+    operation: ValueOpKind | None = None
+    control_transfer: ControlTransferKind | None = None
+    predicate_kind: PredicateKind | None = None
+    control_target: int | None = None
+    call_kind: CallKind | None = None
+    call_target: Varnode | None = None
+    call_args: tuple[Varnode, ...] = ()
+    memory_target: Varnode | None = None
+    memory_value: Varnode | None = None
+    memory_segment: Varnode | None = None
+    source_stkoffs: tuple[int, ...] = ()
+    address_stkoffs: tuple[int, ...] = ()
+    address_const_values: tuple[int, ...] = ()
+    dest_temp: int | None = None
+    src_temps: tuple[int, ...] = ()
     # Register identity for operands carried in a register rather than a
     # stack slot (``mop_r``).  ``None`` when the operand is not a register;
     # ``stkoff`` is likewise ``None`` for register operands.  Populated from the
@@ -72,6 +85,7 @@ class _InstructionView:
     # for diag-style instructions that do not provide a snapshot subtree.
     src_l_mop: "Any | None" = None
     src_r_mop: "Any | None" = None
+    attrs: Mapping[str, Any] = field(default_factory=dict, compare=False, hash=False)
 
 
 @dataclass(frozen=True)
@@ -87,6 +101,7 @@ class _MemoryInductionUpdate:
     store_insn: _InstructionView
     step: int
     source_side: str
+    base_stkoff: int | None
     base_token: str | None
 
 
@@ -106,64 +121,305 @@ def _signed_step(value: int) -> int:
     return value
 
 
-def _opcode_name_from_cfg_insn(insn: Any) -> str:
-    kind = getattr(insn, "kind", InsnKind.UNKNOWN)
-    if isinstance(kind, InsnKind):
-        return kind.value
-    return str(kind or "")
-
-
-def _mop_type_name_from_snapshot(mop: Any) -> str | None:
-    kind = getattr(mop, "kind", OperandKind.UNKNOWN)
-    if kind is OperandKind.STACK:
-        return "mop_S"
-    if kind is OperandKind.NUMBER:
-        return "mop_n"
-    if kind is OperandKind.SUBINSN:
-        return "mop_d"
-    if kind is OperandKind.REGISTER:
-        return "mop_r"
-    if kind is OperandKind.BLOCK:
-        return "mop_b"
-    if kind is OperandKind.GLOBAL:
-        return "mop_v"
-    if kind is OperandKind.LVAR:
-        return "mop_l"
-    if kind is OperandKind.ADDRESS:
-        return "mop_a"
-    return None
-
-
-def _stack_offset_from_snapshot(mop: Any) -> int | None:
-    if getattr(mop, "kind", None) is OperandKind.STACK:
-        stkoff = getattr(mop, "stkoff", None)
-        return int(stkoff) if stkoff is not None else None
-    return None
-
-
-def _reg_from_snapshot(mop: Any) -> int | None:
-    if getattr(mop, "kind", None) is OperandKind.REGISTER:
-        reg = getattr(mop, "reg", None)
-        return int(reg) if reg is not None else None
-    return None
-
-
 def _reg_from_cfg_insn(value: Any) -> int | None:
     return int(value) if value is not None else None
 
 
-def _const_value_from_snapshot(mop: Any) -> int | None:
-    if getattr(mop, "kind", None) is OperandKind.NUMBER:
-        value = getattr(mop, "value", None)
-        return int(value) if value is not None else None
+def _canonical_opcode_name(instruction: Instruction) -> str:
+    return str(getattr(instruction.operation, "value", instruction.operation) or "")
+
+
+def _value_op_from_opcode_name(opcode_name: str) -> ValueOpKind | None:
+    if opcode_name in _ADD_OPCODES:
+        return ValueOpKind.ADD
+    if opcode_name in _SUB_OPCODES:
+        return ValueOpKind.SUB
+    if opcode_name in _STX_OPCODES:
+        return ValueOpKind.STORE
+    if opcode_name in _MOV_OPCODES:
+        return ValueOpKind.MOVE
     return None
 
 
-def _display_text_from_cfg_insn(insn: Any) -> str:
-    text = getattr(insn, "display_text", "")
-    if text:
-        return str(text)
-    return str(getattr(insn, "dstr", "") or "")
+def _value_op_from_instruction(instruction: Instruction) -> ValueOpKind | None:
+    operation = instruction.operation
+    return operation if isinstance(operation, ValueOpKind) else None
+
+
+def _operation_of_view(insn: _InstructionView) -> ValueOpKind | None:
+    return insn.operation or _value_op_from_opcode_name(insn.opcode_name)
+
+
+def _type_name_from_varnode(vn: Varnode | None) -> str | None:
+    if vn is None:
+        return None
+    return vn.space.value
+
+
+def _stkoff_from_varnode(vn: Varnode | None) -> int | None:
+    return int(vn.offset) if vn is not None and vn.space is Space.STACK else None
+
+
+def _reg_from_varnode(vn: Varnode | None) -> int | None:
+    return int(vn.offset) if vn is not None and vn.space is Space.REGISTER else None
+
+
+def _temp_from_varnode(vn: Varnode | None) -> int | None:
+    return int(vn.offset) if vn is not None and vn.space is Space.TEMP else None
+
+
+def _const_value_from_varnode(vn: Varnode | None) -> int | None:
+    return int(vn.offset) if vn is not None and vn.space is Space.CONST else None
+
+
+def _size_from_varnode(vn: Varnode | None) -> int | None:
+    return int(vn.size) if vn is not None else None
+
+
+def _store_operands(
+    instruction: Instruction,
+) -> tuple[Varnode | None, Varnode | None, Varnode | None]:
+    memory = instruction.memory
+    if memory is not None:
+        return memory.target, memory.value, memory.segment
+    for effect in instruction.effects:
+        if effect.kind is InstructionEffectKind.STORE:
+            return effect.target, effect.value, effect.segment
+    return None, None, None
+
+
+def _canonical_operands(
+    instruction: Instruction,
+) -> tuple[Varnode | None, Varnode | None, Varnode | None]:
+    if instruction.operation is ValueOpKind.STORE:
+        return _store_operands(instruction)
+    left = instruction.inputs[0] if len(instruction.inputs) >= 1 else None
+    right = instruction.inputs[1] if len(instruction.inputs) >= 2 else None
+    return instruction.result, left, right
+
+
+def _stack_offsets_from_varnodes(varnodes: Iterable[Varnode]) -> tuple[int, ...]:
+    seen: set[int] = set()
+    offsets: list[int] = []
+    for vn in varnodes:
+        if vn.space is not Space.STACK:
+            continue
+        offset = int(vn.offset)
+        if offset in seen:
+            continue
+        seen.add(offset)
+        offsets.append(offset)
+    return tuple(offsets)
+
+
+def _int_tuple(values: object) -> tuple[int, ...]:
+    if not isinstance(values, (list, tuple)):
+        return ()
+    seen: set[int] = set()
+    offsets: list[int] = []
+    for value in values:
+        try:
+            offset = int(value)
+        except (TypeError, ValueError):
+            continue
+        if offset in seen:
+            continue
+        seen.add(offset)
+        offsets.append(offset)
+    return tuple(offsets)
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _temps_from_varnodes(varnodes: Iterable[Varnode]) -> tuple[int, ...]:
+    seen: set[int] = set()
+    temps: list[int] = []
+    for vn in varnodes:
+        if vn.space is not Space.TEMP:
+            continue
+        offset = int(vn.offset)
+        if offset in seen:
+            continue
+        seen.add(offset)
+        temps.append(offset)
+    return tuple(temps)
+
+
+def _stack_offsets_from_diag_meta(meta_text: object) -> tuple[int, ...]:
+    if not isinstance(meta_text, str) or not meta_text:
+        return ()
+    try:
+        payload = json.loads(meta_text)
+    except (TypeError, ValueError):
+        return ()
+    if not isinstance(payload, Mapping):
+        return ()
+
+    return _int_tuple(
+        payload.get("source_stkoffs")
+        or payload.get("source_stack_refs")
+        or payload.get("stack_refs")
+        or payload.get("stack_offsets")
+    )
+
+
+def _address_stack_offsets_from_diag_meta(meta_text: object) -> tuple[int, ...]:
+    if not isinstance(meta_text, str) or not meta_text:
+        return ()
+    try:
+        payload = json.loads(meta_text)
+    except (TypeError, ValueError):
+        return ()
+    if not isinstance(payload, Mapping):
+        return ()
+
+    explicit = _int_tuple(
+        payload.get("address_stack_refs") or payload.get("address_stkoffs")
+    )
+    if explicit:
+        return explicit
+
+    return ()
+
+
+def _attrs_from_diag_meta(meta_text: object) -> Mapping[str, Any]:
+    if not isinstance(meta_text, str) or not meta_text:
+        return {}
+    try:
+        payload = json.loads(meta_text)
+    except (TypeError, ValueError):
+        return {}
+    return payload if isinstance(payload, Mapping) else {}
+
+
+def _control_transfer_from_instruction(
+    instruction: Instruction,
+) -> ControlTransferKind | None:
+    control = instruction.control
+    return control.transfer if control is not None else None
+
+
+def _predicate_kind_from_instruction(instruction: Instruction) -> PredicateKind | None:
+    control = instruction.control
+    return control.predicate if control is not None else None
+
+
+def _control_target_from_instruction(instruction: Instruction) -> int | None:
+    control = instruction.control
+    if control is None or control.target is None:
+        return None
+    return int(control.target)
+
+
+def _predicate_kind_from_raw(value: object) -> PredicateKind | None:
+    if isinstance(value, PredicateKind):
+        return value
+    if isinstance(value, str):
+        try:
+            return PredicateKind(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _control_transfer_from_raw(value: object) -> ControlTransferKind | None:
+    if isinstance(value, ControlTransferKind):
+        return value
+    if isinstance(value, str):
+        try:
+            return ControlTransferKind(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _first_present(*values: object) -> object | None:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _call_kind_from_instruction(instruction: Instruction) -> CallKind | None:
+    control = instruction.control
+    return control.call_kind if control is not None else None
+
+
+def _call_target_from_instruction(instruction: Instruction) -> Varnode | None:
+    control = instruction.control
+    return control.call_target if control is not None else None
+
+
+def _call_args_from_instruction(instruction: Instruction) -> tuple[Varnode, ...]:
+    control = instruction.control
+    return control.call_args if control is not None else ()
+
+
+def _address_stack_offsets_from_instruction(
+    instruction: Instruction,
+) -> tuple[int, ...]:
+    return _int_tuple(instruction.attrs.get("address_stack_refs"))
+
+
+def _address_const_values_from_instruction(
+    instruction: Instruction,
+) -> tuple[int, ...]:
+    return _int_tuple(instruction.attrs.get("address_const_values"))
+
+
+def _instruction_view_from_canonical(
+    *,
+    block_serial: int,
+    index: int,
+    instruction: Instruction,
+) -> _InstructionView:
+    dest, left, right = _canonical_operands(instruction)
+    attrs = instruction.attrs
+    ea_raw = attrs.get("ea")
+    ea = int(ea_raw) if ea_raw is not None else None
+    memory = instruction.memory
+    return _InstructionView(
+        block_serial=int(block_serial),
+        insn_index=int(index),
+        ea=ea,
+        opcode_name=_canonical_opcode_name(instruction),
+        dest_type=_type_name_from_varnode(dest),
+        dest_stkoff=_stkoff_from_varnode(dest),
+        dest_size=_size_from_varnode(dest),
+        src_l_type=_type_name_from_varnode(left),
+        src_l_stkoff=_stkoff_from_varnode(left),
+        src_l_value=_const_value_from_varnode(left),
+        src_r_type=_type_name_from_varnode(right),
+        src_r_stkoff=_stkoff_from_varnode(right),
+        src_r_value=_const_value_from_varnode(right),
+        dstr=str(attrs.get("display_text") or ""),
+        operation=_value_op_from_instruction(instruction),
+        control_transfer=_control_transfer_from_instruction(instruction),
+        predicate_kind=_predicate_kind_from_instruction(instruction),
+        control_target=_control_target_from_instruction(instruction),
+        call_kind=_call_kind_from_instruction(instruction),
+        call_target=_call_target_from_instruction(instruction),
+        call_args=_call_args_from_instruction(instruction),
+        memory_target=memory.target if memory is not None else None,
+        memory_value=memory.value if memory is not None else None,
+        memory_segment=memory.segment if memory is not None else None,
+        source_stkoffs=_stack_offsets_from_varnodes(instruction.inputs),
+        address_stkoffs=_address_stack_offsets_from_instruction(instruction),
+        address_const_values=_address_const_values_from_instruction(instruction),
+        dest_temp=_temp_from_varnode(instruction.result),
+        src_temps=_temps_from_varnodes(instruction.inputs),
+        dest_reg=_reg_from_varnode(dest),
+        src_l_reg=_reg_from_varnode(left),
+        src_r_reg=_reg_from_varnode(right),
+        attrs=attrs,
+    )
 
 
 def _iter_portable_instructions(target: Any) -> Iterable[_InstructionView]:
@@ -176,30 +432,11 @@ def _iter_portable_instructions(target: Any) -> Iterable[_InstructionView]:
         block_serial = int(getattr(blk, "serial"))
         cfg_instructions = getattr(blk, "insn_snapshots", None)
         if cfg_instructions is not None:
-            for index, insn in enumerate(cfg_instructions):
-                left = getattr(insn, "l", None)
-                right = getattr(insn, "r", None)
-                dest = getattr(insn, "d", None)
-                yield _InstructionView(
+            for index, instruction in enumerate(InstructionProjection.from_block(blk)):
+                yield _instruction_view_from_canonical(
                     block_serial=block_serial,
-                    insn_index=index,
-                    ea=getattr(insn, "ea", None),
-                    opcode_name=_opcode_name_from_cfg_insn(insn),
-                    dest_type=_mop_type_name_from_snapshot(dest),
-                    dest_stkoff=_stack_offset_from_snapshot(dest),
-                    dest_size=getattr(dest, "size", None),
-                    src_l_type=_mop_type_name_from_snapshot(left),
-                    src_l_stkoff=_stack_offset_from_snapshot(left),
-                    src_l_value=_const_value_from_snapshot(left),
-                    src_r_type=_mop_type_name_from_snapshot(right),
-                    src_r_stkoff=_stack_offset_from_snapshot(right),
-                    src_r_value=_const_value_from_snapshot(right),
-                    dstr=_display_text_from_cfg_insn(insn),
-                    dest_reg=_reg_from_snapshot(dest),
-                    src_l_reg=_reg_from_snapshot(left),
-                    src_r_reg=_reg_from_snapshot(right),
-                    src_l_mop=left,
-                    src_r_mop=right,
+                    index=index,
+                    instruction=instruction,
                 )
             continue
         for index, insn in enumerate(getattr(blk, "instructions", ())):
@@ -228,11 +465,28 @@ def _iter_portable_instructions(target: Any) -> Iterable[_InstructionView]:
                 if getattr(insn, "src_r_value", None) is not None
                 else None
             )
+            source_stkoffs = tuple(
+                dict.fromkeys(
+                    int(offset)
+                    for offset in (
+                        *tuple(getattr(insn, "source_stkoffs", ()) or ()),
+                        *_stack_offsets_from_diag_meta(getattr(insn, "meta", None)),
+                        src_l_stkoff,
+                        src_r_stkoff,
+                    )
+                    if offset is not None
+                )
+            )
+            address_stkoffs = _address_stack_offsets_from_diag_meta(
+                getattr(insn, "meta", None)
+            )
+            attrs = dict(_attrs_from_diag_meta(getattr(insn, "meta", None)))
+            opcode_name = str(getattr(insn, "opcode_name", ""))
             yield _InstructionView(
                 block_serial=block_serial,
                 insn_index=int(getattr(insn, "index", index)),
                 ea=getattr(insn, "ea", None),
-                opcode_name=str(getattr(insn, "opcode_name", "")),
+                opcode_name=opcode_name,
                 dest_type=getattr(insn, "dest_type", None),
                 dest_stkoff=dest_stkoff,
                 dest_size=getattr(insn, "dest_size", None),
@@ -243,11 +497,44 @@ def _iter_portable_instructions(target: Any) -> Iterable[_InstructionView]:
                 src_r_stkoff=src_r_stkoff,
                 src_r_value=src_r_value,
                 dstr=str(getattr(insn, "dstr", "")),
+                operation=_value_op_from_opcode_name(opcode_name),
+                control_transfer=_control_transfer_from_raw(
+                    _first_present(
+                        getattr(insn, "control_transfer", None),
+                        getattr(insn, "control_transfer_kind", None),
+                        attrs.get("control_transfer"),
+                        attrs.get("control_transfer_kind"),
+                    )
+                ),
+                predicate_kind=_predicate_kind_from_raw(
+                    _first_present(
+                        getattr(insn, "predicate_kind", None),
+                        getattr(insn, "branch_predicate", None),
+                        attrs.get("predicate_kind"),
+                        attrs.get("branch_predicate"),
+                    )
+                ),
+                control_target=_optional_int(
+                    _first_present(
+                        getattr(insn, "control_target", None),
+                        getattr(insn, "branch_target", None),
+                        attrs.get("control_target"),
+                        attrs.get("branch_target"),
+                        attrs.get("target_block"),
+                    )
+                ),
+                source_stkoffs=source_stkoffs,
+                address_stkoffs=address_stkoffs,
+                address_const_values=_int_tuple(
+                    attrs.get("address_const_values")
+                    or attrs.get("address_constants")
+                ),
                 dest_reg=_reg_from_cfg_insn(getattr(insn, "dest_reg", None)),
                 src_l_reg=_reg_from_cfg_insn(getattr(insn, "src_l_reg", None)),
                 src_r_reg=_reg_from_cfg_insn(getattr(insn, "src_r_reg", None)),
                 src_l_mop=getattr(insn, "src_l_mop", None) or getattr(insn, "l", None),
                 src_r_mop=getattr(insn, "src_r_mop", None) or getattr(insn, "r", None),
+                attrs=attrs,
             )
 
 
@@ -263,13 +550,14 @@ def _iter_instruction_views(target: Any) -> Iterable[_InstructionView]:
 
 
 def _classify_induction_update(insn: _InstructionView) -> _InductionUpdate | None:
+    operation = _operation_of_view(insn)
     if insn.dest_stkoff is not None:
-        if insn.opcode_name in _ADD_OPCODES:
+        if operation is ValueOpKind.ADD:
             if insn.src_l_stkoff == insn.dest_stkoff and insn.src_r_value is not None:
                 return _InductionUpdate(insn, _signed_step(insn.src_r_value), "right")
             if insn.src_r_stkoff == insn.dest_stkoff and insn.src_l_value is not None:
                 return _InductionUpdate(insn, _signed_step(insn.src_l_value), "left")
-        if insn.opcode_name in _SUB_OPCODES:
+        if operation is ValueOpKind.SUB:
             if insn.src_l_stkoff == insn.dest_stkoff and insn.src_r_value is not None:
                 return _InductionUpdate(insn, -_signed_step(insn.src_r_value), "right")
         return None
@@ -282,65 +570,58 @@ def _classify_register_induction_update(
     """Classify a register self-update ``reg = reg +/- const``."""
     if insn.dest_reg is None:
         return None
-    if insn.opcode_name in _ADD_OPCODES:
+    operation = _operation_of_view(insn)
+    if operation is ValueOpKind.ADD:
         if insn.src_l_reg == insn.dest_reg and insn.src_r_value is not None:
             return _InductionUpdate(insn, _signed_step(insn.src_r_value), "right")
         if insn.src_r_reg == insn.dest_reg and insn.src_l_value is not None:
             return _InductionUpdate(insn, _signed_step(insn.src_l_value), "left")
-    if insn.opcode_name in _SUB_OPCODES:
+    if operation is ValueOpKind.SUB:
         if insn.src_l_reg == insn.dest_reg and insn.src_r_value is not None:
             return _InductionUpdate(insn, -_signed_step(insn.src_r_value), "right")
     return None
 
 
-def _deref_base_token(dstr: str) -> str | None:
-    match = _DEREF_BASE_RE.search(dstr)
-    if match is None:
-        return None
-    return match.group(1).lower()
+def _stack_storage_token(stkoff: int | None) -> str | None:
+    return None if stkoff is None else f"S{int(stkoff)}"
 
 
-def _stx_base_token(dstr: str) -> str | None:
-    match = _STX_BASE_RE.search(dstr)
-    if match is None:
-        return None
-    return match.group(1).lower()
-
-
-def _classify_memory_define(insn: _InstructionView) -> tuple[int, str, str | None] | None:
+def _classify_memory_define(
+    insn: _InstructionView,
+) -> tuple[int, str, tuple[int, ...]] | None:
     if insn.dest_stkoff is None:
         return None
-    base_token = _deref_base_token(insn.dstr)
-    if base_token is None:
+    if not insn.address_stkoffs:
         return None
-    if insn.opcode_name in _ADD_OPCODES:
+    operation = _operation_of_view(insn)
+    if operation is ValueOpKind.ADD:
         if insn.src_r_value is not None:
-            return (_signed_step(insn.src_r_value), "right", base_token)
+            return (_signed_step(insn.src_r_value), "right", insn.address_stkoffs)
         if insn.src_l_value is not None:
-            return (_signed_step(insn.src_l_value), "left", base_token)
-    if insn.opcode_name in _SUB_OPCODES:
+            return (_signed_step(insn.src_l_value), "left", insn.address_stkoffs)
+    if operation is ValueOpKind.SUB:
         if insn.src_r_value is not None:
-            return (-_signed_step(insn.src_r_value), "right", base_token)
+            return (-_signed_step(insn.src_r_value), "right", insn.address_stkoffs)
     return None
 
 
 def _iter_memory_induction_updates(
     instructions: tuple[_InstructionView, ...],
 ) -> Iterable[_MemoryInductionUpdate]:
-    definitions: dict[tuple[int, int], tuple[_InstructionView, int, str, str | None]] = {}
+    definitions: dict[tuple[int, int], tuple[_InstructionView, int, str, tuple[int, ...]]] = {}
     for insn in instructions:
         mem_def = _classify_memory_define(insn)
         if mem_def is not None and insn.dest_stkoff is not None:
-            step, source_side, base_token = mem_def
+            step, source_side, base_stkoffs = mem_def
             definitions[(insn.block_serial, insn.dest_stkoff)] = (
                 insn,
                 step,
                 source_side,
-                base_token,
+                base_stkoffs,
             )
             continue
         if (
-            insn.opcode_name not in _STX_OPCODES
+            _operation_of_view(insn) is not ValueOpKind.STORE
             or insn.src_l_stkoff is None
             or insn.dest_stkoff is None
         ):
@@ -348,37 +629,30 @@ def _iter_memory_induction_updates(
         definition = definitions.get((insn.block_serial, insn.src_l_stkoff))
         if definition is None:
             continue
-        define_insn, step, source_side, base_token = definition
-        store_base_token = _stx_base_token(insn.dstr)
-        if base_token is not None and store_base_token is not None and base_token != store_base_token:
+        define_insn, step, source_side, base_stkoffs = definition
+        base_stkoff = int(insn.dest_stkoff)
+        if base_stkoff not in base_stkoffs:
             continue
         yield _MemoryInductionUpdate(
             define_insn=define_insn,
             store_insn=insn,
             step=step,
             source_side=source_side,
-            base_token=base_token,
+            base_stkoff=base_stkoff,
+            base_token=_stack_storage_token(base_stkoff),
         )
 
 
-def _stack_mov_tokens(insn: _InstructionView) -> tuple[str, str] | None:
-    if insn.opcode_name not in {"m_mov", "op_4", InsnKind.MOV.value}:
+def _stack_move_identity(insn: _InstructionView) -> tuple[int, int] | None:
+    if _operation_of_view(insn) is not ValueOpKind.MOVE:
         return None
     if insn.dest_stkoff is None or insn.src_l_stkoff is None:
         return None
-    match = _STACK_MOV_RE.search(insn.dstr)
-    if match is None:
-        return None
-    return (match.group(1).lower(), match.group(2).lower())
+    return int(insn.src_l_stkoff), int(insn.dest_stkoff)
 
 
-def _uses_token_in_memory_address(insn: _InstructionView, token: str) -> bool:
-    text = insn.dstr.lower()
-    token_text = f"%var_{token.lower()}."
-    return any(
-        token_text in match.group(0)
-        for match in _DS_ADDRESS_RE.finditer(text)
-    )
+def _uses_stack_in_memory_address(insn: _InstructionView, stkoff: int) -> bool:
+    return int(stkoff) in {int(offset) for offset in insn.address_stkoffs}
 
 
 def _iter_writeback_tail_updates(
@@ -391,17 +665,17 @@ def _iter_writeback_tail_updates(
     for block_instructions in by_block.values():
         ordered = sorted(block_instructions, key=lambda insn: insn.insn_index)
         for index, insn in enumerate(ordered):
-            tokens = _stack_mov_tokens(insn)
-            if tokens is None:
+            identity = _stack_move_identity(insn)
+            if identity is None:
                 continue
-            source_token, dest_token = tokens
+            source_stkoff, dest_stkoff = identity
             for later in ordered[index + 1:]:
-                if _uses_token_in_memory_address(later, source_token):
+                if _uses_stack_in_memory_address(later, source_stkoff):
                     yield _WritebackTailUpdate(
                         move_insn=insn,
                         address_use_insn=later,
-                        source_token=source_token,
-                        dest_token=dest_token,
+                        source_token=_stack_storage_token(source_stkoff) or "unknown",
+                        dest_token=_stack_storage_token(dest_stkoff) or "unknown",
                     )
                     break
 

@@ -28,54 +28,54 @@ def _view(*, op, dest, l_off=None, l_val=None, r_off=None, r_val=None, block=0):
 
 def test_classify_add_right_operand_step() -> None:
     fact = InductionVariableAnalysis().classify_update(
-        _view(op="m_add", dest=0x20, l_off=0x20, r_val=4)
+        _view(op="ADD", dest=0x20, l_off=0x20, r_val=4)
     )
     assert fact == InductionVariableFact(0x20, 4, "right", 0)
 
 
 def test_classify_add_left_operand_step() -> None:
     fact = InductionVariableAnalysis().classify_update(
-        _view(op="m_add", dest=0x20, r_off=0x20, l_val=8)
+        _view(op="ADD", dest=0x20, r_off=0x20, l_val=8)
     )
     assert fact == InductionVariableFact(0x20, 8, "left", 0)
 
 
 def test_classify_sub_is_negative_step() -> None:
     fact = InductionVariableAnalysis().classify_update(
-        _view(op="m_sub", dest=0x20, l_off=0x20, r_val=1)
+        _view(op="SUB", dest=0x20, l_off=0x20, r_val=1)
     )
     assert fact is not None and fact.step == -1
 
 
 def test_signed_step_handles_64bit_unsigned() -> None:
     fact = InductionVariableAnalysis().classify_update(
-        _view(op="m_add", dest=0x20, l_off=0x20, r_val=0xFFFFFFFFFFFFFFFF)
+        _view(op="ADD", dest=0x20, l_off=0x20, r_val=0xFFFFFFFFFFFFFFFF)
     )
     assert fact is not None and fact.step == -1
 
 
 def test_all_opcode_forms_classify() -> None:
     a = InductionVariableAnalysis()
-    for op in ("m_add", "op_12", "ADD"):
+    for op in ("op_12", "ADD", "add"):
         f = a.classify_update(_view(op=op, dest=0x20, l_off=0x20, r_val=1))
         assert f is not None and f.step == 1
 
 
 def test_non_induction_returns_none() -> None:
     a = InductionVariableAnalysis()
-    assert a.classify_update(_view(op="m_add", dest=None, l_off=0x20, r_val=1)) is None
-    assert a.classify_update(_view(op="m_mov", dest=0x20, l_off=0x20, r_val=1)) is None
+    assert a.classify_update(_view(op="ADD", dest=None, l_off=0x20, r_val=1)) is None
+    assert a.classify_update(_view(op="MOVE", dest=0x20, l_off=0x20, r_val=1)) is None
     # not a self-update: src offset differs from dest
-    assert a.classify_update(_view(op="m_add", dest=0x20, l_off=0x30, r_val=1)) is None
+    assert a.classify_update(_view(op="ADD", dest=0x20, l_off=0x30, r_val=1)) is None
 
 
 def test_collect_block_keys_by_dest_stkoff() -> None:
     a = InductionVariableAnalysis()
     facts = a.collect_block(
         [
-            _view(op="m_add", dest=0x20, l_off=0x20, r_val=1),
-            _view(op="m_sub", dest=0x40, l_off=0x40, r_val=2),
-            _view(op="m_mov", dest=0x60, l_off=0x60, r_val=3),  # ignored
+            _view(op="ADD", dest=0x20, l_off=0x20, r_val=1),
+            _view(op="SUB", dest=0x40, l_off=0x40, r_val=2),
+            _view(op="MOVE", dest=0x60, l_off=0x60, r_val=3),  # ignored
         ]
     )
     assert set(facts) == {0x20, 0x40}
@@ -88,8 +88,8 @@ def test_loop_head_merge_keeps_body_candidate() -> None:
     a = InductionVariableAnalysis()
     result = a.analyze_loop(
         {
-            0: [_view(op="m_mov", dest=0x8, l_off=0x8, r_val=0, block=0)],
-            1: [_view(op="m_add", dest=0x20, l_off=0x20, r_val=1, block=1)],
+            0: [_view(op="MOVE", dest=0x8, l_off=0x8, r_val=0, block=0)],
+            1: [_view(op="ADD", dest=0x20, l_off=0x20, r_val=1, block=1)],
         }
     )
     assert 0x20 in result  # NOT wiped by the empty header
@@ -111,8 +111,8 @@ def test_conflicting_steps_are_preserved_not_collapsed() -> None:
     a = InductionVariableAnalysis()
     result = a.analyze_loop(
         {
-            1: [_view(op="m_add", dest=0x20, l_off=0x20, r_val=1, block=1)],
-            2: [_view(op="m_add", dest=0x20, l_off=0x20, r_val=2, block=2)],
+            1: [_view(op="ADD", dest=0x20, l_off=0x20, r_val=1, block=1)],
+            2: [_view(op="ADD", dest=0x20, l_off=0x20, r_val=2, block=2)],
         }
     )
     assert {c.step for c in result[0x20]} == {1, 2}
@@ -123,8 +123,8 @@ def test_same_step_across_blocks_dedups_and_is_unambiguous() -> None:
     a = InductionVariableAnalysis()
     result = a.analyze_loop(
         {
-            1: [_view(op="m_add", dest=0x20, l_off=0x20, r_val=1, block=1)],
-            2: [_view(op="m_add", dest=0x20, l_off=0x20, r_val=1, block=2)],
+            1: [_view(op="ADD", dest=0x20, l_off=0x20, r_val=1, block=1)],
+            2: [_view(op="ADD", dest=0x20, l_off=0x20, r_val=1, block=2)],
         }
     )
     assert len(result[0x20]) == 1
