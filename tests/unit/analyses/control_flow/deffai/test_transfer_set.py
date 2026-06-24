@@ -59,9 +59,6 @@ def test_mop_cell_maps_stack_and_reg():
     assert mop_cell(Varnode(Space.REGISTER, 5, 8)) == LocationRef.reg(5, 8)
     assert mop_cell(Varnode(Space.CONST, 3, 8)) is None  # a const names no cell
     assert mop_cell(None) is None
-
-
-def test_operand_cell_maps_lifted_operand_snapshots():
     # ``operand_cell`` is the lift-boundary adapter from an operand snapshot
     # through the canonical Varnode surface to a tracked cell.
     assert operand_cell(stk(0x10)) == LocationRef.stack(0x10, 8)

@@ -22,10 +22,12 @@ a block on the carrier-def path or rewrite an edge inside it.
 This module follows the same idioms as
 :func:`d810.analyses.control_flow.linearized_state_dag.detect_side_effect_corridors`:
 - It runs against the FlowGraph snapshot (no live mba access).
-- It introspects ``BlockSnapshot.kind`` / ``InsnSnapshot.kind`` and the
-  rich ``l``/``r``/``d`` ``MopSnapshot`` fields (``t``, ``stkoff``, ``reg``).
+- It introspects ``BlockSnapshot.kind`` / ``InsnSnapshot.kind`` and classifies
+  each operand over the portable :class:`~d810.ir.varnode.Varnode` /
+  :class:`~d810.ir.storage_identity.StorageIdentity` surface (space + offset),
+  never over a raw backend operand type.
 - It is conservative: when the carrier cannot be cleanly captured (no
-  ``mop_l`` / ``mop_S`` source on the writer), no fact is emitted.
+  lvar / stack-identity source on the writer), no fact is emitted.
 
 Default bounds:
 - BFS depth: 8 blocks back from the return tail (matches the audit's
@@ -42,10 +44,13 @@ from d810.ir.flowgraph import (
     FlowGraph,
     InsnKind,
     InsnSnapshot,
-    MopSnapshot,
     OperandKind,
 )
 from d810.ir.varnode import Space, varnode_from_mop_snapshot
+from d810.ir.storage_identity import (
+    StorageIdentityKind,
+    storage_identity_from_mop_snapshot,
+)
 from d810.ir.expressions import Move
 from d810.ir.insn_projection import project_assignment
 from d810.ir.locations import RegisterLocation, StackSlot, WeakStackSlot
@@ -67,21 +72,6 @@ __all__ = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Mop type constants from ida_hexrays (replicated as integers).
-#
-# We hardcode these because (a) the detector runs at FlowGraph-build time and
-# IDA may already have been imported, but (b) we don't want a hard import
-# dependency in the recon layer.  These values are stable across IDA SDK
-# versions: see ida_hexrays.hpp ``mop_t::t`` enum.
-# ---------------------------------------------------------------------------
-_MOP_R = 1   # mop_r: register
-_MOP_N = 2   # mop_n: numeric constant
-_MOP_S = 5   # mop_S/mop_str: stkvar reference
-_MOP_L = 9   # mop_l: lvar reference
-_LEGACY_MOP_S = 3
-_LEGACY_MOP_L = 7
-
 _DEFAULT_MAX_DEPTH = 8
 _DEFAULT_MAX_VISITED = 64
 
@@ -96,38 +86,52 @@ _RETURN_WRITER_KINDS = frozenset(
 )
 
 
-def _mop_type(mop: MopSnapshot | None) -> int | None:
+# ---------------------------------------------------------------------------
+# Operand classification over the canonical Varnode / StorageIdentity surface.
+#
+# Each predicate adapts a lifted operand snapshot into a portable
+# ``Varnode`` (space + offset + size) via ``varnode_from_mop_snapshot`` and
+# decides on the varnode space, never on a raw backend ``mop_t::t`` integer.
+# The ``OperandKind`` fall-throughs cover the accept-on-unknown cases where the
+# varnode adapter cannot recover a concrete identity (e.g. a stack operand whose
+# offset was not captured collapses to ``Space.UNKNOWN``); these keep the
+# detector's existing conservative acceptance without re-deriving operand shape.
+# ---------------------------------------------------------------------------
+
+
+def _operand_space(mop: object | None) -> Space | None:
+    """Portable ``Varnode`` space for a lifted operand snapshot, else ``None``."""
     if mop is None:
         return None
-    try:
-        return int(mop.t)
-    except (TypeError, ValueError):
-        return None
+    varnode = varnode_from_mop_snapshot(mop)
+    return None if varnode is None else varnode.space
 
 
-def _is_register_mop(mop: MopSnapshot | None) -> bool:
+def _is_register_mop(mop: object | None) -> bool:
     return mop is not None and (
-        mop.kind is OperandKind.REGISTER or _mop_type(mop) == _MOP_R
+        getattr(mop, "kind", None) is OperandKind.REGISTER
+        or _operand_space(mop) is Space.REGISTER
     )
 
 
-def _is_number_mop(mop: MopSnapshot | None) -> bool:
+def _is_number_mop(mop: object | None) -> bool:
     return mop is not None and (
-        mop.kind is OperandKind.NUMBER or _mop_type(mop) == _MOP_N
+        getattr(mop, "kind", None) is OperandKind.NUMBER
+        or _operand_space(mop) is Space.CONST
     )
 
 
-def _is_stack_mop(mop: MopSnapshot | None) -> bool:
+def _is_stack_mop(mop: object | None) -> bool:
     return mop is not None and (
-        mop.kind is OperandKind.STACK
-        or _mop_type(mop) in (_MOP_S, _LEGACY_MOP_S)
+        getattr(mop, "kind", None) is OperandKind.STACK
+        or _operand_space(mop) is Space.STACK
     )
 
 
-def _is_lvar_mop(mop: MopSnapshot | None) -> bool:
+def _is_lvar_mop(mop: object | None) -> bool:
     return mop is not None and (
-        mop.kind is OperandKind.LVAR
-        or _mop_type(mop) in (_MOP_L, _LEGACY_MOP_L)
+        getattr(mop, "kind", None) is OperandKind.LVAR
+        or _operand_space(mop) is Space.LVAR
     )
 
 
@@ -141,14 +145,14 @@ class ReturnFrontierCarrierFact:
         walk_path: Block serials from writer_block ... ret_block (inclusive
             on both ends).  Length >= 1 (at minimum the writer is also the
             ret block).
-        carrier_lvar_idx: lvar_idx of the writer's source ``mop_l``, or
+        carrier_lvar_idx: lvar index of the writer's lvar source, or
             ``None`` if the source is not an lvar.
-        carrier_stkoff: Stack offset of the writer's source ``mop_S``, or
-            ``None`` if the source is not a stkvar.
+        carrier_stkoff: Canonical STACK storage offset of the writer's stack
+            source, or ``None`` if the source is not a stkvar.
         writer_path_blocks: Frozenset of block serials whose preservation
             is required for the carrier identity to survive end-to-end
             (writer + immediate predecessors that reference the carrier
-            via mop_l/mop_S).  HCC uses this set to reject mods that
+            by lvar / stack identity).  HCC uses this set to reject mods that
             would inject foreign predecessors or rewrite edges inside.
         classification: Recon carrier classification. The protected
             non-carrier class means the writer is not a recoverable return
@@ -187,23 +191,25 @@ def _is_return_block(blk: BlockSnapshot) -> bool:
 def _dest_is_return_slot(
     insn: InsnSnapshot, *, return_stkoff: int
 ) -> bool:
-    """Heuristic: writer's destination is rax (any mop_r) OR the
+    """Heuristic: writer's destination is rax (any register) OR the
     return-slot stkvar at ``return_stkoff``.
 
-    We accept any mop_r as a candidate because rax is the standard return
-    register on x64 and OLLVM's pre-finalize lowering uses an lvar/stkvar
-    intermediate.  This matches the audit's ``_dest_is_return_slot``.
+    We accept any register destination as a candidate because rax is the
+    standard return register on x64 and OLLVM's pre-finalize lowering uses an
+    lvar/stkvar intermediate.  This matches the audit's ``_dest_is_return_slot``.
     """
     dst = insn.d
     if _is_register_mop(dst):
         return True
     if _is_stack_mop(dst):
-        if dst.stkoff is None:
+        dst_off = _operand_stack_offset(dst)
+        if dst_off is None:
             return True  # accept-on-unknown
-        return int(dst.stkoff) == int(return_stkoff)
+        return dst_off == int(return_stkoff)
     if _is_lvar_mop(dst):
-        # Snapshot doesn't expose lvar idx; accept any mop_l dst as a
-        # candidate (filtered downstream by carrier capture).
+        # The portable lvar identity does not expose the live lvar table index;
+        # accept any lvar destination as a candidate (filtered downstream by
+        # carrier capture).
         return True
     return False
 
@@ -271,6 +277,20 @@ def _find_writer_in_block(
     return last
 
 
+def _operand_stack_offset(mop: object | None) -> int | None:
+    """Return the canonical STACK storage offset of an operand, else ``None``.
+
+    Adapts the lifted operand snapshot into a portable
+    :class:`~d810.ir.storage_identity.StorageIdentity` and returns its offset
+    only for a recovered stack identity; an operand whose stack offset was not
+    captured (or that is not a stack operand) yields ``None``.
+    """
+    identity = storage_identity_from_mop_snapshot(mop)
+    if identity is None or identity.kind is not StorageIdentityKind.STACK:
+        return None
+    return int(identity.offset)
+
+
 def _writer_carrier_identity(
     writer: InsnSnapshot,
 ) -> tuple[int | None, int | None]:
@@ -278,12 +298,11 @@ def _writer_carrier_identity(
     source operand (``writer.l``).  Both None means the carrier cannot
     be captured (writer was a const / sub-instruction / arithmetic).
 
-    The MopSnapshot in d810.ir.flowgraph does NOT carry lvar_idx
-    directly (it's the lightweight pure-Python value type).  When the
-    snapshot was captured by the richer
-    ``d810.hexrays.ir.mop_snapshot.MopSnapshot``, lvar info is exposed
-    via private attribute conventions; we use ``getattr`` with a
-    fall-through.  When unavailable, we record only stkoff.
+    The portable operand snapshot does NOT carry an lvar *index* directly (the
+    portable ``Varnode`` LVAR identity is a frame *offset*, not the live lvar
+    table index).  When a richer capture exposes an lvar index via private
+    attribute conventions, we read it with a ``getattr`` fall-through; when
+    unavailable we record only the canonical stack offset.
     """
     src = writer.l
     if src is None:
@@ -301,11 +320,7 @@ def _writer_carrier_identity(
                 except (TypeError, ValueError):
                     continue
     elif _is_stack_mop(src):
-        if src.stkoff is not None:
-            try:
-                carrier_stkoff = int(src.stkoff)
-            except (TypeError, ValueError):
-                carrier_stkoff = None
+        carrier_stkoff = _operand_stack_offset(src)
     return carrier_lvar_idx, carrier_stkoff
 
 
@@ -340,12 +355,9 @@ def _writer_is_state_variable_return_writer(
     dst = writer.d
     if not _is_stack_mop(src) or not _is_stack_mop(dst):
         return False
-    if src.stkoff is None or dst.stkoff is None:
-        return False
-    try:
-        src_off = int(src.stkoff)
-        dst_off = int(dst.stkoff)
-    except (TypeError, ValueError):
+    src_off = _operand_stack_offset(src)
+    dst_off = _operand_stack_offset(dst)
+    if src_off is None or dst_off is None:
         return False
     return src_off == int(state_var_stkoff) and dst_off != int(state_var_stkoff)
 
@@ -356,8 +368,8 @@ def _insn_references_carrier(
     carrier_lvar_idx: int | None,
     carrier_stkoff: int | None,
 ) -> bool:
-    """True iff any operand of ``insn`` references the carrier via
-    mop_l (idx match) or mop_S (stkoff match)."""
+    """True iff any operand of ``insn`` references the carrier by lvar identity
+    (idx match) or canonical STACK storage offset (stkoff match)."""
     for mop in (insn.l, insn.r, insn.d):
         if mop is None:
             continue
@@ -371,12 +383,9 @@ def _insn_references_carrier(
                     except (TypeError, ValueError):
                         continue
         if carrier_stkoff is not None and _is_stack_mop(mop):
-            if mop.stkoff is not None:
-                try:
-                    if int(mop.stkoff) == int(carrier_stkoff):
-                        return True
-                except (TypeError, ValueError):
-                    continue
+            mop_off = _operand_stack_offset(mop)
+            if mop_off is not None and mop_off == int(carrier_stkoff):
+                return True
     return False
 
 
@@ -540,7 +549,7 @@ def detect_return_frontier_carrier_facts(
     For each block whose tail is a return (or whose block kind is stop), perform a
     bounded backward BFS along the FlowGraph predecessor edges to find
     the first block writing the return slot.  Capture the source
-    operand's carrier identity (mop_l idx or mop_S stkoff).  Compute
+    operand's carrier identity (lvar idx or stack-identity offset).  Compute
     ``writer_path_blocks`` = the set of blocks on the writer's def
     chain that reference the same carrier, plus the writer itself.
 
@@ -573,8 +582,9 @@ def detect_return_frontier_carrier_facts(
             if s is None or d is None:
                 continue
             if _is_stack_mop(s) and _is_register_mop(d):
-                if s.stkoff is not None:
-                    return_stkoff = int(s.stkoff)
+                src_off = _operand_stack_offset(s)
+                if src_off is not None:
+                    return_stkoff = src_off
                     break
         if return_stkoff is None:
             continue
