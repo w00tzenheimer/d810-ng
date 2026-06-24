@@ -1,8 +1,10 @@
 """Tests for InductionVariableFactCollector."""
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
+from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import (
     BlockSnapshot as CfgBlockSnapshot,
     FlowGraph,
@@ -19,13 +21,14 @@ from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 def _insn(
     *,
     index: int = 0,
-    opcode_name: str = "m_add",
+    opcode_name: str = "add",
     dest_stkoff: int | None = 0x680,
     src_l_stkoff: int | None = 0x680,
     src_l_value: int | None = None,
     src_r_stkoff: int | None = None,
     src_r_value: int | None = 0x80,
     dstr: str = "add %var_178.8, #0x80.8, %var_178.8",
+    meta: str | None = None,
 ) -> InstructionSnapshot:
     return InstructionSnapshot(
         index=index,
@@ -42,6 +45,7 @@ def _insn(
         src_r_stkoff=src_r_stkoff,
         src_r_value=src_r_value,
         dstr=dstr,
+        meta=meta,
     )
 
 
@@ -100,6 +104,19 @@ def _cfg_number(value: int, *, size: int = 8) -> MopSnapshot:
     return MopSnapshot(t=2, size=size, value=value, kind=OperandKind.NUMBER)
 
 
+def _cfg_address(*stkoffs: int, size: int = 8) -> MopSnapshot:
+    return MopSnapshot(
+        t=7,
+        size=size,
+        stack_refs=tuple(int(stkoff) for stkoff in stkoffs),
+        kind=OperandKind.ADDRESS,
+    )
+
+
+def _meta_address_refs(*stkoffs: int) -> str:
+    return json.dumps({"address_stack_refs": [int(stkoff) for stkoff in stkoffs]})
+
+
 def _cfg_insn(
     *,
     index: int = 0,
@@ -108,6 +125,7 @@ def _cfg_insn(
     l: MopSnapshot | None = None,
     r: MopSnapshot | None = None,
     display_text: str = "",
+    value_op_kind: ValueOpKind | None = None,
 ) -> InsnSnapshot:
     return InsnSnapshot(
         opcode=index,
@@ -118,6 +136,7 @@ def _cfg_insn(
         l=l,
         r=r,
         display_text=display_text,
+        value_op_kind=value_op_kind,
     )
 
 
@@ -157,7 +176,7 @@ def test_collects_direct_add_induction_fact() -> None:
     assert fact.source_block == 10
     assert fact.source_ea == 0x180010000
     assert fact.payload["step"] == 0x80
-    assert fact.payload["opcode"] == "m_add"
+    assert fact.payload["opcode"] == "add"
     assert fact.payload["source_side"] == "right"
     assert fact.evidence == ("add %var_178.8, #0x80.8, %var_178.8",)
 
@@ -168,7 +187,7 @@ def test_collects_sub_as_negative_step() -> None:
     facts = collector.collect(
         _target(
             _insn(
-                opcode_name="m_sub",
+                opcode_name="sub",
                 src_r_value=1,
                 dstr="sub %var_178.8, #1.8, %var_178.8",
             )
@@ -231,6 +250,30 @@ def test_collects_sub_from_flowgraph_instruction_snapshot() -> None:
     assert facts[0].payload["opcode"] == "sub"
 
 
+def test_flowgraph_collection_uses_canonical_value_operation() -> None:
+    collector = InductionVariableFactCollector()
+
+    facts = collector.collect(
+        _cfg_target(
+            _cfg_insn(
+                kind=InsnKind.UNKNOWN,
+                value_op_kind=ValueOpKind.ADD,
+                d=_cfg_stack(0x680),
+                l=_cfg_stack(0x680),
+                r=_cfg_number(0x80),
+                display_text="add %var_178.8, #0x80.8, %var_178.8",
+            )
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    assert facts[0].semantic_key == "induction:stkoff=0x680:size=8:step=128"
+    assert facts[0].payload["opcode"] == "add"
+
+
 def test_collects_commuted_add() -> None:
     collector = InductionVariableFactCollector()
 
@@ -280,6 +323,7 @@ def test_collects_memory_store_update_carrier() -> None:
         src_r_stkoff=None,
         src_r_value=1,
         dstr="add    [ds.2:%var_178.8].8, #1.8, %var_170.8",
+        meta=_meta_address_refs(0x680),
     )
     store = _insn(
         index=5,
@@ -321,7 +365,7 @@ def test_collects_memory_store_update_from_flowgraph_instruction_snapshots() -> 
                 index=2,
                 kind=InsnKind.ADD,
                 d=_cfg_stack(0x688),
-                l=None,
+                l=_cfg_address(0x680),
                 r=_cfg_number(1),
                 display_text="add    [ds.2:%var_178.8].8, #1.8, %var_170.8",
             ),
@@ -346,6 +390,39 @@ def test_collects_memory_store_update_from_flowgraph_instruction_snapshots() -> 
     assert fact.payload["store_opcode"] == "store"
 
 
+def test_memory_store_update_requires_structural_address_ref_not_dstr() -> None:
+    collector = InductionVariableFactCollector()
+    define = _insn(
+        index=2,
+        opcode_name="op_12",
+        dest_stkoff=0x688,
+        src_l_stkoff=None,
+        src_l_value=None,
+        src_r_stkoff=None,
+        src_r_value=1,
+        dstr="add    [ds.2:%var_178.8].8, #1.8, %var_170.8",
+    )
+    store = _insn(
+        index=5,
+        opcode_name="op_1",
+        dest_stkoff=0x680,
+        src_l_stkoff=0x688,
+        src_l_value=None,
+        src_r_stkoff=None,
+        src_r_value=None,
+        dstr="stx    %var_170.8, ds.2, %var_178.8",
+    )
+
+    facts = collector.collect(
+        _target(define, store),
+        func_ea=0x401000,
+        maturity=2,
+        phase="pre_d810",
+    )
+
+    assert facts == ()
+
+
 def test_memory_store_update_does_not_pair_temp_across_blocks() -> None:
     collector = InductionVariableFactCollector()
     define = _insn(
@@ -357,6 +434,7 @@ def test_memory_store_update_does_not_pair_temp_across_blocks() -> None:
         src_r_stkoff=None,
         src_r_value=1,
         dstr="add    [ds.2:%var_178.8].8, #1.8, %var_170.8",
+        meta=_meta_address_refs(0x680),
     )
     store = _insn(
         index=0,
@@ -400,6 +478,7 @@ def test_collects_writeback_tail_carrier() -> None:
         src_r_stkoff=None,
         src_r_value=None,
         dstr="xdu    [ds.2:(%var_390.8+%var_18.8)].1, %var_480.8",
+        meta=_meta_address_refs(0x468, 0x18),
     )
 
     facts = collector.collect(
@@ -417,8 +496,8 @@ def test_collects_writeback_tail_carrier() -> None:
     assert fact.source_block == 10
     assert fact.mop_signature == "mop_S:writeback:dest=0x638:source=0x468:8"
     assert fact.payload["carrier_kind"] == "writeback_tail"
-    assert fact.payload["source_token"] == "390"
-    assert fact.payload["dest_token"] == "1c0"
+    assert fact.payload["source_token"] == "S1128"
+    assert fact.payload["dest_token"] == "S1592"
     assert fact.evidence == (
         "mov    %var_390.8, %var_1C0.8",
         "xdu    [ds.2:(%var_390.8+%var_18.8)].1, %var_480.8",
@@ -446,6 +525,7 @@ def test_collects_writeback_tail_carrier_with_ssa_versions() -> None:
         src_r_stkoff=None,
         src_r_value=None,
         dstr="xdu    [ds.2:(%var_390.8{360}+%var_18.8{3})].1, %var_480.8",
+        meta=_meta_address_refs(0x468, 0x18),
     )
 
     facts = collector.collect(
@@ -460,8 +540,8 @@ def test_collects_writeback_tail_carrier_with_ssa_versions() -> None:
     assert fact.semantic_key == (
         "induction:writeback_tail:dest=0x638:source=0x468:size=8"
     )
-    assert fact.payload["source_token"] == "390"
-    assert fact.payload["dest_token"] == "1c0"
+    assert fact.payload["source_token"] == "S1128"
+    assert fact.payload["dest_token"] == "S1592"
 
 
 def test_writeback_tail_requires_same_block_address_use() -> None:
@@ -485,6 +565,7 @@ def test_writeback_tail_requires_same_block_address_use() -> None:
         src_r_stkoff=None,
         src_r_value=None,
         dstr="xdu    [ds.2:(%var_390.8+%var_18.8)].1, %var_480.8",
+        meta=_meta_address_refs(0x468, 0x18),
     )
 
     facts = collector.collect(
@@ -518,6 +599,7 @@ def test_writeback_tail_requires_source_token_inside_memory_address() -> None:
         src_r_stkoff=None,
         src_r_value=None,
         dstr="add    [ds.2:(%var_18.8{3})].8, %var_390.8{360}, %var_480.8",
+        meta=_meta_address_refs(0x18),
     )
 
     facts = collector.collect(
@@ -549,7 +631,7 @@ def test_ignores_ambiguous_sub_const_minus_var() -> None:
     facts = collector.collect(
         _target(
             _insn(
-                opcode_name="m_sub",
+                opcode_name="sub",
                 src_l_stkoff=None,
                 src_l_value=10,
                 src_r_stkoff=0x680,

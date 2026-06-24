@@ -10,6 +10,7 @@ from collections import deque
 
 from d810.core.typing import Any
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
+from d810.ir.semantics import ControlTransferKind
 from d810.analyses.fact_collection_context import (
     FactCollectionContext,
     coerce_fact_collection_context,
@@ -25,14 +26,12 @@ from d810.analyses.value_flow.model import FactObservation
 
 _TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 
-_RETURN_OPCODES = frozenset({"m_ret", "op_58"})
-
 
 def _is_return_block(block: _BlockView) -> bool:
     if not block.succs:
         return True
     return any(
-        insn.opcode_name in _RETURN_OPCODES or insn.dstr.lower().lstrip().startswith("ret")
+        insn.control_transfer is ControlTransferKind.RETURN
         for insn in block.instructions
     )
 

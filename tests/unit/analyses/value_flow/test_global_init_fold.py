@@ -7,7 +7,13 @@ reaches the read (per read site), strictly narrower than blanket
 """
 from __future__ import annotations
 
-from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
+from d810.ir.flowgraph import (
+    BlockSnapshot,
+    FlowGraph,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
 from d810.analyses.value_flow.global_init_fold import (
     compute_initializer_stable_global_reads,
 )
@@ -22,11 +28,11 @@ _OTHER = 0x180021318  # approov_global_state analog
 
 
 def _gread(gaddr: int = _GADDR, size: int = 8) -> MopSnapshot:
-    return MopSnapshot(t=7, size=size, gaddr=gaddr)
+    return MopSnapshot(t=7, size=size, gaddr=gaddr, kind=OperandKind.GLOBAL)
 
 
 def _gwrite(gaddr: int = _GADDR, size: int = 8) -> MopSnapshot:
-    return MopSnapshot(t=7, size=size, gaddr=gaddr)
+    return MopSnapshot(t=7, size=size, gaddr=gaddr, kind=OperandKind.GLOBAL)
 
 
 def _const(value: int, size: int = 8) -> MopSnapshot:

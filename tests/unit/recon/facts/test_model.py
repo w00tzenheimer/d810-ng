@@ -222,7 +222,7 @@ def test_stale_return_carrier_hazards_require_exact_ea_target_mapping() -> None:
         payload={
             "upstream_writer_block_serial": 93,
             "upstream_writer_ea": 0x401020,
-            "upstream_writer_var_refs": ["228", "650"],
+            "upstream_writer_source_storage_keys": ["S552", "S1616"],
         },
     )
     view = ValidatedFactView(
@@ -255,7 +255,7 @@ def test_stale_return_carrier_hazards_match_lifecycle_target_block() -> None:
         payload={
             "upstream_writer_block_serial": 254,
             "upstream_writer_ea": 0x401020,
-            "upstream_writer_var_refs": ["228", "650"],
+            "upstream_writer_source_storage_keys": ["S552", "S1616"],
         },
     )
     view = ValidatedFactView(
@@ -289,7 +289,7 @@ def test_stale_return_carrier_hazards_ignore_contradicted_fact() -> None:
         payload={
             "upstream_writer_block_serial": 93,
             "upstream_writer_ea": 0x401020,
-            "upstream_writer_var_refs": ["228"],
+            "upstream_writer_source_storage_keys": ["S552"],
         },
     )
     view = ValidatedFactView(
@@ -520,7 +520,7 @@ def test_stale_return_carrier_hazards_ignore_unrelated_or_incomplete_fact() -> N
         payload={
             "upstream_writer_block_serial": 94,
             "upstream_writer_ea": 0x401020,
-            "upstream_writer_var_refs": ["228"],
+            "upstream_writer_source_storage_keys": ["S552"],
         },
     )
     incomplete = FactObservation(

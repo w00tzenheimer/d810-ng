@@ -475,7 +475,7 @@ class ValidatedFactView:
             # insufficient for a late negative constraint.
             if target not in lost_blocks_by_id.get(obs.fact_id, set()):
                 continue
-            raw_refs = payload.get("upstream_writer_var_refs")
+            raw_refs = payload.get("upstream_writer_source_storage_keys")
             if not isinstance(raw_refs, (tuple, list)) or not raw_refs:
                 continue
             raw_ea = payload.get("upstream_writer_ea")

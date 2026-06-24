@@ -4,8 +4,39 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
+from d810.ir.flowgraph import (
+    BlockSnapshot as CfgBlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
 from d810.analyses.value_flow.return_carrier import ReturnSlotFactCollector
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
+
+_OPCODE_ALIASES = {
+    "m_mov": "move",
+    "m_add": "add",
+    "m_sub": "sub",
+}
+
+_OPERAND_TYPE_ALIASES = {
+    "mop_S": "S",
+    "mop_n": "c",
+    "mop_r": "r",
+    "mop_d": "t",
+}
+
+
+def _opcode_name(value: str) -> str:
+    return _OPCODE_ALIASES.get(value, value)
+
+
+def _operand_type(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return _OPERAND_TYPE_ALIASES.get(value, value)
 
 
 def _insn(
@@ -21,24 +52,36 @@ def _insn(
     src_r_type: str | None = None,
     src_r_stkoff: int | None = None,
     src_r_value: int | None = None,
+    dest_reg: int | None = None,
+    src_l_reg: int | None = None,
+    src_r_reg: int | None = None,
     dstr: str = "mov %var_178.8, %var_8.8",
+    source_stkoffs: tuple[int, ...] = (),
 ) -> InstructionSnapshot:
-    return InstructionSnapshot(
+    insn = InstructionSnapshot(
         index=index,
         ea=0x180010000 + index,
         opcode=0,
-        opcode_name=opcode_name,
-        dest_type=dest_type,
+        opcode_name=_opcode_name(opcode_name),
+        dest_type=_operand_type(dest_type),
         dest_stkoff=dest_stkoff,
         dest_size=dest_size,
-        src_l_type=src_l_type,
+        src_l_type=_operand_type(src_l_type),
         src_l_stkoff=src_l_stkoff,
         src_l_value=src_l_value,
-        src_r_type=src_r_type,
+        src_r_type=_operand_type(src_r_type),
         src_r_stkoff=src_r_stkoff,
         src_r_value=src_r_value,
         dstr=dstr,
     )
+    insn.source_stkoffs = tuple(int(offset) for offset in source_stkoffs)
+    if dest_reg is not None:
+        insn.dest_reg = int(dest_reg)
+    if src_l_reg is not None:
+        insn.src_l_reg = int(src_l_reg)
+    if src_r_reg is not None:
+        insn.src_r_reg = int(src_r_reg)
+    return insn
 
 
 def _target(*instructions: InstructionSnapshot) -> SimpleNamespace:
@@ -58,6 +101,54 @@ def _target(*instructions: InstructionSnapshot) -> SimpleNamespace:
     )
 
 
+def _cfg_stack(stkoff: int, *, size: int = 8) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.STACK, stkoff=stkoff, size=size)
+
+
+def _cfg_reg(reg: int, *, size: int = 8) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.REGISTER, reg=reg, size=size)
+
+
+def _cfg_insn(
+    *,
+    index: int,
+    kind: InsnKind,
+    l: MopSnapshot | None = None,
+    r: MopSnapshot | None = None,
+    d: MopSnapshot | None = None,
+    display_text: str = "",
+) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=-1,
+        raw_opcode=0x1000 + index,
+        ea=0x180010000 + index,
+        operands=tuple(op for op in (l, r, d) if op is not None),
+        operand_slots=tuple(
+            (slot, op)
+            for slot, op in (("l", l), ("r", r), ("d", d))
+            if op is not None
+        ),
+        display_text=display_text,
+        l=l,
+        r=r,
+        d=d,
+        kind=kind,
+    )
+
+
+def _cfg_target(*instructions: InsnSnapshot) -> FlowGraph:
+    block = CfgBlockSnapshot(
+        serial=10,
+        block_type=1,
+        succs=(11,),
+        preds=(9,),
+        flags=0,
+        start_ea=0x180014000,
+        insn_snapshots=tuple(instructions),
+    )
+    return FlowGraph(blocks={10: block}, entry_serial=10, func_ea=0x401000)
+
+
 def test_collects_return_slot_identity_carrier() -> None:
     collector = ReturnSlotFactCollector()
 
@@ -69,6 +160,7 @@ def test_collects_return_slot_identity_carrier() -> None:
                 dest_type="mop_r",
                 dest_stkoff=None,
                 dest_size=8,
+                dest_reg=0,
                 src_l_type="mop_S",
                 src_l_stkoff=0x7F0,
                 dstr="mov %var_8.8, rax.8",
@@ -83,34 +175,68 @@ def test_collects_return_slot_identity_carrier() -> None:
     fact = facts[0]
     assert fact.kind == "ReturnCarrierFact"
     assert fact.semantic_key == (
-        "return_carrier:slot=0x7f0:class=stack_identity_carrier:source=mop_S:0x680"
+        "return_carrier:slot=0x7f0:class=stack_identity_carrier:source=S:0x680"
     )
     assert fact.maturity == "MMAT_LOCOPT"
     assert fact.source_block == 10
     assert fact.source_ea == 0x180010000
     assert fact.mop_signature == "return_slot:mop_S:0x7f0:8"
     assert fact.payload["return_slot_stkoff"] == 0x7F0
-    assert fact.payload["source_signature"] == "mop_S:0x680"
+    assert fact.payload["source_signature"] == "S:0x680"
     assert fact.payload["carrier_class"] == "stack_identity_carrier"
     assert fact.evidence == ("mov %var_178.8, %var_8.8",)
+
+
+def test_collects_return_slot_identity_carrier_from_canonical_flowgraph() -> None:
+    collector = ReturnSlotFactCollector()
+
+    facts = collector.collect(
+        _cfg_target(
+            _cfg_insn(
+                index=0,
+                kind=InsnKind.MOV,
+                l=_cfg_stack(0x680),
+                d=_cfg_stack(0x7F0),
+                display_text="mov %var_178.8, %var_8.8",
+            ),
+            _cfg_insn(
+                index=1,
+                kind=InsnKind.MOV,
+                l=_cfg_stack(0x7F0),
+                d=_cfg_reg(0),
+                display_text="mov %var_8.8, rax.8",
+            ),
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    assert facts[0].semantic_key == (
+        "return_carrier:slot=0x7f0:class=stack_identity_carrier:source=S:0x680"
+    )
+    assert facts[0].payload["source_signature"] == "S:0x680"
 
 
 def test_collects_protected_non_carrier_return_writer_candidate() -> None:
     collector = ReturnSlotFactCollector()
 
     facts = collector.collect(
-        _target(
-            _insn(
-                opcode_name="m_xdu",
-                src_l_stkoff=0x3C,
-                dstr="xdu %var_7BC.4, %var_8.8",
+        _cfg_target(
+            _cfg_insn(
+                index=0,
+                kind=InsnKind.XDU,
+                l=_cfg_stack(0x3C, size=4),
+                d=_cfg_stack(0x7F0),
+                display_text="xdu %var_7BC.4, %var_8.8",
             ),
-            _insn(
+            _cfg_insn(
                 index=1,
-                dest_type="mop_r",
-                dest_stkoff=None,
-                src_l_stkoff=0x7F0,
-                dstr="mov %var_8.8, rax.8",
+                kind=InsnKind.MOV,
+                l=_cfg_stack(0x7F0),
+                d=_cfg_reg(0),
+                display_text="mov %var_8.8, rax.8",
             ),
         ),
         func_ea=0x401000,
@@ -121,10 +247,10 @@ def test_collects_protected_non_carrier_return_writer_candidate() -> None:
     assert len(facts) == 1
     assert facts[0].semantic_key == (
         "return_carrier:slot=0x7f0:class=protected_non_carrier_return_writer_candidate:"
-        "source=mop_S:0x3c"
+        "source=S:0x3c"
     )
-    assert facts[0].payload["source_signature"] == "mop_S:0x3c"
-    assert facts[0].payload["opcode"] == "m_xdu"
+    assert facts[0].payload["source_signature"] == "S:0x3c"
+    assert facts[0].payload["opcode"] == "zext"
 
 
 def test_collects_constant_or_offset_return() -> None:
@@ -145,6 +271,7 @@ def test_collects_constant_or_offset_return() -> None:
                 index=1,
                 dest_type="mop_r",
                 dest_stkoff=None,
+                dest_reg=0,
                 src_l_stkoff=0x7F0,
                 dstr="mov %var_8.8, rax.8",
             ),
@@ -178,6 +305,7 @@ def test_classifies_non_mov_stack_arithmetic_as_computed_return() -> None:
                 index=1,
                 dest_type="mop_r",
                 dest_stkoff=None,
+                dest_reg=0,
                 src_l_stkoff=0x7F0,
                 dstr="mov %var_8.8, rax.8",
             ),
@@ -189,7 +317,7 @@ def test_classifies_non_mov_stack_arithmetic_as_computed_return() -> None:
 
     assert len(facts) == 1
     assert facts[0].semantic_key == (
-        "return_carrier:slot=0x7f0:class=computed_return:source=mop_S:0x680"
+        "return_carrier:slot=0x7f0:class=computed_return:source=S:0x680"
     )
     assert facts[0].payload["carrier_class"] == "computed_return"
 
@@ -199,6 +327,29 @@ def test_ignores_return_slot_writes_without_return_register_read() -> None:
 
     facts = collector.collect(
         _target(_insn()),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
+        phase="pre_d810",
+    )
+
+    assert facts == ()
+
+
+def test_ignores_rendered_rax_text_without_lifted_register_identity() -> None:
+    collector = ReturnSlotFactCollector()
+
+    facts = collector.collect(
+        _target(
+            _insn(),
+            _insn(
+                index=1,
+                dest_type="mop_r",
+                dest_stkoff=None,
+                src_l_type="mop_S",
+                src_l_stkoff=0x7F0,
+                dstr="mov %var_8.8, rax.8",
+            ),
+        ),
         func_ea=0x401000,
         maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
         phase="pre_d810",
@@ -217,6 +368,7 @@ def test_ignores_non_return_slot_write() -> None:
                 index=1,
                 dest_type="mop_r",
                 dest_stkoff=None,
+                dest_reg=0,
                 src_l_stkoff=0x7F0,
                 dstr="mov %var_8.8, rax.8",
             ),
@@ -241,11 +393,8 @@ def test_records_upstream_mba_for_stack_identity_carrier() -> None:
 
     # Upstream MBA producer at insn 0:
     #   add (9*(%var_40 & %var_228)), (0x15*(~%var_228 & ((%var_660+%var_650) ^ %var_658))), %var_7C8
-    upstream_dstr = (
-        "add (9.8*(%var_40.8 & %var_228.8)), "
-        "(0x15.8*(bnot(%var_228.8) & ((%var_660.8+%var_650.8) ^ %var_658.8))), "
-        "%var_7C8.8"
-    )
+    upstream_dstr = "add opaque-return-carrier-mba, %var_7C8.8"
+    upstream_source_stkoffs = (0x40, 0x228, 0x650, 0x658, 0x660)
     upstream = _insn(
         index=0,
         opcode_name="m_add",
@@ -257,6 +406,7 @@ def test_records_upstream_mba_for_stack_identity_carrier() -> None:
         src_r_type="mop_d",
         src_r_stkoff=None,
         dstr=upstream_dstr,
+        source_stkoffs=upstream_source_stkoffs,
     )
     # Identity carrier mov %var_7C8 -> %var_8 at insn 1.
     carrier = _insn(
@@ -276,6 +426,7 @@ def test_records_upstream_mba_for_stack_identity_carrier() -> None:
         opcode_name="m_mov",
         dest_type="mop_r",
         dest_stkoff=None,
+        dest_reg=0,
         src_l_type="mop_S",
         src_l_stkoff=0x8,
         dstr="mov %var_8.8, rax.8",
@@ -295,17 +446,30 @@ def test_records_upstream_mba_for_stack_identity_carrier() -> None:
     # The carrier's source stkvar (var_7C8 at stkoff 0x7C8) must have
     # been recorded as the upstream destination.
     assert fact.payload["carrier_dst_stkoff"] == 0x7C8
+    assert fact.payload["carrier_dst_storage_key"] == "S1992"
+    assert fact.payload["carrier_dst_storage_identity"] == {
+        "kind": "stack",
+        "prefix": "S",
+        "offset": 0x7C8,
+        "key": "S1992",
+    }
     assert fact.payload["upstream_writer_ea"] == 0x180010000  # _insn ea pattern
     assert fact.payload["upstream_writer_block_serial"] == 10
     assert fact.payload["upstream_writer_insn_index"] == 0
-    assert fact.payload["upstream_writer_opcode"] == "m_add"
+    assert fact.payload["upstream_writer_opcode"] == "add"
     assert fact.payload["upstream_writer_dest_stkoff"] == 0x7C8
+    assert fact.payload["upstream_writer_dest_storage_key"] == "S1992"
     assert fact.payload["upstream_writer_dstr"] == upstream_dstr
-    # The set of ``%var_NNN`` references the upstream MBA reads must
-    # surface so a later guard can intersect with handler-block
-    # constant writes.
-    refs = set(fact.payload["upstream_writer_var_refs"])
-    assert {"40", "228", "650", "658", "660", "7c8"}.issubset(refs)
+    # The structured source stack identities must surface without parsing
+    # ``%var`` tokens from the upstream display text.
+    assert set(fact.payload["upstream_writer_source_storage_keys"]) == {
+        "S64",
+        "S552",
+        "S1616",
+        "S1624",
+        "S1632",
+    }
+    assert "upstream_writer_var_refs" not in fact.payload
     # Both dstrs end up in the evidence tuple.
     assert fact.evidence == ("mov %var_7C8.8, %var_8.8", upstream_dstr)
 
@@ -332,6 +496,7 @@ def test_does_not_record_upstream_when_no_writer_present() -> None:
         opcode_name="m_mov",
         dest_type="mop_r",
         dest_stkoff=None,
+        dest_reg=0,
         src_l_type="mop_S",
         src_l_stkoff=0x8,
         dstr="mov %var_8.8, rax.8",
@@ -348,7 +513,7 @@ def test_does_not_record_upstream_when_no_writer_present() -> None:
     fact = facts[0]
     assert fact.payload["carrier_class"] == "stack_identity_carrier"
     assert "upstream_writer_ea" not in fact.payload
-    assert "upstream_writer_var_refs" not in fact.payload
+    assert "upstream_writer_source_storage_keys" not in fact.payload
 
 
 def _multi_block_target(blocks: dict[int, list[InstructionSnapshot]]) -> SimpleNamespace:
@@ -408,6 +573,7 @@ def test_upstream_writer_walk_picks_canonical_producer_not_function_wide_last() 
         src_r_type="mop_d",
         src_r_stkoff=None,
         dstr=canonical_dstr,
+        source_stkoffs=(0x40, 0x228, 0x650, 0x658, 0x660),
     )
     carrier_mov = _insn(
         index=0,
@@ -424,6 +590,7 @@ def test_upstream_writer_walk_picks_canonical_producer_not_function_wide_last() 
         opcode_name="m_mov",
         dest_type="mop_r",
         dest_stkoff=None,
+        dest_reg=0,
         src_l_type="mop_S",
         src_l_stkoff=0x8,
         dstr="mov %var_8.8, rax.8",
@@ -439,6 +606,7 @@ def test_upstream_writer_walk_picks_canonical_producer_not_function_wide_last() 
         src_r_type="mop_d",
         src_r_stkoff=None,
         dstr=late_unrelated_dstr,
+        source_stkoffs=(0x1C8,),
     )
 
     target = _multi_block_target({
@@ -461,10 +629,10 @@ def test_upstream_writer_walk_picks_canonical_producer_not_function_wide_last() 
     # function-wide writer.
     assert fact.payload["upstream_writer_block_serial"] == 140
     assert fact.payload["upstream_writer_dstr"] == canonical_dstr
-    refs = set(fact.payload["upstream_writer_var_refs"])
+    storage_keys = set(fact.payload["upstream_writer_source_storage_keys"])
     # Canonical OLLVM source vars must be present.
-    assert {"40", "228", "650", "658", "660"}.issubset(refs)
+    assert {"S64", "S552", "S1616", "S1624", "S1632"}.issubset(storage_keys)
     # The unrelated late writer's only operand var (var_1C8) must NOT
     # appear -- proving we picked the canonical producer, not the late
     # function-wide last writer.
-    assert "1c8" not in refs
+    assert "S456" not in storage_keys

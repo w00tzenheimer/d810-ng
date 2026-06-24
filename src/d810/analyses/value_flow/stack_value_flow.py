@@ -29,6 +29,10 @@ from d810.analyses.value_flow.reaching_defs import (
     ReachingDefsDomain,
     reaching_defs_of,
 )
+from d810.ir.storage_identity import (
+    StorageIdentityKind,
+    storage_identity_from_mop_snapshot,
+)
 
 __all__ = [
     "CarrierVerdict",
@@ -43,10 +47,10 @@ def _operand_stkoff(operand: object, tracked: set[int]) -> Optional[int]:
     """Return ``operand``'s stack offset if it is one of ``tracked``."""
     if operand is None:
         return None
-    off = getattr(operand, "stkoff", None)
-    if off is None:
+    identity = storage_identity_from_mop_snapshot(operand)
+    if identity is None or identity.kind is not StorageIdentityKind.STACK:
         return None
-    off = int(off)
+    off = int(identity.offset)
     return off if off in tracked else None
 
 

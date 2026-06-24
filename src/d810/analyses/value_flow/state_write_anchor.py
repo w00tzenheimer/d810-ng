@@ -36,6 +36,7 @@ import re
 from dataclasses import dataclass
 
 from d810.core.typing import Any, Iterable
+from d810.ir.expressions import ValueOpKind
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
 from d810.analyses.fact_collection_context import (
     FactCollectionContext,
@@ -45,6 +46,7 @@ from d810.analyses.fact_collection_context import (
 from d810.analyses.value_flow.induction_carrier import (
     _InstructionView,
     _iter_instruction_views,
+    _operation_of_view,
 )
 from d810.analyses.value_flow.model import FactObservation
 from d810.analyses.value_flow.contract_evidence import (
@@ -52,11 +54,6 @@ from d810.analyses.value_flow.contract_evidence import (
     contract_evidence_payload,
 )
 
-
-# State-write opcodes: plain ``m_mov`` (``op_4``) is the canonical OLLVM
-# state writer (``mov #0xXXXX, %var_3C.4``).  ``m_xdu`` / ``m_xds`` show up
-# when the dispatch state is widened/narrowed between maturity passes.
-_MOV_OPCODES = frozenset({"m_mov", "op_4", "mov"})
 
 _TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 
@@ -173,9 +170,9 @@ def _block_start_ea_lookup(target: Any) -> dict[int, int | None]:
 
 def _is_state_const_write(insn: _InstructionView) -> bool:
     """Return ``True`` if ``insn`` writes a constant into a stack slot."""
-    if insn.opcode_name not in _MOV_OPCODES:
+    if _operation_of_view(insn) is not ValueOpKind.MOVE:
         return False
-    if insn.dest_type != "mop_S" or insn.dest_stkoff is None:
+    if insn.dest_stkoff is None:
         return False
     return insn.src_l_value is not None
 

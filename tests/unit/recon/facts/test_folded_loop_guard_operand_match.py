@@ -1,9 +1,9 @@
 """Operand-based folded-loop-guard counter/bound extraction (ticket llr-pydd).
 
-Covers the matrix the hardening replaced the brittle TEXT regex with:
+Covers the matrix the hardening replaced the brittle text/opcode guards with:
 
     {stack counter, reg counter}
-      x {sign-bit ``m_sub`` form, direct ``m_setl`` / ``m_jl``}
+      x {sign-bit ``SUB`` form, direct signed/unsigned ``PredicateKind``}
       x {signed, unsigned}
       x {operand order normal, swapped}
 
@@ -25,17 +25,28 @@ from d810.analyses.value_flow.induction_carrier import (
     _InstructionView,
     _classify_induction_update,
 )
+from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import InsnKind, MopSnapshot, OperandKind
+from d810.ir.semantics import PredicateKind
 
 
 _STK = 0x1E0  # microcode stkoff of a stack-resident counter
 _REG = 0x18   # mreg_t of a register-resident counter
 _BOUND = 0x64  # numeric trip-count bound (100)
 
+_OPERATION_ALIASES = {
+    "m_add": ValueOpKind.ADD,
+    "m_sub": ValueOpKind.SUB,
+    "add": ValueOpKind.ADD,
+    "sub": ValueOpKind.SUB,
+}
+
 
 def _view(
     *,
-    opcode_name: str,
+    opcode_name: str = "",
+    operation: ValueOpKind | None = None,
+    predicate_kind: PredicateKind | None = None,
     src_l_type: str | None = None,
     src_l_stkoff: int | None = None,
     src_l_value: int | None = None,
@@ -48,6 +59,8 @@ def _view(
     dest_reg: int | None = None,
     dest_size: int | None = 4,
 ) -> _InstructionView:
+    if operation is None:
+        operation = _OPERATION_ALIASES.get(opcode_name)
     return _InstructionView(
         block_serial=10,
         insn_index=0,
@@ -63,6 +76,8 @@ def _view(
         src_r_stkoff=src_r_stkoff,
         src_r_value=src_r_value,
         dstr="",
+        operation=operation,
+        predicate_kind=predicate_kind,
         dest_reg=dest_reg,
         src_l_reg=src_l_reg,
         src_r_reg=src_r_reg,
@@ -131,23 +146,23 @@ def test_register_self_update_sub_negative_step() -> None:
 
 
 @pytest.mark.parametrize(
-    "opcode_name, signed",
+    "operation, predicate_kind, signed",
     [
-        ("m_sub", True),   # sign-bit (i - N) < 0 form
-        ("sub", True),     # portable InsnKind alias of m_sub
-        ("m_setl", True),
-        ("m_jl", True),
-        ("m_setb", False),
-        ("m_jb", False),
-        ("m_jae", False),
-        ("m_setae", False),
-        ("m_jle", True),
-        ("m_jg", True),
+        (ValueOpKind.SUB, None, True),  # sign-bit (i - N) < 0 form
+        (None, PredicateKind.SLT, True),
+        (None, PredicateKind.SGE, True),
+        (None, PredicateKind.ULT, False),
+        (None, PredicateKind.UGE, False),
     ],
 )
-def test_stack_guard_normal_order(opcode_name: str, signed: bool) -> None:
+def test_stack_guard_normal_order(
+    operation: ValueOpKind | None,
+    predicate_kind: PredicateKind | None,
+    signed: bool,
+) -> None:
     guard = _view(
-        opcode_name=opcode_name,
+        operation=operation,
+        predicate_kind=predicate_kind,
         src_l_type="mop_S",
         src_l_stkoff=_STK,
         src_r_type="mop_n",
@@ -162,11 +177,17 @@ def test_stack_guard_normal_order(opcode_name: str, signed: bool) -> None:
     assert got_signed is signed
 
 
-@pytest.mark.parametrize("opcode_name, signed", [("m_setl", True), ("m_setb", False)])
-def test_stack_guard_swapped_order(opcode_name: str, signed: bool) -> None:
+@pytest.mark.parametrize(
+    "predicate_kind, signed",
+    [(PredicateKind.SLT, True), (PredicateKind.ULT, False)],
+)
+def test_stack_guard_swapped_order(
+    predicate_kind: PredicateKind,
+    signed: bool,
+) -> None:
     # const on the LEFT, induction var on the RIGHT
     guard = _view(
-        opcode_name=opcode_name,
+        predicate_kind=predicate_kind,
         src_l_type="mop_n",
         src_l_value=_BOUND,
         src_r_type="mop_S",
@@ -185,12 +206,22 @@ def test_stack_guard_swapped_order(opcode_name: str, signed: bool) -> None:
 
 
 @pytest.mark.parametrize(
-    "opcode_name, signed",
-    [("m_sub", True), ("m_setl", True), ("m_jl", True), ("m_setb", False), ("m_jb", False)],
+    "operation, predicate_kind, signed",
+    [
+        (ValueOpKind.SUB, None, True),
+        (None, PredicateKind.SLT, True),
+        (None, PredicateKind.SGE, True),
+        (None, PredicateKind.ULT, False),
+    ],
 )
-def test_register_guard_normal_order(opcode_name: str, signed: bool) -> None:
+def test_register_guard_normal_order(
+    operation: ValueOpKind | None,
+    predicate_kind: PredicateKind | None,
+    signed: bool,
+) -> None:
     guard = _view(
-        opcode_name=opcode_name,
+        operation=operation,
+        predicate_kind=predicate_kind,
         src_l_type="mop_r",
         src_l_reg=_REG,
         src_r_type="mop_n",
@@ -206,10 +237,16 @@ def test_register_guard_normal_order(opcode_name: str, signed: bool) -> None:
     assert got_signed is signed
 
 
-@pytest.mark.parametrize("opcode_name, signed", [("m_setl", True), ("m_setb", False)])
-def test_register_guard_swapped_order(opcode_name: str, signed: bool) -> None:
+@pytest.mark.parametrize(
+    "predicate_kind, signed",
+    [(PredicateKind.SLT, True), (PredicateKind.ULT, False)],
+)
+def test_register_guard_swapped_order(
+    predicate_kind: PredicateKind,
+    signed: bool,
+) -> None:
     guard = _view(
-        opcode_name=opcode_name,
+        predicate_kind=predicate_kind,
         src_l_type="mop_n",
         src_l_value=_BOUND,
         src_r_type="mop_r",
@@ -230,7 +267,7 @@ def test_register_guard_swapped_order(opcode_name: str, signed: bool) -> None:
 def test_rejects_non_induction_operand() -> None:
     # left operand is a DIFFERENT stack slot, not the induction counter
     guard = _view(
-        opcode_name="m_setl",
+        predicate_kind=PredicateKind.SLT,
         src_l_type="mop_S",
         src_l_stkoff=0x700,
         src_r_type="mop_n",
@@ -246,7 +283,7 @@ def test_rejects_non_induction_operand() -> None:
 def test_rejects_non_const_other_operand() -> None:
     # both operands are stack slots; the bound is not a constant
     guard = _view(
-        opcode_name="m_setl",
+        predicate_kind=PredicateKind.SLT,
         src_l_type="mop_S",
         src_l_stkoff=_STK,
         src_r_type="mop_S",
@@ -259,10 +296,11 @@ def test_rejects_non_const_other_operand() -> None:
     )
 
 
-def test_rejects_non_guard_opcode() -> None:
-    # m_mov is not a compare/subtract guard opcode
+def test_rejects_raw_guard_opcode_without_canonical_semantics() -> None:
+    # Raw opcode spelling alone is provenance, not behavior-authorizing
+    # semantics at the portable-analysis boundary.
     guard = _view(
-        opcode_name="m_mov",
+        opcode_name="m_setl",
         src_l_type="mop_S",
         src_l_stkoff=_STK,
         src_r_type="mop_n",
@@ -277,7 +315,7 @@ def test_rejects_non_guard_opcode() -> None:
 
 def test_rejects_non_positive_bound() -> None:
     guard = _view(
-        opcode_name="m_setl",
+        predicate_kind=PredicateKind.SLT,
         src_l_type="mop_S",
         src_l_stkoff=_STK,
         src_r_type="mop_n",
@@ -293,7 +331,7 @@ def test_rejects_non_positive_bound() -> None:
 def test_reg_counter_not_matched_by_stack_operand() -> None:
     # a reg-keyed induction var must not bind to a stack operand of same number
     guard = _view(
-        opcode_name="m_setl",
+        predicate_kind=PredicateKind.SLT,
         src_l_type="mop_S",
         src_l_stkoff=_REG,  # same integer, but a STACK operand
         src_r_type="mop_n",
@@ -343,14 +381,20 @@ def _subinsn_mop(kind: InsnKind, left: MopSnapshot, right: MopSnapshot, size: in
     )
 
 
-def _tree_view(opcode_name: str, *, src_l_mop=None, src_r_mop=None) -> _InstructionView:
+def _tree_view(
+    *,
+    operation: ValueOpKind | None = None,
+    predicate_kind: PredicateKind | None = None,
+    src_l_mop=None,
+    src_r_mop=None,
+) -> _InstructionView:
     """An ``_InstructionView`` whose flat operands are empty -- only the
     structured ``src_l_mop`` / ``src_r_mop`` subtree carries the predicate."""
     return _InstructionView(
         block_serial=10,
         insn_index=0,
         ea=0x180010000,
-        opcode_name=opcode_name,
+        opcode_name="",
         dest_type=None,
         dest_stkoff=None,
         dest_size=4,
@@ -361,6 +405,8 @@ def _tree_view(opcode_name: str, *, src_l_mop=None, src_r_mop=None) -> _Instruct
         src_r_stkoff=None,
         src_r_value=None,
         dstr="",
+        operation=operation,
+        predicate_kind=predicate_kind,
         dest_reg=None,
         src_l_reg=None,
         src_r_reg=None,
@@ -372,7 +418,7 @@ def _tree_view(opcode_name: str, *, src_l_mop=None, src_r_mop=None) -> _Instruct
 def test_nested_xdu_buried_subtract_stack_counter() -> None:
     # xdu (%var_1E0.4 - #0x64.4)  -- the live LOCOPT widen shape
     sub = _subinsn_mop(InsnKind.SUB, _stk_mop(_STK), _num_mop(_BOUND))
-    guard = _tree_view("m_xdu", src_l_mop=sub)
+    guard = _tree_view(operation=ValueOpKind.ZEXT, src_l_mop=sub)
     result = FoldedLoopGuardFactCollector._guard_counter([guard], (_stack_counter(),))
     assert result is not None
     counter, bound, signed = result
@@ -396,7 +442,11 @@ def test_nested_jge_deep_buried_subtract_stack_counter() -> None:
         _num_mop(0xFFFFFF9B),
     )
     and_node = _subinsn_mop(InsnKind.AND, or_node, mask)
-    guard = _tree_view("m_jge", src_l_mop=and_node, src_r_mop=_num_mop(0))
+    guard = _tree_view(
+        predicate_kind=PredicateKind.SGE,
+        src_l_mop=and_node,
+        src_r_mop=_num_mop(0),
+    )
     result = FoldedLoopGuardFactCollector._guard_counter([guard], (_stack_counter(),))
     assert result is not None
     counter, bound, signed = result
@@ -408,7 +458,7 @@ def test_nested_jge_deep_buried_subtract_stack_counter() -> None:
 def test_nested_buried_subtract_register_counter() -> None:
     # xds (r - #0x64)  -- the register-resident counter variant of the tree shape
     sub = _subinsn_mop(InsnKind.SUB, _reg_mop(_REG), _num_mop(_BOUND))
-    guard = _tree_view("m_xds", src_l_mop=sub)
+    guard = _tree_view(operation=ValueOpKind.SEXT, src_l_mop=sub)
     result = FoldedLoopGuardFactCollector._guard_counter([guard], (_reg_counter(),))
     assert result is not None
     counter, bound, signed = result
@@ -418,9 +468,13 @@ def test_nested_buried_subtract_register_counter() -> None:
 
 
 def test_nested_unsigned_tree_host_renders_unsigned() -> None:
-    # an unsigned tree host (m_jb) over a buried (counter - bound) => setb
+    # an unsigned predicate over a buried (counter - bound) => setb
     sub = _subinsn_mop(InsnKind.SUB, _stk_mop(_STK), _num_mop(_BOUND))
-    guard = _tree_view("m_jb", src_l_mop=sub, src_r_mop=_num_mop(0))
+    guard = _tree_view(
+        predicate_kind=PredicateKind.ULT,
+        src_l_mop=sub,
+        src_r_mop=_num_mop(0),
+    )
     result = FoldedLoopGuardFactCollector._guard_counter([guard], (_stack_counter(),))
     assert result is not None
     _counter, _bound, signed = result
@@ -430,7 +484,7 @@ def test_nested_unsigned_tree_host_renders_unsigned() -> None:
 def test_nested_rejects_non_induction_buried_subtract() -> None:
     # buried subtract over a DIFFERENT stack slot must not match the counter
     sub = _subinsn_mop(InsnKind.SUB, _stk_mop(0x700), _num_mop(_BOUND))
-    guard = _tree_view("m_xdu", src_l_mop=sub)
+    guard = _tree_view(operation=ValueOpKind.ZEXT, src_l_mop=sub)
     assert (
         FoldedLoopGuardFactCollector._guard_counter([guard], (_stack_counter(),))
         is None
@@ -440,7 +494,7 @@ def test_nested_rejects_non_induction_buried_subtract() -> None:
 def test_nested_rejects_buried_non_sub_node() -> None:
     # buried node is an XOR (not a SUB), even with (counter, const) children
     xor = _subinsn_mop(InsnKind.UNKNOWN, _stk_mop(_STK), _num_mop(_BOUND))
-    guard = _tree_view("m_xdu", src_l_mop=xor)
+    guard = _tree_view(operation=ValueOpKind.ZEXT, src_l_mop=xor)
     assert (
         FoldedLoopGuardFactCollector._guard_counter([guard], (_stack_counter(),))
         is None

@@ -8,10 +8,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-import re
 
 from d810.core.typing import Any, Iterable
+from d810.ir.expressions import ValueOpKind
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
+from d810.ir.semantics import ControlTransferKind, PredicateKind
+from d810.ir.varnode import Space, Varnode
 from d810.analyses.fact_collection_context import (
     FactCollectionContext,
     coerce_fact_collection_context,
@@ -24,31 +26,6 @@ from d810.analyses.value_flow.induction_carrier import (
 from d810.analyses.value_flow.model import FactObservation
 
 _TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
-
-_STX_OPCODES = frozenset({"m_stx", "op_1", "store"})
-_STORE_TEXT_RE = re.compile(r"^\s*stx\s+(.+?),\s*ds\.\d+,\s*(.+)$", re.IGNORECASE)
-_DS_ADDRESS_RE = re.compile(r"\[ds\.[^\]]+\]")
-_BYTE_INDEX_RE = re.compile(
-    r"(?:v52\s*\[\s*(?P<v52>[0-6])\s*\]|"
-    r"byte(?:_index)?\s*[=:]\s*(?P<label>[0-6])|"
-    r"\bbyte(?P<compact>[0-6])\b)",
-    re.IGNORECASE,
-)
-_SOURCE_OFFSET_INDEX_RE = re.compile(
-    r"xdu\.\d+\(\[ds\.[^\]]*#(?P<offset>[0-6])\.\d+[^\]]*\]",
-    re.IGNORECASE,
-)
-_SMALL_GUARD_RE = re.compile(
-    r"(?P<lhs>(?:tail_count|tail|v53|%var_[0-9a-zA-Z_]+\.\d+(?:\{[^}]*\})?))"
-    r"[^,\n;]*(?P<op>==|!=)\s*#?(?P<value>0x[0-6]|[0-6])(?:\.\d+)?",
-    re.IGNORECASE,
-)
-_JUMP_SMALL_CONST_RE = re.compile(
-    r"\b(?P<op>jz|jnz|jcnd)\b.*?(?P<lhs>%var_[0-9a-zA-Z_]+\.\d+(?:\{[^}]*\})?).*?"
-    r"#(?P<value>0x[0-6]|[0-6])(?:\.\d+)?",
-    re.IGNORECASE,
-)
-_SSA_SUFFIX_RE = re.compile(r"\{[^}]*\}")
 
 
 @dataclass(frozen=True)
@@ -84,86 +61,213 @@ class _EmitterCandidate:
 
 
 def _normal_text(value: str) -> str:
-    without_ssa = _SSA_SUFFIX_RE.sub("", str(value))
-    return " ".join(without_ssa.strip().split())
+    return " ".join(str(value).strip().split())
 
 
-def _parse_small_int(value: str) -> int | None:
+def _parse_small_int(value: object) -> int | None:
     try:
         parsed = int(str(value), 0)
-    except ValueError:
+    except (TypeError, ValueError):
         return None
     return parsed if 0 <= parsed <= 6 else None
 
 
-def _byte_index_from_text(text: str) -> int | None:
-    match = _BYTE_INDEX_RE.search(text)
-    if match is not None:
-        value = match.group("v52") or match.group("label") or match.group("compact")
-        return _parse_small_int(value)
-    offset_match = _SOURCE_OFFSET_INDEX_RE.search(text)
-    if offset_match is not None:
-        return _parse_small_int(offset_match.group("offset"))
+def _attrs(insn: _InstructionView) -> Mapping[str, Any]:
+    attrs = getattr(insn, "attrs", None)
+    return attrs if isinstance(attrs, Mapping) else {}
+
+
+def _terminal_attrs(insn: _InstructionView) -> Mapping[str, Any]:
+    attrs = _attrs(insn)
+    for key in ("terminal_byte", "terminal_byte_emit", "byte_emit"):
+        nested = attrs.get(key)
+        if isinstance(nested, Mapping):
+            return nested
+    return attrs
+
+
+def _attr(insn: _InstructionView, *keys: str) -> Any:
+    terminal = _terminal_attrs(insn)
+    attrs = _attrs(insn)
+    for key in keys:
+        if key in terminal:
+            return terminal[key]
+        if key in attrs:
+            return attrs[key]
     return None
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _small_ints(values: Iterable[object]) -> tuple[int, ...]:
+    seen: set[int] = set()
+    out: list[int] = []
+    for value in values:
+        parsed = _parse_small_int(value)
+        if parsed is None or parsed in seen:
+            continue
+        seen.add(parsed)
+        out.append(parsed)
+    return tuple(out)
+
+
+def _small_int_attr(insn: _InstructionView, *keys: str) -> int | None:
+    value = _attr(insn, *keys)
+    if isinstance(value, (list, tuple)):
+        values = _small_ints(value)
+        return values[0] if len(values) == 1 else None
+    return _parse_small_int(value)
+
+
+def _signature_from_varnode(vn: Varnode | None) -> str | None:
+    if vn is None:
+        return None
+    if vn.space is Space.REGISTER:
+        return f"r{int(vn.offset)}"
+    if vn.space is Space.STACK:
+        return f"S{int(vn.offset)}"
+    if vn.space is Space.GLOBAL:
+        return f"v{int(vn.offset)}"
+    if vn.space is Space.LVAR:
+        return f"l{int(vn.offset)}"
+    if vn.space is Space.TEMP:
+        return f"t{int(vn.offset)}"
+    if vn.space is Space.CONST:
+        return f"#{int(vn.offset)}"
+    return None
+
+
+def _operand_signature(
+    *,
+    operand_type: str | None,
+    stkoff: int | None,
+    reg: int | None,
+    value: int | None,
+    temp: int | None = None,
+) -> str | None:
+    if reg is not None:
+        return f"r{int(reg)}"
+    if stkoff is not None:
+        return f"S{int(stkoff)}"
+    if temp is not None:
+        return f"t{int(temp)}"
+    if value is not None:
+        return f"#{int(value)}"
+    if operand_type:
+        return str(operand_type)
+    return None
+
+
+def _byte_index_from_instruction(insn: _InstructionView) -> int | None:
+    explicit = _small_int_attr(insn, "byte_index", "source_byte_index")
+    if explicit is not None:
+        return explicit
+    values = _small_ints(insn.address_const_values)
+    return values[0] if len(values) == 1 else None
 
 
 def _guard_from_instruction(insn: _InstructionView) -> _GuardView | None:
-    text = _normal_text(insn.dstr)
-    for regex in (_SMALL_GUARD_RE, _JUMP_SMALL_CONST_RE):
-        match = regex.search(text)
-        if match is None:
-            continue
-        byte_index = _parse_small_int(match.group("value"))
-        if byte_index is None:
-            continue
-        lhs = match.group("lhs")
-        return _GuardView(
-            byte_index=byte_index,
-            condition=text,
-            counter_signature=lhs,
-            insn=insn,
-        )
-    return None
+    is_branch = insn.control_transfer is ControlTransferKind.CONDITIONAL_BRANCH
+    has_guard_attrs = _attr(insn, "guard_byte_index", "guard_counter") is not None
+    if not is_branch and not has_guard_attrs:
+        return None
+    byte_index = _small_int_attr(insn, "guard_byte_index", "byte_index")
+    if byte_index is None:
+        byte_index = _parse_small_int(insn.src_l_value)
+    if byte_index is None:
+        byte_index = _parse_small_int(insn.src_r_value)
+    if byte_index is None:
+        return None
+    counter = _attr(insn, "guard_counter", "counter_signature", "counter_carrier")
+    if counter is None:
+        if _parse_small_int(insn.src_l_value) == byte_index:
+            counter = _operand_signature(
+                operand_type=insn.src_r_type,
+                stkoff=insn.src_r_stkoff,
+                reg=insn.src_r_reg,
+                value=insn.src_r_value,
+            )
+        else:
+            counter = _operand_signature(
+                operand_type=insn.src_l_type,
+                stkoff=insn.src_l_stkoff,
+                reg=insn.src_l_reg,
+                value=insn.src_l_value,
+            )
+    if counter is None:
+        return None
+    predicate = insn.predicate_kind.value if insn.predicate_kind is not None else "guard"
+    condition = str(
+        _attr(insn, "guard_condition", "condition_signature")
+        or f"{counter} {predicate} {byte_index}"
+    )
+    return _GuardView(
+        byte_index=byte_index,
+        condition=condition,
+        counter_signature=str(counter),
+        insn=insn,
+    )
 
 
 def _is_byte_emit_store(insn: _InstructionView) -> bool:
-    text = insn.dstr.lower()
-    if insn.opcode_name in _STX_OPCODES:
-        return True
-    if text.lstrip().startswith("stx "):
-        return True
-    return False
+    return insn.operation is ValueOpKind.STORE
 
 
 def _memory_destination_signature(insn: _InstructionView) -> str:
-    text = _normal_text(insn.dstr)
-    address = _DS_ADDRESS_RE.search(text)
-    if address is not None:
-        return address.group(0)
-    store = _STORE_TEXT_RE.search(text)
-    if store is not None:
-        return _normal_text(store.group(2))
+    explicit = _attr(
+        insn,
+        "destination_buffer_expression",
+        "destination_signature",
+        "memory_target_signature",
+    )
+    if explicit is not None:
+        return str(explicit)
+    target = _signature_from_varnode(insn.memory_target)
+    if target is not None:
+        return target
     if insn.dest_stkoff is not None:
-        return f"{insn.dest_type or 'dest'}:0x{int(insn.dest_stkoff):x}"
+        return f"S{int(insn.dest_stkoff)}"
+    if insn.dest_reg is not None:
+        return f"r{int(insn.dest_reg)}"
+    if insn.dest_temp is not None:
+        return f"t{int(insn.dest_temp)}"
     return "unknown-destination"
 
 
 def _source_byte_signature(insn: _InstructionView, block: _BlockView) -> str:
-    text = _normal_text(insn.dstr)
-    source_index = _BYTE_INDEX_RE.search(text)
-    if source_index is not None:
-        return source_index.group(0)
-    store = _STORE_TEXT_RE.search(text)
-    if store is not None:
-        return _normal_text(store.group(1))
+    explicit = _attr(
+        insn,
+        "source_byte_expression",
+        "source_signature",
+        "memory_value_signature",
+    )
+    if explicit is not None:
+        return str(explicit)
+    byte_index = _byte_index_from_instruction(insn)
+    if byte_index is not None:
+        return f"byte[{byte_index}]"
+    value = _signature_from_varnode(insn.memory_value)
+    if value is not None:
+        return value
     for prior in reversed(block.instructions[: insn.insn_index]):
-        prior_text = _normal_text(prior.dstr)
-        if _BYTE_INDEX_RE.search(prior_text) is not None:
-            return prior_text
+        prior_index = _byte_index_from_instruction(prior)
+        if prior_index is not None:
+            return f"byte[{prior_index}]"
     if insn.src_l_stkoff is not None:
-        return f"{insn.src_l_type or 'src_l'}:0x{int(insn.src_l_stkoff):x}"
+        return f"S{int(insn.src_l_stkoff)}"
+    if insn.src_l_reg is not None:
+        return f"r{int(insn.src_l_reg)}"
     if insn.src_r_stkoff is not None:
-        return f"{insn.src_r_type or 'src_r'}:0x{int(insn.src_r_stkoff):x}"
+        return f"S{int(insn.src_r_stkoff)}"
+    if insn.src_r_reg is not None:
+        return f"r{int(insn.src_r_reg)}"
     return "unknown-source"
 
 
@@ -223,7 +327,7 @@ def _return_edge(block: _BlockView, guard: _GuardView | None) -> int | None:
         return None
     target = _jump_target(guard.insn)
     if target is not None and target in block.succs:
-        if guard.byte_index == 0 and _jump_opcode(guard.insn) == "jnz":
+        if guard.byte_index == 0 and _branch_takes_nonzero(guard.insn):
             for succ in block.succs:
                 if succ != target:
                     return succ
@@ -231,25 +335,17 @@ def _return_edge(block: _BlockView, guard: _GuardView | None) -> int | None:
     return None
 
 
-_JUMP_TARGET_RE = re.compile(r"@(?P<target>\d+)\b")
-_JUMP_OPCODE_RE = re.compile(r"^\s*(?P<opcode>jz|jnz|jcnd)\b", re.IGNORECASE)
-
-
 def _jump_target(insn: _InstructionView) -> int | None:
-    match = _JUMP_TARGET_RE.search(insn.dstr)
-    if match is None:
-        return None
-    try:
-        return int(match.group("target"), 10)
-    except ValueError:
-        return None
+    if insn.control_target is not None:
+        return int(insn.control_target)
+    return _optional_int(_attr(insn, "control_target", "branch_target", "target_block"))
 
 
-def _jump_opcode(insn: _InstructionView) -> str | None:
-    match = _JUMP_OPCODE_RE.search(_normal_text(insn.dstr))
-    if match is None:
-        return None
-    return match.group("opcode").lower()
+def _branch_takes_nonzero(insn: _InstructionView) -> bool:
+    opcode = _attr(insn, "branch_opcode", "jump_opcode")
+    if opcode is not None and str(opcode).lower() == "jnz":
+        return True
+    return insn.predicate_kind in {PredicateKind.NE, PredicateKind.TRUTHY}
 
 
 def _continuation_edge_for_return(block: _BlockView, return_edge: int | None) -> int | None:
@@ -317,7 +413,7 @@ class TerminalByteEmitterFactCollector:
             for insn in block.instructions:
                 if not _is_byte_emit_store(insn):
                     continue
-                explicit_index = _byte_index_from_text(insn.dstr)
+                explicit_index = _byte_index_from_instruction(insn)
                 byte_index = explicit_index
                 if byte_index is None and guard is not None:
                     byte_index = guard.byte_index

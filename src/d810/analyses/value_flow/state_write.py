@@ -1,4 +1,4 @@
-"""Portable microcode constant-folding / state-write evaluation (value-flow).
+"""Portable state-write constant folding (value-flow).
 
 Extracted from ``d810.backends.hexrays.evidence.condition_chain_analysis`` in the LS6 condition-chain split
 (Landing Sequence step 6 / ticket d81-1w16).  This is the PURE constant-folding
@@ -6,12 +6,10 @@ core of the condition-chain handler-chain walker: forward evaluation of microcod
 instructions to recover the constant value written to a state variable.
 
 Portable-core: no IDA / Hex-Rays imports.  Everything vendor-specific is
-supplied by the caller through :class:`MicrocodeEvalSeams` -- the opcode /
-operand-type vocabulary (stable lifted identifier names) plus the two
-live-mba accessors (an IDB scalar read and an lvar stack-offset resolver).
-The Hex-Rays evidence adapter builds the seams from its live maps and
-delegates here.  Operands / instructions are duck-typed opaque ``object``
-handles; this module never names a Hex-Rays type.
+lifted by the caller before entering this module.  The Hex-Rays evidence
+adapter captures live operands/instructions into portable snapshots and this
+module evaluates canonical ``Instruction`` records, preserving raw backend
+details only as provenance.
 
 The kill/overwrite semantics are preserved verbatim from the original
 walker: ``_store_to_dest`` overwrites the stack/register maps even on an
@@ -23,16 +21,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core.typing import Callable, Dict, List, Optional
+from d810.ir.expressions import ValueOpKind
+from d810.ir.flowgraph import InsnSnapshot
+from d810.ir.insn_projection import project_instruction_sequence
+from d810.ir.instructions import Instruction, InstructionEffectKind
+from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
 
 
 @dataclass(frozen=True)
 class MicrocodeEvalSeams:
-    """Vendor-supplied vocabulary + live-mba accessors injected by the backend.
+    """Transitional backend callbacks for non-structural value reads.
 
-    Keeping these as injected callables is what makes the evaluation core
-    portable: the names (``"mop_n"``, ``"m_add"``, ...) are stable lifted
-    identifiers, and the two accessors encapsulate the only live-mba touches
-    (an IDB scalar read and ``mba.vars[idx].location.stkoff()``).
+    Older call sites still construct this object, so the vocabulary callbacks
+    remain part of the shape for compatibility.  Portable evaluation no longer
+    switches on them; it consumes lifted snapshots/canonical instructions and
+    only uses ``fetch_stable_global_value`` for backend-owned global reads.
     """
 
     mop_type_name: Callable[[object], Optional[str]]
@@ -43,23 +46,243 @@ class MicrocodeEvalSeams:
     lvar_stkoff: Callable[[object, int], int]
 
 
+def resolve_varnode_from_maps(
+    varnode: Varnode | None,
+    stk_map: Dict[int, int],
+    reg_map: Dict[int, int],
+    *,
+    foldable_global_reads: Optional[Dict[int, Dict[int, int]]] = None,
+    fetch_stable_global_value: Callable[[int, int], Optional[int]] | None = None,
+    read_ea: Optional[int] = None,
+    diag_lines: Optional[List[str]] = None,
+) -> Optional[int]:
+    """Resolve a canonical ``Varnode`` to a concrete value.
+
+    This is the portable state-write evaluator surface.  It consumes the lifted
+    operand space directly instead of asking the caller for Hex-Rays-shaped mop
+    type names.
+    """
+    if varnode is None:
+        return None
+
+    result: Optional[int] = None
+    space = varnode.space
+    key = int(varnode.offset)
+
+    if space is Space.CONST:
+        result = key
+    elif space is Space.STACK:
+        result = stk_map.get(key)
+    elif space in {Space.REGISTER, Space.TEMP}:
+        result = reg_map.get(key)
+    elif space is Space.LVAR:
+        result = stk_map.get(key)
+    elif space is Space.GLOBAL:
+        if key in stk_map:
+            result = stk_map[key]
+        elif foldable_global_reads is not None and read_ea is not None:
+            init = foldable_global_reads.get(int(read_ea), {}).get(key)
+            if init is not None:
+                result = int(init)
+            elif fetch_stable_global_value is not None:
+                result = fetch_stable_global_value(key, int(varnode.size or 0))
+        elif fetch_stable_global_value is not None:
+            result = fetch_stable_global_value(key, int(varnode.size or 0))
+
+    if diag_lines is not None:
+        diag_lines.append(
+            "  fwd_resolve: "
+            f"varnode={space.value}{key} -> "
+            f"{hex(result) if result is not None else 'None'}"
+        )
+    return result
+
+
+def _binary_result(
+    operation: ValueOpKind,
+    left: int,
+    right: int,
+) -> Optional[int]:
+    if operation is ValueOpKind.XOR:
+        return left ^ right
+    if operation is ValueOpKind.SUB:
+        return left - right
+    if operation is ValueOpKind.ADD:
+        return left + right
+    if operation is ValueOpKind.AND:
+        return left & right
+    if operation is ValueOpKind.OR:
+        return left | right
+    if operation is ValueOpKind.MUL:
+        return left * right
+    return None
+
+
+def _extended_result(
+    operation: ValueOpKind,
+    source_value: int,
+    *,
+    source_size: int,
+    output_size: int,
+) -> Optional[int]:
+    if operation is ValueOpKind.ZEXT:
+        return int(source_value) & ((1 << (max(output_size, 1) * 8)) - 1)
+    if operation is ValueOpKind.SEXT:
+        in_size = max(int(source_size or 0), 1)
+        out_size = max(int(output_size or in_size), in_size)
+        sign_bit = 1 << (in_size * 8 - 1)
+        value = int(source_value)
+        if value & sign_bit:
+            value |= ((1 << (out_size * 8)) - 1) ^ ((1 << (in_size * 8)) - 1)
+        return value & ((1 << (out_size * 8)) - 1)
+    return None
+
+
+def _instruction_store_target(instruction: Instruction) -> Varnode | None:
+    if instruction.memory is not None and instruction.memory.target is not None:
+        return instruction.memory.target
+    for effect in instruction.effects:
+        if effect.kind is InstructionEffectKind.STORE:
+            return effect.target
+    return instruction.result
+
+
+def _instruction_store_value(instruction: Instruction) -> Varnode | None:
+    if instruction.memory is not None and instruction.memory.value is not None:
+        return instruction.memory.value
+    for effect in instruction.effects:
+        if effect.kind is InstructionEffectKind.STORE:
+            return effect.value
+    if instruction.inputs:
+        return instruction.inputs[0]
+    return None
+
+
+def _store_varnode_value(
+    dest: Varnode | None,
+    value: int,
+    stk_map: Dict[int, int],
+    reg_map: Dict[int, int],
+    state_var_stkoff: int,
+    *,
+    state_var_gaddr: Optional[int] = None,
+) -> bool:
+    if dest is None:
+        return False
+    key = int(dest.offset)
+    if dest.space is Space.GLOBAL:
+        stk_map[key] = value
+        return state_var_gaddr is not None and key == int(state_var_gaddr)
+    if dest.space is Space.STACK:
+        stk_map[key] = value
+        return key == int(state_var_stkoff)
+    if dest.space in {Space.REGISTER, Space.TEMP}:
+        reg_map[key] = value
+        return False
+    if dest.space is Space.LVAR:
+        stk_map[key] = value
+        return key == int(state_var_stkoff)
+    return False
+
+
+def forward_eval_instruction(
+    instruction: Instruction,
+    stk_map: Dict[int, int],
+    reg_map: Dict[int, int],
+    state_var_stkoff: int,
+    *,
+    diag_lines: Optional[List[str]] = None,
+    state_var_gaddr: Optional[int] = None,
+    foldable_global_reads: Optional[Dict[int, Dict[int, int]]] = None,
+    fetch_stable_global_value: Callable[[int, int], Optional[int]] | None = None,
+) -> Optional[int]:
+    """Evaluate one canonical instruction and update forward maps in-place."""
+    read_ea: Optional[int] = None
+    try:
+        ea_val = instruction.attrs.get("ea")
+        if ea_val is not None:
+            read_ea = int(ea_val)
+    except (TypeError, ValueError):
+        read_ea = None
+
+    operation = instruction.operation
+    if not isinstance(operation, ValueOpKind):
+        return None
+
+    def resolve(varnode: Varnode | None) -> Optional[int]:
+        return resolve_varnode_from_maps(
+            varnode,
+            stk_map,
+            reg_map,
+            foldable_global_reads=foldable_global_reads,
+            fetch_stable_global_value=fetch_stable_global_value,
+            read_ea=read_ea,
+            diag_lines=diag_lines,
+        )
+
+    dest = instruction.result
+    val: Optional[int] = None
+
+    if operation is ValueOpKind.STORE:
+        dest = _instruction_store_target(instruction)
+        val = resolve(_instruction_store_value(instruction))
+    elif operation is ValueOpKind.MOVE:
+        val = resolve(instruction.inputs[0] if instruction.inputs else None)
+    elif operation in {ValueOpKind.ZEXT, ValueOpKind.SEXT}:
+        source = instruction.inputs[0] if instruction.inputs else None
+        source_value = resolve(source)
+        if source_value is not None:
+            val = _extended_result(
+                operation,
+                source_value,
+                source_size=int(source.size if source is not None else 4),
+                output_size=int(dest.size if dest is not None else 4),
+            )
+    elif operation in {
+        ValueOpKind.ADD,
+        ValueOpKind.SUB,
+        ValueOpKind.AND,
+        ValueOpKind.OR,
+        ValueOpKind.XOR,
+        ValueOpKind.MUL,
+    }:
+        left = resolve(instruction.inputs[0] if len(instruction.inputs) >= 1 else None)
+        right = resolve(instruction.inputs[1] if len(instruction.inputs) >= 2 else None)
+        if left is not None and right is not None:
+            val = _binary_result(operation, left, right)
+    else:
+        return None
+
+    if val is None:
+        return None
+
+    val = int(val) & 0xFFFFFFFF
+    if _store_varnode_value(
+        dest,
+        val,
+        stk_map,
+        reg_map,
+        state_var_stkoff,
+        state_var_gaddr=state_var_gaddr,
+    ):
+        if diag_lines is not None:
+            diag_lines.append(
+                f"  fwd_eval_insn: {operation.value} -> state_var write 0x{val:x}"
+            )
+        return val
+    return None
+
+
 def get_mop_const_value(
     mop: object,
     *,
-    mop_type_name: Callable[[object], Optional[str]],
+    mop_type_name: Callable[[object], Optional[str]] | None = None,
 ) -> Optional[int]:
-    """Extract a constant integer value from a microcode operand if it is a number operand."""
-    if mop is None:
+    """Extract a constant integer value from a lifted operand snapshot."""
+    varnode = varnode_from_mop_snapshot(mop)  # type: ignore[arg-type]
+    if varnode is None or varnode.space is not Space.CONST:
         return None
-    mop_type = getattr(mop, "t", None)
-    if mop_type_name(mop_type) == "mop_n":
-        nnn = getattr(mop, "nnn", None)
-        if nnn is not None:
-            return getattr(nnn, "value", None)
-        value = getattr(mop, "value", None)
-        if value is not None:
-            return int(value)
-    return None
+    return int(varnode.offset)
 
 
 def resolve_mop_from_maps(
@@ -67,7 +290,7 @@ def resolve_mop_from_maps(
     stk_map: Dict[int, int],
     reg_map: Dict[int, int],
     *,
-    seams: MicrocodeEvalSeams,
+    seams: MicrocodeEvalSeams | None = None,
     mba: Optional[object] = None,
     state_var_lvar_idx: Optional[int] = None,
     diag_lines: Optional[List[str]] = None,
@@ -75,11 +298,7 @@ def resolve_mop_from_maps(
     foldable_global_reads: Optional[Dict[int, Dict[int, int]]] = None,
     read_ea: Optional[int] = None,
 ) -> Optional[int]:
-    """Resolve a microcode operand to a concrete value using accumulated forward-eval maps.
-
-    Handles: mop_n (literal), mop_S (stk_map via .s.off), mop_r (reg_map),
-    mop_l (stk_map via lvar stkoff), mop_v (stable global), mop_d (recursive
-    binop eval).
+    """Resolve a lifted operand snapshot through accumulated forward-eval maps.
 
     ``state_var_gaddr`` names a *global* dispatcher state variable: a read of
     that global resolves through ``stk_map`` (keyed by gaddr) like a stack slot,
@@ -89,142 +308,43 @@ def resolve_mop_from_maps(
     ``read_ea`` whose gaddr is listed folds to its static ``.data`` initializer
     -- the only value that can be live there because no store reaches it.
     """
-    if mop is None:
-        return None
+    fetch = seams.fetch_stable_global_value if seams is not None else None
+    return resolve_varnode_from_maps(
+        varnode_from_mop_snapshot(mop),  # type: ignore[arg-type]
+        stk_map,
+        reg_map,
+        foldable_global_reads=foldable_global_reads,
+        fetch_stable_global_value=fetch,
+        read_ea=read_ea,
+        diag_lines=diag_lines,
+    )
 
-    mop_type = mop.t
-    mop_type_name = seams.mop_type_name(mop_type)
 
+def _forward_eval_instruction_sequence(
+    instructions: tuple[Instruction, ...],
+    stk_map: Dict[int, int],
+    reg_map: Dict[int, int],
+    state_var_stkoff: int,
+    *,
+    diag_lines: Optional[List[str]] = None,
+    state_var_gaddr: Optional[int] = None,
+    foldable_global_reads: Optional[Dict[int, Dict[int, int]]] = None,
+    fetch_stable_global_value: Callable[[int, int], Optional[int]] | None = None,
+) -> Optional[int]:
     result: Optional[int] = None
-
-    if mop_type_name == "mop_n":
-        result = get_mop_const_value(mop, mop_type_name=seams.mop_type_name)
-    elif mop_type_name == "mop_S":
-        off = getattr(mop, "s", None)
-        if off is not None:
-            off = getattr(off, "off", None)
-        if off is None:
-            off = getattr(mop, "stkoff", None)
-        if off is not None:
-            result = stk_map.get(off)
-    elif mop_type_name == "mop_r":
-        reg = getattr(mop, "r", None)
-        if reg is None:
-            reg = getattr(mop, "reg", None)
-        if reg is not None:
-            result = reg_map.get(reg)
-    elif mop_type_name == "mop_l":
-        lvar_ref = getattr(mop, "l", None)
-        idx = getattr(lvar_ref, "idx", None) if lvar_ref is not None else None
-        if idx is not None and state_var_lvar_idx is not None and idx == state_var_lvar_idx:
-            # State var itself — look up by its own state in stk_map if available
-            pass
-        if idx is not None and mba is not None:
-            try:
-                off = seams.lvar_stkoff(mba, idx)
-                result = stk_map.get(off)
-            except Exception:
-                pass
-    elif mop_type_name == "mop_v":
-        try:
-            addr = int(getattr(mop, "g", 0) or getattr(mop, "gaddr", 0) or 0)
-            size = int(getattr(mop, "size", 0) or 0)
-            # 1) A value written to this global EARLIER in the same forward scan
-            #    (tracked in stk_map under the gaddr key) -- in-block global
-            #    dataflow, e.g. ``qword |= M`` then ``state = qword``.
-            if addr and addr in stk_map:
-                result = stk_map[addr]
-            # 2) Reaching-defs-sound static-initializer fold: a global read that
-            #    no store can reach resolves to its loader-supplied initializer.
-            elif (
-                foldable_global_reads is not None
-                and read_ea is not None
-                and addr
-            ):
-                init = foldable_global_reads.get(int(read_ea), {}).get(addr)
-                if init is not None:
-                    result = int(init)
-                else:
-                    result = seams.fetch_stable_global_value(addr, size)
-            else:
-                result = seams.fetch_stable_global_value(addr, size)
-        except Exception:
-            result = None
-    elif mop_type_name == "mop_d":
-        nested = getattr(mop, "d", None)
-        if nested is not None:
-            op = getattr(nested, "opcode", None)
-            l_mop = getattr(nested, "l", None)
-            r_mop = getattr(nested, "r", None)
-            lv = resolve_mop_from_maps(
-                l_mop,
-                stk_map,
-                reg_map,
-                seams=seams,
-                mba=mba,
-                state_var_lvar_idx=state_var_lvar_idx,
-                diag_lines=diag_lines,
-                state_var_gaddr=state_var_gaddr,
-                foldable_global_reads=foldable_global_reads,
-                read_ea=read_ea,
-            )
-            if r_mop is not None and getattr(r_mop, "t", None) != 0:
-                rv = resolve_mop_from_maps(
-                    r_mop,
-                    stk_map,
-                    reg_map,
-                    seams=seams,
-                    mba=mba,
-                    state_var_lvar_idx=state_var_lvar_idx,
-                    diag_lines=diag_lines,
-                    state_var_gaddr=state_var_gaddr,
-                    foldable_global_reads=foldable_global_reads,
-                    read_ea=read_ea,
-                )
-            else:
-                rv = None
-            if lv is not None:
-                m_add = seams.opcode_value("m_add", 28)
-                m_sub = seams.opcode_value("m_sub", 29)
-                m_and = seams.opcode_value("m_and", 21)
-                m_or = seams.opcode_value("m_or", 22)
-                m_xor = seams.opcode_value("m_xor", 31)
-                m_mul = seams.opcode_value("m_mul", 30)
-                m_xdu = seams.opcode_value("m_xdu", None)
-                m_xds = seams.opcode_value("m_xds", None)
-                if rv is not None:
-                    if op == m_xor:
-                        result = (lv ^ rv) & 0xFFFFFFFF
-                    elif op == m_sub:
-                        result = (lv - rv) & 0xFFFFFFFF
-                    elif op == m_add:
-                        result = (lv + rv) & 0xFFFFFFFF
-                    elif op == m_and:
-                        result = (lv & rv) & 0xFFFFFFFF
-                    elif op == m_or:
-                        result = (lv | rv) & 0xFFFFFFFF
-                    elif op == m_mul:
-                        result = (lv * rv) & 0xFFFFFFFF
-                elif m_xdu is not None and op == m_xdu:
-                    out_size = int(getattr(mop, "size", 0) or getattr(nested, "size", 0) or 4)
-                    result = int(lv) & ((1 << (out_size * 8)) - 1)
-                elif m_xds is not None and op == m_xds:
-                    in_size = int(getattr(l_mop, "size", 0) or 4)
-                    out_size = int(getattr(mop, "size", 0) or getattr(nested, "size", 0) or in_size)
-                    sign_bit = 1 << (in_size * 8 - 1)
-                    if int(lv) & sign_bit:
-                        result = int(lv) | (
-                            ((1 << (out_size * 8)) - 1)
-                            ^ ((1 << (in_size * 8)) - 1)
-                        )
-                    else:
-                        result = int(lv)
-                    result &= (1 << (out_size * 8)) - 1
-
-    if diag_lines is not None:
-        diag_lines.append(
-            f"  fwd_resolve: mop_t={mop_type} -> {hex(result) if result is not None else 'None'}"
+    for instruction in instructions:
+        value = forward_eval_instruction(
+            instruction,
+            stk_map,
+            reg_map,
+            state_var_stkoff,
+            diag_lines=diag_lines,
+            state_var_gaddr=state_var_gaddr,
+            foldable_global_reads=foldable_global_reads,
+            fetch_stable_global_value=fetch_stable_global_value,
         )
+        if value is not None:
+            result = value
     return result
 
 
@@ -234,7 +354,7 @@ def forward_eval_insn(
     reg_map: Dict[int, int],
     state_var_stkoff: int,
     *,
-    seams: MicrocodeEvalSeams,
+    seams: MicrocodeEvalSeams | None = None,
     mba: Optional[object] = None,
     state_var_lvar_idx: Optional[int] = None,
     diag_lines: Optional[List[str]] = None,
@@ -254,157 +374,33 @@ def forward_eval_insn(
     if insn is None:
         return None
 
-    op = getattr(insn, "opcode", None)
-    if op is None:
-        return None
+    fetch = seams.fetch_stable_global_value if seams is not None else None
 
-    read_ea: Optional[int] = None
-    try:
-        ea_val = getattr(insn, "ea", None)
-        if ea_val is not None:
-            read_ea = int(ea_val)
-    except (TypeError, ValueError):
-        read_ea = None
+    if isinstance(insn, Instruction):
+        return forward_eval_instruction(
+            insn,
+            stk_map,
+            reg_map,
+            state_var_stkoff,
+            diag_lines=diag_lines,
+            state_var_gaddr=state_var_gaddr,
+            foldable_global_reads=foldable_global_reads,
+            fetch_stable_global_value=fetch,
+        )
 
-    m_mov_op = seams.opcode_value("m_mov", None)
-    m_add = seams.opcode_value("m_add", 28)
-    m_sub = seams.opcode_value("m_sub", 29)
-    m_and = seams.opcode_value("m_and", 21)
-    m_or = seams.opcode_value("m_or", 22)
-    m_xor = seams.opcode_value("m_xor", 31)
-    m_mul = seams.opcode_value("m_mul", 30)
-    binary_ops = {m_add, m_sub, m_and, m_or, m_xor, m_mul}
-    m_xdu_op = seams.opcode_value("m_xdu", None)
-    m_xds_op = seams.opcode_value("m_xds", None)
+    if isinstance(insn, InsnSnapshot):
+        return _forward_eval_instruction_sequence(
+            project_instruction_sequence(insn),
+            stk_map,
+            reg_map,
+            state_var_stkoff,
+            diag_lines=diag_lines,
+            state_var_gaddr=state_var_gaddr,
+            foldable_global_reads=foldable_global_reads,
+            fetch_stable_global_value=fetch,
+        )
 
-    mop_S_type = seams.mop_type_value("mop_S", None)
-    mop_r_type = seams.mop_type_value("mop_r", 1)
-    mop_l_type = seams.mop_type_value("mop_l", 9)
-    mop_v_type = seams.mop_type_value("mop_v", None)
-
-    def _store_to_dest(dest: object, val: int) -> bool:
-        """Store val into the appropriate map based on dest type. Returns True if state var."""
-        dest_t = getattr(dest, "t", None)
-        is_state = False
-        # A write to a GLOBAL: record it in stk_map under its gaddr key so a
-        # later read of the same global in this forward scan resolves to it
-        # (in-block global dataflow: ``qword |= M`` then ``state = qword``).  It
-        # is the state-var write only when this global IS the state variable.
-        if mop_v_type is not None and dest_t == mop_v_type:
-            gaddr = int(getattr(dest, "g", 0) or getattr(dest, "gaddr", 0) or 0)
-            if gaddr:
-                stk_map[gaddr] = val
-                if state_var_gaddr is not None and gaddr == int(state_var_gaddr):
-                    is_state = True
-            return is_state
-        if mop_S_type is not None and dest_t == mop_S_type:
-            off = getattr(dest, "s", None)
-            if off is not None:
-                off = getattr(off, "off", None)
-            if off is None:
-                off = getattr(dest, "stkoff", None)
-            if off is not None:
-                stk_map[off] = val
-                if off == state_var_stkoff:
-                    is_state = True
-        elif dest_t == mop_r_type:
-            reg = getattr(dest, "r", None)
-            if reg is None:
-                reg = getattr(dest, "reg", None)
-            if reg is not None:
-                reg_map[reg] = val
-        elif mop_l_type is not None and dest_t == mop_l_type:
-            lvar_ref = getattr(dest, "l", None)
-            idx = getattr(lvar_ref, "idx", None) if lvar_ref is not None else None
-            if idx is not None and mba is not None:
-                try:
-                    off = seams.lvar_stkoff(mba, idx)
-                    stk_map[off] = val
-                    if off == state_var_stkoff:
-                        is_state = True
-                except Exception:
-                    pass
-            if idx is not None and state_var_lvar_idx is not None and idx == state_var_lvar_idx:
-                is_state = True
-        return is_state
-
-    dest = getattr(insn, "d", None)
-    if dest is None:
-        return None
-
-    val: Optional[int] = None
-    _glb = dict(
-        state_var_gaddr=state_var_gaddr,
-        foldable_global_reads=foldable_global_reads,
-        read_ea=read_ea,
+    raise TypeError(
+        "state_write.forward_eval_insn requires a canonical Instruction "
+        "or lifted InsnSnapshot; backend callers must capture live instructions first"
     )
-
-    if op == m_mov_op:
-        src = getattr(insn, "l", None)
-        val = resolve_mop_from_maps(
-            src, stk_map, reg_map, seams=seams, mba=mba,
-            state_var_lvar_idx=state_var_lvar_idx, diag_lines=diag_lines, **_glb,
-        )
-    elif m_xdu_op is not None and op == m_xdu_op:
-        # Zero-extend: value stays the same, just widens the register
-        src = getattr(insn, "l", None)
-        val = resolve_mop_from_maps(
-            src, stk_map, reg_map, seams=seams, mba=mba,
-            state_var_lvar_idx=state_var_lvar_idx, diag_lines=diag_lines, **_glb,
-        )
-    elif m_xds_op is not None and op == m_xds_op:
-        # Sign-extend: check high bit of source width, extend if set
-        src = getattr(insn, "l", None)
-        src_val = resolve_mop_from_maps(
-            src, stk_map, reg_map, seams=seams, mba=mba,
-            state_var_lvar_idx=state_var_lvar_idx, diag_lines=diag_lines, **_glb,
-        )
-        if src_val is not None:
-            src_size = getattr(src, "size", 4)  # source operand size in bytes
-            dst_size = getattr(dest, "size", 8)  # dest operand size in bytes
-            sign_bit = 1 << (src_size * 8 - 1)
-            if src_val & sign_bit:
-                # Negative: fill upper bits with 1s
-                mask = (1 << (dst_size * 8)) - (1 << (src_size * 8))
-                src_val = src_val | mask
-            val = src_val
-    elif op in binary_ops:
-        l_mop = getattr(insn, "l", None)
-        r_mop = getattr(insn, "r", None)
-        lv = resolve_mop_from_maps(
-            l_mop, stk_map, reg_map, seams=seams, mba=mba,
-            state_var_lvar_idx=state_var_lvar_idx, **_glb,
-        )
-        rv = resolve_mop_from_maps(
-            r_mop, stk_map, reg_map, seams=seams, mba=mba,
-            state_var_lvar_idx=state_var_lvar_idx, **_glb,
-        )
-        if lv is not None and rv is not None:
-            if op == m_xor:
-                val = (lv ^ rv) & 0xFFFFFFFF
-            elif op == m_sub:
-                val = (lv - rv) & 0xFFFFFFFF
-            elif op == m_add:
-                val = (lv + rv) & 0xFFFFFFFF
-            elif op == m_and:
-                val = (lv & rv) & 0xFFFFFFFF
-            elif op == m_or:
-                val = (lv | rv) & 0xFFFFFFFF
-            elif op == m_mul:
-                val = (lv * rv) & 0xFFFFFFFF
-    else:
-        return None
-
-    if val is None:
-        return None
-
-    val = val & 0xFFFFFFFF
-    is_state = _store_to_dest(dest, val)
-    if is_state:
-        if diag_lines is not None:
-            opcode_name = seams.opcode_name(op) or f"opcode_{op}"
-            diag_lines.append(
-                f"  fwd_eval_insn: {opcode_name} -> state_var write 0x{val:x}"
-            )
-        return val
-    return None

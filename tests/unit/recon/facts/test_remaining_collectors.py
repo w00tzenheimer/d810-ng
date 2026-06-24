@@ -1,14 +1,48 @@
 """Tests for the deferred maturity fact collectors."""
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
+from d810.ir.flowgraph import (
+    BlockSnapshot as CfgBlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
+from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.analyses.value_flow.byte_emit_corridor import ByteEmitCorridorFactCollector
 from d810.analyses.value_flow.call_anchor import CallAnchorFactCollector
 from d810.analyses.value_flow.return_frontier import ReturnFrontierFactCollector
 from d810.analyses.value_flow.zero_blob import ZeroBlobFactCollector
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
+
+_OPCODE_ALIASES = {
+    "m_stx": "store",
+    "m_mov": "move",
+    "m_add": "add",
+    "m_sub": "sub",
+}
+
+_OPERAND_TYPE_ALIASES = {
+    "mop_S": "S",
+    "mop_n": "c",
+    "mop_r": "r",
+}
+
+
+def _opcode_name(value: str) -> str:
+    return _OPCODE_ALIASES.get(value, value)
+
+
+def _operand_type(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return _OPERAND_TYPE_ALIASES.get(value, value)
 
 
 def _insn(
@@ -26,23 +60,40 @@ def _insn(
     src_r_type: str | None = None,
     src_r_stkoff: int | None = None,
     src_r_value: int | None = None,
+    dest_reg: int | None = None,
+    meta: str | Mapping[str, object] | None = None,
+    predicate_kind: PredicateKind | None = None,
+    control_transfer: ControlTransferKind | None = None,
+    control_target: int | None = None,
 ) -> InstructionSnapshot:
-    return InstructionSnapshot(
+    if isinstance(meta, Mapping):
+        meta = json.dumps(dict(meta))
+    insn = InstructionSnapshot(
         index=index,
         ea=0x180010000 + index if ea is None else ea,
         opcode=0,
-        opcode_name=opcode_name,
-        dest_type=dest_type,
+        opcode_name=_opcode_name(opcode_name),
+        dest_type=_operand_type(dest_type),
         dest_stkoff=dest_stkoff,
         dest_size=dest_size,
-        src_l_type=src_l_type,
+        src_l_type=_operand_type(src_l_type),
         src_l_stkoff=src_l_stkoff,
         src_l_value=src_l_value,
-        src_r_type=src_r_type,
+        src_r_type=_operand_type(src_r_type),
         src_r_stkoff=src_r_stkoff,
         src_r_value=src_r_value,
         dstr=dstr,
+        meta=meta,
     )
+    if dest_reg is not None:
+        insn.dest_reg = int(dest_reg)
+    if predicate_kind is not None:
+        insn.predicate_kind = predicate_kind
+    if control_transfer is not None:
+        insn.control_transfer = control_transfer
+    if control_target is not None:
+        insn.control_target = int(control_target)
+    return insn
 
 
 def _block(
@@ -70,6 +121,82 @@ def _target(*blocks: BlockSnapshot) -> SimpleNamespace:
     return SimpleNamespace(blocks={block.serial: block for block in blocks})
 
 
+def _cfg_global(address: int, *, size: int = 8) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.GLOBAL, gaddr=address, size=size)
+
+
+def _cfg_reg(reg: int, *, size: int = 8) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.REGISTER, reg=reg, size=size)
+
+
+def _cfg_stack(stkoff: int, *, size: int = 8) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.STACK, stkoff=stkoff, size=size)
+
+
+def _cfg_const(value: int, *, size: int = 8) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.NUMBER, value=value, size=size)
+
+
+def _cfg_args(*args: MopSnapshot) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.ARG_LIST, args=args)
+
+
+def _cfg_insn(
+    *,
+    index: int,
+    kind: InsnKind,
+    ea: int | None = None,
+    l: MopSnapshot | None = None,
+    r: MopSnapshot | None = None,
+    d: MopSnapshot | None = None,
+    call_kind: CallKind | None = None,
+    display_text: str = "",
+) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=-1,
+        raw_opcode=0x1000 + index,
+        ea=0x180010000 + index if ea is None else ea,
+        operands=tuple(op for op in (l, r, d) if op is not None),
+        operand_slots=tuple(
+            (slot, op)
+            for slot, op in (("l", l), ("r", r), ("d", d))
+            if op is not None
+        ),
+        display_text=display_text,
+        l=l,
+        r=r,
+        d=d,
+        kind=kind,
+        call_kind=call_kind,
+    )
+
+
+def _cfg_block(
+    serial: int,
+    *instructions: InsnSnapshot,
+    succs: tuple[int, ...] = (),
+    preds: tuple[int, ...] = (),
+    start_ea: int | None = None,
+) -> CfgBlockSnapshot:
+    return CfgBlockSnapshot(
+        serial=serial,
+        block_type=1 if len(succs) <= 1 else 2,
+        succs=succs,
+        preds=preds,
+        flags=0,
+        start_ea=0x180014000 + serial if start_ea is None else start_ea,
+        insn_snapshots=tuple(instructions),
+    )
+
+
+def _cfg_target(*blocks: CfgBlockSnapshot) -> FlowGraph:
+    return FlowGraph(
+        blocks={block.serial: block for block in blocks},
+        entry_serial=blocks[0].serial if blocks else 0,
+        func_ea=0x401000,
+    )
+
+
 def test_byte_emit_corridor_groups_terminal_byte_family() -> None:
     collector = ByteEmitCorridorFactCollector()
 
@@ -77,21 +204,68 @@ def test_byte_emit_corridor_groups_terminal_byte_family() -> None:
         _target(
             _block(
                 101,
-                _insn(index=0, opcode_name="m_jcnd", dstr="jnz %var_tail.8, #0.8, @241"),
+                _insn(
+                    index=0,
+                    opcode_name="m_jcnd",
+                    dstr="jnz %var_tail.8, #0.8, @241",
+                    src_l_type="mop_S",
+                    src_l_stkoff=0x54,
+                    src_r_type="mop_n",
+                    src_r_value=0,
+                    predicate_kind=PredicateKind.NE,
+                    control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
+                    control_target=241,
+                ),
                 succs=(102, 241),
                 preds=(99,),
             ),
             _block(
                 102,
-                _insn(index=0, opcode_name="m_jcnd", dstr="jnz %var_tail.8, #1.8, @241"),
-                _insn(index=1, opcode_name="m_stx", dstr="stx v52[1], ds.1, %var_dst.8"),
+                _insn(
+                    index=0,
+                    opcode_name="m_jcnd",
+                    dstr="jnz %var_tail.8, #1.8, @241",
+                    src_l_type="mop_S",
+                    src_l_stkoff=0x54,
+                    src_r_type="mop_n",
+                    src_r_value=1,
+                    predicate_kind=PredicateKind.NE,
+                    control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
+                    control_target=241,
+                ),
+                _insn(
+                    index=1,
+                    opcode_name="m_stx",
+                    dest_type="mop_S",
+                    dest_stkoff=0x700,
+                    meta={"byte_index": 1},
+                    dstr="stx v52[1], ds.1, %var_dst.8",
+                ),
                 succs=(103, 241),
                 preds=(101,),
             ),
             _block(
                 103,
-                _insn(index=0, opcode_name="m_jcnd", dstr="jnz %var_tail.8, #2.8, @241"),
-                _insn(index=1, opcode_name="m_stx", dstr="stx v52[2], ds.1, %var_dst.8"),
+                _insn(
+                    index=0,
+                    opcode_name="m_jcnd",
+                    dstr="jnz %var_tail.8, #2.8, @241",
+                    src_l_type="mop_S",
+                    src_l_stkoff=0x54,
+                    src_r_type="mop_n",
+                    src_r_value=2,
+                    predicate_kind=PredicateKind.NE,
+                    control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
+                    control_target=241,
+                ),
+                _insn(
+                    index=1,
+                    opcode_name="m_stx",
+                    dest_type="mop_S",
+                    dest_stkoff=0x700,
+                    meta={"byte_index": 2},
+                    dstr="stx v52[2], ds.1, %var_dst.8",
+                ),
                 succs=(104, 241),
                 preds=(102,),
             ),
@@ -117,13 +291,19 @@ def test_call_anchor_records_call_context() -> None:
     collector = CallAnchorFactCollector()
 
     facts = collector.collect(
-        _target(
-            _block(
+        _cfg_target(
+            _cfg_block(
                 130,
-                _insn(
+                _cfg_insn(
                     index=0,
-                    opcode_name="m_call",
-                    dstr="call $0x180000000<fast:_QWORD #0x11.8,_QWORD #0x4A.8>",
+                    kind=InsnKind.CALL,
+                    l=_cfg_global(0x180000000),
+                    d=_cfg_reg(0),
+                    call_kind=CallKind.DIRECT,
+                    display_text=(
+                        "call $0x180000000<fast:_QWORD #0x11.8,"
+                        "_QWORD #0x4A.8>"
+                    ),
                     ea=0x180014848,
                 ),
                 succs=(143,),
@@ -147,7 +327,82 @@ def test_call_anchor_records_call_context() -> None:
     assert "ea=0x180014848" in fact.semantic_key
 
 
+def test_call_anchor_ignores_legacy_opcode_only_call_shape() -> None:
+    collector = CallAnchorFactCollector()
+
+    facts = collector.collect(
+        _target(
+            _block(
+                130,
+                _insn(
+                    index=0,
+                    opcode_name="m_call",
+                    dstr="call $0x180000000<fast:_QWORD #0x11.8,_QWORD #0x4A.8>",
+                    ea=0x180014848,
+                ),
+                succs=(143,),
+                preds=(129,),
+            )
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_CALLS"],
+        phase="pre_d810",
+    )
+
+    assert facts == ()
+
+
 def test_zero_blob_collector_separates_zero_store_and_blob_copy() -> None:
+    collector = ZeroBlobFactCollector()
+
+    facts = collector.collect(
+        _cfg_target(
+            _cfg_block(
+                40,
+                _cfg_insn(
+                    index=0,
+                    kind=InsnKind.STORE,
+                    l=_cfg_const(0),
+                    d=_cfg_stack(0x300),
+                    display_text="stx #0x0.8, ds.2, %var_dst.8",
+                ),
+                _cfg_insn(
+                    index=1,
+                    kind=InsnKind.CALL,
+                    l=_cfg_global(0x1800164E0),
+                    d=_cfg_args(
+                        _cfg_stack(0x300),
+                        _cfg_global(0x180018E95),
+                        _cfg_const(0x10),
+                    ),
+                    call_kind=CallKind.DIRECT,
+                    display_text=(
+                        "call sub_1800164E0<fast:%var_dst.8,"
+                        "unk_180018E95,#0x10.8>"
+                    ),
+                ),
+                succs=(41,),
+            )
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_GLBOPT1"],
+        phase="pre_d810",
+    )
+
+    kinds = {fact.payload["init_kind"] for fact in facts}
+    assert kinds == {"zero_store", "blob_copy_call"}
+    zero = next(fact for fact in facts if fact.payload["init_kind"] == "zero_store")
+    blob = next(fact for fact in facts if fact.payload["init_kind"] == "blob_copy_call")
+    assert zero.payload["destination"] == "mop_S:0x300"
+    assert zero.payload["source"] == "#0x0"
+    assert blob.payload["destination"] == "mop_S:0x300"
+    assert blob.payload["source"] == "$0x180018e95"
+    assert blob.payload["size"] == 0x10
+    assert "ea=0x" in zero.semantic_key
+    assert "ea=0x" in blob.semantic_key
+
+
+def test_zero_blob_ignores_legacy_text_only_shapes() -> None:
     collector = ZeroBlobFactCollector()
 
     facts = collector.collect(
@@ -173,14 +428,7 @@ def test_zero_blob_collector_separates_zero_store_and_blob_copy() -> None:
         phase="pre_d810",
     )
 
-    kinds = {fact.payload["init_kind"] for fact in facts}
-    assert kinds == {"zero_store", "blob_copy_call"}
-    zero = next(fact for fact in facts if fact.payload["init_kind"] == "zero_store")
-    blob = next(fact for fact in facts if fact.payload["init_kind"] == "blob_copy_call")
-    assert zero.payload["destination"] == "%var_dst.8"
-    assert blob.payload["size"] == 0x10
-    assert "ea=0x" in zero.semantic_key
-    assert "ea=0x" in blob.semantic_key
+    assert facts == ()
 
 
 def test_return_frontier_records_nearby_return_carrier_writers() -> None:
@@ -209,6 +457,7 @@ def test_return_frontier_records_nearby_return_carrier_writers() -> None:
                     index=0,
                     opcode_name="m_mov",
                     dest_type="mop_r",
+                    dest_reg=0,
                     src_l_type="mop_S",
                     src_l_stkoff=0x7F0,
                     dstr="mov %var_8.8, rax.8",
@@ -233,3 +482,54 @@ def test_return_frontier_records_nearby_return_carrier_writers() -> None:
     assert len(fact.payload["carrier_fact_ids"]) == 1
     assert "writers=50" in fact.semantic_key
     assert "return_carrier:slot=" in fact.semantic_key
+
+
+def test_return_frontier_accepts_canonical_return_control() -> None:
+    collector = ReturnFrontierFactCollector()
+
+    facts = collector.collect(
+        _cfg_target(
+            _cfg_block(
+                57,
+                _cfg_insn(
+                    index=0,
+                    kind=InsnKind.RET,
+                    display_text="ret",
+                    ea=0x180014900,
+                ),
+                succs=(57,),
+                preds=(),
+            )
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_CALLS"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact.kind == "ReturnFrontierFact"
+    assert fact.payload["return_block"] == 57
+    assert fact.payload["successor_blocks"] == [57]
+    assert fact.payload["carrier_fact_ids"] == []
+
+
+def test_return_frontier_ignores_legacy_return_opcode_when_not_terminal() -> None:
+    collector = ReturnFrontierFactCollector()
+
+    facts = collector.collect(
+        _target(
+            _block(
+                57,
+                _insn(index=0, opcode_name="m_ret", dstr="ret"),
+                succs=(58,),
+                preds=(50,),
+                type_name="BLT_1WAY",
+            )
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_CALLS"],
+        phase="pre_d810",
+    )
+
+    assert facts == ()
