@@ -63,10 +63,12 @@ class InstructionControl:
     indirect_target: Varnode | None = None
     call_kind: CallKind | None = None
     call_target: Varnode | None = None
+    call_args: tuple[Varnode, ...] = ()
     return_value: Varnode | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "switch_cases", tuple(self.switch_cases))
+        object.__setattr__(self, "call_args", tuple(self.call_args))
 
 
 class InstructionEffectKind(str, Enum):
@@ -108,6 +110,10 @@ class InstructionEffect:
     target: Varnode | None = None
     segment: Varnode | None = None
     value: Varnode | None = None
+    args: tuple[Varnode, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "args", tuple(self.args))
 
 
 @dataclass(frozen=True, slots=True)

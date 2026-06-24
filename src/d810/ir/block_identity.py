@@ -12,6 +12,10 @@ from collections.abc import Iterable
 
 from d810.core.maturity_labels import MaturityNumbering, mmat_label
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, OperandKind
+from d810.ir.storage_identity import (
+    StorageIdentityKind,
+    storage_identity_from_mop_snapshot,
+)
 
 _MASK64 = 0xFFFFFFFFFFFFFFFF
 _SIGNED64_MAX = 0x7FFFFFFFFFFFFFFF
@@ -136,9 +140,15 @@ def _mop_type_name(value: object | None) -> str | None:
 
 
 def _mop_row(mop: object | None) -> dict[str, object | None]:
+    identity = storage_identity_from_mop_snapshot(mop)
+    stack_offset = (
+        identity.offset
+        if identity is not None and identity.kind is StorageIdentityKind.STACK
+        else None
+    )
     return {
         "t": _mop_type_name(getattr(mop, "kind", None)),
-        "o": _safe_i64(getattr(mop, "stkoff", None)),
+        "o": _safe_i64(stack_offset),
         "s": _safe_i64(getattr(mop, "size", None)) if mop is not None else None,
         "v": hex64(getattr(mop, "value", None)),
     }

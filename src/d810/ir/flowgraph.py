@@ -107,9 +107,10 @@ class MopSnapshot:
     """Frozen, backend-agnostic snapshot of an operand (pure model layer).
 
     This is a lightweight value type that lives in ``d810.ir`` and carries
-    no IDA imports.  The richer ``d810.hexrays.ir.mop_snapshot.MopSnapshot``
-    (which owns an IDA mop_t clone) is a *superset* and satisfies the same
-    structural interface.
+    no IDA imports.  Rich Hex-Rays ``MopSnapshot`` records may still appear in
+    provenance-only fields such as ``InsnSnapshot.operand_slots`` during the
+    migration, but portable analyses should consume this model object from
+    ``InsnSnapshot.l/r/d`` or canonical instructions.
 
     Capture helpers that bridge live IDA objects to this type live in
     ``d810.hexrays.mutation.ir_translator``.
@@ -145,10 +146,15 @@ class MopSnapshot:
     sub_value_op_kind: "ValueOpKind | None" = None
     sub_l: "MopSnapshot | None" = None
     sub_r: "MopSnapshot | None" = None
+    # Function call argument lists (Hex-Rays mop_f) projected as nested
+    # portable operands. The ARG_LIST operand itself remains provenance; these
+    # children are the analysis surface.
+    args: tuple["MopSnapshot", ...] = ()
 
     def __post_init__(self) -> None:
         if self.raw_operand_type is None and self.t >= 0:
             object.__setattr__(self, "raw_operand_type", int(self.t))
+        object.__setattr__(self, "args", tuple(self.args))
 
 
 @dataclass(frozen=True, slots=True)

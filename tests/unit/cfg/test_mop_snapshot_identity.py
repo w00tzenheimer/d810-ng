@@ -13,7 +13,10 @@ from d810.ir.mop_identity import (
     cfg_operand_slots,
     mop_snapshot_key,
     mop_snapshot_offset,
+    mop_storage_identity,
+    operand_storage_identities,
 )
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 
 
 class TestMopSnapshotKey:
@@ -68,6 +71,14 @@ class TestMopSnapshotKey:
         r = MopSnapshot(t=2, size=4, reg=3, kind=OperandKind.REGISTER)
         s = MopSnapshot(t=4, size=4, stkoff=3, kind=OperandKind.STACK)
         assert mop_snapshot_key(r) != mop_snapshot_key(s)
+
+    def test_legacy_key_is_derived_from_storage_identity(self) -> None:
+        m = MopSnapshot(t=4, size=1, stkoff=0x40, kind=OperandKind.STACK)
+
+        identity = mop_storage_identity(m)
+
+        assert identity == StorageIdentity(StorageIdentityKind.STACK, 0x40)
+        assert mop_snapshot_key(m) == identity.key
 
 
 class TestMopSnapshotOffset:
@@ -245,3 +256,24 @@ class TestCfgOperandSlots:
         # is the architectural contract: portable in, portable out.
         assert mop_snapshot_key(operand) == "r3"
         assert mop_snapshot_offset(operand) == 3
+
+
+class TestOperandStorageIdentities:
+    def test_returns_named_identity_boundary_for_identity_slots(self) -> None:
+        left = MopSnapshot(t=2, size=4, reg=3, kind=OperandKind.REGISTER)
+        right = MopSnapshot(t=1, size=4, value=42, kind=OperandKind.NUMBER)
+        dest = MopSnapshot(t=4, size=1, stkoff=0x40, kind=OperandKind.STACK)
+        insn = InsnSnapshot(
+            opcode=1,
+            ea=0x140002000,
+            operands=(),
+            l=left,
+            r=right,
+            d=dest,
+            kind=InsnKind.MOV,
+        )
+
+        assert operand_storage_identities(insn) == (
+            ("l", StorageIdentity(StorageIdentityKind.REGISTER, 3)),
+            ("d", StorageIdentity(StorageIdentityKind.STACK, 0x40)),
+        )

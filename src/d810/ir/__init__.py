@@ -72,6 +72,14 @@ from .semantics import (
     OperationKind,
     PredicateKind,
 )
+from .storage_identity import (
+    StorageIdentity,
+    StorageIdentityKind,
+    storage_identity_from_mop_snapshot,
+    storage_identity_from_varnode,
+    storage_identity_key,
+    storage_identity_offset,
+)
 from .value_refs import (
     DefinitionRef,
     InstructionResultRef,
@@ -117,12 +125,18 @@ __all__ = [
     "Space",
     "StackSlot",
     "Store",
+    "StorageIdentity",
+    "StorageIdentityKind",
     "StorageLocation",
     "Sub",
     "TemporaryRef",
     "ValueOpKind",
     "ValueRef",
     "Varnode",
+    "storage_identity_from_mop_snapshot",
+    "storage_identity_from_varnode",
+    "storage_identity_key",
+    "storage_identity_offset",
     "varnode_key",
     "varnode_offset",
 ]

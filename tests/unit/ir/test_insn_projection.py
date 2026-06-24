@@ -12,10 +12,12 @@ from dataclasses import fields
 from d810.ir.expressions import Add, And, Const, Move, Sub, ValueOpKind
 from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
 from d810.ir.insn_projection import (
+    iter_operand_exprs,
     project_assignment,
     project_conditional_branch,
     project_instruction,
     project_instruction_sequence,
+    project_operand_expr,
 )
 from d810.ir.instructions import (
     Instruction,
@@ -49,6 +51,10 @@ def _reg(register_id: int, size: int = 4) -> MopSnapshot:
 
 def _glob(address: int, size: int = 8) -> MopSnapshot:
     return MopSnapshot(kind=OperandKind.GLOBAL, gaddr=address, size=size)
+
+
+def _args(*args: MopSnapshot) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.ARG_LIST, args=args)
 
 
 def _lvar(offset: int, size: int = 4) -> MopSnapshot:
@@ -426,6 +432,63 @@ def test_instruction_projection_call_and_return_operations():
     )
 
 
+def test_instruction_projection_call_argument_list_becomes_call_args():
+    call = project_instruction(
+        InsnSnapshot(
+            opcode=0x41,
+            ea=0x1000,
+            operands=(),
+            kind=InsnKind.CALL,
+            l=_glob(0x180010000),
+            d=_args(_stk(0x20, size=8), _glob(0x180020000), _num(0x10, size=8)),
+            call_kind=CallKind.DIRECT,
+        )
+    )
+
+    expected_args = (
+        Varnode(Space.STACK, 0x20, 8),
+        Varnode(Space.GLOBAL, 0x180020000, 8),
+        Varnode(Space.CONST, 0x10, 8),
+    )
+    assert call.inputs == (
+        Varnode(Space.GLOBAL, 0x180010000, 8),
+        *expected_args,
+    )
+    assert call.result is None
+    assert call.effects == (
+        InstructionEffect(
+            kind=InstructionEffectKind.CALL,
+            target=Varnode(Space.GLOBAL, 0x180010000, 8),
+            args=expected_args,
+        ),
+    )
+    assert call.control == InstructionControl(
+        call_kind=CallKind.DIRECT,
+        call_target=Varnode(Space.GLOBAL, 0x180010000, 8),
+        call_args=expected_args,
+    )
+
+
+def test_instruction_projection_call_argument_list_from_r_is_not_call_target():
+    call = project_instruction(
+        InsnSnapshot(
+            opcode=0x41,
+            ea=0x1000,
+            operands=(),
+            kind=InsnKind.CALL,
+            l=_glob(0x180010000),
+            r=_args(_reg(2, size=8), _num(4, size=8)),
+            call_kind=CallKind.DIRECT,
+        )
+    )
+
+    assert call.control == InstructionControl(
+        call_kind=CallKind.DIRECT,
+        call_target=Varnode(Space.GLOBAL, 0x180010000, 8),
+        call_args=(Varnode(Space.REGISTER, 2, 8), Varnode(Space.CONST, 4, 8)),
+    )
+
+
 def test_instruction_projection_store_has_typed_effect_not_result():
     store = project_instruction(
         InsnSnapshot(
@@ -461,6 +524,30 @@ def test_instruction_projection_store_has_typed_effect_not_result():
         value=Varnode(Space.REGISTER, 1, 8),
         width=8,
     )
+
+
+def test_instruction_projection_records_address_constants_as_attrs():
+    address = MopSnapshot(
+        kind=OperandKind.ADDRESS,
+        size=8,
+        stack_refs=(0x190,),
+        sub_l=_subinsn(InsnKind.ADD, _stk(0x190, size=8), _num(6, size=8)),
+    )
+
+    store = project_instruction(
+        InsnSnapshot(
+            opcode=0x21,
+            ea=0x1000,
+            operands=(),
+            kind=InsnKind.STORE,
+            l=_reg(1, size=8),
+            r=_reg(2, size=4),
+            d=address,
+        )
+    )
+
+    assert store.attrs["address_stack_refs"] == (0x190,)
+    assert store.attrs["address_const_values"] == (6,)
 
 
 def test_instruction_projection_load_has_indirect_memory_contract():
@@ -698,6 +785,22 @@ def test_unmapped_nested_op_projects_none_not_wrong():
     nested = _subinsn(InsnKind.UNKNOWN, _stk(0x10), _num(1))
     cb = project_conditional_branch(_jcc(PredicateKind.EQ, nested, _num(0)))
     assert cb is not None and cb.lhs is None
+
+
+def test_operand_expr_fragments_include_supported_children_below_vendor_wrapper():
+    sub = _subinsn(InsnKind.SUB, _stk(0x10), _num(1))
+    nested = _subinsn(InsnKind.UNKNOWN, sub, _num(0xFF))
+
+    assert project_operand_expr(nested) is None
+    assert iter_operand_exprs(nested) == (
+        Sub(
+            left=Move(source=DefinitionRef(location=StackSlot(offset=0x10, size=4))),
+            right=Const(value=1),
+        ),
+        Move(source=DefinitionRef(location=StackSlot(offset=0x10, size=4))),
+        Const(value=1),
+        Const(value=0xFF),
+    )
 
 
 def test_instruction_sequence_keeps_unsupported_nested_op_explicit():
