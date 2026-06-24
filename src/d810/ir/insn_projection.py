@@ -949,6 +949,29 @@ def _diag_meta_payload(row: object) -> Mapping[str, object]:
     return {}
 
 
+def diag_row_has_operand_tree(row: object) -> bool:
+    """Return whether ``row`` carries a parseable diag ``meta`` operand tree.
+
+    A production DB-replay / ``observability_models.InstructionSnapshot`` row may
+    carry a recursive ``_instruction_operands_meta``-shaped ``meta`` JSON whose
+    ``l`` / ``r`` / ``d`` nodes project to portable operands.  Such *meta-rich*
+    rows can be lifted faithfully via :func:`project_diag_instruction`.
+
+    A *meta-less* row -- one whose ``meta`` is absent / empty / carries only
+    attrs (e.g. ``{"byte_index": 1}``) with no operand tree -- returns ``False``
+    so callers keep reading the flat ``src_l_*`` / ``dest_*`` fields (the
+    canonical projection only reads the operand tree, never the flat fields, so
+    routing a meta-less row through it would drop those facts).
+    """
+    meta = _diag_meta_payload(row)
+    if not meta:
+        return False
+    return any(
+        parse_diag_meta_operand(meta.get(slot)) is not None
+        for slot in ("l", "r", "d")
+    )
+
+
 def project_diag_instruction(row: object) -> Instruction:
     """Project a production diag instruction row onto the canonical
     ``Instruction``.
