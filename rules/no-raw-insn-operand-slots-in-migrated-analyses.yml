@@ -1,0 +1,67 @@
+# Forbids raw ``InsnSnapshot.l`` / ``.r`` / ``.d`` operand-slot reads in
+# analysis modules that have been migrated to canonical Instruction/Varnode
+# surfaces.
+#
+# This is intentionally narrower than the global raw-mop rule.  The global
+# guard still allows ``InsnSnapshot`` slots during the broader migration
+# because some legacy compatibility shims are not ported yet.  Once a module is
+# listed here, its deobfuscation decisions must come from canonical
+# ``Instruction.inputs`` / ``Instruction.result`` / ``Varnode`` identity or
+# dedicated fact payloads, with backend-shaped operand slots kept only as lift
+# provenance outside the analysis surface.
+#
+# Add modules only after they are clean.  Do not add ignores for violations in
+# listed files; move the behavior to the canonical IR or to a backend adapter.
+
+id: no-raw-insn-operand-slots-in-migrated-analyses
+language: python
+severity: error
+
+files:
+  - "src/d810/analyses/control_flow/dispatcher_analysis.py"
+  - "src/d810/analyses/control_flow/dispatcher_discovery_extractors.py"
+  - "src/d810/analyses/control_flow/instruction_semantics.py"
+  - "src/d810/analyses/control_flow/terminal_family.py"
+  - "src/d810/analyses/value_flow/call_anchor.py"
+  - "src/d810/analyses/value_flow/loop_carrier.py"
+  - "src/d810/analyses/value_flow/model.py"
+  - "src/d810/analyses/value_flow/return_carrier.py"
+  - "src/d810/analyses/value_flow/return_frontier.py"
+  - "src/d810/analyses/value_flow/state_write_anchor.py"
+  - "src/d810/analyses/value_flow/zero_blob.py"
+  - "src/d810/transforms/return_carrier_fact_guard.py"
+ignores:
+  - "tests/**"
+
+message: |
+  Migrated portable analysis code must not read backend-shaped
+  InsnSnapshot operand slots (.l / .r / .d). Use canonical Instruction
+  inputs/result, Varnode storage identity, or typed fact payloads instead.
+
+rule:
+  any:
+    - pattern: getattr($X, "l", $$$)
+    - pattern: getattr($X, "l")
+    - pattern: getattr($X, "r", $$$)
+    - pattern: getattr($X, "r")
+    - pattern: getattr($X, "d", $$$)
+    - pattern: getattr($X, "d")
+    - all:
+        - pattern: getattr($X, $SLOT, $$$)
+        - regex: "getattr\\([^\\n]+,\\s*(operand_name|operand_slot|slot_name)\\b"
+    - all:
+        - pattern: getattr($X, $SLOT)
+        - regex: "getattr\\([^\\n]+,\\s*(operand_name|operand_slot|slot_name)\\b"
+    - pattern: $X.l
+    - pattern: $X.r
+    - pattern: $X.d
+
+note: |
+  Lawful fixes:
+    (a) For new analysis logic, consume d810.ir.instructions.Instruction
+        fields: operation, inputs, result, effects, control, memory, attrs.
+    (b) If the canonical instruction is missing structure, extend the lift
+        projection and add projection tests before consuming it.
+    (c) Backend-shaped operands may remain in d810.backends.* lifters,
+        diagnostics, and explicitly named compatibility shims that are not
+        enrolled in this migrated-module guard.
