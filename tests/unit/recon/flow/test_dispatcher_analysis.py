@@ -161,7 +161,7 @@ def test_state_comparisons_pick_most_common_portable_operand() -> None:
 
     assert analysis.router_kind == RouterKind.CONDITION_CHAIN
     assert analysis.state_variable is not None
-    assert analysis.state_variable.mop.kind is OperandKind.STACK
+    assert analysis.state_variable.storage_identity.kind is StorageIdentityKind.STACK
     assert analysis.state_variable.storage_identity == (
         StorageIdentity(StorageIdentityKind.STACK, 0x20)
     )

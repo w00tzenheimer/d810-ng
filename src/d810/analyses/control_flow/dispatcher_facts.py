@@ -25,11 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import IntFlag
 
-from d810.ir.flowgraph import MopSnapshot, OperandKind
-from d810.ir.storage_identity import (
-    StorageIdentity,
-    storage_identity_from_mop_snapshot,
-)
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 
 __all__ = ["BlockAnalysis", "DispatcherStrategy", "StateVariableCandidate"]
 
@@ -82,27 +78,28 @@ class StateVariableCandidate:
     """A candidate for the state variable (portable -- E3-schema).
 
     The decision identity is held as a portable
-    ``d810.ir.storage_identity.StorageIdentity``.  ``mop`` remains the lifted
-    operand provenance needed by legacy consumers and lowerers; it is NOT a live
-    ``ida_hexrays.mop_t``.
+    ``d810.ir.storage_identity.StorageIdentity`` -- a size-agnostic
+    ``(kind, offset)`` identity, NOT a backend operand snapshot.  Backends adapt
+    a lifted operand into this identity at the lift boundary via
+    ``storage_identity_from_mop_snapshot`` before constructing a candidate.
+
     The live adapter at
     ``d810.backends.hexrays.evidence.dispatcher.dispatcher_history`` is
-    the only construction site -- ``analyze_dispatcher_live`` lifts the mba via
-    ``d810.hexrays.mutation.ir_translator.lift`` and then the pure
-    ``analyze_dispatcher(flow_graph, ...)`` populates this candidate
-    from the resulting snapshot.
+    the only live construction site -- ``analyze_dispatcher_live`` lifts the mba
+    via ``d810.hexrays.mutation.ir_translator.lift`` and then the pure
+    ``analyze_dispatcher(flow_graph, ...)`` populates this candidate from the
+    resulting snapshot.
 
-    Field names ``mop_type`` / ``mop_offset`` / ``mop_size`` are kept
-    for backward compatibility with existing consumers; their values
-    mirror what the live-IDA helpers used to compute and can also be
-    derived from ``storage_identity`` / ``mop.kind`` / ``mop.size``.
+    Field names ``mop_type`` / ``mop_offset`` / ``mop_size`` are kept for
+    backward compatibility with existing consumers; their values are diagnostic
+    mirrors that can also be derived from ``storage_identity``
+    (``offset``) / the candidate's lift width.
     """
 
-    mop: MopSnapshot
-    storage_identity: StorageIdentity | None = None
-    mop_type: int = 0  # Mirror of mop.t (raw backend operand type; diagnostic)
+    storage_identity: StorageIdentity
+    mop_type: int = 0  # Diagnostic raw backend operand type (provenance mirror)
     mop_offset: int = 0  # For STACK: stack offset; for REGISTER: register number
-    mop_size: int = 4  # Operand size in bytes (mirrors mop.size)
+    mop_size: int = 4  # Operand size in bytes (lift width mirror)
     init_value: int | None = None
     comparison_count: int = 0
     assignment_count: int = 0
@@ -110,10 +107,6 @@ class StateVariableCandidate:
     comparison_blocks: list[int] = field(default_factory=list)
     assignment_blocks: list[int] = field(default_factory=list)
     score: float = 0.0
-
-    def __post_init__(self) -> None:
-        if self.storage_identity is None:
-            self.storage_identity = storage_identity_from_mop_snapshot(self.mop)
 
     def get_native_stack_offset(self, frame_size: int) -> int | None:
         """Convert microcode stack offset to native stack offset.
@@ -131,14 +124,11 @@ class StateVariableCandidate:
 
         Returns:
             Native stack offset (negative, relative to frame base),
-            or ``None`` if ``mop`` is not a stack operand or has no
-            stack-offset bit captured.
+            or ``None`` if ``storage_identity`` is not a stack identity.
         """
-        if self.mop.kind is not OperandKind.STACK:
-            return None
-        if self.mop.stkoff is None:
+        if self.storage_identity.kind is not StorageIdentityKind.STACK:
             return None
         # display_offset counts down from frame top; native offset
         # is the negation relative to RBP.
-        display_offset = frame_size - int(self.mop.stkoff)
+        display_offset = frame_size - int(self.storage_identity.offset)
         return -display_offset
