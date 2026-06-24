@@ -12,6 +12,7 @@ from d810.core.logging import getLogger
 from d810.core.provider_phase import ProviderPhase
 from d810.core.typing import Any, Protocol, runtime_checkable
 
+from d810.analyses.control_flow.collection_context import ReconCollectionContext
 from d810.analyses.control_flow.models import ReconResult
 from d810.passes.store import ReconStore, get_recon_writer
 
@@ -36,12 +37,15 @@ class ReconCollector(Protocol):
     maturities: frozenset[int] | None
     level: str
 
-    def collect(self, target: Any, func_ea: int, maturity: int) -> ReconResult:
-        """Collect observations from ``target`` at ``maturity``.
+    def collect(
+        self,
+        target: Any,
+        context: ReconCollectionContext,
+    ) -> ReconResult:
+        """Collect observations from ``target`` at ``context``.
 
         :param target: ``mba_t`` for microcode collectors, ``cfunc_t`` for ctree.
-        :param func_ea: Function effective address.
-        :param maturity: Current maturity level.
+        :param context: Current provider-neutral collection context.
         :return: Immutable ``ReconResult`` with metrics and candidate flags.
         """
         ...
@@ -85,12 +89,32 @@ class ReconPhase:
         logger.debug("Registered recon collector: %s", collector.name)
 
     @staticmethod
-    def _collector_runs_at_maturity(
+    def _collector_runs_at_provider_level(
         collector: ReconCollector,
-        maturity: int,
+        provider_level: int,
     ) -> bool:
-        """Return True when *collector* should fire at *maturity*."""
-        return collector.maturities is ALL_MATURITIES or maturity in collector.maturities
+        """Return True when *collector* should fire at *provider_level*."""
+        return (
+            collector.maturities is ALL_MATURITIES
+            or provider_level in collector.maturities
+        )
+
+    @staticmethod
+    def _collect(
+        collector: ReconCollector,
+        target: Any,
+        context: ReconCollectionContext,
+    ) -> ReconResult:
+        try:
+            return collector.collect(target, context)
+        except TypeError as exc:
+            if "positional" not in str(exc) and "context" not in str(exc):
+                raise
+            return collector.collect(  # type: ignore[misc,call-arg]
+                target,
+                context.func_ea,
+                context.provider_level,
+            )
 
     def reset(self, *, func_ea: int) -> None:
         """Clear the maturity guard for a function (call on new decompilation)."""
@@ -113,20 +137,24 @@ class ReconPhase:
         :param provider_phase: Current provider phase supplied by the adapter.
         :return: List of ``ReconResult`` produced this call (may be empty).
         """
-        maturity = int(provider_phase.provider_level)
+        provider_level = int(provider_phase.provider_level)
         maturity_text = str(provider_phase.friendly_provider_level)
         fired_maturities = self._fired.setdefault(func_ea, set())
-        if maturity in fired_maturities:
+        if provider_level in fired_maturities:
             return []
+        context = ReconCollectionContext(
+            func_ea=int(func_ea),
+            provider_phase=provider_phase,
+        )
 
         results: list[ReconResult] = []
         for collector in self._collectors:
             if collector.level != "microcode":
                 continue
-            if not self._collector_runs_at_maturity(collector, maturity):
+            if not self._collector_runs_at_provider_level(collector, provider_level):
                 continue
             try:
-                result = collector.collect(target, func_ea, maturity)
+                result = self._collect(collector, target, context)
                 writer = get_recon_writer(self._store.db_path)
                 writer.submit(
                     lambda store, r=result: store.save_recon_result(r)
@@ -139,7 +167,7 @@ class ReconPhase:
                     collector.name, func_ea, maturity_text,
                 )
 
-        fired_maturities.add(maturity)
+        fired_maturities.add(provider_level)
         return results
 
     def run_ctree_collectors(
@@ -150,21 +178,25 @@ class ReconPhase:
         provider_phase: ProviderPhase,
     ) -> list[ReconResult]:
         """Dispatch all ctree collectors registered for ``provider_phase``."""
-        maturity = int(provider_phase.provider_level)
+        provider_level = int(provider_phase.provider_level)
         maturity_text = str(provider_phase.friendly_provider_level)
         fired_maturities = self._fired.setdefault(func_ea, set())
-        ctree_key = (maturity, "ctree")
+        ctree_key = (provider_level, "ctree")
         if ctree_key in fired_maturities:
             return []
+        context = ReconCollectionContext(
+            func_ea=int(func_ea),
+            provider_phase=provider_phase,
+        )
 
         results: list[ReconResult] = []
         for collector in self._collectors:
             if collector.level != "ctree":
                 continue
-            if not self._collector_runs_at_maturity(collector, maturity):
+            if not self._collector_runs_at_provider_level(collector, provider_level):
                 continue
             try:
-                result = collector.collect(target, func_ea, maturity)
+                result = self._collect(collector, target, context)
                 get_recon_writer(self._store.db_path).submit(
                     lambda store, r=result: store.save_recon_result(r)
                 )

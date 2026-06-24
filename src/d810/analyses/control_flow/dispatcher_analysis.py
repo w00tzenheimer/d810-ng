@@ -47,7 +47,7 @@ class DispatcherAnalysis:
     """Complete dispatcher analysis for a portable ``FlowGraph``."""
 
     func_ea: int
-    maturity: int
+    provider_level: int
 
     blocks: dict[int, BlockAnalysis] = field(default_factory=dict)
     dispatchers: list[int] = field(default_factory=list)
@@ -58,6 +58,10 @@ class DispatcherAnalysis:
     table_provenance: TableProvenance | None = None
     initial_state: int | None = None
     nested_loop_depth: int = 0
+
+    @property
+    def maturity(self) -> int:
+        return int(self.provider_level)
 
     @property
     def is_conditional_chain(self) -> bool:
@@ -88,7 +92,7 @@ def analyze_dispatcher(
     """
     analysis = DispatcherAnalysis(
         func_ea=int(flow_graph.func_ea),
-        maturity=_metadata_int(flow_graph, "maturity", default=0),
+        provider_level=_metadata_int(flow_graph, "maturity", default=0),
     )
 
     if _has_table_jump(flow_graph):

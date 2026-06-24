@@ -33,6 +33,10 @@ from types import MappingProxyType
 
 from d810.core.typing import TYPE_CHECKING
 
+from d810.analyses.control_flow.collection_context import (
+    ReconCollectionContext,
+    coerce_recon_collection_context,
+)
 from d810.analyses.control_flow.models import CandidateFlag, ReconResult
 
 if TYPE_CHECKING:
@@ -266,7 +270,13 @@ class FixPredSignalsCollector:
     maturities: frozenset[int] = frozenset({_MMAT_CALLS, _MMAT_GLBOPT1})
     level: str = "microcode"
 
-    def collect(self, target: object, func_ea: int, maturity: int) -> ReconResult:
+    def collect(
+        self,
+        target: object,
+        context: ReconCollectionContext | None = None,
+        func_ea: int | None = None,
+        **legacy_fields: object,
+    ) -> ReconResult:
         """Collect fixpred safety signals from a portable ``FlowGraph``.
 
         :param target: Portable ``FlowGraph`` snapshot (after E4a, the
@@ -278,6 +288,11 @@ class FixPredSignalsCollector:
         :param maturity: Current maturity level.
         :return: Frozen ``ReconResult`` with fixpred metrics.
         """
+        context = coerce_recon_collection_context(
+            context,
+            func_ea=func_ea,
+            legacy_fields=legacy_fields,
+        )
         if hasattr(target, "blocks") and hasattr(target, "entry_serial"):
             metrics, candidates = _portable_signals(target)
         else:
@@ -285,8 +300,8 @@ class FixPredSignalsCollector:
 
         return ReconResult(
             collector_name=self.name,
-            func_ea=int(func_ea),
-            maturity=int(maturity),
+            func_ea=context.func_ea,
+            provider_level=context.provider_level,
             timestamp=time.time(),
             metrics=MappingProxyType(metrics),
             candidates=candidates,

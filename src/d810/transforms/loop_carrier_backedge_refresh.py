@@ -184,10 +184,12 @@ class LoopCarrierBackedgeRefreshPass(FlowGraphTransform):
     def _view_for(self, cfg: FlowGraph) -> object | None:
         if self._fact_view_provider is None:
             return None
-        maturity = cfg.metadata.get(
-            "producer_stage_id", cfg.metadata.get("maturity", "MMAT_GLBOPT2")
-        )
-        return self._fact_view_provider(int(cfg.func_ea), maturity)
+        provider_level = cfg.metadata.get("producer_stage_id")
+        if provider_level is None:
+            provider_level = cfg.metadata.get("maturity")
+        if provider_level is None:
+            return None
+        return self._fact_view_provider(int(cfg.func_ea), provider_level)
 
     def transform(self, cfg: FlowGraph) -> list[GraphModification]:
         if not self.is_applicable(cfg):

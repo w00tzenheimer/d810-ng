@@ -39,6 +39,31 @@ _RETURN_FRONTIER = ReturnFrontierCollector.name
 _TERMINAL_RETURN_COLLECTOR = "terminal_return_audit"
 
 
+def _coerce_provider_level(
+    provider_level: int | None,
+    legacy_fields: dict[str, object],
+) -> int | None:
+    legacy_level = legacy_fields.pop("maturity", None)
+    if legacy_fields:
+        names = ", ".join(sorted(legacy_fields))
+        raise TypeError(f"Unexpected recon artifact field(s): {names}")
+    if provider_level is None and legacy_level is not None:
+        return int(legacy_level)
+    if provider_level is None:
+        return None
+    return int(provider_level)
+
+
+def _require_provider_level(
+    provider_level: int | None,
+    legacy_fields: dict[str, object],
+) -> int:
+    resolved = _coerce_provider_level(provider_level, legacy_fields)
+    if resolved is None:
+        raise TypeError("provider_level is required")
+    return int(resolved)
+
+
 class ReturnSiteProvider(Protocol):
     """Adapter for deriving return sites from a transition report."""
 
@@ -70,9 +95,11 @@ def load_transition_report_from_store(
     *,
     func_ea: int,
     log_dir: Path | str | None,
-    maturity: int | None = None,
+    provider_level: int | None = None,
+    **legacy_fields: object,
 ) -> DispatcherTransitionReport | None:
     """Load the latest stored handler transition report for a function."""
+    provider_level = _coerce_provider_level(provider_level, legacy_fields)
     db_path = recon_db_path(log_dir)
     if not db_path.exists():
         return None
@@ -82,9 +109,9 @@ def load_transition_report_from_store(
             result = store.load_latest_recon_result(
                 func_ea=func_ea,
                 collector_name=_HANDLER_TRANSITIONS,
-                maturity=maturity,
+                provider_level=provider_level,
             )
-            if result is None and maturity is not None:
+            if result is None and provider_level is not None:
                 result = store.load_latest_recon_result(
                     func_ea=func_ea,
                     collector_name=_HANDLER_TRANSITIONS,
@@ -108,16 +135,18 @@ def load_transition_report_from_store(
 def save_transition_report_to_store(
     *,
     func_ea: int,
-    maturity: int,
     report: DispatcherTransitionReport,
     log_dir: Path | str | None,
+    provider_level: int | None = None,
+    **legacy_fields: object,
 ) -> None:
     """Persist a canonical transition report as a recon artifact."""
+    provider_level = _require_provider_level(provider_level, legacy_fields)
     db_path = recon_db_path(log_dir)
     result = HandlerTransitionsCollector.build_result_from_report(
         report,
         func_ea=func_ea,
-        maturity=maturity,
+        provider_level=provider_level,
     )
     writer = get_recon_writer(db_path)
     writer.submit(lambda store: store.save_recon_result(result))
@@ -127,14 +156,16 @@ def save_transition_report_to_store(
 def load_return_sites_from_store(
     *,
     func_ea: int,
-    maturity: int | None,
     log_dir: Path | str | None,
     provider: ReturnSiteProvider,
+    provider_level: int | None = None,
+    **legacy_fields: object,
 ) -> tuple[ReturnSite, ...]:
     """Load transition-report-derived return sites from the recon store."""
+    provider_level = _coerce_provider_level(provider_level, legacy_fields)
     report = load_transition_report_from_store(
         func_ea=func_ea,
-        maturity=maturity,
+        provider_level=provider_level,
         log_dir=log_dir,
     )
     if report is None:
@@ -146,9 +177,11 @@ def load_return_frontier_audit_from_store(
     *,
     func_ea: int,
     log_dir: Path | str | None,
-    maturity: int | None = None,
+    provider_level: int | None = None,
+    **legacy_fields: object,
 ) -> ReturnFrontierAudit | None:
     """Load the latest stored return frontier audit for a function."""
+    provider_level = _coerce_provider_level(provider_level, legacy_fields)
     db_path = recon_db_path(log_dir)
     if not db_path.exists():
         return None
@@ -158,9 +191,9 @@ def load_return_frontier_audit_from_store(
             result = store.load_latest_recon_result(
                 func_ea=func_ea,
                 collector_name=_RETURN_FRONTIER,
-                maturity=maturity,
+                provider_level=provider_level,
             )
-            if result is None and maturity is not None:
+            if result is None and provider_level is not None:
                 result = store.load_latest_recon_result(
                     func_ea=func_ea,
                     collector_name=_RETURN_FRONTIER,
@@ -184,16 +217,18 @@ def load_return_frontier_audit_from_store(
 def save_return_frontier_audit_to_store(
     *,
     func_ea: int,
-    maturity: int,
     audit: ReturnFrontierAudit,
     log_dir: Path | str | None,
+    provider_level: int | None = None,
+    **legacy_fields: object,
 ) -> ReconResult:
     """Persist the full return frontier audit as a recon artifact."""
+    provider_level = _require_provider_level(provider_level, legacy_fields)
     db_path = recon_db_path(log_dir)
     result = ReturnFrontierCollector.build_result_from_audit(
         audit,
         func_ea=func_ea,
-        maturity=maturity,
+        provider_level=provider_level,
     )
     get_recon_writer(db_path).submit(lambda store: store.save_recon_result(result))
     return result
@@ -202,15 +237,17 @@ def save_return_frontier_audit_to_store(
 def record_return_frontier_stage(
     *,
     func_ea: int,
-    maturity: int,
     log_dir: Path | str | None,
     return_sites: tuple[ReturnSite, ...],
     successors: dict[int, list[int]],
     entry: int,
     exits: frozenset[int],
     stage_name: str,
+    provider_level: int | None = None,
+    **legacy_fields: object,
 ) -> ReconResult:
     """Load-or-create the audit, record one stage, and persist it."""
+    provider_level = _require_provider_level(provider_level, legacy_fields)
     db_path = recon_db_path(log_dir)
 
     def _do(store: ReconStore) -> ReconResult:
@@ -219,7 +256,7 @@ def record_return_frontier_stage(
             raw = store.load_latest_recon_result(
                 func_ea=func_ea,
                 collector_name=_RETURN_FRONTIER,
-                maturity=maturity,
+                provider_level=provider_level,
             )
             if raw is None:
                 raw = store.load_latest_recon_result(
@@ -236,7 +273,7 @@ def record_return_frontier_stage(
                 return ReconResult(
                     collector_name=_RETURN_FRONTIER,
                     func_ea=func_ea,
-                    maturity=maturity,
+                    provider_level=provider_level,
                     timestamp=time.time(),
                     metrics=MappingProxyType({}),
                     candidates=(),
@@ -254,7 +291,7 @@ def record_return_frontier_stage(
         result = ReturnFrontierCollector.build_result_from_audit(
             audit,
             func_ea=func_ea,
-            maturity=maturity,
+            provider_level=provider_level,
             stage_results=stage_results,
         )
         store.save_recon_result(result)
@@ -266,14 +303,16 @@ def record_return_frontier_stage(
 def write_return_frontier_artifact_from_store(
     *,
     func_ea: int,
-    maturity: int | None,
     log_dir: Path | str | None,
     artifact_dir: Path | str,
+    provider_level: int | None = None,
+    **legacy_fields: object,
 ) -> Path | None:
     """Write the latest stored return frontier audit report to disk."""
+    provider_level = _coerce_provider_level(provider_level, legacy_fields)
     audit = load_return_frontier_audit_from_store(
         func_ea=func_ea,
-        maturity=maturity,
+        provider_level=provider_level,
         log_dir=log_dir,
     )
     if audit is None:
@@ -333,9 +372,11 @@ def load_terminal_return_audit_from_store(
     *,
     func_ea: int,
     log_dir: Path | str | None,
-    maturity: int | None = None,
+    provider_level: int | None = None,
+    **legacy_fields: object,
 ) -> TerminalReturnAuditReport | None:
     """Load the latest stored terminal return audit for a function."""
+    provider_level = _coerce_provider_level(provider_level, legacy_fields)
     db_path = recon_db_path(log_dir)
     if not db_path.exists():
         return None
@@ -345,9 +386,9 @@ def load_terminal_return_audit_from_store(
             result = store.load_latest_recon_result(
                 func_ea=func_ea,
                 collector_name=_TERMINAL_RETURN_COLLECTOR,
-                maturity=maturity,
+                provider_level=provider_level,
             )
-            if result is None and maturity is not None:
+            if result is None and provider_level is not None:
                 result = store.load_latest_recon_result(
                     func_ea=func_ea,
                     collector_name=_TERMINAL_RETURN_COLLECTOR,
@@ -371,17 +412,19 @@ def load_terminal_return_audit_from_store(
 def save_terminal_return_audit_to_store(
     *,
     func_ea: int,
-    maturity: int,
     audit: TerminalReturnAuditReport,
     log_dir: Path | str | None,
+    provider_level: int | None = None,
+    **legacy_fields: object,
 ) -> None:
     """Persist a terminal return audit as a recon artifact."""
+    provider_level = _require_provider_level(provider_level, legacy_fields)
     db_path = recon_db_path(log_dir)
     report_dict = _terminal_return_audit_to_dict(audit)
     result = ReconResult(
         collector_name=_TERMINAL_RETURN_COLLECTOR,
         func_ea=func_ea,
-        maturity=maturity,
+        provider_level=provider_level,
         timestamp=time.time(),
         metrics=MappingProxyType({
             "terminal_handlers": audit.terminal_handlers,

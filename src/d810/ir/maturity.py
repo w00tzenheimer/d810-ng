@@ -12,6 +12,9 @@ mapping lives in the vendor adapter).
 """
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
 
@@ -19,6 +22,7 @@ __all__ = [
     "EARLY_FACT_COLLECTION_IR_MATURITIES",
     "IRMaturity",
     "IR_MATURITY_ORDER",
+    "MaturityEnvelope",
     "SnapshotForm",
     "IR_MATURITY_TO_SNAPSHOT_FORM",
     "LOCAL_FACT_COLLECTION_IR_MATURITIES",
@@ -73,6 +77,95 @@ class SnapshotForm(str, Enum):
     OPTIMIZED_IR = "optimized_ir"
     LVAR_RECOVERED = "lvar_recovered"
     FINAL_PRE_RENDER = "final_pre_render"
+
+
+@dataclass(frozen=True)
+class MaturityEnvelope:
+    """Portable maturity semantics plus provider provenance.
+
+    ``IRMaturity`` and ``SnapshotForm`` are the portable scheduling/form
+    vocabulary.  ``provider_*`` fields are boundary metadata used for replay,
+    persisted diagnostics, and native adapter round-trips.
+    """
+
+    ir: IRMaturity | None
+    snapshot_form: SnapshotForm = SnapshotForm.UNKNOWN
+    provider: str = ""
+    provider_id: int | None = None
+    provider_name: str | None = None
+
+    def to_dict(self) -> dict[str, object | None]:
+        return {
+            "ir": self.ir.name if self.ir is not None else None,
+            "snapshot_form": self.snapshot_form.name,
+            "provider": self.provider,
+            "provider_id": self.provider_id,
+            "provider_name": self.provider_name,
+        }
+
+    def to_record(self) -> dict[str, object | None]:
+        return self.to_dict()
+
+    def dump(self) -> dict[str, object | None]:
+        return self.to_dict()
+
+    def dumps(self) -> str:
+        return json.dumps(
+            self.to_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @classmethod
+    def _load_ir(cls, value: object) -> IRMaturity | None:
+        if value is None or isinstance(value, IRMaturity):
+            return value
+        text = str(value)
+        try:
+            return IRMaturity[text]
+        except KeyError:
+            return IRMaturity(text)
+
+    @classmethod
+    def _load_snapshot_form(cls, value: object) -> SnapshotForm:
+        if value is None:
+            return SnapshotForm.UNKNOWN
+        if isinstance(value, SnapshotForm):
+            return value
+        text = str(value)
+        try:
+            return SnapshotForm[text]
+        except KeyError:
+            return SnapshotForm(text)
+
+    @classmethod
+    def load(cls, record: Mapping[str, object] | "MaturityEnvelope") -> "MaturityEnvelope":
+        if isinstance(record, cls):
+            return record
+        provider_id_value = record.get("provider_id")
+        provider_id = (
+            int(provider_id_value)
+            if provider_id_value is not None else None
+        )
+        provider_value = record.get("provider")
+        provider_name_value = record.get("provider_name")
+        return cls(
+            ir=cls._load_ir(record.get("ir")),
+            snapshot_form=cls._load_snapshot_form(record.get("snapshot_form")),
+            provider=str(provider_value) if provider_value is not None else "",
+            provider_id=provider_id,
+            provider_name=(
+                str(provider_name_value)
+                if provider_name_value is not None else None
+            ),
+        )
+
+    @classmethod
+    def loads(cls, payload: str | bytes) -> "MaturityEnvelope":
+        record = json.loads(payload)
+        if not isinstance(record, Mapping):
+            raise ValueError("MaturityEnvelope JSON must be an object")
+        return cls.load(record)
 
 
 IR_MATURITY_ORDER = (

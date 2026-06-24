@@ -24,6 +24,12 @@ import re
 from d810.core.logging import getLogger
 from d810.core.project import register_recon_fact_collector_registration_handler
 from d810.core.typing import Any, Iterable
+from d810.ir.maturity import IRMaturity
+from d810.analyses.fact_collection_context import (
+    FactCollectionContext,
+    coerce_fact_collection_context,
+    fact_provider_label,
+)
 from d810.capabilities.providers import get_condition_chain_walkers, get_microcode_evidence
 from d810.capabilities.source_lifter import select_lifter
 from d810.analyses.control_flow.branch_ownership import (
@@ -36,10 +42,8 @@ from d810.analyses.control_flow.branch_ownership_oracle import (
     Z3BranchOwnershipOracle,
 )
 from d810.analyses.value_flow.induction_carrier import (
-    _MATURITY_VALUES,
     _InstructionView,
     _iter_instruction_views,
-    _maturity_name,
 )
 from d810.analyses.value_flow.state_write_anchor import (
     _block_start_ea_lookup,
@@ -72,12 +76,12 @@ OLLVM_CARRIER_PROFILE_NAME = "ollvm_carrier"
 _OLLVM_CARRIER_REGISTRATION_HANDLER = "ollvm_carrier_fact_collectors"
 
 _TARGET_MATURITIES = frozenset({
-    _MATURITY_VALUES["MMAT_LOCOPT"],
-    _MATURITY_VALUES["MMAT_CALLS"],
-    _MATURITY_VALUES["MMAT_GLBOPT1"],
-    _MATURITY_VALUES["MMAT_GLBOPT2"],
-    _MATURITY_VALUES["MMAT_GLBOPT3"],
-    _MATURITY_VALUES["MMAT_LVARS"],
+    IRMaturity.LOCAL_OPTIMIZED,
+    IRMaturity.CALL_MODELED,
+    IRMaturity.GLOBAL_ANALYZED,
+    IRMaturity.GLOBAL_OPTIMIZED,
+    IRMaturity.STRUCTURED,
+    IRMaturity.VARIABLE_RECOVERED,
 })
 
 _VAR_TOKEN_RE = re.compile(r"(?:%var_[0-9A-Fa-f]+|v\d+)")
@@ -483,11 +487,19 @@ class OllvmCarrierRawEvidenceCollector:
         self,
         target: Any,
         *,
-        func_ea: int,
-        maturity: int,
-        phase: str,
+        context: FactCollectionContext | None = None,
+        func_ea: int | None = None,
+        phase: str = "pre_d810",
+        **legacy_fields: Any,
     ) -> tuple[FactObservation, ...]:
-        maturity_text = _maturity_name(maturity)
+        context = coerce_fact_collection_context(
+            context,
+            func_ea=func_ea,
+            phase=phase,
+            legacy_fields=legacy_fields,
+        )
+        phase = context.phase
+        maturity_text = fact_provider_label(context)
         instructions = tuple(_iter_instruction_views(target))
         if not instructions or not _looks_like_ollvm_function(instructions):
             return ()
@@ -584,15 +596,20 @@ class OllvmCarrierProfileFactCollector:
         self,
         target: Any,
         *,
-        func_ea: int,
-        maturity: int,
-        phase: str,
+        context: FactCollectionContext | None = None,
+        func_ea: int | None = None,
+        phase: str = "pre_d810",
+        **legacy_fields: Any,
     ) -> tuple[FactObservation, ...]:
+        context = coerce_fact_collection_context(
+            context,
+            func_ea=func_ea,
+            phase=phase,
+            legacy_fields=legacy_fields,
+        )
         raw = self._raw_collector.collect(
             target,
-            func_ea=func_ea,
-            maturity=maturity,
-            phase=phase,
+            context=context,
         )
         return (*raw, *project_ollvm_value_flow_evidence(raw))
 

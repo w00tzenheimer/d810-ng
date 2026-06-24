@@ -33,11 +33,15 @@ from dataclasses import dataclass
 from d810.core.typing import Any
 from d810.ir.flowgraph import InsnKind, OperandKind
 from d810.ir.maturity import LOCAL_FACT_COLLECTION_IR_MATURITIES
+from d810.analyses.fact_collection_context import (
+    FactCollectionContext,
+    coerce_fact_collection_context,
+    fact_provider_label,
+)
 from d810.analyses.value_flow.induction_carrier import (
     _InstructionView,
     _classify_induction_update,
     _iter_instruction_views,
-    _maturity_name,
 )
 from d810.analyses.value_flow.state_write_anchor import (
     _block_start_ea_lookup,
@@ -200,11 +204,19 @@ class FoldedLoopGuardFactCollector:
         self,
         target: Any,
         *,
-        func_ea: int,
-        maturity: int,
-        phase: str,
+        context: FactCollectionContext | None = None,
+        func_ea: int | None = None,
+        phase: str = "pre_d810",
+        **legacy_fields: Any,
     ) -> tuple[FactObservation, ...]:
-        maturity_text = _maturity_name(maturity)
+        context = coerce_fact_collection_context(
+            context,
+            func_ea=func_ea,
+            phase=phase,
+            legacy_fields=legacy_fields,
+        )
+        phase = context.phase
+        maturity_text = fact_provider_label(context)
         instructions = tuple(_iter_instruction_views(target))
         if not instructions:
             return ()

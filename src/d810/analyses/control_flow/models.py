@@ -39,7 +39,7 @@ class CandidateFlag:
             )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class ReconResult:
     """Per-collector, per-maturity observation result.
 
@@ -70,16 +70,47 @@ class ReconResult:
     """
     collector_name: str
     func_ea: int
-    maturity: int
+    provider_level: int
     timestamp: float
     metrics: MappingProxyType  # type: ignore[type-arg]
     candidates: tuple[CandidateFlag, ...]
+
+    def __init__(
+        self,
+        *,
+        collector_name: str,
+        func_ea: int,
+        timestamp: float,
+        metrics: MappingProxyType,  # type: ignore[type-arg]
+        candidates: tuple[CandidateFlag, ...],
+        provider_level: int | None = None,
+        **legacy_fields: object,
+    ) -> None:
+        legacy_level = legacy_fields.pop("maturity", None)
+        if legacy_fields:
+            names = ", ".join(sorted(legacy_fields))
+            raise TypeError(f"Unexpected ReconResult field(s): {names}")
+        if provider_level is None:
+            if legacy_level is None:
+                raise TypeError("provider_level is required")
+            provider_level = int(legacy_level)
+        object.__setattr__(self, "collector_name", collector_name)
+        object.__setattr__(self, "func_ea", int(func_ea))
+        object.__setattr__(self, "provider_level", int(provider_level))
+        object.__setattr__(self, "timestamp", float(timestamp))
+        object.__setattr__(self, "metrics", metrics)
+        object.__setattr__(self, "candidates", candidates)
+        self.__post_init__()
 
     def __post_init__(self) -> None:
         if not (hasattr(self.metrics, '__getitem__') and not hasattr(self.metrics, '__setitem__')):
             raise TypeError(
                 f"ReconResult.metrics must be a read-only mapping, got {type(self.metrics)!r}"
             )
+
+    @property
+    def maturity(self) -> int:
+        return int(self.provider_level)
 
 
 @dataclass(frozen=True)

@@ -33,7 +33,7 @@ from d810.core.logging import D810Logger
 from d810.core.typing import Any, Dict
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class OptimizationContext:
     """A context object holding all necessary data for an optimization pass.
 
@@ -52,10 +52,38 @@ class OptimizationContext:
         log_dir: Directory path for debug logs and artifacts.
     """
     mba: object
-    maturity: int
+    provider_level: int
     config: Dict[str, Any]
     logger: D810Logger
     log_dir: str
+
+    def __init__(
+        self,
+        *,
+        mba: object,
+        config: Dict[str, Any],
+        logger: D810Logger,
+        log_dir: str,
+        provider_level: int | None = None,
+        **legacy_fields: object,
+    ) -> None:
+        legacy_level = legacy_fields.pop("maturity", None)
+        if legacy_fields:
+            names = ", ".join(sorted(legacy_fields))
+            raise TypeError(f"Unexpected OptimizationContext field(s): {names}")
+        if provider_level is None:
+            if legacy_level is None:
+                raise TypeError("provider_level is required")
+            provider_level = int(legacy_level)
+        object.__setattr__(self, "mba", mba)
+        object.__setattr__(self, "provider_level", int(provider_level))
+        object.__setattr__(self, "config", config)
+        object.__setattr__(self, "logger", logger)
+        object.__setattr__(self, "log_dir", log_dir)
+
+    @property
+    def maturity(self) -> int:
+        return int(self.provider_level)
 
 
 class PatternMatchingRule(abc.ABC):

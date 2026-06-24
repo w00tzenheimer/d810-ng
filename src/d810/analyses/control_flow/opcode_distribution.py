@@ -21,6 +21,10 @@ import time
 from collections import Counter
 from types import MappingProxyType
 
+from d810.analyses.control_flow.collection_context import (
+    ReconCollectionContext,
+    coerce_recon_collection_context,
+)
 from d810.analyses.control_flow.models import CandidateFlag, ReconResult
 
 _MMAT_PREOPTIMIZED = 5
@@ -34,7 +38,18 @@ class OpcodeDistributionCollector:
     maturities: frozenset[int] = frozenset({_MMAT_PREOPTIMIZED})
     level: str = "microcode"
 
-    def collect(self, target, func_ea: int, maturity: int) -> ReconResult:
+    def collect(
+        self,
+        target,
+        context: ReconCollectionContext | None = None,
+        func_ea: int | None = None,
+        **legacy_fields: object,
+    ) -> ReconResult:
+        context = coerce_recon_collection_context(
+            context,
+            func_ea=func_ea,
+            legacy_fields=legacy_fields,
+        )
         # ``target`` is a portable d810.ir FlowGraph; iterate its block
         # snapshots only -- no live mba / mblock duck-typing (llr-zeyu).
         counter: Counter[int] = Counter()
@@ -70,8 +85,8 @@ class OpcodeDistributionCollector:
 
         return ReconResult(
             collector_name=self.name,
-            func_ea=int(func_ea),
-            maturity=int(maturity),
+            func_ea=context.func_ea,
+            provider_level=context.provider_level,
             timestamp=time.time(),
             metrics=metrics,
             candidates=tuple(candidates),

@@ -4,7 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core.logging import getLogger
+from d810.core.provider_phase import provider_phase_snapshot_from_level
 from d810.core.typing import Any
+from d810.analyses.fact_collection_context import FactCollectionContext
 
 logger = getLogger("D810.recon.flow.runtime_evidence")
 
@@ -68,6 +70,20 @@ def _count_rewritten_mappings(mappings: tuple[Any, ...]) -> int:
     return total
 
 
+def _collect_terminal_byte_facts(collector: Any, target: Any, context: FactCollectionContext) -> Any:
+    try:
+        return collector.collect(target, context=context)
+    except TypeError as exc:
+        if "context" not in str(exc):
+            raise
+        return collector.collect(
+            target,
+            func_ea=context.func_ea,
+            maturity=context.provider_level,
+            phase=context.phase,
+        )
+
+
 def summarize_fact_view(
     fact_view: Any | None,
     *,
@@ -119,9 +135,10 @@ def ensure_terminal_byte_fact_view(
     target: Any,
     *,
     func_ea: int,
-    maturity: int,
+    provider_level: int | None = None,
     fact_view: Any | None = None,
     phase: str = "runtime",
+    **legacy_fields: object,
 ) -> Any | None:
     """Return a fact view with terminal-byte observations for live consumers.
 
@@ -132,6 +149,14 @@ def ensure_terminal_byte_fact_view(
     """
     if _has_terminal_byte_facts(fact_view):
         return fact_view
+    legacy_level = legacy_fields.pop("maturity", None)
+    if legacy_fields:
+        names = ", ".join(sorted(legacy_fields))
+        raise TypeError(f"Unexpected runtime evidence field(s): {names}")
+    if provider_level is None:
+        if legacy_level is None:
+            return fact_view
+        provider_level = int(legacy_level)
 
     try:
         from d810.analyses.value_flow.terminal_byte_emitter import (
@@ -142,11 +167,15 @@ def ensure_terminal_byte_fact_view(
         return fact_view
 
     try:
-        observations = TerminalByteEmitterFactCollector().collect(
-            target,
+        context = FactCollectionContext(
             func_ea=int(func_ea),
-            maturity=int(maturity),
+            provider_phase=provider_phase_snapshot_from_level(int(provider_level)),
             phase=str(phase),
+        )
+        observations = _collect_terminal_byte_facts(
+            TerminalByteEmitterFactCollector(),
+            target,
+            context,
         )
     except Exception:
         return fact_view
@@ -154,7 +183,7 @@ def ensure_terminal_byte_fact_view(
     if not observations:
         return fact_view
 
-    maturity_text = getattr(observations[0], "maturity", str(maturity))
+    maturity_text = getattr(observations[0], "maturity", str(provider_level))
     return ValidatedFactView(
         maturity=str(maturity_text),
         observations=tuple(observations),

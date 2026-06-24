@@ -137,6 +137,12 @@ def mmat_name(
     return f"MMAT_{value_int}"
 
 
+def numeric_mmat_name(value: int) -> str:
+    """Return the legacy numeric provider ``MMAT_<n>`` label."""
+
+    return f"MMAT_{int(value)}"
+
+
 def mmat_value(
     value: Any,
     *,
@@ -265,6 +271,7 @@ __all__ = [
     "maturity_phase_rank",
     "mmat_label",
     "mmat_name",
+    "numeric_mmat_name",
     "mmat_rank",
     "mmat_value",
     "normalize_mmat_name",

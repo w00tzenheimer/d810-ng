@@ -201,7 +201,7 @@ def _build_dag_local_facts(dag: LinearizedStateDag) -> DagLocalFacts:
 def build_round_discovery_context(
     *,
     func_ea: int,
-    maturity: int,
+    provider_level: int | None = None,
     pass_number: int,
     flow_graph: FlowGraph,
     transition_result: TransitionResult,
@@ -219,6 +219,7 @@ def build_round_discovery_context(
     mba: object | None = None,
     prefer_local_corridors: bool = False,
     return_frontier_artifact_priors: ReturnFrontierArtifactPriors | None = None,
+    **legacy_fields: object,
 ) -> ReconRoundDiscoveryContext:
     """Build the per-round discovery context for one unflattening pass.
 
@@ -234,6 +235,15 @@ def build_round_discovery_context(
     context and pass ``discovery=None`` to :class:`AnalysisSnapshot`; we do
     **not** try to half-build here.
     """
+    legacy_level = legacy_fields.pop("maturity", None)
+    if legacy_fields:
+        names = ", ".join(sorted(legacy_fields))
+        raise TypeError(f"Unexpected round discovery field(s): {names}")
+    if provider_level is None:
+        if legacy_level is None:
+            raise TypeError("provider_level is required")
+        provider_level = int(legacy_level)
+
     corrected_dag_out: list = []
     dag = build_live_linearized_state_dag_from_graph(
         flow_graph,
@@ -303,7 +313,7 @@ def build_round_discovery_context(
 
     round_id = (
         int(func_ea),
-        int(maturity),
+        int(provider_level),
         int(pass_number),
         time.monotonic_ns(),
     )
