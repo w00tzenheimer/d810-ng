@@ -51,11 +51,14 @@ from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
 __all__ = [
     "InstructionProjection",
     "iter_operand_exprs",
+    "operand_storages",
+    "primary_source_storage",
     "project_assignment",
     "project_conditional_branch",
     "project_instruction",
     "project_instruction_sequence",
     "project_operand_expr",
+    "result_storage",
 ]
 
 
@@ -651,6 +654,41 @@ def project_assignment(insn: InsnSnapshot) -> Assignment | None:
     if value is None and target is None:
         return None
     return Assignment(target=target, value=value)
+
+
+def _storage_view(mop: MopSnapshot | None) -> Varnode | WeakStackSlot | None:
+    """Portable storage view for a lifted operand snapshot.
+
+    Returns a canonical :class:`~d810.ir.varnode.Varnode` for register /
+    stack-known / lvar / const operands.  A stack operand whose concrete offset
+    was not recovered (``stkoff is None``) collapses to ``Varnode(UNKNOWN)`` in
+    :func:`varnode_from_mop_snapshot`; here it instead becomes the explicit
+    LiSA-style :class:`~d810.ir.locations.WeakStackSlot`, so accept-on-unknown
+    stack consumers keep "stack write, unknown offset" rather than losing the
+    fact.  ``None`` for a missing operand.
+    """
+    if mop is None:
+        return None
+    if mop.kind is OperandKind.STACK and mop.stkoff is None:
+        return WeakStackSlot(size=int(mop.size or 0))
+    return varnode_from_mop_snapshot(mop)
+
+
+def result_storage(insn: InsnSnapshot) -> Varnode | WeakStackSlot | None:
+    """Portable storage view of the instruction's result/dest operand."""
+    return _storage_view(insn.d)
+
+
+def primary_source_storage(insn: InsnSnapshot) -> Varnode | WeakStackSlot | None:
+    """Portable storage view of the instruction's primary source operand."""
+    return _storage_view(insn.l)
+
+
+def operand_storages(
+    insn: InsnSnapshot,
+) -> tuple[Varnode | WeakStackSlot | None, ...]:
+    """Portable storage views of the ``l``/``r``/``d`` operand slots, in order."""
+    return (_storage_view(insn.l), _storage_view(insn.r), _storage_view(insn.d))
 
 
 def project_conditional_branch(

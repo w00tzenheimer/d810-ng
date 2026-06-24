@@ -13,11 +13,14 @@ from d810.ir.expressions import Add, And, Const, Move, Sub, ValueOpKind
 from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
 from d810.ir.insn_projection import (
     iter_operand_exprs,
+    operand_storages,
+    primary_source_storage,
     project_assignment,
     project_conditional_branch,
     project_instruction,
     project_instruction_sequence,
     project_operand_expr,
+    result_storage,
 )
 from d810.ir.instructions import (
     Instruction,
@@ -816,3 +819,71 @@ def test_instruction_sequence_keeps_unsupported_nested_op_explicit():
         Varnode(Space.TEMP, 0, 4),
         Varnode(Space.CONST, 0, 4),
     )
+
+
+# ---------------------------------------------------------------------------
+# Weak-stack-preserving storage views (llr-ykmh): register / stack-known / lvar
+# / const project to a Varnode, an unknown-offset stack operand projects to a
+# WeakStackSlot rather than collapsing to Varnode(UNKNOWN).
+# ---------------------------------------------------------------------------
+
+
+def _weak_stk(size: int = 8) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.STACK, stkoff=None, size=size)
+
+
+def test_result_storage_register():
+    insn = _mov(_stk(0x10), _reg(0, size=8))
+    assert result_storage(insn) == Varnode(Space.REGISTER, 0, 8)
+
+
+def test_result_storage_known_stack():
+    insn = _mov(_reg(0), _stk(0x7F0, size=8))
+    assert result_storage(insn) == Varnode(Space.STACK, 0x7F0, 8)
+
+
+def test_result_storage_unknown_stack_is_weak_slot():
+    insn = _mov(_reg(0), _weak_stk(size=8))
+    view = result_storage(insn)
+    assert isinstance(view, WeakStackSlot)
+    assert view.size == 8
+
+
+def test_result_storage_lvar():
+    insn = _mov(_reg(0), _lvar(0x20, size=8))
+    assert result_storage(insn) == Varnode(Space.LVAR, 0x20, 8)
+
+
+def test_primary_source_storage_const():
+    insn = _mov(_num(0xABCD, size=8), _reg(0))
+    assert primary_source_storage(insn) == Varnode(Space.CONST, 0xABCD, 8)
+
+
+def test_primary_source_storage_unknown_stack_is_weak_slot():
+    insn = _mov(_weak_stk(size=4), _reg(0))
+    view = primary_source_storage(insn)
+    assert isinstance(view, WeakStackSlot)
+    assert view.size == 4
+
+
+def test_operand_storages_ordered_lrd():
+    insn = InsnSnapshot(
+        opcode=M_MOV,
+        ea=0x1000,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=_stk(0x10, size=8),
+        r=_num(7, size=8),
+        d=_reg(0, size=8),
+    )
+    left, right, dest = operand_storages(insn)
+    assert left == Varnode(Space.STACK, 0x10, 8)
+    assert right == Varnode(Space.CONST, 7, 8)
+    assert dest == Varnode(Space.REGISTER, 0, 8)
+
+
+def test_storage_views_none_for_missing_operand():
+    insn = _mov(None, None)
+    assert result_storage(insn) is None
+    assert primary_source_storage(insn) is None
+    assert operand_storages(insn) == (None, None, None)
