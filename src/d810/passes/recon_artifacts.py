@@ -24,17 +24,19 @@ from d810.passes.artifacts import (
 def load_return_sites_from_store(
     *,
     func_ea: int,
-    maturity: int | None,
     log_dir: Path | str | None,
     provider: HodurReturnSiteProvider | None = None,
+    provider_level: int | None = None,
+    **legacy_fields: object,
 ) -> tuple[ReturnSite, ...]:
     """Load transition-report-derived Hodur return sites from the recon store."""
     site_provider = provider or HodurReturnSiteProvider()
     return _load_return_sites_from_store(
         func_ea=func_ea,
-        maturity=maturity,
+        provider_level=provider_level,
         log_dir=log_dir,
         provider=site_provider,
+        **legacy_fields,
     )
 
 

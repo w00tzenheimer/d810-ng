@@ -426,7 +426,7 @@ def test_induction_fact_absence_creates_identity_lost_mapping() -> None:
     mapping = calls_view.mappings[0]
     assert mapping.source_fact_id == "induction:blk10"
     assert mapping.status is FactStatus.IDENTITY_LOST
-    assert mapping.target_maturity == FactLifecycleRuntime._maturity_text(2)
+    assert mapping.target_maturity == FactLifecycleRuntime._provider_level_text(2)
     assert mapping.target_block is None
     assert mapping.target_ea is None
     assert mapping.target_mop_signature is None

@@ -24,6 +24,9 @@ from d810.core.typing import TYPE_CHECKING
 from d810.core.round_context import (
     RoundContext,
 )
+from d810.ir.maturity import (
+    MaturityEnvelope,
+)
 from d810.transforms.planner_context import (
     CumulativePlannerView,
 )
@@ -91,7 +94,7 @@ def _safe_len(value: object | None) -> int:
             return 0
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class AnalysisSnapshot:
     """Immutable analysis result for one maturity pass.
 
@@ -100,34 +103,35 @@ class AnalysisSnapshot:
     """
 
     mba: object  # ida_hexrays.mba_t — opaque object because the concrete type is caller-specific
-    state_machine: object | None = None
-    detector: object | None = None
-    dispatcher_analysis: object | None = None  # opaque; family-specific DispatcherAnalysis
-    range_evidence: object | None = None
-    dispatcher_root_serial: int = -1
-    dispatcher_blocks: frozenset[int] = field(default_factory=frozenset)
-    handler_graph: dict = field(default_factory=dict)
-    reachability: ReachabilityInfo | None = None
-    state_write_provenance: dict = field(default_factory=dict)
-    maturity: int = 0
-    pass_number: int = 0
-    resolved_transitions: frozenset = field(default_factory=frozenset)
-    initial_transitions: tuple = ()
-    flow_graph: FlowGraph | None = None
-    nop_state_values: dict[int, int] = field(default_factory=dict)
-    lfg_redirected_blocks: frozenset[int] = field(default_factory=frozenset)
-    state_summary: StateModelSummary | None = None
+    state_machine: object | None
+    detector: object | None
+    dispatcher_analysis: object | None  # opaque; family-specific DispatcherAnalysis
+    range_evidence: object | None
+    dispatcher_root_serial: int
+    dispatcher_blocks: frozenset[int]
+    handler_graph: dict
+    reachability: ReachabilityInfo | None
+    state_write_provenance: dict
+    provider_level: int
+    maturity_envelope: MaturityEnvelope | None
+    pass_number: int
+    resolved_transitions: frozenset
+    initial_transitions: tuple
+    flow_graph: FlowGraph | None
+    nop_state_values: dict[int, int]
+    lfg_redirected_blocks: frozenset[int]
+    state_summary: StateModelSummary | None
     # Canonical per-round classification bundle. Types are narrowed via
     # ``TYPE_CHECKING``; runtime imports remain engine-only so recon types
     # never leak into the engine's pure-Python import graph. Defaults to
     # ``None`` until a family adapter opts in to building it; strategies MUST
     # tolerate ``None`` during the Phase A scaffolding rollout.
-    discovery: ReconRoundDiscoveryContext | None = None
+    discovery: ReconRoundDiscoveryContext | None
 
     # Validated maturity fact view. Most strategy uses are diagnostic, but
     # narrow consumers may use validated facts as semantic safety gates when
     # the behavior is explicitly fact-backed and does not rediscover intent.
-    diagnostic_fact_view: object | None = None
+    diagnostic_fact_view: object | None
 
     # Cumulative planner-context view built from prior fragments' metadata
     # entries under the "planner_ctx" key. The engine rebuilds this before
@@ -137,7 +141,7 @@ class AnalysisSnapshot:
     # blocks that prior strategies have already committed to.
     # Defaults to None; strategies MUST tolerate None (fall back to "no
     # prior context known").
-    cumulative_planner_view: CumulativePlannerView | None = None
+    cumulative_planner_view: CumulativePlannerView | None
 
     # Hierarchical execution-scope stack. Empty ``RoundContext`` means
     # "pass-entry, pre-strategy". Strategies that have internal
@@ -150,7 +154,88 @@ class AnalysisSnapshot:
     # current projected view. Use ``round_summary`` (LFG-local) for the
     # current projected DAG. The ``round_context.as_trace()`` breadcrumb is
     # suitable for guardrail / debug log correlation.
-    round_context: RoundContext = field(default_factory=RoundContext)
+    round_context: RoundContext
+
+    def __init__(
+        self,
+        *,
+        mba: object,
+        state_machine: object | None = None,
+        detector: object | None = None,
+        dispatcher_analysis: object | None = None,
+        range_evidence: object | None = None,
+        dispatcher_root_serial: int = -1,
+        dispatcher_blocks: frozenset[int] | None = None,
+        handler_graph: dict | None = None,
+        reachability: ReachabilityInfo | None = None,
+        state_write_provenance: dict | None = None,
+        provider_level: int = 0,
+        maturity_envelope: MaturityEnvelope | None = None,
+        pass_number: int = 0,
+        resolved_transitions: frozenset | None = None,
+        initial_transitions: tuple = (),
+        flow_graph: FlowGraph | None = None,
+        nop_state_values: dict[int, int] | None = None,
+        lfg_redirected_blocks: frozenset[int] | None = None,
+        state_summary: StateModelSummary | None = None,
+        discovery: ReconRoundDiscoveryContext | None = None,
+        diagnostic_fact_view: object | None = None,
+        cumulative_planner_view: CumulativePlannerView | None = None,
+        round_context: RoundContext | None = None,
+        **legacy_fields: object,
+    ) -> None:
+        legacy_provider_level = legacy_fields.pop("maturity", None)
+        if legacy_fields:
+            names = ", ".join(sorted(legacy_fields))
+            raise TypeError(f"Unexpected AnalysisSnapshot field(s): {names}")
+        if legacy_provider_level is not None:
+            provider_level = int(legacy_provider_level)
+        object.__setattr__(self, "mba", mba)
+        object.__setattr__(self, "state_machine", state_machine)
+        object.__setattr__(self, "detector", detector)
+        object.__setattr__(self, "dispatcher_analysis", dispatcher_analysis)
+        object.__setattr__(self, "range_evidence", range_evidence)
+        object.__setattr__(
+            self, "dispatcher_root_serial", int(dispatcher_root_serial)
+        )
+        object.__setattr__(
+            self, "dispatcher_blocks", dispatcher_blocks or frozenset()
+        )
+        object.__setattr__(self, "handler_graph", handler_graph or {})
+        object.__setattr__(self, "reachability", reachability)
+        object.__setattr__(
+            self, "state_write_provenance", state_write_provenance or {}
+        )
+        object.__setattr__(self, "provider_level", int(provider_level))
+        object.__setattr__(self, "maturity_envelope", maturity_envelope)
+        object.__setattr__(self, "pass_number", int(pass_number))
+        object.__setattr__(
+            self, "resolved_transitions", resolved_transitions or frozenset()
+        )
+        object.__setattr__(self, "initial_transitions", initial_transitions)
+        object.__setattr__(self, "flow_graph", flow_graph)
+        object.__setattr__(self, "nop_state_values", nop_state_values or {})
+        object.__setattr__(
+            self, "lfg_redirected_blocks", lfg_redirected_blocks or frozenset()
+        )
+        object.__setattr__(self, "state_summary", state_summary)
+        object.__setattr__(self, "discovery", discovery)
+        object.__setattr__(self, "diagnostic_fact_view", diagnostic_fact_view)
+        object.__setattr__(
+            self, "cumulative_planner_view", cumulative_planner_view
+        )
+        object.__setattr__(
+            self, "round_context", round_context or RoundContext()
+        )
+
+    @property
+    def maturity(self) -> int:
+        if (
+            self.maturity_envelope is not None
+            and self.maturity_envelope.provider_id is not None
+        ):
+            return int(self.maturity_envelope.provider_id)
+        return int(self.provider_level)
 
     @property
     def state_constants(self) -> set:

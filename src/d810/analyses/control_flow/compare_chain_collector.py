@@ -23,6 +23,10 @@ from d810.analyses.control_flow.compare_chain import (
     BlockComparison,
     CompareChainResolver,
 )
+from d810.analyses.control_flow.collection_context import (
+    ReconCollectionContext,
+    coerce_recon_collection_context,
+)
 from d810.analyses.control_flow.state_var_alias import VarRef
 from d810.analyses.control_flow.models import CandidateFlag, ReconResult
 
@@ -130,8 +134,19 @@ class CompareChainCollector:
     maturities: frozenset[int] = frozenset({_MMAT_CALLS, _MMAT_GLBOPT1})
     level: str = "microcode"
 
-    def collect(self, target, func_ea: int, maturity: int) -> ReconResult:
+    def collect(
+        self,
+        target,
+        context: ReconCollectionContext | None = None,
+        func_ea: int | None = None,
+        **legacy_fields: object,
+    ) -> ReconResult:
         """Resolve compare-chain and wrap into ``ReconResult``."""
+        context = coerce_recon_collection_context(
+            context,
+            func_ea=func_ea,
+            legacy_fields=legacy_fields,
+        )
         if hasattr(target, "blocks") and hasattr(target, "entry_serial"):
             comparisons, aliases = _portable_comparisons(target)
         else:
@@ -169,8 +184,8 @@ class CompareChainCollector:
 
         return ReconResult(
             collector_name=self.name,
-            func_ea=int(func_ea),
-            maturity=int(maturity),
+            func_ea=context.func_ea,
+            provider_level=context.provider_level,
             timestamp=time.time(),
             metrics=metrics,
             candidates=candidates,

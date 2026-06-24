@@ -16,6 +16,10 @@ from types import MappingProxyType
 from d810.core.logging import getLogger
 from d810.core.typing import Any
 
+from d810.analyses.control_flow.collection_context import (
+    ReconCollectionContext,
+    coerce_recon_collection_context,
+)
 from d810.analyses.control_flow.return_frontier import (
     ReturnFrontierAudit,
     ReturnSite,
@@ -56,7 +60,7 @@ class ReturnFrontierCollector:
         audit: ReturnFrontierAudit,
         *,
         func_ea: int,
-        maturity: int,
+        provider_level: int,
         timestamp: float | None = None,
         stage_results: tuple[ReturnSiteStatus, ...] | None = None,
     ) -> ReconResult:
@@ -88,7 +92,7 @@ class ReturnFrontierCollector:
         return ReconResult(
             collector_name=cls.name,
             func_ea=func_ea,
-            maturity=maturity,
+            provider_level=provider_level,
             timestamp=time.time() if timestamp is None else timestamp,
             metrics=MappingProxyType({
                 "total_sites": report["total_sites"],
@@ -101,7 +105,11 @@ class ReturnFrontierCollector:
         )
 
     def collect(
-        self, target: Any, func_ea: int, maturity: int
+        self,
+        target: Any,
+        context: ReconCollectionContext | None = None,
+        func_ea: int | None = None,
+        **legacy_fields: object,
     ) -> ReconResult:
         """Collect return frontier audit data.
 
@@ -115,6 +123,11 @@ class ReturnFrontierCollector:
         :param maturity: Current maturity level.
         :return: Frozen ``ReconResult`` with return frontier metrics.
         """
+        context = coerce_recon_collection_context(
+            context,
+            func_ea=func_ea,
+            legacy_fields=legacy_fields,
+        )
         metadata = getattr(target, "metadata", {})
 
         return_sites = metadata.get("return_sites", ())
@@ -126,8 +139,8 @@ class ReturnFrontierCollector:
         if not return_sites or successors is None or entry is None:
             return ReconResult(
                 collector_name=self.name,
-                func_ea=func_ea,
-                maturity=maturity,
+                func_ea=context.func_ea,
+                provider_level=context.provider_level,
                 timestamp=time.time(),
                 metrics=MappingProxyType({}),
                 candidates=(),
@@ -147,8 +160,8 @@ class ReturnFrontierCollector:
 
         return self.build_result_from_audit(
             self._audit,
-            func_ea=func_ea,
-            maturity=maturity,
+            func_ea=context.func_ea,
+            provider_level=context.provider_level,
             timestamp=time.time(),
             stage_results=tuple(results),
         )

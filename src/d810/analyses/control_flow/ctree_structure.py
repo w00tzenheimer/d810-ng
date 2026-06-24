@@ -22,6 +22,10 @@ import time
 from collections import deque
 from types import MappingProxyType
 
+from d810.analyses.control_flow.collection_context import (
+    ReconCollectionContext,
+    coerce_recon_collection_context,
+)
 from d810.analyses.control_flow.models import CandidateFlag, ReconResult
 
 _CMAT_FINAL = 60
@@ -42,15 +46,26 @@ class CtreeStructureCollector:
     maturities: frozenset[int] = frozenset({_CMAT_FINAL})
     level: str = "ctree"
 
-    def collect(self, target, func_ea: int, maturity: int) -> ReconResult:
+    def collect(
+        self,
+        target,
+        context: ReconCollectionContext | None = None,
+        func_ea: int | None = None,
+        **legacy_fields: object,
+    ) -> ReconResult:
         """Walk cfunc.body and collect structural counts.
 
         Accepts real ``ida_hexrays.cfunc_t`` or a stub with a ``.body``
         attribute that supports child iteration.
         """
+        context = coerce_recon_collection_context(
+            context,
+            func_ea=func_ea,
+            legacy_fields=legacy_fields,
+        )
         body = getattr(target, "body", None)
         if body is None:
-            return self._empty_result(func_ea, maturity)
+            return self._empty_result(context)
 
         switch_count = 0
         switch_max_arms = 0
@@ -110,18 +125,18 @@ class CtreeStructureCollector:
 
         return ReconResult(
             collector_name=self.name,
-            func_ea=int(func_ea),
-            maturity=int(maturity),
+            func_ea=context.func_ea,
+            provider_level=context.provider_level,
             timestamp=time.time(),
             metrics=metrics,
             candidates=tuple(candidates),
         )
 
-    def _empty_result(self, func_ea: int, maturity: int) -> ReconResult:
+    def _empty_result(self, context: ReconCollectionContext) -> ReconResult:
         return ReconResult(
             collector_name=self.name,
-            func_ea=int(func_ea),
-            maturity=int(maturity),
+            func_ea=context.func_ea,
+            provider_level=context.provider_level,
             timestamp=time.time(),
             metrics=MappingProxyType({
                 "switch_count": 0, "switch_max_arms": 0,

@@ -12,14 +12,15 @@ from dataclasses import dataclass
 import re
 
 from d810.capabilities.source_lifter import select_lifter
-from d810.core.maturity_labels import (
-    MaturityNumbering,
-    WITH_ZERO_MATURITY_VALUES,
-    mmat_name,
-)
+from d810.core.maturity_labels import WITH_ZERO_MATURITY_VALUES
 from d810.core.typing import Any, Iterable
 from d810.ir.flowgraph import InsnKind, OperandKind
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
+from d810.analyses.fact_collection_context import (
+    FactCollectionContext,
+    coerce_fact_collection_context,
+    fact_provider_label,
+)
 from d810.analyses.value_flow.model import FactObservation
 
 _ADD_OPCODES = frozenset({"m_add", "op_12", InsnKind.ADD.value})
@@ -95,10 +96,6 @@ class _WritebackTailUpdate:
     address_use_insn: _InstructionView
     source_token: str
     dest_token: str
-
-
-def _maturity_name(maturity: int) -> str:
-    return mmat_name(int(maturity), numbering=MaturityNumbering.WITH_ZERO)
 
 
 def _signed_step(value: int) -> int:
@@ -426,11 +423,20 @@ class InductionVariableFactCollector:
         self,
         target: Any,
         *,
-        func_ea: int,
-        maturity: int,
-        phase: str,
+        context: FactCollectionContext | None = None,
+        func_ea: int | None = None,
+        phase: str = "pre_d810",
+        **legacy_fields: Any,
     ) -> tuple[FactObservation, ...]:
-        maturity_text = _maturity_name(maturity)
+        context = coerce_fact_collection_context(
+            context,
+            func_ea=func_ea,
+            phase=phase,
+            legacy_fields=legacy_fields,
+        )
+        func_ea = context.func_ea
+        phase = context.phase
+        maturity_text = fact_provider_label(context)
         observations: list[FactObservation] = []
         seen: set[tuple[int, int, int, int]] = set()
         instructions = tuple(_iter_instruction_views(target))

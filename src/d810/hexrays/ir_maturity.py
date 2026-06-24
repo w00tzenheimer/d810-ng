@@ -10,15 +10,16 @@ The portable enum (:mod:`d810.ir.maturity`) stays independent of the SDK.
 """
 from __future__ import annotations
 
-import json
-from collections.abc import Mapping
-from dataclasses import dataclass
 from enum import Enum
 
 import ida_hexrays
 
-from d810.core.typing import Any
-from d810.ir.maturity import IRMaturity, SnapshotForm, snapshot_form_for_maturity
+from d810.ir.maturity import (
+    IRMaturity,
+    MaturityEnvelope,
+    SnapshotForm,
+    snapshot_form_for_maturity,
+)
 
 __all__ = [
     "HexRaysMaturity",
@@ -88,87 +89,7 @@ IR_TO_IDA_MATURITY: "dict[IRMaturity, int]" = {
 }
 
 
-@dataclass(frozen=True)
-class HexRaysMaturityEnvelope:
-    """Portable maturity semantics plus native Hex-Rays provenance."""
-
-    ir: IRMaturity | None
-    snapshot_form: SnapshotForm
-    provider_id: int | None
-    provider_name: str
-    provider: str = "hexrays"
-
-    def to_dict(self) -> dict[str, object | None]:
-        return {
-            "ir": self.ir.name if self.ir is not None else None,
-            "snapshot_form": self.snapshot_form.name,
-            "provider": self.provider,
-            "provider_id": self.provider_id,
-            "provider_name": self.provider_name,
-        }
-
-    def to_record(self) -> dict[str, object | None]:
-        return self.to_dict()
-
-    def dump(self) -> dict[str, object | None]:
-        return self.to_dict()
-
-    def dumps(self) -> str:
-        return json.dumps(
-            self.to_dict(),
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-
-    @classmethod
-    def load(
-        cls,
-        record: Mapping[str, Any],
-    ) -> "HexRaysMaturityEnvelope":
-        if isinstance(record, cls):
-            return record
-        ir_value = record.get("ir")
-        ir_maturity = (
-            IRMaturity[str(ir_value)]
-            if ir_value is not None else None
-        )
-        snapshot_form_value = record.get("snapshot_form")
-        snapshot_form = (
-            SnapshotForm[str(snapshot_form_value)]
-            if snapshot_form_value is not None else SnapshotForm.UNKNOWN
-        )
-        provider_id_value = record.get("provider_id")
-        provider_id = (
-            int(provider_id_value)
-            if provider_id_value is not None else None
-        )
-        provider_name_value = record.get("provider_name")
-        provider_name = (
-            str(provider_name_value)
-            if provider_name_value is not None
-            else (
-                maturity_to_name(provider_id)
-                if provider_id is not None else "UNKNOWN"
-            )
-        )
-        provider_value = record.get("provider")
-        provider = (
-            str(provider_value) if provider_value is not None else "hexrays"
-        )
-        return cls(
-            ir=ir_maturity,
-            snapshot_form=snapshot_form,
-            provider_id=provider_id,
-            provider_name=provider_name,
-            provider=provider,
-        )
-
-    @classmethod
-    def loads(cls, payload: str | bytes) -> "HexRaysMaturityEnvelope":
-        record = json.loads(payload)
-        if not isinstance(record, Mapping):
-            raise ValueError("Hex-Rays maturity envelope JSON must be an object")
-        return cls.load(record)
+HexRaysMaturityEnvelope = MaturityEnvelope
 
 
 def ida_maturity_to_ir(mmat: int) -> IRMaturity:
@@ -238,6 +159,7 @@ def hexrays_maturity_envelope(
     return HexRaysMaturityEnvelope(
         ir=ir_maturity,
         snapshot_form=snapshot_form,
+        provider="hexrays",
         provider_id=provider_id,
         provider_name=provider_name,
     )

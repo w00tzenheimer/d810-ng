@@ -21,6 +21,10 @@ from d810.analyses.control_flow.transition_report import (
     transition_report_from_dict,
     transition_report_to_dict,
 )
+from d810.analyses.control_flow.collection_context import (
+    ReconCollectionContext,
+    coerce_recon_collection_context,
+)
 from d810.analyses.control_flow.models import CandidateFlag, ReconResult
 
 logger = getLogger(__name__)
@@ -140,7 +144,7 @@ class HandlerTransitionsCollector:
         report: DispatcherTransitionReport,
         *,
         func_ea: int,
-        maturity: int,
+        provider_level: int,
         timestamp: float | None = None,
     ) -> ReconResult:
         candidates: list[CandidateFlag] = []
@@ -158,7 +162,7 @@ class HandlerTransitionsCollector:
         return ReconResult(
             collector_name=cls.name,
             func_ea=func_ea,
-            maturity=maturity,
+            provider_level=provider_level,
             timestamp=time.time() if timestamp is None else timestamp,
             metrics=MappingProxyType(
                 {
@@ -175,13 +179,24 @@ class HandlerTransitionsCollector:
             candidates=tuple(candidates),
         )
 
-    def collect(self, target: Any, func_ea: int, maturity: int) -> ReconResult:
+    def collect(
+        self,
+        target: Any,
+        context: ReconCollectionContext | None = None,
+        func_ea: int | None = None,
+        **legacy_fields: object,
+    ) -> ReconResult:
+        context = coerce_recon_collection_context(
+            context,
+            func_ea=func_ea,
+            legacy_fields=legacy_fields,
+        )
         report = self._resolve_report(target)
         if report is None:
             return ReconResult(
                 collector_name=self.name,
-                func_ea=func_ea,
-                maturity=maturity,
+                func_ea=context.func_ea,
+                provider_level=context.provider_level,
                 timestamp=time.time(),
                 metrics=MappingProxyType({}),
                 candidates=(),
@@ -189,6 +204,6 @@ class HandlerTransitionsCollector:
 
         return self.build_result_from_report(
             report,
-            func_ea=func_ea,
-            maturity=maturity,
+            func_ea=context.func_ea,
+            provider_level=context.provider_level,
         )

@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from d810.core.typing import Any
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
-from d810.analyses.value_flow.induction_carrier import (
-    _maturity_name,
+from d810.analyses.fact_collection_context import (
+    FactCollectionContext,
+    coerce_fact_collection_context,
+    fact_provider_label,
 )
 from d810.analyses.value_flow.terminal_byte_emitter import (
     TerminalByteEmitterFactCollector,
@@ -41,16 +43,22 @@ class ByteEmitCorridorFactCollector:
         self,
         target: Any,
         *,
-        func_ea: int,
-        maturity: int,
-        phase: str,
+        context: FactCollectionContext | None = None,
+        func_ea: int | None = None,
+        phase: str = "pre_d810",
+        **legacy_fields: Any,
     ) -> tuple[FactObservation, ...]:
-        maturity_text = _maturity_name(maturity)
+        context = coerce_fact_collection_context(
+            context,
+            func_ea=func_ea,
+            phase=phase,
+            legacy_fields=legacy_fields,
+        )
+        phase = context.phase
+        maturity_text = fact_provider_label(context)
         byte_facts = self._byte_collector.collect(
             target,
-            func_ea=func_ea,
-            maturity=maturity,
-            phase=phase,
+            context=context,
         )
         by_family: dict[str, list[FactObservation]] = {}
         for observation in byte_facts:

@@ -21,7 +21,7 @@ def persist_terminal_return_audit(
     results: list[StageResult],
     *,
     func_ea: int,
-    maturity: int,
+    provider_level: int,
     log_dir: Path | str | None,
 ) -> None:
     """Persist the first terminal-return audit emitted by the executor."""
@@ -31,7 +31,7 @@ def persist_terminal_return_audit(
             continue
         save_terminal_return_audit_to_store(
             func_ea=func_ea,
-            maturity=maturity,
+            provider_level=provider_level,
             audit=audit,
             log_dir=log_dir,
         )
@@ -44,7 +44,7 @@ def prepare_return_frontier_audit(
     current_return_sites: tuple,
     return_site_provider: object,
     func_ea: int,
-    maturity: int,
+    provider_level: int,
     log_dir: Path | str | None,
     successors: dict[int, list[int]],
     exits: frozenset[int],
@@ -61,7 +61,7 @@ def prepare_return_frontier_audit(
 
         report = load_transition_report_from_store(
             func_ea=func_ea,
-            maturity=maturity,
+            provider_level=provider_level,
             log_dir=log_dir,
         )
         used_report = False
@@ -84,7 +84,7 @@ def prepare_return_frontier_audit(
                 )
                 save_transition_report_to_store(
                     func_ea=func_ea,
-                    maturity=maturity,
+                    provider_level=provider_level,
                     report=report,
                     log_dir=log_dir,
                 )
@@ -140,7 +140,7 @@ def prepare_return_frontier_audit(
         return_sites,
         "pre_plan",
         func_ea=func_ea,
-        maturity=maturity,
+        provider_level=provider_level,
         log_dir=log_dir,
         successors=successors,
         exits=exits,
@@ -154,7 +154,7 @@ def record_return_frontier_stage(
     stage_name: str,
     *,
     func_ea: int,
-    maturity: int,
+    provider_level: int,
     log_dir: Path | str | None,
     successors: dict[int, list[int]],
     exits: frozenset[int],
@@ -163,7 +163,7 @@ def record_return_frontier_stage(
     """Record one return-frontier audit stage."""
     result = record_return_frontier_stage_artifact(
         func_ea=func_ea,
-        maturity=maturity,
+        provider_level=provider_level,
         log_dir=log_dir,
         return_sites=return_sites,
         successors=successors,
@@ -185,7 +185,7 @@ def finalize_return_frontier_audit(
     return_sites: tuple,
     *,
     func_ea: int,
-    maturity: int,
+    provider_level: int,
     log_dir: Path | str | None,
     artifact_dir: Path,
     successors: dict[int, list[int]],
@@ -197,7 +197,7 @@ def finalize_return_frontier_audit(
         return_sites,
         "post_pipeline",
         func_ea=func_ea,
-        maturity=maturity,
+        provider_level=provider_level,
         log_dir=log_dir,
         successors=successors,
         exits=exits,
@@ -205,13 +205,13 @@ def finalize_return_frontier_audit(
     )
     write_return_frontier_artifact_from_store(
         func_ea=func_ea,
-        maturity=maturity,
+        provider_level=provider_level,
         log_dir=log_dir,
         artifact_dir=artifact_dir,
     )
     audit = load_return_frontier_audit_from_store(
         func_ea=func_ea,
-        maturity=maturity,
+        provider_level=provider_level,
         log_dir=log_dir,
     )
     if audit is not None:

@@ -58,7 +58,10 @@ _MMAT_TOKEN = "MMAT_"
 _BOUNDARY_KEYS = {"producer_stage_id", "maturity", "snapshot_id", "phase"}
 _PORTABLE_MATURITY_ANNOTATIONS = (
     "IRMaturity",
+    "MaturityEnvelope",
     "MaturityRange",
+    "ProviderPhase",
+    "ProviderPhaseSnapshot",
     "SnapshotForm",
     "Callable",
 )
@@ -211,6 +214,45 @@ def _iter_targets(packages: tuple[str, ...]) -> list[pathlib.Path]:
     return [p for p in out if "__pycache__" not in p.parts]
 
 
+def _maturity_bucket(finding: Finding) -> str | None:
+    """Return the category-A burn-down bucket for one maturity finding."""
+    if finding.category != "A":
+        return None
+    rel = finding.rel
+    if rel == "src/d810/families/state_machine_cff/ollvm_carrier_profile.py":
+        return "ollvm-profile-schedule"
+    if rel in {
+        "src/d810/transforms/loop_carrier_backedge_refresh.py",
+        "src/d810/transforms/report.py",
+        "src/d810/transforms/snapshot.py",
+    }:
+        return "transform-snapshot-report-dto"
+    if rel in {
+        "src/d810/passes/fact_runtime.py",
+        "src/d810/passes/runtime.py",
+        "src/d810/analyses/control_flow/runtime_evidence.py",
+    }:
+        return "fact-lifecycle-compatibility-facade"
+    if rel.startswith("src/d810/analyses/value_flow/") or rel == (
+        "src/d810/analyses/control_flow/state_transition_anchor.py"
+    ):
+        return "fact-collector-payload-params"
+    if rel in {
+        "src/d810/analyses/control_flow/models.py",
+        "src/d810/passes/artifacts.py",
+        "src/d810/passes/audit_runtime.py",
+        "src/d810/passes/recon_artifacts.py",
+        "src/d810/passes/store.py",
+    }:
+        return "recon-artifact-store-compatibility"
+    if rel.startswith("src/d810/analyses/control_flow/") or rel in {
+        "src/d810/passes/core.py",
+        "src/d810/passes/phase.py",
+    }:
+        return "legacy-recon-collector-api"
+    return "uncategorized-maturity"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--package", action="append", choices=PORTABLE_CORE,
@@ -252,6 +294,11 @@ def main() -> int:
     by_cat = Counter(f.category for f in findings)
     by_cat_real = Counter(f.category for f in real)
     by_file_real = Counter(f.rel for f in real)
+    by_maturity_bucket = Counter(
+        bucket
+        for f in real
+        if (bucket := _maturity_bucket(f)) is not None
+    )
 
     if args.json:
         print(json.dumps({
@@ -259,6 +306,7 @@ def main() -> int:
             "real_leak": len(real),
             "by_category": dict(sorted(by_cat.items())),
             "by_category_real": dict(sorted(by_cat_real.items())),
+            "by_maturity_bucket": dict(sorted(by_maturity_bucket.items())),
         }, indent=2))
     else:
         cat_name = {"A": "maturity", "B": "serial-identity", "C": "mop/duck-typed",
@@ -272,6 +320,10 @@ def main() -> int:
         print("Top real-leak files:")
         for rel, n in by_file_real.most_common(10):
             print(f"  {n:>3}  {rel}")
+        if "A" in cats and by_maturity_bucket:
+            print("\nMaturity burn-down buckets:")
+            for bucket, n in sorted(by_maturity_bucket.items()):
+                print(f"  {n:>3}  {bucket}")
         if args.list:
             print("\nAll findings:")
             for f in sorted(findings, key=lambda x: (x.category, x.rel, x.line)):

@@ -187,7 +187,7 @@ class ReconStore:
     Example:
         >>> store = ReconStore("/tmp/recon.db")
         >>> store.save_recon_result(result)
-        >>> rows = store.load_recon_results(func_ea=0x401000, maturity=5)
+        >>> rows = store.load_recon_results(func_ea=0x401000, provider_level=5)
         >>> store.close()
     """
 
@@ -227,18 +227,30 @@ class ReconStore:
         self._conn.commit()
 
     def load_recon_results(
-        self, *, func_ea: int, maturity: int
+        self,
+        *,
+        func_ea: int,
+        provider_level: int | None = None,
+        **legacy_fields: object,
     ) -> list[ReconResult]:
         """Load all collector results for a specific func/maturity pair."""
+        legacy_level = legacy_fields.pop("maturity", None)
+        if legacy_fields:
+            names = ", ".join(sorted(legacy_fields))
+            raise TypeError(f"Unexpected recon store field(s): {names}")
+        if provider_level is None:
+            if legacy_level is None:
+                raise TypeError("provider_level is required")
+            provider_level = int(legacy_level)
         cursor = self._conn.execute(
             """
             SELECT collector_name, timestamp, metrics_json, candidates_json
             FROM recon_results
             WHERE func_ea = ? AND maturity = ?
             """,
-            (int(func_ea), int(maturity)),
+            (int(func_ea), int(provider_level)),
         )
-        return [self._row_to_result(row, func_ea=func_ea, maturity=maturity)
+        return [self._row_to_result(row, func_ea=func_ea, provider_level=provider_level)
                 for row in cursor.fetchall()]
 
     def load_all_recon_results(self, *, func_ea: int) -> list[ReconResult]:
@@ -253,7 +265,11 @@ class ReconStore:
         )
         rows = cursor.fetchall()
         return [
-            self._row_to_result(row, func_ea=func_ea, maturity=int(row["maturity"]))
+            self._row_to_result(
+                row,
+                func_ea=func_ea,
+                provider_level=int(row["maturity"]),
+            )
             for row in rows
         ]
 
@@ -262,15 +278,22 @@ class ReconStore:
         *,
         func_ea: int,
         collector_name: str,
-        maturity: int | None = None,
+        provider_level: int | None = None,
+        **legacy_fields: object,
     ) -> ReconResult | None:
         """Load the latest result for one collector.
 
-        When *maturity* is provided, constrain the query to that maturity.
+        When *provider_level* is provided, constrain the query to that level.
         Otherwise return the latest row across all maturities, ordered by
         maturity descending then timestamp descending.
         """
-        if maturity is None:
+        legacy_level = legacy_fields.pop("maturity", None)
+        if legacy_fields:
+            names = ", ".join(sorted(legacy_fields))
+            raise TypeError(f"Unexpected recon store field(s): {names}")
+        if provider_level is None and legacy_level is not None:
+            provider_level = int(legacy_level)
+        if provider_level is None:
             cursor = self._conn.execute(
                 """
                 SELECT maturity, collector_name, timestamp, metrics_json, candidates_json
@@ -290,16 +313,20 @@ class ReconStore:
                 ORDER BY timestamp DESC
                 LIMIT 1
                 """,
-                (int(func_ea), str(collector_name), int(maturity)),
+                (int(func_ea), str(collector_name), int(provider_level)),
             )
         row = cursor.fetchone()
         if row is None:
             return None
-        return self._row_to_result(row, func_ea=func_ea, maturity=int(row["maturity"]))
+        return self._row_to_result(
+            row,
+            func_ea=func_ea,
+            provider_level=int(row["maturity"]),
+        )
 
     @staticmethod
     def _row_to_result(
-        row: sqlite3.Row, *, func_ea: int, maturity: int
+        row: sqlite3.Row, *, func_ea: int, provider_level: int
     ) -> ReconResult:
         candidates = tuple(
             _candidate_from_dict(d)
@@ -308,7 +335,7 @@ class ReconStore:
         return ReconResult(
             collector_name=str(row["collector_name"]),
             func_ea=int(func_ea),
-            maturity=int(maturity),
+            provider_level=int(provider_level),
             timestamp=float(row["timestamp"]),
             metrics=MappingProxyType(json.loads(row["metrics_json"] or "{}")),
             candidates=candidates,

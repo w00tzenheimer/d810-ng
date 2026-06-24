@@ -411,9 +411,22 @@ class ReconAnalysisRuntime:
         """Register a maturity fact collector."""
         self._fact_lifecycle.register(collector)
 
-    def validated_fact_view(self, func_ea: int, maturity: int | str) -> ValidatedFactView:
+    def validated_fact_view(
+        self,
+        func_ea: int,
+        provider_level: int | str | None = None,
+        **legacy_fields: object,
+    ) -> ValidatedFactView:
         """Return the current validated fact view for one function."""
-        return self._fact_lifecycle.validated_view(func_ea, maturity)
+        legacy_level = legacy_fields.pop("maturity", None)
+        if legacy_fields:
+            names = ", ".join(sorted(legacy_fields))
+            raise TypeError(f"Unexpected validated_fact_view field(s): {names}")
+        if provider_level is None:
+            if legacy_level is None:
+                raise TypeError("provider_level is required")
+            provider_level = legacy_level  # type: ignore[assignment]
+        return self._fact_lifecycle.validated_view(func_ea, provider_level)
 
     def record_fact_consumers(
         self,
