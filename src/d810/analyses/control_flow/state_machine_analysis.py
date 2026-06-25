@@ -464,16 +464,24 @@ def classify_exit_state(
                     if off is not None and int(off) == int(state_var_stkoff):
                         wrote_state = True
                 elif _is_lvar_operand(dest):
-                    lvar_ref = getattr(dest, "l", None)
-                    idx = getattr(lvar_ref, "idx", None) if lvar_ref else None
-                    if idx is not None:
-                        try:
-                            lvar = mba.vars[idx]
-                            off = lvar.location.stkoff()
-                            if int(off) == int(state_var_stkoff):
-                                wrote_state = True
-                        except Exception:
-                            pass
+                    # Dual-shape (ticket llr-lxas S1): a lifted ``MopSnapshot``
+                    # carries the lvar's FRAME stack offset, which
+                    # ``varnode_from_mop_snapshot`` promotes to a STACK identity
+                    # -- so ``_stack_offset`` resolves it without any live
+                    # ``mba.vars`` read.  Only the opaque ``minsn_t`` shape (no
+                    # snapshot fields, ``_stack_offset`` returns ``None``) still
+                    # needs the live ``mba.vars[idx].location.stkoff()`` fallback.
+                    off = _stack_offset(dest)
+                    if off is None:
+                        lvar_ref = getattr(dest, "l", None)
+                        idx = getattr(lvar_ref, "idx", None) if lvar_ref else None
+                        if idx is not None:
+                            try:
+                                off = int(mba.vars[idx].location.stkoff())
+                            except Exception:
+                                off = None
+                    if off is not None and int(off) == int(state_var_stkoff):
+                        wrote_state = True
                 if wrote_state:
                     # State variable overwritten before any side effect →
                     # the exit state is transient corridor glue.

@@ -132,7 +132,15 @@ class MopSnapshot:
     # name parity for this field -- do NOT add a generic field-by-field copy
     # between the two variants without remapping ``block_ref`` <-> ``block_num``.
     gaddr: int | None = None      # mop_v: g (global address)
-    lvar_off: int | None = None   # mop_l: l.off (lvar offset)
+    lvar_off: int | None = None   # mop_l: l.off (offset *into* the lvar; usually 0)
+    # mop_l: the lvar's FRAME stack offset (``mba.vars[idx].location.stkoff()``),
+    # captured once per function at lift (ticket llr-lxas S1).  This is the real
+    # state-variable identity; ``lvar_off`` is the offset *within* the lvar and
+    # does not match a frame ``state_var_stkoff``.  ``None`` when the lift-time
+    # ``lvar_idx -> stkoff`` map was unavailable (register-located lvars, or
+    # snapshots built without threading the map) -- in that case identity falls
+    # back to ``lvar_off`` and behavior is unchanged from before this slice.
+    lvar_stkoff: int | None = None
     # Switch-table case rows. Each row is ``(case_values, target_block)``;
     # an empty ``case_values`` tuple represents the default target.
     switch_cases: tuple[tuple[tuple[int, ...], int], ...] = ()

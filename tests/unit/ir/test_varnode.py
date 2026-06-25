@@ -7,6 +7,11 @@ import pytest
 
 from d810.ir.flowgraph import MopSnapshot, OperandKind
 from d810.ir.mop_identity import mop_snapshot_key, mop_snapshot_offset
+from d810.ir.storage_identity import (
+    StorageIdentity,
+    StorageIdentityKind,
+    storage_identity_from_mop_snapshot,
+)
 from d810.ir.varnode import (
     Space,
     Varnode,
@@ -87,3 +92,50 @@ def test_adapter_register_with_none_reg_is_unknown() -> None:
     vn = varnode_from_mop_snapshot(MopSnapshot(kind=OperandKind.REGISTER, reg=None))
 
     assert vn == Varnode(Space.UNKNOWN, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# llr-lxas S1: lvar frame-stkoff captured at lift promotes LVAR -> STACK.
+# ---------------------------------------------------------------------------
+
+
+def test_lvar_with_frame_stkoff_promotes_to_stack_identity() -> None:
+    """A captured frame offset makes an lvar a portable STACK slot."""
+    mop = MopSnapshot(
+        kind=OperandKind.LVAR,
+        lvar_off=0,
+        lvar_stkoff=2032,
+        size=4,
+    )
+
+    assert varnode_from_mop_snapshot(mop) == Varnode(Space.STACK, 2032, 4)
+    assert storage_identity_from_mop_snapshot(mop) == StorageIdentity(
+        kind=StorageIdentityKind.STACK, offset=2032
+    )
+
+
+def test_lvar_without_frame_stkoff_keeps_legacy_lvar_identity() -> None:
+    """No captured frame offset (``None``) falls back to the legacy LVAR slot."""
+    mop = MopSnapshot(
+        kind=OperandKind.LVAR,
+        lvar_off=8,
+        lvar_stkoff=None,
+        size=4,
+    )
+
+    assert varnode_from_mop_snapshot(mop) == Varnode(Space.LVAR, 8, 4)
+    assert storage_identity_from_mop_snapshot(mop) == StorageIdentity(
+        kind=StorageIdentityKind.LVAR, offset=8
+    )
+
+
+def test_lvar_frame_stkoff_zero_is_a_valid_promoted_slot() -> None:
+    """``lvar_stkoff == 0`` is a real frame slot, not a missing capture."""
+    mop = MopSnapshot(
+        kind=OperandKind.LVAR,
+        lvar_off=8,
+        lvar_stkoff=0,
+        size=8,
+    )
+
+    assert varnode_from_mop_snapshot(mop) == Varnode(Space.STACK, 0, 8)
