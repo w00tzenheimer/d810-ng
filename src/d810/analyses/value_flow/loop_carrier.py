@@ -10,6 +10,33 @@ by Hex-Rays as ``for (i = ...; i + v11 == v12; ...)``.  The predicate inputs
 but the post-HCC loop back-edges reach the predicate without traversing a
 ``%var_3A8`` writer.  This fact records that as
 ``LOOP_CARRIER_WRITER_OUTSIDE_SCC`` without changing CFG or planning.
+
+llr-3b41 S7 -- per-collector port onto the canonical IR, following the proven
+S3 (:mod:`d810.analyses.value_flow.zero_blob`) / S4
+(:mod:`d810.analyses.value_flow.call_anchor`) / S5
+(:mod:`d810.analyses.control_flow.state_transition_anchor`) / S6
+(:mod:`d810.analyses.value_flow.folded_loop_guard`) dual-currency pattern.  A
+collector-local iterator routes:
+
+* **meta-rich** sources -- a portable :class:`~d810.ir.flowgraph.FlowGraph`
+  block, or a diag row carrying a parseable ``meta`` operand tree -- through the
+  SAME canonical :func:`~d810.ir.insn_projection.project_diag_instruction` /
+  ``InstructionProjection.from_block`` projection.  The flat fields loop_carrier
+  reads (``dest_stkoff`` / ``dest_temp`` / ``src_temps`` / ``source_stkoffs`` /
+  ``control_transfer``) are derived off the canonical record.
+* **meta-less** rows -- the production ``mba_to_fact_target``
+  ``SimpleNamespace`` (flat fields only) and attrs-only ``meta`` rows -- have no
+  operand tree, so they stay on the byte-identical legacy ``_InstructionView``
+  flat path (``diag_row_has_operand_tree`` is the gate).  The legacy path
+  reconstructs ``source_stkoffs`` from ``meta`` plus the flat ``src_*_stkoff``
+  fields exactly as the pre-S7 shared iterator did.
+
+loop_carrier reads no nested operand subtree (unlike folded_loop_guard's
+``src_l_mop`` / ``src_r_mop``); it reads only the FLAT canonical-derived fields.
+Both the meta-less and FlowGraph paths are byte-identical to the pre-S7 shared
+``_iter_instruction_views`` output for those fields, so no EMBRACE gain arises
+here -- this is a pure currency swap onto a collector-local iterator.  Does not
+touch the shared ``_iter_instruction_views`` or any other collector.
 """
 from __future__ import annotations
 
@@ -17,8 +44,15 @@ from collections.abc import Mapping
 from collections import Counter
 from dataclasses import dataclass
 
-from d810.core.typing import Any
+from d810.capabilities.source_lifter import select_lifter
+from d810.core.typing import Any, Iterable
 from d810.ir.directed_graph import tarjan_scc as _canonical_tarjan_scc
+from d810.ir.instructions import Instruction
+from d810.ir.insn_projection import (
+    InstructionProjection,
+    diag_row_has_operand_tree,
+    project_diag_instruction,
+)
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
 from d810.ir.semantics import ControlTransferKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
@@ -29,7 +63,18 @@ from d810.analyses.fact_collection_context import (
 )
 from d810.analyses.value_flow.induction_carrier import (
     _InstructionView,
-    _iter_instruction_views,
+    _attrs_from_diag_meta,
+    _canonical_opcode_name,
+    _control_transfer_from_instruction,
+    _control_transfer_from_raw,
+    _first_present,
+    _stack_offsets_from_diag_meta,
+    _stack_offsets_from_varnodes,
+    _stkoff_from_varnode,
+    _temp_from_varnode,
+    _temps_from_varnodes,
+    _type_name_from_varnode,
+    _value_op_from_instruction,
 )
 from d810.analyses.value_flow.state_write_anchor import (
     _block_start_ea_lookup,
@@ -41,11 +86,198 @@ from d810.analyses.value_flow.model import FactObservation
 
 _TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 
+
+@dataclass(frozen=True)
+class _LoopCarrierInsn:
+    """Uniform view consumed by loop_carrier's carrier/predicate analysis.
+
+    Built from a canonical :class:`~d810.ir.instructions.Instruction` for a
+    meta-rich source, or from a legacy :class:`_InstructionView` for a meta-less
+    row.  Exposes ONLY the fields loop_carrier reads: identity/display
+    (``block_serial`` / ``insn_index`` / ``ea`` / ``opcode_name`` / ``dstr``),
+    the conditional-branch control transfer (``control_transfer``), the
+    destination stack slot/type (``dest_stkoff`` / ``dest_type``) and the
+    temp/source provenance (``dest_temp`` / ``src_temps`` / ``source_stkoffs``).
+
+    These attribute names match :class:`_InstructionView`, so the module's
+    helpers (``_dest_identity`` / ``_carrier_stkoff`` / ``_expanded_source_stkoffs``
+    / ``_source_identities`` / ``_temp_source_stkoff_lookup`` /
+    ``_is_conditional_jump``) duck-type over this record unchanged.
+    """
+
+    block_serial: int
+    insn_index: int
+    ea: int | None
+    opcode_name: str
+    dstr: str
+    control_transfer: ControlTransferKind | None
+    dest_type: str | None
+    dest_stkoff: int | None
+    dest_temp: int | None
+    src_temps: tuple[int, ...]
+    source_stkoffs: tuple[int, ...]
+
+    @classmethod
+    def from_canonical(
+        cls,
+        *,
+        block_serial: int,
+        index: int,
+        instruction: Instruction,
+    ) -> "_LoopCarrierInsn":
+        attrs = instruction.attrs
+        ea_raw = attrs.get("ea")
+        # loop_carrier classifies stack WRITERS (``_canonical_operands``
+        # returns the store target for STORE; for value ops the result is the
+        # destination).  It only ever reads the destination as a stack slot, so
+        # deriving the flat dest fields off ``instruction.result`` matches the
+        # pre-S7 ``_instruction_view_from_canonical`` flow for the
+        # non-STORE producers loop_carrier cares about.
+        dest = instruction.result
+        return cls(
+            block_serial=int(block_serial),
+            insn_index=int(index),
+            ea=int(ea_raw) if ea_raw is not None else None,
+            opcode_name=_canonical_opcode_name(instruction),
+            dstr=str(attrs.get("display_text") or ""),
+            control_transfer=_control_transfer_from_instruction(instruction),
+            dest_type=_type_name_from_varnode(dest),
+            dest_stkoff=_stkoff_from_varnode(dest),
+            dest_temp=_temp_from_varnode(dest),
+            src_temps=_temps_from_varnodes(instruction.inputs),
+            source_stkoffs=_stack_offsets_from_varnodes(instruction.inputs),
+        )
+
+    @classmethod
+    def from_legacy_view(cls, view: _InstructionView) -> "_LoopCarrierInsn":
+        return cls(
+            block_serial=view.block_serial,
+            insn_index=view.insn_index,
+            ea=view.ea,
+            opcode_name=view.opcode_name,
+            dstr=view.dstr,
+            control_transfer=view.control_transfer,
+            dest_type=view.dest_type,
+            dest_stkoff=view.dest_stkoff,
+            dest_temp=view.dest_temp,
+            src_temps=view.src_temps,
+            source_stkoffs=view.source_stkoffs,
+        )
+
+
+def _legacy_view_from_diag_row(
+    block_serial: int, index: int, insn: Any
+) -> _InstructionView:
+    """Build the byte-identical legacy view for a meta-less diag row.
+
+    Mirrors the pre-S7 shared ``_iter_portable_instructions`` flat path for the
+    fields loop_carrier reads: flat ``dest_stkoff`` / ``dest_type``, the
+    ``source_stkoffs`` reconstructed from ``meta`` plus the flat
+    ``src_*_stkoff`` fields, and the ``control_transfer`` resolved from raw
+    attributes.  Temp provenance (``dest_temp`` / ``src_temps``) is absent on a
+    meta-less flat row, matching the pre-S7 default-empty behaviour.
+    """
+    dest_stkoff = (
+        int(getattr(insn, "dest_stkoff"))
+        if getattr(insn, "dest_stkoff", None) is not None
+        else None
+    )
+    src_l_stkoff = (
+        int(getattr(insn, "src_l_stkoff"))
+        if getattr(insn, "src_l_stkoff", None) is not None
+        else None
+    )
+    src_r_stkoff = (
+        int(getattr(insn, "src_r_stkoff"))
+        if getattr(insn, "src_r_stkoff", None) is not None
+        else None
+    )
+    source_stkoffs = tuple(
+        dict.fromkeys(
+            int(offset)
+            for offset in (
+                *tuple(getattr(insn, "source_stkoffs", ()) or ()),
+                *_stack_offsets_from_diag_meta(getattr(insn, "meta", None)),
+                src_l_stkoff,
+                src_r_stkoff,
+            )
+            if offset is not None
+        )
+    )
+    attrs = dict(_attrs_from_diag_meta(getattr(insn, "meta", None)))
+    return _InstructionView(
+        block_serial=block_serial,
+        insn_index=int(getattr(insn, "index", index)),
+        ea=getattr(insn, "ea", None),
+        opcode_name=str(getattr(insn, "opcode_name", "")),
+        dest_type=getattr(insn, "dest_type", None),
+        dest_stkoff=dest_stkoff,
+        dest_size=getattr(insn, "dest_size", None),
+        src_l_type=getattr(insn, "src_l_type", None),
+        src_l_stkoff=src_l_stkoff,
+        src_l_value=None,
+        src_r_type=getattr(insn, "src_r_type", None),
+        src_r_stkoff=src_r_stkoff,
+        src_r_value=None,
+        dstr=str(getattr(insn, "dstr", "")),
+        control_transfer=_control_transfer_from_raw(
+            _first_present(
+                getattr(insn, "control_transfer", None),
+                getattr(insn, "control_transfer_kind", None),
+                attrs.get("control_transfer"),
+                attrs.get("control_transfer_kind"),
+            )
+        ),
+        source_stkoffs=source_stkoffs,
+        attrs=attrs,
+    )
+
+
+def _iter_loop_carrier_insns(target: Any) -> Iterable[_LoopCarrierInsn]:
+    """Yield loop_carrier's semantic record for every instruction in ``target``.
+
+    Dual-currency (see module docstring): meta-rich FlowGraph blocks and
+    operand-tree diag rows are lifted to canonical ``Instruction``; meta-less
+    rows stay on the byte-identical legacy ``_InstructionView`` flat path.  A
+    registered live :class:`~d810.capabilities.source_lifter.SourceLifter`
+    lifts a backend source to a portable flow graph first (behaviour-identical
+    to no-lifter when none is registered).
+    """
+    lifter = select_lifter(target)
+    if lifter is not None:
+        target = lifter.lift(target)
+
+    blocks = getattr(target, "blocks", target)
+    block_iter = blocks.values() if isinstance(blocks, Mapping) else blocks
+
+    for blk in block_iter:
+        block_serial = int(getattr(blk, "serial"))
+        if getattr(blk, "insn_snapshots", None) is not None:
+            for index, instruction in enumerate(InstructionProjection.from_block(blk)):
+                yield _LoopCarrierInsn.from_canonical(
+                    block_serial=block_serial,
+                    index=index,
+                    instruction=instruction,
+                )
+            continue
+        for index, insn in enumerate(getattr(blk, "instructions", ())):
+            if diag_row_has_operand_tree(insn):
+                yield _LoopCarrierInsn.from_canonical(
+                    block_serial=block_serial,
+                    index=int(getattr(insn, "index", index)),
+                    instruction=project_diag_instruction(insn),
+                )
+                continue
+            yield _LoopCarrierInsn.from_legacy_view(
+                _legacy_view_from_diag_row(block_serial, index, insn)
+            )
+
+
 @dataclass(frozen=True)
 class _CarrierCandidate:
     identity: StorageIdentity
-    source_readers: tuple[_InstructionView, ...]
-    writers: tuple[_InstructionView, ...]
+    source_readers: tuple[_LoopCarrierInsn, ...]
+    writers: tuple[_LoopCarrierInsn, ...]
 
 
 def _stack_identity(stkoff: int | None) -> StorageIdentity | None:
@@ -58,7 +290,7 @@ def _identity_keys(identities: tuple[StorageIdentity, ...]) -> tuple[str, ...]:
     return tuple(identity.key for identity in identities)
 
 
-def _dest_identity(insn: _InstructionView) -> StorageIdentity | None:
+def _dest_identity(insn: _LoopCarrierInsn) -> StorageIdentity | None:
     """Return the canonical storage identity written by ``insn``, if any."""
     return _stack_identity(insn.dest_stkoff)
 
@@ -77,7 +309,7 @@ def _merge_stkoffs(*groups: tuple[int, ...]) -> tuple[int, ...]:
 
 
 def _expanded_source_stkoffs(
-    insn: _InstructionView,
+    insn: _LoopCarrierInsn,
     temp_source_stkoffs: dict[tuple[int, int], tuple[int, ...]],
 ) -> tuple[int, ...]:
     temp_sources = tuple(
@@ -89,7 +321,7 @@ def _expanded_source_stkoffs(
 
 
 def _source_identities(
-    insn: _InstructionView,
+    insn: _LoopCarrierInsn,
     temp_source_stkoffs: dict[tuple[int, int], tuple[int, ...]],
 ) -> tuple[StorageIdentity, ...]:
     return tuple(
@@ -100,7 +332,7 @@ def _source_identities(
 
 
 def _temp_source_stkoff_lookup(
-    instructions: tuple[_InstructionView, ...],
+    instructions: tuple[_LoopCarrierInsn, ...],
 ) -> dict[tuple[int, int], tuple[int, ...]]:
     """Return source-stack identities for temp-producing canonical records."""
     lookup: dict[tuple[int, int], tuple[int, ...]] = {}
@@ -115,7 +347,7 @@ def _temp_source_stkoff_lookup(
     return lookup
 
 
-def _is_conditional_jump(insn: _InstructionView) -> bool:
+def _is_conditional_jump(insn: _LoopCarrierInsn) -> bool:
     return insn.control_transfer is ControlTransferKind.CONDITIONAL_BRANCH
 
 
@@ -176,10 +408,10 @@ def _loop_scc_by_block(
 
 def _candidate_carriers_for_predicate(
     predicate_vars: tuple[StorageIdentity, ...],
-    writers_by_dest_identity: dict[StorageIdentity, list[_InstructionView]],
+    writers_by_dest_identity: dict[StorageIdentity, list[_LoopCarrierInsn]],
     temp_source_stkoffs: dict[tuple[int, int], tuple[int, ...]],
 ) -> tuple[_CarrierCandidate, ...]:
-    readers_by_source_identity: dict[StorageIdentity, list[_InstructionView]] = {}
+    readers_by_source_identity: dict[StorageIdentity, list[_LoopCarrierInsn]] = {}
     for predicate_var in predicate_vars:
         for writer in writers_by_dest_identity.get(predicate_var, ()):
             for source_identity in _source_identities(writer, temp_source_stkoffs):
@@ -215,7 +447,7 @@ def _candidate_carriers_for_predicate(
     return tuple(candidates)
 
 
-def _carrier_stkoff(writers: tuple[_InstructionView, ...]) -> int | None:
+def _carrier_stkoff(writers: tuple[_LoopCarrierInsn, ...]) -> int | None:
     counts: Counter[int] = Counter()
     for writer in writers:
         if writer.dest_stkoff is not None:
@@ -255,7 +487,7 @@ class LoopPredicateValueFactCollector:
         )
         phase = context.phase
         maturity_text = fact_provider_label(context)
-        instructions = tuple(_iter_instruction_views(target))
+        instructions = tuple(_iter_loop_carrier_insns(target))
         if not instructions:
             return ()
 
@@ -265,7 +497,7 @@ class LoopPredicateValueFactCollector:
             return ()
 
         temp_source_stkoffs = _temp_source_stkoff_lookup(instructions)
-        writers_by_dest_identity: dict[StorageIdentity, list[_InstructionView]] = {}
+        writers_by_dest_identity: dict[StorageIdentity, list[_LoopCarrierInsn]] = {}
         for insn in instructions:
             identity = _dest_identity(insn)
             if identity is None:
