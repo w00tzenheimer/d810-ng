@@ -37,8 +37,8 @@ cdef extern from "hexrays.hpp":
 import ida_hexrays
 
 # We still need Python helpers for name resolution & masking
-from d810.hexrays.cfg_utils import get_stack_var_name, extract_base_and_offset
-from d810.hexrays.hexrays_helpers import AND_TABLE
+from d810.hexrays.ir.mop_utils import get_stack_var_name, extract_base_and_offset
+from d810.hexrays.utils.hexrays_helpers import AND_TABLE
 # Compile-time alias for SWIG proxy; runtime type is ida_hexrays.mop_t
 ctypedef object MopProxy
 # ===========================================================================

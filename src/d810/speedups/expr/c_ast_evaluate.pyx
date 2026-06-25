@@ -27,7 +27,7 @@ from d810.core.bits import (
     unsigned_to_signed,
 )
 from d810.core import bits as _rotate_helpers
-from d810.hexrays.hexrays_helpers import AND_TABLE
+from d810.hexrays.utils.hexrays_helpers import AND_TABLE
 
 logger = getLogger(__name__)
 
