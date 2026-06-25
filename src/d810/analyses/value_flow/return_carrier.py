@@ -13,11 +13,38 @@ passes consult this payload at GLBOPT1+ to know that a target block / stkvar set
 corresponds to a return-carrier MBA materialization site even after IDA's CALLS
 phase has folded the canonical ``add ... -> %var_K; mov %var_K -> %var_8``
 chain into a sub-instruction operand tree.
+
+llr-3b41 (missed 9th collector) -- this collector now consumes the canonical
+:class:`~d810.ir.instructions.Instruction` IR through a collector-local
+dual-currency iterator (:func:`_iter_return_carrier_insns`), following the proven
+S3 (:mod:`d810.analyses.value_flow.zero_blob`) .. S9
+(:mod:`d810.analyses.value_flow.induction_carrier`) pattern.  return_carrier reads
+the full operand surface (return-register reads, stack-identity carrier movs,
+constant/computed return writers, and a positional upstream-writer walk), so the
+canonical :class:`_InstructionView` is the right currency -- a narrower
+per-collector adapter would only re-expose the same fields.  Like S9, this reuses
+induction_carrier's SHARED :func:`_instruction_view_from_canonical` /
+:func:`_legacy_view_from_diag_row` directly: a portable
+:class:`~d810.ir.flowgraph.FlowGraph` block or a diag row carrying a parseable
+``meta`` operand tree is projected to a canonical ``Instruction`` and adapted to
+the canonical :class:`_InstructionView`; meta-less rows stay on the byte-identical
+legacy flat path (gated by ``diag_row_has_operand_tree``).  This routes the
+collector through the canonical projection WITHOUT touching the shared
+:func:`_iter_instruction_views` the not-yet-ported ``ollvm_carrier_profile``
+(S10) still depends on.
 """
 from __future__ import annotations
 
-from d810.core.typing import Any
+from collections.abc import Mapping
+
+from d810.capabilities.source_lifter import select_lifter
+from d810.core.typing import Any, Iterable
 from d810.ir.expressions import ValueOpKind
+from d810.ir.insn_projection import (
+    InstructionProjection,
+    diag_row_has_operand_tree,
+    project_diag_instruction,
+)
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
 from d810.analyses.fact_collection_context import (
     FactCollectionContext,
@@ -26,7 +53,8 @@ from d810.analyses.fact_collection_context import (
 )
 from d810.analyses.value_flow.induction_carrier import (
     _InstructionView,
-    _iter_instruction_views,
+    _instruction_view_from_canonical,
+    _legacy_view_from_diag_row,
     _operation_of_view,
 )
 from d810.analyses.value_flow import (
@@ -42,6 +70,67 @@ _TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 # id 0 for the integer return register (rax/eax). Keep this as a structural
 # register identity instead of parsing the rendered "rax" spelling.
 _INTEGER_RETURN_REGISTER_IDS = frozenset({0})
+
+
+def _iter_return_carrier_insns(target: Any) -> Iterable[_InstructionView]:
+    """Yield return_carrier's dual-currency instruction views.
+
+    llr-3b41 (missed 9th collector) -- the per-collector port of
+    return_carrier onto the canonical IR, following the proven S3
+    (:mod:`d810.analyses.value_flow.zero_blob`) .. S9
+    (:mod:`d810.analyses.value_flow.induction_carrier`) dual-currency pattern.
+
+    Because return_carrier reads the full operand surface (return-register
+    reads, stack-identity carrier movs, constant/computed return writers, and a
+    positional upstream-writer walk), the canonical :class:`_InstructionView` is
+    the right currency, so this iterator reuses induction_carrier's SHARED
+    :func:`_instruction_view_from_canonical` / :func:`_legacy_view_from_diag_row`
+    helpers directly rather than duplicating a narrower adapter: meta-rich
+    sources -- a portable :class:`~d810.ir.flowgraph.FlowGraph` block (via
+    ``InstructionProjection.from_block``) or a diag row carrying a parseable
+    ``meta`` operand tree (via
+    :func:`~d810.ir.insn_projection.project_diag_instruction`) -- are projected
+    to a canonical :class:`~d810.ir.instructions.Instruction` and adapted to the
+    canonical :class:`_InstructionView` the return-carrier classifiers consume;
+    meta-less rows stay on the byte-identical legacy flat path
+    (:func:`_legacy_view_from_diag_row`, gated by ``diag_row_has_operand_tree``).
+
+    A registered live :class:`~d810.capabilities.source_lifter.SourceLifter`
+    lifts a backend source to a portable flow graph first (behaviour-identical
+    to no-lifter when none is registered) -- preserving the pre-port behaviour of
+    the shared :func:`_iter_instruction_views` this replaces.  This routes the
+    collector through the canonical projection WITHOUT touching that shared
+    iterator the not-yet-ported ``ollvm_carrier_profile`` (S10) still depends on.
+    """
+    lifter = select_lifter(target)
+    if lifter is not None:
+        target = lifter.lift(target)
+
+    blocks = getattr(target, "blocks", target)
+    if isinstance(blocks, Mapping):
+        block_iter = blocks.values()
+    else:
+        block_iter = blocks
+
+    for blk in block_iter:
+        block_serial = int(getattr(blk, "serial"))
+        if getattr(blk, "insn_snapshots", None) is not None:
+            for index, instruction in enumerate(InstructionProjection.from_block(blk)):
+                yield _instruction_view_from_canonical(
+                    block_serial=block_serial,
+                    index=index,
+                    instruction=instruction,
+                )
+            continue
+        for index, insn in enumerate(getattr(blk, "instructions", ())):
+            if diag_row_has_operand_tree(insn):
+                yield _instruction_view_from_canonical(
+                    block_serial=block_serial,
+                    index=int(getattr(insn, "index", index)),
+                    instruction=project_diag_instruction(insn),
+                )
+                continue
+            yield _legacy_view_from_diag_row(block_serial, index, insn)
 
 
 def _is_return_register_read(insn: _InstructionView) -> bool:
@@ -84,7 +173,7 @@ def _find_upstream_writer(
     order that writes ``target_stkoff`` with ``mop_S`` dest, or
     ``None`` if no such writer exists or ``exclude`` is missing.
 
-    Iteration order from :func:`_iter_instruction_views` walks blocks
+    Iteration order from :func:`_iter_return_carrier_insns` walks blocks
     in serial-ascending order and instructions in ``insn_index`` order.
     For a carrier-mov at position P, only writers strictly preceding P
     are considered.  This avoids picking a function-wide LAST writer
@@ -104,7 +193,7 @@ def _find_upstream_writer(
     recover the canonical producer in both cases: when a carrier-mov
     ``mov %var_K, %var_8`` is reached, every reaching def of
     ``%var_K`` lies earlier in the function-wide iteration (because
-    ``_iter_instruction_views`` walks blocks in topological order for
+    ``_iter_return_carrier_insns`` walks blocks in topological order for
     the captured snapshot).  Multi-step chains and CFG-aware
     reaching-def analysis remain follow-up work.
     """
@@ -211,7 +300,7 @@ class ReturnSlotFactCollector:
         )
         phase = context.phase
         maturity_text = fact_provider_label(context)
-        instructions = tuple(_iter_instruction_views(target))
+        instructions = tuple(_iter_return_carrier_insns(target))
         return_slots = _return_slot_offsets(instructions)
         if not return_slots:
             return ()

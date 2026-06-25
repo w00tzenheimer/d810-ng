@@ -1,6 +1,7 @@
 """Tests for ReturnSlotFactCollector."""
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
@@ -636,3 +637,226 @@ def test_upstream_writer_walk_picks_canonical_producer_not_function_wide_last() 
     # appear -- proving we picked the canonical producer, not the late
     # function-wide last writer.
     assert "S456" not in storage_keys
+
+
+# ---------------------------------------------------------------------------
+# llr-3b41 (missed 9th collector): per-collector port onto canonical Instruction.
+#
+# The collector's own dual-currency iterator
+# (:func:`~d810.analyses.value_flow.return_carrier._iter_return_carrier_insns`)
+# routes the two meta-rich currencies -- a portable ``FlowGraph`` block
+# (covered above by ``_cfg_target``) AND a diag row carrying a parseable ``meta``
+# operand tree -- through the SAME canonical projection, while meta-less rows
+# (every ``_target`` test above) stay on the byte-identical legacy flat path.
+# The tests below pin the previously-uncovered operand-tree diag-row source and
+# the meta-less zero-observation contract.
+# ---------------------------------------------------------------------------
+
+
+def _meta_stack(stkoff: int, *, size: int = 8) -> dict:
+    return {
+        "type": "mop_S",
+        "type_num": 5,
+        "size": size,
+        "dstr": f"%var_{stkoff:x}.{size}",
+        "stkoff": stkoff,
+    }
+
+
+def _meta_reg(reg: int, *, size: int = 8) -> dict:
+    return {
+        "type": "mop_r",
+        "type_num": 1,
+        "size": size,
+        "dstr": "rax.8",
+        "register": reg,
+    }
+
+
+def _meta_insn(
+    *,
+    index: int,
+    ea: int,
+    opcode_name: str,
+    l: dict | None = None,
+    r: dict | None = None,
+    d: dict | None = None,
+    dstr: str,
+) -> InstructionSnapshot:
+    """A diag row carrying a parseable ``meta`` operand tree -- routed through
+    the canonical lift (``diag_row_has_operand_tree``).  The flat
+    ``dest_stkoff`` / ``src_l_*`` fields are intentionally ``None`` so a passing
+    test PROVES the operands were recovered from the operand tree, not the flat
+    legacy path."""
+    # NOTE: ``project_diag_instruction`` keys ``_OPCODE_NAME_TO_INSN_KIND`` on the
+    # RAW Hex-Rays opcode name (``m_mov`` / ``m_add``), so the operand-tree diag
+    # row must carry the raw name un-aliased (unlike the flat ``_insn`` helper).
+    insn = InstructionSnapshot(
+        index=index,
+        ea=ea,
+        opcode=0,
+        opcode_name=opcode_name,
+        dest_type=None,
+        dest_stkoff=None,
+        dest_size=d.get("size") if d is not None else None,
+        src_l_type=None,
+        src_l_stkoff=None,
+        src_l_value=None,
+        src_r_type=None,
+        src_r_stkoff=None,
+        src_r_value=None,
+        dstr=dstr,
+    )
+    meta: dict = {}
+    if l is not None:
+        meta["l"] = l
+    if r is not None:
+        meta["r"] = r
+    if d is not None:
+        meta["d"] = d
+    insn.meta = json.dumps(meta)
+    return insn
+
+
+def test_collects_return_slot_identity_carrier_from_meta_rich_diag_row() -> None:
+    """A diag row whose ``meta`` carries an operand tree is lifted through the
+    SAME canonical projection as the FlowGraph source; the stack-identity
+    carrier and the return-register read are recovered from the operand tree
+    (the flat fields are ``None``), yielding the same fact as the FlowGraph /
+    meta-less shapes."""
+    collector = ReturnSlotFactCollector()
+
+    facts = collector.collect(
+        _target(
+            _meta_insn(
+                index=0,
+                ea=0x180014333,
+                opcode_name="m_mov",
+                l=_meta_stack(0x680),
+                d=_meta_stack(0x7F0),
+                dstr="mov %var_178.8, %var_8.8",
+            ),
+            _meta_insn(
+                index=1,
+                ea=0x1800143C5,
+                opcode_name="m_mov",
+                l=_meta_stack(0x7F0),
+                d=_meta_reg(0),
+                dstr="mov %var_8.8, rax.8",
+            ),
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_CALLS"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact.kind == "ReturnCarrierFact"
+    assert fact.semantic_key == (
+        "return_carrier:slot=0x7f0:class=stack_identity_carrier:source=S:0x680"
+    )
+    assert fact.payload["carrier_class"] == "stack_identity_carrier"
+    assert fact.payload["source_signature"] == "S:0x680"
+    assert fact.source_ea == 0x180014333
+
+
+def test_records_upstream_mba_for_stack_identity_carrier_from_meta_rich_diag_row() -> None:
+    """The upstream-writer backward trace works on operand-tree diag rows too:
+    the upstream MBA's structured source-stack identities are recovered from the
+    operand tree (recursive ``stack_refs``), NOT parsed from the display text.
+
+    EMBRACE: a meta-rich diag row that previously fell to the flat legacy path
+    (no operand tree -> no recursive source offsets) now surfaces the same
+    structured ``upstream_writer_source_storage_keys`` the FlowGraph source
+    yields, because both route through ``project_diag_instruction``."""
+    collector = ReturnSlotFactCollector()
+
+    # Upstream MBA producer: add (%var_40 op %var_228), %var_7C8 with a nested
+    # operand tree whose recursive stack_refs expose the source identities.
+    upstream = _meta_insn(
+        index=0,
+        ea=0x180014333,
+        opcode_name="m_add",
+        l=_meta_stack(0x40),
+        r=_meta_stack(0x228),
+        d=_meta_stack(0x7C8),
+        dstr="add %var_40.8, %var_228.8, %var_7C8.8",
+    )
+    carrier = _meta_insn(
+        index=1,
+        ea=0x1800143C5,
+        opcode_name="m_mov",
+        l=_meta_stack(0x7C8),
+        d=_meta_stack(0x8),
+        dstr="mov %var_7C8.8, %var_8.8",
+    )
+    rax_trampoline = _meta_insn(
+        index=2,
+        ea=0x1800143D0,
+        opcode_name="m_mov",
+        l=_meta_stack(0x8),
+        d=_meta_reg(0),
+        dstr="mov %var_8.8, rax.8",
+    )
+
+    facts = collector.collect(
+        _target(upstream, carrier, rax_trampoline),
+        func_ea=0x180012cf0,
+        maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact.payload["carrier_class"] == "stack_identity_carrier"
+    assert fact.payload["carrier_dst_stkoff"] == 0x7C8
+    assert fact.payload["upstream_writer_block_serial"] == 10
+    assert fact.payload["upstream_writer_opcode"] == "add"
+    assert fact.payload["upstream_writer_dest_stkoff"] == 0x7C8
+    # The structured source identities are recovered from the recursive operand
+    # tree -- not the display text -- proving the canonical lift route.
+    assert set(fact.payload["upstream_writer_source_storage_keys"]) == {"S64", "S552"}
+    assert fact.evidence == (
+        "mov %var_7C8.8, %var_8.8",
+        "add %var_40.8, %var_228.8, %var_7C8.8",
+    )
+
+
+def test_meta_less_attrs_only_row_yields_no_observations() -> None:
+    """A meta-less row -- ``meta`` carrying only attrs with no operand tree --
+    stays on the byte-identical legacy flat path.  With no operand tree and no
+    flat return-register read, the collector yields zero observations, exactly
+    as before the port."""
+    collector = ReturnSlotFactCollector()
+
+    carrier = _insn(
+        index=0,
+        opcode_name="m_mov",
+        dest_type="mop_S",
+        dest_stkoff=0x8,
+        src_l_type="mop_S",
+        src_l_stkoff=0x7C8,
+        dstr="mov %var_7C8.8, %var_8.8",
+    )
+    # Return-register read row whose ``meta`` is attrs-only (no l/r/d operand
+    # tree) and whose flat fields omit the register identity -> meta-less path,
+    # so ``_is_return_register_read`` never fires and no slot is resolved.
+    attrs_only = _insn(
+        index=1,
+        dest_type="mop_r",
+        dest_stkoff=None,
+        src_l_type="mop_S",
+        src_l_stkoff=0x8,
+        dstr="mov %var_8.8, rax.8",
+    )
+    attrs_only.meta = json.dumps({"byte_index": 1})
+
+    facts = collector.collect(
+        _target(carrier, attrs_only),
+        func_ea=0x180012cf0,
+        maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
+        phase="pre_d810",
+    )
+
+    assert facts == ()
