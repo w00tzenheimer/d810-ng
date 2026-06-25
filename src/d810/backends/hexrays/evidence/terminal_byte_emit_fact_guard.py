@@ -107,7 +107,7 @@ def _byte_emit_source_ea(site: Any) -> int | None:
 
 
 def _is_state_flow_scaffolding(
-    mba: Any,
+    flow_graph: Any | None,
     source_block: int,
     *,
     insn_kind_classifier: InsnKindClassifier | None = None,
@@ -120,7 +120,7 @@ def _is_state_flow_scaffolding(
     OLLVM state-machine constant write.
     """
     refs = collect_const_var_refs_in_block(
-        mba,
+        flow_graph,
         source_block,
         insn_kind_classifier=insn_kind_classifier,
         operand_kind_classifier=operand_kind_classifier,
@@ -464,7 +464,7 @@ def filter_terminal_byte_emit_fact_redirects(
             continue
 
         is_scaffolding, const_refs = _is_state_flow_scaffolding(
-            mba,
+            flow_graph,
             source,
             insn_kind_classifier=insn_kind_classifier,
             operand_kind_classifier=operand_kind_classifier,

@@ -7,7 +7,7 @@ a diagnostic only for the intended block.
 """
 from __future__ import annotations
 
-from d810.ir.flowgraph import InsnKind, OperandKind
+from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, OperandKind
 
 
 class _StkOff:
@@ -400,6 +400,43 @@ class _MopWithDstr(_Mop):
         self.dstr = dstr_text
 
 
+def _insns_of(block: _Mblock) -> tuple[_Insn, ...]:
+    """Flatten an ``_Mblock`` head→next chain into a tuple of insns."""
+    insns: list[_Insn] = []
+    insn = block.head
+    while insn is not None:
+        insns.append(insn)
+        insn = insn.next
+    return tuple(insns)
+
+
+def _flow_graph_from_blocks(blocks: list[_Mblock]) -> FlowGraph:
+    """Wrap test ``_Mblock`` fakes in a portable ``FlowGraph`` snapshot.
+
+    ``collect_const_var_refs_in_block`` now consumes a ``FlowGraph`` and
+    iterates ``BlockSnapshot.iter_insns()``; the ``_Insn`` fakes ride along
+    as snapshot instructions (the helper reads ``.kind``/``.l``/``.d`` only).
+    ``tail_opcode=0`` skips the ``insn_snapshots[-1].opcode`` derivation that
+    the structural ``_Insn`` fakes do not provide.
+    """
+    snapshots = {
+        serial: BlockSnapshot(
+            serial=serial,
+            block_type=0,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0,
+            insn_snapshots=_insns_of(block),
+            tail_opcode=0,
+            tail_kind=InsnKind.UNKNOWN,
+            kind=BlockKind.ZERO_WAY,
+        )
+        for serial, block in enumerate(blocks)
+    }
+    return FlowGraph(blocks=snapshots, entry_serial=0, func_ea=0)
+
+
 class TestCollectConstVarRefsInBlock:
     def _build_const_writer(
         self,
@@ -428,9 +465,9 @@ class TestCollectConstVarRefsInBlock:
                 (0x660, "660"),
             )
         )
-        mba = _Mba([block])
+        flow_graph = _flow_graph_from_blocks([block])
 
-        refs = collect_const_var_refs_in_block(mba, block_serial=0)
+        refs = collect_const_var_refs_in_block(flow_graph, block_serial=0)
 
         assert refs == frozenset({"s552", "s1616", "s1624", "s1632"})
 
@@ -459,10 +496,10 @@ class TestCollectConstVarRefsInBlock:
         src = LiveMop("mop_n", nnn=_NumValue(0xC0FFEE))
         dst = LiveMop("mop_S", s=_StkOff(0x228), dstr_text="%var_228.8")
         insn = LiveInsn("m_mov", l=src, d=dst)
-        mba = _Mba([_Mblock(_chain(insn))])
+        flow_graph = _flow_graph_from_blocks([_Mblock(_chain(insn))])
 
         refs = collect_const_var_refs_in_block(
-            mba,
+            flow_graph,
             block_serial=0,
             insn_kind_classifier=lambda obj: (
                 InsnKind.MOV if getattr(obj, "opcode", None) == "m_mov" else None
@@ -484,9 +521,9 @@ class TestCollectConstVarRefsInBlock:
         dst = _Mop(OperandKind.STACK, s=_StkOff(0x648))
         insn = _Insn(InsnKind.MOV, l=src, d=dst)
         insn.dstr = lambda: "mov    #0xC0FFEE.8, %var_DEAD.8"
-        mba = _Mba([_Mblock(_chain(insn))])
+        flow_graph = _flow_graph_from_blocks([_Mblock(_chain(insn))])
 
-        assert collect_const_var_refs_in_block(mba, block_serial=0) == frozenset({
+        assert collect_const_var_refs_in_block(flow_graph, block_serial=0) == frozenset({
             "s1608",
         })
 
@@ -500,9 +537,9 @@ class TestCollectConstVarRefsInBlock:
         var_y = _Mop(OperandKind.STACK, s=_StkOff(0x108))
         dest = _Mop(OperandKind.STACK, s=_StkOff(0x200))
         arith = _Insn(InsnKind.ADD, l=var_x, r=var_y, d=dest)
-        mba = _Mba([_Mblock(_chain(arith))])
+        flow_graph = _flow_graph_from_blocks([_Mblock(_chain(arith))])
 
-        assert collect_const_var_refs_in_block(mba, block_serial=0) == frozenset()
+        assert collect_const_var_refs_in_block(flow_graph, block_serial=0) == frozenset()
 
     def test_returns_empty_when_block_serial_out_of_range(self):
         from d810.transforms.loop_bound_writer_guard import (
@@ -510,12 +547,12 @@ class TestCollectConstVarRefsInBlock:
         )
 
         block = self._build_const_writer(((0x228, "228"),))
-        mba = _Mba([block])
+        flow_graph = _flow_graph_from_blocks([block])
 
-        # Block 5 is past mba.qty == 1.
-        assert collect_const_var_refs_in_block(mba, block_serial=5) == frozenset()
+        # Block 5 is absent from the FlowGraph (only serial 0 exists).
+        assert collect_const_var_refs_in_block(flow_graph, block_serial=5) == frozenset()
 
-    def test_returns_empty_when_mba_is_none(self):
+    def test_returns_empty_when_flow_graph_is_none(self):
         from d810.transforms.loop_bound_writer_guard import (
             collect_const_var_refs_in_block,
         )
@@ -533,6 +570,6 @@ class TestCollectConstVarRefsInBlock:
             OperandKind.STACK, s=_StkOff(0x200), dstr_text="%var_200.8"
         )
         insn = _Insn(InsnKind.MOV, l=src_var, d=dst_var)
-        mba = _Mba([_Mblock(_chain(insn))])
+        flow_graph = _flow_graph_from_blocks([_Mblock(_chain(insn))])
 
-        assert collect_const_var_refs_in_block(mba, block_serial=0) == frozenset()
+        assert collect_const_var_refs_in_block(flow_graph, block_serial=0) == frozenset()

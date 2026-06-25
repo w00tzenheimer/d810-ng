@@ -33,7 +33,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from d810.capabilities.providers import get_condition_chain_walkers
-from d810.ir.flowgraph import InsnKind, OperandKind
+from d810.ir.flowgraph import BlockSnapshot, InsnKind, OperandKind
 
 # Loop-bound mask values seen on OLLVM-style flattened functions where the
 # bound expression is ``(state & mask)`` with mask in
@@ -150,6 +150,9 @@ def _operand_const_value(
 
 
 def _iter_block_insns(blk):
+    if isinstance(blk, BlockSnapshot):
+        yield from blk.iter_insns()
+        return
     insn = getattr(blk, "head", None)
     while insn is not None:
         yield insn
@@ -637,7 +640,7 @@ def detect_loop_counter_writeback_tail(
 
 
 def collect_const_var_refs_in_block(
-    mba,
+    flow_graph,
     block_serial: int,
     *,
     insn_kind_classifier: InsnKindClassifier | None = None,
@@ -647,23 +650,24 @@ def collect_const_var_refs_in_block(
 
     The key format matches
     ``ReturnCarrierFact.payload["upstream_writer_source_storage_keys"]``.
-    This helper deliberately reads the live destination stack offset rather
-    than parsing rendered ``%var`` names from ``dstr``.
+    This helper reads the destination stack offset from the portable
+    :class:`~d810.ir.flowgraph.FlowGraph` snapshot rather than parsing
+    rendered ``%var`` names from ``dstr``.
 
     The walk is read-only and returns an empty set on any failure
-    (missing block, missing instructions, bad opcodes, parse errors).
+    (missing graph, missing block, missing instructions, bad opcodes,
+    parse errors).
     """
-    if mba is None:
+    if flow_graph is None:
         return frozenset()
     try:
         serial = int(block_serial)
-        qty = int(getattr(mba, "qty", 0))
     except (TypeError, ValueError):
         return frozenset()
-    if serial < 0 or serial >= qty:
+    if serial < 0:
         return frozenset()
     try:
-        blk = get_condition_chain_walkers().get_block(mba, serial)
+        blk = flow_graph.get_block(serial)
     except Exception:
         return frozenset()
     if blk is None:
