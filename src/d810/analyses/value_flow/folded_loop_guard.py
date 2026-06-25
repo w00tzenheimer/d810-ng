@@ -24,15 +24,57 @@ Observability-only: the collector never modifies microcode and never feeds
 planning except through the typed fact a consumer chooses to read.  The earlier
 LOCOPT facts carry forward into the CALLS view via the lifecycle's
 maturity-rank filter, so the unflatten CALLS run can read this LOCOPT fact directly.
+
+llr-3b41 S6 -- per-collector port onto the canonical IR, following the proven S3
+(:mod:`d810.analyses.value_flow.zero_blob`) / S4
+(:mod:`d810.analyses.value_flow.call_anchor`) / S5
+(:mod:`d810.analyses.control_flow.state_transition_anchor`) dual-currency
+pattern.  A collector-local iterator routes:
+
+* **meta-rich** sources -- a portable :class:`~d810.ir.flowgraph.FlowGraph`
+  block, or a diag row carrying a parseable ``meta`` operand tree -- through the
+  SAME canonical :func:`~d810.ir.insn_projection.project_diag_instruction` /
+  ``InstructionProjection.from_block`` projection.  Flat operands
+  (``dest_stkoff`` / ``src_*``) are read off the canonical record; the nested
+  operand SUBTREE (``src_l_mop`` / ``src_r_mop``) is taken from the SOURCE
+  ``InsnSnapshot.l`` / ``.r`` (FlowGraph) or :func:`parse_diag_meta_operand`
+  (diag) ``MopSnapshot`` and walked through the canonical
+  :func:`~d810.ir.insn_projection.iter_operand_exprs` API.
+* **meta-less** rows -- the production ``mba_to_fact_target``
+  ``SimpleNamespace`` (flat fields only) and attrs-only ``meta`` rows -- have no
+  operand tree, so they stay on the byte-identical legacy ``_InstructionView``
+  flat path (``diag_row_has_operand_tree`` is the gate).
+
+**EMBRACE gain (S6, the first port where it bites):** the nested-sub guard
+detection (Shape 2 below) reads ``src_l_mop`` / ``src_r_mop``.  Pre-S6 those
+fields were populated ONLY by the legacy flat path (``getattr(insn, "l"/"r")``),
+which is ``None`` on every real source -- so Shape 2 was effectively dead on
+FlowGraph blocks AND operand-tree diag rows (``_instruction_view_from_canonical``
+never set the mop subtrees).  Routing meta-rich sources through the source
+``MopSnapshot`` now lets a buried ``(counter - #N)`` guard inside an
+``m_xdu`` / ``m_jge`` tree be detected on those sources for the first time -- a
+strict improvement.  The FlowGraph path already exposed nested structure in the
+canonical projection, so its flat-shape output stays byte-identical; only the
+nested-sub recovery is newly reachable.  Meta-less rows stay byte-identical.
 """
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from d810.core.typing import Any
+from d810.capabilities.source_lifter import select_lifter
+from d810.core.typing import Any, Iterable
 from d810.ir.expressions import Const, ExprRef, Move, Sub, ValueOpKind
-from d810.ir.insn_projection import iter_operand_exprs
+from d810.ir.flowgraph import MopSnapshot
+from d810.ir.instructions import Instruction
+from d810.ir.insn_projection import (
+    InstructionProjection,
+    _diag_meta_payload,
+    diag_row_has_operand_tree,
+    iter_operand_exprs,
+    parse_diag_meta_operand,
+    project_diag_instruction,
+)
 from d810.ir.locations import RegisterLocation, StackSlot
 from d810.ir.maturity import LOCAL_FACT_COLLECTION_IR_MATURITIES
 from d810.ir.semantics import PredicateKind
@@ -44,9 +86,16 @@ from d810.analyses.fact_collection_context import (
 )
 from d810.analyses.value_flow.induction_carrier import (
     _InstructionView,
+    _canonical_opcode_name,
+    _canonical_operands,
     _classify_induction_update,
-    _iter_instruction_views,
+    _const_value_from_varnode,
     _operation_of_view,
+    _reg_from_varnode,
+    _size_from_varnode,
+    _stkoff_from_varnode,
+    _value_op_from_instruction,
+    _value_op_from_opcode_name,
 )
 from d810.analyses.value_flow.state_write_anchor import (
     _block_start_ea_lookup,
@@ -78,6 +127,220 @@ _UNSIGNED_GUARD_PREDICATES = frozenset(
     }
 )
 _BURIED_SUB_HOST_OPERATIONS = frozenset({ValueOpKind.ZEXT, ValueOpKind.SEXT})
+
+
+def _predicate_kind_of(instruction: Instruction) -> PredicateKind | None:
+    """Return the compare predicate of a canonical ``Instruction``.
+
+    A bare set* materialization (``setl`` etc.) carries its ``PredicateKind`` as
+    ``Instruction.operation`` (no control transfer); a conditional branch
+    carries it in ``Instruction.control.predicate``.  This reads whichever is
+    present, matching the legacy ``_InstructionView.predicate_kind`` the flat
+    diag path populates.
+    """
+    operation = instruction.operation
+    if isinstance(operation, PredicateKind):
+        return operation
+    control = instruction.control
+    return control.predicate if control is not None else None
+
+
+@dataclass(frozen=True)
+class _FoldedGuardInsn:
+    """Uniform semantic view consumed by folded_loop_guard's classifiers.
+
+    Built from a canonical :class:`~d810.ir.instructions.Instruction` (plus its
+    source operand ``MopSnapshot`` subtrees) for a meta-rich source, or from a
+    legacy :class:`_InstructionView` for a meta-less row.  Exposes ONLY the
+    fields folded_loop_guard reads:
+
+    * flat operands -- ``dest_stkoff`` / ``dest_size`` / ``dest_reg`` /
+      ``src_l_stkoff`` / ``src_l_reg`` / ``src_l_value`` / ``src_r_stkoff`` /
+      ``src_r_reg`` / ``src_r_value`` -- for the induction-var enumeration, the
+      flat top-level guard (Shape 1) and the state-const-write recovery;
+    * semantics -- ``operation`` / ``opcode_name`` / ``predicate_kind``;
+    * nested operand subtrees -- ``src_l_mop`` / ``src_r_mop`` -- for the buried
+      ``(counter - #N)`` guard (Shape 2);
+    * identity/evidence -- ``block_serial`` / ``insn_index`` / ``ea`` / ``dstr``.
+
+    These attribute names match :class:`_InstructionView`, so the shared
+    classifier helpers (``_classify_induction_update`` / ``_operation_of_view``
+    / ``_is_state_const_write``) duck-type over this record unchanged.
+    """
+
+    block_serial: int
+    insn_index: int
+    ea: int | None
+    opcode_name: str
+    dstr: str
+    operation: ValueOpKind | None
+    predicate_kind: PredicateKind | None
+    dest_stkoff: int | None
+    dest_size: int | None
+    dest_reg: int | None
+    src_l_stkoff: int | None
+    src_l_reg: int | None
+    src_l_value: int | None
+    src_r_stkoff: int | None
+    src_r_reg: int | None
+    src_r_value: int | None
+    src_l_mop: MopSnapshot | None
+    src_r_mop: MopSnapshot | None
+
+    @classmethod
+    def from_canonical(
+        cls,
+        *,
+        block_serial: int,
+        index: int,
+        instruction: Instruction,
+        src_l_mop: MopSnapshot | None,
+        src_r_mop: MopSnapshot | None,
+    ) -> "_FoldedGuardInsn":
+        dest, left, right = _canonical_operands(instruction)
+        attrs = instruction.attrs
+        ea_raw = attrs.get("ea")
+        return cls(
+            block_serial=int(block_serial),
+            insn_index=int(index),
+            ea=int(ea_raw) if ea_raw is not None else None,
+            opcode_name=_canonical_opcode_name(instruction),
+            dstr=str(attrs.get("display_text") or ""),
+            operation=_value_op_from_instruction(instruction),
+            predicate_kind=_predicate_kind_of(instruction),
+            dest_stkoff=_stkoff_from_varnode(dest),
+            dest_size=_size_from_varnode(dest),
+            dest_reg=_reg_from_varnode(dest),
+            src_l_stkoff=_stkoff_from_varnode(left),
+            src_l_reg=_reg_from_varnode(left),
+            src_l_value=_const_value_from_varnode(left),
+            src_r_stkoff=_stkoff_from_varnode(right),
+            src_r_reg=_reg_from_varnode(right),
+            src_r_value=_const_value_from_varnode(right),
+            src_l_mop=src_l_mop,
+            src_r_mop=src_r_mop,
+        )
+
+    @classmethod
+    def from_legacy_view(cls, view: _InstructionView) -> "_FoldedGuardInsn":
+        return cls(
+            block_serial=view.block_serial,
+            insn_index=view.insn_index,
+            ea=view.ea,
+            opcode_name=view.opcode_name,
+            dstr=view.dstr,
+            operation=view.operation
+            or _value_op_from_opcode_name(view.opcode_name),
+            predicate_kind=view.predicate_kind,
+            dest_stkoff=view.dest_stkoff,
+            dest_size=view.dest_size,
+            dest_reg=view.dest_reg,
+            src_l_stkoff=view.src_l_stkoff,
+            src_l_reg=view.src_l_reg,
+            src_l_value=view.src_l_value,
+            src_r_stkoff=view.src_r_stkoff,
+            src_r_reg=view.src_r_reg,
+            src_r_value=view.src_r_value,
+            src_l_mop=view.src_l_mop,
+            src_r_mop=view.src_r_mop,
+        )
+
+
+def _iter_folded_guard_insns(target: Any) -> Iterable[_FoldedGuardInsn]:
+    """Yield folded_loop_guard's semantic record for every instruction.
+
+    Dual-currency (see module docstring): meta-rich FlowGraph blocks and
+    operand-tree diag rows are lifted to canonical ``Instruction`` (with the
+    source operand ``MopSnapshot`` subtrees attached for the nested-sub
+    walker); meta-less rows stay on the byte-identical legacy
+    ``_InstructionView`` flat path.  A registered live
+    :class:`~d810.capabilities.source_lifter.SourceLifter` lifts a backend
+    source to a portable flow graph first (behaviour-identical to no-lifter
+    when none is registered).
+    """
+    lifter = select_lifter(target)
+    if lifter is not None:
+        target = lifter.lift(target)
+
+    blocks = getattr(target, "blocks", target)
+    block_iter = blocks.values() if isinstance(blocks, Mapping) else blocks
+
+    for blk in block_iter:
+        block_serial = int(getattr(blk, "serial"))
+        insn_snapshots = getattr(blk, "insn_snapshots", None)
+        if insn_snapshots is not None:
+            instructions = InstructionProjection.from_block(blk)
+            for index, instruction in enumerate(instructions):
+                source = (
+                    insn_snapshots[index]
+                    if index < len(insn_snapshots)
+                    else None
+                )
+                yield _FoldedGuardInsn.from_canonical(
+                    block_serial=block_serial,
+                    index=index,
+                    instruction=instruction,
+                    src_l_mop=getattr(source, "l", None),
+                    src_r_mop=getattr(source, "r", None),
+                )
+            continue
+        for index, insn in enumerate(getattr(blk, "instructions", ())):
+            if diag_row_has_operand_tree(insn):
+                meta = _diag_meta_payload(insn)
+                yield _FoldedGuardInsn.from_canonical(
+                    block_serial=block_serial,
+                    index=int(getattr(insn, "index", index)),
+                    instruction=project_diag_instruction(insn),
+                    src_l_mop=parse_diag_meta_operand(meta.get("l")),
+                    src_r_mop=parse_diag_meta_operand(meta.get("r")),
+                )
+                continue
+            yield _FoldedGuardInsn.from_legacy_view(
+                _legacy_view_from_diag_row(block_serial, index, insn)
+            )
+
+
+def _legacy_view_from_diag_row(
+    block_serial: int, index: int, insn: Any
+) -> _InstructionView:
+    """Build the byte-identical legacy view for a meta-less diag row.
+
+    Mirrors the pre-S6 shared ``_iter_portable_instructions`` flat path for the
+    fields folded_loop_guard reads: flat operand stkoff/value/reg, predicate,
+    opcode-name ``operation`` inference, and the legacy ``src_l_mop`` /
+    ``src_r_mop`` (``getattr(insn, "l"/"r")``, ``None`` on production meta-less
+    rows).  Block-level helpers (``_block_succs`` / ``_block_start_ea_lookup``)
+    read the ``target`` directly and need nothing from this view.
+    """
+    opcode_name = str(getattr(insn, "opcode_name", ""))
+
+    def _opt_int(name: str) -> int | None:
+        value = getattr(insn, name, None)
+        return int(value) if value is not None else None
+
+    return _InstructionView(
+        block_serial=block_serial,
+        insn_index=int(getattr(insn, "index", index)),
+        ea=getattr(insn, "ea", None),
+        opcode_name=opcode_name,
+        dest_type=getattr(insn, "dest_type", None),
+        dest_stkoff=_opt_int("dest_stkoff"),
+        dest_size=getattr(insn, "dest_size", None),
+        src_l_type=getattr(insn, "src_l_type", None),
+        src_l_stkoff=_opt_int("src_l_stkoff"),
+        src_l_value=_opt_int("src_l_value"),
+        src_r_type=getattr(insn, "src_r_type", None),
+        src_r_stkoff=_opt_int("src_r_stkoff"),
+        src_r_value=_opt_int("src_r_value"),
+        dstr=str(getattr(insn, "dstr", "")),
+        operation=_value_op_from_opcode_name(opcode_name),
+        predicate_kind=getattr(insn, "predicate_kind", None),
+        dest_reg=_opt_int("dest_reg"),
+        src_l_reg=_opt_int("src_l_reg"),
+        src_r_reg=_opt_int("src_r_reg"),
+        src_l_mop=getattr(insn, "src_l_mop", None) or getattr(insn, "l", None),
+        src_r_mop=getattr(insn, "src_r_mop", None) or getattr(insn, "r", None),
+    )
 
 
 def _block_preds(target: Any, block_serial: int) -> tuple[int, ...]:
@@ -122,7 +385,7 @@ class _InductionVar:
 
 
 def _induction_vars(
-    instructions: tuple[_InstructionView, ...],
+    instructions: tuple[_FoldedGuardInsn, ...],
 ) -> tuple[_InductionVar, ...]:
     """Collect every ``+1``/``-1`` self-update as a stack- or register-keyed
     induction var (one entry per distinct counter identity)."""
@@ -145,7 +408,7 @@ def _induction_vars(
     return tuple(by_stkoff.values()) + tuple(by_reg.values())
 
 
-def _state_const(insn: _InstructionView, canonical_stkoff: int | None) -> int | None:
+def _state_const(insn: _FoldedGuardInsn, canonical_stkoff: int | None) -> int | None:
     if not _is_state_const_write(insn):
         return None
     if canonical_stkoff is not None and int(insn.dest_stkoff or -1) != canonical_stkoff:
@@ -154,7 +417,7 @@ def _state_const(insn: _InstructionView, canonical_stkoff: int | None) -> int | 
 
 
 def _canonical_state_stkoff(
-    instructions: tuple[_InstructionView, ...],
+    instructions: tuple[_FoldedGuardInsn, ...],
 ) -> int | None:
     from collections import Counter
 
@@ -192,7 +455,7 @@ class FoldedLoopGuardFactCollector:
         )
         phase = context.phase
         maturity_text = fact_provider_label(context)
-        instructions = tuple(_iter_instruction_views(target))
+        instructions = tuple(_iter_folded_guard_insns(target))
         if not instructions:
             return ()
 
@@ -203,7 +466,7 @@ class FoldedLoopGuardFactCollector:
         if canonical_stkoff is None:
             return ()
 
-        by_block: dict[int, list[_InstructionView]] = {}
+        by_block: dict[int, list[_FoldedGuardInsn]] = {}
         for insn in instructions:
             by_block.setdefault(int(insn.block_serial), []).append(insn)
         for items in by_block.values():
@@ -293,7 +556,7 @@ class FoldedLoopGuardFactCollector:
 
     @staticmethod
     def _guard_counter(
-        block_insns: list[_InstructionView],
+        block_insns: list[_FoldedGuardInsn],
         induction: tuple[_InductionVar, ...],
     ) -> tuple[_InductionVar, int, bool] | None:
         """Return ``(counter, bound, signed)`` for a folded induction compare.
@@ -340,7 +603,7 @@ class FoldedLoopGuardFactCollector:
         return None
 
     @staticmethod
-    def _flat_guard_signedness(insn: _InstructionView) -> bool | None:
+    def _flat_guard_signedness(insn: _FoldedGuardInsn) -> bool | None:
         """Return compare signedness for a semantic flat guard candidate."""
         predicate = insn.predicate_kind
         if predicate in _UNSIGNED_GUARD_PREDICATES:
@@ -352,7 +615,7 @@ class FoldedLoopGuardFactCollector:
         return None
 
     @staticmethod
-    def _nested_sub_signedness(insn: _InstructionView) -> bool | None:
+    def _nested_sub_signedness(insn: _FoldedGuardInsn) -> bool | None:
         """Return compare signedness for a semantic buried-subtract host."""
         predicate = insn.predicate_kind
         if predicate in _UNSIGNED_GUARD_PREDICATES:
@@ -365,7 +628,7 @@ class FoldedLoopGuardFactCollector:
 
     @staticmethod
     def _match_buried_sub(
-        insn: _InstructionView,
+        insn: _FoldedGuardInsn,
         induction: tuple[_InductionVar, ...],
     ) -> tuple[_InductionVar, int] | None:
         """Walk the operand subtree of ``insn`` for a buried ``(counter - #N)``.
@@ -444,7 +707,7 @@ class FoldedLoopGuardFactCollector:
 
     @staticmethod
     def _match_counter_bound(
-        insn: _InstructionView,
+        insn: _FoldedGuardInsn,
         induction: tuple[_InductionVar, ...],
     ) -> tuple[_InductionVar, int] | None:
         """Match ``(induction-var, const)`` in either operand order.
@@ -477,7 +740,7 @@ class FoldedLoopGuardFactCollector:
     def _guard_arms(
         target: Any,
         guard_serial: int,
-        by_block: dict[int, list[_InstructionView]],
+        by_block: dict[int, list[_FoldedGuardInsn]],
         canonical_stkoff: int,
     ) -> tuple[int, int] | None:
         """Recover ``(body_state, exit_state)`` for the folded guard.
@@ -521,7 +784,7 @@ class FoldedLoopGuardFactCollector:
     def _arm_state_block(
         target: Any,
         guard_serial: int,
-        by_block: dict[int, list[_InstructionView]],
+        by_block: dict[int, list[_FoldedGuardInsn]],
         canonical_stkoff: int,
     ) -> tuple[int, int] | None:
         """Return the guard's live successor that writes a state const."""
