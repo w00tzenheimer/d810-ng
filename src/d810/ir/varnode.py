@@ -99,6 +99,10 @@ def varnode_from_mop_snapshot(mop: MopSnapshot | None) -> Varnode | None:
     except AttributeError:
         lvar_off = None
     try:
+        lvar_stkoff = mop.lvar_stkoff
+    except AttributeError:
+        lvar_stkoff = None
+    try:
         value = mop.value
     except AttributeError:
         value = None
@@ -109,8 +113,17 @@ def varnode_from_mop_snapshot(mop: MopSnapshot | None) -> Varnode | None:
         return Varnode(Space.STACK, int(stkoff), size)
     if (kind is OperandKind.GLOBAL or kindless) and gaddr is not None:
         return Varnode(Space.GLOBAL, int(gaddr), size)
-    if (kind is OperandKind.LVAR or kindless) and lvar_off is not None:
-        return Varnode(Space.LVAR, int(lvar_off), size)
+    if kind is OperandKind.LVAR or kindless:
+        # llr-lxas S1: prefer the lvar's FRAME stack offset captured at lift.
+        # An lvar IS a frame slot; promoting it to a STACK identity makes its
+        # offset comparable to ``state_var_stkoff`` (``resolve_varnode_from_maps``
+        # treats LVAR and STACK identically -- both look up ``stk_map``).  This
+        # is gated on ``lvar_stkoff is not None`` so snapshots without the
+        # lift-time map keep the legacy ``Varnode(LVAR, lvar_off)`` identity.
+        if lvar_stkoff is not None:
+            return Varnode(Space.STACK, int(lvar_stkoff), size)
+        if lvar_off is not None:
+            return Varnode(Space.LVAR, int(lvar_off), size)
     if (kind is OperandKind.NUMBER or kindless) and value is not None:
         return Varnode(Space.CONST, int(value), size)
     return Varnode(Space.UNKNOWN, 0, size)

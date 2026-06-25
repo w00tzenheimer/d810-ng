@@ -429,10 +429,20 @@ def _address_inner_mop(mop: object | None) -> object | None:
     return inner if inner is not None else addr
 
 
-def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
+def capture_mop_snapshot(
+    mop: "ida_hexrays.mop_t",
+    lvar_stkoff_map: dict[int, int] | None = None,
+) -> CfgMopSnapshot | None:
     """Capture a lightweight ``CfgMopSnapshot`` from a live ``mop_t``.
 
     Returns ``None`` for empty (``mop_z``) operands.
+
+    ``lvar_stkoff_map`` (ticket llr-lxas S1) maps ``lvar_idx -> frame stkoff``
+    so a ``mop_l`` operand can carry its real frame stack offset
+    (``mba.vars[idx].location.stkoff()``) on the snapshot instead of forcing a
+    live ``mba.vars`` read downstream.  ``None`` keeps the legacy behavior (the
+    snapshot's ``lvar_stkoff`` stays ``None``); callers without a function-scope
+    ``mba`` (e.g. unit tests building a single mop) pass nothing.
     """
     if mop is None or mop.t == ida_hexrays.mop_z:
         return None
@@ -471,8 +481,8 @@ def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
             sub_value_op_kind = (
                 None if sub_opcode is None else opcode_lift.value_op_from_opcode(sub_opcode)
             )
-            sub_l = capture_mop_snapshot(getattr(inner, "l", None))
-            sub_r = capture_mop_snapshot(getattr(inner, "r", None))
+            sub_l = capture_mop_snapshot(getattr(inner, "l", None), lvar_stkoff_map)
+            sub_r = capture_mop_snapshot(getattr(inner, "r", None), lvar_stkoff_map)
         return CfgMopSnapshot(
             t=t,
             size=size,
@@ -488,7 +498,7 @@ def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
         # addressed operand. Preserve that stack evidence portably so analyses
         # can recognize narrow ``reg = &stack_slot`` shapes without reading
         # Hex-Rays-owned operand_slots.
-        inner = capture_mop_snapshot(_address_inner_mop(mop))
+        inner = capture_mop_snapshot(_address_inner_mop(mop), lvar_stkoff_map)
         return CfgMopSnapshot(
             t=t,
             size=size,
@@ -510,10 +520,20 @@ def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
         # portable dispatcher-state analyses can key by ``lvar_off``
         # instead of reaching back into the live ``mop_t``.
         lref = mop.l
+        lvar_idx = int(lref.idx) if lref is not None else None
+        # llr-lxas S1: resolve the lvar's FRAME stack offset once at lift via
+        # the prebuilt ``lvar_idx -> stkoff`` map, so downstream analyses never
+        # have to reach back into the live ``mba.vars`` table.
+        lvar_stkoff = (
+            lvar_stkoff_map.get(lvar_idx)
+            if lvar_stkoff_map is not None and lvar_idx is not None
+            else None
+        )
         return CfgMopSnapshot(
             t=t,
             size=size,
             lvar_off=int(lref.off) if lref is not None else None,
+            lvar_stkoff=lvar_stkoff,
             kind=kind,
         )
     if t == ida_hexrays.mop_c:
@@ -542,18 +562,26 @@ def capture_mop_snapshot(mop: "ida_hexrays.mop_t") -> CfgMopSnapshot | None:
             args=tuple(
                 arg_snapshot
                 for arg in args
-                if (arg_snapshot := capture_mop_snapshot(arg)) is not None
+                if (arg_snapshot := capture_mop_snapshot(arg, lvar_stkoff_map)) is not None
             ),
             kind=kind,
         )
     return CfgMopSnapshot(t=t, size=size, kind=kind)
 
 
-def capture_insn_snapshot(insn: "ida_hexrays.minsn_t") -> InsnSnapshot:
+def capture_insn_snapshot(
+    insn: "ida_hexrays.minsn_t",
+    lvar_stkoff_map: dict[int, int] | None = None,
+) -> InsnSnapshot:
     """Capture a rich ``InsnSnapshot`` from a live ``minsn_t``.
 
     Populates both the legacy ``operands``/``operand_slots`` fields and the
     new typed ``l``/``r``/``d`` fields.
+
+    ``lvar_stkoff_map`` (ticket llr-lxas S1) is threaded down to
+    ``capture_mop_snapshot`` so ``mop_l`` operands carry their frame stack
+    offset.  ``None`` keeps legacy behavior; external callers that capture a
+    single instruction without a function-scope ``mba`` pass nothing.
     """
     opcode = insn.opcode
     ea = insn.ea
@@ -575,9 +603,9 @@ def capture_insn_snapshot(insn: "ida_hexrays.minsn_t") -> InsnSnapshot:
     branch_predicate = _branch_predicate_only_from_hexrays(opcode)
     insn_kind = _insn_kind_from_hexrays(opcode)
     lifted_opcode = opcode_lift.lift_opcode(opcode)
-    left = capture_mop_snapshot(insn.l)
-    right = capture_mop_snapshot(insn.r)
-    dest = capture_mop_snapshot(insn.d)
+    left = capture_mop_snapshot(insn.l, lvar_stkoff_map)
+    right = capture_mop_snapshot(insn.r, lvar_stkoff_map)
+    dest = capture_mop_snapshot(insn.d, lvar_stkoff_map)
 
     return InsnSnapshot(
         opcode=opcode,
@@ -603,7 +631,10 @@ def capture_insn_snapshot(insn: "ida_hexrays.minsn_t") -> InsnSnapshot:
     )
 
 
-def lift_block(blk: "ida_hexrays.mblock_t") -> BlockSnapshot:
+def lift_block(
+    blk: "ida_hexrays.mblock_t",
+    lvar_stkoff_map: dict[int, int] | None = None,
+) -> BlockSnapshot:
     serial = blk.serial
     block_type = blk.type
     flags = blk.flags
@@ -615,7 +646,7 @@ def lift_block(blk: "ida_hexrays.mblock_t") -> BlockSnapshot:
     insn_snapshots: list[InsnSnapshot] = []
     insn = blk.head
     while insn:
-        insn_snapshots.append(capture_insn_snapshot(insn))
+        insn_snapshots.append(capture_insn_snapshot(insn, lvar_stkoff_map))
         insn = insn.next
 
     return BlockSnapshot(
@@ -651,11 +682,37 @@ def _snapshot_stage_for_maturity_name(maturity_name: str) -> SnapshotForm:
     return _snapshot_form_for_maturity_name(maturity_name)
 
 
+def _build_lvar_stkoff_map(mba: "ida_hexrays.mba_t") -> dict[int, int]:
+    """Resolve ``lvar_idx -> frame stkoff`` once per function (llr-lxas S1).
+
+    Reads ``mba.vars[idx].location.stkoff()`` for every lvar that has a stack
+    location.  Register-located lvars (and any var whose ``location`` has no
+    ``stkoff``) raise on ``.stkoff()`` -- those are skipped, so the resulting
+    map only contains true frame slots.  A failure on any single var must not
+    gate the lift, so each lookup is guarded individually.
+    """
+    stkoff_map: dict[int, int] = {}
+    try:
+        var_qty = mba.vars.size()
+    except Exception:
+        return stkoff_map
+    for idx in range(var_qty):
+        try:
+            stkoff_map[idx] = int(mba.vars[idx].location.stkoff())
+        except Exception:
+            # Register-located lvar (or no stack location) -- not a frame slot.
+            continue
+    return stkoff_map
+
+
 def lift(mba: "ida_hexrays.mba_t") -> FlowGraph:
+    # llr-lxas S1: capture the lvar frame offsets once up front so per-operand
+    # snapshots carry a portable STACK identity without a live ``mba.vars`` read.
+    lvar_stkoff_map = _build_lvar_stkoff_map(mba)
     blocks = {}
     for i in range(mba.qty):
         blk = mba.get_mblock(i)
-        blocks[blk.serial] = lift_block(blk)
+        blocks[blk.serial] = lift_block(blk, lvar_stkoff_map)
 
     # E2b: pin a small, portable metadata contract on every lifted
     # ``FlowGraph`` so recon consumers never have to reach back into
