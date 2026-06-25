@@ -645,3 +645,143 @@ def test_ignores_ambiguous_sub_const_minus_var() -> None:
     )
 
     assert facts == ()
+
+
+# -- llr-3b41 S9: induction_carrier's OWN collector consumes canonical
+# Instruction via a collector-local dual-currency iterator.  The FlowGraph
+# (``_cfg_target``) and meta-less (``_target``/``_insn``) source currencies are
+# already covered above; these tests pin the third source -- a diag row whose
+# ``meta`` carries an operand tree -- which the prior suite left untested for
+# this collector, plus the meta-less attrs-only zero gate.
+
+
+def _meta_stack(stkoff: int, size: int = 8) -> dict:
+    return {
+        "type": "mop_S",
+        "type_num": 5,
+        "size": size,
+        "dstr": "x",
+        "stkoff": stkoff,
+    }
+
+
+def _meta_const(value: int, size: int = 8) -> dict:
+    return {
+        "type": "mop_n",
+        "type_num": 2,
+        "size": size,
+        "dstr": f"#{value:#x}",
+        "value": value,
+    }
+
+
+def _meta_self_update(
+    *,
+    opcode_name: str,
+    step_const: int,
+    stkoff: int = 0x680,
+    index: int = 0,
+    dstr: str,
+) -> InstructionSnapshot:
+    """A ``op %var, #const, %var`` self-update diag row carrying a parseable
+    ``meta`` operand tree -- routed through the canonical lift
+    (``diag_row_has_operand_tree``).  The flat ``dest_stkoff`` /
+    ``src_l_stkoff`` / ``src_r_value`` are intentionally ``None`` so a passing
+    assertion PROVES the operands were recovered from the operand tree, not the
+    legacy flat fields."""
+    insn = InstructionSnapshot(
+        index=index,
+        ea=0x180010000 + index,
+        opcode=0,
+        opcode_name=opcode_name,
+        dest_type="S",
+        dest_stkoff=None,
+        dest_size=8,
+        src_l_type="S",
+        src_l_stkoff=None,
+        src_l_value=None,
+        src_r_type="c",
+        src_r_stkoff=None,
+        src_r_value=None,
+        dstr=dstr,
+    )
+    insn.meta = json.dumps(
+        {
+            "l": _meta_stack(stkoff),
+            "r": _meta_const(step_const),
+            "d": _meta_stack(stkoff),
+        }
+    )
+    return insn
+
+
+def test_collects_direct_add_induction_from_operand_tree_diag_row() -> None:
+    collector = InductionVariableFactCollector()
+
+    facts = collector.collect(
+        _target(
+            _meta_self_update(
+                opcode_name="m_add",
+                step_const=0x80,
+                dstr="add %var_178.8, #0x80.8, %var_178.8",
+            )
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    # Operands recovered from the operand tree (flat fields were None).
+    assert fact.semantic_key == "induction:stkoff=0x680:size=8:step=128"
+    assert fact.payload["step"] == 0x80
+    assert fact.payload["source_side"] == "right"
+    assert fact.payload["opcode"] == "add"
+    assert fact.payload["carrier_kind"] == "stack_self_update"
+
+
+def test_collects_sub_induction_from_operand_tree_diag_row() -> None:
+    collector = InductionVariableFactCollector()
+
+    facts = collector.collect(
+        _target(
+            _meta_self_update(
+                opcode_name="m_sub",
+                step_const=1,
+                dstr="sub %var_178.8, #1.8, %var_178.8",
+            )
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_CALLS"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    assert facts[0].semantic_key == "induction:stkoff=0x680:size=8:step=-1"
+    assert facts[0].payload["step"] == -1
+    assert facts[0].payload["opcode"] == "sub"
+
+
+def test_meta_less_attrs_only_diag_row_yields_no_induction_fact() -> None:
+    """A diag row whose ``meta`` carries only non-operand attrs (no l/r/d tree)
+    stays on the byte-identical legacy flat path; with no induction-shaped flat
+    operands it yields zero observations, matching the pre-S9 behaviour."""
+    collector = InductionVariableFactCollector()
+    insn = _insn(
+        opcode_name="add",
+        dest_stkoff=None,
+        src_l_stkoff=None,
+        src_r_value=None,
+        dstr="add something unrelated",
+        meta=json.dumps({"byte_index": 3}),
+    )
+
+    facts = collector.collect(
+        _target(insn),
+        func_ea=0x401000,
+        maturity=2,
+        phase="pre_d810",
+    )
+
+    assert facts == ()
