@@ -1,9 +1,17 @@
 """Tests for StateTransitionAnchorFactCollector."""
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
+from d810.ir.flowgraph import (
+    BlockSnapshot as CfgBlockSnapshot,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
 from d810.analyses.control_flow.state_transition_anchor import StateTransitionAnchorFactCollector
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
@@ -337,3 +345,228 @@ def test_view_accessor_returns_per_source_block() -> None:
     assert len(found_100) == 1
     assert found_100[0].payload["source_state_const"] == 0x5A21D9DB
     assert view.state_transitions_for_source_block(999) == ()
+
+
+# ---------------------------------------------------------------------------
+# llr-3b41 S5: dual-currency port coverage.  The collector now consumes the
+# canonical ``Instruction`` for meta-rich sources (a portable ``FlowGraph``
+# block, or a diag row carrying a parseable ``meta`` operand tree) while
+# meta-less rows (every test above) stay on the byte-identical legacy flat
+# path.  These tests pin the two canonical sources and the two helper edge
+# cases the canonical path introduces.
+# ---------------------------------------------------------------------------
+
+
+def _cfg_stack(stkoff: int, *, size: int = 4) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.STACK, stkoff=stkoff, size=size)
+
+
+def _cfg_const(value: int, *, size: int = 4) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.NUMBER, value=value, size=size)
+
+
+def _cfg_mov(
+    *, index: int, state_const: int, ea: int, stkoff: int = 0x3C
+) -> InsnSnapshot:
+    """A ``mov #const, %var_<stkoff>`` canonical state write."""
+    return InsnSnapshot(
+        opcode=-1,
+        raw_opcode=0x1000 + index,
+        ea=ea,
+        operands=(),
+        operand_slots=(
+            ("l", _cfg_const(state_const)),
+            ("d", _cfg_stack(stkoff)),
+        ),
+        display_text=f"mov #0x{state_const:08X}.4, %var_7BC.4",
+        l=_cfg_const(state_const),
+        r=None,
+        d=_cfg_stack(stkoff),
+        kind=InsnKind.MOV,
+    )
+
+
+def _cfg_block(
+    serial: int,
+    *instructions: InsnSnapshot,
+    succs: tuple[int, ...] = (),
+    start_ea: int | None = None,
+) -> CfgBlockSnapshot:
+    return CfgBlockSnapshot(
+        serial=serial,
+        block_type=1 if len(succs) <= 1 else 2,
+        succs=succs,
+        preds=(),
+        flags=0,
+        start_ea=0x180014000 + serial if start_ea is None else start_ea,
+        insn_snapshots=tuple(instructions),
+    )
+
+
+def _cfg_target(*blocks: CfgBlockSnapshot) -> SimpleNamespace:
+    return SimpleNamespace(blocks={blk.serial: blk for blk in blocks})
+
+
+def test_direct_transition_from_canonical_flowgraph_source() -> None:
+    """A portable ``FlowGraph`` block routes through the canonical projection;
+    ``dest_stkoff`` is read off ``Instruction.result`` and ``src_l_value`` off
+    the first canonical input, so the transition fact matches the legacy
+    diag-row result byte-for-byte."""
+    facts = _collect(
+        _cfg_target(
+            _cfg_block(
+                100,
+                _cfg_mov(index=0, state_const=0x5A21D9DB, ea=0x180014100),
+                succs=(101,),
+            ),
+            _cfg_block(
+                101,
+                _cfg_mov(index=0, state_const=0x63D54755, ea=0x180014200),
+                succs=(),
+            ),
+        ),
+    )
+    assert len(facts) == 2
+    blk100 = {f.payload["source_block_serial"]: f for f in facts}[100]
+    assert blk100.payload["source_state_const"] == 0x5A21D9DB
+    assert blk100.payload["state_var_stkoff"] == 0x3C
+    assert blk100.payload["successor_block_serial"] == 101
+    assert blk100.payload["next_state_const"] == 0x63D54755
+    assert blk100.payload["successor_kind"] == "direct"
+    assert blk100.payload["dest_var_signature"] == "%var_7BC.4"
+    assert (
+        blk100.mop_signature
+        == "state_transition:0x5a21d9db->0x63d54755:kind=direct"
+    )
+
+
+def _meta_stack(stkoff: int, size: int = 4) -> dict:
+    return {"type": "mop_S", "type_num": 5, "size": size, "dstr": "x", "stkoff": stkoff}
+
+
+def _meta_const(value: int, size: int = 4) -> dict:
+    return {
+        "type": "mop_n",
+        "type_num": 2,
+        "size": size,
+        "dstr": f"#{value:#x}",
+        "value": value,
+    }
+
+
+def _meta_mov(
+    *, index: int, state_const: int, ea: int, stkoff: int = 0x3C
+) -> InstructionSnapshot:
+    """A ``mov #const, %var`` diag row carrying a parseable ``meta`` operand
+    tree -- routed through the canonical lift (``diag_row_has_operand_tree``)."""
+    insn = InstructionSnapshot(
+        index=index,
+        ea=ea,
+        opcode=0,
+        opcode_name="m_mov",
+        dest_type="S",
+        dest_stkoff=None,
+        dest_size=4,
+        src_l_type="c",
+        src_l_stkoff=None,
+        src_l_value=None,
+        src_r_type=None,
+        src_r_stkoff=None,
+        src_r_value=None,
+        dstr=f"mov #0x{state_const:08X}.4, %var_7BC.4",
+    )
+    insn.meta = json.dumps(
+        {"l": _meta_const(state_const), "d": _meta_stack(stkoff)}
+    )
+    return insn
+
+
+def test_direct_transition_from_meta_rich_diag_row() -> None:
+    """A diag row whose ``meta`` carries an operand tree is lifted through the
+    SAME canonical projection (the flat ``dest_stkoff`` / ``src_l_value`` are
+    intentionally ``None``); ``dest_stkoff`` / ``src_l_value`` are recovered
+    from the canonical record, yielding the same transition fact."""
+    facts = _collect(
+        _target(
+            _block(
+                100,
+                _meta_mov(index=0, state_const=0x5A21D9DB, ea=0x180014100),
+                succs=(101,),
+            ),
+            _block(
+                101,
+                _meta_mov(index=0, state_const=0x63D54755, ea=0x180014200),
+                succs=(),
+            ),
+        ),
+    )
+    assert len(facts) == 2
+    blk100 = {f.payload["source_block_serial"]: f for f in facts}[100]
+    assert blk100.payload["source_state_const"] == 0x5A21D9DB
+    assert blk100.payload["state_var_stkoff"] == 0x3C
+    assert blk100.payload["next_state_const"] == 0x63D54755
+    assert blk100.payload["successor_kind"] == "direct"
+
+
+def test_dest_var_signature_absent_when_dstr_has_no_var() -> None:
+    """A canonical state write whose ``dstr`` lacks a ``%var_<off>.<sz>`` token
+    yields ``dest_var_signature=None`` (the regex-miss branch)."""
+
+    def _mov_no_var(*, index: int, state_const: int, ea: int) -> InsnSnapshot:
+        return InsnSnapshot(
+            opcode=-1,
+            raw_opcode=0x2000 + index,
+            ea=ea,
+            operands=(),
+            operand_slots=(
+                ("l", _cfg_const(state_const)),
+                ("d", _cfg_stack(0x3C)),
+            ),
+            display_text=f"mov #0x{state_const:08X}.4, eax.4",
+            l=_cfg_const(state_const),
+            r=None,
+            d=_cfg_stack(0x3C),
+            kind=InsnKind.MOV,
+        )
+
+    facts = _collect(
+        _cfg_target(
+            _cfg_block(
+                100,
+                _mov_no_var(index=0, state_const=0x5A21D9DB, ea=0x180014100),
+                succs=(101,),
+            ),
+            _cfg_block(
+                101,
+                _mov_no_var(index=0, state_const=0x63D54755, ea=0x180014200),
+                succs=(),
+            ),
+        ),
+    )
+    blk100 = {f.payload["source_block_serial"]: f for f in facts}[100]
+    assert blk100.payload["dest_var_signature"] is None
+
+
+def test_anchor_ea_falls_back_to_block_start_when_ea_zero() -> None:
+    """When an instruction's ``ea`` is ``0`` the anchor EA falls back to
+    ``block_start_ea + insn_index`` (canonical attrs carry ea=0)."""
+    facts = _collect(
+        _cfg_target(
+            _cfg_block(
+                100,
+                _cfg_mov(index=0, state_const=0x5A21D9DB, ea=0),
+                succs=(101,),
+                start_ea=0x180014700,
+            ),
+            _cfg_block(
+                101,
+                _cfg_mov(index=0, state_const=0x63D54755, ea=0),
+                succs=(),
+                start_ea=0x180014800,
+            ),
+        ),
+    )
+    blk100 = {f.payload["source_block_serial"]: f for f in facts}[100]
+    # ea=0 -> block_start_ea (0x180014700) + insn_index (0)
+    assert blk100.payload["source_instruction_ea"] == 0x180014700
+    assert blk100.source_ea == 0x180014700
