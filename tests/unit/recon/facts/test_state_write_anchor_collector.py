@@ -1,6 +1,7 @@
 """Tests for StateWriteAnchorFactCollector."""
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from d810.ir.expressions import ValueOpKind
@@ -310,3 +311,128 @@ def test_synthetic_ea_fallback_when_zero() -> None:
     # block start 0x180014800 + insn_index 3 = 0x180014803
     assert fact.payload["instruction_ea"] == 0x180014803
     assert fact.source_ea == 0x180014803
+
+
+# ---------------------------------------------------------------------------
+# llr-3b41 S8: dual-currency port coverage.  The collector now consumes the
+# canonical ``Instruction`` for meta-rich sources (a portable ``FlowGraph``
+# block, or a diag row carrying a parseable ``meta`` operand tree) while
+# meta-less rows (every test above) stay on the byte-identical legacy flat
+# path.  These tests pin the canonical FlowGraph source AND the previously
+# uncovered operand-tree diag-row source -- the two meta-rich currencies the
+# port routes through ``project_diag_instruction`` /
+# ``InstructionProjection.from_block``.
+# ---------------------------------------------------------------------------
+
+
+def test_collects_state_const_write_from_canonical_flowgraph_full_payload() -> None:
+    """A portable ``FlowGraph`` block routes through the canonical projection;
+    ``dest_stkoff`` / ``dest_size`` are read off ``Instruction.result`` and
+    ``src_l_value`` off the first canonical input, so the anchor fact matches
+    the legacy meta-less result byte-for-byte (full payload pinned)."""
+    collector = StateWriteAnchorFactCollector()
+    facts = collector.collect(
+        _cfg_target(
+            InsnSnapshot(
+                opcode=0,
+                ea=0x180014155,
+                operands=(),
+                kind=InsnKind.UNKNOWN,
+                d=_cfg_stack(0x3C),
+                l=_cfg_number(0x5A21D9DB),
+                r=None,
+                display_text="mov #0x5A21D9DB.4, %var_7BC.4",
+                value_op_kind=ValueOpKind.MOVE,
+            )
+        ),
+        func_ea=0x180012CF0,
+        maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
+        phase="pre_d810",
+    )
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact.payload["state_const"] == 0x5A21D9DB
+    assert fact.payload["state_var_stkoff"] == 0x3C
+    assert fact.payload["dest_size"] == 4
+    assert fact.payload["dest_var_signature"] == "%var_7BC.4"
+    assert fact.payload["successor_blocks"] == [101]
+    assert fact.payload["opcode"] == "move"
+    assert fact.mop_signature == "state_write:mop_S:0x3c:4"
+    assert (
+        fact.semantic_key
+        == "state_write_anchor:blk=100:insn=0:ea=0x180014155:stkoff=0x3c"
+    )
+
+
+def _meta_stack(stkoff: int, size: int = 4) -> dict:
+    return {"type": "mop_S", "type_num": 5, "size": size, "dstr": "x", "stkoff": stkoff}
+
+
+def _meta_const(value: int, size: int = 4) -> dict:
+    return {
+        "type": "mop_n",
+        "type_num": 2,
+        "size": size,
+        "dstr": f"#{value:#x}",
+        "value": value,
+    }
+
+
+def _meta_mov(
+    *, index: int, state_const: int, ea: int, stkoff: int = 0x3C
+) -> InstructionSnapshot:
+    """A ``mov #const, %var`` diag row carrying a parseable ``meta`` operand
+    tree -- routed through the canonical lift (``diag_row_has_operand_tree``).
+    The flat ``dest_stkoff`` / ``src_l_value`` are intentionally ``None`` so a
+    passing test PROVES the operands were recovered from the operand tree."""
+    insn = InstructionSnapshot(
+        index=index,
+        ea=ea,
+        opcode=0,
+        opcode_name="m_mov",
+        dest_type="S",
+        dest_stkoff=None,
+        dest_size=4,
+        src_l_type="c",
+        src_l_stkoff=None,
+        src_l_value=None,
+        src_r_type=None,
+        src_r_stkoff=None,
+        src_r_value=None,
+        dstr=f"mov #0x{state_const:08X}.4, %var_7BC.4",
+    )
+    insn.meta = json.dumps(
+        {"l": _meta_const(state_const), "d": _meta_stack(stkoff)}
+    )
+    return insn
+
+
+def test_collects_state_const_write_from_meta_rich_diag_row() -> None:
+    """A diag row whose ``meta`` carries an operand tree is lifted through the
+    SAME canonical projection; ``dest_stkoff`` / ``dest_size`` / ``src_l_value``
+    are recovered from the canonical record (the flat fields are ``None``),
+    yielding the same anchor fact as the FlowGraph / meta-less shapes."""
+    collector = StateWriteAnchorFactCollector()
+    facts = collector.collect(
+        _target(
+            _block(
+                100,
+                _meta_mov(index=0, state_const=0x5A21D9DB, ea=0x180014155),
+                succs=(101,),
+            ),
+        ),
+        func_ea=0x180012cf0,
+        maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
+        phase="pre_d810",
+    )
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact.kind == "StateWriteAnchorFact"
+    assert fact.source_block == 100
+    assert fact.source_ea == 0x180014155
+    assert fact.payload["state_const"] == 0x5A21D9DB
+    assert fact.payload["state_var_stkoff"] == 0x3C
+    assert fact.payload["dest_size"] == 4
+    assert fact.payload["successor_blocks"] == [101]
+    assert fact.payload["opcode"] == "move"
+    assert fact.mop_signature == "state_write:mop_S:0x3c:4"
