@@ -1,91 +1,42 @@
-"""Hex-Rays adapters for portable fact collectors."""
+"""Hex-Rays adapters for portable fact collectors.
+
+``mba_to_fact_target`` adapts a live ``mba_t`` into the portable fact target
+that the recon fact collectors iterate.  It delegates to
+:func:`d810.hexrays.mutation.ir_translator.lift`, the SAME lifter the pre-D810
+``FLOWGRAPH_READY`` path uses, so post-D810 capture hands collectors a canonical
+:class:`~d810.ir.flowgraph.FlowGraph` whose blocks carry ``insn_snapshots``.
+
+Why a real ``FlowGraph`` (S10, ticket llr-3b41): every fact collector branches on
+``getattr(blk, "insn_snapshots", None) is not None`` -- a meta-rich
+:class:`~d810.ir.flowgraph.BlockSnapshot` routes through the canonical
+``InstructionProjection.from_block`` projection; a meta-less block falls back to
+the flat legacy ``_InstructionView`` path.  This adapter previously returned a
+flat ``SimpleNamespace`` (``serial`` + flat ``instructions`` only, NO
+``insn_snapshots``), so the post-D810 path was the LONE production source still
+exercising the meta-less fallback.  Returning ``lift(mba)`` puts post-D810
+capture on the canonical branch -- byte-identical to the pre-D810 path's own
+target shape.
+
+EMBRACE (intended, strictly-better recovery): post-D810 facts now recover the
+operand structure the flat path dropped -- ``operation`` (the canonical
+``ValueOpKind`` derived from the lifted instruction kind), full operand
+``address``/``stkoff`` provenance, and nested ``mop_d`` sub-operation structure.
+Stack-offset and constant-value identity are preserved (the lifter and the flat
+adapter read the same ``mop`` fields); the canonical projection adds detail, it
+never drops or alters those identities.
+"""
 from __future__ import annotations
 
-from types import SimpleNamespace
-
-import ida_hexrays
-
-
-def _opcode_name(opcode: int) -> str:
-    if opcode == ida_hexrays.m_add:
-        return "m_add"
-    if opcode == ida_hexrays.m_sub:
-        return "m_sub"
-    if opcode == ida_hexrays.m_stx:
-        return "m_stx"
-    if opcode == ida_hexrays.m_mov:
-        return "m_mov"
-    return f"op_{int(opcode)}"
+from d810.core.typing import Any
+from d810.hexrays.mutation.ir_translator import lift as _lift_mba_to_flowgraph
 
 
-def _stack_offset(mop: object | None) -> int | None:
-    if getattr(mop, "t", None) == ida_hexrays.mop_S:
-        return int(mop.s.off)
-    return None
+def mba_to_fact_target(mba: Any) -> Any:
+    """Adapt a live ``mba_t`` to the canonical portable fact target.
 
-
-def _mop_type_name(mop: object | None) -> str | None:
-    mop_type = getattr(mop, "t", None)
-    if mop_type == ida_hexrays.mop_S:
-        return "mop_S"
-    if mop_type == ida_hexrays.mop_n:
-        return "mop_n"
-    if mop_type == ida_hexrays.mop_d:
-        return "mop_d"
-    if mop_type == ida_hexrays.mop_r:
-        return "mop_r"
-    if mop_type == ida_hexrays.mop_b:
-        return "mop_b"
-    return None
-
-
-def _const_value(mop: object | None) -> int | None:
-    if getattr(mop, "t", None) == ida_hexrays.mop_n:
-        return int(mop.nnn.value)
-    return None
-
-
-def mba_to_fact_target(mba: object) -> object:
-    """Adapt a live ``mba_t`` to the neutral block/instruction fact shape."""
-    blocks = {}
-    qty = int(getattr(mba, "qty", 0) or 0)
-    for block_index in range(qty):
-        blk = mba.get_mblock(block_index)
-        if blk is None:
-            continue
-        instructions = []
-        insn = getattr(blk, "head", None)
-        insn_index = 0
-        while insn is not None:
-            try:
-                dstr = insn.dstr()
-            except Exception:
-                dstr = ""
-            left = getattr(insn, "l", None)
-            right = getattr(insn, "r", None)
-            dest = getattr(insn, "d", None)
-            instructions.append(
-                SimpleNamespace(
-                    index=insn_index,
-                    ea=int(getattr(insn, "ea", 0) or 0),
-                    opcode_name=_opcode_name(int(getattr(insn, "opcode", -1))),
-                    dest_type=_mop_type_name(dest),
-                    dest_stkoff=_stack_offset(dest),
-                    dest_size=getattr(dest, "size", None),
-                    src_l_type=_mop_type_name(left),
-                    src_l_stkoff=_stack_offset(left),
-                    src_l_value=_const_value(left),
-                    src_r_type=_mop_type_name(right),
-                    src_r_stkoff=_stack_offset(right),
-                    src_r_value=_const_value(right),
-                    dstr=str(dstr),
-                )
-            )
-            insn = getattr(insn, "next", None)
-            insn_index += 1
-        block_serial = int(getattr(blk, "serial", block_index))
-        blocks[block_serial] = SimpleNamespace(
-            serial=block_serial,
-            instructions=tuple(instructions),
-        )
-    return SimpleNamespace(blocks=blocks)
+    Returns the same :class:`~d810.ir.flowgraph.FlowGraph` the pre-D810
+    ``FLOWGRAPH_READY`` path produces, so fact collectors route post-D810
+    capture through their canonical ``InstructionProjection.from_block`` branch
+    (meta-rich) instead of the flat meta-less ``_InstructionView`` fallback.
+    """
+    return _lift_mba_to_flowgraph(mba)
