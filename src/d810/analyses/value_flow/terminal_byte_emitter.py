@@ -3,14 +3,44 @@
 This collector is observability-only.  It records byte-emitter shaped memory
 stores and their local guard/edge context so the diag DB can answer where each
 terminal byte step survives, remaps, or disappears across microcode maturities.
+
+llr-3b41 S10-pair -- the coupled ``terminal_byte_emitter`` /
+``return_frontier`` collectors now consume the canonical
+:class:`~d810.ir.instructions.Instruction` IR through a collector-local
+dual-currency iterator (:func:`_iter_block_views`), following the proven S3
+(:mod:`d810.analyses.value_flow.zero_blob`) .. S9
+(:mod:`d810.analyses.value_flow.induction_carrier`) pattern.  They share the
+private :class:`_BlockView` / :func:`_iter_block_views` / :func:`_block_metadata`
+helpers defined here, so they are ported together.
+
+The per-block instruction payload (``_BlockView.instructions``) keeps the
+canonical :class:`_InstructionView` currency: terminal_byte_emitter reads the
+FULL operand surface (``attrs`` nested terminal-byte mappings, control transfer
+/ predicate / target, memory target/value, left/right operand identity for
+stack/reg/const/temp, ``address_const_values``, ``dstr``), so a narrower
+per-collector view would only re-expose nearly the entire ``_InstructionView``.
+The collector-local iterator therefore reuses the SHARED canonical helpers
+(:func:`_instruction_view_from_canonical` / :func:`_legacy_view_from_diag_row`,
+gated by ``diag_row_has_operand_tree``) directly -- meta-rich FlowGraph blocks
+(via ``InstructionProjection.from_block``) and operand-tree diag rows (via
+``project_diag_instruction``) become canonical-faithful; meta-less rows stay on
+the byte-identical legacy flat path.  This routes the coupled pair through the
+canonical projection WITHOUT touching the shared :func:`_iter_instruction_views`
+the not-yet-ported collectors (S11) still depend on.
 """
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from d810.capabilities.source_lifter import select_lifter
 from d810.core.typing import Any, Iterable
 from d810.ir.expressions import ValueOpKind
+from d810.ir.insn_projection import (
+    InstructionProjection,
+    diag_row_has_operand_tree,
+    project_diag_instruction,
+)
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
 from d810.ir.semantics import ControlTransferKind, PredicateKind
 from d810.ir.varnode import Space, Varnode
@@ -21,7 +51,8 @@ from d810.analyses.fact_collection_context import (
 )
 from d810.analyses.value_flow.induction_carrier import (
     _InstructionView,
-    _iter_instruction_views,
+    _instruction_view_from_canonical,
+    _legacy_view_from_diag_row,
 )
 from d810.analyses.value_flow.model import FactObservation
 
@@ -298,9 +329,65 @@ def _block_metadata(target: Any) -> dict[int, tuple[int | None, tuple[int, ...],
     return metadata
 
 
+def _iter_terminal_byte_emitter_insns(target: Any) -> Iterable[_InstructionView]:
+    """Yield the coupled pair's own dual-currency instruction views.
+
+    llr-3b41 S10-pair -- the per-collector port of ``terminal_byte_emitter`` /
+    ``return_frontier`` onto the canonical IR, following the proven S3
+    (:mod:`d810.analyses.value_flow.zero_blob`) .. S9
+    (:mod:`d810.analyses.value_flow.induction_carrier`) dual-currency pattern.
+
+    These collectors read the full operand surface (memory target/value,
+    left/right stack/reg/const/temp operands, control transfer/predicate/target,
+    ``address_const_values``, ``attrs`` nested terminal-byte mappings), so the
+    canonical :class:`_InstructionView` is the right currency here -- a narrower
+    per-collector adapter would only re-expose the same fields.  This reuses the
+    SHARED :func:`_instruction_view_from_canonical` / :func:`_legacy_view_from_diag_row`
+    helpers directly: meta-rich sources -- a portable
+    :class:`~d810.ir.flowgraph.FlowGraph` block (via
+    ``InstructionProjection.from_block``) or a diag row carrying a parseable
+    ``meta`` operand tree (via :func:`project_diag_instruction`) -- are projected
+    to a canonical :class:`~d810.ir.instructions.Instruction` and adapted to the
+    canonical :class:`_InstructionView`; meta-less rows stay on the byte-identical
+    legacy flat path (:func:`_legacy_view_from_diag_row`, gated by
+    ``diag_row_has_operand_tree``).  This routes the coupled pair through the
+    canonical projection WITHOUT touching the shared
+    :func:`_iter_instruction_views` the not-yet-ported collectors still depend on.
+    """
+    lifter = select_lifter(target)
+    if lifter is not None:
+        target = lifter.lift(target)
+
+    blocks = getattr(target, "blocks", target)
+    if isinstance(blocks, Mapping):
+        block_iter = blocks.values()
+    else:
+        block_iter = blocks
+
+    for blk in block_iter:
+        block_serial = int(getattr(blk, "serial"))
+        if getattr(blk, "insn_snapshots", None) is not None:
+            for index, instruction in enumerate(InstructionProjection.from_block(blk)):
+                yield _instruction_view_from_canonical(
+                    block_serial=block_serial,
+                    index=index,
+                    instruction=instruction,
+                )
+            continue
+        for index, insn in enumerate(getattr(blk, "instructions", ())):
+            if diag_row_has_operand_tree(insn):
+                yield _instruction_view_from_canonical(
+                    block_serial=block_serial,
+                    index=int(getattr(insn, "index", index)),
+                    instruction=project_diag_instruction(insn),
+                )
+                continue
+            yield _legacy_view_from_diag_row(block_serial, index, insn)
+
+
 def _iter_block_views(target: Any) -> Iterable[_BlockView]:
     by_block: dict[int, list[_InstructionView]] = {}
-    for insn in _iter_instruction_views(target):
+    for insn in _iter_terminal_byte_emitter_insns(target):
         by_block.setdefault(insn.block_serial, []).append(insn)
 
     metadata = _block_metadata(target)

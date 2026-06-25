@@ -856,3 +856,58 @@ def test_return_frontier_ignores_legacy_return_opcode_when_not_terminal() -> Non
     )
 
     assert facts == ()
+
+
+# --- llr-3b41 S10-pair: return_frontier operand-tree diag-row coverage --------
+#
+# return_frontier shares terminal_byte_emitter's ``_BlockView`` /
+# ``_iter_block_views`` helpers, which now carry the canonical dual-currency
+# payload.  The FlowGraph (meta-rich) and meta-less sources are covered above
+# (``test_return_frontier_accepts_canonical_return_control`` /
+# ``test_return_frontier_records_nearby_return_carrier_writers``).  These pin the
+# third source -- a diag row carrying a parseable ``meta`` operand tree -- which
+# routes through the SAME canonical projection.  ``m_ret`` IS in the
+# opcode->kind map, so its canonical ``control_transfer`` is recovered to
+# RETURN: an operand-tree return block is recognised off recovered canonical
+# control semantics rather than being terminal-by-topology.
+
+
+def _meta_reg(reg: int, size: int = 8) -> dict:
+    return {"type": "mop_r", "type_num": 1, "size": size, "dstr": "r", "reg": reg}
+
+
+def test_return_frontier_recognises_operand_tree_ret_with_successor() -> None:
+    # An operand-tree ``m_ret`` row in a block that still has a successor
+    # (BLT_1WAY, ``not block.succs`` is False).  Only the recovered canonical
+    # ``control_transfer is RETURN`` can mark it a return block -- the meta-less
+    # flat path never sets ``control_transfer`` for ``m_ret`` and yields zero
+    # (see ``test_return_frontier_ignores_legacy_return_opcode_when_not_terminal``).
+    # This is a provable EMBRACE recovery gain, not a regression.
+    collector = ReturnFrontierFactCollector()
+
+    facts = collector.collect(
+        _target(
+            _block(
+                57,
+                _insn(
+                    index=0,
+                    opcode_name="m_ret",
+                    dstr="ret",
+                    meta={"l": _meta_reg(0)},
+                ),
+                succs=(58,),
+                preds=(50,),
+                type_name="BLT_1WAY",
+            )
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_CALLS"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact.kind == "ReturnFrontierFact"
+    assert fact.payload["return_block"] == 57
+    assert fact.payload["successor_blocks"] == [58]
+    assert fact.payload["carrier_fact_ids"] == []
