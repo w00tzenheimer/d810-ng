@@ -322,7 +322,7 @@ cdef bint _check_binding_equalities(CMatchBindings bindings):
         if name in seen:
             prev_mop = seen[name]
             try:
-                from d810.hexrays.hexrays_helpers import equal_mops_ignore_size
+                from d810.hexrays.utils.hexrays_helpers import equal_mops_ignore_size
                 if not equal_mops_ignore_size(prev_mop, mop):
                     return False
             except ImportError:
