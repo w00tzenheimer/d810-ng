@@ -4,6 +4,26 @@ The first vertical collector is deliberately conservative: it records direct
 stack-variable self updates, such as ``x = x + 0x80`` or ``x = x - 1``.  More
 complex recurrence recovery belongs in later collectors once the lifecycle
 pipeline is proven end-to-end.
+
+llr-3b41 S9 -- this module's OWN recurrence/induction collector
+(:class:`InductionVariableFactCollector`) now consumes the canonical
+:class:`~d810.ir.instructions.Instruction` IR through a collector-local
+dual-currency iterator (:func:`_iter_induction_carrier_insns`), following the
+proven S3 (:mod:`d810.analyses.value_flow.zero_blob`) .. S8
+(:mod:`d810.analyses.value_flow.state_write_anchor`) pattern.  Because this
+module *hosts* the shared :func:`_instruction_view_from_canonical` /
+:func:`_legacy_view_from_diag_row` helpers, the local iterator reuses them
+directly: a portable :class:`~d810.ir.flowgraph.FlowGraph` block or a diag row
+carrying a parseable ``meta`` operand tree is projected to a canonical
+``Instruction`` and adapted to the canonical :class:`_InstructionView` the
+induction classifiers (and the S6-shared :func:`_classify_induction_update` /
+:func:`_operation_of_view`) consume; meta-less rows stay on the byte-identical
+legacy flat path.  The SHARED :func:`_iter_instruction_views` /
+:func:`_iter_portable_instructions` / :func:`_instruction_view_from_canonical`
+exports and the :class:`_InstructionView` currency are left behavior-unchanged
+for the not-yet-ported collectors (``return_carrier`` /
+``terminal_byte_emitter`` / ``ollvm_carrier_profile``, S10/S11) and the canonical
+operand helpers other collectors import from here.
 """
 from __future__ import annotations
 
@@ -426,6 +446,119 @@ def _instruction_view_from_canonical(
     )
 
 
+def _legacy_view_from_diag_row(
+    block_serial: int, index: int, insn: Any
+) -> _InstructionView:
+    """Build the byte-identical legacy ``_InstructionView`` for a meta-less row.
+
+    This is the flat-field path historically inlined in
+    :func:`_iter_portable_instructions` for a diag row that does NOT carry a
+    parseable ``meta`` operand tree -- the production ``mba_to_fact_target``
+    ``SimpleNamespace`` (flat fields only) and attrs-only ``meta`` rows.  It is
+    factored out so the shared :func:`_iter_portable_instructions` and the
+    induction collector's own dual-currency iterator
+    (:func:`_iter_induction_carrier_insns`, llr-3b41 S9) consume an identical
+    record for meta-less sources.  Canonical reads only the operand tree, never
+    these flat fields, so a meta-less row cannot be reproduced through the
+    projection and stays here.
+    """
+    dest_stkoff = (
+        int(getattr(insn, "dest_stkoff"))
+        if getattr(insn, "dest_stkoff", None) is not None
+        else None
+    )
+    src_l_stkoff = (
+        int(getattr(insn, "src_l_stkoff"))
+        if getattr(insn, "src_l_stkoff", None) is not None
+        else None
+    )
+    src_r_stkoff = (
+        int(getattr(insn, "src_r_stkoff"))
+        if getattr(insn, "src_r_stkoff", None) is not None
+        else None
+    )
+    src_l_value = (
+        int(getattr(insn, "src_l_value"))
+        if getattr(insn, "src_l_value", None) is not None
+        else None
+    )
+    src_r_value = (
+        int(getattr(insn, "src_r_value"))
+        if getattr(insn, "src_r_value", None) is not None
+        else None
+    )
+    source_stkoffs = tuple(
+        dict.fromkeys(
+            int(offset)
+            for offset in (
+                *tuple(getattr(insn, "source_stkoffs", ()) or ()),
+                *_stack_offsets_from_diag_meta(getattr(insn, "meta", None)),
+                src_l_stkoff,
+                src_r_stkoff,
+            )
+            if offset is not None
+        )
+    )
+    address_stkoffs = _address_stack_offsets_from_diag_meta(
+        getattr(insn, "meta", None)
+    )
+    attrs = dict(_attrs_from_diag_meta(getattr(insn, "meta", None)))
+    opcode_name = str(getattr(insn, "opcode_name", ""))
+    return _InstructionView(
+        block_serial=block_serial,
+        insn_index=int(getattr(insn, "index", index)),
+        ea=getattr(insn, "ea", None),
+        opcode_name=opcode_name,
+        dest_type=getattr(insn, "dest_type", None),
+        dest_stkoff=dest_stkoff,
+        dest_size=getattr(insn, "dest_size", None),
+        src_l_type=getattr(insn, "src_l_type", None),
+        src_l_stkoff=src_l_stkoff,
+        src_l_value=src_l_value,
+        src_r_type=getattr(insn, "src_r_type", None),
+        src_r_stkoff=src_r_stkoff,
+        src_r_value=src_r_value,
+        dstr=str(getattr(insn, "dstr", "")),
+        operation=_value_op_from_opcode_name(opcode_name),
+        control_transfer=_control_transfer_from_raw(
+            _first_present(
+                getattr(insn, "control_transfer", None),
+                getattr(insn, "control_transfer_kind", None),
+                attrs.get("control_transfer"),
+                attrs.get("control_transfer_kind"),
+            )
+        ),
+        predicate_kind=_predicate_kind_from_raw(
+            _first_present(
+                getattr(insn, "predicate_kind", None),
+                getattr(insn, "branch_predicate", None),
+                attrs.get("predicate_kind"),
+                attrs.get("branch_predicate"),
+            )
+        ),
+        control_target=_optional_int(
+            _first_present(
+                getattr(insn, "control_target", None),
+                getattr(insn, "branch_target", None),
+                attrs.get("control_target"),
+                attrs.get("branch_target"),
+                attrs.get("target_block"),
+            )
+        ),
+        source_stkoffs=source_stkoffs,
+        address_stkoffs=address_stkoffs,
+        address_const_values=_int_tuple(
+            attrs.get("address_const_values") or attrs.get("address_constants")
+        ),
+        dest_reg=_reg_from_cfg_insn(getattr(insn, "dest_reg", None)),
+        src_l_reg=_reg_from_cfg_insn(getattr(insn, "src_l_reg", None)),
+        src_r_reg=_reg_from_cfg_insn(getattr(insn, "src_r_reg", None)),
+        src_l_mop=getattr(insn, "src_l_mop", None) or getattr(insn, "l", None),
+        src_r_mop=getattr(insn, "src_r_mop", None) or getattr(insn, "r", None),
+        attrs=attrs,
+    )
+
+
 def _iter_portable_instructions(target: Any) -> Iterable[_InstructionView]:
     blocks = getattr(target, "blocks", target)
     if isinstance(blocks, Mapping):
@@ -451,113 +584,17 @@ def _iter_portable_instructions(target: Any) -> Iterable[_InstructionView]:
             # recursive ``address_stkoffs``).  Meta-less rows -- the production
             # ``mba_to_fact_target`` ``SimpleNamespace`` (flat fields only) and
             # attrs-only ``meta`` rows -- fall through to the byte-identical
-            # legacy flat-field path below (canonical reads only the operand
-            # tree, never the flat fields, so it cannot reproduce them).
+            # legacy flat-field path (canonical reads only the operand tree,
+            # never the flat fields, so it cannot reproduce them).
             if diag_row_has_operand_tree(insn):
                 canonical = project_diag_instruction(insn)
-                view = _instruction_view_from_canonical(
+                yield _instruction_view_from_canonical(
                     block_serial=block_serial,
                     index=int(getattr(insn, "index", index)),
                     instruction=canonical,
                 )
-                yield view
                 continue
-            dest_stkoff = (
-                int(getattr(insn, "dest_stkoff"))
-                if getattr(insn, "dest_stkoff", None) is not None
-                else None
-            )
-            src_l_stkoff = (
-                int(getattr(insn, "src_l_stkoff"))
-                if getattr(insn, "src_l_stkoff", None) is not None
-                else None
-            )
-            src_r_stkoff = (
-                int(getattr(insn, "src_r_stkoff"))
-                if getattr(insn, "src_r_stkoff", None) is not None
-                else None
-            )
-            src_l_value = (
-                int(getattr(insn, "src_l_value"))
-                if getattr(insn, "src_l_value", None) is not None
-                else None
-            )
-            src_r_value = (
-                int(getattr(insn, "src_r_value"))
-                if getattr(insn, "src_r_value", None) is not None
-                else None
-            )
-            source_stkoffs = tuple(
-                dict.fromkeys(
-                    int(offset)
-                    for offset in (
-                        *tuple(getattr(insn, "source_stkoffs", ()) or ()),
-                        *_stack_offsets_from_diag_meta(getattr(insn, "meta", None)),
-                        src_l_stkoff,
-                        src_r_stkoff,
-                    )
-                    if offset is not None
-                )
-            )
-            address_stkoffs = _address_stack_offsets_from_diag_meta(
-                getattr(insn, "meta", None)
-            )
-            attrs = dict(_attrs_from_diag_meta(getattr(insn, "meta", None)))
-            opcode_name = str(getattr(insn, "opcode_name", ""))
-            yield _InstructionView(
-                block_serial=block_serial,
-                insn_index=int(getattr(insn, "index", index)),
-                ea=getattr(insn, "ea", None),
-                opcode_name=opcode_name,
-                dest_type=getattr(insn, "dest_type", None),
-                dest_stkoff=dest_stkoff,
-                dest_size=getattr(insn, "dest_size", None),
-                src_l_type=getattr(insn, "src_l_type", None),
-                src_l_stkoff=src_l_stkoff,
-                src_l_value=src_l_value,
-                src_r_type=getattr(insn, "src_r_type", None),
-                src_r_stkoff=src_r_stkoff,
-                src_r_value=src_r_value,
-                dstr=str(getattr(insn, "dstr", "")),
-                operation=_value_op_from_opcode_name(opcode_name),
-                control_transfer=_control_transfer_from_raw(
-                    _first_present(
-                        getattr(insn, "control_transfer", None),
-                        getattr(insn, "control_transfer_kind", None),
-                        attrs.get("control_transfer"),
-                        attrs.get("control_transfer_kind"),
-                    )
-                ),
-                predicate_kind=_predicate_kind_from_raw(
-                    _first_present(
-                        getattr(insn, "predicate_kind", None),
-                        getattr(insn, "branch_predicate", None),
-                        attrs.get("predicate_kind"),
-                        attrs.get("branch_predicate"),
-                    )
-                ),
-                control_target=_optional_int(
-                    _first_present(
-                        getattr(insn, "control_target", None),
-                        getattr(insn, "branch_target", None),
-                        attrs.get("control_target"),
-                        attrs.get("branch_target"),
-                        attrs.get("target_block"),
-                    )
-                ),
-                source_stkoffs=source_stkoffs,
-                address_stkoffs=address_stkoffs,
-                address_const_values=_int_tuple(
-                    attrs.get("address_const_values")
-                    or attrs.get("address_constants")
-                ),
-                dest_reg=_reg_from_cfg_insn(getattr(insn, "dest_reg", None)),
-                src_l_reg=_reg_from_cfg_insn(getattr(insn, "src_l_reg", None)),
-                src_r_reg=_reg_from_cfg_insn(getattr(insn, "src_r_reg", None)),
-                src_l_mop=getattr(insn, "src_l_mop", None) or getattr(insn, "l", None),
-                src_r_mop=getattr(insn, "src_r_mop", None) or getattr(insn, "r", None),
-                attrs=attrs,
-            )
+            yield _legacy_view_from_diag_row(block_serial, index, insn)
 
 
 def _iter_instruction_views(target: Any) -> Iterable[_InstructionView]:
@@ -565,10 +602,76 @@ def _iter_instruction_views(target: Any) -> Iterable[_InstructionView]:
     # source, lift it to a portable flow graph first; otherwise fall back to the
     # default snapshot/instruction iteration below -- behavior-identical to
     # pre-LS10 when no lifter is registered.
+    #
+    # SHARED export: ``return_carrier`` / ``terminal_byte_emitter`` /
+    # ``ollvm_carrier_profile`` still consume this and the
+    # :class:`_InstructionView` currency (the not-yet-ported collectors, S10/S11).
+    # Keep its behaviour byte-identical.
     lifter = select_lifter(target)
     if lifter is not None:
         target = lifter.lift(target)
     return _iter_portable_instructions(target)
+
+
+def _iter_induction_carrier_insns(target: Any) -> Iterable[_InstructionView]:
+    """Yield the induction collector's own dual-currency instruction views.
+
+    llr-3b41 S9 -- the per-collector port of induction_carrier's OWN
+    recurrence/induction collector onto the canonical IR, following the proven
+    S3 (:mod:`d810.analyses.value_flow.zero_blob`) .. S8
+    (:mod:`d810.analyses.value_flow.state_write_anchor`) dual-currency pattern.
+
+    Because induction_carrier *hosts* the shared
+    :func:`_instruction_view_from_canonical` / :func:`_legacy_view_from_diag_row`
+    helpers, this collector-local iterator reuses them directly rather than
+    duplicating an adapter: meta-rich sources -- a portable
+    :class:`~d810.ir.flowgraph.FlowGraph` block (via
+    ``InstructionProjection.from_block``) or a diag row carrying a parseable
+    ``meta`` operand tree (via
+    :func:`~d810.ir.insn_projection.project_diag_instruction`) -- are projected
+    to a canonical :class:`~d810.ir.instructions.Instruction` and adapted to the
+    canonical :class:`_InstructionView` the induction classifiers (and the
+    S6-shared :func:`_classify_induction_update` / :func:`_operation_of_view`)
+    consume; meta-less rows stay on the byte-identical legacy flat path
+    (:func:`_legacy_view_from_diag_row`, gated by ``diag_row_has_operand_tree``).
+
+    The induction collector reads the full operand surface (stack/register
+    self-update operands, memory ``address_stkoffs``, writeback moves), so the
+    canonical :class:`_InstructionView` is the right currency here -- a narrower
+    per-collector adapter would only re-expose the same fields and risk diverging
+    the classifiers it shares with folded_loop_guard.  This routes the collector
+    through the canonical projection WITHOUT touching the shared
+    :func:`_iter_instruction_views` the not-yet-ported collectors still depend on.
+    """
+    lifter = select_lifter(target)
+    if lifter is not None:
+        target = lifter.lift(target)
+
+    blocks = getattr(target, "blocks", target)
+    if isinstance(blocks, Mapping):
+        block_iter = blocks.values()
+    else:
+        block_iter = blocks
+
+    for blk in block_iter:
+        block_serial = int(getattr(blk, "serial"))
+        if getattr(blk, "insn_snapshots", None) is not None:
+            for index, instruction in enumerate(InstructionProjection.from_block(blk)):
+                yield _instruction_view_from_canonical(
+                    block_serial=block_serial,
+                    index=index,
+                    instruction=instruction,
+                )
+            continue
+        for index, insn in enumerate(getattr(blk, "instructions", ())):
+            if diag_row_has_operand_tree(insn):
+                yield _instruction_view_from_canonical(
+                    block_serial=block_serial,
+                    index=int(getattr(insn, "index", index)),
+                    instruction=project_diag_instruction(insn),
+                )
+                continue
+            yield _legacy_view_from_diag_row(block_serial, index, insn)
 
 
 def _classify_induction_update(insn: _InstructionView) -> _InductionUpdate | None:
@@ -735,7 +838,11 @@ class InductionVariableFactCollector:
         maturity_text = fact_provider_label(context)
         observations: list[FactObservation] = []
         seen: set[tuple[int, int, int, int]] = set()
-        instructions = tuple(_iter_instruction_views(target))
+        # llr-3b41 S9: consume this collector's OWN dual-currency iterator
+        # (canonical Instruction for meta-rich sources; byte-identical legacy
+        # flat path for meta-less rows) rather than the shared
+        # ``_iter_instruction_views`` the not-yet-ported collectors depend on.
+        instructions = tuple(_iter_induction_carrier_insns(target))
         for insn in instructions:
             update = _classify_induction_update(insn)
             if update is None:
