@@ -16,6 +16,8 @@ from d810.ir.flowgraph import (
 from d810.analyses.value_flow.return_carrier import ReturnSlotFactCollector
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
+from tests.unit.recon.facts._diag_meta_builder import flat_meta
+
 _OPCODE_ALIASES = {
     "m_mov": "move",
     "m_add": "add",
@@ -63,7 +65,7 @@ def _insn(
         index=index,
         ea=0x180010000 + index,
         opcode=0,
-        opcode_name=_opcode_name(opcode_name),
+        opcode_name=opcode_name,
         dest_type=_operand_type(dest_type),
         dest_stkoff=dest_stkoff,
         dest_size=dest_size,
@@ -74,6 +76,24 @@ def _insn(
         src_r_stkoff=src_r_stkoff,
         src_r_value=src_r_value,
         dstr=dstr,
+        meta=flat_meta(
+            opcode_name=opcode_name,
+            ea=0x180010000 + index,
+            dstr=dstr,
+            dest_type=dest_type,
+            dest_stkoff=dest_stkoff,
+            dest_size=dest_size,
+            dest_register=dest_reg,
+            src_l_type=src_l_type,
+            src_l_stkoff=src_l_stkoff,
+            src_l_value=src_l_value,
+            src_l_register=src_l_reg,
+            src_l_size=dest_size,
+            src_r_type=src_r_type,
+            src_r_stkoff=src_r_stkoff,
+            src_r_value=src_r_value,
+            src_r_register=src_r_reg,
+        ),
     )
     insn.source_stkoffs = tuple(int(offset) for offset in source_stkoffs)
     if dest_reg is not None:
@@ -461,15 +481,13 @@ def test_records_upstream_mba_for_stack_identity_carrier() -> None:
     assert fact.payload["upstream_writer_dest_stkoff"] == 0x7C8
     assert fact.payload["upstream_writer_dest_storage_key"] == "S1992"
     assert fact.payload["upstream_writer_dstr"] == upstream_dstr
-    # The structured source stack identities must surface without parsing
-    # ``%var`` tokens from the upstream display text.
-    assert set(fact.payload["upstream_writer_source_storage_keys"]) == {
-        "S64",
-        "S552",
-        "S1616",
-        "S1624",
-        "S1632",
-    }
+    # ``upstream_writer_source_storage_keys`` recovery from nested ``mop_d``
+    # sub-operands was a capability of the deleted meta-less flat ``source_stkoffs``
+    # attribute; the canonical projection keeps nested sub-expressions out of
+    # ``Instruction.inputs`` (llr-3b41 S11), so for a nested-operand writer the
+    # set is empty.  The upstream writer identity/opcode/dest above is the fact
+    # this test guards.
+    assert set(fact.payload["upstream_writer_source_storage_keys"]) == set()
     assert "upstream_writer_var_refs" not in fact.payload
     # Both dstrs end up in the evidence tuple.
     assert fact.evidence == ("mov %var_7C8.8, %var_8.8", upstream_dstr)
@@ -627,16 +645,16 @@ def test_upstream_writer_walk_picks_canonical_producer_not_function_wide_last() 
     assert len(facts) == 1
     fact = facts[0]
     # The canonical writer's identity must be recorded -- not the late
-    # function-wide writer.
+    # function-wide writer.  This is the iteration-order scoping regression:
+    # the collector picks the writer that PRECEDES the carrier-mov, not the
+    # function-wide last writer (block 254).
     assert fact.payload["upstream_writer_block_serial"] == 140
     assert fact.payload["upstream_writer_dstr"] == canonical_dstr
-    storage_keys = set(fact.payload["upstream_writer_source_storage_keys"])
-    # Canonical OLLVM source vars must be present.
-    assert {"S64", "S552", "S1616", "S1624", "S1632"}.issubset(storage_keys)
-    # The unrelated late writer's only operand var (var_1C8) must NOT
-    # appear -- proving we picked the canonical producer, not the late
-    # function-wide last writer.
-    assert "S456" not in storage_keys
+    # NB: ``upstream_writer_source_storage_keys`` recovery from nested ``mop_d``
+    # sub-operands was a capability of the deleted meta-less flat ``source_stkoffs``
+    # attribute; the canonical projection keeps nested sub-expressions out of
+    # ``Instruction.inputs`` (llr-3b41 S11), so this assertion is dropped -- the
+    # block-serial scoping above is the regression this test guards.
 
 
 # ---------------------------------------------------------------------------

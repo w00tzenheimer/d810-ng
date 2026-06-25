@@ -15,37 +15,25 @@ authorizing any rewrite:
 The facts are intentionally descriptive.  Consumers must still prove branch
 ownership and block exclusivity before using them for materialization.
 
-llr-3b41 (last ``_iter_instruction_views`` consumer) -- per-collector port onto
-the canonical IR, following the proven S3
-(:mod:`d810.analyses.value_flow.zero_blob`) .. S9
-(:mod:`d810.analyses.value_flow.induction_carrier`) dual-currency pattern.  This
-collector is purely TEXT-driven: every carrier matcher runs regexes over the
-instruction ``dstr`` (microcode rendering), and the only structured field it
-reads is ``operation`` (compared against :attr:`ValueOpKind.STORE`).  A
-collector-local source iterator (:func:`_iter_ollvm_carrier_insns`) routes:
+llr-3b41 S11 -- canonical-only.  This collector is purely TEXT-driven: every
+carrier matcher runs regexes over the instruction ``dstr`` (microcode
+rendering), and the only structured field it reads is ``operation`` (compared
+against :attr:`ValueOpKind.STORE`).  The collector-local source iterator
+(:func:`_iter_ollvm_carrier_insns`) routes a meta-rich
+:class:`~d810.ir.flowgraph.FlowGraph` block (the only shape a production fact
+target ever is) through ``InstructionProjection.from_block``, and an offline
+diag row carrying a parseable ``meta`` operand tree through the SAME canonical
+:func:`~d810.ir.insn_projection.project_diag_instruction` projection, so
+``dstr`` comes from ``Instruction.attrs['display_text']`` and ``operation`` from
+``_value_op_from_instruction``.
 
-* **meta-rich** sources -- a portable :class:`~d810.ir.flowgraph.FlowGraph`
-  block (via ``InstructionProjection.from_block``) or a diag row carrying a
-  parseable ``meta`` operand tree (via
-  :func:`~d810.ir.insn_projection.project_diag_instruction`) -- through the SAME
-  canonical :class:`~d810.ir.instructions.Instruction` projection, so ``dstr``
-  comes from ``Instruction.attrs['display_text']`` and ``operation`` from
-  ``_value_op_from_instruction``.
-* **meta-less** rows -- the production ``mba_to_fact_target``
-  ``SimpleNamespace`` (flat fields only) and attrs-only ``meta`` rows -- have no
-  operand tree, so they stay on the byte-identical legacy ``_InstructionView``
-  flat path (``diag_row_has_operand_tree`` is the gate).  This collector reads
-  ONLY ``dstr`` / ``operation`` (plus ``block_serial`` / ``insn_index`` / ``ea``
-  / ``opcode_name`` for anchoring + evidence), all of which the legacy flat path
-  populates identically, so meta-less rows yield byte-identical observations.
-
-A narrow :class:`_OllvmCarrierInsn` adapter (S8 ``_StateWriteInsn`` style)
-exposes exactly that field surface, built ``from_canonical`` or
-``from_legacy_view``.  Because the carriers are matched on ``dstr`` text, the
-known ``project_diag_instruction`` ``m_call`` -> ``InsnKind`` gap does NOT affect
-this collector: call carriers are recognised purely by their rendered text, not
-by call semantics.  Does not touch the shared ``_iter_instruction_views`` or any
-other collector.
+A narrow :class:`_OllvmCarrierInsn` adapter exposes exactly that field surface,
+built ``from_canonical``.  The legacy meta-less ``_InstructionView`` flat path
+was removed (S11) -- it was unreachable by any real source once every production
+fact target became a canonical ``FlowGraph``.  Because the carriers are matched
+on ``dstr`` text, the known ``project_diag_instruction`` ``m_call`` ->
+``InsnKind`` gap does NOT affect this collector: call carriers are recognised
+purely by their rendered text, not by call semantics.
 """
 from __future__ import annotations
 
@@ -64,7 +52,6 @@ from d810.ir.expressions import ValueOpKind
 from d810.ir.instructions import Instruction
 from d810.ir.insn_projection import (
     InstructionProjection,
-    diag_row_has_operand_tree,
     project_diag_instruction,
 )
 from d810.ir.maturity import IRMaturity
@@ -85,10 +72,8 @@ from d810.analyses.control_flow.branch_ownership_oracle import (
     Z3BranchOwnershipOracle,
 )
 from d810.analyses.value_flow.induction_carrier import (
-    _InstructionView,
     _canonical_opcode_name,
     _value_op_from_instruction,
-    _value_op_from_opcode_name,
 )
 from d810.analyses.value_flow.state_write_anchor import (
     _block_start_ea_lookup,
@@ -172,9 +157,8 @@ _LOOP_BOUND_RE = re.compile(
 class _OllvmCarrierInsn:
     """Uniform semantic view consumed by the OLLVM carrier collector.
 
-    Built from a canonical :class:`~d810.ir.instructions.Instruction` for a
-    meta-rich source, or from a legacy :class:`_InstructionView` for a meta-less
-    row.  Exposes ONLY the fields this collector reads -- ``dstr`` (every carrier
+    Built solely from a canonical :class:`~d810.ir.instructions.Instruction`
+    (llr-3b41 S11 deleted the legacy meta-less flat path).  Exposes ONLY the fields this collector reads -- ``dstr`` (every carrier
     regex runs over it) and ``operation`` (the one structured field, compared
     against :attr:`ValueOpKind.STORE`) plus identity/evidence fields
     (``block_serial`` / ``insn_index`` / ``ea`` / ``opcode_name``).
@@ -211,58 +195,17 @@ class _OllvmCarrierInsn:
             operation=_value_op_from_instruction(instruction),
         )
 
-    @classmethod
-    def from_legacy_view(cls, view: _InstructionView) -> "_OllvmCarrierInsn":
-        return cls(
-            block_serial=view.block_serial,
-            insn_index=view.insn_index,
-            ea=view.ea,
-            opcode_name=view.opcode_name,
-            dstr=view.dstr,
-            operation=view.operation or _value_op_from_opcode_name(view.opcode_name),
-        )
-
-
-def _legacy_view_from_diag_row(
-    block_serial: int, index: int, insn: Any
-) -> _InstructionView:
-    """Build the byte-identical legacy view for a meta-less diag row.
-
-    The OLLVM carrier collector reads only ``dstr`` / ``operation`` (plus
-    identity/evidence), so this view carries exactly those fields -- ``dstr`` and
-    the ``opcode_name`` from which ``operation`` is derived -- leaving
-    operand-tree-only fields empty.  That makes a meta-less row classify
-    identically to the pre-port flat-field path.
-    """
-    opcode_name = str(getattr(insn, "opcode_name", ""))
-    return _InstructionView(
-        block_serial=block_serial,
-        insn_index=int(getattr(insn, "index", index)),
-        ea=getattr(insn, "ea", None),
-        opcode_name=opcode_name,
-        dest_type=getattr(insn, "dest_type", None),
-        dest_stkoff=None,
-        dest_size=getattr(insn, "dest_size", None),
-        src_l_type=getattr(insn, "src_l_type", None),
-        src_l_stkoff=None,
-        src_l_value=None,
-        src_r_type=getattr(insn, "src_r_type", None),
-        src_r_stkoff=None,
-        src_r_value=None,
-        dstr=str(getattr(insn, "dstr", "")),
-        operation=_value_op_from_opcode_name(opcode_name),
-    )
-
 
 def _iter_ollvm_carrier_insns(target: Any) -> Iterable[_OllvmCarrierInsn]:
     """Yield this collector's semantic record for every instruction in ``target``.
 
-    Dual-currency (see module docstring): meta-rich FlowGraph blocks and
-    operand-tree diag rows are lifted to a canonical ``Instruction``; meta-less
-    rows stay on the byte-identical legacy ``_InstructionView`` flat path.  A
-    registered live :class:`~d810.capabilities.source_lifter.SourceLifter` lifts
-    a backend source to a portable flow graph first (behaviour-identical to
-    no-lifter when none is registered).
+    Canonical-only (llr-3b41 S11): a meta-rich FlowGraph block is projected via
+    ``InstructionProjection.from_block``; an offline diag row carrying a ``meta``
+    operand tree is lifted via ``project_diag_instruction``.  The meta-less flat
+    fallback was removed -- it was unreachable by any real source once every
+    production fact target became a canonical ``FlowGraph``.  A registered live
+    :class:`~d810.capabilities.source_lifter.SourceLifter` lifts a backend
+    source to a portable flow graph first.
     """
     lifter = select_lifter(target)
     if lifter is not None:
@@ -285,15 +228,10 @@ def _iter_ollvm_carrier_insns(target: Any) -> Iterable[_OllvmCarrierInsn]:
                 )
             continue
         for index, insn in enumerate(getattr(blk, "instructions", ())):
-            if diag_row_has_operand_tree(insn):
-                yield _OllvmCarrierInsn.from_canonical(
-                    block_serial=block_serial,
-                    index=int(getattr(insn, "index", index)),
-                    instruction=project_diag_instruction(insn),
-                )
-                continue
-            yield _OllvmCarrierInsn.from_legacy_view(
-                _legacy_view_from_diag_row(block_serial, index, insn)
+            yield _OllvmCarrierInsn.from_canonical(
+                block_serial=block_serial,
+                index=int(getattr(insn, "index", index)),
+                instruction=project_diag_instruction(insn),
             )
 
 

@@ -17,6 +17,17 @@ from d810.families.state_machine_cff.ollvm_carrier_profile import (
 )
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
+from tests.unit.recon.facts._diag_meta_builder import flat_meta
+
+
+_OPCODE_CANONICAL = {
+    "op_4": "m_mov",
+    "op_1": "m_stx",
+    "op_10": "m_call",
+    "op_35": "m_xds",
+    "op_56": "m_add",
+}
+
 
 def _insn(
     *,
@@ -26,12 +37,27 @@ def _insn(
     dstr: str,
     dest_stkoff: int | None = None,
 ) -> InstructionSnapshot:
+    # llr-3b41 S11: the OLLVM carrier collector is text-driven (regex over
+    # ``dstr``) but also reads canonical ``operation`` (STORE).  The collector
+    # lifts diag rows through ``project_diag_instruction`` (the meta-less flat
+    # path was deleted), so map the numeric opcode to its serializer spelling and
+    # attach a ``meta`` operand tree carrying the dest stack slot.
+    canonical_opcode = _OPCODE_CANONICAL.get(opcode_name, opcode_name)
+    dest_type = "mop_S" if dest_stkoff is not None else None
+    meta = flat_meta(
+        opcode_name=canonical_opcode,
+        ea=ea,
+        dstr=dstr,
+        dest_type=dest_type,
+        dest_stkoff=dest_stkoff,
+        dest_size=8,
+    )
     return InstructionSnapshot(
         index=index,
         ea=ea,
         opcode=0,
-        opcode_name=opcode_name,
-        dest_type="mop_S" if dest_stkoff is not None else None,
+        opcode_name=canonical_opcode,
+        dest_type=dest_type,
         dest_stkoff=dest_stkoff,
         dest_size=8,
         src_l_type=None,
@@ -41,6 +67,7 @@ def _insn(
         src_r_stkoff=None,
         src_r_value=None,
         dstr=dstr,
+        meta=meta,
     )
 
 

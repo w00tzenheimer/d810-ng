@@ -50,7 +50,8 @@ class InstructionView(Protocol):
     """Structural view of one instruction the classifier reads.
 
     Callers / backends supply concrete views (e.g. snapshot rows); only these
-    fields are consumed.  Mirrors the recon ``_InstructionView`` subset.
+    fields are consumed.  Mirrors the recon induction collector's
+    canonical instruction-view field subset.
     """
 
     block_serial: int

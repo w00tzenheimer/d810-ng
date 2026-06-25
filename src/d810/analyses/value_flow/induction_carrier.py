@@ -5,25 +5,25 @@ stack-variable self updates, such as ``x = x + 0x80`` or ``x = x - 1``.  More
 complex recurrence recovery belongs in later collectors once the lifecycle
 pipeline is proven end-to-end.
 
-llr-3b41 S9 -- this module's OWN recurrence/induction collector
-(:class:`InductionVariableFactCollector`) now consumes the canonical
+llr-3b41 S11 -- this module's OWN recurrence/induction collector
+(:class:`InductionVariableFactCollector`) consumes the canonical
 :class:`~d810.ir.instructions.Instruction` IR through a collector-local
-dual-currency iterator (:func:`_iter_induction_carrier_insns`), following the
-proven S3 (:mod:`d810.analyses.value_flow.zero_blob`) .. S8
-(:mod:`d810.analyses.value_flow.state_write_anchor`) pattern.  Because this
-module *hosts* the shared :func:`_instruction_view_from_canonical` /
-:func:`_legacy_view_from_diag_row` helpers, the local iterator reuses them
-directly: a portable :class:`~d810.ir.flowgraph.FlowGraph` block or a diag row
-carrying a parseable ``meta`` operand tree is projected to a canonical
-``Instruction`` and adapted to the canonical :class:`_InstructionView` the
-induction classifiers (and the S6-shared :func:`_classify_induction_update` /
-:func:`_operation_of_view`) consume; meta-less rows stay on the byte-identical
-legacy flat path.  The SHARED :func:`_iter_instruction_views` /
-:func:`_iter_portable_instructions` / :func:`_instruction_view_from_canonical`
-exports and the :class:`_InstructionView` currency are left behavior-unchanged
-for the not-yet-ported collectors (``return_carrier`` /
-``terminal_byte_emitter`` / ``ollvm_carrier_profile``, S10/S11) and the canonical
-operand helpers other collectors import from here.
+canonical-only iterator (:func:`_iter_induction_carrier_insns`).  A portable
+:class:`~d810.ir.flowgraph.FlowGraph` block (the only shape a production fact
+target ever is) is projected via ``InstructionProjection.from_block``; an
+offline diag row carrying a ``meta`` operand tree is lifted through the SAME
+projection via :func:`~d810.ir.insn_projection.project_diag_instruction`.  Each
+is adapted to the small canonical :class:`_InductionInsn` record the induction
+classifiers (and the S6-shared :func:`_classify_induction_update` /
+:func:`_operation_of_view`, which ``folded_loop_guard`` duck-types) consume.
+
+S11 deleted the legacy ``_InstructionView`` record, the meta-less
+``_legacy_view_from_diag_row`` flat path, and the shared
+``_iter_instruction_views`` / ``_iter_portable_instructions`` iterators -- the
+meta-less fallback was unreachable by any real source once every production
+fact target became a canonical ``FlowGraph`` (S10).  The canonical operand
+helpers other collectors import from here (e.g.
+:func:`_canonical_operands`, :func:`_value_op_from_instruction`) stay.
 """
 from __future__ import annotations
 
@@ -38,7 +38,6 @@ from d810.ir.expressions import ValueOpKind
 from d810.ir.instructions import Instruction, InstructionEffectKind
 from d810.ir.insn_projection import (
     InstructionProjection,
-    diag_row_has_operand_tree,
     project_diag_instruction,
 )
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
@@ -62,7 +61,20 @@ _TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 
 
 @dataclass(frozen=True)
-class _InstructionView:
+class _InductionInsn:
+    """Canonical-derived semantic view consumed by the induction collector.
+
+    Built solely from a canonical :class:`~d810.ir.instructions.Instruction`
+    (llr-3b41 S11 deleted the legacy ``_InstructionView`` flat path and the
+    meta-less fallback now that every production fact target is a canonical
+    ``FlowGraph``).  Exposes the operand surface the induction classifiers and
+    the S6-shared :func:`_classify_induction_update` / :func:`_operation_of_view`
+    helpers read (stack/register self-update operands plus memory
+    ``address_stkoffs``).  ``folded_loop_guard`` duck-types its own
+    :class:`_FoldedGuardInsn` over those same shared classifiers, so the field
+    names are kept stable.
+    """
+
     block_serial: int
     insn_index: int
     ea: int | None
@@ -78,51 +90,27 @@ class _InstructionView:
     src_r_value: int | None
     dstr: str
     operation: ValueOpKind | None = None
-    control_transfer: ControlTransferKind | None = None
-    predicate_kind: PredicateKind | None = None
-    control_target: int | None = None
-    call_kind: CallKind | None = None
-    call_target: Varnode | None = None
-    call_args: tuple[Varnode, ...] = ()
-    memory_target: Varnode | None = None
-    memory_value: Varnode | None = None
-    memory_segment: Varnode | None = None
-    source_stkoffs: tuple[int, ...] = ()
     address_stkoffs: tuple[int, ...] = ()
-    address_const_values: tuple[int, ...] = ()
-    dest_temp: int | None = None
-    src_temps: tuple[int, ...] = ()
     # Register identity for operands carried in a register rather than a
     # stack slot (a ``Varnode`` in ``Space.REGISTER``).  ``None`` when the
     # operand is not a register; ``stkoff`` is likewise ``None`` for register
-    # operands.  Populated from the lifted operand snapshot's register field, or
-    # a ``*_reg`` attribute on a diag-style instruction when present.
+    # operands.  Populated from the lifted operand snapshot's register field.
     dest_reg: int | None = None
     src_l_reg: int | None = None
     src_r_reg: int | None = None
-    # Lifted operand SUBTREE provenance for the left/right
-    # operands, retained so operand-tree walkers can inspect a nested
-    # sub-operation (e.g. a ``(%var - #N)`` subtract buried inside an
-    # ``m_xdu`` / ``m_jge`` expression) at ANY depth.  The flat
-    # ``src_l_stkoff`` / ``src_l_value`` fields above only expose the
-    # top-level operand; these carry the full structured subtree.  ``None``
-    # for diag-style instructions that do not provide a snapshot subtree.
-    src_l_mop: "Any | None" = None
-    src_r_mop: "Any | None" = None
-    attrs: Mapping[str, Any] = field(default_factory=dict, compare=False, hash=False)
 
 
 @dataclass(frozen=True)
 class _InductionUpdate:
-    insn: _InstructionView
+    insn: _InductionInsn
     step: int
     source_side: str
 
 
 @dataclass(frozen=True)
 class _MemoryInductionUpdate:
-    define_insn: _InstructionView
-    store_insn: _InstructionView
+    define_insn: _InductionInsn
+    store_insn: _InductionInsn
     step: int
     source_side: str
     base_stkoff: int | None
@@ -131,8 +119,8 @@ class _MemoryInductionUpdate:
 
 @dataclass(frozen=True)
 class _WritebackTailUpdate:
-    move_insn: _InstructionView
-    address_use_insn: _InstructionView
+    move_insn: _InductionInsn
+    address_use_insn: _InductionInsn
     source_token: str
     dest_token: str
 
@@ -170,7 +158,7 @@ def _value_op_from_instruction(instruction: Instruction) -> ValueOpKind | None:
     return operation if isinstance(operation, ValueOpKind) else None
 
 
-def _operation_of_view(insn: _InstructionView) -> ValueOpKind | None:
+def _operation_of_view(insn: _InductionInsn) -> ValueOpKind | None:
     return insn.operation or _value_op_from_opcode_name(insn.opcode_name)
 
 
@@ -398,18 +386,24 @@ def _address_const_values_from_instruction(
     return _int_tuple(instruction.attrs.get("address_const_values"))
 
 
-def _instruction_view_from_canonical(
+def _induction_insn_from_canonical(
     *,
     block_serial: int,
     index: int,
     instruction: Instruction,
-) -> _InstructionView:
+) -> _InductionInsn:
+    """Adapt a canonical ``Instruction`` to the induction collector's view.
+
+    llr-3b41 S11 -- this is now the SOLE builder of the induction record.  The
+    legacy meta-less flat path (``_legacy_view_from_diag_row``) and the shared
+    ``_iter_portable_instructions`` / ``_iter_instruction_views`` were deleted
+    once every production fact target became a canonical ``FlowGraph``.
+    """
     dest, left, right = _canonical_operands(instruction)
     attrs = instruction.attrs
     ea_raw = attrs.get("ea")
     ea = int(ea_raw) if ea_raw is not None else None
-    memory = instruction.memory
-    return _InstructionView(
+    return _InductionInsn(
         block_serial=int(block_serial),
         insn_index=int(index),
         ea=ea,
@@ -425,223 +419,27 @@ def _instruction_view_from_canonical(
         src_r_value=_const_value_from_varnode(right),
         dstr=str(attrs.get("display_text") or ""),
         operation=_value_op_from_instruction(instruction),
-        control_transfer=_control_transfer_from_instruction(instruction),
-        predicate_kind=_predicate_kind_from_instruction(instruction),
-        control_target=_control_target_from_instruction(instruction),
-        call_kind=_call_kind_from_instruction(instruction),
-        call_target=_call_target_from_instruction(instruction),
-        call_args=_call_args_from_instruction(instruction),
-        memory_target=memory.target if memory is not None else None,
-        memory_value=memory.value if memory is not None else None,
-        memory_segment=memory.segment if memory is not None else None,
-        source_stkoffs=_stack_offsets_from_varnodes(instruction.inputs),
         address_stkoffs=_address_stack_offsets_from_instruction(instruction),
-        address_const_values=_address_const_values_from_instruction(instruction),
-        dest_temp=_temp_from_varnode(instruction.result),
-        src_temps=_temps_from_varnodes(instruction.inputs),
         dest_reg=_reg_from_varnode(dest),
         src_l_reg=_reg_from_varnode(left),
         src_r_reg=_reg_from_varnode(right),
-        attrs=attrs,
     )
 
 
-def _legacy_view_from_diag_row(
-    block_serial: int, index: int, insn: Any
-) -> _InstructionView:
-    """Build the byte-identical legacy ``_InstructionView`` for a meta-less row.
+def _iter_induction_carrier_insns(target: Any) -> Iterable[_InductionInsn]:
+    """Yield the induction collector's canonical instruction views.
 
-    This is the flat-field path historically inlined in
-    :func:`_iter_portable_instructions` for a diag row that does NOT carry a
-    parseable ``meta`` operand tree -- the production ``mba_to_fact_target``
-    ``SimpleNamespace`` (flat fields only) and attrs-only ``meta`` rows.  It is
-    factored out so the shared :func:`_iter_portable_instructions` and the
-    induction collector's own dual-currency iterator
-    (:func:`_iter_induction_carrier_insns`, llr-3b41 S9) consume an identical
-    record for meta-less sources.  Canonical reads only the operand tree, never
-    these flat fields, so a meta-less row cannot be reproduced through the
-    projection and stays here.
-    """
-    dest_stkoff = (
-        int(getattr(insn, "dest_stkoff"))
-        if getattr(insn, "dest_stkoff", None) is not None
-        else None
-    )
-    src_l_stkoff = (
-        int(getattr(insn, "src_l_stkoff"))
-        if getattr(insn, "src_l_stkoff", None) is not None
-        else None
-    )
-    src_r_stkoff = (
-        int(getattr(insn, "src_r_stkoff"))
-        if getattr(insn, "src_r_stkoff", None) is not None
-        else None
-    )
-    src_l_value = (
-        int(getattr(insn, "src_l_value"))
-        if getattr(insn, "src_l_value", None) is not None
-        else None
-    )
-    src_r_value = (
-        int(getattr(insn, "src_r_value"))
-        if getattr(insn, "src_r_value", None) is not None
-        else None
-    )
-    source_stkoffs = tuple(
-        dict.fromkeys(
-            int(offset)
-            for offset in (
-                *tuple(getattr(insn, "source_stkoffs", ()) or ()),
-                *_stack_offsets_from_diag_meta(getattr(insn, "meta", None)),
-                src_l_stkoff,
-                src_r_stkoff,
-            )
-            if offset is not None
-        )
-    )
-    address_stkoffs = _address_stack_offsets_from_diag_meta(
-        getattr(insn, "meta", None)
-    )
-    attrs = dict(_attrs_from_diag_meta(getattr(insn, "meta", None)))
-    opcode_name = str(getattr(insn, "opcode_name", ""))
-    return _InstructionView(
-        block_serial=block_serial,
-        insn_index=int(getattr(insn, "index", index)),
-        ea=getattr(insn, "ea", None),
-        opcode_name=opcode_name,
-        dest_type=getattr(insn, "dest_type", None),
-        dest_stkoff=dest_stkoff,
-        dest_size=getattr(insn, "dest_size", None),
-        src_l_type=getattr(insn, "src_l_type", None),
-        src_l_stkoff=src_l_stkoff,
-        src_l_value=src_l_value,
-        src_r_type=getattr(insn, "src_r_type", None),
-        src_r_stkoff=src_r_stkoff,
-        src_r_value=src_r_value,
-        dstr=str(getattr(insn, "dstr", "")),
-        operation=_value_op_from_opcode_name(opcode_name),
-        control_transfer=_control_transfer_from_raw(
-            _first_present(
-                getattr(insn, "control_transfer", None),
-                getattr(insn, "control_transfer_kind", None),
-                attrs.get("control_transfer"),
-                attrs.get("control_transfer_kind"),
-            )
-        ),
-        predicate_kind=_predicate_kind_from_raw(
-            _first_present(
-                getattr(insn, "predicate_kind", None),
-                getattr(insn, "branch_predicate", None),
-                attrs.get("predicate_kind"),
-                attrs.get("branch_predicate"),
-            )
-        ),
-        control_target=_optional_int(
-            _first_present(
-                getattr(insn, "control_target", None),
-                getattr(insn, "branch_target", None),
-                attrs.get("control_target"),
-                attrs.get("branch_target"),
-                attrs.get("target_block"),
-            )
-        ),
-        source_stkoffs=source_stkoffs,
-        address_stkoffs=address_stkoffs,
-        address_const_values=_int_tuple(
-            attrs.get("address_const_values") or attrs.get("address_constants")
-        ),
-        dest_reg=_reg_from_cfg_insn(getattr(insn, "dest_reg", None)),
-        src_l_reg=_reg_from_cfg_insn(getattr(insn, "src_l_reg", None)),
-        src_r_reg=_reg_from_cfg_insn(getattr(insn, "src_r_reg", None)),
-        src_l_mop=getattr(insn, "src_l_mop", None) or getattr(insn, "l", None),
-        src_r_mop=getattr(insn, "src_r_mop", None) or getattr(insn, "r", None),
-        attrs=attrs,
-    )
-
-
-def _iter_portable_instructions(target: Any) -> Iterable[_InstructionView]:
-    blocks = getattr(target, "blocks", target)
-    if isinstance(blocks, Mapping):
-        block_iter = blocks.values()
-    else:
-        block_iter = blocks
-    for blk in block_iter:
-        block_serial = int(getattr(blk, "serial"))
-        cfg_instructions = getattr(blk, "insn_snapshots", None)
-        if cfg_instructions is not None:
-            for index, instruction in enumerate(InstructionProjection.from_block(blk)):
-                yield _instruction_view_from_canonical(
-                    block_serial=block_serial,
-                    index=index,
-                    instruction=instruction,
-                )
-            continue
-        for index, insn in enumerate(getattr(blk, "instructions", ())):
-            # llr-3b41 S2: a diag Branch-B row that carries a parseable ``meta``
-            # operand tree (DB-replay / ``InstructionSnapshot`` rows) is lifted
-            # through the SAME canonical projection Branch-A uses, so its
-            # operand facts become canonical-faithful (real ``operation``,
-            # recursive ``address_stkoffs``).  Meta-less rows -- the production
-            # ``mba_to_fact_target`` ``SimpleNamespace`` (flat fields only) and
-            # attrs-only ``meta`` rows -- fall through to the byte-identical
-            # legacy flat-field path (canonical reads only the operand tree,
-            # never the flat fields, so it cannot reproduce them).
-            if diag_row_has_operand_tree(insn):
-                canonical = project_diag_instruction(insn)
-                yield _instruction_view_from_canonical(
-                    block_serial=block_serial,
-                    index=int(getattr(insn, "index", index)),
-                    instruction=canonical,
-                )
-                continue
-            yield _legacy_view_from_diag_row(block_serial, index, insn)
-
-
-def _iter_instruction_views(target: Any) -> Iterable[_InstructionView]:
-    # LS10: if a backend has registered a live SourceLifter that handles this
-    # source, lift it to a portable flow graph first; otherwise fall back to the
-    # default snapshot/instruction iteration below -- behavior-identical to
-    # pre-LS10 when no lifter is registered.
-    #
-    # SHARED export: ``return_carrier`` / ``terminal_byte_emitter`` /
-    # ``ollvm_carrier_profile`` still consume this and the
-    # :class:`_InstructionView` currency (the not-yet-ported collectors, S10/S11).
-    # Keep its behaviour byte-identical.
-    lifter = select_lifter(target)
-    if lifter is not None:
-        target = lifter.lift(target)
-    return _iter_portable_instructions(target)
-
-
-def _iter_induction_carrier_insns(target: Any) -> Iterable[_InstructionView]:
-    """Yield the induction collector's own dual-currency instruction views.
-
-    llr-3b41 S9 -- the per-collector port of induction_carrier's OWN
-    recurrence/induction collector onto the canonical IR, following the proven
-    S3 (:mod:`d810.analyses.value_flow.zero_blob`) .. S8
-    (:mod:`d810.analyses.value_flow.state_write_anchor`) dual-currency pattern.
-
-    Because induction_carrier *hosts* the shared
-    :func:`_instruction_view_from_canonical` / :func:`_legacy_view_from_diag_row`
-    helpers, this collector-local iterator reuses them directly rather than
-    duplicating an adapter: meta-rich sources -- a portable
-    :class:`~d810.ir.flowgraph.FlowGraph` block (via
-    ``InstructionProjection.from_block``) or a diag row carrying a parseable
-    ``meta`` operand tree (via
-    :func:`~d810.ir.insn_projection.project_diag_instruction`) -- are projected
-    to a canonical :class:`~d810.ir.instructions.Instruction` and adapted to the
-    canonical :class:`_InstructionView` the induction classifiers (and the
-    S6-shared :func:`_classify_induction_update` / :func:`_operation_of_view`)
-    consume; meta-less rows stay on the byte-identical legacy flat path
-    (:func:`_legacy_view_from_diag_row`, gated by ``diag_row_has_operand_tree``).
-
-    The induction collector reads the full operand surface (stack/register
-    self-update operands, memory ``address_stkoffs``, writeback moves), so the
-    canonical :class:`_InstructionView` is the right currency here -- a narrower
-    per-collector adapter would only re-expose the same fields and risk diverging
-    the classifiers it shares with folded_loop_guard.  This routes the collector
-    through the canonical projection WITHOUT touching the shared
-    :func:`_iter_instruction_views` the not-yet-ported collectors still depend on.
+    llr-3b41 S11 -- canonical-only.  A meta-rich source is the only kind a
+    production fact target ever is: the pre-D810 ``FLOWGRAPH_READY`` path and
+    the post-D810 ``mba_to_fact_target`` adapter both hand collectors a portable
+    :class:`~d810.ir.flowgraph.FlowGraph` whose blocks carry ``insn_snapshots``
+    (projected via ``InstructionProjection.from_block``).  An offline diag row
+    that carries a ``meta`` operand tree is lifted through the SAME canonical
+    projection via :func:`~d810.ir.insn_projection.project_diag_instruction`.
+    The meta-less flat fallback was removed (S11) -- it was unreachable by any
+    real source.  A registered live
+    :class:`~d810.capabilities.source_lifter.SourceLifter` lifts a backend
+    source to a portable flow graph first.
     """
     lifter = select_lifter(target)
     if lifter is not None:
@@ -657,24 +455,21 @@ def _iter_induction_carrier_insns(target: Any) -> Iterable[_InstructionView]:
         block_serial = int(getattr(blk, "serial"))
         if getattr(blk, "insn_snapshots", None) is not None:
             for index, instruction in enumerate(InstructionProjection.from_block(blk)):
-                yield _instruction_view_from_canonical(
+                yield _induction_insn_from_canonical(
                     block_serial=block_serial,
                     index=index,
                     instruction=instruction,
                 )
             continue
         for index, insn in enumerate(getattr(blk, "instructions", ())):
-            if diag_row_has_operand_tree(insn):
-                yield _instruction_view_from_canonical(
-                    block_serial=block_serial,
-                    index=int(getattr(insn, "index", index)),
-                    instruction=project_diag_instruction(insn),
-                )
-                continue
-            yield _legacy_view_from_diag_row(block_serial, index, insn)
+            yield _induction_insn_from_canonical(
+                block_serial=block_serial,
+                index=int(getattr(insn, "index", index)),
+                instruction=project_diag_instruction(insn),
+            )
 
 
-def _classify_induction_update(insn: _InstructionView) -> _InductionUpdate | None:
+def _classify_induction_update(insn: _InductionInsn) -> _InductionUpdate | None:
     operation = _operation_of_view(insn)
     if insn.dest_stkoff is not None:
         if operation is ValueOpKind.ADD:
@@ -690,7 +485,7 @@ def _classify_induction_update(insn: _InstructionView) -> _InductionUpdate | Non
 
 
 def _classify_register_induction_update(
-    insn: _InstructionView,
+    insn: _InductionInsn,
 ) -> _InductionUpdate | None:
     """Classify a register self-update ``reg = reg +/- const``."""
     if insn.dest_reg is None:
@@ -712,7 +507,7 @@ def _stack_storage_token(stkoff: int | None) -> str | None:
 
 
 def _classify_memory_define(
-    insn: _InstructionView,
+    insn: _InductionInsn,
 ) -> tuple[int, str, tuple[int, ...]] | None:
     if insn.dest_stkoff is None:
         return None
@@ -731,9 +526,9 @@ def _classify_memory_define(
 
 
 def _iter_memory_induction_updates(
-    instructions: tuple[_InstructionView, ...],
+    instructions: tuple[_InductionInsn, ...],
 ) -> Iterable[_MemoryInductionUpdate]:
-    definitions: dict[tuple[int, int], tuple[_InstructionView, int, str, tuple[int, ...]]] = {}
+    definitions: dict[tuple[int, int], tuple[_InductionInsn, int, str, tuple[int, ...]]] = {}
     for insn in instructions:
         mem_def = _classify_memory_define(insn)
         if mem_def is not None and insn.dest_stkoff is not None:
@@ -768,7 +563,7 @@ def _iter_memory_induction_updates(
         )
 
 
-def _stack_move_identity(insn: _InstructionView) -> tuple[int, int] | None:
+def _stack_move_identity(insn: _InductionInsn) -> tuple[int, int] | None:
     if _operation_of_view(insn) is not ValueOpKind.MOVE:
         return None
     if insn.dest_stkoff is None or insn.src_l_stkoff is None:
@@ -776,14 +571,14 @@ def _stack_move_identity(insn: _InstructionView) -> tuple[int, int] | None:
     return int(insn.src_l_stkoff), int(insn.dest_stkoff)
 
 
-def _uses_stack_in_memory_address(insn: _InstructionView, stkoff: int) -> bool:
+def _uses_stack_in_memory_address(insn: _InductionInsn, stkoff: int) -> bool:
     return int(stkoff) in {int(offset) for offset in insn.address_stkoffs}
 
 
 def _iter_writeback_tail_updates(
-    instructions: tuple[_InstructionView, ...],
+    instructions: tuple[_InductionInsn, ...],
 ) -> Iterable[_WritebackTailUpdate]:
-    by_block: dict[int, list[_InstructionView]] = {}
+    by_block: dict[int, list[_InductionInsn]] = {}
     for insn in instructions:
         by_block.setdefault(insn.block_serial, []).append(insn)
 

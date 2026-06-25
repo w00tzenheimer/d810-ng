@@ -14,35 +14,30 @@ corresponds to a return-carrier MBA materialization site even after IDA's CALLS
 phase has folded the canonical ``add ... -> %var_K; mov %var_K -> %var_8``
 chain into a sub-instruction operand tree.
 
-llr-3b41 (missed 9th collector) -- this collector now consumes the canonical
+llr-3b41 S11 -- this collector consumes the canonical
 :class:`~d810.ir.instructions.Instruction` IR through a collector-local
-dual-currency iterator (:func:`_iter_return_carrier_insns`), following the proven
-S3 (:mod:`d810.analyses.value_flow.zero_blob`) .. S9
-(:mod:`d810.analyses.value_flow.induction_carrier`) pattern.  return_carrier reads
-the full operand surface (return-register reads, stack-identity carrier movs,
-constant/computed return writers, and a positional upstream-writer walk), so the
-canonical :class:`_InstructionView` is the right currency -- a narrower
-per-collector adapter would only re-expose the same fields.  Like S9, this reuses
-induction_carrier's SHARED :func:`_instruction_view_from_canonical` /
-:func:`_legacy_view_from_diag_row` directly: a portable
-:class:`~d810.ir.flowgraph.FlowGraph` block or a diag row carrying a parseable
-``meta`` operand tree is projected to a canonical ``Instruction`` and adapted to
-the canonical :class:`_InstructionView`; meta-less rows stay on the byte-identical
-legacy flat path (gated by ``diag_row_has_operand_tree``).  This routes the
-collector through the canonical projection WITHOUT touching the shared
-:func:`_iter_instruction_views` the not-yet-ported ``ollvm_carrier_profile``
-(S10) still depends on.
+canonical-only iterator (:func:`_iter_return_carrier_insns`).  return_carrier
+reads the full operand surface (return-register reads, stack-identity carrier
+movs, constant/computed return writers, and a positional upstream-writer walk),
+adapted to the small :class:`_ReturnCarrierInsn` record built from a canonical
+``Instruction``.  A meta-rich :class:`~d810.ir.flowgraph.FlowGraph` block (the
+only shape a production fact target ever is) is projected via
+``InstructionProjection.from_block``; an offline diag row carrying a parseable
+``meta`` operand tree is lifted via ``project_diag_instruction``.  The meta-less
+flat fallback was removed (S11) -- it was unreachable by any real source once
+every production fact target became a canonical ``FlowGraph``.
 """
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from d810.capabilities.source_lifter import select_lifter
 from d810.core.typing import Any, Iterable
 from d810.ir.expressions import ValueOpKind
+from d810.ir.instructions import Instruction
 from d810.ir.insn_projection import (
     InstructionProjection,
-    diag_row_has_operand_tree,
     project_diag_instruction,
 )
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
@@ -52,10 +47,16 @@ from d810.analyses.fact_collection_context import (
     fact_provider_label,
 )
 from d810.analyses.value_flow.induction_carrier import (
-    _InstructionView,
-    _instruction_view_from_canonical,
-    _legacy_view_from_diag_row,
+    _canonical_opcode_name,
+    _canonical_operands,
+    _const_value_from_varnode,
     _operation_of_view,
+    _reg_from_varnode,
+    _size_from_varnode,
+    _stack_offsets_from_varnodes,
+    _stkoff_from_varnode,
+    _type_name_from_varnode,
+    _value_op_from_instruction,
 )
 from d810.analyses.value_flow import (
     RETURN_VALUE_FACT_TYPE,
@@ -72,35 +73,78 @@ _TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 _INTEGER_RETURN_REGISTER_IDS = frozenset({0})
 
 
-def _iter_return_carrier_insns(target: Any) -> Iterable[_InstructionView]:
-    """Yield return_carrier's dual-currency instruction views.
+@dataclass(frozen=True)
+class _ReturnCarrierInsn:
+    """Canonical-derived view consumed by return_carrier's classifiers.
 
-    llr-3b41 (missed 9th collector) -- the per-collector port of
-    return_carrier onto the canonical IR, following the proven S3
-    (:mod:`d810.analyses.value_flow.zero_blob`) .. S9
-    (:mod:`d810.analyses.value_flow.induction_carrier`) dual-currency pattern.
+    Exposes the operand surface return_carrier reads (return-register reads,
+    stack-identity carrier movs, constant/computed return writers, and a
+    positional upstream-writer walk).  The shared :func:`_operation_of_view`
+    duck-types over ``operation`` / ``opcode_name``.
+    """
 
-    Because return_carrier reads the full operand surface (return-register
-    reads, stack-identity carrier movs, constant/computed return writers, and a
-    positional upstream-writer walk), the canonical :class:`_InstructionView` is
-    the right currency, so this iterator reuses induction_carrier's SHARED
-    :func:`_instruction_view_from_canonical` / :func:`_legacy_view_from_diag_row`
-    helpers directly rather than duplicating a narrower adapter: meta-rich
-    sources -- a portable :class:`~d810.ir.flowgraph.FlowGraph` block (via
-    ``InstructionProjection.from_block``) or a diag row carrying a parseable
-    ``meta`` operand tree (via
-    :func:`~d810.ir.insn_projection.project_diag_instruction`) -- are projected
-    to a canonical :class:`~d810.ir.instructions.Instruction` and adapted to the
-    canonical :class:`_InstructionView` the return-carrier classifiers consume;
-    meta-less rows stay on the byte-identical legacy flat path
-    (:func:`_legacy_view_from_diag_row`, gated by ``diag_row_has_operand_tree``).
+    block_serial: int
+    insn_index: int
+    ea: int | None
+    opcode_name: str
+    dstr: str
+    operation: ValueOpKind | None
+    dest_type: str | None
+    dest_stkoff: int | None
+    dest_size: int | None
+    dest_reg: int | None
+    src_l_type: str | None
+    src_l_stkoff: int | None
+    src_l_value: int | None
+    src_r_type: str | None
+    src_r_stkoff: int | None
+    src_r_value: int | None
+    source_stkoffs: tuple[int, ...]
 
-    A registered live :class:`~d810.capabilities.source_lifter.SourceLifter`
-    lifts a backend source to a portable flow graph first (behaviour-identical
-    to no-lifter when none is registered) -- preserving the pre-port behaviour of
-    the shared :func:`_iter_instruction_views` this replaces.  This routes the
-    collector through the canonical projection WITHOUT touching that shared
-    iterator the not-yet-ported ``ollvm_carrier_profile`` (S10) still depends on.
+    @classmethod
+    def from_canonical(
+        cls,
+        *,
+        block_serial: int,
+        index: int,
+        instruction: Instruction,
+    ) -> "_ReturnCarrierInsn":
+        dest, left, right = _canonical_operands(instruction)
+        attrs = instruction.attrs
+        ea_raw = attrs.get("ea")
+        return cls(
+            block_serial=int(block_serial),
+            insn_index=int(index),
+            ea=int(ea_raw) if ea_raw is not None else None,
+            opcode_name=_canonical_opcode_name(instruction),
+            dstr=str(attrs.get("display_text") or ""),
+            operation=_value_op_from_instruction(instruction),
+            dest_type=_type_name_from_varnode(dest),
+            dest_stkoff=_stkoff_from_varnode(dest),
+            dest_size=_size_from_varnode(dest),
+            dest_reg=_reg_from_varnode(dest),
+            src_l_type=_type_name_from_varnode(left),
+            src_l_stkoff=_stkoff_from_varnode(left),
+            src_l_value=_const_value_from_varnode(left),
+            src_r_type=_type_name_from_varnode(right),
+            src_r_stkoff=_stkoff_from_varnode(right),
+            src_r_value=_const_value_from_varnode(right),
+            source_stkoffs=_stack_offsets_from_varnodes(instruction.inputs),
+        )
+
+
+def _iter_return_carrier_insns(target: Any) -> Iterable[_ReturnCarrierInsn]:
+    """Yield return_carrier's canonical instruction views.
+
+    Canonical-only (llr-3b41 S11): a meta-rich
+    :class:`~d810.ir.flowgraph.FlowGraph` block (the only shape a production
+    fact target ever is) is projected via ``InstructionProjection.from_block``;
+    an offline diag row carrying a parseable ``meta`` operand tree is lifted via
+    :func:`~d810.ir.insn_projection.project_diag_instruction`.  The meta-less
+    flat fallback was removed -- it was unreachable by any real source once
+    every production fact target became a canonical ``FlowGraph``.  A registered
+    live :class:`~d810.capabilities.source_lifter.SourceLifter` lifts a backend
+    source to a portable flow graph first.
     """
     lifter = select_lifter(target)
     if lifter is not None:
@@ -116,24 +160,21 @@ def _iter_return_carrier_insns(target: Any) -> Iterable[_InstructionView]:
         block_serial = int(getattr(blk, "serial"))
         if getattr(blk, "insn_snapshots", None) is not None:
             for index, instruction in enumerate(InstructionProjection.from_block(blk)):
-                yield _instruction_view_from_canonical(
+                yield _ReturnCarrierInsn.from_canonical(
                     block_serial=block_serial,
                     index=index,
                     instruction=instruction,
                 )
             continue
         for index, insn in enumerate(getattr(blk, "instructions", ())):
-            if diag_row_has_operand_tree(insn):
-                yield _instruction_view_from_canonical(
-                    block_serial=block_serial,
-                    index=int(getattr(insn, "index", index)),
-                    instruction=project_diag_instruction(insn),
-                )
-                continue
-            yield _legacy_view_from_diag_row(block_serial, index, insn)
+            yield _ReturnCarrierInsn.from_canonical(
+                block_serial=block_serial,
+                index=int(getattr(insn, "index", index)),
+                instruction=project_diag_instruction(insn),
+            )
 
 
-def _is_return_register_read(insn: _InstructionView) -> bool:
+def _is_return_register_read(insn: _ReturnCarrierInsn) -> bool:
     if _operation_of_view(insn) is not ValueOpKind.MOVE:
         return False
     if insn.src_l_stkoff is None:
@@ -143,7 +184,7 @@ def _is_return_register_read(insn: _InstructionView) -> bool:
     return True
 
 
-def _return_slot_offsets(instructions: tuple[_InstructionView, ...]) -> frozenset[int]:
+def _return_slot_offsets(instructions: tuple[_ReturnCarrierInsn, ...]) -> frozenset[int]:
     return frozenset(
         int(insn.src_l_stkoff)
         for insn in instructions
@@ -151,7 +192,7 @@ def _return_slot_offsets(instructions: tuple[_InstructionView, ...]) -> frozense
     )
 
 
-def _source_signature(insn: _InstructionView) -> str:
+def _source_signature(insn: _ReturnCarrierInsn) -> str:
     if insn.src_l_stkoff is not None:
         return f"{insn.src_l_type or 'src_l'}:0x{int(insn.src_l_stkoff):x}"
     if insn.src_l_value is not None:
@@ -164,11 +205,11 @@ def _source_signature(insn: _InstructionView) -> str:
 
 
 def _find_upstream_writer(
-    instructions: tuple[_InstructionView, ...],
+    instructions: tuple[_ReturnCarrierInsn, ...],
     target_stkoff: int,
     *,
-    exclude: _InstructionView | None = None,
-) -> _InstructionView | None:
+    exclude: _ReturnCarrierInsn | None = None,
+) -> _ReturnCarrierInsn | None:
     """Return the LAST instruction PRECEDING ``exclude`` in iteration
     order that writes ``target_stkoff`` with ``mop_S`` dest, or
     ``None`` if no such writer exists or ``exclude`` is missing.
@@ -201,7 +242,7 @@ def _find_upstream_writer(
         return None
     anchor_block = int(exclude.block_serial)
     anchor_index = int(exclude.insn_index)
-    last: _InstructionView | None = None
+    last: _ReturnCarrierInsn | None = None
     for insn in instructions:
         ins_block = int(insn.block_serial)
         ins_idx = int(insn.insn_index)
@@ -234,7 +275,7 @@ def _stack_storage_record(offset: int) -> dict[str, int | str]:
     }
 
 
-def _source_storage_offsets(insn: _InstructionView) -> tuple[int, ...]:
+def _source_storage_offsets(insn: _ReturnCarrierInsn) -> tuple[int, ...]:
     seen: set[int] = set()
     offsets: list[int] = []
     for offset in (
@@ -252,7 +293,7 @@ def _source_storage_offsets(insn: _InstructionView) -> tuple[int, ...]:
     return tuple(offsets)
 
 
-def _carrier_class(insn: _InstructionView) -> str:
+def _carrier_class(insn: _ReturnCarrierInsn) -> str:
     operation = _operation_of_view(insn)
     if operation is ValueOpKind.ZEXT:
         return "protected_non_carrier_return_writer_candidate"

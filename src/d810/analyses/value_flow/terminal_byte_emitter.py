@@ -4,29 +4,23 @@ This collector is observability-only.  It records byte-emitter shaped memory
 stores and their local guard/edge context so the diag DB can answer where each
 terminal byte step survives, remaps, or disappears across microcode maturities.
 
-llr-3b41 S10-pair -- the coupled ``terminal_byte_emitter`` /
-``return_frontier`` collectors now consume the canonical
-:class:`~d810.ir.instructions.Instruction` IR through a collector-local
-dual-currency iterator (:func:`_iter_block_views`), following the proven S3
-(:mod:`d810.analyses.value_flow.zero_blob`) .. S9
-(:mod:`d810.analyses.value_flow.induction_carrier`) pattern.  They share the
-private :class:`_BlockView` / :func:`_iter_block_views` / :func:`_block_metadata`
-helpers defined here, so they are ported together.
+llr-3b41 S11 -- the coupled ``terminal_byte_emitter`` / ``return_frontier``
+collectors consume the canonical :class:`~d810.ir.instructions.Instruction` IR
+through a collector-local canonical-only iterator (:func:`_iter_block_views`).
+They share the private :class:`_BlockView` / :func:`_iter_block_views` /
+:func:`_block_metadata` helpers defined here, so they are ported together.
 
-The per-block instruction payload (``_BlockView.instructions``) keeps the
-canonical :class:`_InstructionView` currency: terminal_byte_emitter reads the
-FULL operand surface (``attrs`` nested terminal-byte mappings, control transfer
-/ predicate / target, memory target/value, left/right operand identity for
-stack/reg/const/temp, ``address_const_values``, ``dstr``), so a narrower
-per-collector view would only re-expose nearly the entire ``_InstructionView``.
-The collector-local iterator therefore reuses the SHARED canonical helpers
-(:func:`_instruction_view_from_canonical` / :func:`_legacy_view_from_diag_row`,
-gated by ``diag_row_has_operand_tree``) directly -- meta-rich FlowGraph blocks
-(via ``InstructionProjection.from_block``) and operand-tree diag rows (via
-``project_diag_instruction``) become canonical-faithful; meta-less rows stay on
-the byte-identical legacy flat path.  This routes the coupled pair through the
-canonical projection WITHOUT touching the shared :func:`_iter_instruction_views`
-the not-yet-ported collectors (S11) still depend on.
+The per-block instruction payload (``_BlockView.instructions``) carries the
+:class:`_TerminalInsn` record built from a canonical ``Instruction``:
+terminal_byte_emitter reads the FULL operand surface (``attrs`` nested
+terminal-byte mappings, control transfer / predicate / target, memory
+target/value, left/right operand identity for stack/reg/const/temp,
+``address_const_values``, ``dstr``).  A meta-rich FlowGraph block (the only
+shape a production fact target ever is) is projected via
+``InstructionProjection.from_block``; an offline diag row carrying a parseable
+``meta`` operand tree is lifted via ``project_diag_instruction``.  The meta-less
+flat fallback was removed (S11) -- it was unreachable by any real source once
+every production fact target became a canonical ``FlowGraph``.
 """
 from __future__ import annotations
 
@@ -36,9 +30,9 @@ from dataclasses import dataclass
 from d810.capabilities.source_lifter import select_lifter
 from d810.core.typing import Any, Iterable
 from d810.ir.expressions import ValueOpKind
+from d810.ir.instructions import Instruction
 from d810.ir.insn_projection import (
     InstructionProjection,
-    diag_row_has_operand_tree,
     project_diag_instruction,
 )
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
@@ -50,11 +44,99 @@ from d810.analyses.fact_collection_context import (
     fact_provider_label,
 )
 from d810.analyses.value_flow.induction_carrier import (
-    _InstructionView,
-    _instruction_view_from_canonical,
-    _legacy_view_from_diag_row,
+    _address_const_values_from_instruction,
+    _canonical_opcode_name,
+    _canonical_operands,
+    _const_value_from_varnode,
+    _control_target_from_instruction,
+    _control_transfer_from_instruction,
+    _predicate_kind_from_instruction,
+    _reg_from_varnode,
+    _stkoff_from_varnode,
+    _temp_from_varnode,
+    _type_name_from_varnode,
+    _value_op_from_instruction,
 )
 from d810.analyses.value_flow.model import FactObservation
+
+
+@dataclass(frozen=True)
+class _TerminalInsn:
+    """Canonical-derived view consumed by terminal_byte_emitter / return_frontier.
+
+    Exposes the operand surface these collectors read (memory target/value,
+    left/right operands, control transfer / predicate / target,
+    ``address_const_values``, and the ``attrs`` nested terminal-byte mappings).
+    Built solely from a canonical :class:`~d810.ir.instructions.Instruction`
+    (llr-3b41 S11 deleted the legacy ``_InstructionView`` flat path).
+    """
+
+    block_serial: int
+    insn_index: int
+    ea: int | None
+    opcode_name: str
+    dstr: str
+    operation: ValueOpKind | None
+    control_transfer: ControlTransferKind | None
+    predicate_kind: PredicateKind | None
+    control_target: int | None
+    memory_target: Varnode | None
+    memory_value: Varnode | None
+    dest_type: str | None
+    dest_stkoff: int | None
+    dest_temp: int | None
+    dest_reg: int | None
+    src_l_type: str | None
+    src_l_stkoff: int | None
+    src_l_value: int | None
+    src_l_reg: int | None
+    src_r_type: str | None
+    src_r_stkoff: int | None
+    src_r_value: int | None
+    src_r_reg: int | None
+    address_const_values: tuple[int, ...]
+    attrs: Mapping[str, Any]
+
+    @classmethod
+    def from_canonical(
+        cls,
+        *,
+        block_serial: int,
+        index: int,
+        instruction: Instruction,
+    ) -> "_TerminalInsn":
+        dest, left, right = _canonical_operands(instruction)
+        attrs = instruction.attrs
+        ea_raw = attrs.get("ea")
+        memory = instruction.memory
+        return cls(
+            block_serial=int(block_serial),
+            insn_index=int(index),
+            ea=int(ea_raw) if ea_raw is not None else None,
+            opcode_name=_canonical_opcode_name(instruction),
+            dstr=str(attrs.get("display_text") or ""),
+            operation=_value_op_from_instruction(instruction),
+            control_transfer=_control_transfer_from_instruction(instruction),
+            predicate_kind=_predicate_kind_from_instruction(instruction),
+            control_target=_control_target_from_instruction(instruction),
+            memory_target=memory.target if memory is not None else None,
+            memory_value=memory.value if memory is not None else None,
+            dest_type=_type_name_from_varnode(dest),
+            dest_stkoff=_stkoff_from_varnode(dest),
+            dest_temp=_temp_from_varnode(dest),
+            dest_reg=_reg_from_varnode(dest),
+            src_l_type=_type_name_from_varnode(left),
+            src_l_stkoff=_stkoff_from_varnode(left),
+            src_l_value=_const_value_from_varnode(left),
+            src_l_reg=_reg_from_varnode(left),
+            src_r_type=_type_name_from_varnode(right),
+            src_r_stkoff=_stkoff_from_varnode(right),
+            src_r_value=_const_value_from_varnode(right),
+            src_r_reg=_reg_from_varnode(right),
+            address_const_values=_address_const_values_from_instruction(instruction),
+            attrs=attrs,
+        )
+
 
 _TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 
@@ -65,7 +147,7 @@ class _BlockView:
     start_ea: int | None
     succs: tuple[int, ...]
     preds: tuple[int, ...]
-    instructions: tuple[_InstructionView, ...]
+    instructions: tuple[_TerminalInsn, ...]
 
 
 @dataclass(frozen=True)
@@ -73,13 +155,13 @@ class _GuardView:
     byte_index: int
     condition: str
     counter_signature: str
-    insn: _InstructionView
+    insn: _TerminalInsn
 
 
 @dataclass(frozen=True)
 class _EmitterCandidate:
     block: _BlockView
-    insn: _InstructionView
+    insn: _TerminalInsn
     byte_index: int
     destination: str
     source: str
@@ -103,12 +185,12 @@ def _parse_small_int(value: object) -> int | None:
     return parsed if 0 <= parsed <= 6 else None
 
 
-def _attrs(insn: _InstructionView) -> Mapping[str, Any]:
+def _attrs(insn: _TerminalInsn) -> Mapping[str, Any]:
     attrs = getattr(insn, "attrs", None)
     return attrs if isinstance(attrs, Mapping) else {}
 
 
-def _terminal_attrs(insn: _InstructionView) -> Mapping[str, Any]:
+def _terminal_attrs(insn: _TerminalInsn) -> Mapping[str, Any]:
     attrs = _attrs(insn)
     for key in ("terminal_byte", "terminal_byte_emit", "byte_emit"):
         nested = attrs.get(key)
@@ -117,7 +199,7 @@ def _terminal_attrs(insn: _InstructionView) -> Mapping[str, Any]:
     return attrs
 
 
-def _attr(insn: _InstructionView, *keys: str) -> Any:
+def _attr(insn: _TerminalInsn, *keys: str) -> Any:
     terminal = _terminal_attrs(insn)
     attrs = _attrs(insn)
     for key in keys:
@@ -149,7 +231,7 @@ def _small_ints(values: Iterable[object]) -> tuple[int, ...]:
     return tuple(out)
 
 
-def _small_int_attr(insn: _InstructionView, *keys: str) -> int | None:
+def _small_int_attr(insn: _TerminalInsn, *keys: str) -> int | None:
     value = _attr(insn, *keys)
     if isinstance(value, (list, tuple)):
         values = _small_ints(value)
@@ -196,7 +278,7 @@ def _operand_signature(
     return None
 
 
-def _byte_index_from_instruction(insn: _InstructionView) -> int | None:
+def _byte_index_from_instruction(insn: _TerminalInsn) -> int | None:
     explicit = _small_int_attr(insn, "byte_index", "source_byte_index")
     if explicit is not None:
         return explicit
@@ -204,7 +286,7 @@ def _byte_index_from_instruction(insn: _InstructionView) -> int | None:
     return values[0] if len(values) == 1 else None
 
 
-def _guard_from_instruction(insn: _InstructionView) -> _GuardView | None:
+def _guard_from_instruction(insn: _TerminalInsn) -> _GuardView | None:
     is_branch = insn.control_transfer is ControlTransferKind.CONDITIONAL_BRANCH
     has_guard_attrs = _attr(insn, "guard_byte_index", "guard_counter") is not None
     if not is_branch and not has_guard_attrs:
@@ -247,11 +329,11 @@ def _guard_from_instruction(insn: _InstructionView) -> _GuardView | None:
     )
 
 
-def _is_byte_emit_store(insn: _InstructionView) -> bool:
+def _is_byte_emit_store(insn: _TerminalInsn) -> bool:
     return insn.operation is ValueOpKind.STORE
 
 
-def _memory_destination_signature(insn: _InstructionView) -> str:
+def _memory_destination_signature(insn: _TerminalInsn) -> str:
     explicit = _attr(
         insn,
         "destination_buffer_expression",
@@ -272,7 +354,7 @@ def _memory_destination_signature(insn: _InstructionView) -> str:
     return "unknown-destination"
 
 
-def _source_byte_signature(insn: _InstructionView, block: _BlockView) -> str:
+def _source_byte_signature(insn: _TerminalInsn, block: _BlockView) -> str:
     explicit = _attr(
         insn,
         "source_byte_expression",
@@ -329,30 +411,23 @@ def _block_metadata(target: Any) -> dict[int, tuple[int | None, tuple[int, ...],
     return metadata
 
 
-def _iter_terminal_byte_emitter_insns(target: Any) -> Iterable[_InstructionView]:
-    """Yield the coupled pair's own dual-currency instruction views.
+def _iter_terminal_byte_emitter_insns(target: Any) -> Iterable[_TerminalInsn]:
+    """Yield the coupled pair's canonical instruction views.
 
-    llr-3b41 S10-pair -- the per-collector port of ``terminal_byte_emitter`` /
-    ``return_frontier`` onto the canonical IR, following the proven S3
-    (:mod:`d810.analyses.value_flow.zero_blob`) .. S9
-    (:mod:`d810.analyses.value_flow.induction_carrier`) dual-currency pattern.
-
-    These collectors read the full operand surface (memory target/value,
+    llr-3b41 S11 -- canonical-only.  ``terminal_byte_emitter`` /
+    ``return_frontier`` read the full operand surface (memory target/value,
     left/right stack/reg/const/temp operands, control transfer/predicate/target,
-    ``address_const_values``, ``attrs`` nested terminal-byte mappings), so the
-    canonical :class:`_InstructionView` is the right currency here -- a narrower
-    per-collector adapter would only re-expose the same fields.  This reuses the
-    SHARED :func:`_instruction_view_from_canonical` / :func:`_legacy_view_from_diag_row`
-    helpers directly: meta-rich sources -- a portable
-    :class:`~d810.ir.flowgraph.FlowGraph` block (via
-    ``InstructionProjection.from_block``) or a diag row carrying a parseable
-    ``meta`` operand tree (via :func:`project_diag_instruction`) -- are projected
-    to a canonical :class:`~d810.ir.instructions.Instruction` and adapted to the
-    canonical :class:`_InstructionView`; meta-less rows stay on the byte-identical
-    legacy flat path (:func:`_legacy_view_from_diag_row`, gated by
-    ``diag_row_has_operand_tree``).  This routes the coupled pair through the
-    canonical projection WITHOUT touching the shared
-    :func:`_iter_instruction_views` the not-yet-ported collectors still depend on.
+    ``address_const_values``, ``attrs`` nested terminal-byte mappings), adapted
+    to the :class:`_TerminalInsn` record built from a canonical
+    :class:`~d810.ir.instructions.Instruction`.  A meta-rich
+    :class:`~d810.ir.flowgraph.FlowGraph` block (the only shape a production
+    fact target ever is) is projected via ``InstructionProjection.from_block``;
+    an offline diag row carrying a parseable ``meta`` operand tree is lifted via
+    ``project_diag_instruction``.  The meta-less flat fallback was removed -- it
+    was unreachable by any real source once every production fact target became
+    a canonical ``FlowGraph``.  A registered live
+    :class:`~d810.capabilities.source_lifter.SourceLifter` lifts a backend
+    source to a portable flow graph first.
     """
     lifter = select_lifter(target)
     if lifter is not None:
@@ -368,25 +443,22 @@ def _iter_terminal_byte_emitter_insns(target: Any) -> Iterable[_InstructionView]
         block_serial = int(getattr(blk, "serial"))
         if getattr(blk, "insn_snapshots", None) is not None:
             for index, instruction in enumerate(InstructionProjection.from_block(blk)):
-                yield _instruction_view_from_canonical(
+                yield _TerminalInsn.from_canonical(
                     block_serial=block_serial,
                     index=index,
                     instruction=instruction,
                 )
             continue
         for index, insn in enumerate(getattr(blk, "instructions", ())):
-            if diag_row_has_operand_tree(insn):
-                yield _instruction_view_from_canonical(
-                    block_serial=block_serial,
-                    index=int(getattr(insn, "index", index)),
-                    instruction=project_diag_instruction(insn),
-                )
-                continue
-            yield _legacy_view_from_diag_row(block_serial, index, insn)
+            yield _TerminalInsn.from_canonical(
+                block_serial=block_serial,
+                index=int(getattr(insn, "index", index)),
+                instruction=project_diag_instruction(insn),
+            )
 
 
 def _iter_block_views(target: Any) -> Iterable[_BlockView]:
-    by_block: dict[int, list[_InstructionView]] = {}
+    by_block: dict[int, list[_TerminalInsn]] = {}
     for insn in _iter_terminal_byte_emitter_insns(target):
         by_block.setdefault(insn.block_serial, []).append(insn)
 
@@ -422,13 +494,13 @@ def _return_edge(block: _BlockView, guard: _GuardView | None) -> int | None:
     return None
 
 
-def _jump_target(insn: _InstructionView) -> int | None:
+def _jump_target(insn: _TerminalInsn) -> int | None:
     if insn.control_target is not None:
         return int(insn.control_target)
     return _optional_int(_attr(insn, "control_target", "branch_target", "target_block"))
 
 
-def _branch_takes_nonzero(insn: _InstructionView) -> bool:
+def _branch_takes_nonzero(insn: _TerminalInsn) -> bool:
     opcode = _attr(insn, "branch_opcode", "jump_opcode")
     if opcode is not None and str(opcode).lower() == "jnz":
         return True

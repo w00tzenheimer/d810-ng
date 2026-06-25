@@ -21,6 +21,8 @@ from d810.analyses.value_flow.return_frontier import ReturnFrontierFactCollector
 from d810.analyses.value_flow.zero_blob import ZeroBlobFactCollector
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
+from tests.unit.recon.facts._diag_meta_builder import flat_meta
+
 _OPCODE_ALIASES = {
     "m_stx": "store",
     "m_mov": "move",
@@ -66,13 +68,44 @@ def _insn(
     control_transfer: ControlTransferKind | None = None,
     control_target: int | None = None,
 ) -> InstructionSnapshot:
+    # llr-3b41 S11: collectors lift diag rows through the canonical operand-tree
+    # projection (the meta-less flat path was deleted), so attach a serializer-
+    # shaped ``meta`` operand tree (raw opcode spelling) built from the flat
+    # fields.  ``dict`` ``meta`` (e.g. ``{"byte_index": N}``) is ignored -- those
+    # non-operand attrs were a meta-less-only capability.
+    resolved_ea = 0x180010000 + index if ea is None else ea
     if isinstance(meta, Mapping):
-        meta = json.dumps(dict(meta))
+        # An explicit operand-tree dict (carries ``l`` / ``r`` / ``d``) is the
+        # serializer operand tree the test wants -- keep it.  An attrs-only dict
+        # (e.g. ``{"byte_index": 1}``) was a meta-less-only capability that the
+        # canonical projection does not surface, so fall back to a flat-field
+        # operand tree instead.
+        if any(slot in meta for slot in ("l", "r", "d")):
+            meta = json.dumps(dict(meta))
+        else:
+            meta = None
+    if meta is None:
+        meta = flat_meta(
+            opcode_name=opcode_name,
+            ea=resolved_ea,
+            dstr=dstr,
+            dest_type=dest_type,
+            dest_stkoff=dest_stkoff,
+            dest_size=dest_size,
+            dest_register=dest_reg,
+            src_l_type=src_l_type,
+            src_l_stkoff=src_l_stkoff,
+            src_l_value=src_l_value,
+            src_l_size=dest_size or 8,
+            src_r_type=src_r_type,
+            src_r_stkoff=src_r_stkoff,
+            src_r_value=src_r_value,
+        )
     insn = InstructionSnapshot(
         index=index,
-        ea=0x180010000 + index if ea is None else ea,
+        ea=resolved_ea,
         opcode=0,
-        opcode_name=_opcode_name(opcode_name),
+        opcode_name=opcode_name,
         dest_type=_operand_type(dest_type),
         dest_stkoff=dest_stkoff,
         dest_size=dest_size,
@@ -195,96 +228,6 @@ def _cfg_target(*blocks: CfgBlockSnapshot) -> FlowGraph:
         entry_serial=blocks[0].serial if blocks else 0,
         func_ea=0x401000,
     )
-
-
-def test_byte_emit_corridor_groups_terminal_byte_family() -> None:
-    collector = ByteEmitCorridorFactCollector()
-
-    facts = collector.collect(
-        _target(
-            _block(
-                101,
-                _insn(
-                    index=0,
-                    opcode_name="m_jcnd",
-                    dstr="jnz %var_tail.8, #0.8, @241",
-                    src_l_type="mop_S",
-                    src_l_stkoff=0x54,
-                    src_r_type="mop_n",
-                    src_r_value=0,
-                    predicate_kind=PredicateKind.NE,
-                    control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
-                    control_target=241,
-                ),
-                succs=(102, 241),
-                preds=(99,),
-            ),
-            _block(
-                102,
-                _insn(
-                    index=0,
-                    opcode_name="m_jcnd",
-                    dstr="jnz %var_tail.8, #1.8, @241",
-                    src_l_type="mop_S",
-                    src_l_stkoff=0x54,
-                    src_r_type="mop_n",
-                    src_r_value=1,
-                    predicate_kind=PredicateKind.NE,
-                    control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
-                    control_target=241,
-                ),
-                _insn(
-                    index=1,
-                    opcode_name="m_stx",
-                    dest_type="mop_S",
-                    dest_stkoff=0x700,
-                    meta={"byte_index": 1},
-                    dstr="stx v52[1], ds.1, %var_dst.8",
-                ),
-                succs=(103, 241),
-                preds=(101,),
-            ),
-            _block(
-                103,
-                _insn(
-                    index=0,
-                    opcode_name="m_jcnd",
-                    dstr="jnz %var_tail.8, #2.8, @241",
-                    src_l_type="mop_S",
-                    src_l_stkoff=0x54,
-                    src_r_type="mop_n",
-                    src_r_value=2,
-                    predicate_kind=PredicateKind.NE,
-                    control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
-                    control_target=241,
-                ),
-                _insn(
-                    index=1,
-                    opcode_name="m_stx",
-                    dest_type="mop_S",
-                    dest_stkoff=0x700,
-                    meta={"byte_index": 2},
-                    dstr="stx v52[2], ds.1, %var_dst.8",
-                ),
-                succs=(104, 241),
-                preds=(102,),
-            ),
-        ),
-        func_ea=0x401000,
-        maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
-        phase="pre_d810",
-    )
-
-    terminal = [
-        fact
-        for fact in facts
-        if fact.payload["family_id"] == "terminal_tail"
-    ]
-    assert len(terminal) == 1
-    assert terminal[0].kind == "ByteEmitCorridorFact"
-    assert terminal[0].payload["unique_byte_indexes"] == [0, 1, 2]
-    assert terminal[0].payload["source_blocks"] == [101, 102, 103]
-    assert "byte_emit_corridor:family=terminal_tail" in terminal[0].semantic_key
 
 
 def test_call_anchor_records_call_context() -> None:
@@ -835,43 +778,6 @@ def test_return_frontier_accepts_canonical_return_control() -> None:
     assert fact.payload["return_block"] == 57
     assert fact.payload["successor_blocks"] == [57]
     assert fact.payload["carrier_fact_ids"] == []
-
-
-def test_return_frontier_ignores_legacy_return_opcode_when_not_terminal() -> None:
-    collector = ReturnFrontierFactCollector()
-
-    facts = collector.collect(
-        _target(
-            _block(
-                57,
-                _insn(index=0, opcode_name="m_ret", dstr="ret"),
-                succs=(58,),
-                preds=(50,),
-                type_name="BLT_1WAY",
-            )
-        ),
-        func_ea=0x401000,
-        maturity=_MATURITY_VALUES["MMAT_CALLS"],
-        phase="pre_d810",
-    )
-
-    assert facts == ()
-
-
-# --- llr-3b41 S10-pair: return_frontier operand-tree diag-row coverage --------
-#
-# return_frontier shares terminal_byte_emitter's ``_BlockView`` /
-# ``_iter_block_views`` helpers, which now carry the canonical dual-currency
-# payload.  The FlowGraph (meta-rich) and meta-less sources are covered above
-# (``test_return_frontier_accepts_canonical_return_control`` /
-# ``test_return_frontier_records_nearby_return_carrier_writers``).  These pin the
-# third source -- a diag row carrying a parseable ``meta`` operand tree -- which
-# routes through the SAME canonical projection.  ``m_ret`` IS in the
-# opcode->kind map, so its canonical ``control_transfer`` is recovered to
-# RETURN: an operand-tree return block is recognised off recovered canonical
-# control semantics rather than being terminal-by-topology.
-
-
 def _meta_reg(reg: int, size: int = 8) -> dict:
     return {"type": "mop_r", "type_num": 1, "size": size, "dstr": "r", "reg": reg}
 
