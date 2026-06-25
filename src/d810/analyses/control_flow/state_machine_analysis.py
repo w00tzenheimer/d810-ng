@@ -201,7 +201,6 @@ __all__ = [
     "classify_exit_state",
     "SnapshotConstantFixpointResult",
     "StateWriteSite",
-    "build_mba_view_from_flow_graph",
     "can_reach_return_snapshot",
     "detect_conditional_transitions",
     "eval_condition_chain_condition",
@@ -274,86 +273,6 @@ def _iter_block_insns(blk: object):
     while insn is not None:
         yield insn
         insn = insn.next
-
-
-# WARNING -- TRANSITIONAL VENDOR-MIMICRY ADAPTER, slated for deletion (ticket
-# llr-lxas, follow-on to llr-zeyu).  ``_InsnView`` / ``_BlockView`` /
-# ``_FlowGraphMBAView`` exist ONLY to make a portable ``d810.ir.FlowGraph``
-# quack like a live Hex-Rays ``mba_t`` (they re-expose ``get_mblock`` /
-# ``nsucc()`` / ``succ(i)`` / ``head`` / ``next``).  This lets legacy live-mba-
-# shaped path analyses run unchanged -- it is NOT the LLVM/LiSA IR end-state.
-# The portable-core data-model gate (llr-zeyu) does not flag these because it
-# matches live method CALL-sites, not these mimicry method DEFINITIONS.  The
-# destination is to retire this trio: lift to ``FlowGraph`` at the
-# optimizer/hodur boundary and have the analyses read ``BlockSnapshot`` fields
-# directly.  Until then, treat this as a backend-shaped shim that happens to
-# live in portable-core, not as portable vocabulary.
-class _InsnView:
-    __slots__ = (
-        "snapshot",
-        "opcode",
-        "ea",
-        "l",
-        "r",
-        "d",
-        "kind",
-        "branch_predicate",
-        "is_call",
-        "is_unconditional_jump",
-        "next",
-    )
-
-    def __init__(self, insn: InsnSnapshot):
-        self.snapshot = insn
-        self.opcode = insn.opcode
-        self.ea = insn.ea
-        self.l = insn.l
-        self.r = insn.r
-        self.d = insn.d
-        self.kind = insn.kind
-        self.branch_predicate = insn.branch_predicate
-        self.is_call = insn.is_call
-        self.is_unconditional_jump = insn.is_unconditional_jump
-        self.next: _InsnView | None = None
-
-
-class _BlockView:
-    __slots__ = ("serial", "_succs", "head")
-
-    def __init__(self, serial: int, succs: tuple[int, ...], head: _InsnView | None):
-        self.serial = serial
-        self._succs = succs
-        self.head = head
-
-    def nsucc(self) -> int:
-        return len(self._succs)
-
-    def succ(self, index: int) -> int:
-        return self._succs[index]
-
-
-class _FlowGraphMBAView:
-    __slots__ = ("qty", "_blocks")
-
-    def __init__(self, blocks: dict[int, _BlockView]):
-        self.qty = (max(blocks) + 1) if blocks else 0
-        self._blocks = blocks
-
-    def get_mblock(self, serial: int) -> _BlockView | None:
-        return self._blocks.get(serial)
-
-
-def build_mba_view_from_flow_graph(flow_graph: FlowGraph) -> object:
-    """Adapt a ``FlowGraph`` snapshot into the minimal MBA API used by path eval."""
-
-    block_views: dict[int, _BlockView] = {}
-    for serial, block in flow_graph.blocks.items():
-        insn_views = [_InsnView(insn) for insn in block.insn_snapshots]
-        for current, nxt in zip(insn_views, insn_views[1:]):
-            current.next = nxt
-        head = insn_views[0] if insn_views else None
-        block_views[serial] = _BlockView(serial, tuple(block.succs), head)
-    return _FlowGraphMBAView(block_views)
 
 
 class ResolutionMethod(enum.Enum):
