@@ -19,13 +19,43 @@ write of the eventually-reaching successor's constant).
 
 Observability-only: the collector never modifies microcode and has no
 influence on planning or CFG mutation.
+
+llr-3b41 S5 -- per-collector port onto the canonical IR, following the
+proven S3 (:mod:`d810.analyses.value_flow.zero_blob`) / S4
+(:mod:`d810.analyses.value_flow.call_anchor`) dual-currency pattern.  A
+collector-local source iterator routes:
+
+* **meta-rich** sources -- a portable :class:`~d810.ir.flowgraph.FlowGraph`
+  block, or a diag row carrying a parseable ``meta`` operand tree -- through
+  the SAME canonical :func:`~d810.ir.insn_projection.project_diag_instruction`
+  / ``InstructionProjection.from_block`` projection.  ``dest_stkoff`` is then
+  read off the canonical ``Instruction.result`` and ``src_l_value`` off the
+  first canonical input, so a transition is anchored on recovered stack/const
+  semantics rather than opcode-table flat fields.
+* **meta-less** rows -- the production ``mba_to_fact_target``
+  ``SimpleNamespace`` (flat fields only) and attrs-only ``meta`` rows -- have
+  no operand tree, so they stay on the byte-identical legacy
+  ``_InstructionView`` flat path (``diag_row_has_operand_tree`` is the gate).
+  This collector reads ONLY ``dest_stkoff`` / ``src_l_value`` /
+  ``block_serial`` / ``insn_index`` (plus ``ea`` / ``opcode_name`` / ``dstr``
+  for anchoring + evidence), all of which the legacy flat path populates
+  identically, so meta-less rows yield byte-identical observations.
 """
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 
-from d810.core.typing import Any
+from d810.capabilities.source_lifter import select_lifter
+from d810.core.typing import Any, Iterable
+from d810.ir.expressions import ValueOpKind
+from d810.ir.instructions import Instruction
+from d810.ir.insn_projection import (
+    InstructionProjection,
+    diag_row_has_operand_tree,
+    project_diag_instruction,
+)
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
 from d810.analyses.fact_collection_context import (
     FactCollectionContext,
@@ -34,14 +64,17 @@ from d810.analyses.fact_collection_context import (
 )
 from d810.analyses.value_flow.induction_carrier import (
     _InstructionView,
-    _iter_instruction_views,
+    _canonical_opcode_name,
+    _canonical_operands,
+    _const_value_from_varnode,
+    _stkoff_from_varnode,
+    _value_op_from_instruction,
+    _value_op_from_opcode_name,
 )
 from d810.analyses.value_flow.state_write_anchor import (
     _block_start_ea_lookup,
     _block_succs,
-    _dest_var_signature,
-    _instruction_anchor_ea,
-    _is_state_const_write,
+    _DEST_VAR_RE,
 )
 from d810.analyses.value_flow.model import FactObservation
 
@@ -51,6 +84,188 @@ _TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 # Hard cap on transit-chain walk length.  OLLVM state machines rarely
 # have more than 4 transit blocks between state writes; 8 gives margin.
 _MAX_TRANSIT_HOPS = 8
+
+
+@dataclass(frozen=True)
+class _StateTransitionInsn:
+    """Uniform semantic view consumed by state_transition_anchor.
+
+    Built from a canonical :class:`~d810.ir.instructions.Instruction` for a
+    meta-rich source, or from a legacy :class:`_InstructionView` for a meta-less
+    row.  Exposes ONLY the fields this collector reads -- ``dest_stkoff`` /
+    ``src_l_value`` (the transition operands) plus identity/evidence fields
+    (``block_serial`` / ``insn_index`` / ``ea`` / ``opcode_name`` / ``dstr``).
+
+    For the canonical path ``dest_stkoff`` is the stack offset of
+    ``Instruction.result`` (a ``Varnode`` in ``Space.STACK``; else ``None`` --
+    an unknown-offset stack dest collapses to ``Varnode(UNKNOWN)`` /
+    ``WeakStackSlot`` and yields ``None``, matching legacy) and ``src_l_value``
+    is the const of the first canonical input (a ``Varnode`` in ``Space.CONST``;
+    else ``None``).
+    """
+
+    block_serial: int
+    insn_index: int
+    ea: int | None
+    opcode_name: str
+    dstr: str
+    dest_stkoff: int | None
+    src_l_value: int | None
+    operation: ValueOpKind | None
+
+    @classmethod
+    def from_canonical(
+        cls,
+        *,
+        block_serial: int,
+        index: int,
+        instruction: Instruction,
+    ) -> "_StateTransitionInsn":
+        dest, left, _right = _canonical_operands(instruction)
+        attrs = instruction.attrs
+        ea_raw = attrs.get("ea")
+        return cls(
+            block_serial=int(block_serial),
+            insn_index=int(index),
+            ea=int(ea_raw) if ea_raw is not None else None,
+            opcode_name=_canonical_opcode_name(instruction),
+            dstr=str(attrs.get("display_text") or ""),
+            dest_stkoff=_stkoff_from_varnode(dest),
+            src_l_value=_const_value_from_varnode(left),
+            operation=_value_op_from_instruction(instruction),
+        )
+
+    @classmethod
+    def from_legacy_view(cls, view: _InstructionView) -> "_StateTransitionInsn":
+        return cls(
+            block_serial=view.block_serial,
+            insn_index=view.insn_index,
+            ea=view.ea,
+            opcode_name=view.opcode_name,
+            dstr=view.dstr,
+            dest_stkoff=view.dest_stkoff,
+            src_l_value=view.src_l_value,
+            operation=view.operation or _value_op_from_opcode_name(view.opcode_name),
+        )
+
+
+def _iter_state_transition_insns(target: Any) -> Iterable[_StateTransitionInsn]:
+    """Yield this collector's semantic record for every instruction in ``target``.
+
+    Dual-currency (see module docstring): meta-rich FlowGraph blocks and
+    operand-tree diag rows are lifted to canonical ``Instruction``; meta-less
+    rows stay on the byte-identical legacy ``_InstructionView`` flat path.  A
+    registered live :class:`~d810.capabilities.source_lifter.SourceLifter`
+    lifts a backend source to a portable flow graph first (behaviour-identical
+    to no-lifter when none is registered).
+    """
+    lifter = select_lifter(target)
+    if lifter is not None:
+        target = lifter.lift(target)
+
+    blocks = getattr(target, "blocks", target)
+    if isinstance(blocks, Mapping):
+        block_iter = blocks.values()
+    else:
+        block_iter = blocks
+
+    for blk in block_iter:
+        block_serial = int(getattr(blk, "serial"))
+        if getattr(blk, "insn_snapshots", None) is not None:
+            for index, instruction in enumerate(InstructionProjection.from_block(blk)):
+                yield _StateTransitionInsn.from_canonical(
+                    block_serial=block_serial,
+                    index=index,
+                    instruction=instruction,
+                )
+            continue
+        for index, insn in enumerate(getattr(blk, "instructions", ())):
+            if diag_row_has_operand_tree(insn):
+                yield _StateTransitionInsn.from_canonical(
+                    block_serial=block_serial,
+                    index=int(getattr(insn, "index", index)),
+                    instruction=project_diag_instruction(insn),
+                )
+                continue
+            yield _StateTransitionInsn.from_legacy_view(
+                _legacy_view_from_diag_row(block_serial, index, insn)
+            )
+
+
+def _legacy_view_from_diag_row(
+    block_serial: int, index: int, insn: Any
+) -> _InstructionView:
+    """Build the byte-identical legacy view for a meta-less diag row.
+
+    state_transition_anchor reads only ``dest_stkoff`` / ``src_l_value`` (plus
+    identity/evidence), all of which a meta-less flat row populates directly, so
+    this view carries exactly those fields, leaving operand-tree-only fields
+    empty.  That makes a meta-less row classify identically to the pre-S5
+    flat-field path.
+    """
+    dest_stkoff = (
+        int(getattr(insn, "dest_stkoff"))
+        if getattr(insn, "dest_stkoff", None) is not None
+        else None
+    )
+    src_l_value = (
+        int(getattr(insn, "src_l_value"))
+        if getattr(insn, "src_l_value", None) is not None
+        else None
+    )
+    opcode_name = str(getattr(insn, "opcode_name", ""))
+    return _InstructionView(
+        block_serial=block_serial,
+        insn_index=int(getattr(insn, "index", index)),
+        ea=getattr(insn, "ea", None),
+        opcode_name=opcode_name,
+        dest_type=getattr(insn, "dest_type", None),
+        dest_stkoff=dest_stkoff,
+        dest_size=getattr(insn, "dest_size", None),
+        src_l_type=getattr(insn, "src_l_type", None),
+        src_l_stkoff=None,
+        src_l_value=src_l_value,
+        src_r_type=getattr(insn, "src_r_type", None),
+        src_r_stkoff=None,
+        src_r_value=None,
+        dstr=str(getattr(insn, "dstr", "")),
+        operation=_value_op_from_opcode_name(opcode_name),
+    )
+
+
+def _is_state_const_write(insn: _StateTransitionInsn) -> bool:
+    """Return ``True`` if ``insn`` writes a constant into a stack slot."""
+    if insn.operation is not ValueOpKind.MOVE:
+        return False
+    if insn.dest_stkoff is None:
+        return False
+    return insn.src_l_value is not None
+
+
+def _dest_var_signature(insn: _StateTransitionInsn) -> str | None:
+    """Return the ``%var_<offset>.<size>`` signature parsed from ``dstr``."""
+    text = str(insn.dstr or "")
+    match = _DEST_VAR_RE.search(text)
+    if match is None:
+        return None
+    return f"%var_{match.group(1).upper()}.{match.group(2)}"
+
+
+def _instruction_anchor_ea(
+    insn: _StateTransitionInsn,
+    block_start_ea_by_serial: dict[int, int | None],
+) -> int | None:
+    """Return a stable EA for an instruction.
+
+    Falls back to ``block_start_ea + insn_index`` when ``insn.ea`` is
+    zero/missing so the lifecycle has SOMETHING to correlate on.
+    """
+    if insn.ea is not None and int(insn.ea) != 0:
+        return int(insn.ea)
+    block_start = block_start_ea_by_serial.get(int(insn.block_serial))
+    if block_start is None:
+        return None
+    return int(block_start) + int(insn.insn_index)
 
 
 @dataclass(frozen=True)
@@ -77,7 +292,7 @@ class _SuccessorWalk:
 
 
 def _identify_canonical_state_var_stkoff(
-    instructions: tuple[_InstructionView, ...],
+    instructions: tuple[_StateTransitionInsn, ...],
 ) -> int | None:
     """Return the stkoff with the most state-const writes.
 
@@ -108,10 +323,10 @@ def _identify_canonical_state_var_stkoff(
 
 
 def _state_const_at_block(
-    instructions_by_block: dict[int, list[_InstructionView]],
+    instructions_by_block: dict[int, list[_StateTransitionInsn]],
     canonical_stkoff: int,
     block_serial: int,
-) -> tuple[int, _InstructionView] | None:
+) -> tuple[int, _StateTransitionInsn] | None:
     """Return ``(state_const, insn)`` for the first canonical state-write
     in ``block_serial``, or ``None``.
     """
@@ -128,7 +343,7 @@ def _state_const_at_block(
 def _walk_transit_chain(
     target: Any,
     source_block_serial: int,
-    instructions_by_block: dict[int, list[_InstructionView]],
+    instructions_by_block: dict[int, list[_StateTransitionInsn]],
     canonical_stkoff: int,
 ) -> _SuccessorWalk:
     """Walk ``source_block_serial``'s successors looking for the next
@@ -227,7 +442,7 @@ class StateTransitionAnchorFactCollector:
         )
         phase = context.phase
         maturity_text = fact_provider_label(context)
-        instructions = tuple(_iter_instruction_views(target))
+        instructions = tuple(_iter_state_transition_insns(target))
         if not instructions:
             return ()
 
@@ -235,7 +450,7 @@ class StateTransitionAnchorFactCollector:
         if canonical_stkoff is None:
             return ()
 
-        instructions_by_block: dict[int, list[_InstructionView]] = {}
+        instructions_by_block: dict[int, list[_StateTransitionInsn]] = {}
         for insn in instructions:
             instructions_by_block.setdefault(
                 int(insn.block_serial), []
