@@ -1,9 +1,17 @@
 """Tests for OLLVM profile-local raw evidence collection."""
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
+from d810.ir.expressions import ValueOpKind
+from d810.ir.flowgraph import (
+    BlockSnapshot as CfgBlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+)
 from d810.families.state_machine_cff.ollvm_carrier_profile import (
     OllvmCarrierRawEvidenceCollector,
 )
@@ -301,3 +309,154 @@ def test_records_local_working_store_when_target_is_address_of_local() -> None:
     assert by_role["LOCAL_WORKING_POINTER"].payload["local_base_token"] == "%var_18"
     assert by_role["LOCAL_WORKING_STORE_CANDIDATE"].payload["carrier_token"] == "%var_370"
     assert by_role["LOCAL_WORKING_STORE_CANDIDATE"].payload["local_base_token"] == "%var_18"
+
+
+# ---------------------------------------------------------------------------
+# llr-3b41: dual-currency port coverage.  The collector now consumes the
+# canonical ``Instruction`` for meta-rich sources (a portable ``FlowGraph``
+# block, or a diag row carrying a parseable ``meta`` operand tree) while
+# meta-less rows (every test above) stay on the byte-identical legacy flat
+# path.  This collector is purely text-driven (carriers are matched on the
+# instruction ``dstr``; the only structured read is ``operation`` vs
+# ``ValueOpKind.STORE``), so the two new currencies are pinned by routing the
+# SAME OLLVM carrier text through ``InstructionProjection.from_block`` and
+# ``project_diag_instruction``.
+# ---------------------------------------------------------------------------
+
+_ACCUM_STORE_TEXT = (
+    "stx ((#5.4*[ds.2:%var_378.8].4)+[ds.2:%var_390.8].4), ds.2, %var_378.8"
+)
+_PASSWORD_CALL_TEXT = (
+    "low call $0x180000000<fast:_QWORD &(%var_98).8,"
+    "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, %var_58.4"
+)
+_LOCAL_BASE_TEXT = "mov    &(%var_18{43}).8, %var_378.8"
+_LOCAL_ALIAS_TEXT = "mov    %var_378.8, %var_390.8"
+
+
+def _cfg_insn(
+    *,
+    index: int,
+    display_text: str,
+    kind: InsnKind = InsnKind.UNKNOWN,
+    value_op_kind: ValueOpKind | None = None,
+) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=0,
+        ea=0x180010000 + index,
+        operands=(),
+        display_text=display_text,
+        kind=kind,
+        value_op_kind=value_op_kind,
+    )
+
+
+def _cfg_target(*insns: InsnSnapshot) -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            10: CfgBlockSnapshot(
+                serial=10,
+                block_type=0,
+                succs=(11,),
+                preds=(9,),
+                flags=0,
+                start_ea=0x180010000,
+                insn_snapshots=tuple(insns),
+            )
+        },
+        entry_serial=10,
+        func_ea=0x18000E360,
+    )
+
+
+def test_collects_accumulator_carrier_from_canonical_flowgraph() -> None:
+    """A portable ``FlowGraph`` block routes through the canonical projection:
+    ``dstr`` comes from ``Instruction.attrs['display_text']`` and the STORE
+    check from the canonical ``operation`` (``value_op_kind=STORE``), so the
+    same OLLVM carriers are recovered as on the legacy meta-less path."""
+    facts = _collect(
+        _cfg_target(
+            _cfg_insn(index=0, display_text=_LOCAL_BASE_TEXT),
+            _cfg_insn(index=1, display_text=_LOCAL_ALIAS_TEXT),
+            _cfg_insn(
+                index=2,
+                display_text=_ACCUM_STORE_TEXT,
+                kind=InsnKind.STORE,
+                value_op_kind=ValueOpKind.STORE,
+            ),
+            _cfg_insn(index=3, display_text=_PASSWORD_CALL_TEXT),
+        )
+    )
+
+    by_role = {fact.payload["role"]: fact for fact in facts}
+    accum = by_role["ACCUMULATOR_CARRIER"]
+    assert accum.payload["carrier_token"] == "%var_378"
+    assert accum.payload["same_carrier_alias_proof"] is True
+    assert accum.payload["multiply_add_same_base_alias_tokens"] == ("%var_390",)
+    # The carrier anchor is the canonical block/index/dstr (text-driven match).
+    assert accum.payload["source_block"] == 10
+    assert accum.payload["instruction_dstr"] == _ACCUM_STORE_TEXT
+    assert by_role["PASSWORD_COMPARE_RESULT"].payload["carrier_token"] == "%var_58"
+
+
+def _accum_store_meta_row() -> InstructionSnapshot:
+    """A STORE diag row carrying a parseable ``meta`` operand tree (so the
+    ``diag_row_has_operand_tree`` gate routes it through the canonical lift).
+    The flat ``dest_*`` / ``src_*`` fields are left ``None``; the carrier is
+    matched purely on ``dstr``, and ``operation`` resolves via the canonical
+    ``Instruction`` projected from the operand tree."""
+    insn = InstructionSnapshot(
+        index=2,
+        ea=0x180010002,
+        opcode=0,
+        opcode_name="m_stx",
+        dest_type=None,
+        dest_stkoff=None,
+        dest_size=8,
+        src_l_type=None,
+        src_l_stkoff=None,
+        src_l_value=None,
+        src_r_type=None,
+        src_r_stkoff=None,
+        src_r_value=None,
+        dstr=_ACCUM_STORE_TEXT,
+    )
+    insn.meta = json.dumps(
+        {
+            "l": {"type": "mop_n", "type_num": 2, "size": 4, "dstr": "#5", "value": 5},
+            "d": {
+                "type": "mop_S",
+                "type_num": 5,
+                "size": 8,
+                "dstr": "%var_378",
+                "stkoff": 0x378,
+            },
+        }
+    )
+    return insn
+
+
+def test_collects_accumulator_carrier_from_operand_tree_diag_row() -> None:
+    """A diag row whose ``meta`` carries an operand tree is lifted through
+    ``project_diag_instruction`` (the canonical currency), not the flat path;
+    the carrier text in ``dstr`` is preserved and the STORE ``operation`` is
+    recovered from the canonical ``Instruction``."""
+    facts = _collect(
+        _target(
+            _block(
+                10,
+                _insn(index=0, dstr=_LOCAL_BASE_TEXT),
+                _insn(index=1, dstr=_LOCAL_ALIAS_TEXT),
+                # operand-tree diag row -> canonical lift (gate True)
+                _accum_store_meta_row(),
+                _insn(index=3, opcode_name="op_10", dstr=_PASSWORD_CALL_TEXT),
+            )
+        )
+    )
+
+    accumulator_facts = [
+        fact for fact in facts if fact.payload["role"] == "ACCUMULATOR_CARRIER"
+    ]
+    assert accumulator_facts[0].payload["carrier_token"] == "%var_378"
+    assert accumulator_facts[0].payload["same_carrier_alias_proof"] is True
+    assert accumulator_facts[0].payload["instruction_dstr"] == _ACCUM_STORE_TEXT
