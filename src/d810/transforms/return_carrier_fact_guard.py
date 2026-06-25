@@ -193,7 +193,7 @@ def filter_return_carrier_fact_redirects(
             continue
 
         const_written = collect_const_var_refs_in_block(
-            mba,
+            flow_graph,
             source,
             insn_kind_classifier=insn_kind_classifier,
             operand_kind_classifier=operand_kind_classifier,

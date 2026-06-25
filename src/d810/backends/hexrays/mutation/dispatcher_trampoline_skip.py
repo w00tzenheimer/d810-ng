@@ -201,7 +201,7 @@ class DispatcherTrampolineSkipStrategy:
                 sites = fact_view.return_carrier_sites_for_block(target_serial)
                 if sites:
                     introduced = collect_const_var_refs_in_block(
-                        mba,
+                        snapshot.flow_graph,
                         serial,
                         insn_kind_classifier=self._hexrays_insn_kind,
                         operand_kind_classifier=self._hexrays_operand_kind,
