@@ -7,7 +7,6 @@ from d810.analyses.control_flow.switch_case_transition_analysis import (
     SwitchCaseTransitionFact,
     collect_switch_case_transition_facts,
 )
-from d810.analyses.control_flow.state_machine_analysis import build_mba_view_from_flow_graph
 from d810.hexrays.mutation.ir_translator import lift as lift_flow_graph
 
 
@@ -36,10 +35,14 @@ def collect_switch_case_transition_facts_from_mba(
     handler_entry_blocks = {int(row.target_block) for row in handler_rows}
     try:
         flow_graph = lift_flow_graph(mba)
-        path_eval_mba = build_mba_view_from_flow_graph(flow_graph)
     except Exception:
         flow_graph = None
-        path_eval_mba = mba
+    # Pass the once-lifted ``FlowGraph`` directly as the path-eval block source
+    # (ticket llr-lxas S0); ``evaluate_handler_paths`` reads ``BlockSnapshot``
+    # topology/instructions from it through the dual-shape accessors, replacing
+    # the ``_FlowGraphMBAView`` mimicry projection.  On lift failure fall back to
+    # the live ``mba`` (seam path).
+    path_eval_mba = flow_graph if flow_graph is not None else mba
     case_bodies: list[SwitchCaseBody] = []
     for row in handler_rows:
         source_state = int(row.state_const)

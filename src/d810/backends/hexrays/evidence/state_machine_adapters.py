@@ -11,7 +11,6 @@ from d810.backends.hexrays.evidence.dispatcher.switch_table import (
     analyze_switch_table_dispatcher,
 )
 from d810.analyses.control_flow.state_machine_analysis import (
-    build_mba_view_from_flow_graph,
     evaluate_handler_paths,
 )
 from d810.analyses.control_flow.transition_builder import StateHandler, StateTransition
@@ -52,8 +51,11 @@ def detect_switch_table_state_machine(
 
     handler_entry_blocks = set(handler_map.handler_state_map.keys())
     dispatcher_blocks_set = set(handler_map.dispatcher_blocks)
+    # Pass the once-lifted ``FlowGraph`` directly as the path-eval block source
+    # (ticket llr-lxas S0); ``evaluate_handler_paths`` reads ``BlockSnapshot``
+    # topology/instructions from it via the dual-shape accessors, replacing the
+    # ``_FlowGraphMBAView`` mimicry projection.
     flow_graph = lift_flow_graph(mba)
-    projected_mba = build_mba_view_from_flow_graph(flow_graph)
 
     for handler_serial, state_const in handler_map.handler_state_map.items():
         state_machine.add_handler(
@@ -67,7 +69,7 @@ def detect_switch_table_state_machine(
     for handler_serial, state_const in handler_map.handler_state_map.items():
         try:
             paths = evaluate_handler_paths(
-                projected_mba,
+                flow_graph,
                 entry_serial=handler_serial,
                 incoming_state=state_const,
                 condition_chain_blocks=dispatcher_blocks_set,
