@@ -42,14 +42,9 @@ pattern.  A collector-local source iterator routes:
   ``dest_size`` are then read off the canonical ``Instruction.result`` and
   ``src_l_value`` off the first canonical input, so a state-write is anchored
   on recovered stack/const semantics rather than opcode-table flat fields.
-* **meta-less** rows -- the production ``mba_to_fact_target``
-  ``SimpleNamespace`` (flat fields only) and attrs-only ``meta`` rows -- have
-  no operand tree, so they stay on the byte-identical legacy
-  ``_InstructionView`` flat path (``diag_row_has_operand_tree`` is the gate).
-  This collector reads ONLY ``dest_stkoff`` / ``src_l_value`` / ``dest_size``
-  / ``block_serial`` / ``insn_index`` (plus ``ea`` / ``opcode_name`` /
-  ``dstr`` for anchoring + evidence), all of which the legacy flat path
-  populates identically, so meta-less rows yield byte-identical observations.
+The legacy meta-less ``_InstructionView`` flat path was removed (llr-3b41 S11)
+-- it was unreachable by any real source once every production fact target
+became a canonical ``FlowGraph``.
 
 ``_block_succs`` / ``_block_start_ea_lookup`` / ``_DEST_VAR_RE`` are exported
 unchanged for reuse by the state_transition_anchor collector (S5).
@@ -66,7 +61,6 @@ from d810.ir.expressions import ValueOpKind
 from d810.ir.instructions import Instruction
 from d810.ir.insn_projection import (
     InstructionProjection,
-    diag_row_has_operand_tree,
     project_diag_instruction,
 )
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
@@ -76,14 +70,12 @@ from d810.analyses.fact_collection_context import (
     fact_provider_label,
 )
 from d810.analyses.value_flow.induction_carrier import (
-    _InstructionView,
     _canonical_opcode_name,
     _canonical_operands,
     _const_value_from_varnode,
     _size_from_varnode,
     _stkoff_from_varnode,
     _value_op_from_instruction,
-    _value_op_from_opcode_name,
 )
 from d810.analyses.value_flow.model import FactObservation
 from d810.analyses.value_flow.contract_evidence import (
@@ -110,9 +102,8 @@ _OPCODE_FINGERPRINT_LIMIT = 8
 class _StateWriteInsn:
     """Uniform semantic view consumed by state_write_anchor.
 
-    Built from a canonical :class:`~d810.ir.instructions.Instruction` for a
-    meta-rich source, or from a legacy :class:`_InstructionView` for a meta-less
-    row.  Exposes ONLY the fields this collector reads -- ``dest_stkoff`` /
+    Built solely from a canonical :class:`~d810.ir.instructions.Instruction`
+    (llr-3b41 S11 deleted the legacy meta-less flat path).  Exposes ONLY the fields this collector reads -- ``dest_stkoff`` /
     ``dest_size`` / ``src_l_value`` (the state-write operands) plus
     identity/evidence fields (``block_serial`` / ``insn_index`` / ``ea`` /
     ``opcode_name`` / ``dstr``).
@@ -158,20 +149,6 @@ class _StateWriteInsn:
             operation=_value_op_from_instruction(instruction),
         )
 
-    @classmethod
-    def from_legacy_view(cls, view: _InstructionView) -> "_StateWriteInsn":
-        return cls(
-            block_serial=view.block_serial,
-            insn_index=view.insn_index,
-            ea=view.ea,
-            opcode_name=view.opcode_name,
-            dstr=view.dstr,
-            dest_stkoff=view.dest_stkoff,
-            dest_size=view.dest_size,
-            src_l_value=view.src_l_value,
-            operation=view.operation or _value_op_from_opcode_name(view.opcode_name),
-        )
-
 
 @dataclass(frozen=True)
 class _BlockStateWriteContext:
@@ -197,56 +174,16 @@ def _block_succs(target: Any, block_serial: int) -> tuple[int, ...]:
     return ()
 
 
-def _legacy_view_from_diag_row(
-    block_serial: int, index: int, insn: Any
-) -> _InstructionView:
-    """Build the byte-identical legacy view for a meta-less diag row.
-
-    state_write_anchor reads only ``dest_stkoff`` / ``dest_size`` /
-    ``src_l_value`` (plus identity/evidence), all of which a meta-less flat row
-    populates directly, so this view carries exactly those fields, leaving
-    operand-tree-only fields empty.  That makes a meta-less row classify
-    identically to the pre-S8 flat-field path.
-    """
-    dest_stkoff = (
-        int(getattr(insn, "dest_stkoff"))
-        if getattr(insn, "dest_stkoff", None) is not None
-        else None
-    )
-    src_l_value = (
-        int(getattr(insn, "src_l_value"))
-        if getattr(insn, "src_l_value", None) is not None
-        else None
-    )
-    opcode_name = str(getattr(insn, "opcode_name", ""))
-    return _InstructionView(
-        block_serial=block_serial,
-        insn_index=int(getattr(insn, "index", index)),
-        ea=getattr(insn, "ea", None),
-        opcode_name=opcode_name,
-        dest_type=getattr(insn, "dest_type", None),
-        dest_stkoff=dest_stkoff,
-        dest_size=getattr(insn, "dest_size", None),
-        src_l_type=getattr(insn, "src_l_type", None),
-        src_l_stkoff=None,
-        src_l_value=src_l_value,
-        src_r_type=getattr(insn, "src_r_type", None),
-        src_r_stkoff=None,
-        src_r_value=None,
-        dstr=str(getattr(insn, "dstr", "")),
-        operation=_value_op_from_opcode_name(opcode_name),
-    )
-
-
 def _iter_state_write_insns(target: Any) -> Iterable[_StateWriteInsn]:
     """Yield this collector's semantic record for every instruction in ``target``.
 
-    Dual-currency (see module docstring): meta-rich FlowGraph blocks and
-    operand-tree diag rows are lifted to canonical ``Instruction``; meta-less
-    rows stay on the byte-identical legacy ``_InstructionView`` flat path.  A
-    registered live :class:`~d810.capabilities.source_lifter.SourceLifter`
-    lifts a backend source to a portable flow graph first (behaviour-identical
-    to no-lifter when none is registered).
+    Canonical-only (llr-3b41 S11): a meta-rich FlowGraph block is projected via
+    ``InstructionProjection.from_block``; an offline diag row carrying a ``meta``
+    operand tree is lifted via ``project_diag_instruction``.  The meta-less flat
+    fallback was removed -- it was unreachable by any real source once every
+    production fact target became a canonical ``FlowGraph``.  A registered live
+    :class:`~d810.capabilities.source_lifter.SourceLifter` lifts a backend
+    source to a portable flow graph first.
     """
     lifter = select_lifter(target)
     if lifter is not None:
@@ -269,15 +206,10 @@ def _iter_state_write_insns(target: Any) -> Iterable[_StateWriteInsn]:
                 )
             continue
         for index, insn in enumerate(getattr(blk, "instructions", ())):
-            if diag_row_has_operand_tree(insn):
-                yield _StateWriteInsn.from_canonical(
-                    block_serial=block_serial,
-                    index=int(getattr(insn, "index", index)),
-                    instruction=project_diag_instruction(insn),
-                )
-                continue
-            yield _StateWriteInsn.from_legacy_view(
-                _legacy_view_from_diag_row(block_serial, index, insn)
+            yield _StateWriteInsn.from_canonical(
+                block_serial=block_serial,
+                index=int(getattr(insn, "index", index)),
+                instruction=project_diag_instruction(insn),
             )
 
 

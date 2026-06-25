@@ -4,23 +4,16 @@ Records canonical call anchors and the local CFG context around them. Backend
 opcode/rendering details remain evidence only; call behavior is authorized by
 ``Instruction.control.call_kind``.
 
-llr-3b41 S4 -- per-collector port onto the canonical IR, following the proven S3
-(:mod:`d810.analyses.value_flow.zero_blob`) pattern.  A collector-local
-dual-currency iterator routes:
-
-* **meta-rich** sources -- a portable :class:`~d810.ir.flowgraph.FlowGraph`
-  block, or a diag row carrying a parseable ``meta`` operand tree -- through the
-  SAME canonical :func:`~d810.ir.insn_projection.project_diag_instruction` /
-  ``InstructionProjection.from_block`` projection.  The classifiers then read
-  ``control.call_kind`` / ``control.call_target`` off the canonical record, so a
-  call anchor is authorized by recovered call semantics, not an opcode guess.
-* **meta-less** rows -- the production ``mba_to_fact_target``
-  ``SimpleNamespace`` (flat fields only) and attrs-only ``meta`` rows -- have no
-  operand tree, so they stay on the legacy ``_InstructionView`` flat path,
-  BYTE-IDENTICAL.  ``diag_row_has_operand_tree`` is the gate (mirrors S3).
-  call_anchor only reads call-shaped fields (``call_kind`` / ``call_target``)
-  that the legacy flat path never populates, so a meta-less row yields zero
-  observations exactly as before.
+llr-3b41 S11 -- canonical-only.  A collector-local iterator routes a meta-rich
+:class:`~d810.ir.flowgraph.FlowGraph` block (the only shape a production fact
+target ever is) through ``InstructionProjection.from_block``, and an offline
+diag row carrying a parseable ``meta`` operand tree through the SAME canonical
+:func:`~d810.ir.insn_projection.project_diag_instruction` projection.  The
+classifiers read ``control.call_kind`` / ``control.call_target`` off the
+canonical record, so a call anchor is authorized by recovered call semantics,
+not an opcode guess.  The legacy meta-less ``_InstructionView`` flat path was
+removed (S11) -- it was unreachable by any real source once every production
+fact target became a canonical ``FlowGraph``.
 """
 from __future__ import annotations
 
@@ -32,7 +25,6 @@ from d810.core.typing import Any, Iterable
 from d810.ir.instructions import Instruction
 from d810.ir.insn_projection import (
     InstructionProjection,
-    diag_row_has_operand_tree,
     project_diag_instruction,
 )
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
@@ -44,7 +36,6 @@ from d810.analyses.fact_collection_context import (
     fact_provider_label,
 )
 from d810.analyses.value_flow.induction_carrier import (
-    _InstructionView,
     _call_kind_from_instruction,
     _call_target_from_instruction,
     _canonical_opcode_name,
@@ -61,9 +52,8 @@ _TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 class _CallAnchorInsn:
     """Uniform semantic view consumed by call_anchor's classifiers.
 
-    Built from a canonical :class:`~d810.ir.instructions.Instruction` for a
-    meta-rich source, or from a legacy :class:`_InstructionView` for a meta-less
-    row.  Only the fields call_anchor actually reads are exposed; the classifier
+    Built solely from a canonical :class:`~d810.ir.instructions.Instruction`
+    (llr-3b41 S11 deleted the legacy meta-less flat path).  Only the fields call_anchor actually reads are exposed; the classifier
     helpers below switch on ``call_kind`` / ``call_target`` and never touch flat
     operand fields, so a meta-less row (whose canonical-shaped call fields are
     all empty) classifies to "not a call" exactly as before.
@@ -97,28 +87,17 @@ class _CallAnchorInsn:
             call_target=_call_target_from_instruction(instruction),
         )
 
-    @classmethod
-    def from_legacy_view(cls, view: _InstructionView) -> "_CallAnchorInsn":
-        return cls(
-            block_serial=view.block_serial,
-            insn_index=view.insn_index,
-            ea=view.ea,
-            opcode_name=view.opcode_name,
-            dstr=view.dstr,
-            call_kind=view.call_kind,
-            call_target=view.call_target,
-        )
-
 
 def _iter_call_anchor_insns(target: Any) -> Iterable[_CallAnchorInsn]:
     """Yield call_anchor's semantic record for every instruction in ``target``.
 
-    Dual-currency (see module docstring): meta-rich FlowGraph blocks and
-    operand-tree diag rows are lifted to canonical ``Instruction``; meta-less
-    rows stay on the byte-identical legacy ``_InstructionView`` flat path.  A
-    registered live :class:`~d810.capabilities.source_lifter.SourceLifter`
-    lifts a backend source to a portable flow graph first (behaviour-identical
-    to no-lifter when none is registered).
+    Canonical-only (llr-3b41 S11): a meta-rich FlowGraph block is projected via
+    ``InstructionProjection.from_block``; an offline diag row carrying a ``meta``
+    operand tree is lifted via ``project_diag_instruction``.  The meta-less flat
+    fallback was removed -- it was unreachable by any real source once every
+    production fact target became a canonical ``FlowGraph``.  A registered live
+    :class:`~d810.capabilities.source_lifter.SourceLifter` lifts a backend
+    source to a portable flow graph first.
     """
     lifter = select_lifter(target)
     if lifter is not None:
@@ -141,45 +120,11 @@ def _iter_call_anchor_insns(target: Any) -> Iterable[_CallAnchorInsn]:
                 )
             continue
         for index, insn in enumerate(getattr(blk, "instructions", ())):
-            if diag_row_has_operand_tree(insn):
-                yield _CallAnchorInsn.from_canonical(
-                    block_serial=block_serial,
-                    index=int(getattr(insn, "index", index)),
-                    instruction=project_diag_instruction(insn),
-                )
-                continue
-            yield _CallAnchorInsn.from_legacy_view(
-                _legacy_view_from_diag_row(block_serial, index, insn)
+            yield _CallAnchorInsn.from_canonical(
+                block_serial=block_serial,
+                index=int(getattr(insn, "index", index)),
+                instruction=project_diag_instruction(insn),
             )
-
-
-def _legacy_view_from_diag_row(
-    block_serial: int, index: int, insn: Any
-) -> _InstructionView:
-    """Build the byte-identical legacy view for a meta-less diag row.
-
-    call_anchor only reads the canonical-shaped call fields (``call_kind`` /
-    ``call_target``), neither of which a meta-less flat row populates, so this
-    view is intentionally minimal: it carries identity only, leaving the call
-    fields empty.  That makes a meta-less row classify to "not a call" -- exactly
-    the pre-S4 behaviour.
-    """
-    return _InstructionView(
-        block_serial=block_serial,
-        insn_index=int(getattr(insn, "index", index)),
-        ea=getattr(insn, "ea", None),
-        opcode_name=str(getattr(insn, "opcode_name", "")),
-        dest_type=getattr(insn, "dest_type", None),
-        dest_stkoff=None,
-        dest_size=getattr(insn, "dest_size", None),
-        src_l_type=getattr(insn, "src_l_type", None),
-        src_l_stkoff=None,
-        src_l_value=None,
-        src_r_type=getattr(insn, "src_r_type", None),
-        src_r_stkoff=None,
-        src_r_value=None,
-        dstr=str(getattr(insn, "dstr", "")),
-    )
 
 
 def _is_call(insn: _CallAnchorInsn) -> bool:

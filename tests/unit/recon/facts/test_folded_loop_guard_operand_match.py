@@ -9,7 +9,7 @@ Covers the matrix the hardening replaced the brittle text/opcode guards with:
 
 Asserts the structured ``(counter_identity, bound, signed)`` extraction and that
 a non-induction or non-const operand is rejected.  These synthetic
-``_InstructionView``s are the register-path proof: the Tigress binary's counter
+``_FoldedGuardInsn``s are the register-path proof: the Tigress binary's counter
 is stack-resident, so the register guard path is NOT exercised live yet.
 """
 from __future__ import annotations
@@ -18,11 +18,11 @@ import pytest
 
 from d810.analyses.value_flow.folded_loop_guard import (
     FoldedLoopGuardFactCollector,
+    _FoldedGuardInsn,
     _InductionVar,
     _induction_vars,
 )
 from d810.analyses.value_flow.induction_carrier import (
-    _InstructionView,
     _classify_induction_update,
 )
 from d810.ir.expressions import ValueOpKind
@@ -58,29 +58,31 @@ def _view(
     dest_stkoff: int | None = None,
     dest_reg: int | None = None,
     dest_size: int | None = 4,
-) -> _InstructionView:
+) -> _FoldedGuardInsn:
+    # ``*_type`` args are accepted for call-site readability but the shared
+    # classifiers read only stkoff/reg/value/operation, so they are not stored.
+    del src_l_type, src_r_type
     if operation is None:
         operation = _OPERATION_ALIASES.get(opcode_name)
-    return _InstructionView(
+    return _FoldedGuardInsn(
         block_serial=10,
         insn_index=0,
         ea=0x180010000,
         opcode_name=opcode_name,
-        dest_type=None,
-        dest_stkoff=dest_stkoff,
-        dest_size=dest_size,
-        src_l_type=src_l_type,
-        src_l_stkoff=src_l_stkoff,
-        src_l_value=src_l_value,
-        src_r_type=src_r_type,
-        src_r_stkoff=src_r_stkoff,
-        src_r_value=src_r_value,
         dstr="",
         operation=operation,
         predicate_kind=predicate_kind,
+        dest_stkoff=dest_stkoff,
+        dest_size=dest_size,
         dest_reg=dest_reg,
+        src_l_stkoff=src_l_stkoff,
         src_l_reg=src_l_reg,
+        src_l_value=src_l_value,
+        src_r_stkoff=src_r_stkoff,
         src_r_reg=src_r_reg,
+        src_r_value=src_r_value,
+        src_l_mop=None,
+        src_r_mop=None,
     )
 
 
@@ -354,7 +356,7 @@ def test_reg_counter_not_matched_by_stack_operand() -> None:
 #   jge ((bnot((%var_1D0.4 - #0x64.4)) | (%var_1D0.4 ^ #0x64.4))
 #        & (xdu(%var_1D0.1) | #0xFFFFFF9B.4)), #0, @33
 #
-# The flat ``_InstructionView`` fields are all None for these; only the
+# The flat ``_FoldedGuardInsn`` operand fields are all None for these; only the
 # ``src_l_mop`` / ``src_r_mop`` MopSnapshot subtree carries the counter.
 
 
@@ -387,29 +389,26 @@ def _tree_view(
     predicate_kind: PredicateKind | None = None,
     src_l_mop=None,
     src_r_mop=None,
-) -> _InstructionView:
-    """An ``_InstructionView`` whose flat operands are empty -- only the
+) -> _FoldedGuardInsn:
+    """A ``_FoldedGuardInsn`` whose flat operands are empty -- only the
     structured ``src_l_mop`` / ``src_r_mop`` subtree carries the predicate."""
-    return _InstructionView(
+    return _FoldedGuardInsn(
         block_serial=10,
         insn_index=0,
         ea=0x180010000,
         opcode_name="",
-        dest_type=None,
-        dest_stkoff=None,
-        dest_size=4,
-        src_l_type="mop_d",
-        src_l_stkoff=None,
-        src_l_value=None,
-        src_r_type=None,
-        src_r_stkoff=None,
-        src_r_value=None,
         dstr="",
         operation=operation,
         predicate_kind=predicate_kind,
+        dest_stkoff=None,
+        dest_size=4,
         dest_reg=None,
+        src_l_stkoff=None,
         src_l_reg=None,
+        src_l_value=None,
+        src_r_stkoff=None,
         src_r_reg=None,
+        src_r_value=None,
         src_l_mop=src_l_mop,
         src_r_mop=src_r_mop,
     )

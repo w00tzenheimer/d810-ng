@@ -7,18 +7,16 @@ predecessor path, and carrier writers found on that path.
 llr-3b41 S10-pair -- this collector is ported onto the canonical
 :class:`~d810.ir.instructions.Instruction` IR jointly with
 ``terminal_byte_emitter``: it shares that module's private :class:`_BlockView`
-/ :func:`_iter_block_views` / :func:`_block_metadata` helpers, which now carry a
-dual-currency per-block instruction payload (canonical
-:class:`~d810.analyses.value_flow.induction_carrier._InstructionView` for
-meta-rich FlowGraph blocks and operand-tree diag rows; the byte-identical legacy
-flat path for meta-less rows).  This collector reads
-``_BlockView.instructions[*].control_transfer`` to recognise a return block, so
-a meta-rich source (a :class:`~d810.ir.flowgraph.FlowGraph` ``RET`` block, or a
-diag row carrying a parseable ``meta`` operand tree) is now recognised off
-recovered canonical control semantics rather than opcode-table flat fields;
-meta-less rows classify byte-identically to the pre-port path.  The direct
-:class:`_BlockView` construction for metadata-only blocks (no instructions)
-keeps the ``instructions=()`` empty payload, so non-instruction return blocks are
+/ :func:`_iter_block_views` / :func:`_block_metadata` helpers, which carry a
+canonical-only per-block instruction payload (the ``_TerminalInsn`` record built
+from a canonical ``Instruction``; the meta-less flat path was deleted in S11).
+This collector reads ``_BlockView.instructions[*].control_transfer`` to
+recognise a return block, so a meta-rich source (a
+:class:`~d810.ir.flowgraph.FlowGraph` ``RET`` block, or a diag row carrying a
+parseable ``meta`` operand tree) is recognised off recovered canonical control
+semantics rather than opcode-table flat fields.  The direct :class:`_BlockView`
+construction for metadata-only blocks (no instructions) keeps the
+``instructions=()`` empty payload, so non-instruction return blocks are
 unchanged.
 """
 from __future__ import annotations

@@ -25,32 +25,24 @@ planning except through the typed fact a consumer chooses to read.  The earlier
 LOCOPT facts carry forward into the CALLS view via the lifecycle's
 maturity-rank filter, so the unflatten CALLS run can read this LOCOPT fact directly.
 
-llr-3b41 S6 -- per-collector port onto the canonical IR, following the proven S3
-(:mod:`d810.analyses.value_flow.zero_blob`) / S4
-(:mod:`d810.analyses.value_flow.call_anchor`) / S5
-(:mod:`d810.analyses.control_flow.state_transition_anchor`) dual-currency
-pattern.  A collector-local iterator routes:
-
-* **meta-rich** sources -- a portable :class:`~d810.ir.flowgraph.FlowGraph`
-  block, or a diag row carrying a parseable ``meta`` operand tree -- through the
-  SAME canonical :func:`~d810.ir.insn_projection.project_diag_instruction` /
-  ``InstructionProjection.from_block`` projection.  Flat operands
-  (``dest_stkoff`` / ``src_*``) are read off the canonical record; the nested
-  operand SUBTREE (``src_l_mop`` / ``src_r_mop``) is taken from the SOURCE
-  ``InsnSnapshot.l`` / ``.r`` (FlowGraph) or :func:`parse_diag_meta_operand`
-  (diag) ``MopSnapshot`` and walked through the canonical
-  :func:`~d810.ir.insn_projection.iter_operand_exprs` API.
-* **meta-less** rows -- the production ``mba_to_fact_target``
-  ``SimpleNamespace`` (flat fields only) and attrs-only ``meta`` rows -- have no
-  operand tree, so they stay on the byte-identical legacy ``_InstructionView``
-  flat path (``diag_row_has_operand_tree`` is the gate).
+llr-3b41 S11 -- canonical-only.  A collector-local iterator routes a meta-rich
+:class:`~d810.ir.flowgraph.FlowGraph` block (the only shape a production fact
+target ever is) through ``InstructionProjection.from_block``, and an offline
+diag row carrying a parseable ``meta`` operand tree through the SAME canonical
+:func:`~d810.ir.insn_projection.project_diag_instruction` projection.  Flat
+operands (``dest_stkoff`` / ``src_*``) are read off the canonical record; the
+nested operand SUBTREE (``src_l_mop`` / ``src_r_mop``) is taken from the SOURCE
+``InsnSnapshot.l`` / ``.r`` (FlowGraph) or :func:`parse_diag_meta_operand`
+(diag) ``MopSnapshot`` and walked through the canonical
+:func:`~d810.ir.insn_projection.iter_operand_exprs` API.  The meta-less flat
+fallback was removed (S11) -- it was unreachable by any real source once every
+production fact target became a canonical ``FlowGraph``.
 
 **EMBRACE gain (S6, the first port where it bites):** the nested-sub guard
 detection (Shape 2 below) reads ``src_l_mop`` / ``src_r_mop``.  Pre-S6 those
-fields were populated ONLY by the legacy flat path (``getattr(insn, "l"/"r")``),
-which is ``None`` on every real source -- so Shape 2 was effectively dead on
-FlowGraph blocks AND operand-tree diag rows (``_instruction_view_from_canonical``
-never set the mop subtrees).  Routing meta-rich sources through the source
+fields were populated ONLY by the now-deleted legacy flat path, which was
+``None`` on every real source -- so Shape 2 was effectively dead on FlowGraph
+blocks AND operand-tree diag rows.  Routing meta-rich sources through the source
 ``MopSnapshot`` now lets a buried ``(counter - #N)`` guard inside an
 ``m_xdu`` / ``m_jge`` tree be detected on those sources for the first time -- a
 strict improvement.  The FlowGraph path already exposed nested structure in the
@@ -70,7 +62,6 @@ from d810.ir.instructions import Instruction
 from d810.ir.insn_projection import (
     InstructionProjection,
     _diag_meta_payload,
-    diag_row_has_operand_tree,
     iter_operand_exprs,
     parse_diag_meta_operand,
     project_diag_instruction,
@@ -85,7 +76,6 @@ from d810.analyses.fact_collection_context import (
     fact_provider_label,
 )
 from d810.analyses.value_flow.induction_carrier import (
-    _InstructionView,
     _canonical_opcode_name,
     _canonical_operands,
     _classify_induction_update,
@@ -95,7 +85,6 @@ from d810.analyses.value_flow.induction_carrier import (
     _size_from_varnode,
     _stkoff_from_varnode,
     _value_op_from_instruction,
-    _value_op_from_opcode_name,
 )
 from d810.analyses.value_flow.state_write_anchor import (
     _block_start_ea_lookup,
@@ -135,8 +124,7 @@ def _predicate_kind_of(instruction: Instruction) -> PredicateKind | None:
     A bare set* materialization (``setl`` etc.) carries its ``PredicateKind`` as
     ``Instruction.operation`` (no control transfer); a conditional branch
     carries it in ``Instruction.control.predicate``.  This reads whichever is
-    present, matching the legacy ``_InstructionView.predicate_kind`` the flat
-    diag path populates.
+    present.
     """
     operation = instruction.operation
     if isinstance(operation, PredicateKind):
@@ -150,8 +138,7 @@ class _FoldedGuardInsn:
     """Uniform semantic view consumed by folded_loop_guard's classifiers.
 
     Built from a canonical :class:`~d810.ir.instructions.Instruction` (plus its
-    source operand ``MopSnapshot`` subtrees) for a meta-rich source, or from a
-    legacy :class:`_InstructionView` for a meta-less row.  Exposes ONLY the
+    source operand ``MopSnapshot`` subtrees).  Exposes ONLY the
     fields folded_loop_guard reads:
 
     * flat operands -- ``dest_stkoff`` / ``dest_size`` / ``dest_reg`` /
@@ -163,9 +150,9 @@ class _FoldedGuardInsn:
       ``(counter - #N)`` guard (Shape 2);
     * identity/evidence -- ``block_serial`` / ``insn_index`` / ``ea`` / ``dstr``.
 
-    These attribute names match :class:`_InstructionView`, so the shared
-    classifier helpers (``_classify_induction_update`` / ``_operation_of_view``
-    / ``_is_state_const_write``) duck-type over this record unchanged.
+    The shared classifier helpers (``_classify_induction_update`` /
+    ``_operation_of_view`` / ``_is_state_const_write``) duck-type over this
+    record's attribute names unchanged.
     """
 
     block_serial: int
@@ -221,42 +208,20 @@ class _FoldedGuardInsn:
             src_r_mop=src_r_mop,
         )
 
-    @classmethod
-    def from_legacy_view(cls, view: _InstructionView) -> "_FoldedGuardInsn":
-        return cls(
-            block_serial=view.block_serial,
-            insn_index=view.insn_index,
-            ea=view.ea,
-            opcode_name=view.opcode_name,
-            dstr=view.dstr,
-            operation=view.operation
-            or _value_op_from_opcode_name(view.opcode_name),
-            predicate_kind=view.predicate_kind,
-            dest_stkoff=view.dest_stkoff,
-            dest_size=view.dest_size,
-            dest_reg=view.dest_reg,
-            src_l_stkoff=view.src_l_stkoff,
-            src_l_reg=view.src_l_reg,
-            src_l_value=view.src_l_value,
-            src_r_stkoff=view.src_r_stkoff,
-            src_r_reg=view.src_r_reg,
-            src_r_value=view.src_r_value,
-            src_l_mop=view.src_l_mop,
-            src_r_mop=view.src_r_mop,
-        )
-
 
 def _iter_folded_guard_insns(target: Any) -> Iterable[_FoldedGuardInsn]:
     """Yield folded_loop_guard's semantic record for every instruction.
 
-    Dual-currency (see module docstring): meta-rich FlowGraph blocks and
-    operand-tree diag rows are lifted to canonical ``Instruction`` (with the
-    source operand ``MopSnapshot`` subtrees attached for the nested-sub
-    walker); meta-less rows stay on the byte-identical legacy
-    ``_InstructionView`` flat path.  A registered live
+    Canonical-only (llr-3b41 S11): a meta-rich FlowGraph block is projected via
+    ``InstructionProjection.from_block`` (with the source operand
+    ``MopSnapshot`` subtrees attached for the nested-sub walker); an offline
+    diag row carrying a ``meta`` operand tree is lifted via
+    ``project_diag_instruction`` (with the ``l`` / ``r`` operand subtrees parsed
+    from ``meta``).  The meta-less flat fallback was removed -- it was
+    unreachable by any real source once every production fact target became a
+    canonical ``FlowGraph``.  A registered live
     :class:`~d810.capabilities.source_lifter.SourceLifter` lifts a backend
-    source to a portable flow graph first (behaviour-identical to no-lifter
-    when none is registered).
+    source to a portable flow graph first.
     """
     lifter = select_lifter(target)
     if lifter is not None:
@@ -285,62 +250,14 @@ def _iter_folded_guard_insns(target: Any) -> Iterable[_FoldedGuardInsn]:
                 )
             continue
         for index, insn in enumerate(getattr(blk, "instructions", ())):
-            if diag_row_has_operand_tree(insn):
-                meta = _diag_meta_payload(insn)
-                yield _FoldedGuardInsn.from_canonical(
-                    block_serial=block_serial,
-                    index=int(getattr(insn, "index", index)),
-                    instruction=project_diag_instruction(insn),
-                    src_l_mop=parse_diag_meta_operand(meta.get("l")),
-                    src_r_mop=parse_diag_meta_operand(meta.get("r")),
-                )
-                continue
-            yield _FoldedGuardInsn.from_legacy_view(
-                _legacy_view_from_diag_row(block_serial, index, insn)
+            meta = _diag_meta_payload(insn)
+            yield _FoldedGuardInsn.from_canonical(
+                block_serial=block_serial,
+                index=int(getattr(insn, "index", index)),
+                instruction=project_diag_instruction(insn),
+                src_l_mop=parse_diag_meta_operand(meta.get("l")),
+                src_r_mop=parse_diag_meta_operand(meta.get("r")),
             )
-
-
-def _legacy_view_from_diag_row(
-    block_serial: int, index: int, insn: Any
-) -> _InstructionView:
-    """Build the byte-identical legacy view for a meta-less diag row.
-
-    Mirrors the pre-S6 shared ``_iter_portable_instructions`` flat path for the
-    fields folded_loop_guard reads: flat operand stkoff/value/reg, predicate,
-    opcode-name ``operation`` inference, and the legacy ``src_l_mop`` /
-    ``src_r_mop`` (``getattr(insn, "l"/"r")``, ``None`` on production meta-less
-    rows).  Block-level helpers (``_block_succs`` / ``_block_start_ea_lookup``)
-    read the ``target`` directly and need nothing from this view.
-    """
-    opcode_name = str(getattr(insn, "opcode_name", ""))
-
-    def _opt_int(name: str) -> int | None:
-        value = getattr(insn, name, None)
-        return int(value) if value is not None else None
-
-    return _InstructionView(
-        block_serial=block_serial,
-        insn_index=int(getattr(insn, "index", index)),
-        ea=getattr(insn, "ea", None),
-        opcode_name=opcode_name,
-        dest_type=getattr(insn, "dest_type", None),
-        dest_stkoff=_opt_int("dest_stkoff"),
-        dest_size=getattr(insn, "dest_size", None),
-        src_l_type=getattr(insn, "src_l_type", None),
-        src_l_stkoff=_opt_int("src_l_stkoff"),
-        src_l_value=_opt_int("src_l_value"),
-        src_r_type=getattr(insn, "src_r_type", None),
-        src_r_stkoff=_opt_int("src_r_stkoff"),
-        src_r_value=_opt_int("src_r_value"),
-        dstr=str(getattr(insn, "dstr", "")),
-        operation=_value_op_from_opcode_name(opcode_name),
-        predicate_kind=getattr(insn, "predicate_kind", None),
-        dest_reg=_opt_int("dest_reg"),
-        src_l_reg=_opt_int("src_l_reg"),
-        src_r_reg=_opt_int("src_r_reg"),
-        src_l_mop=getattr(insn, "src_l_mop", None) or getattr(insn, "l", None),
-        src_r_mop=getattr(insn, "src_r_mop", None) or getattr(insn, "r", None),
-    )
 
 
 def _block_preds(target: Any, block_serial: int) -> tuple[int, ...]:

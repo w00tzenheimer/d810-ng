@@ -17,6 +17,8 @@ from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
 from d810.analyses.value_flow.state_write_anchor import StateWriteAnchorFactCollector
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
+from tests.unit.recon.facts._diag_meta_builder import flat_meta
+
 _OPCODE_ALIASES = {
     "m_mov": "move",
 }
@@ -51,11 +53,31 @@ def _insn(
     ea: int | None = None,
     dstr: str | None = None,
 ) -> InstructionSnapshot:
+    resolved_ea = 0x180014100 + index if ea is None else ea
+    resolved_dstr = dstr or "mov #0x5A21D9DB.4, %var_7BC.4"
+    # llr-3b41 S11: collectors lift diag rows through the canonical operand-tree
+    # projection (the meta-less flat path was deleted), so attach a serializer-
+    # shaped ``meta`` operand tree built from the same flat fields.
+    meta = flat_meta(
+        opcode_name=opcode_name,
+        ea=resolved_ea,
+        dstr=resolved_dstr,
+        dest_type=dest_type,
+        dest_stkoff=dest_stkoff,
+        dest_size=dest_size,
+        src_l_type=src_l_type,
+        src_l_stkoff=src_l_stkoff,
+        src_l_value=src_l_value,
+    )
     return InstructionSnapshot(
         index=index,
-        ea=0x180014100 + index if ea is None else ea,
+        ea=resolved_ea,
         opcode=0,
-        opcode_name=_opcode_name(opcode_name),
+        # llr-3b41 S11: the canonical lift resolves ``operation`` from the RAW
+        # serializer opcode spelling (``m_mov``), so the row carries it raw; the
+        # collector re-derives the normalized ``move`` payload off the canonical
+        # ``Instruction``.
+        opcode_name=opcode_name,
         dest_type=_operand_type(dest_type),
         dest_stkoff=dest_stkoff,
         dest_size=dest_size,
@@ -65,7 +87,8 @@ def _insn(
         src_r_type=None,
         src_r_stkoff=None,
         src_r_value=None,
-        dstr=dstr or "mov #0x5A21D9DB.4, %var_7BC.4",
+        dstr=resolved_dstr,
+        meta=meta,
     )
 
 

@@ -15,6 +15,8 @@ from d810.ir.flowgraph import (
 from d810.analyses.control_flow.state_transition_anchor import StateTransitionAnchorFactCollector
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
+from tests.unit.recon.facts._diag_meta_builder import flat_meta
+
 _OPCODE_ALIASES = {
     "m_mov": "move",
 }
@@ -42,11 +44,12 @@ def _state_insn(
     ea: int,
     stkoff: int = 0x3C,
 ) -> InstructionSnapshot:
+    dstr = f"mov #0x{state_const:08X}.4, %var_7BC.4"
     return InstructionSnapshot(
         index=index,
         ea=ea,
         opcode=0,
-        opcode_name=_opcode_name("m_mov"),
+        opcode_name="m_mov",
         dest_type=_operand_type("mop_S"),
         dest_stkoff=stkoff,
         dest_size=4,
@@ -56,7 +59,17 @@ def _state_insn(
         src_r_type=None,
         src_r_stkoff=None,
         src_r_value=None,
-        dstr=f"mov #0x{state_const:08X}.4, %var_7BC.4",
+        dstr=dstr,
+        meta=flat_meta(
+            opcode_name="m_mov",
+            ea=ea,
+            dstr=dstr,
+            dest_type="mop_S",
+            dest_stkoff=stkoff,
+            dest_size=4,
+            src_l_type="mop_n",
+            src_l_value=state_const,
+        ),
     )
 
 
@@ -68,11 +81,12 @@ def _filler_insn(
 ) -> InstructionSnapshot:
     """Non-state-var const-write (e.g. byte-table store).  Helps the
     collector identify the canonical state-var by frequency."""
+    dstr = "mov #0xDEADBEEF.8, %var_X.8"
     return InstructionSnapshot(
         index=index,
         ea=ea,
         opcode=0,
-        opcode_name=_opcode_name("m_mov"),
+        opcode_name="m_mov",
         dest_type=_operand_type("mop_S"),
         dest_stkoff=stkoff,
         dest_size=8,
@@ -82,7 +96,17 @@ def _filler_insn(
         src_r_type=None,
         src_r_stkoff=None,
         src_r_value=None,
-        dstr=f"mov #0xDEADBEEF.8, %var_X.8",
+        dstr=dstr,
+        meta=flat_meta(
+            opcode_name="m_mov",
+            ea=ea,
+            dstr=dstr,
+            dest_type="mop_S",
+            dest_stkoff=stkoff,
+            dest_size=8,
+            src_l_type="mop_n",
+            src_l_value=0xDEADBEEF,
+        ),
     )
 
 

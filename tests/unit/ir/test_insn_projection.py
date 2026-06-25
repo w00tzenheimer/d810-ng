@@ -10,10 +10,6 @@ from __future__ import annotations
 import json
 from dataclasses import fields
 
-from d810.analyses.value_flow.induction_carrier import (
-    _instruction_view_from_canonical,
-    _iter_portable_instructions,
-)
 from d810.core.observability_models import InstructionSnapshot
 from d810.ir.expressions import Add, And, Const, Move, Sub, ValueOpKind
 from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
@@ -898,32 +894,20 @@ def test_storage_views_none_for_missing_operand():
 
 
 # ---------------------------------------------------------------------------
-# Diag-DB row -> canonical Instruction parity spike (llr-3b41 S0).
+# Diag-DB row -> canonical Instruction lift (llr-3b41).
 #
 # A production diag instruction row (``observability_models.InstructionSnapshot``
-# with a real ``_instruction_operands_meta``-shaped ``meta`` JSON) must project
-# to the SAME canonical ``Instruction`` the live block path produces, and that
-# canonical projection must reach parity with the legacy Branch-B
-# ``_InstructionView`` on the semantic operand facts (operation, dest/src
-# type+stkoff+value, source_stkoffs, address_stkoffs).
+# with a real ``_instruction_operands_meta``-shaped ``meta`` JSON) projects to
+# the SAME canonical ``Instruction`` the live block path produces.  The canonical
+# projection recovers the real ``ValueOpKind`` from the serializer ``m_add`` /
+# ``m_stx`` spellings and walks the recursive ``mop_a -> sub_operand -> mop_S``
+# address tree to recover address stack offsets.
 #
-# S0 FALSIFICATION RESULT (recorded, not papered over): parity HOLDS on the
-# semantic stack/value facts.  S0 also surfaced two places where the canonical
-# projection was *strictly more faithful* than the legacy Branch-B on PRODUCTION
-# rows, because Branch-B never learned the production serializer spellings:
-#   1. operation: Branch-B's opcode-name table only knew ``op_12`` / ``add`` /
-#      ``ADD``, NOT the serializer's ``m_add`` / ``m_stx`` -> it yielded
-#      ``operation=None``; the canonical path resolves the real ``ValueOpKind``.
-#   2. address_stkoffs: the serializer emits address operands as a recursive
-#      ``mop_a -> sub_operand -> mop_S`` tree, but Branch-B only read a flat
-#      ``meta["address_stack_refs"]`` key (never written by the serializer) ->
-#      it yielded ``()``; the canonical path walks the tree and recovers the
-#      offset.
-# llr-3b41 S2 CLOSED both gaps for meta-rich rows: ``_iter_portable_instructions``
-# now routes any diag row carrying a parseable ``meta`` operand tree through the
-# canonical ``project_diag_instruction`` lift, so Branch-B == canonical on these
-# facts.  The asserts below now pin that PARITY (meta-less rows still take the
-# byte-identical legacy flat-field path; see the collector tests).
+# S11 deleted the legacy meta-less ``_InstructionView`` flat path and the shared
+# ``_iter_portable_instructions`` iterator: every production fact target is now a
+# canonical ``FlowGraph``, so the meta-less Branch-B comparison the earlier
+# spikes pinned is no longer reachable.  The asserts below pin the canonical
+# ``Instruction`` facts directly.
 # ---------------------------------------------------------------------------
 
 
@@ -975,19 +959,6 @@ def _diag_row(
     )
 
 
-def _branch_b_view(row: InstructionSnapshot):
-    """Legacy Branch-B ``_InstructionView`` for a single diag-style row."""
-
-    class _Blk:
-        serial = 7
-        insn_snapshots = None
-        instructions = (row,)
-
-    views = list(_iter_portable_instructions([_Blk()]))
-    assert len(views) == 1
-    return views[0]
-
-
 def test_parse_diag_meta_operand_maps_type_num_to_operand_kind():
     assert parse_diag_meta_operand(_diag_meta_S(0x10)).kind is OperandKind.STACK
     assert parse_diag_meta_operand(_diag_meta_N(0x80)).kind is OperandKind.NUMBER
@@ -1005,7 +976,7 @@ def test_parse_diag_meta_operand_maps_type_num_to_operand_kind():
     assert block.kind is OperandKind.BLOCK and block.block_ref == 42
 
 
-def test_project_diag_instruction_add_matches_branch_b_on_semantic_facts():
+def test_project_diag_instruction_add_recovers_canonical_semantic_facts():
     # (a) ``m_add %S(0x680), #0x80 -> %S(0x680)`` -- self-update by constant.
     meta = {
         "opcode": 0x10,
@@ -1033,7 +1004,8 @@ def test_project_diag_instruction_add_matches_branch_b_on_semantic_facts():
     )
 
     canonical = project_diag_instruction(row)
-    # Canonical Instruction is authoritative ground truth.
+    # Canonical Instruction is authoritative ground truth: a meta-rich diag row
+    # lifts to the SAME canonical Instruction the live block path produces.
     assert canonical.operation is ValueOpKind.ADD
     assert canonical.inputs == (
         Varnode(Space.STACK, 0x680, 4),
@@ -1042,31 +1014,8 @@ def test_project_diag_instruction_add_matches_branch_b_on_semantic_facts():
     assert canonical.result == Varnode(Space.STACK, 0x680, 4)
     assert canonical.attrs["ea"] == 0x1000
 
-    canon_view = _instruction_view_from_canonical(
-        block_serial=7, index=0, instruction=canonical
-    )
-    branch_b = _branch_b_view(row)
 
-    # llr-3b41 S2 routed meta-rich diag rows through the SAME canonical lift, so
-    # Branch-B now equals the canonical view on the semantic stack/value facts.
-    assert canon_view.dest_stkoff == branch_b.dest_stkoff == 0x680
-    assert canon_view.src_l_stkoff == branch_b.src_l_stkoff == 0x680
-    assert canon_view.src_r_value == branch_b.src_r_value == 0x80
-    assert canon_view.src_l_value == branch_b.src_l_value is None
-    assert canon_view.src_r_stkoff == branch_b.src_r_stkoff is None
-    assert canon_view.source_stkoffs == branch_b.source_stkoffs == (0x680,)
-    assert canon_view.address_stkoffs == branch_b.address_stkoffs == ()
-
-    # S2 CLOSED the operation gap: Branch-B used to be blind to the production
-    # ``m_add`` spelling (operation=None); routed through canonical it now
-    # resolves the real ``ValueOpKind`` like the live block path.
-    assert canon_view.operation is branch_b.operation is ValueOpKind.ADD
-    # Type fields now share the portable canonical vocabulary on both branches.
-    assert (canon_view.dest_type, branch_b.dest_type) == ("S", "S")
-    assert (canon_view.src_r_type, branch_b.src_r_type) == ("c", "c")
-
-
-def test_project_diag_instruction_stx_recovers_address_stkoff_branch_b_parity():
+def test_project_diag_instruction_stx_recovers_address_stkoff_canonically():
     # (b) ``m_stx`` storing rax through a stack address ``&%S(0x7F0)``.
     # Serializer renders the address operand as mop_a -> sub_operand -> mop_S.
     addr = {
@@ -1107,28 +1056,12 @@ def test_project_diag_instruction_stx_recovers_address_stkoff_branch_b_parity():
     assert canonical.effects[0].kind is InstructionEffectKind.STORE
     assert canonical.effects[0].value == Varnode(Space.REGISTER, 8, 8)
 
-    # The ``d`` subtree referencing a stack address parses recursively.
+    # The ``d`` subtree referencing a stack address parses recursively, and the
+    # canonical projection walks the ``mop_a -> sub_operand -> mop_S`` tree to
+    # recover the address stack offset (a fact the legacy flat path could not).
     d_operand = parse_diag_meta_operand(meta["d"])
     assert d_operand.kind is OperandKind.ADDRESS
     assert d_operand.sub_l.kind is OperandKind.STACK
     assert d_operand.sub_l.stkoff == 0x7F0
     assert d_operand.stack_refs == (0x7F0,)
-
-    canon_view = _instruction_view_from_canonical(
-        block_serial=7, index=0, instruction=canonical
-    )
-    branch_b = _branch_b_view(row)
-
-    # Parity on the flat dest/src facts (both None here).
-    assert canon_view.dest_stkoff == branch_b.dest_stkoff is None
-    assert canon_view.src_l_stkoff == branch_b.src_l_stkoff is None
-    assert canon_view.source_stkoffs == branch_b.source_stkoffs == ()
-
-    # llr-3b41 S2 CLOSED the address-stkoff gap: Branch-B used to read a flat
-    # ``address_stack_refs`` key the serializer never writes and lose the fact
-    # (``()``); routed through canonical it now walks the recursive
-    # ``mop_a -> sub_operand -> mop_S`` tree and recovers the offset like the
-    # live block path.
-    assert canon_view.address_stkoffs == branch_b.address_stkoffs == (0x7F0,)
-    # And the operation gap: canonical resolves STORE on both branches now.
-    assert canon_view.operation is branch_b.operation is ValueOpKind.STORE
+    assert canonical.attrs["address_stack_refs"] == (0x7F0,)

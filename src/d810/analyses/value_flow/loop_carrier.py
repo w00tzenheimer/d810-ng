@@ -11,32 +11,16 @@ but the post-HCC loop back-edges reach the predicate without traversing a
 ``%var_3A8`` writer.  This fact records that as
 ``LOOP_CARRIER_WRITER_OUTSIDE_SCC`` without changing CFG or planning.
 
-llr-3b41 S7 -- per-collector port onto the canonical IR, following the proven
-S3 (:mod:`d810.analyses.value_flow.zero_blob`) / S4
-(:mod:`d810.analyses.value_flow.call_anchor`) / S5
-(:mod:`d810.analyses.control_flow.state_transition_anchor`) / S6
-(:mod:`d810.analyses.value_flow.folded_loop_guard`) dual-currency pattern.  A
-collector-local iterator routes:
-
-* **meta-rich** sources -- a portable :class:`~d810.ir.flowgraph.FlowGraph`
-  block, or a diag row carrying a parseable ``meta`` operand tree -- through the
-  SAME canonical :func:`~d810.ir.insn_projection.project_diag_instruction` /
-  ``InstructionProjection.from_block`` projection.  The flat fields loop_carrier
-  reads (``dest_stkoff`` / ``dest_temp`` / ``src_temps`` / ``source_stkoffs`` /
-  ``control_transfer``) are derived off the canonical record.
-* **meta-less** rows -- the production ``mba_to_fact_target``
-  ``SimpleNamespace`` (flat fields only) and attrs-only ``meta`` rows -- have no
-  operand tree, so they stay on the byte-identical legacy ``_InstructionView``
-  flat path (``diag_row_has_operand_tree`` is the gate).  The legacy path
-  reconstructs ``source_stkoffs`` from ``meta`` plus the flat ``src_*_stkoff``
-  fields exactly as the pre-S7 shared iterator did.
-
-loop_carrier reads no nested operand subtree (unlike folded_loop_guard's
-``src_l_mop`` / ``src_r_mop``); it reads only the FLAT canonical-derived fields.
-Both the meta-less and FlowGraph paths are byte-identical to the pre-S7 shared
-``_iter_instruction_views`` output for those fields, so no EMBRACE gain arises
-here -- this is a pure currency swap onto a collector-local iterator.  Does not
-touch the shared ``_iter_instruction_views`` or any other collector.
+llr-3b41 S11 -- canonical-only.  A collector-local iterator routes a meta-rich
+:class:`~d810.ir.flowgraph.FlowGraph` block (the only shape a production fact
+target ever is) through ``InstructionProjection.from_block``, and an offline
+diag row carrying a parseable ``meta`` operand tree through the SAME canonical
+:func:`~d810.ir.insn_projection.project_diag_instruction` projection.  The flat
+fields loop_carrier reads (``dest_stkoff`` / ``dest_temp`` / ``src_temps`` /
+``source_stkoffs`` / ``control_transfer``) are derived off the canonical record.
+The legacy meta-less ``_InstructionView`` flat path was removed (S11) -- it was
+unreachable by any real source once every production fact target became a
+canonical ``FlowGraph``.
 """
 from __future__ import annotations
 
@@ -50,7 +34,6 @@ from d810.ir.directed_graph import tarjan_scc as _canonical_tarjan_scc
 from d810.ir.instructions import Instruction
 from d810.ir.insn_projection import (
     InstructionProjection,
-    diag_row_has_operand_tree,
     project_diag_instruction,
 )
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
@@ -62,19 +45,13 @@ from d810.analyses.fact_collection_context import (
     fact_provider_label,
 )
 from d810.analyses.value_flow.induction_carrier import (
-    _InstructionView,
-    _attrs_from_diag_meta,
     _canonical_opcode_name,
     _control_transfer_from_instruction,
-    _control_transfer_from_raw,
-    _first_present,
-    _stack_offsets_from_diag_meta,
     _stack_offsets_from_varnodes,
     _stkoff_from_varnode,
     _temp_from_varnode,
     _temps_from_varnodes,
     _type_name_from_varnode,
-    _value_op_from_instruction,
 )
 from d810.analyses.value_flow.state_write_anchor import (
     _block_start_ea_lookup,
@@ -91,16 +68,15 @@ _TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 class _LoopCarrierInsn:
     """Uniform view consumed by loop_carrier's carrier/predicate analysis.
 
-    Built from a canonical :class:`~d810.ir.instructions.Instruction` for a
-    meta-rich source, or from a legacy :class:`_InstructionView` for a meta-less
-    row.  Exposes ONLY the fields loop_carrier reads: identity/display
+    Built solely from a canonical :class:`~d810.ir.instructions.Instruction`
+    (llr-3b41 S11 deleted the legacy meta-less flat path).  Exposes ONLY the fields loop_carrier reads: identity/display
     (``block_serial`` / ``insn_index`` / ``ea`` / ``opcode_name`` / ``dstr``),
     the conditional-branch control transfer (``control_transfer``), the
     destination stack slot/type (``dest_stkoff`` / ``dest_type``) and the
     temp/source provenance (``dest_temp`` / ``src_temps`` / ``source_stkoffs``).
 
-    These attribute names match :class:`_InstructionView`, so the module's
-    helpers (``_dest_identity`` / ``_carrier_stkoff`` / ``_expanded_source_stkoffs``
+    The module's helpers duck-type over this record's attribute names
+    (``_dest_identity`` / ``_carrier_stkoff`` / ``_expanded_source_stkoffs``
     / ``_source_identities`` / ``_temp_source_stkoff_lookup`` /
     ``_is_conditional_jump``) duck-type over this record unchanged.
     """
@@ -148,100 +124,17 @@ class _LoopCarrierInsn:
             source_stkoffs=_stack_offsets_from_varnodes(instruction.inputs),
         )
 
-    @classmethod
-    def from_legacy_view(cls, view: _InstructionView) -> "_LoopCarrierInsn":
-        return cls(
-            block_serial=view.block_serial,
-            insn_index=view.insn_index,
-            ea=view.ea,
-            opcode_name=view.opcode_name,
-            dstr=view.dstr,
-            control_transfer=view.control_transfer,
-            dest_type=view.dest_type,
-            dest_stkoff=view.dest_stkoff,
-            dest_temp=view.dest_temp,
-            src_temps=view.src_temps,
-            source_stkoffs=view.source_stkoffs,
-        )
-
-
-def _legacy_view_from_diag_row(
-    block_serial: int, index: int, insn: Any
-) -> _InstructionView:
-    """Build the byte-identical legacy view for a meta-less diag row.
-
-    Mirrors the pre-S7 shared ``_iter_portable_instructions`` flat path for the
-    fields loop_carrier reads: flat ``dest_stkoff`` / ``dest_type``, the
-    ``source_stkoffs`` reconstructed from ``meta`` plus the flat
-    ``src_*_stkoff`` fields, and the ``control_transfer`` resolved from raw
-    attributes.  Temp provenance (``dest_temp`` / ``src_temps``) is absent on a
-    meta-less flat row, matching the pre-S7 default-empty behaviour.
-    """
-    dest_stkoff = (
-        int(getattr(insn, "dest_stkoff"))
-        if getattr(insn, "dest_stkoff", None) is not None
-        else None
-    )
-    src_l_stkoff = (
-        int(getattr(insn, "src_l_stkoff"))
-        if getattr(insn, "src_l_stkoff", None) is not None
-        else None
-    )
-    src_r_stkoff = (
-        int(getattr(insn, "src_r_stkoff"))
-        if getattr(insn, "src_r_stkoff", None) is not None
-        else None
-    )
-    source_stkoffs = tuple(
-        dict.fromkeys(
-            int(offset)
-            for offset in (
-                *tuple(getattr(insn, "source_stkoffs", ()) or ()),
-                *_stack_offsets_from_diag_meta(getattr(insn, "meta", None)),
-                src_l_stkoff,
-                src_r_stkoff,
-            )
-            if offset is not None
-        )
-    )
-    attrs = dict(_attrs_from_diag_meta(getattr(insn, "meta", None)))
-    return _InstructionView(
-        block_serial=block_serial,
-        insn_index=int(getattr(insn, "index", index)),
-        ea=getattr(insn, "ea", None),
-        opcode_name=str(getattr(insn, "opcode_name", "")),
-        dest_type=getattr(insn, "dest_type", None),
-        dest_stkoff=dest_stkoff,
-        dest_size=getattr(insn, "dest_size", None),
-        src_l_type=getattr(insn, "src_l_type", None),
-        src_l_stkoff=src_l_stkoff,
-        src_l_value=None,
-        src_r_type=getattr(insn, "src_r_type", None),
-        src_r_stkoff=src_r_stkoff,
-        src_r_value=None,
-        dstr=str(getattr(insn, "dstr", "")),
-        control_transfer=_control_transfer_from_raw(
-            _first_present(
-                getattr(insn, "control_transfer", None),
-                getattr(insn, "control_transfer_kind", None),
-                attrs.get("control_transfer"),
-                attrs.get("control_transfer_kind"),
-            )
-        ),
-        source_stkoffs=source_stkoffs,
-        attrs=attrs,
-    )
-
 
 def _iter_loop_carrier_insns(target: Any) -> Iterable[_LoopCarrierInsn]:
     """Yield loop_carrier's semantic record for every instruction in ``target``.
 
-    Dual-currency (see module docstring): meta-rich FlowGraph blocks and
-    operand-tree diag rows are lifted to canonical ``Instruction``; meta-less
-    rows stay on the byte-identical legacy ``_InstructionView`` flat path.  A
-    registered live :class:`~d810.capabilities.source_lifter.SourceLifter`
-    lifts a backend source to a portable flow graph first (behaviour-identical
-    to no-lifter when none is registered).
+    Canonical-only (llr-3b41 S11): a meta-rich FlowGraph block is projected via
+    ``InstructionProjection.from_block``; an offline diag row carrying a ``meta``
+    operand tree is lifted via ``project_diag_instruction``.  The meta-less flat
+    fallback was removed -- it was unreachable by any real source once every
+    production fact target became a canonical ``FlowGraph``.  A registered live
+    :class:`~d810.capabilities.source_lifter.SourceLifter` lifts a backend
+    source to a portable flow graph first.
     """
     lifter = select_lifter(target)
     if lifter is not None:
@@ -261,15 +154,10 @@ def _iter_loop_carrier_insns(target: Any) -> Iterable[_LoopCarrierInsn]:
                 )
             continue
         for index, insn in enumerate(getattr(blk, "instructions", ())):
-            if diag_row_has_operand_tree(insn):
-                yield _LoopCarrierInsn.from_canonical(
-                    block_serial=block_serial,
-                    index=int(getattr(insn, "index", index)),
-                    instruction=project_diag_instruction(insn),
-                )
-                continue
-            yield _LoopCarrierInsn.from_legacy_view(
-                _legacy_view_from_diag_row(block_serial, index, insn)
+            yield _LoopCarrierInsn.from_canonical(
+                block_serial=block_serial,
+                index=int(getattr(insn, "index", index)),
+                instruction=project_diag_instruction(insn),
             )
 
 
