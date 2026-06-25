@@ -352,6 +352,192 @@ def test_call_anchor_ignores_legacy_opcode_only_call_shape() -> None:
     assert facts == ()
 
 
+def test_call_anchor_records_indirect_call_from_register_target() -> None:
+    # An indirect call whose canonical ``control.call_kind`` is INDIRECT and
+    # whose ``control.call_target`` is a register varnode -- exercises the
+    # ``indirect_call`` classifier branch and the register target signature.
+    collector = CallAnchorFactCollector()
+
+    facts = collector.collect(
+        _cfg_target(
+            _cfg_block(
+                130,
+                _cfg_insn(
+                    index=0,
+                    kind=InsnKind.CALL,
+                    l=_cfg_reg(8),
+                    d=_cfg_reg(0),
+                    call_kind=CallKind.INDIRECT,
+                    display_text="call r8",
+                    ea=0x180014860,
+                ),
+                succs=(143,),
+                preds=(129,),
+            )
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_CALLS"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact.payload["call_kind"] == "indirect_call"
+    assert fact.payload["call_target"] == "r8"
+    assert fact.mop_signature == "call:indirect_call:r8"
+
+
+def test_call_anchor_records_intrinsic_call() -> None:
+    # An intrinsic call -> the ``intrinsic_call`` classifier branch.
+    collector = CallAnchorFactCollector()
+
+    facts = collector.collect(
+        _cfg_target(
+            _cfg_block(
+                130,
+                _cfg_insn(
+                    index=0,
+                    kind=InsnKind.CALL,
+                    l=_cfg_global(0x180000100),
+                    d=_cfg_reg(0),
+                    call_kind=CallKind.INTRINSIC,
+                    display_text="call !memset",
+                    ea=0x180014880,
+                ),
+                succs=(143,),
+                preds=(129,),
+            )
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_CALLS"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact.payload["call_kind"] == "intrinsic_call"
+    assert fact.mop_signature == "call:intrinsic_call:$0x180000100"
+
+
+def test_call_anchor_records_unknown_target_for_argless_call() -> None:
+    # A call with no l/r target operand -> ``control.call_target is None`` ->
+    # the "unknown-call-target" signature.
+    collector = CallAnchorFactCollector()
+
+    facts = collector.collect(
+        _cfg_target(
+            _cfg_block(
+                130,
+                _cfg_insn(
+                    index=0,
+                    kind=InsnKind.CALL,
+                    d=_cfg_args(_cfg_const(0x10)),
+                    call_kind=CallKind.DIRECT,
+                    display_text="call ???",
+                    ea=0x180014870,
+                ),
+                succs=(),
+                preds=(),
+            )
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_CALLS"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact.payload["call_target"] == "unknown-call-target"
+    assert fact.payload["successor_blocks"] == []
+    assert fact.payload["predecessor_blocks"] == []
+    assert fact.payload["has_outgoing_flow"] is False
+    assert fact.payload["has_incoming_flow"] is False
+
+
+# --- llr-3b41 S4: call_anchor canonical-lift coverage for the diag-row source ---
+#
+# Following the S3 zero_blob pattern, call_anchor's source iterator is now
+# dual-currency: meta-rich FlowGraph blocks AND operand-tree diag rows route
+# through the SAME canonical projection; meta-less rows stay on the byte-
+# identical legacy ``_InstructionView`` flat path.  call_anchor authorizes an
+# anchor on ``Instruction.control.call_kind``, which the projection only
+# recovers when the InsnSnapshot carries an explicit ``call_kind`` (the live
+# FlowGraph path, covered above).  The diag projection does NOT yet recover
+# call semantics from a meta operand tree (``m_call`` is absent from
+# ``_OPCODE_NAME_TO_INSN_KIND``; see project_diag_instruction), so an
+# operand-tree diag row currently yields zero call facts -- the same result as
+# the meta-less path.  These tests pin BOTH the operand-tree diag-row source
+# (it routes through the canonical lift and produces zero call facts today) and
+# the meta-less attrs-only row (byte-identical zero observations).
+
+
+def test_call_anchor_diag_operand_tree_row_yields_no_call_fact() -> None:
+    # A diag row carrying a parseable ``meta`` operand tree routes through the
+    # canonical projection.  Call recovery from a meta operand tree is not yet
+    # implemented (m_call is not in the opcode->kind map), so this meta-rich
+    # diag row classifies to "not a call" -> zero observations.
+    collector = CallAnchorFactCollector()
+
+    facts = collector.collect(
+        _target(
+            _block(
+                130,
+                _insn(
+                    index=0,
+                    opcode_name="m_call",
+                    dstr="call $0x180000000<fast:_QWORD #0x11.8>",
+                    ea=0x180014848,
+                    meta={
+                        "l": {
+                            "type": "mop_v",
+                            "type_num": 6,
+                            "size": 8,
+                            "dstr": "g",
+                            "global_ea": "0x180000000",
+                        },
+                    },
+                ),
+                succs=(143,),
+                preds=(129,),
+            )
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_CALLS"],
+        phase="pre_d810",
+    )
+
+    assert facts == ()
+
+
+def test_call_anchor_ignores_meta_less_attrs_only_row() -> None:
+    # A meta-less row whose ``meta`` carries only attrs (no operand tree) stays
+    # on the byte-identical legacy flat path: call_anchor reads only the
+    # canonical call fields the flat path never populates -> zero observations.
+    collector = CallAnchorFactCollector()
+
+    facts = collector.collect(
+        _target(
+            _block(
+                130,
+                _insn(
+                    index=0,
+                    opcode_name="m_call",
+                    dstr="call $0x180000000<fast:_QWORD #0x11.8>",
+                    ea=0x180014848,
+                    meta={"byte_index": 1},
+                ),
+                succs=(143,),
+                preds=(129,),
+            )
+        ),
+        func_ea=0x401000,
+        maturity=_MATURITY_VALUES["MMAT_CALLS"],
+        phase="pre_d810",
+    )
+
+    assert facts == ()
+
+
 def test_zero_blob_collector_separates_zero_store_and_blob_copy() -> None:
     collector = ZeroBlobFactCollector()
 
