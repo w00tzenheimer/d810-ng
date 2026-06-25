@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from d810.ir.flowgraph import (
     BlockKind,
+    BlockSnapshot,
     PredicateKind,
     FlowGraph,
     InsnKind,
@@ -215,6 +216,66 @@ __all__ = [
 ]
 
 
+# Dual-shape block/topology accessors (ticket llr-lxas S0).  The path analyses
+# below accept ``mba`` as EITHER a once-lifted portable ``d810.ir.FlowGraph``
+# (the destination shape; read ``BlockSnapshot`` fields directly) OR the legacy
+# opaque backend object (a live ``mba_t`` or a ``_FlowGraphMBAView`` projection,
+# routed through the ``get_condition_chain_walkers`` seam).  For the ``FlowGraph``
+# shape, ``_mba_block_count`` reproduces the SAME ``qty`` the
+# ``_FlowGraphMBAView`` computed from the identical ``flow_graph``
+# (``max(serials) + 1``), so the serial bound check is byte-identical -- no
+# half-swap between topology source and instruction source.
+def _mba_block_count(mba: object) -> int:
+    """Block-serial bound for the ``serial >= qty`` guard.
+
+    ``FlowGraph`` reproduces the legacy ``_FlowGraphMBAView.qty`` exactly
+    (``max(serial) + 1`` over the same block dict); any other ``mba`` shape
+    reads the live ``mba.qty`` it always has.
+    """
+    if isinstance(mba, FlowGraph):
+        blocks = mba.blocks
+        return (max(blocks) + 1) if blocks else 0
+    return mba.qty
+
+
+def _mba_block(mba: object, serial: int) -> object | None:
+    """Fetch one block by serial from either shape.
+
+    ``FlowGraph`` returns the ``BlockSnapshot``; any other shape routes through
+    the backend ``get_block`` seam (live ``mblock_t`` / ``_BlockView``).
+    """
+    if isinstance(mba, FlowGraph):
+        return mba.get_block(serial)
+    return get_condition_chain_walkers().get_block(mba, serial)
+
+
+def _block_succs(blk: object) -> tuple[int, ...]:
+    """Successor serials from either block shape.
+
+    ``BlockSnapshot`` exposes ``.succs`` directly; any other shape routes
+    through the backend ``block_successors`` seam (``nsucc``/``succ``).
+    """
+    if isinstance(blk, BlockSnapshot):
+        return blk.succs
+    return tuple(get_condition_chain_walkers().block_successors(blk))
+
+
+def _iter_block_insns(blk: object):
+    """Iterate instructions from either block shape.
+
+    ``BlockSnapshot`` yields its ``InsnSnapshot`` snapshots via ``iter_insns``;
+    any other shape walks the legacy ``head``/``next`` linked list (``_InsnView``
+    or live ``minsn_t``).
+    """
+    if isinstance(blk, BlockSnapshot):
+        yield from blk.iter_insns()
+        return
+    insn = blk.head
+    while insn is not None:
+        yield insn
+        insn = insn.next
+
+
 # WARNING -- TRANSITIONAL VENDOR-MIMICRY ADAPTER, slated for deletion (ticket
 # llr-lxas, follow-on to llr-zeyu).  ``_InsnView`` / ``_BlockView`` /
 # ``_FlowGraphMBAView`` exist ONLY to make a portable ``d810.ir.FlowGraph``
@@ -366,30 +427,30 @@ def classify_exit_state(
     if incoming_state is not None and masked == (incoming_state & 0xFFFFFFFF):
         return ExitStateKind.SELF_LOOP
 
-    # Block topology via the backend seam: ``mba`` is an opaque live ``mba_t``
-    # or a ``_FlowGraphMBAView`` projection; the seam makes the identical
-    # ``get_mblock``/``nsucc``/``succ`` calls from the backend layer so portable
-    # code holds no live-MBA method coupling (ticket llr-zeyu).
-    walkers = get_condition_chain_walkers()
+    # Block topology via the dual-shape accessors (ticket llr-lxas S0): ``mba``
+    # is either a once-lifted portable ``FlowGraph`` (read ``BlockSnapshot``
+    # fields directly) or the legacy opaque backend object (live ``mba_t`` /
+    # ``_FlowGraphMBAView`` routed through the ``get_condition_chain_walkers``
+    # seam, ticket llr-zeyu).  ``_mba_block_count`` reproduces the same ``qty``
+    # bound for both shapes.
     serial = successor_serial
     visited: set[int] = set()
     try:
-        mba_qty = mba.qty
+        mba_qty = _mba_block_count(mba)
     except AttributeError:
         return ExitStateKind.UNCLASSIFIED
     for _ in range(max_blocks):
         if serial in visited or serial >= mba_qty:
             break
         visited.add(serial)
-        blk = walkers.get_block(mba, serial)
+        blk = _mba_block(mba, serial)
 
         # Note: no merge-point guard here.  OLLVM handler entries have
         # npred > 1 from condition-chain routing + shared suffix flows.  The
         # instruction-level checks (side effects, state writes, non-state
         # stack writes) are sufficient to classify corridor vs handler body.
 
-        insn = blk.head
-        while insn is not None:
+        for insn in _iter_block_insns(blk):
             # Side effect before state overwrite → stable handoff.
             if _is_call_insn(insn) or _is_store_insn(insn):
                 return ExitStateKind.STABLE_HANDOFF
@@ -424,10 +485,8 @@ def classify_exit_state(
                     if off is not None and int(off) != int(state_var_stkoff):
                         return ExitStateKind.STABLE_HANDOFF
 
-            insn = insn.next
-
         # Check successor structure.
-        succs = walkers.block_successors(blk)
+        succs = _block_succs(blk)
         nsucc = len(succs)
         if nsucc == 0:
             # Terminal block.
@@ -1556,10 +1615,12 @@ def evaluate_handler_paths(
         ),
     ]
 
-    # Block topology via the backend seam (see classify_exit_state); ``mba`` is
-    # a live ``mba_t`` or ``_FlowGraphMBAView`` -- behaviour is identical for
-    # both (ticket llr-zeyu).
-    walkers = get_condition_chain_walkers()
+    # Block topology via the dual-shape accessors (ticket llr-lxas S0); ``mba``
+    # is either a once-lifted portable ``FlowGraph`` (read ``BlockSnapshot``
+    # fields directly) or the legacy opaque backend object (live ``mba_t`` /
+    # ``_FlowGraphMBAView`` routed through the ``get_condition_chain_walkers``
+    # seam, ticket llr-zeyu) -- behaviour is identical for both.
+    mba_qty = _mba_block_count(mba)
 
     while queue:
         curr_serial, reg_map, stk_map, path_visited, state_writes, ordered_path = (
@@ -1570,14 +1631,13 @@ def evaluate_handler_paths(
             continue
         path_visited = path_visited | {curr_serial}
 
-        if curr_serial >= mba.qty:
+        if curr_serial >= mba_qty:
             break
 
-        blk = walkers.get_block(mba, curr_serial)
+        blk = _mba_block(mba, curr_serial)
 
         cur_writes = list(state_writes)
-        insn = blk.head
-        while insn is not None:
+        for insn in _iter_block_insns(blk):
             old_val = stk_map.get(state_var_stkoff)
             _forward_eval_insn(
                 insn,
@@ -1589,9 +1649,8 @@ def evaluate_handler_paths(
             new_val = stk_map.get(state_var_stkoff)
             if new_val != old_val:
                 cur_writes.append((curr_serial, insn.ea))
-            insn = insn.next
 
-        succs = list(walkers.block_successors(blk))
+        succs = list(_block_succs(blk))
 
         snapshot_state_resolved = False
         snapshot_final_state: int | None = None
