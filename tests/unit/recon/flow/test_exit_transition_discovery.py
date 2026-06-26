@@ -6,123 +6,38 @@ from types import SimpleNamespace
 import d810.analyses.control_flow.exit_transition_discovery as exit_transition_discovery
 from d810.analyses.control_flow.exit_transition_discovery import (
     collect_condition_chain_default_transition_candidates,
-    collect_exit_transition_candidates,
     collect_valrange_exit_transition_candidates,
 )
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 
-_MOVE_OPCODE = 4
-_NUMBER_OPERAND = 2
 _STACK_OPERAND = 5
 
 
-class _DummyInsn:
-    def __init__(self, *, value: int, ea: int = 0x1000):
-        self.opcode = _MOVE_OPCODE
-        self.d = SimpleNamespace(t=_STACK_OPERAND, s=SimpleNamespace(off=0x30))
-        self.l = SimpleNamespace(t=_NUMBER_OPERAND, nnn=SimpleNamespace(value=value))
-        self.ea = ea
-        self.next = None
+def _insn(*, ea: int = 0x1000) -> InsnSnapshot:
+    return InsnSnapshot(opcode=1, ea=ea, operands=(), kind=InsnKind.MOV)
 
 
-class _DummyBlock:
-    def __init__(self, *, head: object | None, succs: tuple[int, ...] = ()):
-        self.head = head
-        self._succs = succs
-
-    def nsucc(self):
-        return len(self._succs)
-
-    def succ(self, idx: int):
-        return self._succs[idx]
-
-
-class _DummyMba:
-    def __init__(self, blocks: dict[int, _DummyBlock]):
-        self._blocks = blocks
-
-    def get_mblock(self, serial: int):
-        return self._blocks.get(int(serial))
+def _block(serial: int, *, insns: tuple[InsnSnapshot, ...], succs: tuple[int, ...] = ()) -> BlockSnapshot:
+    return BlockSnapshot(
+        serial=serial,
+        block_type=1,
+        succs=succs,
+        preds=(),
+        flags=0,
+        start_ea=0x1000 + serial,
+        insn_snapshots=insns,
+    )
 
 
-class TestCollectExitTransitionCandidates:
-    def test_collects_bfs_write_candidates(self) -> None:
-        snapshot = SimpleNamespace(
-            mba=_DummyMba({24: _DummyBlock(head=_DummyInsn(value=0x22))}),
-            detector=None,
-            dispatcher_root_serial=6,
-        )
-        sm = SimpleNamespace(
-            state_var=SimpleNamespace(t=_STACK_OPERAND, s=SimpleNamespace(off=0x30)),
-            transitions=(),
-            handlers={
-                0x11: SimpleNamespace(handler_blocks=(24,), check_block=24),
-            },
-        )
-        range_evidence = SimpleNamespace(
-            dispatcher=None,
-            handler_state_map={88: 0x22},
-            handler_range_map={},
-            default_block_serial=None,
-        )
-
-        candidates = collect_exit_transition_candidates(
-            snapshot,
-            sm=sm,
-            range_evidence=range_evidence,
-            handler_state_map={24: 0x11},
-            condition_chain_blocks={2, 6},
-        )
-
-        assert len(candidates) == 1
-        assert candidates[0].from_block == 24
-        assert candidates[0].target_entry == 88
-        assert candidates[0].exit_state_value == 0x22
-        assert candidates[0].discovery_kind == "write"
-
-    def test_collects_condition_chain_walk_fallback_candidates(self, monkeypatch) -> None:
-        snapshot = SimpleNamespace(
-            mba=_DummyMba({24: _DummyBlock(head=None)}),
-            detector=None,
-            dispatcher_root_serial=6,
-        )
-        sm = SimpleNamespace(
-            state_var=SimpleNamespace(t=_STACK_OPERAND, s=SimpleNamespace(off=0x30)),
-            transitions=(),
-            handlers={
-                0x11: SimpleNamespace(handler_blocks=(24,), check_block=24),
-            },
-        )
-        range_evidence = SimpleNamespace(
-            dispatcher=None,
-            handler_state_map={},
-            handler_range_map={},
-            default_block_serial=None,
-        )
-
-        monkeypatch.setattr(
-            "d810.analyses.control_flow.exit_transition_discovery.resolve_via_condition_chain_walk",
-            lambda mba, dispatcher_serial, state_val, condition_chain_nodes: 88,
-        )
-
-        candidates = collect_exit_transition_candidates(
-            snapshot,
-            sm=sm,
-            range_evidence=range_evidence,
-            handler_state_map={},
-            condition_chain_blocks={2, 6},
-        )
-
-        assert len(candidates) == 1
-        assert candidates[0].from_block == 24
-        assert candidates[0].target_entry == 88
-        assert candidates[0].exit_state_value is None
-        assert candidates[0].discovery_kind == "condition_chain_walk"
+def _flow_graph(blocks: dict[int, BlockSnapshot]) -> FlowGraph:
+    entry = min(blocks) if blocks else 0
+    return FlowGraph(blocks=blocks, entry_serial=entry, func_ea=0x1000)
 
 
 class TestCollectConditionChainDefaultTransitionCandidates:
     def test_collects_path_eval_candidates(self, monkeypatch) -> None:
         snapshot = SimpleNamespace(
-            mba=_DummyMba({}),
+            mba=object(),
             detector=None,
         )
         sm = SimpleNamespace(
@@ -186,18 +101,9 @@ class TestCollectConditionChainDefaultTransitionCandidates:
         )
 
 
-class _DummyTailBlock:
-    def __init__(self, tail: object | None):
-        self.tail = tail
-
-
 class TestCollectValrangeExitTransitionCandidates:
     def test_collects_unresolved_exit_candidates(self, monkeypatch) -> None:
-        tail = object()
-        snapshot = SimpleNamespace(
-            mba=_DummyMba({24: _DummyTailBlock(tail)}),
-            resolved_transitions=frozenset(),
-        )
+        flow_graph = _flow_graph({24: _block(24, insns=(_insn(),))})
         transition = SimpleNamespace(from_state=0x11, to_state=0x22, from_block=24)
         sm = SimpleNamespace(
             state_var=SimpleNamespace(name="state"),
@@ -210,13 +116,20 @@ class TestCollectValrangeExitTransitionCandidates:
             lambda condition_chain, state: 88 if state == 0x33 else None,
         )
 
+        seen: list[tuple[int, object]] = []
+
+        def fake_resolver(exit_serial, state_var):
+            seen.append((int(exit_serial), state_var))
+            return 0x33
+
         discovery = collect_valrange_exit_transition_candidates(
-            snapshot,
+            flow_graph,
             sm=sm,
             range_evidence=range_evidence,
-            resolve_state_via_valranges=lambda blk, state_var, insn: 0x33,
+            resolve_state_via_valranges=fake_resolver,
         )
 
+        assert seen == [(24, sm.state_var)]
         assert discovery.total_unresolved == 1
         assert len(discovery.candidates) == 1
         assert discovery.candidates[0].from_state == 0x11
@@ -226,11 +139,7 @@ class TestCollectValrangeExitTransitionCandidates:
         assert discovery.candidates[0].resolved_state_value == 0x33
 
     def test_skips_already_resolved_transitions(self) -> None:
-        tail = object()
-        snapshot = SimpleNamespace(
-            mba=_DummyMba({24: _DummyTailBlock(tail)}),
-            resolved_transitions=frozenset({(0x11, 0x22)}),
-        )
+        flow_graph = _flow_graph({24: _block(24, insns=(_insn(),))})
         transition = SimpleNamespace(from_state=0x11, to_state=0x22, from_block=24)
         sm = SimpleNamespace(
             state_var=SimpleNamespace(name="state"),
@@ -238,11 +147,30 @@ class TestCollectValrangeExitTransitionCandidates:
         )
 
         discovery = collect_valrange_exit_transition_candidates(
-            snapshot,
+            flow_graph,
             sm=sm,
             range_evidence=SimpleNamespace(),
-            resolve_state_via_valranges=lambda blk, state_var, insn: 0x33,
+            resolve_state_via_valranges=lambda exit_serial, state_var: 0x33,
+            resolved_transitions=frozenset({(0x11, 0x22)}),
         )
 
         assert discovery.total_unresolved == 0
+        assert discovery.candidates == ()
+
+    def test_skips_empty_exit_block(self) -> None:
+        flow_graph = _flow_graph({24: _block(24, insns=())})
+        transition = SimpleNamespace(from_state=0x11, to_state=0x22, from_block=24)
+        sm = SimpleNamespace(
+            state_var=SimpleNamespace(name="state"),
+            handlers={0x11: SimpleNamespace(transitions=(transition,))},
+        )
+
+        discovery = collect_valrange_exit_transition_candidates(
+            flow_graph,
+            sm=sm,
+            range_evidence=SimpleNamespace(),
+            resolve_state_via_valranges=lambda exit_serial, state_var: 0x33,
+        )
+
+        assert discovery.total_unresolved == 1
         assert discovery.candidates == ()
