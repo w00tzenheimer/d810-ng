@@ -51,7 +51,6 @@ DEFAULT_EXTRAS = [
     "pseudocode_dump",
     "--dump-microcode-maturity",
     "CALLS,GLBOPT1",
-    "--dump-microcode-d810",
     "--dump-terminal-return-valranges",
     "--dump-condition-chain-maturity",
     "GLBOPT1",
@@ -61,7 +60,6 @@ FULL_DIAGNOSTIC_EXTRAS = [
     "pseudocode_dump",
     "--dump-microcode-maturity",
     "LOCOPT,CALLS,GLBOPT1",
-    "--dump-microcode-d810",
     "--dump-terminal-return-valranges",
     "--dump-condition-chain-maturity",
     "CALLS,GLBOPT1,GLBOPT2",
@@ -1156,8 +1154,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  commands such as `d810cli after --stats`, `d810cli snap-render`,\n"
             "  `d810cli residual-worksheet`, `d810cli returns`, and `d810cli db --`.\n\n"
             "  Equivalent pytest extras:\n"
-            "    --dump-microcode-maturity LOCOPT,CALLS,GLBOPT1 "
-            "--dump-microcode-d810\n"
+            "    --dump-microcode-maturity LOCOPT,CALLS,GLBOPT1\n"
             "    --dump-terminal-return-valranges --dump-condition-chain-maturity "
             "CALLS,GLBOPT1,GLBOPT2"
         ),
