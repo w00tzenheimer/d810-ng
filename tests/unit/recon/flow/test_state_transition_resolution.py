@@ -237,8 +237,6 @@ def _portable_condition_chain_walkers():
         walk_handler_chain=lambda *a, **k: None,
         forward_eval_insn=_forward_eval_insn,
         resolve_via_condition_chain_walk=lambda *a, **k: None,
-        get_block=lambda mba, serial: mba.get_block(serial),
-        block_successors=lambda blk: tuple(blk.succs),
     )
     register_condition_chain_walkers(provider)
     try:

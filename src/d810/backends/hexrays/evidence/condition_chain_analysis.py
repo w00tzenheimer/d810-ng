@@ -2471,8 +2471,6 @@ def build_condition_chain_walker_provider() -> ConditionChainWalkerProvider:
         walk_handler_chain=_walk_handler_chain,
         forward_eval_insn=_forward_eval_insn,
         resolve_via_condition_chain_walk=resolve_via_condition_chain_walk,
-        get_block=_get_block,
-        block_successors=_block_successors,
         fetch_idb_value=_fetch_idb_value,
         operand_stack_offset=_operand_stack_offset,
         operand_number_value=_operand_number_value,

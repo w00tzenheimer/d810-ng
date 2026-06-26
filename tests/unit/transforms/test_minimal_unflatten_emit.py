@@ -81,8 +81,6 @@ def _seam():
         walk_handler_chain=lambda *a, **k: None,
         forward_eval_insn=_fwd,
         resolve_via_condition_chain_walk=lambda *a, **k: None,
-        get_block=lambda mba, serial: mba.get_block(serial),
-        block_successors=lambda blk: tuple(blk.succs),
     ))
     try:
         yield
