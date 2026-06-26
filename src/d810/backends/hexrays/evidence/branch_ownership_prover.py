@@ -1,144 +1,230 @@
-"""Hex-Rays live-microcode provers for branch-ownership refinement (llr-f1cs F3).
+"""Hex-Rays live-microcode provers for branch-ownership refinement (llr-f1cs).
 
 The portable branch-ownership refiners
 (:mod:`d810.analyses.control_flow.branch_ownership_oracle`) classify a
 conditional state-machine arm but cannot, by themselves, decide whether a
-predicate is path-constant or real-data-dependent: that requires a live
-backward symbolic slice (``MopTracker``) or a Z3/JumpFixer constant proof over
-the live ``mba``.  Those engine-backed steps belong in the Hex-Rays backend,
-not in portable ``analyses`` (the lazy
-``importlib.import_module("d810.evaluator.hexrays_microcode.tracker")`` dodge
-they used to hide behind violated both the import-linter layering and the
-project "no lazy imports" rule).
+predicate is path-constant: that requires a live backward symbolic slice
+(``MopTracker``) or a Z3/JumpFixer constant proof over the live ``mba``.  Those
+engine-backed steps belong in the Hex-Rays backend, not in portable
+``analyses`` (the lazy
+``importlib.import_module("d810.evaluator.hexrays_microcode.tracker")`` /
+``importlib.import_module("d810.backends.ast.z3")`` dodges they used to hide
+behind violated both the import-linter layering and the project "no lazy
+imports" rule).
 
 This module is that backend adapter.  It imports ``MopTracker`` /
 ``Z3MopProver`` at **top level** (allowed -- the backend may import
-``d810.evaluator`` and ``d810.backends.ast``) and touches the live ``mba``
-directly.  It builds the three injectable seams the portable oracles already
-accept:
+``d810.evaluator`` and ``d810.backends.ast``) and holds the live ``mba``.  Each
+prover implements the portable port from
+:mod:`d810.analyses.control_flow.branch_ownership_oracle`:
 
-* :func:`build_moptracker_predicate_resolver` -> ``predicate_resolver``
-  (``MopTrackerBranchOwnershipOracle.predicate_resolver``);
-* :func:`build_z3_prover_factory` -> ``prover_factory``
-  (``Z3BranchOwnershipOracle.prover_factory``);
-* :func:`build_discarded_side_effect_guard` -> ``side_effect_guard``
-  (``Z3BranchOwnershipOracle.side_effect_guard``).
+* :class:`HexRaysMopTrackerPredicateProver` ->
+  :class:`~d810.analyses.control_flow.branch_ownership_oracle.PredicateOwnershipProver`
+  (``resolve(PredicateRef) -> PredicateOwnershipResult | None``);
+* :class:`HexRaysZ3JumpTakenProver` ->
+  :class:`~d810.analyses.control_flow.branch_ownership_oracle.JumpTakenProver`
+  (``prove_jump_taken(PredicateRef) -> bool | None``).
 
-With these injected, the portable oracles never reach for the lazy tracker /
-lazy z3 import and never call the ``get_condition_chain_walkers().get_block``
-seam for predicate resolution -- the live work runs here.  The pure
-classification helpers (opcode/predicate evaluation, constant folding) are
-imported from the portable oracle module; only the live-microcode steps live
-here.
+The portable refiner hands only a
+:class:`~d810.analyses.control_flow.branch_ownership_oracle.PredicateRef`
+(block serial + arm + predecessor serial + an
+:class:`~d810.ir.flowgraph.InsnSnapshot` tail); the prover re-resolves the live
+block + tail from ``predicate.source_block`` via ``mba.get_mblock`` and runs
+the engine.  No live ``mblock_t``/``minsn_t``/``mop_t`` ever crosses back into
+``analyses``.
 """
 from __future__ import annotations
 
-from d810.core.typing import Callable
 from d810.backends.ast.z3 import Z3MopProver
 from d810.capabilities.providers import BranchOwnershipProverProvider
 from d810.evaluator.hexrays_microcode.tracker import (
     MopTracker,
     get_all_possibles_values,
 )
-from d810.ir.expressions import ValueOpKind
-from d810.ir.semantics import CallKind
 from d810.analyses.control_flow.branch_ownership_oracle import (
     OpcodeLabelResolver,
+    PredicateKind,
     PredicateOwnershipKind,
     PredicateOwnershipResult,
-    PredicateResolver,
-    SideEffectGuard,
-    _block_nsucc,
+    PredicateRef,
     _constant_mop_value,
     _eval_conditional_tail,
-    _format_insn_text,
     _opcode_name,
-    _resolved_opcode_label,
+    _predicate_kind,
 )
 
 _MASK64 = 0xFFFFFFFFFFFFFFFF
 
 
-def build_moptracker_predicate_resolver(
-    mba: object | None,
-    *,
-    max_nb_block: int = 20,
-    max_path: int = 8,
-    opcode_label_resolver: OpcodeLabelResolver | None = None,
-) -> PredicateResolver:
-    """Return a ``predicate_resolver(tail, block, via_pred)`` backed by MopTracker.
+def _live_tail(mba: object | None, predicate: PredicateRef):
+    """Re-resolve the live ``(block, tail)`` for *predicate* from its serial."""
+    if mba is None:
+        return None, None
+    try:
+        block = mba.get_mblock(int(predicate.source_block))
+    except Exception:
+        return None, None
+    if block is None:
+        return None, None
+    tail = getattr(block, "tail", None)
+    return block, tail
 
-    The returned callable runs a live backward symbolic slice over the ``mba``
-    to fold the branch predicate's operands to constants, mirroring the former
-    in-analyses ``_resolve_predicate_with_moptracker`` but with a **top-level**
-    ``MopTracker`` import and direct ``mba.get_mblock`` lookups.
+
+class HexRaysMopTrackerPredicateProver:
+    """Live MopTracker-backed :class:`PredicateOwnershipProver`.
+
+    Re-resolves the live block + tail from ``predicate.source_block`` and runs a
+    backward symbolic slice (``MopTracker``) to fold the branch predicate's
+    operands to constants -- the relocated, de-lazied
+    ``_resolve_predicate_with_moptracker`` / ``_resolve_mop_value``.
     """
 
-    def _resolve(
-        tail: object,
-        block: object | None,
-        via_pred: int | None,
-    ) -> PredicateOwnershipResult:
+    def __init__(
+        self,
+        mba: object | None,
+        *,
+        max_nb_block: int = 20,
+        max_path: int = 8,
+        opcode_label_resolver: OpcodeLabelResolver | None = None,
+    ) -> None:
+        self._mba = mba
+        self._max_nb_block = max_nb_block
+        self._max_path = max_path
+        self._opcode_label_resolver = opcode_label_resolver
+
+    def resolve(
+        self,
+        predicate: PredicateRef,
+    ) -> PredicateOwnershipResult | None:
+        block, tail = _live_tail(self._mba, predicate)
+        if tail is None:
+            return None
         return _resolve_predicate_with_moptracker(
-            mba,
+            self._mba,
             tail,
             block=block,
-            via_pred=via_pred,
-            max_nb_block=max_nb_block,
-            max_path=max_path,
-            opcode_label_resolver=opcode_label_resolver,
+            via_pred=predicate.via_pred,
+            max_nb_block=self._max_nb_block,
+            max_path=self._max_path,
+            opcode_label_resolver=self._opcode_label_resolver,
         )
 
-    return _resolve
 
+class HexRaysZ3JumpTakenProver:
+    """Live Z3-backed :class:`JumpTakenProver`.
 
-def build_z3_prover_factory() -> Callable[[], object]:
-    """Return a ``prover_factory()`` that instantiates a live ``Z3MopProver``.
-
-    Replaces the portable oracle's lazy
-    ``importlib.import_module("d810.backends.ast.z3")`` fallback with a
-    top-level backend import.
+    Re-resolves the live tail from ``predicate.source_block`` and proves whether
+    the conditional jump is statically taken via ``Z3MopProver`` -- the
+    relocated, de-lazied ``Z3BranchOwnershipOracle._prove_jump_taken`` live path
+    (the pure constant-fold path stays in portable analyses).
     """
 
-    def _make() -> object:
-        return Z3MopProver()
-
-    return _make
-
-
-def build_discarded_side_effect_guard(
-    *,
-    discarded_side_effect_depth: int = 3,
-    required_constant_markers: tuple[str, ...] = (),
-    opcode_label_resolver: OpcodeLabelResolver | None = None,
-) -> SideEffectGuard:
-    """Return a ``side_effect_guard(mba, discarded, chosen)`` over the live CFG.
-
-    Mirrors the former in-analyses ``_discarded_corridor_side_effect_reason``
-    but walks the live ``mba`` blocks directly (``mba.get_mblock`` +
-    ``block.succ``) instead of the
-    ``get_condition_chain_walkers().get_block``/``block_successors`` seam.
-    """
-
-    markers = tuple(
-        str(marker).upper() for marker in required_constant_markers if str(marker)
-    )
-
-    def _guard(
+    def __init__(
+        self,
         mba: object | None,
-        discarded_target: int,
-        chosen_target: int,
-    ) -> str | None:
-        return _discarded_corridor_side_effect_reason(
+        *,
+        prover_factory=None,
+        opcode_label_resolver: OpcodeLabelResolver | None = None,
+    ) -> None:
+        self._mba = mba
+        self._prover_factory = prover_factory
+        self._opcode_label_resolver = opcode_label_resolver
+
+    def prove_jump_taken(
+        self,
+        predicate: PredicateRef,
+    ) -> bool | None:
+        _block, tail = _live_tail(self._mba, predicate)
+        if tail is None:
+            return None
+        pred_kind = _predicate_kind(tail, self._opcode_label_resolver)
+        if pred_kind is PredicateKind.TRUTHY:
+            return self._prove_jcnd_taken(tail)
+        left = getattr(tail, "l", None)
+        right = getattr(tail, "r", None)
+        if left is None or right is None:
+            return None
+        if pred_kind in {PredicateKind.EQ, PredicateKind.NE}:
+            prover = self._make_prover()
+            if prover is None:
+                return None
+            if _z3_are_equal(prover, left, right, block=_block, tail=tail):
+                return pred_kind is PredicateKind.EQ
+            if _z3_are_unequal(prover, left, right, block=_block, tail=tail):
+                return pred_kind is PredicateKind.NE
+        return None
+
+    def _prove_jcnd_taken(self, tail: object) -> bool | None:
+        cond = getattr(tail, "l", None)
+        if cond is None:
+            return None
+        prover = self._make_prover()
+        if prover is None:
+            return None
+        if _z3_is_always_zero(prover, cond, block=None, tail=tail):
+            return False
+        if _z3_is_always_nonzero(prover, cond, block=None, tail=tail):
+            return True
+        return None
+
+    def _make_prover(self) -> object | None:
+        if self._prover_factory is not None:
+            try:
+                return self._prover_factory()
+            except Exception:
+                return None
+        try:
+            return Z3MopProver()
+        except Exception:
+            return None
+
+
+def build_branch_ownership_prover_provider() -> BranchOwnershipProverProvider:
+    """Build the backend prover-factory bundle for the composition root.
+
+    Mirrors ``register_mop_ops`` / ``register_condition_chain_walkers``: the
+    Hex-Rays backend constructs this from its live-microcode prover classes and
+    the composition root registers it via
+    :func:`d810.capabilities.providers.register_branch_ownership_provers`.  The
+    portable refiner factory then reads it without importing this IDA-coupled
+    module.
+
+    The bundle exposes two factories:
+
+    * ``moptracker_predicate_resolver(mba, opcode_label_resolver)`` ->
+      :class:`HexRaysMopTrackerPredicateProver` (the
+      ``PredicateOwnershipProver`` port);
+    * ``z3_jump_taken_prover(mba, opcode_label_resolver)`` ->
+      :class:`HexRaysZ3JumpTakenProver` (the ``JumpTakenProver`` port).
+
+    The discarded-arm side-effect guard is no longer a backend seam: it is a
+    portable, FlowGraph-native function in the analyses oracle (F4).
+    """
+
+    def _moptracker_predicate_resolver(
+        mba: object | None,
+        *,
+        opcode_label_resolver: OpcodeLabelResolver | None = None,
+    ) -> HexRaysMopTrackerPredicateProver:
+        return HexRaysMopTrackerPredicateProver(
             mba,
-            start_serial=int(discarded_target),
-            preserved_target=int(chosen_target),
-            max_depth=int(discarded_side_effect_depth),
-            required_constant_markers=markers,
             opcode_label_resolver=opcode_label_resolver,
         )
 
-    return _guard
+    def _z3_jump_taken_prover(
+        mba: object | None,
+        *,
+        opcode_label_resolver: OpcodeLabelResolver | None = None,
+    ) -> HexRaysZ3JumpTakenProver:
+        return HexRaysZ3JumpTakenProver(
+            mba,
+            opcode_label_resolver=opcode_label_resolver,
+        )
+
+    return BranchOwnershipProverProvider(
+        moptracker_predicate_resolver=_moptracker_predicate_resolver,
+        z3_jump_taken_prover=_z3_jump_taken_prover,
+    )
 
 
 def _resolve_predicate_with_moptracker(
@@ -270,123 +356,83 @@ def _resolve_mop_value(
     return next(iter(concrete))
 
 
-def _discarded_corridor_side_effect_reason(
-    mba: object | None,
+def _z3_are_equal(
+    prover: object,
+    left: object,
+    right: object,
     *,
-    start_serial: int,
-    preserved_target: int,
-    max_depth: int,
-    required_constant_markers: tuple[str, ...],
-    opcode_label_resolver: OpcodeLabelResolver | None = None,
-) -> str | None:
-    if mba is None:
-        return "missing_mba_for_side_effect_guard"
-    try:
-        qty = int(getattr(mba, "qty", 0) or 0)
-    except (TypeError, ValueError):
-        qty = 0
-
-    if qty and (start_serial < 0 or start_serial >= qty):
-        return "discarded_target_out_of_range"
-
-    visited: set[int] = set()
-    queue: list[tuple[int, int]] = [(int(start_serial), 0)]
-    while queue:
-        serial, depth = queue.pop(0)
-        if serial in visited or serial == int(preserved_target):
-            continue
-        if qty and (serial < 0 or serial >= qty):
-            continue
-        visited.add(serial)
-        try:
-            block = mba.get_mblock(int(serial))
-        except Exception:
-            return "discarded_block_unavailable"
-        if block is None:
-            return "discarded_block_unavailable"
-
-        block_reason = _block_side_effect_reason(
-            block,
-            required_constant_markers=required_constant_markers,
-            opcode_label_resolver=opcode_label_resolver,
-        )
-        if block_reason is not None:
-            return block_reason
-        if depth >= int(max_depth):
-            continue
-        nsucc = _block_nsucc(block)
-        if nsucc is None:
-            return "discarded_successors_unknown"
-        if nsucc > 2:
-            return "discarded_successors_not_local_corridor"
-        for idx in range(nsucc):
-            try:
-                succ = int(block.succ(idx))
-            except Exception:
-                return "discarded_successor_unavailable"
-            if succ not in visited:
-                queue.append((succ, depth + 1))
-    return None
-
-
-def _block_side_effect_reason(
     block: object,
+    tail: object,
+) -> bool:
+    try:
+        return bool(prover.are_equal(left, right, blk=block, ins=tail))
+    except TypeError:
+        try:
+            return bool(prover.are_equal(left, right))
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
+def _z3_are_unequal(
+    prover: object,
+    left: object,
+    right: object,
     *,
-    required_constant_markers: tuple[str, ...],
-    opcode_label_resolver: OpcodeLabelResolver | None = None,
-) -> str | None:
-    for insn in _iter_block_insns(block):
-        label = _resolved_opcode_label(insn, opcode_label_resolver)
-        if isinstance(label, CallKind) or _opcode_name(
-            insn,
-            opcode_label_resolver,
-        ) in {"call", "icall"}:
-            return "discarded_arm_contains_unknown_call_side_effect"
-        if label is ValueOpKind.STORE:
-            is_store = True
-        else:
-            is_store = _opcode_name(insn, opcode_label_resolver) in {"store", "stx"}
-        if not is_store:
-            continue
-        if not required_constant_markers:
-            return "discarded_arm_contains_payload_store"
-        formatted = _format_insn_text(insn).upper()
-        if any(marker in formatted for marker in required_constant_markers):
-            return "discarded_arm_contains_payload_store"
-    return None
+    block: object,
+    tail: object,
+) -> bool:
+    try:
+        return bool(prover.are_unequal(left, right, blk=block, ins=tail))
+    except TypeError:
+        try:
+            return bool(prover.are_unequal(left, right))
+        except Exception:
+            return False
+    except Exception:
+        return False
 
 
-def _iter_block_insns(block: object, *, max_insns: int = 512):
-    insn = getattr(block, "head", None)
-    seen = 0
-    while insn is not None and seen < max_insns:
-        yield insn
-        seen += 1
-        insn = getattr(insn, "next", None)
+def _z3_is_always_zero(
+    prover: object,
+    mop: object,
+    *,
+    block: object,
+    tail: object,
+) -> bool:
+    try:
+        return bool(prover.is_always_zero(mop, blk=block, ins=tail))
+    except TypeError:
+        try:
+            return bool(prover.is_always_zero(mop))
+        except Exception:
+            return False
+    except Exception:
+        return False
 
 
-def build_branch_ownership_prover_provider() -> BranchOwnershipProverProvider:
-    """Build the backend prover-factory bundle for the composition root.
-
-    Mirrors ``register_mop_ops`` / ``register_condition_chain_walkers``: the
-    Hex-Rays backend constructs this from its live-microcode builders and the
-    composition root registers it via
-    :func:`d810.capabilities.providers.register_branch_ownership_provers`.  The
-    portable refiner factory then reads it without importing this IDA-coupled
-    module.
-    """
-
-    return BranchOwnershipProverProvider(
-        moptracker_predicate_resolver=build_moptracker_predicate_resolver,
-        z3_prover_factory=build_z3_prover_factory,
-        discarded_side_effect_guard=build_discarded_side_effect_guard,
-    )
+def _z3_is_always_nonzero(
+    prover: object,
+    mop: object,
+    *,
+    block: object,
+    tail: object,
+) -> bool:
+    try:
+        return bool(prover.is_always_nonzero(mop, blk=block, ins=tail))
+    except TypeError:
+        try:
+            return bool(prover.is_always_nonzero(mop))
+        except Exception:
+            return False
+    except Exception:
+        return False
 
 
 __all__ = [
     "BranchOwnershipProverProvider",
+    "HexRaysMopTrackerPredicateProver",
+    "HexRaysZ3JumpTakenProver",
     "build_branch_ownership_prover_provider",
-    "build_discarded_side_effect_guard",
-    "build_moptracker_predicate_resolver",
-    "build_z3_prover_factory",
 ]

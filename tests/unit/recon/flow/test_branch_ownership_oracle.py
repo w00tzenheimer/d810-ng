@@ -19,11 +19,121 @@ from d810.analyses.control_flow.branch_ownership_oracle import (
     MopTrackerBranchOwnershipOracle,
     PredicateOwnershipKind,
     PredicateOwnershipResult,
+    PredicateRef,
     Z3BranchOwnershipOracle,
     _opcode_name,
 )
+from d810.ir.flowgraph import (
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
+from d810.ir.semantics import PredicateKind, ValueOpKind
 
 
+# ---------------------------------------------------------------------------
+# Portable FlowGraph fixtures + fake provers (no IDA).  The engine-backed
+# MopTracker/Z3 proofs themselves are now in the backend adapter
+# (branch_ownership_prover.py) and are exercised by the Docker corridor; here
+# we test the PORTABLE refiner (gate + classification + proof construction +
+# FlowGraph side-effect guard) against injected fake provers.
+# ---------------------------------------------------------------------------
+
+
+def _const_mop(value: int) -> MopSnapshot:
+    return MopSnapshot(size=4, value=value, kind=OperandKind.NUMBER)
+
+
+def _block_ref_mop(serial: int) -> MopSnapshot:
+    return MopSnapshot(size=8, block_ref=serial, kind=OperandKind.BLOCK)
+
+
+def _cond_tail(
+    *,
+    ea: int,
+    predicate: PredicateKind = PredicateKind.EQ,
+    jump_target: int = 9,
+    left: MopSnapshot | None = None,
+    right: MopSnapshot | None = None,
+    display_text: str = "",
+) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=0,
+        ea=ea,
+        operands=(),
+        kind=InsnKind.EQUALITY_JUMP
+        if predicate in {PredicateKind.EQ, PredicateKind.NE}
+        else InsnKind.COND_JUMP,
+        predicate_kind=predicate,
+        l=left,
+        r=right,
+        d=_block_ref_mop(jump_target),
+        display_text=display_text,
+    )
+
+
+def _store_insn(*, ea: int, display_text: str = "stx #1.1, [payload]") -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=0,
+        ea=ea,
+        operands=(),
+        kind=InsnKind.STORE,
+        value_op_kind=ValueOpKind.STORE,
+        display_text=display_text,
+    )
+
+
+def _block(
+    *,
+    serial: int,
+    succs: tuple[int, ...] = (),
+    insns: tuple[InsnSnapshot, ...] = (),
+) -> BlockSnapshot:
+    return BlockSnapshot(
+        serial=serial,
+        block_type=0,
+        succs=tuple(succs),
+        preds=(),
+        flags=0,
+        start_ea=0x1000 + serial,
+        insn_snapshots=tuple(insns),
+    )
+
+
+def _flow_graph(*blocks: BlockSnapshot) -> FlowGraph:
+    block_map = {blk.serial: blk for blk in blocks}
+    return FlowGraph(blocks=block_map, entry_serial=blocks[0].serial, func_ea=0x1000)
+
+
+class _FakePredicateProver:
+    """PredicateOwnershipProver returning a fixed result for any predicate."""
+
+    def __init__(self, result: PredicateOwnershipResult | None):
+        self._result = result
+        self.calls: list[PredicateRef] = []
+
+    def resolve(self, predicate: PredicateRef) -> PredicateOwnershipResult | None:
+        self.calls.append(predicate)
+        return self._result
+
+
+class _FakeJumpTakenProver:
+    """JumpTakenProver returning a fixed tri-state for any predicate."""
+
+    def __init__(self, taken: bool | None):
+        self._taken = taken
+        self.calls: list[PredicateRef] = []
+
+    def prove_jump_taken(self, predicate: PredicateRef) -> bool | None:
+        self.calls.append(predicate)
+        return self._taken
+
+
+# Carrier-only fakes (the OllvmCarrierBranchOwnershipOracle still takes a live
+# ``mba`` and reads ``block.tail`` text; F1/F4 did not change its surface).
 class _FakeBlock:
     def __init__(self, tail: object, head: object | None = None):
         self.tail = tail
@@ -40,59 +150,6 @@ class _FakeMba:
 
     def get_mblock(self, serial: int) -> _FakeBlock | None:
         return self._blocks.get(int(serial))
-
-
-class _FakeCfgBlock:
-    def __init__(
-        self,
-        *,
-        serial: int,
-        tail: object | None = None,
-        next_serial: int | None = None,
-        succs: tuple[int, ...] = (),
-        head: object | None = None,
-    ):
-        self.serial = serial
-        self.tail = tail
-        self.nextb = (
-            SimpleNamespace(serial=next_serial)
-            if next_serial is not None else None
-        )
-        self._succs = tuple(int(succ) for succ in succs)
-        self.head = head
-
-    def nsucc(self) -> int:
-        return len(self._succs)
-
-    def succ(self, index: int) -> int:
-        return self._succs[index]
-
-
-class _FakeProver:
-    def __init__(
-        self,
-        *,
-        equal: bool = False,
-        unequal: bool = False,
-        zero: bool = False,
-        nonzero: bool = False,
-    ):
-        self.equal = equal
-        self.unequal = unequal
-        self.zero = zero
-        self.nonzero = nonzero
-
-    def are_equal(self, *_args, **_kwargs) -> bool:
-        return self.equal
-
-    def are_unequal(self, *_args, **_kwargs) -> bool:
-        return self.unequal
-
-    def is_always_zero(self, *_args, **_kwargs) -> bool:
-        return self.zero
-
-    def is_always_nonzero(self, *_args, **_kwargs) -> bool:
-        return self.nonzero
 
 
 def _edge(
@@ -125,18 +182,6 @@ def _edge(
     )
 
 
-def _mop(value: int | None = None):
-    return SimpleNamespace(value=value, size=4)
-
-
-def _block_ref(serial: int):
-    return SimpleNamespace(t="mop_b", b=serial)
-
-
-def _tail(opcode: str, *, jump_target: int, left: object, right: object | None = None):
-    return SimpleNamespace(opcode=opcode, l=left, r=right, d=_block_ref(jump_target))
-
-
 def _insn(opcode: str, *, text: str = ""):
     return SimpleNamespace(opcode=opcode, next=None, text=text)
 
@@ -160,6 +205,21 @@ def test_opcode_name_normalizes_known_conditional_opcode_without_live_ida():
 
 def test_branch_ownership_oracle_does_not_import_live_hexrays():
     assert "import ida_hexrays" not in inspect.getsource(oracle_mod)
+
+
+def test_branch_ownership_oracle_has_no_lazy_import_or_seam():
+    source = inspect.getsource(oracle_mod)
+    # No lazy import laundering, no condition-chain block-lookup seam.
+    assert "importlib" not in source
+    assert "get_condition_chain_walkers" not in source
+    # No import (lazy or top-level) of any upper-layer engine module.  Docstrings
+    # may *name* the backend adapter, so check import statements specifically.
+    import_lines = [
+        line for line in source.splitlines()
+        if line.lstrip().startswith(("import ", "from "))
+    ]
+    for forbidden in ("d810.evaluator", "d810.backends", "d810.hexrays"):
+        assert not any(forbidden in line for line in import_lines), forbidden
 
 
 def _carrier_fact(
@@ -224,15 +284,26 @@ def _raw_carrier_fact(
     )
 
 
+def _moptracker_flow_graph() -> FlowGraph:
+    """Two-way source block 5 (the gate target) plus two arm blocks."""
+    return _flow_graph(
+        _block(
+            serial=5,
+            succs=(8, 9),
+            insns=(_cond_tail(ea=0x500, predicate=PredicateKind.EQ, jump_target=9),),
+        ),
+        _block(serial=8, succs=()),
+        _block(serial=9, succs=()),
+    )
+
+
 def _proofs_for(
     *edges: object,
     result: PredicateOwnershipResult,
 ):
-    tail = SimpleNamespace(opcode="jz")
-    mba = _FakeMba({5: _FakeBlock(tail)})
     oracle = MopTrackerBranchOwnershipOracle(
-        mba=mba,
-        predicate_resolver=lambda _tail, _block, _via_pred: result,
+        flow_graph=_moptracker_flow_graph(),
+        predicate_resolver=_FakePredicateProver(result),
     )
     return collect_branch_ownership_proofs(
         dag=SimpleNamespace(edges=edges),
@@ -242,23 +313,38 @@ def _proofs_for(
 
 def _proofs_for_z3(
     *,
-    tail: object,
-    prover: _FakeProver | None = None,
-    discarded_head: object | None = None,
+    predicate: PredicateKind = PredicateKind.EQ,
+    jump_target: int = 9,
+    taken: bool | None = None,
+    discarded_store: bool = False,
+    left: MopSnapshot | None = None,
+    right: MopSnapshot | None = None,
 ):
-    mba = _FakeMba({
-        5: _FakeCfgBlock(
+    discarded_insns = (
+        (_store_insn(ea=0x800),) if discarded_store else ()
+    )
+    flow_graph = _flow_graph(
+        _block(
             serial=5,
-            tail=tail,
-            next_serial=8,
             succs=(8, 9),
+            insns=(
+                _cond_tail(
+                    ea=0x500,
+                    predicate=predicate,
+                    jump_target=jump_target,
+                    left=left,
+                    right=right,
+                ),
+            ),
         ),
-        8: _FakeCfgBlock(serial=8, succs=(), head=discarded_head),
-        9: _FakeCfgBlock(serial=9, succs=()),
-    })
+        _block(serial=8, succs=(), insns=discarded_insns),
+        _block(serial=9, succs=()),
+    )
     oracle = Z3BranchOwnershipOracle(
-        mba=mba,
-        prover_factory=(lambda: prover) if prover is not None else None,
+        flow_graph=flow_graph,
+        jump_taken_prover=(
+            _FakeJumpTakenProver(taken) if taken is not None or left is None else None
+        ),
     )
     return collect_branch_ownership_proofs(
         dag=SimpleNamespace(edges=(
@@ -276,6 +362,19 @@ def _proof_by_arm(proofs, arm: int) -> BranchOwnershipProof:
     ]
     assert len(matches) == 1
     return matches[0]
+
+
+def test_moptracker_oracle_with_no_prover_leaves_arm_unresolved():
+    oracle = MopTrackerBranchOwnershipOracle(
+        flow_graph=_moptracker_flow_graph(),
+        predicate_resolver=None,
+    )
+    proofs = collect_branch_ownership_proofs(
+        dag=SimpleNamespace(edges=(_edge(branch_arm=0, target_state=0x20),)),
+        proof_refiner=oracle.refine,
+    )
+    assert proofs[0].proof_kind == BranchOwnershipProofKind.UNRESOLVED
+    assert proofs[0].trusted is False
 
 
 def test_path_constant_predicate_marks_non_taken_arm_as_obfuscation_residue():
@@ -1147,8 +1246,9 @@ def test_incomplete_edge_identity_does_not_create_trusted_rewrite_proof():
 
 def test_z3_jz_equal_chooses_jump_target_arm():
     proofs = _proofs_for_z3(
-        tail=_tail("jz", jump_target=9, left=_mop(), right=_mop()),
-        prover=_FakeProver(equal=True),
+        predicate=PredicateKind.EQ,
+        jump_target=9,
+        taken=True,
     )
 
     fallthrough = _proof_by_arm(proofs, 0)
@@ -1165,9 +1265,11 @@ def test_z3_jz_equal_chooses_jump_target_arm():
 
 
 def test_z3_jnz_equal_chooses_fallthrough_arm():
+    # jnz with proven-equal operands is NOT taken -> chosen = fallthrough (8).
     proofs = _proofs_for_z3(
-        tail=_tail("jnz", jump_target=9, left=_mop(), right=_mop()),
-        prover=_FakeProver(equal=True),
+        predicate=PredicateKind.NE,
+        jump_target=9,
+        taken=False,
     )
 
     fallthrough = _proof_by_arm(proofs, 0)
@@ -1181,8 +1283,11 @@ def test_z3_jnz_equal_chooses_fallthrough_arm():
 
 
 def test_z3_jcnd_constant_nonzero_chooses_jump_target_arm():
+    # jcnd with a constant nonzero condition is statically taken.
     proofs = _proofs_for_z3(
-        tail=_tail("jcnd", jump_target=9, left=_mop(1)),
+        predicate=PredicateKind.TRUTHY,
+        jump_target=9,
+        left=_const_mop(1),
     )
 
     fallthrough = _proof_by_arm(proofs, 0)
@@ -1195,8 +1300,9 @@ def test_z3_jcnd_constant_nonzero_chooses_jump_target_arm():
 
 def test_z3_sibling_arm_proof_does_not_authorize_wrong_edge():
     proofs = _proofs_for_z3(
-        tail=_tail("jz", jump_target=9, left=_mop(), right=_mop()),
-        prover=_FakeProver(equal=True),
+        predicate=PredicateKind.EQ,
+        jump_target=9,
+        taken=True,
     )
 
     residue = _proof_by_arm(proofs, 0)
@@ -1213,9 +1319,10 @@ def test_z3_sibling_arm_proof_does_not_authorize_wrong_edge():
 
 def test_z3_discarded_payload_store_blocks_rewrite_authority():
     proofs = _proofs_for_z3(
-        tail=_tail("jz", jump_target=9, left=_mop(), right=_mop()),
-        prover=_FakeProver(equal=True),
-        discarded_head=_insn("store", text="stx #1.1, [payload]"),
+        predicate=PredicateKind.EQ,
+        jump_target=9,
+        taken=True,
+        discarded_store=True,
     )
 
     fallthrough = _proof_by_arm(proofs, 0)

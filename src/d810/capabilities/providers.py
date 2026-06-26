@@ -190,18 +190,20 @@ class BranchOwnershipProverProvider:
     never reaches the lazy-import dodge (ticket llr-f1cs).
 
     Each factory takes the live ``mba`` (and the backend opcode-label resolver)
-    and returns one of the injectable seams the oracles already accept:
+    and returns one of the portable prover ports the oracles consume:
 
     * ``moptracker_predicate_resolver(mba, opcode_label_resolver)`` ->
-      ``predicate_resolver``;
-    * ``z3_prover_factory()`` -> ``prover_factory``;
-    * ``discarded_side_effect_guard(opcode_label_resolver)`` ->
-      ``side_effect_guard``.
+      ``PredicateOwnershipProver`` (MopTracker backward slice);
+    * ``z3_jump_taken_prover(mba, opcode_label_resolver)`` ->
+      ``JumpTakenProver`` (Z3/JumpFixer constant proof).
+
+    The discarded-arm side-effect guard is NOT a backend seam: it is a
+    portable, FlowGraph-native function in the analyses oracle (ticket
+    llr-f1cs F4).
     """
 
     moptracker_predicate_resolver: Callable[..., Any]
-    z3_prover_factory: Callable[..., Any]
-    discarded_side_effect_guard: Callable[..., Any]
+    z3_jump_taken_prover: Callable[..., Any]
 
 
 _lock = threading.Lock()

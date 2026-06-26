@@ -1146,23 +1146,26 @@ def collect_ollvm_branch_ownership_refiners(
 ) -> tuple[object, ...]:
     try:
         opcode_label_resolver = microcode_semantic_label_resolver(mba)
+        # The portable branch-ownership oracles run their block-topology gate +
+        # side-effect guard over a portable FlowGraph snapshot lifted once here
+        # via the registered source lifter (headless-safe: no top-level
+        # ir_translator/IDA import, so this module stays headlessly importable).
         # Engine-backed predicate proofs (MopTracker backward slice / Z3
-        # constant proof + live-CFG side-effect guard) are supplied by the
-        # backend prover provider registered at the composition root.  Reading
-        # them here keeps this factory free of any top-level IDA-coupled import
-        # (MopTracker/Z3); with no provider registered the oracles fall back to
-        # UNRESOLVED predicate ownership (ticket llr-f1cs F3).
+        # constant proof) are supplied by the backend prover provider registered
+        # at the composition root; with no provider registered the oracles fall
+        # back to UNRESOLVED predicate ownership (ticket llr-f1cs F4).
+        lifter = select_lifter(mba)
+        flow_graph = lifter.lift(mba) if lifter is not None else None
         provers = get_branch_ownership_provers()
         predicate_resolver = None
-        prover_factory = None
-        side_effect_guard = None
+        jump_taken_prover = None
         if provers is not None:
             predicate_resolver = provers.moptracker_predicate_resolver(
                 mba,
                 opcode_label_resolver=opcode_label_resolver,
             )
-            prover_factory = provers.z3_prover_factory()
-            side_effect_guard = provers.discarded_side_effect_guard(
+            jump_taken_prover = provers.z3_jump_taken_prover(
+                mba,
                 opcode_label_resolver=opcode_label_resolver,
             )
         return (
@@ -1171,13 +1174,12 @@ def collect_ollvm_branch_ownership_refiners(
                 carrier_facts=collect_ollvm_post_execute_carrier_facts(mba),
             ).refine,
             Z3BranchOwnershipOracle(
-                mba=mba,
-                prover_factory=prover_factory,
-                side_effect_guard=side_effect_guard,
+                flow_graph=flow_graph,
+                jump_taken_prover=jump_taken_prover,
                 opcode_label_resolver=opcode_label_resolver,
             ).refine,
             MopTrackerBranchOwnershipOracle(
-                mba=mba,
+                flow_graph=flow_graph,
                 predicate_resolver=predicate_resolver,
                 opcode_label_resolver=opcode_label_resolver,
             ).refine,
