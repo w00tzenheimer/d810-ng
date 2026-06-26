@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 from d810.backends.hexrays.evidence import condition_chain_analysis
+from d810.backends.hexrays.evidence.branch_ownership_prover import (
+    build_branch_ownership_prover_provider,
+)
 from d810.capabilities.providers import (
+    register_branch_ownership_provers,
     register_condition_chain_walkers,
     register_microcode_evidence,
 )
@@ -26,4 +30,5 @@ def register_hexrays_backend_providers() -> None:
         condition_chain_analysis.build_microcode_evidence_provider()
     )
     register_mop_ops(HexRaysMopOps())
+    register_branch_ownership_provers(build_branch_ownership_prover_provider())
     ensure_hexrays_fact_lifter_registered()
