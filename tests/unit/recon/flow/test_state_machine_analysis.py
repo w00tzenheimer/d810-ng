@@ -3,7 +3,14 @@ from __future__ import annotations
 import inspect
 from types import SimpleNamespace
 
-from d810.ir.flowgraph import PredicateKind, InsnKind, MopSnapshot, OperandKind
+from d810.ir.flowgraph import (
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    MopSnapshot,
+    OperandKind,
+    PredicateKind,
+)
 from d810.analyses.control_flow import state_machine_analysis as sma
 
 
@@ -65,32 +72,40 @@ class _SnapshotFlowGraph:
         return self._blocks.get(int(serial))
 
 
-class _FakeBlock:
-    def __init__(self, succs: tuple[int, ...]):
-        self.head = None
-        self._succs = succs
+def _topology_flow_graph(succ_map: dict[int, tuple[int, ...]]) -> FlowGraph:
+    """Build a portable ``FlowGraph`` from a ``{serial: succs}`` topology.
 
-    def nsucc(self) -> int:
-        return len(self._succs)
-
-    def succ(self, index: int) -> int:
-        return self._succs[index]
-
-
-class _FakeMBA:
-    def __init__(self, blocks: dict[int, _FakeBlock]):
-        self._blocks = blocks
-        self.qty = max(blocks) + 1 if blocks else 0
-
-    def get_mblock(self, serial: int) -> _FakeBlock | None:
-        return self._blocks.get(serial)
+    Blocks carry no instructions (``insn_snapshots=()``); the path evaluator's
+    final state comes from the mocked
+    ``find_last_state_write_site_on_path_snapshot`` snapshot resolver, so only
+    block topology matters (ticket llr-f1cs F5 -- the path analyses are
+    FlowGraph-only and no longer accept a live ``mba``).
+    """
+    preds: dict[int, list[int]] = {serial: [] for serial in succ_map}
+    for serial, succs in succ_map.items():
+        for succ in succs:
+            preds.setdefault(succ, [])
+            preds[succ].append(serial)
+    blocks: dict[int, BlockSnapshot] = {}
+    for serial, succs in succ_map.items():
+        blocks[serial] = BlockSnapshot(
+            serial=serial,
+            block_type=0,
+            succs=tuple(succs),
+            preds=tuple(preds.get(serial, ())),
+            flags=0,
+            start_ea=0,
+            insn_snapshots=(),
+        )
+    entry = min(succ_map) if succ_map else 0
+    return FlowGraph(blocks=blocks, entry_serial=entry, func_ea=0)
 
 
 def test_evaluate_handler_paths_uses_snapshot_state_for_condition_chain_exit(monkeypatch):
-    mba = _FakeMBA(
+    mba = _topology_flow_graph(
         {
-            1: _FakeBlock((2,)),
-            2: _FakeBlock((0,)),
+            1: (2,),
+            2: (0,),
         }
     )
 
@@ -135,11 +150,11 @@ def test_evaluate_handler_paths_uses_snapshot_state_for_condition_chain_exit(mon
 def test_evaluate_handler_paths_uses_snapshot_state_for_handler_handoff(
     monkeypatch,
 ):
-    mba = _FakeMBA(
+    mba = _topology_flow_graph(
         {
-            1: _FakeBlock((2,)),
-            2: _FakeBlock((3,)),
-            3: _FakeBlock(()),
+            1: (2,),
+            2: (3,),
+            3: (),
         }
     )
 
@@ -178,10 +193,10 @@ def test_evaluate_handler_paths_uses_snapshot_state_for_handler_handoff(
 def test_evaluate_handler_paths_resolves_no_successor_state_write_stub(
     monkeypatch,
 ):
-    mba = _FakeMBA(
+    mba = _topology_flow_graph(
         {
-            1: _FakeBlock((2,)),
-            2: _FakeBlock(()),
+            1: (2,),
+            2: (),
         }
     )
 
@@ -220,10 +235,10 @@ def test_evaluate_handler_paths_resolves_no_successor_state_write_stub(
 def test_evaluate_handler_paths_keeps_unknown_no_successor_write_terminal(
     monkeypatch,
 ):
-    mba = _FakeMBA(
+    mba = _topology_flow_graph(
         {
-            1: _FakeBlock((2,)),
-            2: _FakeBlock(()),
+            1: (2,),
+            2: (),
         }
     )
 

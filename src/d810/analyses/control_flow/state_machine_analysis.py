@@ -238,25 +238,23 @@ def _mba_block_count(mba: object) -> int:
 
 
 def _mba_block(mba: object, serial: int) -> object | None:
-    """Fetch one block by serial from either shape.
+    """Fetch one ``BlockSnapshot`` by serial from a portable ``FlowGraph``.
 
-    ``FlowGraph`` returns the ``BlockSnapshot``; any other shape routes through
-    the backend ``get_block`` seam (live ``mblock_t`` / ``_BlockView``).
+    Callers must lift any live backend ``mba`` to a once-lifted
+    ``d810.ir.FlowGraph`` before reaching the path analyses (ticket llr-f1cs
+    F5); the analyses layer never touches a live ``mblock_t`` and the
+    ``get_block`` provider seam has been retired.
     """
-    if isinstance(mba, FlowGraph):
-        return mba.get_block(serial)
-    return get_condition_chain_walkers().get_block(mba, serial)
+    return mba.get_block(serial)
 
 
 def _block_succs(blk: object) -> tuple[int, ...]:
-    """Successor serials from either block shape.
+    """Successor serials from a portable ``BlockSnapshot``.
 
-    ``BlockSnapshot`` exposes ``.succs`` directly; any other shape routes
-    through the backend ``block_successors`` seam (``nsucc``/``succ``).
+    ``BlockSnapshot`` exposes ``.succs`` directly; the live-block
+    ``block_successors`` provider seam has been retired (ticket llr-f1cs F5).
     """
-    if isinstance(blk, BlockSnapshot):
-        return blk.succs
-    return tuple(get_condition_chain_walkers().block_successors(blk))
+    return blk.succs
 
 
 def _iter_block_insns(blk: object):

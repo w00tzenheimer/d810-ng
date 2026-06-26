@@ -4517,7 +4517,7 @@ def _discover_supplemental_states(
             if entry in condition_chain_block_set:
                 continue
             kind = classify_exit_state(
-                mba=mba,
+                mba=flow_graph,
                 final_state=1,  # dummy non-None to skip TERMINAL check
                 incoming_state=None,
                 successor_serial=entry,
@@ -4555,7 +4555,7 @@ def _discover_supplemental_states(
             ):
                 if mba is not None and state_var_stkoff is not None:
                     resolved_kind = classify_exit_state(
-                        mba=mba,
+                        mba=flow_graph,
                         final_state=masked,
                         incoming_state=None,
                         successor_serial=int(resolved),
@@ -4623,7 +4623,7 @@ def _discover_supplemental_states(
             state_machine_blocks = set(report.condition_chain_blocks) | handler_entry_blocks
             if resolved is not None and resolved not in state_machine_blocks:
                 resolved_kind = classify_exit_state(
-                    mba=mba,
+                    mba=flow_graph,
                     final_state=masked,
                     incoming_state=None,
                     successor_serial=int(resolved),
@@ -4745,7 +4745,7 @@ def _discover_supplemental_states(
                 kind = ExitStateKind.UNCLASSIFIED
                 if mba is not None and state_var_stkoff is not None and succ_serial is not None:
                     kind = classify_exit_state(
-                        mba=mba,
+                        mba=flow_graph,
                         final_state=path.final_state,
                         incoming_state=incoming,
                         successor_serial=succ_serial,
@@ -4776,7 +4776,7 @@ def _discover_supplemental_states(
                         if resolved is not None:
                             handoff_paths = tuple(
                                 evaluate_handler_paths(
-                                    mba,
+                                    flow_graph,
                                     int(resolved),
                                     state_value,
                                     condition_chain_block_set,
@@ -5224,7 +5224,7 @@ def build_live_linearized_state_dag_from_graph(
             if exact_anchor is not None and exact_anchor != row.handler_serial:
                 exact_paths = tuple(
                     evaluate_handler_paths(
-                        mba,
+                        flow_graph,
                         exact_anchor,
                         incoming_state,
                         set(report.condition_chain_blocks),
@@ -5241,7 +5241,7 @@ def build_live_linearized_state_dag_from_graph(
 
         paths = tuple(
             evaluate_handler_paths(
-                mba,
+                flow_graph,
                 analysis_anchor,
                 incoming_state,
                 set(report.condition_chain_blocks),
@@ -5645,7 +5645,7 @@ def build_live_linearized_state_dag_from_graph(
                 for candidate_anchor in sorted(candidate_anchor_set):
                     candidate_paths = tuple(
                         evaluate_handler_paths(
-                            mba,
+                            flow_graph,
                             candidate_anchor,
                             state_value,
                             condition_chain_block_set,
@@ -5879,7 +5879,7 @@ def build_live_linearized_state_dag_from_graph(
                 if candidate_anchor not in condition_chain_block_set:
                     candidate_paths = tuple(
                         evaluate_handler_paths(
-                            mba,
+                            flow_graph,
                             candidate_anchor,
                             state_value,
                             condition_chain_block_set,
@@ -6126,7 +6126,7 @@ def build_live_linearized_state_dag_from_graph(
             else:
                 paths = tuple(
                     evaluate_handler_paths(
-                        mba,
+                        flow_graph,
                         anchor,
                         state_value,
                         set(report_with_supplemental.condition_chain_blocks),
