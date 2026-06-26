@@ -388,7 +388,7 @@ class TransactionalExecutor:
             qty = 0
         for _i in range(qty):
             _diag = detect_loop_counter_writeback_tail(
-                self.mba,
+                pre_cfg,
                 _i,
                 insn_kind_classifier=classify_live_insn_kind,
                 operand_kind_classifier=classify_live_operand_kind,

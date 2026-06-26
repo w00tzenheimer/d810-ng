@@ -292,8 +292,8 @@ class TestDetectLoopCounterWritebackTail:
             detect_loop_counter_writeback_tail,
         )
 
-        mba = self._build_mba()
-        diag = detect_loop_counter_writeback_tail(mba, tail_block_serial=2)
+        flow_graph = _flow_graph_from_blocks(self._build_mba()._blocks)
+        diag = detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=2)
 
         assert diag is not None
         assert diag.tail_block_serial == 2
@@ -307,13 +307,13 @@ class TestDetectLoopCounterWritebackTail:
             detect_loop_counter_writeback_tail,
         )
 
-        mba = self._build_mba()
+        flow_graph = _flow_graph_from_blocks(self._build_mba()._blocks)
         # Block 0 has the advance compute, not a writeback to counter.
-        assert detect_loop_counter_writeback_tail(mba, tail_block_serial=0) is None
+        assert detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=0) is None
         # Block 1 has the loop test, not a writeback.
-        assert detect_loop_counter_writeback_tail(mba, tail_block_serial=1) is None
+        assert detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=1) is None
         # Block 3 is unrelated.
-        assert detect_loop_counter_writeback_tail(mba, tail_block_serial=3) is None
+        assert detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=3) is None
 
     def test_rejects_when_writeback_source_is_constant(self):
         """``mov #0, %counter`` is a counter RESET, not a loop-carried
@@ -325,7 +325,7 @@ class TestDetectLoopCounterWritebackTail:
         const_zero = _Mop(OperandKind.NUMBER, nnn=_NumValue(0))
         dest = _Mop(OperandKind.STACK, s=_StkOff(self.COUNTER_STKOFF))
         reset = _Insn(InsnKind.MOV, ea=self.WRITEBACK_EA, l=const_zero, d=dest)
-        mba = _Mba([
+        flow_graph = _flow_graph_from_blocks([
             _build_counter_advance_block(
                 counter_stkoff=self.COUNTER_STKOFF,
                 delta=2,
@@ -339,7 +339,7 @@ class TestDetectLoopCounterWritebackTail:
             ),
             _Mblock(_chain(reset)),
         ])
-        assert detect_loop_counter_writeback_tail(mba, tail_block_serial=2) is None
+        assert detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=2) is None
 
     def test_rejects_when_no_loop_test_present(self):
         """Without a ``counter+small_const`` loop test, the writeback is
@@ -348,7 +348,7 @@ class TestDetectLoopCounterWritebackTail:
             detect_loop_counter_writeback_tail,
         )
 
-        mba = _Mba([
+        flow_graph = _flow_graph_from_blocks([
             _build_counter_advance_block(
                 counter_stkoff=self.COUNTER_STKOFF,
                 delta=2,
@@ -360,7 +360,7 @@ class TestDetectLoopCounterWritebackTail:
                 ea=self.WRITEBACK_EA,
             ),
         ])
-        assert detect_loop_counter_writeback_tail(mba, tail_block_serial=2) is None
+        assert detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=2) is None
 
     def test_rejects_when_no_advance_compute(self):
         """Without an ``m_add counter+small_const`` somewhere in the
@@ -369,7 +369,7 @@ class TestDetectLoopCounterWritebackTail:
             detect_loop_counter_writeback_tail,
         )
 
-        mba = _Mba([
+        flow_graph = _flow_graph_from_blocks([
             _build_unrelated_block(),
             _build_loop_test_block(
                 bound_stkoff=self.BOUND_STKOFF,
@@ -382,9 +382,9 @@ class TestDetectLoopCounterWritebackTail:
                 ea=self.WRITEBACK_EA,
             ),
         ])
-        assert detect_loop_counter_writeback_tail(mba, tail_block_serial=2) is None
+        assert detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=2) is None
 
-    def test_returns_none_when_mba_is_none(self):
+    def test_returns_none_when_flow_graph_is_none(self):
         from d810.transforms.loop_bound_writer_guard import (
             detect_loop_counter_writeback_tail,
         )

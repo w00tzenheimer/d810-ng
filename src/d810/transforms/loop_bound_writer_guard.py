@@ -509,16 +509,22 @@ def _is_counter_advance_add(
 
 
 def detect_loop_counter_writeback_tail(
-    mba,
+    flow_graph,
     tail_block_serial: int,
     *,
     insn_kind_classifier: InsnKindClassifier | None = None,
     operand_kind_classifier: OperandKindClassifier | None = None,
 ) -> LoopCounterWritebackDiagnostic | None:
-    """Inspect ``mba`` and return a diagnostic iff ``tail_block_serial``
-    is the writeback tail of a loop-carried counter (all four
-    conjunctive conditions hold).  Read-only; returns ``None`` on any
-    failure.
+    """Inspect ``flow_graph`` and return a diagnostic iff
+    ``tail_block_serial`` is the writeback tail of a loop-carried
+    counter (all four conjunctive conditions hold).  Read-only; returns
+    ``None`` on any failure.
+
+    Consumes a portable :class:`~d810.ir.flowgraph.FlowGraph` snapshot
+    (lifted once by the caller) rather than a live ``mba`` -- block
+    lookup is ``flow_graph.get_block(serial)`` and the existence scans
+    walk ``flow_graph.blocks`` in ascending-serial order (matching the
+    former ``range(mba.qty)`` traversal).
 
     The four conditions are documented on
     :class:`LoopCounterWritebackDiagnostic`.  The detector is
@@ -527,16 +533,11 @@ def detect_loop_counter_writeback_tail(
     causing IDA to DCE the unique counter advance commit and produce a
     non-progressing inner do-while.
     """
-    if mba is None:
+    if flow_graph is None:
         return None
 
-    qty = _safe_int_attr(mba, "qty", 0)
-    if qty <= 0:
-        return None
-
-    walkers = get_condition_chain_walkers()
     try:
-        tail_blk = walkers.get_block(mba, int(tail_block_serial))
+        tail_blk = flow_graph.get_block(int(tail_block_serial))
     except Exception:
         return None
     if tail_blk is None:
@@ -557,13 +558,8 @@ def detect_loop_counter_writeback_tail(
     # other operand is a stkvar (the loop bound).
     loop_test_ea: int | None = None
     bound_stkoff: int | None = None
-    for i in range(qty):
-        try:
-            blk = walkers.get_block(mba, i)
-        except Exception:
-            continue
-        if blk is None:
-            continue
+    for _serial in sorted(flow_graph.blocks):
+        blk = flow_graph.blocks[_serial]
         for ins in _iter_block_insns(blk):
             if _insn_kind(ins, insn_kind_classifier) != InsnKind.EQUALITY_JUMP:
                 continue
@@ -604,13 +600,8 @@ def detect_loop_counter_writeback_tail(
     # Condition (3): some block emits m_add mop_S(counter_stkoff) +
     # small_const (the advance compute that feeds the writeback).
     advance_ea: int | None = None
-    for i in range(qty):
-        try:
-            blk = walkers.get_block(mba, i)
-        except Exception:
-            continue
-        if blk is None:
-            continue
+    for _serial in sorted(flow_graph.blocks):
+        blk = flow_graph.blocks[_serial]
         for ins in _iter_block_insns(blk):
             if _insn_kind(ins, insn_kind_classifier) != InsnKind.ADD:
                 continue
