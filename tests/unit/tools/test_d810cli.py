@@ -196,7 +196,10 @@ def test_dump_full_diagnostics_expands_recon_diag_flags(
     assert "pseudocode_dump" in argv
     assert "--dump-microcode-maturity" in argv
     assert "LOCOPT,CALLS,GLBOPT1" in argv
-    assert "--dump-microcode-d810" in argv
+    # llr-4je3: --dump-microcode-d810 is no longer a registered pytest dump
+    # option (tests/system/conftest.py pytest_addoption), so it must NOT appear
+    # in the expanded full-diagnostics extras.
+    assert "--dump-microcode-d810" not in argv
     assert "--dump-terminal-return-valranges" in argv
     assert "--dump-condition-chain-maturity" in argv
     assert "CALLS,GLBOPT1,GLBOPT2" in argv
