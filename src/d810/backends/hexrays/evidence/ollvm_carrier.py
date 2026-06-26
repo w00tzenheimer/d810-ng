@@ -70,7 +70,10 @@ from d810.analyses.fact_collection_context import (
     coerce_fact_collection_context,
     fact_provider_label,
 )
-from d810.capabilities.providers import get_condition_chain_walkers
+from d810.capabilities.providers import (
+    get_branch_ownership_provers,
+    get_condition_chain_walkers,
+)
 from d810.capabilities.source_lifter import select_lifter
 from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipProof,
@@ -1143,6 +1146,25 @@ def collect_ollvm_branch_ownership_refiners(
 ) -> tuple[object, ...]:
     try:
         opcode_label_resolver = microcode_semantic_label_resolver(mba)
+        # Engine-backed predicate proofs (MopTracker backward slice / Z3
+        # constant proof + live-CFG side-effect guard) are supplied by the
+        # backend prover provider registered at the composition root.  Reading
+        # them here keeps this factory free of any top-level IDA-coupled import
+        # (MopTracker/Z3); with no provider registered the oracles fall back to
+        # UNRESOLVED predicate ownership (ticket llr-f1cs F3).
+        provers = get_branch_ownership_provers()
+        predicate_resolver = None
+        prover_factory = None
+        side_effect_guard = None
+        if provers is not None:
+            predicate_resolver = provers.moptracker_predicate_resolver(
+                mba,
+                opcode_label_resolver=opcode_label_resolver,
+            )
+            prover_factory = provers.z3_prover_factory()
+            side_effect_guard = provers.discarded_side_effect_guard(
+                opcode_label_resolver=opcode_label_resolver,
+            )
         return (
             OllvmCarrierBranchOwnershipOracle(
                 mba=mba,
@@ -1150,10 +1172,13 @@ def collect_ollvm_branch_ownership_refiners(
             ).refine,
             Z3BranchOwnershipOracle(
                 mba=mba,
+                prover_factory=prover_factory,
+                side_effect_guard=side_effect_guard,
                 opcode_label_resolver=opcode_label_resolver,
             ).refine,
             MopTrackerBranchOwnershipOracle(
                 mba=mba,
+                predicate_resolver=predicate_resolver,
                 opcode_label_resolver=opcode_label_resolver,
             ).refine,
         )

@@ -173,9 +173,41 @@ class MicrocodeEvidenceProvider:
     mbl_keep_flag: Callable[..., Any]
 
 
+@dataclass(frozen=True)
+class BranchOwnershipProverProvider:
+    """Backend-supplied factories for live-microcode branch-ownership provers.
+
+    The portable branch-ownership refiners
+    (``d810.analyses.control_flow.branch_ownership_oracle``) classify a
+    conditional arm but cannot run the engine-backed predicate proofs
+    themselves: a MopTracker backward symbolic slice and a Z3/JumpFixer
+    constant proof both require live microcode.  The Hex-Rays backend builds
+    those steps in ``d810.backends.hexrays.evidence.branch_ownership_prover``
+    (top-level ``MopTracker``/``Z3MopProver`` imports) and registers this
+    bundle of *factories* at the composition root; the portable refiner factory
+    reads it via :func:`get_branch_ownership_provers` and injects the produced
+    callables into the oracles, so portable code never imports the engine and
+    never reaches the lazy-import dodge (ticket llr-f1cs).
+
+    Each factory takes the live ``mba`` (and the backend opcode-label resolver)
+    and returns one of the injectable seams the oracles already accept:
+
+    * ``moptracker_predicate_resolver(mba, opcode_label_resolver)`` ->
+      ``predicate_resolver``;
+    * ``z3_prover_factory()`` -> ``prover_factory``;
+    * ``discarded_side_effect_guard(opcode_label_resolver)`` ->
+      ``side_effect_guard``.
+    """
+
+    moptracker_predicate_resolver: Callable[..., Any]
+    z3_prover_factory: Callable[..., Any]
+    discarded_side_effect_guard: Callable[..., Any]
+
+
 _lock = threading.Lock()
 _condition_chain_walkers: Optional[ConditionChainWalkerProvider] = None
 _microcode_evidence: Optional[MicrocodeEvidenceProvider] = None
+_branch_ownership_provers: Optional[BranchOwnershipProverProvider] = None
 
 
 def register_condition_chain_walkers(provider: ConditionChainWalkerProvider) -> None:
@@ -235,9 +267,37 @@ def get_microcode_evidence() -> MicrocodeEvidenceProvider:
     return provider
 
 
+def register_branch_ownership_provers(
+    provider: BranchOwnershipProverProvider | None,
+) -> None:
+    """Register the backend branch-ownership prover factories.
+
+    Called only by the composition root (``D810State.start_d810`` via the
+    Hex-Rays backend registration), which may import the IDA-coupled prover
+    module to build the bundle.
+    """
+    global _branch_ownership_provers
+    with _lock:
+        _branch_ownership_provers = provider
+
+
+def get_branch_ownership_provers() -> Optional[BranchOwnershipProverProvider]:
+    """Return the registered branch-ownership prover factories, or ``None``.
+
+    Unlike :func:`get_condition_chain_walkers`, a missing provider is NOT a
+    fatal wiring bug: with no backend registered (headless / portable use), the
+    branch-ownership refiners simply fall back to ``UNRESOLVED`` predicate
+    ownership rather than running an engine-backed proof.
+    """
+    with _lock:
+        return _branch_ownership_provers
+
+
 def reset_providers_for_tests() -> None:
     """Clear all registered providers (test isolation)."""
     global _condition_chain_walkers, _microcode_evidence
+    global _branch_ownership_provers
     with _lock:
         _condition_chain_walkers = None
         _microcode_evidence = None
+        _branch_ownership_provers = None
