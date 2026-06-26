@@ -15,6 +15,7 @@ from d810.core.typing import TYPE_CHECKING
 
 from d810.core import logging
 from d810.evaluator.hexrays_microcode.valranges import resolve_state_via_valranges
+from d810.hexrays.mutation.ir_translator import lift as lift_flow_graph
 from d810.analyses.control_flow.exit_transition_discovery import (
     collect_valrange_exit_transition_candidates,
 )
@@ -113,11 +114,30 @@ class ValrangeResolutionStrategy:
         if not handlers:
             return None
 
+        # Lift the live ``mba`` to a portable ``FlowGraph`` for exit-block
+        # identity, and wrap ``resolve_state_via_valranges`` so the analyses
+        # layer never touches a live block: the backend re-resolves the live
+        # block/tail from the portable serial here (ticket llr-f1cs F5b).
+        flow_graph = lift_flow_graph(mba)
+
+        def _resolve_via_valranges(exit_serial: int, state_var: object) -> int | None:
+            try:
+                blk = mba.get_mblock(int(exit_serial))
+            except Exception:
+                blk = None
+            if blk is None:
+                return None
+            tail_ins = getattr(blk, "tail", None)
+            if tail_ins is None:
+                return None
+            return resolve_state_via_valranges(blk, state_var, tail_ins)
+
         discovery = collect_valrange_exit_transition_candidates(
-            snapshot,
+            flow_graph,
             sm=sm,
             range_evidence=range_evidence,
-            resolve_state_via_valranges=resolve_state_via_valranges,
+            resolve_state_via_valranges=_resolve_via_valranges,
+            resolved_transitions=getattr(snapshot, "resolved_transitions", ()) or (),
         )
         resolved_count = len(discovery.candidates)
 

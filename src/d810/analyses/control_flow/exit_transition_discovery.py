@@ -5,20 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.analyses.control_flow.condition_chain_model import resolve_target_via_condition_chain
-from d810.capabilities.providers import get_condition_chain_walkers
 from d810.analyses.control_flow.state_machine_analysis import evaluate_handler_paths
 from d810.analyses.control_flow.transition_builder import _get_state_var_stkoff
-from d810.ir.expressions import ValueOpKind
+from d810.capabilities.providers import get_condition_chain_walkers
+from d810.ir.flowgraph import FlowGraph
 from d810.ir.varnode import Space, varnode_from_mop_snapshot
-
-
-# Registry-backed seam (see ``d810.capabilities.providers``, ticket d81-1w16):
-# kept as a module-level name so call sites are unchanged and tests can
-# monkeypatch ``resolve_via_condition_chain_walk`` in place.
-def resolve_via_condition_chain_walk(*args, **kwargs):
-    return get_condition_chain_walkers().resolve_via_condition_chain_walk(*args, **kwargs)
-
-_MOVE_OPS = frozenset({"move", ValueOpKind.MOVE.value, ValueOpKind.MOVE.name, 4})
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,184 +73,6 @@ def resolve_state_var_stkoff(
     return stkoff
 
 
-def collect_exit_transition_candidates(
-    snapshot: object,
-    *,
-    sm: object,
-    range_evidence: object,
-    handler_state_map: dict[int, int],
-    condition_chain_blocks: set[int],
-    max_bfs_depth: int = 6,
-) -> tuple[ExitTransitionCandidate, ...]:
-    """Collect redirect candidates for handler exit-state recovery."""
-    mba = getattr(snapshot, "mba", None)
-    if mba is None:
-        return ()
-
-    stkoff = resolve_state_var_stkoff(
-        detector=getattr(snapshot, "detector", None),
-        state_var=getattr(sm, "state_var", None),
-    )
-    if stkoff is None:
-        return ()
-
-    state_to_entry: dict[int, int] = {v: k for k, v in handler_state_map.items()}
-    exit_dispatcher = getattr(range_evidence, "dispatcher", None)
-
-    transitions = tuple(getattr(sm, "transitions", ()))
-    handlers = dict(getattr(sm, "handlers", {}))
-
-    states_with_outgoing: set[int] = {
-        int(t.from_state)
-        for t in transitions
-        if getattr(t, "from_state", None) is not None
-    }
-
-    self_loop_only: set[int] = set()
-    for state_val, handler in handlers.items():
-        if state_val not in states_with_outgoing:
-            continue
-        handler_transitions = [t for t in transitions if t.from_state == state_val]
-        all_self_loop = True
-        for transition in handler_transitions:
-            target = resolve_target_via_condition_chain(range_evidence, transition.to_state)
-            if target is None or transition.from_block != target:
-                all_self_loop = False
-                break
-        if all_self_loop and handler_transitions:
-            self_loop_only.add(int(state_val))
-
-    exit_states = [
-        int(state_val)
-        for state_val in handlers
-        if state_val not in states_with_outgoing or state_val in self_loop_only
-    ]
-    if not exit_states:
-        return ()
-
-    candidates: list[ExitTransitionCandidate] = []
-    for state_val in exit_states:
-        handler = handlers[state_val]
-        correct_entry = state_to_entry.get(state_val)
-        if correct_entry is None and exit_dispatcher is not None:
-            correct_entry = exit_dispatcher.lookup(state_val)
-
-        if correct_entry is None:
-            dispatcher_serial = int(getattr(snapshot, "dispatcher_root_serial", -1))
-            if dispatcher_serial < 0 or not condition_chain_blocks:
-                continue
-            target_serial = resolve_via_condition_chain_walk(
-                mba,
-                dispatcher_serial,
-                state_val,
-                condition_chain_blocks,
-            )
-            if target_serial is None:
-                continue
-
-            from_block: int | None = None
-            for transition in transitions:
-                if getattr(transition, "to_state", None) == state_val:
-                    from_block = int(transition.from_block)
-                    break
-            if from_block is None:
-                handler_blocks = tuple(getattr(handler, "handler_blocks", ()))
-                from_block = (
-                    int(handler_blocks[0])
-                    if handler_blocks
-                    else int(getattr(handler, "check_block", -1))
-                )
-            if from_block in condition_chain_blocks or from_block == target_serial:
-                continue
-            candidates.append(
-                ExitTransitionCandidate(
-                    state_value=state_val,
-                    from_block=from_block,
-                    target_entry=int(target_serial),
-                    exit_state_value=None,
-                    discovery_kind="condition_chain_walk",
-                )
-            )
-            continue
-
-        visited: set[int] = set()
-        queue: list[tuple[int, int]] = [(int(correct_entry), 0)]
-        found_writes: list[tuple[int, int]] = []
-
-        # Block topology via the backend seam: ``mba`` is the live
-        # ``snapshot.mba``; the seam makes the identical get_mblock/nsucc/succ
-        # calls from the backend layer (ticket llr-zeyu).
-        walkers = get_condition_chain_walkers()
-        while queue:
-            blk_serial, depth = queue.pop(0)
-            if blk_serial in visited:
-                continue
-            visited.add(blk_serial)
-            if blk_serial in condition_chain_blocks:
-                continue
-
-            try:
-                blk = walkers.get_block(mba, blk_serial)
-            except Exception:
-                blk = None
-            if blk is None:
-                continue
-
-            insn = blk.head
-            while insn is not None:
-                if _is_move_opcode(getattr(insn, "opcode", None)):
-                    d = insn.d
-                    dest_stkoff = _stack_offset(d)
-                    literal = _number_value(getattr(insn, "l", None))
-                    if dest_stkoff == stkoff and literal is not None:
-                        found_writes.append((int(blk_serial), int(literal)))
-                insn = insn.next
-
-            if depth < max_bfs_depth:
-                try:
-                    for succ_serial in walkers.block_successors(blk):
-                        if int(succ_serial) not in visited:
-                            queue.append((int(succ_serial), depth + 1))
-                except Exception:
-                    pass
-
-        for write_blk, exit_state_value in found_writes:
-            target_entry = resolve_target_via_condition_chain(range_evidence, exit_state_value)
-            if target_entry is None or write_blk == target_entry:
-                continue
-            candidates.append(
-                ExitTransitionCandidate(
-                    state_value=state_val,
-                    from_block=write_blk,
-                    target_entry=int(target_entry),
-                    exit_state_value=int(exit_state_value),
-                    discovery_kind="write",
-                )
-            )
-
-    return tuple(candidates)
-
-
-def _is_move_opcode(opcode: object) -> bool:
-    if opcode in _MOVE_OPS or str(opcode) in _MOVE_OPS:
-        return True
-    try:
-        if int(opcode) in _MOVE_OPS:
-            return True
-    except Exception:
-        pass
-    try:
-        is_move_opcode = get_condition_chain_walkers().is_move_opcode
-    except LookupError:
-        is_move_opcode = None
-    if is_move_opcode is None:
-        return False
-    try:
-        return bool(is_move_opcode(opcode))
-    except Exception:
-        return False
-
-
 def _varnode(mop: object | None):
     if mop is None:
         return None
@@ -287,26 +100,6 @@ def _stack_offset(mop: object | None) -> int | None:
     except Exception:
         provider_stkoff = None
     return int(provider_stkoff) if provider_stkoff is not None else None
-
-
-def _number_value(mop: object | None) -> int | None:
-    varnode = _varnode(mop)
-    if varnode is not None and varnode.space is Space.CONST:
-        return int(varnode.offset)
-    value = getattr(mop, "value", None) if mop is not None else None
-    if value is not None:
-        return int(value)
-    try:
-        operand_number_value = get_condition_chain_walkers().operand_number_value
-    except LookupError:
-        operand_number_value = None
-    if operand_number_value is None or mop is None:
-        return None
-    try:
-        provider_value = operand_number_value(mop)
-    except Exception:
-        provider_value = None
-    return int(provider_value) if provider_value is not None else None
 
 
 def collect_condition_chain_default_transition_candidates(
@@ -364,15 +157,32 @@ def collect_condition_chain_default_transition_candidates(
 
 
 def collect_valrange_exit_transition_candidates(
-    snapshot: object,
+    flow_graph: FlowGraph,
     *,
     sm: object,
     range_evidence: object,
     resolve_state_via_valranges: object | None,
+    resolved_transitions: object = (),
 ) -> ValrangeExitTransitionDiscovery:
-    """Collect unresolved handler exits that valranges resolves to one target."""
-    mba = getattr(snapshot, "mba", None)
-    if mba is None or not callable(resolve_state_via_valranges):
+    """Collect unresolved handler exits that valranges resolves to one target.
+
+    Block identity/topology comes from the portable ``flow_graph``: this layer
+    only confirms the exit block exists and is non-empty.  The actual IDA
+    value-range query is performed by the injected ``resolve_state_via_valranges``
+    callable, which the backend wires to the live ``mba`` so it can re-resolve
+    the live block/tail from the (portable) block serial (ticket llr-f1cs F5b).
+
+    Args:
+        flow_graph: Portable CFG snapshot for exit-block identity.
+        sm: State-machine model (handlers + state_var).
+        range_evidence: Condition-chain target-resolution evidence.
+        resolve_state_via_valranges: Backend callable
+            ``(exit_serial: int, state_var) -> int | None`` that performs the
+            live IDA valrange query for the state variable at the exit block.
+        resolved_transitions: Already-resolved ``(from_state, to_state)`` pairs
+            to skip (sourced from the snapshot by the caller).
+    """
+    if flow_graph is None or not callable(resolve_state_via_valranges):
         return ValrangeExitTransitionDiscovery()
 
     state_var = getattr(sm, "state_var", None)
@@ -380,13 +190,10 @@ def collect_valrange_exit_transition_candidates(
     if state_var is None or not handlers:
         return ValrangeExitTransitionDiscovery()
 
-    already_resolved = set(getattr(snapshot, "resolved_transitions", ()) or ())
+    already_resolved = set(resolved_transitions or ())
     candidates: list[ValrangeExitTransitionCandidate] = []
     total_unresolved = 0
 
-    # Block lookup via the backend seam (``mba`` is the live ``snapshot.mba``);
-    # behaviour is identical to the inlined ``get_mblock`` (ticket llr-zeyu).
-    walkers = get_condition_chain_walkers()
     for handler in handlers.values():
         for transition in tuple(getattr(handler, "transitions", ())):
             key = (int(transition.from_state), int(transition.to_state))
@@ -395,18 +202,16 @@ def collect_valrange_exit_transition_candidates(
 
             total_unresolved += 1
             exit_serial = int(transition.from_block)
-            try:
-                exit_blk = walkers.get_block(mba, exit_serial)
-            except Exception:
-                exit_blk = None
+            exit_blk = flow_graph.get_block(exit_serial)
             if exit_blk is None:
                 continue
 
-            tail_ins = getattr(exit_blk, "tail", None)
-            if tail_ins is None:
+            # Non-empty gate: the live backend resolver anchors its valrange
+            # query at the block tail, so an empty block cannot be resolved.
+            if exit_blk.tail is None:
                 continue
 
-            resolved_value = resolve_state_via_valranges(exit_blk, state_var, tail_ins)
+            resolved_value = resolve_state_via_valranges(exit_serial, state_var)
             if resolved_value is None:
                 continue
 
@@ -436,7 +241,6 @@ __all__ = [
     "ValrangeExitTransitionCandidate",
     "ValrangeExitTransitionDiscovery",
     "collect_condition_chain_default_transition_candidates",
-    "collect_exit_transition_candidates",
     "collect_valrange_exit_transition_candidates",
     "resolve_state_var_stkoff",
 ]

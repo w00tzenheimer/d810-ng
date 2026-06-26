@@ -72,7 +72,6 @@ from d810.analyses.fact_collection_context import (
 )
 from d810.capabilities.providers import (
     get_branch_ownership_provers,
-    get_condition_chain_walkers,
 )
 from d810.capabilities.source_lifter import select_lifter
 from d810.analyses.control_flow.branch_ownership import (
@@ -1788,11 +1787,14 @@ def _iter_mba_instruction_texts(mba: object | None) -> tuple[str, ...]:
         qty = int(getattr(mba, "qty", 0) or 0)
     except (TypeError, ValueError):
         qty = 0
-    walkers = get_condition_chain_walkers()
     texts: list[str] = []
     for serial in range(max(0, qty)):
         try:
-            block = walkers.get_block(mba, int(serial))
+            # ``mba`` is the live mba built in
+            # ``collect_ollvm_branch_ownership_refiners(mba=mba)``; read the
+            # live block directly (F1 pattern), not through the retired
+            # ``get_block`` provider seam (ticket llr-f1cs F5b).
+            block = mba.get_mblock(int(serial))
         except Exception:
             continue
         if block is None:
