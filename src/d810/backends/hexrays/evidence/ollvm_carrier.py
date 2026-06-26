@@ -1083,7 +1083,7 @@ class OllvmCarrierBranchOwnershipOracle:
         if self._mba is None:
             return None
         try:
-            return get_condition_chain_walkers().get_block(self._mba, int(serial))
+            return self._mba.get_mblock(int(serial))
         except Exception:
             return None
 
