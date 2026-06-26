@@ -10,8 +10,9 @@ import importlib
 from dataclasses import dataclass, field
 from enum import Enum
 
-from d810.core.typing import Callable
+from d810.core.typing import Callable, Protocol, runtime_checkable
 from d810.capabilities.providers import get_condition_chain_walkers
+from d810.ir.flowgraph import InsnSnapshot
 from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipProof,
     BranchOwnershipProofKind,
@@ -65,6 +66,44 @@ PredicateResolver = Callable[
     PredicateOwnershipResult,
 ]
 OpcodeLabelResolver = Callable[[object], object | None]
+
+
+@dataclass(frozen=True, slots=True)
+class PredicateRef:
+    """Portable descriptor for one conditional-branch predicate.
+
+    Carries only portable identities across the analyses/backend port: the
+    source block serial, the branch arm, the path predecessor serial, and a
+    portable :class:`~d810.ir.flowgraph.InsnSnapshot` of the branch tail (plus
+    its rendered text for text-driven matchers).  A backend prover re-resolves
+    the live block/operands from the serial; no live ``mblock_t``/``minsn_t``/
+    ``mop_t`` crosses this boundary (ticket llr-f1cs).
+    """
+
+    source_block: int
+    branch_arm: int
+    via_pred: int | None = None
+    tail: InsnSnapshot | None = None
+    tail_text: str = ""
+
+
+@runtime_checkable
+class PredicateOwnershipProver(Protocol):
+    """Backend-supplied prover that resolves a branch predicate's ownership.
+
+    The portable refiner hands a :class:`PredicateRef` (portable identities
+    only) and receives a :class:`PredicateOwnershipResult` or ``None`` when the
+    backend cannot prove anything.  The Hex-Rays implementation lives under
+    ``d810.backends.hexrays.evidence`` (MopTracker symbolic slicing / Z3
+    proofs); it holds the live ``mba`` and re-resolves the block + operands
+    from ``predicate.source_block``.  With no prover injected, analyses
+    classify the arm as :attr:`PredicateOwnershipKind.UNRESOLVED`.
+    """
+
+    def resolve(
+        self,
+        predicate: PredicateRef,
+    ) -> PredicateOwnershipResult | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -1055,6 +1094,8 @@ __all__ = [
     "BranchTargetIdentity",
     "MopTrackerBranchOwnershipOracle",
     "PredicateOwnershipKind",
+    "PredicateOwnershipProver",
     "PredicateOwnershipResult",
+    "PredicateRef",
     "Z3BranchOwnershipOracle",
 ]
