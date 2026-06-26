@@ -28,9 +28,8 @@ diag row carrying a parseable ``meta`` operand tree through the SAME canonical
 ``_value_op_from_instruction``.
 
 A narrow :class:`_OllvmCarrierInsn` adapter exposes exactly that field surface,
-built ``from_canonical``.  The legacy meta-less ``_InstructionView`` flat path
-was removed (S11) -- it was unreachable by any real source once every production
-fact target became a canonical ``FlowGraph``.  Because the carriers are matched
+built ``from_canonical``.  There is no meta-less fallback -- every production
+fact target is a canonical ``FlowGraph``.  Because the carriers are matched
 on ``dstr`` text, the known ``project_diag_instruction`` ``m_call`` ->
 ``InsnKind`` gap does NOT affect this collector: call carriers are recognised
 purely by their rendered text, not by call semantics.

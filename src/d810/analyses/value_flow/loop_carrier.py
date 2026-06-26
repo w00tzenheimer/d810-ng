@@ -18,9 +18,8 @@ diag row carrying a parseable ``meta`` operand tree through the SAME canonical
 :func:`~d810.ir.insn_projection.project_diag_instruction` projection.  The flat
 fields loop_carrier reads (``dest_stkoff`` / ``dest_temp`` / ``src_temps`` /
 ``source_stkoffs`` / ``control_transfer``) are derived off the canonical record.
-The legacy meta-less ``_InstructionView`` flat path was removed (S11) -- it was
-unreachable by any real source once every production fact target became a
-canonical ``FlowGraph``.
+There is no meta-less fallback -- every production fact target is a canonical
+``FlowGraph``.
 """
 from __future__ import annotations
 

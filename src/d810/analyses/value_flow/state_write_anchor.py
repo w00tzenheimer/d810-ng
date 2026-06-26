@@ -42,9 +42,8 @@ pattern.  A collector-local source iterator routes:
   ``dest_size`` are then read off the canonical ``Instruction.result`` and
   ``src_l_value`` off the first canonical input, so a state-write is anchored
   on recovered stack/const semantics rather than opcode-table flat fields.
-The legacy meta-less ``_InstructionView`` flat path was removed (llr-3b41 S11)
--- it was unreachable by any real source once every production fact target
-became a canonical ``FlowGraph``.
+There is no meta-less fallback -- every production fact target is a canonical
+``FlowGraph``.
 
 ``_block_succs`` / ``_block_start_ea_lookup`` / ``_DEST_VAR_RE`` are exported
 unchanged for reuse by the state_transition_anchor collector (S5).

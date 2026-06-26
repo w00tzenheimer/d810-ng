@@ -27,9 +27,8 @@ and an offline diag row carrying a parseable ``meta`` operand tree through the
 SAME canonical :func:`~d810.ir.insn_projection.project_diag_instruction`
 projection.  ``dest_stkoff`` is read off the canonical ``Instruction.result``
 and ``src_l_value`` off the first canonical input, so a transition is anchored
-on recovered stack/const semantics.  The legacy meta-less ``_InstructionView``
-flat path was removed (S11) -- it was unreachable by any real source once every
-production fact target became a canonical ``FlowGraph``.
+on recovered stack/const semantics.  There is no meta-less fallback -- every
+production fact target is a canonical ``FlowGraph``.
 """
 from __future__ import annotations
 

@@ -11,9 +11,8 @@ diag row carrying a parseable ``meta`` operand tree through the SAME canonical
 :func:`~d810.ir.insn_projection.project_diag_instruction` projection.  The
 classifiers read ``control.call_kind`` / ``control.call_target`` off the
 canonical record, so a call anchor is authorized by recovered call semantics,
-not an opcode guess.  The legacy meta-less ``_InstructionView`` flat path was
-removed (S11) -- it was unreachable by any real source once every production
-fact target became a canonical ``FlowGraph``.
+not an opcode guess.  There is no meta-less fallback -- every production fact
+target is a canonical ``FlowGraph``.
 """
 from __future__ import annotations
 
