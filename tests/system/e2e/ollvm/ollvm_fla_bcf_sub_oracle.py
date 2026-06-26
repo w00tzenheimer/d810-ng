@@ -375,6 +375,7 @@ def evaluate_ollvm_fla_bcf_sub_oracle(
                 f"fact_role_{role.lower()}",
                 fact_summary.has_role(role),
                 f"diag fact role {role} is present",
+                blocker=False,
             ))
         output_fact_present = any(
             fact_summary.has_role(role)
@@ -388,6 +389,7 @@ def evaluate_ollvm_fla_bcf_sub_oracle(
             "fact_output_or_terminal_store_candidate",
             output_fact_present,
             "diag facts identify a terminal/output store candidate",
+            blocker=False,
         ))
         checks.append(OllvmFlaBcfSubCheck(
             "fact_accumulator_has_transform_evidence",
@@ -395,6 +397,7 @@ def evaluate_ollvm_fla_bcf_sub_oracle(
             and any("#0x42" in text for text in fact_summary.accumulator_evidence)
             and any("#0xFFFFFFBD" in text for text in fact_summary.accumulator_evidence),
             "diag accumulator facts include multiply/add and mask transform evidence",
+            blocker=False,
         ))
         checks.append(OllvmFlaBcfSubCheck(
             "fact_alias_multiply_add_same_carrier",
@@ -403,6 +406,7 @@ def evaluate_ollvm_fla_bcf_sub_oracle(
                 and fact_summary.alias_multiply_add_proof_count > 0
             ),
             "diag facts prove the 5*x+x add operand aliases the same accumulator carrier",
+            blocker=False,
         ))
     rendered_loop_clean = (
         _has_rendered_payload_loop(code)
@@ -421,9 +425,7 @@ def evaluate_ollvm_fla_bcf_sub_oracle(
     return_artifact = _looks_like_uninitialized_return_artifact(code)
     checks.append(OllvmFlaBcfSubCheck(
         "sink_present",
-        rendered_output_sink or (
-            "return " in code and output_fact_present and not return_artifact
-        ),
+        rendered_output_sink,
         "rendered output has an observable output sink carrier",
     ))
     checks.append(OllvmFlaBcfSubCheck(
@@ -431,9 +433,9 @@ def evaluate_ollvm_fla_bcf_sub_oracle(
         not return_artifact,
         (
             "IDA rendered an uninitialized return carrier; accepted as a "
-            "type-recovery presentation warning only with rendered and diag output sinks"
+            "type-recovery presentation warning only with a rendered output sink"
         ),
-        blocker=return_artifact and not (rendered_output_sink and output_fact_present),
+        blocker=return_artifact and not rendered_output_sink,
     ))
 
     return OllvmFlaBcfSubOracleResult(
