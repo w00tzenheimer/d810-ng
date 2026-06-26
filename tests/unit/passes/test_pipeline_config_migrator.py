@@ -1608,7 +1608,7 @@ def test_ollvm_canary_rollout_stays_single_selectable_and_not_default_routed():
     canary_additional = canary_project["additional_configuration"]
     assert canary_additional["pipeline_v2_mode"] == "config-v2"
     assert canary_additional["recon_fact_profile_modules"] == [
-        "d810.families.state_machine_cff.ollvm_carrier_profile"
+        "d810.backends.hexrays.evidence.ollvm_carrier"
     ]
     assert (
         canary_additional["pipeline_v2"]

@@ -11,7 +11,7 @@ import json
 from dataclasses import fields
 
 from d810.core.observability_models import InstructionSnapshot
-from d810.ir.expressions import Add, And, Const, Move, Sub, ValueOpKind
+from d810.ir.expressions import Add, And, Const, Move, Mul, Sub, ValueOpKind
 from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
 from d810.ir.insn_projection import (
     iter_operand_exprs,
@@ -89,6 +89,7 @@ def test_instruction_record_pins_operation_as_field_not_whole_record():
         "control",
         "memory",
         "attrs",
+        "input_exprs",
     ]
 
 
@@ -1065,3 +1066,33 @@ def test_project_diag_instruction_stx_recovers_address_stkoff_canonically():
     assert d_operand.sub_l.stkoff == 0x7F0
     assert d_operand.stack_refs == (0x7F0,)
     assert canonical.attrs["address_stack_refs"] == (0x7F0,)
+
+
+def test_input_exprs_slot0_is_lifted_tree_for_subinsn_source():
+    # ``jz (var * 5 + var), #0`` -- insn.l is a nested add(mul(var,5), var).
+    mul_node = _subinsn(InsnKind.MUL, _stk(0x3C), _num(5))
+    add_node = _subinsn(InsnKind.ADD, mul_node, _stk(0x3C))
+    insn = _jcc(PredicateKind.EQ, add_node, _num(0))
+
+    instruction = project_instruction(insn)
+
+    expected_tree = Add(
+        left=Mul(
+            left=Move(source=DefinitionRef(location=StackSlot(offset=0x3C, size=4))),
+            right=Const(value=5),
+        ),
+        right=Move(source=DefinitionRef(location=StackSlot(offset=0x3C, size=4))),
+    )
+    assert instruction.input_exprs[0] == expected_tree
+    # slot[1] = insn.r = #0
+    assert instruction.input_exprs[1] == Const(value=0)
+
+
+def test_input_exprs_flat_instruction_yields_shallow_expr():
+    # A plain mov #const -> stack: insn.l is a NUMBER, insn.r is absent.
+    insn = _mov(_num(0x41), _stk(0x10))
+    instruction = project_instruction(insn)
+
+    # slot[0] = Const (shallow), slot[1] = None (no r operand)
+    assert instruction.input_exprs[0] == Const(value=0x41)
+    assert instruction.input_exprs[1] is None

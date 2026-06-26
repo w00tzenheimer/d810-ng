@@ -8,11 +8,14 @@ from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import (
     BlockSnapshot as CfgBlockSnapshot,
+    BlockSnapshot as IRBlockSnapshot,
     FlowGraph,
     InsnKind,
     InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
 )
-from d810.families.state_machine_cff.ollvm_carrier_profile import (
+from d810.backends.hexrays.evidence.ollvm_carrier import (
     OllvmCarrierRawEvidenceCollector,
 )
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
@@ -487,3 +490,233 @@ def test_collects_accumulator_carrier_from_operand_tree_diag_row() -> None:
     assert accumulator_facts[0].payload["carrier_token"] == "%var_378"
     assert accumulator_facts[0].payload["same_carrier_alias_proof"] is True
     assert accumulator_facts[0].payload["instruction_dstr"] == _ACCUM_STORE_TEXT
+
+
+# ---------------------------------------------------------------------------
+# Structural ACCUMULATOR_CARRIER detection (ollvm-carrier-oracle-split port).
+# These fixtures build real ``MopSnapshot`` subinsn trees so the canonical
+# projection populates ``Instruction.input_exprs``, which the carrier record
+# exposes as ``_OllvmCarrierInsn.src_l_expr``.  The structural self-update
+# detection walks that lifted ``ExprRef`` tree (the store value = ``insn.l``)
+# instead of the ``dstr`` regex.  ``display_text`` is still carried so the
+# unchanged (regex-derived) ``_carrier_alias_sets`` recovers
+# ``local_pointer_base`` and so the OLLVM marker gate fires; the out-of-scope
+# LOOP/LOCAL roles still read it.  The payloads are asserted byte-identical to
+# the rendered-text (regex-fallback) fixtures above.
+# ---------------------------------------------------------------------------
+
+
+def _stk(off: int, size: int = 8) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.STACK, stkoff=off, size=size)
+
+
+def _num(value: int, size: int = 4) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.NUMBER, value=value, size=size)
+
+
+def _addr_of_local(base_off: int) -> MopSnapshot:
+    return MopSnapshot(kind=OperandKind.ADDRESS, size=8, stack_refs=(base_off,))
+
+
+def _lea_local_snap(
+    *, idx: int, base_off: int, dest_off: int, base_token: str, dest_token: str
+) -> InsnSnapshot:
+    """``mov &(local).8, carrier.8`` — lea-of-local alias seed."""
+    return InsnSnapshot(
+        opcode=0x4,
+        ea=0x180010000 + idx,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=_addr_of_local(base_off),
+        d=_stk(dest_off),
+        display_text=f"mov    &({base_token}{{43}}).8, {dest_token}.8",
+    )
+
+
+def _var_copy_snap(
+    *, idx: int, src_off: int, dest_off: int, src_token: str, dest_token: str
+) -> InsnSnapshot:
+    """``mov src.8, dst.8`` — var->var copy propagation."""
+    return InsnSnapshot(
+        opcode=0x4,
+        ea=0x180010000 + idx,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=_stk(src_off),
+        d=_stk(dest_off),
+        display_text=f"mov    {src_token}.8, {dest_token}.8",
+    )
+
+
+def _accumulator_snap(
+    *, idx: int, carrier_off: int, addend_off: int, carrier_token: str, addend_token: str
+) -> InsnSnapshot:
+    """``stx ((#5 * carrier) + addend), ds.2, carrier`` self-update store.
+
+    The stored-value subtree (``l``) projects to
+    ``Add(Mul(Const(5), Move(carrier)), Move(addend))`` so ``src_l_expr`` carries
+    the full multiply-add shape; the store target (``d``) is the carrier slot.
+    """
+    mul = MopSnapshot(
+        kind=OperandKind.SUBINSN,
+        sub_kind=InsnKind.MUL,
+        size=4,
+        sub_l=_num(5),
+        sub_r=_stk(carrier_off, size=4),
+    )
+    add = MopSnapshot(
+        kind=OperandKind.SUBINSN,
+        sub_kind=InsnKind.ADD,
+        size=4,
+        sub_l=mul,
+        sub_r=_stk(addend_off, size=4),
+    )
+    return InsnSnapshot(
+        opcode=0x61,
+        ea=0x180010000 + idx,
+        operands=(),
+        kind=InsnKind.STORE,
+        l=add,
+        d=_stk(carrier_off),
+        display_text=(
+            f"stx ((#5.4*[ds.2:{carrier_token}.8].4)+"
+            f"[ds.2:{addend_token}.8].4), ds.2, {carrier_token}.8"
+        ),
+    )
+
+
+def _text_snap(*, idx: int, opcode: int, display_text: str) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=opcode,
+        ea=0x180010000 + idx,
+        operands=(),
+        kind=InsnKind.UNKNOWN,
+        display_text=display_text,
+    )
+
+
+_LOOP_SETB_TEXT = "setb [ds.2:%var_398.8].4, #0x64.4, %var_3A1.1"
+_MARKER_CALL_TEXT = (
+    "low call $0x180000000<fast:_QWORD &(%var_98).8,"
+    "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, %var_58.4"
+)
+
+
+def _ir_flowgraph(serial: int, *insns: InsnSnapshot) -> FlowGraph:
+    block = IRBlockSnapshot(
+        serial=serial,
+        block_type=1,
+        flags=0,
+        succs=(),
+        preds=(),
+        start_ea=0x180010000 + serial,
+        insn_snapshots=tuple(insns),
+    )
+    return FlowGraph(
+        blocks={serial: block},
+        entry_serial=serial,
+        func_ea=0x18000E360,
+    )
+
+
+def test_structural_distinguishes_loop_index_from_accumulator() -> None:
+    facts = _collect(_ir_flowgraph(
+        10,
+        _lea_local_snap(
+            idx=0, base_off=0x18, dest_off=0x378,
+            base_token="%var_18", dest_token="%var_378",
+        ),
+        _var_copy_snap(
+            idx=1, src_off=0x378, dest_off=0x390,
+            src_token="%var_378", dest_token="%var_390",
+        ),
+        _text_snap(idx=2, opcode=0x35, display_text=_LOOP_SETB_TEXT),
+        _accumulator_snap(
+            idx=3, carrier_off=0x378, addend_off=0x390,
+            carrier_token="%var_378", addend_token="%var_390",
+        ),
+        _text_snap(idx=4, opcode=0x10, display_text=_MARKER_CALL_TEXT),
+    ))
+
+    index_facts = [
+        fact for fact in facts if fact.payload["role"] == "LOOP_INDEX_CARRIER"
+    ]
+    accumulator_facts = [
+        fact for fact in facts if fact.payload["role"] == "ACCUMULATOR_CARRIER"
+    ]
+
+    # Exactly one ACCUMULATOR_CARRIER hit (structural-primary, single-emit).
+    assert len(accumulator_facts) == 1
+    assert index_facts[0].payload["carrier_token"] == "%var_398"
+    payload = accumulator_facts[0].payload
+    assert payload["carrier_token"] == "%var_378"
+    assert payload["store_kind"] == "self_update"
+    assert payload["same_carrier_alias_proof"] is True
+    assert payload["multiply_add_same_base_alias_tokens"] == ("%var_390",)
+    assert payload["multiply_add_operand_tokens"] == ("%var_378", "%var_390")
+    assert payload["multiply_add_base_token"] == "%var_18"
+
+
+def test_structural_multiply_add_without_same_base_alias_is_not_proven() -> None:
+    facts = _collect(_ir_flowgraph(
+        10,
+        _lea_local_snap(
+            idx=0, base_off=0x18, dest_off=0x378,
+            base_token="%var_18", dest_token="%var_378",
+        ),
+        _lea_local_snap(
+            idx=1, base_off=0x84, dest_off=0x390,
+            base_token="%var_84", dest_token="%var_390",
+        ),
+        _accumulator_snap(
+            idx=2, carrier_off=0x378, addend_off=0x390,
+            carrier_token="%var_378", addend_token="%var_390",
+        ),
+        _text_snap(idx=3, opcode=0x10, display_text=_MARKER_CALL_TEXT),
+    ))
+
+    accumulator_facts = [
+        fact for fact in facts if fact.payload["role"] == "ACCUMULATOR_CARRIER"
+    ]
+    assert len(accumulator_facts) == 1
+    payload = accumulator_facts[0].payload
+    assert payload["carrier_token"] == "%var_378"
+    assert payload["same_carrier_alias_proof"] is False
+    assert payload["multiply_add_same_base_alias_tokens"] == ()
+    assert payload["multiply_add_base_token"] == "%var_18"
+
+
+def test_structural_accumulator_payload_matches_legacy_golden() -> None:
+    """Byte-identical regression guard: the structural ACCUMULATOR_CARRIER
+    payload equals the exact dict the regex path produces for the canonical
+    ``5*x + addend`` self-update with a shared ``%var_18`` local base."""
+    facts = _collect(_ir_flowgraph(
+        10,
+        _lea_local_snap(
+            idx=0, base_off=0x18, dest_off=0x378,
+            base_token="%var_18", dest_token="%var_378",
+        ),
+        _var_copy_snap(
+            idx=1, src_off=0x378, dest_off=0x390,
+            src_token="%var_378", dest_token="%var_390",
+        ),
+        _accumulator_snap(
+            idx=2, carrier_off=0x378, addend_off=0x390,
+            carrier_token="%var_378", addend_token="%var_390",
+        ),
+        _text_snap(idx=3, opcode=0x10, display_text=_MARKER_CALL_TEXT),
+    ))
+    payload = next(
+        fact.payload for fact in facts
+        if fact.payload["role"] == "ACCUMULATOR_CARRIER"
+    )
+    legacy_golden = {
+        "role": "ACCUMULATOR_CARRIER",
+        "carrier_token": "%var_378",
+        "store_kind": "self_update",
+        "multiply_add_operand_tokens": ("%var_378", "%var_390"),
+        "multiply_add_base_token": "%var_18",
+        "multiply_add_same_base_alias_tokens": ("%var_390",),
+        "same_carrier_alias_proof": True,
+    }
+    assert {k: payload[k] for k in legacy_golden} == legacy_golden

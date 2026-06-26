@@ -7,7 +7,7 @@ import pytest
 
 from d810.core import project as project_callbacks
 from d810.backends.facts.ida import ensure_hexrays_lifter_registered
-from d810.families.state_machine_cff import ollvm_carrier_profile
+from d810.backends.hexrays.evidence import ollvm_carrier as ollvm_carrier_profile
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.ir.insn_projection import InstructionProjection
 from tests.system.runtime.conftest import gen_microcode_at_maturity, get_func_ea
@@ -87,7 +87,7 @@ class TestOllvmCarrierLifterBoundary:
                 return ("raw_fact",)
 
         monkeypatch.setattr(
-            "d810.families.state_machine_cff.ollvm_carrier_profile."
+            "d810.backends.hexrays.evidence.ollvm_carrier."
             "OllvmCarrierRawEvidenceCollector",
             FakeCollector,
         )

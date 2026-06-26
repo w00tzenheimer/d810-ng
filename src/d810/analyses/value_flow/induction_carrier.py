@@ -34,7 +34,7 @@ import json
 from d810.capabilities.source_lifter import select_lifter
 from d810.core.maturity_labels import WITH_ZERO_MATURITY_VALUES
 from d810.core.typing import Any, Iterable
-from d810.ir.expressions import ValueOpKind
+from d810.ir.expressions import ExprRef, ValueOpKind
 from d810.ir.instructions import Instruction, InstructionEffectKind
 from d810.ir.insn_projection import (
     InstructionProjection,
@@ -98,6 +98,11 @@ class _InductionInsn:
     dest_reg: int | None = None
     src_l_reg: int | None = None
     src_r_reg: int | None = None
+    # Lifted operand expression trees (slot-indexed), evidence-only.
+    # Populated from ``Instruction.input_exprs`` on the production projection
+    # branch; ``None`` for diag-style instructions (no canonical Instruction).
+    src_l_expr: "ExprRef | None" = None
+    src_r_expr: "ExprRef | None" = None
 
 
 @dataclass(frozen=True)
@@ -423,6 +428,8 @@ def _induction_insn_from_canonical(
         dest_reg=_reg_from_varnode(dest),
         src_l_reg=_reg_from_varnode(left),
         src_r_reg=_reg_from_varnode(right),
+        src_l_expr=instruction.input_exprs[0] if len(instruction.input_exprs) > 0 else None,
+        src_r_expr=instruction.input_exprs[1] if len(instruction.input_exprs) > 1 else None,
     )
 
 

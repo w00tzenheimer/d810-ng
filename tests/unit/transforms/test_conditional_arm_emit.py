@@ -21,7 +21,7 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     recover_handler_transitions,
 )
 from d810.analyses.value_flow.model import FactObservation
-from d810.families.state_machine_cff.ollvm_carrier_profile import (
+from d810.backends.hexrays.evidence.ollvm_carrier import (
     project_ollvm_value_flow_evidence,
 )
 from d810.analyses.value_flow.state_write import (
