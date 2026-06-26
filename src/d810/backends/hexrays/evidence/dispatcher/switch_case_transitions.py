@@ -38,10 +38,11 @@ def collect_switch_case_transition_facts_from_mba(
     except Exception:
         flow_graph = None
     # Pass the once-lifted ``FlowGraph`` directly as the path-eval block source
-    # (ticket llr-lxas S0); ``evaluate_handler_paths`` reads ``BlockSnapshot``
-    # topology/instructions from it through the dual-shape accessors, replacing
-    # the ``_FlowGraphMBAView`` mimicry projection.  On lift failure fall back to
-    # the live ``mba`` (seam path).
+    # (ticket llr-lxas S0); ``evaluate_handler_paths`` is FlowGraph-only after
+    # the live-``mba`` block-lookup seam was retired (ticket llr-f1cs F5).  On
+    # lift failure the live ``mba`` has no portable block source, so the path
+    # eval raises and the per-handler ``except`` below records a
+    # ``live_extraction_error`` payload for that row.
     path_eval_mba = flow_graph if flow_graph is not None else mba
     case_bodies: list[SwitchCaseBody] = []
     for row in handler_rows:
