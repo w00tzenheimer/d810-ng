@@ -7,18 +7,13 @@ from d810.transforms.graph_modification import (
     GraphModification,
     RedirectGoto,
 )
-from d810.transforms.loop_bound_writer_guard import (
-    LoopBoundWriterDiagnostic,
-    detect_loop_bound_writer_redirect,
-)
+from d810.transforms.loop_bound_writer_guard import LoopBoundWriterDiagnostic
 from d810.transforms.lowering_selector import can_duplicate_path_tail, is_valid_pred_split_pair
 
 
-# ``LoopBoundWriterDiagnostic`` and ``detect_loop_bound_writer_redirect`` are
-# re-exported above from :mod:`d810.transforms.loop_bound_writer_guard` so the
-# shared-group reconstruction emitter can use the same predicate without
-# importing planner internals.  See that module for the four-condition
-# detector.
+# ``LoopBoundWriterDiagnostic`` is imported from
+# :mod:`d810.transforms.loop_bound_writer_guard` to type the loop-bound
+# decision field below.
 
 
 
@@ -378,7 +373,6 @@ def apply_path_tail_emission_plan(
 
 __all__ = [
     "apply_path_tail_emission_plan",
-    "detect_loop_bound_writer_redirect",
     "LoopBoundWriterDiagnostic",
     "PathTailEmissionKind",
     "PathTailEmissionPlan",
