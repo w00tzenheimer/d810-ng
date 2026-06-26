@@ -90,6 +90,7 @@ def test_instruction_record_pins_operation_as_field_not_whole_record():
         "memory",
         "attrs",
         "input_exprs",
+        "operand_expr_fragments",
     ]
 
 
@@ -1096,3 +1097,31 @@ def test_input_exprs_flat_instruction_yields_shallow_expr():
     # slot[0] = Const (shallow), slot[1] = None (no r operand)
     assert instruction.input_exprs[0] == Const(value=0x41)
     assert instruction.input_exprs[1] is None
+
+
+def test_operand_expr_fragments_expose_buried_sub_under_non_binop_wrapper():
+    # ``jge xdu(i - #0x64), #0`` -- the (i - #0x64) Sub is buried under an
+    # UNKNOWN (non-binop / vendor) wrapper. ``_value_of`` of the top operand is
+    # None (returns None on a non-binop SUBINSN, insn_projection.py:613-614), so
+    # input_exprs[0] is None -- but the DEEP iter_operand_exprs walk still surfaces
+    # the Sub on operand_expr_fragments (the contract folded_loop_guard relies on).
+    sub = _subinsn(InsnKind.SUB, _stk(0x1E0), _num(0x64))
+    nested = _subinsn(InsnKind.UNKNOWN, sub, _num(0xFF))
+    insn = _jcc(PredicateKind.SGE, nested, _num(0))
+
+    instruction = project_instruction(insn)
+
+    # The shallow slot is None: _value_of can't lift the non-binop wrapper.
+    assert instruction.input_exprs[0] is None
+    # The DEEP fragments DO contain the buried (i - #0x64) Sub.
+    buried_sub = Sub(
+        left=Move(source=DefinitionRef(location=StackSlot(offset=0x1E0, size=4))),
+        right=Const(value=0x64),
+    )
+    assert buried_sub in instruction.operand_expr_fragments
+    # No fragment is ever None; the walk is the concat of both operand walks
+    # (slot0 fragments ++ slot1 fragments == iter_operand_exprs(l) ++ (r-const)).
+    assert None not in instruction.operand_expr_fragments
+    assert instruction.operand_expr_fragments == (
+        iter_operand_exprs(nested) + (Const(value=0),)
+    )

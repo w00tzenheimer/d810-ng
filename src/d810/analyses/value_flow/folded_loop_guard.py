@@ -31,23 +31,24 @@ target ever is) through ``InstructionProjection.from_block``, and an offline
 diag row carrying a parseable ``meta`` operand tree through the SAME canonical
 :func:`~d810.ir.insn_projection.project_diag_instruction` projection.  Flat
 operands (``dest_stkoff`` / ``src_*``) are read off the canonical record; the
-nested operand SUBTREE (``src_l_mop`` / ``src_r_mop``) is taken from the SOURCE
-``InsnSnapshot.l`` / ``.r`` (FlowGraph) or :func:`parse_diag_meta_operand`
-(diag) ``MopSnapshot`` and walked through the canonical
-:func:`~d810.ir.insn_projection.iter_operand_exprs` API.  The meta-less flat
-fallback was removed (S11) -- it was unreachable by any real source once every
+nested operand fragments needed by the buried-sub walker are read off the
+canonical ``Instruction.operand_expr_fragments`` -- the deep recursive
+:func:`~d810.ir.insn_projection.iter_operand_exprs` walk of the source operand
+trees, populated by the projection for BOTH sources (llr-0s2n).  This analysis
+no longer touches any raw ``MopSnapshot`` subtree.  The meta-less flat fallback
+was removed (S11) -- it was unreachable by any real source once every
 production fact target became a canonical ``FlowGraph``.
 
 **EMBRACE gain (S6, the first port where it bites):** the nested-sub guard
-detection (Shape 2 below) reads ``src_l_mop`` / ``src_r_mop``.  Pre-S6 those
-fields were populated ONLY by the now-deleted legacy flat path, which was
-``None`` on every real source -- so Shape 2 was effectively dead on FlowGraph
-blocks AND operand-tree diag rows.  Routing meta-rich sources through the source
-``MopSnapshot`` now lets a buried ``(counter - #N)`` guard inside an
-``m_xdu`` / ``m_jge`` tree be detected on those sources for the first time -- a
-strict improvement.  The FlowGraph path already exposed nested structure in the
-canonical projection, so its flat-shape output stays byte-identical; only the
-nested-sub recovery is newly reachable.  Meta-less rows stay byte-identical.
+detection (Shape 2 below) reads the deep operand fragments.  Pre-S6 those
+fragments were unreachable from the diag path, which was ``None`` on every real
+source -- so Shape 2 was effectively dead on operand-tree diag rows.  Exposing
+the deep ``iter_operand_exprs`` walk on the canonical ``Instruction`` now lets a
+buried ``(counter - #N)`` guard inside an ``m_xdu`` / ``m_jge`` tree be detected
+on those sources for the first time -- a strict improvement.  The FlowGraph path
+already exposed nested structure in the canonical projection, so its flat-shape
+output stays byte-identical; only the nested-sub recovery is newly reachable.
+Meta-less rows stay byte-identical.
 """
 from __future__ import annotations
 
@@ -57,13 +58,9 @@ from dataclasses import dataclass
 from d810.capabilities.source_lifter import select_lifter
 from d810.core.typing import Any, Iterable
 from d810.ir.expressions import Const, ExprRef, Move, Sub, ValueOpKind
-from d810.ir.flowgraph import MopSnapshot
 from d810.ir.instructions import Instruction
 from d810.ir.insn_projection import (
     InstructionProjection,
-    _diag_meta_payload,
-    iter_operand_exprs,
-    parse_diag_meta_operand,
     project_diag_instruction,
 )
 from d810.ir.locations import RegisterLocation, StackSlot
@@ -137,8 +134,8 @@ def _predicate_kind_of(instruction: Instruction) -> PredicateKind | None:
 class _FoldedGuardInsn:
     """Uniform semantic view consumed by folded_loop_guard's classifiers.
 
-    Built from a canonical :class:`~d810.ir.instructions.Instruction` (plus its
-    source operand ``MopSnapshot`` subtrees).  Exposes ONLY the
+    Built from a canonical :class:`~d810.ir.instructions.Instruction` (including
+    its deep ``operand_expr_fragments``).  Exposes ONLY the
     fields folded_loop_guard reads:
 
     * flat operands -- ``dest_stkoff`` / ``dest_size`` / ``dest_reg`` /
@@ -146,7 +143,9 @@ class _FoldedGuardInsn:
       ``src_r_reg`` / ``src_r_value`` -- for the induction-var enumeration, the
       flat top-level guard (Shape 1) and the state-const-write recovery;
     * semantics -- ``operation`` / ``opcode_name`` / ``predicate_kind``;
-    * nested operand subtrees -- ``src_l_mop`` / ``src_r_mop`` -- for the buried
+    * deep operand fragments -- ``operand_exprs`` -- the recursive
+      ``iter_operand_exprs`` walk of the source operand trees exposed on the
+      canonical ``Instruction.operand_expr_fragments``, for the buried
       ``(counter - #N)`` guard (Shape 2);
     * identity/evidence -- ``block_serial`` / ``insn_index`` / ``ea`` / ``dstr``.
 
@@ -171,8 +170,7 @@ class _FoldedGuardInsn:
     src_r_stkoff: int | None
     src_r_reg: int | None
     src_r_value: int | None
-    src_l_mop: MopSnapshot | None
-    src_r_mop: MopSnapshot | None
+    operand_exprs: tuple[ExprRef, ...]
 
     @classmethod
     def from_canonical(
@@ -181,8 +179,6 @@ class _FoldedGuardInsn:
         block_serial: int,
         index: int,
         instruction: Instruction,
-        src_l_mop: MopSnapshot | None,
-        src_r_mop: MopSnapshot | None,
     ) -> "_FoldedGuardInsn":
         dest, left, right = _canonical_operands(instruction)
         attrs = instruction.attrs
@@ -204,8 +200,7 @@ class _FoldedGuardInsn:
             src_r_stkoff=_stkoff_from_varnode(right),
             src_r_reg=_reg_from_varnode(right),
             src_r_value=_const_value_from_varnode(right),
-            src_l_mop=src_l_mop,
-            src_r_mop=src_r_mop,
+            operand_exprs=tuple(instruction.operand_expr_fragments),
         )
 
 
@@ -213,11 +208,12 @@ def _iter_folded_guard_insns(target: Any) -> Iterable[_FoldedGuardInsn]:
     """Yield folded_loop_guard's semantic record for every instruction.
 
     Canonical-only (llr-3b41 S11): a meta-rich FlowGraph block is projected via
-    ``InstructionProjection.from_block`` (with the source operand
-    ``MopSnapshot`` subtrees attached for the nested-sub walker); an offline
-    diag row carrying a ``meta`` operand tree is lifted via
-    ``project_diag_instruction`` (with the ``l`` / ``r`` operand subtrees parsed
-    from ``meta``).  The meta-less flat fallback was removed -- it was
+    ``InstructionProjection.from_block``; an offline diag row carrying a
+    ``meta`` operand tree is lifted via ``project_diag_instruction``.  Both
+    paths expose the deep recursive ``iter_operand_exprs`` walk of the source
+    operand trees on ``Instruction.operand_expr_fragments`` (llr-0s2n), which
+    the nested-sub walker reads -- no raw ``MopSnapshot`` subtree is touched by
+    this analysis.  The meta-less flat fallback was removed -- it was
     unreachable by any real source once every production fact target became a
     canonical ``FlowGraph``.  A registered live
     :class:`~d810.capabilities.source_lifter.SourceLifter` lifts a backend
@@ -236,27 +232,17 @@ def _iter_folded_guard_insns(target: Any) -> Iterable[_FoldedGuardInsn]:
         if insn_snapshots is not None:
             instructions = InstructionProjection.from_block(blk)
             for index, instruction in enumerate(instructions):
-                source = (
-                    insn_snapshots[index]
-                    if index < len(insn_snapshots)
-                    else None
-                )
                 yield _FoldedGuardInsn.from_canonical(
                     block_serial=block_serial,
                     index=index,
                     instruction=instruction,
-                    src_l_mop=getattr(source, "l", None),
-                    src_r_mop=getattr(source, "r", None),
                 )
             continue
         for index, insn in enumerate(getattr(blk, "instructions", ())):
-            meta = _diag_meta_payload(insn)
             yield _FoldedGuardInsn.from_canonical(
                 block_serial=block_serial,
                 index=int(getattr(insn, "index", index)),
                 instruction=project_diag_instruction(insn),
-                src_l_mop=parse_diag_meta_operand(meta.get("l")),
-                src_r_mop=parse_diag_meta_operand(meta.get("r")),
             )
 
 
@@ -548,20 +534,19 @@ class FoldedLoopGuardFactCollector:
         insn: _FoldedGuardInsn,
         induction: tuple[_InductionVar, ...],
     ) -> tuple[_InductionVar, int] | None:
-        """Walk the operand subtree of ``insn`` for a buried ``(counter - #N)``.
+        """Walk the operand fragments of ``insn`` for a buried ``(counter - #N)``.
 
-        The structured operand snapshots are projected into ``ExprRef``
-        fragments by the IR layer.  Unsupported vendor wrappers remain
-        provenance-only there, but supported child expressions below them still
-        reach this analysis as portable expression nodes.
+        ``operand_exprs`` is the deep recursive ``iter_operand_exprs`` walk of
+        the source operand trees, exposed on
+        ``Instruction.operand_expr_fragments`` by the IR projection.
+        Unsupported vendor wrappers remain provenance-only there, but supported
+        child expressions below them still reach this analysis as portable
+        expression nodes.
         """
-        for root in (insn.src_l_mop, insn.src_r_mop):
-            for expr in iter_operand_exprs(root):
-                match = FoldedLoopGuardFactCollector._match_sub_expr(
-                    expr, induction
-                )
-                if match is not None:
-                    return match
+        for expr in insn.operand_exprs:
+            match = FoldedLoopGuardFactCollector._match_sub_expr(expr, induction)
+            if match is not None:
+                return match
         return None
 
     @staticmethod

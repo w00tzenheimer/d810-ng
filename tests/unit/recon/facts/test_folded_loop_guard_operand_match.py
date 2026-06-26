@@ -27,6 +27,7 @@ from d810.analyses.value_flow.induction_carrier import (
 )
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import InsnKind, MopSnapshot, OperandKind
+from d810.ir.insn_projection import iter_operand_exprs
 from d810.ir.semantics import PredicateKind
 
 
@@ -81,8 +82,7 @@ def _view(
         src_r_stkoff=src_r_stkoff,
         src_r_reg=src_r_reg,
         src_r_value=src_r_value,
-        src_l_mop=None,
-        src_r_mop=None,
+        operand_exprs=(),
     )
 
 
@@ -357,7 +357,9 @@ def test_reg_counter_not_matched_by_stack_operand() -> None:
 #        & (xdu(%var_1D0.1) | #0xFFFFFF9B.4)), #0, @33
 #
 # The flat ``_FoldedGuardInsn`` operand fields are all None for these; only the
-# ``src_l_mop`` / ``src_r_mop`` MopSnapshot subtree carries the counter.
+# deep ``operand_exprs`` fragments (the recursive ``iter_operand_exprs`` walk of
+# the source operand trees the projection exposes on
+# ``Instruction.operand_expr_fragments``) carry the buried counter.
 
 
 def _stk_mop(stkoff: int, size: int = 4) -> MopSnapshot:
@@ -390,8 +392,16 @@ def _tree_view(
     src_l_mop=None,
     src_r_mop=None,
 ) -> _FoldedGuardInsn:
-    """A ``_FoldedGuardInsn`` whose flat operands are empty -- only the
-    structured ``src_l_mop`` / ``src_r_mop`` subtree carries the predicate."""
+    """A ``_FoldedGuardInsn`` whose flat operands are empty -- only the deep
+    ``operand_exprs`` fragments carry the predicate.
+
+    The ``src_l_mop`` / ``src_r_mop`` subtrees are the SAME structured operand
+    ``MopSnapshot`` trees the lifter captures; this helper passes them through
+    the production ``iter_operand_exprs`` walk -- exactly as the projection
+    populates ``Instruction.operand_expr_fragments`` -- so the analysis sees
+    only canonical ``ExprRef`` fragments, never a raw operand snapshot.
+    """
+    operand_exprs = iter_operand_exprs(src_l_mop) + iter_operand_exprs(src_r_mop)
     return _FoldedGuardInsn(
         block_serial=10,
         insn_index=0,
@@ -409,8 +419,7 @@ def _tree_view(
         src_r_stkoff=None,
         src_r_reg=None,
         src_r_value=None,
-        src_l_mop=src_l_mop,
-        src_r_mop=src_r_mop,
+        operand_exprs=operand_exprs,
     )
 
 

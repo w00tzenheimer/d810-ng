@@ -25,6 +25,7 @@ files:
   - "src/d810/analyses/control_flow/instruction_semantics.py"
   - "src/d810/analyses/control_flow/terminal_family.py"
   - "src/d810/analyses/value_flow/call_anchor.py"
+  - "src/d810/analyses/value_flow/folded_loop_guard.py"
   - "src/d810/analyses/value_flow/loop_carrier.py"
   - "src/d810/analyses/value_flow/model.py"
   - "src/d810/analyses/value_flow/return_carrier.py"
