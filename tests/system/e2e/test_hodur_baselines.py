@@ -1,10 +1,12 @@
 """Regression baselines for Hodur unflattening pseudocode metrics.
 
 These tests lock in the expected AFTER-deobfuscation pseudocode metrics
-(statements, returns, whiles, gotos, ifs) for Hodur-unflattened functions.
-Metrics are AST-based (via libclang CodeComparator) to avoid sensitivity
-to cosmetic differences like function signature wrapping, return type
-formatting, or whitespace.
+(statements, returns, whiles, gotos, ifs, calls) for Hodur-unflattened
+functions.  Metrics are AST-based via IDA ctree (count_ast_statements over
+the decompiler AST) to avoid sensitivity to cosmetic differences like
+function signature wrapping, return type formatting, or whitespace.  The
+ctree counter is environment-independent and includes calls to undeclared
+functions that libclang would drop.
 
 Any change to the metrics indicates a regression or improvement that
 must be reviewed.
@@ -12,7 +14,7 @@ must be reviewed.
 Run with:
     pytest tests/system/e2e/test_hodur_baselines.py -v -s
 
-Requires IDA Pro with Hex-Rays and libclang (auto-marked by e2e conftest).
+Requires IDA Pro with Hex-Rays (auto-marked by e2e conftest).
 """
 
 from __future__ import annotations
@@ -25,6 +27,10 @@ import pytest
 
 import idaapi
 import idc
+
+from tests.system.ctree_comparator import (
+    count_ast_statements as ctree_count_ast_statements,
+)
 
 from d810.analyses.control_flow.return_frontier_artifacts import (
     ReturnFrontierArtifactEdgeProof,
@@ -62,9 +68,9 @@ def _get_default_binary() -> str:
 
 
 # Baseline expectations: (function_name, project_json, expected_ast_stats)
-# Keys: statements, returns, whiles, gotos, ifs
-# These are AST-based counts from CodeComparator.count_ast_statements(),
-# immune to cosmetic formatting differences.
+# Keys: statements, returns, whiles, gotos, ifs, calls
+# These are IDA-ctree counts (ctree_count_ast_statements),
+# immune to cosmetic formatting differences and environment rendering variants.
 HODUR_BASELINES = [
     pytest.param(
         "hodur_func",
@@ -72,11 +78,12 @@ HODUR_BASELINES = [
         # unflatten back-edge unflatten (conditional/equality-chain migration, ticket
         # llr-28ht). hodur_func is a pure CONDITION_CHAIN dispatcher; its
         # exact state->handler map IS routed through emit_minimal_unflatten just
-        # like sub_7FFD. The AST metrics are byte-identical to the legacy
-        # emulated path ({statements:39, returns:3, whiles:0, gotos:1, ifs:8}),
-        # proving semantic equivalence; the emulated conditional-chain path is
-        # thus retired for this shape.
-        {"statements": 39, "returns": 3, "whiles": 0, "gotos": 1, "ifs": 8},
+        # like sub_7FFD. Counts from IDA ctree (includes calls to sub_* helpers
+        # that libclang would drop). Old libclang baseline was:
+        # {statements:39, returns:3, whiles:0, gotos:1, ifs:8} (no calls key).
+        # ctree baseline (captured 2026-06-25):
+        # statements:94, returns:3, whiles:0, gotos:1, ifs:11, calls:32
+        {"statements": 94, "returns": 3, "whiles": 0, "gotos": 1, "ifs": 11, "calls": 32},
         id="hodur_func",
     ),
     pytest.param(
@@ -84,7 +91,11 @@ HODUR_BASELINES = [
         "hodur_flag2_s1a.json",
         # unflatten back-edge unflatten on the corrected MASM sample (all 9 work-calls
         # preserved, dispatcher removed, semantically == _gitless reference).
-        {"statements": 95, "returns": 4, "whiles": 0, "gotos": 4, "ifs": 22},
+        # Counts from IDA ctree (env-independent). Old libclang baseline was:
+        # {statements:95, returns:4, whiles:0, gotos:4, ifs:22} (no calls key).
+        # ctree baseline (captured 2026-06-25):
+        # statements:188, returns:4, whiles:0, gotos:4, ifs:23, calls:10
+        {"statements": 188, "returns": 4, "whiles": 0, "gotos": 4, "ifs": 23, "calls": 10},
         id="sub_7FFD3338C040",
     ),
 ]
@@ -132,32 +143,6 @@ def _sub7ffd_work_call_count(code: str) -> int:
     return memory_calls + image_base_calls
 
 
-def _sub7ffd_expected_stat_variants(code: str, expected_stats: dict) -> tuple[dict, ...]:
-    """Return accepted AST metrics for equivalent call-target renderings.
-
-    Local PE type information may name the 0x180000000 import slot ``_ImageBase``
-    while the Docker path renders the same call target as ``MEMORY[0x180000000]``.
-    The call sites are still present; libclang's AST statement count differs by
-    three in that spelling.  Only admit the variant when all nine work calls are
-    visible under the local name.
-    """
-    variants = [expected_stats]
-    docker_stats = {"statements": 95, "returns": 4, "whiles": 0, "gotos": 4, "ifs": 22}
-    local_image_base_stats = {
-        "statements": 92,
-        "returns": 4,
-        "whiles": 0,
-        "gotos": 4,
-        "ifs": 22,
-    }
-    if (
-        code.count("MEMORY[0x180000000]") == 0
-        and code.count("_ImageBase(") == 9
-        and expected_stats == docker_stats
-    ):
-        variants.append(local_image_base_stats)
-    return tuple(variants)
-
 
 @pytest.fixture(scope="class")
 def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_funcs):
@@ -189,14 +174,9 @@ class TestHodurBaselines:
         libobfuscated_setup,
         d810_state,
         pseudocode_to_string,
-        code_comparator,
         request,
     ):
         """Assert AFTER pseudocode AST metrics match the locked-in baseline."""
-        assert code_comparator is not None, (
-            "libclang required for AST-based baseline metrics"
-        )
-
         func_ea = _get_func_ea(func_name)
         if func_ea == idaapi.BADADDR:
             pytest.skip(f"Function '{func_name}' not found in binary")
@@ -226,7 +206,7 @@ class TestHodurBaselines:
                 )
                 code_after = pseudocode_to_string(cfunc.get_pseudocode())
 
-        actual = code_comparator.count_ast_statements(code_after)
+        actual = ctree_count_ast_statements(cfunc)
 
         # Print diagnostics before asserting
         print(f"\n=== HODUR BASELINE: {func_name} ===")
@@ -262,24 +242,12 @@ class TestHodurBaselines:
             )
 
         # Show per-metric diff for any mismatches
-        expected_variants = (
-            _sub7ffd_expected_stat_variants(code_after, expected_stats)
-            if func_name == "sub_7FFD3338C040"
-            else (expected_stats,)
-        )
-        if any(
-            all(
-                actual.get(metric, 0) == expected_val
-                for metric, expected_val in candidate.items()
-            )
-            for candidate in expected_variants
-        ):
+        if actual == expected_stats:
             return
 
         diffs = {}
-        canonical_expected = expected_variants[0]
-        for metric in canonical_expected:
-            expected_val = canonical_expected[metric]
+        for metric in expected_stats:
+            expected_val = expected_stats[metric]
             actual_val = actual.get(metric, 0)
             if actual_val != expected_val:
                 diffs[metric] = (expected_val, actual_val, actual_val - expected_val)

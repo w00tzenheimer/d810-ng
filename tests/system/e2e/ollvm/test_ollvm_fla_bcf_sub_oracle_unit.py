@@ -393,11 +393,14 @@ def test_oracle_rejects_missing_carrier_fact_roles() -> None:
         func_ea_hex="0x000000018000e360",
     )
 
-    assert not result.passed
-    assert any(
-        blocker.name == "fact_role_accumulator_carrier"
-        for blocker in result.blockers
-    )
+    # fact_* checks are non-blocking diagnostics; missing facts produce warnings,
+    # not failures.  Verify the checks are present but not in .blockers.
+    fact_checks = [c for c in result.checks if c.name.startswith("fact_")]
+    assert fact_checks, "expected fact_* checks to be present when conn supplied"
+    assert all(not c.passed for c in fact_checks), "all fact checks should fail (empty DB)"
+    assert not any(
+        b.name.startswith("fact_") for b in result.blockers
+    ), "fact_* checks must not appear in blockers"
 
 
 def test_oracle_rejects_return_result_without_output_sink() -> None:
@@ -444,11 +447,29 @@ def test_oracle_requires_alias_proof_for_multiply_add() -> None:
         func_ea_hex="0x000000018000e360",
     )
 
-    assert not result.passed
-    assert any(
-        blocker.name == "fact_alias_multiply_add_same_carrier"
-        for blocker in result.blockers
+    # fact_alias_multiply_add_same_carrier is now a non-blocking diagnostic;
+    # missing alias proof shows up as a warning, not a gate failure.
+    alias_check = next(
+        c for c in result.checks if c.name == "fact_alias_multiply_add_same_carrier"
     )
+    assert not alias_check.passed, "alias proof should be absent"
+    assert not alias_check.blocker, "alias check must be non-blocking"
+    assert not any(
+        b.name == "fact_alias_multiply_add_same_carrier" for b in result.blockers
+    )
+
+
+def test_fact_witness_checks_are_non_blocking() -> None:
+    # any conn works; we assert the POLICY, not fact presence
+    result = evaluate_ollvm_fla_bcf_sub_oracle(
+        CURRENT_STYLE_AFTER,
+        conn=_diag_db_with_carrier_facts(),
+    )
+    witness = [c for c in result.checks if c.name.startswith("fact_")]
+    assert witness, "expected fact_* witness checks to be present"
+    assert all(not c.blocker for c in witness), \
+        "fact_* checks must be non-blocking diagnostics, not gates"
+    assert not any(b.name.startswith("fact_") for b in result.blockers)
 
 
 def test_report_marks_return_artifact_as_warning() -> None:
