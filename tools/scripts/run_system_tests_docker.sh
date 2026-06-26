@@ -306,8 +306,15 @@ _d810_extra_env_flags() {
 IDA_VENV_PIP="/app/ida/.venv/bin/pip"
 IDA_VENV_PYTHON="/app/ida/.venv/bin/python"
 
-# One-time setup: export env, pip install -e .[dev], d810.speedups.install
-SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON && $IDA_VENV_PIP install -e .[dev] -q && $IDA_VENV_PYTHON -m d810.speedups.install"
+# One-time setup: export env, pip install -e .[dev], d810.speedups.install,
+# then BEST-EFFORT compile the Cython speedups in-container so they load
+# (instead of silently falling back to pure-Python). The build needs a C++
+# toolchain + the IDA SDK; setup.py auto-downloads the SDK from GitHub when
+# IDA_SDK is unset and links against the live IDA runtime (libida.so) via
+# IDA_INSTALL_DIR. If the build fails (no toolchain/SDK), the suite still runs
+# on the pure-Python fallback — the '|| echo' below keeps SETUP_CMD's exit 0.
+SPEEDUPS_BUILD_CMD="D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] --no-build-isolation -q || echo '[speedups] build failed, falling back to pure-Python'"
+SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON && $IDA_VENV_PIP install -e .[dev] -q && $IDA_VENV_PYTHON -m d810.speedups.install && { $SPEEDUPS_BUILD_CMD; }"
 
 run_bash() {
   local inner="$1"
