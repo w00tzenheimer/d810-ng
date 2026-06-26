@@ -100,7 +100,6 @@ source_modules =
     d810.analyses.control_flow.profile_classifier
     d810.analyses.control_flow.transition_condition_chain_adapter
     d810.analyses.control_flow.exit_transition_discovery
-    d810.analyses.control_flow.residual_handoff_discovery
     d810.analyses.control_flow.state_machine_analysis
 forbidden_modules =
     d810.hexrays
