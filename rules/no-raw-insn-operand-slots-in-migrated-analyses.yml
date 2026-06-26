@@ -32,6 +32,7 @@ files:
   - "src/d810/analyses/value_flow/return_frontier.py"
   - "src/d810/analyses/value_flow/state_write_anchor.py"
   - "src/d810/analyses/value_flow/zero_blob.py"
+  - "src/d810/transforms/loop_bound_writer_guard.py"
   - "src/d810/transforms/return_carrier_fact_guard.py"
 ignores:
   - "tests/**"

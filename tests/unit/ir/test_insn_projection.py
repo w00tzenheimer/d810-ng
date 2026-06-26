@@ -1125,3 +1125,34 @@ def test_operand_expr_fragments_expose_buried_sub_under_non_binop_wrapper():
     assert instruction.operand_expr_fragments == (
         iter_operand_exprs(nested) + (Const(value=0),)
     )
+
+
+def test_attrs_preserve_snapshot_kind_distinguishing_branch_kinds():
+    # EQUALITY_JUMP (m_jnz/m_jz) and COND_JUMP (m_jcnd) both project to the
+    # same operation enum (ControlTransferKind.CONDITIONAL_BRANCH), so the
+    # distinguishing portable InsnKind must survive in provenance attrs
+    # (llr-0s2n: loop_bound_writer_guard gates its loop-test on EQUALITY_JUMP).
+    equality = InsnSnapshot(
+        opcode=-1, ea=0x2000, operands=(), kind=InsnKind.EQUALITY_JUMP,
+        l=_stk(0x10), r=_stk(0x20),
+    )
+    cond = InsnSnapshot(
+        opcode=-1, ea=0x2004, operands=(), kind=InsnKind.COND_JUMP,
+        l=_stk(0x10), r=_stk(0x20),
+    )
+
+    eq_instr = project_instruction(equality)
+    cond_instr = project_instruction(cond)
+
+    assert eq_instr.operation is ControlTransferKind.CONDITIONAL_BRANCH
+    assert cond_instr.operation is ControlTransferKind.CONDITIONAL_BRANCH
+    # Same operation, but the snapshot_kind attr keeps them distinguishable.
+    assert eq_instr.attrs.get("snapshot_kind") == InsnKind.EQUALITY_JUMP.value
+    assert cond_instr.attrs.get("snapshot_kind") == InsnKind.COND_JUMP.value
+
+
+def test_attrs_omit_snapshot_kind_for_unknown_insn_kind():
+    # An UNKNOWN-kind snapshot carries no snapshot_kind attr (additive only).
+    insn = InsnSnapshot(opcode=0x12, ea=0x1000, operands=(), kind=InsnKind.UNKNOWN)
+    instruction = project_instruction(insn)
+    assert "snapshot_kind" not in instruction.attrs

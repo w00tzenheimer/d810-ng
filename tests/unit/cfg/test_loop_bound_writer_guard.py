@@ -7,7 +7,15 @@ a diagnostic only for the intended block.
 """
 from __future__ import annotations
 
-from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, OperandKind
+from d810.ir.flowgraph import (
+    BlockKind,
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
 
 
 class _StkOff:
@@ -20,18 +28,37 @@ class _NumValue:
         self.value = value
 
 
-class _Mop:
-    """Minimal mop_t shim.  Set ``t``, plus the appropriate sub-attributes
-    for the type."""
+def _Mop(kind: OperandKind, *, s=None, nnn=None, d=None):
+    """Build a portable ``MopSnapshot`` for the detector's canonical projection.
 
-    def __init__(self, kind: OperandKind, *, s=None, nnn=None, d=None):
-        self.kind = kind
-        self.s = s
-        self.nnn = nnn
-        self.d = d
+    ``s`` carries a stack offset (``_StkOff``), ``nnn`` a constant value
+    (``_NumValue``), and ``d`` a nested ``InsnSnapshot`` (a SUBINSN operand,
+    projected from the wrapped ``m_add`` to ``Add(Move(StackSlot), Const)``)."""
+    if kind is OperandKind.SUBINSN:
+        sub = d
+        return MopSnapshot(
+            size=4,
+            kind=OperandKind.SUBINSN,
+            sub_kind=sub.kind if sub is not None else None,
+            sub_l=sub.l if sub is not None else None,
+            sub_r=sub.r if sub is not None else None,
+        )
+    if kind is OperandKind.NUMBER:
+        return MopSnapshot(size=4, value=int(nnn.value), kind=OperandKind.NUMBER)
+    if kind is OperandKind.STACK:
+        return MopSnapshot(size=4, stkoff=int(s.off), kind=OperandKind.STACK)
+    if kind is OperandKind.LVAR:
+        return MopSnapshot(size=4, lvar_off=0, kind=OperandKind.LVAR)
+    return MopSnapshot(size=4, kind=kind)
 
 
 class _Insn:
+    """Builder that exposes ``.l``/``.r``/``.d`` as portable ``MopSnapshot``s.
+
+    For top-level block instructions it is materialized into a real
+    ``InsnSnapshot`` by ``_insns_of``; as a nested SUBINSN body it is read for
+    its ``kind``/``l``/``r`` operands by ``_Mop(OperandKind.SUBINSN, ...)``."""
+
     def __init__(self, kind: InsnKind, *, ea: int = 0, l=None, r=None, d=None):
         self.kind = kind
         self.ea = ea
@@ -39,6 +66,20 @@ class _Insn:
         self.r = r
         self.d = d
         self.next = None
+
+    def to_snapshot(self) -> InsnSnapshot:
+        operands = tuple(
+            op for op in (self.l, self.r, self.d) if op is not None
+        )
+        return InsnSnapshot(
+            opcode=-1,
+            ea=int(self.ea),
+            operands=operands,
+            l=self.l,
+            r=self.r,
+            d=self.d,
+            kind=self.kind,
+        )
 
 
 class _Mblock:
@@ -247,20 +288,18 @@ class TestDetectLoopCounterWritebackTail:
         assert detect_loop_counter_writeback_tail(None, tail_block_serial=2) is None
 
 
-# Extended ``_Mop`` shim with a ``dstr`` attribute.  The const-writer helper
-# should ignore it and use the structured stack offset instead.
-class _MopWithDstr(_Mop):
-    def __init__(self, t: int, *, s=None, nnn=None, d=None, dstr_text: str = ""):
-        super().__init__(t, s=s, nnn=nnn, d=d)
-        self.dstr = dstr_text
+# ``dstr`` is intentionally dropped: the const-writer helper reads the
+# structured stack offset off the canonical projection, never rendered text.
+def _MopWithDstr(t: OperandKind, *, s=None, nnn=None, d=None, dstr_text: str = ""):
+    return _Mop(t, s=s, nnn=nnn, d=d)
 
 
-def _insns_of(block: _Mblock) -> tuple[_Insn, ...]:
-    """Flatten an ``_Mblock`` head→next chain into a tuple of insns."""
-    insns: list[_Insn] = []
+def _insns_of(block: _Mblock) -> tuple[InsnSnapshot, ...]:
+    """Flatten an ``_Mblock`` head→next chain into portable ``InsnSnapshot``s."""
+    insns: list[InsnSnapshot] = []
     insn = block.head
     while insn is not None:
-        insns.append(insn)
+        insns.append(insn.to_snapshot())
         insn = insn.next
     return tuple(insns)
 
@@ -326,43 +365,27 @@ class TestCollectConstVarRefsInBlock:
 
         assert refs == frozenset({"s552", "s1616", "s1624", "s1632"})
 
-    def test_accepts_semantic_kind_classifiers_for_live_shaped_objects(self):
+    def test_accepts_classifier_params_for_caller_compat(self):
+        """The detector still accepts the legacy classifier parameters.
+
+        The canonical ``Instruction`` projection carries the semantic kind, so
+        the classifiers are no longer consulted; passing them must remain a
+        no-op (callers in ``terminal_byte_emit_fact_guard`` /
+        ``return_carrier_fact_guard`` thread them unconditionally)."""
         from d810.transforms.loop_bound_writer_guard import (
             collect_const_var_refs_in_block,
         )
 
-        class LiveMop:
-            def __init__(self, t, *, nnn=None, s=None, dstr_text=""):
-                self.t = t
-                self.nnn = nnn
-                self.s = s
-                self._dstr = dstr_text
-
-            def dstr(self):
-                return self._dstr
-
-        class LiveInsn:
-            def __init__(self, opcode, *, l=None, d=None):
-                self.opcode = opcode
-                self.l = l
-                self.d = d
-                self.next = None
-
-        src = LiveMop("mop_n", nnn=_NumValue(0xC0FFEE))
-        dst = LiveMop("mop_S", s=_StkOff(0x228), dstr_text="%var_228.8")
-        insn = LiveInsn("m_mov", l=src, d=dst)
+        src = _Mop(OperandKind.NUMBER, nnn=_NumValue(0xC0FFEE))
+        dst = _Mop(OperandKind.STACK, s=_StkOff(0x228))
+        insn = _Insn(InsnKind.MOV, l=src, d=dst)
         flow_graph = _flow_graph_from_blocks([_Mblock(_chain(insn))])
 
         refs = collect_const_var_refs_in_block(
             flow_graph,
             block_serial=0,
-            insn_kind_classifier=lambda obj: (
-                InsnKind.MOV if getattr(obj, "opcode", None) == "m_mov" else None
-            ),
-            operand_kind_classifier=lambda obj: {
-                "mop_n": OperandKind.NUMBER,
-                "mop_S": OperandKind.STACK,
-            }.get(getattr(obj, "t", None)),
+            insn_kind_classifier=lambda obj: None,
+            operand_kind_classifier=lambda obj: None,
         )
 
         assert refs == frozenset({"s552"})

@@ -71,6 +71,13 @@ def _instruction_attrs(insn: InsnSnapshot) -> dict[str, object]:
     attrs["ea"] = int(insn.ea)
     if insn.display_text:
         attrs["display_text"] = str(insn.display_text)
+    # Portable backend-neutral instruction kind (provenance only).  The
+    # operation enum collapses distinct branch kinds (e.g. m_jnz/m_jz
+    # EQUALITY_JUMP and m_jcnd COND_JUMP both become
+    # ControlTransferKind.CONDITIONAL_BRANCH), so analyses that must keep the
+    # original InsnKind distinction read it from here.
+    if insn.kind is not InsnKind.UNKNOWN:
+        attrs.setdefault("snapshot_kind", insn.kind.value)
     raw_opcode = insn.raw_opcode if insn.raw_opcode is not None else insn.opcode
     if raw_opcode >= 0:
         attrs.setdefault("raw_opcode_int", int(raw_opcode))
