@@ -289,6 +289,9 @@ class _SequenceProjector:
                 result=temp,
                 attrs=attrs,
                 input_exprs=(_value_of(mop.sub_l), _value_of(mop.sub_r)),
+                operand_expr_fragments=(
+                    iter_operand_exprs(mop.sub_l) + iter_operand_exprs(mop.sub_r)
+                ),
             )
         )
         return temp
@@ -504,6 +507,9 @@ def project_instruction(insn: InsnSnapshot) -> Instruction:
         memory=_instruction_memory_access(insn, projector),
         attrs=_instruction_attrs(insn),
         input_exprs=(_value_of(insn.l), _value_of(insn.r)),
+        operand_expr_fragments=(
+            iter_operand_exprs(insn.l) + iter_operand_exprs(insn.r)
+        ),
     )
 
 
@@ -531,6 +537,9 @@ def project_instruction_sequence(insn: InsnSnapshot) -> tuple[Instruction, ...]:
         memory=_instruction_memory_access(insn, projector),
         attrs=_instruction_attrs(insn),
         input_exprs=(_value_of(insn.l), _value_of(insn.r)),
+        operand_expr_fragments=(
+            iter_operand_exprs(insn.l) + iter_operand_exprs(insn.r)
+        ),
     )
     return (*projector.instructions, parent)
 

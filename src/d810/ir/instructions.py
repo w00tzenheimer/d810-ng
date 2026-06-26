@@ -146,9 +146,27 @@ class Instruction:
     C-S3 is the first consumer; ``input_exprs[0]`` is the stored-value slot
     for STORE instructions.
     """
+    operand_expr_fragments: tuple[ExprRef, ...] = field(
+        default_factory=tuple, hash=False
+    )
+    """Deep, flattened lifted expression fragments of the source operand trees.
+
+    Unlike ``input_exprs`` -- which is a shallow, slot-indexed ``_value_of`` of
+    each top-level operand and is ``None`` on an unsupported (non-binop) wrapper
+    -- this is the recursive ``iter_operand_exprs`` walk of the SAME operands.
+    A supported child expression buried under a vendor/widen wrapper (e.g. a
+    ``(counter - #N)`` ``Sub`` under an ``m_xdu`` / ``m_jge`` host) survives
+    here even when ``input_exprs`` lifts the top operand to ``None``.
+
+    Evidence-only: ordered ``slot0-fragments ++ slot1-fragments``; never
+    contains ``None``.
+    """
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "inputs", tuple(self.inputs))
         object.__setattr__(self, "effects", tuple(self.effects))
         object.__setattr__(self, "attrs", MappingProxyType(dict(self.attrs)))
         object.__setattr__(self, "input_exprs", tuple(self.input_exprs))
+        object.__setattr__(
+            self, "operand_expr_fragments", tuple(self.operand_expr_fragments)
+        )
