@@ -67,8 +67,8 @@ class _TerminalInsn:
     Exposes the operand surface these collectors read (memory target/value,
     left/right operands, control transfer / predicate / target,
     ``address_const_values``, and the ``attrs`` nested terminal-byte mappings).
-    Built solely from a canonical :class:`~d810.ir.instructions.Instruction`
-    (llr-3b41 S11 deleted the legacy ``_InstructionView`` flat path).
+    Built solely from a canonical :class:`~d810.ir.instructions.Instruction`;
+    there is no meta-less fallback.
     """
 
     block_serial: int

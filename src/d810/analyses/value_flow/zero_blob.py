@@ -10,9 +10,8 @@ offline diag row carrying a parseable ``meta`` operand tree is lifted through
 the SAME projection via :func:`d810.ir.insn_projection.project_diag_instruction`.
 The classifier helpers read ``operation`` / ``memory`` / ``control`` off that
 canonical record, so their facts are canonical-faithful (real
-``ValueOpKind.STORE``, recovered call/memory operands).  The legacy meta-less
-``_InstructionView`` flat path was removed (S11) -- it was unreachable by any
-real source once every production fact target became a canonical ``FlowGraph``.
+``ValueOpKind.STORE``, recovered call/memory operands).  There is no meta-less
+fallback -- every production fact target is a canonical ``FlowGraph``.
 """
 from __future__ import annotations
 

@@ -17,12 +17,9 @@ is adapted to the small canonical :class:`_InductionInsn` record the induction
 classifiers (and the S6-shared :func:`_classify_induction_update` /
 :func:`_operation_of_view`, which ``folded_loop_guard`` duck-types) consume.
 
-S11 deleted the legacy ``_InstructionView`` record, the meta-less
-``_legacy_view_from_diag_row`` flat path, and the shared
-``_iter_instruction_views`` / ``_iter_portable_instructions`` iterators -- the
-meta-less fallback was unreachable by any real source once every production
-fact target became a canonical ``FlowGraph`` (S10).  The canonical operand
-helpers other collectors import from here (e.g.
+There is no meta-less fallback: every production fact target is a canonical
+``FlowGraph`` (S10), so only the canonical projection path is reachable.  The
+canonical operand helpers other collectors import from here (e.g.
 :func:`_canonical_operands`, :func:`_value_op_from_instruction`) stay.
 """
 from __future__ import annotations
@@ -64,10 +61,9 @@ _TARGET_MATURITIES = EARLY_FACT_COLLECTION_IR_MATURITIES
 class _InductionInsn:
     """Canonical-derived semantic view consumed by the induction collector.
 
-    Built solely from a canonical :class:`~d810.ir.instructions.Instruction`
-    (llr-3b41 S11 deleted the legacy ``_InstructionView`` flat path and the
-    meta-less fallback now that every production fact target is a canonical
-    ``FlowGraph``).  Exposes the operand surface the induction classifiers and
+    Built solely from a canonical :class:`~d810.ir.instructions.Instruction`;
+    there is no meta-less fallback now that every production fact target is a
+    canonical ``FlowGraph``.  Exposes the operand surface the induction classifiers and
     the S6-shared :func:`_classify_induction_update` / :func:`_operation_of_view`
     helpers read (stack/register self-update operands plus memory
     ``address_stkoffs``).  ``folded_loop_guard`` duck-types its own
