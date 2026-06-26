@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
 
+from d810.ir.expressions import ExprRef
 from d810.ir.semantics import (
     CallKind,
     ControlTransferKind,
@@ -133,8 +134,21 @@ class Instruction:
     control: InstructionControl | None = None
     memory: InstructionMemoryAccess | None = None
     attrs: Mapping[str, object] = field(default_factory=dict, hash=False)
+    input_exprs: tuple[ExprRef | None, ...] = field(default_factory=tuple, hash=False)
+    """Operand-slot-indexed lifted expression trees for source operands.
+
+    ``input_exprs[0]`` is the lifted ``ExprRef`` for the LEFT source operand
+    (``insn.l``); for an ``m_stx`` STORE this is the STORED VALUE subtree.
+    ``input_exprs[1]`` is the RIGHT source operand tree, or ``None``.
+    Entries are ``None`` when ``_value_of`` cannot lift that operand.
+
+    Evidence-only contract: no analysis reads this field yet (C-S1).
+    C-S3 is the first consumer; ``input_exprs[0]`` is the stored-value slot
+    for STORE instructions.
+    """
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "inputs", tuple(self.inputs))
         object.__setattr__(self, "effects", tuple(self.effects))
         object.__setattr__(self, "attrs", MappingProxyType(dict(self.attrs)))
+        object.__setattr__(self, "input_exprs", tuple(self.input_exprs))

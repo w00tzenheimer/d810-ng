@@ -50,6 +50,7 @@ class InsnKind(Enum):
     ADD = "add"
     SUB = "sub"
     AND = "and"
+    MUL = "mul"
     STORE = "store"
     GOTO = "goto"
     COND_JUMP = "cond_jump"

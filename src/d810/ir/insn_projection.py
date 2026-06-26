@@ -25,7 +25,7 @@ import json
 from collections.abc import Mapping
 from types import MappingProxyType
 
-from d810.ir.expressions import Add, And, Const, ExprRef, Move, Sub, ValueOpKind
+from d810.ir.expressions import Add, And, Const, ExprRef, Move, Mul, Sub, ValueOpKind
 from d810.ir.flowgraph import (
     BlockSnapshot,
     FlowGraph,
@@ -206,6 +206,7 @@ _SUBINSN_VALUE_OPS = {
     InsnKind.ADD: ValueOpKind.ADD,
     InsnKind.SUB: ValueOpKind.SUB,
     InsnKind.AND: ValueOpKind.AND,
+    InsnKind.MUL: ValueOpKind.MUL,
 }
 
 
@@ -287,6 +288,7 @@ class _SequenceProjector:
                 inputs=inputs,
                 result=temp,
                 attrs=attrs,
+                input_exprs=(_value_of(mop.sub_l), _value_of(mop.sub_r)),
             )
         )
         return temp
@@ -501,6 +503,7 @@ def project_instruction(insn: InsnSnapshot) -> Instruction:
         control=_instruction_control(insn, projector),
         memory=_instruction_memory_access(insn, projector),
         attrs=_instruction_attrs(insn),
+        input_exprs=(_value_of(insn.l), _value_of(insn.r)),
     )
 
 
@@ -527,6 +530,7 @@ def project_instruction_sequence(insn: InsnSnapshot) -> tuple[Instruction, ...]:
         control=_instruction_control(insn, projector),
         memory=_instruction_memory_access(insn, projector),
         attrs=_instruction_attrs(insn),
+        input_exprs=(_value_of(insn.l), _value_of(insn.r)),
     )
     return (*projector.instructions, parent)
 
@@ -589,6 +593,7 @@ _BINOP_NODES = {
     InsnKind.ADD: Add,
     InsnKind.SUB: Sub,
     InsnKind.AND: And,
+    InsnKind.MUL: Mul,
 }
 
 
@@ -775,6 +780,8 @@ _OPCODE_NAME_TO_INSN_KIND: Mapping[str, InsnKind] = MappingProxyType(
         "sub": InsnKind.SUB,
         "m_and": InsnKind.AND,
         "and": InsnKind.AND,
+        "m_mul": InsnKind.MUL,
+        "mul": InsnKind.MUL,
         "m_xdu": InsnKind.XDU,
         "xdu": InsnKind.XDU,
         "m_xds": InsnKind.XDS,

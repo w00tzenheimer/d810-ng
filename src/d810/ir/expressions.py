@@ -24,6 +24,7 @@ __all__ = [
     "ExprRef",
     "Load",
     "Move",
+    "Mul",
     "Store",
     "Sub",
     "ValueOpKind",
@@ -113,6 +114,14 @@ class And:
 
 
 @dataclass(frozen=True)
+class Mul:
+    """Two-operand multiplication."""
+
+    left: "ExprRef"
+    right: "ExprRef"
+
+
+@dataclass(frozen=True)
 class Load:
     """A memory load from a computed address."""
 
@@ -127,5 +136,5 @@ class Store:
     value: "ExprRef"
 
 
-ExprRef = Union[Const, Move, Add, Sub, And, Load, Store]
+ExprRef = Union[Const, Move, Add, Sub, And, Mul, Load, Store]
 """Closed union of the concrete expression-node families."""
