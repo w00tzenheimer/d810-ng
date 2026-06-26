@@ -1,18 +1,29 @@
-"""Microcode-backed branch ownership proof production.
+"""Branch ownership proof production (portable classification).
 
-This module is pure classification (``d810.analyses.control_flow``): it only classifies conditional state-machine branch
-arms and emits :class:`BranchOwnershipProof` rows.  It does not plan or apply
-CFG rewrites.
+This module is pure classification (``d810.analyses.control_flow``): it only
+classifies conditional state-machine branch arms and emits
+:class:`BranchOwnershipProof` rows.  It does not plan or apply CFG rewrites,
+and it is Hex-Rays-free.
+
+The engine-backed predicate proofs (MopTracker backward symbolic slicing, Z3
+constant proofs, live-CFG side-effect guards) are NOT here -- they live in the
+Hex-Rays backend adapter
+(:mod:`d810.backends.hexrays.evidence.branch_ownership_prover`) and are injected
+through the :class:`PredicateOwnershipProver` / ``jump_taken_prover`` /
+``side_effect_guard`` ports.  These refiners consume a portable
+:class:`~d810.ir.flowgraph.FlowGraph` snapshot for the block-topology gate and
+hand the backend only a portable :class:`PredicateRef` (block serial + arm +
+predecessor serial + an :class:`~d810.ir.flowgraph.InsnSnapshot` tail).  No live
+``mblock_t``/``minsn_t``/``mop_t`` crosses into this layer, and there is no
+lazy import of any backend/evaluator module (ticket llr-f1cs).
 """
 from __future__ import annotations
 
-import importlib
 from dataclasses import dataclass, field
 from enum import Enum
 
 from d810.core.typing import Callable, Protocol, runtime_checkable
-from d810.capabilities.providers import get_condition_chain_walkers
-from d810.ir.flowgraph import InsnSnapshot
+from d810.ir.flowgraph import FlowGraph, InsnSnapshot
 from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipProof,
     BranchOwnershipProofKind,
@@ -61,10 +72,6 @@ class PredicateOwnershipResult:
     evidence: dict[str, object] = field(default_factory=dict)
 
 
-PredicateResolver = Callable[
-    [object, object | None, int | None],
-    PredicateOwnershipResult,
-]
 OpcodeLabelResolver = Callable[[object], object | None]
 
 
@@ -94,16 +101,38 @@ class PredicateOwnershipProver(Protocol):
     The portable refiner hands a :class:`PredicateRef` (portable identities
     only) and receives a :class:`PredicateOwnershipResult` or ``None`` when the
     backend cannot prove anything.  The Hex-Rays implementation lives under
-    ``d810.backends.hexrays.evidence`` (MopTracker symbolic slicing / Z3
-    proofs); it holds the live ``mba`` and re-resolves the block + operands
-    from ``predicate.source_block``.  With no prover injected, analyses
-    classify the arm as :attr:`PredicateOwnershipKind.UNRESOLVED`.
+    ``d810.backends.hexrays.evidence`` (MopTracker symbolic slicing); it holds
+    the live ``mba`` and re-resolves the block + operands from
+    ``predicate.source_block``.  With no prover injected, analyses classify the
+    arm as :attr:`PredicateOwnershipKind.UNRESOLVED`.
     """
 
     def resolve(
         self,
         predicate: PredicateRef,
     ) -> PredicateOwnershipResult | None: ...
+
+
+@runtime_checkable
+class JumpTakenProver(Protocol):
+    """Backend-supplied prover for the Z3/JumpFixer constant-branch proof.
+
+    Given a portable :class:`PredicateRef`, the backend re-resolves the live
+    tail operands and proves whether the conditional jump is statically taken
+    (``True``), not taken (``False``), or unprovable (``None``).  No live
+    operand crosses back into analyses; only a tri-state boolean does.
+    """
+
+    def prove_jump_taken(
+        self,
+        predicate: PredicateRef,
+    ) -> bool | None: ...
+
+
+SideEffectGuard = Callable[
+    [object | None, int, int],
+    str | None,
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,27 +158,23 @@ class BranchTargetIdentity:
         return self.jump_target if int(arm) == 1 else self.fallthrough_target
 
 
-SideEffectGuard = Callable[
-    [object | None, int, int],
-    str | None,
-]
-
-
 class MopTrackerBranchOwnershipOracle:
-    """Refine diagnostic branch ownership rows with microcode evidence."""
+    """Refine diagnostic branch ownership rows with microcode evidence.
+
+    Portable: the block-topology gate reads a
+    :class:`~d810.ir.flowgraph.FlowGraph` snapshot and the predicate proof is
+    delegated to an injected :class:`PredicateOwnershipProver`.  With no prover
+    injected (headless / portable), every arm stays ``UNRESOLVED``.
+    """
 
     def __init__(
         self,
         *,
-        mba: object | None,
-        max_nb_block: int = 20,
-        max_path: int = 8,
-        predicate_resolver: PredicateResolver | None = None,
+        flow_graph: FlowGraph | None,
+        predicate_resolver: PredicateOwnershipProver | None = None,
         opcode_label_resolver: OpcodeLabelResolver | None = None,
     ) -> None:
-        self._mba = mba
-        self._max_nb_block = max_nb_block
-        self._max_path = max_path
+        self._flow_graph = flow_graph
         self._predicate_resolver = predicate_resolver
         self._opcode_label_resolver = opcode_label_resolver
 
@@ -170,6 +195,8 @@ class MopTrackerBranchOwnershipOracle:
             return None
         if _edge_kind_name(edge) != "CONDITIONAL_TRANSITION":
             return None
+        if self._predicate_resolver is None:
+            return None
 
         block = self._get_block(proof.source_block)
         if block is None or _block_nsucc(block) != 2:
@@ -179,7 +206,16 @@ class MopTrackerBranchOwnershipOracle:
             return None
 
         via_pred = _path_predecessor(edge, proof.source_block)
-        result = self._resolve_predicate(tail, block, via_pred)
+        predicate = PredicateRef(
+            source_block=int(proof.source_block),
+            branch_arm=int(proof.branch_arm),
+            via_pred=via_pred,
+            tail=tail,
+            tail_text=getattr(tail, "display_text", "") or "",
+        )
+        result = self._predicate_resolver.resolve(predicate)
+        if result is None:
+            return None
         if result.kind == PredicateOwnershipKind.PATH_CONSTANT:
             if result.taken is None:
                 return None
@@ -263,47 +299,37 @@ class MopTrackerBranchOwnershipOracle:
         )
 
     def _get_block(self, serial: int) -> object | None:
-        if self._mba is None:
+        if self._flow_graph is None:
             return None
         try:
-            return get_condition_chain_walkers().get_block(self._mba, int(serial))
+            return self._flow_graph.get_block(int(serial))
         except Exception:
             return None
 
-    def _resolve_predicate(
-        self,
-        tail: object,
-        block: object | None,
-        via_pred: int | None,
-    ) -> PredicateOwnershipResult:
-        if self._predicate_resolver is not None:
-            return self._predicate_resolver(tail, block, via_pred)
-        return _resolve_predicate_with_moptracker(
-            self._mba,
-            tail,
-            block=block,
-            via_pred=via_pred,
-            max_nb_block=self._max_nb_block,
-            max_path=self._max_path,
-            opcode_label_resolver=self._opcode_label_resolver,
-        )
-
 
 class Z3BranchOwnershipOracle:
-    """Refine branch ownership rows using read-only JumpFixer/Z3 proofs."""
+    """Refine branch ownership rows using read-only JumpFixer/Z3 proofs.
+
+    Portable: the gate + branch-target topology are computed from a
+    :class:`~d810.ir.flowgraph.FlowGraph` snapshot; the live constant proof is
+    delegated to an injected ``jump_taken_prover``
+    (:class:`JumpTakenProver`), and the discarded-arm side-effect veto to an
+    injected ``side_effect_guard``.  With neither injected, no proof is
+    produced.
+    """
 
     def __init__(
         self,
         *,
-        mba: object | None,
-        prover_factory: Callable[[], object] | None = None,
+        flow_graph: FlowGraph | None,
+        jump_taken_prover: JumpTakenProver | None = None,
         side_effect_guard: SideEffectGuard | None = None,
         discarded_side_effect_depth: int = 3,
         required_constant_markers: tuple[str, ...] = (),
         opcode_label_resolver: OpcodeLabelResolver | None = None,
     ) -> None:
-        self._mba = mba
-        self._prover_factory = prover_factory
+        self._flow_graph = flow_graph
+        self._jump_taken_prover = jump_taken_prover
         self._side_effect_guard = side_effect_guard
         self._discarded_side_effect_depth = max(0, int(discarded_side_effect_depth))
         self._opcode_label_resolver = opcode_label_resolver
@@ -338,7 +364,8 @@ class Z3BranchOwnershipOracle:
         if tail is None:
             return None
 
-        identity = self._prove_branch_identity(block, tail)
+        via_pred = _path_predecessor(edge, proof.source_block)
+        identity = self._prove_branch_identity(proof, block, tail, via_pred)
         if identity is None:
             return None
 
@@ -380,23 +407,25 @@ class Z3BranchOwnershipOracle:
         )
 
     def _get_block(self, serial: int) -> object | None:
-        if self._mba is None:
+        if self._flow_graph is None:
             return None
         try:
-            return get_condition_chain_walkers().get_block(self._mba, int(serial))
+            return self._flow_graph.get_block(int(serial))
         except Exception:
             return None
 
     def _prove_branch_identity(
         self,
+        proof: BranchOwnershipProof,
         block: object,
         tail: object,
+        via_pred: int | None,
     ) -> BranchTargetIdentity | None:
         jump_target = _mop_block_ref(getattr(tail, "d", None))
-        fallthrough_target = _fallthrough_target(block)
+        fallthrough_target = _fallthrough_target(block, jump_target)
         if jump_target is None or fallthrough_target is None:
             return None
-        taken = self._prove_jump_taken(block, tail)
+        taken = self._prove_jump_taken(proof, tail, via_pred)
         if taken is None:
             return None
         chosen_target = jump_target if taken else fallthrough_target
@@ -410,66 +439,45 @@ class Z3BranchOwnershipOracle:
             taken=bool(taken),
         )
 
-    def _prove_jump_taken(self, block: object, tail: object) -> bool | None:
+    def _prove_jump_taken(
+        self,
+        proof: BranchOwnershipProof,
+        tail: object,
+        via_pred: int | None,
+    ) -> bool | None:
         predicate = _predicate_kind(tail, self._opcode_label_resolver)
+
+        # Constant-fold path: pure, snapshot-only, no live operands required.
         if predicate is PredicateKind.TRUTHY:
-            return self._prove_jcnd_taken(block, tail)
+            cond = getattr(tail, "l", None)
+            direct = _constant_mop_value(cond) if cond is not None else None
+            if direct is not None:
+                return int(direct) != 0
+        else:
+            left = getattr(tail, "l", None)
+            right = getattr(tail, "r", None)
+            if left is not None and right is not None:
+                direct = _eval_conditional_from_constants(
+                    tail,
+                    left,
+                    right,
+                    opcode_label_resolver=self._opcode_label_resolver,
+                )
+                if direct is not None:
+                    return direct
 
-        left = getattr(tail, "l", None)
-        right = getattr(tail, "r", None)
-        if left is None or right is None:
+        # Live constant proof: delegate to the injected backend prover.
+        if self._jump_taken_prover is None:
             return None
-        direct = _eval_conditional_from_constants(
-            tail,
-            left,
-            right,
-            opcode_label_resolver=self._opcode_label_resolver,
+        ref = PredicateRef(
+            source_block=int(proof.source_block),
+            branch_arm=int(proof.branch_arm),
+            via_pred=via_pred,
+            tail=tail,
+            tail_text=getattr(tail, "display_text", "") or "",
         )
-        if direct is not None:
-            return direct
-
-        if predicate in {PredicateKind.EQ, PredicateKind.NE}:
-            prover = self._make_prover()
-            if prover is None:
-                return None
-            if _z3_are_equal(prover, left, right, block=block, tail=tail):
-                return predicate is PredicateKind.EQ
-            if _z3_are_unequal(prover, left, right, block=block, tail=tail):
-                return predicate is PredicateKind.NE
-        return None
-
-    def _prove_jcnd_taken(self, block: object, tail: object) -> bool | None:
-        cond = getattr(tail, "l", None)
-        if cond is None:
-            return None
-        direct = _constant_mop_value(cond)
-        if direct is not None:
-            return int(direct) != 0
-
-        prover = self._make_prover()
-        if prover is None:
-            return None
-        if _z3_is_always_zero(prover, cond, block=block, tail=tail):
-            return False
-        if _z3_is_always_nonzero(prover, cond, block=block, tail=tail):
-            return True
-        return None
-
-    def _make_prover(self) -> object | None:
-        if self._prover_factory is not None:
-            try:
-                return self._prover_factory()
-            except Exception:
-                return None
         try:
-            z3_module = importlib.import_module("d810.backends.ast.z3")
-            prover_cls = getattr(z3_module, "Z3MopProver", None)
-        except Exception:
-            return None
-        if prover_cls is None:
-            return None
-        try:
-            return prover_cls()
+            return self._jump_taken_prover.prove_jump_taken(ref)
         except Exception:
             return None
 
@@ -480,17 +488,17 @@ class Z3BranchOwnershipOracle:
         if self._side_effect_guard is not None:
             try:
                 return self._side_effect_guard(
-                    self._mba,
+                    self._flow_graph,
                     int(identity.discarded_target),
                     int(identity.chosen_target),
                 )
             except Exception:
                 return "side_effect_guard_error"
         return _discarded_corridor_side_effect_reason(
-            self._mba,
+            self._flow_graph,
             start_serial=int(identity.discarded_target),
             preserved_target=int(identity.chosen_target),
-            max_depth=int(self._discarded_side_effect_depth),
+            max_depth=self._discarded_side_effect_depth,
             required_constant_markers=self._required_constant_markers,
             opcode_label_resolver=self._opcode_label_resolver,
         )
@@ -554,149 +562,6 @@ class Z3BranchOwnershipOracle:
         )
 
 
-def _resolve_predicate_with_moptracker(
-    mba: object | None,
-    tail: object,
-    *,
-    block: object | None,
-    via_pred: int | None,
-    max_nb_block: int,
-    max_path: int,
-    opcode_label_resolver: OpcodeLabelResolver | None = None,
-) -> PredicateOwnershipResult:
-    l_mop = getattr(tail, "l", None)
-    r_mop = getattr(tail, "r", None)
-    if l_mop is None or r_mop is None:
-        return PredicateOwnershipResult(
-            PredicateOwnershipKind.UNRESOLVED,
-            "missing_predicate_operands",
-        )
-
-    left = _resolve_mop_value(
-        mba,
-        tail,
-        l_mop,
-        block=block,
-        via_pred=via_pred,
-        max_nb_block=max_nb_block,
-        max_path=max_path,
-    )
-    right = _resolve_mop_value(
-        mba,
-        tail,
-        r_mop,
-        block=block,
-        via_pred=via_pred,
-        max_nb_block=max_nb_block,
-        max_path=max_path,
-    )
-    if left is None or right is None:
-        return PredicateOwnershipResult(
-            PredicateOwnershipKind.UNRESOLVED,
-            "moptracker_unresolved_predicate",
-            evidence={
-                "left_resolved": left is not None,
-                "right_resolved": right is not None,
-            },
-        )
-
-    taken = _eval_conditional_tail(
-        tail,
-        int(left),
-        int(right),
-        opcode_label_resolver=opcode_label_resolver,
-    )
-    if taken is None:
-        return PredicateOwnershipResult(
-            PredicateOwnershipKind.UNRESOLVED,
-            "unsupported_conditional_opcode",
-            evidence={
-                "opcode": _opcode_name(tail, opcode_label_resolver),
-                "left_value": int(left) & _MASK64,
-                "right_value": int(right) & _MASK64,
-            },
-        )
-    return PredicateOwnershipResult(
-        PredicateOwnershipKind.PATH_CONSTANT,
-        "moptracker_resolved_predicate_constant",
-        taken=bool(taken),
-        evidence={
-            "opcode": _opcode_name(tail, opcode_label_resolver),
-            "left_value": int(left) & _MASK64,
-            "right_value": int(right) & _MASK64,
-        },
-    )
-
-
-def _resolve_mop_value(
-    mba: object | None,
-    tail: object,
-    mop: object,
-    *,
-    block: object | None,
-    via_pred: int | None,
-    max_nb_block: int,
-    max_path: int,
-) -> int | None:
-    direct = _constant_mop_value(mop)
-    if direct is not None:
-        return direct
-    block = block or getattr(tail, "block", None) or getattr(tail, "blk", None)
-    if block is None and mba is not None:
-        serial = getattr(tail, "block_serial", None)
-        if serial is not None:
-            try:
-                block = get_condition_chain_walkers().get_block(mba, int(serial))
-            except Exception:
-                block = None
-    if block is None:
-        return None
-    try:
-        tracker_module = importlib.import_module(
-            "d810.evaluator.hexrays_microcode.tracker"
-        )
-        MopTracker = getattr(tracker_module, "MopTracker", None)
-        get_all_possibles_values = getattr(
-            tracker_module,
-            "get_all_possibles_values",
-            None,
-        )
-    except Exception:
-        return None
-    if MopTracker is None or get_all_possibles_values is None:
-        return None
-
-    try:
-        MopTracker.reset()
-        tracker = MopTracker(
-            [mop],
-            max_nb_block=max_nb_block,
-            max_path=max_path,
-        )
-        must_use_pred = None
-        if via_pred is not None and mba is not None:
-            try:
-                must_use_pred = get_condition_chain_walkers().get_block(mba, int(via_pred))
-            except Exception:
-                must_use_pred = None
-        histories = tracker.search_backward(
-            block,
-            tail,
-            must_use_pred=must_use_pred,
-        )
-        values = get_all_possibles_values(histories, [mop])
-    except Exception:
-        return None
-    concrete = {
-        int(entry[0])
-        for entry in values
-        if entry and entry[0] is not None
-    }
-    if len(concrete) != 1:
-        return None
-    return next(iter(concrete))
-
-
 def _constant_mop_value(mop: object) -> int | None:
     try:
         vn = varnode_from_mop_snapshot(mop)
@@ -705,7 +570,9 @@ def _constant_mop_value(mop: object) -> int | None:
     if vn is not None and vn.space is Space.CONST:
         return int(vn.offset)
 
-    value = getattr(mop, "nnn_value", None)
+    value = getattr(mop, "value", None)
+    if value is None:
+        value = getattr(mop, "nnn_value", None)
     if value is not None:
         try:
             return int(value)
@@ -782,6 +649,18 @@ def _opcode_name(
         opcode = getattr(tail, "op", None)
     if isinstance(opcode, str):
         return opcode
+    # Prefer the portable predicate identity (snapshot tails carry it) so a
+    # conditional-jump tail renders as its canonical short branch name
+    # ("jz"/"jnz"/"jcnd"/...) rather than the coarse InsnKind value
+    # ("equality_jump"); this keeps ``_opcode_sense`` byte-identical to the
+    # former live-minsn -> resolver -> short-name path.
+    predicate = getattr(tail, "predicate_kind", None)
+    if predicate is None:
+        predicate = getattr(tail, "branch_predicate", None)
+    if isinstance(predicate, PredicateKind):
+        short = conditional_jump_opcode_name(predicate)
+        if short is not None:
+            return short
     kind = getattr(tail, "kind", None)
     kind_value = getattr(kind, "value", kind)
     if isinstance(kind_value, str):
@@ -836,7 +715,9 @@ def _opcode_sense(opcode: str) -> str:
 def _mop_block_ref(mop: object | None) -> int | None:
     if mop is None:
         return None
-    value = getattr(mop, "b", None)
+    value = getattr(mop, "block_ref", None)
+    if value is None:
+        value = getattr(mop, "b", None)
     if value is not None:
         try:
             return int(value)
@@ -851,7 +732,24 @@ def _mop_block_ref(mop: object | None) -> int | None:
     return None
 
 
-def _fallthrough_target(block: object) -> int | None:
+def _fallthrough_target(block: object, jump_target: int | None) -> int | None:
+    """Return the fall-through successor serial for a two-way block.
+
+    Reads the portable :class:`~d810.ir.flowgraph.BlockSnapshot.succs` topology:
+    the fall-through arm is the successor that is not the explicit jump target.
+    Falls back to a live ``block.nextb.serial`` only when the snapshot does not
+    expose ``succs`` (legacy fakes).
+    """
+    succs = getattr(block, "succs", None)
+    if succs is not None:
+        try:
+            succ_serials = [int(s) for s in succs]
+        except (TypeError, ValueError):
+            succ_serials = []
+        if len(succ_serials) == 2 and jump_target is not None:
+            for serial in succ_serials:
+                if serial != int(jump_target):
+                    return serial
     nextb = getattr(block, "nextb", None)
     serial = getattr(nextb, "serial", None)
     if serial is not None:
@@ -862,82 +760,8 @@ def _fallthrough_target(block: object) -> int | None:
     return None
 
 
-def _z3_are_equal(
-    prover: object,
-    left: object,
-    right: object,
-    *,
-    block: object,
-    tail: object,
-) -> bool:
-    try:
-        return bool(prover.are_equal(left, right, blk=block, ins=tail))
-    except TypeError:
-        try:
-            return bool(prover.are_equal(left, right))
-        except Exception:
-            return False
-    except Exception:
-        return False
-
-
-def _z3_are_unequal(
-    prover: object,
-    left: object,
-    right: object,
-    *,
-    block: object,
-    tail: object,
-) -> bool:
-    try:
-        return bool(prover.are_unequal(left, right, blk=block, ins=tail))
-    except TypeError:
-        try:
-            return bool(prover.are_unequal(left, right))
-        except Exception:
-            return False
-    except Exception:
-        return False
-
-
-def _z3_is_always_zero(
-    prover: object,
-    mop: object,
-    *,
-    block: object,
-    tail: object,
-) -> bool:
-    try:
-        return bool(prover.is_always_zero(mop, blk=block, ins=tail))
-    except TypeError:
-        try:
-            return bool(prover.is_always_zero(mop))
-        except Exception:
-            return False
-    except Exception:
-        return False
-
-
-def _z3_is_always_nonzero(
-    prover: object,
-    mop: object,
-    *,
-    block: object,
-    tail: object,
-) -> bool:
-    try:
-        return bool(prover.is_always_nonzero(mop, blk=block, ins=tail))
-    except TypeError:
-        try:
-            return bool(prover.is_always_nonzero(mop))
-        except Exception:
-            return False
-    except Exception:
-        return False
-
-
 def _discarded_corridor_side_effect_reason(
-    mba: object | None,
+    flow_graph: FlowGraph | None,
     *,
     start_serial: int,
     preserved_target: int,
@@ -945,30 +769,36 @@ def _discarded_corridor_side_effect_reason(
     required_constant_markers: tuple[str, ...],
     opcode_label_resolver: OpcodeLabelResolver | None = None,
 ) -> str | None:
-    if mba is None:
+    """Portable, FlowGraph-native discarded-arm side-effect guard.
+
+    Walks the discarded-arm corridor over the portable
+    :class:`~d810.ir.flowgraph.FlowGraph` snapshot (``get_block`` +
+    ``BlockSnapshot.succs``), reading per-block side-effect markers
+    (call/store) off the :class:`~d810.ir.flowgraph.InsnSnapshot` kind /
+    semantic label / rendered text.  No live ``mba`` is consulted -- this is the
+    F4 replacement for the former ``get_block``/``block_successors`` seam BFS.
+    """
+    if flow_graph is None:
         return "missing_mba_for_side_effect_guard"
+    blocks = getattr(flow_graph, "blocks", None)
     try:
-        qty = int(getattr(mba, "qty", 0) or 0)
-    except (TypeError, ValueError):
+        qty = len(blocks) if blocks is not None else 0
+    except TypeError:
         qty = 0
 
-    if qty and (start_serial < 0 or start_serial >= qty):
+    if qty and start_serial not in blocks:
         return "discarded_target_out_of_range"
 
-    walkers = get_condition_chain_walkers()
     visited: set[int] = set()
     queue: list[tuple[int, int]] = [(int(start_serial), 0)]
     while queue:
         serial, depth = queue.pop(0)
         if serial in visited or serial == int(preserved_target):
             continue
-        if qty and (serial < 0 or serial >= qty):
+        if blocks is not None and serial not in blocks:
             continue
         visited.add(serial)
-        try:
-            block = walkers.get_block(mba, int(serial))
-        except Exception:
-            return "discarded_block_unavailable"
+        block = flow_graph.get_block(int(serial))
         if block is None:
             return "discarded_block_unavailable"
 
@@ -986,17 +816,14 @@ def _discarded_corridor_side_effect_reason(
             return "discarded_successors_unknown"
         if nsucc > 2:
             return "discarded_successors_not_local_corridor"
-        try:
-            succs = walkers.block_successors(block)
-        except Exception:
-            return "discarded_successor_unavailable"
-        for idx in range(nsucc):
+        succs = getattr(block, "succs", None) or ()
+        for succ in succs:
             try:
-                succ = int(succs[idx])
-            except Exception:
+                succ_serial = int(succ)
+            except (TypeError, ValueError):
                 return "discarded_successor_unavailable"
-            if succ not in visited:
-                queue.append((succ, depth + 1))
+            if succ_serial not in visited:
+                queue.append((succ_serial, depth + 1))
     return None
 
 
@@ -1028,6 +855,10 @@ def _block_side_effect_reason(
 
 
 def _iter_block_insns(block: object, *, max_insns: int = 512):
+    iterator = getattr(block, "iter_insns", None)
+    if callable(iterator):
+        yield from iterator()
+        return
     insn = getattr(block, "head", None)
     seen = 0
     while insn is not None and seen < max_insns:
@@ -1037,6 +868,9 @@ def _iter_block_insns(block: object, *, max_insns: int = 512):
 
 
 def _format_insn_text(insn: object) -> str:
+    text = getattr(insn, "display_text", None)
+    if text:
+        return str(text)
     dstr = getattr(insn, "dstr", None)
     if callable(dstr):
         try:
@@ -1092,10 +926,12 @@ def _hex_state(value: int | None) -> str | None:
 
 __all__ = [
     "BranchTargetIdentity",
+    "JumpTakenProver",
     "MopTrackerBranchOwnershipOracle",
     "PredicateOwnershipKind",
     "PredicateOwnershipProver",
     "PredicateOwnershipResult",
     "PredicateRef",
+    "SideEffectGuard",
     "Z3BranchOwnershipOracle",
 ]
