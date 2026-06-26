@@ -49,19 +49,12 @@ class ConditionChainWalkerProvider:
     # seams; the backend impl makes the identical call on whichever object it
     # is handed, so behaviour is unchanged for both (ticket llr-zeyu).
     #
-    # WARNING -- TRANSITIONAL VENDOR BRIDGE, NOT the LLVM/LiSA IR end-state
-    # (ticket llr-lxas).  These accessors are phrased in Hex-Rays taxonomy
-    # (fetch a block off an opaque live object by serial) and keep a LIVE
-    # HANDLE alive in portable code: the analyses re-query the source object
-    # mid-analysis instead of consuming a once-lifted ``d810.ir.FlowGraph``.
-    # The portable destination is to lift ``mba_t -> FlowGraph`` at the
-    # optimizer/hodur call boundary so the path analyses take a ``FlowGraph``
-    # and read ``BlockSnapshot.succs`` directly, after which both of these
-    # seams (and the ``_FlowGraphMBAView`` mimicry adapter) are DELETED.
-    # "gate 0" means the live method-CALLS left portable-core text, NOT that
-    # the IR converged.
-    get_block: Callable[..., Any]
-    block_successors: Callable[..., Any]
+    # The transitional ``get_block`` / ``block_successors`` live-block lookup
+    # seams (the last "live handle in portable code" smell) are DELETED here
+    # (ticket llr-f1cs F6 / llr-2sdu S-delete): every former consumer now lifts
+    # ``mba_t -> d810.ir.FlowGraph`` at the call boundary and reads
+    # ``BlockSnapshot.succs`` directly, or (backend-internal) reads the live
+    # block via ``mba.get_mblock``.
     # Unconditional IDB scalar read ``(addr, size) -> int | None`` (loader-supplied
     # ``.data`` / ``.bss`` initializer).  Distinct from the *gated* stable-global
     # seam inside ``forward_eval_insn``: this returns the static initializer for

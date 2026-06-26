@@ -25,8 +25,6 @@ def _fake_provider() -> ConditionChainWalkerProvider:
         walk_handler_chain=lambda *a, **k: "walk",
         forward_eval_insn=lambda *a, **k: "eval",
         resolve_via_condition_chain_walk=lambda *a, **k: "resolve",
-        get_block=lambda mba, serial: ("block", serial),
-        block_successors=lambda block: ("succs", block),
     )
 
 
@@ -76,8 +74,6 @@ class TestConditionChainWalkerProvider:
             "walk_handler_chain",
             "forward_eval_insn",
             "resolve_via_condition_chain_walk",
-            "get_block",
-            "block_successors",
             "fetch_idb_value",
             "operand_stack_offset",
             "operand_number_value",
