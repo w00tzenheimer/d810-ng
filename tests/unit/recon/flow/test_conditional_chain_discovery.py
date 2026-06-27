@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from d810.ir.flowgraph import MopSnapshot, OperandKind
+from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
 from d810.analyses.control_flow.conditional_chain_discovery import (
     extract_check_constant_from_snapshot,
     find_conditional_predecessor,
@@ -42,9 +42,19 @@ def _block(
 
 
 def _numeric_check_tail(*, opcode: int, check_value: int, jump_target: int):
-    return SimpleNamespace(
+    """A real conditional-jump ``InsnSnapshot`` with a numeric RHS check.
+
+    The const is the RIGHT operand (``r``) and the jump target the dest
+    (``d``); ``kind=EQUALITY_JUMP`` makes the canonical projection populate
+    ``control.target`` and the compared-operand ``inputs`` the discovery code
+    reads.
+    """
+    return InsnSnapshot(
         opcode=opcode,
-        l=SimpleNamespace(t=0),
+        ea=0,
+        operands=(),
+        kind=InsnKind.EQUALITY_JUMP,
+        l=None,
         r=MopSnapshot(kind=OperandKind.NUMBER, value=check_value, size=4),
         d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=jump_target),
     )
