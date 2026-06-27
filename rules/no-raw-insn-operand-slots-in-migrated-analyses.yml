@@ -40,6 +40,9 @@ files:
   - "src/d810/analyses/control_flow/conditional_chain_discovery.py"
   - "src/d810/analyses/control_flow/switch_table_analysis.py"
   - "src/d810/analyses/control_flow/exit_path_effect_discovery.py"
+  - "src/d810/analyses/control_flow/guarded_state_machine.py"
+  - "src/d810/analyses/control_flow/local_select_loop.py"
+  - "src/d810/analyses/control_flow/minimal_state_recovery.py"
 ignores:
   - "tests/**"
 

@@ -15,6 +15,9 @@ from d810.ir.expressions import Add, And, Const, Move, Mul, Sub, ValueOpKind
 from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
 from d810.ir.insn_projection import (
     iter_operand_exprs,
+    operand_kinds,
+    operand_stack_offsets,
+    operand_stack_refs,
     operand_storages,
     parse_diag_meta_operand,
     primary_source_operand_kind,
@@ -909,6 +912,99 @@ def test_primary_source_operand_kind_distinguishes_address_from_value():
     assert primary_source_operand_kind(_mov(_reg(0), _stk(0x10))) is OperandKind.REGISTER
     assert primary_source_operand_kind(_mov(_glob(0x401000), _stk(0x10))) is OperandKind.GLOBAL
     assert primary_source_operand_kind(_mov(None, _stk(0x10))) is None
+
+
+def test_operand_kinds_l_r_d_slot_classification():
+    # d81-qlal -- pin the slot-aligned operand-kind accessor the
+    # minimal_state_recovery destination locator consumes.  ``operand_storages``
+    # collapses an LVAR carrying a frame offset to a ``Space.STACK`` view (the
+    # ``varnode_from_mop_snapshot`` promotion), so the kind-gated locator MUST
+    # read the original ``OperandKind`` here to keep an LVAR destination apart
+    # from a genuine STACK destination (legacy ``_is_stack_operand`` gate).
+    insn = InsnSnapshot(
+        opcode=M_MOV,
+        ea=0x1000,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=_num(7),
+        r=_reg(3),
+        d=_stk(0x20),
+    )
+    assert operand_kinds(insn) == (
+        OperandKind.NUMBER,
+        OperandKind.REGISTER,
+        OperandKind.STACK,
+    )
+    # An LVAR destination keeps OperandKind.LVAR even though its storage view may
+    # promote to a STACK Varnode when a frame offset was lifted.
+    lvar_dst = MopSnapshot(kind=OperandKind.LVAR, lvar_off=0x8, lvar_stkoff=0x30, size=4)
+    assert operand_kinds(_mov(_num(1), lvar_dst))[2] is OperandKind.LVAR
+    assert operand_kinds(_mov(None, None)) == (None, None, None)
+
+
+def test_operand_stack_offsets_decodes_direct_address_and_single_ref():
+    # d81-qlal -- pin the per-slot referenced-stack-offset accessor the
+    # stack-address-alias resolver consumes.  The ``Varnode`` storage view
+    # collapses ADDRESS / multi-stack-ref operands to ``Space.UNKNOWN``; this
+    # accessor recovers the SINGLE stack slot an operand names (direct stack,
+    # address-of-stack, or a sole ``stack_ref``), matching the legacy
+    # ``_stack_offset_from_address`` decode.
+    direct = _stk(0x40, size=8)
+    address_of_stack = MopSnapshot(kind=OperandKind.ADDRESS, sub_l=_stk(0x48, size=8))
+    sole_ref = MopSnapshot(kind=OperandKind.ADDRESS, stack_refs=(0x50,))
+    multi_ref = MopSnapshot(kind=OperandKind.ADDRESS, stack_refs=(0x60, 0x68))
+    insn = InsnSnapshot(
+        opcode=M_MOV,
+        ea=0x1000,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=address_of_stack,
+        r=sole_ref,
+        d=direct,
+    )
+    assert operand_stack_offsets(insn) == (0x48, 0x50, 0x40)
+    # A multi-ref ADDRESS operand names no single slot.
+    assert operand_stack_offsets(_mov(multi_ref, _reg(0)))[0] is None
+    # NUMBER / REGISTER operands reference no stack slot.
+    assert operand_stack_offsets(_mov(_num(7), _reg(1))) == (None, None, None)
+    assert operand_stack_offsets(_mov(None, None)) == (None, None, None)
+
+
+def test_operand_stack_refs_per_slot_membership_sets():
+    # d81-qlal -- pin the per-slot stack-ref set accessor the terminal-guard
+    # successor analysis membership-tests (``state_var_stkoff in refs``).  It
+    # reads the operand's lifted ``stack_refs`` set exactly as the legacy
+    # ``getattr(left, "stack_refs", ())`` read did: a compared sub-expression
+    # exposes EVERY referenced slot (the membership the single-offset
+    # ``operand_stack_offsets`` cannot express), an operand carrying no lifted
+    # ``stack_refs`` yields the empty set, and an absent slot yields the empty
+    # set.
+    state_with_refs = MopSnapshot(kind=OperandKind.STACK, stkoff=0x3C, size=8, stack_refs=(0x3C,))
+    multi = MopSnapshot(kind=OperandKind.ADDRESS, stack_refs=(0x3C, 0x40))
+    insn = InsnSnapshot(
+        opcode=0x12,
+        ea=0x1000,
+        operands=(),
+        kind=InsnKind.EQUALITY_JUMP,
+        l=multi,
+        r=_num(0x22),
+        is_conditional_jump=True,
+        branch_predicate=PredicateKind.EQ,
+    )
+    left_refs, right_refs, dest_refs = operand_stack_refs(insn)
+    assert 0x3C in left_refs and 0x40 in left_refs
+    assert right_refs == frozenset()
+    assert dest_refs == frozenset()
+    # A lifted direct-stack operand carries its own offset in ``stack_refs``.
+    assert operand_stack_refs(_mov(state_with_refs, _reg(0)))[0] == frozenset({0x3C})
+    # No lifted ``stack_refs`` (and absent slots) -> empty sets (legacy
+    # ``getattr(..., "stack_refs", ())`` returned the operand's own empty tuple).
+    assert operand_stack_refs(_mov(_stk(0x3C, size=8), _reg(0)))[0] == frozenset()
+    assert operand_stack_refs(_mov(None, None)) == (
+        frozenset(),
+        frozenset(),
+        frozenset(),
+    )
 
 
 # ---------------------------------------------------------------------------

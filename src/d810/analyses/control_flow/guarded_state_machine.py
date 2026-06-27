@@ -1,12 +1,29 @@
-"""Read-only discovery for local guarded constant-state machines."""
+"""Read-only discovery for local guarded constant-state machines.
+
+d81-qlal -- canonical Instruction port.  The operand reads no longer touch the
+backend-shaped ``InsnSnapshot`` operand slots (``.l`` / ``.r`` / ``.d``) and no
+``_operand`` shim / ``operand_slots`` walk / ``getattr`` on a snapshot remains.
+Operand storage views come from
+:func:`~d810.ir.insn_projection.operand_storages` (slot-aligned ``l`` / ``r`` /
+``d``); ``_const_value`` / ``_var_key`` adapt them (or a raw ``MopSnapshot``-shaped
+operand, for the operand-identity unit pins) through the shared
+:func:`~d810.analyses.control_flow._operand_readers._as_varnode` normalizer.
+
+``_const_value`` keeps this module's 32-bit mask and ``_var_key`` keeps its
+size-bearing ``(label, offset, size)`` identity (both distinct from the 64-bit /
+size-agnostic shared readers), so behaviour is byte-identical.
+"""
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind
+from d810.analyses.control_flow._operand_readers import _as_varnode
+from d810.analyses.control_flow.instruction_semantics import is_kind
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+from d810.ir.insn_projection import operand_storages
 from d810.ir.storage_identity import StorageIdentityKind, storage_identity_from_varnode
-from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
+from d810.ir.varnode import Space
 
 
 GUARDED_STATE_MACHINE_FIXES_METADATA_KEY = "guarded_state_machine_fixes"
@@ -31,24 +48,15 @@ class GuardedStateMachineFix:
     success_target: int
 
 
-def _operand(insn: object | None, slot: str) -> object | None:
-    if insn is None:
-        return None
-    for slot_name, operand in getattr(insn, "operand_slots", ()) or ():
-        if slot_name == slot:
-            return operand
-    return getattr(insn, slot, None)
+def _const_value(operand: object | None) -> int | None:
+    """Return the 32-bit-masked numeric constant for a CONST operand, else ``None``.
 
-
-def _varnode(mop: object | None) -> Varnode | None:
-    try:
-        return varnode_from_mop_snapshot(mop)
-    except (AttributeError, TypeError, ValueError):
-        return None
-
-
-def _const_value(mop: object | None) -> int | None:
-    vn = _varnode(mop)
+    Accepts a canonical storage view (``Varnode`` from ``operand_storages``) or a
+    raw ``MopSnapshot``-shaped operand (the operand-identity unit pin), normalized
+    through the shared :func:`_as_varnode`.  Masks to 32 bits (this module's
+    historical width), distinct from the 64-bit shared reader.
+    """
+    vn = _as_varnode(operand)
     if vn is None or vn.space is not Space.CONST:
         return None
     try:
@@ -57,8 +65,14 @@ def _const_value(mop: object | None) -> int | None:
         return None
 
 
-def _var_key(mop: object | None) -> tuple[str, int, int] | None:
-    vn = _varnode(mop)
+def _var_key(operand: object | None) -> tuple[str, int, int] | None:
+    """Return the size-bearing storage identity ``(label, offset, size)``, else ``None``.
+
+    Accepts a canonical storage view or a raw ``MopSnapshot``-shaped operand; the
+    size component keeps this module's identity distinct from the size-agnostic
+    shared ``_var_id``.
+    """
+    vn = _as_varnode(operand)
     identity = storage_identity_from_varnode(vn)
     if identity is None or vn is None:
         return None
@@ -68,33 +82,21 @@ def _var_key(mop: object | None) -> tuple[str, int, int] | None:
     return (label, int(identity.offset), int(vn.size))
 
 
-def _is_mov(insn: object | None) -> bool:
-    if insn is None:
-        return False
-    if getattr(insn, "kind", None) is InsnKind.MOV:
-        return True
-    return str(getattr(insn, "kind", "")) == "InsnKind.MOV"
+def _is_mov(insn: InsnSnapshot | None) -> bool:
+    return is_kind(insn, InsnKind.MOV, "mov")
 
 
-def _is_conditional(insn: object | None) -> bool:
-    if insn is None:
-        return False
-    kind = getattr(insn, "kind", None)
-    if kind in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}:
-        return True
-    return str(kind) in {
-        "InsnKind.COND_JUMP",
-        "InsnKind.EQUALITY_JUMP",
-        "cond_jump",
-        "equality_jump",
-    }
+def _is_conditional(insn: InsnSnapshot | None) -> bool:
+    return is_kind(insn, InsnKind.COND_JUMP, "cond_jump") or is_kind(
+        insn, InsnKind.EQUALITY_JUMP, "equality_jump"
+    )
 
 
-def _iter_movs(block: BlockSnapshot) -> tuple[object, ...]:
+def _iter_movs(block: BlockSnapshot) -> tuple[InsnSnapshot, ...]:
     return tuple(insn for insn in block.insn_snapshots if _is_mov(insn))
 
 
-def _last_insn(block: BlockSnapshot) -> object | None:
+def _last_insn(block: BlockSnapshot) -> InsnSnapshot | None:
     if not block.insn_snapshots:
         return None
     return block.insn_snapshots[-1]
@@ -106,8 +108,9 @@ def _const_assignment(
 ) -> tuple[tuple[str, int, int], int] | None:
     result: tuple[tuple[str, int, int], int] | None = None
     for insn in _iter_movs(block):
-        dst = _var_key(_operand(insn, "d"))
-        value = _const_value(_operand(insn, "l"))
+        left, _right, dest = operand_storages(insn)
+        dst = _var_key(dest)
+        value = _const_value(left)
         if dst is None or value is None:
             continue
         if dest_key is not None and dst != dest_key:
@@ -123,8 +126,9 @@ def _var_assignment(
 ) -> tuple[tuple[str, int, int], tuple[str, int, int]] | None:
     result: tuple[tuple[str, int, int], tuple[str, int, int]] | None = None
     for insn in _iter_movs(block):
-        dst = _var_key(_operand(insn, "d"))
-        src = _var_key(_operand(insn, "l"))
+        left, _right, dest = operand_storages(insn)
+        dst = _var_key(dest)
+        src = _var_key(left)
         if dst is None or src is None:
             continue
         if dest_key is not None and dst != dest_key:
@@ -141,8 +145,7 @@ def _compare_const(
     tail = _last_insn(block)
     if not _is_conditional(tail):
         return None
-    left = _operand(tail, "l")
-    right = _operand(tail, "r")
+    left, right, _dest = operand_storages(tail)
     left_var = _var_key(left)
     right_var = _var_key(right)
     left_const = _const_value(left)

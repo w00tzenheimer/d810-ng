@@ -52,6 +52,9 @@ from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
 __all__ = [
     "InstructionProjection",
     "iter_operand_exprs",
+    "operand_kinds",
+    "operand_stack_offsets",
+    "operand_stack_refs",
     "operand_storages",
     "parse_diag_meta_operand",
     "primary_source_operand_kind",
@@ -723,11 +726,106 @@ def primary_source_operand_kind(insn: InsnSnapshot) -> OperandKind | None:
     return insn.l.kind if insn.l is not None else None
 
 
+def operand_kinds(
+    insn: InsnSnapshot,
+) -> tuple[OperandKind | None, OperandKind | None, OperandKind | None]:
+    """Return the portable :class:`OperandKind` of the ``l``/``r``/``d`` slots.
+
+    Lift-boundary accessor (``d810.ir`` reads the backend-shaped operand slot;
+    portable analyses must not).  Each entry is the operand's portable
+    ``OperandKind`` (or ``None`` for an absent slot).  Pairs with
+    :func:`operand_storages` so a portable analysis can keep apart operand
+    *classifications* the ``Varnode`` storage view collapses -- e.g. an ``LVAR``
+    destination (which :func:`~d810.ir.varnode.varnode_from_mop_snapshot`
+    promotes to a ``Space.STACK`` view when a frame offset was lifted) from a
+    genuine ``STACK`` destination -- preserving the exact ``kind``-gated
+    behaviour of the legacy ``_is_stack_operand`` / ``_is_register_operand``
+    destination locator.
+    """
+    return (
+        insn.l.kind if insn.l is not None else None,
+        insn.r.kind if insn.r is not None else None,
+        insn.d.kind if insn.d is not None else None,
+    )
+
+
 def operand_storages(
     insn: InsnSnapshot,
 ) -> tuple[Varnode | WeakStackSlot | None, ...]:
     """Portable storage views of the ``l``/``r``/``d`` operand slots, in order."""
     return (_storage_view(insn.l), _storage_view(insn.r), _storage_view(insn.d))
+
+
+def _mop_stack_offset(mop: MopSnapshot | None) -> int | None:
+    """Stack offset an operand references: direct STACK, ADDRESS-of-stack, or a
+    sole ``stack_ref``.  ``None`` otherwise.
+
+    Mirrors the legacy ``_stack_offset_from_address`` operand decode exactly: a
+    direct ``STACK`` operand yields its ``stkoff``; an ``ADDRESS`` operand
+    recurses into its inner operand (``sub_l``) and otherwise falls back to a
+    unique ``stack_ref``; any operand carrying exactly one ``stack_ref`` yields
+    it.  This is the structural ADDRESS / ``stack_refs`` information the
+    ``Varnode`` storage view deliberately collapses to ``Space.UNKNOWN``, so the
+    alias-resolution analyses read it from this named lift-boundary accessor
+    instead of the raw operand slot.
+    """
+    if mop is None:
+        return None
+    vn = varnode_from_mop_snapshot(mop)
+    if vn is not None and vn.space is Space.STACK:
+        return int(vn.offset)
+    if mop.kind is OperandKind.ADDRESS:
+        inner = mop.sub_l
+        if inner is not None:
+            return _mop_stack_offset(inner)
+        refs = tuple(mop.stack_refs or ())
+        if len(refs) == 1:
+            return int(refs[0])
+    refs = tuple(mop.stack_refs or ())
+    if len(refs) == 1:
+        return int(refs[0])
+    return None
+
+
+def operand_stack_refs(
+    insn: InsnSnapshot,
+) -> tuple[frozenset[int], frozenset[int], frozenset[int]]:
+    """Per-slot set of stack offsets each ``l``/``r``/``d`` operand references.
+
+    Lift-boundary accessor (``d810.ir`` reads the backend-shaped operand slot;
+    portable analyses must not).  Each entry is the operand's ``stack_refs`` set
+    (the stack offsets flattened from its possibly-nested operand tree -- a
+    direct stack cell, or every stack leaf of a compared sub-expression), so a
+    portable analysis can membership-test ``state_var_stkoff in refs`` exactly as
+    the legacy ``insn.l.stack_refs`` / ``insn.r.stack_refs`` read did, including
+    operands that reference several stack slots.  Empty set for an absent slot.
+    """
+    return (
+        frozenset(int(off) for off in (insn.l.stack_refs if insn.l is not None else ())),
+        frozenset(int(off) for off in (insn.r.stack_refs if insn.r is not None else ())),
+        frozenset(int(off) for off in (insn.d.stack_refs if insn.d is not None else ())),
+    )
+
+
+def operand_stack_offsets(
+    insn: InsnSnapshot,
+) -> tuple[int | None, int | None, int | None]:
+    """Per-slot referenced stack offset for the ``l``/``r``/``d`` operands.
+
+    Lift-boundary accessor (``d810.ir`` reads the backend-shaped operand slot;
+    portable analyses must not).  Each entry is the stack offset the operand
+    *names* -- a direct stack cell, the address of a stack cell, or a sole
+    lifted ``stack_ref`` -- exactly as the legacy
+    ``_stack_offset_from_address`` decode produced, or ``None`` when the operand
+    references no single stack slot.  Lets alias-resolution analyses recover a
+    state write performed through ``&state_slot`` materialized in a register
+    without decoding the ADDRESS / ``stack_refs`` operand tree themselves.
+    """
+    return (
+        _mop_stack_offset(insn.l),
+        _mop_stack_offset(insn.r),
+        _mop_stack_offset(insn.d),
+    )
 
 
 def project_conditional_branch(

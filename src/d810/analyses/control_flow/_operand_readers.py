@@ -218,6 +218,7 @@ def _next_successors(block: BlockSnapshot, env: Env) -> tuple[int, ...] | None:
 __all__ = [
     "Env",
     "VarId",
+    "_as_varnode",
     "_branch_targets",
     "_const_value",
     "_eval_branch",
