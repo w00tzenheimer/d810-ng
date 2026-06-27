@@ -16,27 +16,60 @@ hand the backend only a portable :class:`PredicateRef` (block serial + arm +
 predecessor serial + an :class:`~d810.ir.flowgraph.InsnSnapshot` tail).  No live
 ``mblock_t``/``minsn_t``/``mop_t`` crosses into this layer, and there is no
 lazy import of any backend/evaluator module (ticket llr-f1cs).
+
+d81-qlal -- canonical Instruction port (private helper layer).  The public
+classes / Protocols were already strongly typed; this slice strong-types the
+residual ``_*`` helper layer and reads branch operands through the canonical
+projection instead of backend-shaped ``InsnSnapshot`` operand slots:
+
+* the conditional jump target (was ``_mop_block_ref(tail.d)``) is read off
+  ``Instruction.control.target`` (the projection populates it from the branch's
+  block operand ``block_ref``);
+* the branch predicate (was ``tail.predicate_kind`` / ``tail.branch_predicate``)
+  is read off ``Instruction.control.predicate`` / the snapshot's
+  ``predicate_kind``;
+* the compared operands (was ``tail.l`` / ``tail.r``) are read off the
+  slot-aligned :func:`~d810.ir.insn_projection.operand_storages` views, and their
+  constants off ``_const_value_from_varnode``;
+* the compare width (was ``conditional_operand_size(tail.l, tail.r)``) comes off
+  the canonical ``operand_storages`` view sizes (``_compare_operand_size``).
+
+The two ``_*`` helpers re-exported to the Hex-Rays backend prover
+(``_constant_mop_value`` / ``_eval_conditional_tail`` / ``_predicate_kind`` /
+``_opcode_name``) stay polymorphic over a portable ``MopSnapshot`` *or* a live
+``mop_t`` (the backend re-resolves the live tail and hands a live operand); the
+live-resolution itself lives in the backend (MopTracker / Z3), not here.  The
+``edge`` is a portable :class:`~d810.analyses.control_flow.linearized_state_dag.StateDagEdge`
+in production but a duck-typed namespace in unit fixtures, so the edge readers
+stay structurally polymorphic (non-operand-slot getattr, justified).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
 
+from d810.analyses.control_flow.conditional_jump_eval import (
+    conditional_jump_opcode_name,
+    predicate_jump_taken,
+)
+from d810.analyses.value_flow.induction_carrier import _const_value_from_varnode
 from d810.core.typing import Callable, Protocol, runtime_checkable
-from d810.ir.flowgraph import FlowGraph, InsnSnapshot
+from d810.ir.expressions import ValueOpKind
+from d810.ir.flowgraph import (
+    BlockSnapshot,
+    FlowGraph,
+    InsnSnapshot,
+    MopSnapshot,
+    PredicateKind,
+)
+from d810.ir.insn_projection import operand_storages, project_instruction
+from d810.ir.semantics import CallKind
 from d810.analyses.control_flow.branch_ownership import (
     BranchOwnershipProof,
     BranchOwnershipProofKind,
 )
-from d810.analyses.control_flow.conditional_jump_eval import (
-    conditional_jump_opcode_name,
-    conditional_operand_size,
-    predicate_jump_taken,
-)
-from d810.ir.expressions import ValueOpKind
-from d810.ir.flowgraph import PredicateKind
-from d810.ir.semantics import CallKind
-from d810.ir.varnode import Space, varnode_from_mop_snapshot
+from d810.ir.locations import WeakStackSlot
+from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
 
 _MASK64 = 0xFFFFFFFFFFFFFFFF
 _SHORT_JUMP_PREDICATES = {
@@ -72,6 +105,11 @@ class PredicateOwnershipResult:
     evidence: dict[str, object] = field(default_factory=dict)
 
 
+# An opcode-label resolver maps a tail instruction (a portable ``InsnSnapshot``
+# in production, a duck-typed namespace in fixtures) to a portable semantic
+# label (``PredicateKind`` / ``ValueOpKind`` / ``CallKind``) or a short opcode
+# name string; ``None`` when it cannot resolve one.  It stays ``object``-typed
+# on the input because the backend may inject a live-mba resolver.
 OpcodeLabelResolver = Callable[[object], object | None]
 
 
@@ -129,8 +167,11 @@ class JumpTakenProver(Protocol):
     ) -> bool | None: ...
 
 
+# A side-effect guard inspects the discarded-arm corridor over a portable
+# ``FlowGraph`` (or ``None``) given ``(discarded_target, chosen_target)`` block
+# serials and returns a veto reason string, else ``None``.
 SideEffectGuard = Callable[
-    [object | None, int, int],
+    [FlowGraph | None, int, int],
     str | None,
 ]
 
@@ -201,7 +242,7 @@ class MopTrackerBranchOwnershipOracle:
         block = self._get_block(proof.source_block)
         if block is None or _block_nsucc(block) != 2:
             return None
-        tail = getattr(block, "tail", None)
+        tail = block.tail
         if tail is None:
             return None
 
@@ -211,7 +252,7 @@ class MopTrackerBranchOwnershipOracle:
             branch_arm=int(proof.branch_arm),
             via_pred=via_pred,
             tail=tail,
-            tail_text=getattr(tail, "display_text", "") or "",
+            tail_text=tail.display_text or "",
         )
         result = self._predicate_resolver.resolve(predicate)
         if result is None:
@@ -298,7 +339,7 @@ class MopTrackerBranchOwnershipOracle:
             payload=dict(proof.payload),
         )
 
-    def _get_block(self, serial: int) -> object | None:
+    def _get_block(self, serial: int) -> BlockSnapshot | None:
         if self._flow_graph is None:
             return None
         try:
@@ -360,7 +401,7 @@ class Z3BranchOwnershipOracle:
         block = self._get_block(proof.source_block)
         if block is None or _block_nsucc(block) != 2:
             return None
-        tail = getattr(block, "tail", None)
+        tail = block.tail
         if tail is None:
             return None
 
@@ -406,7 +447,7 @@ class Z3BranchOwnershipOracle:
             evidence=evidence,
         )
 
-    def _get_block(self, serial: int) -> object | None:
+    def _get_block(self, serial: int) -> BlockSnapshot | None:
         if self._flow_graph is None:
             return None
         try:
@@ -417,11 +458,11 @@ class Z3BranchOwnershipOracle:
     def _prove_branch_identity(
         self,
         proof: BranchOwnershipProof,
-        block: object,
-        tail: object,
+        block: BlockSnapshot,
+        tail: InsnSnapshot,
         via_pred: int | None,
     ) -> BranchTargetIdentity | None:
-        jump_target = _mop_block_ref(getattr(tail, "d", None))
+        jump_target = _jump_target_block(tail)
         fallthrough_target = _fallthrough_target(block, jump_target)
         if jump_target is None or fallthrough_target is None:
             return None
@@ -442,26 +483,30 @@ class Z3BranchOwnershipOracle:
     def _prove_jump_taken(
         self,
         proof: BranchOwnershipProof,
-        tail: object,
+        tail: InsnSnapshot,
         via_pred: int | None,
     ) -> bool | None:
         predicate = _predicate_kind(tail, self._opcode_label_resolver)
 
         # Constant-fold path: pure, snapshot-only, no live operands required.
+        # The compared operands come from the canonical ``operand_storages``
+        # views (was ``tail.l`` / ``tail.r``), and their constants off the
+        # ``Space.CONST`` varnode -- never from a raw operand slot.
+        left_storage, right_storage, _dest = operand_storages(tail)
         if predicate is PredicateKind.TRUTHY:
-            cond = getattr(tail, "l", None)
-            direct = _constant_mop_value(cond) if cond is not None else None
+            direct = _const_storage_value(left_storage)
             if direct is not None:
                 return int(direct) != 0
         else:
-            left = getattr(tail, "l", None)
-            right = getattr(tail, "r", None)
+            left = _const_storage_value(left_storage)
+            right = _const_storage_value(right_storage)
             if left is not None and right is not None:
-                direct = _eval_conditional_from_constants(
+                direct = _eval_conditional_tail(
                     tail,
-                    left,
-                    right,
+                    int(left),
+                    int(right),
                     opcode_label_resolver=self._opcode_label_resolver,
+                    operand_size=_compare_operand_size(left_storage, right_storage),
                 )
                 if direct is not None:
                     return direct
@@ -474,7 +519,7 @@ class Z3BranchOwnershipOracle:
             branch_arm=int(proof.branch_arm),
             via_pred=via_pred,
             tail=tail,
-            tail_text=getattr(tail, "display_text", "") or "",
+            tail_text=tail.display_text or "",
         )
         try:
             return self._jump_taken_prover.prove_jump_taken(ref)
@@ -562,7 +607,48 @@ class Z3BranchOwnershipOracle:
         )
 
 
-def _constant_mop_value(mop: object) -> int | None:
+def _const_storage_value(
+    storage: Varnode | WeakStackSlot | None,
+) -> int | None:
+    """Return the numeric constant of a canonical ``Space.CONST`` storage view.
+
+    Reads the constant off the slot-aligned ``operand_storages`` view rather
+    than a raw operand slot; ``None`` for any non-constant storage.
+    """
+    if isinstance(storage, Varnode):
+        return _const_value_from_varnode(storage)
+    return None
+
+
+def _compare_operand_size(
+    *storages: Varnode | WeakStackSlot | None,
+) -> int:
+    """Return the first concrete compare-operand size, else dword semantics.
+
+    Mirrors :func:`~d810.analyses.control_flow.conditional_jump_eval.conditional_operand_size`
+    (first non-zero operand size, default 4) but over the canonical
+    ``operand_storages`` views instead of raw operand slots.
+    """
+    for storage in storages:
+        size = getattr(storage, "size", None)
+        if size is not None:
+            try:
+                return max(1, int(size))
+            except (TypeError, ValueError):
+                continue
+    return 4
+
+
+def _constant_mop_value(mop: MopSnapshot | None) -> int | None:
+    """Return the constant value of a portable (or rich) operand snapshot.
+
+    Re-exported to the Hex-Rays backend prover, which hands it a live ``mop_t``
+    while a constant operand is resolved by the engine, not here; for such a
+    live operand this returns ``None`` (the ``varnode_from_mop_snapshot`` adapter
+    yields no ``Space.CONST`` view and ``mop.value`` is not an ``int``), so the
+    polymorphic ``getattr(mop, "value", ...)`` read on a non-portable snapshot
+    is justified and is *not* an operand-slot read.
+    """
     try:
         vn = varnode_from_mop_snapshot(mop)
     except (AttributeError, TypeError, ValueError):
@@ -571,8 +657,6 @@ def _constant_mop_value(mop: object) -> int | None:
         return int(vn.offset)
 
     value = getattr(mop, "value", None)
-    if value is None:
-        value = getattr(mop, "nnn_value", None)
     if value is not None:
         try:
             return int(value)
@@ -582,18 +666,27 @@ def _constant_mop_value(mop: object) -> int | None:
 
 
 def _eval_conditional_tail(
-    tail: object,
+    tail: InsnSnapshot,
     left: int,
     right: int,
     opcode_label_resolver: OpcodeLabelResolver | None = None,
+    *,
+    operand_size: int | None = None,
 ) -> bool | None:
+    """Evaluate a conditional tail over already-folded ``left``/``right``.
+
+    ``operand_size`` is the compare width: portable callers pass the canonical
+    ``operand_storages`` view size (``_compare_operand_size``), and the Hex-Rays
+    backend prover passes the live operand size; when ``None`` it defaults to
+    dword semantics (the legacy ``conditional_operand_size`` default).
+    """
     predicate = _predicate_kind(tail, opcode_label_resolver)
-    size = conditional_operand_size(getattr(tail, "l", None), getattr(tail, "r", None))
+    size = operand_size if operand_size is not None else 4
     return predicate_jump_taken(predicate, left, right, operand_size=size)
 
 
 def _predicate_kind(
-    tail: object,
+    tail: InsnSnapshot,
     opcode_label_resolver: OpcodeLabelResolver | None = None,
 ) -> PredicateKind | None:
     raw = getattr(tail, "predicate_kind", None)
@@ -617,36 +710,15 @@ def _predicate_kind(
     return _SHORT_JUMP_PREDICATES.get(canonical)
 
 
-def _eval_conditional_from_constants(
-    tail: object,
-    left_mop: object,
-    right_mop: object,
-    opcode_label_resolver: OpcodeLabelResolver | None = None,
-) -> bool | None:
-    left = _constant_mop_value(left_mop)
-    if left is None:
-        return None
-    right = _constant_mop_value(right_mop)
-    if right is None:
-        return None
-    return _eval_conditional_tail(
-        tail,
-        int(left),
-        int(right),
-        opcode_label_resolver=opcode_label_resolver,
-    )
-
-
 def _opcode_name(
-    tail: object,
+    tail: InsnSnapshot,
     opcode_label_resolver: OpcodeLabelResolver | None = None,
 ) -> str:
-    name = getattr(tail, "opcode_name", None)
-    if isinstance(name, str) and name:
-        return name
+    # ``tail.opcode`` is the structural opcode integer (an ``InsnSnapshot`` field
+    # / a live minsn opcode), not an operand slot.  The former ``opcode_name`` /
+    # ``op`` text probes were dead: neither is a field on the portable or rich
+    # ``InsnSnapshot``, on a live minsn, or on the fixture namespaces.
     opcode = getattr(tail, "opcode", None)
-    if opcode is None:
-        opcode = getattr(tail, "op", None)
     if isinstance(opcode, str):
         return opcode
     # Prefer the portable predicate identity (snapshot tails carry it) so a
@@ -712,51 +784,35 @@ def _opcode_sense(opcode: str) -> str:
     }.get(canonical, opcode)
 
 
-def _mop_block_ref(mop: object | None) -> int | None:
-    if mop is None:
+def _jump_target_block(tail: InsnSnapshot) -> int | None:
+    """Return the conditional branch's explicit jump-target block serial.
+
+    Read off the canonical ``Instruction.control.target`` (the projection
+    populates it from the branch's block operand ``block_ref``), never from the
+    raw ``tail.d`` operand slot.  The former ``_mop_block_ref`` text probes
+    (``.b`` / ``.target``) were dead: neither is a field on the portable or rich
+    ``MopSnapshot`` (which carry ``block_ref`` / ``block_num``).
+    """
+    control = project_instruction(tail).control
+    if control is None or control.target is None:
         return None
-    value = getattr(mop, "block_ref", None)
-    if value is None:
-        value = getattr(mop, "b", None)
-    if value is not None:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
-    target = getattr(mop, "target", None)
-    if target is not None:
-        try:
-            return int(target)
-        except (TypeError, ValueError):
-            return None
-    return None
+    return int(control.target)
 
 
-def _fallthrough_target(block: object, jump_target: int | None) -> int | None:
+def _fallthrough_target(block: BlockSnapshot, jump_target: int | None) -> int | None:
     """Return the fall-through successor serial for a two-way block.
 
     Reads the portable :class:`~d810.ir.flowgraph.BlockSnapshot.succs` topology:
     the fall-through arm is the successor that is not the explicit jump target.
-    Falls back to a live ``block.nextb.serial`` only when the snapshot does not
-    expose ``succs`` (legacy fakes).
     """
-    succs = getattr(block, "succs", None)
-    if succs is not None:
-        try:
-            succ_serials = [int(s) for s in succs]
-        except (TypeError, ValueError):
-            succ_serials = []
-        if len(succ_serials) == 2 and jump_target is not None:
-            for serial in succ_serials:
-                if serial != int(jump_target):
-                    return serial
-    nextb = getattr(block, "nextb", None)
-    serial = getattr(nextb, "serial", None)
-    if serial is not None:
-        try:
-            return int(serial)
-        except (TypeError, ValueError):
-            return None
+    try:
+        succ_serials = [int(s) for s in block.succs]
+    except (TypeError, ValueError):
+        succ_serials = []
+    if len(succ_serials) == 2 and jump_target is not None:
+        for serial in succ_serials:
+            if serial != int(jump_target):
+                return serial
     return None
 
 
@@ -780,11 +836,8 @@ def _discarded_corridor_side_effect_reason(
     """
     if flow_graph is None:
         return "missing_mba_for_side_effect_guard"
-    blocks = getattr(flow_graph, "blocks", None)
-    try:
-        qty = len(blocks) if blocks is not None else 0
-    except TypeError:
-        qty = 0
+    blocks = flow_graph.blocks
+    qty = len(blocks)
 
     if qty and start_serial not in blocks:
         return "discarded_target_out_of_range"
@@ -795,7 +848,7 @@ def _discarded_corridor_side_effect_reason(
         serial, depth = queue.pop(0)
         if serial in visited or serial == int(preserved_target):
             continue
-        if blocks is not None and serial not in blocks:
+        if serial not in blocks:
             continue
         visited.add(serial)
         block = flow_graph.get_block(int(serial))
@@ -816,8 +869,7 @@ def _discarded_corridor_side_effect_reason(
             return "discarded_successors_unknown"
         if nsucc > 2:
             return "discarded_successors_not_local_corridor"
-        succs = getattr(block, "succs", None) or ()
-        for succ in succs:
+        for succ in block.succs:
             try:
                 succ_serial = int(succ)
             except (TypeError, ValueError):
@@ -828,7 +880,7 @@ def _discarded_corridor_side_effect_reason(
 
 
 def _block_side_effect_reason(
-    block: object,
+    block: BlockSnapshot,
     *,
     required_constant_markers: tuple[str, ...],
     opcode_label_resolver: OpcodeLabelResolver | None = None,
@@ -854,45 +906,41 @@ def _block_side_effect_reason(
     return None
 
 
-def _iter_block_insns(block: object, *, max_insns: int = 512):
-    iterator = getattr(block, "iter_insns", None)
-    if callable(iterator):
-        yield from iterator()
-        return
-    insn = getattr(block, "head", None)
-    seen = 0
-    while insn is not None and seen < max_insns:
-        yield insn
-        seen += 1
-        insn = getattr(insn, "next", None)
+def _iter_block_insns(block: BlockSnapshot):
+    """Iterate a portable block's instruction snapshots.
+
+    ``block`` is always a :class:`~d810.ir.flowgraph.BlockSnapshot` here, so the
+    legacy ``head`` / ``.next`` linked-list fallback (for live-fake blocks) was
+    dead and is removed.
+    """
+    return block.iter_insns()
 
 
-def _format_insn_text(insn: object) -> str:
-    text = getattr(insn, "display_text", None)
+def _format_insn_text(insn: InsnSnapshot) -> str:
+    """Return a portable instruction's rendered text, else its ``repr``.
+
+    The former ``dstr`` / ``text`` / ``display`` probes were dead: none is a
+    field on the portable or rich ``InsnSnapshot`` (which carries
+    ``display_text``).
+    """
+    text = insn.display_text
     if text:
         return str(text)
-    dstr = getattr(insn, "dstr", None)
-    if callable(dstr):
-        try:
-            return str(dstr())
-        except Exception:
-            return repr(insn)
-    text = getattr(insn, "text", None)
-    if text is not None:
-        return str(text)
-    display = getattr(insn, "display", None)
-    if display is not None:
-        return str(display)
     return repr(insn)
 
 
 def _edge_kind_name(edge: object) -> str:
+    # ``edge`` is a portable ``StateDagEdge`` in production (its ``kind`` is a
+    # ``SemanticEdgeKind`` enum, read via ``.name``) and a duck-typed namespace
+    # in fixtures; this structural, non-operand-slot read stays polymorphic.
     kind = getattr(edge, "kind", None)
     name = getattr(kind, "name", None)
     return str(name if name is not None else kind)
 
 
 def _path_predecessor(edge: object, source_block: int) -> int | None:
+    # ``edge.ordered_path`` is a portable ``StateDagEdge`` field in production
+    # and a fixture-namespace attr in tests; structural, non-operand-slot read.
     path = tuple(getattr(edge, "ordered_path", ()) or ())
     try:
         index = path.index(int(source_block))
@@ -903,19 +951,8 @@ def _path_predecessor(edge: object, source_block: int) -> int | None:
     return int(path[index - 1])
 
 
-def _block_nsucc(block: object) -> int | None:
-    nsucc = getattr(block, "nsucc", None)
-    if callable(nsucc):
-        try:
-            return int(nsucc())
-        except Exception:
-            return None
-    if nsucc is not None:
-        try:
-            return int(nsucc)
-        except (TypeError, ValueError):
-            return None
-    return None
+def _block_nsucc(block: BlockSnapshot) -> int | None:
+    return int(block.nsucc)
 
 
 def _hex_state(value: int | None) -> str | None:
