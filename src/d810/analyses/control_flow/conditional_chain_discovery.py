@@ -1,54 +1,45 @@
-"""Conditional-chain discovery helpers for dormant fallback fork recovery."""
+"""Conditional-chain discovery helpers for dormant fallback fork recovery.
+
+d81-qlal -- canonical Instruction port.  The operand reads no longer touch
+backend-shaped ``InsnSnapshot`` operand slots (``.l`` / ``.r`` / ``.d`` or their
+``operand_slots`` provenance).  Each :class:`~d810.ir.flowgraph.InsnSnapshot` is
+projected through :func:`~d810.ir.insn_projection.project_instruction` to the
+canonical :class:`~d810.ir.instructions.Instruction`, and:
+
+* the compare-operand numeric constants (was ``insn.l`` / ``insn.r`` ->
+  const value/size) are read off the canonical ``Instruction.inputs`` via
+  ``_const_value_from_varnode`` / ``_size_from_varnode`` (a ``NUMBER`` operand
+  projects to a ``Varnode(Space.CONST, value, size)``);
+* the conditional jump target (was ``tail.d.block_ref``) is read off
+  ``Instruction.control.target`` (populated from ``insn.d.block_ref`` by the
+  projection's ``_block_target_from``).  The fallthrough is derived from the
+  block snapshot's successors as before.
+
+STRUCTURAL block topology stays direct -- ``flow_graph.block_count`` /
+``flow_graph.get_block`` and ``BlockSnapshot.succs`` / ``.preds`` / ``.nsucc`` /
+``.npred`` / ``.tail`` / ``.tail_opcode`` are portable model surfaces, not
+operand slots.  The raw branch opcode passed to the injected backend ports
+(``normalize_reversed_jump_opcode`` / ``is_jump_taken_for_state``) is read off
+``InsnSnapshot.opcode`` (an opcode field, not an operand slot).
+"""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 
-from d810.ir.flowgraph import (
-    BlockSnapshot,
-    FlowGraph,
-    InsnSnapshot,
-    MopSnapshot,
-    OperandKind,
+from d810.analyses.value_flow.induction_carrier import (
+    _const_value_from_varnode,
+    _size_from_varnode,
 )
-from d810.ir.varnode import Space, varnode_from_mop_snapshot
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.ir.insn_projection import operand_storages, project_instruction
+from d810.ir.varnode import Varnode
 
 # Callable port signatures (injected by the Hex-Rays backend).
 #   normalize_reversed_jump_opcode(opcode) -> normalized opcode
 #   is_jump_taken_for_state(opcode, state_value, check_const, check_size) -> taken?
 NormalizeReversedJumpOpcode = Callable[[int | None], int | None]
 IsJumpTakenForState = Callable[[int, int, int, int], bool | None]
-
-
-def _operand(insn: InsnSnapshot, slot: str) -> MopSnapshot | None:
-    """Read a typed operand slot from an instruction snapshot.
-
-    Mirrors the canonical reader used by the other migrated control-flow
-    analyses: it consults ``operand_slots`` provenance when present and otherwise
-    falls back to the typed slot field by name.  Reading the slot through a
-    variable name (not a literal ``.l`` / ``.r`` / ``.d``) keeps this module free
-    of backend-shaped raw-slot reads.
-    """
-    for slot_name, operand in getattr(insn, "operand_slots", ()) or ():
-        if slot_name == slot:
-            return operand if isinstance(operand, MopSnapshot) else None
-    return getattr(insn, slot, None)
-
-
-def _const_value_and_size(mop: MopSnapshot | None) -> tuple[int, int] | None:
-    """Return ``(value, size)`` when ``mop`` is a numeric constant, else ``None``."""
-    varnode = varnode_from_mop_snapshot(mop)
-    if varnode is None or varnode.space is not Space.CONST:
-        return None
-    return int(varnode.offset), int(varnode.size)
-
-
-def _block_ref(mop: MopSnapshot | None) -> int | None:
-    """Return the referenced block serial for a BLOCK operand, else ``None``."""
-    if mop is None or mop.kind is not OperandKind.BLOCK:
-        return None
-    block_ref = mop.block_ref
-    return int(block_ref) if block_ref is not None else None
 
 
 def find_conditional_predecessor(
@@ -92,24 +83,36 @@ def extract_check_constant_from_snapshot(
     *,
     normalize_reversed_jump_opcode: NormalizeReversedJumpOpcode,
 ) -> tuple[int, int, int] | None:
-    """Read the numeric comparison operand from an InsnSnapshot."""
-    l_mop = _operand(insn_snap, "l")
-    r_mop = _operand(insn_snap, "r")
+    """Read the numeric comparison operand from an InsnSnapshot.
+
+    The compared operands are read from the canonical projection's
+    slot-aligned storage views (``operand_storages`` -> ``l`` / ``r`` / ``d``):
+    a ``NUMBER`` operand projects to a ``Varnode(Space.CONST, value, size)``,
+    an absent operand to ``None`` -- never from the raw ``insn.l`` / ``insn.r``
+    slots, and never positionally collapsed.  The numeric value on the LEFT
+    means the compare is reversed (the const is the left-hand side), so the
+    opcode is normalized; a value on the RIGHT keeps the opcode as-is.
+    """
+    left, right, _ = operand_storages(insn_snap)
+    left = left if isinstance(left, Varnode) else None
+    right = right if isinstance(right, Varnode) else None
+
+    l_value = _const_value_from_varnode(left)
+    r_value = _const_value_from_varnode(right)
     opcode = insn_snap.opcode
 
-    l_const = _const_value_and_size(l_mop)
-    r_const = _const_value_and_size(r_mop)
-
-    if l_const is not None:
-        num_val, num_size = l_const
+    if l_value is not None:
+        num_val = l_value
+        num_size = _size_from_varnode(left)
         normalized = normalize_reversed_jump_opcode(opcode)
-    elif r_const is not None:
-        num_val, num_size = r_const
+    elif r_value is not None:
+        num_val = r_value
+        num_size = _size_from_varnode(right)
         normalized = opcode
     else:
         return None
 
-    if normalized is None:
+    if normalized is None or num_size is None:
         return None
     return (int(normalized), int(num_val), int(num_size))
 
@@ -122,7 +125,7 @@ def get_jump_and_fallthrough_from_snapshot(
     if tail is None:
         return None, None
 
-    jump_target = _block_ref(_operand(tail, "d"))
+    jump_target = _jump_target_from_snapshot(tail)
     if jump_target is None:
         return None, None
 
@@ -133,6 +136,20 @@ def get_jump_and_fallthrough_from_snapshot(
             break
 
     return int(jump_target), fallthrough
+
+
+def _jump_target_from_snapshot(insn_snap: InsnSnapshot) -> int | None:
+    """Return the conditional jump target block serial, else ``None``.
+
+    Read off the canonical ``Instruction.control.target`` (the projection
+    populates it from ``insn.d.block_ref`` for a CONDITIONAL_BRANCH), never from
+    the raw ``insn.d`` operand slot.
+    """
+    instruction = project_instruction(insn_snap)
+    control = instruction.control
+    if control is None or control.target is None:
+        return None
+    return int(control.target)
 
 
 def resolve_conditional_chain_target(

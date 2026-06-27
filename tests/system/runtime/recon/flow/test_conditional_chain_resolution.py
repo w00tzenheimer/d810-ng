@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-from d810.ir.flowgraph import MopSnapshot, OperandKind
+from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
 from d810.backends.hexrays.evidence.datamodel import (
     DispatcherStateMachine,
     StateHandler,
@@ -44,9 +44,19 @@ def _block(
 
 
 def _numeric_check_tail(*, opcode: int, check_value: int, jump_target: int):
-    return SimpleNamespace(
+    """A real conditional-jump ``InsnSnapshot`` with a numeric RHS check.
+
+    The discovery code reads operands off the canonical ``Instruction``
+    projection (d81-qlal), so the tail must be a real ``InsnSnapshot``:
+    ``kind=EQUALITY_JUMP`` makes the projection populate ``control.target``
+    (from ``d``) and the compared-operand storage (the ``r`` const).
+    """
+    return InsnSnapshot(
         opcode=opcode,
-        l=SimpleNamespace(t=0),
+        ea=0,
+        operands=(),
+        kind=InsnKind.EQUALITY_JUMP,
+        l=None,
         r=MopSnapshot(kind=OperandKind.NUMBER, value=check_value, size=4),
         d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=jump_target),
     )
