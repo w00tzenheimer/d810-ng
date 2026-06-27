@@ -4,6 +4,27 @@ Providers produce explicit per-compare witness rows. They may use recovered
 dispatcher metadata to find states, dispatcher blocks, and the entry compare,
 but endpoint rows are not proof: selected and rejected arms are derived from
 the current CFG and validated later by :func:`static_witness_for_state`.
+
+d81-qlal -- canonical Instruction port.  The compare / indirect-store readers no
+longer touch backend-shaped ``InsnSnapshot`` operand slots (``.l`` / ``.r`` /
+``.d``) or the dead text-fallback probes (``opcode_name`` / ``dstr`` /
+``sub_operand`` / ``sub_instruction``, none of which is a field on either the
+portable or the rich ``MopSnapshot`` / ``InsnSnapshot``).  Inputs are
+strong-typed against the portable :class:`~d810.ir.flowgraph.FlowGraph` /
+:class:`~d810.analyses.control_flow.dispatcher_resolution.StateDispatcherMap` /
+:class:`~d810.ir.flowgraph.BlockSnapshot` / ``InsnSnapshot`` / ``MopSnapshot``
+models:
+
+* the conditional jump target / branch predicate / compared constant are read
+  off the canonical :func:`~d810.ir.insn_projection.project_instruction`
+  projection (``Instruction.control`` and ``operand_storages``);
+* an instruction's stack-variable references are read off the lift-boundary
+  :func:`~d810.ir.insn_projection.operand_stack_offsets` /
+  :func:`~d810.ir.insn_projection.operand_stack_refs` accessors plus the portable
+  ``MopSnapshot.stack_refs`` / ``sub_l`` / ``sub_r`` / ``args`` expression tree;
+* an indirect (pointer-register-dest) store is identified from the canonical
+  ``Instruction`` STORE memory access whose target is a register
+  (was ``opcode_name == "m_stx"`` text + ``insn.d.reg``).
 """
 from __future__ import annotations
 
@@ -16,19 +37,33 @@ from d810.analyses.control_flow.branch_witness import (
     _evaluate_branch,
     _int_or_none,
     _is_known_predicate,
-    _predicate_value,
+    _tail_predicate_value,
     static_witness_for_state,
 )
+from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
 from d810.capabilities.dispatcher import RouterKind
+from d810.ir.flowgraph import (
+    BlockSnapshot,
+    FlowGraph,
+    InsnSnapshot,
+    MopSnapshot,
+)
+from d810.ir.insn_projection import (
+    operand_stack_offsets,
+    operand_stack_refs,
+    operand_storages,
+    project_instruction,
+)
 from d810.ir.storage_identity import (
     StorageIdentityKind,
     storage_identity_from_mop_snapshot,
 )
+from d810.ir.varnode import Space, Varnode
 
 
 def build_static_equality_chain_witness_map(
-    flow_graph: object,
-    dispatch_map: object,
+    flow_graph: FlowGraph,
+    dispatch_map: StateDispatcherMap,
     *,
     states: tuple[int, ...] | None = None,
 ) -> BranchWitnessMap | None:
@@ -39,21 +74,21 @@ def build_static_equality_chain_witness_map(
     states and dispatcher metadata; row target blocks are deliberately ignored.
     """
 
-    if getattr(dispatch_map, "router_kind", None) is not RouterKind.CONDITION_CHAIN:
+    if dispatch_map.router_kind is not RouterKind.CONDITION_CHAIN:
         return None
-    entry = _int_or_none(getattr(dispatch_map, "dispatcher_entry_block", None))
+    entry = _int_or_none(dispatch_map.dispatcher_entry_block)
     if entry is None:
         return None
     dispatcher_blocks = frozenset(
-        int(b) for b in getattr(dispatch_map, "dispatcher_blocks", ()) if b is not None
+        int(b) for b in dispatch_map.dispatcher_blocks if b is not None
     )
     if not dispatcher_blocks:
         return None
     if states is None:
         states = tuple(
-            int(getattr(row, "state_const"))
-            for row in getattr(dispatch_map, "rows", ())
-            if _int_or_none(getattr(row, "state_const", None)) is not None
+            int(row.state_const)
+            for row in dispatch_map.rows
+            if _int_or_none(row.state_const) is not None
         )
     if not states:
         return None
@@ -71,13 +106,13 @@ def build_static_equality_chain_witness_map(
             block = flow_graph.get_block(current)
             if block is None:
                 break
-            tail = getattr(block, "tail", None)
-            if tail is None or not getattr(tail, "is_conditional_jump", False):
+            tail = block.tail
+            if tail is None or not tail.is_conditional_jump:
                 break
-            predicate = _predicate_value(getattr(tail, "branch_predicate", None))
-            if not _is_known_predicate(predicate):
+            predicate = _tail_predicate_value(block)
+            if predicate is None or not _is_known_predicate(predicate):
                 break
-            compare_const, _state_op = _block_compare_operands(block)
+            compare_const, _state_slot = _block_compare_operands(block)
             if compare_const is None:
                 break
             taken, fallthrough = _compare_successors(block)
@@ -100,7 +135,7 @@ def build_static_equality_chain_witness_map(
                         compare_const=int(compare_const) & 0xFFFFFFFF,
                         selected_successor=int(selected),
                         rejected_successors=tuple(int(r) for r in rejected),
-                        router_kind=getattr(dispatch_map, "router_kind", None),
+                        router_kind=dispatch_map.router_kind,
                     )
                 )
             if int(selected) not in dispatcher_blocks:
@@ -113,12 +148,20 @@ def build_static_equality_chain_witness_map(
         rows=tuple(rows),
         dispatcher_entry_block=int(entry),
         dispatcher_blocks=dispatcher_blocks,
-        state_var_stkoff=_int_or_none(getattr(dispatch_map, "state_var_stkoff", None)),
-        router_kind=getattr(dispatch_map, "router_kind", None),
+        state_var_stkoff=_int_or_none(dispatch_map.state_var_stkoff),
+        router_kind=dispatch_map.router_kind,
     )
 
 
-def _mop_references_stack(mop: object, stkoff: int) -> bool:
+def _mop_references_stack(mop: MopSnapshot | None, stkoff: int) -> bool:
+    """Whether a portable operand snapshot references stack cell ``stkoff``.
+
+    Reads only portable ``MopSnapshot`` identity / expression-tree fields: the
+    direct storage identity, the flattened ``stack_refs``, and the nested
+    ``sub_l`` / ``sub_r`` / ``args`` operands.  The legacy ``sub_operand`` /
+    ``sub_instruction`` probes were dead (neither is a field on the portable or
+    the rich snapshot) and are removed.
+    """
     if mop is None:
         return False
     identity = storage_identity_from_mop_snapshot(mop)
@@ -128,80 +171,70 @@ def _mop_references_stack(mop: object, stkoff: int) -> bool:
         and int(identity.offset) == int(stkoff)
     ):
         return True
-    for ref in getattr(mop, "stack_refs", ()) or ():
+    for ref in mop.stack_refs or ():
         ref_i = _int_or_none(ref)
         if ref_i is not None and int(ref_i) == int(stkoff):
             return True
-    for attr in ("sub_l", "sub_r", "sub_operand"):
-        if _mop_references_stack(getattr(mop, attr, None), stkoff):
+    for child in (mop.sub_l, mop.sub_r, *mop.args):
+        if _mop_references_stack(child, stkoff):
             return True
-    sub_insn = getattr(mop, "sub_instruction", None)
-    if sub_insn is not None:
-        return any(
-            _mop_references_stack(getattr(sub_insn, attr, None), stkoff)
-            for attr in ("l", "r", "d")
-        )
     return False
 
 
-def _mop_const_value(mop: object) -> int | None:
-    if mop is None:
-        return None
-    kind = getattr(getattr(mop, "kind", None), "value", getattr(mop, "kind", None))
-    if kind == "number" or getattr(mop, "value", None) is not None:
-        return _int_or_none(getattr(mop, "value", None))
-    return None
+def _insn_references_stack(insn: InsnSnapshot, stkoff: int) -> bool:
+    """Whether any compare/dest operand of ``insn`` references stack ``stkoff``.
+
+    Read off the canonical lift-boundary stack accessors (named offset +
+    flattened expression-tree refs), never the raw ``insn.l`` / ``insn.r`` /
+    ``insn.d`` operand slots.
+    """
+    target = int(stkoff)
+    if any(named is not None and int(named) == target for named in operand_stack_offsets(insn)):
+        return True
+    return any(target in refs for refs in operand_stack_refs(insn))
 
 
-def _insn_references_stack(insn: object, stkoff: int) -> bool:
-    return any(
-        _mop_references_stack(getattr(insn, attr, None), stkoff)
-        for attr in ("l", "r", "d")
-    )
+def _is_indirect_store(insn: InsnSnapshot) -> bool:
+    """Whether ``insn`` is a pointer-register-indirected store.
 
-
-def _is_indirect_store(insn: object) -> bool:
-    kind = getattr(getattr(insn, "kind", None), "value", getattr(insn, "kind", None))
-    opcode_name = str(getattr(insn, "opcode_name", "") or "").lower()
-    text = str(getattr(insn, "display_text", "") or getattr(insn, "dstr", "") or "")
-    is_store = (
-        kind == "store"
-        or opcode_name in {"m_stx", "op_1", "store"}
-        or text.lstrip().startswith("stx ")
-    )
-    if not is_store:
-        return False
-    dest = getattr(insn, "d", None)
-    return _int_or_none(getattr(dest, "reg", None)) is not None
+    Identified from the canonical projection: a STORE whose memory-access target
+    is a register ``Varnode`` (the legacy ``insn.d.reg is not None`` pointer
+    register), via the portable ``Instruction.memory`` / effects.  The
+    ``opcode_name`` / ``dstr`` text fallbacks were dead and are removed.
+    """
+    instruction = project_instruction(insn)
+    memory = instruction.memory
+    target: Varnode | None = memory.target if memory is not None else None
+    return target is not None and target.space is Space.REGISTER
 
 
 def block_has_unresolved_indirect_state_store(
-    block: object,
+    block: BlockSnapshot,
     state_var_stkoff: int | None,
 ) -> bool:
     """Return whether a block carries pointer-indirected state stores."""
 
     if state_var_stkoff is None:
         return False
-    tail = getattr(block, "tail", None)
+    tail = block.tail
     if tail is None or not _insn_references_stack(tail, int(state_var_stkoff)):
         return False
-    for insn in tuple(getattr(block, "insn_snapshots", ()) or ())[:-1]:
+    for insn in block.insn_snapshots[:-1]:
         if _is_indirect_store(insn):
             return True
     return False
 
 
 def _local_compare_witness_row(
-    block: object,
+    block: BlockSnapshot,
     block_serial: int,
     state_value: int,
     compare_const: int,
 ) -> BranchWitnessRow | None:
-    tail = getattr(block, "tail", None)
-    if tail is None or not getattr(tail, "is_conditional_jump", False):
+    tail = block.tail
+    if tail is None or not tail.is_conditional_jump:
         return None
-    predicate = _predicate_value(getattr(tail, "branch_predicate", None))
+    predicate = _tail_predicate_value(block)
     if predicate not in {"eq", "ne"}:
         return None
     taken, fallthrough = _compare_successors(block)
@@ -224,43 +257,74 @@ def _local_compare_witness_row(
     )
 
 
+def _tail_compare_const(tail: InsnSnapshot) -> int | None:
+    """Return the numeric constant compared in a conditional-jump tail, else None.
+
+    Reads the slot-aligned ``operand_storages`` views (a ``NUMBER`` operand
+    projects to a ``Varnode(Space.CONST, value)``), left-first then right --
+    never the raw ``tail.l`` / ``tail.r`` operand slot.
+    """
+    left, right, _dest = operand_storages(tail)
+    for storage in (left, right):
+        if isinstance(storage, Varnode) and storage.space is Space.CONST:
+            return int(storage.offset) & 0xFFFFFFFF
+    return None
+
+
+def _indirect_store_const(insn: InsnSnapshot) -> int | None:
+    """Return the constant value an indirect store writes, else ``None``.
+
+    The stored value is the STORE's value operand (was ``insn.l``); read off the
+    canonical ``Instruction`` memory access / store effect as a ``CONST``
+    ``Varnode``.
+    """
+    instruction = project_instruction(insn)
+    value: Varnode | None = None
+    memory = instruction.memory
+    if memory is not None:
+        value = memory.value
+    if value is None:
+        for effect in instruction.effects:
+            if effect.value is not None:
+                value = effect.value
+                break
+    if value is not None and value.space is Space.CONST:
+        return int(value.offset) & 0xFFFFFFFF
+    return None
+
+
 def indirect_state_store_branch_witness(
-    flow_graph: object,
-    block: object,
+    flow_graph: FlowGraph,
+    block: BlockSnapshot,
     block_serial: int,
     state_var_stkoff: int | None,
-    branch_witness_map: object | None,
+    branch_witness_map: BranchWitnessMap | None,
 ) -> ExactBranchWitness | None:
     """Prove the selected successor after an indirect concrete state store."""
 
     if state_var_stkoff is None:
         return None
-    tail = getattr(block, "tail", None)
+    tail = block.tail
     if tail is None or not _insn_references_stack(tail, int(state_var_stkoff)):
         return None
-    compare_const = None
-    for operand in (getattr(tail, "l", None), getattr(tail, "r", None)):
-        compare_const = _mop_const_value(operand)
-        if compare_const is not None:
-            break
+    compare_const = _tail_compare_const(tail)
     if compare_const is None:
         return None
 
     stored_consts: set[int] = set()
-    for insn in tuple(getattr(block, "insn_snapshots", ()) or ())[:-1]:
+    for insn in block.insn_snapshots[:-1]:
         if not _is_indirect_store(insn):
             continue
-        value = _mop_const_value(getattr(insn, "l", None))
+        value = _indirect_store_const(insn)
         if value is not None:
             stored_consts.add(int(value) & 0xFFFFFFFF)
     compare_u = int(compare_const) & 0xFFFFFFFF
     if compare_u not in stored_consts:
         return None
 
-    row = None
-    row_for = getattr(branch_witness_map, "row_for_state_compare", None)
-    if callable(row_for):
-        row = row_for(compare_u, int(block_serial))
+    row: BranchWitnessRow | None = None
+    if branch_witness_map is not None:
+        row = branch_witness_map.row_for_state_compare(compare_u, int(block_serial))
     if row is None:
         row = _local_compare_witness_row(
             block, int(block_serial), compare_u, compare_u
