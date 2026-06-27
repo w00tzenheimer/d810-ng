@@ -37,6 +37,7 @@ files:
   - "src/d810/analyses/control_flow/exit_transition_discovery.py"
   - "src/d810/analyses/control_flow/selector_shell.py"
   - "src/d810/analyses/control_flow/side_effect_select_loop.py"
+  - "src/d810/analyses/control_flow/conditional_chain_discovery.py"
 ignores:
   - "tests/**"
 
