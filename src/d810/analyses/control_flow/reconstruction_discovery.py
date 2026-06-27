@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.ir.flowgraph import InsnKind, OperandKind
+from d810.ir.flowgraph import InsnKind, InsnSnapshot, OperandKind
+from d810.ir.insn_projection import operand_kinds, operand_storages
+from d810.ir.varnode import Space, Varnode
 from d810.core import logging
 
 from d810.analyses.control_flow.exit_transition_discovery import resolve_state_var_stkoff
@@ -82,6 +84,82 @@ def collect_boundary_protected_shared_blocks(dag: LinearizedStateDag) -> set[int
     return protected
 
 
+def _stack_offset_of(
+    kind: OperandKind | None,
+    storage: Varnode | object | None,
+) -> int | None:
+    """Frame offset a ``STACK``-kind operand names, else ``None``.
+
+    Canonical replacement (d81-qlal) for the legacy ``op.kind is STACK and
+    int(op.stkoff)`` read.  ``kind`` keeps the exact ``OperandKind.STACK`` gate
+    (so a frame ``LVAR`` whose storage view promotes to ``Space.STACK`` is *not*
+    treated as a stack operand, matching the legacy ``kind`` discrimination);
+    the concrete offset is read off the slot-aligned canonical storage view
+    (``operand_storages``).  An unknown-offset stack write (``WeakStackSlot``,
+    not a ``Varnode``) yields ``None``, exactly as the legacy ``stkoff is None``
+    guard did.
+    """
+    if kind is not OperandKind.STACK:
+        return None
+    if not isinstance(storage, Varnode) or storage.space is not Space.STACK:
+        return None
+    return int(storage.offset)
+
+
+def _const_value_of(
+    kind: OperandKind | None,
+    storage: Varnode | object | None,
+) -> int | None:
+    """Numeric value a ``NUMBER``-kind operand carries, else ``None``.
+
+    Canonical replacement (d81-qlal) for the legacy ``op.kind is NUMBER and
+    int(op.value)`` read: ``kind`` keeps the ``OperandKind.NUMBER`` gate, and the
+    literal is read off the canonical storage view (a ``NUMBER`` operand projects
+    to ``Varnode(Space.CONST, value)``).
+    """
+    if kind is not OperandKind.NUMBER:
+        return None
+    if not isinstance(storage, Varnode) or storage.space is not Space.CONST:
+        return None
+    return int(storage.offset)
+
+
+def _is_state_forwarding_artifact(
+    insn: InsnSnapshot,
+    *,
+    state_var_stkoff: int,
+    state_constants: set[int],
+) -> bool:
+    """Whether ``insn`` forwards a dead state value into a non-state slot.
+
+    Reads the operand classifications and values off the canonical projection's
+    slot-aligned surface (:func:`~d810.ir.insn_projection.operand_kinds` /
+    :func:`~d810.ir.insn_projection.operand_storages`) instead of the raw
+    ``insn.l`` / ``insn.d`` operand slots; behaviour is byte-identical to the
+    legacy per-slot read.
+    """
+    l_kind, _r_kind, d_kind = operand_kinds(insn)
+    l_storage, _r_storage, d_storage = operand_storages(insn)
+    d_stkoff = _stack_offset_of(d_kind, d_storage)
+    if insn.kind is InsnKind.XDU:
+        l_stkoff = _stack_offset_of(l_kind, l_storage)
+        return (
+            l_stkoff is not None
+            and d_stkoff is not None
+            and l_stkoff == state_var_stkoff
+            and d_stkoff != state_var_stkoff
+        )
+    if insn.kind is InsnKind.MOV:
+        l_value = _const_value_of(l_kind, l_storage)
+        return (
+            l_value is not None
+            and d_stkoff is not None
+            and d_stkoff != state_var_stkoff
+            and (l_value & 0xFFFFFFFF) in state_constants
+        )
+    return False
+
+
 def classify_artifact_return_blocks(
     flow_graph: object,
     *,
@@ -92,36 +170,13 @@ def classify_artifact_return_blocks(
     artifact_blocks: set[int] = set()
     for serial, blk in flow_graph.blocks.items():
         for insn in blk.insn_snapshots:
-            if insn.kind is InsnKind.XDU:
-                l_op = insn.l
-                d_op = insn.d
-                if (
-                    l_op is not None
-                    and d_op is not None
-                    and l_op.kind is OperandKind.STACK
-                    and d_op.kind is OperandKind.STACK
-                    and getattr(l_op, "stkoff", None) is not None
-                    and getattr(d_op, "stkoff", None) is not None
-                    and int(l_op.stkoff) == state_var_stkoff
-                    and int(d_op.stkoff) != state_var_stkoff
-                ):
-                    artifact_blocks.add(serial)
-                    break
-            if insn.kind is InsnKind.MOV:
-                l_op = insn.l
-                d_op = insn.d
-                if (
-                    l_op is not None
-                    and d_op is not None
-                    and l_op.kind is OperandKind.NUMBER
-                    and d_op.kind is OperandKind.STACK
-                    and getattr(l_op, "value", None) is not None
-                    and getattr(d_op, "stkoff", None) is not None
-                    and int(d_op.stkoff) != state_var_stkoff
-                    and (int(l_op.value) & 0xFFFFFFFF) in state_constants
-                ):
-                    artifact_blocks.add(serial)
-                    break
+            if _is_state_forwarding_artifact(
+                insn,
+                state_var_stkoff=state_var_stkoff,
+                state_constants=state_constants,
+            ):
+                artifact_blocks.add(serial)
+                break
     return artifact_blocks
 
 

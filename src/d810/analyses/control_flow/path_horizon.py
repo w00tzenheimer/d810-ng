@@ -12,7 +12,8 @@ from d810.analyses.control_flow.state_machine_analysis import (
     find_last_state_write_site_on_path_snapshot,
     find_state_write_sites_snapshot,
 )
-from d810.ir.varnode import Space, varnode_from_mop_snapshot
+from d810.ir.insn_projection import result_storage
+from d810.ir.varnode import Space, Varnode
 
 logger = logging.getLogger(__name__)
 
@@ -89,19 +90,21 @@ def resolve_transition_path_horizon(
             if block_snap is None:
                 continue
             for insn_idx, insn in enumerate(reversed(block_snap.insn_snapshots)):
-                dest = getattr(insn, "d", None)
-                if dest is None:
+                # Canonical dest read (d81-qlal): the instruction's result/dest
+                # storage view comes from the named lift-boundary accessor
+                # (was a raw ``insn.d`` operand-slot read).  A direct STACK cell
+                # yields its frame offset; an unknown-offset stack write
+                # (``WeakStackSlot``) carries no concrete offset, so -- exactly
+                # like the legacy ``Space.STACK`` ``Varnode.offset`` guard -- it
+                # never matches ``state_var_stkoff``.
+                dest_storage = result_storage(insn)
+                if (
+                    not isinstance(dest_storage, Varnode)
+                    or dest_storage.space is not Space.STACK
+                ):
                     continue
-                try:
-                    dest_varnode = varnode_from_mop_snapshot(dest)
-                except (AttributeError, TypeError, ValueError):
-                    dest_varnode = None
-                dest_stkoff = (
-                    int(dest_varnode.offset)
-                    if dest_varnode is not None and dest_varnode.space is Space.STACK
-                    else None
-                )
-                if dest_stkoff is None or int(dest_stkoff) != int(state_var_stkoff):
+                dest_stkoff = int(dest_storage.offset)
+                if int(dest_stkoff) != int(state_var_stkoff):
                     continue
                 actual_insn_idx = len(block_snap.insn_snapshots) - 1 - insn_idx
                 site = StateWriteSite(
