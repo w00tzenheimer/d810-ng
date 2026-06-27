@@ -38,6 +38,8 @@ files:
   - "src/d810/analyses/control_flow/selector_shell.py"
   - "src/d810/analyses/control_flow/side_effect_select_loop.py"
   - "src/d810/analyses/control_flow/conditional_chain_discovery.py"
+  - "src/d810/analyses/control_flow/switch_table_analysis.py"
+  - "src/d810/analyses/control_flow/exit_path_effect_discovery.py"
 ignores:
   - "tests/**"
 

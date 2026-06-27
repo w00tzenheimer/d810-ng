@@ -17,6 +17,7 @@ from d810.ir.insn_projection import (
     iter_operand_exprs,
     operand_storages,
     parse_diag_meta_operand,
+    primary_source_operand_kind,
     primary_source_storage,
     project_assignment,
     project_conditional_branch,
@@ -893,6 +894,21 @@ def test_storage_views_none_for_missing_operand():
     assert result_storage(insn) is None
     assert primary_source_storage(insn) is None
     assert operand_storages(insn) == (None, None, None)
+
+
+def test_primary_source_operand_kind_distinguishes_address_from_value():
+    # d81-qlal -- pin the lift-boundary source-kind accessor the exit-path
+    # carrier classifier consumes.  ``operand_storages`` collapses both ADDRESS
+    # and a nested value-producing source to ``Space.UNKNOWN``, so a
+    # carrier-source classifier that must keep ``cursor_or_ptr`` (ADDRESS) apart
+    # from ``expr`` (any other present source) and ``real_const`` (NUMBER) reads
+    # the portable operand kind here instead.
+    assert primary_source_operand_kind(_mov(_num(7), _stk(0x10))) is OperandKind.NUMBER
+    address_src = MopSnapshot(kind=OperandKind.ADDRESS, stack_refs=(0x40,))
+    assert primary_source_operand_kind(_mov(address_src, _stk(0x10))) is OperandKind.ADDRESS
+    assert primary_source_operand_kind(_mov(_reg(0), _stk(0x10))) is OperandKind.REGISTER
+    assert primary_source_operand_kind(_mov(_glob(0x401000), _stk(0x10))) is OperandKind.GLOBAL
+    assert primary_source_operand_kind(_mov(None, _stk(0x10))) is None
 
 
 # ---------------------------------------------------------------------------

@@ -54,6 +54,7 @@ __all__ = [
     "iter_operand_exprs",
     "operand_storages",
     "parse_diag_meta_operand",
+    "primary_source_operand_kind",
     "primary_source_storage",
     "project_assignment",
     "project_conditional_branch",
@@ -706,6 +707,20 @@ def result_storage(insn: InsnSnapshot) -> Varnode | WeakStackSlot | None:
 def primary_source_storage(insn: InsnSnapshot) -> Varnode | WeakStackSlot | None:
     """Portable storage view of the instruction's primary source operand."""
     return _storage_view(insn.l)
+
+
+def primary_source_operand_kind(insn: InsnSnapshot) -> OperandKind | None:
+    """Return the portable :class:`OperandKind` of the primary source operand.
+
+    Lift-boundary accessor (``d810.ir`` reads the backend-shaped operand slot;
+    portable analyses must not).  Returns the ``insn.l`` operand kind, or
+    ``None`` when there is no source operand.  This exposes the source-operand
+    *classification* (e.g. ``NUMBER`` vs ``ADDRESS`` vs a value-producing
+    operand) that the ``Varnode`` storage view deliberately collapses to
+    ``Space.UNKNOWN`` -- the only canonical signal a carrier-source classifier
+    needs to keep a constant / pointer / expression source apart.
+    """
+    return insn.l.kind if insn.l is not None else None
 
 
 def operand_storages(
