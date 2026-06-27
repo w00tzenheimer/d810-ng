@@ -7,6 +7,7 @@ from d810.ir.flowgraph import (
     BlockSnapshot,
     FlowGraph,
     InsnKind,
+    InsnSnapshot,
     MopSnapshot,
     OperandKind,
     PredicateKind,
@@ -48,8 +49,16 @@ class _SnapshotBlock:
             self.tail = None
             self.tail_opcode = None
         else:
-            insn = SimpleNamespace(
-                opcode=opcode,
+            # Production-faithful tail shape: a real ``InsnSnapshot`` whose ``d``
+            # (dest) slot defaults to ``None``.  The condition-chain walk now
+            # reads the compared ``l`` / ``r`` operands through the canonical
+            # ``operand_kinds`` / ``operand_storages`` accessors, which project
+            # the ``l`` / ``r`` / ``d`` slots -- a duck-typed ``SimpleNamespace``
+            # without a ``d`` attribute is not what the live lift ever produces.
+            insn = InsnSnapshot(
+                opcode=0,
+                ea=0,
+                operands=(),
                 kind=kind,
                 branch_predicate=branch_predicate,
                 l=_mop_s(0x364),
