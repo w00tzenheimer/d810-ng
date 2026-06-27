@@ -16,8 +16,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from d810.ir.flowgraph import FlowGraph, InsnKind, OperandKind
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind
+from d810.ir.insn_projection import (
+    operand_stack_offsets,
+    operand_storages,
+    project_instruction,
+)
+from d810.ir.locations import WeakStackSlot
 from d810.ir.semantics import PredicateKind
+from d810.ir.varnode import Space, Varnode
 from d810.analyses.value_flow.model import ValidatedFactView
 from d810.analyses.control_flow.reachability import reachable_from
 from d810.analyses.control_flow.dominator import compute_dom_tree
@@ -35,6 +42,38 @@ from d810.analyses.control_flow.dispatcher_resolver import (
 from d810.analyses.control_flow.switch_table_analysis import (
     analyze_switch_table_flow_graph,
 )
+
+StorageView = Varnode | WeakStackSlot | None
+
+
+def _const_of(view: StorageView) -> int | None:
+    """Numeric constant a storage view names (``Space.CONST``), else ``None``.
+
+    Replaces the raw ``operand.value`` read: ``operand_storages`` projects a
+    ``NUMBER`` operand to ``Varnode(Space.CONST, value)``, so its ``offset`` IS
+    the literal value (masked to 64 bits, matching the legacy reads).
+    """
+    if isinstance(view, Varnode) and view.space is Space.CONST:
+        return int(view.offset) & 0xFFFFFFFFFFFFFFFF
+    return None
+
+
+def _reg_of(view: StorageView) -> int | None:
+    """Register id a storage view names (``Space.REGISTER``), else ``None``."""
+    if isinstance(view, Varnode) and view.space is Space.REGISTER:
+        return int(view.offset)
+    return None
+
+
+def _stkoff_of(view: StorageView) -> int | None:
+    """Stack offset a storage view directly names (``Space.STACK``), else ``None``.
+
+    Replaces the raw ``operand.stkoff`` read.  A ``WeakStackSlot`` (stack write
+    with an unrecovered offset) and a non-stack view both yield ``None``.
+    """
+    if isinstance(view, Varnode) and view.space is Space.STACK:
+        return int(view.offset)
+    return None
 
 # Matches the live HodurStateMachineDetector threshold (analysis.py MIN_STATE_CONSTANT).
 MIN_STATE_CONSTANT = 0x01000000
@@ -76,31 +115,53 @@ class DispatcherRecovery:
     dispatch_map: StateDispatcherMap | None = None
 
 
-def _split_const_state(left, right, min_const: int):
-    """Return ``(const_value, state_operand)`` from a compare's operands, or ``(None, None)``."""
-    for const_op, state_op in ((left, right), (right, left)):
-        if (
-            const_op is not None
-            and const_op.kind is OperandKind.NUMBER
-            and const_op.value is not None
-            and int(const_op.value) > min_const
-        ):
-            return int(const_op.value), state_op
-    return None, None
+def _split_const_state(
+    left: StorageView,
+    left_stkoff: int | None,
+    right: StorageView,
+    right_stkoff: int | None,
+    min_const: int,
+):
+    """Return ``(const_value, state_view, state_stkoff)`` from a compare's two
+    operand storage views, or ``(None, None, None)``.
+
+    Each side is a canonical ``operand_storages`` view paired with its
+    ``operand_stack_offsets`` slot offset (the latter captures the stack slot a
+    nested ``(state & mask)`` subexpression references, which the storage view
+    collapses to ``Varnode(UNKNOWN)``).  A side is the constant iff it is a
+    ``Space.CONST`` view whose value exceeds ``min_const`` -- exactly the legacy
+    ``kind is NUMBER and value > min_const`` test.
+    """
+    for (const_view, _const_off), (state_view, state_off) in (
+        ((left, left_stkoff), (right, right_stkoff)),
+        ((right, right_stkoff), (left, left_stkoff)),
+    ):
+        const = _const_of(const_view)
+        if const is not None and const > min_const:
+            return const, state_view, state_off
+    return None, None, None
 
 
-def _state_var_offset(operand) -> int | None:
-    """Portable identity for a state operand: its stack offset (direct or via an expr ref)."""
-    if operand is None:
-        return None
-    if operand.stkoff is not None:
-        return int(operand.stkoff)
-    if operand.stack_refs:
-        return int(operand.stack_refs[0])
+def _state_var_offset(view: StorageView, stack_off: int | None) -> int | None:
+    """Portable identity for a state operand: its stack offset (direct or via an
+    expr ref).
+
+    A direct ``Space.STACK`` view yields its offset; otherwise the slot's lifted
+    stack reference (``operand_stack_offsets``) supplies the stack slot a nested
+    compared subexpression names -- the canonical replacement for the legacy
+    ``operand.stkoff`` / ``operand.stack_refs[0]`` fallback.
+    """
+    direct = _stkoff_of(view)
+    if direct is not None:
+        return direct
+    if stack_off is not None:
+        return int(stack_off)
     return None
 
 
-def _state_var_identity(operand) -> tuple[str, int] | None:
+def _state_var_identity(
+    view: StorageView, stack_off: int | None
+) -> tuple[str, int] | None:
     """Votable identity for a state operand: ``('stk', off)`` or ``('reg', reg)``.
 
     The equality leaves of a *register-resident* dispatcher compare a register
@@ -109,17 +170,18 @@ def _state_var_identity(operand) -> tuple[str, int] | None:
     decoy stack comparison win the vote. Identifying the operand by its register
     keeps those votes; the winner is resolved back to a stack slot afterwards.
     """
-    if operand is None:
-        return None
-    off = _state_var_offset(operand)
+    off = _state_var_offset(view, stack_off)
     if off is not None:
         return ("stk", off)
-    if getattr(operand, "reg", None) is not None:
-        return ("reg", int(operand.reg))
+    reg = _reg_of(view)
+    if reg is not None:
+        return ("reg", reg)
     return None
 
 
-def _resolve_state_identity_to_stkoff(identity, graph) -> int | None:
+def _resolve_state_identity_to_stkoff(
+    identity: tuple[str, int] | None, graph: FlowGraph
+) -> int | None:
     """Resolve a voted state identity to a stack offset.
 
     Stack identities map directly. A register identity is resolved to the stack
@@ -141,23 +203,19 @@ def _resolve_state_identity_to_stkoff(identity, graph) -> int | None:
     write_counts: dict[int, int] = {}
     for blk in graph.blocks.values():
         for insn in blk.insn_snapshots:
-            dst = insn.d
-            src = insn.l
+            src_view, _r_view, dst_view = operand_storages(insn)
+            dst_reg = _reg_of(dst_view)
+            src_stkoff = _stkoff_of(src_view)
+            if dst_reg == key and src_stkoff is not None:
+                src_counts[src_stkoff] = src_counts.get(src_stkoff, 0) + 1
+            dst_stkoff = _stkoff_of(dst_view)
+            src_value = _const_of(src_view)
             if (
-                dst is not None
-                and getattr(dst, "reg", None) == key
-                and src is not None
-                and getattr(src, "stkoff", None) is not None
+                dst_stkoff is not None
+                and src_value is not None
+                and src_value >= MIN_STATE_CONSTANT
             ):
-                src_counts[int(src.stkoff)] = src_counts.get(int(src.stkoff), 0) + 1
-            if (
-                dst is not None
-                and getattr(dst, "stkoff", None) is not None
-                and src is not None
-                and getattr(src, "value", None) is not None
-                and int(src.value) >= MIN_STATE_CONSTANT
-            ):
-                write_counts[int(dst.stkoff)] = write_counts.get(int(dst.stkoff), 0) + 1
+                write_counts[dst_stkoff] = write_counts.get(dst_stkoff, 0) + 1
     if not src_counts:
         return None
     # Prefer the loaded slot with the most state-constant writes (the state var).
@@ -177,7 +235,7 @@ def build_state_dispatcher_map_from_flow_graph(
     Hand-port of the live detector's equality-chain recognition. Returns ``None`` when no
     state-check chain is present.
     """
-    raw: list[tuple[StateDispatcherRow, object]] = []
+    raw: list[tuple[StateDispatcherRow, tuple[str, int] | None]] = []
     dispatcher_blocks: set[int] = set()
     for serial, blk in graph.blocks.items():
         tail = blk.tail
@@ -186,14 +244,24 @@ def build_state_dispatcher_map_from_flow_graph(
         pred = tail.branch_predicate
         if pred not in _EQUALITY_PREDICATES:
             continue
-        const, state_op = _split_const_state(tail.l, tail.r, min_state_constant)
+        left_view, right_view, _dest_view = operand_storages(tail)
+        left_off, right_off, _dest_off = operand_stack_offsets(tail)
+        const, state_view, state_off = _split_const_state(
+            left_view, left_off, right_view, right_off, min_state_constant
+        )
         if const is None:
             continue
-        taken = tail.d.block_ref if tail.d is not None else None
+        control = project_instruction(tail).control
+        taken = (
+            int(control.target)
+            if control is not None and control.target is not None
+            else None
+        )
         fallthrough = next((s for s in blk.succs if s != taken), None)
         handler = taken if pred is PredicateKind.EQ else fallthrough
         if handler is None:
             continue
+        state_identity = _state_var_identity(state_view, state_off)
         raw.append(
             (
                 StateDispatcherRow(
@@ -204,7 +272,7 @@ def build_state_dispatcher_map_from_flow_graph(
                     branch_kind=pred.value,
                     router_kind=RouterKind.CONDITION_CHAIN,
                 ),
-                state_op,
+                state_identity,
             )
         )
         dispatcher_blocks.add(int(serial))
@@ -218,16 +286,15 @@ def build_state_dispatcher_map_from_flow_graph(
     # (``jz eax, #state_const`` — the MASM/non-spilled form) count instead of being
     # dropped and letting a lone decoy stack comparison win.
     votes: dict[tuple[str, int], int] = {}
-    for _row, st_op in raw:
-        identity = _state_var_identity(st_op)
+    for _row, identity in raw:
         if identity is not None:
             votes[identity] = votes.get(identity, 0) + 1
     winner = max(votes, key=lambda k: votes[k]) if votes else None
     state_var_stkoff = _resolve_state_identity_to_stkoff(winner, graph)
     rows = tuple(
         row
-        for row, st_op in raw
-        if winner is None or _state_var_identity(st_op) == winner
+        for row, identity in raw
+        if winner is None or identity == winner
     )
     chain_blocks = frozenset(row.dispatcher_block for row in rows)
     # Dispatcher entry = the loop head the handler tails converge on. The equality-chain comparators
@@ -253,7 +320,9 @@ def build_state_dispatcher_map_from_flow_graph(
     )
 
 
-def _read_state_init_const(blk, state_var_stkoff: int) -> int | None:
+def _read_state_init_const(
+    blk: BlockSnapshot | None, state_var_stkoff: int
+) -> int | None:
     """Read the constant a block initializes the state variable to, portably.
 
     Mirrors the live ``_extract_state_from_block`` (condition_chain_analysis) over portable
@@ -265,32 +334,26 @@ def _read_state_init_const(blk, state_var_stkoff: int) -> int | None:
     """
     if blk is None:
         return None
+    target_off = int(state_var_stkoff)
     for insn in blk.insn_snapshots:
+        src_view, _r_view, dst_view = operand_storages(insn)
         if insn.kind is InsnKind.MOV:
-            dst, src = insn.d, insn.l
-            if (
-                dst is not None
-                and getattr(dst, "stkoff", None) is not None
-                and int(dst.stkoff) == int(state_var_stkoff)
-                and src is not None
-                and getattr(src, "value", None) is not None
-            ):
-                return int(src.value) & 0xFFFFFFFFFFFFFFFF
+            # mov #const -> state_slot: dest is the (direct) stack slot, value is
+            # the source constant.
+            dst_stkoff = _stkoff_of(dst_view)
+            src_value = _const_of(src_view)
+            if dst_stkoff == target_off and src_value is not None:
+                return src_value
         elif insn.kind is InsnKind.STORE:
             # m_stx <value>, <addr>: value = left, destination address = right.
-            val, addr = insn.l, insn.r
-            addr_off = None
-            if addr is not None:
-                addr_off = getattr(addr, "stkoff", None)
-                if addr_off is None and getattr(addr, "stack_refs", None):
-                    addr_off = addr.stack_refs[0]
-            if (
-                addr_off is not None
-                and int(addr_off) == int(state_var_stkoff)
-                and val is not None
-                and getattr(val, "value", None) is not None
-            ):
-                return int(val.value) & 0xFFFFFFFFFFFFFFFF
+            # The written cell lives on the slot-aligned address operand
+            # (``operand_stack_offsets`` resolves a direct stkoff OR an
+            # ``&state_slot`` / sole stack_ref), NEVER ``Instruction.result``
+            # (which a STORE drops) -- the deffai m_stx d-slot precedent.
+            _l_off, addr_off, _d_off = operand_stack_offsets(insn)
+            src_value = _const_of(src_view)
+            if addr_off is not None and int(addr_off) == target_off and src_value is not None:
+                return src_value
     return None
 
 

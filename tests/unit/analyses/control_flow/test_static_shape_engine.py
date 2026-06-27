@@ -128,7 +128,7 @@ def _eq_cmp(state_stkoff: int, const: int, taken: int) -> InsnSnapshot:
         branch_predicate=PredicateKind.EQ,
         left=_mop(kind=OperandKind.STACK, stkoff=state_stkoff, stack_refs=(state_stkoff,)),
         right=_mop(kind=OperandKind.NUMBER, value=const),
-        dest=_mop(block_ref=taken),
+        dest=_mop(kind=OperandKind.BLOCK, block_ref=taken),
     )
 
 
