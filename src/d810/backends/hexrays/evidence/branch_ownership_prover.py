@@ -41,6 +41,7 @@ from d810.evaluator.hexrays_microcode.tracker import (
     MopTracker,
     get_all_possibles_values,
 )
+from d810.analyses.control_flow.conditional_jump_eval import conditional_operand_size
 from d810.analyses.control_flow.branch_ownership_oracle import (
     OpcodeLabelResolver,
     PredicateKind,
@@ -273,11 +274,16 @@ def _resolve_predicate_with_moptracker(
             },
         )
 
+    # The live operand size feeds the relational-predicate mask exactly as the
+    # former in-helper ``conditional_operand_size(tail.l, tail.r)`` read did; the
+    # portable helper no longer reaches into the live operand slots itself
+    # (d81-qlal), so the backend (which owns the live ``mop_t``) supplies it.
     taken = _eval_conditional_tail(
         tail,
         int(left),
         int(right),
         opcode_label_resolver=opcode_label_resolver,
+        operand_size=conditional_operand_size(l_mop, r_mop),
     )
     if taken is None:
         return PredicateOwnershipResult(
