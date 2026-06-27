@@ -19,6 +19,19 @@ translate recovered serials back.  ``MBL_KEEP`` / live-``mba`` clone hazards do
 clone risk lives in the emit/patch layer (out of P3 scope).
 
 Portable-core: no IDA imports.
+
+d81-qlal -- canonical Instruction port.  The condvar slice used to read the
+backend-shaped tail operand slots (``tail.l`` / ``tail.r``) and the dest slot
+(``insn.d``).  Both now read the tracked cells off the canonical projection's
+slot-aligned surface, via the shared transfer readers:
+
+* the condition-variable cells of a conditional tail come from
+  :func:`~d810.analyses.control_flow.deffai.transfer.tail_condvar_cells` (the
+  non-constant compared operand cells -- was the ``operand_cell`` of every
+  non-``NUMBER`` ``tail.l`` / ``tail.r``);
+* the cell a block defines comes from
+  :func:`~d810.analyses.control_flow.deffai.transfer.written_cell` (the ``d``
+  dest slot -- was ``operand_cell(insn.d)``).
 """
 from __future__ import annotations
 
@@ -31,11 +44,13 @@ from d810.ir.flowgraph import (
     BlockSnapshot,
     FlowGraph,
     InsnKind,
-    OperandKind,
 )
 from d810.analyses.data_flow.concolic.refs import LocationRef
 
-from d810.analyses.control_flow.deffai.transfer import operand_cell
+from d810.analyses.control_flow.deffai.transfer import (
+    tail_condvar_cells,
+    written_cell,
+)
 
 __all__ = [
     "PRUNE_BLOCK_META_KEY",
@@ -69,19 +84,14 @@ def condvar_cells_of(
         tail = blk.tail
         if tail is None or not tail.is_conditional_jump:
             continue
-        for operand in (getattr(tail, "l", None), getattr(tail, "r", None)):
-            if operand is None or operand.kind is OperandKind.NUMBER:
-                continue
-            cell = operand_cell(operand)
-            if cell is not None:
-                cells.add(cell)
+        cells |= tail_condvar_cells(tail)
     return frozenset(cells)
 
 
 def _block_defines_any(blk: BlockSnapshot, cells: frozenset[LocationRef]) -> bool:
     """``True`` iff any instruction in ``blk`` writes one of ``cells``."""
     for insn in blk.insn_snapshots:
-        dest_cell = operand_cell(getattr(insn, "d", None))
+        dest_cell = written_cell(insn)
         if dest_cell is not None and dest_cell in cells:
             return True
     return False

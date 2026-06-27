@@ -31,6 +31,29 @@ function is portable, only its evaluation touches the Hex-Rays seam).  Unit test
 inject a pure-Python evaluator; production keeps the proven fold.
 
 Portable-core: no IDA imports.
+
+d81-qlal -- canonical Instruction port.  This module's cell-discovery readers
+used to reach into the backend-shaped ``InsnSnapshot`` operand slots
+(``insn.l`` / ``insn.r`` / ``insn.d``) and feed the raw operand to
+:func:`operand_cell`.  They now read the per-instruction operand evidence off the
+canonical :func:`~d810.ir.insn_projection.project_instruction` projection:
+
+* the cells a block *reads* come from ``Instruction.inputs`` (the projection's
+  ``_VarnodeProjector.input_nodes`` already exposes the flattened stack-ref
+  varnodes of a nested ``(state & mask)`` source, so the same tracked cell the
+  ``stack_refs[0]`` fallback surfaced is recovered -- via a real ``Varnode``);
+* the cell a block *writes* comes from ``Instruction.result``;
+* the conditional jump target (was ``tail.d.block_ref``) comes from
+  ``Instruction.control.target``;
+* the ``switch_cases`` fan-out (was ``tail.l`` / ``tail.d`` ``switch_cases``)
+  comes from ``Instruction.control.switch_cases``;
+* the compare's ``(const, condvar_cell)`` split (was ``tail.l`` / ``tail.r``)
+  comes from the slot-aligned :func:`~d810.ir.insn_projection.operand_storages`
+  views: a ``Space.CONST`` view is the literal, the other names the cell.
+
+:func:`operand_cell` / :func:`mop_cell` remain the public lift-boundary cell
+adapters (consumed by the deffai facade, ``ccm`` and the unit tests); they read
+no operand slot and so are not part of the migrated-module guard surface.
 """
 from __future__ import annotations
 
@@ -38,7 +61,13 @@ from itertools import product
 
 from d810.core.typing import Callable, Mapping, Optional
 
-from d810.ir.flowgraph import BlockSnapshot, InsnKind, OperandKind
+from d810.ir.flowgraph import BlockSnapshot, InsnKind, InsnSnapshot
+from d810.ir.insn_projection import (
+    operand_stack_offsets,
+    operand_storages,
+    project_instruction,
+)
+from d810.ir.locations import WeakStackSlot
 from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
 from d810.ir.semantics import PredicateKind
 from d810.analyses.control_flow.instruction_semantics import branch_predicate
@@ -55,7 +84,9 @@ __all__ = [
     "mop_cell",
     "operand_cell",
     "scalar_block_evaluator",
+    "tail_condvar_cells",
     "transfer_block_set",
+    "written_cell",
 ]
 
 _U32_MASK = 0xFFFFFFFF
@@ -88,7 +119,7 @@ def mop_cell(vn: Varnode | None) -> LocationRef | None:
     return None
 
 
-def operand_cell(mop: object | None) -> LocationRef | None:
+def operand_cell(mop: MopSnapshot | None) -> LocationRef | None:
     """Lift-boundary adapter: project a lifted operand snapshot to the storage
     cell it names, via the canonical ``Varnode`` surface.
 
@@ -98,17 +129,120 @@ def operand_cell(mop: object | None) -> LocationRef | None:
     ``(state & mask)``) still resolves to its first referenced stack slot, so
     the read/write cell discovery keeps the same superset behavior it had over
     raw operand fields.
+
+    This is the public cell adapter consumed by the deffai facade / ``ccm`` /
+    the unit tests; it reads no ``l`` / ``r`` / ``d`` operand slot.  The
+    ``stack_refs`` / ``size`` reads are portable :class:`MopSnapshot` fields
+    (strong-typed), not backend operand slots, so they are outside the
+    migrated-module operand-slot guard.
     """
     if mop is None:
         return None
     cell = mop_cell(varnode_from_mop_snapshot(mop))
     if cell is not None:
         return cell
-    stack_refs = getattr(mop, "stack_refs", ())
+    stack_refs = mop.stack_refs
     if stack_refs:
-        size = int(getattr(mop, "size", 0) or 0)
+        size = int(mop.size or 0)
         return mop_cell(Varnode(Space.STACK, int(stack_refs[0]), size))
     return None
+
+
+def _insn_read_cells(insn: InsnSnapshot) -> set[LocationRef]:
+    """The tracked cells the instruction *reads* (the ``l`` / ``r`` source slots).
+
+    Canonical replacement for ``operand_cell(insn.l) | operand_cell(insn.r)``: the
+    two source operand storage views (:func:`~d810.ir.insn_projection.operand_storages`)
+    map through :func:`_slot_cell`, which reproduces the direct-cell read and the
+    nested ``(state & mask)`` stack-ref fallback at the source's width.  Only the
+    source slots are read -- the dest slot (a store's target) is a *write*, never
+    a read -- so the cell set is byte-identical to the legacy per-slot read for
+    every instruction family (incl. ``m_stx`` STORE, whose dest is on ``d``).
+    """
+    left, right, _dest = operand_storages(insn)
+    left_off, right_off, _dest_off = operand_stack_offsets(insn)
+    cells: set[LocationRef] = set()
+    for view, stack_offset in ((left, left_off), (right, right_off)):
+        cell = _slot_cell(view, stack_offset)
+        if cell is not None:
+            cells.add(cell)
+    return cells
+
+
+def _insn_written_cell(insn: InsnSnapshot) -> LocationRef | None:
+    """The tracked cell the instruction *writes* (the ``d`` dest slot).
+
+    Canonical replacement for ``operand_cell(insn.d)``: the dest operand storage
+    view (:func:`~d810.ir.insn_projection.result_storage`, i.e. the ``d`` slot
+    view) maps through :func:`_slot_cell`.  This reads the dest slot directly --
+    not ``Instruction.result`` -- so an ``m_stx`` STORE, whose written cell lives
+    on ``d`` and is absent from the projection's ``result``, is still surfaced as
+    the strong-update target (made ``top`` when unresolved), matching the legacy
+    ``operand_cell(insn.d)`` read.
+    """
+    _left, _right, dest = operand_storages(insn)
+    _left_off, _right_off, dest_off = operand_stack_offsets(insn)
+    return _slot_cell(dest, dest_off)
+
+
+def _slot_cell(
+    view: Varnode | WeakStackSlot | None, stack_offset: int | None
+) -> LocationRef | None:
+    """The tracked cell an operand slot names, reproducing :func:`operand_cell`.
+
+    Direct register / stack / lvar views map through :func:`mop_cell`; a nested
+    expression operand (``Varnode(UNKNOWN)`` -- e.g. ``(state & mask)``) names no
+    direct varnode cell, so the slot's lifted single stack reference
+    (:func:`~d810.ir.insn_projection.operand_stack_offsets`) supplies the cell at
+    the view's width, exactly as the legacy ``stack_refs[0]`` fallback did.
+    """
+    cell = mop_cell(view) if isinstance(view, Varnode) else None
+    if cell is not None:
+        return cell
+    if stack_offset is not None:
+        width = int(view.size or 0) if isinstance(view, Varnode) else 0
+        return mop_cell(Varnode(Space.STACK, int(stack_offset), width))
+    return None
+
+
+def _const_of(view: Varnode | WeakStackSlot | None) -> int | None:
+    """The literal value of a ``Space.CONST`` operand storage view, else ``None``."""
+    if isinstance(view, Varnode) and view.space is Space.CONST:
+        return int(view.offset)
+    return None
+
+
+def tail_condvar_cells(tail: InsnSnapshot) -> set[LocationRef]:
+    """The tracked cells the tail *compares* (every non-constant source operand).
+
+    Canonical replacement for ``operand_cell(tail.l) | operand_cell(tail.r)``
+    filtered to non-``NUMBER`` operands: the two source operand storage views
+    (:func:`~d810.ir.insn_projection.operand_storages`) map through
+    :func:`_slot_cell`, skipping a ``Space.CONST`` view (the literal names no
+    cell -- exactly the legacy ``kind is OperandKind.NUMBER`` skip).  Used by the
+    preprocess condvar slice; the read/write cell helpers above use the same
+    slot-aligned surface.
+    """
+    left, right, _dest = operand_storages(tail)
+    left_off, right_off, _dest_off = operand_stack_offsets(tail)
+    cells: set[LocationRef] = set()
+    for view, stack_offset in ((left, left_off), (right, right_off)):
+        if _const_of(view) is not None:
+            continue
+        cell = _slot_cell(view, stack_offset)
+        if cell is not None:
+            cells.add(cell)
+    return cells
+
+
+def written_cell(insn: InsnSnapshot) -> LocationRef | None:
+    """The tracked cell ``insn`` writes (the ``d`` dest slot), or ``None``.
+
+    Public alias of :func:`_insn_written_cell` so the preprocess slice reads the
+    canonical written cell off the same slot-aligned surface the transfer uses,
+    without importing a private helper.
+    """
+    return _insn_written_cell(insn)
 
 
 def scalar_block_evaluator(state_var_stkoff: int) -> BlockEvaluator:
@@ -140,14 +274,17 @@ def _arm_targets(
 ) -> tuple[Optional[int], Optional[int]]:
     """The (taken, fallthrough) successor serials of a 2-way branch tail.
 
-    ``taken = tail.d.block_ref``; the fallthrough is the block's other successor
-    (mirrors ``dispatcher_discovery_extractors.extract_state_arm_comparisons``).
-    Returns ``(None, None)`` when the shape is not a clean 2-way branch.
+    ``taken`` is the conditional branch's ``Instruction.control.target`` (the
+    projection populates it from the tail's block operand ``block_ref``); the
+    fallthrough is the block's other successor (mirrors
+    ``dispatcher_discovery_extractors.extract_state_arm_comparisons``).  Returns
+    ``(None, None)`` when the shape is not a clean 2-way branch.
     """
     tail = block.tail
     if tail is None or not tail.is_conditional_jump:
         return None, None
-    taken = tail.d.block_ref if tail.d is not None else None
+    control = project_instruction(tail).control
+    taken = control.target if control is not None else None
     if taken is None:
         return None, None
     fallthrough = next((s for s in block.succs if s != taken), None)
@@ -155,21 +292,26 @@ def _arm_targets(
 
 
 def _compare_const_and_cell(
-    tail,
+    tail: InsnSnapshot,
 ) -> tuple[Optional[int], Optional[LocationRef]]:
     """Split a compare tail into ``(const, condvar_cell)``.
 
-    One operand is a NUMBER literal, the other names the condition variable's
-    cell.  Returns ``(None, None)`` when neither side is a plain constant.
+    One compared operand is a literal, the other names the condition variable's
+    cell.  Read off the slot-aligned canonical
+    :func:`~d810.ir.insn_projection.operand_storages` views (was ``tail.l`` /
+    ``tail.r``): a ``Space.CONST`` view is the literal; the other view's named
+    cell is the condvar.  Returns ``(None, None)`` when neither side is a plain
+    constant.
     """
-    left, right = getattr(tail, "l", None), getattr(tail, "r", None)
-    for const_op, cell_op in ((left, right), (right, left)):
-        if (
-            const_op is not None
-            and const_op.kind is OperandKind.NUMBER
-            and const_op.value is not None
-        ):
-            return int(const_op.value) & _U32_MASK, operand_cell(cell_op)
+    left, right, _dest = operand_storages(tail)
+    left_off, right_off, _dest_off = operand_stack_offsets(tail)
+    for (const_view, _c_off), (cell_view, cell_off) in (
+        ((left, left_off), (right, right_off)),
+        ((right, right_off), (left, left_off)),
+    ):
+        const = _const_of(const_view)
+        if const is not None:
+            return const & _U32_MASK, _slot_cell(cell_view, cell_off)
     return None, None
 
 
@@ -183,10 +325,7 @@ def _read_cells(block: BlockSnapshot) -> frozenset[LocationRef]:
     """
     cells: set[LocationRef] = set()
     for insn in block.insn_snapshots:
-        for operand in (getattr(insn, "l", None), getattr(insn, "r", None)):
-            cell = operand_cell(operand)
-            if cell is not None:
-                cells.add(cell)
+        cells |= _insn_read_cells(insn)
     return frozenset(cells)
 
 
@@ -201,7 +340,7 @@ def _written_cells(block: BlockSnapshot) -> frozenset[LocationRef]:
     """
     cells: set[LocationRef] = set()
     for insn in block.insn_snapshots:
-        cell = operand_cell(getattr(insn, "d", None))
+        cell = _insn_written_cell(insn)
         if cell is not None:
             cells.add(cell)
     return frozenset(cells)
@@ -451,21 +590,27 @@ def transfer_block_set(
     return {int(s): out_store for s in succs}
 
 
-def _switch_cases(tail) -> tuple:
-    """The ``switch_cases`` rows off a TABLE_JUMP tail's operand, or ``()``.
+def _switch_cases(tail: InsnSnapshot) -> tuple[tuple[tuple[int, ...], int], ...]:
+    """The ``(case_values, target)`` rows off a TABLE_JUMP tail, or ``()``.
 
-    The case table lives on whichever operand carries it (``l`` then ``d``).
+    Read off the canonical ``Instruction.control.switch_cases`` (the projection
+    collects the case table from whichever operand carries it -- ``l`` then
+    ``d`` -- via ``_switch_cases_from``).  Each :class:`InstructionSwitchCase` is
+    flattened back to the legacy ``(case_values, target)`` tuple shape the jtbl
+    fan-out (:func:`_transfer_switch`) consumes; an empty ``values`` tuple is the
+    default target.
     """
-    for operand in (getattr(tail, "l", None), getattr(tail, "d", None)):
-        cases = getattr(operand, "switch_cases", ()) if operand is not None else ()
-        if cases:
-            return cases
-    return ()
+    control = project_instruction(tail).control
+    if control is None or not control.switch_cases:
+        return ()
+    return tuple(
+        (tuple(case.values), int(case.target)) for case in control.switch_cases
+    )
 
 
 def _transfer_switch(
     out_store: PowersetStore,
-    tail,
+    tail: InsnSnapshot,
     state_cell: LocationRef,
 ) -> dict[int, PowersetStore]:
     """Fork a TABLE_JUMP: one arm per case row, state cell refined to the case set.
