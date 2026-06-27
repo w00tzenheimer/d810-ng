@@ -1,7 +1,7 @@
 """Semantic-region entry resolution.
 
 This module classifies the CFG splice point for a semantic-DAG-like region
-without depending on a live Hex-Rays ``mba_t`` or importing ``d810.recon``.
+without depending on a live Hex-Rays ``mba_t`` or importing ``d810.passes``.
 Strategy code supplies a small block view and the transition-kind sentinel for
 the DAG representation it is using.  The resolver stays backend-neutral and
 only reasons about DAG edge shape plus projected block successor shape.

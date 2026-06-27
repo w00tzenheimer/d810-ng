@@ -30,7 +30,7 @@ from d810.analyses.control_flow.instruction_semantics import (
 
 
 SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY = "side_effect_select_loop_fixes"
-logger = logging.getLogger("D810.recon.flow.side_effect_select_loop")
+logger = logging.getLogger("D810.analyses.control_flow.side_effect_select_loop")
 
 
 @dataclass(frozen=True)

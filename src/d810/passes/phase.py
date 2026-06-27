@@ -16,7 +16,7 @@ from d810.analyses.control_flow.collection_context import ReconCollectionContext
 from d810.analyses.control_flow.models import ReconResult
 from d810.passes.store import ReconStore, get_recon_writer
 
-logger = getLogger("D810.recon.phase")
+logger = getLogger("D810.passes.phase")
 
 ALL_MATURITIES: frozenset[int] | None = None
 

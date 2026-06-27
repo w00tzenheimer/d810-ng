@@ -48,7 +48,7 @@ from d810.core.observability_labels import (
 )
 from d810.core.typing import Any
 
-_logger = _d810_logging.getLogger("D810.cfg.provenance")
+_logger = _d810_logging.getLogger("D810.ir.provenance")
 
 
 @dataclass

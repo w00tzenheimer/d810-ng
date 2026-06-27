@@ -39,12 +39,10 @@ class AnalyzedCFG(Generic[StateT]):
     """A graph paired with the fixpoint result computed over it.
 
     ``graph`` is intentionally typed ``Any`` for now.  The portable graph
-    type (``d810.cfg.FlowGraph`` today, a future ``d810.ir`` graph handle
-    later) is not yet pinned at this layer -- mirroring the Slice 9
-    narrowing decision recorded in
-    ``docs/plans/recon-and-cfg-restructuring.md``.  Pinning it would force
-    ``d810.analyses`` to take an upward import on ``d810.cfg`` before the
-    graph type is relocated.
+    type (``d810.ir.flowgraph.FlowGraph`` today) is not yet pinned at
+    this layer -- mirroring the Slice 9 narrowing decision recorded in
+    ``docs/plans/recon-and-cfg-restructuring.md``.  Pinning it is deferred
+    until the graph-type narrowing lands.
     """
 
     graph: Any

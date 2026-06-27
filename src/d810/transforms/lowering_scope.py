@@ -4,7 +4,7 @@ Pure-logic predicates that determine whether a 1-way feeder redirect
 must use pred-scoped lowering (duplicate-and-redirect) vs whole-block
 lowering (RedirectGoto).
 
-These live in ``d810.cfg`` (not ``d810.optimizers``) so unit tests can
+These live in ``d810.transforms`` (not ``d810.optimizers``) so unit tests can
 import them without violating the layered architecture contract.
 """
 from __future__ import annotations

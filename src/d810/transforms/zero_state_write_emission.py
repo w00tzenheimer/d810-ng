@@ -37,8 +37,8 @@ The architectural payoff:
   from multiple call sites.
 * **Single dedup-key invariant** — every ``(block_serial, insn_ea)``
   ZSW decision is keyed identically across all 3 inputs.
-* **Layering preserved** — this module lives in :mod:`d810.cfg` (below
-  :mod:`d810.recon`); recon-level path resolution stays at the call
+* **Layering preserved** — this module lives in :mod:`d810.transforms` (below
+  :mod:`d810.passes`); recon-level path resolution stays at the call
   site. The unified function only sees already-resolved sites.
 
 The DagAuthority is consulted at the planner gateway in Phase 1; the

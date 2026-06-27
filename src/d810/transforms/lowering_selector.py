@@ -1,6 +1,6 @@
 """Generic lowering-shape selection for shared feeder transitions.
 
-This module lives in :mod:`d810.cfg` because it chooses between *virtual*
+This module lives in :mod:`d810.transforms` because it chooses between *virtual*
 graph-edit shapes before any Hex-Rays lowering occurs.
 
 The current first slice handles the shared 1-way feeder case:
@@ -10,7 +10,7 @@ The current first slice handles the shared 1-way feeder case:
 
 The selector is intentionally generic and consumes only projected CFG facts
 plus corridor ownership hints.  Callers in Hodur provide those facts from
-``d810.recon`` outputs.
+``d810.passes`` outputs.
 """
 from __future__ import annotations
 

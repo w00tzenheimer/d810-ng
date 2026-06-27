@@ -61,7 +61,7 @@ from d810.transforms.materialization_payload import CapturedBlockBody
 # every RedirectGoto goes through this — the log volume is only
 # manageable for targeted investigations.
 _redirect_goto_tracer = logging.getLogger(
-    "D810.cfg.graph_modification.redirect_goto_trace", logging.DEBUG
+    "D810.transforms.graph_modification.redirect_goto_trace", logging.DEBUG
 )
 _TRACE_REDIRECT_GOTO = (
     os.environ.get("D810_TRACE_REDIRECT_GOTO_CONSTRUCTION", "").strip() == "1"
@@ -763,7 +763,7 @@ def to_redirect_intent(mod: RedirectGoto | RedirectBranch) -> RedirectIntent:
     they are; the IR intent types (``RedirectGotoIntent`` /
     ``RedirectBranchIntent`` at ``d810.ir.redirect``) are pure data and
     let ``UseDefSafetyCapability.redirect_use_def_violations`` tighten
-    its ``mod`` parameter off ``Any`` without dragging ``d810.cfg`` into
+    its ``mod`` parameter off ``Any`` without dragging ``d810.transforms`` into
     ``d810.capabilities``.
 
     Use this helper at every capability-call site -- both for locally

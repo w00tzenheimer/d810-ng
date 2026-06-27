@@ -24,7 +24,7 @@ from d810.analyses.control_flow.dispatch_region import DispatchRegionDetector
 
 
 logger = logging.getLogger(
-    "D810.recon.flow.full_coverage_chain_probe",
+    "D810.analyses.control_flow.full_coverage_chain_probe",
     logging.DEBUG,
 )
 

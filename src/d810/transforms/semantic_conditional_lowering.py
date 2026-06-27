@@ -22,7 +22,7 @@ from d810.analyses.control_flow.sese_hammock import (
     compute_postdominator_tree,
 )
 
-logger = logging.getLogger("D810.cfg.semantic_conditional_lowering", logging.DEBUG)
+logger = logging.getLogger("D810.transforms.semantic_conditional_lowering", logging.DEBUG)
 
 __all__ = [
     "ConditionalExactNodeSite",

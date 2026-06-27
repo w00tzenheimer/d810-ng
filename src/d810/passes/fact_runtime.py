@@ -33,7 +33,7 @@ from d810.analyses.value_flow.model import (
     ValidatedFactView,
 )
 
-logger = getLogger("D810.recon.facts.runtime")
+logger = getLogger("D810.passes.facts.runtime")
 
 _GENERIC_LIFECYCLE_FACT_KINDS = frozenset({
     "ByteEmitCorridorFact",

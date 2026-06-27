@@ -234,7 +234,7 @@ def _portable_signals(
 # subscriber always invokes ``collect(target=flow_graph, ...)``,
 # so the live path is dead code in production.  Re-routing it to
 # ``d810.backends.hexrays.evidence.dispatcher.dispatcher_history.analyze_dispatcher_live`` would
-# silently put a Hex-Rays import inside ``d810.recon.collectors``
+# silently put a Hex-Rays import inside the ``d810.analyses`` collectors
 # -- breaking ``recon-core-no-hexrays`` for any future test or
 # adapter that pulls collectors from the recon package.  The path
 # is therefore removed entirely; ``collect()`` now requires a

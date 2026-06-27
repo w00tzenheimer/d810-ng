@@ -3,7 +3,7 @@
 Block serials are local to a single MBA snapshot/maturity.  Diagnostics that
 compare across maturities or after block creation must include at least the
 serial-local snapshot context plus a physical/code identity.  These helpers are
-pure ``d810.cfg`` utilities for logs that only have a :class:`FlowGraph`.
+pure ``d810.ir`` utilities for logs that only have a :class:`FlowGraph`.
 """
 from __future__ import annotations
 
