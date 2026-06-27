@@ -50,6 +50,14 @@ PORTABLE_CORE = (
 # C: operand sub-fields that only exist on a live Hex-Rays mop_t / minsn_t.
 # Reading these off an ``object``/``Any``-typed param IS the gate-evading shape.
 _MOP_FIELDS = {"t", "nnn", "stkoff", "lvar_idx", "lvar_off", "gaddr"}
+# The full set of Hex-Rays ``mop_t`` type spellings.  Only these are genuine
+# duck-typing leaks when compared as string literals; project identifiers that
+# merely share the ``mop_`` prefix (e.g. the ``mop_cell`` Varnode->cell helper
+# exported from d810.analyses.control_flow.deffai) are NOT leaks.
+_MOP_TYPE_NAMES = {
+    "mop_z", "mop_r", "mop_n", "mop_str", "mop_d", "mop_S", "mop_v", "mop_b",
+    "mop_f", "mop_l", "mop_a", "mop_h", "mop_c", "mop_fn", "mop_p", "mop_sc",
+}
 # E / C string literals that are raw Hex-Rays enum spellings used for dispatch.
 _VENDOR_ENUM_PREFIXES = ("mop_", "m_")
 # A: the canonical maturity ladder (any literal of these = an MMAT table/compare)
@@ -112,9 +120,14 @@ class _Visitor(ast.NodeVisitor):
             if _MMAT_TOKEN in s:
                 self.findings.append(Finding(self.rel, node.lineno, "A", repr(s), "REAL-LEAK"))
             elif s.startswith(_VENDOR_ENUM_PREFIXES) and len(s) <= 12 and s.replace("_", "").isalnum():
-                # "mop_n" / "m_goto" style raw-enum string dispatch (C if mop_, E if m_)
-                cat = "C" if s.startswith("mop_") else "E"
-                self.findings.append(Finding(self.rel, node.lineno, cat, repr(s), "REAL-LEAK"))
+                # "mop_n" / "m_goto" style raw-enum string dispatch (C if mop_, E if m_).
+                # For the mop_ prefix only genuine mop_t type spellings count;
+                # project identifiers sharing the prefix (e.g. "mop_cell") do not.
+                if s.startswith("mop_"):
+                    if s in _MOP_TYPE_NAMES:
+                        self.findings.append(Finding(self.rel, node.lineno, "C", repr(s), "REAL-LEAK"))
+                else:
+                    self.findings.append(Finding(self.rel, node.lineno, "E", repr(s), "REAL-LEAK"))
         self.generic_visit(node)
 
     # ---- B + A: dataclass fields -----------------------------------------
