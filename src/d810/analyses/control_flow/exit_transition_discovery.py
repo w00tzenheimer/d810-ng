@@ -1,15 +1,79 @@
-"""Exit-transition discovery helpers for late handler/condition-chain recovery."""
+"""Exit-transition discovery helpers for late handler/condition-chain recovery.
+
+d81-qlal -- canonical port.  This portable analysis no longer reads
+backend-shaped operand slots and is typed against portable models / Protocols:
+
+* the state-variable operand it inspects is the portable
+  :class:`~d810.ir.flowgraph.MopSnapshot`; its ``stkoff`` is read off the
+  canonical :class:`~d810.ir.varnode.Varnode` storage view (with the portable
+  ``MopSnapshot.stkoff`` field and the condition-chain provider as exact
+  behaviour-identity fallbacks);
+* the condition-chain target-resolution evidence is the portable
+  :class:`~d810.analyses.control_flow.condition_chain_model.ConditionChainAnalysisResult`;
+* the live-backend bundle (``snapshot.mba`` / ``snapshot.detector``) is
+  *genuinely* polymorphic -- those are live IDA / detector handles with no
+  portable type -- so the :class:`_ExitTransitionSnapshot` Protocol declares
+  them ``object | None``; the state-machine view (:class:`_StateMachineLike`)
+  and the backend valrange resolver (a ``Callable``) are typed against their
+  real portable shapes.
+
+Block topology stays direct on the typed
+:class:`~d810.ir.flowgraph.FlowGraph` / :class:`~d810.ir.flowgraph.BlockSnapshot`.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.analyses.control_flow.condition_chain_model import resolve_target_via_condition_chain
+from d810.analyses.control_flow.condition_chain_model import (
+    ConditionChainAnalysisResult,
+    resolve_target_via_condition_chain,
+)
 from d810.analyses.control_flow.state_machine_analysis import evaluate_handler_paths
 from d810.analyses.control_flow.transition_builder import _get_state_var_stkoff
 from d810.capabilities.providers import get_condition_chain_walkers
-from d810.ir.flowgraph import FlowGraph
-from d810.ir.varnode import Space, varnode_from_mop_snapshot
+from d810.core.typing import Callable, Mapping, Protocol, Sequence
+from d810.ir.flowgraph import FlowGraph, MopSnapshot
+from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
+
+
+class _TransitionLike(Protocol):
+    """Portable view of a recovered state transition (see ``StateTransition``)."""
+
+    from_state: int | None
+    to_state: int
+    from_block: int
+
+
+class _StateHandlerLike(Protocol):
+    """Portable view of a state handler (see ``StateHandler``)."""
+
+    transitions: Sequence[_TransitionLike]
+
+
+class _StateMachineLike(Protocol):
+    """Portable view of the recovered dispatcher state machine.
+
+    ``state_var`` is the portable operand snapshot the analysis inspects;
+    ``handlers`` maps a state value to its handler.  These are Protocol fields,
+    not operand slots, so reading them is allowed under the migrated-module
+    guard.
+    """
+
+    state_var: MopSnapshot | None
+    handlers: Mapping[int, _StateHandlerLike]
+
+
+class _ExitTransitionSnapshot(Protocol):
+    """Producer-supplied bundle for condition-chain-default discovery.
+
+    ``mba`` and ``detector`` are live IDA / detector handles with no portable
+    type -- they stay ``object | None`` (a live handle is genuinely
+    polymorphic, not a typing gap).
+    """
+
+    mba: object | None
+    detector: object | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,9 +120,14 @@ class ValrangeExitTransitionDiscovery:
 def resolve_state_var_stkoff(
     *,
     detector: object | None,
-    state_var: object | None,
+    state_var: MopSnapshot | None,
 ) -> int | None:
-    """Resolve the state-variable stack offset from detector or state var."""
+    """Resolve the state-variable stack offset from detector or state var.
+
+    ``detector`` is a live backend detector handle (genuinely polymorphic, kept
+    ``object | None``); ``state_var`` is the portable operand snapshot whose
+    stack offset is read via :func:`_stack_offset`.
+    """
     stkoff: int | None = None
     if detector is not None:
         try:
@@ -73,19 +142,30 @@ def resolve_state_var_stkoff(
     return stkoff
 
 
-def _varnode(mop: object | None):
+def _varnode(mop: MopSnapshot | None) -> Varnode | None:
     if mop is None:
         return None
     try:
-        return varnode_from_mop_snapshot(mop)  # type: ignore[arg-type]
+        return varnode_from_mop_snapshot(mop)
     except (AttributeError, TypeError, ValueError):
         return None
 
 
-def _stack_offset(mop: object | None) -> int | None:
+def _stack_offset(mop: MopSnapshot | None) -> int | None:
+    """Stack offset a portable operand snapshot names, else ``None``.
+
+    Reads the canonical :class:`~d810.ir.varnode.Varnode` storage view first; a
+    stack operand projects to ``Varnode(Space.STACK, offset, size)``.  Falls
+    back to the portable ``MopSnapshot.stkoff`` field and then the
+    condition-chain provider, preserving the original triple-fallback exactly.
+    """
     varnode = _varnode(mop)
     if varnode is not None and varnode.space is Space.STACK:
         return int(varnode.offset)
+    # ``stkoff`` is a portable ``MopSnapshot`` field (not an operand slot), read
+    # defensively: a migration-era rich operand snapshot may not carry it, in
+    # which case resolution falls through to the condition-chain provider
+    # exactly as the legacy ``getattr(mop, "stkoff", None)`` path did.
     stkoff = getattr(mop, "stkoff", None) if mop is not None else None
     if stkoff is not None:
         return int(stkoff)
@@ -103,21 +183,21 @@ def _stack_offset(mop: object | None) -> int | None:
 
 
 def collect_condition_chain_default_transition_candidates(
-    snapshot: object,
+    snapshot: _ExitTransitionSnapshot,
     *,
-    sm: object,
-    range_evidence: object,
+    sm: _StateMachineLike,
+    range_evidence: ConditionChainAnalysisResult,
     handler_state_map: dict[int, int],
     condition_chain_blocks: set[int],
 ) -> tuple[ConditionChainDefaultTransitionCandidate, ...]:
     """Collect raw condition-chain-default transition candidates via handler-path eval."""
-    mba = getattr(snapshot, "mba", None)
+    mba = snapshot.mba
     if mba is None:
         return ()
 
     stkoff = resolve_state_var_stkoff(
-        detector=getattr(snapshot, "detector", None),
-        state_var=getattr(sm, "state_var", None),
+        detector=snapshot.detector,
+        state_var=sm.state_var,
     )
     if stkoff is None:
         return ()
@@ -159,9 +239,9 @@ def collect_condition_chain_default_transition_candidates(
 def collect_valrange_exit_transition_candidates(
     flow_graph: FlowGraph,
     *,
-    sm: object,
-    range_evidence: object,
-    resolve_state_via_valranges: object | None,
+    sm: _StateMachineLike,
+    range_evidence: ConditionChainAnalysisResult,
+    resolve_state_via_valranges: Callable[[int, MopSnapshot | None], int | None] | None,
     resolved_transitions: object = (),
 ) -> ValrangeExitTransitionDiscovery:
     """Collect unresolved handler exits that valranges resolves to one target.
@@ -185,8 +265,8 @@ def collect_valrange_exit_transition_candidates(
     if flow_graph is None or not callable(resolve_state_via_valranges):
         return ValrangeExitTransitionDiscovery()
 
-    state_var = getattr(sm, "state_var", None)
-    handlers = dict(getattr(sm, "handlers", {}) or {})
+    state_var = sm.state_var
+    handlers = dict(sm.handlers or {})
     if state_var is None or not handlers:
         return ValrangeExitTransitionDiscovery()
 
@@ -195,7 +275,7 @@ def collect_valrange_exit_transition_candidates(
     total_unresolved = 0
 
     for handler in handlers.values():
-        for transition in tuple(getattr(handler, "transitions", ())):
+        for transition in tuple(handler.transitions):
             key = (int(transition.from_state), int(transition.to_state))
             if key in already_resolved:
                 continue
