@@ -34,6 +34,9 @@ files:
   - "src/d810/analyses/value_flow/zero_blob.py"
   - "src/d810/transforms/loop_bound_writer_guard.py"
   - "src/d810/transforms/return_carrier_fact_guard.py"
+  - "src/d810/analyses/control_flow/exit_transition_discovery.py"
+  - "src/d810/analyses/control_flow/selector_shell.py"
+  - "src/d810/analyses/control_flow/side_effect_select_loop.py"
 ignores:
   - "tests/**"
 
