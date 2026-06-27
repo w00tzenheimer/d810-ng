@@ -8,6 +8,7 @@ from d810.core.typing import Dict, List, Optional, Protocol
 
 from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult
 from d810.capabilities.providers import get_condition_chain_walkers
+from d810.ir.flowgraph import MopSnapshot
 from d810.ir.varnode import Space, varnode_from_mop_snapshot
 
 logger = getLogger(__name__)
@@ -155,7 +156,10 @@ def _get_state_var_stkoff(detector) -> Optional[int]:
         varnode = None
     if varnode is not None and varnode.space is Space.STACK:
         return int(varnode.offset)
-    stkoff = getattr(sm.state_var, "stkoff", None)
+    # Read ``stkoff`` directly only for a portable ``MopSnapshot``; other operand
+    # shapes (no portable ``stkoff`` field) fall through to the condition-chain
+    # provider below -- preserving the prior defensive ``getattr`` semantics.
+    stkoff = sm.state_var.stkoff if isinstance(sm.state_var, MopSnapshot) else None
     if stkoff is not None:
         return int(stkoff)
     try:
