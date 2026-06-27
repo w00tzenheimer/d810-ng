@@ -239,6 +239,19 @@ class InsnSnapshot:
             or self.kind in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}
         ) and not self.is_conditional_jump:
             object.__setattr__(self, "is_conditional_jump", True)
+        # A predicate-identified conditional jump whose ``kind`` did not supply a
+        # transfer (e.g. a semantically-recovered branch lifted with
+        # ``kind=UNKNOWN`` but a known ``branch_predicate``) is still a
+        # conditional branch.  Keep ``control_transfer_kind`` consistent with
+        # ``is_conditional_jump`` so the canonical instruction projection
+        # populates ``Instruction.control`` (and its block ``target``) for it,
+        # matching the legacy ``insn.d.block_ref`` jump-target read.
+        if self.control_transfer_kind is None and self.is_conditional_jump:
+            object.__setattr__(
+                self,
+                "control_transfer_kind",
+                ControlTransferKind.CONDITIONAL_BRANCH,
+            )
         if self.kind is InsnKind.GOTO and not self.is_unconditional_jump:
             object.__setattr__(self, "is_unconditional_jump", True)
         if self.kind is InsnKind.CALL and not self.is_call:
