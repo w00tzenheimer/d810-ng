@@ -1,8 +1,8 @@
 """Built-in maturity fact collectors (canonical aggregation).
 
 Single import surface for the value-flow + control-flow fact collectors that
-the reconnaissance fact pipeline registers. Relocated from the dissolved
-``d810.recon.facts.collectors`` package (dissolution, llr-mdz2); the concrete
+the reconnaissance fact pipeline registers. Consolidated during the
+facts-package dissolution (llr-mdz2); the concrete
 collectors live in their ``d810.analyses.value_flow.*`` /
 ``d810.analyses.control_flow.*`` modules and are re-exported here.
 """

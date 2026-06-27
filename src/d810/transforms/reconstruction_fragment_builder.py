@@ -5,7 +5,7 @@ Packages the round's accumulated modifications + ownership + metadata into a
 structured-region-leakage soft-gate on post-apply condition-chain cleanup.
 
 Lives in the Hodur strategies package because ``PlanFragment`` is a
-Hodur-specific type; moving this to ``d810.cfg`` would require an upward
+Hodur-specific type; moving this to ``d810.transforms`` would require an upward
 import. Kept Hodur-local per the Option C decomposition plan.
 
 Conflict-resolution filter cascade (uee-jrgq Phase 6 — retirement gate)

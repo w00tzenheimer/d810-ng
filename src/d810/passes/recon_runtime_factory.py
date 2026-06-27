@@ -42,7 +42,7 @@ from d810.passes.phase import ReconPhase
 from d810.passes.runtime import ReconAnalysisRuntime
 from d810.passes.store import ReconStore
 
-logger = getLogger("D810.recon.factory")
+logger = getLogger("D810.passes.factory")
 
 DEFAULT_RECON_COLLECTOR_FACTORIES = (
     CFGShapeCollector,

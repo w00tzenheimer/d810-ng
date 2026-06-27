@@ -14,7 +14,7 @@ from d810.core.typing import (
 from d810.ir.flowgraph import BlockKind
 from d810.transforms.graph_modification import ReorderBlocks
 
-logger = logging.getLogger("D810.cfg.reorder_blocks_planning")
+logger = logging.getLogger("D810.transforms.reorder_blocks_planning")
 
 
 class _HandlerLike(Protocol):

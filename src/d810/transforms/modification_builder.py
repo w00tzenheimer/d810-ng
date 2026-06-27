@@ -13,7 +13,7 @@ from d810.core.algorithm_metadata import algorithm_metadata
 # override). Emits at INFO so it shows up in the live d810 log alongside
 # the existing RECONSTRUCTION_REDIRECT_ATTEMPT entries.
 _mod_builder_logger = logging.getLogger(
-    "D810.cfg.modification_builder", logging.DEBUG
+    "D810.transforms.modification_builder", logging.DEBUG
 )
 # Intra-fragment-ledger logger — fires when a single ModificationBuilder
 # instance queues two RedirectGoto mods on the same source block with

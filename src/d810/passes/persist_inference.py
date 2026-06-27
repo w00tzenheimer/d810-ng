@@ -22,7 +22,7 @@ from pathlib import Path
 from d810.core.logging import getLogger
 from d810.core.rule_scope import RuleDelta
 
-logger = getLogger("D810.recon.persist_inference")
+logger = getLogger("D810.passes.persist_inference")
 
 
 def persist_inference(

@@ -58,7 +58,7 @@ if TYPE_CHECKING:
     from d810.core.rule_scope import ApplyHintsResult, RuleScopeService
     from d810.passes.flow_hints import FlowContextHintSummary
 
-logger = getLogger("D810.recon.runtime")
+logger = getLogger("D810.passes.runtime")
 
 
 class FactObservationSink(Protocol):

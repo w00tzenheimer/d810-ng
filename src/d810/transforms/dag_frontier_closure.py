@@ -24,7 +24,7 @@ from d810.transforms.plan import compile_patch_plan
 from d810.analyses.control_flow.scc import compute_live_cfg_sccs, nontrivial_sccs
 from d810.core import logging
 
-logger = logging.getLogger("D810.cfg.dag_frontier_closure")
+logger = logging.getLogger("D810.transforms.dag_frontier_closure")
 
 
 RedirectKey = tuple[int, int, int]

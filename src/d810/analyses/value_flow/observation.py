@@ -2,8 +2,8 @@
 
 Relocated from ``d810.analyses.value_flow.model`` (Landing Sequence LS7, Commit 0) so
 portable ``d810.analyses`` code can depend on the fact-observation type without
-an upward import into ``d810.recon`` -- e.g. value-flow fact projection, once it
-moves under ``analyses``, would otherwise form an ``analyses -> recon`` edge
+an upward import into ``d810.passes`` -- e.g. value-flow fact projection, once it
+moves under ``analyses``, would otherwise form an ``analyses -> passes`` edge
 (UPWARD-FATAL).  ``d810.analyses.value_flow.model`` re-exports these names for backward
 compatibility; the lifecycle types that depend on ``FactStatus`` (FactMapping,
 ValidatedFactView, ...) stay in that module.

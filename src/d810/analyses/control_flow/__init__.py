@@ -2,7 +2,7 @@
 
 ``d810.analyses.control_flow`` hosts backend-neutral CFG analyses:
 dominators, reachability, SESE regions, and the state-machine / dispatcher
-recognition graph algorithms relocated out of ``d810.recon.flow``
+recognition graph algorithms relocated out of the dissolved recon-flow package
 (condition-chain interval maps, route-node models, snapshot-only topology
 helpers).
 

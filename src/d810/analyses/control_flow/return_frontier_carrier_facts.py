@@ -64,7 +64,7 @@ from d810.analyses.control_flow.return_frontier_artifacts import (
 )
 
 logger = logging.getLogger(
-    "D810.recon.flow.return_frontier_carrier_facts", logging.INFO
+    "D810.analyses.control_flow.return_frontier_carrier_facts", logging.INFO
 )
 
 __all__ = [

@@ -19,7 +19,7 @@ because they own ``__post_init__`` construction diagnostics that do
 not belong in IR.
 
 ``live_function`` and ``pre_cfg`` stay ``Any`` -- ``d810.capabilities``
-must not import ``d810.cfg`` (where ``FlowGraph`` lives) or
+must not bind to a concrete backend graph type or import
 ``ida_hexrays`` (where ``mba_t`` lives).  Protocol method parameter
 positions are contravariant, so a concrete impl typing them against
 ``FlowGraph`` / ``mba_t`` structurally satisfies this contract.

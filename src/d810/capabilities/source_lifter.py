@@ -40,7 +40,7 @@ class SourceLifter(Protocol):
         ...
 
     def lift(self, source: Any) -> Any:
-        """Lift ``source`` into a portable flow graph (a ``d810.cfg`` FlowGraph)."""
+        """Lift ``source`` into a portable flow graph (a ``d810.ir`` FlowGraph)."""
         ...
 
 

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from d810.core.typing import Any, Callable
 
 # Callable-injected to preserve the existing layer contract (cfg must not
-# import d810.recon). Matches the `blk_label` / `edge_metadata_fn` pattern
+# import d810.passes). Matches the `blk_label` / `edge_metadata_fn` pattern
 # already used by `cfg/frontier_override_execution.py` and
 # `cfg/reconstruction_missing_via_pred_execution.py`.
 EdgeMetadataFn = Callable[..., dict[str, int | str | None]]

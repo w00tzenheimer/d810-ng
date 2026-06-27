@@ -357,7 +357,7 @@ conf: dict[str, typing.Any] = {
             "handlers": ["z3FileHandler"],
             "propagate": False,
         },
-        "D810.cfg.provenance": {
+        "D810.ir.provenance": {
             "level": "INFO",
             "handlers": ["defaultFileHandler"],
             "propagate": False,

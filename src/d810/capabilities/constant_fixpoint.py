@@ -6,11 +6,10 @@ evidence.  The default Hodur implementation lives at
 future angr / Ghidra backends would implement this Protocol next to
 their own data-flow analyses.
 
-The ``flow_graph`` parameter is annotated ``Any`` to keep
-``d810.capabilities`` free of an upward edge into ``d810.cfg``
-(``FlowGraph`` lives there today; a portable ``FlowGraphHandle``
-identity is available at ``d810.ir.handles`` but it does not yet
-replace ``d810.cfg.FlowGraph``).  Concrete implementations may type
+The ``flow_graph`` parameter is annotated ``Any`` because this is a
+Protocol surface; the portable ``FlowGraph`` lives at
+``d810.ir.flowgraph`` (with a ``FlowGraphHandle`` identity at
+``d810.ir.handles``).  Concrete implementations may type
 themselves against the richer types: Protocol method parameters are
 contravariant so ``Any`` is the only annotation that lets a concrete
 ``compute(self, flow_graph: FlowGraph, ...)`` structurally satisfy
@@ -53,10 +52,10 @@ class ConstantFixpointCapability(Protocol):
 
         Args:
             flow_graph: Portable flow graph snapshot.  Concrete backends
-                accept their native graph type (``d810.cfg.FlowGraph``
+                accept their native graph type (``d810.ir.flowgraph.FlowGraph``
                 for Hodur today; angr ``AILGraph`` for a future angr
-                backend); the Protocol surface stays ``Any`` so the
-                capability layer holds no upward edge into ``d810.cfg``.
+                backend); the Protocol surface stays ``Any`` so it
+                binds to no concrete backend graph type.
             state_var_stkoff: Stack offset of the state variable being
                 analyzed.
 

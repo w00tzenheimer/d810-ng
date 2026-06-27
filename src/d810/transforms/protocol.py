@@ -2,7 +2,7 @@
 
 CFGBackend defines the interface between backend-agnostic transform (operating
 on FlowGraph) and concrete backend implementations (IDA mba_t, in-memory
-graphs, etc.). Core ``d810.cfg`` analyses stay graph-only; live backend objects
+graphs, etc.). Core graph analyses (``d810.analyses``) stay graph-only; live backend objects
 such as ``mba_t`` are allowed only at translation/lowering boundaries like
 ``d810.transforms.protocol`` callers and Hex-Rays compatibility modules under
 ``d810.hexrays``.

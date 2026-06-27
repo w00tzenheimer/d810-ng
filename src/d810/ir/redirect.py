@@ -4,7 +4,7 @@ These are the IR-layer counterparts of ``d810.transforms.graph_modification.Redi
 and ``RedirectBranch``: pure data, three integer fields per type, no
 construction diagnostics, no CFG-mutation machinery.  They exist so
 ``UseDefSafetyCapability.redirect_use_def_violations`` can accept a
-portable intent value without dragging ``d810.cfg`` into the
+portable intent value without dragging ``d810.transforms`` into the
 ``d810.capabilities`` layer (the slice-5 follow-up the capability
 docstring records).
 
@@ -19,7 +19,7 @@ Discipline:
   boundary via ``d810.transforms.graph_modification.to_redirect_intent``.
 * The IR types are intentionally NOT constructible from CFG objects
   here -- the converter lives next to the CFG types so ``d810.ir``
-  carries no upward edge into ``d810.cfg``.
+  carries no upward edge into ``d810.transforms``.
 
 LLVM analog: ``llvm::IR::Instruction`` carries identity + operands;
 the diagnostic / dwarf metadata sits on a sibling object.  Same split

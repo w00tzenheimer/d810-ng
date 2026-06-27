@@ -42,7 +42,7 @@ from d810.ir.storage_identity import (
 )
 from d810.ir.varnode import Space, Varnode
 
-logger = logging.getLogger("D810.recon.flow.equality_chain_dispatcher", logging.INFO)
+logger = logging.getLogger("D810.analyses.control_flow.equality_chain_dispatcher", logging.INFO)
 
 
 def extract_state_dispatcher_map_from_mba(

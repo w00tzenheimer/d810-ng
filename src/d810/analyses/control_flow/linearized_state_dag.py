@@ -56,7 +56,7 @@ from d810.analyses.control_flow.transition_report import (
     build_dispatcher_transition_report_from_graph,
 )
 
-logger = logging.getLogger("D810.recon.flow.linearized_state_dag", logging.INFO)
+logger = logging.getLogger("D810.analyses.control_flow.linearized_state_dag", logging.INFO)
 
 _SUPPLEMENTAL_ANCHOR_DEBUG_STATES = frozenset({0x00C0C59F, 0x0B2FECE0, 0x4C77464F, 0x790A1FEB})
 _ENTRY_ANCHOR_DEBUG_STATES = frozenset({0x00C0C59F, 0x0B2FECE0, 0x385BBE2D})

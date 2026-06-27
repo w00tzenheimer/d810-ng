@@ -27,7 +27,7 @@ from d810.transforms.target_entry_resolution import (
 )
 
 
-logger = logging.getLogger("D810.cfg.semantic_region_lowering")
+logger = logging.getLogger("D810.transforms.semantic_region_lowering")
 
 
 @dataclass(frozen=True, slots=True)

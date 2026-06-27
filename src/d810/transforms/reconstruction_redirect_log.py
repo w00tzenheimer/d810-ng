@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from d810.core import logging
 
-logger = logging.getLogger("D810.cfg.reconstruction_redirect_log", logging.DEBUG)
+logger = logging.getLogger("D810.transforms.reconstruction_redirect_log", logging.DEBUG)
 
 
 def target_is_semantic_handler(target_entry: int, dag: object) -> bool:

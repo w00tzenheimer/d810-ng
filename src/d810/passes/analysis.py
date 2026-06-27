@@ -21,7 +21,7 @@ from d810.analyses.control_flow.models import CandidateFlag, DeobfuscationHints,
 if TYPE_CHECKING:
     from d810.passes.store import ReconStore
 
-logger = getLogger("D810.recon.analysis")
+logger = getLogger("D810.passes.analysis")
 
 
 # ---------------------------------------------------------------------------
