@@ -56,10 +56,10 @@ rule:
     - pattern: getattr($X, "d")
     - all:
         - pattern: getattr($X, $SLOT, $$$)
-        - regex: "getattr\\([^\\n]+,\\s*(operand_name|operand_slot|slot_name)\\b"
+        - regex: "getattr\\([^\\n]+,\\s*(operand_name|operand_slot|slot_name|slot)\\b"
     - all:
         - pattern: getattr($X, $SLOT)
-        - regex: "getattr\\([^\\n]+,\\s*(operand_name|operand_slot|slot_name)\\b"
+        - regex: "getattr\\([^\\n]+,\\s*(operand_name|operand_slot|slot_name|slot)\\b"
     - pattern: $X.l
     - pattern: $X.r
     - pattern: $X.d
