@@ -1,33 +1,36 @@
-"""Read-only discovery for predecessor-armed side-effect state loops."""
+"""Read-only discovery for predecessor-armed side-effect state loops.
+
+d81-qlal -- the operand readers (``_const_value`` / ``_var_id`` / the simple-
+assignment constant folder / branch evaluation / jump-target resolution) are the
+canonical-Instruction readers shared with ``selector_shell`` and live in
+:mod:`d810.analyses.control_flow._operand_readers`.  No ``_operand`` shim, no
+``operand_slots`` walk, no ``getattr`` on a snapshot, and no raw ``insn.l`` /
+``insn.r`` / ``insn.d`` slot read remains in this module.
+"""
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind
-from d810.ir.storage_identity import StorageIdentityKind, storage_identity_from_varnode
-from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.core import logging
+from d810.analyses.control_flow._operand_readers import (
+    Env,
+    VarId,
+    _const_value,
+    _exec_simple_assignments,
+    _is_simple_assign,
+    _next_successors,
+    _var_id,
+)
 from d810.analyses.control_flow.instruction_semantics import (
-    branch_predicate,
-    comparison_width,
-    evaluate_branch_predicate,
     is_branch,
     is_goto,
-    is_kind as _is_kind,
 )
 
 
 SIDE_EFFECT_SELECT_LOOP_FIXES_METADATA_KEY = "side_effect_select_loop_fixes"
 logger = logging.getLogger("D810.recon.flow.side_effect_select_loop")
-
-VarId = tuple[str, int]
-Env = dict[VarId, int]
-_VAR_ID_KIND_LABELS = {
-    StorageIdentityKind.REGISTER: "reg",
-    StorageIdentityKind.STACK: "stack",
-    StorageIdentityKind.LVAR: "lvar",
-}
 
 
 @dataclass(frozen=True)
@@ -40,67 +43,6 @@ class SideEffectSelectLoopFix:
     terminal_redirects: tuple[tuple[int, int, int], ...]
 
 
-def _operand(insn: object | None, slot: str) -> object | None:
-    if insn is None:
-        return None
-    for slot_name, operand in getattr(insn, "operand_slots", ()) or ():
-        if slot_name == slot:
-            return operand
-    return getattr(insn, slot, None)
-
-
-def _varnode(mop: object | None) -> Varnode | None:
-    try:
-        return varnode_from_mop_snapshot(mop)
-    except (AttributeError, TypeError, ValueError):
-        return None
-
-
-def _const_value(mop: object | None) -> int | None:
-    vn = _varnode(mop)
-    if vn is None or vn.space is not Space.CONST:
-        return None
-    try:
-        return int(vn.offset) & 0xFFFFFFFFFFFFFFFF
-    except (TypeError, ValueError):
-        return None
-
-
-def _block_ref(mop: object | None) -> int | None:
-    if mop is None:
-        return None
-    value = getattr(mop, "block_ref", None)
-    if value is None:
-        value = getattr(mop, "block_num", None)
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _var_id(mop: object | None) -> VarId | None:
-    identity = storage_identity_from_varnode(_varnode(mop))
-    if identity is None:
-        return None
-    label = _VAR_ID_KIND_LABELS.get(identity.kind)
-    if label is None:
-        return None
-    return (label, int(identity.offset))
-
-
-def _is_simple_assign(insn: object | None) -> bool:
-    if not (
-        _is_kind(insn, InsnKind.MOV, "mov") or _is_kind(insn, InsnKind.XDU, "xdu")
-    ):
-        return False
-    if _var_id(_operand(insn, "d")) is None:
-        return False
-    src = _operand(insn, "l")
-    return _const_value(src) is not None or _var_id(src) is not None
-
-
 def _is_branch(insn: object | None) -> bool:
     return is_branch(insn)
 
@@ -109,86 +51,12 @@ def _is_goto(insn: object | None) -> bool:
     return is_goto(insn)
 
 
-def _last_insn(block: BlockSnapshot) -> object | None:
-    return block.insn_snapshots[-1] if block.insn_snapshots else None
-
-
 def _is_pure_dispatch_block(block: BlockSnapshot) -> bool:
     for insn in block.insn_snapshots:
         if _is_simple_assign(insn) or _is_branch(insn) or _is_goto(insn):
             continue
         return False
     return True
-
-
-def _exec_simple_assignments(block: BlockSnapshot, env: Env) -> Env:
-    result = dict(env)
-    for insn in block.insn_snapshots:
-        if not _is_simple_assign(insn):
-            continue
-        dst = _var_id(_operand(insn, "d"))
-        if dst is None:
-            continue
-        src = _operand(insn, "l")
-        value = _const_value(src)
-        if value is None:
-            src_id = _var_id(src)
-            value = result.get(src_id) if src_id is not None else None
-        if value is None:
-            result.pop(dst, None)
-        else:
-            result[dst] = int(value)
-    return result
-
-
-def _eval_branch(block: BlockSnapshot, env: Env) -> bool | None:
-    tail = _last_insn(block)
-    if tail is None or not _is_branch(tail):
-        return None
-    left = _operand(tail, "l")
-    right = _operand(tail, "r")
-    left_value = _const_value(left)
-    if left_value is None:
-        left_id = _var_id(left)
-        left_value = env.get(left_id) if left_id is not None else None
-    right_value = _const_value(right)
-    if right_value is None:
-        right_id = _var_id(right)
-        right_value = env.get(right_id) if right_id is not None else None
-    return evaluate_branch_predicate(
-        branch_predicate(tail),
-        left_value,
-        right_value,
-        comparison_width(tail),
-    )
-
-
-def _branch_targets(block: BlockSnapshot) -> tuple[int, int] | None:
-    tail = _last_insn(block)
-    taken = _block_ref(_operand(tail, "d"))
-    if taken is None or taken not in block.succs:
-        return None
-    fallthrough = tuple(int(succ) for succ in block.succs if int(succ) != int(taken))
-    if len(fallthrough) != 1:
-        return None
-    return int(taken), fallthrough[0]
-
-
-def _next_successors(block: BlockSnapshot, env: Env) -> tuple[int, ...] | None:
-    if block.nsucc == 0:
-        return ()
-    if block.nsucc == 1:
-        return (int(block.succs[0]),)
-    if block.nsucc != 2:
-        return None
-    targets = _branch_targets(block)
-    if targets is None:
-        return None
-    taken, fallthrough = targets
-    decision = _eval_branch(block, env)
-    if decision is None:
-        return None
-    return (taken if decision else fallthrough,)
 
 
 def _simulate_to_payload(
