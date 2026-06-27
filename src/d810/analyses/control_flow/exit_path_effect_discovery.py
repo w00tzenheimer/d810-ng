@@ -1,3 +1,24 @@
+"""Shared exit-path effect discovery.
+
+d81-qlal -- canonical Instruction port.  The carrier-source classifier no longer
+reads the backend-shaped ``InsnSnapshot`` operand slots (``.l`` / ``.d``).  Each
+carrier-block :class:`~d810.ir.flowgraph.InsnSnapshot` is projected through
+:func:`~d810.ir.insn_projection.project_instruction` machinery, and:
+
+* the MOV destination identity (was ``insn.d`` -> ``stkoff`` match) is read off
+  the canonical ``result_storage`` view (a stack dest projects to
+  ``Varnode(Space.STACK, offset, size)``);
+* the moved constant (was ``insn.l`` NUMBER -> ``value``) is read off the
+  canonical ``primary_source_storage`` view via ``_const_value_from_varnode``;
+* the source-operand *classification* the carrier bucket needs to keep apart
+  (NUMBER / ADDRESS / any-other-present source -- was ``insn.l.kind``) is read
+  off the lift-boundary accessor ``primary_source_operand_kind`` (the ``Varnode``
+  storage view collapses ADDRESS and nested sources to ``Space.UNKNOWN``).
+
+The portable ``state_var`` operand snapshot carried on the state machine is now
+strongly typed ``MopSnapshot | None`` and its ``kind`` / ``stkoff`` fields are
+read directly (portable snapshot fields, not operand slots).
+"""
 from __future__ import annotations
 
 import enum
@@ -9,7 +30,20 @@ from d810.analyses.control_flow.terminal_frontier import (
     classify_cfg_suffix_action,
     compute_terminal_cfg_suffix_frontier,
 )
-from d810.ir.flowgraph import PredicateKind, InsnKind, OperandKind
+from d810.analyses.value_flow.induction_carrier import _const_value_from_varnode
+from d810.ir.flowgraph import (
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+    PredicateKind,
+    InsnKind,
+)
+from d810.ir.insn_projection import (
+    primary_source_operand_kind,
+    primary_source_storage,
+    result_storage,
+)
+from d810.ir.varnode import Space, Varnode
 from d810.core.typing import AbstractSet, Mapping, Protocol, Sequence
 from d810.analyses.control_flow.carrier_resolution import CarrierResolver
 from d810.analyses.control_flow.state_machine_analysis import (
@@ -129,7 +163,7 @@ class _StateMachineHandlerLike(Protocol):
 
 class _StateMachineLike(Protocol):
     handlers: Mapping[int, _StateMachineHandlerLike]
-    state_var: object | None
+    state_var: MopSnapshot | None
 
 
 class _ExitPathEffectSnapshot(Protocol):
@@ -164,9 +198,10 @@ def resolve_state_var_stkoff(snapshot: _ExitPathEffectSnapshot) -> int | None:
         except Exception:
             pass
     # Explicit evidence carried by the snapshot producer (preferred):
-    # the state-var offset is input, not a live dataflow query.
+    # the state-var offset is input, not a live dataflow query.  The Protocol
+    # already declares ``state_var_stkoff: int | None`` on the snapshot.
     if state_var_stkoff is None:
-        explicit = getattr(snapshot, "state_var_stkoff", None)
+        explicit = snapshot.state_var_stkoff
         if explicit is not None:
             state_var_stkoff = int(explicit)
     # Portable state-variable representation, if the producer attached one.
@@ -176,10 +211,8 @@ def resolve_state_var_stkoff(snapshot: _ExitPathEffectSnapshot) -> int | None:
         and snapshot.state_machine.state_var is not None
     ):
         sv = snapshot.state_machine.state_var
-        if getattr(sv, "kind", None) is OperandKind.STACK:
-            off = getattr(sv, "stkoff", None)
-            if off is not None:
-                state_var_stkoff = int(off)
+        if sv.kind is OperandKind.STACK and sv.stkoff is not None:
+            state_var_stkoff = int(sv.stkoff)
     return state_var_stkoff
 
 
@@ -200,24 +233,34 @@ def _resolve_pre_header_serial(
     return None
 
 
-def _extract_const_from_snapshot_mop(mop_snap: object) -> int | None:
-    if mop_snap is None:
+def _const_from_source_storage(source: Varnode | object | None) -> int | None:
+    """Return the moved constant for a CONST source storage view, else ``None``.
+
+    ``source`` is the canonical ``primary_source_storage`` view: a ``NUMBER``
+    operand projects to a ``Varnode(Space.CONST, value, size)``, so the const
+    test matches the previous ``mop.kind is NUMBER`` -> ``mop.value`` read; a
+    non-const view (``WeakStackSlot`` / ``Varnode`` in another space / ``None``)
+    carries no constant.
+    """
+    if not isinstance(source, Varnode):
         return None
-    if getattr(mop_snap, "kind", None) is not OperandKind.NUMBER:
-        return None
-    val = getattr(mop_snap, "value", None)
-    if val is not None:
-        return int(val)
-    return None
+    return _const_value_from_varnode(source)
 
 
-def _mop_matches_stkoff_snapshot(mop_snap: object | None, stkoff: int) -> bool:
-    if mop_snap is None:
+def _dest_matches_stkoff(dest: Varnode | object | None, stkoff: int) -> bool:
+    """Return whether the canonical dest storage view is the state-var slot.
+
+    ``dest`` is the canonical ``result_storage`` view: a stack destination
+    projects to ``Varnode(Space.STACK, offset, size)`` whose ``offset`` is the
+    written stack offset (matching the previous ``insn.d.stkoff == stkoff``
+    read).
+    """
+    if not isinstance(dest, Varnode) or dest.space is not Space.STACK:
         return False
-    return getattr(mop_snap, "stkoff", None) == stkoff
+    return int(dest.offset) == int(stkoff)
 
 
-def _is_exit_path_control_flow_insn(insn: object) -> bool:
+def _is_exit_path_control_flow_insn(insn: InsnSnapshot) -> bool:
     """Match the original local set {m_goto, m_jnz, m_ijmp, m_jtbl}.
 
     Exact parity via portable kinds: exit_path control flow is ``GOTO``,
@@ -260,22 +303,23 @@ def classify_carrier_source_rich(
     resolution: CarrierResolutionResult | None = None
 
     for insn in blk_snap.iter_insns():
-        if insn.kind is InsnKind.MOV and insn.d is not None:
-            if _mop_matches_stkoff_snapshot(insn.d, state_var_stkoff):
+        dest_storage = result_storage(insn)
+        if insn.kind is InsnKind.MOV and dest_storage is not None:
+            source_kind = primary_source_operand_kind(insn)
+            if _dest_matches_stkoff(dest_storage, state_var_stkoff):
                 has_state_write = True
-                const_val = _extract_const_from_snapshot_mop(insn.l)
+                const_val = _const_from_source_storage(primary_source_storage(insn))
                 if const_val is not None:
                     state_const_written = const_val
-                elif insn.l is not None:
+                elif source_kind is not None:
                     state_write_source_indirect = True
                 continue
-            if insn.l is not None:
-                src_kind = insn.l.kind
-                if src_kind is OperandKind.NUMBER:
+            if source_kind is not None:
+                if source_kind is OperandKind.NUMBER:
                     has_const_write = True
-                elif src_kind is OperandKind.ADDRESS:
+                elif source_kind is OperandKind.ADDRESS:
                     has_ptr_write = True
-                elif src_kind is not None:
+                else:
                     has_expr_write = True
 
     if (

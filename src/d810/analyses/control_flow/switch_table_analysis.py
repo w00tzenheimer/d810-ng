@@ -3,13 +3,37 @@
 Extracts exact state-dispatcher rows from portable ``FlowGraph`` switch-table
 snapshots. Live Hex-Rays adapters live above recon and call
 ``analyze_switch_table_flow_graph()`` after lifting an MBA.
+
+d81-qlal -- canonical Instruction port.  The operand reads no longer touch the
+backend-shaped ``InsnSnapshot`` operand slots (``.l`` / ``.r`` / ``.d``).  Each
+tail :class:`~d810.ir.flowgraph.InsnSnapshot` is projected through
+:func:`~d810.ir.insn_projection.project_instruction` to the canonical
+:class:`~d810.ir.instructions.Instruction`, and:
+
+* the switch case-target pairs (was ``blk.tail.r.switch_cases``) are read off
+  ``Instruction.control.switch_cases``;
+* the table-jump state variable (was ``blk.tail.l`` -> ``stack_refs`` / ``stkoff``
+  / ``size``) is read off ``Instruction.inputs`` -- a ``Varnode`` in the STACK
+  identity space (the projection exposes the SUBINSN/stack-ref state operand as a
+  ``Varnode(Space.STACK, offset, size)`` input);
+* the loop-guard compare operands (was ``tail.l`` / ``tail.r``) are read off the
+  canonical slot-aligned storage views (``operand_storages`` -> ``l`` / ``r``):
+  a ``NUMBER`` operand projects to a ``Varnode(Space.CONST, value, size)`` and a
+  stack operand to a ``Varnode(Space.STACK, offset, size)``.
+
+STRUCTURAL block topology stays direct -- ``flow_graph.get_block`` /
+``BlockSnapshot.tail`` / ``.succs`` / ``.preds`` / ``.tail_kind`` /
+``.is_conditional_jump`` are portable model surfaces, not operand slots.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind
-from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
+from d810.analyses.value_flow.induction_carrier import _const_value_from_varnode
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+from d810.ir.insn_projection import operand_storages, project_instruction
+from d810.ir.locations import WeakStackSlot
+from d810.ir.varnode import Space, Varnode
 from d810.core.logging import getLogger
 from d810.core.typing import Callable
 from d810.capabilities.dispatcher import RouterKind, TableProvenance
@@ -110,45 +134,44 @@ def build_state_dispatcher_map_from_cases(
     )
 
 
-def _find_state_var_stkoff(
-    operand: object | None,
-) -> int | None:
-    """Return the stack offset referenced by a table-jump state operand.
+def _find_table_jump_state_var(insn: InsnSnapshot) -> Varnode | None:
+    """Return the canonical STACK state-variable operand of a table jump.
 
-    ``operand`` is the lifted operand-snapshot provenance from the table-jump
-    tail; only its portable ``stack_refs`` / ``stkoff`` identity is read here.
+    Read off the canonical ``Instruction.inputs`` for the table-branch tail:
+    the projection exposes the (possibly SUBINSN-wrapped) state operand's stack
+    reference as a ``Varnode(Space.STACK, offset, size)`` input, never from the
+    raw ``insn.l`` operand slot.  The first STACK input is the table state
+    variable (matching the previous ``stack_refs[0]`` / ``stkoff`` read).
     """
-    if operand is None:
-        return None
-    stack_refs = getattr(operand, "stack_refs", ())
-    if stack_refs:
-        return int(stack_refs[0])
-    stkoff = getattr(operand, "stkoff", None)
-    if stkoff is not None:
-        return int(stkoff)
+    for value in project_instruction(insn).inputs:
+        if value.space is Space.STACK:
+            return value
     return None
 
 
-def _extract_cases_from_switch_operand(
-    switch_operand: object | None,
+def _extract_cases_from_switch_control(
+    insn: InsnSnapshot,
     dispatcher_serial: int,
 ) -> list[tuple[int | None, int]]:
     """Extract ``(case_value, target_serial)`` pairs from switch cases.
 
-    Default cases are represented as ``(None, target_serial)``. The
-    ``dispatcher_serial`` parameter keeps the helper signature aligned with
-    the previous live-MBA version and makes call sites self-documenting.
+    Default cases are represented as ``(None, target_serial)``.  The case-target
+    pairs are read off the canonical ``Instruction.control.switch_cases`` (was
+    ``insn.r.switch_cases``); the ``dispatcher_serial`` parameter keeps the
+    helper signature aligned with the previous live-MBA version and makes call
+    sites self-documenting.
     """
     cases: list[tuple[int | None, int]] = []
     _ = dispatcher_serial
-    if switch_operand is None:
+    control = project_instruction(insn).control
+    if control is None:
         return cases
-    for values, target in getattr(switch_operand, "switch_cases", ()):
-        if len(values) == 0:
-            cases.append((None, int(target)))
+    for case in control.switch_cases:
+        if len(case.values) == 0:
+            cases.append((None, int(case.target)))
             continue
-        for value in values:
-            cases.append((int(value), int(target)))
+        for value in case.values:
+            cases.append((int(value), int(case.target)))
     return cases
 
 
@@ -166,34 +189,33 @@ def _maturity_label(flow_graph: FlowGraph) -> str:
     return "unknown" if value is None else str(value)
 
 
-def _mop_const_value(mop: object | None) -> int | None:
-    if mop is None:
+def _storage_const_value(storage: Varnode | WeakStackSlot | None) -> int | None:
+    """Return the numeric constant for a CONST storage view, else ``None``.
+
+    ``storage`` is a canonical ``operand_storages`` view (a ``Varnode`` for a
+    numeric operand projects to ``Space.CONST``; a ``WeakStackSlot`` / ``None``
+    carries no constant), so the const test matches the previous
+    ``varnode_from_mop_snapshot(...) is CONST`` / ``mop.value`` read.
+    """
+    if not isinstance(storage, Varnode):
         return None
-    try:
-        varnode = varnode_from_mop_snapshot(mop)  # type: ignore[arg-type]
-    except (AttributeError, TypeError, ValueError):
-        varnode = None
-    if varnode is not None and varnode.space is Space.CONST:
-        return int(varnode.offset)
-    value = getattr(mop, "value", None)
-    if value is not None:
-        return int(value)
-    return None
+    return _const_value_from_varnode(storage)
 
 
-def _mop_contains_stkoff(
-    mop: object | None,
+def _storage_contains_stkoff(
+    storage: Varnode | WeakStackSlot | None,
     state_var_stkoff: int,
 ) -> bool:
-    if mop is None:
+    """Return whether a STACK storage view references ``state_var_stkoff``.
+
+    ``storage`` is a canonical ``operand_storages`` view: a stack operand
+    projects to ``Varnode(Space.STACK, offset, size)`` whose ``offset`` is the
+    state-var stack offset (matching the previous ``stack_refs`` / ``stkoff``
+    read on the lifted operand snapshot).
+    """
+    if not isinstance(storage, Varnode) or storage.space is not Space.STACK:
         return False
-    stack_refs = getattr(mop, "stack_refs", ())
-    if int(state_var_stkoff) in {int(ref) for ref in stack_refs}:
-        return True
-    stkoff = getattr(mop, "stkoff", None)
-    if stkoff is not None and int(stkoff) == int(state_var_stkoff):
-        return True
-    return False
+    return int(storage.offset) == int(state_var_stkoff)
 
 
 def _guard_compares_state_to_terminal(
@@ -208,14 +230,13 @@ def _guard_compares_state_to_terminal(
     if not tail.is_conditional_jump:
         return False
 
-    left = tail.l
-    right = tail.r
-    left_is_state = _mop_contains_stkoff(left, state_var_stkoff)
-    right_is_state = _mop_contains_stkoff(right, state_var_stkoff)
+    left, right, _dest = operand_storages(tail)
+    left_is_state = _storage_contains_stkoff(left, state_var_stkoff)
+    right_is_state = _storage_contains_stkoff(right, state_var_stkoff)
     if left_is_state == right_is_state:
         return False
-    const_mop = right if left_is_state else left
-    const_value = _mop_const_value(const_mop)
+    const_storage = right if left_is_state else left
+    const_value = _storage_const_value(const_storage)
     if const_value is None:
         return False
     return (int(const_value) & 0xFFFFFFFFFFFFFFFF) not in case_values
@@ -302,22 +323,22 @@ def analyze_switch_table_flow_graph(
         if blk.tail is None or blk.tail_kind is not InsnKind.TABLE_JUMP:
             continue
 
-        state_operand_snapshot = blk.tail.l
-        stkoff = _find_state_var_stkoff(state_operand_snapshot)
-        if stkoff is None:
+        state_var_node = _find_table_jump_state_var(blk.tail)
+        if state_var_node is None:
             logger.debug(
                 "table jump at blk[%d]: could not identify state variable stkoff",
                 serial,
             )
             continue
 
+        stkoff = int(state_var_node.offset)
         state_var_operand = Varnode(
             Space.STACK,
-            int(stkoff),
-            int(getattr(state_operand_snapshot, "size", 0) or 0),
+            stkoff,
+            int(state_var_node.size or 0),
         )
 
-        cases = _extract_cases_from_switch_operand(blk.tail.r, serial)
+        cases = _extract_cases_from_switch_control(blk.tail, serial)
         if len(cases) < 2:
             logger.debug(
                 "table jump at blk[%d]: too few cases (%d), skipping",
