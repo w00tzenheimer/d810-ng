@@ -1,13 +1,34 @@
-"""Read-only discovery for local constant-select loop shells."""
+"""Read-only discovery for local constant-select loop shells.
+
+d81-qlal -- canonical Instruction port.  The operand reads no longer touch the
+backend-shaped ``InsnSnapshot`` operand slots (``.l`` / ``.r`` / ``.d``) and no
+``_operand`` shim / ``operand_slots`` walk / ``getattr`` on a snapshot remains.
+Operand storage views come from
+:func:`~d810.ir.insn_projection.operand_storages` (slot-aligned ``l`` / ``r`` /
+``d``); ``_const_value`` / ``_var_id`` / ``_var_use_id`` adapt them (or a raw
+``MopSnapshot``-shaped operand, for the operand-identity unit pins) through the
+shared :func:`~d810.analyses.control_flow._operand_readers._as_varnode`
+normalizer.  ``_const_value`` keeps this module's 32-bit mask (distinct from the
+64-bit shared reader); ``_var_id`` matches the shared 2-tuple and ``_var_use_id``
+extends it with the operand size.
+"""
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind
+from d810.analyses.control_flow._operand_readers import _as_varnode
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+from d810.ir.insn_projection import operand_storages
+from d810.ir.locations import WeakStackSlot
 from d810.ir.storage_identity import StorageIdentityKind, storage_identity_from_varnode
-from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
-from d810.analyses.control_flow.instruction_semantics import is_branch, is_call, is_goto
+from d810.ir.varnode import Space, Varnode
+from d810.analyses.control_flow.instruction_semantics import (
+    is_branch,
+    is_call,
+    is_goto,
+    is_kind,
+)
 
 
 LOCAL_SELECT_LOOP_FIXES_METADATA_KEY = "local_select_loop_fixes"
@@ -86,24 +107,15 @@ class _HeaderStep:
     init_const: int
 
 
-def _operand(insn: object | None, slot: str) -> object | None:
-    if insn is None:
-        return None
-    for slot_name, operand in getattr(insn, "operand_slots", ()) or ():
-        if slot_name == slot:
-            return operand
-    return getattr(insn, slot, None)
+def _const_value(operand: object | None) -> int | None:
+    """Return the 32-bit-masked numeric constant for a CONST operand, else ``None``.
 
-
-def _varnode(mop: object | None) -> Varnode | None:
-    try:
-        return varnode_from_mop_snapshot(mop)
-    except (AttributeError, TypeError, ValueError):
-        return None
-
-
-def _const_value(mop: object | None) -> int | None:
-    vn = _varnode(mop)
+    Accepts a canonical storage view (``Varnode`` from ``operand_storages``) or a
+    raw ``MopSnapshot``-shaped operand (the operand-identity unit pin), normalized
+    through the shared :func:`_as_varnode`.  Masks to 32 bits (this module's
+    historical width), distinct from the 64-bit shared reader.
+    """
+    vn = _as_varnode(operand)
     if vn is None or vn.space is not Space.CONST:
         return None
     try:
@@ -112,8 +124,8 @@ def _const_value(mop: object | None) -> int | None:
         return None
 
 
-def _var_id(mop: object | None) -> VarId | None:
-    identity = storage_identity_from_varnode(_varnode(mop))
+def _var_id(operand: object | None) -> VarId | None:
+    identity = storage_identity_from_varnode(_as_varnode(operand))
     if identity is None:
         return None
     label = _VAR_ID_KIND_LABELS.get(identity.kind)
@@ -122,36 +134,21 @@ def _var_id(mop: object | None) -> VarId | None:
     return (label, int(identity.offset))
 
 
-def _var_use_id(mop: object | None) -> VarUseId | None:
-    var_id = _var_id(mop)
+def _var_use_id(operand: object | None) -> VarUseId | None:
+    var_id = _var_id(operand)
     if var_id is None:
         return None
-    vn = _varnode(mop)
+    vn = _as_varnode(operand)
     size = int(vn.size) if vn is not None else 0
     return (var_id[0], var_id[1], size)
 
 
-def _kind_name(insn: object | None) -> str:
-    if insn is None:
-        return ""
-    kind = getattr(insn, "kind", None)
-    if isinstance(kind, InsnKind):
-        return kind.value
-    return str(kind)
+def _is_mov(insn: InsnSnapshot | None) -> bool:
+    return is_kind(insn, InsnKind.MOV, "mov")
 
 
-def _is_mov(insn: object | None) -> bool:
-    return getattr(insn, "kind", None) is InsnKind.MOV or _kind_name(insn) in {
-        "InsnKind.MOV",
-        "mov",
-    }
-
-
-def _is_xdu(insn: object | None) -> bool:
-    return getattr(insn, "kind", None) is InsnKind.XDU or _kind_name(insn) in {
-        "InsnKind.XDU",
-        "xdu",
-    }
+def _is_xdu(insn: InsnSnapshot | None) -> bool:
+    return is_kind(insn, InsnKind.XDU, "xdu")
 
 
 def _is_forward_assign(insn: object | None) -> bool:
@@ -180,11 +177,12 @@ def _iter_assignments(block: BlockSnapshot) -> tuple[object, ...]:
     return tuple(insn for insn in block.insn_snapshots if _is_forward_assign(insn))
 
 
-def _var_assignment(insn: object | None) -> tuple[VarId, VarId] | None:
+def _var_assignment(insn: InsnSnapshot | None) -> tuple[VarId, VarId] | None:
     if not _is_forward_assign(insn):
         return None
-    dst = _var_id(_operand(insn, "d"))
-    src = _var_id(_operand(insn, "l"))
+    left, _right, dest = operand_storages(insn)
+    dst = _var_id(dest)
+    src = _var_id(left)
     if dst is None or src is None:
         return None
     return dst, src
@@ -198,8 +196,9 @@ def _const_assignment(
     for insn in block.insn_snapshots:
         if not _is_mov(insn):
             continue
-        dst = _var_id(_operand(insn, "d"))
-        value = _const_value(_operand(insn, "l"))
+        left, _right, dest = operand_storages(insn)
+        dst = _var_id(dest)
+        value = _const_value(left)
         if dst is None or value is None:
             continue
         if dest_id is not None and dst != dest_id:
@@ -210,12 +209,11 @@ def _const_assignment(
 
 def _compare_var_const_operand(
     block: BlockSnapshot,
-) -> tuple[VarId, int, object] | None:
+) -> tuple[VarId, int, Varnode | WeakStackSlot | None] | None:
     tail = _last_insn(block)
     if not _is_conditional(tail):
         return None
-    left = _operand(tail, "l")
-    right = _operand(tail, "r")
+    left, right, _dest = operand_storages(tail)
     left_var = _var_id(left)
     right_var = _var_id(right)
     left_const = _const_value(left)
@@ -231,7 +229,7 @@ def _compare_var_const(block: BlockSnapshot) -> tuple[VarId, int] | None:
     result = _compare_var_const_operand(block)
     if result is None:
         return None
-    var_id, const_value, _operand = result
+    var_id, const_value, _storage = result
     return var_id, const_value
 
 
@@ -523,9 +521,11 @@ def _collect_loop_region_to_header(
     return frozenset(region)
 
 
-def _instruction_var_use_ids(insn: object | None) -> frozenset[VarUseId]:
+def _instruction_var_use_ids(insn: InsnSnapshot | None) -> frozenset[VarUseId]:
+    if insn is None:
+        return frozenset()
     result: set[VarUseId] = set()
-    for _slot_name, operand in getattr(insn, "operand_slots", ()) or ():
+    for operand in operand_storages(insn):
         var_id = _var_use_id(operand)
         if var_id is not None:
             result.add(var_id)
@@ -547,11 +547,12 @@ def _is_dispatch_only_loop_block(
             return _is_goto(insn)
         if not _is_forward_assign(insn):
             return False
-        dst = _var_id(_operand(insn, "d"))
+        left, _right, dest = operand_storages(insn)
+        dst = _var_id(dest)
         if dst not in allowed_ids:
             return False
-        src_var = _var_id(_operand(insn, "l"))
-        src_const = _const_value(_operand(insn, "l"))
+        src_var = _var_id(left)
+        src_const = _const_value(left)
         if src_var is None and src_const is None:
             return False
         if src_var is not None and src_var not in allowed_ids:
@@ -736,11 +737,12 @@ def _is_terminal_dispatch_loop_block(
             return compare is not None and compare[0] in allowed_ids
         if not _is_forward_assign(insn):
             return False
-        dst = _var_id(_operand(insn, "d"))
+        left, _right, dest = operand_storages(insn)
+        dst = _var_id(dest)
         if dst not in allowed_ids:
             return False
-        src_var = _var_id(_operand(insn, "l"))
-        src_const = _const_value(_operand(insn, "l"))
+        src_var = _var_id(left)
+        src_const = _const_value(left)
         if src_var is None and src_const is None:
             return False
         if src_var is not None and src_var not in allowed_ids:
@@ -769,7 +771,8 @@ def _terminal_loop_allowed_ids(
                     continue
                 dst, src = assignment
                 if dst in allowed and src not in allowed:
-                    src_const = _const_value(_operand(insn, "l"))
+                    left, _right, _dest = operand_storages(insn)
+                    src_const = _const_value(left)
                     if src_const is not None:
                         continue
                     if src[0] != "reg":
@@ -1400,26 +1403,29 @@ def _coerce_fixes(raw: object) -> tuple[LocalSelectLoopCandidate, ...]:
     return tuple(fixes)
 
 
+def _fix_sort_key(item: LocalSelectLoopCandidate) -> tuple[str, int, int, int]:
+    """Stable sort key across the heterogeneous fix dataclasses.
+
+    Mirrors the previous attribute-fallback chain
+    (``test_block`` -> ``header_block``; ``assignment_block`` ->
+    ``loop_entry_target`` -> ``sink_block``) by explicit per-type field reads,
+    so no ``getattr`` attribute probe on the fix dataclass remains.
+    """
+    if isinstance(item, LocalSelectLoopFix):
+        return (item.__class__.__name__, int(item.init_block), int(item.test_block), int(item.assignment_block))
+    if isinstance(item, LocalSelectTerminalLoopFix):
+        return (item.__class__.__name__, int(item.init_block), -1, int(item.sink_block))
+    # LocalSelectConvergenceLoopFix / LocalSelectDirectExitLoopFix both expose
+    # ``header_block`` and ``loop_entry_target``.
+    return (item.__class__.__name__, int(item.init_block), int(item.header_block), int(item.loop_entry_target))
+
+
 def serialize_local_select_loop_fixes(
     fixes: Sequence[LocalSelectLoopCandidate],
 ) -> tuple[dict[str, int | str], ...]:
     """Serialize select-loop fixes into FlowGraph metadata."""
     serialized: list[dict[str, int | str]] = []
-    for fix in sorted(
-        fixes,
-        key=lambda item: (
-            item.__class__.__name__,
-            int(item.init_block),
-            int(getattr(item, "test_block", getattr(item, "header_block", -1))),
-            int(
-                getattr(
-                    item,
-                    "assignment_block",
-                    getattr(item, "loop_entry_target", getattr(item, "sink_block", -1)),
-                )
-            ),
-        ),
-    ):
+    for fix in sorted(fixes, key=_fix_sort_key):
         if isinstance(fix, LocalSelectLoopFix):
             serialized.append(
                 {

@@ -38,8 +38,6 @@ from dataclasses import dataclass
 
 from d810.core.logging import getLogger
 from d810.analyses.control_flow.state_machine_analysis import (
-    _constant_dest_locator_snapshot,
-    _eval_insn_view_snapshot,
     _is_call_insn,
     _is_goto_insn,
     _is_nop_insn,
@@ -60,14 +58,62 @@ from d810.analyses.data_flow.concolic import (
     fold_exact,
 )
 from d810.capabilities.providers import get_condition_chain_walkers
-from d810.ir.flowgraph import InsnKind, OperandKind
-from d810.ir.semantics import PredicateKind
-from d810.ir.storage_identity import (
-    StorageIdentityKind,
-    storage_identity_from_mop_snapshot,
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot, OperandKind
+from d810.ir.insn_projection import (
+    operand_kinds,
+    operand_stack_offsets,
+    operand_stack_refs,
+    operand_storages,
+    project_instruction,
 )
+from d810.ir.locations import WeakStackSlot
+from d810.ir.semantics import PredicateKind
+from d810.ir.varnode import Space, Varnode
 
 logger = getLogger(__name__)
+
+
+def _storage_dest_locator(
+    storage: Varnode | WeakStackSlot | None,
+    kind: OperandKind | None,
+) -> tuple[str, int] | None:
+    """``("stk"|"reg", offset)`` for a STACK/REGISTER operand, else ``None``.
+
+    Canonical-Instruction equivalent of
+    :func:`~d810.analyses.control_flow.state_machine_analysis._constant_dest_locator_snapshot`,
+    byte-identical including its ``kind`` gate: the legacy locator only matched
+    operands whose *operand* kind is ``STACK`` / ``REGISTER``
+    (``_is_stack_operand`` / ``_is_register_operand``), so an ``LVAR`` operand
+    (which :func:`~d810.ir.varnode.varnode_from_mop_snapshot` may promote to a
+    ``Space.STACK`` view) located to ``None``.  ``kind`` (from
+    :func:`~d810.ir.insn_projection.operand_kinds`) reproduces that gate exactly;
+    the offset then comes from the slot-aligned ``Varnode`` storage view (a
+    ``STACK`` operand whose offset was not recovered is a ``WeakStackSlot`` ->
+    ``None``, matching the legacy ``_stack_offset`` miss).
+    """
+    if kind is OperandKind.STACK:
+        if isinstance(storage, Varnode) and storage.space is Space.STACK:
+            return ("stk", int(storage.offset))
+        return None
+    if kind is OperandKind.REGISTER:
+        if isinstance(storage, Varnode) and storage.space is Space.REGISTER:
+            return ("reg", int(storage.offset))
+        return None
+    return None
+
+
+def _storage_const_value(storage: Varnode | WeakStackSlot | None) -> int | None:
+    """Numeric constant for a CONST storage view, else ``None``."""
+    if not isinstance(storage, Varnode) or storage.space is not Space.CONST:
+        return None
+    return int(storage.offset)
+
+
+def _storage_global_offset(storage: Varnode | WeakStackSlot | None) -> int | None:
+    """Global address for a GLOBAL storage view, else ``None``."""
+    if not isinstance(storage, Varnode) or storage.space is not Space.GLOBAL:
+        return None
+    return int(storage.offset)
 
 # Default bound on the handler-local corridor scan.  Real OLLVM handler bodies
 # (entry -> work -> const-load -> shared MBA suffix -> dispatcher) are short; a
@@ -334,31 +380,20 @@ def _resolve_state_var_alias(
         return int(state_var_stkoff)
     soff = int(state_var_stkoff)
     source = soff
-    for insn in getattr(blk, "insn_snapshots", ()):
-        view = _eval_insn_view_snapshot(insn)
-        if _constant_dest_locator_snapshot(getattr(view, "d", None)) != ("stk", soff):
+    for insn in blk.insn_snapshots:
+        left, right, dest = operand_storages(insn)
+        l_kind, r_kind, d_kind = operand_kinds(insn)
+        if _storage_dest_locator(dest, d_kind) != ("stk", soff):
             continue
-        r = getattr(view, "r", None)
         if (
-            _constant_dest_locator_snapshot(r) is not None
-            or getattr(r, "value", None) is not None
+            _storage_dest_locator(right, r_kind) is not None
+            or _storage_const_value(right) is not None
         ):
             continue  # binary op (add/xor/...) -> not a pure copy
-        lloc = _constant_dest_locator_snapshot(getattr(view, "l", None))
+        lloc = _storage_dest_locator(left, l_kind)
         if lloc is not None and lloc[0] == "stk" and lloc[1] != soff:
             source = int(lloc[1])  # last copy into state_var wins
     return source
-
-
-def _operand_gaddr(mop) -> int | None:
-    """Return the lifted global address an operand names, or ``None``."""
-    try:
-        identity = storage_identity_from_mop_snapshot(mop)
-    except (AttributeError, TypeError, ValueError):
-        return None
-    if identity is None or identity.kind is not StorageIdentityKind.GLOBAL:
-        return None
-    return int(identity.offset)
 
 
 def _detect_global_state_var(flow_graph, dispatcher_entry_serial: int) -> int | None:
@@ -376,23 +411,37 @@ def _detect_global_state_var(flow_graph, dispatcher_entry_serial: int) -> int | 
     blk = flow_graph.get_block(int(dispatcher_entry_serial))
     if blk is None:
         return None
-    for insn in getattr(blk, "insn_snapshots", ()):
+    for insn in blk.insn_snapshots:
         if not (
-            getattr(insn, "is_conditional_jump", False)
-            or getattr(insn, "kind", None) in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}
+            insn.is_conditional_jump
+            or insn.kind in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}
         ):
             continue
-        # The dispatcher head compares the state var: its LEFT operand (or a
-        # nested compared subexpression) names the global.
-        for slot in ("l", "r"):
-            mop = getattr(insn, slot, None)
-            g = _operand_gaddr(mop)
+        # The dispatcher head compares the state var: its compared operand (or a
+        # nested compared subexpression) names the global.  Read the compared
+        # operands off the canonical slot-aligned storage views (was ``insn.l`` /
+        # ``insn.r``) -- a GLOBAL operand projects to ``Varnode(Space.GLOBAL,
+        # gaddr, size)``; the storage view tolerates a partial/duck-typed live
+        # operand exactly as the previous ``storage_identity_from_mop_snapshot``
+        # path did (an unrecovered global folds to ``Space.UNKNOWN`` -> ``None``).
+        left, right, _dest = operand_storages(insn)
+        for storage in (left, right):
+            g = _storage_global_offset(storage)
             if g is not None:
                 return g
-            for sub in ("sub_l", "sub_r"):
-                g = _operand_gaddr(getattr(mop, sub, None))
-                if g is not None:
-                    return g
+        # Nested compared sub-expression (was the ``sub_l`` / ``sub_r`` walk):
+        # the projection flattens a SUBINSN branch operand's leaves to ``Varnode``
+        # inputs, so a GLOBAL leaf surfaces as a ``Space.GLOBAL`` input.  Guarded
+        # because a partial/duck-typed live operand cannot supply a full nested
+        # tree -- mirroring the original ``_operand_gaddr`` try/except tolerance.
+        try:
+            inputs = project_instruction(insn).inputs
+        except (AttributeError, TypeError, ValueError):
+            continue
+        for value in inputs:
+            g = _storage_global_offset(value)
+            if g is not None:
+                return g
     return None
 
 
@@ -432,7 +481,7 @@ def _compute_foldable_global_reads(
     )
 
 
-def block_has_live_carrier_write(block, state_var_stkoff: int) -> bool:
+def block_has_live_carrier_write(block: BlockSnapshot, state_var_stkoff: int) -> bool:
     """``True`` if *block* writes a non-state value (a "carrier") besides the
     state-var write / control flow.
 
@@ -453,13 +502,14 @@ def block_has_live_carrier_write(block, state_var_stkoff: int) -> bool:
     keep the existing bypass behaviour byte-identical.
     """
     soff = int(state_var_stkoff)
-    for insn in getattr(block, "insn_snapshots", ()):
+    for insn in block.insn_snapshots:
         if _is_goto_insn(insn) or _is_nop_insn(insn):
             continue
         if _is_call_insn(insn):
             return True
-        view = _eval_insn_view_snapshot(insn)
-        dloc = _constant_dest_locator_snapshot(getattr(view, "d", None))
+        _left, _right, dest = operand_storages(insn)
+        _l_kind, _r_kind, d_kind = operand_kinds(insn)
+        dloc = _storage_dest_locator(dest, d_kind)
         if dloc is None:
             continue  # no resolvable data destination (control flow / unknown)
         kind, ident = dloc
@@ -833,54 +883,48 @@ class _ResolverContext:
     arm_of: object
 
 
-def _stack_offset_from_address(operand: object | None) -> int | None:
-    if operand is None:
-        return None
-    try:
-        identity = storage_identity_from_mop_snapshot(operand)
-    except (AttributeError, TypeError, ValueError):
-        identity = None
-    if identity is not None and identity.kind is StorageIdentityKind.STACK:
-        return int(identity.offset)
-    if getattr(operand, "kind", None) is OperandKind.ADDRESS:
-        inner = getattr(operand, "sub_l", None)
-        if inner is not None:
-            return _stack_offset_from_address(inner)
-        refs = tuple(getattr(operand, "stack_refs", ()) or ())
-        if len(refs) == 1:
-            return int(refs[0])
-    refs = tuple(getattr(operand, "stack_refs", ()) or ())
-    if len(refs) == 1:
-        return int(refs[0])
+def _reg_of(storage: Varnode | WeakStackSlot | None) -> int | None:
+    """Register id for a REGISTER storage view, else ``None``.
+
+    Canonical equivalent of the legacy ``insn.l.kind is REGISTER -> insn.l.reg``
+    read: a register operand projects to ``Varnode(Space.REGISTER, id, size)``.
+    """
+    if isinstance(storage, Varnode) and storage.space is Space.REGISTER:
+        return int(storage.offset)
     return None
 
 
-def _reg_of(operand: object | None) -> int | None:
-    if operand is not None and getattr(operand, "kind", None) is OperandKind.REGISTER:
-        reg = getattr(operand, "reg", None)
-        return int(reg) if reg is not None else None
-    return None
+def _number_value(storage: Varnode | WeakStackSlot | None) -> int | None:
+    """Numeric constant for a CONST storage view, else ``None``.
 
-
-def _number_value(operand: object | None) -> int | None:
-    if operand is not None and getattr(operand, "kind", None) is OperandKind.NUMBER:
-        value = getattr(operand, "value", None)
-        return int(value) if value is not None else None
+    Canonical equivalent of the legacy ``insn.l.kind is NUMBER -> insn.l.value``
+    read: a number operand projects to ``Varnode(Space.CONST, value, size)``.
+    """
+    if isinstance(storage, Varnode) and storage.space is Space.CONST:
+        return int(storage.offset)
     return None
 
 
 def _constant_operand_value(
-    operand: object | None,
+    storage: Varnode | WeakStackSlot | None,
+    stack_offset: int | None,
     stk_map: dict[int, int],
     reg_map: dict[int, int],
 ) -> int | None:
-    value = _number_value(operand)
+    """Concrete value of a compared operand under the const env, else ``None``.
+
+    ``storage`` is the canonical ``operand_storages`` view and ``stack_offset``
+    the matching :func:`~d810.ir.insn_projection.operand_stack_offsets` entry
+    (the address-of-stack decode the ``Varnode`` view collapses).  Mirrors the
+    legacy ``NUMBER -> value`` / ``&stack -> stk_map`` / ``REGISTER -> reg_map``
+    resolution order byte-for-byte.
+    """
+    value = _number_value(storage)
     if value is not None:
         return int(value)
-    off = _stack_offset_from_address(operand)
-    if off is not None:
-        return stk_map.get(int(off))
-    reg = _reg_of(operand)
+    if stack_offset is not None:
+        return stk_map.get(int(stack_offset))
+    reg = _reg_of(storage)
     if reg is not None:
         return reg_map.get(int(reg))
     return None
@@ -927,14 +971,16 @@ def _predicate_holds(
 
 
 def _conditional_taken_fallthrough(
-    block: object,
+    block: BlockSnapshot,
     succs: tuple[int, ...],
 ) -> tuple[int, int] | None:
-    tail = getattr(block, "tail", None)
+    tail = block.tail
     if tail is None:
         return None
-    dest = getattr(tail, "d", None)
-    taken = getattr(dest, "block_ref", None)
+    # The branch's taken target (was ``tail.d.block_ref``) is read off the
+    # canonical ``Instruction.control.target``, never the raw ``insn.d`` slot.
+    control = project_instruction(tail).control
+    taken = control.target if control is not None else None
     if taken is not None and int(taken) in succs:
         fallthrough = next((succ for succ in succs if int(succ) != int(taken)), None)
         if fallthrough is not None:
@@ -946,25 +992,27 @@ def _conditional_taken_fallthrough(
 
 
 def _concrete_successors(
-    block: object,
+    block: BlockSnapshot,
     stk_map: dict[int, int],
     reg_map: dict[int, int],
 ) -> tuple[int, ...]:
-    succs = tuple(int(s) for s in getattr(block, "succs", ()) or ())
+    succs = tuple(int(s) for s in block.succs)
     if len(succs) != 2:
         return succs
-    tail = getattr(block, "tail", None)
-    if tail is None or not getattr(tail, "is_conditional_jump", False):
+    tail = block.tail
+    if tail is None or not tail.is_conditional_jump:
         return succs
-    predicate = getattr(tail, "branch_predicate", None)
-    left = _constant_operand_value(getattr(tail, "l", None), stk_map, reg_map)
+    predicate = tail.branch_predicate
+    left_storage, right_storage, _dest = operand_storages(tail)
+    left_off, right_off, _doff = operand_stack_offsets(tail)
+    left = _constant_operand_value(left_storage, left_off, stk_map, reg_map)
     if predicate is PredicateKind.TRUTHY:
         right = 0
     else:
-        right = _constant_operand_value(getattr(tail, "r", None), stk_map, reg_map)
+        right = _constant_operand_value(right_storage, right_off, stk_map, reg_map)
     if left is None or right is None:
         return succs
-    width = int(getattr(tail, "compare_width", 4) or 4)
+    width = int(tail.compare_width or 4)
     holds = _predicate_holds(predicate, int(left), int(right), width=width)
     targets = _conditional_taken_fallthrough(block, succs)
     if holds is None or targets is None:
@@ -1012,13 +1060,14 @@ def _alias_map_for_path(flow_graph: object, path_blocks: tuple[int, ...]) -> dic
         block = get_block(int(serial))
         if block is None:
             continue
-        for insn in tuple(getattr(block, "insn_snapshots", ()) or ()):
-            if getattr(insn, "kind", None) is not InsnKind.MOV:
+        for insn in block.insn_snapshots:
+            if insn.kind is not InsnKind.MOV:
                 continue
-            dst_reg = _reg_of(getattr(insn, "d", None))
+            _l, _r, dest = operand_storages(insn)
+            dst_reg = _reg_of(dest)
             if dst_reg is None:
                 continue
-            offset = _stack_offset_from_address(getattr(insn, "l", None))
+            offset = operand_stack_offsets(insn)[0]
             if offset is None:
                 aliases.pop(dst_reg, None)
             else:
@@ -1026,9 +1075,9 @@ def _alias_map_for_path(flow_graph: object, path_blocks: tuple[int, ...]) -> dic
     return aliases
 
 
-def _store_target_offset(insn: object, aliases: dict[int, int]) -> int | None:
-    target = getattr(insn, "d", None)
-    offset = _stack_offset_from_address(target)
+def _store_target_offset(insn: InsnSnapshot, aliases: dict[int, int]) -> int | None:
+    _l, _r, target = operand_storages(insn)
+    offset = operand_stack_offsets(insn)[2]
     if offset is not None:
         return int(offset)
     reg = _reg_of(target)
@@ -1068,12 +1117,13 @@ def _alias_offset_after_block_for_reg(
     if entry_offset is not None:
         aliases[int(target_reg)] = int(entry_offset)
 
-    for insn in tuple(getattr(block, "insn_snapshots", ()) or ()):
-        if getattr(insn, "kind", None) is not InsnKind.MOV:
+    for insn in block.insn_snapshots:
+        if insn.kind is not InsnKind.MOV:
             continue
-        if _reg_of(getattr(insn, "d", None)) != int(target_reg):
+        _l, _r, dest = operand_storages(insn)
+        if _reg_of(dest) != int(target_reg):
             continue
-        offset = _stack_offset_from_address(getattr(insn, "l", None))
+        offset = operand_stack_offsets(insn)[0]
         if offset is None:
             aliases.pop(int(target_reg), None)
         else:
@@ -1156,12 +1206,13 @@ def _resolve_stack_alias_state_store(
         dispatcher_entry=int(ctx.dispatcher_entry),
     )
     aliases = _alias_map_for_path(ctx.flow_graph, path)
-    for insn in tuple(getattr(block, "insn_snapshots", ()) or ()):
-        if getattr(insn, "kind", None) is not InsnKind.STORE:
+    for insn in block.insn_snapshots:
+        if insn.kind is not InsnKind.STORE:
             continue
         target = _store_target_offset(insn, aliases)
         if target is None:
-            target_reg = _reg_of(getattr(insn, "d", None))
+            _l, _r, dest = operand_storages(insn)
+            target_reg = _reg_of(dest)
             if target_reg is not None:
                 target = _incoming_alias_offset_for_reg(
                     ctx,
@@ -1170,7 +1221,8 @@ def _resolve_stack_alias_state_store(
                 )
         if target is None or int(target) != int(ctx.effective_stkoff):
             continue
-        value = _number_value(getattr(insn, "l", None))
+        left, _r, _d = operand_storages(insn)
+        value = _number_value(left)
         if value is not None:
             return int(value) & 0xFFFFFFFF
     return None
@@ -1190,37 +1242,38 @@ def _resolve_stack_alias_state_store_from_predecessor(
             dispatcher_entry=int(ctx.dispatcher_entry),
         ),
     )
-    for insn in tuple(getattr(block, "insn_snapshots", ()) or ()):
-        if getattr(insn, "kind", None) is not InsnKind.STORE:
+    for insn in block.insn_snapshots:
+        if insn.kind is not InsnKind.STORE:
             continue
         target = _store_target_offset(insn, aliases)
         if target is None or int(target) != int(ctx.effective_stkoff):
             continue
-        value = _number_value(getattr(insn, "l", None))
+        left, _r, _d = operand_storages(insn)
+        value = _number_value(left)
         if value is not None:
             return int(value) & 0xFFFFFFFF
     return None
 
 
 def _terminal_guard_successor_for_state(
-    block: object,
+    block: BlockSnapshot,
     *,
     state: int,
     state_var_stkoff: int,
     dispatcher_entry: int,
 ) -> int | None:
-    succs = tuple(int(succ) for succ in getattr(block, "succs", ()) or ())
+    succs = tuple(int(succ) for succ in block.succs)
     if len(succs) != 2 or int(dispatcher_entry) not in succs:
         return None
-    tail = getattr(block, "tail", None)
-    if tail is None or not getattr(tail, "is_conditional_jump", False):
+    tail = block.tail
+    if tail is None or not tail.is_conditional_jump:
         return None
-    left = getattr(tail, "l", None)
-    right = getattr(tail, "r", None)
-    left_state = int(state_var_stkoff) in tuple(getattr(left, "stack_refs", ()) or ())
-    right_state = int(state_var_stkoff) in tuple(getattr(right, "stack_refs", ()) or ())
-    left_value = _number_value(left)
-    right_value = _number_value(right)
+    left_storage, right_storage, _dest = operand_storages(tail)
+    left_refs, right_refs, _dest_refs = operand_stack_refs(tail)
+    left_state = int(state_var_stkoff) in left_refs
+    right_state = int(state_var_stkoff) in right_refs
+    left_value = _number_value(left_storage)
+    right_value = _number_value(right_storage)
 
     def _matches_state(value: int | None) -> bool:
         if value is None:
@@ -1235,7 +1288,7 @@ def _terminal_guard_successor_for_state(
     )
     if not compares_state:
         return None
-    predicate = getattr(tail, "branch_predicate", None)
+    predicate = tail.branch_predicate
     if predicate is PredicateKind.EQ:
         target = int(succs[1])
     elif predicate is PredicateKind.NE:
