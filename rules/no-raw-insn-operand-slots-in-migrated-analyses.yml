@@ -46,6 +46,8 @@ files:
   - "src/d810/analyses/control_flow/branch_witness.py"
   - "src/d810/analyses/control_flow/branch_witness_provider.py"
   - "src/d810/analyses/control_flow/branch_ownership_oracle.py"
+  - "src/d810/analyses/control_flow/deffai/transfer.py"
+  - "src/d810/analyses/control_flow/deffai/preprocess.py"
 ignores:
   - "tests/**"
 
