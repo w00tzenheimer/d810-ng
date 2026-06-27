@@ -17,13 +17,17 @@ from d810.ir.flowgraph import (
 from d810.core import logging
 from d810.core.typing import Optional
 from d810.capabilities.providers import get_condition_chain_walkers
+from d810.ir.insn_projection import (
+    operand_kinds,
+    operand_stack_offsets,
+    operand_storages,
+)
 from d810.ir.results import ConstantFixpointResult
 from d810.ir.storage_identity import (
     StorageIdentity,
-    StorageIdentityKind,
-    storage_identity_from_mop_snapshot,
+    storage_identity_from_varnode,
 )
-from d810.ir.varnode import Space, varnode_from_mop_snapshot
+from d810.ir.varnode import Space, Varnode
 
 logger = logging.getLogger(__name__)
 
@@ -56,31 +60,6 @@ def _kind_matches(value: object, expected: object) -> bool:
     if actual == target or value is expected:
         return True
     return False
-
-
-def _operand_kind_matches(
-    operand: object | None,
-    expected: OperandKind,
-) -> bool:
-    if operand is None:
-        return False
-    return _kind_matches(getattr(operand, "kind", None), expected)
-
-
-def _is_stack_operand(operand: object | None) -> bool:
-    return _operand_kind_matches(operand, OperandKind.STACK)
-
-
-def _is_lvar_operand(operand: object | None) -> bool:
-    return _operand_kind_matches(operand, OperandKind.LVAR)
-
-
-def _is_register_operand(operand: object | None) -> bool:
-    return _operand_kind_matches(operand, OperandKind.REGISTER)
-
-
-def _is_number_operand(operand: object | None) -> bool:
-    return _operand_kind_matches(operand, OperandKind.NUMBER)
 
 
 def _insn_kind_matches(
@@ -163,34 +142,105 @@ def _condition_chain_condition_key_for_tail(tail: object | None) -> object | Non
     return _branch_predicate_for_tail(tail)
 
 
-def _constant_operand_value(operand: object | None) -> int | None:
-    varnode = varnode_from_mop_snapshot(operand)  # type: ignore[arg-type]
-    if varnode is None or varnode.space is not Space.CONST:
+# ---------------------------------------------------------------------------
+# Canonical slot-aligned destination / operand readers (ticket d81-qlal).
+#
+# The state-write classifiers below locate the cell an instruction WRITES (its
+# ``d`` slot) and read the compared operands of a condition-chain branch (its
+# ``l`` / ``r`` slots).  These analyses are reached only with a once-lifted
+# portable ``FlowGraph`` whose blocks yield canonical
+# :class:`~d810.ir.flowgraph.InsnSnapshot` (the path evaluators require
+# ``mba.get_block`` -- a ``FlowGraph`` method a live ``mba_t`` does not have --
+# before any operand is read, so the legacy opaque shape never reaches an
+# operand-slot read here; ticket llr-f1cs F5).  Operand reads therefore go
+# through the slot-aligned lift-boundary accessors
+# (:func:`~d810.ir.insn_projection.operand_kinds` /
+# :func:`~d810.ir.insn_projection.operand_stack_offsets` /
+# :func:`~d810.ir.insn_projection.operand_storages`), never a raw ``insn.d`` /
+# ``insn.l`` / ``insn.r`` operand slot.
+# ---------------------------------------------------------------------------
+
+# A resolved destination locator: ("stk", stkoff) | ("reg", reg_id) | None.
+DestLocator = tuple[str, int]
+
+# Operand-kind classes a destination locator distinguishes (a frame-resident
+# LVAR projects to the same stack identity as a STACK cell).
+_STACK_DEST_KINDS = frozenset({OperandKind.STACK, OperandKind.LVAR})
+
+
+def _dest_storage_kind(insn: InsnSnapshot) -> OperandKind | None:
+    """Portable :class:`OperandKind` of the instruction's ``d`` (dest) slot."""
+    return operand_kinds(insn)[2]
+
+
+def _dest_stack_offset(insn: InsnSnapshot) -> int | None:
+    """Frame offset the ``d`` (dest) slot names, else ``None``.
+
+    Resolves both a direct ``STACK`` cell and an ``LVAR`` destination whose
+    lift-time ``lvar_stkoff`` was promoted to a stack identity -- the same
+    offset the legacy ``_stack_offset(insn.d)`` decode produced.
+    """
+    return operand_stack_offsets(insn)[2]
+
+
+def _dest_register_id(insn: InsnSnapshot) -> int | None:
+    """Register id of a ``REGISTER`` ``d`` (dest) slot, else ``None``."""
+    dest_storage = operand_storages(insn)[2]
+    if isinstance(dest_storage, Varnode) and dest_storage.space is Space.REGISTER:
+        return int(dest_storage.offset)
+    return None
+
+
+def _branch_source_storages(
+    tail: InsnSnapshot,
+) -> tuple[Varnode | None, Varnode | None]:
+    """Canonical ``(left, right)`` source-storage views of a branch tail.
+
+    Reads the slot-aligned ``l`` / ``r`` operands through ``operand_storages``,
+    never a raw ``tail.l`` / ``tail.r`` slot.  A ``WeakStackSlot`` (an
+    unknown-offset stack cell) carries no comparable identity, so it normalizes
+    to ``None`` -- matching the legacy ``storage_identity_from_mop_snapshot``
+    read, which returned ``None`` for such an operand.
+    """
+    left, right, _dest = operand_storages(tail)
+    left_vn = left if isinstance(left, Varnode) else None
+    right_vn = right if isinstance(right, Varnode) else None
+    return left_vn, right_vn
+
+
+def _storage_identity(vn: Varnode | None) -> StorageIdentity | None:
+    """Size-agnostic storage identity for a source-storage view, else ``None``.
+
+    Equivalent to the legacy ``_state_var_ref`` /
+    ``storage_identity_from_mop_snapshot`` read, derived from the canonical
+    ``Varnode`` view instead of the raw operand slot.
+    """
+    return storage_identity_from_varnode(vn)
+
+
+def _storage_is_number(vn: Varnode | None) -> bool:
+    """Whether a source-storage view is a numeric constant (``Space.CONST``)."""
+    return vn is not None and vn.space is Space.CONST
+
+
+def _storage_number_value(vn: Varnode | None) -> int | None:
+    """Numeric value of a CONST source-storage view, else ``None``."""
+    if vn is None or vn.space is not Space.CONST:
         return None
-    return int(varnode.offset)
+    return int(vn.offset)
 
 
-def _stack_offset(operand: object | None) -> int | None:
-    identity = storage_identity_from_mop_snapshot(operand)  # type: ignore[arg-type]
-    if identity is None or identity.kind is not StorageIdentityKind.STACK:
+def _storage_is_stack(vn: Varnode | None) -> bool:
+    """Whether a source-storage view is a stack identity (``Space.STACK``)."""
+    return vn is not None and vn.space is Space.STACK
+
+
+def _storage_stack_offset(vn: Varnode | None) -> int | None:
+    """Stack offset of a STACK source-storage view, else ``None``."""
+    if vn is None or vn.space is not Space.STACK:
         return None
-    return int(identity.offset)
+    return int(vn.offset)
 
-
-def _register_id(operand: object | None) -> int | None:
-    identity = storage_identity_from_mop_snapshot(operand)  # type: ignore[arg-type]
-    if identity is None or identity.kind is not StorageIdentityKind.REGISTER:
-        return None
-    return int(identity.offset)
-
-
-def _state_var_ref(operand: object) -> StorageIdentity | None:
-    return storage_identity_from_mop_snapshot(operand)  # type: ignore[arg-type]
-
-
-def _tracks_condition_chain_stack_offset(operand: object | None) -> bool:
-    identity = storage_identity_from_mop_snapshot(operand)  # type: ignore[arg-type]
-    return identity is not None and identity.kind is StorageIdentityKind.STACK
 
 __all__ = [
     "CarrierResolutionResult",
@@ -372,31 +422,21 @@ def classify_exit_state(
             if _is_call_insn(insn) or _is_store_insn(insn):
                 return ExitStateKind.STABLE_HANDOFF
 
-            # Check if this instruction writes to the state variable.
-            dest = getattr(insn, "d", None)
-            if dest is not None:
+            # Check if this instruction writes to the state variable.  The
+            # destination slot is read through the canonical lift-boundary
+            # accessors (``operand_kinds`` / ``operand_stack_offsets``), never a
+            # raw ``insn.d`` slot.  A STACK *or* LVAR destination is compared to
+            # ``state_var_stkoff`` -- a frame-resident lvar carries its FRAME
+            # offset via the lift-time ``lvar_stkoff`` that
+            # ``operand_stack_offsets`` promotes to a stack identity, so the old
+            # live ``mba.vars[idx].location.stkoff()`` fallback (a no-op once the
+            # path evaluator runs on a portable ``FlowGraph`` -- which has no
+            # ``.vars`` -- so it always raised + resolved to ``None``) is gone.
+            dest_kind = _dest_storage_kind(insn)
+            if dest_kind is not None:
                 wrote_state = False
-                if _is_stack_operand(dest):
-                    off = _stack_offset(dest)
-                    if off is not None and int(off) == int(state_var_stkoff):
-                        wrote_state = True
-                elif _is_lvar_operand(dest):
-                    # Dual-shape (ticket llr-lxas S1): a lifted ``MopSnapshot``
-                    # carries the lvar's FRAME stack offset, which
-                    # ``varnode_from_mop_snapshot`` promotes to a STACK identity
-                    # -- so ``_stack_offset`` resolves it without any live
-                    # ``mba.vars`` read.  Only the opaque ``minsn_t`` shape (no
-                    # snapshot fields, ``_stack_offset`` returns ``None``) still
-                    # needs the live ``mba.vars[idx].location.stkoff()`` fallback.
-                    off = _stack_offset(dest)
-                    if off is None:
-                        lvar_ref = getattr(dest, "l", None)
-                        idx = getattr(lvar_ref, "idx", None) if lvar_ref else None
-                        if idx is not None:
-                            try:
-                                off = int(mba.vars[idx].location.stkoff())
-                            except Exception:
-                                off = None
+                if dest_kind in _STACK_DEST_KINDS:
+                    off = _dest_stack_offset(insn)
                     if off is not None and int(off) == int(state_var_stkoff):
                         wrote_state = True
                 if wrote_state:
@@ -404,9 +444,11 @@ def classify_exit_state(
                     # the exit state is transient corridor glue.
                     return ExitStateKind.TRANSIENT_CORRIDOR
 
-                # Non-state stack write: real computation, not corridor.
-                if _is_stack_operand(dest):
-                    off = _stack_offset(dest)
+                # Non-state stack write: real computation, not corridor.  This
+                # check is STACK-only (an LVAR destination is excluded, matching
+                # the legacy ``_is_stack_operand`` gate exactly).
+                if dest_kind is OperandKind.STACK:
+                    off = _dest_stack_offset(insn)
                     if off is not None and int(off) != int(state_var_stkoff):
                         return ExitStateKind.STABLE_HANDOFF
 
@@ -557,44 +599,43 @@ class StateWriteSite:
 SnapshotConstantFixpointResult = ConstantFixpointResult
 
 
+def _constant_dest_locator_snapshot(insn: InsnSnapshot) -> DestLocator | None:
+    """Return a stable locator for the constant-fixpoint destination of *insn*.
+
+    Reads the slot-aligned ``d`` operand through the canonical lift-boundary
+    accessors (``operand_kinds`` / ``operand_stack_offsets`` / ``operand_storages``),
+    never a raw ``insn.d`` slot.  This is **STACK-only** for the stack key
+    (an ``LVAR`` destination yields ``None``, since it is not tracked in the
+    exact-constant ``stk_map``) -- unlike the state-write locator in
+    ``classify_exit_state``, which treats a frame-resident LVAR as a stack cell.
+    This matches the legacy ``_is_stack_operand`` / ``_is_register_operand`` gate
+    exactly.
+    """
+    dest_kind = _dest_storage_kind(insn)
+    if dest_kind is OperandKind.STACK:
+        stkoff = _dest_stack_offset(insn)
+        return ("stk", int(stkoff)) if stkoff is not None else None
+    if dest_kind is OperandKind.REGISTER:
+        reg = _dest_register_id(insn)
+        return ("reg", int(reg)) if reg is not None else None
+    return None
+
+
 def _kill_constant_dest_snapshot(
-    dest: object | None,
+    insn: InsnSnapshot,
     stk_map: dict[int, int],
     reg_map: dict[int, int],
 ) -> None:
     """Forget a written destination when its new value is not provably constant."""
 
-    if dest is None:
+    locator = _constant_dest_locator_snapshot(insn)
+    if locator is None:
         return
-
-    if _is_stack_operand(dest):
-        stkoff = _stack_offset(dest)
-        if stkoff is not None:
-            stk_map.pop(int(stkoff), None)
-        return
-
-    if _is_register_operand(dest):
-        reg = _register_id(dest)
-        if reg is not None:
-            reg_map.pop(int(reg), None)
-
-
-def _constant_dest_locator_snapshot(dest: object | None) -> tuple[str, int] | None:
-    """Return a stable locator for stack/register destinations in snapshots."""
-
-    if dest is None:
-        return None
-    if _is_stack_operand(dest):
-        stkoff = _stack_offset(dest)
-        if stkoff is not None:
-            return ("stk", int(stkoff))
-        return None
-
-    if _is_register_operand(dest):
-        reg = _register_id(dest)
-        if reg is not None:
-            return ("reg", int(reg))
-    return None
+    kind, ident = locator
+    if kind == "stk":
+        stk_map.pop(int(ident), None)
+    else:
+        reg_map.pop(int(ident), None)
 
 
 def _eval_insn_view_snapshot(insn: InsnSnapshot) -> InsnSnapshot:
@@ -624,17 +665,17 @@ def _classify_truncation_side_effect_snapshot(
         return "call"
 
     eval_insn = _eval_insn_view_snapshot(insn)
-    dest = getattr(eval_insn, "d", None)
-    if dest is None:
+    dest_kind = _dest_storage_kind(eval_insn)
+    if dest_kind is None:
         return "control_flow"
 
-    if _is_stack_operand(dest):
-        stkoff = _stack_offset(dest)
+    if dest_kind is OperandKind.STACK:
+        stkoff = _dest_stack_offset(eval_insn)
         if stkoff is not None and int(stkoff) == int(state_var_stkoff):
             return "state_var_write"
         return "memory_write"
 
-    if _is_register_operand(dest):
+    if dest_kind is OperandKind.REGISTER:
         return "register_write"
 
     return "unknown_side_effect"
@@ -681,8 +722,7 @@ def _transfer_snapshot_constant_block(
     reg_map = dict(in_reg_map)
     for insn in block.insn_snapshots:
         eval_insn = _eval_insn_view_snapshot(insn)
-        dest = getattr(eval_insn, "d", None)
-        dest_locator = _constant_dest_locator_snapshot(dest)
+        dest_locator = _constant_dest_locator_snapshot(eval_insn)
         old_dest_value = None
         if dest_locator is not None:
             kind, ident = dest_locator
@@ -706,7 +746,7 @@ def _transfer_snapshot_constant_block(
             new_dest_value = stk_map.get(ident) if kind == "stk" else reg_map.get(ident)
             if new_dest_value != old_dest_value or new_dest_value is not None:
                 continue
-            _kill_constant_dest_snapshot(dest, stk_map, reg_map)
+            _kill_constant_dest_snapshot(eval_insn, stk_map, reg_map)
     return stk_map, reg_map
 
 
@@ -843,8 +883,7 @@ def find_state_write_sites_snapshot(
 
     for index, insn in enumerate(instructions):
         eval_insn = _eval_insn_view_snapshot(insn)
-        dest = getattr(eval_insn, "d", None)
-        dest_locator = _constant_dest_locator_snapshot(dest)
+        dest_locator = _constant_dest_locator_snapshot(eval_insn)
         old_dest_value = None
         if dest_locator is not None:
             kind, ident = dest_locator
@@ -866,7 +905,7 @@ def find_state_write_sites_snapshot(
             new_dest_value = stk_map.get(ident) if kind == "stk" else reg_map.get(ident)
             if new_dest_value != old_dest_value or new_dest_value is not None:
                 continue
-            _kill_constant_dest_snapshot(dest, stk_map, reg_map)
+            _kill_constant_dest_snapshot(eval_insn, stk_map, reg_map)
             continue
         trailing = instructions[index + 1 :]
         unsafe_trailing_eas: list[int] = []
@@ -1050,19 +1089,24 @@ def _is_condition_chain_comparison_snapshot(
         and condition_key not in _CONDITION_CHAIN_BRANCH_PREDICATES
     ):
         return False
-    l_mop = getattr(tail, "l", None)
-    r_mop = getattr(tail, "r", None)
-    if l_mop is None or r_mop is None:
+    # ``tail`` is the canonical ``BlockSnapshot.tail`` (this walk is
+    # ``FlowGraph``-only); read the compared ``l`` / ``r`` operands through the
+    # slot-aligned ``operand_kinds`` / ``operand_storages`` accessors, not a raw
+    # ``tail.l`` / ``tail.r`` slot.  An absent slot reports ``kind is None``,
+    # reproducing the old ``l_mop is None or r_mop is None`` guard.
+    l_kind, r_kind, _d_kind = operand_kinds(tail)
+    if l_kind is None or r_kind is None:
         return False
-    if not _is_number_operand(r_mop):
+    if r_kind is not OperandKind.NUMBER:
         return False
     if state_var_ref is not None:
-        if _state_var_ref(l_mop) != state_var_ref:
+        left_vn, _right_vn = _branch_source_storages(tail)
+        if _storage_identity(left_vn) != state_var_ref:
             return False
         if (
-            _tracks_condition_chain_stack_offset(l_mop)
+            _storage_is_stack(left_vn)
             and state_var_stkoff is not None
-            and _stack_offset(l_mop) != state_var_stkoff
+            and _storage_stack_offset(left_vn) != state_var_stkoff
         ):
             return False
     return True
@@ -1141,40 +1185,45 @@ def resolve_exit_via_condition_chain_default_snapshot(
         ):
             return current_serial if current_serial != condition_chain_default_serial else None
 
-        r_mop = tail.r
-        if r_mop is None or not _is_number_operand(r_mop):
+        # ``tail`` is the canonical ``BlockSnapshot.tail`` (FlowGraph-only walk);
+        # read the compared ``l`` / ``r`` operands through the slot-aligned
+        # ``operand_kinds`` / ``operand_storages`` accessors, not a raw
+        # ``tail.r`` / ``tail.l`` slot.
+        _l_kind, r_kind, _d_kind = operand_kinds(tail)
+        if r_kind is None or r_kind is not OperandKind.NUMBER:
             return current_serial if current_serial != condition_chain_default_serial else None
 
-        l_mop = tail.l
-        if l_mop is None:
+        if _l_kind is None:
             return current_serial if current_serial != condition_chain_default_serial else None
 
+        left_vn, right_vn = _branch_source_storages(tail)
+        left_identity = _storage_identity(left_vn)
         if state_var_ref is None:
-            state_var_ref = _state_var_ref(l_mop)
-            if _tracks_condition_chain_stack_offset(l_mop):
-                state_var_stkoff_local = _stack_offset(l_mop)
+            state_var_ref = left_identity
+            if _storage_is_stack(left_vn):
+                state_var_stkoff_local = _storage_stack_offset(left_vn)
         else:
-            if _state_var_ref(l_mop) != state_var_ref:
+            if left_identity != state_var_ref:
                 logger.info(
                     "  exit %#x: blk[%d] compares non-state-var (%s), stopping",
                     exit_state,
                     current_serial,
-                    _state_var_ref(l_mop),
+                    left_identity,
                 )
                 return current_serial if current_serial != condition_chain_default_serial else None
             if (
-                _tracks_condition_chain_stack_offset(l_mop)
-                and state_var_stkoff_local != _stack_offset(l_mop)
+                _storage_is_stack(left_vn)
+                and state_var_stkoff_local != _storage_stack_offset(left_vn)
             ):
                 logger.info(
                     "  exit %#x: blk[%d] compares different stkoff=%s, stopping",
                     exit_state,
                     current_serial,
-                    _stack_offset(l_mop),
+                    _storage_stack_offset(left_vn),
                 )
                 return current_serial if current_serial != condition_chain_default_serial else None
 
-        cmp_val = _constant_operand_value(r_mop)
+        cmp_val = _storage_number_value(right_vn)
         if cmp_val is None:
             return current_serial if current_serial != condition_chain_default_serial else None
         cond_taken = eval_condition_chain_condition(condition_key, exit_state, cmp_val)
