@@ -51,6 +51,7 @@ files:
   - "src/d810/analyses/control_flow/deffai/preprocess.py"
   - "src/d810/analyses/control_flow/path_horizon.py"
   - "src/d810/analyses/control_flow/reconstruction_discovery.py"
+  - "src/d810/analyses/control_flow/equality_chain_dispatcher.py"
 ignores:
   - "tests/**"
 
