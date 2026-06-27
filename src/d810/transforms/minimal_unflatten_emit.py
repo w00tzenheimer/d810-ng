@@ -966,7 +966,7 @@ def _stack_token_for_stkoff(stkoff: object) -> str | None:
 
 
 def _mop_stack_token(mop) -> str | None:
-    token = _stack_token_for_stkoff(getattr(mop, "stkoff", None))
+    token = _stack_token_for_stkoff(mop.stkoff if mop is not None else None)
     if token is not None:
         return token
     return _canonical_local_token(getattr(mop, "dstr", ""))
@@ -1528,7 +1528,7 @@ def _mop_stack_refs(mop) -> set[int]:
     if mop is None:
         return set()
     refs: set[int] = set()
-    stkoff = _int_or_none(getattr(mop, "stkoff", None))
+    stkoff = _int_or_none(mop.stkoff)
     if stkoff is not None:
         refs.add(int(stkoff))
     for ref in getattr(mop, "stack_refs", ()) or ():

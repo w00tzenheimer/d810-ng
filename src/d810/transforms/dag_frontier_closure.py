@@ -1135,7 +1135,7 @@ def _is_dispatcher_state_mov(insn: object, state_stkoff: int) -> bool:
     if dest is None or src is None:
         return False
     try:
-        dest_stkoff = int(getattr(dest, "stkoff", None))
+        dest_stkoff = int(dest.stkoff)
     except (TypeError, ValueError):
         return False
     if dest_stkoff != int(state_stkoff):
@@ -1636,7 +1636,7 @@ def _dispatcher_state_stkoff(flow_graph: object, dispatcher_serial: int) -> int 
         if getattr(operand, "value", None) is not None:
             constants += 1
             continue
-        stkoff = getattr(operand, "stkoff", None)
+        stkoff = operand.stkoff
         if stkoff is None:
             continue
         try:
@@ -1660,7 +1660,7 @@ def _state_write_constant(block: object, state_stkoff: int) -> int | None:
         if dest is None or src is None:
             continue
         try:
-            dest_stkoff = int(getattr(dest, "stkoff", None))
+            dest_stkoff = int(dest.stkoff)
         except (TypeError, ValueError):
             continue
         if dest_stkoff != int(state_stkoff):

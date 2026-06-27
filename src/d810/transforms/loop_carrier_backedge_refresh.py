@@ -45,7 +45,7 @@ def _env_enabled() -> bool:
 def _insn_writes_stkoff(blk: BlockSnapshot, stkoff: int) -> bool:
     for insn in blk.insn_snapshots:
         dest = getattr(insn, "d", None)
-        if dest is not None and getattr(dest, "stkoff", None) == stkoff:
+        if dest is not None and dest.stkoff == stkoff:
             return True
     return False
 
@@ -56,7 +56,7 @@ def _insn_loads_stkoff(blk: BlockSnapshot, stkoff: int) -> bool:
         if (
             getattr(insn, "kind", InsnKind.UNKNOWN) == InsnKind.LOAD
             and dest is not None
-            and getattr(dest, "stkoff", None) == stkoff
+            and dest.stkoff == stkoff
         ):
             return True
     return False
@@ -65,7 +65,7 @@ def _insn_loads_stkoff(blk: BlockSnapshot, stkoff: int) -> bool:
 def _insn_reads_stkoff(blk: BlockSnapshot, stkoff: int) -> bool:
     for insn in blk.insn_snapshots:
         for operand in (getattr(insn, "l", None), getattr(insn, "r", None)):
-            if operand is not None and getattr(operand, "stkoff", None) == stkoff:
+            if operand is not None and operand.stkoff == stkoff:
                 return True
     return False
 
@@ -74,7 +74,7 @@ def _direct_written_stkoffs(blk: BlockSnapshot) -> set[int]:
     out: set[int] = set()
     for insn in blk.insn_snapshots:
         dest = getattr(insn, "d", None)
-        stkoff = getattr(dest, "stkoff", None) if dest is not None else None
+        stkoff = dest.stkoff if dest is not None else None
         parsed = _as_int(stkoff)
         if parsed is not None:
             out.add(parsed)
@@ -156,7 +156,7 @@ def _tail_branch_stack_const(blk: BlockSnapshot) -> tuple[int, int] | None:
         return None
     l = getattr(tail, "l", None)
     r = getattr(tail, "r", None)
-    stkoff = getattr(l, "stkoff", None)
+    stkoff = l.stkoff if l is not None else None
     value = getattr(r, "value", None)
     if stkoff is None or value is None:
         return None

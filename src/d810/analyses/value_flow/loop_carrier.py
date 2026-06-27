@@ -389,7 +389,10 @@ class LoopPredicateValueFactCollector:
             identity = _dest_identity(insn)
             if identity is None:
                 continue
-            if insn.dest_type != "mop_S" and insn.dest_stkoff is None:
+            # ``dest_type == "mop_S"`` and ``dest_stkoff is not None`` are
+            # equivalent: both derive from ``dest.space is Space.STACK`` (a stack
+            # Varnode always carries an int offset).  Test the canonical field.
+            if insn.dest_stkoff is None:
                 continue
             writers_by_dest_identity.setdefault(identity, []).append(insn)
         for writers in writers_by_dest_identity.values():

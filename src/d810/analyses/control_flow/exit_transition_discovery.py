@@ -162,11 +162,11 @@ def _stack_offset(mop: MopSnapshot | None) -> int | None:
     varnode = _varnode(mop)
     if varnode is not None and varnode.space is Space.STACK:
         return int(varnode.offset)
-    # ``stkoff`` is a portable ``MopSnapshot`` field (not an operand slot), read
-    # defensively: a migration-era rich operand snapshot may not carry it, in
-    # which case resolution falls through to the condition-chain provider
-    # exactly as the legacy ``getattr(mop, "stkoff", None)`` path did.
-    stkoff = getattr(mop, "stkoff", None) if mop is not None else None
+    # Read ``stkoff`` directly only when ``mop`` is a portable ``MopSnapshot``;
+    # backend/rich operand shapes (which carry no portable ``stkoff`` field) fall
+    # through to the condition-chain provider below, which resolves them via
+    # ``s.off`` -- exactly as the prior defensive ``getattr`` fallback did.
+    stkoff = mop.stkoff if isinstance(mop, MopSnapshot) else None
     if stkoff is not None:
         return int(stkoff)
     try:
