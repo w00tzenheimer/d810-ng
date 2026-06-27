@@ -48,6 +48,8 @@ files:
   - "src/d810/analyses/control_flow/branch_ownership_oracle.py"
   - "src/d810/analyses/control_flow/deffai/transfer.py"
   - "src/d810/analyses/control_flow/deffai/preprocess.py"
+  - "src/d810/analyses/control_flow/path_horizon.py"
+  - "src/d810/analyses/control_flow/reconstruction_discovery.py"
 ignores:
   - "tests/**"
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import d810.analyses.control_flow.path_horizon as path_horizon
+from d810.ir.flowgraph import OperandKind
 from d810.analyses.control_flow.linearized_state_dag import (
     RedirectSourceKind,
     SemanticEdgeKind,
@@ -142,7 +143,7 @@ class TestResolveTransitionPathHorizon:
 
         insn = SimpleNamespace(
             ea=0x3333,
-            d=SimpleNamespace(t=3, stkoff=0x3C),
+            d=SimpleNamespace(t=3, kind=OperandKind.STACK, stkoff=0x3C),
         )
         block = SimpleNamespace(insn_snapshots=(insn,))
 

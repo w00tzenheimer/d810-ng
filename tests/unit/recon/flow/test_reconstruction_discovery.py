@@ -13,9 +13,10 @@ from d810.analyses.control_flow.state_machine_analysis import StateWriteSite
 
 
 class _Insn:
-    def __init__(self, *, kind, l=None, d=None):
+    def __init__(self, *, kind, l=None, r=None, d=None):
         self.kind = kind
         self.l = l
+        self.r = r
         self.d = d
 
 
