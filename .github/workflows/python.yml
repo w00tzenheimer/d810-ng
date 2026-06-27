@@ -29,6 +29,10 @@ jobs:
               run: |
                   sg scan --config sgconfig.yml
 
+            - name: Portable-core shape-lint gate (warning-mode ratchet)
+              run: |
+                  python3 tools/scripts/portable_shape_lint_gate.py
+
     unit-tests:
         name: "unit-tests (py${{ matrix.python-version }})"
         runs-on: ubuntu-24.04

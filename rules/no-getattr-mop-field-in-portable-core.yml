@@ -1,0 +1,75 @@
+# Bans the duck-typed Hex-Rays mop_t / minsn_t field dodge in portable-core.
+#
+# The ``portable-core-no-ida`` import-linter contract forbids ``import ida_*``
+# but cannot see SHAPE: pure-Python code can read backend-only operand fields off
+# an ``object``/``Any``-typed param via ``getattr(x, "t")`` and thereby mirror the
+# live Hex-Rays data model while passing the import gate.  This rule is the
+# ast-grep-expressible companion to category C of
+# ``tools/scripts/codemod_portable_ir_audit.py`` and to the warning-mode ratchet
+# in ``tools/scripts/portable_shape_lint_gate.py`` (epic llr-rv7p, slice S8).
+#
+# Banned fields are the operand sub-fields that ONLY exist on a live mop_t /
+# minsn_t: t (mop kind), nnn (immediate node), stkoff (stack offset), lvar_idx /
+# lvar_off (local-variable identity), gaddr (global address).
+#
+# SEVERITY = warning (DELIBERATE, S8 deliverable):
+#   * The ticket says "land warning-mode after S1/S4, flip to error after S5/S6".
+#   * 15 baseline category-C sites still exist (12 of them are these getattr
+#     reads); error-level here would break the build before those leaks are
+#     burned down.  The numeric ratchet that actually BLOCKS regressions lives in
+#     ``portable_shape_lint_gate.py`` (it fails if category C rises above its
+#     committed baseline); this ast-grep rule is the human-readable, per-line
+#     surfacing of the same leak class.
+#   * Modelled on ``no-raw-insn-operand-slots-in-migrated-analyses.yml`` (which is
+#     error but file-enrolled to already-clean modules); scoping to clean files
+#     instead of warning would require enumerating all of portable-core minus the
+#     12 leaking files -- brittle and high-churn during the migration.  Warning
+#     mirrors ``no-live-ida-in-portable-core.yml``'s migration pattern.
+#
+# Flip to ``severity: error`` once category C reaches 0 in the gate baseline
+# (slice S5/S6).
+
+id: no-getattr-mop-field-in-portable-core
+language: python
+severity: warning
+
+files:
+  - "src/d810/ir/**/*.py"
+  - "src/d810/analyses/**/*.py"
+  - "src/d810/transforms/**/*.py"
+  - "src/d810/passes/**/*.py"
+  - "src/d810/capabilities/**/*.py"
+  - "src/d810/families/**/*.py"
+ignores:
+  - "tests/**"
+
+message: |
+  Portable-core code must not duck-type Hex-Rays mop_t / minsn_t operand
+  fields via getattr (t / nnn / stkoff / lvar_idx / lvar_off / gaddr). This
+  passes the import gate but mirrors the live backend data model.
+
+rule:
+  any:
+    - pattern: getattr($X, "t", $$$)
+    - pattern: getattr($X, "t")
+    - pattern: getattr($X, "nnn", $$$)
+    - pattern: getattr($X, "nnn")
+    - pattern: getattr($X, "stkoff", $$$)
+    - pattern: getattr($X, "stkoff")
+    - pattern: getattr($X, "lvar_idx", $$$)
+    - pattern: getattr($X, "lvar_idx")
+    - pattern: getattr($X, "lvar_off", $$$)
+    - pattern: getattr($X, "lvar_off")
+    - pattern: getattr($X, "gaddr", $$$)
+    - pattern: getattr($X, "gaddr")
+
+note: |
+  Lawful fixes:
+    (a) Consume canonical d810.ir.instructions.Instruction / Varnode surfaces:
+        operation, inputs, result, effects, control, memory, attrs, and
+        Varnode storage identity (space, offset, size).
+    (b) If the canonical IR is missing the structure, extend the lift
+        projection (and add projection tests) before consuming it.
+    (c) Backend-shaped operand reads may remain only in d810.backends.*
+        lifters, diagnostics, and explicitly named compatibility shims that
+        are not enrolled in this portable-core guard.
