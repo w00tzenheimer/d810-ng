@@ -9,7 +9,7 @@ from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
 from d810.analyses.control_flow.equality_chain_dispatcher import (
     extract_state_dispatcher_map_from_mba,
 )
-from d810.ir.flowgraph import InsnKind, OperandKind
+from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
 from d810.ir.semantics import PredicateKind
 
 
@@ -119,47 +119,85 @@ class _MopView:
         return getattr(self._mop, name)
 
 
-@dataclass(frozen=True, slots=True)
-class _InsnView:
-    _insn: object
-    _opcode_names: Mapping[int, str]
-    _mop_type_names: Mapping[int, str]
+def _mop_snapshot_from_view(view: _MopView | None) -> MopSnapshot | None:
+    """Materialize a normalized ``_MopView`` into a frozen ``MopSnapshot``.
 
-    @property
-    def opcode(self) -> object:
-        raw_opcode = getattr(self._insn, "opcode", None)
-        try:
-            return self._opcode_names.get(int(raw_opcode), raw_opcode)
-        except Exception:
-            return raw_opcode
+    The ``_MopView`` already normalizes the raw Hex-Rays operand into portable
+    fields (``kind`` / ``size`` / ``value`` / ``stkoff`` / ``reg`` /
+    ``block_ref`` / ``gaddr`` / ``lvar_off``); copying them onto a real
+    ``MopSnapshot`` lets the canonical recon extractor read operands through
+    ``operand_storages`` / ``project_instruction`` instead of raw operand slots.
+    """
+    if view is None:
+        return None
+    kind = view.kind
+    if kind is OperandKind.UNKNOWN:
+        return None
+    stkoff = view.stkoff
+    return MopSnapshot(
+        size=int(view.size or 0),
+        value=view.value,
+        stkoff=stkoff,
+        reg=view.reg,
+        block_ref=view.block_ref,
+        gaddr=view.gaddr,
+        lvar_off=view.lvar_off,
+        stack_refs=() if stkoff is None else (int(stkoff),),
+        kind=kind,
+    )
 
-    @property
-    def kind(self) -> InsnKind:
-        return _INSN_KIND_BY_OPCODE_NAME.get(str(self.opcode), InsnKind.UNKNOWN)
 
-    @property
-    def predicate(self) -> PredicateKind | None:
-        return _PREDICATE_BY_OPCODE_NAME.get(str(self.opcode))
+def _insn_snapshot_from_live(
+    insn: object,
+    opcode_names: Mapping[int, str],
+    mop_type_names: Mapping[int, str],
+) -> InsnSnapshot:
+    """Build a portable ``InsnSnapshot`` from one live microcode instruction.
 
-    @property
-    def l(self) -> object | None:
-        return self._adapt_mop(getattr(self._insn, "l", None))
+    The raw opcode / operand types are normalized through the same
+    ``opcode_names`` / ``mop_type_names`` maps the legacy views used, then the
+    portable semantic ``kind`` / ``predicate_kind`` and the ``l`` / ``r`` / ``d``
+    ``MopSnapshot`` operands are stamped onto a real ``InsnSnapshot``.  The
+    canonical projection infers ``control_transfer_kind`` (CONDITIONAL_BRANCH for
+    the equality-jump ``kind``) so the recon extractor's
+    ``project_instruction`` reads of ``control.target`` / ``control.predicate``
+    resolve.
+    """
+    raw_opcode = getattr(insn, "opcode", None)
+    try:
+        opcode_name = opcode_names.get(int(raw_opcode), raw_opcode)
+    except Exception:
+        opcode_name = raw_opcode
+    kind = _INSN_KIND_BY_OPCODE_NAME.get(str(opcode_name), InsnKind.UNKNOWN)
+    predicate = _PREDICATE_BY_OPCODE_NAME.get(str(opcode_name))
+    left = _mop_snapshot_from_view(
+        _adapt_live_mop(getattr(insn, "l", None), mop_type_names)
+    )
+    right = _mop_snapshot_from_view(
+        _adapt_live_mop(getattr(insn, "r", None), mop_type_names)
+    )
+    dest = _mop_snapshot_from_view(
+        _adapt_live_mop(getattr(insn, "d", None), mop_type_names)
+    )
+    return InsnSnapshot(
+        opcode=-1,
+        ea=0,
+        operands=(),
+        kind=kind,
+        l=left,
+        r=right,
+        d=dest,
+        predicate_kind=predicate,
+    )
 
-    @property
-    def r(self) -> object | None:
-        return self._adapt_mop(getattr(self._insn, "r", None))
 
-    @property
-    def d(self) -> object | None:
-        return self._adapt_mop(getattr(self._insn, "d", None))
-
-    def _adapt_mop(self, mop: object | None) -> object | None:
-        if mop is None:
-            return None
-        return _MopView(mop, self._mop_type_names)
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self._insn, name)
+def _adapt_live_mop(
+    mop: object | None,
+    mop_type_names: Mapping[int, str],
+) -> _MopView | None:
+    if mop is None:
+        return None
+    return _MopView(mop, mop_type_names)
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,10 +205,12 @@ class _BlockView:
     _blk: object
     _opcode_names: Mapping[int, str]
     _mop_type_names: Mapping[int, str]
-    _insns: tuple[_InsnView, ...] = field(init=False, repr=False)
+    _insns: tuple[InsnSnapshot, ...] = field(init=False, repr=False)
+    _tail: InsnSnapshot | None = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_insns", tuple(self._iter_live_insns()))
+        object.__setattr__(self, "_tail", self._build_tail())
 
     @property
     def serial(self) -> int:
@@ -181,11 +221,8 @@ class _BlockView:
         return getattr(self._blk, "type", None)
 
     @property
-    def tail(self) -> _InsnView | None:
-        tail = getattr(self._blk, "tail", None)
-        if tail is None:
-            return None
-        return _InsnView(tail, self._opcode_names, self._mop_type_names)
+    def tail(self) -> InsnSnapshot | None:
+        return self._tail
 
     @property
     def succs(self) -> tuple[int, ...]:
@@ -203,7 +240,7 @@ class _BlockView:
             return ()
 
     @property
-    def insns(self) -> tuple[_InsnView, ...]:
+    def insns(self) -> tuple[InsnSnapshot, ...]:
         return self._insns
 
     def nsucc(self) -> int:
@@ -211,6 +248,14 @@ class _BlockView:
 
     def succ(self, index: int) -> int:
         return self.succs[int(index)]
+
+    def _build_tail(self) -> InsnSnapshot | None:
+        tail = getattr(self._blk, "tail", None)
+        if tail is None:
+            return None
+        return _insn_snapshot_from_live(
+            tail, self._opcode_names, self._mop_type_names
+        )
 
     def _iter_live_insns(self):
         head = getattr(self._blk, "head", None)
@@ -221,7 +266,9 @@ class _BlockView:
         seen: set[int] = set()
         while current is not None and id(current) not in seen:
             seen.add(id(current))
-            yield _InsnView(current, self._opcode_names, self._mop_type_names)
+            yield _insn_snapshot_from_live(
+                current, self._opcode_names, self._mop_type_names
+            )
             if current is tail:
                 break
             current = getattr(current, "next", None)

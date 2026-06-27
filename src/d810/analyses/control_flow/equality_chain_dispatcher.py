@@ -1,4 +1,29 @@
-"""Recover exact dispatcher rows from equality/inequality chains."""
+"""Recover exact dispatcher rows from equality/inequality chains.
+
+d81-qlal -- canonical Instruction port.  The compared-operand and state-write
+reads no longer touch backend-shaped ``InsnSnapshot`` operand slots (``.l`` /
+``.r`` / ``.d``).  Each tail / move :class:`~d810.ir.flowgraph.InsnSnapshot` is
+read through the canonical projection:
+
+* the compared operands (was ``tail.l`` / ``tail.r``) come from the slot-aligned
+  canonical storage views (:func:`~d810.ir.insn_projection.operand_storages` ->
+  ``l`` / ``r``): a ``NUMBER`` operand projects to a ``Varnode(Space.CONST,
+  value, size)`` and a stack/lvar operand to a stack/lvar identity ``Varnode``;
+* the conditional jump target (was ``tail.d.block_ref``) is read off
+  ``Instruction.control.target`` (populated by the projection's
+  ``_block_target_from`` for a CONDITIONAL_BRANCH), and the branch predicate off
+  ``Instruction.control.predicate``;
+* the move source/dest of a state-var alias (was ``insn.l`` / ``insn.d``) come
+  from the move instruction's slot-aligned ``operand_storages`` (``l`` source /
+  ``d`` dest).
+
+STRUCTURAL block topology stays direct: ``mba.qty`` / ``get_mblock`` and the
+block's ``serial`` / ``succs`` / ``tail`` / ``insns`` are model surfaces, not
+operand slots.  The live Hex-Rays adapter
+(:mod:`d810.backends.hexrays.evidence.dispatcher.equality_chain`) normalizes the
+raw microcode into these portable ``InsnSnapshot`` / ``BlockSnapshot`` shapes
+before this extractor runs.
+"""
 from __future__ import annotations
 
 from d810.core import logging
@@ -7,14 +32,15 @@ from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
     StateDispatcherRow,
 )
+from d810.ir.flowgraph import InsnKind, InsnSnapshot
+from d810.ir.insn_projection import operand_storages, project_instruction
+from d810.ir.semantics import PredicateKind
 from d810.ir.storage_identity import (
     StorageIdentity,
     StorageIdentityKind,
     storage_identity_from_varnode,
 )
-from d810.ir.flowgraph import InsnKind
-from d810.ir.semantics import PredicateKind
-from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
+from d810.ir.varnode import Space, Varnode
 
 logger = logging.getLogger("D810.recon.flow.equality_chain_dispatcher", logging.INFO)
 
@@ -40,10 +66,9 @@ def extract_state_dispatcher_map_from_mba(
         if not _is_two_way_block(blk):
             continue
         two_way_count += 1
-        tail = getattr(blk, "tail", None)
-        predicate = _branch_predicate(blk)
-        left = getattr(tail, "l", None)
-        right = getattr(tail, "r", None)
+        tail = _block_tail(blk)
+        predicate = _branch_predicate(tail)
+        left, right = _compare_operands(tail)
         extracted = _extract_compare(blk)
         jump_and_fallthrough = _jump_and_fallthrough(blk)
         if len(sample_two_way) < 8:
@@ -257,6 +282,16 @@ def _successors(blk: object) -> tuple[int, ...]:
     return ()
 
 
+def _block_tail(blk: object) -> InsnSnapshot | None:
+    """Return the block's tail instruction snapshot, else ``None``.
+
+    ``tail`` is a model surface (the block's last instruction), not an operand
+    slot.  Accepts either a ``BlockSnapshot`` (``.tail`` property) or the live
+    Hex-Rays adapter's block view (``.tail`` attribute).
+    """
+    return getattr(blk, "tail", None)
+
+
 def _walk_chain(
     mba: object,
     entry: int,
@@ -303,8 +338,9 @@ def _state_var_aliases(
         for insn in _iter_block_insns(blk):
             if not _is_mov(insn):
                 continue
-            dst = _state_var_identity(getattr(insn, "d", None))
-            src = _state_var_identity(getattr(insn, "l", None))
+            src_storage, _r, dst_storage = operand_storages(insn)
+            dst = _state_var_identity(dst_storage)
+            src = _state_var_identity(src_storage)
             if dst is None or src is None or dst == src:
                 continue
             aliases[dst] = src
@@ -324,7 +360,9 @@ def _canonical_state_var(
 
 
 def _iter_block_insns(blk: object):
-    insns = getattr(blk, "insns", None)
+    insns = getattr(blk, "insn_snapshots", None)
+    if insns is None:
+        insns = getattr(blk, "insns", None)
     if insns is not None:
         try:
             yield from tuple(insns)
@@ -333,7 +371,7 @@ def _iter_block_insns(blk: object):
             pass
 
     head = getattr(blk, "head", None)
-    tail = getattr(blk, "tail", None)
+    tail = _block_tail(blk)
     if head is None:
         return
     current = head
@@ -346,17 +384,36 @@ def _iter_block_insns(blk: object):
         current = getattr(current, "next", None)
 
 
+def _compare_operands(
+    tail: InsnSnapshot | None,
+) -> tuple[Varnode | None, Varnode | None]:
+    """Return the slot-aligned ``(left, right)`` compared-operand storage views.
+
+    Reads the canonical slot-aligned ``operand_storages`` (``l`` / ``r``), so a
+    ``NUMBER`` operand surfaces as a ``Varnode(Space.CONST, ...)`` and a
+    stack/lvar operand as its identity ``Varnode`` -- never a raw ``tail.l`` /
+    ``tail.r`` operand slot.  A ``WeakStackSlot`` (unknown stack offset) or
+    absent operand normalizes to ``None`` for the scalar reads below.
+    """
+    if tail is None:
+        return None, None
+    left, right, _dest = operand_storages(tail)
+    return (
+        left if isinstance(left, Varnode) else None,
+        right if isinstance(right, Varnode) else None,
+    )
+
+
 def _extract_compare(
     blk: object,
 ) -> tuple[StorageIdentity, int, PredicateKind] | None:
-    tail = getattr(blk, "tail", None)
+    tail = _block_tail(blk)
     if tail is None:
         return None
-    predicate = _branch_predicate(blk)
+    predicate = _branch_predicate(tail)
     if not (_is_eq(predicate) or _is_ne(predicate)):
         return None
-    left = getattr(tail, "l", None)
-    right = getattr(tail, "r", None)
+    left, right = _compare_operands(tail)
     left_const = _const_value(left)
     right_const = _const_value(right)
     left_var = _state_var_identity(left)
@@ -369,11 +426,7 @@ def _extract_compare(
 
 
 def _jump_and_fallthrough(blk: object) -> tuple[int | None, int | None]:
-    tail = getattr(blk, "tail", None)
-    jump_target = None
-    if tail is not None:
-        dest = getattr(tail, "d", None)
-        jump_target = _block_ref(dest)
+    jump_target = _jump_target(_block_tail(blk))
     succs = _successors(blk)
     if jump_target is None and len(succs) == 2:
         jump_target = int(succs[1])
@@ -387,32 +440,31 @@ def _jump_and_fallthrough(blk: object) -> tuple[int | None, int | None]:
     return int(jump_target), fallthrough
 
 
-def _block_ref(mop: object | None) -> int | None:
-    if mop is None:
+def _jump_target(tail: InsnSnapshot | None) -> int | None:
+    """Return the conditional jump target block serial, else ``None``.
+
+    Read off the canonical ``Instruction.control.target`` (the projection
+    populates it from ``insn.d.block_ref`` for a CONDITIONAL_BRANCH), never from
+    the raw ``tail.d`` operand slot.
+    """
+    if tail is None:
         return None
-    for attr in ("block_ref", "block_num", "b"):
-        value = getattr(mop, attr, None)
-        if value is not None:
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                continue
-    return None
+    control = project_instruction(tail).control
+    if control is None or control.target is None:
+        return None
+    return int(control.target)
 
 
-def _const_value(mop: object | None) -> int | None:
-    vn = _varnode(mop)
-    if vn is None or vn.space is not Space.CONST:
+def _const_value(operand: Varnode | None) -> int | None:
+    if operand is None or operand.space is not Space.CONST:
         return None
-    return int(vn.offset)
+    return int(operand.offset)
 
 
 def _state_var_identity(
-    mop: object | None,
+    operand: Varnode | None,
 ) -> StorageIdentity | None:
-    if mop is None:
-        return None
-    identity = storage_identity_from_varnode(_varnode(mop))
+    identity = storage_identity_from_varnode(operand)
     if identity is None:
         return None
     if identity.kind not in {
@@ -423,41 +475,25 @@ def _state_var_identity(
     return identity
 
 
-def _varnode(mop: object | None) -> Varnode | None:
-    try:
-        return varnode_from_mop_snapshot(mop)
-    except (AttributeError, TypeError, ValueError):
+def _operand_space(operand: Varnode | None) -> str | None:
+    if operand is None:
         return None
+    return operand.space.name.lower()
 
 
-def _operand_space(mop: object | None) -> str | None:
-    vn = _varnode(mop)
-    if vn is None:
-        return None
-    return vn.space.name.lower()
+def _branch_predicate(tail: InsnSnapshot | None) -> PredicateKind | None:
+    """Return the tail branch predicate, else ``None``.
 
-
-def _branch_predicate(blk: object) -> PredicateKind | None:
-    tail = getattr(blk, "tail", None)
+    Read off the canonical ``Instruction.control.predicate`` (populated from the
+    snapshot's ``predicate_kind`` for a CONDITIONAL_BRANCH), never from a raw
+    operand slot.
+    """
     if tail is None:
         return None
-    for attr in ("predicate", "predicate_kind"):
-        predicate = _coerce_predicate(getattr(tail, attr, None))
-        if predicate is not None:
-            return predicate
-    return None
-
-
-def _coerce_predicate(value: object | None) -> PredicateKind | None:
-    if isinstance(value, PredicateKind):
-        return value
-    if value is None:
+    control = project_instruction(tail).control
+    if control is None:
         return None
-    raw = getattr(value, "value", value)
-    try:
-        return PredicateKind(str(raw))
-    except ValueError:
-        return None
+    return control.predicate
 
 
 def _is_eq(predicate: PredicateKind | None) -> bool:
