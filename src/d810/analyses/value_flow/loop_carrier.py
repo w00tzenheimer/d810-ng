@@ -33,7 +33,6 @@ from d810.ir.directed_graph import tarjan_scc as _canonical_tarjan_scc
 from d810.ir.instructions import Instruction
 from d810.ir.insn_projection import (
     InstructionProjection,
-    project_diag_instruction,
 )
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
 from d810.ir.semantics import ControlTransferKind
@@ -144,19 +143,11 @@ def _iter_loop_carrier_insns(target: Any) -> Iterable[_LoopCarrierInsn]:
 
     for blk in block_iter:
         block_serial = int(getattr(blk, "serial"))
-        if getattr(blk, "insn_snapshots", None) is not None:
-            for index, instruction in enumerate(InstructionProjection.from_block(blk)):
-                yield _LoopCarrierInsn.from_canonical(
-                    block_serial=block_serial,
-                    index=index,
-                    instruction=instruction,
-                )
-            continue
-        for index, insn in enumerate(getattr(blk, "instructions", ())):
+        for index, instruction in enumerate(InstructionProjection.from_block(blk)):
             yield _LoopCarrierInsn.from_canonical(
                 block_serial=block_serial,
-                index=int(getattr(insn, "index", index)),
-                instruction=project_diag_instruction(insn),
+                index=index,
+                instruction=instruction,
             )
 
 

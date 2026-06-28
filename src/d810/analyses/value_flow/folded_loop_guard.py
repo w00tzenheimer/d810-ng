@@ -61,7 +61,6 @@ from d810.ir.expressions import Const, ExprRef, Move, Sub, ValueOpKind
 from d810.ir.instructions import Instruction
 from d810.ir.insn_projection import (
     InstructionProjection,
-    project_diag_instruction,
 )
 from d810.ir.locations import RegisterLocation, StackSlot
 from d810.ir.maturity import LOCAL_FACT_COLLECTION_IR_MATURITIES
@@ -228,21 +227,11 @@ def _iter_folded_guard_insns(target: Any) -> Iterable[_FoldedGuardInsn]:
 
     for blk in block_iter:
         block_serial = int(getattr(blk, "serial"))
-        insn_snapshots = getattr(blk, "insn_snapshots", None)
-        if insn_snapshots is not None:
-            instructions = InstructionProjection.from_block(blk)
-            for index, instruction in enumerate(instructions):
-                yield _FoldedGuardInsn.from_canonical(
-                    block_serial=block_serial,
-                    index=index,
-                    instruction=instruction,
-                )
-            continue
-        for index, insn in enumerate(getattr(blk, "instructions", ())):
+        for index, instruction in enumerate(InstructionProjection.from_block(blk)):
             yield _FoldedGuardInsn.from_canonical(
                 block_serial=block_serial,
-                index=int(getattr(insn, "index", index)),
-                instruction=project_diag_instruction(insn),
+                index=index,
+                instruction=instruction,
             )
 
 

@@ -29,7 +29,6 @@ from collections.abc import Mapping
 from types import MappingProxyType
 
 from d810.capabilities.source_lifter import register_live_lifter
-from d810.core.diag.snapshot import BlockSnapshot as _DiagBlockSnapshot
 from d810.core.typing import Any
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import (
@@ -322,10 +321,17 @@ class DiagSourceLifter:
     """Lift an offline diag-snapshot source into a canonical ``FlowGraph``."""
 
     def matches(self, source: Any) -> bool:
-        """True iff ``source`` is a diag-snapshot graph (blocks are
-        :class:`d810.core.diag.snapshot.BlockSnapshot`).  Canonical ``FlowGraph``
-        snapshots (``d810.ir`` blocks) and live ``mba`` sources do not match, so
-        the recon default iteration / the live lifter handle them."""
+        """True iff ``source`` is a diag-snapshot graph.
+
+        A diag block carries raw instruction rows (``instructions``) and no
+        canonical ``insn_snapshots`` -- the exact discriminator the removed
+        inline collector branch used (``getattr(blk, "insn_snapshots", None) is
+        not None``).  Duck-typed so it covers both
+        :class:`d810.core.diag.snapshot.BlockSnapshot` and the loose
+        ``SimpleNamespace`` doubles some collector tests build.  Canonical
+        ``FlowGraph`` snapshots (``d810.ir`` blocks carry ``insn_snapshots``) and
+        live ``mba`` sources (no ``blocks``) do not match, so the recon default
+        iteration / the live lifter handle them."""
         blocks_attr = getattr(source, "blocks", None)
         if blocks_attr is None:
             return False
@@ -333,7 +339,9 @@ class DiagSourceLifter:
             blocks_attr.values() if isinstance(blocks_attr, Mapping) else blocks_attr
         )
         for blk in blocks:
-            return isinstance(blk, _DiagBlockSnapshot)
+            return getattr(blk, "insn_snapshots", None) is None and hasattr(
+                blk, "instructions"
+            )
         return False
 
     def lift(self, source: Any) -> FlowGraph:
