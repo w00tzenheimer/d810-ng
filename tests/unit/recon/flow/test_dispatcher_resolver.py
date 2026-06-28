@@ -388,7 +388,7 @@ def test_portable_resolver_accepts_on_m_ijmp_graph():
     assert candidate.router_kind is RouterKind.TABLE
     assert candidate.table_provenance is TableProvenance.INDIRECT_JUMP_TABLE
     assert candidate.resolver_name == "indirect_jump_table"
-    assert "m_ijmp" in candidate.reasons
+    assert "indirect-jump-tail" in candidate.reasons
     assert "rows=2" in candidate.reasons
 
 
