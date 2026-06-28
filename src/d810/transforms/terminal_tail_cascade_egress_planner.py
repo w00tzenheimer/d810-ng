@@ -56,7 +56,7 @@ class TerminalTailBlock:
     @property
     def has_explicit_store(self) -> bool:
         return any(
-            opcode in {"m_stx", "op_1"} or text.lstrip().startswith("stx")
+            opcode == "op_1" or text.lstrip().startswith("stx")
             for opcode, text in zip(self.insn_opcodes, self.insn_text)
         )
 
@@ -82,7 +82,10 @@ class TerminalByteEmitSite:
 
     @property
     def explicit_store(self) -> bool:
-        return self.opcode == "m_stx"
+        # A store site carries the portable ``memory_store`` emitter role (set by
+        # the terminal-byte-emit fact emitter alongside the vendor opcode name),
+        # so detect the store by role rather than the Hex-Rays ``m_stx`` spelling.
+        return self.emitter_role == "memory_store"
 
     @property
     def is_guard_only(self) -> bool:
@@ -315,7 +318,7 @@ def _next_observed_byte_by_byte(
 
 def _block_has_call(block: TerminalTailBlock) -> bool:
     return any(
-        opcode in {"m_call", "op_56"} or text.lstrip().startswith("call")
+        opcode == "op_56" or text.lstrip().startswith("call")
         for opcode, text in zip(block.insn_opcodes, block.insn_text)
     )
 
