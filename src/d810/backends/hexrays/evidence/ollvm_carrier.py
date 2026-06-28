@@ -60,7 +60,6 @@ from d810.ir.expressions import (
 from d810.ir.instructions import Instruction
 from d810.ir.insn_projection import (
     InstructionProjection,
-    project_diag_instruction,
 )
 from d810.ir.locations import StackSlot
 from d810.ir.value_refs import DefinitionRef
@@ -253,19 +252,11 @@ def _iter_ollvm_carrier_insns(target: Any) -> Iterable[_OllvmCarrierInsn]:
 
     for blk in block_iter:
         block_serial = int(getattr(blk, "serial"))
-        if getattr(blk, "insn_snapshots", None) is not None:
-            for index, instruction in enumerate(InstructionProjection.from_block(blk)):
-                yield _OllvmCarrierInsn.from_canonical(
-                    block_serial=block_serial,
-                    index=index,
-                    instruction=instruction,
-                )
-            continue
-        for index, insn in enumerate(getattr(blk, "instructions", ())):
+        for index, instruction in enumerate(InstructionProjection.from_block(blk)):
             yield _OllvmCarrierInsn.from_canonical(
                 block_serial=block_serial,
-                index=int(getattr(insn, "index", index)),
-                instruction=project_diag_instruction(insn),
+                index=index,
+                instruction=instruction,
             )
 
 

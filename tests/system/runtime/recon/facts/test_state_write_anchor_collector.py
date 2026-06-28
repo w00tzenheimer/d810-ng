@@ -17,7 +17,7 @@ from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
 from d810.analyses.value_flow.state_write_anchor import StateWriteAnchorFactCollector
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
-from tests.unit.recon.facts._diag_meta_builder import flat_meta
+from tests.system.runtime.recon.facts._diag_meta_builder import flat_meta
 
 _OPCODE_ALIASES = {
     "m_mov": "move",
@@ -331,9 +331,13 @@ def test_synthetic_ea_fallback_when_zero() -> None:
     )
     assert len(facts) == 1
     fact = facts[0]
-    # block start 0x180014800 + insn_index 3 = 0x180014803
-    assert fact.payload["instruction_ea"] == 0x180014803
-    assert fact.source_ea == 0x180014803
+    # Synthetic-EA fallback (ea==0) = block start + the instruction's position in
+    # the lifted canonical stream.  Under E opt-4 (4a) the diag source is lifted
+    # via DiagSourceLifter -> from_block, so the index is the sequence position
+    # (0 for this lone insn), matching the live path -- NOT the diag row's
+    # recorded ``.index`` (3).  block start 0x180014800 + 0 = 0x180014800.
+    assert fact.payload["instruction_ea"] == 0x180014800
+    assert fact.source_ea == 0x180014800
 
 
 # ---------------------------------------------------------------------------

@@ -33,7 +33,6 @@ from d810.ir.expressions import ValueOpKind
 from d810.ir.instructions import Instruction
 from d810.ir.insn_projection import (
     InstructionProjection,
-    project_diag_instruction,
 )
 from d810.ir.maturity import EARLY_FACT_COLLECTION_IR_MATURITIES
 from d810.ir.semantics import ControlTransferKind, PredicateKind
@@ -441,19 +440,11 @@ def _iter_terminal_byte_emitter_insns(target: Any) -> Iterable[_TerminalInsn]:
 
     for blk in block_iter:
         block_serial = int(getattr(blk, "serial"))
-        if getattr(blk, "insn_snapshots", None) is not None:
-            for index, instruction in enumerate(InstructionProjection.from_block(blk)):
-                yield _TerminalInsn.from_canonical(
-                    block_serial=block_serial,
-                    index=index,
-                    instruction=instruction,
-                )
-            continue
-        for index, insn in enumerate(getattr(blk, "instructions", ())):
+        for index, instruction in enumerate(InstructionProjection.from_block(blk)):
             yield _TerminalInsn.from_canonical(
                 block_serial=block_serial,
-                index=int(getattr(insn, "index", index)),
-                instruction=project_diag_instruction(insn),
+                index=index,
+                instruction=instruction,
             )
 
 
