@@ -123,7 +123,7 @@ class IndirectJumpDispatcherResolver:
             table_provenance=self.table_provenance,
             reasons=(
                 "indirect-jump-table",
-                "materialized" if not _graph_has_indirect_jump(graph) else "m_ijmp",
+                "materialized" if not _graph_has_indirect_jump(graph) else "indirect-jump-tail",
                 "rows=%d" % len(dmap.rows),
                 "missing_targets=%d" % int(result.missing_target_count),
             ),

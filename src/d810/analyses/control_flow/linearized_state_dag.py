@@ -85,10 +85,6 @@ _PRESERVE_EXACT_SIDE_EFFECT_CORRIDORS_ENV = (
 )
 _SIDE_EFFECT_INSN_KINDS = frozenset({InsnKind.STORE, InsnKind.CALL})
 _SIDE_EFFECT_KIND_VALUES = frozenset(kind.value for kind in _SIDE_EFFECT_INSN_KINDS)
-_SIDE_EFFECT_OPCODE_NAMES = frozenset(
-    {"m_stx", "m_call", "m_icall", "stx", "call", "icall"}
-)
-_SIDE_EFFECT_OPCODES = frozenset({0x01, 0x38, 0x39})
 
 
 def _preserve_exact_side_effect_corridors_gate() -> bool:
@@ -129,8 +125,6 @@ def _classify_exact_handler_side_effect_corridor(
     """
     if flow_graph is None or handler_serial is None:
         return False, (), ()
-    side_effect_ops = _SIDE_EFFECT_OPCODES
-
     visited: set[int] = set()
     queue: deque[tuple[int, int]] = deque([(int(handler_serial), 0)])
     signature: list[str] = []
@@ -149,7 +143,7 @@ def _classify_exact_handler_side_effect_corridor(
             continue
 
         for insn in getattr(blk, "insn_snapshots", ()):
-            if _insn_has_side_effect(insn, side_effect_ops):
+            if _insn_has_side_effect(insn):
                 found = True
                 if len(signature) < 8:
                     ea = int(getattr(insn, "ea", 0))
@@ -201,26 +195,17 @@ def _classify_exact_handler_side_effect_corridor(
 # rewrites that would shred them.
 
 
-def _insn_has_side_effect(
-    insn: object,
-    side_effect_ops: frozenset[int] | set[int] = _SIDE_EFFECT_OPCODES,
-) -> bool:
+def _insn_has_side_effect(insn: object) -> bool:
+    # Side effects are classified by canonical InsnKind only (STORE / CALL).
+    # The carrier is a canonical InsnSnapshot whose ``kind`` is populated;
+    # ``kind_value`` additionally covers a kind serialized as its enum-value
+    # string.  The former ``m_*`` opcode-name / raw opcode-int backstops were
+    # dead once carriers became canonical (llr-rv7p E).
     kind = getattr(insn, "kind", None)
     if kind in _SIDE_EFFECT_INSN_KINDS:
         return True
     kind_value = getattr(kind, "value", kind)
-    if isinstance(kind_value, str) and kind_value in _SIDE_EFFECT_KIND_VALUES:
-        return True
-    opcode_name = getattr(insn, "opcode_name", None)
-    if isinstance(opcode_name, str) and opcode_name in _SIDE_EFFECT_OPCODE_NAMES:
-        return True
-    opcode = getattr(insn, "opcode", None)
-    if isinstance(opcode, str):
-        return opcode in _SIDE_EFFECT_OPCODE_NAMES
-    try:
-        return int(opcode) in side_effect_ops
-    except (TypeError, ValueError):
-        return False
+    return isinstance(kind_value, str) and kind_value in _SIDE_EFFECT_KIND_VALUES
 
 
 def _insn_side_effect_marker(insn: object) -> str:
@@ -237,15 +222,12 @@ def _insn_side_effect_marker(insn: object) -> str:
     return str(kind_value)
 
 
-def _block_has_side_effect_opcode(
-    blk: object,
-    side_effect_ops: frozenset[int] | set[int] = _SIDE_EFFECT_OPCODES,
-) -> bool:
-    """Check whether ``blk`` contains any ``m_stx``/``m_call``/``m_icall``."""
+def _block_has_side_effect_opcode(blk: object) -> bool:
+    """Check whether ``blk`` contains a STORE/CALL (canonical side effect)."""
     if blk is None:
         return False
     for insn in getattr(blk, "insn_snapshots", ()):
-        if _insn_has_side_effect(insn, side_effect_ops):
+        if _insn_has_side_effect(insn):
             return True
     return False
 
@@ -283,8 +265,6 @@ def detect_side_effect_corridors(
     """
     if flow_graph is None:
         return ()
-    side_effect_ops = _SIDE_EFFECT_OPCODES
-
     condition_chain_set: set[int] = (
         set(int(s) for s in (condition_chain_block_set or ())) if condition_chain_block_set else set()
     )
@@ -309,7 +289,7 @@ def detect_side_effect_corridors(
         if nsucc not in (1, 2):
             continue
         blocks_by_serial[serial] = blk
-        if _block_has_side_effect_opcode(blk, side_effect_ops):
+        if _block_has_side_effect_opcode(blk):
             candidate_set.add(serial)
         else:
             transit_set.add(serial)
@@ -408,8 +388,6 @@ def detect_intra_node_terminal_byte_corridors(
     """
     if dag is None or flow_graph is None:
         return ()
-    side_effect_ops = _SIDE_EFFECT_OPCODES
-
     # Local-edge kinds that participate in the sequential cascade.
     # SHARED_SUFFIX is critical: the byte-emit terminal cascade is a
     # tail shared across handler exits; the local-graph models that as
@@ -481,7 +459,7 @@ def detect_intra_node_terminal_byte_corridors(
                 blk = flow_graph.get_block(owned)
                 if blk is None:
                     continue
-                if _block_has_side_effect_opcode(blk, side_effect_ops):
+                if _block_has_side_effect_opcode(blk):
                     has_se = True
                     break
             seg_has_side_effect[sid] = has_se
@@ -623,7 +601,6 @@ class SideEffectFragment:
 def _extract_side_effect_fragment(
     node: "StateDagNode",
     flow_graph: FlowGraph,
-    side_effect_ops: set[int],
 ) -> SideEffectFragment | None:
     """Build the ordered side-effect fragment for one handler.
 
@@ -649,7 +626,7 @@ def _extract_side_effect_fragment(
                 continue
             if not (getattr(blk, "succs", ()) or ()):
                 seg_owns_terminal = True
-            if _block_has_side_effect_opcode(blk, side_effect_ops):
+            if _block_has_side_effect_opcode(blk):
                 side_effect_blocks.append(owned)
                 last_se_seg_id = seg_id
 
@@ -727,12 +704,10 @@ def detect_hybrid_terminal_byte_corridors(
     """
     if dag is None or flow_graph is None:
         return ()
-    side_effect_ops = _SIDE_EFFECT_OPCODES
-
     # 1. Extract one fragment per state node.
     fragments: dict[int, SideEffectFragment] = {}
     for node in dag.nodes:
-        frag = _extract_side_effect_fragment(node, flow_graph, side_effect_ops)
+        frag = _extract_side_effect_fragment(node, flow_graph)
         if frag is None or not frag.blocks:
             continue
         fragments[frag.handler_serial] = frag
@@ -776,7 +751,7 @@ def detect_hybrid_terminal_byte_corridors(
                     blk = flow_graph.get_block(owned)
                     if blk is None:
                         continue
-                    if _block_has_side_effect_opcode(blk, side_effect_ops):
+                    if _block_has_side_effect_opcode(blk):
                         seg_has_se = True
                         break
                 for owned in seg_blocks:
@@ -1111,8 +1086,6 @@ def detect_state_dag_terminal_byte_corridors(
     """
     if dag is None or flow_graph is None:
         return ()
-    side_effect_ops = _SIDE_EFFECT_OPCODES
-
     # Index nodes by handler_serial; classify each as side-effect or
     # transit by inspecting its owned_blocks.
     nodes_by_handler: dict[int, "StateDagNode"] = {}
@@ -1131,7 +1104,7 @@ def detect_state_dag_terminal_byte_corridors(
             owned_blk = flow_graph.get_block(owned_serial)
             if owned_blk is None:
                 continue
-            if _block_has_side_effect_opcode(owned_blk, side_effect_ops):
+            if _block_has_side_effect_opcode(owned_blk):
                 side_effect_nodes.add(handler)
                 break
 
