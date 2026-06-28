@@ -219,9 +219,10 @@ def _evaluate_comparison(*, opcode: str, lhs: int, rhs: int | None) -> bool | No
     >>> _evaluate_comparison(opcode="jg", lhs=-1, rhs=0) is False
     True
     """
+    # ``opcode`` is the canonical short branch name (``_opcode_name`` resolves a
+    # snapshot tail's ``predicate_kind`` to "jz"/"jnz"/"jcnd"/...), so no
+    # vendor ``m_`` prefix reaches here.
     op = opcode.lower()
-    if op.startswith("m_"):
-        op = op[2:]
     if op == "jcnd":
         return bool(lhs)
     if rhs is None:
