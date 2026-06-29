@@ -1,13 +1,13 @@
-"""Live Hex-Rays evidence adapter for the return-carrier corruption proof
-(ticket llr-ytow).
+"""Live Hex-Rays adapter for the return-carrier corruption proof (llr-ytow).
 
 Builds the three injected facts the backend-neutral proof core
 (:mod:`d810.analyses.value_flow.return_carrier_corruption`) needs, from a live
 ``ida_hexrays.mba_t`` at ``MMAT_GLBOPT1``:
 
-* **carrier blocks** -- blocks with a full-width ``rax`` definition whose source
-  is a stack slot / arg-derived value (``mop_S`` / ``mop_a``): the genuine
-  return carriers (the counter ``*v17+1``, ``a5+0xD0``, ...).
+* **carrier blocks** -- blocks with a full-width ``rax`` definition whose value
+  is directly derived from a stack slot / arg-derived value (``mop_S`` /
+  ``mop_a``): the genuine return carriers (the counter ``*v17+1``,
+  ``a5+0xD0``, ...).
 * **DU-chain use count** of a candidate ``mov #imm, <rax>{n}`` -- counted as the
   number of *other* operands across the whole MBA whose value number equals the
   def's ``{n}`` (Pillar 1: zero == no computational use).
@@ -15,8 +15,8 @@ Builds the three injected facts the backend-neutral proof core
   :func:`compute_dom_tree`).
 
 This module is READ-ONLY: it returns the proven-droppable sites. The mutation
-(NOP) is a thin wrapper applied by the flow rule once a site is proven, so the
-fact-building can be validated independently of any MBA edit.
+(NOP) is a thin wrapper applied by the GLBOPT hook once a site is proven, so
+the fact-building can be validated independently of any MBA edit.
 
 In IDA microcode ``al`` / ``ax`` / ``eax`` / ``rax`` share one micro-register
 (``mr_rax``) and differ only by ``mop_t.size``; a write with ``size == 8`` is a
@@ -36,7 +36,7 @@ from d810.analyses.value_flow.return_carrier_corruption import (
 )
 from d810.core.logging import getLogger
 
-logger = getLogger(__name__)
+logger = getLogger("D810.return_carrier_corruption")
 
 try:
     import ida_hexrays
@@ -69,20 +69,25 @@ def _rax_mreg() -> int | None:
 
 
 def _iter_operands(insn):
-    """Yield every leaf ``mop_t`` referenced by *insn* (l, r, d and nested)."""
-    stack = [insn.l, insn.r, insn.d]
+    """Yield every leaf ``mop_t`` referenced by *insn*.
+
+    The boolean marks only the instruction's top-level destination slot. Do
+    not rely on ``mop is ins.d`` for this distinction: SWIG property access can
+    hand back fresh proxy objects.
+    """
+    stack = [(insn.l, False), (insn.r, False), (insn.d, True)]
     while stack:
-        mop = stack.pop()
+        mop, is_top_dest = stack.pop()
         if mop is None:
             continue
-        yield mop
+        yield mop, is_top_dest
         # descend into sub-instructions / operand pairs so register reads
         # nested inside expressions are counted as uses.
         sub = getattr(mop, "d", None)
         if mop.t == ida_hexrays.mop_d and sub is not None:
-            stack.extend([sub.l, sub.r, sub.d])
+            stack.extend([(sub.l, False), (sub.r, False), (sub.d, False)])
         elif mop.t == ida_hexrays.mop_a and getattr(mop, "a", None) is not None:
-            stack.append(mop.a)
+            stack.append((mop.a, False))
 
 
 def _count_valnum_uses(mba, rax_mreg: int, valnum: int, def_ea: int) -> int:
@@ -96,25 +101,59 @@ def _count_valnum_uses(mba, rax_mreg: int, valnum: int, def_ea: int) -> int:
         blk = mba.get_mblock(bi)
         ins = blk.head
         while ins is not None:
-            for mop in _iter_operands(ins):
+            for mop, is_top_dest in _iter_operands(ins):
                 if (
                     mop.t == ida_hexrays.mop_r
                     and mop.r == rax_mreg
                     and getattr(mop, "valnum", -1) == valnum
-                    and not (mop is ins.d and ins.ea == def_ea)
+                    and not (is_top_dest and ins.ea == def_ea)
                 ):
                     uses += 1
             ins = ins.next
     return uses
 
 
-def _is_carrier_source(insn) -> bool:
-    """A full-rax def is a *carrier* when its value comes from a stack slot or
-    arg-derived address (the genuine return value), not a literal/expression."""
-    src = insn.l
-    if src is None:
+def _is_literal_operand(mop) -> bool:
+    return mop is not None and mop.t == ida_hexrays.mop_n
+
+
+def _is_simple_stack_or_arg_source(mop) -> bool:
+    """Return whether *mop* is a direct carrier source.
+
+    Accept direct stack/arg operands and the GLBOPT shape for memory carriers:
+    ``ldx ds, %slot`` wrapped as a ``mop_d`` source. Reject larger folded
+    arithmetic trees that merely mention stack locals.
+    """
+    if mop is None:
         return False
-    return src.t in (ida_hexrays.mop_S, ida_hexrays.mop_a)
+    if mop.t in (ida_hexrays.mop_S, ida_hexrays.mop_a):
+        return True
+    sub = getattr(mop, "d", None)
+    if (
+        mop.t == ida_hexrays.mop_d
+        and sub is not None
+        and sub.opcode == getattr(ida_hexrays, "m_ldx", object())
+    ):
+        return _is_simple_stack_or_arg_source(sub.l) or _is_simple_stack_or_arg_source(
+            sub.r
+        )
+    return False
+
+
+def _is_carrier_source(insn) -> bool:
+    """A full-rax def is a carrier when it directly computes a return value
+    from stack/arg storage, not when it is a call/load or literal result."""
+    if insn.opcode == ida_hexrays.m_mov:
+        return _is_simple_stack_or_arg_source(insn.l)
+    if insn.opcode == getattr(ida_hexrays, "m_add", object()):
+        return (
+            _is_simple_stack_or_arg_source(insn.l)
+            and _is_literal_operand(insn.r)
+        ) or (
+            _is_literal_operand(insn.l)
+            and _is_simple_stack_or_arg_source(insn.r)
+        )
+    return False
 
 
 def find_droppable_return_const_corruptions(mba) -> list[CandidateSite]:
@@ -129,27 +168,35 @@ def find_droppable_return_const_corruptions(mba) -> list[CandidateSite]:
     if rax is None:
         return []
 
-    # --- topology + dominators ---
-    successors: dict[int, list[int]] = {}
-    for bi in range(mba.qty):
-        blk = mba.get_mblock(bi)
-        succ = blk.succset
-        successors[bi] = [int(s) for s in succ] if succ is not None else []
-    dom = compute_dom_tree(successors, entry=0)
-
     # --- carrier blocks: full-rax defs sourced from a stack/arg value ---
     carrier_blocks: set[int] = set()
     candidates: list[tuple[ReturnRegDef, int]] = []  # (def, insn_ea)
+    reg_defs = 0
+    const_reg_defs = 0
+    seen_regs: set[int] = set()
     for bi in range(mba.qty):
         blk = mba.get_mblock(bi)
         ins = blk.head
         while ins is not None:
             d = ins.d
+            if d is not None and d.t == ida_hexrays.mop_r:
+                reg_defs += 1
+                seen_regs.add(int(d.r))
+                if (
+                    ins.opcode == ida_hexrays.m_mov
+                    and ins.l is not None
+                    and ins.l.t == ida_hexrays.mop_n
+                ):
+                    const_reg_defs += 1
             if d is not None and d.t == ida_hexrays.mop_r and d.r == rax:
                 full = d.size == 8
-                if full and ins.opcode == ida_hexrays.m_mov and _is_carrier_source(ins):
+                if full and _is_carrier_source(ins):
                     carrier_blocks.add(bi)
-                if ins.opcode == ida_hexrays.m_mov and ins.l is not None and ins.l.t == ida_hexrays.mop_n:
+                if (
+                    ins.opcode == ida_hexrays.m_mov
+                    and ins.l is not None
+                    and ins.l.t == ida_hexrays.mop_n
+                ):
                     candidates.append(
                         (
                             ReturnRegDef(
@@ -164,6 +211,31 @@ def find_droppable_return_const_corruptions(mba) -> list[CandidateSite]:
                         )
                     )
             ins = ins.next
+
+    if logger.debug_on:
+        logger.debug(
+            "return-carrier corruption scan: maturity=%s rax_mreg=%s "
+            "reg_defs=%d const_reg_defs=%d candidates=%d carriers=%s "
+            "seen_regs=%s",
+            getattr(mba, "maturity", None),
+            rax,
+            reg_defs,
+            const_reg_defs,
+            len(candidates),
+            sorted(carrier_blocks),
+            sorted(seen_regs),
+        )
+
+    if not candidates:
+        return []
+
+    # --- topology + dominators ---
+    successors: dict[int, list[int]] = {}
+    for bi in range(mba.qty):
+        blk = mba.get_mblock(bi)
+        succ = blk.succset
+        successors[bi] = [int(s) for s in succ] if succ is not None else []
+    dom = compute_dom_tree(successors, entry=0)
 
     # --- prove each candidate ---
     sites: list[CandidateSite] = []

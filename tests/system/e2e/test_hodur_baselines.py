@@ -93,9 +93,17 @@ HODUR_BASELINES = [
         # preserved, dispatcher removed, semantically == _gitless reference).
         # Counts from IDA ctree (env-independent). Old libclang baseline was:
         # {statements:95, returns:4, whiles:0, gotos:4, ifs:22} (no calls key).
-        # ctree baseline (captured 2026-06-25):
-        # statements:188, returns:4, whiles:0, gotos:4, ifs:23, calls:10
-        {"statements": 188, "returns": 4, "whiles": 0, "gotos": 4, "ifs": 23, "calls": 10},
+        # ctree baseline after GLBOPT return-carrier corruption cleanup
+        # (captured 2026-06-29): two dead return-register constant writes are
+        # gone, including the rendered LOBYTE helper call.
+        {
+            "statements": 186,
+            "returns": 4,
+            "whiles": 0,
+            "gotos": 4,
+            "ifs": 23,
+            "calls": 9,
+        },
         id="sub_7FFD3338C040",
     ),
 ]
@@ -228,6 +236,14 @@ class TestHodurBaselines:
             assert "0x5644FD01B1049C4BLL" in code_after, (
                 "sub_7FFD3338C040 return-carrier regression: "
                 "the AFTER pseudocode no longer returns 0x5644FD01B1049C4B"
+            )
+            assert "LOBYTE(result) = 0xB5;" not in code_after, (
+                "sub_7FFD3338C040 return-carrier corruption regression: "
+                "the byte-exit path still overwrites the true carrier with 0xB5"
+            )
+            assert "0x4F409D9CACFE95CLL" not in code_after, (
+                "sub_7FFD3338C040 return-carrier corruption regression: "
+                "the six-byte exit path still returns a folded foreign constant"
             )
             # The unflatten back-edge unflatten does not build the legacy StateDag /
             # region-DAG recon, so the region-oracle guardrail is N/A. Guard
