@@ -5,8 +5,84 @@ from collections import deque
 import ida_hexrays
 
 from d810.core import getLogger, typing
+from d810.hexrays.mutation.return_carrier_corruption import (
+    CandidateSite,
+    find_droppable_return_const_corruptions,
+)
 
 main_logger = getLogger("D810")
+
+_RCCC_APPLY = True
+
+_RCCC_MATURITIES = {
+    ida_hexrays.MMAT_GLBOPT1,
+    ida_hexrays.MMAT_GLBOPT2,
+}
+
+
+def _iter_block_insns(blk: ida_hexrays.mblock_t):
+    insn = getattr(blk, "head", None)
+    while insn is not None:
+        yield insn
+        insn = getattr(insn, "next", None)
+
+
+def _find_site_insn(mba: ida_hexrays.mbl_array_t, site: CandidateSite):
+    blk = mba.get_mblock(int(site.block_serial))
+    if blk is None:
+        return None
+    for insn in _iter_block_insns(blk):
+        if int(getattr(insn, "ea", -1)) == int(site.insn_ea):
+            return insn
+    return None
+
+
+def _make_nop(insn) -> None:
+    insn.opcode = ida_hexrays.m_nop
+    insn.l.erase()
+    insn.r.erase()
+    insn.d.erase()
+
+
+def apply_return_const_corruption_cleanup(mba: ida_hexrays.mbl_array_t) -> int:
+    """NOP proven return-register constant corruptions after GLBOPT folding."""
+    if getattr(mba, "maturity", None) not in _RCCC_MATURITIES:
+        return 0
+
+    sites = find_droppable_return_const_corruptions(mba)
+    if not sites:
+        return 0
+
+    main_logger.info(
+        "ReturnCarrierCorruption[glbopt]: %d proven droppable site(s) for %s",
+        len(sites),
+        hex(int(getattr(mba, "entry_ea", 0) or 0)),
+    )
+
+    applied = 0
+    for site in sites:
+        main_logger.info("ReturnCarrierCorruption[glbopt]: %s", site.proof.reason)
+        if not _RCCC_APPLY:
+            continue
+        insn = _find_site_insn(mba, site)
+        if insn is None:
+            main_logger.warning(
+                "ReturnCarrierCorruption[glbopt]: proven site disappeared "
+                "before NOP: blk[%d] ea=%#x",
+                site.block_serial,
+                site.insn_ea,
+            )
+            continue
+        _make_nop(insn)
+        applied += 1
+
+    if applied:
+        mba.mark_chains_dirty()
+        main_logger.info(
+            "ReturnCarrierCorruption[glbopt]: NOPed %d site(s); requesting loop",
+            applied,
+        )
+    return applied
 
 
 def prune_unreachable_condition_chain(

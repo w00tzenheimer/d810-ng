@@ -7,7 +7,10 @@ import idaapi
 
 from d810.core import getLogger, typing
 from d810.hexrays.hooks.ctree_hooks import CtreeOptimizerManager
-from d810.hexrays.hooks.glbopt_diagnostics import prune_unreachable_condition_chain
+from d810.hexrays.hooks.glbopt_diagnostics import (
+    apply_return_const_corruption_cleanup,
+    prune_unreachable_condition_chain,
+)
 from d810.hexrays.lifecycle import DecompilationEvent
 
 main_logger = getLogger("D810")
@@ -95,6 +98,8 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         # PruneUnreachable: diagnostic-only; logs unreachable condition-chain blocks
         # but does NOT remove them (see helper for rationale).
         prune_unreachable_condition_chain(mba, self._block_optimizer)
+        if apply_return_const_corruption_cleanup(mba):
+            return ida_hexrays.MERR_LOOP
         return 0
 
     def structural(self, ct: "control_graph_t") -> int:  # type: ignore
