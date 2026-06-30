@@ -518,6 +518,30 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             maturity_to_string(getattr(self.mba, "maturity", 0)),
             getattr(blk, "serial", "?"),
         )
+        # Delegate to the mba-only orchestration (ticket d81-1vlb). Every line of
+        # the family-routed pipeline below operates on the live ``mba`` and never
+        # references ``blk`` again, so the same body can be driven from a maturity
+        # hook (the planned hook-driven MERR_LOOP fixpoint) as well as from IDA's
+        # per-block optblock callback. ``optimize`` stays the optblock entrypoint.
+        return self.run_state_machine_unflatten(self.mba)
+
+    def run_state_machine_unflatten(self, mba: "ida_hexrays.mba_t") -> int:
+        """Run the family-routed state-machine unflatten pipeline on a live ``mba``.
+
+        Extracted verbatim from :meth:`optimize` (ticket d81-1vlb) so the same
+        orchestration can be invoked from a maturity hook -- the planned
+        hook-driven ``MERR_LOOP`` fixpoint that replaces IDA's per-block optblock
+        re-invocation cadence -- as well as from the optblock callback. Behaviour
+        is byte-identical: :meth:`optimize` binds ``self.mba`` and logs, then
+        delegates here.
+
+        Returns 0 to the optblock caller (the historical contract: convergence is
+        driven by IDA's optblock re-invocation cadence interleaved with its own
+        ``optimize_global`` cleanup, NOT by the reported change count -- returning
+        the real count front-loads an ``optimize_global`` that collapses the
+        residual dispatcher before recovery can redirect it).
+        """
+        self.mba = mba
         mba = self.mba
         # Profile-scoped recovery maturity (llr-m9r4 + llr-a93i). The Tigress INDIRECT
         # profile recovers ONLY at MMAT_CALLS — its state-write transitions (and the
