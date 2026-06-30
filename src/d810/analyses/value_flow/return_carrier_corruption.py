@@ -26,8 +26,11 @@ already have (``reaching_defs`` / DU-chains + a dominator tree):
   -- and removing the candidate re-delivers the dominating carrier.
 
 ``DROP`` iff Pillar 1 ∧ Pillar 2; otherwise ``KEEP`` (fail-closed). A genuine
-constant return (e.g. the ``0x5644...`` sentinel emitted before any carrier
-exists) has *no* dominating carrier, so Pillar 2 fails and it is kept.
+constant return is kept by one of two fail-closed paths, both observed in the
+real sub_7FFD microcode: IDA leaves the final-return write *untagged* (the
+``0x5644...`` sentinel at blk9 -- no SSA version, kept at Pillar 1 before any
+carrier check), or the constant is SSA-tagged but has *no* dominating carrier
+(the ``0xc5fb...`` return at blk13 -- kept by Pillar 2).
 
 This module is backend-neutral: the live ``ida_hexrays`` facts (DU-chain use
 count, the carrier-block set, and the dominator relation) are *injected* by the
@@ -153,23 +156,34 @@ def prove_return_const_droppable(
     Examples:
         Corruptor -- const, no uses, carrier dominates -> droppable:
 
-        >>> d = ReturnRegDef(block=61, ea=0x18f75, ssa=151, is_const=True,
+        >>> d = ReturnRegDef(block=61, ea=0x180018f75, ssa=151, is_const=True,
         ...                  is_partial=True, const_value=0xB5)
         >>> p = prove_return_const_droppable(
-        ...     d, du_chain_uses=0, carrier_blocks={4, 31, 49},
-        ...     strict_dominators={0, 1, 4, 5, 31, 49})
+        ...     d, du_chain_uses=0, carrier_blocks={4, 16, 21, 49, 56, 62},
+        ...     strict_dominators={0, 1, 4, 5, 49})
         >>> isinstance(p, CarrierCorruptionProof), p.dominating_carrier_blocks
-        (True, (4, 31, 49))
+        (True, (4, 49))
 
-        Sentinel return -- const but no dominating carrier -> kept:
+        The genuine ``0x5644...`` sentinel return is *untagged* in the real
+        sub_7FFD microcode (blk9 -- IDA leaves no SSA version on the final
+        return write), so it is kept at Pillar 1 before any carrier check:
 
-        >>> r = prove_return_const_droppable(
-        ...     ReturnRegDef(block=9, ea=0x9, ssa=200, is_const=True,
-        ...                  is_partial=False, const_value=0x5644),
-        ...     du_chain_uses=0, carrier_blocks={16, 62},
-        ...     strict_dominators={0, 1})
-        >>> r
-        (None, <KeepReason.NO_DOMINATING_CARRIER: 'no_dominating_carrier'>)
+        >>> prove_return_const_droppable(
+        ...     ReturnRegDef(block=9, ea=0x180015569, ssa=None, is_const=True,
+        ...                  is_partial=False, const_value=0x5644FD01B1049C4B),
+        ...     du_chain_uses=0, carrier_blocks={4, 49},
+        ...     strict_dominators={0, 1})[1]
+        <KeepReason.UNTAGGED_DEF: 'untagged_def'>
+
+        A *tagged* constant return with no use but no dominating carrier is the
+        genuine-return case Pillar 2 guards (blk13, ``0xc5fb...``):
+
+        >>> prove_return_const_droppable(
+        ...     ReturnRegDef(block=13, ea=0x180015896, ssa=36, is_const=True,
+        ...                  is_partial=False, const_value=0xC5FB34A1D9A6E315),
+        ...     du_chain_uses=0, carrier_blocks={4, 49},
+        ...     strict_dominators={0, 1})[1]
+        <KeepReason.NO_DOMINATING_CARRIER: 'no_dominating_carrier'>
 
         A def with a surviving use is never dropped:
 
