@@ -543,270 +543,28 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         """
         self.mba = mba
         mba = self.mba
-        # Profile-scoped recovery maturity (llr-m9r4 + llr-a93i). The Tigress INDIRECT
-        # profile recovers ONLY at MMAT_CALLS — its state-write transitions (and the
-        # accumulation-loop guard) are constant-folded / DCE'd by GLBOPT1, so the
-        # transition map reads empty there, and its terminal-tail / folded-loop-guard
-        # lowering is tuned for a single CALLS pass (re-running drops semantic body).
-        # The NON-indirect profile recovers at EVERY maturity from LOCOPT through GLBOPT2
-        # (ticket llr-a93i): Hex-Rays folds the small equality-chains into structured
-        # loops before GLBOPT1, so a GLBOPT1-only recovery misses them (map_rows=0) — the
-        # same shapes the legacy EmulatedDispatcherUnflattener caught at MMAT_CALLS. Each
-        # function commits at the earliest maturity whose dispatcher is intact + soundly
-        # bridged; per-(ea,maturity) round budgeting + per-ea convergence keep an
-        # already-unflattened function from being reprocessed later. The indirect profile
-        # is detected STRUCTURALLY (llr-trxj): the flowchart event subscriber
-        # materialized this function iff it is a register-indirect computed-goto
-        # dispatcher, and recorded its EA — no config key, no hardcoded
-        # addresses. (Matches the existing local-import pattern for this
-        # IDA-bound preanalysis module elsewhere in configure().)
-        from d810.hexrays.preanalysis.indirect_jump_labels import (
-            is_materialized_indirect_dispatcher,
-        )
-        _is_indirect = is_materialized_indirect_dispatcher(int(mba.entry_ea))
-        # INDIRECT keeps the historical one-shot MMAT_CALLS contract (its
-        # terminal-tail / folded-loop-guard lowering is tuned for a single CALLS
-        # pass).  The NON-indirect profile now recovers at EVERY maturity from LOCOPT
-        # through GLBOPT2 (ticket llr-a93i) so folded equality-chains recover at the
-        # pre-fold stage where their dispatcher is still alive.
-        if _is_indirect:
-            if mba.maturity != ida_hexrays.MMAT_CALLS:
-                return 0
-        elif int(mba.maturity) not in (
-            self._union_recovery_maturities() | self._config_recovery_maturities()
-        ):
-            # No registered profile (nor a per-project ``recovery_maturity`` override)
-            # recovers a non-indirect shape at this maturity; bail BEFORE the expensive
-            # lift/prelim/select_family so a stage nothing wants costs nothing (ticket
-            # llr-a93i). The fine per-family gate below still defers a profile that wants a
-            # DIFFERENT stage within the union/override.
+        proceed, _is_indirect = self._should_recover(mba)
+        if not proceed:
             return 0
-        func_ea: int = mba.entry_ea
-        self._reset_pass_manager_if_new_session(mba)
-        # Bounded re-run (ticket llr-3gn4): re-running the unflatten on the re-lifted
-        # post-redirect graph discovers + redirects a residual dispatcher a single pass
-        # leaves behind, so IDA's optimize_global converges to the dispatcher-free graph.
-        # An ea is terminal once recovery finds no dispatcher (the common clean case,
-        # identical to the old one-shot behaviour) or the round cap is reached. Self-
-        # terminating: a fully-unflattened graph yields no dispatcher, so the next round
-        # emits no plan and marks the ea done. GATED to the NON-indirect profile — see
-        # :meth:`_should_run_unflatten_round`.
-        if not self._should_run_unflatten_round(
-            func_ea, is_indirect=_is_indirect, maturity=int(mba.maturity)
-        ):
-            return 0
+        func_ea: int = int(mba.entry_ea)
 
         source = lift_function(mba, maturity=mba.maturity)
-        # llr-dczv: register the PORTABLE indirect jump-table resolver into the
-        # shared front-end (build_dispatch_map_any_kind) BEFORE any detection
-        # (the prelim recover_dispatcher, select_family, pass manager) so the
-        # Tigress indirect dispatcher is recognized end-to-end. The resolver is
-        # IDA-free; the live binary table reads live behind the injected
-        # HexRaysIndirectJumpTableCapability (bound to the fresh mba). accepts()
-        # consults the capability even AFTER materialization removes the m_ijmp
-        # (llr-tm3i), and the capability self-gates (None for non-dispatchers),
-        # so this is inert on every non-indirect function (no golden regression).
-        # Idempotent by name -> rebinds the fresh mba each decompilation.
-        _cfg = getattr(self, "config", None)
-        register_extra_dispatcher_resolver(
-            IndirectJumpDispatcherResolver(
-                indirect_tables=HexRaysIndirectJumpTableCapability(mba=mba),
-                goto_table_info=(
-                    _cfg.get("goto_table_info", {}) or {}
-                    if isinstance(_cfg, dict)
-                    else {}
-                ),
-            )
-        )
-        # llr-a93i Slice 5: register the emulation-based resolver. It recovers
-        # non-identity-selector machines (XOR-masked ``switch((state^KEY)&MASK)``) that the
-        # static equality-chain/switch resolvers structurally cannot (their case labels are
-        # sub-threshold byte projections; the compared operand is a computed ``m_xor`` tree). It
-        # ranks at the LOWEST specificity, so a static win always wins and the expensive
-        # emulation walk runs only when both static resolvers return map_rows=0.
-        #
-        # Registered UNCONDITIONALLY every decompile (like the indirect resolver above) so its
-        # bound ``mba`` is always FRESH -- a stale ``mba`` left in the process-global registry by
-        # a prior opted-in function would otherwise segfault when a later, non-opted-in function
-        # consults the chain (idempotent-by-name replaces the prior instance). The per-project
-        # opt-in is carried by ``enabled`` instead: when the config omits
-        # ``"emulation_dispatcher"`` the resolver's ``accepts`` returns ``None`` immediately, so
-        # it is completely inert and golden configs are byte-identical.
-        register_extra_dispatcher_resolver(
-            EmulationDispatcherResolver(
-                mba=mba,
-                enabled=bool(isinstance(_cfg, dict) and _cfg.get("emulation_dispatcher")),
-            )
-        )
-        # Supply the live validated fact view (state observations) so resolve_state_transitions
-        # has the transition evidence; without it the chain produces an empty plan.
-        fact_view = None
-        flow_ctx = getattr(self, "flow_context", None)
-        if flow_ctx is not None:
-            try:
-                fact_view = flow_ctx.validated_fact_view(mba.maturity)
-            except Exception:  # noqa: BLE001 — fact view is best-effort input
-                logger.debug("unflat: validated_fact_view unavailable", exc_info=True)
-        # Pre-mutation condition-chain/interval evidence: walk the PRISTINE mba here (it still matches
-        # source.flow_graph; the pipeline mutates it below) so the value-range dispatcher recovery
-        # sees the intact condition-chain. PROMOTED TO PRODUCTION (gap3+gap4, ticket llr-t1s8): #4's
-        # LowerStateMachine consumes this through the AnalysisManager to build the condition-chain-enriched DAG
-        # whose CONDITIONAL_RETURN edges (interval-map classification, not the bounded mba walk)
-        # materialize terminal returns — the unflatten returns=0 -> returns=N fix. analyze_condition_chain_dispatcher
-        # lives in the hexrays backend (needs the live mba), which the portable LowerStateMachine
-        # can't import, so the evidence is computed here in the entry and threaded as an opaque fact.
-        # The LiSA-discovery diff log stays diag-only. Self-gating: no dispatcher -> no evidence ->
-        # #4 stays on the committed shallow path (byte-identical).
-        range_evidence = None
-        prelim = None
-        # Thread the rule's min_state_constant into the prelim recovery so the condition-chain
-        # evidence (and select_family below) agree on the threshold; defaults to the
-        # module MIN_STATE_CONSTANT when the config omits it (golden byte-identical).
-        prelim_min_state_constant = min_state_constant_from_config(
-            getattr(self, "config", None)
-        )
-        try:
-            prelim = recover_dispatcher(
-                source.flow_graph,
-                fact_view,
-                min_state_constant=prelim_min_state_constant,
-            )
-            if getattr(prelim, "dispatcher_block_serial", None) is not None:
-                range_evidence = analyze_condition_chain_dispatcher(
-                    mba,
-                    int(prelim.dispatcher_block_serial),
-                    getattr(prelim, "state_var_stkoff", None),
-                )
-                if _capture_diagnostics_enabled():
-                    self._log_lisa_discovery_diff(source.flow_graph, prelim, range_evidence)
-        except Exception:  # noqa: BLE001 — evidence recovery is best-effort
-            logger.debug("unflat: pre-pipeline condition-chain evidence failed", exc_info=True)
-        analysis_seeds = {"range_evidence": range_evidence}
-        facts = self._pass_manager.facts_for(
-            source,
-            input_facts=fact_view,
-            analysis_seeds=analysis_seeds,
-        )
+        self._register_dispatcher_resolvers(mba)
+        (
+            fact_view,
+            prelim,
+            range_evidence,
+            analysis_seeds,
+            facts,
+        ) = self._build_recovery_evidence(mba, source)
         backend = HexRaysMutationBackend()
-        # Provide the live value-range capability so RecoverStateTransitions can resolve handler
-        # transitions the exact equality-chain leaves unresolved (the north-star
-        # ``capabilities.optional(ValRangeCapability)``).
-        cap_instances = {
-            ValRangeCapability: HexRaysValRangeCapability(mba),
-            UseDefSafetyCapability: HexRaysUseDefSafetyBackend(),
-        }
-        # Concolic precision oracle (M3 slice 1, llr-11du): the prove-exact-or-abstain
-        # block emulator switch/indirect next-state folds consume. ADDITIVE — no standard
-        # pass requires "emulation", and the INDIRECT pipeline that reads it never runs in
-        # golden (no live indirect detector). Omitted when the dispatcher state var is
-        # unknown (e.g. no dispatcher), so construction can never crash.
-        state_var_stkoff = (
-            getattr(range_evidence, "state_var_stkoff", None)
-            if range_evidence is not None
-            else None
-        )
-        if state_var_stkoff is None:
-            state_var_stkoff = getattr(prelim, "state_var_stkoff", None)
-        if state_var_stkoff is not None:
-            state_cell = LocationRef.stack(int(state_var_stkoff), 8)
-            cap_instances[EmulationCapability] = HexRaysBlockEmulator(
-                mba=mba,
-                state_var_stkoff=int(state_var_stkoff),
-                state_cell=state_cell,
-            )
-        # Reduced-product recovery engines (ticket llr-iy9i): the live-mba spine
-        # (DEFFAI) + concolic (the old-engine recovery behind the contract) the
-        # ``RecoverDispatcher`` pass composes when the project config sets
-        # ``recovery_engine == "reduced_product"``. Bound to a FRESH ``mba`` each
-        # decompile (staleness rule). ``concolic_enabled`` carries the existing
-        # ``emulation_dispatcher`` opt-in so a project that already enables the
-        # emulation resolver also gets the concolic engine here. Registered
-        # unconditionally so a later non-opted-in function never sees a stale ``mba``;
-        # the orchestrator only consults this capability on the reduced_product path.
-        # The concolic leg is the reduced_product path's recovery mechanism, so it
-        # must be live whenever that engine is selected -- not only behind the older
-        # ``emulation_dispatcher`` resolver opt-in. Enable on EITHER signal: the
-        # explicit emulation-resolver opt-in OR ``recovery_engine == reduced_product``
-        # (the orchestrator consults this capability only on that path, so enabling it
-        # here is inert for every other project).
-        _concolic_on = isinstance(_cfg, dict) and (
-            bool(_cfg.get("emulation_dispatcher"))
-            or _cfg.get("recovery_engine") == "reduced_product"
-        )
-        cap_instances[MachineRecoveryEnginesCapability] = (
-            HexRaysMachineRecoveryEnginesCapability(
-                mba=mba,
-                min_state_constant=min_state_constant_from_config(
-                    getattr(self, "config", None)
-                ),
-                concolic_enabled=bool(_concolic_on),
-            )
-        )
-        capabilities = CapabilitySet(cap_instances)
-        # Route through the registered profiles (llr-ibpi): select_family polls the
-        # StateMachineCffFamily registry (HodurFamily=equality-chain, ApproovFamily/
-        # TigressFamily=switch/indirect) and returns the one whose detect claims this
-        # graph; the selected profile's pipeline_for drives the pass manager. The rule's
-        # JSON config is threaded so a project may override the choice via the
-        # router_resolution policy (llr-11du); empty config preserves registration order.
+        capabilities = self._build_capabilities(mba, prelim, range_evidence)
         rule_config = getattr(self, "config", None)
         project_config = self._project_config or (
             rule_config if isinstance(rule_config, dict) else {}
         )
-        family = select_family(
-            source.flow_graph,
-            project_config=rule_config,
-            capabilities=backend.capabilities(),
-        )
-        # Reduced-product family-gate bypass (ticket llr-iy9i): the static select_family
-        # poll declines a non-identity-selector machine (XOR-masked
-        # ``switch((state^KEY)&MASK)`` -- abc_xor_dispatch) because no compare/switch SHAPE
-        # is found, so without this the pipeline (and thus RecoverDispatcher ->
-        # recover_machine -> the SELF-ANCHORING concolic engine) never runs for it. When the
-        # project config opts into the reduced-product engine, fall through to the canonical
-        # five-pass spine via a synthetic bypass family so the concolic engine is reached
-        # (it self-anchors via discover_anchors' dominant-self-update fallback -- the proven
-        # old-engine recovery). SCOPED to recovery_engine == "reduced_product" ONLY: this
-        # synthetic family is instantiated directly (never auto-registered), so every other
-        # config (hodur/approov/tigress/ollvm -- which sets no such key) is byte-identical.
-        if family is None and (
-            isinstance(rule_config, dict)
-            and rule_config.get("recovery_engine") == "reduced_product"
-        ):
-            if logger.debug_on:
-                logger.debug(
-                    "unflat: reduced_product family-gate bypass for func=0x%x at %s "
-                    "(static select_family declined)",
-                    int(mba.entry_ea),
-                    maturity_to_string(int(mba.maturity)),
-                )
-            family = _ReducedProductBypassFamily()
-        # Fine per-family maturity gate (ticket llr-a93i): a profile recovers ONLY at one
-        # of its declared ``recovery_maturities``. When a family claims this graph but not
-        # at the CURRENT maturity, skip (return 0) and wait for the stage it wants -- the
-        # dispatcher is not converged, so a later maturity still recovers it. INDIRECT
-        # bypasses this gate: it is routed to MMAT_CALLS structurally above, independent of
-        # the selected family's declaration.
-        # A per-project ``recovery_maturity`` override (config-driven, ticket llr-a93i)
-        # REPLACES the selected profile's declared maturities for this project; absent it,
-        # the profile's own ``recovery_maturities`` apply.
-        _target_maturities = (
-            self._config_recovery_maturities()
-            or self._family_recovery_maturities(family)
-        )
-        if (
-            family is not None
-            and not _is_indirect
-            and int(mba.maturity) not in _target_maturities
-        ):
-            if logger.debug_on:
-                logger.debug(
-                    "unflat: family=%s defers func=0x%x at %s (wants %s)",
-                    getattr(family, "name", "?"),
-                    int(mba.entry_ea),
-                    maturity_to_string(int(mba.maturity)),
-                    sorted(maturity_to_string(m) for m in _target_maturities),
-                )
+        family = self._select_family(mba, source, rule_config, backend)
+        if self._family_defers(mba, family, is_indirect=_is_indirect):
             return 0
         if family is not None:
             try:
@@ -923,6 +681,289 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # round can recover + redirect it, so the convergence redirect is never emitted and the
         # dispatcher survives (verified: returning the count regressed approov_real_pattern).
         return 0
+
+    def _should_recover(self, mba: "ida_hexrays.mba_t") -> "tuple[bool, bool]":
+        """Maturity + bounded-round gate; returns ``(proceed, is_indirect)``."""
+        # Profile-scoped recovery maturity (llr-m9r4 + llr-a93i). The Tigress INDIRECT
+        # profile recovers ONLY at MMAT_CALLS — its state-write transitions (and the
+        # accumulation-loop guard) are constant-folded / DCE'd by GLBOPT1, so the
+        # transition map reads empty there, and its terminal-tail / folded-loop-guard
+        # lowering is tuned for a single CALLS pass (re-running drops semantic body).
+        # The NON-indirect profile recovers at EVERY maturity from LOCOPT through GLBOPT2
+        # (ticket llr-a93i): Hex-Rays folds the small equality-chains into structured
+        # loops before GLBOPT1, so a GLBOPT1-only recovery misses them (map_rows=0) — the
+        # same shapes the legacy EmulatedDispatcherUnflattener caught at MMAT_CALLS. Each
+        # function commits at the earliest maturity whose dispatcher is intact + soundly
+        # bridged; per-(ea,maturity) round budgeting + per-ea convergence keep an
+        # already-unflattened function from being reprocessed later. The indirect profile
+        # is detected STRUCTURALLY (llr-trxj): the flowchart event subscriber
+        # materialized this function iff it is a register-indirect computed-goto
+        # dispatcher, and recorded its EA — no config key, no hardcoded addresses.
+        from d810.hexrays.preanalysis.indirect_jump_labels import (
+            is_materialized_indirect_dispatcher,
+        )
+        is_indirect = is_materialized_indirect_dispatcher(int(mba.entry_ea))
+        # INDIRECT keeps the historical one-shot MMAT_CALLS contract (its
+        # terminal-tail / folded-loop-guard lowering is tuned for a single CALLS
+        # pass).  The NON-indirect profile now recovers at EVERY maturity from LOCOPT
+        # through GLBOPT2 (ticket llr-a93i) so folded equality-chains recover at the
+        # pre-fold stage where their dispatcher is still alive.
+        if is_indirect:
+            if mba.maturity != ida_hexrays.MMAT_CALLS:
+                return (False, is_indirect)
+        elif int(mba.maturity) not in (
+            self._union_recovery_maturities() | self._config_recovery_maturities()
+        ):
+            # No registered profile (nor a per-project ``recovery_maturity`` override)
+            # recovers a non-indirect shape at this maturity; bail BEFORE the expensive
+            # lift/prelim/select_family so a stage nothing wants costs nothing (ticket
+            # llr-a93i). The fine per-family gate below still defers a profile that wants a
+            # DIFFERENT stage within the union/override.
+            return (False, is_indirect)
+        self._reset_pass_manager_if_new_session(mba)
+        # Bounded re-run (ticket llr-3gn4): re-running the unflatten on the re-lifted
+        # post-redirect graph discovers + redirects a residual dispatcher a single pass
+        # leaves behind, so IDA's optimize_global converges to the dispatcher-free graph.
+        # An ea is terminal once recovery finds no dispatcher (the common clean case,
+        # identical to the old one-shot behaviour) or the round cap is reached. Self-
+        # terminating: a fully-unflattened graph yields no dispatcher, so the next round
+        # emits no plan and marks the ea done. GATED to the NON-indirect profile — see
+        # :meth:`_should_run_unflatten_round`.
+        if not self._should_run_unflatten_round(
+            int(mba.entry_ea), is_indirect=is_indirect, maturity=int(mba.maturity)
+        ):
+            return (False, is_indirect)
+        return (True, is_indirect)
+
+    def _register_dispatcher_resolvers(self, mba: "ida_hexrays.mba_t") -> None:
+        """Register the indirect-jump + emulation dispatcher resolvers for this ``mba``."""
+        # llr-dczv: register the PORTABLE indirect jump-table resolver into the
+        # shared front-end (build_dispatch_map_any_kind) BEFORE any detection
+        # (the prelim recover_dispatcher, select_family, pass manager) so the
+        # Tigress indirect dispatcher is recognized end-to-end. The resolver is
+        # IDA-free; the live binary table reads live behind the injected
+        # HexRaysIndirectJumpTableCapability (bound to the fresh mba). accepts()
+        # consults the capability even AFTER materialization removes the m_ijmp
+        # (llr-tm3i), and the capability self-gates (None for non-dispatchers),
+        # so this is inert on every non-indirect function (no golden regression).
+        # Idempotent by name -> rebinds the fresh mba each decompilation.
+        _cfg = getattr(self, "config", None)
+        register_extra_dispatcher_resolver(
+            IndirectJumpDispatcherResolver(
+                indirect_tables=HexRaysIndirectJumpTableCapability(mba=mba),
+                goto_table_info=(
+                    _cfg.get("goto_table_info", {}) or {}
+                    if isinstance(_cfg, dict)
+                    else {}
+                ),
+            )
+        )
+        # llr-a93i Slice 5: register the emulation-based resolver. It recovers
+        # non-identity-selector machines (XOR-masked ``switch((state^KEY)&MASK)``) that the
+        # static equality-chain/switch resolvers structurally cannot (their case labels are
+        # sub-threshold byte projections; the compared operand is a computed ``m_xor`` tree). It
+        # ranks at the LOWEST specificity, so a static win always wins and the expensive
+        # emulation walk runs only when both static resolvers return map_rows=0.
+        #
+        # Registered UNCONDITIONALLY every decompile (like the indirect resolver above) so its
+        # bound ``mba`` is always FRESH -- a stale ``mba`` left in the process-global registry by
+        # a prior opted-in function would otherwise segfault when a later, non-opted-in function
+        # consults the chain (idempotent-by-name replaces the prior instance). The per-project
+        # opt-in is carried by ``enabled`` instead: when the config omits
+        # ``"emulation_dispatcher"`` the resolver's ``accepts`` returns ``None`` immediately, so
+        # it is completely inert and golden configs are byte-identical.
+        register_extra_dispatcher_resolver(
+            EmulationDispatcherResolver(
+                mba=mba,
+                enabled=bool(isinstance(_cfg, dict) and _cfg.get("emulation_dispatcher")),
+            )
+        )
+
+    def _build_recovery_evidence(self, mba: "ida_hexrays.mba_t", source):
+        """Build the pre-pipeline recovery inputs.
+
+        Returns ``(fact_view, prelim, range_evidence, analysis_seeds, facts)``.
+        """
+        # Supply the live validated fact view (state observations) so resolve_state_transitions
+        # has the transition evidence; without it the chain produces an empty plan.
+        fact_view = None
+        flow_ctx = getattr(self, "flow_context", None)
+        if flow_ctx is not None:
+            try:
+                fact_view = flow_ctx.validated_fact_view(mba.maturity)
+            except Exception:  # noqa: BLE001 — fact view is best-effort input
+                logger.debug("unflat: validated_fact_view unavailable", exc_info=True)
+        # Pre-mutation condition-chain/interval evidence: walk the PRISTINE mba here (it still matches
+        # source.flow_graph; the pipeline mutates it below) so the value-range dispatcher recovery
+        # sees the intact condition-chain. PROMOTED TO PRODUCTION (gap3+gap4, ticket llr-t1s8): #4's
+        # LowerStateMachine consumes this through the AnalysisManager to build the condition-chain-enriched DAG
+        # whose CONDITIONAL_RETURN edges (interval-map classification, not the bounded mba walk)
+        # materialize terminal returns — the unflatten returns=0 -> returns=N fix. analyze_condition_chain_dispatcher
+        # lives in the hexrays backend (needs the live mba), which the portable LowerStateMachine
+        # can't import, so the evidence is computed here in the entry and threaded as an opaque fact.
+        # The LiSA-discovery diff log stays diag-only. Self-gating: no dispatcher -> no evidence ->
+        # #4 stays on the committed shallow path (byte-identical).
+        range_evidence = None
+        prelim = None
+        # Thread the rule's min_state_constant into the prelim recovery so the condition-chain
+        # evidence (and select_family below) agree on the threshold; defaults to the
+        # module MIN_STATE_CONSTANT when the config omits it (golden byte-identical).
+        prelim_min_state_constant = min_state_constant_from_config(
+            getattr(self, "config", None)
+        )
+        try:
+            prelim = recover_dispatcher(
+                source.flow_graph,
+                fact_view,
+                min_state_constant=prelim_min_state_constant,
+            )
+            if getattr(prelim, "dispatcher_block_serial", None) is not None:
+                range_evidence = analyze_condition_chain_dispatcher(
+                    mba,
+                    int(prelim.dispatcher_block_serial),
+                    getattr(prelim, "state_var_stkoff", None),
+                )
+                if _capture_diagnostics_enabled():
+                    self._log_lisa_discovery_diff(source.flow_graph, prelim, range_evidence)
+        except Exception:  # noqa: BLE001 — evidence recovery is best-effort
+            logger.debug("unflat: pre-pipeline condition-chain evidence failed", exc_info=True)
+        analysis_seeds = {"range_evidence": range_evidence}
+        facts = self._pass_manager.facts_for(
+            source,
+            input_facts=fact_view,
+            analysis_seeds=analysis_seeds,
+        )
+        return (fact_view, prelim, range_evidence, analysis_seeds, facts)
+
+    def _build_capabilities(self, mba: "ida_hexrays.mba_t", prelim, range_evidence):
+        """Assemble the live capability set the pass pipeline consumes."""
+        _cfg = getattr(self, "config", None)
+        # Provide the live value-range capability so RecoverStateTransitions can resolve handler
+        # transitions the exact equality-chain leaves unresolved (the north-star
+        # ``capabilities.optional(ValRangeCapability)``).
+        cap_instances = {
+            ValRangeCapability: HexRaysValRangeCapability(mba),
+            UseDefSafetyCapability: HexRaysUseDefSafetyBackend(),
+        }
+        # Concolic precision oracle (M3 slice 1, llr-11du): the prove-exact-or-abstain
+        # block emulator switch/indirect next-state folds consume. ADDITIVE — no standard
+        # pass requires "emulation", and the INDIRECT pipeline that reads it never runs in
+        # golden (no live indirect detector). Omitted when the dispatcher state var is
+        # unknown (e.g. no dispatcher), so construction can never crash.
+        state_var_stkoff = (
+            getattr(range_evidence, "state_var_stkoff", None)
+            if range_evidence is not None
+            else None
+        )
+        if state_var_stkoff is None:
+            state_var_stkoff = getattr(prelim, "state_var_stkoff", None)
+        if state_var_stkoff is not None:
+            state_cell = LocationRef.stack(int(state_var_stkoff), 8)
+            cap_instances[EmulationCapability] = HexRaysBlockEmulator(
+                mba=mba,
+                state_var_stkoff=int(state_var_stkoff),
+                state_cell=state_cell,
+            )
+        # Reduced-product recovery engines (ticket llr-iy9i): the live-mba spine
+        # (DEFFAI) + concolic (the old-engine recovery behind the contract) the
+        # ``RecoverDispatcher`` pass composes when the project config sets
+        # ``recovery_engine == "reduced_product"``. Bound to a FRESH ``mba`` each
+        # decompile (staleness rule). ``concolic_enabled`` carries the existing
+        # ``emulation_dispatcher`` opt-in so a project that already enables the
+        # emulation resolver also gets the concolic engine here. Registered
+        # unconditionally so a later non-opted-in function never sees a stale ``mba``;
+        # the orchestrator only consults this capability on the reduced_product path.
+        # The concolic leg is the reduced_product path's recovery mechanism, so it
+        # must be live whenever that engine is selected -- not only behind the older
+        # ``emulation_dispatcher`` resolver opt-in. Enable on EITHER signal: the
+        # explicit emulation-resolver opt-in OR ``recovery_engine == reduced_product``
+        # (the orchestrator consults this capability only on that path, so enabling it
+        # here is inert for every other project).
+        _concolic_on = isinstance(_cfg, dict) and (
+            bool(_cfg.get("emulation_dispatcher"))
+            or _cfg.get("recovery_engine") == "reduced_product"
+        )
+        cap_instances[MachineRecoveryEnginesCapability] = (
+            HexRaysMachineRecoveryEnginesCapability(
+                mba=mba,
+                min_state_constant=min_state_constant_from_config(
+                    getattr(self, "config", None)
+                ),
+                concolic_enabled=bool(_concolic_on),
+            )
+        )
+        return CapabilitySet(cap_instances)
+
+    def _select_family(self, mba: "ida_hexrays.mba_t", source, rule_config, backend):
+        """Poll the family registry (reduced-product bypass on opt-in). Returns family|None."""
+        # Route through the registered profiles (llr-ibpi): select_family polls the
+        # StateMachineCffFamily registry (HodurFamily=equality-chain, ApproovFamily/
+        # TigressFamily=switch/indirect) and returns the one whose detect claims this
+        # graph; the selected profile's pipeline_for drives the pass manager. The rule's
+        # JSON config is threaded so a project may override the choice via the
+        # router_resolution policy (llr-11du); empty config preserves registration order.
+        family = select_family(
+            source.flow_graph,
+            project_config=rule_config,
+            capabilities=backend.capabilities(),
+        )
+        # Reduced-product family-gate bypass (ticket llr-iy9i): the static select_family
+        # poll declines a non-identity-selector machine (XOR-masked
+        # ``switch((state^KEY)&MASK)`` -- abc_xor_dispatch) because no compare/switch SHAPE
+        # is found, so without this the pipeline (and thus RecoverDispatcher ->
+        # recover_machine -> the SELF-ANCHORING concolic engine) never runs for it. When the
+        # project config opts into the reduced-product engine, fall through to the canonical
+        # five-pass spine via a synthetic bypass family so the concolic engine is reached
+        # (it self-anchors via discover_anchors' dominant-self-update fallback -- the proven
+        # old-engine recovery). SCOPED to recovery_engine == "reduced_product" ONLY: this
+        # synthetic family is instantiated directly (never auto-registered), so every other
+        # config (hodur/approov/tigress/ollvm -- which sets no such key) is byte-identical.
+        if family is None and (
+            isinstance(rule_config, dict)
+            and rule_config.get("recovery_engine") == "reduced_product"
+        ):
+            if logger.debug_on:
+                logger.debug(
+                    "unflat: reduced_product family-gate bypass for func=0x%x at %s "
+                    "(static select_family declined)",
+                    int(mba.entry_ea),
+                    maturity_to_string(int(mba.maturity)),
+                )
+            family = _ReducedProductBypassFamily()
+        return family
+
+    def _family_defers(
+        self, mba: "ida_hexrays.mba_t", family, *, is_indirect: bool
+    ) -> bool:
+        """True when the selected family wants a DIFFERENT maturity (caller returns 0)."""
+        # Fine per-family maturity gate (ticket llr-a93i): a profile recovers ONLY at one
+        # of its declared ``recovery_maturities``. When a family claims this graph but not
+        # at the CURRENT maturity, skip (return 0) and wait for the stage it wants -- the
+        # dispatcher is not converged, so a later maturity still recovers it. INDIRECT
+        # bypasses this gate: it is routed to MMAT_CALLS structurally above, independent of
+        # the selected family's declaration.
+        # A per-project ``recovery_maturity`` override (config-driven, ticket llr-a93i)
+        # REPLACES the selected profile's declared maturities for this project; absent it,
+        # the profile's own ``recovery_maturities`` apply.
+        _target_maturities = (
+            self._config_recovery_maturities()
+            or self._family_recovery_maturities(family)
+        )
+        if (
+            family is not None
+            and not is_indirect
+            and int(mba.maturity) not in _target_maturities
+        ):
+            if logger.debug_on:
+                logger.debug(
+                    "unflat: family=%s defers func=0x%x at %s (wants %s)",
+                    getattr(family, "name", "?"),
+                    int(mba.entry_ea),
+                    maturity_to_string(int(mba.maturity)),
+                    sorted(maturity_to_string(m) for m in _target_maturities),
+                )
+            return True
+        return False
 
     def _log_lisa_discovery_diff(self, flow_graph, prelim, range_evidence) -> None:
         """Compare the LiSA value-set dispatcher discovery to analyze_condition_chain_dispatcher (gap1 parity gate).
