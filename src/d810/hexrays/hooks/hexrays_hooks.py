@@ -98,7 +98,18 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         # PruneUnreachable: diagnostic-only; logs unreachable condition-chain blocks
         # but does NOT remove them (see helper for rationale).
         prune_unreachable_condition_chain(mba, self._block_optimizer)
-        if apply_return_const_corruption_cleanup(mba):
+        # v2 (d81-fzlo): the GLBOPT1 pre-fold severance snapshot is function-keyed
+        # on the block optimizer (it survives the GLBOPT1->GLBOPT2 boundary, where
+        # glbopt() actually fires; the per-maturity flow_context does not). Empty
+        # when no block optimizer is installed -> the cleanup fails closed.
+        prefold_def_eas = (
+            self._block_optimizer.prefold_return_reg_consumer_def_eas_for(
+                int(mba.entry_ea)
+            )
+            if self._block_optimizer is not None
+            else frozenset()
+        )
+        if apply_return_const_corruption_cleanup(mba, prefold_def_eas=prefold_def_eas):
             return ida_hexrays.MERR_LOOP
         return 0
 

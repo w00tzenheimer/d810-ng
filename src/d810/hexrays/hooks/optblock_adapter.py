@@ -16,6 +16,9 @@ from d810.hexrays.lifecycle import (
     _emit_flowgraph_ready_event,
 )
 from d810.hexrays.ir_maturity import ida_maturity_to_ir
+from d810.hexrays.mutation.return_carrier_corruption import (
+    snapshot_return_reg_consumer_def_eas,
+)
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
 main_logger = getLogger("D810")
@@ -80,6 +83,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         # Optional ReconAnalysisRuntime - set via configure(recon_runtime=...).
         # Used to reset recon state when a new function is decompiled.
         self._recon_runtime = None  # ReconAnalysisRuntime | None
+        # v2 (d81-fzlo): pre-fold rax-family consumer DEF EAs, keyed by func_ea so
+        # the capture (GLBOPT1 optblock) survives the GLBOPT1->GLBOPT2 maturity
+        # boundary to the glbopt() consume (which fires at GLBOPT2). The per-maturity
+        # flow_context is invalidated across that boundary and cannot carry it.
+        self._prefold_rccc_by_func: dict[int, frozenset[int]] = {}
         self._function_priors_provider = None
         self._dispatcher_artifact_planner = None
         # Optional PassPipeline - set via configure(pass_pipeline=...). None
@@ -250,6 +258,12 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             optimizer_logger.debug("Invalidating flow context: %s", reason)
         self._flow_context = None
         self._flow_context_key = None
+
+    def prefold_return_reg_consumer_def_eas_for(self, func_ea: int) -> frozenset[int]:
+        """GLBOPT1 pre-fold rax-family consumer DEF EAs captured for *func_ea*
+        (empty if none); function-keyed so it survives to the GLBOPT2 glbopt()
+        consume (ticket d81-fzlo)."""
+        return self._prefold_rccc_by_func.get(int(func_ea), frozenset())
 
     def reset_perf_counters(self) -> None:
         for key in self._perf_counters:
@@ -746,6 +760,24 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     view_provider=self._recon_runtime.validated_fact_view,
                     consumer_callback=self._recon_runtime.record_fact_consumers,
                 )
+            # v2 (d81-fzlo): capture the pre-fold rax-family consumer DEF EAs ONCE
+            # per (func, GLBOPT1), here in the create-branch where the mba is still
+            # in tree form (pre optimize_global fold). Stored FUNCTION-keyed (not on
+            # the per-maturity flow_context, which is invalidated before the GLBOPT2
+            # glbopt() consume).
+            if int(self.current_maturity) == ida_hexrays.MMAT_GLBOPT1:
+                # Best-effort: a non-standard / partial mba (e.g. a unit-test mock
+                # without get_mblock) must not break the optblock pass. On failure
+                # the cleanup simply fails closed (no severance evidence captured ->
+                # nothing dropped).
+                try:
+                    self._prefold_rccc_by_func[int(mba.entry_ea)] = frozenset(
+                        snapshot_return_reg_consumer_def_eas(mba)
+                    )
+                except Exception:  # noqa: BLE001 -- capture is best-effort
+                    optimizer_logger.debug(
+                        "RCCC pre-fold capture skipped", exc_info=True
+                    )
         else:
             self._flow_context.refresh_mba(mba)
         self._flow_context.set_function_priors_provider(

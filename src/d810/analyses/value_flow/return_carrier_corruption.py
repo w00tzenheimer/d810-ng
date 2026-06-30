@@ -11,8 +11,14 @@ will not remove it -- and must not, because the same shape (``mov #C, rax`` with
 no use) is *also* how a legitimate constant return is emitted. Dropping the
 former restores the oracle's return value; dropping the latter would corrupt it.
 
-The discriminator is a two-pillar proof, both pillars decidable from analyses we
-already have (``reaching_defs`` / DU-chains + a dominator tree):
+The discriminator is a *severance gate* (the primary trigger) followed by a
+two-pillar proof, all decidable from analyses we already have (a pre-fold
+consumer snapshot + ``reaching_defs`` / DU-chains + a dominator tree):
+
+* **Severance gate.** The value had a real operand consumer at the pre-fold
+  snapshot (GLBOPT1 entry) and has none now -- i.e. IDA's fold actually orphaned
+  it. A genuine constant return never had a consumer, so it fails the gate and is
+  kept; this closes the legit-partial-return false-drop (ticket d81-fzlo).
 
 * **Pillar 1 -- no computational use.** The def's SSA version has an *empty*
   use-def chain: no instruction operand reads it. Proves the constant feeds no
@@ -87,6 +93,12 @@ class KeepReason(str, enum.Enum):
     UNTAGGED_DEF = "untagged_def"
     """No SSA version -- cannot establish an empty use-def chain."""
 
+    NOT_SEVERED = "not_severed"
+    """Severance gate failed: the value had no real consumer at the pre-fold
+    snapshot, so the fold did not orphan it. A genuine constant return (never
+    consumed) lands here and is kept -- closing the legit-partial-return
+    false-drop (ticket d81-fzlo)."""
+
     HAS_USES = "has_uses"
     """Pillar 1 failed: the SSA def still has explicit operand use(s)."""
 
@@ -130,6 +142,7 @@ class CarrierCorruptionProof:
 def prove_return_const_droppable(
     target: ReturnRegDef,
     *,
+    was_consumed_prefold: bool,
     du_chain_uses: int,
     carrier_blocks: Collection[int],
     strict_dominators: Collection[int],
@@ -140,6 +153,11 @@ def prove_return_const_droppable(
 
     Args:
         target: The candidate return-register definition.
+        was_consumed_prefold: Whether ``target.ssa`` had at least one real
+            operand consumer at the pre-fold snapshot (GLBOPT1 entry). The
+            severance gate (primary trigger) requires ``True``: only a value the
+            fold actually orphaned is a corruption victim; ``False`` keeps a
+            genuine constant return that never had a consumer.
         du_chain_uses: Number of explicit operand uses of ``target.ssa``
             (the empty-DU-chain query result). Pillar 1 requires ``0``.
         carrier_blocks: Blocks that contain a full-width return-carrier
@@ -156,46 +174,63 @@ def prove_return_const_droppable(
     Examples:
         Corruptor -- const, no uses, carrier dominates -> droppable:
 
+        Corruptor -- severed (had a consumer pre-fold), no uses now, carrier
+        dominates -> droppable:
+
         >>> d = ReturnRegDef(block=61, ea=0x180018f75, ssa=151, is_const=True,
         ...                  is_partial=True, const_value=0xB5)
         >>> p = prove_return_const_droppable(
-        ...     d, du_chain_uses=0, carrier_blocks={4, 16, 21, 49, 56, 62},
+        ...     d, was_consumed_prefold=True, du_chain_uses=0,
+        ...     carrier_blocks={4, 16, 21, 49, 56, 62},
         ...     strict_dominators={0, 1, 4, 5, 49})
         >>> isinstance(p, CarrierCorruptionProof), p.dominating_carrier_blocks
         (True, (4, 49))
 
+        A genuine partial return that was NEVER consumed (the fold did not sever
+        it) is kept even though both pillars would otherwise pass -- this is the
+        false-drop the severance gate closes (ticket d81-fzlo):
+
+        >>> prove_return_const_droppable(
+        ...     ReturnRegDef(block=70, ea=0x1800a0, ssa=300, is_const=True,
+        ...                  is_partial=True, const_value=0x5),
+        ...     was_consumed_prefold=False, du_chain_uses=0,
+        ...     carrier_blocks={4, 49}, strict_dominators={0, 1, 4, 49})[1]
+        <KeepReason.NOT_SEVERED: 'not_severed'>
+
         The genuine ``0x5644...`` sentinel return is *untagged* in the real
-        sub_7FFD microcode (blk9 -- IDA leaves no SSA version on the final
-        return write), so it is kept at Pillar 1 before any carrier check:
+        sub_7FFD microcode (blk9 -- no SSA version), kept before any other check:
 
         >>> prove_return_const_droppable(
         ...     ReturnRegDef(block=9, ea=0x180015569, ssa=None, is_const=True,
         ...                  is_partial=False, const_value=0x5644FD01B1049C4B),
-        ...     du_chain_uses=0, carrier_blocks={4, 49},
-        ...     strict_dominators={0, 1})[1]
+        ...     was_consumed_prefold=True, du_chain_uses=0,
+        ...     carrier_blocks={4, 49}, strict_dominators={0, 1})[1]
         <KeepReason.UNTAGGED_DEF: 'untagged_def'>
 
-        A *tagged* constant return with no use but no dominating carrier is the
+        A *tagged* severed constant with no dominating carrier is the
         genuine-return case Pillar 2 guards (blk13, ``0xc5fb...``):
 
         >>> prove_return_const_droppable(
         ...     ReturnRegDef(block=13, ea=0x180015896, ssa=36, is_const=True,
         ...                  is_partial=False, const_value=0xC5FB34A1D9A6E315),
-        ...     du_chain_uses=0, carrier_blocks={4, 49},
-        ...     strict_dominators={0, 1})[1]
+        ...     was_consumed_prefold=True, du_chain_uses=0,
+        ...     carrier_blocks={4, 49}, strict_dominators={0, 1})[1]
         <KeepReason.NO_DOMINATING_CARRIER: 'no_dominating_carrier'>
 
         A def with a surviving use is never dropped:
 
         >>> prove_return_const_droppable(
         ...     ReturnRegDef(7, 0x7, 5, True, False, 0x1),
-        ...     du_chain_uses=2, carrier_blocks={4}, strict_dominators={4})[1]
+        ...     was_consumed_prefold=True, du_chain_uses=2,
+        ...     carrier_blocks={4}, strict_dominators={4})[1]
         <KeepReason.HAS_USES: 'has_uses'>
     """
     if not target.is_const:
         return (None, KeepReason.NOT_CONST)
     if target.ssa is None:
         return (None, KeepReason.UNTAGGED_DEF)
+    if not was_consumed_prefold:
+        return (None, KeepReason.NOT_SEVERED)
     if du_chain_uses != 0:
         return (None, KeepReason.HAS_USES)
     dominating = tuple(sorted(set(carrier_blocks) & set(strict_dominators)))

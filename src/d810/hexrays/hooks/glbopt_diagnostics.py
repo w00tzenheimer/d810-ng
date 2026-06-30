@@ -15,11 +15,13 @@ main_logger = getLogger("D810")
 _RCCC_APPLY = True
 
 _RCCC_MATURITIES = {
-    # The residue is created by IDA's optimize_global at GLBOPT1 (diag DB:
-    # present in GLBOPT1_post_d810, absent in GLBOPT1_pre). The GLBOPT1 firing
-    # NOPs + MERR_LOOP converges in a single pass, so a GLBOPT2 firing only ever
-    # sees an already-clean graph -- gate to GLBOPT1 only.
+    # glbopt() ("microcode global optimization complete") fires once at GLBOPT2 for
+    # this pipeline -- the residue created by optimize_global at GLBOPT1 persists
+    # into the GLBOPT2 firing. Gate both so the cleanup runs wherever glbopt lands.
+    # (Verified live, ticket d81-fzlo: the sub_7FFD residue is caught + removed at
+    # maturity=6/GLBOPT2; a GLBOPT1-only gate never fires and disables the fix.)
     ida_hexrays.MMAT_GLBOPT1,
+    ida_hexrays.MMAT_GLBOPT2,
 }
 
 
@@ -47,12 +49,21 @@ def _make_nop(insn) -> None:
     insn.d.erase()
 
 
-def apply_return_const_corruption_cleanup(mba: ida_hexrays.mbl_array_t) -> int:
-    """NOP proven return-register constant corruptions after GLBOPT folding."""
-    if getattr(mba, "maturity", None) not in _RCCC_MATURITIES:
+def apply_return_const_corruption_cleanup(
+    mba: ida_hexrays.mbl_array_t, *, prefold_def_eas: frozenset[int] = frozenset()
+) -> int:
+    """NOP proven return-register constant corruptions after GLBOPT folding.
+
+    *prefold_def_eas* is the GLBOPT1 pre-fold severance snapshot (ticket d81-fzlo,
+    function-keyed on the block optimizer); only defs whose consumer the fold
+    actually severed are dropped.
+    """
+    if mba is None or int(mba.maturity) not in _RCCC_MATURITIES:
         return 0
 
-    sites = find_droppable_return_const_corruptions(mba)
+    sites = find_droppable_return_const_corruptions(
+        mba, prefold_def_eas=prefold_def_eas
+    )
     if not sites:
         return 0
 

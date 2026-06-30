@@ -45,7 +45,11 @@ try:
 except ImportError:  # pragma: no cover - unit envs have no IDA
     IDA_AVAILABLE = False
 
-__all__ = ["CandidateSite", "find_droppable_return_const_corruptions"]
+__all__ = [
+    "CandidateSite",
+    "find_droppable_return_const_corruptions",
+    "snapshot_return_reg_consumer_def_eas",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +117,60 @@ def _count_valnum_uses(mba, rax_mreg: int, valnum: int, def_ea: int) -> int:
     return uses
 
 
+def snapshot_return_reg_consumer_def_eas(mba) -> set[int]:
+    """Pre-fold snapshot (ticket d81-fzlo): effective addresses of rax-family
+    DEFs whose value has at least one real operand *use* in *mba*.
+
+    Keyed by DEF EA, NOT SSA value number: value numbers are pass-local and IDA
+    reassigns them across the unflattener's ``MERR_LOOP`` re-lifts, so a valnum
+    captured here would not match the post-fold candidate. The defining
+    instruction's EA is stable across re-lifts and the ``optimize_global`` fold.
+
+    Captured at GLBOPT1 entry, while the obfuscation intermediates are still
+    expression trees. The post-fold severance diff then admits a folded
+    ``mov #imm, rax`` only when the def at that EA was consumed here but lost every
+    consumer to the fold -- which a genuine constant return (never consumed) can
+    never satisfy.
+
+    Read-only.
+    """
+    if not IDA_AVAILABLE or mba is None:
+        return set()
+    rax = _rax_mreg()
+    if rax is None:
+        return set()
+    # pass 1: rax-family value numbers that appear as a real (non-dest) use
+    consumed_valnums: set[int] = set()
+    for bi in range(mba.qty):
+        ins = mba.get_mblock(bi).head
+        while ins is not None:
+            for mop, is_top_dest in _iter_operands(ins):
+                if (
+                    mop.t == ida_hexrays.mop_r
+                    and mop.r == rax
+                    and not is_top_dest
+                ):
+                    valnum = int(mop.valnum)
+                    if valnum:
+                        consumed_valnums.add(valnum)
+            ins = ins.next
+    # pass 2: EAs of rax-family DEFs whose value is in the consumed set
+    consumer_def_eas: set[int] = set()
+    for bi in range(mba.qty):
+        ins = mba.get_mblock(bi).head
+        while ins is not None:
+            dest = ins.d
+            if (
+                dest is not None
+                and dest.t == ida_hexrays.mop_r
+                and dest.r == rax
+                and int(dest.valnum) in consumed_valnums
+            ):
+                consumer_def_eas.add(int(ins.ea))
+            ins = ins.next
+    return consumer_def_eas
+
+
 def _is_literal_operand(mop) -> bool:
     return mop is not None and mop.t == ida_hexrays.mop_n
 
@@ -156,11 +214,22 @@ def _is_carrier_source(insn) -> bool:
     return False
 
 
-def find_droppable_return_const_corruptions(mba) -> list[CandidateSite]:
+def find_droppable_return_const_corruptions(
+    mba, *, prefold_def_eas: frozenset[int] = frozenset()
+) -> list[CandidateSite]:
     """Return the proven-droppable ``mov #imm, <rax>`` corruptions in *mba*.
 
-    Read-only. Applies the two-pillar proof to every literal write of the
-    return register; returns only the sites where both pillars hold.
+    Read-only. Applies the v2 severance gate (ticket d81-fzlo) followed by the
+    two-pillar proof to every literal write of the return register; returns only
+    sites that are proven corruption victims.
+
+    The severance gate is the primary trigger: a candidate is admitted only when
+    the def at its EA had a real consumer in the GLBOPT1 *prefold_def_eas* snapshot
+    and has none now -- i.e. the fold actually severed it. When *prefold_def_eas*
+    is empty nothing is dropped (fail-closed: act only where the severance is
+    proven). The dominating-carrier pillar then remains as a secondary "do not
+    strand the return" safety check. EAs are used (not SSA value numbers) because
+    value numbers are pass-local and reassigned across the unflattener re-lifts.
     """
     if not IDA_AVAILABLE or mba is None:
         return []
@@ -238,14 +307,23 @@ def find_droppable_return_const_corruptions(mba) -> list[CandidateSite]:
     dom = compute_dom_tree(successors, entry=0)
 
     # --- prove each candidate ---
+    # Severance evidence is keyed by DEF EA (stable across re-lifts/fold), not by
+    # the pass-local SSA value number; supplied by the caller from the GLBOPT1
+    # pre-fold snapshot.
     sites: list[CandidateSite] = []
     for target, insn_ea in candidates:
         if target.ssa is None:
             continue
+        severed = int(insn_ea) in prefold_def_eas
         uses = _count_valnum_uses(mba, rax, target.ssa, insn_ea)
         strict = dom.dominators_of(target.block) - {target.block}
         result = prove_return_const_droppable(
             target,
+            # v2 severance gate (d81-fzlo): primary trigger -- the def at this EA
+            # had a real consumer at the pre-fold snapshot and has none now, i.e.
+            # the fold actually orphaned it. Empty set (no flow_context) =>
+            # fail-closed.
+            was_consumed_prefold=severed,
             du_chain_uses=uses,
             carrier_blocks=carrier_blocks,
             strict_dominators=strict,
