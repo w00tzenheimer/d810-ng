@@ -14,13 +14,18 @@
 # existing dump harness / D810_TEST_BINARY can resolve it. That copy never
 # touches libobfuscated.dll.
 #
-# Usage:  samples/restructuring_lab/build_lab.sh
+# Usage:  samples/restructuring_lab/build_lab.sh [output_name.dll]
+#
+# The optional first arg names the output DLL (default restructuring_lab.dll), so
+# you can build several isolated lab DLLs side by side without clobbering the
+# shared one -- e.g. `build_lab.sh experiment_a.dll`. Each DLL still contains
+# every c/ + masm/ fixture; only the filename changes.
 set -euo pipefail
 
 LAB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAMPLES="$(cd "$LAB_DIR/.." && pwd)"
 IMAGE="restructuring-lab"
-OUT="restructuring_lab.dll"
+OUT="$(basename "${1:-restructuring_lab.dll}")"
 
 command -v docker >/dev/null 2>&1 || { echo "[lab] docker is required" >&2; exit 1; }
 
@@ -33,7 +38,7 @@ echo "[lab] building $OUT (C via mingw clang, MASM via llvm-ml64) ..."
 docker run --rm \
   -v "$LAB_DIR":/work \
   -v "$SAMPLES/include":/include:ro \
-  "$IMAGE" make clean all
+  "$IMAGE" make OUT="bins/$OUT" clean all
 
 DLL="$LAB_DIR/bins/$OUT"
 [ -f "$DLL" ] || { echo "[lab] build produced no $OUT" >&2; exit 1; }

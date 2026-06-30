@@ -13,7 +13,7 @@
 CC      ?= clang
 ML64    ?= llvm-ml64
 TRIPLE  := x86_64-w64-mingw32
-OUT     := bins/restructuring_lab.dll
+OUT     ?= bins/restructuring_lab.dll
 
 CFLAGS  := --target=$(TRIPLE) -fuse-ld=lld -O0 -g -ffreestanding -fno-inline \
            -fno-builtin -I/include -DD810_DLL_EXPORT=1 -Wall -Wextra -Wno-error
