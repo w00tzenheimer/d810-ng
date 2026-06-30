@@ -15,8 +15,11 @@ main_logger = getLogger("D810")
 _RCCC_APPLY = True
 
 _RCCC_MATURITIES = {
+    # The residue is created by IDA's optimize_global at GLBOPT1 (diag DB:
+    # present in GLBOPT1_post_d810, absent in GLBOPT1_pre). The GLBOPT1 firing
+    # NOPs + MERR_LOOP converges in a single pass, so a GLBOPT2 firing only ever
+    # sees an already-clean graph -- gate to GLBOPT1 only.
     ida_hexrays.MMAT_GLBOPT1,
-    ida_hexrays.MMAT_GLBOPT2,
 }
 
 
