@@ -94,7 +94,7 @@ def test_return_const_corruption_cleanup_dry_run_does_not_mutate(
     monkeypatch.setattr(
         glbopt_module,
         "find_droppable_return_const_corruptions",
-        lambda _mba: [_site(glbopt_module)],
+        lambda _mba, **_kw: [_site(glbopt_module)],
     )
 
     assert glbopt_module.apply_return_const_corruption_cleanup(mba) == 0
@@ -115,7 +115,7 @@ def test_return_const_corruption_cleanup_apply_nops_and_marks_chains_dirty(
     monkeypatch.setattr(
         glbopt_module,
         "find_droppable_return_const_corruptions",
-        lambda _mba: [_site(glbopt_module)],
+        lambda _mba, **_kw: [_site(glbopt_module)],
     )
 
     assert glbopt_module.apply_return_const_corruption_cleanup(mba) == 1
@@ -154,7 +154,7 @@ def test_return_const_corruption_cleanup_runs_at_glbopt2(
     monkeypatch.setattr(
         glbopt_module,
         "find_droppable_return_const_corruptions",
-        lambda _mba: [_site(glbopt_module)],
+        lambda _mba, **_kw: [_site(glbopt_module)],
     )
 
     assert glbopt_module.apply_return_const_corruption_cleanup(mba) == 1
