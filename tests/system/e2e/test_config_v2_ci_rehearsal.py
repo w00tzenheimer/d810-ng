@@ -134,6 +134,38 @@ _REHEARSAL_CASES = (
         ),
         id="eidolon",
     ),
+    # Batch-routed shadow-only configs (d81-xkw8). These rehearsal cases verify
+    # the source config routes through its config-v2 canary and fires the
+    # expected pass ids (asserted in TestConfigV2SupportedDefaultRouting); the
+    # paired parity rows prove legacy==canary equivalence, so they do not assert
+    # a specific unflattening outcome (must_change/check_stats left off).
+    pytest.param(
+        DeobfuscationCase(
+            function="tigress_minmaxarray",
+            project="default_unflattening_tigress_engine_transition_facts.json",
+            must_change=False,
+            check_stats=False,
+        ),
+        id="default_unflattening_tigress_engine_transition_facts",
+    ),
+    pytest.param(
+        DeobfuscationCase(
+            function="abc_or_dispatch",
+            project="example_libobfuscated_abc.json",
+            must_change=False,
+            check_stats=False,
+        ),
+        id="example_libobfuscated_abc",
+    ),
+    pytest.param(
+        DeobfuscationCase(
+            function="mixed_dispatcher_pattern",
+            project="flatfold.json",
+            must_change=False,
+            check_stats=False,
+        ),
+        id="flatfold",
+    ),
 )
 
 _EXPECTED_DEFAULT_RUNTIME_CONFIGS = {
@@ -233,6 +265,45 @@ _EXPECTED_DEFAULT_RUNTIME_CONFIGS = {
     "identity_call.json": (
         "identity_call_config_v2_canary.json",
         ("identity-call-resolver",),
+    ),
+    "default_unflattening_tigress_engine_transition_facts.json": (
+        "default_unflattening_tigress_engine_transition_facts_config_v2_canary.json",
+        (
+            "mba-simplify",
+            "forward-constant-propagation",
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+        ),
+    ),
+    "example_libobfuscated_abc.json": (
+        "example_libobfuscated_abc_config_v2_canary.json",
+        (
+            "mba-simplify",
+            "forward-constant-propagation",
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+            "jump-fixer",
+        ),
+    ),
+    "flatfold.json": (
+        "flatfold_config_v2_canary.json",
+        (
+            "mba-simplify",
+            "mba-state-preconditioner",
+            "global-constant-inliner",
+            "jump-fixer",
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+        ),
     ),
 }
 

@@ -172,6 +172,54 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
         parity_row="identity_call_config_v2_canary_explicit_adapter",
         expected_pass_ids=("identity-call-resolver",),
     ),
+    ConfigV2DefaultMapping(
+        source_config="default_unflattening_tigress_engine_transition_facts.json",
+        runtime_config=(
+            "default_unflattening_tigress_engine_transition_facts"
+            "_config_v2_canary.json"
+        ),
+        parity_row="tigress_engine_transition_facts_config_v2_canary_spine",
+        expected_pass_ids=(
+            "mba-simplify",
+            "forward-constant-propagation",
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+        ),
+    ),
+    ConfigV2DefaultMapping(
+        source_config="example_libobfuscated_abc.json",
+        runtime_config="example_libobfuscated_abc_config_v2_canary.json",
+        parity_row="example_libobfuscated_abc_config_v2_canary_mixed_spine",
+        expected_pass_ids=(
+            "mba-simplify",
+            "forward-constant-propagation",
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+            "jump-fixer",
+        ),
+    ),
+    ConfigV2DefaultMapping(
+        source_config="flatfold.json",
+        runtime_config="flatfold_config_v2_canary.json",
+        parity_row="flatfold_config_v2_canary_mixed_spine",
+        expected_pass_ids=(
+            "mba-simplify",
+            "mba-state-preconditioner",
+            "global-constant-inliner",
+            "jump-fixer",
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+        ),
+    ),
 )
 
 _MAPPINGS_BY_SOURCE = {
