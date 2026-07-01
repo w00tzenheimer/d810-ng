@@ -458,6 +458,21 @@ runtime path by default:
 - `default_unflattening_tigress_engine.json` routes to
   `default_unflattening_tigress_engine_config_v2_canary.json`.
 - `hodur_flag2.json` routes to `hodur_flag2_config_v2_canary.json`.
+- `hodur_glbopt2_only.json` routes to
+  `hodur_glbopt2_only_config_v2_canary.json`.
+- `eidolon.json` routes to `eidolon_config_v2_canary.json`.
+- `default_unflattening_approov.json` routes to
+  `default_unflattening_approov_config_v2_canary.json`.
+- `hodur_flag2_s1a.json` routes to `hodur_flag2_s1a_config_v2_canary.json`.
+- `hodur_flag2_with_fcp.json` routes to
+  `hodur_flag2_with_fcp_config_v2_canary.json`.
+- `identity_call.json` routes to `identity_call_config_v2_canary.json`.
+
+OLLVM (`default_unflattening_ollvm.json`), indirect branch/call
+(`default_indirect_resolution.json`), and the cleanup-family adapter
+(`example_libobfuscated_no_fixprecedessor.json`) remain opt-in-selectable
+canaries only, not default-routed — this is a deliberate scope boundary, not
+an oversight.
 
 User configs that override those filenames remain on the existing project
 configuration path by default. The default routing only trusts checked-in
@@ -475,6 +490,30 @@ project configurations:
 - `default_unflattening_ollvm_config_v2_canary.json` exercises the OLLVM
   generated-shadow lane with MBA/instruction, indirect-call, native
   state-machine spine, cleanup-family, and simple flow-rule hooks.
+- `hodur_glbopt2_only_config_v2_canary.json` (config-v2 counterpart of the
+  `hodur_glbopt2_only.json` isolation config) exercises the native
+  state-machine spine lane alone, with no simple flow-rule hooks.
+- `eidolon_config_v2_canary.json` (config-v2 counterpart of `eidolon.json`)
+  exercises the MBA/instruction hook lane.
+- `default_unflattening_approov_config_v2_canary.json` (config-v2 counterpart
+  of `default_unflattening_approov.json`) exercises the native
+  state-machine spine plus the supported simple flow-rule lane, with an
+  additional MBA/state-preconditioner hook.
+- `hodur_flag2_s1a_config_v2_canary.json` (config-v2 counterpart of
+  `hodur_flag2_s1a.json`) exercises the Hodur native state-machine spine
+  plus the supported simple flow-rule lane.
+- `hodur_flag2_with_fcp_config_v2_canary.json` (config-v2 counterpart of
+  `hodur_flag2_with_fcp.json`) exercises the MBA/instruction hook lane plus
+  native state-machine spine and simple flow-rule hooks.
+- `identity_call_config_v2_canary.json` (config-v2 counterpart of
+  `identity_call.json`) exercises the explicit identity-call legacy
+  flow-rule adapter lane.
+- `default_indirect_resolution_config_v2_canary.json` (config-v2 counterpart
+  of `default_indirect_resolution.json`) exercises the indirect branch/call
+  legacy flow-rule adapter lane.
+- `example_libobfuscated_no_fixprecedessor_config_v2_canary.json`
+  (config-v2 counterpart of `example_libobfuscated_no_fixprecedessor.json`)
+  exercises the explicit cleanup-family planner/executor hook lane.
 
 Each canary sets `pipeline_v2_mode: config-v2`.
 

@@ -54,6 +54,71 @@ _REHEARSAL_CASES = (
         ),
         id="hodur_flag2",
     ),
+    pytest.param(
+        DeobfuscationCase(
+            function="approov_vm_dispatcher",
+            project="default_unflattening_approov.json",
+            deobfuscated_not_contains=["switch"],
+            must_change=True,
+        ),
+        id="default_unflattening_approov",
+    ),
+    pytest.param(
+        DeobfuscationCase(
+            function="identity_call_trampoline_chain",
+            project="identity_call.json",
+            must_change=True,
+            check_stats=True,
+            required_rules=["IdentityCallResolver"],
+            deobfuscated_not_contains=["identity_func("],
+            acceptable_patterns=["trampoline_wrapper(", "sub_"],
+        ),
+        id="identity_call",
+    ),
+    pytest.param(
+        DeobfuscationCase(
+            function="hodur_func",
+            project="hodur_glbopt2_only.json",
+            obfuscated_contains=["while"],
+            deobfuscated_not_contains=["while ( 1 )"],
+            acceptable_patterns=["Hodur/1.0", "printf", "resolve_api"],
+            check_stats=False,
+        ),
+        id="hodur_glbopt2_only",
+    ),
+    pytest.param(
+        DeobfuscationCase(
+            function="hodur_func",
+            project="hodur_flag2_s1a.json",
+            obfuscated_contains=["while"],
+            deobfuscated_not_contains=["while ( 1 )"],
+            acceptable_patterns=["Hodur/1.0", "printf", "resolve_api"],
+            check_stats=False,
+        ),
+        id="hodur_flag2_s1a",
+    ),
+    pytest.param(
+        DeobfuscationCase(
+            function="hodur_func",
+            project="hodur_flag2_with_fcp.json",
+            obfuscated_contains=["while"],
+            deobfuscated_not_contains=["while ( 1 )"],
+            acceptable_patterns=["Hodur/1.0", "printf", "resolve_api"],
+            check_stats=False,
+        ),
+        id="hodur_flag2_with_fcp",
+    ),
+    pytest.param(
+        DeobfuscationCase(
+            function="test_mba_guessing",
+            project="eidolon.json",
+            obfuscated_contains=["*"],
+            acceptable_patterns=["a4 | a1", "~(a1 ^ a4)", "return"],
+            must_change=True,
+            check_stats=False,
+        ),
+        id="eidolon",
+    ),
 )
 
 _EXPECTED_DEFAULT_RUNTIME_CONFIGS = {
@@ -85,6 +150,61 @@ _EXPECTED_DEFAULT_RUNTIME_CONFIGS = {
             "cleanup_residual_dispatcher",
             "jump-fixer",
         ),
+    ),
+    "hodur_glbopt2_only.json": (
+        "hodur_glbopt2_only_config_v2_canary.json",
+        (
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+        ),
+    ),
+    "eidolon.json": (
+        "eidolon_config_v2_canary.json",
+        ("mba-simplify",),
+    ),
+    "default_unflattening_approov.json": (
+        "default_unflattening_approov_config_v2_canary.json",
+        (
+            "mba-simplify",
+            "mba-state-preconditioner",
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+            "jump-fixer",
+        ),
+    ),
+    "hodur_flag2_s1a.json": (
+        "hodur_flag2_s1a_config_v2_canary.json",
+        (
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+            "jump-fixer",
+        ),
+    ),
+    "hodur_flag2_with_fcp.json": (
+        "hodur_flag2_with_fcp_config_v2_canary.json",
+        (
+            "mba-simplify",
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+            "jump-fixer",
+            "forward-constant-propagation",
+        ),
+    ),
+    "identity_call.json": (
+        "identity_call_config_v2_canary.json",
+        ("identity-call-resolver",),
     ),
 }
 

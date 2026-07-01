@@ -1,0 +1,42 @@
+{
+  "description": "Config-v2 explicit opt-in canary for identity_call.json. The existing project configuration path remains the default runtime; this project is selectable only when explicit config-v2 mode is desired.",
+  "ins_rules": [],
+  "blk_rules": [],
+  "additional_configuration": {
+    "pipeline_v2_mode": "config-v2",
+    "config_v2_canary": {
+      "source_config": "identity_call.json",
+      "source_shadow": "identity_call.pipeline_v2.json",
+      "representative_row": "identity_call_config_v2_canary_explicit_adapter",
+      "runtime_source": "pipeline_v2"
+    },
+    "pipeline_v2": [
+      {
+        "pass": "identity-call-resolver",
+        "scope": "block",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "legacy_flow_rule_adapter"
+          ]
+        },
+        "migration": {
+          "source_config": "identity_call.json",
+          "source_section": "blk_rules",
+          "source_rule": "IdentityCallResolver"
+        },
+        "options": {
+          "legacy_rule": "IdentityCallResolver",
+          "enable_experimental": true,
+          "max_trampoline_depth": 32,
+          "max_search_instructions": 30
+        }
+      }
+    ]
+  }
+}
