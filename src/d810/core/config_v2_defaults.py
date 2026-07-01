@@ -124,6 +124,21 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
         ),
     ),
     ConfigV2DefaultMapping(
+        source_config="default_unflattening_approov_s1a.json",
+        runtime_config="default_unflattening_approov_s1a_config_v2_canary.json",
+        parity_row="approov_s1a_config_v2_canary_mixed_spine_flow",
+        expected_pass_ids=(
+            "mba-simplify",
+            "mba-state-preconditioner",
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+            "jump-fixer",
+        ),
+    ),
+    ConfigV2DefaultMapping(
         source_config="hodur_flag2_s1a.json",
         runtime_config="hodur_flag2_s1a_config_v2_canary.json",
         parity_row="hodur_flag2_s1a_config_v2_canary_mixed",

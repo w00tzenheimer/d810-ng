@@ -64,6 +64,21 @@ _REHEARSAL_CASES = (
         id="default_unflattening_approov",
     ),
     pytest.param(
+        # §1a StateMachineCffUnflattener/ApproovFamily route. The paired parity
+        # rows (approov_s1a_mixed_spine_flow / _config_v2_canary_...) prove
+        # legacy==canary equivalence outcome-agnostically; this rehearsal case
+        # only verifies that the source config routes through the config-v2
+        # canary and fires the expected pass ids, so it does not assert a
+        # specific unflattening outcome (the §1a threshold may be a no-op).
+        DeobfuscationCase(
+            function="approov_vm_dispatcher",
+            project="default_unflattening_approov_s1a.json",
+            must_change=False,
+            check_stats=False,
+        ),
+        id="default_unflattening_approov_s1a",
+    ),
+    pytest.param(
         DeobfuscationCase(
             function="identity_call_trampoline_chain",
             project="identity_call.json",
@@ -181,6 +196,19 @@ _EXPECTED_DEFAULT_RUNTIME_CONFIGS = {
     "hodur_flag2_s1a.json": (
         "hodur_flag2_s1a_config_v2_canary.json",
         (
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+            "jump-fixer",
+        ),
+    ),
+    "default_unflattening_approov_s1a.json": (
+        "default_unflattening_approov_s1a_config_v2_canary.json",
+        (
+            "mba-simplify",
+            "mba-state-preconditioner",
             "recover_dispatcher",
             "recover_state_transitions",
             "plan_semantic_regions",
