@@ -469,6 +469,11 @@ runtime path by default:
 - `hodur_flag2_with_fcp.json` routes to
   `hodur_flag2_with_fcp_config_v2_canary.json`.
 - `identity_call.json` routes to `identity_call_config_v2_canary.json`.
+- `default_unflattening_tigress_engine_transition_facts.json` routes to
+  `default_unflattening_tigress_engine_transition_facts_config_v2_canary.json`.
+- `example_libobfuscated_abc.json` routes to
+  `example_libobfuscated_abc_config_v2_canary.json`.
+- `flatfold.json` routes to `flatfold_config_v2_canary.json`.
 
 OLLVM (`default_unflattening_ollvm.json`), indirect branch/call
 (`default_indirect_resolution.json`), and the cleanup-family adapter
@@ -515,6 +520,16 @@ project configurations:
 - `identity_call_config_v2_canary.json` (config-v2 counterpart of
   `identity_call.json`) exercises the explicit identity-call legacy
   flow-rule adapter lane.
+- `default_unflattening_tigress_engine_transition_facts_config_v2_canary.json`
+  (config-v2 counterpart of
+  `default_unflattening_tigress_engine_transition_facts.json`) exercises the
+  MBA/instruction hook lane plus native state-machine spine.
+- `example_libobfuscated_abc_config_v2_canary.json` (config-v2 counterpart of
+  `example_libobfuscated_abc.json`) exercises the MBA/instruction hook lane
+  plus native state-machine spine and simple flow-rule hooks.
+- `flatfold_config_v2_canary.json` (config-v2 counterpart of `flatfold.json`)
+  exercises the MBA/instruction hook lane plus native state-machine spine and
+  simple flow-rule hooks.
 - `default_indirect_resolution_config_v2_canary.json` (config-v2 counterpart
   of `default_indirect_resolution.json`) exercises the indirect branch/call
   legacy flow-rule adapter lane.

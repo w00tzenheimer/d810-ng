@@ -869,6 +869,12 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "default_indirect_resolution_branch_call_config_v2_canary_branch",
         "default_indirect_resolution_branch_call_config_v2_canary_call",
         "example_libobfuscated_no_fixprecedessor_config_v2_canary_cleanup",
+        "tigress_engine_transition_facts_spine",
+        "tigress_engine_transition_facts_config_v2_canary_spine",
+        "example_libobfuscated_abc_mixed_spine",
+        "example_libobfuscated_abc_config_v2_canary_mixed_spine",
+        "flatfold_mixed_spine",
+        "flatfold_config_v2_canary_mixed_spine",
     }
     assert parity_rows["eidolon_mba_instruction_heavy"] == {
         "id": "eidolon_mba_instruction_heavy",
@@ -1087,7 +1093,31 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
             "source_shadow": "example_libobfuscated_no_fixprecedessor.pipeline_v2.json",
             "representative_row": "example_libobfuscated_no_fixprecedessor_config_v2_canary_cleanup",
             "runtime_mode": "config-v2",
-        }
+        },
+        "default_unflattening_tigress_engine_transition_facts_config_v2_canary.json": {
+            "id": "default_unflattening_tigress_engine_transition_facts_config_v2_canary",
+            "config": "default_unflattening_tigress_engine_transition_facts_config_v2_canary.json",
+            "source_config": "default_unflattening_tigress_engine_transition_facts.json",
+            "source_shadow": "default_unflattening_tigress_engine_transition_facts.pipeline_v2.json",
+            "representative_row": "tigress_engine_transition_facts_config_v2_canary_spine",
+            "runtime_mode": "config-v2",
+        },
+        "example_libobfuscated_abc_config_v2_canary.json": {
+            "id": "example_libobfuscated_abc_config_v2_canary",
+            "config": "example_libobfuscated_abc_config_v2_canary.json",
+            "source_config": "example_libobfuscated_abc.json",
+            "source_shadow": "example_libobfuscated_abc.pipeline_v2.json",
+            "representative_row": "example_libobfuscated_abc_config_v2_canary_mixed_spine",
+            "runtime_mode": "config-v2",
+        },
+        "flatfold_config_v2_canary.json": {
+            "id": "flatfold_config_v2_canary",
+            "config": "flatfold_config_v2_canary.json",
+            "source_config": "flatfold.json",
+            "source_shadow": "flatfold.pipeline_v2.json",
+            "representative_row": "flatfold_config_v2_canary_mixed_spine",
+            "runtime_mode": "config-v2",
+        },
     }
     assert matrix["opt_in_rollout"]["status"] == "supported-canaries"
     assert matrix["opt_in_rollout"]["default_runtime_mode"] == (
@@ -1228,7 +1258,40 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
             "lanes": [
                 "cleanup_family_adapter",
             ],
-        }
+        },
+        {
+            "config": "default_unflattening_tigress_engine_transition_facts_config_v2_canary.json",
+            "source_config": "default_unflattening_tigress_engine_transition_facts.json",
+            "source_shadow": "default_unflattening_tigress_engine_transition_facts.pipeline_v2.json",
+            "parity_row": "tigress_engine_transition_facts_config_v2_canary_spine",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "native_state_machine_spine",
+                "mixed_spine_instruction_simple_flow_rule",
+            ],
+        },
+        {
+            "config": "example_libobfuscated_abc_config_v2_canary.json",
+            "source_config": "example_libobfuscated_abc.json",
+            "source_shadow": "example_libobfuscated_abc.pipeline_v2.json",
+            "parity_row": "example_libobfuscated_abc_config_v2_canary_mixed_spine",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "native_state_machine_spine",
+                "mixed_spine_instruction_simple_flow_rule",
+            ],
+        },
+        {
+            "config": "flatfold_config_v2_canary.json",
+            "source_config": "flatfold.json",
+            "source_shadow": "flatfold.pipeline_v2.json",
+            "parity_row": "flatfold_config_v2_canary_mixed_spine",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "native_state_machine_spine",
+                "mixed_spine_instruction_simple_flow_rule",
+            ],
+        },
     ]
 
     lane_ids = {lane["id"] for lane in matrix["runtime_lanes"]}
