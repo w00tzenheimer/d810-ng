@@ -463,6 +463,8 @@ runtime path by default:
 - `eidolon.json` routes to `eidolon_config_v2_canary.json`.
 - `default_unflattening_approov.json` routes to
   `default_unflattening_approov_config_v2_canary.json`.
+- `default_unflattening_approov_s1a.json` routes to
+  `default_unflattening_approov_s1a_config_v2_canary.json`.
 - `hodur_flag2_s1a.json` routes to `hodur_flag2_s1a_config_v2_canary.json`.
 - `hodur_flag2_with_fcp.json` routes to
   `hodur_flag2_with_fcp_config_v2_canary.json`.
@@ -497,6 +499,11 @@ project configurations:
   exercises the MBA/instruction hook lane.
 - `default_unflattening_approov_config_v2_canary.json` (config-v2 counterpart
   of `default_unflattening_approov.json`) exercises the native
+  state-machine spine plus the supported simple flow-rule lane, with an
+  additional MBA/state-preconditioner hook.
+- `default_unflattening_approov_s1a_config_v2_canary.json` (config-v2
+  counterpart of `default_unflattening_approov_s1a.json`, the §1a
+  StateMachineCffUnflattener/ApproovFamily route) exercises the native
   state-machine spine plus the supported simple flow-rule lane, with an
   additional MBA/state-preconditioner hook.
 - `hodur_flag2_s1a_config_v2_canary.json` (config-v2 counterpart of

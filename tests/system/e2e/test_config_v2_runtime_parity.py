@@ -137,6 +137,41 @@ _PARITY_ROWS = (
     ),
     pytest.param(
         ConfigV2ParityRow(
+            row_id="approov_s1a_mixed_spine_flow",
+            legacy_config="default_unflattening_approov_s1a.json",
+            shadow_config="default_unflattening_approov_s1a.pipeline_v2.json",
+            function_name="approov_vm_dispatcher",
+            expected_pass_ids=(
+                "mba-simplify",
+                "mba-state-preconditioner",
+                *STATE_MACHINE_NATIVE_PASS_IDS,
+                "jump-fixer",
+            ),
+            expects_state_machine=True,
+            required_snapshot_label=None,
+        ),
+        id="approov_s1a_mixed_spine_flow",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="approov_s1a_config_v2_canary_mixed_spine_flow",
+            legacy_config="default_unflattening_approov_s1a.json",
+            shadow_config="default_unflattening_approov_s1a.pipeline_v2.json",
+            runtime_config="default_unflattening_approov_s1a_config_v2_canary.json",
+            function_name="approov_vm_dispatcher",
+            expected_pass_ids=(
+                "mba-simplify",
+                "mba-state-preconditioner",
+                *STATE_MACHINE_NATIVE_PASS_IDS,
+                "jump-fixer",
+            ),
+            expects_state_machine=True,
+            required_snapshot_label=None,
+        ),
+        id="approov_s1a_config_v2_canary_mixed_spine_flow",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
             row_id="hodur_glbopt2_only_spine",
             legacy_config="hodur_glbopt2_only.json",
             shadow_config="hodur_glbopt2_only.pipeline_v2.json",
