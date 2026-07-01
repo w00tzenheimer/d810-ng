@@ -64,6 +64,19 @@ _PARITY_ROWS = (
     ),
     pytest.param(
         ConfigV2ParityRow(
+            row_id="eidolon_config_v2_canary_mba_instruction_heavy",
+            legacy_config="eidolon.json",
+            shadow_config="eidolon.pipeline_v2.json",
+            runtime_config="eidolon_config_v2_canary.json",
+            function_name="test_mba_guessing",
+            expected_pass_ids=("mba-simplify",),
+            expects_state_machine=False,
+            required_snapshot_label=None,
+        ),
+        id="eidolon_config_v2_canary_mba_instruction_heavy",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
             row_id="tigress_engine_spine",
             legacy_config="default_unflattening_tigress_engine.json",
             shadow_config="default_unflattening_tigress_engine.pipeline_v2.json",
@@ -106,6 +119,24 @@ _PARITY_ROWS = (
     ),
     pytest.param(
         ConfigV2ParityRow(
+            row_id="approov_config_v2_canary_mixed_spine_flow",
+            legacy_config="default_unflattening_approov.json",
+            shadow_config="default_unflattening_approov.pipeline_v2.json",
+            runtime_config="default_unflattening_approov_config_v2_canary.json",
+            function_name="approov_vm_dispatcher",
+            expected_pass_ids=(
+                "mba-simplify",
+                "mba-state-preconditioner",
+                *STATE_MACHINE_NATIVE_PASS_IDS,
+                "jump-fixer",
+            ),
+            expects_state_machine=True,
+            required_snapshot_label=None,
+        ),
+        id="approov_config_v2_canary_mixed_spine_flow",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
             row_id="hodur_glbopt2_only_spine",
             legacy_config="hodur_glbopt2_only.json",
             shadow_config="hodur_glbopt2_only.pipeline_v2.json",
@@ -115,6 +146,19 @@ _PARITY_ROWS = (
             required_snapshot_label=FINAL_POST_D810_SNAPSHOT_LABEL,
         ),
         id="hodur_glbopt2_only_spine",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="hodur_glbopt2_only_config_v2_canary_spine",
+            legacy_config="hodur_glbopt2_only.json",
+            shadow_config="hodur_glbopt2_only.pipeline_v2.json",
+            runtime_config="hodur_glbopt2_only_config_v2_canary.json",
+            function_name="hodur_func",
+            expected_pass_ids=STATE_MACHINE_NATIVE_PASS_IDS,
+            expects_state_machine=True,
+            required_snapshot_label=FINAL_POST_D810_SNAPSHOT_LABEL,
+        ),
+        id="hodur_glbopt2_only_config_v2_canary_spine",
     ),
     pytest.param(
         ConfigV2ParityRow(
@@ -148,6 +192,22 @@ _PARITY_ROWS = (
     ),
     pytest.param(
         ConfigV2ParityRow(
+            row_id="hodur_flag2_s1a_config_v2_canary_mixed",
+            legacy_config="hodur_flag2_s1a.json",
+            shadow_config="hodur_flag2_s1a.pipeline_v2.json",
+            runtime_config="hodur_flag2_s1a_config_v2_canary.json",
+            function_name="hodur_func",
+            expected_pass_ids=(
+                *STATE_MACHINE_NATIVE_PASS_IDS,
+                "jump-fixer",
+            ),
+            expects_state_machine=True,
+            required_snapshot_label=FINAL_POST_D810_SNAPSHOT_LABEL,
+        ),
+        id="hodur_flag2_s1a_config_v2_canary_mixed",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
             row_id="hodur_flag2_with_fcp_mixed",
             legacy_config="hodur_flag2_with_fcp.json",
             shadow_config="hodur_flag2_with_fcp.pipeline_v2.json",
@@ -162,6 +222,24 @@ _PARITY_ROWS = (
             required_snapshot_label=FINAL_POST_D810_SNAPSHOT_LABEL,
         ),
         id="hodur_flag2_with_fcp_mixed",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="hodur_flag2_with_fcp_config_v2_canary_mixed",
+            legacy_config="hodur_flag2_with_fcp.json",
+            shadow_config="hodur_flag2_with_fcp.pipeline_v2.json",
+            runtime_config="hodur_flag2_with_fcp_config_v2_canary.json",
+            function_name="hodur_func",
+            expected_pass_ids=(
+                "mba-simplify",
+                *STATE_MACHINE_NATIVE_PASS_IDS,
+                "jump-fixer",
+                "forward-constant-propagation",
+            ),
+            expects_state_machine=True,
+            required_snapshot_label=FINAL_POST_D810_SNAPSHOT_LABEL,
+        ),
+        id="hodur_flag2_with_fcp_config_v2_canary_mixed",
     ),
     pytest.param(
         ConfigV2ParityRow(
@@ -193,6 +271,19 @@ _PARITY_ROWS = (
     ),
     pytest.param(
         ConfigV2ParityRow(
+            row_id="identity_call_config_v2_canary_explicit_adapter",
+            legacy_config="identity_call.json",
+            shadow_config="identity_call.pipeline_v2.json",
+            runtime_config="identity_call_config_v2_canary.json",
+            function_name="identity_call_trampoline_chain",
+            expected_pass_ids=("identity-call-resolver",),
+            expects_state_machine=False,
+            required_snapshot_label=None,
+        ),
+        id="identity_call_config_v2_canary_explicit_adapter",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
             row_id="example_libobfuscated_no_fixprecedessor_cleanup",
             legacy_config="example_libobfuscated_no_fixprecedessor.json",
             shadow_config="example_libobfuscated_no_fixprecedessor.pipeline_v2.json",
@@ -207,6 +298,24 @@ _PARITY_ROWS = (
             required_snapshot_label=None,
         ),
         id="example_libobfuscated_no_fixprecedessor_cleanup",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="example_libobfuscated_no_fixprecedessor_config_v2_canary_cleanup",
+            legacy_config="example_libobfuscated_no_fixprecedessor.json",
+            shadow_config="example_libobfuscated_no_fixprecedessor.pipeline_v2.json",
+            runtime_config="example_libobfuscated_no_fixprecedessor_config_v2_canary.json",
+            function_name="abc_f6_sub_dispatch",
+            expected_pass_ids=(
+                "mba-simplify",
+                "forward-constant-propagation",
+                "simple-flattening-cleanup-unflattener",
+                "jump-fixer",
+            ),
+            expects_state_machine=False,
+            required_snapshot_label=None,
+        ),
+        id="example_libobfuscated_no_fixprecedessor_config_v2_canary_cleanup",
     ),
     pytest.param(
         ConfigV2ParityRow(
@@ -225,6 +334,22 @@ _PARITY_ROWS = (
     ),
     pytest.param(
         ConfigV2ParityRow(
+            row_id="default_indirect_resolution_branch_call_config_v2_canary_branch",
+            legacy_config="default_indirect_resolution.json",
+            shadow_config="default_indirect_resolution.pipeline_v2.json",
+            runtime_config="default_indirect_resolution_config_v2_canary.json",
+            function_name="indirect_jump_table_xor",
+            expected_pass_ids=(
+                "indirect-branch-resolver",
+                "indirect-call-resolver",
+            ),
+            expects_state_machine=False,
+            required_snapshot_label=None,
+        ),
+        id="default_indirect_resolution_branch_call_config_v2_canary_branch",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
             row_id="default_indirect_resolution_branch_call_call",
             legacy_config="default_indirect_resolution.json",
             shadow_config="default_indirect_resolution.pipeline_v2.json",
@@ -237,6 +362,22 @@ _PARITY_ROWS = (
             required_snapshot_label=None,
         ),
         id="default_indirect_resolution_branch_call_call",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="default_indirect_resolution_branch_call_config_v2_canary_call",
+            legacy_config="default_indirect_resolution.json",
+            shadow_config="default_indirect_resolution.pipeline_v2.json",
+            runtime_config="default_indirect_resolution_config_v2_canary.json",
+            function_name="indirect_call_hikari_mov_sub",
+            expected_pass_ids=(
+                "indirect-branch-resolver",
+                "indirect-call-resolver",
+            ),
+            expects_state_machine=False,
+            required_snapshot_label=None,
+        ),
+        id="default_indirect_resolution_branch_call_config_v2_canary_call",
     ),
     pytest.param(
         ConfigV2ParityRow(

@@ -318,6 +318,21 @@ IDA_VENV_PYTHON="/app/ida/.venv/bin/python"
 SPEEDUPS_BUILD_CMD="D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q || echo '[speedups] build failed, falling back to pure-Python'"
 SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON && $IDA_VENV_PIP install -e .[dev] -q && $IDA_VENV_PYTHON -m d810.speedups.install && { $SPEEDUPS_BUILD_CMD; }"
 
+# Safely reassemble an array of args into a string suitable for embedding in
+# a bash -c command that gets re-parsed by another shell (e.g. inside the
+# container). Plain ${ARR[*]} flattens the array with a single space and no
+# re-quoting, so any element containing whitespace (e.g. a multi-word
+# `pytest -k "A or B"` filter) gets word-split again when the reconstructed
+# string is parsed downstream. printf '%q' quotes each element so it
+# round-trips as exactly one token.
+_d810_quote_args() {
+  local out="" arg
+  for arg in "$@"; do
+    out+="$(printf '%q ' "$arg")"
+  done
+  printf '%s' "$out"
+}
+
 run_bash() {
   local inner="$1"
   local extra_env="$(_d810_extra_env_flags)"
@@ -380,7 +395,7 @@ if [ "$CMD" = "system" ]; then
     SYS_TRUNCATE=": > \"$SYS_LOG\"; "
     SYS_REDIR="> \"$SYS_LOG\" 2>&1"
   fi
-  run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON -m pytest tests/system -v ${SYSTEM_ARGS[*]} $SYS_REDIR"
+  run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON -m pytest tests/system -v $(_d810_quote_args "${SYSTEM_ARGS[@]}") $SYS_REDIR"
   exit 0
 fi
 
@@ -395,7 +410,7 @@ if [ "$CMD" = "test" ]; then
     SYS_TRUNCATE=": > \"$SYS_LOG\"; "
     SYS_REDIR="> \"$SYS_LOG\" 2>&1"
   fi
-  run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON -m pytest -v ${SYSTEM_ARGS[*]} $SYS_REDIR"
+  run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON -m pytest -v $(_d810_quote_args "${SYSTEM_ARGS[@]}") $SYS_REDIR"
   exit 0
 fi
 
@@ -431,5 +446,5 @@ if [ -n "$DUMP_OUT" ]; then
   REDIR="> \"$LOG_PATH\" 2>&1"
 fi
 
-INNER="$SETUP_CMD && ${TRUNCATE_CMD}$ENV_TEST $PYTEST_DUMP ${DUMP_ARGS[*]} -v $REDIR"
+INNER="$SETUP_CMD && ${TRUNCATE_CMD}$ENV_TEST $PYTEST_DUMP $(_d810_quote_args "${DUMP_ARGS[@]}") -v $REDIR"
 run_bash "$INNER"

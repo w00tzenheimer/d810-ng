@@ -858,6 +858,15 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "default_unflattening_ollvm_generated_shadow",
         "default_unflattening_ollvm_config_v2_canary",
         "default_unflattening_ollvm_s1a_fair_generated_shadow",
+        "hodur_glbopt2_only_config_v2_canary_spine",
+        "eidolon_config_v2_canary_mba_instruction_heavy",
+        "approov_config_v2_canary_mixed_spine_flow",
+        "hodur_flag2_s1a_config_v2_canary_mixed",
+        "hodur_flag2_with_fcp_config_v2_canary_mixed",
+        "identity_call_config_v2_canary_explicit_adapter",
+        "default_indirect_resolution_branch_call_config_v2_canary_branch",
+        "default_indirect_resolution_branch_call_config_v2_canary_call",
+        "example_libobfuscated_no_fixprecedessor_config_v2_canary_cleanup",
     }
     assert parity_rows["eidolon_mba_instruction_heavy"] == {
         "id": "eidolon_mba_instruction_heavy",
@@ -966,7 +975,7 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         f"{len(parity_rows)} passed,"
     )
     assert matrix["parity_evidence"]["docker_log"].endswith(
-        "config-v2-ollvm-opt-in-rollout-v1-parity.log"
+        "config-v2-ollvm-opt-in-rollout-v3-parity.log"
     )
 
     canaries = {
@@ -1003,6 +1012,70 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
             "source_config": "default_unflattening_ollvm.json",
             "source_shadow": "default_unflattening_ollvm.pipeline_v2.json",
             "representative_row": "default_unflattening_ollvm_config_v2_canary",
+            "runtime_mode": "config-v2",
+        },
+        "hodur_glbopt2_only_config_v2_canary.json": {
+            "id": "hodur_glbopt2_only_config_v2_canary",
+            "config": "hodur_glbopt2_only_config_v2_canary.json",
+            "source_config": "hodur_glbopt2_only.json",
+            "source_shadow": "hodur_glbopt2_only.pipeline_v2.json",
+            "representative_row": "hodur_glbopt2_only_config_v2_canary_spine",
+            "runtime_mode": "config-v2",
+        },
+        "eidolon_config_v2_canary.json": {
+            "id": "eidolon_config_v2_canary",
+            "config": "eidolon_config_v2_canary.json",
+            "source_config": "eidolon.json",
+            "source_shadow": "eidolon.pipeline_v2.json",
+            "representative_row": "eidolon_config_v2_canary_mba_instruction_heavy",
+            "runtime_mode": "config-v2",
+        },
+        "default_unflattening_approov_config_v2_canary.json": {
+            "id": "default_unflattening_approov_config_v2_canary",
+            "config": "default_unflattening_approov_config_v2_canary.json",
+            "source_config": "default_unflattening_approov.json",
+            "source_shadow": "default_unflattening_approov.pipeline_v2.json",
+            "representative_row": "approov_config_v2_canary_mixed_spine_flow",
+            "runtime_mode": "config-v2",
+        },
+        "hodur_flag2_s1a_config_v2_canary.json": {
+            "id": "hodur_flag2_s1a_config_v2_canary",
+            "config": "hodur_flag2_s1a_config_v2_canary.json",
+            "source_config": "hodur_flag2_s1a.json",
+            "source_shadow": "hodur_flag2_s1a.pipeline_v2.json",
+            "representative_row": "hodur_flag2_s1a_config_v2_canary_mixed",
+            "runtime_mode": "config-v2",
+        },
+        "hodur_flag2_with_fcp_config_v2_canary.json": {
+            "id": "hodur_flag2_with_fcp_config_v2_canary",
+            "config": "hodur_flag2_with_fcp_config_v2_canary.json",
+            "source_config": "hodur_flag2_with_fcp.json",
+            "source_shadow": "hodur_flag2_with_fcp.pipeline_v2.json",
+            "representative_row": "hodur_flag2_with_fcp_config_v2_canary_mixed",
+            "runtime_mode": "config-v2",
+        },
+        "identity_call_config_v2_canary.json": {
+            "id": "identity_call_config_v2_canary",
+            "config": "identity_call_config_v2_canary.json",
+            "source_config": "identity_call.json",
+            "source_shadow": "identity_call.pipeline_v2.json",
+            "representative_row": "identity_call_config_v2_canary_explicit_adapter",
+            "runtime_mode": "config-v2",
+        },
+        "default_indirect_resolution_config_v2_canary.json": {
+            "id": "default_indirect_resolution_config_v2_canary",
+            "config": "default_indirect_resolution_config_v2_canary.json",
+            "source_config": "default_indirect_resolution.json",
+            "source_shadow": "default_indirect_resolution.pipeline_v2.json",
+            "representative_row": "default_indirect_resolution_branch_call_config_v2_canary_branch",
+            "runtime_mode": "config-v2",
+        },
+        "example_libobfuscated_no_fixprecedessor_config_v2_canary.json": {
+            "id": "example_libobfuscated_no_fixprecedessor_config_v2_canary",
+            "config": "example_libobfuscated_no_fixprecedessor_config_v2_canary.json",
+            "source_config": "example_libobfuscated_no_fixprecedessor.json",
+            "source_shadow": "example_libobfuscated_no_fixprecedessor.pipeline_v2.json",
+            "representative_row": "example_libobfuscated_no_fixprecedessor_config_v2_canary_cleanup",
             "runtime_mode": "config-v2",
         }
     }
@@ -1051,6 +1124,88 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
             "normal_project_config_loading_path": True,
             "lanes": [
                 "ollvm_generated_shadow_parity",
+            ],
+        },
+        {
+            "config": "hodur_glbopt2_only_config_v2_canary.json",
+            "source_config": "hodur_glbopt2_only.json",
+            "source_shadow": "hodur_glbopt2_only.pipeline_v2.json",
+            "parity_row": "hodur_glbopt2_only_config_v2_canary_spine",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "native_state_machine_spine",
+            ],
+        },
+        {
+            "config": "eidolon_config_v2_canary.json",
+            "source_config": "eidolon.json",
+            "source_shadow": "eidolon.pipeline_v2.json",
+            "parity_row": "eidolon_config_v2_canary_mba_instruction_heavy",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "mba_instruction_hook",
+            ],
+        },
+        {
+            "config": "default_unflattening_approov_config_v2_canary.json",
+            "source_config": "default_unflattening_approov.json",
+            "source_shadow": "default_unflattening_approov.pipeline_v2.json",
+            "parity_row": "approov_config_v2_canary_mixed_spine_flow",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "native_state_machine_spine",
+                "mixed_spine_simple_flow_rule",
+            ],
+        },
+        {
+            "config": "hodur_flag2_s1a_config_v2_canary.json",
+            "source_config": "hodur_flag2_s1a.json",
+            "source_shadow": "hodur_flag2_s1a.pipeline_v2.json",
+            "parity_row": "hodur_flag2_s1a_config_v2_canary_mixed",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "native_state_machine_spine",
+                "mixed_spine_simple_flow_rule",
+            ],
+        },
+        {
+            "config": "hodur_flag2_with_fcp_config_v2_canary.json",
+            "source_config": "hodur_flag2_with_fcp.json",
+            "source_shadow": "hodur_flag2_with_fcp.pipeline_v2.json",
+            "parity_row": "hodur_flag2_with_fcp_config_v2_canary_mixed",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "mixed_spine_instruction_simple_flow_rule",
+            ],
+        },
+        {
+            "config": "identity_call_config_v2_canary.json",
+            "source_config": "identity_call.json",
+            "source_shadow": "identity_call.pipeline_v2.json",
+            "parity_row": "identity_call_config_v2_canary_explicit_adapter",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "identity_call_flow_rule",
+            ],
+        },
+        {
+            "config": "default_indirect_resolution_config_v2_canary.json",
+            "source_config": "default_indirect_resolution.json",
+            "source_shadow": "default_indirect_resolution.pipeline_v2.json",
+            "parity_row": "default_indirect_resolution_branch_call_config_v2_canary_branch",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "indirect_branch_call_flow_rule",
+            ],
+        },
+        {
+            "config": "example_libobfuscated_no_fixprecedessor_config_v2_canary.json",
+            "source_config": "example_libobfuscated_no_fixprecedessor.json",
+            "source_shadow": "example_libobfuscated_no_fixprecedessor.pipeline_v2.json",
+            "parity_row": "example_libobfuscated_no_fixprecedessor_config_v2_canary_cleanup",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "cleanup_family_adapter",
             ],
         }
     ]

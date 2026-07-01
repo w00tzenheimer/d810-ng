@@ -90,6 +90,73 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
             "jump-fixer",
         ),
     ),
+    ConfigV2DefaultMapping(
+        source_config="hodur_glbopt2_only.json",
+        runtime_config="hodur_glbopt2_only_config_v2_canary.json",
+        parity_row="hodur_glbopt2_only_config_v2_canary_spine",
+        expected_pass_ids=(
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+        ),
+    ),
+    ConfigV2DefaultMapping(
+        source_config="eidolon.json",
+        runtime_config="eidolon_config_v2_canary.json",
+        parity_row="eidolon_config_v2_canary_mba_instruction_heavy",
+        expected_pass_ids=("mba-simplify",),
+    ),
+    ConfigV2DefaultMapping(
+        source_config="default_unflattening_approov.json",
+        runtime_config="default_unflattening_approov_config_v2_canary.json",
+        parity_row="approov_config_v2_canary_mixed_spine_flow",
+        expected_pass_ids=(
+            "mba-simplify",
+            "mba-state-preconditioner",
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+            "jump-fixer",
+        ),
+    ),
+    ConfigV2DefaultMapping(
+        source_config="hodur_flag2_s1a.json",
+        runtime_config="hodur_flag2_s1a_config_v2_canary.json",
+        parity_row="hodur_flag2_s1a_config_v2_canary_mixed",
+        expected_pass_ids=(
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+            "jump-fixer",
+        ),
+    ),
+    ConfigV2DefaultMapping(
+        source_config="hodur_flag2_with_fcp.json",
+        runtime_config="hodur_flag2_with_fcp_config_v2_canary.json",
+        parity_row="hodur_flag2_with_fcp_config_v2_canary_mixed",
+        expected_pass_ids=(
+            "mba-simplify",
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+            "jump-fixer",
+            "forward-constant-propagation",
+        ),
+    ),
+    ConfigV2DefaultMapping(
+        source_config="identity_call.json",
+        runtime_config="identity_call_config_v2_canary.json",
+        parity_row="identity_call_config_v2_canary_explicit_adapter",
+        expected_pass_ids=("identity-call-resolver",),
+    ),
 )
 
 _MAPPINGS_BY_SOURCE = {
