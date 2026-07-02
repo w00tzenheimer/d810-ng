@@ -119,7 +119,7 @@
   ],
   "parity_evidence": {
     "docker_log": ".tmp/logs/config-v2-ollvm-opt-in-rollout-v3-parity.log",
-    "summary": "35 passed, 1 skipped, 2594 deselected, 117 warnings",
+    "summary": "37 passed, 1 skipped, 2592 deselected, 117 warnings",
     "rows": [
       {
         "id": "default_instruction_only_mba",
@@ -421,6 +421,23 @@
         "ast_stats_match": true,
         "stable_diag_parity": true,
         "allowed_diag_drift": []
+      },
+      {
+        "id": "example_hodur_mixed_spine",
+        "legacy_config": "example_hodur.json",
+        "shadow_config": "example_hodur.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
+      },
+      {
+        "id": "example_hodur_config_v2_canary_mixed_spine",
+        "legacy_config": "example_hodur.json",
+        "runtime_config": "example_hodur_config_v2_canary.json",
+        "shadow_config": "example_hodur.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
       }
     ]
   },
@@ -552,6 +569,14 @@
       "source_shadow": "flatfold.pipeline_v2.json",
       "representative_row": "flatfold_config_v2_canary_mixed_spine",
       "runtime_mode": "config-v2"
+    },
+    {
+      "id": "example_hodur_config_v2_canary",
+      "config": "example_hodur_config_v2_canary.json",
+      "source_config": "example_hodur.json",
+      "source_shadow": "example_hodur.pipeline_v2.json",
+      "representative_row": "example_hodur_config_v2_canary_mixed_spine",
+      "runtime_mode": "config-v2"
     }
   ],
   "opt_in_rollout": {
@@ -560,7 +585,7 @@
     "required_mode": "config-v2",
     "selection_model": "Users may select checked-in canary ProjectConfigurations by name; supported bundled source configs also route to those canaries by default. Generated shadows remain migration artifacts and unsupported project configs remain on the existing project configuration path.",
     "docker_log": ".tmp/logs/config-v2-ollvm-opt-in-rollout-v3-parity.log",
-    "summary": "35 passed, 1 skipped, 2594 deselected, 117 warnings",
+    "summary": "37 passed, 1 skipped, 2592 deselected, 117 warnings",
     "user_selectable_configs": [
       {
         "config": "default_instruction_only_config_v2_canary.json",
@@ -723,6 +748,17 @@
         "source_config": "flatfold.json",
         "source_shadow": "flatfold.pipeline_v2.json",
         "parity_row": "flatfold_config_v2_canary_mixed_spine",
+        "normal_project_config_loading_path": true,
+        "lanes": [
+          "native_state_machine_spine",
+          "mixed_spine_instruction_simple_flow_rule"
+        ]
+      },
+      {
+        "config": "example_hodur_config_v2_canary.json",
+        "source_config": "example_hodur.json",
+        "source_shadow": "example_hodur.pipeline_v2.json",
+        "parity_row": "example_hodur_config_v2_canary_mixed_spine",
         "normal_project_config_loading_path": true,
         "lanes": [
           "native_state_machine_spine",
@@ -922,6 +958,21 @@
           "plan_semantic_regions",
           "lower_state_machine",
           "cleanup_residual_dispatcher"
+        ]
+      },
+      {
+        "source_config": "example_hodur.json",
+        "runtime_config": "example_hodur_config_v2_canary.json",
+        "parity_row": "example_hodur_config_v2_canary_mixed_spine",
+        "expected_pass_ids": [
+          "mba-simplify",
+          "forward-constant-propagation",
+          "recover_dispatcher",
+          "recover_state_transitions",
+          "plan_semantic_regions",
+          "lower_state_machine",
+          "cleanup_residual_dispatcher",
+          "jump-fixer"
         ]
       }
     ],
@@ -1142,6 +1193,21 @@
           "plan_semantic_regions",
           "lower_state_machine",
           "cleanup_residual_dispatcher"
+        ]
+      },
+      {
+        "source_config": "example_hodur.json",
+        "runtime_config": "example_hodur_config_v2_canary.json",
+        "parity_row": "example_hodur_config_v2_canary_mixed_spine",
+        "expected_pass_ids": [
+          "mba-simplify",
+          "forward-constant-propagation",
+          "recover_dispatcher",
+          "recover_state_transitions",
+          "plan_semantic_regions",
+          "lower_state_machine",
+          "cleanup_residual_dispatcher",
+          "jump-fixer"
         ]
       }
     ],
