@@ -80,19 +80,15 @@ _GENERATED_SHADOW_CONFIGS = (
     "default_unflattening_ollvm_s1a_fair",
     "default_unflattening_approov",
     "default_unflattening_approov_s1a",
-    "default_unflattening_switch_case",
     "default_unflattening_tigress_engine",
     "default_unflattening_tigress_engine_transition_facts",
     "default_unflattening_tigress_indirect",
     "eidolon",
-    "example_anel",
     "example_hodur",
     "example_libobfuscated",
     "example_libobfuscated_abc",
     "example_libobfuscated_no_fixprecedessor",
     "flatfold",
-    "flatfold_no_predicate_loop_fix",
-    "hodur_deobfuscation",
     "hodur_flag2",
     "hodur_flag2_s1a",
     "hodur_flag2_with_fcp",
@@ -128,7 +124,6 @@ _REMAINING_GENERATED_SHADOWS = (
         ("MbaStatePreconditioner", "StateMachineCffUnflattener", "JumpFixer"),
     ),
     ("eidolon", 172, ()),
-    ("example_anel", 179, ("JumpFixer",)),
     (
         "example_hodur",
         185,
@@ -158,7 +153,6 @@ _REMAINING_GENERATED_SHADOWS = (
             "StateMachineCffUnflattener",
         ),
     ),
-    ("flatfold_no_predicate_loop_fix", 177, ("JumpFixer",)),
     (
         "hodur_flag2_with_fcp",
         3,
@@ -724,7 +718,7 @@ def test_checked_in_pipeline_v2_shadows_are_not_empty_pipeline_payloads():
 def test_repo_legacy_config_inventory_reports_current_state():
     inventory = _inventory_by_name()
 
-    assert len(inventory) == 26
+    assert len(inventory) == 22
     assert [
         item.config_name
         for item in inventory.values()
@@ -748,19 +742,15 @@ def test_repo_legacy_config_inventory_reports_current_state():
         "default_unflattening_ollvm_s1a_fair.json",
         "default_unflattening_approov.json",
         "default_unflattening_approov_s1a.json",
-        "default_unflattening_switch_case.json",
         "default_unflattening_tigress_engine.json",
         "default_unflattening_tigress_engine_transition_facts.json",
         "default_unflattening_tigress_indirect.json",
         "eidolon.json",
-        "example_anel.json",
         "example_hodur.json",
         "example_libobfuscated.json",
         "example_libobfuscated_abc.json",
         "example_libobfuscated_no_fixprecedessor.json",
         "flatfold.json",
-        "flatfold_no_predicate_loop_fix.json",
-        "hodur_deobfuscation.json",
         "hodur_flag2.json",
         "hodur_flag2_s1a.json",
         "hodur_flag2_with_fcp.json",
@@ -1914,11 +1904,6 @@ def test_remaining_generated_shadows_preserve_legacy_rule_shape(
             0,
             ["StateMachineCffUnflattener", "JumpFixer"],
         ),
-        (
-            "hodur_deobfuscation",
-            182,
-            ["JumpFixer"],
-        ),
     ],
 )
 def test_hodur_generated_shadows_preserve_legacy_rule_shape(
@@ -1980,11 +1965,6 @@ def test_hodur_generated_shadows_preserve_legacy_rule_shape(
             "default_unflattening_tigress_indirect",
             7,
             ["StateMachineCffUnflattener", "JumpFixer"],
-        ),
-        (
-            "default_unflattening_switch_case",
-            178,
-            ["MbaStatePreconditioner", "JumpFixer"],
         ),
     ],
 )

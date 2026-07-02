@@ -186,13 +186,6 @@ _REMAINING_GENERATED_SHADOWS = (
     ),
     ("eidolon", 172, [], ["mba-simplify"], "mba-simplify"),
     (
-        "example_anel",
-        179,
-        ["JumpFixer"],
-        ["mba-simplify", "jump-fixer"],
-        "mba-simplify",
-    ),
-    (
         "example_hodur",
         185,
         ["ForwardConstantPropagationRule", "StateMachineCffUnflattener", "JumpFixer"],
@@ -232,13 +225,6 @@ _REMAINING_GENERATED_SHADOWS = (
             "jump-fixer",
             *_STATE_MACHINE_NATIVE_PIPELINE,
         ],
-        "mba-simplify",
-    ),
-    (
-        "flatfold_no_predicate_loop_fix",
-        177,
-        ["JumpFixer"],
-        ["mba-simplify", "jump-fixer"],
         "mba-simplify",
     ),
     (
@@ -822,11 +808,6 @@ def test_example_libobfuscated_pipeline_v2_shadow_is_not_registry_buildable_yet(
             0,
             ["StateMachineCffUnflattener", "JumpFixer"],
         ),
-        (
-            "hodur_deobfuscation",
-            182,
-            ["JumpFixer"],
-        ),
     ],
 )
 def test_hodur_legacy_configs_remain_runtime_source(
@@ -855,10 +836,6 @@ def test_hodur_legacy_configs_remain_runtime_source(
         (
             "hodur_flag2_s1a",
             [*_STATE_MACHINE_NATIVE_PIPELINE, "jump-fixer"],
-        ),
-        (
-            "hodur_deobfuscation",
-            ["mba-simplify", "jump-fixer"],
         ),
     ],
 )
@@ -928,7 +905,6 @@ def test_hodur_pipeline_v2_shadows_parse_and_roundtrip(
     [
         ("hodur_flag2", "jump-fixer"),
         ("hodur_flag2_s1a", "jump-fixer"),
-        ("hodur_deobfuscation", "mba-simplify"),
     ],
 )
 def test_hodur_pipeline_v2_shadows_are_not_registry_buildable_yet(
@@ -1013,11 +989,6 @@ def test_hodur_config_v2_canary_is_explicit_opt_in_and_operational():
             7,
             ["StateMachineCffUnflattener", "JumpFixer"],
         ),
-        (
-            "default_unflattening_switch_case",
-            178,
-            ["MbaStatePreconditioner", "JumpFixer"],
-        ),
     ],
 )
 def test_tigress_switch_legacy_configs_remain_runtime_source(
@@ -1054,10 +1025,6 @@ def test_tigress_switch_legacy_configs_remain_runtime_source(
         (
             "default_unflattening_tigress_indirect",
             ["mba-simplify", *_STATE_MACHINE_NATIVE_PIPELINE, "jump-fixer"],
-        ),
-        (
-            "default_unflattening_switch_case",
-            ["mba-simplify", "mba-state-preconditioner", "jump-fixer"],
         ),
     ],
 )
@@ -1128,7 +1095,6 @@ def test_tigress_switch_pipeline_v2_shadows_parse_and_roundtrip(
         ("default_unflattening_tigress_engine", None),
         ("default_unflattening_tigress_engine_transition_facts", "mba-simplify"),
         ("default_unflattening_tigress_indirect", "mba-simplify"),
-        ("default_unflattening_switch_case", "mba-simplify"),
     ],
 )
 def test_tigress_switch_pipeline_v2_shadows_are_not_registry_buildable_yet(
