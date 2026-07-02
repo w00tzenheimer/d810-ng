@@ -84,7 +84,7 @@ Flow optimizers restore natural control flow from flattened dispatchers. The cur
 | O-LLVM (obfuscator-llvm) | `default_unflattening_ollvm.json` | `EmulatedDispatcherUnflattener` | FLA + BCF + MBA through the OLLVM dispatcher profile. |
 | Tigress switch | `default_unflattening_tigress_engine_transition_facts.json` | `EmulatedDispatcherUnflattener` | Switch-table state dispatcher and transition facts. |
 | Approov | `default_unflattening_approov.json` | `EmulatedDispatcherUnflattener` / `SimpleFlatteningCleanupUnflattener` | Approov-like state constants and cleanup shapes. |
-| Hodur (PlugX) | `hodur_deobfuscation.json`, `example_hodur.json` | `HodurUnflattener` | Hodur MBA + Hodur while-loop state-machine recovery. |
+| Hodur (PlugX) | `example_hodur.json` | `HodurUnflattener` | Hodur MBA + Hodur while-loop state-machine recovery. |
 | Tigress indirect | `default_unflattening_tigress_indirect_engine.json` | `EmulatedDispatcherUnflattener` | Indirect transfer-map profile with materialized target proof. |
 
 ### DSL and Rule Verification

@@ -195,7 +195,7 @@ class TestConfiguration(unittest.TestCase):
                 )
 
                 # This project overrides a built-in template
-                (user_conf_dir / "hodur_deobfuscation.json").write_text(
+                (user_conf_dir / "hodur_flag2.json").write_text(
                     '{"description": "User Override for Hodur"}'
                 )
 
@@ -216,9 +216,9 @@ class TestConfiguration(unittest.TestCase):
                 )
 
                 # Check that the user's overriding project is used
-                self.assertIn("hodur_deobfuscation.json", project_map)
+                self.assertIn("hodur_flag2.json", project_map)
                 self.assertEqual(
-                    project_map["hodur_deobfuscation.json"].description,
+                    project_map["hodur_flag2.json"].description,
                     "User Override for Hodur",
                 )
 
@@ -230,7 +230,7 @@ class TestConfiguration(unittest.TestCase):
                 reloaded_config = D810Configuration(config.config_file, ida_user_dir=ida_dir)
                 saved_configs = reloaded_config.get("configurations")
                 self.assertIn("my_user_project.json", saved_configs)
-                self.assertIn("hodur_deobfuscation.json", saved_configs)
+                self.assertIn("hodur_flag2.json", saved_configs)
 
 
 if __name__ == "__main__":
