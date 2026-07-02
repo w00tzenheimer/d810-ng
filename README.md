@@ -475,11 +475,14 @@ runtime path by default:
   `example_libobfuscated_abc_config_v2_canary.json`.
 - `flatfold.json` routes to `flatfold_config_v2_canary.json`.
 - `example_hodur.json` routes to `example_hodur_config_v2_canary.json`.
+- `default_unflattening_ollvm.json` routes to
+  `default_unflattening_ollvm_config_v2_canary.json`.
+- `default_indirect_resolution.json` routes to
+  `default_indirect_resolution_config_v2_canary.json`.
 
-OLLVM (`default_unflattening_ollvm.json`), indirect branch/call
-(`default_indirect_resolution.json`), and the cleanup-family adapter
-(`example_libobfuscated_no_fixprecedessor.json`) remain opt-in-selectable
-canaries only, not default-routed — this is a deliberate scope boundary, not
+The cleanup-family adapter
+(`example_libobfuscated_no_fixprecedessor.json`) remains an opt-in-selectable
+canary only, not default-routed — this is a deliberate scope boundary, not
 an oversight.
 
 User configs that override those filenames remain on the existing project
@@ -559,9 +562,9 @@ runner, use:
 ```
 
 These canaries do not default-route every generated shadow. Non-default-routed
-generated shadows, including indirect branch/call, cleanup-family, and OLLVM
-paths outside the listed canaries, remain generated-shadow artifacts unless a
-canary or supported-default mapping is explicitly added.
+generated shadows, including cleanup-family paths outside the listed canaries,
+remain generated-shadow artifacts unless a canary or supported-default mapping
+is explicitly added.
 
 ### Config-v2 default cutover criteria
 
@@ -579,10 +582,10 @@ bounded by these criteria:
 - A reviewed rollback path lets users return supported bundled configs to the
   existing project configuration path if config-v2 default routing regresses
   behavior.
-- Non-default-routed generated shadows stay explicit; indirect branch/call,
-  cleanup-family, or OLLVM generated-shadow support is not default-routed
-  without a supported-default mapping. Future unsupported adapter boundaries
-  stay fail-closed until executable adapter work lands.
+- Non-default-routed generated shadows stay explicit; cleanup-family
+  generated-shadow support is not default-routed without a supported-default
+  mapping. Future unsupported adapter boundaries stay fail-closed until
+  executable adapter work lands.
 - Always-on unit checks depend only on tracked support-matrix metadata. Docker
   log contents must be regenerated through the wrapper gate, not required from
   ignored `.tmp` paths in a clean checkout.
