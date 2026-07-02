@@ -244,6 +244,31 @@ def _entry_bridge_requires_witness(dmap) -> bool:
     return False
 
 
+def _needs_multi_entry_back_edge_recovery(range_evidence, dmap) -> bool:
+    """Whether exact dispatcher rows prove the range router dropped states."""
+
+    if getattr(dmap, "router_kind", None) is not RouterKind.CONDITION_CHAIN:
+        return False
+    range_router = getattr(range_evidence, "dispatcher", None)
+    lookup = getattr(range_router, "lookup", None)
+    if not callable(lookup):
+        return False
+    state_to_handler = dmap.state_to_handler() if dmap is not None else {}
+    if not state_to_handler:
+        return False
+
+    default_target = getattr(range_router, "default_target", None)
+    for state, exact_target in state_to_handler.items():
+        routed = lookup(int(state) & 0xFFFFFFFF)
+        if routed is not None and int(routed) == int(exact_target):
+            continue
+        if routed is None:
+            return True
+        if default_target is not None and int(routed) == int(default_target):
+            return True
+    return False
+
+
 def _has_emulated_endpoint_rows(dmap) -> bool:
     rows = tuple(getattr(dmap, "rows", ()) or ())
     return any(str(getattr(row, "branch_kind", "")) == "emulated" for row in rows)
@@ -585,6 +610,9 @@ class LowerStateMachine(PipelinePass):
                 if dmap is not None and entry_bridge_requires_witness
                 else ()
             )
+            recover_multi_entry_back_edges = _needs_multi_entry_back_edge_recovery(
+                range_evidence, dmap
+            )
             plan = emit_minimal_unflatten(
                 context.graph,
                 dispatcher,
@@ -606,6 +634,7 @@ class LowerStateMachine(PipelinePass):
                     isinstance(context.project_config, dict)
                     and bool(context.project_config.get("exit_path_effect_recovery"))
                 ),
+                recover_multi_entry_back_edges=recover_multi_entry_back_edges,
             )
             plan_metadata = plan.metadata_dict()
             _publish(context, LOWER_STATE_MACHINE_PLAN_METADATA, plan_metadata)

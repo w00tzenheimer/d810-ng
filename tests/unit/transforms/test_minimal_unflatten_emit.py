@@ -318,6 +318,54 @@ def test_emits_back_edge_redirect_and_entry_bridge(_seam) -> None:
     assert (0, 2, 10) in gotos
 
 
+def test_strict_preheader_prologue_keeps_ring_back_edge_redirectable(_seam) -> None:
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1, 3), ()),
+            1: _b(1, (2,), (0,), (_mov_state(0x900, 0x10),)),
+            2: _b(2, (10, 20), (1, 10)),
+            3: _b(3, (10,), (0,)),
+            10: _b(10, (2,), (2, 3), (_mov_state(0x1000, 0x20),)),
+            20: _b(20, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 10, 0x20: 20}, exit_block=99)
+    transitions = (StateWriteTransition(10, 0x20, 20, False, None),)
+
+    loose = build_state_write_redirects(
+        fg,
+        disp,
+        transitions,
+        dispatcher_entry_serial=2,
+        pre_header_serial=1,
+        initial_state=0x10,
+    )
+    loose_gotos = {
+        (m.from_serial, m.old_target, m.new_target)
+        for m in loose
+        if isinstance(m, RedirectGoto)
+    }
+    assert (10, 2, 20) not in loose_gotos
+
+    strict = build_state_write_redirects(
+        fg,
+        disp,
+        transitions,
+        dispatcher_entry_serial=2,
+        pre_header_serial=1,
+        initial_state=0x10,
+        strict_pre_header_prologue=True,
+    )
+    strict_gotos = {
+        (m.from_serial, m.old_target, m.new_target)
+        for m in strict
+        if isinstance(m, RedirectGoto)
+    }
+    assert (10, 2, 20) in strict_gotos
+
+
 def test_entry_bridge_shortcuts_pure_state_only_witness_exit_path(_seam) -> None:
     fg = FlowGraph(
         blocks={

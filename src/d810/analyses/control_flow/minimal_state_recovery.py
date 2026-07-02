@@ -34,7 +34,7 @@ IDA / Hex-Rays imports.  The MBA fold runs through the registered
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from d810.core.logging import getLogger
 from d810.analyses.control_flow.state_machine_analysis import (
@@ -1615,6 +1615,7 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
     initial_state: int | None = None,
     emu: "EmulationCapability | None" = None,
     live_block_for: "object | None" = None,
+    include_multi_entry_back_edges: bool = False,
 ) -> tuple[StateWriteTransition, ...]:
     """B2 shadow: predecessor-partitioned multi-cell fold -> the Case-2 ``via_block`` split.
 
@@ -1746,6 +1747,7 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
         arm_of=_arm,
     )
     out: list[StateWriteTransition] = []
+    visited_sources: set[int] = set()
     for pred in sorted(int(p) for p in disp_block.preds):
         block = flow_graph.get_block(pred)
         if block is None:
@@ -1753,8 +1755,19 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
         succs = tuple(int(s) for s in block.succs)
         if disp not in succs:
             continue
+        visited_sources.add(pred)
         arm = succs.index(disp) if len(succs) > 1 else None
         out.extend(_resolve_next_state(resolver_ctx, pred, block, arm))
+
+    if include_multi_entry_back_edges:
+        out.extend(
+            _recover_multi_entry_state_write_transitions(
+                resolver_ctx,
+                flow_graph,
+                dispatcher_entry=disp,
+                already_visited=visited_sources,
+            )
+        )
 
     # Terminal-tail back-edges (Tigress decoy-exit shape): a state-write block
     # whose successor is a STOP/terminal (or otherwise never re-enters the
@@ -1783,6 +1796,96 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
                 arm_of=_arm,
             )
         )
+    return tuple(out)
+
+
+def _reaches_dispatcher_entry(
+    flow_graph,
+    start_serial: int,
+    dispatcher_entry: int,
+    *,
+    max_depth: int = _MAX_CORRIDOR_DEPTH,
+) -> bool:
+    """Whether ``start_serial`` flows back into the anchored dispatcher entry."""
+
+    target = int(dispatcher_entry)
+    seen: set[int] = set()
+    stack: list[tuple[int, int]] = [(int(start_serial), 0)]
+    while stack:
+        serial, depth = stack.pop()
+        if serial == target:
+            return True
+        if serial in seen or depth >= max_depth:
+            continue
+        seen.add(serial)
+        block = flow_graph.get_block(serial)
+        if block is None:
+            continue
+        for succ in tuple(int(s) for s in getattr(block, "succs", ()) or ()):
+            if succ not in seen:
+                stack.append((succ, depth + 1))
+    return False
+
+
+def _recover_multi_entry_state_write_transitions(
+    ctx: _ResolverContext,
+    flow_graph,
+    *,
+    dispatcher_entry: int,
+    already_visited: set[int],
+) -> tuple[StateWriteTransition, ...]:
+    """Recover state-write exits that re-enter a dispatcher region away from entry.
+
+    Nested condition-chain dispatchers can route handlers into a shared inner
+    compare/suffix block instead of directly back to the anchored dispatcher
+    entry.  The ordinary predecessor scan misses those state writes entirely.
+    When the caller has already proven this multi-entry shape, scan one-way
+    state writers whose sole successor reaches the anchored dispatcher and emit
+    them as ``via_block`` splits: redirect ``writer -> successor`` onto the
+    folded routed handler.
+    """
+
+    out: list[StateWriteTransition] = []
+    emitted: set[tuple[int, int | None, int | None]] = set()
+    disp = int(dispatcher_entry)
+    for serial in sorted(int(s) for s in flow_graph.blocks):
+        if serial == disp or serial in already_visited:
+            continue
+        block = flow_graph.get_block(serial)
+        if block is None or int(getattr(block, "nsucc", 0)) != 1:
+            continue
+        succ = int(block.succs[0])
+        if succ == disp:
+            continue
+        if not _reaches_dispatcher_entry(flow_graph, succ, disp):
+            continue
+
+        for edge in _resolve_next_state(ctx, serial, block, None):
+            if edge.next_state is None or edge.target_handler is None:
+                continue
+            if edge.is_return:
+                continue
+            target = int(edge.target_handler)
+            if target in {serial, succ}:
+                continue
+            key = (serial, int(edge.next_state), target)
+            if key in emitted:
+                continue
+            emitted.add(key)
+            out.append(
+                replace(
+                    edge,
+                    write_block=serial,
+                    branch_arm=None,
+                    via_block=succ,
+                    proof=TransitionProof(
+                        _FIXPOINT_ORACLE,
+                        "multi_entry_global_fold",
+                        True,
+                        reason="state_write_reenters_dispatcher_region_via_successor",
+                    ),
+                )
+            )
     return tuple(out)
 
 

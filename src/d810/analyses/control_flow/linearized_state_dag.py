@@ -1558,6 +1558,113 @@ class LinearizedStateDag:
         return {node.handler_serial: node for node in self.nodes}
 
 
+@dataclass(frozen=True, slots=True)
+class IntervalRouterDagInsufficiency:
+    """A concrete DAG state whose authoritative route disagrees with the interval router."""
+
+    state: int
+    dag_entry: int
+    authoritative_target: int
+    target_source: str
+    interval_target: int | None
+    interval_is_default: bool
+
+
+def _detect_interval_router_insufficiencies(
+    *,
+    dag,
+    dispatcher,
+    exact_dispatcher_map=None,
+) -> tuple[IntervalRouterDagInsufficiency, ...]:
+    """Detect DAG states whose authoritative handler is not represented by an interval router."""
+    if dag is None or dispatcher is None:
+        return ()
+
+    exact_resolver = getattr(exact_dispatcher_map, "resolve_target", None)
+    interval_lookup = getattr(dispatcher, "lookup", None)
+    if not callable(interval_lookup):
+        return ()
+
+    default_target = getattr(dispatcher, "default_target", None)
+    default_target = int(default_target) if default_target is not None else None
+    gaps: list[IntervalRouterDagInsufficiency] = []
+    seen_states: set[int] = set()
+    for node in getattr(dag, "nodes", ()) or ():
+        key = getattr(node, "key", None)
+        state = getattr(key, "state_const", None)
+        if state is None:
+            continue
+        normalized = int(state) & 0xFFFFFFFF
+        if normalized in seen_states:
+            continue
+        seen_states.add(normalized)
+
+        dag_entry = getattr(node, "entry_anchor", None)
+        if dag_entry is None:
+            dag_entry = getattr(node, "handler_serial", None)
+        exact_target = (
+            exact_resolver(normalized) if callable(exact_resolver) else None
+        )
+        target_source = "exact_map"
+        if exact_target is None:
+            if dag_entry is None:
+                continue
+            exact_target = int(dag_entry)
+            target_source = "dag_entry"
+        interval_target = interval_lookup(normalized)
+        exact_int = int(exact_target)
+        interval_int = int(interval_target) if interval_target is not None else None
+        if interval_int == exact_int:
+            continue
+
+        if dag_entry is None:
+            dag_entry = getattr(node, "handler_serial", exact_int)
+        gaps.append(
+            IntervalRouterDagInsufficiency(
+                state=normalized,
+                dag_entry=int(dag_entry),
+                authoritative_target=exact_int,
+                target_source=target_source,
+                interval_target=interval_int,
+                interval_is_default=(
+                    interval_int is not None and interval_int == default_target
+                ),
+            )
+        )
+
+    return tuple(gaps)
+
+
+def _log_interval_router_insufficiencies(
+    dag,
+    *,
+    dispatcher,
+    exact_dispatcher_map=None,
+) -> None:
+    gaps = _detect_interval_router_insufficiencies(
+        dag=dag,
+        dispatcher=dispatcher,
+        exact_dispatcher_map=exact_dispatcher_map,
+    )
+    if gaps and logger.info_on:
+        logger.info(
+            "DAG M1 interval-router-insufficient: states=%d defaulted=%d "
+            "examples=%s",
+            len(gaps),
+            sum(1 for gap in gaps if gap.interval_is_default),
+            [
+                (
+                    f"0x{gap.state:08X}",
+                    gap.dag_entry,
+                    gap.authoritative_target,
+                    gap.target_source,
+                    gap.interval_target,
+                )
+                for gap in gaps[:12]
+            ],
+        )
+
+
 def _summarize_rows(rows: tuple[TransitionRow, ...]) -> TransitionSummary:
     known_count = sum(1 for row in rows if row.kind == TransitionKind.TRANSITION)
     conditional_count = sum(
@@ -7126,6 +7233,7 @@ def build_linearized_state_dag_from_graph(
         denylisted_state_values=tuple(sorted(transient_target_states)),
         diagnostics=report.diagnostics,
     )
+    _log_interval_router_insufficiencies(dag, dispatcher=dispatcher)
     sccs = compute_state_sccs(dag)
     log_sccs(sccs)
     dag = replace(dag, sccs=sccs)

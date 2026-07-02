@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,6 +36,7 @@ from d810.analyses.control_flow.linearized_state_dag import (
     StateNodeKind,
     StateRedirectAnchor,
     _compute_alias_label_override,
+    _detect_interval_router_insufficiencies,
     _build_state_resolver,
     _normalize_alias_nodes,
     _normalize_nonhandler_exact_nodes,
@@ -101,6 +103,73 @@ def test_side_effect_detection_uses_portable_instruction_kind() -> None:
     )
 
     assert linearized_state_dag._block_has_side_effect_opcode(block)
+
+
+class _ExactMap:
+    def __init__(self, routes):
+        self._routes = {
+            int(state) & 0xFFFFFFFF: int(target) for state, target in routes.items()
+        }
+
+    def resolve_target(self, state_value):
+        return self._routes.get(int(state_value) & 0xFFFFFFFF)
+
+
+class _IntervalRouter:
+    def __init__(self, routes, *, default_target=None):
+        self._routes = {
+            int(state) & 0xFFFFFFFF: int(target) for state, target in routes.items()
+        }
+        self.default_target = default_target
+
+    def lookup(self, state_value):
+        return self._routes.get(int(state_value) & 0xFFFFFFFF, self.default_target)
+
+
+def _dag_with_states(state_to_entry):
+    return SimpleNamespace(
+        nodes=tuple(
+            SimpleNamespace(
+                key=SimpleNamespace(state_const=state),
+                entry_anchor=entry,
+                handler_serial=entry,
+            )
+            for state, entry in state_to_entry.items()
+        )
+    )
+
+
+def test_interval_router_insufficiency_flags_nested_default_route() -> None:
+    inner_state = 0x2E3F4A5B
+    outer_state = 0x4A5B6C7D
+    dag = _dag_with_states({inner_state: 6, outer_state: 10})
+
+    gaps = _detect_interval_router_insufficiencies(
+        dag=dag,
+        dispatcher=_IntervalRouter({outer_state: 10}, default_target=15),
+        exact_dispatcher_map=_ExactMap({outer_state: 10}),
+    )
+
+    assert len(gaps) == 1
+    assert gaps[0].state == inner_state
+    assert gaps[0].dag_entry == 6
+    assert gaps[0].authoritative_target == 6
+    assert gaps[0].target_source == "dag_entry"
+    assert gaps[0].interval_target == 15
+    assert gaps[0].interval_is_default
+
+
+def test_interval_router_insufficiency_stays_quiet_for_flat_routes() -> None:
+    flat_routes = {0x1000 + i: 20 + i for i in range(13)}
+    dag = _dag_with_states(flat_routes)
+
+    gaps = _detect_interval_router_insufficiencies(
+        dag=dag,
+        dispatcher=_IntervalRouter(flat_routes, default_target=99),
+        exact_dispatcher_map=_ExactMap({}),
+    )
+
+    assert gaps == ()
 
 
 def render_linearized_state_program(
