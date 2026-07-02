@@ -235,6 +235,34 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
             "jump-fixer",
         ),
     ),
+    # Fence lifted (d81-xkw8): OLLVM + indirect were fenced by policy, not
+    # technical blocker -- their canaries + parity rows are already proven green.
+    ConfigV2DefaultMapping(
+        source_config="default_unflattening_ollvm.json",
+        runtime_config="default_unflattening_ollvm_config_v2_canary.json",
+        parity_row="default_unflattening_ollvm_config_v2_canary",
+        expected_pass_ids=(
+            "mba-simplify",
+            "indirect-call-resolver",
+            "mba-state-preconditioner",
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+            "simple-flattening-cleanup-unflattener",
+            "jump-fixer",
+        ),
+    ),
+    ConfigV2DefaultMapping(
+        source_config="default_indirect_resolution.json",
+        runtime_config="default_indirect_resolution_config_v2_canary.json",
+        parity_row="default_indirect_resolution_branch_call_config_v2_canary_branch",
+        expected_pass_ids=(
+            "indirect-branch-resolver",
+            "indirect-call-resolver",
+        ),
+    ),
 )
 
 _MAPPINGS_BY_SOURCE = {

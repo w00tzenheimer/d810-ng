@@ -1635,7 +1635,7 @@ def test_readme_documents_config_v2_canary_selection_note():
     for boundary in ("OLLVM", "cleanup-family"):
         assert boundary in normalized_readme
     assert (
-        "Non-default-routed generated shadows, including indirect branch/call, cleanup-family, and OLLVM paths"
+        "Non-default-routed generated shadows, including cleanup-family paths"
         in normalized_readme
     )
     assert "identity-call remains unsupported" not in normalized_readme
@@ -1662,7 +1662,7 @@ def test_readme_documents_config_v2_default_cutover_criteria():
         "all operational exceptions",
         "reviewed rollback path",
         "Non-default-routed generated shadows stay explicit",
-        "indirect branch/call, cleanup-family, or OLLVM generated-shadow support is not default-routed",
+        "cleanup-family generated-shadow support is not default-routed",
         "Future unsupported adapter boundaries stay fail-closed",
         "ignored `.tmp` paths",
         "CI gates include support-matrix unit guards",
@@ -1818,7 +1818,7 @@ def test_ollvm_configs_are_generated_shadow_supported_after_reassessment(config_
     assert "exclude_groups" not in pipeline_v2[0]["rules"]
 
 
-def test_ollvm_canary_rollout_stays_single_selectable_and_not_default_routed():
+def test_ollvm_canary_rollout_single_canary_primary_routed_s1a_fair_fenced():
     matrix = _load_runtime_support_matrix()
     canary_sources = {item["source_config"] for item in matrix["canary_configs"]}
     canary_configs = {item["config"]: item for item in matrix["canary_configs"]}
@@ -1829,9 +1829,12 @@ def test_ollvm_canary_rollout_stays_single_selectable_and_not_default_routed():
     parity_rows = {row["id"]: row for row in matrix["parity_evidence"]["rows"]}
 
     for config_name in _OLLVM_CONFIGS:
-        source_config = f"{config_name}.json"
         assert (_CONF_DIR / f"{config_name}.pipeline_v2.json").exists()
-        assert source_config not in default_sources
+    # Fence lifted (d81-xkw8): the primary OLLVM config is now default-routed
+    # off its proven canary; the s1a_fair variant stays canary-less and
+    # NOT default-routed.
+    assert "default_unflattening_ollvm.json" in default_sources
+    assert "default_unflattening_ollvm_s1a_fair.json" not in default_sources
 
     assert "default_unflattening_ollvm.json" in canary_sources
     assert "default_unflattening_ollvm_s1a_fair.json" not in canary_sources

@@ -974,6 +974,32 @@
           "cleanup_residual_dispatcher",
           "jump-fixer"
         ]
+      },
+      {
+        "source_config": "default_unflattening_ollvm.json",
+        "runtime_config": "default_unflattening_ollvm_config_v2_canary.json",
+        "parity_row": "default_unflattening_ollvm_config_v2_canary",
+        "expected_pass_ids": [
+          "mba-simplify",
+          "indirect-call-resolver",
+          "mba-state-preconditioner",
+          "recover_dispatcher",
+          "recover_state_transitions",
+          "plan_semantic_regions",
+          "lower_state_machine",
+          "cleanup_residual_dispatcher",
+          "simple-flattening-cleanup-unflattener",
+          "jump-fixer"
+        ]
+      },
+      {
+        "source_config": "default_indirect_resolution.json",
+        "runtime_config": "default_indirect_resolution_config_v2_canary.json",
+        "parity_row": "default_indirect_resolution_branch_call_config_v2_canary_branch",
+        "expected_pass_ids": [
+          "indirect-branch-resolver",
+          "indirect-call-resolver"
+        ]
       }
     ],
     "user_override_policy": "A user ProjectConfiguration named like a supported source or canary config is not trusted for default routing unless it independently opts into explicit pipeline_v2_mode=config-v2 and passes existing fail-closed config-v2 validation.",
@@ -1209,6 +1235,32 @@
           "cleanup_residual_dispatcher",
           "jump-fixer"
         ]
+      },
+      {
+        "source_config": "default_unflattening_ollvm.json",
+        "runtime_config": "default_unflattening_ollvm_config_v2_canary.json",
+        "parity_row": "default_unflattening_ollvm_config_v2_canary",
+        "expected_pass_ids": [
+          "mba-simplify",
+          "indirect-call-resolver",
+          "mba-state-preconditioner",
+          "recover_dispatcher",
+          "recover_state_transitions",
+          "plan_semantic_regions",
+          "lower_state_machine",
+          "cleanup_residual_dispatcher",
+          "simple-flattening-cleanup-unflattener",
+          "jump-fixer"
+        ]
+      },
+      {
+        "source_config": "default_indirect_resolution.json",
+        "runtime_config": "default_indirect_resolution_config_v2_canary.json",
+        "parity_row": "default_indirect_resolution_branch_call_config_v2_canary_branch",
+        "expected_pass_ids": [
+          "indirect-branch-resolver",
+          "indirect-call-resolver"
+        ]
       }
     ],
     "unsupported_policy": "Any project config outside supported_mappings fails closed when the switch is enabled; the switch does not imply default routing for non-default-routed generated shadows or future unsupported adapter boundaries."
@@ -1252,8 +1304,6 @@
   "unsupported_adapter_boundaries": [],
   "non_goals": [
     "no unsupported runtime cutover",
-    "no OLLVM supported-default route or second OLLVM canary",
-    "no indirect branch/call default routing or canary rollout",
     "no cleanup-family default routing or canary rollout",
     "no fake pass registration",
     "no LLVM M3/M4/lower-back/drop work"
