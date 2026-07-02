@@ -586,6 +586,41 @@ _PARITY_ROWS = (
         ),
         id="flatfold_config_v2_canary_mixed_spine",
     ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="example_hodur_mixed_spine",
+            legacy_config="example_hodur.json",
+            shadow_config="example_hodur.pipeline_v2.json",
+            function_name="nested_while_hodur_pattern",
+            expected_pass_ids=(
+                "mba-simplify",
+                "forward-constant-propagation",
+                *STATE_MACHINE_NATIVE_PASS_IDS,
+                "jump-fixer",
+            ),
+            expects_state_machine=True,
+            required_snapshot_label=None,
+        ),
+        id="example_hodur_mixed_spine",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="example_hodur_config_v2_canary_mixed_spine",
+            legacy_config="example_hodur.json",
+            shadow_config="example_hodur.pipeline_v2.json",
+            runtime_config="example_hodur_config_v2_canary.json",
+            function_name="nested_while_hodur_pattern",
+            expected_pass_ids=(
+                "mba-simplify",
+                "forward-constant-propagation",
+                *STATE_MACHINE_NATIVE_PASS_IDS,
+                "jump-fixer",
+            ),
+            expects_state_machine=True,
+            required_snapshot_label=None,
+        ),
+        id="example_hodur_config_v2_canary_mixed_spine",
+    ),
 )
 
 

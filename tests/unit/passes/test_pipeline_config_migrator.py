@@ -863,6 +863,8 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "tigress_engine_transition_facts_config_v2_canary_spine",
         "example_libobfuscated_abc_mixed_spine",
         "example_libobfuscated_abc_config_v2_canary_mixed_spine",
+        "example_hodur_mixed_spine",
+        "example_hodur_config_v2_canary_mixed_spine",
         "flatfold_mixed_spine",
         "flatfold_config_v2_canary_mixed_spine",
     }
@@ -1100,6 +1102,14 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
             "representative_row": "example_libobfuscated_abc_config_v2_canary_mixed_spine",
             "runtime_mode": "config-v2",
         },
+        "example_hodur_config_v2_canary.json": {
+            "id": "example_hodur_config_v2_canary",
+            "config": "example_hodur_config_v2_canary.json",
+            "source_config": "example_hodur.json",
+            "source_shadow": "example_hodur.pipeline_v2.json",
+            "representative_row": "example_hodur_config_v2_canary_mixed_spine",
+            "runtime_mode": "config-v2",
+        },
         "flatfold_config_v2_canary.json": {
             "id": "flatfold_config_v2_canary",
             "config": "flatfold_config_v2_canary.json",
@@ -1276,6 +1286,17 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
             "source_config": "flatfold.json",
             "source_shadow": "flatfold.pipeline_v2.json",
             "parity_row": "flatfold_config_v2_canary_mixed_spine",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "native_state_machine_spine",
+                "mixed_spine_instruction_simple_flow_rule",
+            ],
+        },
+        {
+            "config": "example_hodur_config_v2_canary.json",
+            "source_config": "example_hodur.json",
+            "source_shadow": "example_hodur.pipeline_v2.json",
+            "parity_row": "example_hodur_config_v2_canary_mixed_spine",
             "normal_project_config_loading_path": True,
             "lanes": [
                 "native_state_machine_spine",

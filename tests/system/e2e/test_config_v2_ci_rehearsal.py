@@ -166,6 +166,19 @@ _REHEARSAL_CASES = (
         ),
         id="flatfold",
     ),
+    pytest.param(
+        # Nested two-level Hodur dispatcher, restored by the multi-entry
+        # state-write recovery (d81-m0qo). Unlike the other batch cases this
+        # one asserts must_change=True: the fix collapses it to a returning
+        # arithmetic expression, so the routed config-v2 path must change it.
+        DeobfuscationCase(
+            function="nested_while_hodur_pattern",
+            project="example_hodur.json",
+            must_change=True,
+            check_stats=False,
+        ),
+        id="example_hodur",
+    ),
 )
 
 _EXPECTED_DEFAULT_RUNTIME_CONFIGS = {
@@ -303,6 +316,19 @@ _EXPECTED_DEFAULT_RUNTIME_CONFIGS = {
             "plan_semantic_regions",
             "lower_state_machine",
             "cleanup_residual_dispatcher",
+        ),
+    ),
+    "example_hodur.json": (
+        "example_hodur_config_v2_canary.json",
+        (
+            "mba-simplify",
+            "forward-constant-propagation",
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+            "jump-fixer",
         ),
     ),
 }

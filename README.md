@@ -474,6 +474,7 @@ runtime path by default:
 - `example_libobfuscated_abc.json` routes to
   `example_libobfuscated_abc_config_v2_canary.json`.
 - `flatfold.json` routes to `flatfold_config_v2_canary.json`.
+- `example_hodur.json` routes to `example_hodur_config_v2_canary.json`.
 
 OLLVM (`default_unflattening_ollvm.json`), indirect branch/call
 (`default_indirect_resolution.json`), and the cleanup-family adapter
@@ -530,6 +531,10 @@ project configurations:
 - `flatfold_config_v2_canary.json` (config-v2 counterpart of `flatfold.json`)
   exercises the MBA/instruction hook lane plus native state-machine spine and
   simple flow-rule hooks.
+- `example_hodur_config_v2_canary.json` (config-v2 counterpart of
+  `example_hodur.json`) exercises the MBA/instruction hook lane plus native
+  state-machine spine and simple flow-rule hooks (nested Hodur while-loop
+  dispatcher recovery).
 - `default_indirect_resolution_config_v2_canary.json` (config-v2 counterpart
   of `default_indirect_resolution.json`) exercises the indirect branch/call
   legacy flow-rule adapter lane.

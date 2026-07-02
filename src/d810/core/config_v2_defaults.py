@@ -220,6 +220,21 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
             "cleanup_residual_dispatcher",
         ),
     ),
+    ConfigV2DefaultMapping(
+        source_config="example_hodur.json",
+        runtime_config="example_hodur_config_v2_canary.json",
+        parity_row="example_hodur_config_v2_canary_mixed_spine",
+        expected_pass_ids=(
+            "mba-simplify",
+            "forward-constant-propagation",
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+            "jump-fixer",
+        ),
+    ),
 )
 
 _MAPPINGS_BY_SOURCE = {
