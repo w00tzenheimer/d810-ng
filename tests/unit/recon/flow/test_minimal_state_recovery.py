@@ -457,6 +457,47 @@ def test_partitioned_fixpoint_resolves_stack_address_alias_state_store(_seam) ->
     assert edge.proof.kind == "stack_address_alias_store"
 
 
+def test_partitioned_fixpoint_multi_entry_recovers_nonpredecessor_writer(_seam) -> None:
+    fg = FlowGraph(
+        blocks={
+            0: _blk(0, (10,), (), ()),
+            2: _blk(2, (20,), (12,), ()),
+            10: _blk(10, (11,), (0,), (_mov(0x1000, _num(0x20), _stk(_STATE_OFF)),)),
+            11: _blk(11, (12,), (10,), ()),
+            12: _blk(12, (2,), (11,), ()),
+            20: _blk(20, (2,), (2,), ()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _dispatcher({0x20: 20}, exit_block=99)
+
+    default_edges = recover_state_write_transitions_via_partitioned_fixpoint(
+        fg,
+        disp,
+        _STATE_OFF,
+        dispatcher_entry_serial=2,
+    )
+    assert not any(edge.write_block == 10 for edge in default_edges)
+
+    edges = recover_state_write_transitions_via_partitioned_fixpoint(
+        fg,
+        disp,
+        _STATE_OFF,
+        dispatcher_entry_serial=2,
+        include_multi_entry_back_edges=True,
+    )
+
+    multi = [edge for edge in edges if edge.write_block == 10]
+    assert len(multi) == 1
+    edge = multi[0]
+    assert edge.via_block == 11
+    assert edge.next_state == 0x20
+    assert edge.target_handler == 20
+    assert edge.proof is not None
+    assert edge.proof.kind == "multi_entry_global_fold"
+
+
 def test_partitioned_fixpoint_resolves_joined_stack_address_alias_state_store(_seam) -> None:
     # Both incoming edges to blk12 prove r3 == &state_var before the shared store.
     # This is the exit-path effect shape from sub_1815C8C30: the state store is

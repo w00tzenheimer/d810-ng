@@ -313,6 +313,7 @@ def _apply_entry_bridge(
     branch_witness_emu: object | None,
     entry_bridge_exit_path_blocks: tuple[int, ...],
     entry_bridge_requires_witness: bool,
+    allow_multi_entry_witness_fallback: bool,
     _add,
 ) -> None:
     """Apply entry-bridge redirects, gated on exact branch witness resolution.
@@ -420,6 +421,53 @@ def _apply_entry_bridge(
         live_definitions=decision.live_definitions,
     )
     if not decision.allowed:
+        if (
+            allow_multi_entry_witness_fallback
+            and isinstance(witness, BranchWitnessAbstain)
+            and witness.reason == "selected_successor_not_dispatcher_endpoint"
+        ):
+            exit_path_blocks = tuple(
+                sorted({int(block) for block in entry_bridge_exit_path_blocks})
+            ) or (int(disp),)
+            unsafe = exit_path_blocks_live_violations(
+                flow_graph,
+                exit_path_blocks,
+                int(first),
+                state_var_stkoff,
+                source_blocks=tuple(sorted(int(p) for p in prologue_preds)),
+                old_target=int(disp),
+            )
+            _observe_exit_path_shortcut_decision(
+                flow_graph,
+                source_blocks=prologue_preds,
+                old_target=disp,
+                shortcut_target=first,
+                witness_result=witness,
+                decision_reason=(
+                    "multi_entry_exact_map_live_safe"
+                    if not unsafe
+                    else "multi_entry_exact_map_liveness_unsafe"
+                ),
+                decision_allowed=not unsafe,
+                exit_path_blocks=exit_path_blocks,
+                live_definitions=tuple(sorted(unsafe)),
+            )
+            if not unsafe:
+                if logger.info_on:
+                    logger.info(
+                        "unflat entry bridge: MULTI_ENTRY_EXACT state=0x%X "
+                        "reason=selected_successor_not_dispatcher_endpoint "
+                        "target=%s exit_path=%s",
+                        initial_state_u,
+                        _format_block_label(flow_graph, first),
+                        _format_block_labels(flow_graph, exit_path_blocks),
+                    )
+                for entry_pred in sorted(prologue_preds):
+                    epblk = flow_graph.get_block(int(entry_pred))
+                    if epblk is None:
+                        continue
+                    _add(int(entry_pred), disp, int(first), two_way=(epblk.nsucc == 2))
+                return
         if logger.info_on:
             logger.info(
                 "unflat entry bridge: PRESERVED state=0x%X reason=%s "
@@ -435,6 +483,43 @@ def _apply_entry_bridge(
         if epblk is None:
             continue
         _add(int(entry_pred), disp, int(first), two_way=(epblk.nsucc == 2))
+
+
+def _has_multi_entry_forward_chain(
+    transitions: tuple[StateWriteTransition, ...],
+    first_handler: int,
+    *,
+    min_edges: int = 3,
+) -> bool:
+    """Whether recovered redirects form a non-cyclic chain from the entry target."""
+
+    next_by_source: dict[int, int] = {}
+    multi_entry_sources: set[int] = set()
+    for transition in transitions:
+        if transition.next_state is None or transition.target_handler is None:
+            continue
+        if transition.is_return:
+            continue
+        source = int(transition.write_block)
+        target = int(transition.target_handler)
+        if source == target:
+            continue
+        next_by_source.setdefault(source, target)
+        if transition.via_block is not None:
+            multi_entry_sources.add(source)
+
+    seen: set[int] = set()
+    current = int(first_handler)
+    edges = 0
+    used_multi_entry = False
+    while current in next_by_source:
+        if current in seen:
+            return False
+        seen.add(current)
+        used_multi_entry = used_multi_entry or current in multi_entry_sources
+        current = int(next_by_source[current])
+        edges += 1
+    return used_multi_entry and edges >= min_edges
 
 
 def _flow_graph_func_ea(flow_graph: object) -> int | None:
@@ -644,6 +729,8 @@ def build_state_write_redirects(
     branch_witness_emu: object | None = None,
     entry_bridge_exit_path_blocks: tuple[int, ...] = (),
     entry_bridge_requires_witness: bool = False,
+    strict_pre_header_prologue: bool = False,
+    allow_multi_entry_entry_bridge: bool = False,
 ) -> list[object]:
     """Build the redirect modifications that linearize the interval-set graph.
 
@@ -702,12 +789,15 @@ def build_state_write_redirects(
     # redirecting the entry to the shared-return block.
     prologue_preds: set[int] = set()
     if disp is not None:
-        prologue_preds = {
-            int(p)
-            for p in _dispatcher_entry_preds(
-                flow_graph, disp, pre_header_hint=pre_header_serial
-            )
-        }
+        if strict_pre_header_prologue and pre_header_serial is not None:
+            prologue_preds = {int(pre_header_serial)}
+        else:
+            prologue_preds = {
+                int(p)
+                for p in _dispatcher_entry_preds(
+                    flow_graph, disp, pre_header_hint=pre_header_serial
+                )
+            }
 
     # A predecessor-partitioned ``via_block`` is normally pure state-glue: the
     # emitter bypasses it (``src -> via_block`` re-pointed onto the routed handler)
@@ -857,12 +947,18 @@ def build_state_write_redirects(
     if initial_state is not None and disp is not None:
         first = dispatcher.lookup(int(initial_state) & 0xFFFFFFFF)
         if first is not None:
+            multi_entry_entry_bridge_safe = (
+                allow_multi_entry_entry_bridge
+                and _has_multi_entry_forward_chain(transitions, int(first))
+            )
             _apply_entry_bridge(
                 flow_graph, dispatcher, disp, first, int(initial_state) & 0xFFFFFFFF,
                 prologue_preds, state_var_stkoff, branch_witness_map,
                 branch_witness_emu,
                 entry_bridge_exit_path_blocks,
-                entry_bridge_requires_witness, _add,
+                entry_bridge_requires_witness,
+                multi_entry_entry_bridge_safe,
+                _add,
             )
 
     return mods
@@ -2418,6 +2514,7 @@ def emit_minimal_unflatten(
     entry_bridge_exit_path_blocks: tuple[int, ...] = (),
     entry_bridge_requires_witness: bool = False,
     exit_path_effect_recovery: bool = False,
+    recover_multi_entry_back_edges: bool = False,
 ) -> PatchPlan:
     """Recover back-edge transitions and emit the dispatcher-bypass ``PatchPlan``.
 
@@ -2458,6 +2555,7 @@ def emit_minimal_unflatten(
         initial_state=initial_state,
         emu=emu,
         live_block_for=live_block_for,
+        include_multi_entry_back_edges=recover_multi_entry_back_edges,
     )
     terminal_carrier_convergence = transitions_use_terminal_stack_alias_guard(
         transitions
@@ -2538,6 +2636,8 @@ def emit_minimal_unflatten(
         branch_witness_emu=branch_witness_emu,
         entry_bridge_exit_path_blocks=entry_bridge_exit_path_blocks,
         entry_bridge_requires_witness=entry_bridge_requires_witness,
+        strict_pre_header_prologue=recover_multi_entry_back_edges,
+        allow_multi_entry_entry_bridge=recover_multi_entry_back_edges,
     )
     # Conditional/multi-arm transitions (ticket llr-aga1): the back-edge model
     # above emits one redirect per dispatcher predecessor and collapses a
