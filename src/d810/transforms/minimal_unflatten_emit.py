@@ -98,6 +98,8 @@ __all__ = [
     "emit_minimal_unflatten",
     "build_state_write_redirects",
     "build_conditional_arm_redirects",
+    "build_shared_merge_conditional_redirects",
+    "build_loop_guard_exit_redirects",
     "build_folded_loop_guard_lowerings",
     "build_folded_loop_guard_transitions",
     "build_local_alias_scalarizations",
@@ -2495,6 +2497,258 @@ def build_folded_loop_guard_lowerings(
     )
 
 
+def _block_reaches_target(
+    flow_graph, start: int, target: int, *, bound: int = 128
+) -> bool:
+    """Bounded forward reachability: ``True`` if ``target`` is reachable from ``start``."""
+    seen: set[int] = set()
+    stack = [int(start)]
+    steps = 0
+    while stack and steps < bound:
+        steps += 1
+        cur = stack.pop()
+        if cur == int(target):
+            return True
+        if cur in seen:
+            continue
+        seen.add(cur)
+        block = flow_graph.get_block(cur)
+        if block is None:
+            continue
+        for s in block.succs:
+            if int(s) not in seen:
+                stack.append(int(s))
+    return False
+
+
+def build_loop_guard_exit_redirects(
+    flow_graph,
+    dispatcher,
+    handler_transitions: tuple[HandlerTransition, ...],
+    *,
+    dispatcher_entry_serial: int,
+) -> list[object]:
+    """Redirect a loop-guard-exit dispatcher's terminal handler to the exit corridor.
+
+    A ``while(state != K){switch(state){...}}`` flattener has NO dispatcher
+    ``default_target``: the loop exit is the guard block's ``state == K`` arm -- a
+    corridor OUTSIDE the state machine that reaches the function return.  The
+    handler that writes the exit sentinel ``K`` leaves the loop through that
+    corridor, but ``K`` spuriously routes back to a handler row (the dispatcher
+    still has a ``K -> handler`` interval), so the back-edge model classifies it
+    as an ordinary self-transition and never wires the exit.  Once every
+    dispatcher back-edge is severed, that corridor is orphaned and the function's
+    terminal becomes unreachable -- the mutation backend then correctly REJECTS
+    the whole plan (``all reachable terminal routes became unreachable``) and the
+    function stays flattened.
+
+    Detect each handler whose recovered arm leaves the loop into a PURE exit
+    corridor -- an ``exit_block`` that reaches a function return but can NOT reach
+    the dispatcher again -- and redirect that handler's own loop-ward out-edge
+    onto the exit block.  The handler body still executes; only its loop-back is
+    replaced by the return corridor.
+
+    Fires ONLY when the dispatcher has no ``default_target`` (the loop-guard
+    shape); a dispatcher with an explicit default already routes its exit through
+    the ``is_return`` back-edge model and is left byte-identical.
+    """
+    if dispatcher.default_target is not None:
+        return []
+    disp = int(dispatcher_entry_serial)
+    mods: list[object] = []
+    seen_edges: set[tuple[int, int]] = set()
+    for handler in handler_transitions:
+        hb = flow_graph.get_block(int(handler.handler))
+        if hb is None:
+            continue
+        for arm in handler.arms:
+            exit_block = arm.exit_block
+            if exit_block is None or int(exit_block) == disp:
+                continue
+            # A PURE exit corridor: reaches a return but never re-enters the
+            # dispatcher.  Handlers that loop back end their scan at a
+            # dispatcher-predecessor (which DOES reach the dispatcher) and are
+            # excluded here.
+            if _block_reaches_target(flow_graph, int(exit_block), disp):
+                continue
+            if not _routes_to_function_return(flow_graph, int(exit_block), disp=disp):
+                continue
+            # Redirect the handler entry's loop-ward out-edge (the successor that
+            # still reaches the dispatcher, i.e. the shared glue / back-edge tail)
+            # onto the exit corridor.
+            glue: int | None = None
+            for s in (int(x) for x in hb.succs):
+                if s == int(exit_block):
+                    continue
+                if _block_reaches_target(flow_graph, s, disp):
+                    glue = s
+                    break
+            if glue is None:
+                continue
+            key = (int(handler.handler), int(glue))
+            if key in seen_edges:
+                continue
+            if hb.nsucc == 2:
+                # Retargeting a 2-way handler's edge is only expressible when the
+                # loop-ward edge IS the conditional JUMP arm (BLOCK_TARGET_CHANGE
+                # cannot retarget a fall-through).  Bail otherwise -- leave the
+                # function flattened rather than mis-wire the exit.
+                if _conditional_jump_target(hb) != int(glue):
+                    continue
+                seen_edges.add(key)
+                mods.append(
+                    RedirectBranch(
+                        from_serial=int(handler.handler),
+                        old_target=int(glue),
+                        new_target=int(exit_block),
+                    )
+                )
+            else:
+                seen_edges.add(key)
+                mods.append(
+                    RedirectGoto(
+                        from_serial=int(handler.handler),
+                        old_target=int(glue),
+                        new_target=int(exit_block),
+                    )
+                )
+    return mods
+
+
+def _conditional_jump_target(block) -> int | None:
+    """Return the taken (jump) target serial of a 2-way block's conditional tail.
+
+    ``BLOCK_TARGET_CHANGE`` (``RedirectBranch``) retargets ONLY this arm; the
+    block's other successor is the fall-through.  The target is the ``mop_b``
+    operand of the tail conditional jump (historically ``insn.d.block_ref``).
+    """
+    insns = tuple(getattr(block, "insn_snapshots", ()) or ())
+    if not insns:
+        return None
+    tail = insns[-1]
+    if not getattr(tail, "is_conditional_jump", False):
+        return None
+    for mop in (getattr(tail, "d", None), getattr(tail, "r", None), getattr(tail, "l", None)):
+        ref = getattr(mop, "block_ref", None) if mop is not None else None
+        if ref is not None:
+            return int(ref)
+    return None
+
+
+def build_shared_merge_conditional_redirects(
+    flow_graph,
+    dispatcher,
+    handler_transitions: tuple[HandlerTransition, ...],
+    *,
+    dispatcher_entry_serial: int,
+) -> tuple[list[object], set[int]]:
+    """Correctly materialize an OLLVM ``state = cond ? A : B`` conditional handler.
+
+    The flattener lowers ``state = cond ? A : B`` as::
+
+        branch:  <work>; reg = <state B>;  jcc(cond) @merge
+        interm:  reg = <state A>                       (falls through into merge)
+        merge:   state = reg; goto <loop-back>
+
+    so both arms converge on ONE shared ``merge`` block that the recovery folds to
+    a distinct next-state per incoming path.  The generic passes mishandle this:
+    the back-edge model emits BOTH (conflicting) ``merge -> route`` redirects, and
+    :func:`build_conditional_arm_redirects` retargets the branch's FALL-THROUGH
+    arm -- which ``BLOCK_TARGET_CHANGE`` cannot express (it retargets only the
+    conditional JUMP arm).  The conditional is dropped and Hex-Rays folds the
+    function down to the fall-through arm alone (the ``3*(a1-5)/2`` miscompile).
+
+    Materialize it correctly: retarget the branch's real JUMP arm with a valid
+    ``BLOCK_TARGET_CHANGE`` and redirect the fall-through arm's block with a goto.
+    Reads the branch's actual jump target so the arm polarity is never assumed.
+
+    Returns ``(redirects, suppressed_sources)``.  The caller must drop every
+    existing redirect whose ``from_serial`` is in ``suppressed_sources`` (the
+    wrong arm redirect on the branch + both conflicting merge redirects) BEFORE
+    appending ``redirects``.  Detection is strictly shape-gated; a handler that
+    does not match this exact OLLVM select shape contributes nothing.
+    """
+    disp = int(dispatcher_entry_serial)
+    default_target = dispatcher.default_target
+    redirects: list[object] = []
+    suppressed: set[int] = set()
+
+    def _route(arm) -> int | None:
+        if arm.is_return:
+            return default_target
+        return arm.target_handler
+
+    for handler in handler_transitions:
+        if not handler.is_conditional or len(handler.arms) != 2:
+            continue
+        branch = handler.arms[0].branch_block
+        if branch is None or any(a.branch_block != branch for a in handler.arms):
+            continue
+        succ0 = _arm_branch_successor(handler.arms[0])
+        succ1 = _arm_branch_successor(handler.arms[1])
+        if succ0 is None or succ1 is None or int(succ0) == int(succ1):
+            continue
+        path0 = handler.arms[0].ordered_path
+        path1 = handler.arms[1].ordered_path
+        # Shared merge M = the branch-successor lying on BOTH arm paths (the direct
+        # arm's first hop, revisited by the indirect arm); intermediate I = the
+        # other branch-successor, a 1-way alt-state assignment feeding M.
+        if succ0 in path1 and succ1 not in path0:
+            merge, direct_arm, inter, indirect_arm = (
+                int(succ0), handler.arms[0], int(succ1), handler.arms[1]
+            )
+        elif succ1 in path0 and succ0 not in path1:
+            merge, direct_arm, inter, indirect_arm = (
+                int(succ1), handler.arms[1], int(succ0), handler.arms[0]
+            )
+        else:
+            continue
+        branch_block = flow_graph.get_block(int(branch))
+        inter_block = flow_graph.get_block(int(inter))
+        merge_block = flow_graph.get_block(int(merge))
+        if branch_block is None or inter_block is None or merge_block is None:
+            continue
+        if branch_block.nsucc != 2:
+            continue
+        # I must be a 1-way block whose sole successor is M (the alt-state write).
+        if tuple(int(s) for s in inter_block.succs) != (int(merge),):
+            continue
+        direct_route = _route(direct_arm)
+        indirect_route = _route(indirect_arm)
+        if direct_route is None or indirect_route is None:
+            continue
+        # Read the branch's real jump target; only one of {M, I} may be it.
+        jump_target = _conditional_jump_target(branch_block)
+        if jump_target is None or jump_target not in (int(merge), int(inter)):
+            continue
+        if jump_target == int(merge):
+            # M is the jump arm (OLLVM standard: `jcc @merge`); I is fall-through.
+            #   B --jump--> M            ==> B --jump--> route(direct)
+            #   B --fall--> I --> M      ==> I --> route(indirect)   (M orphaned)
+            redirects.append(
+                RedirectBranch(from_serial=int(branch), old_target=int(merge), new_target=int(direct_route))
+            )
+            redirects.append(
+                RedirectGoto(from_serial=int(inter), old_target=int(merge), new_target=int(indirect_route))
+            )
+        else:
+            # I is the jump arm; M is the fall-through.
+            #   B --jump--> I --> M      ==> B --jump--> route(indirect)  (I orphaned)
+            #   B --fall--> M            ==> M --> route(direct)
+            merge_succs = tuple(int(s) for s in merge_block.succs)
+            if len(merge_succs) != 1:
+                continue
+            redirects.append(
+                RedirectBranch(from_serial=int(branch), old_target=int(inter), new_target=int(indirect_route))
+            )
+            redirects.append(
+                RedirectGoto(from_serial=int(merge), old_target=int(merge_succs[0]), new_target=int(direct_route))
+            )
+        suppressed.add(int(branch))
+        suppressed.add(int(merge))
+    return redirects, suppressed
+
+
 def emit_minimal_unflatten(
     flow_graph,
     dispatcher,
@@ -2888,6 +3142,52 @@ def emit_minimal_unflatten(
             total,
             ",".join("blk%d" % b for b in unreached[:20]),
         )
+    # Shared-merge conditional handlers (ticket d81-c733): an OLLVM
+    # ``state = cond ? A : B`` handler whose two arms converge on one shared merge
+    # block is mishandled by the generic passes above -- the back-edge model emits
+    # conflicting merge redirects and the conditional-arm pass retargets the
+    # branch's fall-through arm (which the backend cannot express), dropping the
+    # conditional entirely.  Re-materialize the diamond correctly from the branch's
+    # real jump target; strictly shape-gated so non-matching handlers are
+    # untouched.
+    cond_redirects, cond_suppressed = build_shared_merge_conditional_redirects(
+        flow_graph, dispatcher, handler_transitions,
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
+    )
+    if cond_suppressed:
+        mods = [
+            m
+            for m in mods
+            if not (
+                isinstance(m, (RedirectGoto, RedirectBranch))
+                and int(m.from_serial) in cond_suppressed
+            )
+        ]
+    if cond_redirects:
+        # A handler already resolved correctly by the back-edge model (its arms
+        # write to DISTINCT glue blocks, e.g. state_comparison) matches the same
+        # shape; re-emitting the identical redirect is a no-op but keep the plan
+        # duplicate-free so the backend never sees two edits for one edge.
+        _existing = {
+            (type(m).__name__, int(m.from_serial), int(m.old_target), int(m.new_target))
+            for m in mods
+            if isinstance(m, (RedirectGoto, RedirectBranch))
+        }
+        for m in cond_redirects:
+            key = (type(m).__name__, int(m.from_serial), int(m.old_target), int(m.new_target))
+            if key not in _existing:
+                mods = list(mods) + [m]
+                _existing.add(key)
+    # Loop-guard exit (ticket d81-c733): a ``while(state != K)`` flattener with no
+    # dispatcher default routes its terminal through the guard's exit arm.  Wire
+    # the sentinel-writing handler to that exit corridor so severing the
+    # dispatcher back-edges does not orphan the function's return.
+    exit_redirects = build_loop_guard_exit_redirects(
+        flow_graph, dispatcher, handler_transitions,
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
+    )
+    if exit_redirects:
+        mods = list(mods) + exit_redirects
     plan = compile_patch_plan(list(mods), flow_graph)
     if terminal_carrier_convergence:
         plan = plan.with_metadata(
