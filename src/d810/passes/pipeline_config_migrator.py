@@ -69,6 +69,7 @@ _BLOCK_RULE_PASS_IDS = {
     "IndirectCallResolver": "indirect-call-resolver",
     "MbaStatePreconditioner": "mba-state-preconditioner",
     "JumpFixer": "jump-fixer",
+    "SingleTripLoopPeel": "single-trip-loop-peel",
 }
 _SUPPORTED_BLOCK_RULE_ADAPTERS = {
     rule_name: LegacyBlockRuleAdapterBoundary(

@@ -9,6 +9,29 @@
     },
     "pipeline_v2": [
       {
+        "pass": "single-trip-loop-peel",
+        "scope": "block",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "legacy_flow_rule_adapter"
+          ]
+        },
+        "migration": {
+          "source_config": "bogus_loops.json",
+          "source_section": "blk_rules",
+          "source_rule": "SingleTripLoopPeel"
+        },
+        "options": {
+          "legacy_rule": "SingleTripLoopPeel"
+        }
+      },
+      {
         "pass": "mba-state-preconditioner",
         "scope": "block",
         "maturity": {

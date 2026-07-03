@@ -156,9 +156,9 @@ _REMAINING_GENERATED_SHADOWS = (
     (
         "bogus_loops",
         0,
-        ["MbaStatePreconditioner", "JumpFixer"],
-        ["mba-state-preconditioner", "jump-fixer"],
-        "mba-state-preconditioner",
+        ["SingleTripLoopPeel", "MbaStatePreconditioner", "JumpFixer"],
+        ["single-trip-loop-peel", "mba-state-preconditioner", "jump-fixer"],
+        "single-trip-loop-peel",
     ),
     (
         "default_unflattening_approov",

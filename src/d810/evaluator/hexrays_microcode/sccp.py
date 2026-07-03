@@ -4,8 +4,14 @@ Gold-standard compiler constant propagation combining a constant lattice
 with CFG reachability analysis.  Uses IDA's DU chains (``mba.get_du``)
 for SSA-like use-def information.
 
-**Status: DORMANT** -- not wired into the emulator or any pass.  Created
-as a complete solver for future activation.
+**Status: WIRED (constant overlay).** ``run_sccp`` feeds a *constant* overlay
+into the forward-const-prop pass, the emulator, the dynamic-state-write and
+definition-rescue backends, and the bad-while-loop diagnostic -- every one of
+those consumes only the ``{mop_key: const}`` dict.  The *conditional* half of
+SCCP (which CFG edges are executable) is computed internally but was historically
+discarded at the return.  :func:`run_sccp_ex` now surfaces it as an
+:class:`SccpResult` so callers can ask whether a loop back-edge is unreachable
+(a proven single-trip loop -> peelable).
 
 The lattice is: ``BOTTOM`` (unknown) < ``Const(v, sz)`` < ``TOP`` (overdefined).
 Two worklists drive the analysis:
@@ -22,10 +28,11 @@ References:
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from dataclasses import dataclass
 
 from d810.ir.lattice import BOTTOM, TOP, Const, LatticeValue, lattice_meet
 from d810.core.logging import getLogger
-from d810.core.typing import Any
+from d810.core.typing import Any, Iterable
 
 logger = getLogger(__name__)
 
@@ -36,6 +43,62 @@ logger = getLogger(__name__)
 LatticeVal = LatticeValue
 MopKey = tuple  # from get_mop_key
 CfgEdge = tuple[int, int]  # (from_serial, to_serial)
+
+
+# ---------------------------------------------------------------------------
+# Rich result (constants + conditional reachability)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SccpResult:
+    """Full output of :func:`run_sccp_ex`.
+
+    ``run_sccp`` returns only :attr:`constants` for backward compatibility;
+    this bundles the *conditional* reachability the solver computes internally.
+
+    Attributes:
+        constants: ``{mop_key: int | None}`` -- the historical ``run_sccp``
+            payload (``None`` for ``TOP``/``BOTTOM`` variables).
+        executable_edges: CFG edges ``(from_serial, to_serial)`` proven
+            reachable by the conditional solver.  The virtual entry-seed edge
+            is excluded.  An edge out of a reachable block that is *absent*
+            here was proven dead.
+        reachable_blocks: serials of blocks with >=1 executable in-edge.
+    """
+
+    constants: dict[MopKey, int | None]
+    executable_edges: frozenset[CfgEdge]
+    reachable_blocks: frozenset[int]
+
+    @classmethod
+    def empty(cls) -> "SccpResult":
+        return cls(
+            constants={},
+            executable_edges=frozenset(),
+            reachable_blocks=frozenset(),
+        )
+
+    def is_edge_executable(self, src: int, dst: int) -> bool:
+        return (src, dst) in self.executable_edges
+
+    def is_edge_dead(self, src: int, dst: int) -> bool:
+        """True iff SCCP *proved* edge ``(src, dst)`` unreachable.
+
+        Requires ``src`` itself to be reachable -- an edge out of an
+        unreached block is "not proven live", which is not the same as a
+        proven-dead branch and must never license a peel.
+        """
+        return src in self.reachable_blocks and (src, dst) not in self.executable_edges
+
+    def dead_edges_among(self, edges: Iterable[CfgEdge]) -> frozenset[CfgEdge]:
+        """Subset of *edges* that SCCP proved unreachable (source reachable)."""
+        return frozenset(
+            (int(u), int(v))
+            for (u, v) in edges
+            if int(u) in self.reachable_blocks
+            and (int(u), int(v)) not in self.executable_edges
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -91,11 +154,45 @@ def _init_opcode_sets(hx: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
+def run_sccp_ex(mba: object) -> "SccpResult | None":
+    """Run SCCP and return constants **and** conditional reachability.
+
+    Unlike :func:`run_sccp` (which returns only the constant dict for
+    backward compatibility), this exposes the executable-edge set the solver
+    computes internally.  A loop back-edge that is absent from
+    :attr:`SccpResult.executable_edges` (with its source block reachable) was
+    proven unreachable -- the loop runs a single time and is safe to peel.
+
+    Args:
+        mba: An ``ida_hexrays.mba_t`` instance (typed as ``object`` to avoid
+            a hard import dependency on IDA at module level).
+
+    Returns:
+        An :class:`SccpResult`, or ``None`` if IDA is unavailable or the
+        solver raised.
+    """
+    try:
+        import ida_hexrays  # noqa: F811
+    except ImportError:
+        return None
+
+    try:
+        return _run_sccp_impl(mba, ida_hexrays)
+    except Exception as exc:
+        logger.warning("sccp: top-level failure: %s", exc)
+        return None
+
+
 def run_sccp(mba: object) -> dict[tuple, int | None]:
     """Run Sparse Conditional Constant Propagation on the MBA.
 
     Returns mapping from ``mop_key`` to constant value, or ``None`` for
     variables that are ``TOP`` (overdefined) or ``BOTTOM`` (unresolved).
+
+    Thin wrapper over :func:`run_sccp_ex` that returns only the constant
+    lattice, preserving the historical dict contract for existing callers
+    (forward-const-prop, the emulator, the state-write / definition-rescue
+    backends, and the bad-while-loop diagnostic).
 
     Args:
         mba: An ``ida_hexrays.mba_t`` instance (typed as ``object`` to
@@ -103,18 +200,10 @@ def run_sccp(mba: object) -> dict[tuple, int | None]:
 
     Returns:
         ``{mop_key: int | None}`` -- constant for resolved variables,
-        ``None`` for overdefined / unresolved.
+        ``None`` for overdefined / unresolved.  Empty dict on failure.
     """
-    try:
-        import ida_hexrays  # noqa: F811
-    except ImportError:
-        return {}
-
-    try:
-        return _run_sccp_impl(mba, ida_hexrays)
-    except Exception as exc:
-        logger.warning("sccp: top-level failure: %s", exc)
-        return {}
+    result = run_sccp_ex(mba)
+    return result.constants if result is not None else {}
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +214,7 @@ def run_sccp(mba: object) -> dict[tuple, int | None]:
 def _run_sccp_impl(
     mba: object,
     hx: Any,
-) -> dict[tuple, int | None]:
+) -> "SccpResult":
     """Core SCCP implementation.
 
     1. Initialize: all variables = BOTTOM, entry block edges executable.
@@ -155,7 +244,7 @@ def _run_sccp_impl(
     qty: int = mba.qty  # type: ignore[attr-defined]
     if qty > _MAX_BLOCKS:
         logger.info("sccp: skipping (%d blocks > %d limit)", qty, _MAX_BLOCKS)
-        return {}
+        return SccpResult.empty()
 
     max_iterations = qty * 10
 
@@ -174,7 +263,7 @@ def _run_sccp_impl(
     # Entry block (serial 0) is always executable.
     entry_blk = mba.get_mblock(0)  # type: ignore[attr-defined]
     if entry_blk is None:
-        return {}
+        return SccpResult.empty()
 
     # Seed: a virtual edge (-1, 0) to mark the entry block reachable.
     cfg_wl.append((-1, 0))
@@ -628,13 +717,18 @@ def _run_sccp_impl(
         logger.info("sccp: hit iteration limit (%d)", max_iterations)
 
     # ------------------------------------------------------------------ extract
-    result: dict[tuple, int | None] = {}
+    constants: dict[tuple, int | None] = {}
     for key, lv in lattice.items():
-        if isinstance(lv, Const):
-            result[key] = lv.value
-        else:
-            result[key] = None
-    return result
+        constants[key] = lv.value if isinstance(lv, Const) else None
+
+    # Drop the virtual entry-seed edge (-1, 0); expose only real CFG edges.
+    real_edges = frozenset((u, v) for (u, v) in executable if u >= 0)
+
+    return SccpResult(
+        constants=constants,
+        executable_edges=real_edges,
+        reachable_blocks=frozenset(block_visited),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -764,5 +858,7 @@ __all__ = [
     "LatticeVal",
     "MopKey",
     "CfgEdge",
+    "SccpResult",
     "run_sccp",
+    "run_sccp_ex",
 ]

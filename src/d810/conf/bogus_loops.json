@@ -3,6 +3,11 @@
     "ins_rules": [],
     "blk_rules": [
         {
+            "name": "SingleTripLoopPeel",
+            "is_activated": true,
+            "config": {}
+        },
+        {
             "name": "MbaStatePreconditioner",
             "is_activated": true,
             "config": {
