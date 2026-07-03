@@ -479,6 +479,8 @@ runtime path by default:
   `default_unflattening_ollvm_config_v2_canary.json`.
 - `default_indirect_resolution.json` routes to
   `default_indirect_resolution_config_v2_canary.json`.
+- `default_unflattening_tigress_indirect.json` routes to
+  `default_unflattening_tigress_indirect_config_v2_canary.json`.
 
 The cleanup-family adapter
 (`example_libobfuscated_no_fixprecedessor.json`) remains an opt-in-selectable

@@ -119,7 +119,7 @@
   ],
   "parity_evidence": {
     "docker_log": ".tmp/logs/config-v2-ollvm-opt-in-rollout-v3-parity.log",
-    "summary": "37 passed, 1 skipped, 2592 deselected, 117 warnings",
+    "summary": "39 passed, 1 skipped, 2590 deselected, 117 warnings",
     "rows": [
       {
         "id": "default_instruction_only_mba",
@@ -438,6 +438,23 @@
         "ast_stats_match": true,
         "stable_diag_parity": true,
         "allowed_diag_drift": []
+      },
+      {
+        "id": "tigress_indirect_spine",
+        "legacy_config": "default_unflattening_tigress_indirect.json",
+        "shadow_config": "default_unflattening_tigress_indirect.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
+      },
+      {
+        "id": "tigress_indirect_config_v2_canary_spine",
+        "legacy_config": "default_unflattening_tigress_indirect.json",
+        "runtime_config": "default_unflattening_tigress_indirect_config_v2_canary.json",
+        "shadow_config": "default_unflattening_tigress_indirect.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
       }
     ]
   },
@@ -577,6 +594,14 @@
       "source_shadow": "example_hodur.pipeline_v2.json",
       "representative_row": "example_hodur_config_v2_canary_mixed_spine",
       "runtime_mode": "config-v2"
+    },
+    {
+      "id": "default_unflattening_tigress_indirect_config_v2_canary",
+      "config": "default_unflattening_tigress_indirect_config_v2_canary.json",
+      "source_config": "default_unflattening_tigress_indirect.json",
+      "source_shadow": "default_unflattening_tigress_indirect.pipeline_v2.json",
+      "representative_row": "tigress_indirect_config_v2_canary_spine",
+      "runtime_mode": "config-v2"
     }
   ],
   "opt_in_rollout": {
@@ -605,6 +630,17 @@
         "normal_project_config_loading_path": true,
         "lanes": [
           "native_state_machine_spine"
+        ]
+      },
+      {
+        "config": "default_unflattening_tigress_indirect_config_v2_canary.json",
+        "source_config": "default_unflattening_tigress_indirect.json",
+        "source_shadow": "default_unflattening_tigress_indirect.pipeline_v2.json",
+        "parity_row": "tigress_indirect_config_v2_canary_spine",
+        "normal_project_config_loading_path": true,
+        "lanes": [
+          "native_state_machine_spine",
+          "mixed_spine_simple_flow_rule"
         ]
       },
       {
@@ -1000,6 +1036,20 @@
           "indirect-branch-resolver",
           "indirect-call-resolver"
         ]
+      },
+      {
+        "source_config": "default_unflattening_tigress_indirect.json",
+        "runtime_config": "default_unflattening_tigress_indirect_config_v2_canary.json",
+        "parity_row": "tigress_indirect_config_v2_canary_spine",
+        "expected_pass_ids": [
+          "mba-simplify",
+          "recover_dispatcher",
+          "recover_state_transitions",
+          "plan_semantic_regions",
+          "lower_state_machine",
+          "cleanup_residual_dispatcher",
+          "jump-fixer"
+        ]
       }
     ],
     "user_override_policy": "A user ProjectConfiguration named like a supported source or canary config is not trusted for default routing unless it independently opts into explicit pipeline_v2_mode=config-v2 and passes existing fail-closed config-v2 validation.",
@@ -1260,6 +1310,20 @@
         "expected_pass_ids": [
           "indirect-branch-resolver",
           "indirect-call-resolver"
+        ]
+      },
+      {
+        "source_config": "default_unflattening_tigress_indirect.json",
+        "runtime_config": "default_unflattening_tigress_indirect_config_v2_canary.json",
+        "parity_row": "tigress_indirect_config_v2_canary_spine",
+        "expected_pass_ids": [
+          "mba-simplify",
+          "recover_dispatcher",
+          "recover_state_transitions",
+          "plan_semantic_regions",
+          "lower_state_machine",
+          "cleanup_residual_dispatcher",
+          "jump-fixer"
         ]
       }
     ],
