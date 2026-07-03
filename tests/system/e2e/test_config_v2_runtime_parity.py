@@ -410,6 +410,95 @@ _PARITY_ROWS = (
     ),
     pytest.param(
         ConfigV2ParityRow(
+            row_id="default_branch",
+            legacy_config="default.json",
+            shadow_config="default.pipeline_v2.json",
+            function_name="indirect_jump_table_xor",
+            expected_pass_ids=(
+                "indirect-branch-resolver",
+                "indirect-call-resolver",
+            ),
+            expects_state_machine=False,
+            required_snapshot_label=None,
+        ),
+        id="default_branch",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="default_call",
+            legacy_config="default.json",
+            shadow_config="default.pipeline_v2.json",
+            function_name="indirect_call_hikari_mov_sub",
+            expected_pass_ids=(
+                "indirect-branch-resolver",
+                "indirect-call-resolver",
+            ),
+            expects_state_machine=False,
+            required_snapshot_label=None,
+        ),
+        id="default_call",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="bogus_loops_single_trip",
+            legacy_config="bogus_loops.json",
+            shadow_config="bogus_loops.pipeline_v2.json",
+            function_name="bogus_loops",
+            expected_pass_ids=(
+                "single-trip-loop-peel",
+                "mba-state-preconditioner",
+                "jump-fixer",
+            ),
+            expects_state_machine=False,
+            required_snapshot_label=None,
+        ),
+        id="bogus_loops_single_trip",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="default_config_v2_canary_branch",
+            legacy_config="default.json",
+            shadow_config="default.pipeline_v2.json",
+            runtime_config="default_config_v2_canary.json",
+            function_name="indirect_jump_table_xor",
+            expected_pass_ids=("indirect-branch-resolver", "indirect-call-resolver"),
+            expects_state_machine=False,
+            required_snapshot_label=None,
+        ),
+        id="default_config_v2_canary_branch",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="default_config_v2_canary_call",
+            legacy_config="default.json",
+            shadow_config="default.pipeline_v2.json",
+            runtime_config="default_config_v2_canary.json",
+            function_name="indirect_call_hikari_mov_sub",
+            expected_pass_ids=("indirect-branch-resolver", "indirect-call-resolver"),
+            expects_state_machine=False,
+            required_snapshot_label=None,
+        ),
+        id="default_config_v2_canary_call",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="bogus_loops_config_v2_canary_single_trip",
+            legacy_config="bogus_loops.json",
+            shadow_config="bogus_loops.pipeline_v2.json",
+            runtime_config="bogus_loops_config_v2_canary.json",
+            function_name="bogus_loops",
+            expected_pass_ids=(
+                "single-trip-loop-peel",
+                "mba-state-preconditioner",
+                "jump-fixer",
+            ),
+            expects_state_machine=False,
+            required_snapshot_label=None,
+        ),
+        id="bogus_loops_config_v2_canary_single_trip",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
             row_id="default_indirect_resolution_branch_call_config_v2_canary_branch",
             legacy_config="default_indirect_resolution.json",
             shadow_config="default_indirect_resolution.pipeline_v2.json",

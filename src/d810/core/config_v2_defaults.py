@@ -277,6 +277,36 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
             "jump-fixer",
         ),
     ),
+    ConfigV2DefaultMapping(
+        source_config="default.json",
+        runtime_config="default_config_v2_canary.json",
+        parity_row="default_config_v2_canary_branch",
+        expected_pass_ids=(
+            "indirect-branch-resolver",
+            "indirect-call-resolver",
+        ),
+    ),
+    ConfigV2DefaultMapping(
+        source_config="example_libobfuscated_no_fixprecedessor.json",
+        runtime_config="example_libobfuscated_no_fixprecedessor_config_v2_canary.json",
+        parity_row="example_libobfuscated_no_fixprecedessor_config_v2_canary_cleanup",
+        expected_pass_ids=(
+            "mba-simplify",
+            "forward-constant-propagation",
+            "simple-flattening-cleanup-unflattener",
+            "jump-fixer",
+        ),
+    ),
+    ConfigV2DefaultMapping(
+        source_config="bogus_loops.json",
+        runtime_config="bogus_loops_config_v2_canary.json",
+        parity_row="bogus_loops_config_v2_canary_single_trip",
+        expected_pass_ids=(
+            "single-trip-loop-peel",
+            "mba-state-preconditioner",
+            "jump-fixer",
+        ),
+    ),
 )
 
 _MAPPINGS_BY_SOURCE = {

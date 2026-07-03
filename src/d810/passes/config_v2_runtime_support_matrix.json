@@ -115,11 +115,22 @@
         "simple-flattening-cleanup-unflattener",
         "jump-fixer"
       ]
+    },
+    {
+      "id": "single_trip_loop_peel_flow_rule",
+      "description": "Single-trip loop-peel legacy flow-rule hook lane (Z3-proven single-iteration loop peel + preconditioner + jump-fixer)",
+      "representative_row": "bogus_loops_single_trip",
+      "representative_shadow": "bogus_loops.pipeline_v2.json",
+      "pass_ids": [
+        "single-trip-loop-peel",
+        "mba-state-preconditioner",
+        "jump-fixer"
+      ]
     }
   ],
   "parity_evidence": {
     "docker_log": ".tmp/logs/config-v2-ollvm-opt-in-rollout-v3-parity.log",
-    "summary": "39 passed, 1 skipped, 2590 deselected, 117 warnings",
+    "summary": "45 passed, 1 skipped, 2595 deselected, 117 warnings",
     "rows": [
       {
         "id": "default_instruction_only_mba",
@@ -455,6 +466,57 @@
         "ast_stats_match": true,
         "stable_diag_parity": true,
         "allowed_diag_drift": []
+      },
+      {
+        "id": "default_branch",
+        "legacy_config": "default.json",
+        "shadow_config": "default.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
+      },
+      {
+        "id": "default_call",
+        "legacy_config": "default.json",
+        "shadow_config": "default.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
+      },
+      {
+        "id": "default_config_v2_canary_branch",
+        "legacy_config": "default.json",
+        "shadow_config": "default.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": [],
+        "runtime_config": "default_config_v2_canary.json"
+      },
+      {
+        "id": "default_config_v2_canary_call",
+        "legacy_config": "default.json",
+        "shadow_config": "default.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": [],
+        "runtime_config": "default_config_v2_canary.json"
+      },
+      {
+        "id": "bogus_loops_single_trip",
+        "legacy_config": "bogus_loops.json",
+        "shadow_config": "bogus_loops.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": []
+      },
+      {
+        "id": "bogus_loops_config_v2_canary_single_trip",
+        "legacy_config": "bogus_loops.json",
+        "shadow_config": "bogus_loops.pipeline_v2.json",
+        "ast_stats_match": true,
+        "stable_diag_parity": true,
+        "allowed_diag_drift": [],
+        "runtime_config": "bogus_loops_config_v2_canary.json"
       }
     ]
   },
@@ -601,6 +663,22 @@
       "source_config": "default_unflattening_tigress_indirect.json",
       "source_shadow": "default_unflattening_tigress_indirect.pipeline_v2.json",
       "representative_row": "tigress_indirect_config_v2_canary_spine",
+      "runtime_mode": "config-v2"
+    },
+    {
+      "id": "default_config_v2_canary",
+      "config": "default_config_v2_canary.json",
+      "source_config": "default.json",
+      "source_shadow": "default.pipeline_v2.json",
+      "representative_row": "default_config_v2_canary_branch",
+      "runtime_mode": "config-v2"
+    },
+    {
+      "id": "bogus_loops_config_v2_canary",
+      "config": "bogus_loops_config_v2_canary.json",
+      "source_config": "bogus_loops.json",
+      "source_shadow": "bogus_loops.pipeline_v2.json",
+      "representative_row": "bogus_loops_config_v2_canary_single_trip",
       "runtime_mode": "config-v2"
     }
   ],
@@ -799,6 +877,26 @@
         "lanes": [
           "native_state_machine_spine",
           "mixed_spine_instruction_simple_flow_rule"
+        ]
+      },
+      {
+        "config": "default_config_v2_canary.json",
+        "source_config": "default.json",
+        "source_shadow": "default.pipeline_v2.json",
+        "parity_row": "default_config_v2_canary_branch",
+        "normal_project_config_loading_path": true,
+        "lanes": [
+          "indirect_branch_call_flow_rule"
+        ]
+      },
+      {
+        "config": "bogus_loops_config_v2_canary.json",
+        "source_config": "bogus_loops.json",
+        "source_shadow": "bogus_loops.pipeline_v2.json",
+        "parity_row": "bogus_loops_config_v2_canary_single_trip",
+        "normal_project_config_loading_path": true,
+        "lanes": [
+          "single_trip_loop_peel_flow_rule"
         ]
       }
     ],
@@ -1048,6 +1146,36 @@
           "plan_semantic_regions",
           "lower_state_machine",
           "cleanup_residual_dispatcher",
+          "jump-fixer"
+        ]
+      },
+      {
+        "source_config": "default.json",
+        "runtime_config": "default_config_v2_canary.json",
+        "parity_row": "default_config_v2_canary_branch",
+        "expected_pass_ids": [
+          "indirect-branch-resolver",
+          "indirect-call-resolver"
+        ]
+      },
+      {
+        "source_config": "example_libobfuscated_no_fixprecedessor.json",
+        "runtime_config": "example_libobfuscated_no_fixprecedessor_config_v2_canary.json",
+        "parity_row": "example_libobfuscated_no_fixprecedessor_config_v2_canary_cleanup",
+        "expected_pass_ids": [
+          "mba-simplify",
+          "forward-constant-propagation",
+          "simple-flattening-cleanup-unflattener",
+          "jump-fixer"
+        ]
+      },
+      {
+        "source_config": "bogus_loops.json",
+        "runtime_config": "bogus_loops_config_v2_canary.json",
+        "parity_row": "bogus_loops_config_v2_canary_single_trip",
+        "expected_pass_ids": [
+          "single-trip-loop-peel",
+          "mba-state-preconditioner",
           "jump-fixer"
         ]
       }
@@ -1325,6 +1453,36 @@
           "cleanup_residual_dispatcher",
           "jump-fixer"
         ]
+      },
+      {
+        "source_config": "default.json",
+        "runtime_config": "default_config_v2_canary.json",
+        "parity_row": "default_config_v2_canary_branch",
+        "expected_pass_ids": [
+          "indirect-branch-resolver",
+          "indirect-call-resolver"
+        ]
+      },
+      {
+        "source_config": "example_libobfuscated_no_fixprecedessor.json",
+        "runtime_config": "example_libobfuscated_no_fixprecedessor_config_v2_canary.json",
+        "parity_row": "example_libobfuscated_no_fixprecedessor_config_v2_canary_cleanup",
+        "expected_pass_ids": [
+          "mba-simplify",
+          "forward-constant-propagation",
+          "simple-flattening-cleanup-unflattener",
+          "jump-fixer"
+        ]
+      },
+      {
+        "source_config": "bogus_loops.json",
+        "runtime_config": "bogus_loops_config_v2_canary.json",
+        "parity_row": "bogus_loops_config_v2_canary_single_trip",
+        "expected_pass_ids": [
+          "single-trip-loop-peel",
+          "mba-state-preconditioner",
+          "jump-fixer"
+        ]
       }
     ],
     "unsupported_policy": "Any project config outside supported_mappings fails closed when the switch is enabled; the switch does not imply default routing for non-default-routed generated shadows or future unsupported adapter boundaries."
@@ -1368,7 +1526,6 @@
   "unsupported_adapter_boundaries": [],
   "non_goals": [
     "no unsupported runtime cutover",
-    "no cleanup-family default routing or canary rollout",
     "no fake pass registration",
     "no LLVM M3/M4/lower-back/drop work"
   ],

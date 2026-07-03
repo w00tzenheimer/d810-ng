@@ -113,9 +113,10 @@ def test_user_canary_basename_gets_no_default_trust(tmp_path, mapping):
 
 
 def test_unsupported_config_does_not_route_by_default():
-    # ollvm_s1a_fair stays fenced (no canary/mapping) even though the primary
-    # OLLVM config is now default-routed (d81-xkw8 fence lift).
-    source = _project("default_unflattening_ollvm_s1a_fair.json")
+    # example_libobfuscated stays unrouted -- blocked on BlockLevelEgglogOptimizer
+    # (a generated_shadows operational_exception); it is the only config not
+    # default-routed after the d81-69va fence lift.
+    source = _project("example_libobfuscated.json")
 
     assert select_config_v2_default_project(source) is None
 
