@@ -49,7 +49,6 @@ _RUNTIME_PARITY_TEST = _REPO_ROOT / "tests" / "system" / "e2e" / (
 _CI_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "python.yml"
 _OLLVM_CONFIGS = (
     "default_unflattening_ollvm",
-    "default_unflattening_ollvm_s1a_fair",
 )
 _CONFIG_V2_CANARY_CONFIGS = (
     "default_instruction_only_config_v2_canary",
@@ -77,7 +76,6 @@ _GENERATED_SHADOW_CONFIGS = (
     "default_indirect_resolution",
     "default_instruction_only",
     "default_unflattening_ollvm",
-    "default_unflattening_ollvm_s1a_fair",
     "default_unflattening_approov",
     "default_unflattening_approov_s1a",
     "default_unflattening_tigress_engine",
@@ -105,11 +103,6 @@ _REMAINING_GENERATED_SHADOWS = (
     ),
     (
         "default_unflattening_ollvm",
-        180,
-        _OLLVM_BLOCK_RULES,
-    ),
-    (
-        "default_unflattening_ollvm_s1a_fair",
         180,
         _OLLVM_BLOCK_RULES,
     ),
@@ -718,7 +711,7 @@ def test_checked_in_pipeline_v2_shadows_are_not_empty_pipeline_payloads():
 def test_repo_legacy_config_inventory_reports_current_state():
     inventory = _inventory_by_name()
 
-    assert len(inventory) == 22
+    assert len(inventory) == 21
     assert [
         item.config_name
         for item in inventory.values()
@@ -739,7 +732,6 @@ def test_repo_legacy_config_inventory_reports_current_state():
         "default_indirect_resolution.json",
         "default_instruction_only.json",
         "default_unflattening_ollvm.json",
-        "default_unflattening_ollvm_s1a_fair.json",
         "default_unflattening_approov.json",
         "default_unflattening_approov_s1a.json",
         "default_unflattening_tigress_engine.json",
@@ -790,9 +782,6 @@ def test_repo_inventory_surfaces_unsupported_reasons():
         LegacyConfigMigrationStatus.MIGRATABLE
     )
     assert inventory["default_unflattening_ollvm.json"].status is (
-        LegacyConfigMigrationStatus.MIGRATABLE
-    )
-    assert inventory["default_unflattening_ollvm_s1a_fair.json"].status is (
         LegacyConfigMigrationStatus.MIGRATABLE
     )
     assert inventory["example_libobfuscated_no_fixprecedessor.json"].status is (
@@ -856,7 +845,6 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "example_libobfuscated_no_fixprecedessor_cleanup",
         "default_unflattening_ollvm_generated_shadow",
         "default_unflattening_ollvm_config_v2_canary",
-        "default_unflattening_ollvm_s1a_fair_generated_shadow",
         "hodur_glbopt2_only_config_v2_canary_spine",
         "eidolon_config_v2_canary_mba_instruction_heavy",
         "approov_config_v2_canary_mixed_spine_flow",
@@ -967,14 +955,6 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "legacy_config": "default_unflattening_ollvm.json",
         "runtime_config": "default_unflattening_ollvm_config_v2_canary.json",
         "shadow_config": "default_unflattening_ollvm.pipeline_v2.json",
-        "ast_stats_match": True,
-        "stable_diag_parity": True,
-        "allowed_diag_drift": [],
-    }
-    assert parity_rows["default_unflattening_ollvm_s1a_fair_generated_shadow"] == {
-        "id": "default_unflattening_ollvm_s1a_fair_generated_shadow",
-        "legacy_config": "default_unflattening_ollvm_s1a_fair.json",
-        "shadow_config": "default_unflattening_ollvm_s1a_fair.pipeline_v2.json",
         "ast_stats_match": True,
         "stable_diag_parity": True,
         "allowed_diag_drift": [],
@@ -1895,17 +1875,11 @@ def test_ollvm_canary_rollout_single_canary_primary_routed_s1a_fair_fenced():
     for config_name in _OLLVM_CONFIGS:
         assert (_CONF_DIR / f"{config_name}.pipeline_v2.json").exists()
     # Fence lifted (d81-xkw8): the primary OLLVM config is default-routed off its
-    # proven canary. The s1a_fair variant stays out (d81-69va): its config-v2
-    # canary trips the SAME-SESSION flaky diag compare (stable_diag_counts drift)
-    # while its SHADOW parity is green -- a harness artifact like example_hodur,
-    # not a semantic divergence, so it is not routed.
+    # proven canary. The s1a_fair benchmark variant (llr-m2ul) was removed as
+    # unneeded (d81-69va); only the primary OLLVM config remains.
     assert "default_unflattening_ollvm.json" in default_sources
-    assert "default_unflattening_ollvm_s1a_fair.json" not in default_sources
-
     assert "default_unflattening_ollvm.json" in canary_sources
-    assert "default_unflattening_ollvm_s1a_fair.json" not in canary_sources
     assert "default_unflattening_ollvm_config_v2_canary.json" in canary_configs
-    assert not (_CONF_DIR / "default_unflattening_ollvm_s1a_fair_config_v2_canary.json").exists()
 
     canary = canary_configs["default_unflattening_ollvm_config_v2_canary.json"]
     assert canary == {
