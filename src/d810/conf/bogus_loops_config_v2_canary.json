@@ -1,0 +1,103 @@
+{
+  "description": "Config-v2 explicit opt-in canary for bogus_loops.json. The existing project configuration path remains the default runtime; this project is selectable only when explicit config-v2 mode is desired.",
+  "ins_rules": [],
+  "blk_rules": [],
+  "additional_configuration": {
+    "pipeline_v2_mode": "config-v2",
+    "config_v2_canary": {
+      "source_config": "bogus_loops.json",
+      "source_shadow": "bogus_loops.pipeline_v2.json",
+      "representative_row": "bogus_loops_config_v2_canary_single_trip",
+      "runtime_source": "pipeline_v2"
+    },
+    "pipeline_v2": [
+      {
+        "pass": "single-trip-loop-peel",
+        "scope": "block",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "legacy_flow_rule_adapter"
+          ]
+        },
+        "migration": {
+          "source_config": "bogus_loops.json",
+          "source_section": "blk_rules",
+          "source_rule": "SingleTripLoopPeel"
+        },
+        "options": {
+          "legacy_rule": "SingleTripLoopPeel"
+        }
+      },
+      {
+        "pass": "mba-state-preconditioner",
+        "scope": "block",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "legacy_flow_rule_adapter"
+          ]
+        },
+        "migration": {
+          "source_config": "bogus_loops.json",
+          "source_section": "blk_rules",
+          "source_rule": "MbaStatePreconditioner"
+        },
+        "options": {
+          "legacy_rule": "MbaStatePreconditioner",
+          "max_optimize_local_rounds": 1
+        }
+      },
+      {
+        "pass": "jump-fixer",
+        "scope": "block",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "legacy_flow_rule_adapter"
+          ]
+        },
+        "migration": {
+          "source_config": "bogus_loops.json",
+          "source_section": "blk_rules",
+          "source_rule": "JumpFixer"
+        },
+        "options": {
+          "legacy_rule": "JumpFixer",
+          "enabled_rules": [
+            "CompareConstantRule1",
+            "CompareConstantRule2",
+            "CompareConstantRule3",
+            "JaeRule1",
+            "JbRule1",
+            "JnzRule1",
+            "JnzRule2",
+            "JnzRule3",
+            "JnzRule4",
+            "JnzRule5",
+            "JnzRule6",
+            "JnzRule7",
+            "JnzRule8",
+            "JmpRuleZ3Const"
+          ],
+          "dump_intermediate_microcode": false
+        }
+      }
+    ]
+  }
+}

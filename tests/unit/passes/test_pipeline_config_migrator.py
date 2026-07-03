@@ -837,6 +837,12 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "tigress_engine_config_v2_canary_spine",
         "tigress_indirect_spine",
         "tigress_indirect_config_v2_canary_spine",
+        "default_branch",
+        "default_call",
+        "default_config_v2_canary_branch",
+        "default_config_v2_canary_call",
+        "bogus_loops_single_trip",
+        "bogus_loops_config_v2_canary_single_trip",
         "approov_mixed_spine_flow",
         "approov_s1a_mixed_spine_flow",
         "hodur_glbopt2_only_spine",
@@ -1006,6 +1012,22 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
             "source_config": "default_unflattening_tigress_indirect.json",
             "source_shadow": "default_unflattening_tigress_indirect.pipeline_v2.json",
             "representative_row": "tigress_indirect_config_v2_canary_spine",
+            "runtime_mode": "config-v2",
+        },
+        "default_config_v2_canary.json": {
+            "id": "default_config_v2_canary",
+            "config": "default_config_v2_canary.json",
+            "source_config": "default.json",
+            "source_shadow": "default.pipeline_v2.json",
+            "representative_row": "default_config_v2_canary_branch",
+            "runtime_mode": "config-v2",
+        },
+        "bogus_loops_config_v2_canary.json": {
+            "id": "bogus_loops_config_v2_canary",
+            "config": "bogus_loops_config_v2_canary.json",
+            "source_config": "bogus_loops.json",
+            "source_shadow": "bogus_loops.pipeline_v2.json",
+            "representative_row": "bogus_loops_config_v2_canary_single_trip",
             "runtime_mode": "config-v2",
         },
         "hodur_flag2_config_v2_canary.json": {
@@ -1324,10 +1346,31 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
                 "mixed_spine_instruction_simple_flow_rule",
             ],
         },
+        {
+            "config": "default_config_v2_canary.json",
+            "source_config": "default.json",
+            "source_shadow": "default.pipeline_v2.json",
+            "parity_row": "default_config_v2_canary_branch",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "indirect_branch_call_flow_rule",
+            ],
+        },
+        {
+            "config": "bogus_loops_config_v2_canary.json",
+            "source_config": "bogus_loops.json",
+            "source_shadow": "bogus_loops.pipeline_v2.json",
+            "parity_row": "bogus_loops_config_v2_canary_single_trip",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "single_trip_loop_peel_flow_rule",
+            ],
+        },
     ]
 
     lane_ids = {lane["id"] for lane in matrix["runtime_lanes"]}
     assert lane_ids == {
+        "single_trip_loop_peel_flow_rule",
         "mba_instruction_hook",
         "native_state_machine_spine",
         "mixed_spine_simple_flow_rule",
@@ -1851,9 +1894,11 @@ def test_ollvm_canary_rollout_single_canary_primary_routed_s1a_fair_fenced():
 
     for config_name in _OLLVM_CONFIGS:
         assert (_CONF_DIR / f"{config_name}.pipeline_v2.json").exists()
-    # Fence lifted (d81-xkw8): the primary OLLVM config is now default-routed
-    # off its proven canary; the s1a_fair variant stays canary-less and
-    # NOT default-routed.
+    # Fence lifted (d81-xkw8): the primary OLLVM config is default-routed off its
+    # proven canary. The s1a_fair variant stays out (d81-69va): its config-v2
+    # canary trips the SAME-SESSION flaky diag compare (stable_diag_counts drift)
+    # while its SHADOW parity is green -- a harness artifact like example_hodur,
+    # not a semantic divergence, so it is not routed.
     assert "default_unflattening_ollvm.json" in default_sources
     assert "default_unflattening_ollvm_s1a_fair.json" not in default_sources
 
