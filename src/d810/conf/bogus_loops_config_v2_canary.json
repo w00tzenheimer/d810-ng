@@ -6,8 +6,6 @@
     "pipeline_v2_mode": "config-v2",
     "config_v2_canary": {
       "source_config": "bogus_loops.json",
-      "source_shadow": "bogus_loops.pipeline_v2.json",
-      "representative_row": "bogus_loops_config_v2_canary_single_trip",
       "runtime_source": "pipeline_v2"
     },
     "pipeline_v2": [

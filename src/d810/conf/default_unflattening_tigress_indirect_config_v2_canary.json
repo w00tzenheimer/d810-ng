@@ -6,8 +6,6 @@
     "pipeline_v2_mode": "config-v2",
     "config_v2_canary": {
       "source_config": "default_unflattening_tigress_indirect.json",
-      "source_shadow": "default_unflattening_tigress_indirect.pipeline_v2.json",
-      "representative_row": "tigress_indirect_config_v2_canary_spine",
       "runtime_source": "pipeline_v2"
     },
     "pipeline_v2": [

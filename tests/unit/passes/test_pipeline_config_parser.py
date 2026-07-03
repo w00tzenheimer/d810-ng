@@ -1,7 +1,6 @@
 """Shadow parsing for optional PipelineConfig v2 project payloads."""
 from __future__ import annotations
 
-import json
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,11 +14,8 @@ from d810.families.state_machine_cff.pipeline import (
     state_machine_pass_registry,
 )
 from d810.passes.contract_vocabulary import ContractVocabularyWarning
-from d810.passes.legacy_flow_rules import LEGACY_FLOW_RULE_ADAPTER_CAPABILITY
 from d810.passes.pass_pipeline import (
     BackendRoute,
-    PassScope,
-    PipelineConfig,
     PipelineConfigError,
 )
 from d810.passes.function_prior_config import (
@@ -51,105 +47,6 @@ _STATE_MACHINE_NATIVE_PIPELINE = [
     "lower_state_machine",
     "cleanup_residual_dispatcher",
 ]
-
-
-def _expand_state_machine_pass_ids(pass_ids):
-    expanded = []
-    for pass_id in pass_ids:
-        if pass_id == "state-machine-cff-unflattener":
-            expanded.extend(_STATE_MACHINE_NATIVE_PIPELINE)
-        else:
-            expanded.append(pass_id)
-    return expanded
-
-
-def _expected_unknown_pass(pass_ids):
-    for pass_id in pass_ids:
-        if pass_id not in _STATE_MACHINE_NATIVE_PIPELINE:
-            return pass_id
-    return None
-
-
-def _unique_active_instruction_rule_names(raw_rules):
-    names = []
-    seen = set()
-    for rule in raw_rules:
-        rule_name = rule["name"]
-        if not rule["is_activated"] or rule_name in seen:
-            continue
-        seen.add(rule_name)
-        names.append(rule_name)
-    return names
-
-
-def _assert_entry_shape(entry):
-    assert "include_groups" not in entry.get("rules", {})
-    assert "exclude_groups" not in entry.get("rules", {})
-    assert "target" not in entry
-    assert "preferred" not in entry.get("maturity", {})
-    assert "preferred" not in entry.get("maturity", {}).get("range", {})
-    if entry.get("migration", {}).get("expansion") == "native_state_machine_spine":
-        assert "safety" in entry
-    else:
-        assert "safety" not in entry
-    assert PipelineConfig.from_dict(entry).to_dict()["pass_id"] == entry["pass"]
-
-
-def _assert_block_configs_preserve_legacy_rules(
-    block_configs,
-    active_block_rules,
-    *,
-    shadow_entries,
-    source_config,
-):
-    cursor = 0
-    for rule in active_block_rules:
-        if rule["name"] == "StateMachineCffUnflattener":
-            config_group = block_configs[
-                cursor: cursor + len(_STATE_MACHINE_NATIVE_PIPELINE)
-            ]
-            entry_group = shadow_entries[
-                cursor: cursor + len(_STATE_MACHINE_NATIVE_PIPELINE)
-            ]
-            assert [config.pass_id for config in config_group] == (
-                _STATE_MACHINE_NATIVE_PIPELINE
-            )
-            for index, (config, entry) in enumerate(zip(config_group, entry_group)):
-                options = dict(config.options)
-                assert options.pop("legacy_rule") == rule["name"]
-                assert options.pop("legacy_rule_options") == rule["config"]
-                assert options.pop("native_pipeline") == _STATE_MACHINE_NATIVE_PIPELINE
-                assert options == {}
-                assert config.contract.scope is PassScope.FUNCTION
-                assert entry["migration"] == {
-                    "source_config": source_config,
-                    "source_section": "blk_rules",
-                    "source_rule": "StateMachineCffUnflattener",
-                    "expansion": "native_state_machine_spine",
-                    "stage_index": index,
-                    "stage_count": len(_STATE_MACHINE_NATIVE_PIPELINE),
-                }
-            cursor += len(_STATE_MACHINE_NATIVE_PIPELINE)
-            continue
-
-        config = block_configs[cursor]
-        entry = shadow_entries[cursor]
-        options = dict(config.options)
-        assert options.pop("legacy_rule") == rule["name"]
-        assert options == rule["config"]
-        assert config.contract.scope is PassScope.BLOCK
-        assert config.contract.requires.capabilities == frozenset(
-            {LEGACY_FLOW_RULE_ADAPTER_CAPABILITY}
-        )
-        assert entry["migration"] == {
-            "source_config": source_config,
-            "source_section": "blk_rules",
-            "source_rule": rule["name"],
-        }
-        cursor += 1
-
-    assert cursor == len(block_configs)
-    assert cursor == len(shadow_entries)
 
 
 _REMAINING_GENERATED_SHADOWS = (
@@ -618,91 +515,11 @@ def test_default_instruction_only_legacy_config_remains_runtime_source():
     assert pipeline_configs_from_project_config(project) == ()
 
 
-def test_default_instruction_only_pipeline_v2_shadow_parses_and_roundtrips():
-    shadow_path = _CONF_DIR / "default_instruction_only.pipeline_v2.json"
-    raw = json.loads(shadow_path.read_text())
-    project = ProjectConfiguration.from_file(shadow_path)
-
-    configs = pipeline_configs_from_project_config(project)
-
-    assert project.ins_rules == []
-    assert project.blk_rules == []
-    assert project.additional_configuration["pipeline_v2_shadow"] == {
-        "source_config": "default_instruction_only.json",
-        "runtime_source": "legacy",
-    }
-    assert [config.pass_id for config in configs] == [
-        "mba-simplify",
-        "global-constant-inliner",
-        "jump-fixer",
-    ]
-    config = configs[0]
-    assert config.pass_id == "mba-simplify"
-    assert config.contract.scope is PassScope.EXPRESSION
-    assert config.contract.maturity.min is IRMaturity.CANONICAL
-    assert config.contract.maturity.max is IRMaturity.GLOBAL_OPTIMIZED
-    assert config.contract.maturity.preferred is None
-    assert config.contract.requires.capabilities == frozenset(
-        {"local_instruction_rewrite", "z3_solver"}
-    )
-    assert config.rules.include_groups == frozenset()
-    assert len(config.rules.include) == 179
-    assert {
-        "FoldReadonlyDataRule",
-        "Add_OllvmRule_1",
-        "Z3ConstantOptimization",
-        "ExampleGuessingRule",
-    } <= config.rules.include
-    assert config.rules.exclude_groups == frozenset()
-    assert config.rules.exclude == frozenset()
-    assert config.rules.options["FoldReadonlyDataRule"] == {
-        "fold_writable_constants": True
-    }
-    assert config.rules.options["Z3ConstantOptimization"] == {
-        "min_nb_opcode": 4,
-        "min_nb_constant": 3,
-    }
-    assert config.rules.options["ExampleGuessingRule"] == {
-        "min_nb_var": 1,
-        "max_nb_var": 3,
-        "min_nb_diff_opcodes": 3,
-        "max_nb_diff_opcodes": 6,
-    }
-    assert PipelineConfig.from_dict(config.to_dict()) == config
-
-    pass_payload = raw["additional_configuration"]["pipeline_v2"][0]
-    assert "include_groups" not in pass_payload["rules"]
-    assert "exclude_groups" not in pass_payload["rules"]
-    assert "target" not in pass_payload
-    assert "safety" not in pass_payload
-    assert "preferred" not in pass_payload["maturity"]
-
-    assert configs[1].pass_id == "global-constant-inliner"
-    assert configs[1].contract.scope is PassScope.BLOCK
-    assert dict(configs[1].options) == {
-        "legacy_rule": "GlobalConstantInliner"
-    }
-    assert configs[2].pass_id == "jump-fixer"
-    assert configs[2].contract.scope is PassScope.BLOCK
-    assert configs[2].options["legacy_rule"] == "JumpFixer"
-    assert "JmpRuleZ3Const" in configs[2].options["enabled_rules"]
-
-
-def test_default_instruction_only_pipeline_v2_shadow_is_not_registry_buildable_yet():
-    shadow = ProjectConfiguration.from_file(
-        _CONF_DIR / "default_instruction_only.pipeline_v2.json"
-    )
-
-    with pytest.raises(UnknownPassIdError, match="mba-simplify"):
-        pass_specs_from_project_config(shadow, state_machine_pass_registry())
-
-
 def test_example_libobfuscated_legacy_config_remains_runtime_source():
     project = ProjectConfiguration.from_file(_CONF_DIR / "example_libobfuscated.json")
 
     assert len([rule for rule in project.ins_rules if rule.is_activated]) == 186
     assert [rule.name for rule in project.blk_rules if rule.is_activated] == [
-        "BlockLevelEgglogOptimizer",
         "GlobalConstantInliner",
         "ForwardConstantPropagationRule",
         "MbaStatePreconditioner",
@@ -711,88 +528,6 @@ def test_example_libobfuscated_legacy_config_remains_runtime_source():
     ]
     assert project.additional_configuration == {"enable_pass_pipeline": True}
     assert pipeline_configs_from_project_config(project) == ()
-
-
-def test_example_libobfuscated_pipeline_v2_shadow_parses_and_roundtrips():
-    legacy_path = _CONF_DIR / "example_libobfuscated.json"
-    shadow_path = _CONF_DIR / "example_libobfuscated.pipeline_v2.json"
-    legacy_raw = json.loads(legacy_path.read_text())
-    shadow_raw = json.loads(shadow_path.read_text())
-    shadow = ProjectConfiguration.from_file(shadow_path)
-
-    legacy_ins_rules = [
-        rule for rule in legacy_raw["ins_rules"] if rule["is_activated"]
-    ]
-    legacy_blk_rules = [
-        rule for rule in legacy_raw["blk_rules"] if rule["is_activated"]
-    ]
-    configs = pipeline_configs_from_project_config(shadow)
-
-    assert shadow.ins_rules == []
-    assert shadow.blk_rules == []
-    assert shadow.additional_configuration["pipeline_v2_shadow"] == {
-        "source_config": "example_libobfuscated.json",
-        "runtime_source": "legacy",
-        "enable_pass_pipeline": True,
-    }
-    assert [config.pass_id for config in configs] == [
-        "mba-simplify",
-        "block-level-egglog-optimizer",
-        "global-constant-inliner",
-        "forward-constant-propagation",
-        "mba-state-preconditioner",
-        *_STATE_MACHINE_NATIVE_PIPELINE,
-        "jump-fixer",
-    ]
-
-    mba_config = configs[0]
-    assert mba_config.contract.scope is PassScope.EXPRESSION
-    assert mba_config.contract.requires.capabilities == frozenset(
-        {"local_instruction_rewrite", "z3_solver"}
-    )
-    assert mba_config.rules.include_groups == frozenset()
-    shadow_rule_names = shadow_raw["additional_configuration"]["pipeline_v2"][0][
-        "rules"
-    ]["include"]
-    assert shadow_rule_names == [rule["name"] for rule in legacy_ins_rules]
-    assert "include_groups" not in shadow_raw["additional_configuration"][
-        "pipeline_v2"
-    ][0]["rules"]
-    assert "exclude_groups" not in shadow_raw["additional_configuration"][
-        "pipeline_v2"
-    ][0]["rules"]
-    assert mba_config.rules.include == frozenset(
-        rule["name"] for rule in legacy_ins_rules
-    )
-    assert mba_config.rules.options == {
-        rule["name"]: rule["config"]
-        for rule in legacy_ins_rules
-        if rule["config"]
-    }
-
-    _assert_block_configs_preserve_legacy_rules(
-        configs[1:],
-        legacy_blk_rules,
-        shadow_entries=shadow_raw["additional_configuration"]["pipeline_v2"][1:],
-        source_config="example_libobfuscated.json",
-    )
-
-    for entry in shadow_raw["additional_configuration"]["pipeline_v2"]:
-        _assert_entry_shape(entry)
-
-    roundtripped_configs = tuple(
-        PipelineConfig.from_dict(config.to_dict()) for config in configs
-    )
-    assert roundtripped_configs == configs
-
-
-def test_example_libobfuscated_pipeline_v2_shadow_is_not_registry_buildable_yet():
-    shadow = ProjectConfiguration.from_file(
-        _CONF_DIR / "example_libobfuscated.pipeline_v2.json"
-    )
-
-    with pytest.raises(UnknownPassIdError, match="mba-simplify"):
-        pass_specs_from_project_config(shadow, state_machine_pass_registry())
 
 
 @pytest.mark.parametrize(
@@ -826,111 +561,12 @@ def test_hodur_legacy_configs_remain_runtime_source(
     assert pipeline_configs_from_project_config(project) == ()
 
 
-@pytest.mark.parametrize(
-    ("config_name", "expected_pass_ids"),
-    [
-        (
-            "hodur_flag2",
-            [*_STATE_MACHINE_NATIVE_PIPELINE, "jump-fixer"],
-        ),
-        (
-            "hodur_flag2_s1a",
-            [*_STATE_MACHINE_NATIVE_PIPELINE, "jump-fixer"],
-        ),
-    ],
-)
-def test_hodur_pipeline_v2_shadows_parse_and_roundtrip(
-    config_name,
-    expected_pass_ids,
-):
-    legacy_path = _CONF_DIR / f"{config_name}.json"
-    shadow_path = _CONF_DIR / f"{config_name}.pipeline_v2.json"
-    legacy_raw = json.loads(legacy_path.read_text())
-    shadow_raw = json.loads(shadow_path.read_text())
-    shadow = ProjectConfiguration.from_file(shadow_path)
-
-    configs = pipeline_configs_from_project_config(shadow)
-    assert shadow.ins_rules == []
-    assert shadow.blk_rules == []
-    assert shadow.additional_configuration["pipeline_v2_shadow"] == {
-        "source_config": f"{config_name}.json",
-        "runtime_source": "legacy",
-    }
-    assert [config.pass_id for config in configs] == expected_pass_ids
-
-    if expected_pass_ids[0] == "mba-simplify":
-        active_instruction_rules = [
-            rule for rule in legacy_raw["ins_rules"] if rule["is_activated"]
-        ]
-        instruction_entry = shadow_raw["additional_configuration"]["pipeline_v2"][0]
-        assert instruction_entry["rules"]["include"] == (
-            _unique_active_instruction_rule_names(active_instruction_rules)
-        )
-        assert "include_groups" not in instruction_entry["rules"]
-        assert "exclude_groups" not in instruction_entry["rules"]
-        assert configs[0].rules.include_groups == frozenset()
-        assert configs[0].rules.include == frozenset(
-            rule["name"] for rule in active_instruction_rules
-        )
-        assert configs[0].rules.options == {
-            rule["name"]: rule["config"]
-            for rule in active_instruction_rules
-            if rule["config"]
-        }
-        block_configs = configs[1:]
-    else:
-        block_configs = configs
-
-    active_block_rules = [
-        rule for rule in legacy_raw["blk_rules"] if rule["is_activated"]
-    ]
-    _assert_block_configs_preserve_legacy_rules(
-        block_configs,
-        active_block_rules,
-        shadow_entries=shadow_raw["additional_configuration"]["pipeline_v2"][
-            len(configs) - len(block_configs):
-        ],
-        source_config=f"{config_name}.json",
-    )
-
-    for entry in shadow_raw["additional_configuration"]["pipeline_v2"]:
-        _assert_entry_shape(entry)
-    assert tuple(PipelineConfig.from_dict(config.to_dict()) for config in configs) == (
-        configs
-    )
-
-
-@pytest.mark.parametrize(
-    ("config_name", "expected_unknown_pass"),
-    [
-        ("hodur_flag2", "jump-fixer"),
-        ("hodur_flag2_s1a", "jump-fixer"),
-    ],
-)
-def test_hodur_pipeline_v2_shadows_are_not_registry_buildable_yet(
-    config_name,
-    expected_unknown_pass,
-):
-    shadow = ProjectConfiguration.from_file(
-        _CONF_DIR / f"{config_name}.pipeline_v2.json"
-    )
-
-    if expected_unknown_pass is None:
-        specs = pass_specs_from_project_config(shadow, state_machine_pass_registry())
-        assert [spec.pass_id for spec in specs] == _STATE_MACHINE_NATIVE_PIPELINE
-    else:
-        with pytest.raises(UnknownPassIdError, match=expected_unknown_pass):
-            pass_specs_from_project_config(shadow, state_machine_pass_registry())
-
-
 def test_hodur_config_v2_canary_is_explicit_opt_in_and_operational():
     canary = ProjectConfiguration.from_file(
         _CONF_DIR / "hodur_flag2_config_v2_canary.json"
     )
-    shadow = ProjectConfiguration.from_file(_CONF_DIR / "hodur_flag2.pipeline_v2.json")
 
     canary_configs = pipeline_configs_from_project_config(canary)
-    shadow_configs = pipeline_configs_from_project_config(shadow)
 
     normalized_description = " ".join(canary.description.split())
     assert canary.ins_rules == []
@@ -943,8 +579,6 @@ def test_hodur_config_v2_canary_is_explicit_opt_in_and_operational():
     assert "pipeline_v2_shadow" not in canary.additional_configuration
     assert canary.additional_configuration["config_v2_canary"] == {
         "source_config": "hodur_flag2.json",
-        "source_shadow": "hodur_flag2.pipeline_v2.json",
-        "representative_row": "hodur_flag2_config_v2_canary_mixed",
         "runtime_source": "pipeline_v2",
     }
     priors_by_key = load_function_analysis_priors_from_config(
@@ -959,7 +593,10 @@ def test_hodur_config_v2_canary_is_explicit_opt_in_and_operational():
     assert len(priors.return_frontier_artifacts.impossible_return_artifact_edges) == 1
     terminal_priors = priors.terminal_tail_cascade_egress
     assert terminal_priors.is_empty
-    assert canary_configs == shadow_configs
+    assert [config.pass_id for config in canary_configs] == [
+        *_STATE_MACHINE_NATIVE_PIPELINE,
+        "jump-fixer",
+    ]
 
     specs = pass_specs_from_project_config(
         canary,
@@ -1008,112 +645,6 @@ def test_tigress_switch_legacy_configs_remain_runtime_source(
 
 
 @pytest.mark.parametrize(
-    ("config_name", "expected_pass_ids"),
-    [
-        (
-            "default_unflattening_tigress_engine",
-            [*_STATE_MACHINE_NATIVE_PIPELINE],
-        ),
-        (
-            "default_unflattening_tigress_engine_transition_facts",
-            [
-                "mba-simplify",
-                "forward-constant-propagation",
-                *_STATE_MACHINE_NATIVE_PIPELINE,
-            ],
-        ),
-        (
-            "default_unflattening_tigress_indirect",
-            ["mba-simplify", *_STATE_MACHINE_NATIVE_PIPELINE, "jump-fixer"],
-        ),
-    ],
-)
-def test_tigress_switch_pipeline_v2_shadows_parse_and_roundtrip(
-    config_name,
-    expected_pass_ids,
-):
-    legacy_path = _CONF_DIR / f"{config_name}.json"
-    shadow_path = _CONF_DIR / f"{config_name}.pipeline_v2.json"
-    legacy_raw = json.loads(legacy_path.read_text())
-    shadow_raw = json.loads(shadow_path.read_text())
-    shadow = ProjectConfiguration.from_file(shadow_path)
-
-    configs = pipeline_configs_from_project_config(shadow)
-    assert shadow.ins_rules == []
-    assert shadow.blk_rules == []
-    assert shadow.additional_configuration["pipeline_v2_shadow"] == {
-        "source_config": f"{config_name}.json",
-        "runtime_source": "legacy",
-    }
-    assert [config.pass_id for config in configs] == expected_pass_ids
-
-    if expected_pass_ids[0] == "mba-simplify":
-        active_instruction_rules = [
-            rule for rule in legacy_raw["ins_rules"] if rule["is_activated"]
-        ]
-        instruction_entry = shadow_raw["additional_configuration"]["pipeline_v2"][0]
-        assert instruction_entry["rules"]["include"] == (
-            _unique_active_instruction_rule_names(active_instruction_rules)
-        )
-        assert "include_groups" not in instruction_entry["rules"]
-        assert "exclude_groups" not in instruction_entry["rules"]
-        assert configs[0].rules.include_groups == frozenset()
-        assert configs[0].rules.include == frozenset(
-            rule["name"] for rule in active_instruction_rules
-        )
-        assert configs[0].rules.options == {
-            rule["name"]: rule["config"]
-            for rule in active_instruction_rules
-            if rule["config"]
-        }
-        block_configs = configs[1:]
-    else:
-        block_configs = configs
-
-    active_block_rules = [
-        rule for rule in legacy_raw["blk_rules"] if rule["is_activated"]
-    ]
-    _assert_block_configs_preserve_legacy_rules(
-        block_configs,
-        active_block_rules,
-        shadow_entries=shadow_raw["additional_configuration"]["pipeline_v2"][
-            len(configs) - len(block_configs):
-        ],
-        source_config=f"{config_name}.json",
-    )
-
-    for entry in shadow_raw["additional_configuration"]["pipeline_v2"]:
-        _assert_entry_shape(entry)
-    assert tuple(PipelineConfig.from_dict(config.to_dict()) for config in configs) == (
-        configs
-    )
-
-
-@pytest.mark.parametrize(
-    ("config_name", "expected_unknown_pass"),
-    [
-        ("default_unflattening_tigress_engine", None),
-        ("default_unflattening_tigress_engine_transition_facts", "mba-simplify"),
-        ("default_unflattening_tigress_indirect", "mba-simplify"),
-    ],
-)
-def test_tigress_switch_pipeline_v2_shadows_are_not_registry_buildable_yet(
-    config_name,
-    expected_unknown_pass,
-):
-    shadow = ProjectConfiguration.from_file(
-        _CONF_DIR / f"{config_name}.pipeline_v2.json"
-    )
-
-    if expected_unknown_pass is None:
-        specs = pass_specs_from_project_config(shadow, state_machine_pass_registry())
-        assert [spec.pass_id for spec in specs] == _STATE_MACHINE_NATIVE_PIPELINE
-    else:
-        with pytest.raises(UnknownPassIdError, match=expected_unknown_pass):
-            pass_specs_from_project_config(shadow, state_machine_pass_registry())
-
-
-@pytest.mark.parametrize(
     (
         "config_name",
         "expected_instruction_rules",
@@ -1139,111 +670,6 @@ def test_remaining_legacy_configs_remain_runtime_source(
         expected_block_rules
     )
     assert pipeline_configs_from_project_config(project) == ()
-
-
-@pytest.mark.parametrize(
-    (
-        "config_name",
-        "expected_instruction_rules",
-        "expected_block_rules",
-        "expected_pass_ids",
-        "expected_unknown_pass",
-    ),
-    _REMAINING_GENERATED_SHADOWS,
-)
-def test_remaining_pipeline_v2_shadows_parse_and_roundtrip(
-    config_name,
-    expected_instruction_rules,
-    expected_block_rules,
-    expected_pass_ids,
-    expected_unknown_pass,
-):
-    legacy_path = _CONF_DIR / f"{config_name}.json"
-    shadow_path = _CONF_DIR / f"{config_name}.pipeline_v2.json"
-    legacy_raw = json.loads(legacy_path.read_text())
-    shadow_raw = json.loads(shadow_path.read_text())
-    shadow = ProjectConfiguration.from_file(shadow_path)
-
-    configs = pipeline_configs_from_project_config(shadow)
-    assert shadow.ins_rules == []
-    assert shadow.blk_rules == []
-    assert shadow.additional_configuration["pipeline_v2_shadow"] == {
-        "source_config": f"{config_name}.json",
-        "runtime_source": "legacy",
-    }
-    assert [config.pass_id for config in configs] == expected_pass_ids
-
-    if expected_pass_ids[0] == "mba-simplify":
-        active_instruction_rules = [
-            rule for rule in legacy_raw["ins_rules"] if rule["is_activated"]
-        ]
-        instruction_entry = shadow_raw["additional_configuration"]["pipeline_v2"][0]
-        assert len(active_instruction_rules) == expected_instruction_rules
-        assert instruction_entry["rules"]["include"] == (
-            _unique_active_instruction_rule_names(active_instruction_rules)
-        )
-        assert "include_groups" not in instruction_entry["rules"]
-        assert "exclude_groups" not in instruction_entry["rules"]
-        assert configs[0].rules.include_groups == frozenset()
-        assert configs[0].rules.include == frozenset(
-            rule["name"] for rule in active_instruction_rules
-        )
-        assert configs[0].rules.options == {
-            rule["name"]: rule["config"]
-            for rule in active_instruction_rules
-            if rule["config"]
-        }
-        block_configs = configs[1:]
-    else:
-        block_configs = configs
-
-    active_block_rules = [
-        rule for rule in legacy_raw["blk_rules"] if rule["is_activated"]
-    ]
-    assert [rule["name"] for rule in active_block_rules] == expected_block_rules
-    _assert_block_configs_preserve_legacy_rules(
-        block_configs,
-        active_block_rules,
-        shadow_entries=shadow_raw["additional_configuration"]["pipeline_v2"][
-            len(configs) - len(block_configs):
-        ],
-        source_config=f"{config_name}.json",
-    )
-
-    for entry in shadow_raw["additional_configuration"]["pipeline_v2"]:
-        _assert_entry_shape(entry)
-    assert tuple(PipelineConfig.from_dict(config.to_dict()) for config in configs) == (
-        configs
-    )
-
-
-@pytest.mark.parametrize(
-    (
-        "config_name",
-        "expected_instruction_rules",
-        "expected_block_rules",
-        "expected_pass_ids",
-        "expected_unknown_pass",
-    ),
-    _REMAINING_GENERATED_SHADOWS,
-)
-def test_remaining_pipeline_v2_shadows_are_not_registry_buildable_yet(
-    config_name,
-    expected_instruction_rules,
-    expected_block_rules,
-    expected_pass_ids,
-    expected_unknown_pass,
-):
-    shadow = ProjectConfiguration.from_file(
-        _CONF_DIR / f"{config_name}.pipeline_v2.json"
-    )
-
-    if expected_unknown_pass is None:
-        specs = pass_specs_from_project_config(shadow, state_machine_pass_registry())
-        assert [spec.pass_id for spec in specs] == _STATE_MACHINE_NATIVE_PIPELINE
-    else:
-        with pytest.raises(UnknownPassIdError, match=expected_unknown_pass):
-            pass_specs_from_project_config(shadow, state_machine_pass_registry())
 
 
 def test_pipeline_spec_comparison_reports_ordered_differences():

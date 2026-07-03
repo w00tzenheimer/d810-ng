@@ -6,8 +6,6 @@
     "pipeline_v2_mode": "config-v2",
     "config_v2_canary": {
       "source_config": "default_unflattening_approov.json",
-      "source_shadow": "default_unflattening_approov.pipeline_v2.json",
-      "representative_row": "approov_config_v2_canary_mixed_spine_flow",
       "runtime_source": "pipeline_v2"
     },
     "pipeline_v2": [

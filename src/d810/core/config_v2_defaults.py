@@ -6,20 +6,10 @@ bridge still derives executable hook rules from an explicit runtime
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from d810.core.config import ProjectConfiguration
-from d810.core.typing import Mapping
-
-CONFIG_V2_SUPPORTED_DEFAULTS_ENV = "D810_CONFIG_V2_SUPPORTED_DEFAULTS"
-CONFIG_V2_SUPPORTED_DEFAULTS_ENABLED_VALUES = frozenset(
-    ("1", "true", "yes", "on", "config-v2")
-)
-CONFIG_V2_SUPPORTED_DEFAULTS_DISABLED_VALUES = frozenset(
-    ("", "0", "false", "no", "off", "legacy", "existing")
-)
 
 
 class ConfigV2DefaultRoutingError(RuntimeError):
@@ -30,7 +20,6 @@ class ConfigV2DefaultRoutingError(RuntimeError):
 class ConfigV2DefaultMapping:
     source_config: str
     runtime_config: str
-    parity_row: str
     expected_pass_ids: tuple[str, ...]
 
 
@@ -58,7 +47,6 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="default_instruction_only.json",
         runtime_config="default_instruction_only_config_v2_canary.json",
-        parity_row="default_instruction_only_config_v2_canary_mba",
         expected_pass_ids=(
             "mba-simplify",
             "global-constant-inliner",
@@ -68,7 +56,6 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="default_unflattening_tigress_engine.json",
         runtime_config="default_unflattening_tigress_engine_config_v2_canary.json",
-        parity_row="tigress_engine_config_v2_canary_spine",
         expected_pass_ids=(
             "recover_dispatcher",
             "recover_state_transitions",
@@ -80,7 +67,6 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="hodur_flag2.json",
         runtime_config="hodur_flag2_config_v2_canary.json",
-        parity_row="hodur_flag2_config_v2_canary_mixed",
         expected_pass_ids=(
             "recover_dispatcher",
             "recover_state_transitions",
@@ -93,7 +79,6 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="hodur_glbopt2_only.json",
         runtime_config="hodur_glbopt2_only_config_v2_canary.json",
-        parity_row="hodur_glbopt2_only_config_v2_canary_spine",
         expected_pass_ids=(
             "recover_dispatcher",
             "recover_state_transitions",
@@ -105,13 +90,11 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="eidolon.json",
         runtime_config="eidolon_config_v2_canary.json",
-        parity_row="eidolon_config_v2_canary_mba_instruction_heavy",
         expected_pass_ids=("mba-simplify",),
     ),
     ConfigV2DefaultMapping(
         source_config="default_unflattening_approov.json",
         runtime_config="default_unflattening_approov_config_v2_canary.json",
-        parity_row="approov_config_v2_canary_mixed_spine_flow",
         expected_pass_ids=(
             "mba-simplify",
             "mba-state-preconditioner",
@@ -126,7 +109,6 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="default_unflattening_approov_s1a.json",
         runtime_config="default_unflattening_approov_s1a_config_v2_canary.json",
-        parity_row="approov_s1a_config_v2_canary_mixed_spine_flow",
         expected_pass_ids=(
             "mba-simplify",
             "mba-state-preconditioner",
@@ -141,7 +123,6 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="hodur_flag2_s1a.json",
         runtime_config="hodur_flag2_s1a_config_v2_canary.json",
-        parity_row="hodur_flag2_s1a_config_v2_canary_mixed",
         expected_pass_ids=(
             "recover_dispatcher",
             "recover_state_transitions",
@@ -154,7 +135,6 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="hodur_flag2_with_fcp.json",
         runtime_config="hodur_flag2_with_fcp_config_v2_canary.json",
-        parity_row="hodur_flag2_with_fcp_config_v2_canary_mixed",
         expected_pass_ids=(
             "mba-simplify",
             "recover_dispatcher",
@@ -169,7 +149,6 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="identity_call.json",
         runtime_config="identity_call_config_v2_canary.json",
-        parity_row="identity_call_config_v2_canary_explicit_adapter",
         expected_pass_ids=("identity-call-resolver",),
     ),
     ConfigV2DefaultMapping(
@@ -178,7 +157,6 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
             "default_unflattening_tigress_engine_transition_facts"
             "_config_v2_canary.json"
         ),
-        parity_row="tigress_engine_transition_facts_config_v2_canary_spine",
         expected_pass_ids=(
             "mba-simplify",
             "forward-constant-propagation",
@@ -192,7 +170,6 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="example_libobfuscated_abc.json",
         runtime_config="example_libobfuscated_abc_config_v2_canary.json",
-        parity_row="example_libobfuscated_abc_config_v2_canary_mixed_spine",
         expected_pass_ids=(
             "mba-simplify",
             "forward-constant-propagation",
@@ -207,7 +184,6 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="flatfold.json",
         runtime_config="flatfold_config_v2_canary.json",
-        parity_row="flatfold_config_v2_canary_mixed_spine",
         expected_pass_ids=(
             "mba-simplify",
             "mba-state-preconditioner",
@@ -223,7 +199,6 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="example_hodur.json",
         runtime_config="example_hodur_config_v2_canary.json",
-        parity_row="example_hodur_config_v2_canary_mixed_spine",
         expected_pass_ids=(
             "mba-simplify",
             "forward-constant-propagation",
@@ -240,7 +215,6 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="default_unflattening_ollvm.json",
         runtime_config="default_unflattening_ollvm_config_v2_canary.json",
-        parity_row="default_unflattening_ollvm_config_v2_canary",
         expected_pass_ids=(
             "mba-simplify",
             "indirect-call-resolver",
@@ -257,7 +231,6 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="default_indirect_resolution.json",
         runtime_config="default_indirect_resolution_config_v2_canary.json",
-        parity_row="default_indirect_resolution_branch_call_config_v2_canary_branch",
         expected_pass_ids=(
             "indirect-branch-resolver",
             "indirect-call-resolver",
@@ -266,7 +239,6 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="default_unflattening_tigress_indirect.json",
         runtime_config="default_unflattening_tigress_indirect_config_v2_canary.json",
-        parity_row="tigress_indirect_config_v2_canary_spine",
         expected_pass_ids=(
             "mba-simplify",
             "recover_dispatcher",
@@ -280,7 +252,6 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="default.json",
         runtime_config="default_config_v2_canary.json",
-        parity_row="default_config_v2_canary_branch",
         expected_pass_ids=(
             "indirect-branch-resolver",
             "indirect-call-resolver",
@@ -289,7 +260,6 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="example_libobfuscated_no_fixprecedessor.json",
         runtime_config="example_libobfuscated_no_fixprecedessor_config_v2_canary.json",
-        parity_row="example_libobfuscated_no_fixprecedessor_config_v2_canary_cleanup",
         expected_pass_ids=(
             "mba-simplify",
             "forward-constant-propagation",
@@ -300,10 +270,25 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="bogus_loops.json",
         runtime_config="bogus_loops_config_v2_canary.json",
-        parity_row="bogus_loops_config_v2_canary_single_trip",
         expected_pass_ids=(
             "single-trip-loop-peel",
             "mba-state-preconditioner",
+            "jump-fixer",
+        ),
+    ),
+    ConfigV2DefaultMapping(
+        source_config="example_libobfuscated.json",
+        runtime_config="example_libobfuscated_config_v2_canary.json",
+        expected_pass_ids=(
+            "mba-simplify",
+            "global-constant-inliner",
+            "forward-constant-propagation",
+            "mba-state-preconditioner",
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
             "jump-fixer",
         ),
     ),
@@ -342,33 +327,15 @@ def is_bundled_project_config(project: ProjectConfiguration) -> bool:
     return project_path.parent == conf_dir and project_path.exists()
 
 
-def config_v2_supported_defaults_enabled(
-    environ: Mapping[str, str] | None = None,
-) -> bool:
-    env = environ if environ is not None else os.environ
-    if CONFIG_V2_SUPPORTED_DEFAULTS_ENV not in env:
-        return True
-    raw = str(env.get(CONFIG_V2_SUPPORTED_DEFAULTS_ENV, "")).strip().lower()
-    if raw in CONFIG_V2_SUPPORTED_DEFAULTS_ENABLED_VALUES:
-        return True
-    if raw in CONFIG_V2_SUPPORTED_DEFAULTS_DISABLED_VALUES:
-        return False
-    raise ConfigV2DefaultRoutingError(
-        f"{CONFIG_V2_SUPPORTED_DEFAULTS_ENV} must be one of "
-        f"{sorted(CONFIG_V2_SUPPORTED_DEFAULTS_ENABLED_VALUES | CONFIG_V2_SUPPORTED_DEFAULTS_DISABLED_VALUES)!r}; "
-        f"got {raw!r}"
-    )
-
-
 def select_config_v2_default_project(
     source_project: ProjectConfiguration,
-    *,
-    environ: Mapping[str, str] | None = None,
 ) -> ConfigV2DefaultSelection | None:
-    """Select a bundled config-v2 canary for supported bundled source configs."""
-    if not config_v2_supported_defaults_enabled(environ):
-        return None
+    """Select a bundled config-v2 canary for supported bundled source configs.
 
+    Config-v2 is the runtime for every bundled project config: routing is
+    unconditional. User-provided configs (not bundled) are never routed and run
+    their own rules unchanged.
+    """
     project_name = source_project.path.name
     mapping = _MAPPINGS_BY_SOURCE.get(project_name)
     if mapping is not None:

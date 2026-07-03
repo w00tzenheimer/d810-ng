@@ -6,8 +6,6 @@
     "pipeline_v2_mode": "config-v2",
     "config_v2_canary": {
       "source_config": "hodur_glbopt2_only.json",
-      "source_shadow": "hodur_glbopt2_only.pipeline_v2.json",
-      "representative_row": "hodur_glbopt2_only_spine",
       "runtime_source": "pipeline_v2"
     },
     "pipeline_v2": [

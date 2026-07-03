@@ -30,7 +30,7 @@ from d810.passes.pipeline_config_parser import (
     pass_specs_from_project_config,
     pipeline_configs_from_project_config,
 )
-from d810.passes.registry import PassRegistry, UnknownPassIdError
+from d810.passes.registry import PassRegistry
 
 _CONF_DIR = Path("src/d810/conf")
 
@@ -156,9 +156,9 @@ def test_legacy_flow_rule_pass_requires_typed_capability():
         adapter.run(_context())
 
 
-def test_legacy_flow_rule_registry_builds_jump_fixer_shadow_entry():
+def test_legacy_flow_rule_registry_builds_jump_fixer_canary_entry():
     project = ProjectConfiguration.from_file(
-        _CONF_DIR / "hodur_flag2.pipeline_v2.json"
+        _CONF_DIR / "hodur_flag2_config_v2_canary.json"
     )
     config = pipeline_configs_from_project_config(project)[-1]
 
@@ -301,13 +301,13 @@ def test_legacy_flow_rule_pipeline_executes_when_string_and_typed_capabilities_e
     assert capability.requests[0].rule_options == {"enabled_rules": ["JnzRule1"]}
 
 
-def test_operational_registry_builds_mba_spine_and_simple_block_shadow():
-    shadow = ProjectConfiguration.from_file(
-        _CONF_DIR / "default_unflattening_tigress_indirect.pipeline_v2.json"
+def test_operational_registry_builds_mba_spine_and_simple_block_canary():
+    canary = ProjectConfiguration.from_file(
+        _CONF_DIR / "default_unflattening_tigress_indirect_config_v2_canary.json"
     )
 
     specs = pass_specs_from_project_config(
-        shadow,
+        canary,
         operational_config_v2_pass_registry(),
     )
 
@@ -322,20 +322,13 @@ def test_operational_registry_builds_mba_spine_and_simple_block_shadow():
     ]
 
 
-def test_operational_registry_still_fails_on_unregistered_block_level_egglog():
-    shadow = ProjectConfiguration.from_file(
-        _CONF_DIR / "example_libobfuscated.pipeline_v2.json"
+def test_operational_registry_builds_identity_call_canary():
+    canary = ProjectConfiguration.from_file(
+        _CONF_DIR / "identity_call_config_v2_canary.json"
     )
 
-    with pytest.raises(UnknownPassIdError, match="block-level-egglog-optimizer"):
-        pass_specs_from_project_config(shadow, operational_config_v2_pass_registry())
-
-
-def test_operational_registry_builds_identity_call_shadow():
-    shadow = ProjectConfiguration.from_file(_CONF_DIR / "identity_call.pipeline_v2.json")
-
     specs = pass_specs_from_project_config(
-        shadow,
+        canary,
         operational_config_v2_pass_registry(),
     )
 
@@ -351,11 +344,13 @@ def test_operational_registry_builds_identity_call_shadow():
 
 
 @pytest.mark.parametrize("config_name", ["default", "default_indirect_resolution"])
-def test_operational_registry_builds_indirect_branch_call_shadow(config_name):
-    shadow = ProjectConfiguration.from_file(_CONF_DIR / f"{config_name}.pipeline_v2.json")
+def test_operational_registry_builds_indirect_branch_call_canary(config_name):
+    canary = ProjectConfiguration.from_file(
+        _CONF_DIR / f"{config_name}_config_v2_canary.json"
+    )
 
     specs = pass_specs_from_project_config(
-        shadow,
+        canary,
         operational_config_v2_pass_registry(),
     )
 

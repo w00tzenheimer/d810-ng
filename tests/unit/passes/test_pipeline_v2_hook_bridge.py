@@ -22,12 +22,14 @@ _CONF_DIR = Path("src/d810/conf")
 
 
 def _config_v2_project(name: str) -> ProjectConfiguration:
-    shadow = ProjectConfiguration.from_file(_CONF_DIR / f"{name}.pipeline_v2.json")
-    additional_configuration = dict(shadow.additional_configuration)
+    canary = ProjectConfiguration.from_file(
+        _CONF_DIR / f"{name}_config_v2_canary.json"
+    )
+    additional_configuration = dict(canary.additional_configuration)
     additional_configuration["pipeline_v2_mode"] = "config-v2"
     return ProjectConfiguration(
         path=Path(f"{name}.runtime-config-v2.json"),
-        description=shadow.description,
+        description=canary.description,
         ins_rules=[
             RuleConfiguration(
                 name="CopiedLegacyInstructionRule",
@@ -48,7 +50,7 @@ def _config_v2_project(name: str) -> ProjectConfiguration:
 
 def test_pipeline_v2_hook_activation_is_inert_for_legacy_mode():
     project = ProjectConfiguration.from_file(
-        _CONF_DIR / "default_instruction_only.pipeline_v2.json"
+        _CONF_DIR / "default_instruction_only.json"
     )
 
     activation = pipeline_v2_hook_activation(project)

@@ -6,8 +6,6 @@
     "pipeline_v2_mode": "config-v2",
     "config_v2_canary": {
       "source_config": "example_libobfuscated_no_fixprecedessor.json",
-      "source_shadow": "example_libobfuscated_no_fixprecedessor.pipeline_v2.json",
-      "representative_row": "example_libobfuscated_no_fixprecedessor_config_v2_canary_cleanup",
       "runtime_source": "pipeline_v2"
     },
     "pipeline_v2": [

@@ -950,11 +950,6 @@
   ],
   "blk_rules": [
     {
-      "name": "BlockLevelEgglogOptimizer",
-      "is_activated": true,
-      "config": {}
-    },
-    {
       "name": "GlobalConstantInliner",
       "is_activated": true,
       "config": {}

@@ -8,13 +8,8 @@ import pytest
 
 from d810.core.config import ProjectConfiguration
 from d810.core.config_v2_defaults import (
-    CONFIG_V2_SUPPORTED_DEFAULTS_DISABLED_VALUES,
-    CONFIG_V2_SUPPORTED_DEFAULTS_ENABLED_VALUES,
-    CONFIG_V2_SUPPORTED_DEFAULTS_ENV,
     CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS,
-    ConfigV2DefaultRoutingError,
     bundled_config_path,
-    config_v2_supported_defaults_enabled,
     format_config_v2_default_selection_status,
     is_bundled_project_config,
     select_config_v2_default_project,
@@ -43,31 +38,6 @@ def _write_user_project(tmp_path: Path, name: str) -> ProjectConfiguration:
         encoding="utf-8",
     )
     return ProjectConfiguration.from_file(path)
-
-
-def test_supported_defaults_are_enabled_when_switch_is_absent():
-    assert config_v2_supported_defaults_enabled({}) is True
-
-
-@pytest.mark.parametrize("value", sorted(CONFIG_V2_SUPPORTED_DEFAULTS_ENABLED_VALUES))
-def test_supported_defaults_accept_enabled_values(value):
-    assert (
-        config_v2_supported_defaults_enabled({CONFIG_V2_SUPPORTED_DEFAULTS_ENV: value})
-        is True
-    )
-
-
-@pytest.mark.parametrize("value", sorted(CONFIG_V2_SUPPORTED_DEFAULTS_DISABLED_VALUES))
-def test_supported_defaults_accept_disabled_values(value):
-    assert (
-        config_v2_supported_defaults_enabled({CONFIG_V2_SUPPORTED_DEFAULTS_ENV: value})
-        is False
-    )
-
-
-def test_supported_defaults_reject_unknown_switch_value():
-    with pytest.raises(ConfigV2DefaultRoutingError, match=CONFIG_V2_SUPPORTED_DEFAULTS_ENV):
-        config_v2_supported_defaults_enabled({CONFIG_V2_SUPPORTED_DEFAULTS_ENV: "maybe"})
 
 
 @pytest.mark.parametrize("mapping", CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS)
@@ -110,27 +80,6 @@ def test_user_canary_basename_gets_no_default_trust(tmp_path, mapping):
     canary = _write_user_project(tmp_path, mapping.runtime_config)
 
     assert select_config_v2_default_project(canary) is None
-
-
-def test_unsupported_config_does_not_route_by_default():
-    # example_libobfuscated stays unrouted -- blocked on BlockLevelEgglogOptimizer
-    # (a generated_shadows operational_exception); it is the only config not
-    # default-routed after the d81-69va fence lift.
-    source = _project("example_libobfuscated.json")
-
-    assert select_config_v2_default_project(source) is None
-
-
-def test_disable_switch_keeps_supported_source_on_existing_path():
-    source = _project("default_instruction_only.json")
-
-    assert (
-        select_config_v2_default_project(
-            source,
-            environ={CONFIG_V2_SUPPORTED_DEFAULTS_ENV: "0"},
-        )
-        is None
-    )
 
 
 def test_supported_default_status_is_auditable():
