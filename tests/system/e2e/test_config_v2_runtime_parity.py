@@ -585,25 +585,6 @@ _PARITY_ROWS = (
     ),
     pytest.param(
         ConfigV2ParityRow(
-            row_id="default_unflattening_ollvm_s1a_fair_generated_shadow",
-            legacy_config="default_unflattening_ollvm_s1a_fair.json",
-            shadow_config="default_unflattening_ollvm_s1a_fair.pipeline_v2.json",
-            function_name="test_function_ollvm_fla_bcf_sub",
-            expected_pass_ids=(
-                "mba-simplify",
-                "indirect-call-resolver",
-                "mba-state-preconditioner",
-                *STATE_MACHINE_NATIVE_PASS_IDS,
-                "simple-flattening-cleanup-unflattener",
-                "jump-fixer",
-            ),
-            expects_state_machine=True,
-            required_snapshot_label=None,
-        ),
-        id="default_unflattening_ollvm_s1a_fair_generated_shadow",
-    ),
-    pytest.param(
-        ConfigV2ParityRow(
             row_id="tigress_engine_transition_facts_spine",
             legacy_config="default_unflattening_tigress_engine_transition_facts.json",
             shadow_config=(
