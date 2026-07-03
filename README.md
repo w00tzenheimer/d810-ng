@@ -450,8 +450,8 @@ D810_BUILD_SPEEDUPS=1 pip install --no-build-isolation -e ".[dev]"
 
 ### Config-v2 supported defaults and canaries
 
-D810 routes these bundled project configurations to the supported config-v2
-runtime path by default:
+Config-v2 is the runtime path for every bundled project configuration. Each
+bundled config routes to its `*_config_v2_canary.json` counterpart:
 
 - `default_instruction_only.json` routes to
   `default_instruction_only_config_v2_canary.json`.
@@ -485,18 +485,14 @@ runtime path by default:
 - `example_libobfuscated_no_fixprecedessor.json` routes to
   `example_libobfuscated_no_fixprecedessor_config_v2_canary.json`.
 - `bogus_loops.json` routes to `bogus_loops_config_v2_canary.json`.
-
-The cleanup-family adapter
-(`example_libobfuscated_no_fixprecedessor.json`) remains an opt-in-selectable
-canary only, not default-routed — this is a deliberate scope boundary, not
-an oversight.
+- `example_libobfuscated.json` routes to
+  `example_libobfuscated_config_v2_canary.json`.
 
 User configs that override those filenames remain on the existing project
-configuration path by default. The default routing only trusts checked-in
-bundled configs under `d810/conf`.
+configuration path by default. Routing only trusts checked-in bundled configs
+under `d810/conf`.
 
-To select the supported config-v2 runtime path explicitly, choose one of these
-project configurations:
+Each canary exercises a specific hook lane:
 
 - `default_instruction_only_config_v2_canary.json` exercises the
   MBA/instruction plus supported simple flow-rule lane.
@@ -553,50 +549,11 @@ project configurations:
 
 Each canary sets `pipeline_v2_mode: config-v2`.
 
-To disable supported default routing and return those bundled source configs
-to the existing project configuration path, set:
+### Config-v2 validation
 
-```bash
-D810_CONFIG_V2_SUPPORTED_DEFAULTS=0
-```
-
-To rehearse the supported config-v2 path through the normal Docker system
-runner, use:
-
-```bash
-./tools/scripts/run_config_v2_ci_rehearsal.sh -w <target-worktree>
-```
-
-These canaries do not default-route every generated shadow. Non-default-routed
-generated shadows, including cleanup-family paths outside the listed canaries,
-remain generated-shadow artifacts unless a canary or supported-default mapping
-is explicitly added.
-
-### Config-v2 default cutover criteria
-
-D810 defaults to config-v2 only for the supported bundled configs listed
-above. Other project configurations remain on the existing project
-configuration path unless they explicitly set `pipeline_v2_mode: config-v2`
-and pass fail-closed config-v2 validation. The supported default routing stays
-bounded by these criteria:
-
-- Docker wrapper parity/canary coverage stays green for every supported
-  user-selectable config-v2 canary and representative runtime lane.
-- The support matrix lists all supported generated shadows, all selectable
-  canaries, all parity rows, all operational exceptions, and any future
-  unsupported adapter boundaries.
-- A reviewed rollback path lets users return supported bundled configs to the
-  existing project configuration path if config-v2 default routing regresses
-  behavior.
-- Non-default-routed generated shadows stay explicit; cleanup-family
-  generated-shadow support is not default-routed without a supported-default
-  mapping. Future unsupported adapter boundaries stay fail-closed until
-  executable adapter work lands.
-- Always-on unit checks depend only on tracked support-matrix metadata. Docker
-  log contents must be regenerated through the wrapper gate, not required from
-  ignored `.tmp` paths in a clean checkout.
-- CI gates include support-matrix unit guards, JSON validation,
-  import/architecture checks, and Docker wrapper parity evidence.
+Config-v2 is the only runtime path for bundled configs. User-provided configs
+run on the existing project configuration path unless they explicitly set
+`pipeline_v2_mode: config-v2` and pass fail-closed config-v2 validation.
 
 When you want to disable deobfuscation, just click on the `Stop` button or use the context menus:
 

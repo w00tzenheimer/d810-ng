@@ -6,8 +6,6 @@
     "pipeline_v2_mode": "config-v2",
     "config_v2_canary": {
       "source_config": "default.json",
-      "source_shadow": "default.pipeline_v2.json",
-      "representative_row": "default_config_v2_canary_branch",
       "runtime_source": "pipeline_v2"
     },
     "pipeline_v2": [

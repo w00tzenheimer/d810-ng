@@ -144,9 +144,9 @@ def test_mba_simplify_empty_rule_selection_is_noop_without_capability():
     assert isinstance(adapter.run(_context()), PassResult)
 
 
-def test_mba_simplify_registry_builds_default_instruction_shadow_first_pass():
+def test_mba_simplify_registry_builds_default_instruction_canary_first_pass():
     project = ProjectConfiguration.from_file(
-        _CONF_DIR / "default_instruction_only.pipeline_v2.json"
+        _CONF_DIR / "default_instruction_only_config_v2_canary.json"
     )
     config = pipeline_configs_from_project_config(project)[0]
 
