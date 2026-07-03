@@ -96,7 +96,7 @@ _GENERATED_SHADOW_CONFIGS = (
     "identity_call",
 )
 _REMAINING_GENERATED_SHADOWS = (
-    ("bogus_loops", 0, ("MbaStatePreconditioner", "JumpFixer")),
+    ("bogus_loops", 0, ("SingleTripLoopPeel", "MbaStatePreconditioner", "JumpFixer")),
     ("default", 0, ("IndirectBranchResolver", "IndirectCallResolver")),
     (
         "default_indirect_resolution",

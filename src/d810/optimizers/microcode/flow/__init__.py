@@ -23,3 +23,4 @@ else:
     from d810.optimizers.microcode.flow.jumps import indirect_branch  # noqa: F401
     from d810.optimizers.microcode.flow.jumps import indirect_call  # noqa: F401
     from d810.optimizers.microcode.flow import identity_call  # noqa: F401
+    from d810.optimizers.microcode.flow import single_trip_loop_peel  # noqa: F401

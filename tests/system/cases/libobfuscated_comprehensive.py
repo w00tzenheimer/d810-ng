@@ -824,9 +824,12 @@ UNWRAP_LOOPS_CASES = [
     ),
     DeobfuscationCase(
         function="bogus_loops",
-        description="Bogus/redundant loop patterns",
+        description="Bogus single-trip loop for(i=0;!i;i=1) PROVEN single-trip (Z3) and peeled to straight-line code by SingleTripLoopPeel",
         project="bogus_loops.json",
-        must_change=False,  # Pattern not yet supported by bogus_loops rule
+        obfuscated_contains=["!i"],  # native decompile keeps the opaque loop guard
+        deobfuscated_not_contains=["!i", "for", "while"],  # loop fully removed
+        must_change=True,
+        check_stats=False,
     ),
 ]
 

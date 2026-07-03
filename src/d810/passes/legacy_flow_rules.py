@@ -24,6 +24,7 @@ _SIMPLE_FLOW_RULE_PASS_IDS: Mapping[str, str] = {
     "indirect-call-resolver": "IndirectCallResolver",
     "mba-state-preconditioner": "MbaStatePreconditioner",
     "jump-fixer": "JumpFixer",
+    "single-trip-loop-peel": "SingleTripLoopPeel",
 }
 
 
