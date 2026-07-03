@@ -263,6 +263,20 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
             "indirect-call-resolver",
         ),
     ),
+    ConfigV2DefaultMapping(
+        source_config="default_unflattening_tigress_indirect.json",
+        runtime_config="default_unflattening_tigress_indirect_config_v2_canary.json",
+        parity_row="tigress_indirect_config_v2_canary_spine",
+        expected_pass_ids=(
+            "mba-simplify",
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "plan_semantic_regions",
+            "lower_state_machine",
+            "cleanup_residual_dispatcher",
+            "jump-fixer",
+        ),
+    ),
 )
 
 _MAPPINGS_BY_SOURCE = {

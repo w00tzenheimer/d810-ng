@@ -835,6 +835,8 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
         "eidolon_mba_instruction_heavy",
         "tigress_engine_spine",
         "tigress_engine_config_v2_canary_spine",
+        "tigress_indirect_spine",
+        "tigress_indirect_config_v2_canary_spine",
         "approov_mixed_spine_flow",
         "approov_s1a_mixed_spine_flow",
         "hodur_glbopt2_only_spine",
@@ -998,6 +1000,14 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
             "representative_row": "tigress_engine_config_v2_canary_spine",
             "runtime_mode": "config-v2",
         },
+        "default_unflattening_tigress_indirect_config_v2_canary.json": {
+            "id": "default_unflattening_tigress_indirect_config_v2_canary",
+            "config": "default_unflattening_tigress_indirect_config_v2_canary.json",
+            "source_config": "default_unflattening_tigress_indirect.json",
+            "source_shadow": "default_unflattening_tigress_indirect.pipeline_v2.json",
+            "representative_row": "tigress_indirect_config_v2_canary_spine",
+            "runtime_mode": "config-v2",
+        },
         "hodur_flag2_config_v2_canary.json": {
             "id": "hodur_flag2_config_v2_canary",
             "config": "hodur_flag2_config_v2_canary.json",
@@ -1143,6 +1153,17 @@ def test_config_v2_runtime_support_matrix_matches_inventory_and_evidence():
             "normal_project_config_loading_path": True,
             "lanes": [
                 "native_state_machine_spine",
+            ],
+        },
+        {
+            "config": "default_unflattening_tigress_indirect_config_v2_canary.json",
+            "source_config": "default_unflattening_tigress_indirect.json",
+            "source_shadow": "default_unflattening_tigress_indirect.pipeline_v2.json",
+            "parity_row": "tigress_indirect_config_v2_canary_spine",
+            "normal_project_config_loading_path": True,
+            "lanes": [
+                "native_state_machine_spine",
+                "mixed_spine_simple_flow_rule",
             ],
         },
         {

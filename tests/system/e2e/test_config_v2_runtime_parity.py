@@ -89,6 +89,47 @@ _PARITY_ROWS = (
     ),
     pytest.param(
         ConfigV2ParityRow(
+            row_id="tigress_indirect_spine",
+            legacy_config="default_unflattening_tigress_indirect.json",
+            shadow_config="default_unflattening_tigress_indirect.pipeline_v2.json",
+            function_name="tigress_flatten_indirect",
+            expected_pass_ids=(
+                "mba-simplify",
+                "recover_dispatcher",
+                "recover_state_transitions",
+                "plan_semantic_regions",
+                "lower_state_machine",
+                "cleanup_residual_dispatcher",
+                "jump-fixer",
+            ),
+            expects_state_machine=True,
+            required_snapshot_label=None,
+        ),
+        id="tigress_indirect_spine",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
+            row_id="tigress_indirect_config_v2_canary_spine",
+            legacy_config="default_unflattening_tigress_indirect.json",
+            shadow_config="default_unflattening_tigress_indirect.pipeline_v2.json",
+            runtime_config="default_unflattening_tigress_indirect_config_v2_canary.json",
+            function_name="tigress_flatten_indirect",
+            expected_pass_ids=(
+                "mba-simplify",
+                "recover_dispatcher",
+                "recover_state_transitions",
+                "plan_semantic_regions",
+                "lower_state_machine",
+                "cleanup_residual_dispatcher",
+                "jump-fixer",
+            ),
+            expects_state_machine=True,
+            required_snapshot_label=None,
+        ),
+        id="tigress_indirect_config_v2_canary_spine",
+    ),
+    pytest.param(
+        ConfigV2ParityRow(
             row_id="tigress_engine_config_v2_canary_spine",
             legacy_config="default_unflattening_tigress_engine.json",
             shadow_config="default_unflattening_tigress_engine.pipeline_v2.json",
