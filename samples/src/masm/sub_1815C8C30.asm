@@ -4,6 +4,7 @@ OPTION PROLOGUE:NONE
 OPTION EPILOGUE:NONE
 
 EXTERN sub_18010A890:PROC
+EXTERN rand:PROC   ; defined + exported by src/masm/rand.asm (dependency-free stub)
 
 CONST SEGMENT
 qword_1820FB868 dq -6F17D3B815F9C620h
@@ -11,7 +12,11 @@ qword_1820FB870 dq 52F4D8FC2BDB37D0h
 byte_1820FB887 db 1Dh
 dword_1820FB888 dd 6C0DDC73h
 dword_1820FB88C dd 0C98B8047h
-off_18210A360 dq -64E2C540BC1DB16h
+; The obfuscated call target is `[off_18210A360] + 0x64E2C558D421136` (see the
+; add at the call site).  In dac.dll that folded to rand's VA.  Retarget it onto
+; the REAL linked `rand` here via a relocation, so d810's devirt renders `rand()`
+; instead of a dangling `MEMORY[0x181803620]`: off = &rand - 0x64E2C558D421136.
+off_18210A360 dq rand - 64E2C558D421136h
 CONST ENDS
 
 _TEXT SEGMENT ALIGN(16) 'CODE'
