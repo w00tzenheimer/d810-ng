@@ -35,6 +35,10 @@ from .assertions import (
     assert_rules_fired,
 )
 from .cases import DeobfuscationCase
+from .semantic_equivalence import (
+    SemanticOracleUnavailable,
+    assert_semantic_equivalence,
+)
 from .skip_controls import should_skip_reason
 from d810.core.config import ProjectConfiguration
 from d810.core.logging import getLogger
@@ -214,6 +218,28 @@ def run_deobfuscation_test(
         # Assert code changed (if required)
         if effective_case.must_change:
             assert_code_changed(code_before, code_after)
+
+        # Behavioral semantic-equivalence oracle (strictly stronger than
+        # must_change, which has passed on real miscompiles): compile the AFTER
+        # pseudocode next to the reference source and diff their outputs.  A
+        # missing host compiler is an infrastructural skip of THIS check only,
+        # not the whole test (the other assertions still ran).
+        if effective_case.semantic_reference:
+            try:
+                assert_semantic_equivalence(
+                    code_after,
+                    effective_case.function,
+                    effective_case.semantic_reference,
+                )
+            except SemanticOracleUnavailable as exc:
+                import warnings
+
+                warnings.warn(
+                    f"semantic-equivalence oracle skipped for "
+                    f"{effective_case.function}: {exc}",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         # Optional operator-complexity trend checks (case-specific)
         if effective_case.operator_complexity_mode:

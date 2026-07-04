@@ -523,6 +523,7 @@ DISPATCHER_PATTERN_CASES = [
         description="HIGH_FAN_IN dispatcher with multiple case blocks",
         project="example_libobfuscated.json",
         must_change=True,
+        semantic_reference="samples/src/c/dispatcher_patterns.c",
     ),
     DeobfuscationCase(
         function="state_comparison_pattern",
@@ -530,6 +531,7 @@ DISPATCHER_PATTERN_CASES = [
         project="example_libobfuscated.json",
         obfuscated_contains=["0x6F5E1A2B"],
         must_change=True,
+        semantic_reference="samples/src/c/dispatcher_patterns.c",
     ),
     DeobfuscationCase(
         function="nested_while_hodur_pattern",
@@ -537,6 +539,7 @@ DISPATCHER_PATTERN_CASES = [
         project="example_hodur.json",
         obfuscated_contains=["while"],
         must_change=True,
+        semantic_reference="samples/src/c/dispatcher_patterns.c",
     ),
     DeobfuscationCase(
         function="switch_case_ollvm_pattern",
@@ -544,6 +547,7 @@ DISPATCHER_PATTERN_CASES = [
         project="example_libobfuscated.json",
         obfuscated_contains=["switch", "case"],
         must_change=True,
+        semantic_reference="samples/src/c/dispatcher_patterns.c",
     ),
     DeobfuscationCase(
         function="mixed_dispatcher_pattern",
@@ -564,6 +568,9 @@ DISPATCHER_PATTERN_CASES = [
         # This pattern intentionally compiles to a structured switch/while form;
         # deobfuscation should stay safe and not force a rewrite.
         must_change=False,
+        # Correctness holds whether or not the code changes: the (possibly
+        # unchanged) output must still be behaviorally equal to the source.
+        semantic_reference="samples/src/c/dispatcher_patterns.c",
     ),
     DeobfuscationCase(
         function="test_all_patterns",

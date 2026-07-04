@@ -93,6 +93,9 @@ class DeobfuscationCase:
         expected_rules: Rules that SHOULD fire (warning if missing, not failure).
         forbidden_rules: Rules that MUST NOT fire (test fails if they do).
 
+        semantic_reference: Repo-relative C source path whose ``int
+            <function>(int input)`` is compiled and diffed against the AFTER
+            pseudocode (behavioral equivalence; single-int-arg only).
         must_change: Whether deobfuscation must change the code (default: True).
         check_stats: Whether to verify rule firing statistics (default: True).
         skip: If set, skip this test with this reason.
@@ -131,6 +134,13 @@ class DeobfuscationCase:
 
     # AST metrics baseline (from CodeComparator.count_ast_statements)
     expected_ast_stats: Optional[dict[str, int]] = None
+
+    # Behavioral semantic-equivalence oracle: repo-root-relative path to a C
+    # source file containing ``int <function>(int input){...}``.  When set, the
+    # deobfuscated AFTER pseudocode is compiled next to that reference and their
+    # outputs are diffed over an input range -- a behavioral check strictly
+    # stronger than ``must_change`` (single ``int``-arg references only).
+    semantic_reference: Optional[str] = None
 
     # Behavior flags
     must_change: bool = True
