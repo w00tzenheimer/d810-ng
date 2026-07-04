@@ -262,22 +262,6 @@ def randmod_rendered(randmod_database, configure_hexrays, d810_state, pseudocode
 @pytest.mark.e2e
 @pytest.mark.manual
 class TestOllvmRandModSub1815C8C30:
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "d81-u3cg REGRESSION: the pointer-aliased-state dispatcher loop no "
-            "longer collapses, so `sub_1815C8C30` still renders a `while`/`do` "
-            "loop (the `% 3` fold + rand() devirt still work). Recovery is INTACT "
-            "(emit still emits the `stack_address_alias_terminal_guard_partitioned` "
-            "transition); the mutation plan is rejected `terminal_ok=False` because "
-            "the exit-path liveness policy will not preserve+collapse around the "
-            "`&rand`/`&state` carrier corridor (blk2/blk4). Was SOLVED 2026-06-15 "
-            "(handoff 2026-06-15-rand-loop-pointer-aliased-state.md); regressed by "
-            "the branch-witness/liveness/terminal-corridor refactor after 57a62de94. "
-            "strict=True so this XPASSes (and fails) the moment the fix lands, "
-            "forcing this marker to be removed."
-        ),
-    )
     def test_magic_modulo_recovered_and_loop_removed(self, randmod_rendered) -> None:
         """The magic-modulo fold + unflattening recover ``% 3`` with no loop.
 
