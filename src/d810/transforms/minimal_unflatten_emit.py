@@ -829,12 +829,39 @@ def build_state_write_redirects(
     )
     emitted_via_self: set[int] = set()
 
+    # A pointer-aliased terminal state write (``reg = &state; *reg = val`` -- the
+    # ``state_store_through_stack_address_alias[_terminal_guard]`` proof) is the
+    # AUTHORITATIVE next-state for its source edge: it accounts for the indirect
+    # store a syntactic global fold cannot see.  When a NON-guard sibling
+    # transition is also recovered for the SAME ``(write_block, via_block)`` -- the
+    # naive ``multi_entry_global_fold`` reading that still sees the pre-store state
+    # -- its redirect contradicts the guard: it re-points the source AWAY from the
+    # via block that performs the store, orphaning that block (and the terminal
+    # route through it), so the whole plan is rejected ``terminal_ok=False`` and
+    # the loop survives (ticket d81-u3cg).  Defer to the guard: skip the sibling.
+    # Empty for every shape without a terminal stack-alias guard -> byte-identical.
+    terminal_guard_source_edges = {
+        (
+            int(t.write_block),
+            int(t.via_block) if t.via_block is not None else -1,
+        )
+        for t in transitions
+        if transition_uses_terminal_stack_alias_guard(t)
+    }
+
     if disp is not None:
         for transition in transitions:
             src = int(transition.write_block)
             if src in prologue_preds:
                 continue  # handled by the entry bridge below
             vb = transition.via_block
+            if (
+                terminal_guard_source_edges
+                and not transition_uses_terminal_stack_alias_guard(transition)
+                and (src, int(vb) if vb is not None else -1)
+                in terminal_guard_source_edges
+            ):
+                continue  # the terminal stack-alias guard owns this source edge
             # ``via_block`` set => bypass a shared (pure state-glue) back-edge:
             # redirect ``src -> via_block`` onto the routed handler.  Otherwise
             # sever ``src -> dispatcher``.
