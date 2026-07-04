@@ -155,6 +155,11 @@ def run_deobfuscation_test(
     # Get function address
     func_ea = get_func_ea(effective_case.function)
     if func_ea == idaapi.BADADDR:
+        if effective_case.skip_if_function_absent and _HAS_PYTEST:
+            pytest.skip(
+                f"Function '{effective_case.function}' absent from this binary "
+                f"(Windows-only MASM fixture); skipping."
+            )
         raise AssertionError(f"Function '{effective_case.function}' not found")
 
     # Validate code_comparator if expected_code is specified

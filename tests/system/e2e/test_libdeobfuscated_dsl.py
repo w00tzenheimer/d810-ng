@@ -31,6 +31,7 @@ from tests.system.cases.libobfuscated_comprehensive import (
     ABC_XOR_CASES,
     APPROOV_CASES,
     CONSTANT_FOLDING_CASES,
+    DAC_MASM_CASES,
     DISPATCHER_PATTERN_CASES,
     HODUR_CASES,
     NESTED_DISPATCHER_CASES,
@@ -211,6 +212,40 @@ class TestDispatcherPatterns:
         load_expected_stats,
     ):
         """Dispatcher detection patterns."""
+        run_deobfuscation_test(
+            case=case,
+            d810_state=d810_state,
+            pseudocode_to_string=pseudocode_to_string,
+            code_comparator=code_comparator,
+            capture_stats=capture_stats,
+            load_expected_stats=load_expected_stats,
+        )
+
+
+class TestDacMasmFixtures:
+    """Real dac.dll functions (issue #48) extracted to MASM and linked into
+    libobfuscated.dll.
+
+    These carry the issue-48 regressions in the tracked corpus so CI catches
+    them without the gitless dac.dll sample.  Windows-PE-only: they SKIP on the
+    .dylib/.so builds (skip_if_function_absent).  See d81-u3cg (the
+    ``sub_1815C8C30`` loop-collapse regression) and d81-l3cu (this extraction).
+    """
+
+    binary_name = _get_default_binary()
+
+    @pytest.mark.parametrize("case", DAC_MASM_CASES, ids=lambda c: c.test_id)
+    def test_dac_masm_fixtures(
+        self,
+        case,
+        libobfuscated_setup,
+        d810_state,
+        pseudocode_to_string,
+        code_comparator,
+        capture_stats,
+        load_expected_stats,
+    ):
+        """dac.dll issue-48 functions extracted as MASM."""
         run_deobfuscation_test(
             case=case,
             d810_state=d810_state,

@@ -146,6 +146,10 @@ class DeobfuscationCase:
     must_change: bool = True
     check_stats: bool = True
     skip: Optional[str] = None
+    # When True, a function absent from the current binary is a SKIP, not a
+    # failure.  Used by Windows-only fixtures (e.g. MASM-linked ``src/masm/*.asm``
+    # functions that exist only in the PE ``.dll``, not the ``.dylib``/``.so``).
+    skip_if_function_absent: bool = False
     operator_complexity_mode: Optional[str] = None
     operator_complexity_ops: list[str] = field(default_factory=list)
 
