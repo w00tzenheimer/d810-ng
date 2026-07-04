@@ -759,15 +759,17 @@ OLLVM_CASES = [
 DAC_MASM_CASES = [
     DeobfuscationCase(
         function="sub_1815C8C30",
-        description="dac.dll rand()%3 helper (issue #48, MASM-extracted): a "
-                    "pointer-aliased single-iteration dispatcher loop "
-                    "(reg=&state; *reg=magic). Regression guard for d81-u3cg -- the "
-                    "loop MUST collapse (terminal stack-alias guard owns its source "
-                    "edge). The call renders as an indirect call, not rand(), because "
-                    "the CRT extern is unresolved in the standalone DLL.",
+        description="dac.dll rand()%3 helper (issue #48, MASM-extracted). Full "
+                    "golden: `return rand() % 3u;`. Guards two facts: (1) the "
+                    "pointer-aliased single-iteration dispatcher loop (reg=&state; "
+                    "*reg=magic) MUST collapse -- regression guard for d81-u3cg "
+                    "(terminal stack-alias guard owns its source edge); and (2) the "
+                    "obfuscated indirect call `[off]+const` MUST devirtualize to "
+                    "rand() (the data slot relocates onto the dependency-free "
+                    "src/masm/rand.asm stub, so the fold lands on a named rand).",
         project="default_unflattening_ollvm.json",
         obfuscated_contains=["0x8348BA7AD21C9415"],
-        deobfuscated_contains=["% 3"],
+        deobfuscated_contains=["rand()", "% 3"],
         deobfuscated_not_contains=["while (", "0x8348BA7AD21C9415"],
         must_change=True,
         expected_rules=["UnsignedMagicModulo3Rule"],
