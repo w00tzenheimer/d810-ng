@@ -746,6 +746,49 @@ OLLVM_CASES = [
 
 
 # =============================================================================
+# src/masm/*.asm - real obfuscated functions extracted from dac.dll (issue #48)
+#
+# These are the ACTUAL machine code of two dac.dll functions, exported to MASM
+# via d810's structural exporter and linked into libobfuscated.dll (Windows PE
+# only -- the .dylib/.so builds ignore src/masm/, so these functions are absent
+# there and the cases SKIP via skip_if_function_absent).  They bring the issue
+# #48 regressions into the tracked corpus so CI catches them WITHOUT the gitless
+# dac.dll sample.
+# =============================================================================
+
+DAC_MASM_CASES = [
+    DeobfuscationCase(
+        function="sub_1815C8C30",
+        description="dac.dll rand()%3 helper (issue #48, MASM-extracted): a "
+                    "pointer-aliased single-iteration dispatcher loop "
+                    "(reg=&state; *reg=magic). Regression guard for d81-u3cg -- the "
+                    "loop MUST collapse (terminal stack-alias guard owns its source "
+                    "edge). The call renders as an indirect call, not rand(), because "
+                    "the CRT extern is unresolved in the standalone DLL.",
+        project="default_unflattening_ollvm.json",
+        obfuscated_contains=["0x8348BA7AD21C9415"],
+        deobfuscated_contains=["% 3"],
+        deobfuscated_not_contains=["while (", "0x8348BA7AD21C9415"],
+        must_change=True,
+        expected_rules=["UnsignedMagicModulo3Rule"],
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
+        function="Java_dimension_DimensionAPI_getHuzpsbPY",
+        description="dac.dll DimensionAPI (issue #48, MASM-extracted): the function "
+                    "whose flattening crashed old d810-ng with INTERR 50860/51920. "
+                    "Standalone MASM loses the binary's extern/data context so it only "
+                    "PARTIALLY unflattens here; this gate guards the no-INTERR + "
+                    "must-change property (decompile succeeds, cleanup fires).",
+        project="default_unflattening_ollvm.json",
+        must_change=True,
+        expected_rules=["SimpleFlatteningCleanupUnflattener"],
+        skip_if_function_absent=True,
+    ),
+]
+
+
+# =============================================================================
 # tigress_obfuscated.c - Tigress patterns
 # =============================================================================
 
@@ -977,6 +1020,7 @@ ALL_CASES = (
     + HODUR_CASES
     + NESTED_DISPATCHER_CASES
     + OLLVM_CASES
+    + DAC_MASM_CASES
     + TIGRESS_CASES
     + UNWRAP_LOOPS_CASES
     + WHILE_SWITCH_CASES
