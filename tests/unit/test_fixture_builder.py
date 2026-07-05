@@ -123,3 +123,41 @@ def test_upsert_replaces_existing_case_no_duplicate():
     again = upsert_case_in_list(base, "sub_X", emit_fixture_case("sub_X", "q.json"))
     assert again.count('function="sub_X"') == 1
     assert 'project="q.json"' in again
+
+
+# --------------------------------------------------------------------------- #
+# Task 5: build + verify subprocess orchestration
+# --------------------------------------------------------------------------- #
+import subprocess as _sp  # noqa: E402
+
+from d810.samples.fixture_builder import (  # noqa: E402
+    build_fixture_dll, verify_fixture_case,
+)
+
+
+def test_build_fixture_dll_invokes_build_masm_sh(tmp_path):
+    calls = {}
+
+    def fake_run(cmd, **kw):
+        calls["cmd"] = cmd
+        calls["env"] = kw.get("env", {})
+        (tmp_path / "samples/bins").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "samples/bins/tmpfx.dll").write_bytes(b"MZ")
+        return _sp.CompletedProcess(cmd, 0, "linked", "")
+
+    out = build_fixture_dll(tmp_path, "tmpfx", runner=fake_run)
+    assert out == tmp_path / "samples/bins/tmpfx.dll"
+    assert "build_masm.sh" in " ".join(str(c) for c in calls["cmd"])
+    assert calls["env"].get("BINARY_NAME") == "tmpfx"
+
+
+def test_verify_sets_test_binary_env(tmp_path):
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["env"] = kw.get("env", {})
+        return _sp.CompletedProcess(cmd, 0, "1 passed", "")
+
+    ok = verify_fixture_case(tmp_path, "sub_X", "tmpfx", runner=fake_run)
+    assert ok is True
+    assert seen["env"].get("D810_TEST_BINARY") == "tmpfx.dll"
