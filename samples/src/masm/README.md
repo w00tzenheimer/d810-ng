@@ -39,7 +39,7 @@ python tools/d810cli.py fixture add --idb <dac.dll.i64> --func <ea|name> \
 (`must_change` + `skip_if_function_absent` only — YOU write the semantic
 assertions from the shown before/after dump) and never auto-commits binaries.
 Re-run one stage with `fixture extract` / `retarget --dry-run` / `build` /
-`register` / `verify`. Layering: pure `src/d810/samples/fixture_builder.py`
+`register` / `verify`. Layering: pure `src/d810/testing/fixture_builder.py`
 (detector/rewriter/case-emitter) + headless idalib worker
 `scripts/fixture_idb_worker.py` (extract + VA→name resolve) +
 `cmd_fixture` in `tools/d810cli.py`.

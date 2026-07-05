@@ -6,7 +6,7 @@ IDA-bound extract/resolve worker is covered by
 """
 from pathlib import Path
 
-from d810.samples.fixture_builder import CallSiteFold, detect_indirect_call_folds
+from d810.testing.fixture_builder import CallSiteFold, detect_indirect_call_folds
 
 REPO = Path(__file__).resolve().parents[2]
 SUB = (REPO / "samples/src/masm/sub_1815C8C30.asm").read_text()
@@ -44,7 +44,7 @@ def test_reads_materialized_value_on_fresh_extract():
 # --------------------------------------------------------------------------- #
 # Task 2: retarget planner + rewriter + stub renderer
 # --------------------------------------------------------------------------- #
-from d810.samples.fixture_builder import (  # noqa: E402
+from d810.testing.fixture_builder import (  # noqa: E402
     ResolvedTarget, RetargetAction, RetargetPlan,
     plan_retargets, apply_retargets, render_stub,
 )
@@ -91,7 +91,7 @@ def test_render_stub_is_dependency_free_leaf():
 # --------------------------------------------------------------------------- #
 # Task 3: DSL case emitter + idempotent upsert
 # --------------------------------------------------------------------------- #
-from d810.samples.fixture_builder import (  # noqa: E402
+from d810.testing.fixture_builder import (  # noqa: E402
     emit_fixture_case, upsert_case_in_list,
 )
 
@@ -130,7 +130,7 @@ def test_upsert_replaces_existing_case_no_duplicate():
 # --------------------------------------------------------------------------- #
 import subprocess as _sp  # noqa: E402
 
-from d810.samples.fixture_builder import (  # noqa: E402
+from d810.testing.fixture_builder import (  # noqa: E402
     build_fixture_dll, verify_fixture_case,
 )
 
