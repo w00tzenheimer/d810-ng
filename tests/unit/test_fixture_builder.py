@@ -39,3 +39,50 @@ def test_reads_materialized_value_on_fresh_extract():
     assert fold.slot_symbol == "off_ABC"
     assert fold.const == 0x10
     assert fold.materialized == 0xDEADBEEFCAFE0000
+
+
+# --------------------------------------------------------------------------- #
+# Task 2: retarget planner + rewriter + stub renderer
+# --------------------------------------------------------------------------- #
+from d810.samples.fixture_builder import (  # noqa: E402
+    ResolvedTarget, RetargetAction, RetargetPlan,
+    plan_retargets, apply_retargets, render_stub,
+)
+
+
+def test_plan_retargets_keeps_leaf_import_skips_sub():
+    folds = [
+        CallSiteFold("off_A", 0x10, "rax", materialized=0x100),  # -> va 0x110
+        CallSiteFold("off_B", 0x20, "rcx", materialized=0x200),  # -> va 0x220
+    ]
+    resolved = {
+        0x110: ResolvedTarget(0x110, "rand", is_import=True, retargetable=True),
+        0x220: ResolvedTarget(0x220, "sub_1815DF1C0", is_import=False, retargetable=False),
+    }
+    plan = plan_retargets(folds, resolved, image_symbols=set())
+    assert plan.actions == (RetargetAction("off_A", 0x10, "rand"),)
+    assert any("sub_1815DF1C0" in s for s in plan.skipped)
+
+
+def test_apply_retargets_rewrites_slot_and_adds_extern():
+    asm = (
+        "; header\n"
+        "CONST SEGMENT\n"
+        "off_A dq 0100h\n"
+        "CONST ENDS\n"
+        "_TEXT SEGMENT ALIGN(16) 'CODE'\n"
+        "PUBLIC f\nf:\n    call rax\n_TEXT ENDS\nEND\n"
+    )
+    plan = RetargetPlan(actions=(RetargetAction("off_A", 0x10, "rand"),), skipped=())
+    out = apply_retargets(asm, plan)
+    assert "off_A dq rand - 10h" in out
+    assert "EXTERN rand:PROC" in out
+    assert "dq 0100h" not in out
+
+
+def test_render_stub_is_dependency_free_leaf():
+    stub = render_stub("rand")
+    assert "PUBLIC rand" in stub
+    assert "xor eax, eax" in stub
+    assert "ret" in stub
+    assert "OPTION PROLOGUE:NONE" in stub

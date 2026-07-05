@@ -96,3 +96,72 @@ def detect_indirect_call_folds(asm_text: str) -> list[CallSiteFold]:
                 materialized=_materialized_value(asm_text, slot),
             ))
     return folds
+
+
+def plan_retargets(
+    folds: list[CallSiteFold],
+    resolved: dict[int, ResolvedTarget],
+    image_symbols: set[str],
+) -> RetargetPlan:
+    """Decide which folds to retarget. LEAF/IMPORT ONLY (§7.2)."""
+    actions: list[RetargetAction] = []
+    skipped: list[str] = []
+    seen: set[str] = set()
+    for f in folds:
+        if f.materialized is None:
+            skipped.append(f"{f.slot_symbol}: slot already a reloc expr (not a fresh extract)")
+            continue
+        va = (f.materialized + f.const) & _MASK64
+        tgt = resolved.get(va)
+        if tgt is None or not tgt.name:
+            skipped.append(f"{f.slot_symbol}: target VA {va:#x} unresolved in source idb")
+            continue
+        if tgt.name in image_symbols:
+            skipped.append(f"{f.slot_symbol}: target {tgt.name} is in-image (already fine)")
+            continue
+        if not tgt.retargetable:
+            skipped.append(f"{f.slot_symbol}: target {tgt.name} is an obfuscated helper, left as MEMORY[...]")
+            continue
+        key = f"{f.slot_symbol}->{tgt.name}"
+        if key in seen:
+            continue
+        seen.add(key)
+        actions.append(RetargetAction(f.slot_symbol, f.const, tgt.name))
+    return RetargetPlan(actions=tuple(actions), skipped=tuple(skipped))
+
+
+def apply_retargets(asm_text: str, plan: RetargetPlan) -> str:
+    """Rewrite slot lines to ``<name> - <const>h`` and inject EXTERN decls."""
+    text = asm_text
+    externs: list[str] = []
+    for act in plan.actions:
+        text = re.sub(
+            rf"^\s*{re.escape(act.slot_symbol)}\s+dq\s+(?:[0-9A-Fa-f]+h|\d+)\s*$",
+            f"{act.slot_symbol} dq {act.name} - {act.const:X}h",
+            text, count=1, flags=re.MULTILINE,
+        )
+        externs.append(f"EXTERN {act.name}:PROC")
+    if externs:
+        # inject EXTERN block just before the first SEGMENT (after existing
+        # header comments and any pre-existing EXTERN decls).
+        lines = text.splitlines(keepends=True)
+        insert_at = next((i for i, ln in enumerate(lines) if "SEGMENT" in ln), 0)
+        block = "".join(e + "\n" for e in externs) + "\n"
+        text = "".join(lines[:insert_at]) + block + "".join(lines[insert_at:])
+    return text
+
+
+def render_stub(name: str) -> str:
+    """A dependency-free leaf stub, auto-exported by the Makefile."""
+    return (
+        f"; d810 fixture retarget stub for {name} (dependency-free leaf)\n"
+        "OPTION PROLOGUE:NONE\n"
+        "OPTION EPILOGUE:NONE\n"
+        "_TEXT SEGMENT ALIGN(16) 'CODE'\n"
+        f"PUBLIC {name}\n"
+        f"{name}:\n"
+        "    xor eax, eax\n"
+        "    ret\n"
+        "_TEXT ENDS\n"
+        "END\n"
+    )
