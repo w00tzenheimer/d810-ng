@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import json
 import os
 import re
 import shutil
@@ -1125,6 +1126,114 @@ def _add_worktree(p: argparse.ArgumentParser) -> None:
     )
 
 
+def cmd_fixture(args: argparse.Namespace) -> int:
+    """Automate idb64 -> committed MASM fixture (ticket d81-rtfh)."""
+    _ensure_src_on_path()
+    from d810.samples import fixture_builder as fb
+
+    worker = REPO_ROOT / "samples/scripts/fixture_idb_worker.py"
+    out_dir = Path(args.out) if getattr(args, "out", None) else (REPO_ROOT / "samples/src/masm")
+
+    def _worker(*wargs: str) -> str:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(REPO_ROOT / "src")
+        res = subprocess.run([sys.executable, str(worker), *wargs],
+                             capture_output=True, text=True, env=env, cwd=str(REPO_ROOT))
+        if res.returncode != 0:
+            _die(f"worker {wargs[0]} failed:\n{res.stderr}")
+        return res.stdout.strip().splitlines()[-1]
+
+    sub = args.fixture_cmd
+    if sub in ("extract", "retarget", "add"):
+        asm_path = out_dir / f"{args.function}.asm"
+        meta = json.loads(_worker("extract", "--idb", args.idb,
+                                  "--func", args.function, "--out", str(asm_path)))
+        func_name = meta["function"]
+        final_path = out_dir / f"{func_name}.asm"
+        if str(final_path) != meta["asm"]:
+            Path(meta["asm"]).replace(final_path)
+        asm_path = final_path
+        print(f"d810cli: extracted -> {asm_path}", file=sys.stderr)
+        if sub == "extract":
+            print(f"ASM={asm_path}")
+            return 0
+
+        asm_text = asm_path.read_text()
+        folds = fb.detect_indirect_call_folds(asm_text)
+        vas = ",".join(hex((f.materialized + f.const) & ((1 << 64) - 1))
+                       for f in folds if f.materialized is not None)
+        resolved_raw = json.loads(_worker("resolve", "--idb", args.idb, "--vas", vas)) if vas else {}
+        resolved = {int(k): fb.ResolvedTarget(**v) for k, v in resolved_raw.items()}
+        plan = fb.plan_retargets(folds, resolved, image_symbols=set())
+        print("=== retarget plan ===", file=sys.stderr)
+        for a in plan.actions:
+            print(f"  retarget {a.slot_symbol} -> {a.name} - {a.const:#x}", file=sys.stderr)
+        for s in plan.skipped:
+            print(f"  skip: {s}", file=sys.stderr)
+        if getattr(args, "dry_run", False) and sub == "retarget":
+            return 0
+
+        asm_text = fb.apply_retargets(asm_text, plan)
+        asm_path.write_text(asm_text)
+        for a in plan.actions:
+            stub = out_dir / f"{a.name}.asm"
+            if not stub.exists():
+                stub.write_text(fb.render_stub(a.name))
+                print(f"d810cli: wrote stub -> {stub}", file=sys.stderr)
+        if sub == "retarget":
+            return 0
+
+    if sub in ("build", "add"):
+        binary = getattr(args, "binary_name", None) or "libobfuscated_fixturetest"
+        dll = fb.build_fixture_dll(REPO_ROOT, binary, runner=subprocess.run)
+        print(f"d810cli: built {dll}", file=sys.stderr)
+        if sub == "build":
+            print(f"DLL={dll}")
+            return 0
+
+    if sub in ("register", "add"):
+        cases_file = REPO_ROOT / "tests/system/cases/libobfuscated_comprehensive.py"
+        src = cases_file.read_text()
+        case_src = fb.emit_fixture_case(args.function, args.project)
+        # Isolate the DAC_MASM_CASES = [ ... ] block, upsert, splice back.
+        start = src.index("DAC_MASM_CASES = [")
+        depth = 0
+        i = src.index("[", start)
+        end = i + 1
+        for j in range(i, len(src)):
+            if src[j] == "[":
+                depth += 1
+            elif src[j] == "]":
+                depth -= 1
+                if depth == 0:
+                    end = j + 1
+                    break
+        block = src[start:end]
+        new_block = fb.upsert_case_in_list(block, args.function, case_src)
+        cases_file.write_text(src[:start] + new_block + src[end:])
+        print(f"d810cli: registered case for {args.function} in {cases_file}", file=sys.stderr)
+        if sub == "register":
+            return 0
+
+    if sub in ("verify", "add"):
+        binary = getattr(args, "binary_name", None) or "libobfuscated_fixturetest"
+        ok = fb.verify_fixture_case(REPO_ROOT, args.function, binary, runner=subprocess.run)
+        print(f"d810cli: verify {'PASS' if ok else 'FAIL'} for {args.function}", file=sys.stderr)
+        if sub == "verify":
+            return 0 if ok else 1
+
+    if sub == "add":
+        # HUMAN GATE: never auto-commit binaries or the case.
+        print("\n=== HUMAN GATE (d81-rtfh) ===", file=sys.stderr)
+        print("Derived a MINIMAL case (must_change + skip-if-absent only). Review the", file=sys.stderr)
+        print("before/after decompile, WRITE the semantic assertions by hand, then", file=sys.stderr)
+        print("commit the .asm/stub/case yourself. Binaries are NOT auto-committed.", file=sys.stderr)
+        if not getattr(args, "yes", False):
+            print("(re-run with --yes to acknowledge non-interactively)", file=sys.stderr)
+        return 0
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="d810cli",
@@ -1760,6 +1869,44 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     sp.set_defaults(func=cmd_egress_plan)
+
+    fixture = sub.add_parser("fixture", help="idb64 -> committed MASM fixture (d81-rtfh)")
+    fixture_sub = fixture.add_subparsers(dest="fixture_cmd", required=True)
+
+    def _fx_common(sp):
+        sp.add_argument("--idb", required=True, help="source .i64/.idb path")
+        # dest="function" so it does NOT clobber the `func` dispatch handler
+        # (main() calls args.func(args)).
+        sp.add_argument("--func", required=True, dest="function",
+                        help="function ea (0x..) or name")
+        sp.add_argument("--out", help="output dir for .asm (default samples/src/masm)")
+        sp.set_defaults(func=cmd_fixture)
+
+    fx_extract = fixture_sub.add_parser("extract", help="emit compilable MASM")
+    _fx_common(fx_extract)
+
+    fx_retarget = fixture_sub.add_parser("retarget", help="detect + retarget devirt calls")
+    _fx_common(fx_retarget)
+    fx_retarget.add_argument("--dry-run", action="store_true", help="print plan, do not rewrite")
+
+    fx_build = fixture_sub.add_parser("build", help="local build_masm.sh -> throwaway DLL")
+    _fx_common(fx_build)
+    fx_build.add_argument("--binary-name", dest="binary_name", default=None)
+
+    fx_register = fixture_sub.add_parser("register", help="upsert DSL case into DAC_MASM_CASES")
+    _fx_common(fx_register)
+    fx_register.add_argument("--project", required=True)
+
+    fx_verify = fixture_sub.add_parser("verify", help="run the DSL case (D810_TEST_BINARY)")
+    _fx_common(fx_verify)
+    fx_verify.add_argument("--binary-name", dest="binary_name", default=None)
+
+    fx_add = fixture_sub.add_parser("add", help="run the whole pipeline (human gate at end)")
+    _fx_common(fx_add)
+    fx_add.add_argument("--project", required=True)
+    fx_add.add_argument("--binary-name", dest="binary_name", default=None)
+    fx_add.add_argument("--dry-run", action="store_true")
+    fx_add.add_argument("--yes", action="store_true", help="acknowledge the human gate non-interactively")
 
     return p
 
