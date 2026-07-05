@@ -165,3 +165,50 @@ def render_stub(name: str) -> str:
         "_TEXT ENDS\n"
         "END\n"
     )
+
+
+def emit_fixture_case(function: str, project: str) -> str:
+    """Render a MINIMAL DeobfuscationCase (assertion policy = §7.1 minimal)."""
+    return (
+        "    DeobfuscationCase(\n"
+        f'        function="{function}",\n'
+        f'        description="TODO(human): {function} MASM fixture (d810cli fixture, '
+        'd81-rtfh). Auto-generated MINIMAL case: only must_change + no-INTERR '
+        'guarded. Replace this description and add semantic assertions '
+        '(contains / not-contains / expected-rules) from the '
+        'before/after dump before merging.",\n'
+        f'        project="{project}",\n'
+        "        must_change=True,\n"
+        "        skip_if_function_absent=True,\n"
+        "    ),\n"
+    )
+
+
+def upsert_case_in_list(list_source: str, function: str, case_src: str) -> str:
+    """Insert/replace a case keyed by ``function="<function>"`` in a
+    ``DAC_MASM_CASES = [ ... ]`` block (idempotent, §7.4/§7.5)."""
+    # Try to replace an existing DeobfuscationCase(...) whose function matches.
+    case_block = re.compile(r"[ \t]*DeobfuscationCase\(\s*.*?\),\n", re.DOTALL)
+
+    def _matches(block: str) -> bool:
+        return bool(re.search(rf'function="{re.escape(function)}"', block))
+
+    replaced = False
+    out_parts: list[str] = []
+    pos = 0
+    for m in case_block.finditer(list_source):
+        out_parts.append(list_source[pos:m.start()])
+        block = m.group(0)
+        if _matches(block) and not replaced:
+            out_parts.append(case_src)
+            replaced = True
+        else:
+            out_parts.append(block)
+        pos = m.end()
+    out_parts.append(list_source[pos:])
+    result = "".join(out_parts)
+    if replaced:
+        return result
+    # Append before the closing bracket of DAC_MASM_CASES.
+    idx = list_source.rfind("]")
+    return list_source[:idx] + case_src + list_source[idx:]

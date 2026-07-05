@@ -86,3 +86,40 @@ def test_render_stub_is_dependency_free_leaf():
     assert "xor eax, eax" in stub
     assert "ret" in stub
     assert "OPTION PROLOGUE:NONE" in stub
+
+
+# --------------------------------------------------------------------------- #
+# Task 3: DSL case emitter + idempotent upsert
+# --------------------------------------------------------------------------- #
+from d810.samples.fixture_builder import (  # noqa: E402
+    emit_fixture_case, upsert_case_in_list,
+)
+
+
+def test_emit_case_is_minimal_no_auto_semantics():
+    src = emit_fixture_case("sub_ABC", "default_unflattening_ollvm.json")
+    assert 'function="sub_ABC"' in src
+    assert 'project="default_unflattening_ollvm.json"' in src
+    assert "must_change=True" in src
+    assert "skip_if_function_absent=True" in src
+    assert "TODO(human)" in src
+    # MINIMAL policy: no auto semantic assertions
+    assert "deobfuscated_contains" not in src
+    assert "deobfuscated_not_contains" not in src
+    assert "expected_rules" not in src
+
+
+def test_upsert_appends_new_case():
+    lst = "DAC_MASM_CASES = [\n    DeobfuscationCase(\n        function=\"old\",\n    ),\n]\n"
+    out = upsert_case_in_list(lst, "sub_NEW", emit_fixture_case("sub_NEW", "p.json"))
+    assert 'function="old"' in out
+    assert 'function="sub_NEW"' in out
+    assert out.count("DeobfuscationCase(") == 2
+
+
+def test_upsert_replaces_existing_case_no_duplicate():
+    base = upsert_case_in_list(
+        "DAC_MASM_CASES = [\n]\n", "sub_X", emit_fixture_case("sub_X", "p.json"))
+    again = upsert_case_in_list(base, "sub_X", emit_fixture_case("sub_X", "q.json"))
+    assert again.count('function="sub_X"') == 1
+    assert 'project="q.json"' in again
