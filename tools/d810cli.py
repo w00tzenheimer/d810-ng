@@ -1129,7 +1129,7 @@ def _add_worktree(p: argparse.ArgumentParser) -> None:
 def cmd_fixture(args: argparse.Namespace) -> int:
     """Automate idb64 -> committed MASM fixture (ticket d81-rtfh)."""
     _ensure_src_on_path()
-    from d810.samples import fixture_builder as fb
+    from d810.testing import fixture_builder as fb
 
     worker = REPO_ROOT / "samples/scripts/fixture_idb_worker.py"
     out_dir = Path(args.out) if getattr(args, "out", None) else (REPO_ROOT / "samples/src/masm")
