@@ -6,8 +6,11 @@ module is unit-testable without IDA.
 """
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 _MASK64 = (1 << 64) - 1
 
@@ -212,3 +215,32 @@ def upsert_case_in_list(list_source: str, function: str, case_src: str) -> str:
     # Append before the closing bracket of DAC_MASM_CASES.
     idx = list_source.rfind("]")
     return list_source[:idx] + case_src + list_source[idx:]
+
+
+def build_fixture_dll(repo_root: Path, binary_name: str, runner=subprocess.run) -> Path:
+    """Build a throwaway DLL locally via samples/scripts/build_masm.sh (§7.3)."""
+    samples = repo_root / "samples"
+    script = samples / "scripts" / "build_masm.sh"
+    env = {**os.environ, "BINARY_NAME": binary_name, "MASM_FUNCS": ""}
+    res = runner(["bash", str(script)], env=env, cwd=str(samples),
+                 capture_output=True, text=True)
+    out = samples / "bins" / f"{binary_name}.dll"
+    if getattr(res, "returncode", 1) != 0 or not out.exists():
+        raise RuntimeError(
+            f"build_masm.sh failed (rc={getattr(res, 'returncode', '?')}):\n"
+            f"{getattr(res, 'stderr', '')}")
+    return out
+
+
+def verify_fixture_case(repo_root: Path, function: str, binary_name: str,
+                        runner=subprocess.run) -> bool:
+    """Run the DSL case for <function> against the throwaway DLL."""
+    env = {**os.environ,
+           "D810_TEST_BINARY": f"{binary_name}.dll",
+           "PYTHONPATH": f"{repo_root / 'src'}:{repo_root / 'tests'}"}
+    res = runner(
+        ["python", "-m", "pytest",
+         "tests/system/e2e/test_libdeobfuscated_dsl.py",
+         "-k", function, "-q"],
+        env=env, cwd=str(repo_root), capture_output=True, text=True)
+    return getattr(res, "returncode", 1) == 0
