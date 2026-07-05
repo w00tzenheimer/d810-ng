@@ -21,8 +21,28 @@ Authoritative build path (per `../../README.md`): `reversepc.local`,
 ## How a fixture is created (the manual workflow)
 
 Worked example: `sub_1815C8C30` (dac.dll `rand()%3` helper) and its `rand()`
-retarget. This is the procedure the planned `d810cli.py fixture` command
-(ticket d81-rtfh) will automate.
+retarget. This is the procedure the `d810cli.py fixture` command (ticket
+d81-rtfh) automates — see **Automated** below; the manual steps follow it.
+
+## Automated: `d810cli.py fixture`
+
+The manual workflow below is automated by:
+
+```bash
+python tools/d810cli.py fixture add --idb <dac.dll.i64> --func <ea|name> \
+    --project default_unflattening_ollvm.json
+```
+
+`add` runs extract → retarget (LEAF/IMPORT targets only — deeper obfuscated
+`sub_*` stay `MEMORY[...]`) → local build (`scripts/build_masm.sh`, NO reversepc)
+→ verify, then STOPS at a human gate: it emits a MINIMAL `DeobfuscationCase`
+(`must_change` + `skip_if_function_absent` only — YOU write the semantic
+assertions from the shown before/after dump) and never auto-commits binaries.
+Re-run one stage with `fixture extract` / `retarget --dry-run` / `build` /
+`register` / `verify`. Layering: pure `src/d810/samples/fixture_builder.py`
+(detector/rewriter/case-emitter) + headless idalib worker
+`scripts/fixture_idb_worker.py` (extract + VA→name resolve) +
+`cmd_fixture` in `tools/d810cli.py`.
 
 ### 1. Extract the function to MASM
 
