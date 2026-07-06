@@ -712,7 +712,6 @@ PYTHONPATH=src python3 tools/d810cli.py after -n --stats
 * **Deobfuscation Stats**: `PYTHONPATH=src python3 tools/d810cli.py stats`
 * **Frontier Diagnostics**: `PYTHONPATH=src python3 tools/d810cli.py frontier-diagnostics`
 * **Terminal Byte Audit**: `PYTHONPATH=src python3 tools/d810cli.py byte-audit`
-* **Recompute Oracle**: `PYTHONPATH=src python3 tools/d810cli.py oracle`
 
 ### Offline Diagnostic DB Queries
 
@@ -729,8 +728,19 @@ DB=$(ls -lhS .worktrees/${WORKTREE_NAME}/.tmp/logs/d810_logs/*.diag.sqlite3 | he
 sqlite3 $DB "SELECT id, label FROM snapshots"
 
 # Trace specific microcode instructions or EAs across snapshots
-PYTHONPATH=src python3 -m d810.core.diag ea-trace --db $DB 0x1800134A5
+PYTHONPATH=src python3 -m d810.diagnostics ea-trace --db $DB 0x1800134A5
+
+# Structured queries: a block chain, writes to a stack slot, return-path hops
+PYTHONPATH=src python3 -m d810.diagnostics chain --db $DB 131 174 176
+PYTHONPATH=src python3 -m d810.diagnostics var-writes --db $DB 0x7F0
+PYTHONPATH=src python3 -m d810.diagnostics return-paths --db $DB
 ```
+
+Run `PYTHONPATH=src python3 -m d810.diagnostics --help` for the full set of query subcommands.
+
+### Cross-session persistence
+
+Beyond the per-run diagnostic snapshots, D-810 keeps a persistent SQLite store (`src/d810/core/persistence.py`, `SQLiteOptimizationStorage`) of function fingerprints, applied patches, per-function rule configuration, and optimization results. It survives restarts, so repeated analysis of the same function can reuse prior results instead of recomputing them.
 
 ---
 
