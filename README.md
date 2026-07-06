@@ -568,6 +568,31 @@ Overrides persist to the project database, so reopening the IDB or sharing the p
 
 See [docs/features/function-rules.md](docs/features/function-rules.md) for the full walkthrough, precedence rules, and programmatic API.
 
+## How to deobfuscate something new
+
+Before you pick a rule, understand the shape. This is the workflow, obfuscator-agnostic — you almost never need to know "which obfuscator produced this" to add coverage.
+
+1. **Triage the shape.** Decompile the target natively first — that native decompile is your oracle. Classify what you see: MBA / arithmetic, an opaque predicate / constant-condition jump, an indirect jump / call, or control-flow flattening (a dispatcher). Use the diagnostics CLI (the *Diagnostics & CLI Tools* section below) to look at the microcode, not just the pseudocode.
+
+2. **Pick your lever.**
+
+   | Shape | Lever | Where |
+   |-|-|-|
+   | MBA / arithmetic | DSL `VerifiableRule` (pattern + replacement, Z3-verified) | `src/d810/mba/rules/` |
+   | Opaque predicate / constant jump | `JumpFixer` family | `src/d810/optimizers/microcode/flow/jumps/` |
+   | Indirect jump / call, table decode, custom transform | Port a `FlowOptimizationRule` (step 3) | `src/d810/optimizers/microcode/flow/` |
+   | Control-flow flattening / dispatcher | `ComposedUnflatteningRule` / `StateMachineCffUnflattener` + a strategy/profile | `src/d810/optimizers/microcode/flow/flattening/` |
+
+3. **Porting an analysis / transform pass.** To bring an external C++ (or LLVM) deobfuscation pass into d810, reimplement it as a Python `FlowOptimizationRule`: detect the pattern at the right maturity, reuse the framework helpers (e.g. `d810.hexrays.utils.table_utils` for table / xor / global analysis), mutate the microcode graph through `DeferredGraphModifier`, and validate the result with `safe_verify`. Register the rule in a config-v2 profile so it runs.
+
+4. **Build a fixture** so your target lives in the tracked corpus and CI guards it. Two paths:
+   - **Author a C source fixture** — write `samples/src/c/<name>.c`, then `make` (the *Adding New Obfuscation Examples* section below) builds it into `libobfuscated.{dll,so,dylib}`. Use this for a minimal, controlled repro of a pattern. The sample build compiles C only — there is no C++ path, and C suffices because the obfuscation lives in the compiled machine code, not the source language.
+   - **Extract a real function to MASM** — `python tools/d810cli.py fixture add --idb <db.i64> --func <ea|name> --project <profile>` lifts a genuine obfuscated function from an IDB into `samples/src/masm/`, retargets its indirect calls onto named stubs, builds locally, and stops at a human gate for you to add the semantic assertions.
+
+5. **Verify.** Add a `DeobfuscationCase` and check the deobfuscated output against the native-decompile oracle — it must copy IDA's structure, not merely differ. Then wire the rule into the config-v2 profile it belongs to.
+
+6. **See how it applied — or where it missed.** Use the diagnostics CLI and the persistence layer (the *Diagnostics & CLI Tools* section below) to inspect which rules fired, on which blocks, and what stayed obfuscated.
+
 ## Adding New Obfuscation Examples
 
 In `samples/src`, there are various `C` programs compiled using the `samples/Makefile` into a shared library, without optimizations (`-O0`). On Windows, that shared library is a `.dll`; on macOS, it is a `.dylib`; on Linux, it is a `.so`. Included is an example compiled DLL, `libobfuscated.dll`, that can serve as a testing ground for seeing the plugin in action. Please make a pull request with more obfuscation `C` examples to build a repository of obfuscated sample code for further research.
