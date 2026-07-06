@@ -53,7 +53,7 @@ D-810 operates on IDA Hex-Rays microcode at multiple maturity levels. Instructio
 | **Factor rules** | `AndBnot_FactorRule_*`, `Xor_FactorRule_*`, etc. | Algebraic factorization and rewriting. |
 | **Chain rules** | `AndChain`, `OrChain`, `XorChain`, `ArithmeticChain` | Simplifies chains of the same operation. |
 | **Z3 rules** | `Z3ConstantOptimization`, `Z3setzRuleGeneric`, `Z3SmodRuleGeneric`, etc. | SMT-based simplification when template matching fails. |
-| **Peephole** | `FoldReadonlyDataRule`, `LocalizedConstantPropagationRule` | Folds reads from readonly data, constant propagation. |
+| **Peephole** | `FoldReadonlyDataRule`, `ForwardConstantPropagationRule` | Folds reads from readonly data, constant propagation. |
 | **Hodur-specific** | `Xor_Hodur_1`, `Bnot_Hodur_1`, `Or_Hodur_1`, `Or_Hodur_2` | MBA patterns seen in Hodur (PlugX) malware. |
 
 ### Control-Flow Unflatteners
@@ -62,30 +62,25 @@ Flow optimizers restore natural control flow from flattened dispatchers. The cur
 
 | Engine rule | Target | Description |
 |-------------|--------|-------------|
-| **EmulatedDispatcherUnflattener** | OLLVM / Tigress switch / Tigress indirect / Approov-style dispatchers | Shared dispatcher engine with profiles for equality-chain, switch-table, indirect-transfer, and dynamic state-machine shapes. |
-| **HodurUnflattener** | Hodur (PlugX) | Hodur-specific state-machine strategy family and priors. |
+| **StateMachineCffUnflattener** | OLLVM / Tigress / Approov / Hodur dispatchers | The dispatcher unflattener (a `ComposedUnflatteningRule`). Config-v2 profiles select its per-obfuscator strategy/profile — equality-chain, switch-table, indirect-transfer, and dynamic state-machine shapes. |
 | **SimpleFlatteningCleanupUnflattener** | Generic cleanup | Shared cleanup family for fake jumps, single-iteration loops, bad-while-loop shapes, and predecessor branch-arm repairs. |
-| **UnflattenControlFlowRule** (experimental) | Generic | Alternative CFG-based unflattener using path emulation. |
 
 ### Flow Optimizations (non-unflattening)
 
 | Rule | Description |
 |------|-------------|
-| **BlockMerger** | Merges sequential blocks when safe. |
 | **JumpFixer** | Resolves opaque/constant-condition jumps (``JnzRule*``, ``JbRule1``, ``JaeRule1``, ``CompareConstantRule*``, ``JmpRuleZ3Const``). |
 | **GlobalConstantInliner** | Inlines global constants used as immediates. |
-| **IndirectCallResolver** | Resolves `m_icall` via function-pointer table analysis. |
-| **IndirectBranchResolver** | Resolves indirect branches via jump-table analysis. |
 
 ### Supported Obfuscators / Patterns
 
 | Obfuscator | Config | Engine path | Notes |
 |------------|--------|-------------|-------|
-| O-LLVM (obfuscator-llvm) | `default_unflattening_ollvm.json` | `EmulatedDispatcherUnflattener` | FLA + BCF + MBA through the OLLVM dispatcher profile. |
-| Tigress switch | `default_unflattening_tigress_engine_transition_facts.json` | `EmulatedDispatcherUnflattener` | Switch-table state dispatcher and transition facts. |
-| Approov | `default_unflattening_approov.json` | `EmulatedDispatcherUnflattener` / `SimpleFlatteningCleanupUnflattener` | Approov-like state constants and cleanup shapes. |
-| Hodur (PlugX) | `example_hodur.json` | `HodurUnflattener` | Hodur MBA + Hodur while-loop state-machine recovery. |
-| Tigress indirect | `default_unflattening_tigress_indirect_engine.json` | `EmulatedDispatcherUnflattener` | Indirect transfer-map profile with materialized target proof. |
+| O-LLVM (obfuscator-llvm) | `default_unflattening_ollvm.json` | `StateMachineCffUnflattener` | FLA + BCF + MBA through the OLLVM dispatcher profile. |
+| Tigress switch | `default_unflattening_tigress_engine_transition_facts.json` | `StateMachineCffUnflattener` | Switch-table state dispatcher and transition facts. |
+| Approov | `default_unflattening_approov.json` | `StateMachineCffUnflattener` / `SimpleFlatteningCleanupUnflattener` | Approov-like state constants and cleanup shapes. |
+| Hodur (PlugX) | `example_hodur.json` | `StateMachineCffUnflattener` | Hodur MBA + Hodur while-loop state-machine recovery. |
+| Tigress indirect | `default_unflattening_tigress_indirect.json` | `StateMachineCffUnflattener` | Indirect transfer-map profile with materialized target proof. |
 
 ### DSL and Rule Verification
 
@@ -340,7 +335,7 @@ So an unknown obfuscator that flattens with, say, an equality-chain dispatcher i
 2. **New vendor needing shape-specific recovery** — add a `StateMachineCffFamily` profile under `families/state_machine_cff/<name>.py`: a `detect` (claim by `DispatcherType` + any signature) and a kind-aware `pipeline_for`. Register it via the package `__init__` eager import.
 3. **Config-directed routing** — set `router_resolution` in the `StateMachineCffUnflattener` rule config: `require` (force one profile), `prefer` (bias the order), `deny` (exclude). Absent it, pure shape-detection runs.
 
-> The legacy `EmulatedDispatcherUnflattener` engine (still config-activated for some OLLVM / Tigress profiles) recovers VM / switch dispatchers *statically* through a separate `CFFStrategyFamily` system — it does **not** use the concolic emulator despite the name. It is being subsumed into the §1a profiles above; the concolic `EmulationCapability` handles the genuinely-needs-execution indirect-jump cases.
+> Naming caveat: the *emulated-dispatcher* strategy (`emulated_dispatcher_strategy.py`, which feeds the static `CFFStrategyFamily`) recovers VM / switch dispatchers *statically* — it does **not** use the concolic emulator despite the "emulated" name. It is subsumed by the §1a `StateMachineCffUnflattener` profiles above; the concolic `EmulationCapability` handles the genuinely-needs-execution indirect-jump cases.
 
 
 ## Installation
