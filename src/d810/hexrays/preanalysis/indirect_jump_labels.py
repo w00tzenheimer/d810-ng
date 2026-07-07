@@ -5,6 +5,39 @@ dispatches with ``ijmp`` through that stack slot.  IDA may keep the native label
 bodies outside the function graph used by Hex-Rays, so the resulting MBA only
 contains the table-copy stub and final indirect jump.  This module performs the
 IDA-specific preanalysis needed to make those labels visible to Hex-Rays.
+
+Indirect-dispatcher materialization family
+------------------------------------------
+This module also owns the *shared contract* by which any register-indirect
+computed-goto dispatcher is made visible to Hex-Rays on the flowchart-preanalysis
+seam and routed for CFF recovery. A dispatcher "shape" is a member of the family
+if it implements discovery + delivery and then uses these three shared
+primitives:
+
+* :func:`create_dispatcher_target_instructions` -- turn discovered handler EAs
+  into real code/flowchart heads (undefining stale data heads first).
+* :func:`mark_indirect_dispatcher` -- record that a function was materialized as
+  a register-indirect dispatcher.
+* :func:`is_materialized_indirect_dispatcher` -- the address-agnostic signal the
+  CFF unflattener reads to route recovery to ``MMAT_CALLS`` (the maturity at
+  which the ``cmp state,K; jz`` equality chain is still intact; GLBOPT1
+  constant-folds it away).
+
+Two shapes are registered today; they share the contract above but keep their own
+discovery + delivery because both differ fundamentally:
+
+* **Pointer-table (indexed N-way switch)** -- Tigress ``ijmp`` through a qword
+  array of absolute code pointers. Discovery: :func:`discover_indirect_jump_table`
+  (a data-structure scan). Delivery: *crefs* -- the state var indexes the table,
+  so there is no per-target condition to lose and Hex-Rays rebuilds the switch.
+* **Comparison-tree (binary search)** -- ``cmp state,K; setcc/cmov; jmp reg`` with
+  ``target = dword[table]+KEY`` (Rhadamanthys ``sub_40A560``). Discovery +
+  delivery live in :mod:`d810.optimizers.microcode.flow.jumps.computed_goto_resolver` (concolic
+  execution for the x64 cmov shape; a static const-prop fixpoint for the x86
+  binary search). Delivery: *condition-preserving byte-patch* to an explicit
+  ``j<cc>`` -- crefs decouple the condition from the target, so ``mba-simplify``
+  strips the dead ``cmp/cmov`` and collapses the tree to a single comparison
+  (verified). The delivery mechanism is a property of the topology, not a knob.
 """
 from __future__ import annotations
 
@@ -143,8 +176,12 @@ def _discover_next_function_start(function_ea: int) -> int | None:
         return None
 
 
-def _create_target_instructions(targets: Sequence[int]) -> None:
+def create_dispatcher_target_instructions(targets: Sequence[int]) -> None:
     """Disassemble each computed-goto label target into an instruction head.
+
+    Shared primitive of the indirect-dispatcher materialization family (see the
+    module docstring): both the pointer-table and comparison-tree shapes call it
+    to promote discovered handler EAs to real code/flowchart heads.
 
     A Tigress label body that immediately abuts the dispatch ``jmp reg`` (the
     ``jmp`` has no fall-through, so the byte after it is only reachable through
@@ -616,7 +653,7 @@ def materialize_indirect_label_targets(
             reason="unbounded_label_range",
         )
 
-    _create_target_instructions(plan.target_eas)
+    create_dispatcher_target_instructions(plan.target_eas)
     indirect_jump_ea = (
         int(dispatch_jump_ea)
         if dispatch_jump_ea is not None else
@@ -1007,7 +1044,24 @@ def is_materialized_indirect_dispatcher(function_ea: int) -> bool:
     return int(function_ea) in _INDIRECT_DISPATCHER_FUNCTION_EAS
 
 
+def mark_indirect_dispatcher(function_ea: int) -> None:
+    """Mark *function_ea* as a materialized register-indirect computed-goto
+    dispatcher.
+
+    Used by sibling computed-goto materializers (e.g. the cmov/setcc
+    pointer-select resolver in :mod:`d810.optimizers.microcode.flow.jumps.computed_goto_resolver`)
+    that recover a register-indirect dispatcher of a non-Tigress shape. Setting
+    this flag makes :func:`is_materialized_indirect_dispatcher` true, which routes
+    the CFF unflattener's recovery to ``MMAT_CALLS`` — the maturity at which the
+    ``cmp state, const; jz handler`` equality chain is still intact (GLBOPT1
+    constant-folds it away, which is why a GLBOPT1-only recovery reads
+    ``map_rows=0``)."""
+    _INDIRECT_DISPATCHER_FUNCTION_EAS.add(int(function_ea))
+
+
 __all__ = [
+    "mark_indirect_dispatcher",
+    "create_dispatcher_target_instructions",
     "IndirectLabelMaterializationPlan",
     "is_materialized_indirect_dispatcher",
     "IndirectLabelMaterializationResult",
