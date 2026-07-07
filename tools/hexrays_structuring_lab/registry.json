@@ -1006,6 +1006,35 @@
         "case_cond BLT_2WAY conditional block"
       ],
       "observation_artifact": "tools/hexrays_structuring_lab/observations/badwhile_duplicate_group_triangle.json"
+    },
+    {
+      "id": "rhad_indirect_dispatch",
+      "binary": "restructuring_lab.dll",
+      "function": "lab_rhad_indirect",
+      "fixture_kind": "masm",
+      "compiler_flags": [
+        "llvm-ml64"
+      ],
+      "project": "default_indirect_resolution.json",
+      "maturity": "LOCOPT,CALLS,GLBOPT1",
+      "status": "planned",
+      "question": "Can d810 resolve a cmov-selected computed goto (jmp reg = qword[cell]+KEY) and materialize the orphaned handlers so Hex-Rays forms the ebx state-machine CFG, then unflatten it? (Rhadamanthys sub_40A560 shape analog.)",
+      "expected_evidence": [
+        "baseline Hex-Rays truncates: __asm{jmp rax}, jmp reg succs=[] (VERIFIED 2026-07-07)",
+        "with pass: computed jmp resolved to 2 targets/site via concolic/microcode evaluator",
+        "handlers materialized (set_switch_info/tail); flowchart grows past the single node",
+        "ebx comparison-tree state machine recovered (map_rows>0) and unflattened"
+      ],
+      "tags": [
+        "masm-fixture",
+        "indirect-computed-goto",
+        "cmov-pointer-select",
+        "rhadamanthys",
+        "state-machine",
+        "d81-0kow",
+        "d81-uhbj",
+        "lane-rhad"
+      ]
     }
   ]
 }
