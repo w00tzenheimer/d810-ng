@@ -101,6 +101,7 @@ class TestMopSnapshotProperties:
 
 
 @pytest.mark.ida_required
+@pytest.mark.usefixtures("ida_database", "configure_hexrays")
 class TestMopSnapshotToMop:
     """Test that to_mop() reconstructs a real mop_t from a snapshot.
 
@@ -108,6 +109,12 @@ class TestMopSnapshotToMop:
     ``mop_t.make_global`` is not exposed (issue #44). Other branches are
     sanity-checked to guard against the same class of SDK drift.
     """
+
+    # to_mop() calls mop_t.make_*(), which needs a live Hex-Rays context. With no
+    # open database those calls segfault on IDA 9.2 (a context-free call only
+    # tolerated on 9.3). Open the sample DLL like every other runtime test so the
+    # reconstruction runs against a real decompiler.
+    binary_name = "libobfuscated.dll"
 
     def test_to_mop_global_reconstructs_mop_v(self):
         """mop_v branch — guards against missing mop_t.make_global (#44)."""
