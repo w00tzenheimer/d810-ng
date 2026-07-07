@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+import os
 import pathlib
 import time
 from collections import defaultdict
@@ -151,9 +152,15 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self._rule_scope_func_ea = -1
         self._active_instruction_rule_names_by_maturity: dict[int, frozenset[str]] = {}
 
-        # Cycle detection: maps instruction EA -> set of post-rewrite hashes.
-        # If a rewrite produces an instruction whose hash was already seen for
-        # that EA, we have a cycle (Rule A: X->Y, Rule B: Y->X) and break it.
+        # Cycle detection: state-revisit. For each instruction EA we record
+        # the set of distinct pre-rewrite state hashes ever observed. A
+        # "cycle" is when we revisit a prior pre-state AFTER having been at
+        # some different state in between (Rule A: X->Y, Rule B: Y->X, then
+        # we see X again => cycle). Re-presentation of the same pre-state
+        # repeatedly (Hex-Rays giving us the unchanged ins across passes) is
+        # NOT a cycle and stays allowed -- the previous post-hash keying
+        # bracketed valid idempotent re-folds and undid them, leaving
+        # obfuscated forms in the final pseudocode.
         self._rewrite_seen: dict[int, set[int]] = defaultdict(set)
 
         # Optional event emitter — set by D810Manager after construction to
@@ -480,38 +487,47 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                         return False
                     # --- end expression size guard ---
 
-                    # --- cycle detection guard ---
-                    # Compute structural hash of the NEW instruction
-                    # (after swap, `ins` holds the new content).
-                    ins.swap(new_ins)
+                    # --- cycle detection guard (state-revisit) ---
+                    # Treat as a cycle ONLY when this instruction's pre-state
+                    # was already seen at this EA AND we have observed other
+                    # distinct pre-states in between (X -> Y -> ... -> X). A
+                    # simple repeated re-presentation of the same pre-state
+                    # (Hex-Rays giving us the same input across passes) is NOT
+                    # a cycle: it represents idempotent re-folding, harmless.
+                    #
+                    # Bypass: set D810_NO_CYCLE_DETECT=1 to disable the guard
+                    # entirely (diagnostic only).
+                    if os.environ.get("D810_NO_CYCLE_DETECT") == "1":
+                        ins.swap(new_ins)
+                    else:
+                        try:
+                            func_ea = blk.mba.entry_ea if blk and blk.mba else 0
+                        except Exception:
+                            func_ea = 0
+                        pre_hash = hash_minsn(ins, func_ea)
+                        seen_states = self._rewrite_seen[ins.ea]
 
-                    try:
-                        func_ea = blk.mba.entry_ea if blk and blk.mba else 0
-                    except Exception:
-                        func_ea = 0
-                    post_hash = hash_minsn(ins, func_ea)
-                    ins_key = ins.ea
-
-                    seen = self._rewrite_seen[ins_key]
-                    if post_hash in seen:
-                        # Cycle detected: this instruction was already
-                        # rewritten to this exact form.  Undo the swap and
-                        # refuse the rewrite to break the cycle.
-                        ins.swap(new_ins)  # undo
-                        optimizer_logger.warning(
-                            "Cycle detected for instruction at %s by %s -- "
-                            "breaking rewrite loop",
-                            hex(ins_key),
-                            ins_optimizer.name,
-                        )
-                        if self.stats is not None:
-                            self.stats.record_cycle_detected(
+                        if pre_hash in seen_states and len(seen_states) > 1:
+                            # We've been at this pre-state before AND in
+                            # between we've been at >=1 other state -- so
+                            # something flipped us back. Real cycle: refuse
+                            # the fold and leave the ins as is (no swap done
+                            # yet, no undo needed).
+                            optimizer_logger.warning(
+                                "Cycle detected for instruction at %s by %s -- "
+                                "breaking rewrite loop",
+                                hex(ins.ea),
                                 ins_optimizer.name,
-                                hex(ins_key),
                             )
-                        return False
+                            if self.stats is not None:
+                                self.stats.record_cycle_detected(
+                                    ins_optimizer.name,
+                                    hex(ins.ea),
+                                )
+                            return False
 
-                    seen.add(post_hash)
+                        ins.swap(new_ins)
+                        seen_states.add(pre_hash)
                     # --- end cycle detection guard ---
 
                     if self.stats is not None:
