@@ -1197,6 +1197,15 @@ class AstConstant(AstLeaf):
             source_leaf = other2.leafs_by_name[self.name]
 
         if source_leaf is None:
+            # Literal AstConstant: value is already known via expected_value
+            # (e.g. Const("ONE", 1), NEGATIVE_TWO, ZERO defined in d810.mba.dsl)
+            # and no candidate binding is required. Downstream
+            # _materialize_replacement_constants will synthesize a mop_t from
+            # expected_value. Without this guard, REPLACEMENTs that reference a
+            # numeric constant not present in PATTERN silently fail to fire
+            # (e.g. Mul_FactorRule_2 with `NEG_TWO * (x & y)`).
+            if self.expected_value is not None:
+                return True
             return False
 
         # Copy mop if available
