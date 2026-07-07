@@ -5,9 +5,20 @@ to verify the structures are bound identically.
 """
 import pytest
 
-pytest.importorskip("idapro")
+# Quiet idapro import: this file's tests are all pytest-style functions (no
+# unittest.TestCase classes), so unittest.defaultTestLoader.discover ignores
+# them. The only thing it needs from this module is a clean import. Raising
+# pytest.importorskip / unittest.SkipTest at module load creates dynamic
+# placeholder classes (``ModuleSkipped`` / ``_FailedTest``) that d810's
+# in-IDA test browser then mis-identifies as importable modules and tries to
+# re-load — failing with AttributeError noise. A plain try/except keeps the
+# module importable; the @pytest.mark.xfail(run=False) on the test body
+# already guards execution when idapro is unavailable.
+try:
+    import idapro
+except ImportError:
+    idapro = None
 
-import idapro
 import ida_hexrays
 
 

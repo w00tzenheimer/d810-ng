@@ -21,7 +21,25 @@ import platform
 
 import pytest
 
-import idapro
+# Quiet idapro import: this file's tests are all pytest-style (no
+# unittest.TestCase), so unittest.defaultTestLoader.discover ignores them
+# and only needs the module to import cleanly. Raising at module load
+# creates ModuleSkipped/_FailedTest placeholders that d810's in-IDA test
+# browser mis-treats as importable modules. A silent try/except keeps the
+# module importable; pytest-level skips below guard execution.
+try:
+    import idapro
+except ImportError:
+    idapro = None
+
+# Skip the whole file under pytest when idapro is unavailable. This module's
+# fixtures call idapro.open_database, so without it every test would AttributeError
+# at runtime. unittest ignores pytestmark; this only affects pytest collection.
+pytestmark = pytest.mark.skipif(
+    idapro is None,
+    reason="idapro (idalib) not available — set IDADIR to your IDA 9.0+ install",
+)
+
 import ida_hexrays
 import idaapi
 import idc

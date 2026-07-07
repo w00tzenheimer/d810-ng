@@ -9,7 +9,7 @@ import tempfile
 
 import pytest
 
-from tests.system.runtime.test_capture import (
+from .test_capture import (
     TestResultCapture,
     TestResultQuery,
     init_database,
