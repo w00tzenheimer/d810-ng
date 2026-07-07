@@ -233,6 +233,24 @@ def get_ext_modules():
         libraries = ["ida"]
         runtime_library_dirs = [linux_lib_dir]
 
+    # The public HexRaysSA/ida-sdk repo ships headers, not the compiled libida.
+    # libida lives with the IDA *install* (idalib / IDA_INSTALL_DIR), which is
+    # where CI and headless idalib resolve -lida. Add that dir so the link finds
+    # libida even when the SDK lib dir carries only headers. Guarded on the
+    # library actually being present, so it is a no-op when it is not needed.
+    if "ida" in libraries:
+        _lib = ("ida.lib" if OSTYPE == "Windows"
+                else "libida.dylib" if OSTYPE == "Darwin" else "libida.so")
+        _cands = [os.environ.get("IDA_INSTALL_DIR"), os.environ.get("IDADIR")]
+        _cands += (os.environ.get("LD_LIBRARY_PATH") or "").split(os.pathsep)
+        for _p in _cands:
+            if _p and pathlib.Path(_p, _lib).exists():
+                if _p not in library_dirs:
+                    library_dirs.append(_p)
+                if _p not in runtime_library_dirs:
+                    runtime_library_dirs.append(_p)
+                break
+
     macros = [("__EA64__", "1")] if x64 else []
     if DEBUG:
         macros.extend([("CYTHON_TRACE", "1"), ("CYTHON_CLINE_IN_TRACEBACK", "1")])
