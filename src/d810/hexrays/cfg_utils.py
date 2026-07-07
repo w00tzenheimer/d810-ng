@@ -604,6 +604,62 @@ def make_2way_block_goto(blk: ida_hexrays.mblock_t, blk_successor_serial: int, v
         raise e
 
 
+def make_nway_block_goto(blk: ida_hexrays.mblock_t, blk_successor_serial: int, verify: bool = True) -> bool:
+    """Convert an N-way block (m_jtbl, switch dispatcher) to a 1-way goto.
+
+    Generalisation of :func:`make_2way_block_goto`: handles any
+    ``nsucc() >= 2``. Used to fold an m_jtbl/switch dispatcher whose case
+    targets have been fully resolved (typically via emulation in
+    UnflattenerSwitchCase), leaving only one live edge that should be
+    followed unconditionally.
+
+    Why a separate helper rather than reusing make_2way_block_goto:
+    the 2-way version assumes exactly two successors and only removes
+    one of them, leaving stale edges and a corrupt CFG when applied to
+    an N-way (jtbl) dispatcher with N>2. This helper drops *all* prior
+    successors uniformly.
+    """
+    if blk.nsucc() < 2:
+        return False
+    mba = blk.mba
+    previous_blk_successor_serials = [x for x in blk.succset]
+    previous_blk_successors = [
+        mba.get_mblock(x) for x in previous_blk_successor_serials
+    ]
+
+    insert_goto_instruction(blk, blk_successor_serial, nop_previous_instruction=True)
+
+    blk.type = ida_hexrays.BLT_1WAY
+    blk.flags |= ida_hexrays.MBL_GOTO
+
+    for prev_serial in previous_blk_successor_serials:
+        blk.succset._del(prev_serial)
+    blk.succset.push_back(blk_successor_serial)
+    blk.mark_lists_dirty()
+
+    for prev_blk in previous_blk_successors:
+        prev_blk.predset._del(blk.serial)
+        if prev_blk.serial != mba.qty - 1:
+            prev_blk.mark_lists_dirty()
+
+    new_blk_successor = blk.mba.get_mblock(blk_successor_serial)
+    new_blk_successor.predset.push_back(blk.serial)
+    if new_blk_successor.serial != mba.qty - 1:
+        new_blk_successor.mark_lists_dirty()
+
+    mba.mark_chains_dirty()
+    if not verify:
+        return True
+    try:
+        mba.verify(True)
+        return True
+    except RuntimeError as e:
+        helper_logger.error("Error in make_nway_block_goto: {0}".format(e))
+        log_block_info(blk, helper_logger.error)
+        log_block_info(new_blk_successor, helper_logger.error)
+        raise e
+
+
 def create_block(
     blk: ida_hexrays.mblock_t, blk_ins: list[ida_hexrays.minsn_t], is_0_way: bool = False, verify: bool = True
 ) -> ida_hexrays.mblock_t:

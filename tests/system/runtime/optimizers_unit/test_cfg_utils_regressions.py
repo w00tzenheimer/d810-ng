@@ -298,6 +298,79 @@ def test_create_block_0way_clears_goto_and_edges(monkeypatch):
     assert mba.marked_dirty == 1
 
 
+def test_make_nway_block_goto_folds_three_way_to_single_edge(monkeypatch):
+    """Folding a 3-way dispatcher (e.g. m_jtbl with 3 case targets) to a
+    1-way goto must drop ALL prior successors uniformly and rewire only
+    the chosen target's predset."""
+    from d810.hexrays import cfg_utils
+
+    mba = _FakeMBA(qty=10)
+    # 3-way dispatcher block (jtbl-style) with 3 case targets
+    dispatcher = _FakeBlock(2, mba, succs=[5, 6, 7], preds=[1])
+    case_a = _FakeBlock(5, mba, succs=[], preds=[2])
+    case_b = _FakeBlock(6, mba, succs=[], preds=[2])
+    case_c = _FakeBlock(7, mba, succs=[], preds=[2])
+
+    # Stub insert_goto_instruction (the test only cares about CFG bookkeeping)
+    monkeypatch.setattr(
+        cfg_utils,
+        "insert_goto_instruction",
+        lambda *_a, **_k: None,
+    )
+
+    result = cfg_utils.make_nway_block_goto(dispatcher, 6, verify=False)
+
+    assert result is True
+    assert dispatcher.type == cfg_utils.ida_hexrays.BLT_1WAY
+    assert (dispatcher.flags & cfg_utils.ida_hexrays.MBL_GOTO) != 0
+    # All prior successors removed, only the new target remains
+    assert list(dispatcher.succset) == [6]
+    # Every prior case had us in its predset; only case_b stays connected
+    assert 2 not in case_a.predset
+    assert list(case_b.predset).count(2) == 1
+    assert 2 not in case_c.predset
+
+
+def test_make_nway_block_goto_refuses_one_way_block(monkeypatch):
+    """A block with nsucc()<2 cannot be folded -- helper must return False."""
+    from d810.hexrays import cfg_utils
+
+    mba = _FakeMBA(qty=4)
+    blk = _FakeBlock(1, mba, succs=[2])
+    _FakeBlock(2, mba, succs=[])
+
+    monkeypatch.setattr(
+        cfg_utils,
+        "insert_goto_instruction",
+        lambda *_a, **_k: pytest.fail("insert_goto_instruction should not be called"),
+    )
+
+    assert cfg_utils.make_nway_block_goto(blk, 2, verify=False) is False
+
+
+def test_make_nway_block_goto_handles_two_way_for_completeness(monkeypatch):
+    """make_nway_block_goto must also handle nsucc()==2 (subsumes 2way case).
+    Distinct from make_2way_block_goto behavior: this one drops both
+    successors uniformly rather than special-casing them."""
+    from d810.hexrays import cfg_utils
+
+    mba = _FakeMBA(qty=5)
+    blk = _FakeBlock(1, mba, succs=[2, 3], preds=[0])
+    succ_a = _FakeBlock(2, mba, succs=[], preds=[1])
+    succ_b = _FakeBlock(3, mba, succs=[], preds=[1])
+
+    monkeypatch.setattr(
+        cfg_utils,
+        "insert_goto_instruction",
+        lambda *_a, **_k: None,
+    )
+
+    assert cfg_utils.make_nway_block_goto(blk, 3, verify=False) is True
+    assert list(blk.succset) == [3]
+    assert 1 not in succ_a.predset
+    assert list(succ_b.predset).count(1) == 1
+
+
 def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch):
     """safe_verify should emit a JSON artifact with focused block capture."""
     from d810.hexrays import cfg_utils

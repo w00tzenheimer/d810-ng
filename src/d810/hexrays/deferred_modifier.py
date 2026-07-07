@@ -207,6 +207,7 @@ from d810.hexrays.cfg_utils import (
     insert_nop_blk,
     log_block_info,
     make_2way_block_goto,
+    make_nway_block_goto,
     mba_deep_cleaning,
     safe_verify,
     snapshot_block_for_capture,
@@ -1332,8 +1333,13 @@ class DeferredGraphModifier:
         return change_2way_block_conditional_successor(blk, new_target, verify=False)
 
     def _apply_convert_to_goto(self, blk: ida_hexrays.mblock_t, goto_target: int) -> bool:
-        """Convert a 2-way block to a 1-way goto."""
-        return make_2way_block_goto(blk, goto_target, verify=False)
+        """Convert a 2-way or N-way block to a 1-way goto."""
+        nsucc = blk.nsucc()
+        if nsucc == 2:
+            return make_2way_block_goto(blk, goto_target, verify=False)
+        if nsucc > 2:
+            return make_nway_block_goto(blk, goto_target, verify=False)
+        return False
 
     def _apply_insn_remove(self, blk: ida_hexrays.mblock_t, insn_ea: int) -> bool:
         """Remove an instruction by its EA."""
@@ -1847,8 +1853,13 @@ class ImmediateGraphModifier:
         return change_2way_block_conditional_successor(blk, new_target, verify=False)
 
     def _apply_convert_to_goto(self, blk: ida_hexrays.mblock_t, goto_target: int) -> bool:
-        """Convert a 2-way block to a 1-way goto."""
-        return make_2way_block_goto(blk, goto_target, verify=False)
+        """Convert a 2-way or N-way block to a 1-way goto."""
+        nsucc = blk.nsucc()
+        if nsucc == 2:
+            return make_2way_block_goto(blk, goto_target, verify=False)
+        if nsucc > 2:
+            return make_nway_block_goto(blk, goto_target, verify=False)
+        return False
 
     def _apply_insn_remove(self, blk: ida_hexrays.mblock_t, insn_ea: int) -> bool:
         """Remove an instruction by its EA."""
