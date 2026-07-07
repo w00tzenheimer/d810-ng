@@ -936,6 +936,7 @@
           "JnzRule6",
           "JnzRule7",
           "JnzRule8",
+          "JmpRuleAffineEq",
           "JmpRuleZ3Const"
         ]
       }
