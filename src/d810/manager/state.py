@@ -7,6 +7,7 @@ import importlib
 import pathlib
 
 from d810.backends.hexrays.registration import register_hexrays_backend_providers
+from d810.hexrays.utils.ida_utils import ensure_hexrays_available
 from d810.backends.mba.ida import adapt_rules
 from d810.core import typing
 from d810.core.config import D810Configuration, ProjectConfiguration
@@ -230,6 +231,11 @@ class D810State(metaclass=SingletonMeta):
         register_hexrays_backend_providers()
 
     def start_d810(self):
+        # Deferred decompiler load: ensure Hex-Rays is loaded + initialized
+        # before installing microcode hooks (moved off plugin init / IDB open).
+        if not ensure_hexrays_available(force_load=True):
+            logger.error("Cannot start D-810: Hex-Rays decompiler is not available")
+            return
         self._register_backend_analysis_providers()
         runtime_project = self.current_runtime_project or self.current_project
         self.manager.configure_instruction_optimizer(

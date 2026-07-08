@@ -188,11 +188,19 @@ class D810ContextMenu:
                 action_count += 1
             else:
                 logger.warning("Failed to register action %s", action_cls.ACTION_ID)
-        # Install the pseudocode popup hook
-        self._popup_hook = D810PopupHook(self)
-        self._popup_hook.hook()
+        # Install the pseudocode popup hook. This is a Hexrays_Hooks and needs
+        # the decompiler; since the decompiler load is deferred (off plugin
+        # init), install best-effort so a not-yet-loaded decompiler does not
+        # break action registration.
+        try:
+            self._popup_hook = D810PopupHook(self)
+            self._popup_hook.hook()
+        except Exception:
+            logger.warning(
+                "D810 pseudocode popup hook not installed (decompiler not ready)"
+            )
 
-        # Install the disassembly popup hook
+        # Install the disassembly popup hook (UI_Hooks; no decompiler needed).
         self._disasm_popup_hook = D810DisasmPopupHook(self)
         self._disasm_popup_hook.hook()
 
