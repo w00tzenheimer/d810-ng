@@ -20,6 +20,43 @@ from idaapi import (
     xrefblk_t,
 )
 
+import idaapi
+import ida_hexrays
+
+# Processor id -> Hex-Rays decompiler plugin name.
+ALL_DECOMPILERS = {
+    idaapi.PLFM_386: "hexx64",
+    idaapi.PLFM_ARM: "hexarm",
+    idaapi.PLFM_PPC: "hexppc",
+    idaapi.PLFM_MIPS: "hexmips",
+    idaapi.PLFM_RISCV: "hexrv",
+}
+
+
+def decompiler_for_current_arch() -> "str | None":
+    """Return the Hex-Rays decompiler plugin name for the current processor,
+    or ``None`` if this architecture has no known decompiler."""
+    return ALL_DECOMPILERS.get(idaapi.ph.id, None)
+
+
+def ensure_hexrays_available(force_load: bool = False) -> bool:
+    """Ensure the Hex-Rays decompiler is initialized.
+
+    With ``force_load=False`` an already-available decompiler is initialized but
+    the decompiler plugin is never eagerly ``load_plugin``-ed, so callers on the
+    plugin-init / IDB-open path do not force hexx64 to load. Callers that
+    genuinely need the decompiler (e.g. ``start_d810``) pass ``force_load=True``
+    to load it on demand.
+    """
+    decompiler = decompiler_for_current_arch()
+    if not decompiler:
+        return False
+    if ida_hexrays.init_hexrays_plugin():
+        return True
+    if force_load and idaapi.load_plugin(decompiler) and ida_hexrays.init_hexrays_plugin():
+        return True
+    return False
+
 
 def fetch_idb_value(address: int, size: int) -> int | None:
     """Read a value from the IDA database at the given address.

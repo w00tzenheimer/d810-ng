@@ -1,33 +1,22 @@
-import ida_hexrays
 import ida_kernwin
 import idaapi
 
 import d810
 from d810._vendor.ida_reloader import ReloadablePluginBase, reload_package
 from d810.core.typing import override
+from d810.hexrays.utils.ida_utils import (
+    decompiler_for_current_arch,
+    ensure_hexrays_available,
+)
 
 D810_VERSION = d810.__version__
 
 
-ALL_DECOMPILERS = {
-    idaapi.PLFM_386: "hexx64",
-    idaapi.PLFM_ARM: "hexarm",
-    idaapi.PLFM_PPC: "hexppc",
-    idaapi.PLFM_MIPS: "hexmips",
-    idaapi.PLFM_RISCV: "hexrv",
-}
-
-def init_hexrays() -> bool:
-    cpu = idaapi.ph.id
-    decompiler = ALL_DECOMPILERS.get(cpu, None)
-    if not decompiler:
-        print("No known decompilers for architecture with ID: %d" % idaapi.ph.id)
-        return False
-    if idaapi.load_plugin(decompiler) and idaapi.init_hexrays_plugin():
-        return True
-    else:
-        print(f"Couldn't load or initialize decompiler: {decompiler}")
-        return False
+# NOTE: the arch->decompiler map and the actual Hex-Rays load/init now live in
+# d810.hexrays.utils.ida_utils (decompiler_for_current_arch /
+# ensure_hexrays_available). The decompiler load is DEFERRED off plugin init():
+# it happens in start_d810() (and best-effort in the GUI popup-hook install), so
+# opening an IDB no longer force-loads hexx64 during the plugin lifecycle.
 
 
 class _UIHooks(idaapi.UI_Hooks):
@@ -69,8 +58,16 @@ class D810Plugin(
 
     @override
     def init(self):
-        if not init_hexrays():
-            print(f"{self.wanted_name} need Hex-Rays decompiler. Skipping")
+        # Only verify the architecture has a known decompiler; do NOT load it
+        # here. init() runs as PLUGIN_PROC (during IDB open), and d810's
+        # microcode hooks do not install until start_d810() -- so the decompiler
+        # load is deferred there. This avoids force-loading hexx64 on every IDB
+        # open, which is unnecessary work on the first-decompile path.
+        if decompiler_for_current_arch() is None:
+            print(
+                f"{self.wanted_name}: no known Hex-Rays decompiler for this "
+                "architecture. Skipping"
+            )
             return idaapi.PLUGIN_SKIP
 
         kv = ida_kernwin.get_kernel_version().split(".")
@@ -82,9 +79,10 @@ class D810Plugin(
     @override
     def late_init(self):
         super().late_init()
-        if not ida_hexrays.init_hexrays_plugin():
-            print(f"{self.wanted_name} need Hex-Rays decompiler. Unloading...")
-            self.term()
+        # Do NOT force-init the decompiler here. Under deferred loading it may
+        # not be loaded yet, and the previous code called term() and then fell
+        # through -- leaving a half-torn-down plugin. The decompiler is loaded
+        # on demand in start_d810().
         print(f"{self.wanted_name} initialized (version {D810_VERSION})")
 
     @override
