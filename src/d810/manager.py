@@ -715,6 +715,12 @@ class D810State(metaclass=SingletonMeta):
         return self.current_project
 
     def start_d810(self):
+        # Deferred decompiler load: ensure Hex-Rays is loaded before installing
+        # microcode hooks (moved off plugin init / IDB open).
+        from d810ng import ensure_hexrays
+        if not ensure_hexrays(force_load=True):
+            logger.error("Cannot start D-810: Hex-Rays decompiler is not available")
+            return
         self.manager.configure_instruction_optimizer(
             [rule for rule in self.current_ins_rules],
             generate_z3_code=self.d810_config.get("generate_z3_code"),
