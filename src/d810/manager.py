@@ -110,6 +110,39 @@ def _maturity_name(maturity: int) -> str:
         return f"MMAT_{maturity}"
 
 
+def _ensure_hexrays(force_load: bool = False) -> bool:
+    """Ensure the Hex-Rays decompiler is initialized.
+
+    Copied from ``d810ng`` so this module does not import from the plugin
+    entry module. With ``force_load=False`` an already-available decompiler is
+    initialized but never eagerly ``load_plugin``-ed, so plugin ``init()`` does
+    not force hexx64 to load during IDB open. Callers that need the decompiler
+    (``start_d810``) pass ``force_load=True`` to load it on demand.
+    """
+    import ida_hexrays
+    import idaapi
+
+    all_decompilers = {
+        idaapi.PLFM_386: "hexx64",
+        idaapi.PLFM_ARM: "hexarm",
+        idaapi.PLFM_PPC: "hexppc",
+        idaapi.PLFM_MIPS: "hexmips",
+        idaapi.PLFM_RISCV: "hexrv",
+    }
+    decompiler = all_decompilers.get(idaapi.ph.id, None)
+    if not decompiler:
+        return False
+    if ida_hexrays.init_hexrays_plugin():
+        return True
+    if (
+        force_load
+        and idaapi.load_plugin(decompiler)
+        and ida_hexrays.init_hexrays_plugin()
+    ):
+        return True
+    return False
+
+
 @dataclasses.dataclass
 class D810Manager:
     log_dir: pathlib.Path
@@ -717,8 +750,7 @@ class D810State(metaclass=SingletonMeta):
     def start_d810(self):
         # Deferred decompiler load: ensure Hex-Rays is loaded before installing
         # microcode hooks (moved off plugin init / IDB open).
-        from d810ng import ensure_hexrays
-        if not ensure_hexrays(force_load=True):
+        if not _ensure_hexrays(force_load=True):
             logger.error("Cannot start D-810: Hex-Rays decompiler is not available")
             return
         self.manager.configure_instruction_optimizer(
