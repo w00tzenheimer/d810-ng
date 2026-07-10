@@ -1,22 +1,55 @@
+import ida_hexrays
 import ida_kernwin
 import idaapi
 
 import d810
 from d810._vendor.ida_reloader import ReloadablePluginBase, reload_package
 from d810.core.typing import override
-from d810.hexrays.utils.ida_utils import (
-    decompiler_for_current_arch,
-    ensure_hexrays_available,
-)
 
 D810_VERSION = d810.__version__
 
 
-# NOTE: the arch->decompiler map and the actual Hex-Rays load/init now live in
-# d810.hexrays.utils.ida_utils (decompiler_for_current_arch /
-# ensure_hexrays_available). The decompiler load is DEFERRED off plugin init():
-# it happens in start_d810() (and best-effort in the GUI popup-hook install), so
-# opening an IDB no longer force-loads hexx64 during the plugin lifecycle.
+# Processor id -> Hex-Rays decompiler plugin name. Copied verbatim from
+# d810.hexrays.utils.ida_utils so this plugin entry module imports nothing from
+# d810 proper for the decompiler load/init path (only from d810._vendor). Keep
+# in sync with ida_utils if either helper changes.
+ALL_DECOMPILERS = {
+    idaapi.PLFM_386: "hexx64",
+    idaapi.PLFM_ARM: "hexarm",
+    idaapi.PLFM_PPC: "hexppc",
+    idaapi.PLFM_MIPS: "hexmips",
+    idaapi.PLFM_RISCV: "hexrv",
+}
+
+
+def decompiler_for_current_arch() -> "str | None":
+    """Return the Hex-Rays decompiler plugin name for the current processor,
+    or ``None`` if this architecture has no known decompiler."""
+    return ALL_DECOMPILERS.get(idaapi.ph.id, None)
+
+
+def ensure_hexrays_available(force_load: bool = False) -> bool:
+    """Ensure the Hex-Rays decompiler is initialized.
+
+    With ``force_load=False`` an already-available decompiler is initialized but
+    the decompiler plugin is never eagerly ``load_plugin``-ed, so callers on the
+    plugin-init / IDB-open path do not force hexx64 to load. Callers that
+    genuinely need the decompiler (e.g. ``start_d810``) pass ``force_load=True``
+    to load it on demand.
+    """
+    decompiler = decompiler_for_current_arch()
+    if not decompiler:
+        return False
+    if ida_hexrays.init_hexrays_plugin():
+        return True
+    if force_load and idaapi.load_plugin(decompiler) and ida_hexrays.init_hexrays_plugin():
+        return True
+    return False
+
+
+# NOTE: the decompiler load is DEFERRED off plugin init(): it happens in
+# start_d810() (and best-effort in the GUI popup-hook install), so opening an
+# IDB no longer force-loads hexx64 during the plugin lifecycle.
 
 
 class _UIHooks(idaapi.UI_Hooks):
