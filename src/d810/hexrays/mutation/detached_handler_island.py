@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 
 import ida_funcs
 import ida_hexrays
+import ida_range
 
 from d810.core.typing import Mapping
 
@@ -1445,6 +1446,8 @@ def _materialize_detached_snippet_templates(
     template_cache: dict[tuple[int, int], DetachedSnippetTemplate],
     *,
     expected_template_maturity: int | None = None,
+    allow_raw_preopt_calls: bool = False,
+    import_native_preopt_ranges: bool = False,
 ) -> dict[int, int]:
     """Import cached snippets atomically and return target EA -> root serial."""
     templates = tuple(
@@ -1477,6 +1480,46 @@ def _materialize_detached_snippet_templates(
             sorted({int(template.maturity) for template in selected}),
         )
         return {}
+    preserve_raw_calls = bool(allow_raw_preopt_calls)
+    preserve_native_call_eas = bool(import_native_preopt_ranges)
+    if preserve_raw_calls and (
+        int(mba.maturity)
+        not in {
+            int(ida_hexrays.MMAT_GENERATED),
+            int(ida_hexrays.MMAT_PREOPTIMIZED),
+        }
+        or required_maturity != int(ida_hexrays.MMAT_PREOPTIMIZED)
+    ):
+        logger.info(
+            "detached snippet import abstained: destination_maturity=%d "
+            "required_template_maturity=%d reason=raw_calls_require_preopt",
+            int(mba.maturity),
+            required_maturity,
+        )
+        return {}
+    if preserve_native_call_eas and not preserve_raw_calls:
+        logger.info(
+            "detached snippet import abstained: reason="
+            "native_preopt_ranges_require_raw_calls"
+        )
+        return {}
+
+    if preserve_native_call_eas:
+        native_call_eas = [
+            int(instruction.ea)
+            for template in selected
+            for block in template.blocks
+            for instruction in block.instructions
+            if int(instruction.opcode)
+            in (int(ida_hexrays.m_call), int(ida_hexrays.m_icall))
+        ]
+        if len(native_call_eas) != len(set(native_call_eas)):
+            logger.info(
+                "detached snippet import abstained: duplicate_call_eas=%s "
+                "reason=native_preopt_call_ea_collision",
+                [hex(ea) for ea in native_call_eas],
+            )
+            return {}
 
     stack_maps_by_target: dict[int, dict[int, int]] = {}
     stable_stack_maps_by_target: dict[int, dict[int, int]] = {}
@@ -1524,16 +1567,22 @@ def _materialize_detached_snippet_templates(
     ] = {}
     subsumed_call_setup_eas_by_target: dict[int, frozenset[int]] = {}
     for template in selected:
-        analyzed_calls = _analyzed_replacement_calls_by_ea(
-            int(function_ea),
-            int(template.target_ea),
+        analyzed_calls = (
+            {}
+            if preserve_raw_calls
+            else _analyzed_replacement_calls_by_ea(
+                int(function_ea),
+                int(template.target_ea),
+            )
         )
         analyzed_calls_by_target[int(template.target_ea)] = analyzed_calls
         replacement_template = _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES.get(
             (int(function_ea), int(template.target_ea))
         )
         subsumed_call_setup_eas_by_target[int(template.target_ea)] = (
-            _subsumed_raw_call_setup_instruction_eas(
+            frozenset()
+            if preserve_raw_calls
+            else _subsumed_raw_call_setup_instruction_eas(
                 template,
                 replacement_template,
                 analyzed_calls,
@@ -1549,6 +1598,7 @@ def _materialize_detached_snippet_templates(
                         int(ida_hexrays.m_icall),
                     )
                     or int(captured.d.t) == int(ida_hexrays.mop_f)
+                    or preserve_raw_calls
                 ):
                     continue
                 analyzed_call = analyzed_calls.get(int(captured.ea))
@@ -1594,6 +1644,7 @@ def _materialize_detached_snippet_templates(
                     captured_opcode
                     in (int(ida_hexrays.m_call), int(ida_hexrays.m_icall))
                     and int(captured.d.t) != int(ida_hexrays.mop_f)
+                    and not preserve_raw_calls
                 ):
                     instruction = analyzed_calls[int(captured.ea)].instruction
                     instruction_stack_map = analyzed_stack_map
@@ -1669,6 +1720,36 @@ def _materialize_detached_snippet_templates(
         )
         for template in selected
     }
+    if preserve_native_call_eas:
+        native_ranges = sorted(
+            {
+                (int(start_ea), int(end_ea))
+                for template in selected
+                for start_ea, end_ea in template.owned_ranges
+            }
+        )
+        combined_ranges = [
+            (
+                int(mba.mbr.ranges[index].start_ea),
+                int(mba.mbr.ranges[index].end_ea),
+            )
+            for index in range(int(mba.mbr.ranges.size()))
+        ]
+        combined_ranges.extend(native_ranges)
+        merged_ranges: list[tuple[int, int]] = []
+        for start_ea, end_ea in sorted(combined_ranges):
+            if not merged_ranges or start_ea > merged_ranges[-1][1]:
+                merged_ranges.append((start_ea, end_ea))
+                continue
+            previous_start, previous_end = merged_ranges[-1]
+            merged_ranges[-1] = (
+                previous_start,
+                max(previous_end, end_ea),
+            )
+        mba.mbr.ranges.clear()
+        for start_ea, end_ea in merged_ranges:
+            mba.mbr.ranges.push_back(ida_range.range_t(start_ea, end_ea))
+        mba.set_mba_flags2(int(ida_hexrays.MBA2_HAS_OUTLINES))
     for template in selected:
         serial_map = {
             int(block.source_serial): int(
@@ -1725,6 +1806,7 @@ def _materialize_detached_snippet_templates(
                         int(ida_hexrays.m_icall),
                     )
                     and int(captured.d.t) != int(ida_hexrays.mop_f)
+                    and not preserve_raw_calls
                 ):
                     analyzed_call = analyzed_calls.get(int(captured.ea))
                     if (
@@ -1781,12 +1863,19 @@ def _materialize_detached_snippet_templates(
                 # (INTERR 50342).  Detached native EAs may also lie outside the
                 # destination MBA ranges (INTERR 50863/50870), so every imported
                 # instruction receives a unique fictitious EA mapped to the live
-                # function entry.  Calls are safe here because their complete
-                # analyzed mop_f argument lists were preserved above; they no
-                # longer depend on native-EA call analysis.  Native provenance is
-                # retained separately for resolver and diagnostics consumers.
-                imported_instruction_ea = int(
-                    mba.alloc_fict_ea(int(mba.entry_ea) + 1)
+                # function entry.  At LOCOPT/CALLS, analyzed mop_f argument
+                # lists were preserved above and no longer depend on native-EA
+                # call analysis.  The PREOPT-only raw-call mode deliberately
+                # keeps the original call setup so the destination MBA can
+                # perform its own call analysis.
+                # Native provenance is retained separately for resolver and
+                # diagnostics consumers.
+                imported_instruction_ea = (
+                    native_instruction_ea
+                    if preserve_native_call_eas
+                    and captured_opcode
+                    in (int(ida_hexrays.m_call), int(ida_hexrays.m_icall))
+                    else int(mba.alloc_fict_ea(int(mba.entry_ea) + 1))
                 )
                 instruction.setaddr(imported_instruction_ea)
                 if native_instruction_ea > 0:
@@ -1827,7 +1916,17 @@ def _materialize_detached_snippet_templates(
                 destination,
                 block_type=int(block.block_type),
                 flags=(
-                    (int(block.block_flags) & int(ida_hexrays.MBL_GOTO))
+                    (
+                        int(block.block_flags)
+                        & (
+                            int(ida_hexrays.MBL_GOTO)
+                            | (
+                                int(ida_hexrays.MBL_PUSH)
+                                if preserve_raw_calls
+                                else 0
+                            )
+                        )
+                    )
                     | int(ida_hexrays.MBL_KEEP)
                     | int(ida_hexrays.MBL_FAKE)
                 ),
@@ -1914,14 +2013,31 @@ def materialize_detached_snippet_templates(
     target_eas: tuple[int, ...],
     *,
     expected_template_maturity: int | None = None,
+    allow_raw_preopt_calls: bool = False,
+    import_native_preopt_ranges: bool = False,
 ) -> dict[int, int]:
-    """Import cached LOCOPT snippets for missing detached handlers."""
+    """Import cached snippets for missing detached handlers.
+
+    ``allow_raw_preopt_calls`` is valid only for a PREOPTIMIZED template at
+    the ``hxe_preoptimized`` boundary.  Hex-Rays invokes that callback before
+    advancing ``mba.maturity`` from GENERATED, so both observed destination
+    values are accepted.  The mode preserves raw call setup so the live
+    destination MBA, rather than an isolated snippet, owns later call analysis.
+
+    ``import_native_preopt_ranges`` additionally imports the template-owned
+    native ranges and preserves native call EAs.  This gives Hex-Rays the
+    address-domain evidence required for destination-side call analysis.  It
+    is an experimental PREOPT-only mode and therefore requires
+    ``allow_raw_preopt_calls``.
+    """
     return _materialize_detached_snippet_templates(
         mba,
         function_ea,
         target_eas,
         _DETACHED_SNIPPET_TEMPLATES,
         expected_template_maturity=expected_template_maturity,
+        allow_raw_preopt_calls=allow_raw_preopt_calls,
+        import_native_preopt_ranges=import_native_preopt_ranges,
     )
 
 

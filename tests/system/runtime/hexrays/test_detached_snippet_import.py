@@ -97,6 +97,25 @@ class _SerialList(list[int]):
         self.remove(int(serial))
 
 
+class _RangeList(list[object]):
+    def push_back(self, item: object) -> None:
+        self.append(item)
+
+    def size(self) -> int:
+        return len(self)
+
+
+class _MBARanges:
+    def __init__(self) -> None:
+        self.ranges = _RangeList()
+
+    def range_contains(self, ea: int) -> bool:
+        return any(
+            int(item.start_ea) <= int(ea) < int(item.end_ea)
+            for item in self.ranges
+        )
+
+
 class _Block:
     def __init__(
         self,
@@ -187,6 +206,8 @@ class _MBA:
         self.stacksize = int(stacksize)
         self.frsize = int(frsize)
         self.frregs = int(frregs)
+        self.flags2 = 0
+        self.mbr = _MBARanges()
         self.chains_dirty = 0
         self.verify_calls = 0
         self.fictitious_ea_map: dict[int, int] = {}
@@ -228,6 +249,12 @@ class _MBA:
 
     def verify(self, _always: bool) -> None:
         self.verify_calls += 1
+
+    def get_mba_flags2(self) -> int:
+        return int(self.flags2)
+
+    def set_mba_flags2(self, flags: int) -> None:
+        self.flags2 |= int(flags)
 
 
 def _fake_minsn(instruction: _Instruction | int) -> _Instruction:
@@ -1544,6 +1571,108 @@ def test_import_abstains_atomically_without_exact_analyzed_call(
     assert roots == {}
     assert destination.qty == original_qty
     assert created == []
+
+
+def test_preopt_import_preserves_raw_call_for_destination_analysis(
+    monkeypatch,
+) -> None:
+    """PREOPT injection may defer raw-call analysis to the destination MBA."""
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    target_ea = 0x40B9A6
+    call_ea = 0x40BA56
+    raw_push = _Instruction(ida_hexrays.m_push, call_ea - 1)
+    raw_call = _Instruction(ida_hexrays.m_call, call_ea)
+    raw_block = _Block(0, target_ea, (raw_push, raw_call))
+    raw_block.flags = int(ida_hexrays.MBL_PUSH)
+    raw_source = _MBA(
+        (raw_block,),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        # hxe_preoptimized fires after the pass but before mba.maturity is
+        # advanced from GENERATED to PREOPTIMIZED.
+        maturity=ida_hexrays.MMAT_GENERATED,
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        target_ea,
+        raw_source,
+        ((target_ea, call_ea + 1),),
+    )
+
+    roots = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (target_ea,),
+        expected_template_maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+        allow_raw_preopt_calls=True,
+    )
+
+    imported_block = destination.get_mblock(roots[target_ea])
+    imported_call = imported_block.tail
+    assert imported_call is not None
+    assert int(imported_call.opcode) == int(ida_hexrays.m_call)
+    assert int(imported_call.d.t) != int(ida_hexrays.mop_f)
+    assert int(imported_block.flags) & int(ida_hexrays.MBL_PUSH)
+
+
+def test_preopt_native_range_import_preserves_call_ea_and_marks_outline(
+    monkeypatch,
+) -> None:
+    """Native-range PREOPT import retains the EAs needed by call analysis."""
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    target_ea = 0x40B9A6
+    call_ea = 0x40BA56
+    raw_push = _Instruction(ida_hexrays.m_push, call_ea - 1)
+    raw_call = _Instruction(ida_hexrays.m_call, call_ea)
+    raw_block = _Block(0, target_ea, (raw_push, raw_call))
+    raw_block.flags = int(ida_hexrays.MBL_PUSH)
+    raw_source = _MBA(
+        (raw_block,),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_GENERATED,
+    )
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        target_ea,
+        raw_source,
+        ((target_ea, call_ea + 1),),
+    )
+
+    roots = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (target_ea,),
+        expected_template_maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+        allow_raw_preopt_calls=True,
+        import_native_preopt_ranges=True,
+    )
+
+    imported_block = destination.get_mblock(roots[target_ea])
+    imported_call = imported_block.tail
+    assert imported_call is not None
+    assert int(imported_call.ea) == call_ea
+    assert int(destination.flags2) & int(ida_hexrays.MBA2_HAS_OUTLINES)
+    assert destination.mbr.range_contains(target_ea)
+    assert destination.mbr.range_contains(call_ea)
 
 
 def test_imported_callinfo_defers_to_unique_live_native_authority(

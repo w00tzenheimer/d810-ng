@@ -6540,12 +6540,15 @@ def prepare_detached_handler_snippets(
     function_ea: int,
     *,
     live_mba: object | None = None,
+    template_maturity: int | None = None,
 ) -> int:
     """Generate and cache resolver-proven detached handlers outside callbacks.
 
     This entry point must be called between top-level decompilations.  It uses
-    explicit native ranges to obtain isolated call-analyzed microcode, then stores
-    function-frame-normalized templates for the next LOCOPT MBA.
+    explicit native ranges to obtain isolated microcode, then stores
+    function-frame-normalized templates for the next top-level MBA.  LOCOPT is
+    the compatibility default; PREOPT may be requested by an earlier-maturity
+    importer that deliberately defers call analysis to the destination MBA.
     """
     import ida_hexrays  # type: ignore[import-untyped]
     import idaapi  # type: ignore[import-untyped]
@@ -6570,6 +6573,31 @@ def prepare_detached_handler_snippets(
     key = int(function_ea)
     resolution = _RESOLUTIONS_BY_EA.get(key)
     if resolution is None or _SNIPPET_CAPTURE_ACTIVE:
+        return 0
+    primary_maturity = (
+        int(ida_hexrays.MMAT_LOCOPT)
+        if template_maturity is None
+        else int(template_maturity)
+    )
+    primary_maturity_name = (
+        "PREOPT"
+        if primary_maturity == int(ida_hexrays.MMAT_PREOPTIMIZED)
+        else (
+            "LOCOPT"
+            if primary_maturity == int(ida_hexrays.MMAT_LOCOPT)
+            else f"unsupported({primary_maturity})"
+        )
+    )
+    if primary_maturity not in {
+        int(ida_hexrays.MMAT_PREOPTIMIZED),
+        int(ida_hexrays.MMAT_LOCOPT),
+    }:
+        logger.info(
+            "detached snippet capture abstained: func=0x%X maturity=%s "
+            "reason=unsupported_primary_maturity",
+            key,
+            primary_maturity_name,
+        )
         return 0
     transfers = get_materialized_indirect_transfers(key)
     handler_entry_routes = tuple(
@@ -6672,12 +6700,13 @@ def prepare_detached_handler_snippets(
                         failure,
                         None,
                         flags,
-                        ida_hexrays.MMAT_LOCOPT,
+                        primary_maturity,
                     )
                 except Exception:
                     logger.info(
-                        "detached LOCOPT snippet generation failed: "
+                        "detached %s snippet generation failed: "
                         "target=0x%X ranges=%s",
+                        primary_maturity_name,
                         int(target_ea),
                         merged_ranges,
                         exc_info=True,
@@ -6700,8 +6729,9 @@ def prepare_detached_handler_snippets(
                             terminal_transfers,
                         )
                     logger.info(
-                        "detached LOCOPT snippet captured: func=0x%X "
+                        "detached %s snippet captured: func=0x%X "
                         "target=0x%X ranges=%s blocks=%d terminal_transfers=%s",
+                        primary_maturity_name,
                         key,
                         int(target_ea),
                         merged_ranges,
