@@ -384,6 +384,8 @@ def _materialize_missing_detached_snippets(
     *,
     require_live_residual_source: bool = True,
     expected_template_maturity: int | None = None,
+    allow_raw_preopt_calls: bool = False,
+    import_native_preopt_ranges: bool = False,
 ) -> int:
     """Import exact missing targets before source-scoped routes are applied."""
     live_eas: set[int] = set()
@@ -479,6 +481,8 @@ def _materialize_missing_detached_snippets(
         int(mba.entry_ea),
         target_eas,
         expected_template_maturity=expected_template_maturity,
+        allow_raw_preopt_calls=allow_raw_preopt_calls,
+        import_native_preopt_ranges=import_native_preopt_ranges,
     )
     if set(roots) != set(target_eas):
         logger.info(
