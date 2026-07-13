@@ -816,7 +816,7 @@ def ida_database(request):
     # Cleanup
     if not db_info.get("reused", False):
         logger.debug("Closing database...")
-        idapro.close_database()
+        idapro.close_database(False)
         if tempdir.exists():
             logger.debug("Cleaning up temporary directory...")
             shutil.rmtree(tempdir)

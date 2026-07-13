@@ -57,6 +57,7 @@ class OptimizationRule:
 
     def __init__(self):
         self.maturities = []
+        self._default_maturities: tuple[int, ...] | None = None
         self.config = {}
         self.log_dir = None
         self.dump_intermediate_microcode = False
@@ -65,9 +66,16 @@ class OptimizationRule:
         self.log_dir = log_dir
 
     def configure(self, kwargs):
+        if self._default_maturities is None:
+            # Rule instances are reused across project switches. Capture the
+            # concrete subclass defaults on first configuration, after every
+            # subclass constructor has had a chance to set ``maturities``.
+            self._default_maturities = tuple(self.maturities)
         self.config = kwargs if kwargs is not None else {}
         if "maturities" in self.config:
             self.maturities = [string_to_maturity(x) for x in self.config["maturities"]]
+        else:
+            self.maturities = list(self._default_maturities)
         if "dump_intermediate_microcode" in self.config:
             self.dump_intermediate_microcode = self.config[
                 "dump_intermediate_microcode"

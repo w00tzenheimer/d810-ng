@@ -109,6 +109,23 @@ def test_hodur_bridge_derives_unflattener_trigger_and_simple_flow_rule():
     assert unflattener.config["enable_transition_uddu_validator"] is True
 
 
+def test_ollvm_bridge_keeps_materialized_computed_goto_island_rule():
+    project = _config_v2_project("default_unflattening_ollvm")
+
+    activation = pipeline_v2_hook_activation(project)
+
+    assert "materialized-computed-goto-island" in activation.configured_pass_ids
+    island_rules = [
+        rule
+        for rule in activation.block_rules
+        if rule.name == "MaterializedComputedGotoIslandRule"
+    ]
+    assert len(island_rules) == 1
+    assert island_rules[0].config == {
+        "maturities": ["MMAT_LOCOPT", "MMAT_CALLS"]
+    }
+
+
 def test_identity_call_bridge_derives_explicit_opt_in_rule_config():
     project = _config_v2_project("identity_call")
 

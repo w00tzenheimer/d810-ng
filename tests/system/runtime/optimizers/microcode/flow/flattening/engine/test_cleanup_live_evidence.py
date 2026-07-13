@@ -77,6 +77,7 @@ class _FakeBlock:
         reginsn_qty: int = 1,
     ) -> None:
         self.serial = int(serial)
+        self.start = int(serial)
         self._succs = tuple(int(succ) for succ in succs)
         self.succset = set(self._succs)
         self.predset = set(int(pred) for pred in preds)
@@ -196,6 +197,68 @@ def test_fake_jump_resolves_direct_branch_arm_assignment(monkeypatch) -> None:
     )
 
 
+def test_fake_jump_abstains_when_any_backward_history_is_unresolved(
+    monkeypatch,
+) -> None:
+    """One resolved path cannot prove a branch when sibling paths are unknown."""
+    compared = _reg("local_guard")
+    fake_tail = _FakeInsn(
+        ida_hexrays.m_jnz,
+        left=compared,
+        right=_num(0),
+        dest=SimpleNamespace(b=31),
+    )
+    fake_block = _FakeBlock(28, (29, 31), (26,), fake_tail)
+    fallthrough = _FakeBlock(
+        29,
+        (40,),
+        (28,),
+        _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=40)),
+    )
+    taken = _FakeBlock(
+        31,
+        (40,),
+        (28,),
+        _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=40)),
+    )
+    join = _FakeBlock(
+        40,
+        (40,),
+        (29, 31),
+        _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=40)),
+    )
+    predecessor = _FakeBlock(
+        26,
+        (28,),
+        (),
+        _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=28)),
+    )
+    fake_block.nextb = fallthrough
+    _FakeMba(predecessor, fake_block, fallthrough, taken, join)
+
+    class _PartialTracker:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def reset(self) -> None:
+            pass
+
+        def search_backward(self, *_args, **_kwargs) -> list[object]:
+            resolved = SimpleNamespace(is_resolved=lambda: True)
+            unresolved = SimpleNamespace(is_resolved=lambda: False)
+            return [resolved, unresolved, unresolved, unresolved, unresolved, unresolved]
+
+    monkeypatch.setattr(live_evidence_module.ida_hexrays, "mop_t", lambda mop: mop)
+    monkeypatch.setattr(live_evidence_module, "MopTracker", _PartialTracker)
+    monkeypatch.setattr(
+        live_evidence_module,
+        "get_all_possibles_values",
+        lambda _histories, _mops: [(0,)],
+    )
+
+    assert collect_live_fake_jump_block_fixes(fake_block) == ()
+
+
 def test_fake_jump_preserves_dynamic_loop_carrier_guard(monkeypatch) -> None:
     counter = _reg("counter")
 
@@ -265,6 +328,95 @@ def test_fake_jump_preserves_dynamic_loop_carrier_guard(monkeypatch) -> None:
     )
 
     assert collect_live_fake_jump_block_fixes(guard) == ()
+
+
+def test_fake_jump_preserves_backward_reachable_loop_carrier_guard(monkeypatch) -> None:
+    """A break-path completion test must retain an upstream induction update.
+
+    The immediate predecessor contains no counter write.  A backward tracker
+    that stops at the loop initializer can therefore report a single constant
+    even though an earlier loop-carried ``counter = counter + 2`` reaches the
+    same predecessor on later iterations.  That first-iteration value is not
+    an exhaustive proof that the completion test is fake.
+    """
+    counter = _reg("counter")
+
+    completion_tail = _FakeInsn(
+        ida_hexrays.m_jnz,
+        left=counter,
+        right=_num(0x40),
+        dest=SimpleNamespace(b=42),
+    )
+    completion = _FakeBlock(25, (26, 42), (74,), completion_tail)
+    success = _FakeBlock(
+        26,
+        (7,),
+        (25,),
+        _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=7)),
+    )
+    failure = _FakeBlock(
+        42,
+        (7,),
+        (25,),
+        _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=7)),
+    )
+    join = _FakeBlock(
+        7,
+        (7,),
+        (26, 42),
+        _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=7)),
+    )
+    completion.nextb = success
+
+    induction_update = _FakeInsn(
+        ida_hexrays.m_add,
+        left=counter,
+        right=_num(2),
+        dest=counter,
+    )
+    update = _FakeBlock(
+        16,
+        (73,),
+        (),
+        _FakeInsn(
+            ida_hexrays.m_goto,
+            dest=SimpleNamespace(b=73),
+            prev=induction_update,
+        ),
+    )
+    break_test = _FakeBlock(
+        73,
+        (74,),
+        (16,),
+        _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=74)),
+    )
+    break_tail = _FakeBlock(
+        74,
+        (25,),
+        (73,),
+        _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=25)),
+    )
+    _FakeMba(update, break_test, break_tail, completion, success, failure, join)
+
+    class _FirstIterationTracker:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def reset(self) -> None:
+            pass
+
+        def search_backward(self, *_args, **_kwargs) -> list[object]:
+            return [SimpleNamespace(is_resolved=lambda: True)]
+
+    monkeypatch.setattr(live_evidence_module.ida_hexrays, "mop_t", lambda mop: mop)
+    monkeypatch.setattr(live_evidence_module, "MopTracker", _FirstIterationTracker)
+    monkeypatch.setattr(
+        live_evidence_module,
+        "get_all_possibles_values",
+        lambda _histories, _mops: [(0,)],
+    )
+
+    assert collect_live_fake_jump_block_fixes(completion) == ()
 
 
 def test_copied_carrier_jz_self_loop_produces_entry_redirect() -> None:

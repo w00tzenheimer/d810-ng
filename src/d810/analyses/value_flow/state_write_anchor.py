@@ -71,6 +71,7 @@ from d810.analyses.value_flow.induction_carrier import (
     _canonical_opcode_name,
     _canonical_operands,
     _const_value_from_varnode,
+    _reg_from_varnode,
     _size_from_varnode,
     _stkoff_from_varnode,
     _value_op_from_instruction,
@@ -120,6 +121,7 @@ class _StateWriteInsn:
     opcode_name: str
     dstr: str
     dest_stkoff: int | None
+    dest_reg: int | None
     dest_size: int | None
     src_l_value: int | None
     operation: ValueOpKind | None
@@ -142,6 +144,7 @@ class _StateWriteInsn:
             opcode_name=_canonical_opcode_name(instruction),
             dstr=str(attrs.get("display_text") or ""),
             dest_stkoff=_stkoff_from_varnode(dest),
+            dest_reg=_reg_from_varnode(dest),
             dest_size=_size_from_varnode(dest),
             src_l_value=_const_value_from_varnode(left),
             operation=_value_op_from_instruction(instruction),
@@ -279,10 +282,10 @@ def _block_start_ea_lookup(target: Any) -> dict[int, int | None]:
 
 
 def _is_state_const_write(insn: _StateWriteInsn) -> bool:
-    """Return ``True`` if ``insn`` writes a constant into a stack slot."""
+    """Return ``True`` if ``insn`` writes a constant into state storage."""
     if insn.operation is not ValueOpKind.MOVE:
         return False
-    if insn.dest_stkoff is None:
+    if insn.dest_stkoff is None and insn.dest_reg is None:
         return False
     return insn.src_l_value is not None
 
@@ -340,12 +343,17 @@ class StateWriteAnchorFactCollector:
         block_contexts: dict[int, _BlockStateWriteContext] = {}
 
         observations: list[FactObservation] = []
-        # Dedupe using ``(block_serial, insn_index, anchor_ea, stkoff)``.
-        seen: set[tuple[int, int, int, int]] = set()
+        # Dedupe using ``(block_serial, insn_index, anchor_ea, storage)``.
+        seen: set[tuple[int, int, int, str, int]] = set()
 
         for insn in _iter_state_const_writes(instructions):
             block_serial = int(insn.block_serial)
-            stkoff = int(insn.dest_stkoff or 0)
+            if insn.dest_stkoff is not None:
+                storage_kind, storage_offset = "stk", int(insn.dest_stkoff)
+            elif insn.dest_reg is not None:
+                storage_kind, storage_offset = "reg", int(insn.dest_reg)
+            else:
+                continue
             anchor_ea = _instruction_anchor_ea(insn, block_start_ea)
             if anchor_ea is None:
                 # Without a stable EA we can't anchor the lifecycle row.
@@ -354,7 +362,8 @@ class StateWriteAnchorFactCollector:
                 block_serial,
                 int(insn.insn_index),
                 int(anchor_ea),
-                stkoff,
+                storage_kind,
+                storage_offset,
             )
             if dedupe in seen:
                 continue
@@ -378,11 +387,16 @@ class StateWriteAnchorFactCollector:
             # fact_id remains stable across maturities for the SAME write
             # site, while the payload preserves the per-maturity constant
             # for the lifecycle to compare on.
+            storage_key = (
+                f"stkoff=0x{storage_offset:x}"
+                if storage_kind == "stk"
+                else f"reg={storage_offset}"
+            )
             semantic_key = (
                 f"state_write_anchor:blk={block_serial}:"
                 f"insn={int(insn.insn_index)}:"
                 f"ea=0x{int(anchor_ea):x}:"
-                f"stkoff=0x{stkoff:x}"
+                f"{storage_key}"
             )
             fact_id = semantic_key
             payload: dict[str, Any] = {
@@ -393,8 +407,12 @@ class StateWriteAnchorFactCollector:
                 "instruction_index": int(insn.insn_index),
                 "instruction_ea_hex": f"0x{int(anchor_ea) & 0xFFFFFFFFFFFFFFFF:016x}",
                 "instruction_ea": int(anchor_ea),
-                "state_var_stkoff": stkoff,
-                "state_var_stkoff_hex": f"0x{stkoff:x}",
+                "state_var_stkoff": (
+                    storage_offset if storage_kind == "stk" else None
+                ),
+                "state_var_stkoff_hex": (
+                    f"0x{storage_offset:x}" if storage_kind == "stk" else None
+                ),
                 "dest_var_signature": dest_var_signature,
                 "dest_size": dest_size,
                 "block_dstr": ctx.opcode_fingerprint,
@@ -404,6 +422,8 @@ class StateWriteAnchorFactCollector:
                     ContractEvidenceToken.STATE_VARIABLE_WRITES
                 ),
             }
+            if storage_kind == "reg":
+                payload["state_var_reg"] = storage_offset
 
             observations.append(
                 FactObservation(
@@ -420,7 +440,11 @@ class StateWriteAnchorFactCollector:
                         f"{insn.opcode_name}"
                     ),
                     mop_signature=(
-                        f"state_write:mop_S:0x{stkoff:x}:{dest_size}"
+                        (
+                            f"state_write:mop_S:0x{storage_offset:x}:{dest_size}"
+                            if storage_kind == "stk"
+                            else f"state_write:mop_r:{storage_offset}:{dest_size}"
+                        )
                     ),
                     payload=payload,
                     evidence=(insn.dstr,),

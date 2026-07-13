@@ -27,6 +27,7 @@ from d810.passes.unflatten.state_machine import (
     RecoverDispatcher,
     RecoverStateTransitions,
 )
+from d810.passes.unflatten import state_machine as state_machine_module
 
 C1 = 0x10000001
 STATE_OFF = 0x3C
@@ -153,6 +154,24 @@ def test_recover_dispatcher_publishes_branch_target_evidence():
 
     assert not am.has_evidence("branch_targets")
     assert not am.has_evidence("dispatcher_predicates")
+
+
+def test_recover_dispatcher_publishes_exact_rows_for_snapshot_diagnostics(monkeypatch):
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        state_machine_module,
+        "observe_state_dispatcher_rows",
+        lambda **kwargs: calls.append(kwargs),
+    )
+    am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
+    ctx = _ctx(am.graph, am.view())
+
+    RecoverDispatcher().run(ctx)
+
+    assert len(calls) == 1
+    assert calls[0]["func_ea"] == 0x1000
+    assert calls[0]["dispatcher_entry_block"] == 0
+    assert len(calls[0]["rows"]) == 1
 
     RecoverDispatcher().run(ctx)
 

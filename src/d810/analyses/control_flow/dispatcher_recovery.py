@@ -112,6 +112,10 @@ class DispatcherRecovery:
     dispatcher_block_serial: int | None = None
     condition_chain_block_serials: tuple[int, ...] = ()
     state_var_stkoff: int | None = None
+    # Register id of a REGISTER-resident state variable (d81-3rja); mirrors
+    # ``dispatch_map.state_var_reg``. Set only when the state var is a register
+    # with no stack home (``state_var_stkoff is None``).
+    state_var_reg: int | None = None
     dispatch_map: StateDispatcherMap | None = None
 
 
@@ -227,6 +231,141 @@ def _resolve_state_identity_to_stkoff(
     return max(src_counts, key=lambda k: src_counts[k])
 
 
+def _recover_computed_goto_loop_header(
+    graph: FlowGraph,
+    chain_blocks: frozenset[int],
+    fallback: int,
+    *,
+    state_identity: tuple[str, int] | None = None,
+) -> int:
+    """Recover the dispatcher loop header when the dominator heuristic degenerates.
+
+    Materialized computed-goto BSTs route every equality leaf's *no-match* edge into a single
+    central re-dispatch hub, and the prologue enters the comparison tree via the
+    indirect jump -- so the true loop header dominates *nothing* in the chain and
+    ``max(chain_blocks u dominators, key=in-degree)`` falls to an arbitrary
+    in-degree-1 mid-chain comparator.
+
+    The funnel is an unambiguous, shape-specific fingerprint: the block a strong
+    majority of chain blocks fall through to. Its re-dispatch successor -- the
+    block the no-match path *and* the handler tails converge on -- is the loop
+    header. Linear (stack) equality chains have no such shared funnel (each
+    no-match edge targets a distinct next comparator), so this never fires for
+    them and the proven stack path is untouched. Returns ``fallback`` unchanged
+    whenever the fingerprint is absent.
+    """
+    if not chain_blocks:
+        return fallback
+    succ_freq: dict[int, int] = {}
+    for cb in chain_blocks:
+        blk = graph.blocks.get(int(cb))
+        if blk is None:
+            continue
+        for s in blk.succs:
+            succ_freq[int(s)] = succ_freq.get(int(s), 0) + 1
+    if not succ_freq:
+        return fallback
+    funnel, hits = max(succ_freq.items(), key=lambda kv: kv[1])
+    # Require a strong majority so a merely-popular successor cannot masquerade
+    # as the central hub of a linear chain.
+    if hits * 2 <= len(chain_blocks):
+        return fallback
+    funnel_blk = graph.blocks.get(int(funnel))
+    if funnel_blk is None:
+        return fallback
+    # After a staged entry bridge exposes both initial arms, equality leaves can
+    # return directly to a native two-way BST node.  Usually that majority
+    # successor is already the re-dispatch header.  A stricter variant has leaves
+    # converging on a busy range node whose one arm
+    # enters the actual handler-tail hub.  Distinguish those shapes by semantic
+    # predecessor evidence, not in-degree: only the real hub has predecessors
+    # that write the recovered state cell.  With no such evidence, retain the
+    # existing direct-two-way-root behavior byte-for-byte.
+    if int(funnel) not in chain_blocks and len(funnel_blk.succs) == 2:
+        write_scores: dict[int, int] = {}
+        if state_identity is not None:
+            identity_kind, identity_value = state_identity
+            for successor in funnel_blk.succs:
+                successor_block = graph.blocks.get(int(successor))
+                if successor_block is None:
+                    continue
+                score = 0
+                for predecessor in successor_block.preds:
+                    predecessor_block = graph.blocks.get(int(predecessor))
+                    if predecessor_block is None:
+                        continue
+                    for instruction in predecessor_block.insn_snapshots:
+                        _left, _right, destination = operand_storages(instruction)
+                        if (
+                            identity_kind == "reg"
+                            and _reg_of(destination) == int(identity_value)
+                        ) or (
+                            identity_kind == "stk"
+                            and _stkoff_of(destination) == int(identity_value)
+                        ):
+                            score += 1
+                            break
+                write_scores[int(successor)] = score
+        if write_scores:
+            best_score = max(write_scores.values())
+            best_successors = tuple(
+                successor
+                for successor, score in write_scores.items()
+                if score == best_score and score > 0
+            )
+            if len(best_successors) == 1:
+                return int(best_successors[0])
+        return int(funnel)
+    # Loop header = the funnel's re-dispatch successor, never a chain block.
+    header_candidates = [
+        int(s) for s in funnel_blk.succs if int(s) not in chain_blocks
+    ]
+    if len(header_candidates) != 1:
+        return fallback
+    return header_candidates[0]
+
+
+def _computed_goto_dispatcher_region(
+    graph: FlowGraph,
+    *,
+    entry: int,
+    chain_blocks: frozenset[int],
+    handler_blocks: frozenset[int],
+) -> frozenset[int]:
+    """Return the complete router region between a BST hub and its leaves.
+
+    Equality recovery names only the exact-comparison leaves.  A computed-goto
+    BST also contains range-navigation nodes (and the two-way redispatch hub),
+    all of which are transition-scan boundaries.  Keep only blocks both
+    reachable from the recovered hub without entering a handler and capable of
+    reaching an equality leaf; this excludes handler bodies and default exits.
+    """
+    start = int(entry)
+    handlers = {int(block) for block in handler_blocks}
+
+    forward: set[int] = set()
+    pending = [start]
+    while pending:
+        serial = pending.pop()
+        if serial in forward or serial in handlers or serial not in graph.blocks:
+            continue
+        forward.add(serial)
+        pending.extend(int(succ) for succ in graph.blocks[serial].succs)
+
+    reverse: set[int] = set()
+    pending = [int(block) for block in chain_blocks]
+    while pending:
+        serial = pending.pop()
+        if serial in reverse or serial in handlers or serial not in graph.blocks:
+            continue
+        reverse.add(serial)
+        if serial == start:
+            continue
+        pending.extend(int(pred) for pred in graph.blocks[serial].preds)
+
+    return frozenset(forward & reverse)
+
+
 def build_state_dispatcher_map_from_flow_graph(
     graph: FlowGraph, *, min_state_constant: int = MIN_STATE_CONSTANT
 ) -> StateDispatcherMap | None:
@@ -291,6 +430,18 @@ def build_state_dispatcher_map_from_flow_graph(
             votes[identity] = votes.get(identity, 0) + 1
     winner = max(votes, key=lambda k: votes[k]) if votes else None
     state_var_stkoff = _resolve_state_identity_to_stkoff(winner, graph)
+    # Register-resident state var (d81-3rja): when the winning identity is a
+    # register that has NO stack home (``state_var_stkoff is None``), surface its
+    # register id so the disjoint register-lowering path can rewire it. A register
+    # that DOES resolve to a stack slot keeps ``state_var_reg=None`` -- the proven
+    # stack path owns it, and the disjoint gate stays closed.
+    state_var_reg = (
+        int(winner[1])
+        if winner is not None
+        and winner[0] == "reg"
+        and state_var_stkoff is None
+        else None
+    )
     rows = tuple(
         row
         for row, identity in raw
@@ -310,13 +461,122 @@ def build_state_dispatcher_map_from_flow_graph(
     for cb in chain_blocks:
         entry_candidates |= dom.dominators_of(cb)
     entry = max(entry_candidates, key=lambda s: len(graph.blocks[s].preds))
+    # A materialized computed-goto BST can make one range subtree look like the
+    # dispatcher entry merely because many state writes are range-specialized
+    # straight to that subtree.  The equality leaves' majority redispatch funnel
+    # is stronger topology evidence than in-degree, even when the wrong subtree
+    # is itself busy.  Linear stack equality chains have no majority funnel, so
+    # the helper returns ``entry`` unchanged and their path remains identical.
+    recovered_entry = _recover_computed_goto_loop_header(
+        graph,
+        chain_blocks,
+        entry,
+        state_identity=winner,
+    )
+    dispatcher_region = chain_blocks
+    if recovered_entry != entry:
+        entry = recovered_entry
+        dispatcher_region = _computed_goto_dispatcher_region(
+            graph,
+            entry=entry,
+            chain_blocks=chain_blocks,
+            handler_blocks=frozenset(int(row.target_block) for row in rows),
+        )
     return StateDispatcherMap(
         rows=rows,
         dispatcher_entry_block=int(entry),
-        dispatcher_blocks=chain_blocks,
+        dispatcher_blocks=dispatcher_region,
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=None,
         router_kind=RouterKind.CONDITION_CHAIN,
+        state_var_reg=state_var_reg,
+    )
+
+
+def _augment_residual_equality_rows(
+    graph: FlowGraph,
+    dmap: StateDispatcherMap,
+    transfers: tuple[object, ...],
+) -> StateDispatcherMap:
+    """Add only resolver-proven residual equality routes with live unique targets."""
+    from d810.analyses.control_flow.materialized_indirect_transfer import (
+        MaterializedIndirectTransfer,
+        find_unique_target_block,
+    )
+
+    rows = list(dmap.rows)
+    existing = {int(row.state_const) for row in rows}
+    for transfer in transfers:
+        if not isinstance(transfer, MaterializedIndirectTransfer):
+            continue
+        state = transfer.selector_state_constant
+        if transfer.resolver_kind == "condition_chain_handler_evidence":
+            target_ea = (
+                transfer.target_eas[0] if len(transfer.target_eas) == 1 else None
+            )
+            branch_kind = "resolver_proven_condition_chain_handler"
+        elif transfer.resolver_kind == "static_equality_route":
+            target_ea = (
+                transfer.target_eas[0] if len(transfer.target_eas) == 1 else None
+            )
+            branch_kind = "resolver_proven_static_equality_route"
+        elif transfer.resolver_kind == "residual_microcode":
+            # An equality JZ proves the true arm; JNZ proves the false arm.
+            # Other predicates are not exact-state rows and remain outside this
+            # provider.
+            cc = transfer.condition_code
+            target_ea = (
+                transfer.true_target_ea
+                if cc == 4
+                else transfer.false_target_ea
+                if cc == 5
+                else None
+            )
+            branch_kind = "resolver_proven_residual_equality"
+        else:
+            continue
+        if state is None or target_ea is None or int(state) in existing:
+            continue
+        target = find_unique_target_block(graph, int(target_ea))
+        if target is None:
+            continue
+        rows.append(
+            StateDispatcherRow(
+                state_const=int(state),
+                target_block=int(target),
+                dispatcher_block=int(dmap.dispatcher_entry_block),
+                compare_block=None,
+                branch_kind=branch_kind,
+                router_kind=dmap.router_kind,
+                confidence=1.0,
+                row_kind="handler",
+            )
+        )
+        existing.add(int(state))
+    if len(rows) == len(dmap.rows):
+        return dmap
+
+    dispatcher_region = dmap.dispatcher_blocks
+    equality_blocks = frozenset(
+        int(row.compare_block)
+        for row in rows
+        if row.compare_block is not None
+    )
+    # The initial portable pass knows only live equality leaves.  Resolver
+    # augmentation can add handler entries that the first router-region walk
+    # mistakenly traversed as ordinary glue.  Recompute the computed-goto BST
+    # region with the complete exact handler set before publishing the map.
+    if set(dispatcher_region) - set(equality_blocks):
+        dispatcher_region = _computed_goto_dispatcher_region(
+            graph,
+            entry=int(dmap.dispatcher_entry_block),
+            chain_blocks=equality_blocks,
+            handler_blocks=frozenset(int(row.target_block) for row in rows),
+        )
+    return replace(
+        dmap,
+        rows=tuple(rows),
+        dispatcher_blocks=dispatcher_region,
     )
 
 
@@ -592,6 +852,7 @@ def recover_dispatcher(
     facts: ValidatedFactView | None,
     *,
     min_state_constant: int = MIN_STATE_CONSTANT,
+    materialized_indirect_transfers: tuple[object, ...] = (),
 ) -> DispatcherRecovery:
     """Recover dispatcher structure + the exact state->handler map over a portable ``FlowGraph``.
 
@@ -619,10 +880,14 @@ def recover_dispatcher(
         recovered_initial = recover_entry_dominated_initial_state(graph, dmap)
         if recovered_initial is not None:
             dmap = replace(dmap, initial_state=recovered_initial)
+    dmap = _augment_residual_equality_rows(
+        graph, dmap, materialized_indirect_transfers
+    )
     return DispatcherRecovery(
         reachable_block_serials=reachable,
         dispatcher_block_serial=dmap.dispatcher_entry_block,
         condition_chain_block_serials=tuple(sorted(dmap.dispatcher_blocks)),
         state_var_stkoff=dmap.state_var_stkoff,
+        state_var_reg=getattr(dmap, "state_var_reg", None),
         dispatch_map=dmap,
     )

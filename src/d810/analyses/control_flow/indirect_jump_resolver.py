@@ -88,6 +88,7 @@ class IndirectJumpDispatcherResolver:
 
     indirect_tables: IndirectJumpTableCapability
     goto_table_info: dict = field(default_factory=dict)
+    enabled: bool = True
     name: str = "indirect_jump_table"
     router_kind: RouterKind = RouterKind.TABLE
     table_provenance: TableProvenance = TableProvenance.INDIRECT_JUMP_TABLE
@@ -95,6 +96,8 @@ class IndirectJumpDispatcherResolver:
 
     def _analyze(self, graph: FlowGraph) -> IndirectJumpTableResult | None:
         """Run the injected capability; ``None`` on any miss/failure."""
+        if not self.enabled:
+            return None
         try:
             return self.indirect_tables.analyze_indirect_dispatcher(
                 graph, goto_table_info=self.goto_table_info or {}

@@ -180,7 +180,8 @@ class ConvertToGoto:
     """Convert a block's tail to an unconditional goto.
 
     Maps to DeferredGraphModifier's BLOCK_CONVERT_TO_GOTO.
-    Typically used to simplify 2-way blocks to 1-way when one branch is dead.
+    Used to connect a proven terminal route or simplify a 2-way block to 1-way
+    when one branch is dead.
 
     Attributes:
         block_serial: Block to convert to goto.
@@ -589,6 +590,30 @@ class SyntheticCounterBoundCondition:
 
 
 @dataclass(frozen=True)
+class SyntheticRegisterNonzeroCondition:
+    """Portable descriptor for a proven live ``register != 0`` predicate."""
+
+    predicate_reg: int
+    predicate_size: int
+
+
+@dataclass(frozen=True)
+class PreserveLivePredicateCondition:
+    """Retain the existing live conditional instruction at one exact EA.
+
+    The backend may use this only while the source remains two-way and the
+    instruction at ``predicate_ea`` is still its conditional tail.  No
+    predicate expression is reconstructed; only the two proven arm targets are
+    replaced.  ``true_is_taken`` maps the portable true/false targets back to
+    the original instruction's explicit jump arm.
+    """
+
+    predicate_ea: int
+    true_is_taken: bool
+    preserve_live_predicate: bool = True
+
+
+@dataclass(frozen=True)
 class LowerConditionalStateTransition:
     """Replace a dispatcher state write with an explicit conditional edge.
 
@@ -605,6 +630,12 @@ class LowerConditionalStateTransition:
     false_target_serial: int
     true_target_serial: int
     proof_id: str | None = None
+    state_register: int | None = None
+    state_size: int | None = None
+    false_state: int | None = None
+    true_state: int | None = None
+    false_state_write_ea: int | None = None
+    true_state_write_ea: int | None = None
     reason: str = "conditional_state_transition"
 
 
@@ -818,6 +849,8 @@ __all__ = [
     "DuplicateReplayEntry",
     "DuplicateReplayAndRedirect",
     "SyntheticCounterBoundCondition",
+    "SyntheticRegisterNonzeroCondition",
+    "PreserveLivePredicateCondition",
     "LowerConditionalStateTransition",
     "NormalizeNWayDispatcherExit",
     "BypassDispatcherTrampoline",

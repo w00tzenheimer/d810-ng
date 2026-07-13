@@ -8,6 +8,10 @@ from collections import defaultdict
 
 import ida_hexrays
 
+from d810.hexrays.hooks.optimization_suppression import (
+    d810_optimization_is_suppressed,
+)
+
 from d810.core import getLogger, typing
 from d810.core.rule_scope import PIPELINE_FLOW
 from d810.errors import D810Exception
@@ -889,6 +893,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         }
 
     def optimize(self, blk: ida_hexrays.mblock_t):
+        if d810_optimization_is_suppressed():
+            return 0
         active_rules = self._resolve_active_rules(blk)
         rules = active_rules if active_rules is not None else tuple(self.cfg_rules)
         rules = self._order_rules_for_execution(rules)

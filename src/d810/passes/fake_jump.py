@@ -72,10 +72,8 @@ def should_skip_fake_jump_predecessor(
     resolved_count: int,
     unresolved_count: int,
 ) -> bool:
-    """Return True when unresolved histories make the fix unsafe."""
-    if resolved_count <= 0:
-        return True
-    return resolved_count < 3 and unresolved_count > 10 * resolved_count
+    """Require every reaching history before proving a branch deterministic."""
+    return resolved_count <= 0 or unresolved_count > 0
 
 
 def resolve_fake_jump_target(

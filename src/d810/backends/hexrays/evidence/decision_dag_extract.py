@@ -62,7 +62,7 @@ _FLIP = {
 
 def _is_state_var(
     mop,
-    state_var_stkoff: int,
+    state_var_stkoff: Optional[int],
     state_var_lvar_idx: Optional[int],
     state_var_reg: Optional[int] = None,
 ) -> bool:
@@ -72,7 +72,11 @@ def _is_state_var(
     if t == ida_hexrays.mop_S:
         s = getattr(mop, "s", None)
         off = getattr(s, "off", None) if s is not None else None
-        return off is not None and int(off) == int(state_var_stkoff)
+        return (
+            state_var_stkoff is not None
+            and off is not None
+            and int(off) == int(state_var_stkoff)
+        )
     if t == ida_hexrays.mop_l and state_var_lvar_idx is not None:
         lref = getattr(mop, "l", None)
         idx = getattr(lref, "idx", None) if lref is not None else None
@@ -177,7 +181,7 @@ def _descend_to_root(
             return cur
         if (
             _parse_state_comparison(
-                blk, op_map, int(state_var_stkoff), state_var_lvar_idx, mask,
+                blk, op_map, state_var_stkoff, state_var_lvar_idx, mask,
                 state_var_reg,
             )
             is not None
@@ -194,8 +198,9 @@ def extract_decision_dag(
     mba,
     *,
     dispatcher_entry_serial: int,
-    state_var_stkoff: int,
+    state_var_stkoff: Optional[int],
     state_var_lvar_idx: Optional[int] = None,
+    state_var_reg: Optional[int] = None,
     width: int = 32,
     max_nodes: int = 1024,
 ) -> DecisionDag:
@@ -204,8 +209,12 @@ def extract_decision_dag(
     Args:
         mba: The live ``mba_t``.
         dispatcher_entry_serial: The condition-chain root block (handlers ``goto`` here).
-        state_var_stkoff: The dispatcher state variable's ``mop_S.s.off``.
+        state_var_stkoff: The dispatcher state variable's ``mop_S.s.off``, or
+            ``None`` for a register-resident state variable.
         state_var_lvar_idx: Its lvar index when the state var is a register/lvar.
+        state_var_reg: Explicit mreg identity for a register-resident state
+            variable. When absent, stack dispatchers retain the existing
+            entry-load auto-detection.
         width: State variable bit-width (default 32).
         max_nodes: Safety bound on the comparison-node count.
 
@@ -219,11 +228,12 @@ def extract_decision_dag(
     # Register-resident dispatchers compare the state var in a register below the
     # root; detect it so the comparison nodes are recognized (else the DAG
     # collapses to the root leaf and routing degrades to exact-only).
-    state_var_reg = _detect_state_var_reg(
-        mba, int(dispatcher_entry_serial), int(state_var_stkoff)
-    )
+    if state_var_reg is None and state_var_stkoff is not None:
+        state_var_reg = _detect_state_var_reg(
+            mba, int(dispatcher_entry_serial), int(state_var_stkoff)
+        )
     root = _descend_to_root(
-        mba, int(dispatcher_entry_serial), op_map, int(state_var_stkoff),
+        mba, int(dispatcher_entry_serial), op_map, state_var_stkoff,
         state_var_lvar_idx, mask, state_var_reg=state_var_reg,
     )
     nodes: dict[int, RouteComparison] = {}
@@ -241,7 +251,7 @@ def extract_decision_dag(
         if blk is None:
             continue
         parsed = _parse_state_comparison(
-            blk, op_map, int(state_var_stkoff), state_var_lvar_idx, mask,
+            blk, op_map, state_var_stkoff, state_var_lvar_idx, mask,
             state_var_reg,
         )
         if parsed is None:

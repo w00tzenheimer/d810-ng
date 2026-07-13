@@ -226,6 +226,12 @@ class PatchLowerConditionalStateTransition:
     false_target_serial: int
     true_target_serial: int
     proof_id: str | None = None
+    state_register: int | None = None
+    state_size: int | None = None
+    false_state: int | None = None
+    true_state: int | None = None
+    false_state_write_ea: int | None = None
+    true_state_write_ea: int | None = None
 
     def to_graph_modification(self) -> LowerConditionalStateTransition:
         return LowerConditionalStateTransition(
@@ -236,6 +242,12 @@ class PatchLowerConditionalStateTransition:
             false_target_serial=self.false_target_serial,
             true_target_serial=self.true_target_serial,
             proof_id=self.proof_id,
+            state_register=self.state_register,
+            state_size=self.state_size,
+            false_state=self.false_state,
+            true_state=self.true_state,
+            false_state_write_ea=self.false_state_write_ea,
+            true_state_write_ea=self.true_state_write_ea,
         )
 
 
@@ -2271,6 +2283,12 @@ def compile_patch_plan(
                 false_target_serial=false_target,
                 true_target_serial=true_target,
                 proof_id=proof_id,
+                state_register=state_register,
+                state_size=state_size,
+                false_state=false_state,
+                true_state=true_state,
+                false_state_write_ea=false_state_write_ea,
+                true_state_write_ea=true_state_write_ea,
             ):
                 raw_steps.append(PatchLowerConditionalStateTransition(
                     source_serial=src,
@@ -2280,6 +2298,12 @@ def compile_patch_plan(
                     false_target_serial=false_target,
                     true_target_serial=true_target,
                     proof_id=proof_id,
+                    state_register=state_register,
+                    state_size=state_size,
+                    false_state=false_state,
+                    true_state=true_state,
+                    false_state_write_ea=false_state_write_ea,
+                    true_state_write_ea=true_state_write_ea,
                 ))
 
             case NormalizeNWayDispatcherExit(

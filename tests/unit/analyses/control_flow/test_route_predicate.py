@@ -76,6 +76,14 @@ def test_sub7ffd_routes_match_microcode_trace():
     assert 56 in sib[57] and 57 in sib[56]  # blk55's two arms are siblings
 
 
+def test_route_from_materialized_midtree_target_uses_that_root():
+    dag = _sub7ffd_condition_chain()
+    state = 0x1234
+
+    assert dag.route(state) == 112
+    assert dag.route_from(53, state) == 57
+
+
 def test_blk56_partition_cell_is_exactly_0x7D9C16EC():
     # What routes to blk56? Only state 0x7D9C16EC -- proven by the partition.
     dag = _sub7ffd_condition_chain()

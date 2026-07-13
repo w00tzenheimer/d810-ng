@@ -207,7 +207,7 @@ def randmod_database():
     print(f"[randmod] .data permissions old/new: {data_perms}", flush=True)
     yield {"input": temp_input, "data_perms": data_perms}
 
-    idapro.close_database()
+    idapro.close_database(False)
     shutil.rmtree(tempdir, ignore_errors=True)
 
 

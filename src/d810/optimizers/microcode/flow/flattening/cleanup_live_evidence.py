@@ -63,9 +63,12 @@ def collect_live_fake_jump_block_fixes(
 
     if logger is not None:
         logger.info(
-            "Checking if block %s is fake loop: %s",
+            "Checking if blk%d@0x%x is fake loop: %s preds=%s succs=%s",
             blk.serial,
+            int(blk.start),
             format_minsn_t(blk.tail),
+            tuple(int(pred) for pred in blk.predset),
+            _live_block_successors(blk),
         )
 
     op_compared = ida_hexrays.mop_t(blk.tail.l)
@@ -75,13 +78,20 @@ def collect_live_fake_jump_block_fixes(
         pred_blk = blk.mba.get_mblock(pred_serial)
         if pred_blk is None or pred_blk.tail is None:
             continue
-        if _last_assignment_to_mop_is_nonconstant(pred_blk, op_compared):
+        if _has_backward_reachable_loop_carrier_update(
+            pred_blk,
+            op_compared,
+            max_nb_block=max_nb_block,
+        ):
             if logger is not None:
                 logger.info(
-                    "Pred %s updates compared operand for candidate fake jump %s "
-                    "with a non-constant value; preserving carrier guard",
+                    "Pred blk%d@0x%x updates compared operand for candidate "
+                    "fake jump blk%d@0x%x with a non-constant value; "
+                    "preserving carrier guard",
                     pred_blk.serial,
+                    int(pred_blk.start),
                     blk.serial,
+                    int(blk.start),
                 )
             continue
 
@@ -399,6 +409,37 @@ def _mop_subtree_reads(node: object, mop: object, depth: int = 0) -> bool:
     return False
 
 
+def _last_write_to_mop(blk: object, mop: object) -> object | None:
+    """Return the last instruction in ``blk`` that writes ``mop``."""
+    if blk is None or mop is None:
+        return None
+    insn = blk.tail
+    while insn is not None:
+        dest = insn.d
+        if dest is not None:
+            try:
+                if dest.equal_mops(mop, ida_hexrays.EQ_IGNSIZE):
+                    return insn
+            except AttributeError:
+                pass
+        insn = insn.prev
+    return None
+
+
+def _is_self_referential_nonconstant_write(insn: object, mop: object) -> bool:
+    if insn is None or mop is None:
+        return False
+    left = insn.l
+    right = insn.r
+    if (
+        insn.opcode == ida_hexrays.m_mov
+        and left is not None
+        and left.t == ida_hexrays.mop_n
+    ):
+        return False
+    return _mop_subtree_reads(left, mop) or _mop_subtree_reads(right, mop)
+
+
 def _last_assignment_to_mop_is_nonconstant(blk: object, mop: object) -> bool:
     """Return True when ``blk``'s last write to ``mop`` is a dynamic *carrier* update.
 
@@ -415,29 +456,53 @@ def _last_assignment_to_mop_is_nonconstant(blk: object, mop: object) -> bool:
     shuffling, is *not* a carrier update: it falls through to the deterministic
     MopTracker resolution, which independently proves whether the jump is fake.
     """
-    if blk is None or mop is None:
+    return _is_self_referential_nonconstant_write(
+        _last_write_to_mop(blk, mop),
+        mop,
+    )
+
+
+def _has_backward_reachable_loop_carrier_update(
+    pred_blk: object,
+    mop: object,
+    *,
+    max_nb_block: int,
+) -> bool:
+    """Find a reaching self-update that invalidates a constant-only history.
+
+    The immediate predecessor of a loop-completion test is often a break-path
+    tail, not the induction-update block itself.  ``MopTracker`` can then stop
+    at the loop initializer and report a first-iteration constant while
+    omitting the loop-carried history.  Walk predecessor edges until the first
+    write to ``mop`` on each path.  A self-referential nonconstant write makes
+    the candidate dynamic; any other write kills older definitions on that
+    path and therefore stops the walk.
+    """
+    if pred_blk is None or mop is None or max_nb_block <= 0:
         return False
-    insn = getattr(blk, "tail", None)
-    while insn is not None:
-        dest = getattr(insn, "d", None)
-        equal_mops = getattr(dest, "equal_mops", None)
-        if (
-            dest is not None
-            and callable(equal_mops)
-            and equal_mops(mop, ida_hexrays.EQ_IGNSIZE)
-        ):
-            is_const_mov = (
-                getattr(insn, "opcode", None) == ida_hexrays.m_mov
-                and getattr(getattr(insn, "l", None), "t", None) == ida_hexrays.mop_n
-            )
-            if is_const_mov:
-                return False
-            # Non-constant write: only a self-referential update (the operand
-            # reappears in the source) is a real loop carrier worth preserving.
-            return _mop_subtree_reads(
-                getattr(insn, "l", None), mop
-            ) or _mop_subtree_reads(getattr(insn, "r", None), mop)
-        insn = getattr(insn, "prev", None)
+
+    pending = [pred_blk]
+    visited: set[int] = set()
+    while pending and len(visited) < max_nb_block:
+        block = pending.pop()
+        serial = int(block.serial)
+        if serial in visited:
+            continue
+        visited.add(serial)
+
+        write = _last_write_to_mop(block, mop)
+        if write is not None:
+            if _is_self_referential_nonconstant_write(write, mop):
+                return True
+            continue
+
+        for predecessor in block.predset:
+            predecessor_serial = int(predecessor)
+            if predecessor_serial in visited:
+                continue
+            predecessor_block = block.mba.get_mblock(predecessor_serial)
+            if predecessor_block is not None:
+                pending.append(predecessor_block)
     return False
 
 

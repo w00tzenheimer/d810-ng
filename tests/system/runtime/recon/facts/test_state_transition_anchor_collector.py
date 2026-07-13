@@ -23,6 +23,7 @@ _OPCODE_ALIASES = {
 
 _OPERAND_TYPE_ALIASES = {
     "mop_S": "S",
+    "mop_r": "r",
     "mop_n": "c",
 }
 
@@ -66,6 +67,42 @@ def _state_insn(
             dstr=dstr,
             dest_type="mop_S",
             dest_stkoff=stkoff,
+            dest_size=4,
+            src_l_type="mop_n",
+            src_l_value=state_const,
+        ),
+    )
+
+
+def _register_state_insn(
+    *,
+    index: int,
+    state_const: int,
+    ea: int,
+    register: int = 20,
+) -> InstructionSnapshot:
+    dstr = f"mov #0x{state_const:08X}.4, r{register}.4"
+    return InstructionSnapshot(
+        index=index,
+        ea=ea,
+        opcode=0,
+        opcode_name="m_mov",
+        dest_type=_operand_type("mop_r"),
+        dest_stkoff=None,
+        dest_size=4,
+        src_l_type=_operand_type("mop_n"),
+        src_l_stkoff=None,
+        src_l_value=state_const,
+        src_r_type=None,
+        src_r_stkoff=None,
+        src_r_value=None,
+        dstr=dstr,
+        meta=flat_meta(
+            opcode_name="m_mov",
+            ea=ea,
+            dstr=dstr,
+            dest_type="mop_r",
+            dest_register=register,
             dest_size=4,
             src_l_type="mop_n",
             src_l_value=state_const,
@@ -169,10 +206,34 @@ def test_direct_transition_records_both_consts() -> None:
     assert blk100.payload["transit_blocks"] == []
     assert blk100.payload["successor_kind"] == "direct"
     assert blk100.payload["state_var_stkoff"] == 0x3C
+    assert "state_var_reg" not in blk100.payload
     assert (
         blk100.mop_signature
         == "state_transition:0x5a21d9db->0x63d54755:kind=direct"
     )
+
+
+def test_register_state_machine_records_register_identity_and_transition():
+    facts = _collect(
+        _target(
+            _block(
+                100,
+                _register_state_insn(index=0, state_const=0x19A7218A, ea=0x1000),
+                succs=(101,),
+            ),
+            _block(
+                101,
+                _register_state_insn(index=0, state_const=0x357A351E, ea=0x1010),
+                succs=(),
+            ),
+        ),
+    )
+
+    assert len(facts) == 2
+    first = next(fact for fact in facts if fact.payload["source_block_serial"] == 100)
+    assert first.payload["state_var_stkoff"] is None
+    assert first.payload["state_var_reg"] == 20
+    assert first.payload["next_state_const"] == 0x357A351E
 
 
 def test_transit_chain_records_intermediate_blocks() -> None:

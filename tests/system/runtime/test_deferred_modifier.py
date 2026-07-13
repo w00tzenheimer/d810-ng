@@ -516,7 +516,13 @@ def test_block_target_change_rewrites_fallthrough_via_helper_and_remaps_later_ta
     blk.nextb = SimpleNamespace(serial=16)
     blk.nsucc = lambda: 2  # type: ignore[assignment]
     blk.succ = lambda idx: [16, 17][idx]  # type: ignore[assignment]
-    mba.blocks = {15: blk}
+    fallthrough_destination = _FakeBlock(66, start=0x406600)
+    conditional_destination = _FakeBlock(202, start=0x420200)
+    mba.blocks = {
+        15: blk,
+        66: fallthrough_destination,
+        202: conditional_destination,
+    }
     mba.qty = 300
 
     modifier = dm.DeferredGraphModifier(mba)
@@ -526,6 +532,11 @@ def test_block_target_change_rewrites_fallthrough_via_helper_and_remaps_later_ta
     conditional_targets: list[tuple[int, int, int | None]] = []
 
     def _insert_nop(_blk):
+        for block in mba.blocks.values():
+            if int(block.serial) >= int(nop_blk.serial):
+                block.serial += 1
+        mba.blocks = {int(block.serial): block for block in mba.blocks.values()}
+        mba.blocks[int(nop_blk.serial)] = nop_blk
         mba.qty += 1
         return nop_blk
 
@@ -565,6 +576,213 @@ def test_block_target_change_rewrites_fallthrough_via_helper_and_remaps_later_ta
     assert modifier._serial_remap[16] == 17
     assert modifier._serial_remap[17] == 18
     assert modifier._serial_remap[202] == 203
+
+
+def test_block_target_change_fallthrough_helper_preserves_target_ea_after_serial_drift(
+    monkeypatch,
+):
+    """A remapped serial must not retarget the handler to its fallthrough."""
+    mba = _FakeMBA()
+    source = _FakeBlock(237, start=0x40C32F)
+    source.type = ida_hexrays.BLT_2WAY
+    source.tail.opcode = ida_hexrays.m_jnz
+    source.tail.d = SimpleNamespace(t=ida_hexrays.mop_b, b=239)
+    source.succset = _FakeEdgeSet([238, 239])
+    source.nextb = SimpleNamespace(serial=238)
+    source.nsucc = lambda: 2  # type: ignore[assignment]
+    source.succ = lambda idx: [238, 239][idx]  # type: ignore[assignment]
+    handler = _FakeBlock(51, start=0x40AB25)
+    handler_fallthrough = _FakeBlock(52, start=0x40AB56)
+    mba.blocks = {
+        51: handler,
+        52: handler_fallthrough,
+        237: source,
+    }
+    mba.qty = 300
+
+    modifier = dm.DeferredGraphModifier(mba)
+    # The original target blk50@0x40AB25 is currently blk51@0x40AB25.
+    # Another original block 51 independently maps to live serial 52.  Once
+    # _apply_single resolves new_target 50 -> 51, the fallthrough helper must
+    # treat 51 as a live serial, not resolve it again through the original-key
+    # mapping 51 -> 52.
+    modifier._serial_remap = {226: 237, 227: 238, 50: 51, 51: 52}
+    helper = _FakeBlock(238)
+    rewritten_targets: list[int] = []
+
+    def _insert_nop(_source):
+        mba.qty += 1
+        return helper
+
+    monkeypatch.setattr(dm, "insert_nop_blk", _insert_nop)
+    monkeypatch.setattr(
+        dm,
+        "change_1way_block_successor",
+        lambda _helper, target, verify=False: rewritten_targets.append(target) or True,
+    )
+
+    assert modifier._apply_single(
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_TARGET_CHANGE,
+            block_serial=226,
+            new_target=50,
+            old_target=227,
+        )
+    )
+    assert int(mba.get_mblock(rewritten_targets[0]).start) == int(handler.start)
+
+
+def test_conditional_lowering_helper_remaps_later_branch_targets(monkeypatch):
+    """A helper insertion must shift targets used by later queued rewrites."""
+    mba = _FakeMBA()
+    guard = _FakeBlock(10)
+    guard.mba = mba
+    guard.head = None
+    target = _FakeBlock(20)
+    target.mba = mba
+    helper = _FakeBlock(11)
+    helper.mba = mba
+    helper.head = None
+    helper.make_nop = lambda _insn: None  # type: ignore[attr-defined]
+    helper.mark_lists_dirty = lambda: None  # type: ignore[assignment]
+    source = _FakeBlock(5)
+    source.mba = mba
+    mba.blocks = {5: source, 10: guard, 20: target}
+    mba.qty = 30
+
+    def _copy_block_keep(_mba, _guard, _insertion_serial):
+        assert _insertion_serial == 11
+        mba.qty += 1
+        target.serial = 21
+        mba.blocks[21] = target
+        mba.blocks[11] = helper
+        return helper
+
+    monkeypatch.setattr(dm, "copy_block_keep", _copy_block_keep)
+    monkeypatch.setattr(dm, "insert_goto_instruction", lambda *_a, **_k: None)
+
+    modifier = dm.DeferredGraphModifier(mba)
+    assert modifier._build_fallthrough_goto_helper(guard, target) == 11
+
+    captured: list[tuple[int, int | None]] = []
+    monkeypatch.setattr(
+        modifier,
+        "_apply_target_change",
+        lambda _blk, new_target, old_target=None: (
+            captured.append((new_target, old_target)) or True
+        ),
+    )
+    assert modifier._apply_single(
+        dm.GraphModification(
+            dm.ModificationType.BLOCK_TARGET_CHANGE,
+            block_serial=5,
+            new_target=20,
+            old_target=10,
+        )
+    )
+
+    assert modifier._serial_remap[20] == 21
+    assert captured == [(21, 10)]
+
+
+def test_conditional_lowering_helpers_keep_target_identity_across_two_insertions(
+    monkeypatch,
+):
+    """The second helper must target the same EA after the first insert shifts it."""
+    mba = _FakeMBA()
+    guard = _FakeBlock(10, start=0x40AC64)
+    guard.mba = mba
+    guard.head = None
+    taken_target = _FakeBlock(20, start=0x40B0CA)
+    taken_target.mba = mba
+    fallthrough_target = _FakeBlock(30, start=0x40C0FE)
+    fallthrough_target.mba = mba
+    mba.blocks = {
+        int(guard.serial): guard,
+        int(taken_target.serial): taken_target,
+        int(fallthrough_target.serial): fallthrough_target,
+    }
+    mba.qty = 40
+
+    goto_targets: list[tuple[_FakeBlock, int]] = []
+
+    def _copy_block_keep(_mba, _guard, insertion_serial):
+        helper = _FakeBlock(int(insertion_serial), start=0xF1C00000 + mba.qty)
+        helper.mba = mba
+        helper.head = None
+        helper.make_nop = lambda _insn: None  # type: ignore[attr-defined]
+        helper.mark_lists_dirty = lambda: None  # type: ignore[assignment]
+        for block in tuple(mba.blocks.values()):
+            if int(block.serial) >= int(insertion_serial):
+                block.serial += 1
+        mba.blocks = {int(block.serial): block for block in mba.blocks.values()}
+        mba.blocks[int(helper.serial)] = helper
+        mba.qty += 1
+        return helper
+
+    monkeypatch.setattr(dm, "copy_block_keep", _copy_block_keep)
+    monkeypatch.setattr(
+        dm,
+        "insert_goto_instruction",
+        lambda helper, target, **_kwargs: goto_targets.append((helper, target)),
+    )
+
+    modifier = dm.DeferredGraphModifier(mba)
+    assert (
+        modifier._build_fallthrough_goto_helper(guard, taken_target)
+        is not None
+    )
+    assert (
+        modifier._build_fallthrough_goto_helper(guard, fallthrough_target)
+        is not None
+    )
+
+    second_target_serial = int(goto_targets[1][1])
+    assert int(mba.get_mblock(second_target_serial).start) == 0x40C0FE
+
+
+def test_conditional_lowering_resolves_dispatcher_serial_once(monkeypatch):
+    """The lowering callee owns target remapping; do not pre-remap its old edge."""
+    mba = _FakeMBA()
+    source = _FakeBlock(87)
+    mba.blocks = {87: source}
+    mba.qty = 143
+    modifier = dm.DeferredGraphModifier(mba)
+    modifier._serial_remap = {
+        86: 87,
+        140: 141,
+        141: 142,
+    }
+
+    captured: dict[str, int] = {}
+
+    def _lower(_block, **kwargs):
+        captured["source"] = int(_block.serial)
+        captured["old_dispatcher"] = int(kwargs["old_dispatcher_serial"])
+        return True
+
+    monkeypatch.setattr(
+        modifier,
+        "_apply_lower_conditional_state_transition",
+        _lower,
+    )
+
+    assert modifier._apply_single(
+        dm.GraphModification(
+            dm.ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
+            block_serial=86,
+            new_target=245,
+            old_target=140,
+            rewrite_from_ea=0x40AFEB,
+            condition_operand=object(),
+            false_target=227,
+            true_target=245,
+        )
+    )
+    assert captured == {
+        "source": 87,
+        "old_dispatcher": 140,
+    }
 
 
 def test_create_and_redirect_rejects_non_1way_source(monkeypatch):
@@ -2909,6 +3127,42 @@ class TestStagedAtomicEaIdentity:
         # pointers captured at stage time.
         assert len(rewire.preds_to_redirect) == 1
         assert rewire.preds_to_redirect[0] is pred
+
+    def test_staged_goto_change_resolves_remapped_source_to_its_ea(
+        self, monkeypatch,
+    ):
+        """A queued goto change must stage the remapped source, not its old slot."""
+        mba = _StagedFakeMBA()
+        stale_slot = _StagedFakeBlock(
+            100, nsucc=1, succ_serial=102, start=0x40B149,
+        )
+        intended_source = _StagedFakeBlock(
+            101, nsucc=1, succ_serial=102, start=0x40B157,
+        )
+        destination = _StagedFakeBlock(102, nsucc=0, start=0x40B163)
+        stop = _StagedFakeBlock(112, nsucc=0)
+        stop.type = ida_hexrays.BLT_STOP
+        mba.blocks.update({
+            100: stale_slot,
+            101: intended_source,
+            102: destination,
+            112: stop,
+        })
+        mba.qty = 113
+
+        _staged_patch_wiring(monkeypatch, mba)
+        modifier = dm.DeferredGraphModifier(mba)
+        modifier._serial_remap = {100: 101}
+        mod = dm.GraphModification(
+            dm.ModificationType.BLOCK_GOTO_CHANGE,
+            block_serial=100,
+            new_target=102,
+        )
+
+        rewire = modifier._stage_destructive_mod_via_copy(mod, index=0)
+
+        assert rewire is not None
+        assert rewire.original_start_ea == 0x40B157
 
     def test_commit_re_resolves_original_by_ea_after_staging_shift(self, monkeypatch):
         """After a Phase 2 inner staging shift, commit still hits the right block.

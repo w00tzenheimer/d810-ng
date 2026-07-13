@@ -62,6 +62,88 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             return ida_hexrays.MERR_REDO
         return 0
 
+    def calls_done(self, mba: ida_hexrays.mbl_array_t) -> "int":
+        """Run preanalysis that requires the intact MMAT_CALLS microcode."""
+        decision: dict[str, object] = {"request_redo": False}
+        try:
+            self.callback(
+                DecompilationEvent.HEXRAYS_CALLS_DONE,
+                function_ea=int(mba.entry_ea),
+                mba=mba,
+                decision=decision,
+            )
+        except Exception:
+            main_logger.debug(
+                "Hex-Rays CALLS preanalysis event failed for 0x%X",
+                int(mba.entry_ea),
+                exc_info=True,
+            )
+            return 0
+        if bool(decision.get("request_redo")):
+            main_logger.info(
+                "Hex-Rays CALLS preanalysis requested redo for 0x%X: %s",
+                int(mba.entry_ea),
+                decision.get("reason", "unspecified"),
+            )
+            # Hex-Rays documents MERR_LOOP as the required result when a
+            # calls_done subscriber changes microcode inputs.  It restarts the
+            # optimization pipeline at the CALLS boundary.
+            return ida_hexrays.MERR_LOOP
+        return 0
+
+    def build_callinfo(self, blk, call_type):
+        """Let profile-scoped providers supply a call prototype before guessing."""
+        decision: dict[str, object] = {"callinfo": None}
+        try:
+            self.callback(
+                DecompilationEvent.HEXRAYS_BUILD_CALLINFO,
+                function_ea=int(blk.mba.entry_ea),
+                block=blk,
+                call_type=call_type,
+                decision=decision,
+            )
+        except Exception:
+            call_ea = int(blk.tail.ea) if blk.tail is not None else int(blk.start)
+            main_logger.debug(
+                "Hex-Rays callinfo preanalysis event failed at 0x%X",
+                call_ea,
+                exc_info=True,
+            )
+            return None
+        return decision["callinfo"]
+
+    def locopt(self, mba: ida_hexrays.mbl_array_t) -> "int":
+        """Run profile-gated mutation after LOCOPT and before call analysis."""
+        decision: dict[str, object] = {"request_redo": False}
+        try:
+            self.callback(
+                DecompilationEvent.HEXRAYS_LOCOPT_READY,
+                function_ea=int(mba.entry_ea),
+                mba=mba,
+                decision=decision,
+            )
+        except Exception:
+            main_logger.debug(
+                "Hex-Rays LOCOPT preanalysis event failed for 0x%X",
+                int(mba.entry_ea),
+                exc_info=True,
+            )
+            return 0
+        if bool(decision.get("request_redo")):
+            main_logger.warning(
+                "Hex-Rays LOCOPT preanalysis requested an unsupported maturity "
+                "restart for 0x%X: %s; continuing into call analysis",
+                int(mba.entry_ea),
+                decision.get("reason", "unspecified"),
+            )
+        elif bool(decision.get("microcode_modified")):
+            main_logger.info(
+                "Hex-Rays LOCOPT preanalysis modified microcode for 0x%X: %s",
+                int(mba.entry_ea),
+                decision.get("details", {}),
+            )
+        return 0
+
     def prolog(
         self, mba: ida_hexrays.mbl_array_t, fc, reachable_blocks, decomp_flags
     ) -> "int":

@@ -959,6 +959,12 @@ class GraphModification:
     false_target: int | None = None
     true_target: int | None = None
     proof_id: str | None = None
+    state_register: int | None = None
+    state_size: int | None = None
+    false_state: int | None = None
+    true_state: int | None = None
+    false_state_write_ea: int | None = None
+    true_state_write_ea: int | None = None
     # For NORMALIZE_NWAY_DISPATCHER_EXIT
     dispatcher_entry_serial: int | None = None
     keep_target_serial: int | None = None
@@ -1396,6 +1402,7 @@ class DeferredGraphModifier:
         goto_target: int,
         description: str = "",
         target_ref_kind: TargetRefKind | None = None,
+        priority: int = 20,
     ) -> None:
         """Queue conversion of a 0-way terminal block to a 1-way goto."""
         resolved_target_kind = (
@@ -1407,7 +1414,7 @@ class DeferredGraphModifier:
             mod_type=ModificationType.BLOCK_TERMINAL_GOTO_CHANGE,
             block_serial=block_serial,
             new_target=goto_target,
-            priority=20,
+            priority=int(priority),
             description=description or f"terminal {block_serial} -> goto {goto_target}",
             target_ref_kind=resolved_target_kind,
         ))
@@ -1692,6 +1699,12 @@ class DeferredGraphModifier:
         false_target_serial: int,
         true_target_serial: int,
         proof_id: str | None = None,
+        state_register: int | None = None,
+        state_size: int | None = None,
+        false_state: int | None = None,
+        true_state: int | None = None,
+        false_state_write_ea: int | None = None,
+        true_state_write_ea: int | None = None,
         description: str = "",
         rule_priority: int = 0,
     ) -> None:
@@ -1706,6 +1719,12 @@ class DeferredGraphModifier:
             false_target=false_target_serial,
             true_target=true_target_serial,
             proof_id=proof_id,
+            state_register=state_register,
+            state_size=state_size,
+            false_state=false_state,
+            true_state=true_state,
+            false_state_write_ea=false_state_write_ea,
+            true_state_write_ea=true_state_write_ea,
             priority=10,
             rule_priority=rule_priority,
             description=description or (
@@ -2418,6 +2437,126 @@ class DeferredGraphModifier:
         if mark_chains:
             self.mba.mark_chains_dirty()
 
+    @staticmethod
+    def _block_instructions(block: ida_hexrays.mblock_t) -> tuple[object, ...]:
+        instructions: list[object] = []
+        instruction = block.head
+        while instruction is not None:
+            instructions.append(instruction)
+            if instruction is block.tail:
+                break
+            instruction = instruction.next
+        return tuple(instructions)
+
+    def remove_all_instructions_now(self, block: ida_hexrays.mblock_t) -> None:
+        """Remove every instruction through the central mutation backend."""
+        for instruction in self._block_instructions(block):
+            block.make_nop(instruction)
+            block.remove_from_block(instruction)
+
+    def remove_nops_now(self, block: ida_hexrays.mblock_t) -> None:
+        """Remove all explicit NOP instructions from a block."""
+        for instruction in self._block_instructions(block):
+            if int(instruction.opcode) == int(ida_hexrays.m_nop):
+                block.remove_from_block(instruction)
+
+    def insert_instruction_now(
+        self,
+        block: ida_hexrays.mblock_t,
+        instruction: ida_hexrays.minsn_t,
+        before: ida_hexrays.minsn_t | None,
+        *,
+        mark_dirty: bool = False,
+    ) -> None:
+        """Insert one instruction through the central mutation backend."""
+        block.insert_into_block(instruction, before)
+        if mark_dirty:
+            block.mark_lists_dirty()
+
+    def configure_block_now(
+        self,
+        block: ida_hexrays.mblock_t,
+        *,
+        block_type: int | None = None,
+        flags: int | None = None,
+        start_ea: int | None = None,
+        end_ea: int | None = None,
+    ) -> None:
+        """Apply verifier-relevant block metadata through the mutation backend."""
+        if block_type is not None:
+            block.type = int(block_type)
+        if flags is not None:
+            block.flags = int(flags)
+        if start_ea is not None:
+            block.start = int(start_ea)
+        if end_ea is not None:
+            block.end = int(end_ea)
+
+    def connect_blocks_now(
+        self,
+        source: ida_hexrays.mblock_t,
+        target: ida_hexrays.mblock_t,
+    ) -> None:
+        """Add one explicit CFG edge and repair both adjacency sets."""
+        source.succset.push_back(int(target.serial))
+        target.predset.push_back(int(source.serial))
+        source.mark_lists_dirty()
+        target.mark_lists_dirty()
+
+    def make_displaced_fallthrough_explicit_now(
+        self,
+        block: ida_hexrays.mblock_t,
+    ) -> None:
+        """Close a non-adjacent one-way fallthrough with an explicit goto."""
+        goto_instruction = ida_hexrays.minsn_t(block.tail)
+        block.insert_into_block(goto_instruction, block.tail)
+        block.make_nop(goto_instruction)
+        goto_instruction.opcode = int(ida_hexrays.m_goto)
+        goto_instruction.l.make_blkref(int(block.succset[0]))
+        goto_instruction.r.erase()
+        goto_instruction.d.erase()
+        goto_instruction.setaddr(
+            int(self.mba.alloc_fict_ea(int(self.mba.entry_ea) + 1))
+        )
+        block.flags |= int(ida_hexrays.MBL_GOTO)
+        block.mark_lists_dirty()
+
+    def insert_nop_block_now(self, source_serial: int) -> int:
+        """Insert an owned NOP block after a source block."""
+        source = self.mba.get_mblock(int(source_serial))
+        if source is None:
+            raise RuntimeError(f"insert_nop_block: missing source {source_serial}")
+        return int(insert_nop_blk(source).serial)
+
+    def redirect_one_way_now(
+        self,
+        source_serial: int,
+        target_serial: int,
+        *,
+        verify: bool = False,
+    ) -> bool:
+        """Apply an immediate one-way redirect through the mutation backend."""
+        source = self.mba.get_mblock(int(source_serial))
+        if source is None:
+            return False
+        return bool(
+            change_1way_block_successor(
+                source,
+                int(target_serial),
+                verify=verify,
+            )
+        )
+
+    def reanchor_block_instructions_now(
+        self,
+        block: ida_hexrays.mblock_t,
+        ea: int,
+    ) -> None:
+        """Assign one owned provenance EA to every instruction in a block."""
+        for instruction in self._block_instructions(block):
+            instruction.setaddr(int(ea))
+        block.mark_lists_dirty()
+
     def clear_state_frontier_payload_now(self, block_serial: int) -> None:
         """NOP non-goto instructions in a state-frontier block."""
         blk = self.mba.get_mblock(int(block_serial))
@@ -2947,6 +3086,12 @@ class DeferredGraphModifier:
                     mod.true_target,
                     mod.rewrite_from_ea,
                     mod.proof_id,
+                    mod.state_register,
+                    mod.state_size,
+                    mod.false_state,
+                    mod.true_state,
+                    mod.false_state_write_ea,
+                    mod.true_state_write_ea,
                 )
             elif mod.mod_type == ModificationType.NORMALIZE_NWAY_DISPATCHER_EXIT:
                 key = (
@@ -4898,6 +5043,17 @@ class DeferredGraphModifier:
         mba = self.mba
         if mba is None:
             return None
+        resolved_source_serial = self._resolve_serial(mod.block_serial)
+        if resolved_source_serial is None:
+            return None
+        if int(resolved_source_serial) != int(mod.block_serial):
+            logger.info(
+                "staged_atomic: remapped source blk[%d] -> blk[%d] for %s",
+                mod.block_serial,
+                resolved_source_serial,
+                mod.mod_type.name,
+            )
+            mod.block_serial = int(resolved_source_serial)
         target_blk = mba.get_mblock(mod.block_serial)
         if target_blk is None:
             logger.warning(
@@ -5677,6 +5833,23 @@ class DeferredGraphModifier:
             return None
         return self._serial_remap.get(serial, serial)
 
+    def _record_serial_insertion(
+        self,
+        insertion_serial: int,
+        old_qty: int,
+    ) -> None:
+        """Record the +1 drift caused by inserting one live MBA block."""
+        remap = dict(self._serial_remap)
+        for original_serial, live_serial in tuple(remap.items()):
+            if int(live_serial) >= int(insertion_serial):
+                remap[int(original_serial)] = int(live_serial) + 1
+        for original_serial in range(
+            int(insertion_serial),
+            int(old_qty),
+        ):
+            remap.setdefault(int(original_serial), int(original_serial) + 1)
+        self._serial_remap = remap
+
     # BISECT denylist: (block_serial, new_target) pairs to skip.
     # Set via environment: D810_BISECT_SKIP="173:111,76:158"
     _bisect_skip: set[tuple[int, int]] = field(default_factory=set, init=False)
@@ -5703,9 +5876,20 @@ class DeferredGraphModifier:
                          "via_pred", "src_block", "expected_serial",
                          "expected_secondary_serial",
                          "final_target", "original_redirect_target"):
+                if (
+                    mod.mod_type
+                    == ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION
+                    and attr == "old_target"
+                ):
+                    # This lowering resolves all three arm/dispatcher targets
+                    # together inside _apply_lower_conditional_state_transition.
+                    # Pre-remapping old_target here resolves that one edge twice.
+                    continue
                 val = getattr(mod, attr, None)
-                if val is not None and val in self._serial_remap:
-                    new_val = self._serial_remap[val]
+                if val is not None:
+                    new_val = self._resolve_serial(val)
+                    if new_val is None or int(new_val) == int(val):
+                        continue
                     try:
                         setattr(mod, attr, new_val)
                         remapped = True
@@ -5797,6 +5981,12 @@ class DeferredGraphModifier:
                 condition_operand=mod.condition_operand,
                 false_target_serial=mod.false_target,
                 true_target_serial=mod.true_target,
+                state_register=mod.state_register,
+                state_size=mod.state_size,
+                false_state=mod.false_state,
+                true_state=mod.true_state,
+                false_state_write_ea=mod.false_state_write_ea,
+                true_state_write_ea=mod.true_state_write_ea,
             )
 
         elif mod.mod_type == ModificationType.NORMALIZE_NWAY_DISPATCHER_EXIT:
@@ -6052,6 +6242,22 @@ class DeferredGraphModifier:
             )
             return False
 
+        # ``new_target`` is already a live serial: _apply_single resolved it
+        # through ``_serial_remap`` before dispatching here.  Hold the live
+        # block object across the helper insertion so Hex-Rays can update its
+        # serial if the insertion precedes it.  Resolving the live serial a
+        # second time is ambiguous when that number is also an original key
+        # in ``_serial_remap`` (for example, an inserted helper shifts a live
+        # target onto a serial that is also a distinct original-map key).
+        new_target_blk = self.mba.get_mblock(int(new_target))
+        if new_target_blk is None:
+            logger.warning(
+                "Block %d fallthrough rewrite target %d is not live",
+                blk.serial,
+                new_target,
+            )
+            return False
+
         old_qty = int(self.mba.qty)
         nop_blk = insert_nop_blk(blk)
         if nop_blk is None:
@@ -6062,15 +6268,9 @@ class DeferredGraphModifier:
             return False
 
         insertion_serial = int(nop_blk.serial)
-        remap = dict(self._serial_remap)
-        for original_serial, live_serial in tuple(remap.items()):
-            if int(live_serial) >= insertion_serial:
-                remap[int(original_serial)] = int(live_serial) + 1
-        for serial in range(insertion_serial, old_qty):
-            remap.setdefault(serial, serial + 1)
-        self._serial_remap = remap
+        self._record_serial_insertion(insertion_serial, old_qty)
 
-        effective_new_target = self._resolve_serial(int(new_target))
+        effective_new_target = int(new_target_blk.serial)
         logger.info(
             "Applying fallthrough rewrite on blk[%d]: old_target=%d helper=%d -> %d",
             blk.serial,
@@ -6085,7 +6285,9 @@ class DeferredGraphModifier:
         )
 
     def _apply_convert_to_goto(self, blk: ida_hexrays.mblock_t, goto_target: int) -> bool:
-        """Convert a 2-way block to a 1-way goto."""
+        """Connect a terminal block or collapse a 2-way block to a goto."""
+        if blk.nsucc() == 0:
+            return change_0way_block_successor(blk, goto_target, verify=False)
         return make_2way_block_goto(blk, goto_target, verify=False)
 
     def _apply_nway_null_tail_downgrade(
@@ -6708,10 +6910,58 @@ class DeferredGraphModifier:
             return None
         return wrapped
 
+    def _materialize_register_nonzero_condition(
+        self, condition_operand: object
+    ) -> object | None:
+        """Materialize a portable live-register boolean predicate."""
+        predicate_reg = getattr(condition_operand, "predicate_reg", None)
+        predicate_size = getattr(condition_operand, "predicate_size", None)
+        if predicate_reg is None or predicate_size is None:
+            return None
+        try:
+            result = ida_hexrays.mop_t()
+            result.make_reg(int(predicate_reg), int(predicate_size))
+        except Exception as exc:  # noqa: BLE001 - synthesis is best-effort
+            logger.warning(
+                "conditional_state_transition: register predicate synthesis "
+                "failed: %s",
+                exc,
+            )
+            return None
+        if int(getattr(result, "t", ida_hexrays.mop_z)) == int(ida_hexrays.mop_z):
+            return None
+        return result
+
+    def _materialize_register_state_write(
+        self,
+        *,
+        ea: int,
+        state_register: int,
+        state_size: int,
+        state_value: int,
+    ) -> ida_hexrays.minsn_t:
+        """Build ``m_mov #state, register`` for one conditional arm."""
+        size = int(state_size)
+        register = int(state_register)
+        if size <= 0 or register < 0:
+            raise ValueError("state register assignments require positive size and register")
+        mask = (1 << (size * 8)) - 1
+        assignment = ida_hexrays.minsn_t(int(ea))
+        assignment.opcode = ida_hexrays.m_mov
+        assignment.l.make_number(int(state_value) & mask, size, int(ea))
+        assignment.d.make_reg(register, size)
+        return assignment
+
     def _materialize_condition_mop(self, condition_operand: object | None) -> object | None:
         """Clone a proof-supplied condition operand into an owned ``mop_t``."""
         if condition_operand is None:
             return None
+        if (
+            getattr(condition_operand, "predicate_reg", None) is not None
+            and getattr(condition_operand, "predicate_size", None) is not None
+            and not callable(getattr(condition_operand, "to_mop", None))
+        ):
+            return self._materialize_register_nonzero_condition(condition_operand)
         if (
             (
                 getattr(condition_operand, "counter_stkoff", None) is not None
@@ -6745,6 +6995,38 @@ class DeferredGraphModifier:
             return None
         return copied
 
+    def _find_exact_register_state_write(
+        self,
+        *,
+        write_ea: int,
+        state_register: int,
+        state_size: int,
+        state_value: int,
+    ) -> tuple[ida_hexrays.mblock_t, ida_hexrays.minsn_t] | None:
+        """Find one exact microcode state write that an arm helper will hoist."""
+        mask = (1 << (8 * int(state_size))) - 1
+        matches: list[tuple[ida_hexrays.mblock_t, ida_hexrays.minsn_t]] = []
+        for serial in range(int(self.mba.qty)):
+            owner = self.mba.get_mblock(serial)
+            instruction = owner.head
+            while instruction is not None:
+                if (
+                    int(instruction.ea) == int(write_ea)
+                    and int(instruction.opcode) == int(ida_hexrays.m_mov)
+                    and int(instruction.d.t) == int(ida_hexrays.mop_r)
+                    and int(instruction.d.r) == int(state_register)
+                    and int(instruction.d.size) == int(state_size)
+                    and int(instruction.l.t) == int(ida_hexrays.mop_n)
+                    and int(instruction.l.size) == int(state_size)
+                    and (int(instruction.l.nnn.value) & mask)
+                    == (int(state_value) & mask)
+                ):
+                    matches.append((owner, instruction))
+                if instruction is owner.tail:
+                    break
+                instruction = instruction.next
+        return matches[0] if len(matches) == 1 else None
+
     def _apply_lower_conditional_state_transition(
         self,
         blk: ida_hexrays.mblock_t,
@@ -6754,6 +7036,12 @@ class DeferredGraphModifier:
         condition_operand: object | None,
         false_target_serial: int | None,
         true_target_serial: int | None,
+        state_register: int | None = None,
+        state_size: int | None = None,
+        false_state: int | None = None,
+        true_state: int | None = None,
+        false_state_write_ea: int | None = None,
+        true_state_write_ea: int | None = None,
     ) -> bool:
         """Lower a proven conditional state update into explicit 2-way topology."""
         if (
@@ -6767,6 +7055,46 @@ class DeferredGraphModifier:
                 blk.serial,
             )
             return False
+        state_fields = (state_register, state_size, false_state, true_state)
+        has_arm_state_writes = all(value is not None for value in state_fields)
+        if any(value is not None for value in state_fields) and not has_arm_state_writes:
+            logger.warning(
+                "conditional_state_transition: partial arm-state proof for block %d",
+                blk.serial,
+            )
+            return False
+        if has_arm_state_writes and (
+            int(state_register) < 0 or int(state_size) <= 0
+        ):
+            logger.warning(
+                "conditional_state_transition: invalid arm-state register for block %d",
+                blk.serial,
+            )
+            return False
+        hoisted_writes: list[
+            tuple[ida_hexrays.mblock_t, ida_hexrays.minsn_t]
+        ] = []
+        for write_ea, state_value in (
+            (false_state_write_ea, false_state),
+            (true_state_write_ea, true_state),
+        ):
+            if write_ea is None:
+                continue
+            if not has_arm_state_writes:
+                return False
+            match = self._find_exact_register_state_write(
+                write_ea=int(write_ea),
+                state_register=int(state_register),
+                state_size=int(state_size),
+                state_value=int(state_value),
+            )
+            if match is None:
+                logger.warning(
+                    "conditional_state_transition: arm-state write 0x%x not unique",
+                    int(write_ea),
+                )
+                return False
+            hoisted_writes.append(match)
         false_target = self._resolve_serial(int(false_target_serial))
         true_target = self._resolve_serial(int(true_target_serial))
         old_dispatcher = self._resolve_serial(int(old_dispatcher_serial))
@@ -6780,16 +7108,17 @@ class DeferredGraphModifier:
                 true_target,
             )
             return False
-        if blk.nsucc() != 1 or int(blk.succset[0]) != int(old_dispatcher):
+        current_successors = tuple(int(successor) for successor in blk.succset)
+        if (
+            int(blk.nsucc()) not in (1, 2)
+            or int(old_dispatcher) not in current_successors
+        ):
             logger.warning(
-                "conditional_state_transition: block %d expected sole successor %d, succs=%s",
+                "conditional_state_transition: block %d expected dispatcher successor %d, succs=%s",
                 blk.serial,
                 old_dispatcher,
-                [int(s) for s in blk.succset],
+                list(current_successors),
             )
-            return False
-        condition_mop = self._materialize_condition_mop(condition_operand)
-        if condition_mop is None:
             return False
         rewrite_insn = blk.head
         while rewrite_insn is not None:
@@ -6803,6 +7132,41 @@ class DeferredGraphModifier:
                 blk.serial,
             )
             return False
+
+        preserve_live_predicate = bool(
+            getattr(condition_operand, "preserve_live_predicate", False)
+        )
+        preserved_branch = None
+        true_is_taken = True
+        condition_mop = None
+        if preserve_live_predicate:
+            predicate_ea = getattr(condition_operand, "predicate_ea", None)
+            marker_true_is_taken = getattr(
+                condition_operand, "true_is_taken", None
+            )
+            if (
+                predicate_ea is None
+                or int(predicate_ea) != int(rewrite_from_ea)
+                or marker_true_is_taken not in (True, False)
+                or blk.tail is None
+                or int(blk.tail.ea) != int(rewrite_from_ea)
+                or int(blk.tail.opcode) != int(rewrite_insn.opcode)
+                or not ida_hexrays.is_mcode_jcond(int(rewrite_insn.opcode))
+                or int(blk.nsucc()) != 2
+            ):
+                logger.warning(
+                    "conditional_state_transition: live predicate proof "
+                    "does not match block %d at 0x%x",
+                    blk.serial,
+                    int(rewrite_from_ea),
+                )
+                return False
+            preserved_branch = ida_hexrays.minsn_t(rewrite_insn)
+            true_is_taken = bool(marker_true_is_taken)
+        else:
+            condition_mop = self._materialize_condition_mop(condition_operand)
+            if condition_mop is None:
+                return False
 
         cursor = rewrite_insn
         while cursor is not None:
@@ -6823,24 +7187,62 @@ class DeferredGraphModifier:
         # (``copy_block_keep`` inserts before ``serial + 1``) that gotos the
         # false arm, and wire ``succset = [helper, taken]``.
         true_blk = self.mba.get_mblock(int(true_target))
-        # Hold the false-arm handler as an OBJECT too: the helper insert below
-        # shifts serials, so re-read it AFTER for diagnostic provenance.
         false_blk = self.mba.get_mblock(int(false_target))
-        first_succ = self._build_fallthrough_goto_helper(blk, int(false_target))
-        if first_succ is None or true_blk is None:
+        taken_target = int(true_target if true_is_taken else false_target)
+        taken_state = true_state if true_is_taken else false_state
+        fallthrough_state = false_state if true_is_taken else true_state
+        taken_blk = self.mba.get_mblock(taken_target)
+        fallthrough_blk = false_blk if true_is_taken else true_blk
+        if (
+            true_blk is None
+            or false_blk is None
+            or taken_blk is None
+            or fallthrough_blk is None
+        ):
             return False
-        true_serial = int(true_blk.serial)
+        taken_helper = None
+        if has_arm_state_writes:
+            taken_helper_serial = self._build_fallthrough_goto_helper(
+                blk,
+                taken_blk,
+                state_register=int(state_register),
+                state_size=int(state_size),
+                state_value=int(taken_state),
+            )
+            if taken_helper_serial is None:
+                return False
+            taken_helper = self.mba.get_mblock(int(taken_helper_serial))
+            if taken_helper is None:
+                return False
+        first_succ = self._build_fallthrough_goto_helper(
+            blk,
+            fallthrough_blk,
+            state_register=(int(state_register) if has_arm_state_writes else None),
+            state_size=(int(state_size) if has_arm_state_writes else None),
+            state_value=(
+                int(fallthrough_state) if has_arm_state_writes else None
+            ),
+        )
+        if first_succ is None:
+            return False
+        taken_serial = int(
+            taken_helper.serial if taken_helper is not None else taken_blk.serial
+        )
 
-        condition_size = int(getattr(condition_mop, "size", 0) or 1)
-        jnz = ida_hexrays.minsn_t(safe_ea)
-        jnz.opcode = ida_hexrays.m_jnz
-        jnz.l = ida_hexrays.mop_t()
-        jnz.l.assign(condition_mop)
-        jnz.r = ida_hexrays.mop_t()
-        jnz.r.make_number(0, condition_size, safe_ea)
-        jnz.d = ida_hexrays.mop_t()
-        jnz.d.make_blkref(int(true_serial))
-        blk.insert_into_block(jnz, blk.tail)
+        if preserved_branch is not None:
+            branch = preserved_branch
+            branch.d.make_blkref(int(taken_serial))
+        else:
+            condition_size = int(getattr(condition_mop, "size", 0) or 1)
+            branch = ida_hexrays.minsn_t(safe_ea)
+            branch.opcode = ida_hexrays.m_jnz
+            branch.l = ida_hexrays.mop_t()
+            branch.l.assign(condition_mop)
+            branch.r = ida_hexrays.mop_t()
+            branch.r.make_number(0, condition_size, safe_ea)
+            branch.d = ida_hexrays.mop_t()
+            branch.d.make_blkref(int(taken_serial))
+        blk.insert_into_block(branch, blk.tail)
         blk.flags &= ~ida_hexrays.MBL_GOTO
         blk.type = ida_hexrays.BLT_2WAY
 
@@ -6852,21 +7254,24 @@ class DeferredGraphModifier:
                 sblk.predset._del(blk.serial)
                 if sblk.serial != self.mba.qty - 1:
                     sblk.mark_lists_dirty()
-        for new_succ in (int(first_succ), int(true_serial)):
+        for new_succ in (int(first_succ), int(taken_serial)):
             blk.succset.push_back(new_succ)
             nblk = self.mba.get_mblock(new_succ)
             if nblk is not None and blk.serial not in [int(p) for p in nblk.predset]:
                 nblk.predset.push_back(blk.serial)
                 if nblk.serial != self.mba.qty - 1:
                     nblk.mark_lists_dirty()
+        for owner, instruction in hoisted_writes:
+            owner.make_nop(instruction)
+            owner.mark_lists_dirty()
         blk.mark_lists_dirty()
         self.mba.mark_chains_dirty()
         logger.info(
-            "LOWER_CONDITIONAL_STATE_TRANSITION: blk[%d] old=%d true=%d "
+            "LOWER_CONDITIONAL_STATE_TRANSITION: blk[%d] old=%d taken=%d "
             "(fallthrough_helper=%d) ea=0x%x",
             blk.serial,
             old_dispatcher,
-            true_serial,
+            taken_serial,
             int(first_succ),
             int(rewrite_from_ea),
         )
@@ -6881,8 +7286,9 @@ class DeferredGraphModifier:
         try:
             from d810.core.observability_cfg import observe_cfg_provenance_latest
 
-            false_handler_serial = (
-                int(false_blk.serial) if false_blk is not None else int(false_target)
+            false_handler_serial = int(false_blk.serial)
+            true_path_serial = (
+                int(taken_serial) if true_is_taken else int(first_succ)
             )
             # Late-binding variant: this lowering can fire AFTER the last
             # captured snapshot, so bind the row to the latest snapshot for the
@@ -6893,14 +7299,20 @@ class DeferredGraphModifier:
                 pass_name="deferred_modifier",
                 action="LOWER_CONDITIONAL_STATE_TRANSITION",
                 block_serial=int(blk.serial),
-                target_serial=int(true_serial),
+                target_serial=true_path_serial,
                 reason="lower_conditional_state_transition",
                 extra={
-                    "true_target": int(true_serial),
+                    "true_target": true_path_serial,
                     "false_target": false_handler_serial,
                     "fallthrough_helper": int(first_succ),
                     "old_dispatcher": int(old_dispatcher),
                     "rewrite_from_ea": int(rewrite_from_ea),
+                    "state_register": state_register,
+                    "state_size": state_size,
+                    "false_state": false_state,
+                    "true_state": true_state,
+                    "false_state_write_ea": false_state_write_ea,
+                    "true_state_write_ea": true_state_write_ea,
                 },
                 mba=self.mba,
             )
@@ -6909,22 +7321,27 @@ class DeferredGraphModifier:
         return True
 
     def _build_fallthrough_goto_helper(
-        self, blk: ida_hexrays.mblock_t, false_target: int
+        self,
+        blk: ida_hexrays.mblock_t,
+        target_blk: ida_hexrays.mblock_t,
+        *,
+        state_register: int | None = None,
+        state_size: int | None = None,
+        state_value: int | None = None,
     ) -> int | None:
         """Create a 1-way NOP-goto block directly after ``blk`` that gotos
-        ``false_target``, returning its serial (the 2-way fall-through arm).
+        ``target_blk``, returning its serial (the 2-way fall-through arm).
 
         Placed physically adjacent to ``blk`` (``copy_block_keep`` inserts before
         ``blk.serial + 1``) so it becomes ``blk.nextb`` and satisfies the verifier
         requirement that ``succset[0]`` of a 2-way block equals the fall-through.
         """
         mba = blk.mba
-        false_blk = mba.get_mblock(int(false_target))
-        if false_blk is None:
-            return None
+        old_qty = int(mba.qty)
         nop_block = copy_block_keep(mba, blk, blk.serial + 1)
         if nop_block is None:
             return None
+        self._record_serial_insertion(int(nop_block.serial), old_qty)
         # Strip the cloned body to a single NOP, then append the goto.
         cur = nop_block.head
         while cur is not None:
@@ -6942,15 +7359,29 @@ class DeferredGraphModifier:
                 sblk.predset._del(nop_block.serial)
         for p in [int(x) for x in nop_block.predset]:
             nop_block.predset._del(p)
-        # Re-resolve false_target after the insertion (serials may have shifted).
-        false_serial = int(false_blk.serial)
-        insert_goto_instruction(nop_block, false_serial, nop_previous_instruction=False)
+        # Re-read the target object's serial after the insertion. The caller
+        # deliberately passes the object rather than a pre-insertion integer so
+        # a preceding arm-helper insertion cannot retarget this helper to the
+        # target's former predecessor.
+        target_serial = int(target_blk.serial)
+        state_fields = (state_register, state_size, state_value)
+        if all(value is not None for value in state_fields):
+            assignment = self._materialize_register_state_write(
+                ea=int(blk.tail.ea) if blk.tail is not None else int(self.mba.entry_ea),
+                state_register=int(state_register),
+                state_size=int(state_size),
+                state_value=int(state_value),
+            )
+            nop_block.insert_into_block(assignment, nop_block.tail)
+        elif any(value is not None for value in state_fields):
+            return None
+        insert_goto_instruction(nop_block, target_serial, nop_previous_instruction=False)
         nop_block.flags |= ida_hexrays.MBL_GOTO
-        nop_block.succset.push_back(false_serial)
-        if nop_block.serial not in [int(p) for p in false_blk.predset]:
-            false_blk.predset.push_back(nop_block.serial)
-            if false_blk.serial != mba.qty - 1:
-                false_blk.mark_lists_dirty()
+        nop_block.succset.push_back(target_serial)
+        if nop_block.serial not in [int(p) for p in target_blk.predset]:
+            target_blk.predset.push_back(nop_block.serial)
+            if target_blk.serial != mba.qty - 1:
+                target_blk.mark_lists_dirty()
         nop_block.mark_lists_dirty()
         return int(nop_block.serial)
 
@@ -11474,7 +11905,9 @@ class ImmediateGraphModifier:
         )
 
     def _apply_convert_to_goto(self, blk: ida_hexrays.mblock_t, goto_target: int) -> bool:
-        """Convert a 2-way block to a 1-way goto."""
+        """Connect a terminal block or collapse a 2-way block to a goto."""
+        if blk.nsucc() == 0:
+            return change_0way_block_successor(blk, goto_target, verify=False)
         return make_2way_block_goto(blk, goto_target, verify=False)
 
     def _apply_remove_edge(self, blk: ida_hexrays.mblock_t, to_serial: int) -> bool:

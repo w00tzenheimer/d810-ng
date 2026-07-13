@@ -46,6 +46,7 @@ def _insn(
     opcode_name: str = "m_mov",
     dest_type: str | None = "mop_S",
     dest_stkoff: int | None = 0x3C,
+    dest_register: int | None = None,
     dest_size: int | None = 4,
     src_l_type: str | None = "mop_n",
     src_l_value: int | None = 0x5A21D9DB,
@@ -64,6 +65,7 @@ def _insn(
         dstr=resolved_dstr,
         dest_type=dest_type,
         dest_stkoff=dest_stkoff,
+        dest_register=dest_register,
         dest_size=dest_size,
         src_l_type=src_l_type,
         src_l_stkoff=src_l_stkoff,
@@ -178,6 +180,33 @@ def test_collects_state_const_write_basic() -> None:
         == "state_write_anchor:blk=100:insn=0:ea=0x180014155:stkoff=0x3c"
     )
     assert fact.mop_signature == "state_write:mop_S:0x3c:4"
+
+
+def test_collects_register_state_const_write() -> None:
+    collector = StateWriteAnchorFactCollector()
+    facts = collector.collect(
+        _target(
+            _block(
+                100,
+                _insn(
+                    index=0,
+                    dest_type="mop_r",
+                    dest_stkoff=None,
+                    dest_register=20,
+                    src_l_value=0x19A7218A,
+                    dstr="mov #0x19A7218A.4, ebx.4",
+                ),
+                succs=(),
+            ),
+        ),
+        func_ea=0x180012CF0,
+        maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
+        phase="pre_d810",
+    )
+
+    assert len(facts) == 1
+    assert facts[0].payload["state_var_stkoff"] is None
+    assert facts[0].payload["state_var_reg"] == 20
 
 
 def test_collects_state_const_write_from_canonical_move_operation() -> None:

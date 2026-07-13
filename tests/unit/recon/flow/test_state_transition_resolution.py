@@ -88,6 +88,36 @@ def test_resolves_exact_state_and_next_state_write() -> None:
     assert resolutions[0].resolution_reason == "resolved_exact_state"
 
 
+def test_resolves_register_state_and_matching_register_write_anchor() -> None:
+    dispatch = _dispatch_map()
+    dispatch = StateDispatcherMap(
+        rows=dispatch.rows,
+        dispatcher_entry_block=dispatch.dispatcher_entry_block,
+        dispatcher_blocks=dispatch.dispatcher_blocks,
+        state_var_stkoff=None,
+        state_var_lvar_idx=None,
+        router_kind=dispatch.router_kind,
+        state_var_reg=20,
+    )
+    resolutions = resolve_state_transitions_with_dispatcher_map(
+        (
+            StateTransitionFact(
+                fact_id="transition:ebx",
+                source_block_serial=100,
+                source_state_const=0x10,
+                state_var_reg=20,
+            ),
+        ),
+        dispatch_map=dispatch,
+        state_write_anchors=(
+            StateWriteAnchor(block_serial=7, state_const=0x55, state_var_reg=20),
+            StateWriteAnchor(block_serial=7, state_const=0x99, state_var_stkoff=0x3C),
+        ),
+    )
+
+    assert resolutions[0].resolved_next_state_const_u64 == 0x55
+
+
 def test_reports_dispatcher_self_loop_target() -> None:
     resolutions = resolve_state_transitions_with_dispatcher_map(
         (
@@ -151,6 +181,7 @@ def test_projects_validated_fact_view_to_transition_evidence() -> None:
                     "block_serial": 7,
                     "state_const_u64": 0x55,
                     "state_var_stkoff": 0x3C,
+                    "instruction_ea": 0x401234,
                 },
             ),
         ),
@@ -173,6 +204,7 @@ def test_projects_validated_fact_view_to_transition_evidence() -> None:
             block_serial=7,
             state_const=0x55,
             state_var_stkoff=0x3C,
+            instruction_ea=0x401234,
         ),
     )
 

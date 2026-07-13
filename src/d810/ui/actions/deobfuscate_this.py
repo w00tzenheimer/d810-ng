@@ -7,6 +7,9 @@ from __future__ import annotations
 from d810.core import typing
 
 from d810.core.logging import getLogger
+from d810.capabilities.detached_handler_snippets import (
+    prepare_detached_handler_snippets,
+)
 from d810.ui.actions.base import D810ActionHandler
 
 logger = getLogger("D810.ui")
@@ -57,9 +60,20 @@ class DeobfuscateThisFunction(D810ActionHandler):
 
         logger.info("Triggering re-decompilation for function at %s", hex(func_ea))
 
+        vdui = idaapi_shim.get_widget_vdui(ctx.widget)
+        captured = prepare_detached_handler_snippets(
+            int(func_ea),
+            live_mba=vdui.cfunc.mba if vdui is not None else None,
+        )
+        if captured:
+            logger.info(
+                "Prepared %d detached microcode snippet(s) for %s",
+                int(captured),
+                hex(func_ea),
+            )
+
         # Force a refresh of the pseudocode view, which re-runs the
         # decompiler (and therefore all installed D-810 hooks).
-        vdui = idaapi_shim.get_widget_vdui(ctx.widget)
         if vdui is not None:
             vdui.refresh_view(True)
         else:

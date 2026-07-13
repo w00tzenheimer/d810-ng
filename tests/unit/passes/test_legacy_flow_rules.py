@@ -182,6 +182,10 @@ def test_legacy_flow_rule_registry_builds_jump_fixer_canary_entry():
         ("identity-call-resolver", "IdentityCallResolver"),
         ("indirect-branch-resolver", "IndirectBranchResolver"),
         ("indirect-call-resolver", "IndirectCallResolver"),
+        (
+            "materialized-computed-goto-island",
+            "MaterializedComputedGotoIslandRule",
+        ),
         ("mba-state-preconditioner", "MbaStatePreconditioner"),
         ("jump-fixer", "JumpFixer"),
     ],

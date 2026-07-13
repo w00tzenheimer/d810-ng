@@ -159,7 +159,18 @@ class DecisionDag:
 
     def route(self, state: int) -> int:
         """Follow the single feasible branch for a concrete *state* to its leaf."""
-        cur = self.root
+        return self.route_from(self.root, state)
+
+    def route_from(self, root: int, state: int) -> int:
+        """Route *state* from an explicitly proven comparison-tree root.
+
+        Resolver materialization can enter a condition-chain below its global
+        dispatcher root.  Starting from :attr:`root` would replay comparisons
+        that native control flow has already bypassed and can select the wrong
+        leaf.  This variant preserves the exact same concrete evaluator while
+        honoring that proven entry block.
+        """
+        cur = int(root)
         seen: set[int] = set()
         while cur in self.nodes and cur not in seen:
             seen.add(cur)

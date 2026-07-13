@@ -96,6 +96,7 @@ MINSN_50773_ARGLIST_ON_NONCALL = "MINSN_50773_ARGLIST_ON_NONCALL"
 MINSN_50780_REG_ADDR_OUTSIDE_HELPER = "MINSN_50780_REG_ADDR_OUTSIDE_HELPER"
 MINSN_50782_BAD_HELPER_NAME = "MINSN_50782_BAD_HELPER_NAME"
 MINSN_50784_HELPER_ON_NONCALL = "MINSN_50784_HELPER_ON_NONCALL"
+MINSN_50824_CALL_WITHOUT_ARGLIST = "MINSN_50824_CALL_WITHOUT_ARGLIST"
 MINSN_51066_ARG_BAD_ADDR = "MINSN_51066_ARG_BAD_ADDR"
 MINSN_51264_DUPLICATE_CALL_ADDRS = "MINSN_51264_DUPLICATE_CALL_ADDRS"
 
@@ -160,6 +161,39 @@ def _iter_insns(blk):
     while insn is not None:
         yield insn
         insn = getattr(insn, "next", None)
+
+
+def _iter_operand_subinsns(operand):
+    """Yield every mop_d instruction recursively verified by Hex-Rays."""
+    if operand is None:
+        return
+    operand_type = _mop_type(operand)
+    if operand_type == int(ida_hexrays.mop_d):
+        nested = operand.d
+        if nested is None:
+            return
+        yield nested
+        for child in (nested.l, nested.r, nested.d):
+            yield from _iter_operand_subinsns(child)
+        return
+    if operand_type == int(ida_hexrays.mop_a):
+        yield from _iter_operand_subinsns(operand.a)
+        return
+    if operand_type == int(ida_hexrays.mop_f):
+        if operand.f is not None:
+            for argument in operand.f.args:
+                yield from _iter_operand_subinsns(argument)
+        return
+    if operand_type == int(ida_hexrays.mop_p) and operand.pair is not None:
+        yield from _iter_operand_subinsns(operand.pair.lop)
+        yield from _iter_operand_subinsns(operand.pair.hop)
+
+
+def _iter_insn_tree(insn):
+    """Yield a top-level instruction and all recursively verified subinsns."""
+    yield insn
+    for operand in (insn.l, insn.r, insn.d):
+        yield from _iter_operand_subinsns(operand)
 
 
 def _insn_ea(insn) -> int | None:
@@ -2078,7 +2112,7 @@ def insn_call_validity(
     phase: str,
     focus_serials: Iterable[int] | None = None,
 ) -> list[InvariantViolation]:
-    """Check call and helper operand invariants (verify.cpp 50772-50784, 51066, 51264).
+    """Check call and helper operand invariants (verify.cpp 50772-50824, 51066, 51264).
 
     Checks:
     - 50772: mop_f (arglist) must only appear as the d operand.
@@ -2086,6 +2120,7 @@ def insn_call_validity(
     - 50780: mop_a (register address) is only valid for helper calls.
     - 50782: mop_h (helper) name must not be empty.
     - 50784: mop_h (helper) operand must only appear on call/icall instructions.
+    - 50824: calls in MBL_CALL blocks must have an argument list in d.
     - 51066: call argument operand addresses must exist (best-effort).
     - 51264: each call instruction ea must appear at most once across the MBA.
     """
@@ -2099,6 +2134,7 @@ def insn_call_validity(
     m_call = int(ida_hexrays.m_call)
     m_icall = int(ida_hexrays.m_icall)
     call_opcodes = frozenset({m_call, m_icall})
+    mbl_call = int(ida_hexrays.MBL_CALL)
     badaddr = _badaddr()
 
     seen_eas: set[int] = set()
@@ -2107,6 +2143,32 @@ def insn_call_validity(
         blk = _safe_get_block(mba, int(serial))
         if blk is None:
             continue
+        if (int(blk.flags) & mbl_call) != 0:
+            for top_insn in _iter_insns(blk):
+                for nested_insn in _iter_insn_tree(top_insn):
+                    nested_opcode = int(nested_insn.opcode)
+                    if (
+                        nested_opcode not in call_opcodes
+                        or _mop_type(nested_insn.d) == mop_f_type
+                    ):
+                        continue
+                    nested_ea = _insn_ea(nested_insn)
+                    violations.append(
+                        _violation(
+                            code=MINSN_50824_CALL_WITHOUT_ARGLIST,
+                            phase=phase,
+                            message=(
+                                f"Block {serial} ea=0x{nested_ea or 0:x}: "
+                                "call in MBL_CALL block has no argument list "
+                                "in d"
+                            ),
+                            block_serial=int(serial),
+                            insn_ea=nested_ea,
+                            verify_code=50824,
+                            details={"opcode": nested_opcode},
+                        )
+                    )
+
         for insn in _iter_insns(blk):
             ea = _insn_ea(insn)
             opcode = int(getattr(insn, "opcode", 0))

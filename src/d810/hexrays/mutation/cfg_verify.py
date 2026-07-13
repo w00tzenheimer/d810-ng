@@ -19,6 +19,95 @@ from d810.core import getLogger
 helper_logger = getLogger(__name__)
 
 
+_OWNED_FAKE_BLOCK_ANCHORS: dict[int, set[int]] = {}
+
+
+def _stable_mba_identity(mba: object) -> int:
+    try:
+        return int(mba.this)
+    except (AttributeError, TypeError, ValueError):
+        return id(mba)
+
+
+def register_owned_fake_block(mba: object, block: object) -> None:
+    """Register instruction anchors for a d810-owned synthetic fake block."""
+    anchors = _OWNED_FAKE_BLOCK_ANCHORS.setdefault(
+        _stable_mba_identity(mba),
+        set(),
+    )
+    instruction = block.head
+    while instruction is not None:
+        anchors.add(int(instruction.ea))
+        if instruction is block.tail:
+            break
+        instruction = instruction.next
+    helper_logger.info(
+        "registered owned fake block: blk%d@0x%X mba=0x%X anchors=%d",
+        int(block.serial),
+        int(mba.map_fict_ea(int(block.head.ea))) if block.head is not None else 0,
+        _stable_mba_identity(mba),
+        len(anchors),
+    )
+
+
+def clear_owned_fake_block_registrations() -> None:
+    """Forget verifier-owned fake-block anchors at pipeline teardown."""
+    helper_logger.info(
+        "clearing owned fake block registrations: mbas=%d",
+        len(_OWNED_FAKE_BLOCK_ANCHORS),
+    )
+    _OWNED_FAKE_BLOCK_ANCHORS.clear()
+
+
+def repair_owned_fake_block_boundaries(mba: object) -> int:
+    """Restore verifier-safe ends after Hex-Rays normalizes imported blocks.
+
+    Hex-Rays may rewrite a synthetic ``MBL_FAKE`` block to ``start == end``
+    between optimization callbacks.  Under ``MBA_CMBBLK``, verify.cpp then
+    maps ``end`` and checks ``end - 1`` against the function ranges (50870).
+    Registered d810-owned blocks have no native interval, so give their end a
+    fresh fictitious EA mapped one byte past the live function entry.  The
+    verifier consequently checks the real entry byte, which is in-range.
+    """
+    anchors = _OWNED_FAKE_BLOCK_ANCHORS.get(_stable_mba_identity(mba))
+    if not anchors:
+        return 0
+
+    safe_real_end = int(mba.entry_ea) + 1
+    repaired = 0
+    for serial in range(int(mba.qty)):
+        block = mba.get_mblock(serial)
+        if (
+            block is None
+            or block.head is None
+            or (int(block.flags) & int(ida_hexrays.MBL_FAKE)) == 0
+        ):
+            continue
+        instruction = block.head
+        owns_block = False
+        while instruction is not None:
+            if int(instruction.ea) in anchors:
+                owns_block = True
+                break
+            if instruction is block.tail:
+                break
+            instruction = instruction.next
+        if not owns_block:
+            continue
+        if int(mba.map_fict_ea(int(block.end))) == safe_real_end:
+            continue
+        block.end = int(mba.alloc_fict_ea(safe_real_end))
+        mapped_head_ea = int(mba.map_fict_ea(int(block.head.ea)))
+        helper_logger.info(
+            "repaired owned fake block boundary: blk%d@0x%X end=0x%X",
+            int(block.serial),
+            mapped_head_ea,
+            safe_real_end,
+        )
+        repaired += 1
+    return repaired
+
+
 class _InterrCatcher(ida_hexrays.Hexrays_Hooks):
     """Temporary hook that captures the INTERR code fired by hxe_interr.
 
@@ -54,6 +143,7 @@ def safe_verify(
     capture_metadata: dict[str, Any] | None = None,
 ) -> None:
     """Run mba.verify(True) and produce helpful diagnostics on failure."""
+    repair_owned_fake_block_boundaries(mba)
     catcher = None
     try:
         catcher = _InterrCatcher()
@@ -275,4 +365,7 @@ __all__ = [
     "_snapshot_insn",
     "_collect_related_blocks",
     "_json_safe",
+    "clear_owned_fake_block_registrations",
+    "register_owned_fake_block",
+    "repair_owned_fake_block_boundaries",
 ]

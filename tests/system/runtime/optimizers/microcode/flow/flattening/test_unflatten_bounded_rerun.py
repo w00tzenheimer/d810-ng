@@ -206,6 +206,8 @@ class TestUnflattenBoundedRerunGate:
             lambda *_args, **_kwargs: SimpleNamespace(
                 dispatcher_block_serial=None,
                 state_var_stkoff=None,
+                state_var_reg=None,
+                dispatch_map=None,
             ),
         )
         monkeypatch.setattr(unflat_mod, "select_family", lambda *_args, **_kwargs: family)
@@ -235,8 +237,22 @@ class TestUnflattenBoundedRerunGate:
         assert captured["maturity"] is IRMaturity.GLOBAL_ANALYZED
         assert captured["input_facts"] is fact_view
         assert captured["prepared_input_facts"] is fact_view
-        assert captured["analysis_seeds"] == {"range_evidence": None}
-        assert captured["prepared_analysis_seeds"] == {"range_evidence": None}
+        assert captured["analysis_seeds"] == {
+            "range_evidence": None,
+            "materialized_indirect_transfers": (),
+            "materialized_state_routes": (),
+            "materialized_computed_goto_profile": False,
+            "materialized_handler_entry_eas": {},
+            "residual_entry_bridge_evidence": None,
+        }
+        assert captured["prepared_analysis_seeds"] == {
+            "range_evidence": None,
+            "materialized_indirect_transfers": (),
+            "materialized_state_routes": (),
+            "materialized_computed_goto_profile": False,
+            "materialized_handler_entry_eas": {},
+            "residual_entry_bridge_evidence": None,
+        }
         assert captured["reset_func"] == _EA
 
     def test_config_v2_mode_executes_configured_pass_specs(self, monkeypatch) -> None:
@@ -345,6 +361,8 @@ class TestUnflattenBoundedRerunGate:
             lambda *_args, **_kwargs: SimpleNamespace(
                 dispatcher_block_serial=None,
                 state_var_stkoff=None,
+                state_var_reg=None,
+                dispatch_map=None,
             ),
         )
         monkeypatch.setattr(unflat_mod, "select_family", lambda *_args, **_kwargs: family)

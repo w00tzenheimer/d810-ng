@@ -572,8 +572,8 @@ def test_fake_jump_resolution_supports_signed_jump_conditions() -> None:
     assert signed_greater_not_taken.always_not_taken is True
 
 
-def test_fake_jump_unresolved_ratio_helper_matches_runtime_guard() -> None:
+def test_fake_jump_unresolved_history_helper_fails_closed() -> None:
     assert should_skip_fake_jump_predecessor(0, 0) is True
     assert should_skip_fake_jump_predecessor(2, 21) is True
-    assert should_skip_fake_jump_predecessor(3, 31) is False
+    assert should_skip_fake_jump_predecessor(3, 31) is True
     assert should_skip_fake_jump_predecessor(4, 0) is False

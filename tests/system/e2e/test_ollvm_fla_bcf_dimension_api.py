@@ -211,7 +211,7 @@ def ollvm_fla_bcf_database():
         "data_perms": data_perms,
     }
 
-    idapro.close_database()
+    idapro.close_database(False)
     shutil.rmtree(tempdir, ignore_errors=True)
 
 

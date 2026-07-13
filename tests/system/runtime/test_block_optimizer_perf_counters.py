@@ -144,6 +144,31 @@ def test_block_optimizer_runs_scheduled_rule_at_later_maturity():
     assert rule.calls == 2
 
 
+def test_block_optimizer_abstains_during_scoped_suppression():
+    from d810.hexrays.hooks.optimization_suppression import (
+        suppress_d810_optimization,
+    )
+
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    rule = _DummyRule("suppressed_rule")
+    scope_service = _FakeRuleScopeService((rule,))
+    manager.add_rule(rule)
+    manager.configure(
+        rule_scope_service=scope_service,
+        rule_scope_project_name="proj",
+        rule_scope_idb_key="idb",
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT1
+
+    with suppress_d810_optimization():
+        assert manager.optimize(_make_block()) == 0
+    assert rule.calls == 0
+    assert manager.optimize(_make_block()) == 0
+    assert rule.calls == 1
+
+
 def test_block_optimizer_runs_cross_pass_scheduled_rule_at_later_maturity():
     manager = BlockOptimizerManager(
         OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext

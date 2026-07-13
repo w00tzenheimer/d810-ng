@@ -1018,6 +1018,9 @@
       "project": "default_indirect_resolution.json",
       "maturity": "LOCOPT,CALLS,GLBOPT1",
       "status": "planned",
+      "cfg_validation": {
+        "status": "not_run"
+      },
       "question": "Can d810 resolve a cmov-selected computed goto (jmp reg = qword[cell]+KEY) and materialize the orphaned handlers so Hex-Rays forms the ebx state-machine CFG, then unflatten it? (Rhadamanthys sub_40A560 shape analog.)",
       "expected_evidence": [
         "baseline Hex-Rays truncates: __asm{jmp rax}, jmp reg succs=[] (VERIFIED 2026-07-07)",
