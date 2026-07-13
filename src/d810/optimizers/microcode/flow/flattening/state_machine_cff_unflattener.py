@@ -27,8 +27,19 @@ from d810.analyses.control_flow.dispatcher_recovery import (
     recover_dispatcher,
     register_extra_dispatcher_resolver,
 )
+from d810.analyses.control_flow.detached_handler_island import (
+    select_unique_block_native_ea,
+)
 from d810.analyses.control_flow.linearized_state_dag import (
     build_live_linearized_state_dag_from_graph,
+)
+from d810.analyses.control_flow.materialized_indirect_transfer import (
+    MaterializedIndirectTransfer,
+    exact_materialized_handler_override_serial,
+    merge_materialized_handler_maps,
+    override_materialized_handler_targets,
+    plan_terminal_return_carrier_requests,
+    unique_materialized_equality_target_eas,
 )
 from d810.analyses.control_flow.read_state_cfg import read_dag_from
 from d810.analyses.control_flow.semantic_transition import \
@@ -64,6 +75,9 @@ from d810.analyses.data_flow.concolic import (
 from d810.analyses.data_flow.concolic.emulation import EmulationCapability
 from d810.analyses.control_flow.transition_builder import _convert_condition_chain_to_result
 from d810.backends.hexrays.evidence.condition_chain_analysis import analyze_condition_chain_dispatcher
+from d810.backends.hexrays.evidence.residual_entry_bridge import (
+    recognize_residual_entry_bridge,
+)
 from d810.analyses.control_flow.indirect_jump_resolver import (
     IndirectJumpDispatcherResolver,
 )
@@ -94,6 +108,7 @@ from d810.core.observability_recon import (
     diagnostics_enabled as _recon_diagnostics_enabled,
     observe_dag,
     observe_dag_local_facts,
+    observe_fact_observation,
     observe_modifications,
     observe_reachability,
     observe_state_dispatcher_rows,
@@ -111,9 +126,23 @@ from d810.hexrays.observability import (
     diagnostics_enabled as _capture_diagnostics_enabled,
     request_capture_mba_snapshot,
 )
+from d810.hexrays.preanalysis.indirect_jump_labels import (
+    get_materialized_indirect_transfers,
+    record_terminal_return_carrier_requests,
+)
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle import (
     ComposedUnflatteningRule,
+)
+from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
+    _build_conditional_handler_state_routes,
+    _build_materialized_state_routes,
+    recover_conditional_handler_bridge_transfers_from_mba,
+    is_computed_goto_materialized,
+)
+from d810.hexrays.mutation.detached_handler_island import (
+    find_unique_live_block_by_ea,
+    imported_detached_snippet_target_eas,
 )
 from d810.passes.function_pass_manager import FunctionPassManager
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
@@ -556,7 +585,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             range_evidence,
             analysis_seeds,
             facts,
-        ) = self._build_recovery_evidence(mba, source)
+        ) = self._build_recovery_evidence(
+            mba,
+            source,
+            materialized_computed_goto_profile=(
+                _is_indirect or is_computed_goto_materialized(func_ea)
+            ),
+        )
         backend = HexRaysMutationBackend()
         capabilities = self._build_capabilities(mba, prelim, range_evidence)
         rule_config = getattr(self, "config", None)
@@ -744,10 +779,11 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # IDA-free; the live binary table reads live behind the injected
         # HexRaysIndirectJumpTableCapability (bound to the fresh mba). accepts()
         # consults the capability even AFTER materialization removes the m_ijmp
-        # (llr-tm3i), and the capability self-gates (None for non-dispatchers),
-        # so this is inert on every non-indirect function (no golden regression).
+        # (llr-tm3i). Registration remains unconditional so the process-global
+        # slot is rebound to the fresh MBA, but ``enabled`` is profile-scoped:
+        # non-Tigress profiles abstain before touching the live capability.
         # Idempotent by name -> rebinds the fresh mba each decompilation.
-        _cfg = getattr(self, "config", None)
+        _cfg = self.config
         register_extra_dispatcher_resolver(
             IndirectJumpDispatcherResolver(
                 indirect_tables=HexRaysIndirectJumpTableCapability(mba=mba),
@@ -756,6 +792,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     if isinstance(_cfg, dict)
                     else {}
                 ),
+                enabled=self._uses_tigress_indirect_materialization(_cfg),
             )
         )
         # llr-a93i Slice 5: register the emulation-based resolver. It recovers
@@ -779,7 +816,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             )
         )
 
-    def _build_recovery_evidence(self, mba: "ida_hexrays.mba_t", source):
+    def _build_recovery_evidence(
+        self,
+        mba: "ida_hexrays.mba_t",
+        source,
+        *,
+        materialized_computed_goto_profile: bool = False,
+    ):
         """Build the pre-pipeline recovery inputs.
 
         Returns ``(fact_view, prelim, range_evidence, analysis_seeds, facts)``.
@@ -818,16 +861,337 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 min_state_constant=prelim_min_state_constant,
             )
             if getattr(prelim, "dispatcher_block_serial", None) is not None:
+                # Thread the recovered register identity so a register-resident
+                # state var drives the same condition-chain analysis as a stack
+                # state var.
                 range_evidence = analyze_condition_chain_dispatcher(
                     mba,
                     int(prelim.dispatcher_block_serial),
                     getattr(prelim, "state_var_stkoff", None),
+                    state_var_reg=getattr(prelim, "state_var_reg", None),
                 )
                 if _capture_diagnostics_enabled():
                     self._log_lisa_discovery_diff(source.flow_graph, prelim, range_evidence)
         except Exception:  # noqa: BLE001 — evidence recovery is best-effort
             logger.debug("unflat: pre-pipeline condition-chain evidence failed", exc_info=True)
-        analysis_seeds = {"range_evidence": range_evidence}
+        # Optimizer-owned seam: resolver materialization is Hex-Rays-specific,
+        # while the portable five-pass spine consumes only the immutable proof
+        # tuple through AnalysisManager. This keeps d810.passes hexrays-agnostic.
+        materialized_indirect_transfers = get_materialized_indirect_transfers(
+            int(source.func_ea)
+        )
+        materialized_state_routes = ()
+        materialized_handler_entry_eas: dict[int, int] = {}
+        if (
+            prelim is not None
+            and prelim.dispatch_map is not None
+            and prelim.dispatcher_block_serial is not None
+            and prelim.state_var_reg is not None
+            and materialized_indirect_transfers
+        ):
+            _, state_write_anchors = facts_from_validated_view(fact_view)
+            register_fixpoint = run_snapshot_constant_fixpoint(
+                source.flow_graph,
+                -1,
+            )
+            exact_state_to_handler = prelim.dispatch_map.state_to_handler()
+            handler_states, handler_targets, handler_serials = (
+                merge_materialized_handler_maps(
+                    exact_state_to_handler,
+                    (
+                        range_evidence.handler_state_map
+                        if range_evidence is not None
+                        else {}
+                    ),
+                    (
+                        range_evidence.dispatcher.to_handler_state_map()
+                        if range_evidence is not None
+                        and range_evidence.dispatcher is not None
+                        else {}
+                    ),
+                )
+            )
+            imported_target_eas = frozenset(
+                imported_detached_snippet_target_eas(mba)
+            )
+            equality_target_eas = unique_materialized_equality_target_eas(
+                materialized_indirect_transfers,
+                int(prelim.state_var_reg),
+            )
+            materialized_handler_overrides: dict[int, int] = {}
+            imported_handler_serials: set[int] = set()
+            for state_constant, target_ea in equality_target_eas.items():
+                target_block = find_unique_live_block_by_ea(mba, int(target_ea))
+                if target_block is None:
+                    continue
+                target_serial = int(target_block.serial)
+                graph_target = source.flow_graph.get_block(target_serial)
+                if graph_target is None:
+                    continue
+                target_native_identity_ea = select_unique_block_native_ea(
+                    int(graph_target.start_ea),
+                    tuple(
+                        int(instruction.ea)
+                        for instruction in graph_target.insn_snapshots
+                    ),
+                )
+                if target_native_identity_ea is None:
+                    continue
+                override_serial = exact_materialized_handler_override_serial(
+                    target_ea=int(target_ea),
+                    target_serial=target_serial,
+                    target_native_identity_ea=target_native_identity_ea,
+                    imported_target_eas=imported_target_eas,
+                )
+                if override_serial is None:
+                    continue
+                materialized_handler_overrides[int(state_constant)] = (
+                    override_serial
+                )
+                materialized_handler_entry_eas[override_serial] = int(target_ea)
+                if int(target_ea) in imported_target_eas:
+                    imported_handler_serials.add(override_serial)
+                logger.info(
+                    "exact materialized handler target override: state=0x%X "
+                    "target_ea=0x%X live=blk%d@0x%X",
+                    int(state_constant),
+                    int(target_ea),
+                    target_serial,
+                    int(graph_target.start_ea),
+                )
+            handler_states, handler_targets, handler_serials = (
+                override_materialized_handler_targets(
+                    handler_targets,
+                    handler_serials,
+                    materialized_handler_overrides,
+                )
+            )
+            authoritative_handler_serials = frozenset(
+                {
+                    *(int(serial) for serial in exact_state_to_handler.values()),
+                    *(
+                        int(serial)
+                        for serial in materialized_handler_overrides.values()
+                    ),
+                }
+            )
+            materialized_state_routes = _build_materialized_state_routes(
+                source.flow_graph,
+                state_write_anchors=state_write_anchors,
+                in_stk_maps=register_fixpoint.in_stk_maps,
+                in_reg_maps=register_fixpoint.in_reg_maps,
+                out_stk_maps=register_fixpoint.out_stk_maps,
+                out_reg_maps=register_fixpoint.out_reg_maps,
+                dispatcher_entry_serial=int(prelim.dispatcher_block_serial),
+                state_var_reg=int(prelim.state_var_reg),
+                handler_serials=handler_serials,
+                authoritative_handler_serials=authoritative_handler_serials,
+                dispatcher_block_serials=frozenset(
+                    {
+                        int(prelim.dispatcher_block_serial),
+                        *(
+                            int(serial)
+                            for serial in prelim.dispatch_map.dispatcher_blocks
+                        ),
+                        *(
+                            int(serial)
+                            for serial in (
+                                range_evidence.condition_chain_blocks
+                                if range_evidence is not None
+                                else ()
+                            )
+                        ),
+                        *(
+                            int(serial)
+                            for serial in (
+                                range_evidence.decision_dag.nodes
+                                if range_evidence is not None
+                                and range_evidence.decision_dag is not None
+                                else ()
+                            )
+                        ),
+                    }
+                ),
+                transfers=materialized_indirect_transfers,
+                handler_states=handler_states,
+                handler_targets=handler_targets,
+                replacement_handler_serials=frozenset(
+                    int(serial) for serial in imported_handler_serials
+                ),
+                exact_handler_override_serials=frozenset(
+                    int(serial)
+                    for serial in materialized_handler_overrides.values()
+                ),
+                handler_entry_eas_by_serial=materialized_handler_entry_eas,
+                handler_target_resolver=(
+                    range_evidence.decision_dag.route
+                    if range_evidence is not None
+                    and range_evidence.decision_dag is not None
+                    and range_evidence.decision_dag.nodes
+                    else (
+                        range_evidence.dispatcher.lookup
+                        if range_evidence is not None
+                        and range_evidence.dispatcher is not None
+                        else None
+                    )
+                ),
+            )
+            terminal_carrier_requests = plan_terminal_return_carrier_requests(
+                source.flow_graph,
+                materialized_state_routes,
+                state_var_reg=int(prelim.state_var_reg),
+            )
+            if terminal_carrier_requests:
+                record_terminal_return_carrier_requests(
+                    int(source.func_ea),
+                    terminal_carrier_requests,
+                )
+                logger.info(
+                    "terminal return-carrier requests: %s",
+                    [
+                        (
+                            hex(int(request.source_handler_ea)),
+                            hex(int(request.terminal_target_ea)),
+                            hex(int(request.state_constant)),
+                        )
+                        for request in terminal_carrier_requests
+                    ],
+                )
+            def resolve_live_target_serial(target_ea: int) -> int | None:
+                target_block = find_unique_live_block_by_ea(mba, int(target_ea))
+                target_serial = (
+                    int(target_block.serial) if target_block is not None else None
+                )
+                graph_target = (
+                    source.flow_graph.get_block(target_serial)
+                    if target_serial is not None
+                    else None
+                )
+                logger.info(
+                    "conditional bridge live target: target_ea=0x%X live=%s graph=%s",
+                    int(target_ea),
+                    (
+                        None
+                        if target_block is None
+                        else "blk%d@0x%X"
+                        % (int(target_block.serial), int(target_block.start))
+                    ),
+                    (
+                        None
+                        if graph_target is None
+                        else "blk%d@0x%X"
+                        % (int(graph_target.serial), int(graph_target.start_ea))
+                    ),
+                )
+                return target_serial
+
+            def resolve_conditional_arm_sources(
+                transfer: MaterializedIndirectTransfer,
+            ) -> tuple[int, int] | None:
+                source_block = find_unique_live_block_by_ea(
+                    mba,
+                    int(transfer.source_jmp_ea),
+                )
+                if source_block is None:
+                    native_source_serials = tuple(
+                        int(block.serial)
+                        for block in source.flow_graph.blocks.values()
+                        if block.preds
+                        and block.insn_snapshots
+                        and block.insn_snapshots[-1].is_conditional_jump
+                        and int(block.insn_snapshots[-1].ea)
+                        == int(transfer.source_jmp_ea)
+                    )
+                    if len(native_source_serials) == 1:
+                        source_block = mba.get_mblock(native_source_serials[0])
+                if (
+                    source_block is None
+                    or int(source_block.nsucc()) != 2
+                    or source_block.tail is None
+                    or int(source_block.tail.opcode)
+                    not in (int(ida_hexrays.m_jz), int(ida_hexrays.m_jnz))
+                    or source_block.tail.d.t != ida_hexrays.mop_b
+                    or transfer.predicate_true_is_taken is None
+                ):
+                    return None
+                successors = tuple(int(serial) for serial in source_block.succset)
+                taken = int(source_block.tail.d.b)
+                if len(successors) != 2 or taken not in successors:
+                    return None
+                fallthrough = next(
+                    serial for serial in successors if int(serial) != taken
+                )
+                if transfer.predicate_true_is_taken:
+                    return taken, int(fallthrough)
+                return int(fallthrough), taken
+
+            conditional_handler_routes = _build_conditional_handler_state_routes(
+                source.flow_graph,
+                materialized_indirect_transfers,
+                exact_handler_by_state=handler_targets,
+                target_serial_resolver=resolve_live_target_serial,
+                arm_source_serial_resolver=resolve_conditional_arm_sources,
+            )
+            materialized_state_routes = tuple(
+                dict.fromkeys(
+                    (*materialized_state_routes, *conditional_handler_routes)
+                )
+            )
+            route_state_candidates: dict[int, set[int]] = {}
+            for route in materialized_state_routes:
+                if (
+                    route.source_handler_serial is None
+                    or int(route.source_handler_serial)
+                    != int(route.source_block_serial)
+                    or not route.handler_exit_proven
+                ):
+                    continue
+                route_source = source.flow_graph.get_block(
+                    int(route.source_block_serial)
+                )
+                if route_source is None or not route_source.insn_snapshots:
+                    continue
+                predicate = route_source.insn_snapshots[-1]
+                if not predicate.is_conditional_jump or int(predicate.ea) <= 0:
+                    continue
+                route_state_candidates.setdefault(int(predicate.ea), set()).add(
+                    int(route.state_constant) & 0xFFFFFFFF
+                )
+            inherited_states_by_predicate_ea = {
+                predicate_ea: next(iter(states))
+                for predicate_ea, states in route_state_candidates.items()
+                if len(states) == 1
+            }
+            conditional_bridges = (
+                recover_conditional_handler_bridge_transfers_from_mba(
+                    materialized_indirect_transfers,
+                    mba,
+                    inherited_states_by_predicate_ea=(
+                        inherited_states_by_predicate_ea
+                    ),
+                )
+            )
+            if conditional_bridges:
+                materialized_indirect_transfers = tuple(
+                    dict.fromkeys(
+                        (*materialized_indirect_transfers, *conditional_bridges)
+                    )
+                )
+        residual_entry_bridge_evidence = (
+            recognize_residual_entry_bridge(mba)
+            if materialized_computed_goto_profile
+            else None
+        )
+        analysis_seeds = {
+            "range_evidence": range_evidence,
+            "materialized_indirect_transfers": materialized_indirect_transfers,
+            "materialized_state_routes": materialized_state_routes,
+            "materialized_handler_entry_eas": materialized_handler_entry_eas,
+            "residual_entry_bridge_evidence": residual_entry_bridge_evidence,
+            "materialized_computed_goto_profile": bool(
+                materialized_computed_goto_profile
+            ),
+        }
         facts = self._pass_manager.facts_for(
             source,
             input_facts=fact_view,
@@ -1084,11 +1448,53 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
           capture subscriber, so it only runs under ``--full-diagnostics``; production decompilation
           never pays for it. Best-effort: any failure degrades to a debug log, never breaks optimize.
         """
-        dmap = getattr(rec, "dispatch_map", None) if rec is not None else None
-        if dmap is None:
-            return
         func_ea = int(getattr(mba, "entry_ea", 0) or 0)
         maturity = maturity_to_string(int(getattr(mba, "maturity", -1) or -1))
+        dmap = getattr(rec, "dispatch_map", None) if rec is not None else None
+        # A missing map used to look identical to a diagnostics failure: this
+        # method returned before creating a snapshot, leaving no structured way
+        # to distinguish "pipeline recovered nothing" from "rows were dropped".
+        # Record the recovery status first. This is diagnostics-only and works
+        # for stack, register, and materialized-indirect dispatchers alike.
+        if source is not None and _capture_diagnostics_enabled():
+            try:
+                status_snap = request_capture_mba_snapshot(
+                    blocks=_diag_blocks_from_flow_graph(source.flow_graph),
+                    label="unflat_recovery_status",
+                    func_ea=func_ea,
+                    maturity=maturity,
+                    phase="post_pipeline",
+                )
+                if status_snap is not None:
+                    observe_fact_observation(
+                        status_snap,
+                        func_ea,
+                        ({
+                            "fact_id": f"unflat-recovery-status:{func_ea:x}:{maturity}",
+                            "kind": "UnflattenRecoveryStatus",
+                            "semantic_key": "unflatten_recovery_status",
+                            "maturity": maturity,
+                            "phase": "post_pipeline",
+                            "confidence": 1.0,
+                            "source_block": getattr(rec, "dispatcher_block_serial", None),
+                            "source_ea": None,
+                            "block_fingerprint": None,
+                            "mop_signature": None,
+                            "payload": {
+                                "recovery_present": rec is not None,
+                                "dispatch_map_present": dmap is not None,
+                                "map_rows": len(getattr(dmap, "rows", ()) or ()),
+                                "dispatcher_entry": getattr(dmap, "dispatcher_entry_block", None),
+                                "state_var_stkoff": getattr(rec, "state_var_stkoff", None),
+                                "state_var_reg": getattr(rec, "state_var_reg", None),
+                            },
+                            "evidence": (),
+                        },),
+                    )
+            except Exception:  # noqa: BLE001 -- diagnostics must never change recovery
+                logger.debug("unflat: recovery-status diagnostics failed", exc_info=True)
+        if dmap is None:
+            return
         if _recon_diagnostics_enabled():
             try:
                 observe_state_dispatcher_rows(

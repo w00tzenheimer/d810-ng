@@ -119,3 +119,25 @@ def test_extract_flips_op_when_state_var_on_right():
     assert dag.nodes[2].op == "jae"
     assert dag.route(5) == 20
     assert dag.route(2) == 21
+
+
+def test_extract_register_resident_state_var_without_stack_slot():
+    state_reg = 20
+    tail = SimpleNamespace(
+        opcode=ida_hexrays.m_jnz,
+        l=SimpleNamespace(t=ida_hexrays.mop_r, r=state_reg),
+        r=_const(0x82F1899D),
+        d=_target(30),
+    )
+    mba = _mba({2: _Blk(tail, [31, 30]), 30: _leaf(), 31: _leaf()})
+
+    dag = extract_decision_dag(
+        mba,
+        dispatcher_entry_serial=2,
+        state_var_stkoff=None,
+        state_var_reg=state_reg,
+    )
+
+    assert dag.nodes[2].op == "jnz"
+    assert dag.route(0x82F1899D) == 31
+    assert dag.route(0xDEADBEEF) == 30

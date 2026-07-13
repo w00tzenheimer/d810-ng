@@ -151,6 +151,39 @@ def test_active_optimizer_list_filters_by_maturity():
     assert locopt_opt.calls == 1, f"LocoptOpt was not called at LOCOPT"
 
 
+def test_instruction_optimizer_abstains_during_scoped_suppression():
+    from d810.hexrays.hooks.optimization_suppression import (
+        suppress_d810_optimization,
+    )
+
+    optimizer = _MockOptimizer("LocoptOpt", [ida_hexrays.MMAT_LOCOPT])
+    mgr = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    mgr.instruction_optimizers = [optimizer]
+    mgr.current_maturity = ida_hexrays.MMAT_LOCOPT
+    mgr.current_blk_serial = None
+    mgr._rewrite_seen = {}
+    mgr._rule_scope_service = None
+    mgr._rule_scope_project_name = ""
+    mgr._rule_scope_idb_key = ""
+    mgr.analyzer = SimpleNamespace(set_maturity=lambda m: None, analyze=lambda blk, ins: None)
+    mgr.event_emitter = None
+    mgr.dump_intermediate_microcode = False
+    mgr.stats = None
+    mgr._active_instruction_rule_names_by_maturity = {}
+    mgr.instruction_visitor = None
+    mgr._last_optimizer_tried = None
+    mgr.log_dir = None
+    mgr._recon_phase = None
+    mgr._recon_runtime = None
+    mgr._run_later_scheduler = None
+    mgr._run_later_rule_names = frozenset()
+    mgr._active_optimizers = [optimizer]
+
+    with suppress_d810_optimization():
+        assert mgr.optimize(_make_blk(ida_hexrays.MMAT_LOCOPT), _make_ins()) is False
+    assert optimizer.calls == 0
+
+
 from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import (
     FoldReadonlyDataRule,
     _has_potential_readonly_operand,

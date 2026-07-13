@@ -53,6 +53,7 @@ from d810.transforms.plan import (
 from d810.transforms.materialization_payload import CapturedBlockBody, CapturedBlockBodySummary
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.mutation.ir_translator import (
+    _build_lvar_stkoff_map,
     _branch_predicate_only_from_hexrays,
     _block_kind_from_hexrays,
     _insn_kind_from_hexrays,
@@ -62,6 +63,61 @@ from d810.hexrays.mutation.ir_translator import (
 
 
 _DEFAULT_TEST_BINARY = "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+
+
+class _FakeLocation:
+    def __init__(self, *, stack_offset: int | None) -> None:
+        self.stack_offset = stack_offset
+        self.stkoff_called = False
+
+    def is_stkoff(self) -> bool:
+        return self.stack_offset is not None
+
+    def stkoff(self) -> int:
+        self.stkoff_called = True
+        if self.stack_offset is None:
+            raise AssertionError("stkoff() must not be called for non-stack locations")
+        return int(self.stack_offset)
+
+
+class _FakeVars:
+    def __init__(self, locations: tuple[_FakeLocation, ...]) -> None:
+        self.size_called = False
+        self.values = tuple(
+            SimpleNamespace(location=location)
+            for location in locations
+        )
+
+    def size(self) -> int:
+        self.size_called = True
+        return len(self.values)
+
+    def __getitem__(self, index: int) -> object:
+        return self.values[index]
+
+
+def test_lvar_stkoff_map_checks_location_kind_before_reading_offset() -> None:
+    non_stack = _FakeLocation(stack_offset=None)
+    stack = _FakeLocation(stack_offset=0x38)
+    mba = SimpleNamespace(
+        maturity=ida_hexrays.MMAT_LVARS,
+        vars=_FakeVars((non_stack, stack)),
+    )
+
+    assert _build_lvar_stkoff_map(mba) == {1: 0x38}
+    assert not non_stack.stkoff_called
+    assert stack.stkoff_called
+
+
+def test_lvar_stkoff_map_does_not_touch_lvars_before_lvar_maturity() -> None:
+    variables = _FakeVars((_FakeLocation(stack_offset=0x38),))
+    mba = SimpleNamespace(
+        maturity=ida_hexrays.MMAT_CALLS,
+        vars=variables,
+    )
+
+    assert _build_lvar_stkoff_map(mba) == {}
+    assert not variables.size_called
 
 
 @dataclass(frozen=True)

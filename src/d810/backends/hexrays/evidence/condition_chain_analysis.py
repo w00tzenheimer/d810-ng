@@ -962,24 +962,33 @@ def _find_pre_header(
 
 def _mop_matches_stkoff(
     mop: object,
-    state_var_stkoff: int,
+    state_var_stkoff: Optional[int],
     diag_lines: Optional[List[str]] = None,
     state_var_lvar_idx: Optional[int] = None,
     mba: Optional[object] = None,
+    state_var_reg: Optional[int] = None,
 ) -> bool:
-    """Return True if mop is a stack variable operand at the given stack offset.
+    """Return True if mop is the state variable operand.
 
     Handles mop_S (direct stack var), mop_a wrapping a mop_S (address-of
-    pattern used in m_stx instructions), and mop_l (local variable promoted
-    from stack var at higher maturity levels such as GLBOPT2).
+    pattern used in m_stx instructions), mop_l (local variable promoted
+    from stack var at higher maturity levels such as GLBOPT2), and -- when
+    ``state_var_reg`` is given -- mop_r (a REGISTER-resident state variable used
+    by comparison-tree dispatchers whose state is never spilled).
+    ``state_var_stkoff`` may be
+    ``None`` for the pure-register case; the register branch is checked
+    regardless so stack + register goldens share this one matcher.
 
     Args:
         mop: The microcode operand to test.
-        state_var_stkoff: Stack offset of the state variable.
+        state_var_stkoff: Stack offset of the state variable (or ``None`` when
+            the state var is register-resident).
         diag_lines: Optional list to collect diagnostic strings.
         state_var_lvar_idx: If not None, match mop_l by lvar index directly.
         mba: If provided and state_var_lvar_idx is None, fall back to
             ``mba.vars[idx].location.stkoff()`` comparison for mop_l operands.
+        state_var_reg: Microcode register number of a register-resident state
+            variable; when set, a ``mop_r`` whose ``r`` equals it matches.
     """
     if mop is None:
         return False
@@ -987,6 +996,25 @@ def _mop_matches_stkoff(
     mop_S_type = _mop_type_value("mop_S", None)
     mop_a_type = _mop_type_value("mop_a", None)
     mop_l_type = _mop_type_value("mop_l", None)
+    mop_r_type = _mop_type_value("mop_r", None)
+
+    # Register-resident state variable (d81-3rja): a direct ``mop_r`` naming the
+    # recovered state register. Checked first + independently of the stack offset
+    # so the pure-register dispatcher (``state_var_stkoff is None``) still matches.
+    if (
+        state_var_reg is not None
+        and mop_r_type is not None
+        and mop_type == mop_r_type
+    ):
+        r = getattr(mop, "r", None)
+        if diag_lines is not None:
+            diag_lines.append(
+                f"      -> mop_r: r={r} state_var_reg={state_var_reg}"
+                f" match={r == state_var_reg}"
+            )
+        return r == state_var_reg
+    if state_var_stkoff is None:
+        return False
 
     if diag_lines is not None:
         mop_type_name = MOP_TYPE_MAP.get(mop_type, f"unknown_{mop_type}") if mop_type is not None else "None"
@@ -1277,12 +1305,17 @@ def _forward_eval_insn(
 
 def _extract_state_from_block(
     blk: object,
-    state_var_stkoff: int,
+    state_var_stkoff: Optional[int],
     diag_lines: Optional[List[str]] = None,
     state_var_lvar_idx: Optional[int] = None,
     mba: Optional[object] = None,
+    state_var_reg: Optional[int] = None,
 ) -> Optional[int]:
-    """Scan a block's instructions for a write to state_var_stkoff.
+    """Scan a block's instructions for a write to the state variable.
+
+    ``state_var_reg``: when set, also matches ``m_mov #const, <mop_r
+    state_var_reg>`` register-resident writes in a comparison-tree dispatcher;
+    ``state_var_stkoff`` may then be ``None``.
 
     Handles two patterns:
     - ``m_mov <const>, <mop_S stkoff=N>`` — simple stack-variable move
@@ -1335,6 +1368,7 @@ def _extract_state_from_block(
             if _mop_matches_stkoff(
                 d, state_var_stkoff, diag_lines=diag_lines,
                 state_var_lvar_idx=state_var_lvar_idx, mba=mba,
+                state_var_reg=state_var_reg,
             ):
                 l = getattr(insn, "l", None)
                 val = _get_mop_const_value(l)
@@ -1358,6 +1392,7 @@ def _extract_state_from_block(
             if _mop_matches_stkoff(
                 r, state_var_stkoff, diag_lines=diag_lines,
                 state_var_lvar_idx=state_var_lvar_idx, mba=mba,
+                state_var_reg=state_var_reg,
             ):
                 l = getattr(insn, "l", None)
                 val = _get_mop_const_value(l)
@@ -1383,12 +1418,13 @@ def _walk_handler_chain(
     mba: object,
     handler_start_serial: int,
     dispatcher_entry_serial: int,
-    state_var_stkoff: int,
+    state_var_stkoff: Optional[int],
     chain_visited: Optional[set] = None,
     max_chain_depth: int = 64,
     diag_lines: Optional[List[str]] = None,
     state_var_lvar_idx: Optional[int] = None,
     _branch_depth: int = 0,
+    state_var_reg: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Walk a handler's block chain to find the next-state write and back-edge.
 
@@ -1437,10 +1473,14 @@ def _walk_handler_chain(
         chain_visited = set()
 
     if diag_lines is not None:
+        _sv = (
+            f"stkoff=0x{state_var_stkoff:x}"
+            if state_var_stkoff is not None
+            else f"reg={state_var_reg}"
+        )
         diag_lines.append(
             f"  walker start: blk[{handler_start_serial}]"
-            f" dispatcher=blk[{dispatcher_entry_serial}]"
-            f" stkoff=0x{state_var_stkoff:x}"
+            f" dispatcher=blk[{dispatcher_entry_serial}] {_sv}"
         )
 
     current = handler_start_serial
@@ -1480,27 +1520,25 @@ def _walk_handler_chain(
         if diag_lines is not None:
             diag_lines.append(f"  walker: visiting blk[{current}] ({num_insns} insns)")
 
-        # Scan for state variable write if not yet found
-        if state_var_stkoff is not None:
+        # Scan for state variable write if not yet found. The direct-write fast
+        # path (``_extract_state_from_block``) is register-aware (d81-3rja) and runs
+        # for a stack OR register state var; the ``_forward_eval_insn`` MBA-fold pass
+        # stays stkoff-keyed (it tracks the stack value lattice) and is skipped for a
+        # pure-register state var, whose ``mov #const, reg`` writes the fast path
+        # already resolves.
+        if state_var_stkoff is not None or state_var_reg is not None:
             fast_val = _extract_state_from_block(
                 blk, state_var_stkoff, diag_lines=diag_lines,
                 state_var_lvar_idx=state_var_lvar_idx, mba=mba,
+                state_var_reg=state_var_reg,
             ) if result["next_state"] is None else None
             if fast_val is not None:
                 result["next_state"] = fast_val
                 if diag_lines is not None:
                     diag_lines.append(f"  walker: found next_state=0x{fast_val:x} in blk[{current}]")
-                # Fast path found it — still run forward eval to keep maps current.
-                fwd_insn = blk.head
-                while fwd_insn is not None:
-                    _forward_eval_insn(
-                        fwd_insn, fwd_stk_map, fwd_reg_map, state_var_stkoff,
-                        mba=mba, state_var_lvar_idx=state_var_lvar_idx,
-                    )
-                    fwd_insn = getattr(fwd_insn, "next", None)
-            else:
-                # Fast path did not find state (or already found in prior block).
-                # Run forward eval to accumulate maps and check for MBA state writes.
+            if state_var_stkoff is not None:
+                # Fast path found it (or not) — run forward eval to keep the stack
+                # value maps current / catch MBA-computed stack state writes.
                 fwd_insn = blk.head
                 while fwd_insn is not None:
                     fwd_val = _forward_eval_insn(
@@ -1567,6 +1605,7 @@ def _walk_handler_chain(
                         diag_lines=diag_lines,
                         state_var_lvar_idx=state_var_lvar_idx,
                         _branch_depth=_branch_depth + 1,
+                        state_var_reg=state_var_reg,
                     )
                     sub_results.append(sub)
                     result["chain"].extend(sub["chain"])
@@ -1645,21 +1684,20 @@ def _find_pre_header_state(
     state_var_stkoff: Optional[int],
     diag_lines: Optional[List[str]] = None,
     state_var_lvar_idx: Optional[int] = None,
+    state_var_reg: Optional[int] = None,
 ) -> tuple:
     """Find pre-header block and extract initial state constant.
 
-    Args:
-        mba: The microcode block array.
-        dispatcher_entry_serial: Block serial of the condition-chain root.
-        state_var_stkoff: Stack offset of the state variable.
-        diag_lines: Optional list to collect diagnostic strings.
-        state_var_lvar_idx: If not None, also match mop_l writes by lvar index.
+    ``state_var_reg`` (d81-3rja): resolves the initial state from a register write
+    when the state var is register-resident (``state_var_stkoff is None``).
 
     Returns:
         Tuple of (pre_header_serial: Optional[int], initial_state: Optional[int])
     """
     pre_header_serial = _find_pre_header(mba, dispatcher_entry_serial, diag_lines=diag_lines)
-    if pre_header_serial is None or state_var_stkoff is None:
+    if pre_header_serial is None or (
+        state_var_stkoff is None and state_var_reg is None
+    ):
         return pre_header_serial, None
     blk = mba.get_mblock(pre_header_serial)
     if blk is None:
@@ -1667,6 +1705,7 @@ def _find_pre_header_state(
     initial_state = _extract_state_from_block(
         blk, state_var_stkoff, diag_lines=diag_lines,
         state_var_lvar_idx=state_var_lvar_idx, mba=mba,
+        state_var_reg=state_var_reg,
     )
     return pre_header_serial, initial_state
 
@@ -1888,6 +1927,7 @@ def analyze_condition_chain_dispatcher(
     state_var_stkoff: Optional[int] = None,
     state_var_lvar_idx: Optional[int] = None,
     max_depth: int = 20,
+    state_var_reg: Optional[int] = None,
 ) -> ConditionChainAnalysisResult:
     """Analyze a condition-chain dispatcher and return a structured result.
 
@@ -1917,8 +1957,10 @@ def analyze_condition_chain_dispatcher(
 
     result = ConditionChainAnalysisResult()
 
-    # Auto-detect stkoff / lvar_idx when not provided
-    if state_var_stkoff is None:
+    # Auto-detect stkoff / lvar_idx when not provided. A register-resident state
+    # var (d81-3rja, ``state_var_reg`` supplied) has NO stack slot to detect, so
+    # skip auto-detection and let the register identity drive the write-scanners.
+    if state_var_stkoff is None and state_var_reg is None:
         detected, detected_lvar_idx = _detect_state_var_stkoff(
             mba, dispatcher_entry_serial, diag=False
         )
@@ -1932,7 +1974,7 @@ def analyze_condition_chain_dispatcher(
     # consolidation; the decision-DAG walks the real condition-chain comparison tree, verified
     # 0 divergence vs the legacy interval/exact/range router on sub_7FFD).
     # Best-effort: any failure leaves decision_dag=None -> legacy routing remains.
-    if state_var_stkoff is not None:
+    if state_var_stkoff is not None or state_var_reg is not None:
         try:
             from d810.backends.hexrays.evidence.decision_dag_extract import (
                 extract_decision_dag,
@@ -1941,12 +1983,16 @@ def analyze_condition_chain_dispatcher(
             result.decision_dag = extract_decision_dag(
                 mba,
                 dispatcher_entry_serial=int(dispatcher_entry_serial),
-                state_var_stkoff=int(state_var_stkoff),
+                state_var_stkoff=(
+                    int(state_var_stkoff) if state_var_stkoff is not None else None
+                ),
                 state_var_lvar_idx=state_var_lvar_idx,
+                state_var_reg=state_var_reg,
             )
             logger.info(
-                "DECISION_DAG: state_var_stkoff=%s entry=%s nodes=%s root=%s",
+                "DECISION_DAG: state_var_stkoff=%s state_var_reg=%s entry=%s nodes=%s root=%s",
                 state_var_stkoff,
+                state_var_reg,
                 dispatcher_entry_serial,
                 len(getattr(result.decision_dag, "nodes", {}) or {}),
                 getattr(result.decision_dag, "root", None),
@@ -1959,6 +2005,7 @@ def analyze_condition_chain_dispatcher(
     pre_header_serial, initial_state = _find_pre_header_state(
         mba, dispatcher_entry_serial, state_var_stkoff,
         state_var_lvar_idx=state_var_lvar_idx,
+        state_var_reg=state_var_reg,
     )
     result.pre_header_serial = pre_header_serial
     result.initial_state = initial_state
@@ -2210,7 +2257,7 @@ def analyze_condition_chain_dispatcher(
     for h_serial in sorted(handler_serials):
         state_const = handler_state_map.get(h_serial)
 
-        if state_var_stkoff is not None:
+        if state_var_stkoff is not None or state_var_reg is not None:
             per_handler_visited: set = set()
             walk = _walk_handler_chain(
                 mba,
@@ -2219,6 +2266,7 @@ def analyze_condition_chain_dispatcher(
                 state_var_stkoff,
                 chain_visited=per_handler_visited,
                 state_var_lvar_idx=state_var_lvar_idx,
+                state_var_reg=state_var_reg,
             )
         else:
             walk = {"next_state": None, "back_edge": False, "exit": False, "chain": []}

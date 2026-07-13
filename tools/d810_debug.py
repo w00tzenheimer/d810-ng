@@ -138,7 +138,7 @@ def _open_ida_database(binary_path: Path):
         yield
     finally:  # pragma: no cover - requires IDA
         try:
-            idapro.close_database()
+            idapro.close_database(False)
         except Exception:
             pass
 

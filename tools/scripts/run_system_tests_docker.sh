@@ -16,7 +16,7 @@
 #   shell     Run SETUP then start an interactive bash (docker run -it)
 #   exec      Run SETUP then exec COMMAND with ARGS (e.g. exec -- python -c 'print(1)' or exec -- bash -c '...')
 #
-# SETUP (same for all commands): export IDA/PYTHONPATH env, pip install -e .[dev], python -m d810.speedups.install
+# SETUP (same for all commands): export IDA/PYTHONPATH env, pip install -e .[dev,emulation], python -m d810.speedups.install
 #
 # Options (system/test/shell/exec):
 #   -w, --worktree REL      Use worktree at REPO_ROOT/WORKTREE_ROOT/REL as /work. REL is relative to
@@ -306,8 +306,10 @@ _d810_extra_env_flags() {
 IDA_VENV_PIP="/app/ida/.venv/bin/pip"
 IDA_VENV_PYTHON="/app/ida/.venv/bin/python"
 
-# One-time setup: export env, pip install -e .[dev], d810.speedups.install,
-# then BEST-EFFORT compile the Cython speedups in-container so they load
+# One-time setup: export env, pip install -e .[dev,emulation], d810.speedups.install,
+# then BEST-EFFORT compile the Cython speedups in-container when explicitly
+# enabled.  The default D810_NO_CYTHON=1 must skip this build: an OOM kill of
+# the build container cannot be caught by the shell's fallback.
 # (instead of silently falling back to pure-Python). The build needs a C++
 # toolchain + the IDA SDK; setup.py auto-downloads the SDK from GitHub when
 # IDA_SDK is unset and links against the live IDA runtime (libida.so) via
@@ -315,8 +317,12 @@ IDA_VENV_PYTHON="/app/ida/.venv/bin/python"
 # neither setuptools nor Cython, so pip MUST build-isolate to install the
 # build-system.requires (setuptools/wheel/Cython). If the build fails, the suite
 # still runs on the pure-Python fallback — the '|| echo' below keeps exit 0.
-SPEEDUPS_BUILD_CMD="D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q || echo '[speedups] build failed, falling back to pure-Python'"
-SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON && $IDA_VENV_PIP install -e .[dev] -q && $IDA_VENV_PYTHON -m d810.speedups.install && { $SPEEDUPS_BUILD_CMD; }"
+if [ "${D810_NO_CYTHON:-1}" = "1" ]; then
+  SPEEDUPS_BUILD_CMD="echo '[speedups] native build disabled by D810_NO_CYTHON=1'"
+else
+  SPEEDUPS_BUILD_CMD="D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q || echo '[speedups] build failed, falling back to pure-Python'"
+fi
+SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON && $IDA_VENV_PIP install -e '.[dev,emulation]' -q && $IDA_VENV_PYTHON -m d810.speedups.install && { $SPEEDUPS_BUILD_CMD; }"
 
 # Safely reassemble an array of args into a string suitable for embedding in
 # a bash -c command that gets re-parsed by another shell (e.g. inside the

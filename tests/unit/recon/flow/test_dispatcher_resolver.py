@@ -427,6 +427,17 @@ def test_portable_resolver_abstains_when_capability_returns_none():
     assert resolver.accepts(_materialized_flow_graph()) is None
 
 
+def test_disabled_portable_resolver_does_not_consult_capability():
+    cap = _FakeCapability(_indirect_result())
+    resolver = IndirectJumpDispatcherResolver(
+        indirect_tables=cap,
+        enabled=False,
+    )
+
+    assert resolver.accepts(_indirect_flow_graph()) is None
+    assert cap.calls == []
+
+
 def test_portable_resolver_passes_goto_table_info_through():
     cap = _FakeCapability(_indirect_result())
     resolver = IndirectJumpDispatcherResolver(

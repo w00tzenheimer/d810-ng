@@ -65,6 +65,7 @@ from d810.capabilities.use_def_safety import UseDefSafetyCapability
 from d810.capabilities.machine_engines import MachineRecoveryEnginesCapability
 from d810.analyses.data_flow.concolic import EmulationCapability
 from d810.core import logging
+from d810.core.observability_recon import observe_state_dispatcher_rows
 
 logger = logging.getLogger("D810.passes.unflatten.state_machine")
 
@@ -220,6 +221,18 @@ def _resolve_initial_state(range_evidence, recovery) -> int | None:
     # recovered true prologue state, so it wins when present.
     if map_initial is not None:
         return int(map_initial)
+    # Register-BST soundness: a register-resident state var reaches its
+    # dispatcher through an indirect / decoy re-dispatch spine, and the live range
+    # analyzer can fabricate an UNTRUSTWORTHY initial state for it by selecting a
+    # range leaf while the prologue actually writes a non-leaf pivot. Bridging to
+    # that wrong leaf routes the prologue to the wrong handler
+    # and orphans the true chain -- the function collapses to a bare ``while(1);``.
+    # Distrust the range value here and return None so ``emit_minimal_unflatten`` folds
+    # the initial state from the prologue's OWN state-write (unseeded); when that fold
+    # cannot confirm a state (this shared-merge prologue), its entry-bridge bail leaves
+    # the function intact. Scoped to the register path -> stack goldens are untouched.
+    if getattr(recovery, "state_var_reg", None) is not None:
+        return None
     range_initial = getattr(range_evidence, "initial_state", None)
     if range_initial is not None:
         return int(range_initial)
@@ -301,6 +314,7 @@ def _recovery_from_machine(machine, graph, min_state_constant: int) -> Dispatche
         dispatcher_block_serial=dmap.dispatcher_entry_block,
         condition_chain_block_serials=tuple(sorted(dmap.dispatcher_blocks)),
         state_var_stkoff=dmap.state_var_stkoff,
+        state_var_reg=getattr(dmap, "state_var_reg", None),
         dispatch_map=dmap,
     )
 
@@ -354,13 +368,29 @@ class RecoverDispatcher(PipelinePass):
             analysis_outputs = {"recovered_machine": machine}
         else:
             recovery = recover_dispatcher(
-                context.graph, context.facts, min_state_constant=min_state_constant
+                context.graph,
+                context.facts,
+                min_state_constant=min_state_constant,
+                materialized_indirect_transfers=tuple(
+                    _analysis(context, "materialized_indirect_transfers", ()) or ()
+                ),
             )
             analysis_outputs = {}
         _publish(context, self.name, recovery)
         analysis_outputs[self.name] = recovery
         dispatch_map = getattr(recovery, "dispatch_map", None)
         if dispatch_map is not None:
+            # Emit before LowerStateMachine applies its rewrite plan. The pass
+            # manager invalidates analyses after that mutation, but the diag
+            # event handler buffers this row until the recovery-status snapshot
+            # is captured, preserving the exact pre-rewrite map in SQLite.
+            observe_state_dispatcher_rows(
+                func_ea=int(getattr(context.graph, "func_ea", 0) or 0),
+                maturity=_maturity_label(context),
+                dispatcher_entry_block=int(dispatch_map.dispatcher_entry_block),
+                dispatcher_kind=dispatch_map.router_kind.name,
+                rows=dispatch_map.rows,
+            )
             _publish_observation_evidence(
                 context,
                 collect_state_dispatcher_discovery_fact_observations(
@@ -534,6 +564,12 @@ class LowerStateMachine(PipelinePass):
         transition_result = _analysis(context, "transition_result")
         dispatcher_entry = getattr(recovery, "dispatcher_block_serial", None)
         state_var_stkoff = getattr(recovery, "state_var_stkoff", None)
+        # A register-resident state variable that is never stack-homed has
+        # ``state_var_stkoff is None`` but a
+        # recovered ``state_var_reg``. The primary emit path below opens to EITHER
+        # identity; the partitioned fixpoint reads the register cell from its
+        # already-computed ``out_reg_maps``.
+        state_var_reg = getattr(recovery, "state_var_reg", None)
         live_function = getattr(context.source, "live_source", None)
         range_evidence = _analysis(context, "range_evidence")
 
@@ -549,7 +585,7 @@ class LowerStateMachine(PipelinePass):
         if (
             dispatcher is not None
             and dispatcher_entry is not None
-            and state_var_stkoff is not None
+            and (state_var_stkoff is not None or state_var_reg is not None)
         ):
             # Initial state for the entry bridge: prefer the range evidence
             # for comparison / switch-table dispatchers, fall back to the
@@ -613,10 +649,54 @@ class LowerStateMachine(PipelinePass):
             recover_multi_entry_back_edges = _needs_multi_entry_back_edge_recovery(
                 range_evidence, dmap
             )
+            materialized_indirect_transfers = _analysis(
+                context, "materialized_indirect_transfers", ()
+            ) or ()
+            materialized_state_routes = _analysis(
+                context, "materialized_state_routes", ()
+            ) or ()
+            materialized_handler_entry_eas = _analysis(
+                context, "materialized_handler_entry_eas", {}
+            ) or {}
+            materialized_computed_goto_profile = bool(
+                _analysis(context, "materialized_computed_goto_profile", False)
+            )
+            entry_bridge_evidence = _analysis(
+                context, "residual_entry_bridge_evidence"
+            )
+            logger.info(
+                "unflat computed-goto profile: active=%s transfers=%d routes=%d state_reg=%s",
+                materialized_computed_goto_profile,
+                len(materialized_indirect_transfers),
+                len(materialized_state_routes),
+                state_var_reg,
+            )
+            condition_chain_dag = (
+                range_evidence.decision_dag if range_evidence is not None else None
+            )
+            condition_chain_handlers = (
+                frozenset(int(serial) for serial in dmap.state_to_handler().values())
+                if dmap is not None and condition_chain_dag is not None
+                else frozenset()
+            )
+            dispatcher_region_serials = frozenset(
+                int(block) for block in dmap.dispatcher_blocks
+            ) if dmap is not None else frozenset()
+            if range_evidence is not None:
+                dispatcher_region_serials |= frozenset(
+                    int(block) for block in range_evidence.condition_chain_blocks
+                )
+                if range_evidence.decision_dag is not None:
+                    dispatcher_region_serials |= frozenset(
+                        int(block) for block in range_evidence.decision_dag.nodes
+                    )
             plan = emit_minimal_unflatten(
                 context.graph,
                 dispatcher,
-                state_var_stkoff=int(state_var_stkoff),
+                state_var_stkoff=(
+                    int(state_var_stkoff) if state_var_stkoff is not None else None
+                ),
+                state_var_reg=state_var_reg,
                 dispatcher_entry_serial=int(dispatcher_entry),
                 pre_header_serial=getattr(range_evidence, "pre_header_serial", None),
                 initial_state=initial_state,
@@ -635,6 +715,16 @@ class LowerStateMachine(PipelinePass):
                     and bool(context.project_config.get("exit_path_effect_recovery"))
                 ),
                 recover_multi_entry_back_edges=recover_multi_entry_back_edges,
+                materialized_indirect_transfers=materialized_indirect_transfers,
+                materialized_state_routes=materialized_state_routes,
+                handler_entry_eas_by_serial=materialized_handler_entry_eas,
+                materialized_computed_goto_profile=(
+                    materialized_computed_goto_profile
+                ),
+                condition_chain_dag=condition_chain_dag,
+                condition_chain_handlers=condition_chain_handlers,
+                dispatcher_region_serials=dispatcher_region_serials,
+                entry_bridge_evidence=entry_bridge_evidence,
             )
             plan_metadata = plan.metadata_dict()
             _publish(context, LOWER_STATE_MACHINE_PLAN_METADATA, plan_metadata)

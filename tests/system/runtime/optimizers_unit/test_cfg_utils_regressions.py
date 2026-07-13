@@ -324,6 +324,88 @@ def test_insert_nop_blk_2way_does_not_duplicate_fallthrough_successor(monkeypatc
     assert nop_blk.build_lists_calls == [False]
 
 
+def test_insert_nop_blk_can_force_call_fallthrough_adjacency(monkeypatch):
+    """A future call block can require its helper at ``serial + 1``."""
+    from d810.hexrays.mutation import cfg_mutations
+
+    _hr = cfg_mutations.ida_hexrays
+    monkeypatch.setattr(_hr, "mop_b", 1, raising=False)
+
+    mba = _FakeMBA(qty=20)
+    successor = _FakeBlock(15, mba, succs=[], preds=[10])
+    blk = _FakeBlock(
+        10,
+        mba,
+        succs=[15],
+        preds=[],
+        tail=SimpleNamespace(opcode=_hr.m_call),
+    )
+
+    def _copy_block(src_blk, dest_serial, cpblk_flags=3):
+        assert dest_serial == src_blk.serial + 1
+        nop_blk = _FakeBlock(
+            11,
+            mba,
+            succs=[15],
+            preds=[src_blk.serial],
+            tail=SimpleNamespace(opcode=_hr.m_goto),
+        )
+        nop_blk.head = SimpleNamespace(next=None)
+        # IDA can eagerly rehome both ends of the edge when inserting at
+        # ``serial + 1``. The helper must not append either relation twice.
+        src_blk.succset = _FakeSet([11])
+        successor.predset = _FakeSet([11])
+        return nop_blk
+
+    mba.copy_block = _copy_block  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        cfg_mutations,
+        "insert_goto_instruction",
+        lambda block, target_serial, nop_previous_instruction=False: setattr(
+            block, "goto_target", target_serial
+        ),
+    )
+
+    nop_blk = cfg_mutations.insert_nop_blk(blk, force_adjacent=True)
+
+    assert nop_blk.serial == 11
+    assert list(blk.succset) == [11]
+    assert list(nop_blk.succset) == [15]
+    assert list(successor.predset) == [11]
+
+
+def test_change_1way_call_successor_forces_serial_next_helper(monkeypatch):
+    from d810.hexrays.mutation import cfg_mutations
+
+    insert_calls: list[bool] = []
+    mba = SimpleNamespace(mark_chains_dirty=lambda: None)
+    call_block = SimpleNamespace(mba=mba, nsucc=lambda: 1)
+    nop_block = SimpleNamespace()
+
+    def insert(_block, *, force_adjacent: bool = False):
+        insert_calls.append(bool(force_adjacent))
+        return nop_block
+
+    monkeypatch.setattr(cfg_mutations, "insert_nop_blk", insert)
+    monkeypatch.setattr(
+        cfg_mutations,
+        "insert_goto_instruction",
+        lambda _block, _target, nop_previous_instruction=False: None,
+    )
+    monkeypatch.setattr(
+        cfg_mutations,
+        "change_1way_block_successor",
+        lambda _block, _target, verify=False: True,
+    )
+
+    assert cfg_mutations.change_1way_call_block_successor(
+        call_block,
+        42,
+        verify=False,
+    )
+    assert insert_calls == [True]
+
+
 def test_mba_remove_simple_goto_blocks_preserves_2way_fallthrough_helper(monkeypatch):
     """2-way fallthrough helpers must not be collapsed as ordinary goto chains."""
     from d810.hexrays.mutation import cfg_mutations

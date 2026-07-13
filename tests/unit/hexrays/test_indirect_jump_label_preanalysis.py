@@ -9,7 +9,15 @@ from d810.hexrays.preanalysis.indirect_jump_discovery import (
 from d810.hexrays.preanalysis.indirect_jump_labels import (
     _add_user_cref_with_fallback,
     _add_resolved_state_write_crefs,
+    get_materialized_indirect_transfers,
+    get_terminal_return_carrier_requests,
     plan_indirect_label_materialization,
+    record_materialized_indirect_transfers,
+    record_terminal_return_carrier_requests,
+)
+from d810.analyses.control_flow.materialized_indirect_transfer import (
+    MaterializedIndirectTransfer,
+    TerminalReturnCarrierRequest,
 )
 
 
@@ -53,6 +61,77 @@ def test_indirect_label_materialization_plan_rejects_unbounded_range() -> None:
         )
         is None
     )
+
+
+def test_materialized_transfer_registry_is_function_scoped_and_reset() -> None:
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x401000,
+        source_block_ea=0x400FF0,
+        materialized_anchor_eas=(0x400FFC,),
+        target_eas=(0x402000,),
+    )
+    labels.reset_indirect_materialization()
+
+    record_materialized_indirect_transfers(0x400000, (transfer,))
+
+    assert get_materialized_indirect_transfers(0x400000) == (transfer,)
+    assert get_materialized_indirect_transfers(0x500000) == ()
+
+    second = MaterializedIndirectTransfer(
+        source_jmp_ea=0x401010,
+        source_block_ea=0x401000,
+        materialized_anchor_eas=(0x401010,),
+        target_eas=(0x402100,),
+        resolver_kind="residual_state_route_evidence",
+    )
+    record_materialized_indirect_transfers(0x400000, (second,))
+    assert get_materialized_indirect_transfers(0x400000) == (transfer, second)
+
+    labels.reset_indirect_materialization()
+    assert get_materialized_indirect_transfers(0x400000) == ()
+
+
+def test_terminal_return_carrier_request_registry_is_function_scoped_and_reset() -> None:
+    request = TerminalReturnCarrierRequest(
+        source_handler_ea=0x40C7E5,
+        terminal_target_ea=0x40C898,
+        state_var_reg=20,
+        state_constant=0x19A7218A,
+    )
+    labels.reset_indirect_materialization()
+
+    record_terminal_return_carrier_requests(0x40A560, (request,))
+
+    assert get_terminal_return_carrier_requests(0x40A560) == (request,)
+    assert get_terminal_return_carrier_requests(0x500000) == ()
+    labels.reset_indirect_materialization()
+    assert get_terminal_return_carrier_requests(0x40A560) == ()
+
+
+def test_function_scoped_clear_removes_address_only_profile_evidence() -> None:
+    function_ea = 0x401000
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x401080,
+        source_block_ea=0x401070,
+        materialized_anchor_eas=(0x401078,),
+        target_eas=(0x402000,),
+    )
+    request = TerminalReturnCarrierRequest(
+        source_handler_ea=0x401100,
+        terminal_target_ea=0x402100,
+        state_var_reg=20,
+        state_constant=0x12345678,
+    )
+    labels.reset_indirect_materialization()
+    labels.mark_indirect_dispatcher(function_ea)
+    record_materialized_indirect_transfers(function_ea, (transfer,))
+    record_terminal_return_carrier_requests(function_ea, (request,))
+
+    labels.clear_materialized_indirect_dispatcher_evidence(function_ea)
+
+    assert not labels.is_materialized_indirect_dispatcher(function_ea)
+    assert get_materialized_indirect_transfers(function_ea) == ()
+    assert get_terminal_return_carrier_requests(function_ea) == ()
 
 
 def test_indirect_label_cref_uses_fallback_kind(monkeypatch) -> None:

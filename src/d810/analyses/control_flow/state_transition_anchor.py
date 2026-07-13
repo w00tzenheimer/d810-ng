@@ -53,6 +53,7 @@ from d810.analyses.value_flow.induction_carrier import (
     _canonical_opcode_name,
     _canonical_operands,
     _const_value_from_varnode,
+    _reg_from_varnode,
     _stkoff_from_varnode,
     _value_op_from_instruction,
 )
@@ -94,6 +95,7 @@ class _StateTransitionInsn:
     opcode_name: str
     dstr: str
     dest_stkoff: int | None
+    dest_reg: int | None
     src_l_value: int | None
     operation: ValueOpKind | None
 
@@ -115,6 +117,7 @@ class _StateTransitionInsn:
             opcode_name=_canonical_opcode_name(instruction),
             dstr=str(attrs.get("display_text") or ""),
             dest_stkoff=_stkoff_from_varnode(dest),
+            dest_reg=_reg_from_varnode(dest),
             src_l_value=_const_value_from_varnode(left),
             operation=_value_op_from_instruction(instruction),
         )
@@ -152,12 +155,20 @@ def _iter_state_transition_insns(target: Any) -> Iterable[_StateTransitionInsn]:
 
 
 def _is_state_const_write(insn: _StateTransitionInsn) -> bool:
-    """Return ``True`` if ``insn`` writes a constant into a stack slot."""
+    """Return ``True`` if ``insn`` writes a constant into state storage."""
     if insn.operation is not ValueOpKind.MOVE:
         return False
-    if insn.dest_stkoff is None:
+    if insn.dest_stkoff is None and insn.dest_reg is None:
         return False
     return insn.src_l_value is not None
+
+
+def _state_storage_identity(insn: _StateTransitionInsn) -> tuple[str, int] | None:
+    if insn.dest_stkoff is not None:
+        return ("stk", int(insn.dest_stkoff))
+    if insn.dest_reg is not None:
+        return ("reg", int(insn.dest_reg))
+    return None
 
 
 def _dest_var_signature(insn: _StateTransitionInsn) -> str | None:
@@ -209,10 +220,10 @@ class _SuccessorWalk:
     successor_kind: str
 
 
-def _identify_canonical_state_var_stkoff(
+def _identify_canonical_state_storage(
     instructions: tuple[_StateTransitionInsn, ...],
-) -> int | None:
-    """Return the stkoff with the most state-const writes.
+) -> tuple[str, int] | None:
+    """Return the storage identity with the most state-const writes.
 
     Uses simple frequency: the canonical state variable receives writes
     from every handler (often dozens of them), while byte-table or
@@ -221,28 +232,29 @@ def _identify_canonical_state_var_stkoff(
     that case the function is not a state-machine and there is nothing
     for this collector to observe.
     """
-    counter: Counter[int] = Counter()
+    counter: Counter[tuple[str, int]] = Counter()
     for insn in instructions:
         if not _is_state_const_write(insn):
             continue
-        if insn.dest_stkoff is None:
+        identity = _state_storage_identity(insn)
+        if identity is None:
             continue
-        counter[int(insn.dest_stkoff)] += 1
+        counter[identity] += 1
     if not counter:
         return None
     # Most-written stkoff wins; ties broken by the smaller offset
     # (canonical state vars on x86_64 OLLVM are typically near the top
     # of the local frame).
     sorted_items = sorted(counter.items(), key=lambda item: (-item[1], item[0]))
-    top_stkoff, top_count = sorted_items[0]
+    top_identity, top_count = sorted_items[0]
     if top_count < 2:
         return None
-    return int(top_stkoff)
+    return top_identity
 
 
 def _state_const_at_block(
     instructions_by_block: dict[int, list[_StateTransitionInsn]],
-    canonical_stkoff: int,
+    canonical_storage: tuple[str, int],
     block_serial: int,
 ) -> tuple[int, _StateTransitionInsn] | None:
     """Return ``(state_const, insn)`` for the first canonical state-write
@@ -251,7 +263,7 @@ def _state_const_at_block(
     for insn in instructions_by_block.get(block_serial, ()):
         if not _is_state_const_write(insn):
             continue
-        if int(insn.dest_stkoff or -1) != canonical_stkoff:
+        if _state_storage_identity(insn) != canonical_storage:
             continue
         const = int(insn.src_l_value or 0) & 0xFFFFFFFFFFFFFFFF
         return (const, insn)
@@ -262,7 +274,7 @@ def _walk_transit_chain(
     target: Any,
     source_block_serial: int,
     instructions_by_block: dict[int, list[_StateTransitionInsn]],
-    canonical_stkoff: int,
+    canonical_storage: tuple[str, int],
 ) -> _SuccessorWalk:
     """Walk ``source_block_serial``'s successors looking for the next
     canonical state-var write.
@@ -302,7 +314,7 @@ def _walk_transit_chain(
         visited.add(next_block)
 
         match = _state_const_at_block(
-            instructions_by_block, canonical_stkoff, next_block
+            instructions_by_block, canonical_storage, next_block
         )
         if match is not None:
             return _SuccessorWalk(
@@ -364,8 +376,8 @@ class StateTransitionAnchorFactCollector:
         if not instructions:
             return ()
 
-        canonical_stkoff = _identify_canonical_state_var_stkoff(instructions)
-        if canonical_stkoff is None:
+        canonical_storage = _identify_canonical_state_storage(instructions)
+        if canonical_storage is None:
             return ()
 
         instructions_by_block: dict[int, list[_StateTransitionInsn]] = {}
@@ -384,7 +396,7 @@ class StateTransitionAnchorFactCollector:
         for insn in instructions:
             if not _is_state_const_write(insn):
                 continue
-            if int(insn.dest_stkoff or -1) != canonical_stkoff:
+            if _state_storage_identity(insn) != canonical_storage:
                 continue
 
             source_block = int(insn.block_serial)
@@ -403,7 +415,14 @@ class StateTransitionAnchorFactCollector:
                 target,
                 source_block,
                 instructions_by_block,
-                canonical_stkoff,
+                canonical_storage,
+            )
+
+            storage_kind, storage_offset = canonical_storage
+            storage_key = (
+                f"stkoff=0x{storage_offset:x}"
+                if storage_kind == "stk"
+                else f"reg={storage_offset}"
             )
 
             semantic_key = (
@@ -411,7 +430,7 @@ class StateTransitionAnchorFactCollector:
                 f"source_const=0x{source_const:08x}:"
                 f"insn={int(insn.insn_index)}:"
                 f"ea=0x{int(anchor_ea):x}:"
-                f"stkoff=0x{canonical_stkoff:x}"
+                f"{storage_key}"
             )
 
             payload: dict[str, Any] = {
@@ -423,8 +442,12 @@ class StateTransitionAnchorFactCollector:
                 "source_instruction_ea_hex": (
                     f"0x{int(anchor_ea) & 0xFFFFFFFFFFFFFFFF:016x}"
                 ),
-                "state_var_stkoff": canonical_stkoff,
-                "state_var_stkoff_hex": f"0x{canonical_stkoff:x}",
+                "state_var_stkoff": (
+                    storage_offset if storage_kind == "stk" else None
+                ),
+                "state_var_stkoff_hex": (
+                    f"0x{storage_offset:x}" if storage_kind == "stk" else None
+                ),
                 "successor_block_serial": walk.successor_block,
                 "next_state_const": walk.next_state_const,
                 "next_state_const_hex": (
@@ -436,6 +459,8 @@ class StateTransitionAnchorFactCollector:
                 "successor_kind": walk.successor_kind,
                 "dest_var_signature": _dest_var_signature(insn),
             }
+            if storage_kind == "reg":
+                payload["state_var_reg"] = storage_offset
 
             mop_target = (
                 "?"

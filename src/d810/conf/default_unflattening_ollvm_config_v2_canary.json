@@ -18,7 +18,7 @@
         "maturity": {
           "range": {
             "min": "ir.canonical",
-            "max": "ir.global.optimized"
+            "max": "ir.call.modeled"
           }
         },
         "requires": {
@@ -230,6 +230,33 @@
               "max_nb_diff_opcodes": 6
             }
           }
+        }
+      },
+      {
+        "pass": "materialized-computed-goto-island",
+        "scope": "block",
+        "maturity": {
+          "range": {
+            "min": "ir.canonical",
+            "max": "ir.global.optimized"
+          }
+        },
+        "requires": {
+          "capabilities": [
+            "legacy_flow_rule_adapter"
+          ]
+        },
+        "migration": {
+          "source_config": "default_unflattening_ollvm.json",
+          "source_section": "blk_rules",
+          "source_rule": "MaterializedComputedGotoIslandRule"
+        },
+        "options": {
+          "legacy_rule": "MaterializedComputedGotoIslandRule",
+          "maturities": [
+            "MMAT_LOCOPT",
+            "MMAT_CALLS"
+          ]
         }
       },
       {

@@ -27,6 +27,8 @@ class _Mop:
     s: Any = None
     l: Any = None
     a: Any = None
+    d: Any = None
+    f: Any = None
     helper: str | None = None
     fpc: Any = None
     pair: Any = None
@@ -48,10 +50,17 @@ class _Insn:
 
 
 class _Block:
-    def __init__(self, serial: int, insns: list[_Insn] | None = None):
+    def __init__(
+        self,
+        serial: int,
+        insns: list[_Insn] | None = None,
+        *,
+        flags: int = 0,
+    ):
         self.serial = serial
         self.start = 0x401000
         self.end = 0x402000
+        self.flags = int(flags)
         self._insns = insns or []
         # Wire up linked list
         self.head: _Insn | None = None
@@ -101,6 +110,10 @@ def _mop_n(size: int = 4) -> _Mop:
 
 def _mop_f(size: int = 0) -> _Mop:
     return _Mop(t=int(getattr(_HR, "mop_f", 8)), size=size)
+
+
+def _mop_d(insn: _Insn, size: int = 4) -> _Mop:
+    return _Mop(t=int(_HR.mop_d), size=size, d=insn)
 
 
 def _mop_h(size: int = 0) -> _Mop:
@@ -380,6 +393,109 @@ class TestInsnCallValidity:
         mba = _simple_mba([insn1], [insn2])
         viols = inv.insn_call_validity(mba, phase="test")
         assert inv.MINSN_51264_DUPLICATE_CALL_ADDRS in _codes(viols)
+
+    @pytest.mark.parametrize(
+        "opcode",
+        (int(_HR.m_call), int(_HR.m_icall)),
+        ids=("m_call", "m_icall"),
+    )
+    @pytest.mark.parametrize("nested", (False, True), ids=("top", "nested"))
+    def test_50824_mbl_call_requires_arglist_destination(
+        self,
+        opcode: int,
+        nested: bool,
+    ):
+        call_ea = 0x401020
+        call = _Insn(
+            opcode,
+            ea=call_ea,
+            l=_mop_r(4),
+            d=_mop_r(4),
+        )
+        top = (
+            _Insn(
+                int(_HR.m_mov),
+                ea=0x401010,
+                l=_mop_d(call),
+                d=_mop_r(4),
+            )
+            if nested
+            else call
+        )
+        mba = _MBA(
+            [
+                _Block(
+                    0,
+                    [top],
+                    flags=int(_HR.MBL_CALL),
+                )
+            ]
+        )
+
+        viols = inv.insn_call_validity(mba, phase="test")
+
+        matching = [
+            violation
+            for violation in viols
+            if violation.code == inv.MINSN_50824_CALL_WITHOUT_ARGLIST
+        ]
+        assert len(matching) == 1
+        assert matching[0].insn_ea == call_ea
+        assert matching[0].details["verify_code"] == 50824
+
+    @pytest.mark.parametrize(
+        "opcode",
+        (int(_HR.m_call), int(_HR.m_icall)),
+        ids=("m_call", "m_icall"),
+    )
+    @pytest.mark.parametrize("nested", (False, True), ids=("top", "nested"))
+    def test_50824_accepts_arglist_destination(
+        self,
+        opcode: int,
+        nested: bool,
+    ):
+        call = _Insn(
+            opcode,
+            ea=0x401020,
+            l=_mop_r(4),
+            d=_mop_f(),
+        )
+        top = (
+            _Insn(
+                int(_HR.m_mov),
+                ea=0x401010,
+                l=_mop_d(call),
+                d=_mop_r(4),
+            )
+            if nested
+            else call
+        )
+        mba = _MBA(
+            [
+                _Block(
+                    0,
+                    [top],
+                    flags=int(_HR.MBL_CALL),
+                )
+            ]
+        )
+
+        viols = inv.insn_call_validity(mba, phase="test")
+
+        assert inv.MINSN_50824_CALL_WITHOUT_ARGLIST not in _codes(viols)
+
+    def test_50824_does_not_apply_without_mbl_call(self):
+        call = _Insn(
+            int(_HR.m_call),
+            ea=0x401020,
+            l=_mop_r(4),
+            d=_mop_r(4),
+        )
+        mba = _MBA([_Block(0, [call])])
+
+        viols = inv.insn_call_validity(mba, phase="test")
+
+        assert inv.MINSN_50824_CALL_WITHOUT_ARGLIST not in _codes(viols)
 
 
 # ---------------------------------------------------------------------------

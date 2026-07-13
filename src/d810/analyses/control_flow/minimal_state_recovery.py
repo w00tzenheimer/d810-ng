@@ -57,6 +57,16 @@ from d810.analyses.data_flow.concolic import (
     PrecisionStatus,
     fold_exact,
 )
+from d810.analyses.control_flow.materialized_indirect_transfer import (
+    MaterializedIndirectTransfer,
+    MaterializedStateRoute,
+    lookup_materialized_state_route,
+    lookup_state_keyed_transfer_target,
+    lookup_singleton_transfer_target,
+    route_materialized_transfer_chain,
+    route_transfer_target_through_condition_chain,
+)
+from d810.analyses.control_flow.route_predicate import DecisionDag
 from d810.capabilities.providers import get_condition_chain_walkers
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot, OperandKind
 from d810.ir.insn_projection import (
@@ -124,6 +134,8 @@ __all__ = [
     "TransitionArm",
     "HandlerTransition",
     "recover_handler_transitions",
+    "resolve_materialized_handler_exit_states",
+    "resolve_materialized_handler_transition_targets",
     "StateWriteTransition",
     "TransitionProof",
     "transition_uses_terminal_stack_alias_guard",
@@ -332,6 +344,362 @@ class StateWriteTransition:
     proof: "TransitionProof | None" = None  # typed provenance (d81-t9ok); the
                                             # authoritative fixpoint emitter attaches
                                             # it, None = unattributed (legacy fold)
+
+
+def _source_local_constant_register_write(
+    flow_graph: FlowGraph,
+    source_serial: int,
+    state_var_reg: int | None,
+) -> int | None:
+    """Return the final source-local immediate state-register write, if exact."""
+    if state_var_reg is None:
+        return None
+    block = flow_graph.get_block(int(source_serial))
+    if block is None:
+        return None
+    result: int | None = None
+    for instruction in block.insn_snapshots:
+        left, _right, destination = operand_storages(instruction)
+        if _reg_of(destination) != int(state_var_reg):
+            continue
+        value = _number_value(left) if instruction.kind is InsnKind.MOV else None
+        result = int(value) & 0xFFFFFFFF if value is not None else None
+    return result
+
+
+def resolve_materialized_indirect_transfer_targets(
+    transitions: tuple[StateWriteTransition, ...],
+    flow_graph: FlowGraph,
+    dispatcher,
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+    *,
+    materialized_state_routes: tuple[MaterializedStateRoute, ...] = (),
+    condition_chain_dag: DecisionDag | None = None,
+    condition_chain_handlers: frozenset[int] = frozenset(),
+    state_var_reg: int | None = None,
+) -> tuple[StateWriteTransition, ...]:
+    """Reconnect concrete router misses using resolver-materialization proof.
+
+    Exact dispatcher routes (including default/STOP rows) remain authoritative.
+    Only a concrete state whose router lookup is absent can be upgraded, and
+    only when a singleton resolver target is anchored in the transition source
+    and maps uniquely onto this FlowGraph.  Every other transition is returned
+    byte-identically, including unresolved and terminal transitions.
+    """
+    if not transfers and not materialized_state_routes:
+        return transitions
+    comparison_evidence_active = bool(condition_chain_handlers)
+    resolved: list[StateWriteTransition] = []
+    for transition in transitions:
+        route_sources = (
+            (int(transition.via_block), int(transition.write_block))
+            if transition.via_block is not None
+            else (int(transition.write_block),)
+        )
+        source_local_terminal_routes: set[tuple[int, int]] = set()
+        for route in materialized_state_routes:
+            if (
+                route.proof_kind != "terminal_state_route"
+                or int(route.source_block_serial) not in route_sources
+            ):
+                continue
+            state_write = _source_local_constant_register_write(
+                flow_graph,
+                int(route.source_block_serial),
+                state_var_reg,
+            )
+            if (
+                state_write is None
+                or state_write != (int(route.state_constant) & 0xFFFFFFFF)
+            ):
+                continue
+            target = flow_graph.get_block(int(route.target_handler_serial))
+            if target is not None and target.nsucc == 0:
+                source_local_terminal_routes.add(
+                    (
+                        state_write,
+                        int(route.target_handler_serial),
+                    )
+                )
+        if len(source_local_terminal_routes) == 1:
+            terminal_state, terminal_target = next(
+                iter(source_local_terminal_routes)
+            )
+            resolved.append(
+                replace(
+                    transition,
+                    next_state=int(terminal_state),
+                    target_handler=int(terminal_target),
+                    is_return=True,
+                    proof=TransitionProof(
+                        _FIXPOINT_ORACLE,
+                        "computed_goto_exact_terminal_delivery",
+                        True,
+                        reason="source_local_terminal_state_write",
+                    ),
+                )
+            )
+            continue
+        state = transition.next_state
+        explicit_terminal_targets: set[int] = set()
+        if state is not None:
+            normalized_state = int(state) & 0xFFFFFFFF
+            for route in materialized_state_routes:
+                if (
+                    route.proof_kind != "terminal_state_route"
+                    or int(route.source_block_serial) not in route_sources
+                    or (int(route.state_constant) & 0xFFFFFFFF)
+                    != normalized_state
+                ):
+                    continue
+                target = flow_graph.get_block(int(route.target_handler_serial))
+                if target is not None and target.nsucc == 0:
+                    explicit_terminal_targets.add(
+                        int(route.target_handler_serial)
+                    )
+        if len(explicit_terminal_targets) == 1:
+            resolved.append(
+                replace(
+                    transition,
+                    target_handler=next(iter(explicit_terminal_targets)),
+                    is_return=True,
+                    proof=TransitionProof(
+                        _FIXPOINT_ORACLE,
+                        "computed_goto_exact_terminal_delivery",
+                        True,
+                        reason="explicit_source_state_terminal_route",
+                    ),
+                )
+            )
+            continue
+        default = dispatcher.default_target
+        routed = (
+            dispatcher.lookup(int(state) & 0xFFFFFFFF)
+            if state is not None
+            else None
+        )
+        exact_equality_target = None
+        dispatcher_has_exact_point = False
+        if state is not None:
+            try:
+                routed_row = dispatcher.lookup_row(int(state) & 0xFFFFFFFF)
+            except AttributeError:
+                routed_row = None
+            dispatcher_has_exact_point = bool(
+                routed_row is not None
+                and int(routed_row.hi) == int(routed_row.lo) + 1
+            )
+            exact_equality_candidates = {
+                int(target)
+                for transfer in transfers
+                if transfer.resolver_kind == "static_equality_route"
+                and (
+                    target := lookup_state_keyed_transfer_target(
+                        flow_graph,
+                        transfer,
+                        int(state),
+                        state_var_reg=state_var_reg,
+                    )
+                )
+                is not None
+            }
+            if len(exact_equality_candidates) == 1:
+                exact_equality_target = next(iter(exact_equality_candidates))
+        exact_terminal_deliveries: set[int] = set()
+        if state is not None:
+            for transfer in transfers:
+                if transfer.resolver_kind != "static_fixpoint":
+                    continue
+                target = lookup_state_keyed_transfer_target(
+                    flow_graph,
+                    transfer,
+                    int(state),
+                    state_var_reg=state_var_reg,
+                )
+                if target is None:
+                    continue
+                target_block = flow_graph.get_block(int(target))
+                if target_block is not None and target_block.nsucc == 0:
+                    exact_terminal_deliveries.add(int(target))
+        if len(exact_terminal_deliveries) == 1:
+            resolved.append(
+                replace(
+                    transition,
+                    target_handler=next(iter(exact_terminal_deliveries)),
+                    is_return=True,
+                    proof=TransitionProof(
+                        _FIXPOINT_ORACLE,
+                        "computed_goto_exact_terminal_delivery",
+                        True,
+                        reason="static_patch_plan_selects_exact_terminal_arm",
+                    ),
+                )
+            )
+            continue
+        terminal_router_miss = bool(
+            transition.is_return
+            and (
+                transition.target_handler is None
+                or (
+                    default is not None
+                    and int(transition.target_handler) == int(default)
+                )
+            )
+        )
+        has_exact_handler_route = (
+            routed is not None
+            and (default is None or int(routed) != int(default))
+            and (
+                not comparison_evidence_active
+                or int(routed) in condition_chain_handlers
+            )
+        )
+        is_default_terminal = (
+            transition.target_handler is not None
+            and default is not None
+            and int(transition.target_handler) == int(default)
+            and transition.is_return
+        )
+        if (
+            state is None
+            or (
+                transition.target_handler is not None
+                and not is_default_terminal
+                and (
+                    not comparison_evidence_active
+                    or int(transition.target_handler) in condition_chain_handlers
+                )
+            )
+            or not transition.is_return
+            or has_exact_handler_route
+        ):
+            resolved.append(transition)
+            continue
+        exact_state_target = None
+        for route_source in route_sources:
+            exact_state_target = lookup_materialized_state_route(
+                materialized_state_routes,
+                source_block_serial=route_source,
+                state_constant=int(state),
+                handler_serials=condition_chain_handlers,
+            )
+            if exact_state_target is not None:
+                break
+        if exact_state_target is not None:
+            resolved.append(
+                replace(
+                    transition,
+                    target_handler=int(exact_state_target),
+                    is_return=False,
+                    proof=TransitionProof(
+                        _FIXPOINT_ORACLE,
+                        "computed_goto_state_route",
+                        True,
+                        reason="resolver_proven_materialized_state_route",
+                    ),
+                )
+            )
+            continue
+        # A source-keyed MaterializedStateRoute is stronger than a global
+        # state-keyed equality leaf: it proves the route for this exact state
+        # write partition.  Consult the equality leaf only after that stronger
+        # evidence is absent, and only to rescue a transition already classified
+        # as terminal/unresolved.  Healthy coarse-router transitions remain
+        # authoritative.
+        if (
+            exact_equality_target is not None
+            and terminal_router_miss
+            and not dispatcher_has_exact_point
+        ):
+            resolved.append(
+                replace(
+                    transition,
+                    target_handler=int(exact_equality_target),
+                    is_return=False,
+                    proof=TransitionProof(
+                        _FIXPOINT_ORACLE,
+                        "computed_goto_exact_equality_route",
+                        True,
+                        reason="resolver_proven_exact_state_target_for_terminal_miss",
+                    ),
+                )
+            )
+            continue
+        if not transfers:
+            resolved.append(transition)
+            continue
+        if comparison_evidence_active:
+            chain_target = route_materialized_transfer_chain(
+                flow_graph,
+                transfers,
+                start_block=int(transition.write_block),
+                state_constant=int(state),
+                state_var_reg=state_var_reg,
+                handler_serials=condition_chain_handlers,
+            )
+            if chain_target is not None:
+                resolved.append(
+                    replace(
+                        transition,
+                        target_handler=int(chain_target),
+                        is_return=False,
+                        proof=TransitionProof(
+                            _FIXPOINT_ORACLE,
+                            "computed_goto_logical_cfg",
+                            True,
+                            reason="resolver_proven_materialized_transfer_chain",
+                        ),
+                    )
+                )
+                continue
+        candidates: set[int] = set()
+        for transfer in transfers:
+            target = lookup_state_keyed_transfer_target(
+                flow_graph,
+                transfer,
+                int(state),
+                state_var_reg=state_var_reg,
+            )
+            if target is None:
+                target = lookup_singleton_transfer_target(
+                    flow_graph,
+                    transfer,
+                    int(transition.write_block),
+                    transition.via_block,
+                )
+            if target is None:
+                continue
+            if comparison_evidence_active:
+                if condition_chain_dag is not None:
+                    target = route_transfer_target_through_condition_chain(
+                        flow_graph,
+                        condition_chain_dag,
+                        int(target),
+                        int(state),
+                        condition_chain_handlers,
+                    )
+                elif int(target) not in condition_chain_handlers:
+                    target = None
+            if target is not None:
+                candidates.add(int(target))
+        if len(candidates) != 1:
+            resolved.append(transition)
+            continue
+        target = next(iter(candidates))
+        resolved.append(
+            replace(
+                transition,
+                target_handler=int(target),
+                is_return=False,
+                proof=TransitionProof(
+                    _FIXPOINT_ORACLE,
+                    "computed_goto_target",
+                    True,
+                    reason="resolver_proven_materialized_indirect_target",
+                ),
+            )
+        )
+    return tuple(resolved)
 
 
 def transition_uses_terminal_stack_alias_guard(transition: object) -> bool:
@@ -881,6 +1249,38 @@ class _ResolverContext:
     state_cell: object | None
     classify: object
     arm_of: object
+    #: Register id of a register-resident state variable. When set, the ranked
+    #: providers read the folded next-state from the fixpoint's REGISTER map
+    #: (``fp.out_reg_maps[serial][state_var_reg]``) instead of the stack map
+    #: (``fp.out_stk_maps[serial][read_key]``). ``None`` -> the stack path is
+    #: byte-identical (the register map is simply never consulted).
+    state_var_reg: int | None = None
+
+
+def _folded_state_from_maps(
+    ctx: "_ResolverContext",
+    out_stk: dict,
+    out_reg: dict,
+) -> int | None:
+    """Read the state-var's folded constant from a (stk, reg) map pair.
+
+    d81-3rja: a register-resident state variable (``ctx.state_var_reg`` set) reads
+    the folded next-state from the register map; the stack-resident default reads
+    the stack map keyed by ``ctx.read_key`` (byte-identical to the pre-change
+    ``out_stk.get(ctx.read_key)``).
+    """
+    if ctx.state_var_reg is not None:
+        return out_reg.get(int(ctx.state_var_reg))
+    return out_stk.get(ctx.read_key)
+
+
+def _folded_state_at(ctx: "_ResolverContext", serial: int) -> int | None:
+    """Read the state-var's converged OUT constant at ``serial`` (reg or stack)."""
+    return _folded_state_from_maps(
+        ctx,
+        ctx.fp.out_stk_maps.get(serial, {}),
+        ctx.fp.out_reg_maps.get(serial, {}),
+    )
 
 
 def _reg_of(storage: Varnode | WeakStackSlot | None) -> int | None:
@@ -1307,7 +1707,7 @@ def _provider_global_fold(ctx: _ResolverContext, pred, block, arm):
     single value, redirect the back-edge itself.  ``None`` -> defer to the next
     provider (the abstract per-edge fold partitions by immediate predecessor).
     """
-    value = ctx.fp.out_stk_maps.get(pred, {}).get(ctx.read_key)
+    value = _folded_state_at(ctx, pred)
     if value is None:
         return None
     state = int(value) & 0xFFFFFFFF
@@ -1334,7 +1734,7 @@ def _abstract_partition_states(ctx: _ResolverContext, block):
         ip_block = ctx.flow_graph.get_block(ip)
         if ip_block is None:
             return edge_states, True
-        out_stk, _ = _transfer_snapshot_constant_block(
+        out_stk, out_reg = _transfer_snapshot_constant_block(
             block,
             dict(ctx.fp.out_stk_maps.get(ip, {})),
             dict(ctx.fp.out_reg_maps.get(ip, {})),
@@ -1342,7 +1742,7 @@ def _abstract_partition_states(ctx: _ResolverContext, block):
             state_var_gaddr=ctx.state_var_gaddr,
             foldable_global_reads=ctx.foldable_global_reads,
         )
-        ev = out_stk.get(ctx.read_key)
+        ev = _folded_state_from_maps(ctx, out_stk, out_reg)
         if ev is None:
             return edge_states, True
         edge_states[int(ip)] = int(ev) & 0xFFFFFFFF
@@ -1608,7 +2008,7 @@ def _resolve_next_state(ctx: _ResolverContext, pred, block, arm):
 def recover_state_write_transitions_via_partitioned_fixpoint(
     flow_graph,
     dispatcher,
-    state_var_stkoff: int,
+    state_var_stkoff: int | None,
     *,
     dispatcher_entry_serial: int,
     recover_terminal_tail: bool = False,
@@ -1616,6 +2016,7 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
     emu: "EmulationCapability | None" = None,
     live_block_for: "object | None" = None,
     include_multi_entry_back_edges: bool = False,
+    state_var_reg: int | None = None,
 ) -> tuple[StateWriteTransition, ...]:
     """B2 shadow: predecessor-partitioned multi-cell fold -> the Case-2 ``via_block`` split.
 
@@ -1646,13 +2047,26 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
     ``_EMULATION_ORACLE``.  The consult fires ONLY at the genuine ⊥ gap -- it never
     overrides a fixpoint-resolved transition.
     """
-    state_cell = LocationRef.stack(int(state_var_stkoff), 8) if emu is not None else None
+    state_cell = (
+        LocationRef.stack(int(state_var_stkoff), 8)
+        if emu is not None and state_var_stkoff is not None
+        else None
+    )
     disp = int(dispatcher_entry_serial)
     disp_block = flow_graph.get_block(disp)
     if disp_block is None:
         return ()
     default = dispatcher.default_target
-    effective_stkoff = _resolve_state_var_alias(flow_graph, disp, int(state_var_stkoff))
+    # d81-3rja: a register-resident state var carries no stack offset. The
+    # constant fixpoint tracks it in ``out_reg_maps`` regardless; the providers
+    # read it via ``ctx.state_var_reg``. Use a sentinel stack offset (-1) that
+    # matches no real stack write so the stack-keyed alias / seeded / global-fold
+    # fallbacks stay inert (they contribute nothing for the register path, which
+    # is resolved by the reg-aware ``_provider_global_fold`` / abstract partition).
+    if state_var_stkoff is not None:
+        effective_stkoff = _resolve_state_var_alias(flow_graph, disp, int(state_var_stkoff))
+    else:
+        effective_stkoff = -1
     # A handler can write its NEXT state through a global it reads (Approov:
     # ``state = (qword |= 0xF6A20)`` where ``qword`` is a zero-initialised ``.data``
     # global).  ``state_var_gaddr`` flags the rarer case where a global IS the
@@ -1745,6 +2159,7 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
         state_cell=state_cell,
         classify=_classify,
         arm_of=_arm,
+        state_var_reg=state_var_reg,
     )
     out: list[StateWriteTransition] = []
     visited_sources: set[int] = set()
@@ -1860,11 +2275,27 @@ def _recover_multi_entry_state_write_transitions(
         if not _reaches_dispatcher_entry(flow_graph, succ, disp):
             continue
 
-        for edge in _resolve_next_state(ctx, serial, block, None):
-            if edge.next_state is None or edge.target_handler is None:
-                continue
-            if edge.is_return:
-                continue
+        resolved_edges = tuple(
+            edge
+            for edge in _resolve_next_state(ctx, serial, block, None)
+            if edge.next_state is not None
+            and edge.target_handler is not None
+            and not edge.is_return
+        )
+        # A partitioned result names distinct incoming predecessor edges.  This
+        # scan only has one physical ``serial -> succ`` edge to rewrite, so
+        # collapsing those routes onto it would emit competing redirects and
+        # arbitrarily erase one arm.  The predecessor blocks are scanned in
+        # their own iterations and retain their precise ``pred -> serial``
+        # routes; abstain from this coarser corridor edge.
+        routes = {
+            (int(edge.next_state), int(edge.target_handler))
+            for edge in resolved_edges
+        }
+        if len(routes) != 1:
+            continue
+
+        for edge in resolved_edges[:1]:
             target = int(edge.target_handler)
             if target in {serial, succ}:
                 continue
@@ -2205,6 +2636,7 @@ class TransitionArm:
     write_block: int | None      # block whose state-var write produced next_state
     exit_block: int | None       # last block of the scanned path (the boundary)
     ordered_path: tuple[int, ...] = ()  # handler-local blocks visited (entry..exit)
+    source_keyed_block: int | None = None  # exact route owner in this snapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -2244,8 +2676,10 @@ def _scan_handler(
     flow_graph,
     entry: int,
     *,
-    state_var_stkoff: int,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None = None,
     dispatcher_entry_serial: int | None,
+    dispatcher_region_serials: frozenset[int] = frozenset(),
     handler_entries: set[int],
     max_depth: int = _MAX_CORRIDOR_DEPTH,
     initial_stk: dict[int, int] | None = None,
@@ -2262,6 +2696,13 @@ def _scan_handler(
     """
 
     results: list[tuple[int | None, int | None, tuple[int, ...]]] = []
+    effective_stkoff = int(state_var_stkoff) if state_var_stkoff is not None else -1
+
+    def _current_state(stk: dict, reg: dict) -> int | None:
+        if state_var_reg is not None:
+            return reg.get(int(state_var_reg))
+        return stk.get(effective_stkoff)
+
     # stack frames: (block, stk_map, reg_map, branch_block, visited, depth, path)
     stack: list[tuple[int, dict, dict, int | None, frozenset[int], int, tuple[int, ...]]] = [
         (
@@ -2279,19 +2720,21 @@ def _scan_handler(
         blk_serial, stk, reg, branch, visited, depth, path = stack.pop()
         block = flow_graph.get_block(blk_serial)
         if block is None:
-            results.append((stk.get(state_var_stkoff), branch, path))
+            results.append((_current_state(stk, reg), branch, path))
             continue
 
         # Fold this block's state-var write into the carried const env.
         nstk, nreg = _transfer_snapshot_constant_block(
-            block, dict(stk), dict(reg), state_var_stkoff
+            block, dict(stk), dict(reg), effective_stkoff
         )
-        running_state = nstk.get(state_var_stkoff)
+        running_state = _current_state(nstk, nreg)
 
         succs = _concrete_successors(block, nstk, nreg)
 
         def _is_boundary_succ(s: int) -> bool:
             if dispatcher_entry_serial is not None and s == int(dispatcher_entry_serial):
+                return True
+            if s in dispatcher_region_serials:
                 return True
             if s in handler_entries and s != int(entry):
                 return True
@@ -2379,9 +2822,12 @@ def _classify_arm(
 def recover_handler_transitions(
     flow_graph,
     dispatcher,
-    state_var_stkoff: int,
+    state_var_stkoff: int | None,
     *,
+    state_var_reg: int | None = None,
     dispatcher_entry_serial: int | None = None,
+    dispatcher_region_serials: frozenset[int] = frozenset(),
+    authoritative_handler_serials: frozenset[int] = frozenset(),
     max_depth: int = _MAX_CORRIDOR_DEPTH,
 ) -> tuple[HandlerTransition, ...]:
     """Recover each handler's outgoing transition(s) via the minimal model.
@@ -2389,18 +2835,38 @@ def recover_handler_transitions(
     Args:
         flow_graph: a :class:`d810.ir.flowgraph.FlowGraph` snapshot.
         dispatcher: an :class:`IntervalDispatcher` (state value -> handler block).
-        state_var_stkoff: the dispatcher state variable's stack offset.
+        state_var_stkoff: the dispatcher state variable's stack offset, when
+            state is stack-resident.
+        state_var_reg: the dispatcher state variable's register id, when it is
+            register-resident.
         dispatcher_entry_serial: the dispatcher block the handlers loop back to;
             used as a scan boundary.  Falls back to the dispatcher's most-routed
             block when not supplied is intentionally NOT done — callers should
             pass it.
+        dispatcher_region_serials: every comparison/router block in the same
+            dispatcher.  A computed-goto BST may have several live re-entry
+            nodes, so all of them are handler-scan boundaries; otherwise the
+            scan crosses the router and attributes the next handler's write to
+            the current handler.
+        authoritative_handler_serials: exact equality/resolver handler entries.
+            When supplied, these replace coarse interval-leaf targets as scan
+            boundaries; a range partition may end at handler glue that must
+            remain inside the current handler corridor.
         max_depth: corridor-scan bound.
 
     Returns:
         One :class:`HandlerTransition` per handler block, ordered by serial.
     """
 
-    handler_entries = _handler_entries(dispatcher)
+    if state_var_stkoff is None and state_var_reg is None:
+        return ()
+
+    effective_stkoff = int(state_var_stkoff) if state_var_stkoff is not None else -1
+    handler_entries = (
+        {int(serial) for serial in authoritative_handler_serials}
+        if authoritative_handler_serials
+        else _handler_entries(dispatcher)
+    )
     states_by_handler = _states_by_handler(dispatcher)
     seed_stk: dict[int, int] = {}
     seed_reg: dict[int, int] = {}
@@ -2411,17 +2877,20 @@ def recover_handler_transitions(
                 dispatcher_entry,
                 {},
                 {},
-                int(state_var_stkoff),
+                effective_stkoff,
             )
-            seed_stk.pop(int(state_var_stkoff), None)
+            if state_var_stkoff is not None:
+                seed_stk.pop(effective_stkoff, None)
     results: list[HandlerTransition] = []
 
     for handler in sorted(handler_entries):
         paths = _scan_handler(
             flow_graph,
             handler,
-            state_var_stkoff=int(state_var_stkoff),
+            state_var_stkoff=state_var_stkoff,
+            state_var_reg=state_var_reg,
             dispatcher_entry_serial=dispatcher_entry_serial,
+            dispatcher_region_serials=dispatcher_region_serials,
             handler_entries=handler_entries,
             max_depth=max_depth,
             initial_stk=seed_stk,
@@ -2429,9 +2898,24 @@ def recover_handler_transitions(
         )
         # Dedup arms by next_state: identical next-states on multiple paths are
         # the same edge (a degenerate branch), not a conditional.
-        seen: dict[int | None, TransitionArm] = {}
+        seen: dict[object, TransitionArm] = {}
         for next_state, branch_block, ordered_path in paths:
-            key = (int(next_state) & 0xFFFFFFFF) if next_state is not None else None
+            if next_state is not None:
+                key: object = int(next_state) & 0xFFFFFFFF
+            elif branch_block is not None:
+                try:
+                    branch_index = ordered_path.index(int(branch_block))
+                except ValueError:
+                    branch_index = -1
+                branch_successor = (
+                    int(ordered_path[branch_index + 1])
+                    if branch_index >= 0
+                    and branch_index + 1 < len(ordered_path)
+                    else None
+                )
+                key = (None, int(branch_block), branch_successor)
+            else:
+                key = None
             if key in seen:
                 continue
             seen[key] = _classify_arm(
@@ -2465,3 +2949,236 @@ def recover_handler_transitions(
         )
 
     return tuple(results)
+
+
+def resolve_materialized_handler_transition_targets(
+    transitions: tuple[HandlerTransition, ...],
+    routes: tuple[MaterializedStateRoute, ...],
+    handler_serials: frozenset[int],
+    *,
+    dispatcher_block_serials: frozenset[int] = frozenset(),
+) -> tuple[HandlerTransition, ...]:
+    """Override coarse handler-arm routes with exact snapshot-local evidence.
+
+    A :class:`MaterializedStateRoute` identifies a state-write block and its
+    concrete-dispatch target in the *same* FlowGraph snapshot.  Accept it only
+    when ``(source block, state)`` identifies exactly one handler arm globally,
+    the target is an authoritative handler, and all matching facts agree.  A
+    recovered non-router handler target is already stronger than this fallback
+    evidence and is preserved; only unresolved/return arms or targets still in
+    the dispatcher region may be refined to a different handler.
+    """
+    if not routes or not handler_serials:
+        return transitions
+    exact_owner_matches: dict[tuple[int, int], set[tuple[int, int]]] = {}
+    fallback_matches: dict[tuple[int, int], set[tuple[int, int]]] = {}
+    for route in routes:
+        target = int(route.target_handler_serial)
+        if target not in handler_serials:
+            continue
+        state = int(route.state_constant) & 0xFFFFFFFF
+        source_handler = route.source_handler_serial
+        if (
+            source_handler is not None
+            and int(route.source_block_serial) == int(source_handler)
+            and not route.handler_exit_proven
+        ):
+            continue
+        matches = [
+            (transition_index, arm_index)
+            for transition_index, transition in enumerate(transitions)
+            for arm_index, arm in enumerate(transition.arms)
+            if arm.next_state is not None
+            and (int(arm.next_state) & 0xFFFFFFFF) == state
+            and int(route.source_block_serial) in arm.ordered_path
+            and (
+                source_handler is None
+                or int(transition.handler) == int(source_handler)
+            )
+        ]
+        if len(matches) == 1:
+            destination = (
+                exact_owner_matches
+                if source_handler is not None
+                else fallback_matches
+            )
+            destination.setdefault(matches[0], set()).add(
+                (target, int(route.source_block_serial))
+            )
+
+    resolved: list[HandlerTransition] = []
+    for transition_index, transition in enumerate(transitions):
+        arms: list[TransitionArm] = []
+        for arm_index, arm in enumerate(transition.arms):
+            key = (transition_index, arm_index)
+            exact_owner = key in exact_owner_matches
+            facts = (
+                exact_owner_matches[key]
+                if exact_owner
+                else fallback_matches.get(key, set())
+            )
+            corroborated_exact_owner = bool(
+                exact_owner
+                and len(facts) == 1
+                and fallback_matches.get(key, set()) == facts
+            )
+            if len(facts) != 1:
+                arms.append(arm)
+                continue
+            target, source = next(iter(facts))
+            if (
+                arm.target_handler is not None
+                and not arm.is_return
+            ):
+                existing_target = int(arm.target_handler)
+                if (
+                    existing_target != int(target)
+                    and existing_target not in dispatcher_block_serials
+                    and not corroborated_exact_owner
+                ):
+                    arms.append(
+                        replace(arm, source_keyed_block=int(source))
+                        if exact_owner
+                        else arm
+                    )
+                    continue
+                if existing_target == int(target) and not exact_owner:
+                    arms.append(arm)
+                    continue
+            arms.append(
+                replace(
+                    arm,
+                    target_handler=int(target),
+                    is_return=False,
+                    source_keyed_block=int(source),
+                )
+            )
+        resolved.append(replace(transition, arms=tuple(arms)))
+    return tuple(resolved)
+
+
+def resolve_materialized_handler_exit_states(
+    transitions: tuple[HandlerTransition, ...],
+    routes: tuple[MaterializedStateRoute, ...],
+    handler_serials: frozenset[int],
+) -> tuple[HandlerTransition, ...]:
+    """Recover a handler-exit state write dropped from live microcode.
+
+    Handler replay publishes an exact snapshot-local route even when Hex-Rays
+    removed the state-register write.  Consume it only when one route source
+    identifies one unresolved arm globally and its target is authoritative.
+    An explicit terminal delivery outranks an ordinary replay route from the
+    same source: the replay can inherit the incoming state after Hex-Rays folds
+    the terminal state write, while the terminal route names the exact native
+    endpoint.
+    """
+    if not routes or not handler_serials:
+        return transitions
+    conditional_arm_candidates: dict[
+        tuple[int, int], set[tuple[int, int, int]]
+    ] = {}
+    terminal_candidates: dict[
+        tuple[int, int], set[tuple[int, int, int]]
+    ] = {}
+    owned_candidates: dict[tuple[int, int], set[tuple[int, int, int]]] = {}
+    fallback_candidates: dict[tuple[int, int], set[tuple[int, int, int]]] = {}
+    for route in routes:
+        target = int(route.target_handler_serial)
+        if target not in handler_serials:
+            continue
+        source = int(route.source_block_serial)
+        source_handler = route.source_handler_serial
+        matches: list[tuple[int, int]] = []
+        for transition_index, transition in enumerate(transitions):
+            if (
+                source_handler is not None
+                and int(transition.handler) != int(source_handler)
+            ):
+                continue
+            for arm_index, arm in enumerate(transition.arms):
+                missing_state_on_path = (
+                    arm.next_state is None and source in arm.ordered_path
+                )
+                exact_exit_owner = (
+                    arm.exit_block is not None
+                    and source == int(arm.exit_block)
+                    and arm.target_handler is not None
+                    and int(arm.target_handler) == int(transition.handler)
+                )
+                handler_owned_self_loop = (
+                    bool(route.handler_exit_proven)
+                    and source_handler is not None
+                    and source == int(source_handler)
+                    and source == int(transition.handler)
+                    and source in arm.ordered_path
+                    and arm.next_state is not None
+                    and (int(arm.next_state) & 0xFFFFFFFF)
+                    in {
+                        int(state) & 0xFFFFFFFF
+                        for state in transition.states
+                    }
+                    and arm.target_handler is not None
+                    and int(arm.target_handler) == int(transition.handler)
+                    and not arm.is_return
+                )
+                if (
+                    missing_state_on_path
+                    or exact_exit_owner
+                    or handler_owned_self_loop
+                ):
+                    matches.append((transition_index, arm_index))
+        if len(matches) == 1:
+            destination = (
+                terminal_candidates
+                if route.proof_kind == "terminal_state_route"
+                else (
+                    conditional_arm_candidates
+                    if route.proof_kind == "conditional_arm"
+                    else (
+                        owned_candidates
+                        if source_handler is not None
+                        else fallback_candidates
+                    )
+                )
+            )
+            destination.setdefault(matches[0], set()).add(
+                (
+                    int(route.state_constant) & 0xFFFFFFFF,
+                    target,
+                    source,
+                )
+            )
+
+    resolved: list[HandlerTransition] = []
+    for transition_index, transition in enumerate(transitions):
+        arms: list[TransitionArm] = []
+        for arm_index, arm in enumerate(transition.arms):
+            key = (transition_index, arm_index)
+            facts = (
+                terminal_candidates[key]
+                if key in terminal_candidates
+                else (
+                    conditional_arm_candidates[key]
+                    if key in conditional_arm_candidates
+                    else (
+                        owned_candidates[key]
+                        if key in owned_candidates
+                        else fallback_candidates.get(key, set())
+                    )
+                )
+            )
+            if len(facts) != 1:
+                arms.append(arm)
+                continue
+            state, target, source = next(iter(facts))
+            arms.append(
+                replace(
+                    arm,
+                    next_state=int(state),
+                    target_handler=int(target),
+                    is_return=key in terminal_candidates,
+                    source_keyed_block=int(source),
+                )
+            )
+        resolved.append(replace(transition, arms=tuple(arms)))
+    return tuple(resolved)

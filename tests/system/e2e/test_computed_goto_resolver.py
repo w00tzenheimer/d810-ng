@@ -15,7 +15,9 @@ idalib or the lab fixture DLL is unavailable.
 """
 from __future__ import annotations
 
+import os
 import pathlib
+import re
 
 import pytest
 
@@ -35,7 +37,7 @@ def _clear_ida_sidecars() -> None:
 
 
 @pytest.mark.skipif(not _FIXTURE.exists(), reason="restructuring_lab.dll not built")
-def test_computed_goto_dispatcher_unflattens() -> None:
+def test_computed_goto_dispatcher_unflattens(monkeypatch) -> None:
     _clear_ida_sidecars()
     assert idapro.open_database(str(_FIXTURE), True) == 0
     try:
@@ -58,14 +60,31 @@ def test_computed_goto_dispatcher_unflattens() -> None:
         # start d810 with the unflattener config + install the computed-goto pass
         import d810.headless as headless
 
+        # Under pytest, tests/system/conftest.py already scans+populates the
+        # entire d810 package (Scanner.scan) at collection time. headless.configure()
+        # normally re-triggers load_optimizer_registries() -> reload_package(),
+        # which does a FULL importlib.reload() of every d810.* submodule. That
+        # mints brand-new class objects (UnflatteningPlanner, etc.) while every
+        # already-collected test module still holds the OLD class references
+        # bound at collection time, causing `is`-identity assertions to fail
+        # cascading through the rest of the system suite when it runs after
+        # this test. Skip the redundant/destructive reload under pytest; it is
+        # only needed for cold standalone idalib scripts (see __main__ below)
+        # that never went through the system conftest's Scanner.scan().
+        if "PYTEST_CURRENT_TEST" in os.environ:
+            monkeypatch.setattr(headless, "load_optimizer_registries", lambda **_: None)
+
         headless.configure(project="default_unflattening_ollvm.json")
         headless.start()
         try:
             import d810.optimizers.microcode.flow.jumps.computed_goto_resolver as cg
 
             cg.install()
-            ida_hexrays.clear_cached_cfuncs()
-            recovered = str(ida_hexrays.decompile(func_ea) or "None")
+            try:
+                ida_hexrays.clear_cached_cfuncs()
+                recovered = str(ida_hexrays.decompile(func_ea) or "None")
+            finally:
+                cg.uninstall()
         finally:
             headless.stop()
     finally:
@@ -75,17 +94,23 @@ def test_computed_goto_dispatcher_unflattens() -> None:
     assert "__asm" not in recovered and "jmp" not in recovered.lower(), (
         f"computed goto not materialised/unflattened:\n{recovered}"
     )
-    for literal in ("0x11", "0x22", "0x33"):
-        assert literal in recovered, f"handler effect {literal} missing:\n{recovered}"
-    # order: h_s1 (+0x11) before h_s2 (+0x22) before h_s3 (+0x33). (The final
-    # return value may be typed away by Hex-Rays when unobserved -- not asserted.)
-    assert recovered.index("0x11") < recovered.index("0x22") < recovered.index("0x33"), (
-        f"handler order not recovered:\n{recovered}"
+    # IDA's persisted radix setting may render these as hexadecimal or decimal.
+    # Compare the ordered values, not their presentation.
+    effects = tuple(
+        int(literal, 0)
+        for literal in re.findall(r"\+=\s+(0x[0-9A-Fa-f]+|[0-9]+)", recovered)
+    )
+    assert effects == (0x11, 0x22, 0x33), (
+        f"handler effects/order not recovered: {effects}\n{recovered}"
     )
 
 
 if __name__ == "__main__":
     # Local idalib runner (the docker system harness runs tests inside an already
     # open IDA; this file is idalib-style, so validate it directly here).
-    test_computed_goto_dispatcher_unflattens()
+    patcher = pytest.MonkeyPatch()
+    try:
+        test_computed_goto_dispatcher_unflattens(patcher)
+    finally:
+        patcher.undo()
     print("PASS: computed-goto dispatcher unflattens end-to-end")

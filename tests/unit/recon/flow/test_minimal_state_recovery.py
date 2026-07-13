@@ -9,8 +9,14 @@ import pytest
 
 import d810.analyses.control_flow.minimal_state_recovery as minimal_state_recovery
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
+from d810.analyses.control_flow.materialized_indirect_transfer import (
+    MaterializedIndirectTransfer,
+    MaterializedStateRoute,
+)
 from d810.analyses.control_flow.minimal_state_recovery import (
+    HandlerTransition,
     StateWriteTransition,
+    TransitionArm,
     TransitionProof,
     diff_back_edge_transitions,
     diff_back_edge_transitions_partitioned,
@@ -19,6 +25,8 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     recover_state_write_transitions_via_fixpoint,
     recover_state_write_transitions_via_multicell_fixpoint,
     recover_state_write_transitions_via_partitioned_fixpoint,
+    resolve_materialized_indirect_transfer_targets,
+    resolve_materialized_handler_exit_states,
     transitions_use_terminal_stack_alias_guard,
 )
 from d810.analyses.control_flow.state_transition_domain import (
@@ -258,6 +266,378 @@ def _dispatcher(point_targets: dict[int, int], *, exit_block: int, domain_hi: in
 # --- tests ----------------------------------------------------------------
 
 
+def test_residual_state_key_upgrades_default_terminal_without_source_anchor() -> None:
+    state = 0xEC71CA67
+    graph = FlowGraph(
+        blocks={
+            1: _blk(1, (99,), (), (), ea=0x1000),
+            20: _blk(20, (), (), (), ea=0x2000),
+            30: _blk(30, (), (), (), ea=0x3000),
+            99: _stop(99, (1,)),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    dispatcher = _dispatcher({}, exit_block=99)
+    transition = StateWriteTransition(
+        write_block=1,
+        next_state=state,
+        target_handler=99,
+        is_return=True,
+        branch_arm=None,
+        proof=TransitionProof("region_partitioned_fixpoint", "global_fold", True),
+    )
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x1010,
+        source_block_ea=0x5000,
+        materialized_anchor_eas=(0xDEAD,),
+        target_eas=(0x2000, 0x3000),
+        condition_code=4,
+        true_target_ea=0x2000,
+        false_target_ea=0x3000,
+        selector_state_constant=state,
+        resolver_kind="residual_microcode",
+    )
+
+    result = resolve_materialized_indirect_transfer_targets(
+        (transition,), graph, dispatcher, (transfer,)
+    )
+
+    assert result[0].target_handler == 20
+    assert result[0].is_return is False
+    assert result[0].proof is not None
+    assert result[0].proof.kind == "computed_goto_target"
+
+
+def test_static_fixpoint_terminal_delivery_overrides_intermediate_equality_handler() -> None:
+    """A byte-patch plan's exact terminal arm outranks its selector stub."""
+    state = 0x19A7218A
+    graph = FlowGraph(
+        blocks={
+            1: _blk(1, (20,), (), (), ea=0x40C7E5),
+            20: _blk(20, (30,), (1,), (), ea=0x40A5D0),
+            30: _stop(30, (20,)),
+        },
+        entry_serial=1,
+        func_ea=0x40A560,
+    )
+    dispatcher = _dispatcher({state: 20}, exit_block=30)
+    transition = StateWriteTransition(1, state, 20, False, None)
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40A5E3,
+        source_block_ea=0x40A5CA,
+        materialized_anchor_eas=(0x40A5D0,),
+        target_eas=(0x9000 + 30, 0x40A5F0),
+        condition_code=4,
+        true_target_ea=0x9000 + 30,
+        false_target_ea=0x40A5F0,
+        selector_state_var_reg=20,
+        selector_compare_constant=state,
+        selector_state_on_left=True,
+        resolver_kind="static_fixpoint",
+    )
+
+    (resolved,) = resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        dispatcher,
+        (transfer,),
+        condition_chain_handlers=frozenset({20}),
+        state_var_reg=20,
+    )
+
+    assert resolved.target_handler == 30
+    assert resolved.is_return is True
+    assert resolved.proof is not None
+    assert resolved.proof.kind == "computed_goto_exact_terminal_delivery"
+
+
+def test_explicit_terminal_state_route_overrides_coarse_self_route() -> None:
+    state = 0x19A7218A
+    graph = FlowGraph(
+        blocks={
+            1: _blk(1, (1,), (), (), ea=0x40C7E5),
+            30: _stop(30, (1,)),
+        },
+        entry_serial=1,
+        func_ea=0x40A560,
+    )
+    dispatcher = _dispatcher({state: 1}, exit_block=30)
+    transition = StateWriteTransition(1, state, 1, False, None)
+    route = MaterializedStateRoute(
+        source_block_serial=1,
+        state_constant=state,
+        target_handler_serial=30,
+        proof_kind="terminal_state_route",
+    )
+
+    (resolved,) = resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        dispatcher,
+        (),
+        materialized_state_routes=(route,),
+        condition_chain_handlers=frozenset({1, 30}),
+        state_var_reg=20,
+    )
+
+    assert resolved.target_handler == 30
+    assert resolved.is_return is True
+    assert resolved.proof is not None
+    assert resolved.proof.kind == "computed_goto_exact_terminal_delivery"
+
+
+def test_source_local_terminal_write_overrides_stale_transition_state() -> None:
+    terminal_state = 0x19A7218A
+    stale_state = 0xABB95547
+    graph = FlowGraph(
+        blocks={
+            1: _blk(
+                1,
+                (20,),
+                (),
+                (_mov(0x40A5D0, _num(terminal_state), _reg(20)),),
+                ea=0x40A5D0,
+            ),
+            20: _blk(20, (20,), (1,), (), ea=0xF1C003B8),
+            30: _stop(30, ()),
+        },
+        entry_serial=1,
+        func_ea=0x40A560,
+    )
+    dispatcher = _dispatcher({stale_state: 20}, exit_block=30)
+    transition = StateWriteTransition(1, stale_state, 20, False, None)
+    route = MaterializedStateRoute(
+        source_block_serial=1,
+        state_constant=terminal_state,
+        target_handler_serial=30,
+        proof_kind="terminal_state_route",
+    )
+
+    (resolved,) = resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        dispatcher,
+        (),
+        materialized_state_routes=(route,),
+        condition_chain_handlers=frozenset({20, 30}),
+        state_var_reg=20,
+    )
+
+    assert resolved.next_state == terminal_state
+    assert resolved.target_handler == 30
+    assert resolved.is_return is True
+    assert resolved.proof is not None
+    assert resolved.proof.kind == "computed_goto_exact_terminal_delivery"
+    assert resolved.proof.reason == "source_local_terminal_state_write"
+
+
+def test_residual_state_key_uses_condition_chain_handler_authority_without_dag() -> None:
+    state = 0xEC71CA67
+    graph = FlowGraph(
+        blocks={
+            1: _blk(1, (99,), (), (), ea=0x1000),
+            20: _blk(20, (), (), (), ea=0x2000),
+            30: _blk(30, (), (), (), ea=0x3000),
+            99: _stop(99, (1,)),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    dispatcher = _dispatcher({}, exit_block=99)
+    transition = StateWriteTransition(1, state, 99, True, None)
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x1010,
+        source_block_ea=0x5000,
+        materialized_anchor_eas=(0xDEAD,),
+        target_eas=(0x2000, 0x3000),
+        condition_code=4,
+        true_target_ea=0x2000,
+        false_target_ea=0x3000,
+        selector_state_constant=state,
+        resolver_kind="residual_microcode",
+    )
+
+    (resolved,) = resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        dispatcher,
+        (transfer,),
+        condition_chain_handlers=frozenset({20}),
+    )
+
+    assert resolved.target_handler == 20
+    assert resolved.is_return is False
+    assert resolved.proof is not None
+    assert resolved.proof.kind == "computed_goto_target"
+
+
+def test_residual_state_key_abstains_when_target_is_not_known_handler() -> None:
+    state = 0xEC71CA67
+    graph = FlowGraph(
+        blocks={
+            1: _blk(1, (99,), (), (), ea=0x1000),
+            20: _blk(20, (), (), (), ea=0x2000),
+            30: _blk(30, (), (), (), ea=0x3000),
+            99: _stop(99, (1,)),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    dispatcher = _dispatcher({}, exit_block=99)
+    transition = StateWriteTransition(1, state, 99, True, None)
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x1010,
+        source_block_ea=0x1000,
+        materialized_anchor_eas=(0xDEAD,),
+        target_eas=(0x3000,),
+        condition_code=4,
+        true_target_ea=0x3000,
+        false_target_ea=0x2000,
+        selector_state_constant=state,
+        resolver_kind="residual_microcode",
+    )
+
+    assert resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        dispatcher,
+        (transfer,),
+        condition_chain_handlers=frozenset({20}),
+    ) == (transition,)
+
+
+def test_exact_materialized_state_route_upgrades_only_matching_false_terminal() -> None:
+    state = 0xA5A94B86
+    graph = FlowGraph(
+        blocks={
+            10: _blk(10, (99,), (), (), ea=0x1000),
+            20: _blk(20, (), (), (), ea=0x2000),
+            99: _stop(99, (10,)),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+    dispatcher = _dispatcher({}, exit_block=99)
+    transition = StateWriteTransition(
+        write_block=10,
+        next_state=state,
+        target_handler=99,
+        is_return=True,
+        branch_arm=None,
+    )
+    route = MaterializedStateRoute(
+        source_block_serial=10,
+        state_constant=state,
+        target_handler_serial=20,
+    )
+
+    (resolved,) = resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        dispatcher,
+        (),
+        materialized_state_routes=(route,),
+        condition_chain_handlers=frozenset({20}),
+    )
+
+    assert resolved.target_handler == 20
+    assert resolved.is_return is False
+    assert resolved.proof is not None
+    assert resolved.proof.kind == "computed_goto_state_route"
+
+
+def test_exact_materialized_state_route_uses_via_block_partition() -> None:
+    state = 0xF6A636EF
+    graph = FlowGraph(
+        blocks={
+            10: _blk(10, (11,), (), (), ea=0x1000),
+            11: _blk(11, (99,), (10,), (), ea=0x1100),
+            20: _blk(20, (), (), (), ea=0x2000),
+            30: _blk(30, (), (), (), ea=0x3000),
+            99: _stop(99, (11,)),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+    dispatcher = _dispatcher({}, exit_block=99)
+    transition = StateWriteTransition(10, state, 99, True, None, via_block=11)
+    routes = (
+        MaterializedStateRoute(10, state, 30),
+        MaterializedStateRoute(11, state, 20),
+    )
+
+    (resolved,) = resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        dispatcher,
+        (),
+        materialized_state_routes=routes,
+        condition_chain_handlers=frozenset({20, 30}),
+    )
+
+    assert resolved.target_handler == 20
+
+
+def test_exact_materialized_state_route_falls_back_to_write_block_partition() -> None:
+    state = 0x23B8E806
+    graph = FlowGraph(
+        blocks={
+            10: _blk(10, (11,), (), (), ea=0x1000),
+            11: _blk(11, (99,), (10,), (), ea=0x1100),
+            20: _blk(20, (), (), (), ea=0x2000),
+            99: _stop(99, (11,)),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+    dispatcher = _dispatcher({}, exit_block=99)
+    transition = StateWriteTransition(10, state, 99, True, None, via_block=11)
+
+    (resolved,) = resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        dispatcher,
+        (),
+        materialized_state_routes=(MaterializedStateRoute(10, state, 20),),
+        condition_chain_handlers=frozenset({20}),
+    )
+
+    assert resolved.target_handler == 20
+
+
+def test_exact_materialized_state_route_abstains_on_conflict_or_non_handler() -> None:
+    state = 0xAE5A330B
+    graph = FlowGraph(
+        blocks={
+            10: _blk(10, (99,), (), (), ea=0x1000),
+            20: _blk(20, (), (), (), ea=0x2000),
+            30: _blk(30, (), (), (), ea=0x3000),
+            99: _stop(99, (10,)),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+    dispatcher = _dispatcher({}, exit_block=99)
+    transition = StateWriteTransition(10, state, 99, True, None)
+
+    for routes in (
+        (
+            MaterializedStateRoute(10, state, 20),
+            MaterializedStateRoute(10, state, 30),
+        ),
+        (MaterializedStateRoute(10, state, 30),),
+    ):
+        assert resolve_materialized_indirect_transfer_targets(
+            (transition,),
+            graph,
+            dispatcher,
+            (),
+            materialized_state_routes=routes,
+            condition_chain_handlers=frozenset({20}),
+        ) == (transition,)
+
+
 def test_global_state_var_detector_ignores_rich_operand_slot_provenance() -> None:
     insn = InsnSnapshot(
         opcode=_OP_JZ,
@@ -367,6 +747,378 @@ def test_conditional_two_arm_transition(_seam) -> None:
     targets = {a.next_state: a.target_handler for a in h30.arms}
     assert targets == {0xAA: 40, 0xBB: 50}
     assert all(a.branch_block == 30 for a in h30.arms)
+
+
+def test_register_conditional_two_arm_transition(_seam) -> None:
+    """The multi-arm scan follows a register-resident dispatcher state variable."""
+    state_reg = 20
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (30, 40, 50), (31, 32), (_mov(0x2000, _num(0), _reg(0)),)),
+            30: _blk(30, (31, 32), (2,), ()),
+            31: _blk(31, (2,), (30,), (_mov(0x3100, _num(0xAA), _reg(state_reg)),)),
+            32: _blk(32, (2,), (30,), (_mov(0x3200, _num(0xBB), _reg(state_reg)),)),
+            40: _blk(40, (2,), (2,), ()),
+            50: _blk(50, (2,), (2,), ()),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    disp = _dispatcher({0x30: 30, 0xAA: 40, 0xBB: 50}, exit_block=99)
+
+    edges = {
+        edge.handler: edge
+        for edge in recover_handler_transitions(
+            fg,
+            disp,
+            None,
+            state_var_reg=state_reg,
+            dispatcher_entry_serial=2,
+        )
+    }
+
+    h30 = edges[30]
+    assert h30.is_conditional
+    assert {arm.next_state: arm.target_handler for arm in h30.arms} == {
+        0xAA: 40,
+        0xBB: 50,
+    }
+    assert all(arm.branch_block == 30 for arm in h30.arms)
+
+
+def test_handler_scan_stops_at_alternate_dispatcher_region_entry(_seam) -> None:
+    """A handler exit must not be owned by a second BST router root.
+
+    Computed-goto comparison trees can have more than one live re-entry node.
+    ``dispatcher_entry_serial`` names the canonical root, while a handler can
+    jump to another comparison node in the same dispatcher region.  The state
+    write remains owned by the handler exit, not by that router node.
+    """
+    state_reg = 20
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 20), (), ()),
+            3: _blk(3, (20,), (10,), ()),
+            10: _blk(
+                10,
+                (3,),
+                (2,),
+                (_mov(0x1010, _num(0x20), _reg(state_reg)),),
+            ),
+            20: _blk(20, (2,), (3,), ()),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    disp = _dispatcher({0x10: 10, 0x20: 20}, exit_block=99)
+
+    edges = {
+        edge.handler: edge
+        for edge in recover_handler_transitions(
+            fg,
+            disp,
+            None,
+            state_var_reg=state_reg,
+            dispatcher_entry_serial=2,
+            dispatcher_region_serials=frozenset({2, 3}),
+        )
+    }
+
+    arm = edges[10].arms[0]
+    assert arm.next_state == 0x20
+    assert arm.target_handler == 20
+    assert arm.write_block == 10
+    assert arm.ordered_path == (10,)
+
+
+def test_handler_scan_uses_authoritative_handlers_not_coarse_interval_leaves(_seam) -> None:
+    """An interval leaf can be handler glue, not a semantic handler entry."""
+    state_reg = 20
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 20), (11,), ()),
+            10: _blk(10, (11,), (2,), ()),
+            11: _blk(
+                11,
+                (2,),
+                (10,),
+                (_mov(0x1110, _num(0x20), _reg(state_reg)),),
+            ),
+            20: _blk(20, (2,), (2,), ()),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    # Block 11 is a coarse interval outcome, but exact equality evidence says
+    # only blocks 10 and 20 are semantic handlers.
+    disp = _dispatcher({0x10: 10, 0x20: 20, 0x30: 11}, exit_block=99)
+
+    edges = {
+        edge.handler: edge
+        for edge in recover_handler_transitions(
+            fg,
+            disp,
+            None,
+            state_var_reg=state_reg,
+            dispatcher_entry_serial=2,
+            authoritative_handler_serials=frozenset({10, 20}),
+        )
+    }
+
+    arm = edges[10].arms[0]
+    assert arm.next_state == 0x20
+    assert arm.target_handler == 20
+    assert arm.write_block == 11
+    assert arm.ordered_path == (10, 11)
+
+
+def test_handler_scan_preserves_distinct_unresolved_branch_paths(_seam) -> None:
+    state_reg = 20
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (10,), (), ()),
+            10: _blk(10, (11,), (2,), ()),
+            11: _blk(11, (12, 13), (10,), ()),
+            12: _blk(12, (), (11,), ()),
+            13: _blk(13, (), (11,), ()),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    dispatcher = _dispatcher({0x10: 10}, exit_block=99)
+
+    transitions = recover_handler_transitions(
+        fg,
+        dispatcher,
+        None,
+        state_var_reg=state_reg,
+        dispatcher_entry_serial=2,
+        authoritative_handler_serials=frozenset({10}),
+    )
+
+    assert len(transitions) == 1
+    assert {
+        (arm.branch_block, arm.ordered_path)
+        for arm in transitions[0].arms
+    } == {
+        (11, (10, 11, 12)),
+        (11, (10, 11, 13)),
+    }
+
+
+def test_exact_exit_route_overrides_stale_inherited_handler_state() -> None:
+    transition = HandlerTransition(
+        handler=10,
+        states=(0x10,),
+        arms=(
+            TransitionArm(
+                next_state=0x10,
+                target_handler=10,
+                is_return=False,
+                branch_block=None,
+                write_block=11,
+                exit_block=11,
+                ordered_path=(10, 11),
+            ),
+        ),
+    )
+    route = MaterializedStateRoute(
+        source_block_serial=11,
+        state_constant=0x20,
+        target_handler_serial=20,
+    )
+
+    (resolved,) = resolve_materialized_handler_exit_states(
+        (transition,),
+        (route,),
+        frozenset({10, 20}),
+    )
+
+    (arm,) = resolved.arms
+    assert arm.next_state == 0x20
+    assert arm.target_handler == 20
+    assert arm.is_return is False
+    assert arm.source_keyed_block == 11
+
+
+def test_conditional_arm_route_outranks_generic_route_for_same_unresolved_arm() -> None:
+    transition = HandlerTransition(
+        handler=10,
+        states=(0x10,),
+        arms=(
+            TransitionArm(
+                next_state=None,
+                target_handler=None,
+                is_return=True,
+                branch_block=10,
+                write_block=12,
+                exit_block=13,
+                ordered_path=(10, 12, 13),
+            ),
+        ),
+    )
+    routes = (
+        MaterializedStateRoute(12, 0x30, 30),
+        MaterializedStateRoute(
+            12,
+            0x20,
+            20,
+            proof_kind="conditional_arm",
+        ),
+    )
+
+    (resolved,) = resolve_materialized_handler_exit_states(
+        (transition,),
+        routes,
+        frozenset({10, 20, 30}),
+    )
+
+    assert resolved.arms[0].next_state == 0x20
+    assert resolved.arms[0].target_handler == 20
+    assert resolved.arms[0].source_keyed_block == 12
+
+
+def test_exact_handler_owned_exit_route_repairs_one_self_loop_arm() -> None:
+    transition = HandlerTransition(
+        handler=10,
+        states=(0x10,),
+        arms=(
+            TransitionArm(
+                next_state=0x10,
+                target_handler=10,
+                is_return=False,
+                branch_block=10,
+                write_block=11,
+                exit_block=11,
+                ordered_path=(10, 11),
+            ),
+            TransitionArm(
+                next_state=0x30,
+                target_handler=30,
+                is_return=False,
+                branch_block=10,
+                write_block=12,
+                exit_block=12,
+                ordered_path=(10, 12),
+            ),
+        ),
+    )
+    route = MaterializedStateRoute(
+        source_block_serial=10,
+        state_constant=0x20,
+        target_handler_serial=20,
+        source_handler_serial=10,
+        handler_exit_proven=True,
+    )
+
+    (resolved,) = resolve_materialized_handler_exit_states(
+        (transition,),
+        (route,),
+        frozenset({10, 20, 30}),
+    )
+
+    assert resolved.arms[0].next_state == 0x20
+    assert resolved.arms[0].target_handler == 20
+    assert resolved.arms[0].is_return is False
+    assert resolved.arms[0].source_keyed_block == 10
+    assert resolved.arms[1] == transition.arms[1]
+
+
+def test_terminal_route_outranks_replayed_handler_self_loop_exit() -> None:
+    terminal_state = 0x19A7218A
+    stale_state = 0xABB95547
+    transition = HandlerTransition(
+        handler=301,
+        states=(terminal_state,),
+        arms=(
+            TransitionArm(
+                next_state=terminal_state,
+                target_handler=301,
+                is_return=False,
+                branch_block=None,
+                write_block=301,
+                exit_block=301,
+                ordered_path=(301,),
+            ),
+        ),
+    )
+    routes = (
+        MaterializedStateRoute(
+            source_block_serial=301,
+            state_constant=terminal_state,
+            target_handler_serial=302,
+            proof_kind="terminal_state_route",
+        ),
+        MaterializedStateRoute(
+            source_block_serial=301,
+            state_constant=stale_state,
+            target_handler_serial=286,
+            source_handler_serial=301,
+            handler_exit_proven=True,
+        ),
+    )
+
+    (resolved,) = resolve_materialized_handler_exit_states(
+        (transition,),
+        routes,
+        frozenset({286, 301, 302}),
+    )
+
+    (arm,) = resolved.arms
+    assert arm.next_state == terminal_state
+    assert arm.target_handler == 302
+    assert arm.is_return is True
+    assert arm.source_keyed_block == 301
+
+
+def test_exact_exit_route_preserves_healthy_nonself_handler_transition() -> None:
+    transition = HandlerTransition(
+        handler=10,
+        states=(0x10,),
+        arms=(
+            TransitionArm(
+                next_state=0x20,
+                target_handler=20,
+                is_return=False,
+                branch_block=None,
+                write_block=11,
+                exit_block=11,
+                ordered_path=(10, 11),
+            ),
+        ),
+    )
+    route = MaterializedStateRoute(11, 0x30, 30)
+
+    assert resolve_materialized_handler_exit_states(
+        (transition,),
+        (route,),
+        frozenset({10, 20, 30}),
+    ) == (transition,)
+
+
+def test_exact_exit_route_preserves_concrete_unresolved_state_for_direct_routing() -> None:
+    transition = HandlerTransition(
+        handler=10,
+        states=(0x10,),
+        arms=(
+            TransitionArm(
+                next_state=0x30,
+                target_handler=None,
+                is_return=True,
+                branch_block=None,
+                write_block=11,
+                exit_block=11,
+                ordered_path=(10, 11),
+            ),
+        ),
+    )
+    route = MaterializedStateRoute(11, 0x40, 40)
+
+    assert resolve_materialized_handler_exit_states(
+        (transition,),
+        (route,),
+        frozenset({10, 40}),
+    ) == (transition,)
 
 
 def test_nested_dispatcher_corridor_uses_concrete_reentry_path(_seam) -> None:
@@ -496,6 +1248,46 @@ def test_partitioned_fixpoint_multi_entry_recovers_nonpredecessor_writer(_seam) 
     assert edge.target_handler == 20
     assert edge.proof is not None
     assert edge.proof.kind == "multi_entry_global_fold"
+
+
+def test_multi_entry_scan_does_not_collapse_partitioned_predecessors(_seam) -> None:
+    """A shared corridor with two incoming states stays predecessor-specific."""
+    fg = FlowGraph(
+        blocks={
+            0: _blk(0, (10, 60), (), ()),
+            2: _blk(2, (10, 60, 20, 70), (12,), ()),
+            10: _blk(10, (11,), (0, 2), (_mov(0x1000, _num(0x20), _stk(_STATE_OFF)),)),
+            60: _blk(60, (11,), (0, 2), (_mov(0x6000, _num(0x30), _stk(_STATE_OFF)),)),
+            11: _blk(11, (12,), (10, 60), ()),
+            12: _blk(12, (2,), (11,), ()),
+            20: _blk(20, (2,), (2,), ()),
+            70: _blk(70, (2,), (2,), ()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _dispatcher({0x20: 20, 0x30: 70}, exit_block=99)
+
+    edges = recover_state_write_transitions_via_partitioned_fixpoint(
+        fg,
+        disp,
+        _STATE_OFF,
+        dispatcher_entry_serial=2,
+        include_multi_entry_back_edges=True,
+    )
+
+    targets_by_physical_edge: dict[tuple[int, int], set[int]] = {}
+    for edge in edges:
+        if edge.via_block is None or edge.target_handler is None:
+            continue
+        targets_by_physical_edge.setdefault(
+            (edge.write_block, edge.via_block), set()
+        ).add(edge.target_handler)
+
+    assert targets_by_physical_edge[(10, 11)] == {20}
+    assert targets_by_physical_edge[(60, 11)] == {70}
+    assert (11, 12) not in targets_by_physical_edge
+    assert all(len(targets) == 1 for targets in targets_by_physical_edge.values())
 
 
 def test_partitioned_fixpoint_resolves_joined_stack_address_alias_state_store(_seam) -> None:

@@ -1204,6 +1204,12 @@ def test_compile_patch_plan_round_trips_legacy_flow_primitives():
             false_target_serial=20,
             true_target_serial=30,
             proof_id="abc-proof",
+            state_register=20,
+            state_size=4,
+            false_state=0xDEF4B7E6,
+            true_state=0xA5540595,
+            false_state_write_ea=None,
+            true_state_write_ea=0x40C50B,
         ),
         NormalizeNWayDispatcherExit(
             block_serial=11,

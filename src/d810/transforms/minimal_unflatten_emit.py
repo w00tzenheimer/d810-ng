@@ -42,13 +42,29 @@ from d810.analyses.control_flow.branch_witness_provider import (
 from d810.analyses.control_flow.minimal_state_recovery import (
     HandlerTransition,
     StateWriteTransition,
+    _source_local_constant_register_write,
     block_has_live_carrier_write,
     recover_handler_transitions,
+    resolve_materialized_handler_exit_states,
+    resolve_materialized_handler_transition_targets,
     recover_state_write_transitions_via_partitioned_fixpoint,
     transition_uses_terminal_stack_alias_guard,
     transitions_use_terminal_stack_alias_guard,
+    resolve_materialized_indirect_transfer_targets,
 )
-from d810.analyses.control_flow.state_machine_analysis import _is_stop_block
+from d810.analyses.control_flow.materialized_indirect_transfer import (
+    MaterializedIndirectTransfer,
+    MaterializedStateRoute,
+    find_unique_target_entry_block,
+    lookup_state_keyed_transfer_target,
+    plan_resolver_proven_indirect_call_neutralizations,
+)
+from d810.analyses.control_flow.route_predicate import DecisionDag
+from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
+from d810.analyses.control_flow.state_machine_analysis import (
+    _is_stop_block,
+    run_snapshot_constant_fixpoint,
+)
 from d810.analyses.value_flow import (
     LOOP_PREDICATE_VALUE_FACT_TYPE,
     OBSERVABLE_OUTPUT_FACT_TYPE,
@@ -58,11 +74,13 @@ from d810.analyses.value_flow import (
     project_value_flow_facts,
 )
 from d810.core import logging
+from d810.core.typing import Mapping
 from d810.core.observability_recon import (
     observe_branch_witness_decisions,
     observe_exit_path_shortcut_decisions,
 )
 from d810.ir.block_identity import block_label
+from d810.ir.flowgraph import BlockKind, InsnKind
 from d810.ir.semantics import PredicateKind
 from d810.transforms.exit_path_liveness_policy import (
     exit_path_blocks_live_violations,
@@ -71,11 +89,14 @@ from d810.transforms.exit_path_liveness_policy import (
 from d810.transforms.graph_modification import (
     ConvertToGoto,
     LowerConditionalStateTransition,
+    NopInstructions,
+    PreserveLivePredicateCondition,
     RedirectBranch,
     RedirectGoto,
     RetargetOutputStore,
     ScalarizeLocalAliasAccess,
     SyntheticCounterBoundCondition,
+    SyntheticRegisterNonzeroCondition,
     ZeroStateWrite,
 )
 from d810.transforms.plan import PatchPlan, compile_patch_plan
@@ -98,6 +119,10 @@ __all__ = [
     "emit_minimal_unflatten",
     "build_state_write_redirects",
     "build_conditional_arm_redirects",
+    "build_exact_terminal_state_route_redirects",
+    "build_source_keyed_handler_redirects",
+    "build_materialized_conditional_handler_bridges",
+    "build_resolver_proven_indirect_call_neutralizations",
     "build_shared_merge_conditional_redirects",
     "build_loop_guard_exit_redirects",
     "build_folded_loop_guard_lowerings",
@@ -301,6 +326,26 @@ def _return_redirect_target(
     ):
         return int(target_handler)
     return default_target
+
+
+def _exact_native_terminal_redirect_target(
+    flow_graph,
+    target_handler: int | None,
+) -> int | None:
+    """Map an exact native epilogue target onto the MBA's canonical STOP."""
+    if target_handler is None:
+        return None
+    target = flow_graph.get_block(int(target_handler))
+    if target is None or target.nsucc != 0:
+        return int(target_handler)
+    if _is_stop_block(target):
+        return int(target_handler)
+    stop_targets = {
+        int(serial)
+        for serial, block in flow_graph.blocks.items()
+        if _is_stop_block(block)
+    }
+    return next(iter(stop_targets)) if len(stop_targets) == 1 else int(target_handler)
 
 
 def _apply_entry_bridge(
@@ -718,6 +763,194 @@ def _terminal_alias_materializer_parent_redirects(
     return tuple(out)
 
 
+def _recover_register_conditional_entry(
+    flow_graph,
+    dispatcher,
+    disp: int,
+    *,
+    state_var_reg: int,
+    materialized_indirect_transfers: tuple[MaterializedIndirectTransfer, ...] = (),
+    materialized_state_routes: tuple[MaterializedStateRoute, ...] = (),
+    condition_chain_handlers: frozenset[int] = frozenset(),
+    entry_bridge_evidence: EntryBridgeEvidence | None = None,
+) -> list[tuple[int, int, int]]:
+    """Recover a prologue conditional carried in a NON-state register.
+
+    Some comparison-tree dispatchers select their initial dispatch state in a
+    scratch register while the state var itself carries a non-leaf decoy. The state-var fixpoint
+    therefore recovers no leaf arm transition, but the conditional's *values* still
+    route through the dispatcher's equality leaves.
+
+    Walk back from the dispatcher through single-predecessor prologue glue to the
+    prologue MERGE (the first block with >= 2 prologue-reachable predecessors),
+    fold each merge-predecessor's registers with the register-domain fixpoint, and
+    for every predecessor whose folded register value is a dispatcher leaf yield
+    ``(pred, merge, handler)``. An asymmetric arm containing a range pivot rather
+    than a leaf is simply absent from the result --
+    the raw-target pass (step 2) owns it. Returns ``[]`` when no register
+    conditional feeds the dispatcher, so non-conditional prologues are untouched.
+    """
+    entry = flow_graph.entry_serial
+    # Prologue reachability: blocks reached from the function entry WITHOUT passing
+    # through the dispatcher (so handler back-edges never count as prologue paths).
+    prologue_reach: set[int] = set()
+    stack = [int(entry)]
+    while stack:
+        s = stack.pop()
+        if s in prologue_reach or s == int(disp):
+            continue
+        blk = flow_graph.get_block(s)
+        if blk is None:
+            continue
+        prologue_reach.add(s)
+        stack.extend(int(x) for x in blk.succs if int(x) != int(disp))
+
+    merge: int | None = None
+    if entry_bridge_evidence is not None:
+        source_store_ea = int(entry_bridge_evidence.source_store_ea)
+        anchored_merges = tuple(
+            int(block.serial)
+            for block in flow_graph.blocks.values()
+            if any(
+                int(instruction.ea) == source_store_ea
+                for instruction in block.insn_snapshots
+            )
+        )
+        if len(anchored_merges) != 1:
+            return []
+        anchored_merge = anchored_merges[0]
+        if anchored_merge not in prologue_reach or anchored_merge == int(disp):
+            return []
+        merge = anchored_merge
+    else:
+        # Backward glue walk: from the dispatcher, follow the unique
+        # prologue-reachable predecessor chain until a merge (>= 2
+        # prologue-reachable preds) is found.
+        cur = int(disp)
+        visited: set[int] = set()
+        while True:
+            blk = flow_graph.get_block(cur)
+            if blk is None:
+                return []
+            p_reach = [int(p) for p in blk.preds if int(p) in prologue_reach]
+            if len(p_reach) >= 2:
+                merge = cur
+                break
+            if len(p_reach) == 1:
+                nxt = p_reach[0]
+                if nxt in visited:
+                    return []
+                visited.add(nxt)
+                cur = nxt
+                continue
+            return []  # no merge on the prologue path -> not a conditional entry
+
+    merge_blk = flow_graph.get_block(merge)
+    if merge_blk is None:
+        return []
+    fp = run_snapshot_constant_fixpoint(flow_graph, -1)
+    routes: list[tuple[int, int, int]] = []
+
+    def _materialized_target(state: int) -> int | None:
+        targets = {
+            int(route.target_handler_serial)
+            for route in materialized_state_routes
+            if (int(route.state_constant) & 0xFFFFFFFF)
+            == (int(state) & 0xFFFFFFFF)
+        }
+        if len(targets) != 1:
+            return None
+        target = next(iter(targets))
+        if condition_chain_handlers and target not in condition_chain_handlers:
+            return None
+        return target
+
+    def _exact_equality_target(state: int) -> int | None:
+        state_u = int(state) & 0xFFFFFFFF
+        candidates: set[int] = set()
+        for transfer in materialized_indirect_transfers:
+            selector = transfer.selector_state_constant
+            compared = transfer.selector_compare_constant
+            if (
+                selector is None
+                and (
+                    compared is None
+                    or (int(compared) & 0xFFFFFFFF) != state_u
+                    or transfer.condition_code not in (4, 5)
+                )
+            ):
+                continue
+            if selector is not None and (int(selector) & 0xFFFFFFFF) != state_u:
+                continue
+            target = lookup_state_keyed_transfer_target(
+                flow_graph,
+                transfer,
+                state_u,
+                state_var_reg=int(state_var_reg),
+            )
+            if target is not None:
+                candidates.add(int(target))
+        return next(iter(candidates)) if len(candidates) == 1 else None
+
+    def _resolve_state_target(value: int) -> int | None:
+        handler = _exact_equality_target(int(value))
+        if handler is None:
+            handler = dispatcher.lookup(int(value) & 0xFFFFFFFF)
+            if (
+                handler is not None
+                and condition_chain_handlers
+                and int(handler) not in condition_chain_handlers
+            ):
+                handler = None
+        if handler is None:
+            handler = _materialized_target(int(value))
+        return int(handler) if handler is not None else None
+
+    prologue_preds = tuple(
+        int(pred) for pred in merge_blk.preds if int(pred) in prologue_reach
+    )
+    if len(prologue_preds) < 2:
+        return []
+    pred_register_maps = tuple(
+        fp.out_reg_maps.get(pred, {}) for pred in prologue_preds
+    )
+    shared_registers = set(pred_register_maps[0])
+    for register_map in pred_register_maps[1:]:
+        shared_registers &= set(register_map)
+
+    # Select ONE register across the whole merge.  Choosing the first
+    # dispatcher-valued register independently on each predecessor can mix
+    # unrelated registers and route both arms to a coincidental state.  A real
+    # conditional carrier is present on every arm and changes value across the
+    # merge.  If more than one such register proves a different route set, fail
+    # closed instead of guessing.
+    candidate_route_sets: set[tuple[tuple[int, int, int], ...]] = set()
+    for register in sorted(shared_registers):
+        values = tuple(
+            int(register_map[register]) & 0xFFFFFFFF
+            for register_map in pred_register_maps
+        )
+        if len(set(values)) < 2:
+            continue
+        register_routes = tuple(
+            (pred, int(merge), handler)
+            for pred, value in zip(prologue_preds, values)
+            for handler in (_resolve_state_target(value),)
+            if handler is not None
+        )
+        if register_routes:
+            candidate_route_sets.add(register_routes)
+
+    if len(candidate_route_sets) != 1:
+        return []
+    routes.extend(next(iter(candidate_route_sets)))
+    # Require at least one resolvable arm AND >= 2 prologue arms overall (a genuine
+    # conditional); a single prologue arm is the scalar-initial-state case.
+    if not routes:
+        return []
+    return routes
+
+
 def build_state_write_redirects(
     flow_graph,
     dispatcher,
@@ -727,12 +960,18 @@ def build_state_write_redirects(
     pre_header_serial: int | None,
     initial_state: int | None,
     state_var_stkoff: int | None = None,
+    state_var_reg: int | None = None,
     branch_witness_map: object | None = None,
     branch_witness_emu: object | None = None,
     entry_bridge_exit_path_blocks: tuple[int, ...] = (),
     entry_bridge_requires_witness: bool = False,
     strict_pre_header_prologue: bool = False,
     allow_multi_entry_entry_bridge: bool = False,
+    materialized_state_routes: tuple[MaterializedStateRoute, ...] = (),
+    materialized_indirect_transfers: tuple[MaterializedIndirectTransfer, ...] = (),
+    condition_chain_handlers: frozenset[int] = frozenset(),
+    infer_unmatched_returns: bool = True,
+    entry_bridge_evidence: EntryBridgeEvidence | None = None,
 ) -> list[object]:
     """Build the redirect modifications that linearize the interval-set graph.
 
@@ -854,6 +1093,12 @@ def build_state_write_redirects(
             src = int(transition.write_block)
             if src in prologue_preds:
                 continue  # handled by the entry bridge below
+            if (
+                not infer_unmatched_returns
+                and transition.is_return
+                and transition.next_state is None
+            ):
+                continue
             vb = transition.via_block
             if (
                 terminal_guard_source_edges
@@ -866,14 +1111,26 @@ def build_state_write_redirects(
             # redirect ``src -> via_block`` onto the routed handler.  Otherwise
             # sever ``src -> dispatcher``.
             old = int(vb) if vb is not None else disp
+            exact_terminal_delivery = bool(
+                transition.proof is not None
+                and transition.proof.kind
+                == "computed_goto_exact_terminal_delivery"
+            )
             new = (
-                _return_redirect_target(
+                _exact_native_terminal_redirect_target(
                     flow_graph,
                     transition.target_handler,
-                    default_target=default_target,
                 )
-                if transition.is_return
-                else transition.target_handler
+                if transition.is_return and exact_terminal_delivery
+                else (
+                    _return_redirect_target(
+                        flow_graph,
+                        transition.target_handler,
+                        default_target=default_target,
+                    )
+                    if transition.is_return
+                    else transition.target_handler
+                )
             )
             # Terminal stack-alias split: ``src -> vb`` reaches a shared block that
             # writes the non-state result carrier, writes the terminal dispatcher
@@ -973,7 +1230,76 @@ def build_state_write_redirects(
     # current CFG and only shortcut when exit-path liveness is safe.  Abstain /
     # conflict / unsafe exit path preserves the original prologue -> dispatcher
     # edges.
-    if initial_state is not None and disp is not None:
+    # Conditional entry bridge: when the prologue selects the initial
+    # state CONDITIONALLY -- two-or-more prologue predecessors each writing a
+    # DISTINCT leaf state to the state var, then merging into the dispatcher -- a single scalar
+    # ``initial_state`` cannot express it. Bridge EACH arm past the dispatcher to
+    # its own handler. Fires only when >= 2 prologue preds resolve to DISTINCT
+    # handler states, so the proven single-initial-state path below is untouched
+    # for every non-conditional entry.
+    conditional_entry_arms: set[int] = set()
+    if disp is not None and len(prologue_preds) >= 2:
+        arm_routes: list[tuple[int, int]] = []  # (write_block, handler)
+        for t in transitions:
+            wb = int(t.write_block)
+            if wb not in prologue_preds or t.is_return or t.next_state is None:
+                continue
+            handler = dispatcher.lookup(int(t.next_state) & 0xFFFFFFFF)
+            if handler is None:
+                continue
+            arm_routes.append((wb, int(handler)))
+        if len({wb for wb, _h in arm_routes}) >= 2 and len({h for _wb, h in arm_routes}) >= 2:
+            for wb, handler in arm_routes:
+                wb_block = flow_graph.get_block(wb)
+                if wb_block is None:
+                    continue
+                _add(wb, disp, handler, two_way=(wb_block.nsucc == 2))
+                conditional_entry_arms.add(wb)
+            if logger.info_on:
+                logger.info(
+                    "unflat conditional entry bridge: %d arms -> %s",
+                    len(conditional_entry_arms),
+                    sorted({h for _wb, h in arm_routes}),
+                )
+
+    # Register-conditional entry: the prologue's initial state may
+    # live in a NON-state register while the
+    # state var carries a decoy. Bridge each resolvable arm past the dispatcher to its
+    # handler. Gated on the register path (``state_var_reg`` set) so the stack goldens
+    # never pay the walk-back/fixpoint cost and are byte-identical.
+    register_entry_arms: set[int] = set()
+    if (
+        disp is not None
+        and state_var_reg is not None
+        and not conditional_entry_arms
+    ):
+        for pred, merge, handler in _recover_register_conditional_entry(
+            flow_graph,
+            dispatcher,
+            disp,
+            state_var_reg=int(state_var_reg),
+            materialized_indirect_transfers=materialized_indirect_transfers,
+            materialized_state_routes=materialized_state_routes,
+            condition_chain_handlers=condition_chain_handlers,
+            entry_bridge_evidence=entry_bridge_evidence,
+        ):
+            pred_block = flow_graph.get_block(pred)
+            if pred_block is None:
+                continue
+            _add(pred, merge, handler, two_way=(pred_block.nsucc == 2))
+            register_entry_arms.add(pred)
+        if register_entry_arms and logger.info_on:
+            logger.info(
+                "unflat register-conditional entry bridge: %d arms",
+                len(register_entry_arms),
+            )
+
+    if (
+        initial_state is not None
+        and disp is not None
+        and not conditional_entry_arms
+        and not register_entry_arms
+    ):
         first = dispatcher.lookup(int(initial_state) & 0xFFFFFFFF)
         if first is not None:
             multi_entry_entry_bridge_safe = (
@@ -990,7 +1316,12 @@ def build_state_write_redirects(
                 _add,
             )
 
-    return mods
+    return _preserve_fully_resolved_state_forks(
+        flow_graph,
+        mods,
+        handler_entries={int(target) for target in dispatcher.all_targets()},
+        excluded_fork_serials=({disp} if disp is not None else set()),
+    )
 
 
 def _existing_redirect_keys(mods: list[object]) -> set[tuple[int, int]]:
@@ -1004,6 +1335,26 @@ def _existing_redirect_keys(mods: list[object]) -> set[tuple[int, int]]:
     for m in mods:
         if isinstance(m, (RedirectGoto, RedirectBranch)):
             keys.add((int(m.from_serial), int(m.old_target)))
+    return keys
+
+
+def _exact_live_state_edge_keys(
+    flow_graph,
+    routes: tuple[MaterializedStateRoute, ...],
+) -> set[tuple[int, int]]:
+    """Return exact live edges that weaker recovery must not retarget."""
+    keys: set[tuple[int, int]] = set()
+    for route in routes:
+        if route.proof_kind != "exact_live_state_edge":
+            continue
+        source = int(route.source_block_serial)
+        target = int(route.target_handler_serial)
+        source_block = flow_graph.get_block(source)
+        if source_block is None or target not in {
+            int(successor) for successor in source_block.succs
+        }:
+            continue
+        keys.add((source, target))
     return keys
 
 
@@ -2094,6 +2445,941 @@ def _arm_branch_successor(arm) -> int | None:
     return int(path[idx + 1])
 
 
+def _unique_planned_redirect_targets(
+    modifications: tuple[object, ...],
+) -> dict[int, int]:
+    targets_by_source: dict[int, set[int]] = {}
+    for modification in modifications:
+        if isinstance(modification, (RedirectGoto, RedirectBranch)):
+            source = int(modification.from_serial)
+            target = int(modification.new_target)
+        elif isinstance(modification, ConvertToGoto):
+            source = int(modification.block_serial)
+            target = int(modification.goto_target)
+        else:
+            continue
+        targets_by_source.setdefault(source, set()).add(target)
+    return {
+        source: next(iter(targets))
+        for source, targets in targets_by_source.items()
+        if len(targets) == 1
+    }
+
+
+def _one_way_arm_planned_target(
+    flow_graph,
+    start_serial: int,
+    planned_targets: dict[int, int],
+    handler_entries: set[int],
+) -> int | None:
+    """Find an exact planned target along one unsplit fork arm."""
+    current = int(start_serial)
+    visited: set[int] = set()
+    while current not in visited:
+        visited.add(current)
+        target = planned_targets.get(current)
+        if target is not None:
+            return target
+        if current in handler_entries:
+            return None
+        block = flow_graph.get_block(current)
+        if block is None or block.nsucc != 1:
+            return None
+        current = int(block.succs[0])
+    return None
+
+
+def _successor_is_fully_resolved_state_fork(
+    flow_graph,
+    successor_serial: int,
+    planned_targets: dict[int, int],
+    handler_entries: set[int],
+) -> bool:
+    """Whether both arms of a live fork have distinct exact handler targets."""
+    fork = flow_graph.get_block(int(successor_serial))
+    if fork is None or fork.nsucc != 2:
+        return False
+    arm_targets = tuple(
+        _one_way_arm_planned_target(
+            flow_graph,
+            int(arm_serial),
+            planned_targets,
+            handler_entries,
+        )
+        for arm_serial in fork.succs
+    )
+    return all(target is not None for target in arm_targets) and len(
+        set(arm_targets)
+    ) == 2
+
+
+def _preserve_fully_resolved_state_forks(
+    flow_graph,
+    modifications: list[object],
+    *,
+    handler_entries: set[int],
+    excluded_fork_serials: set[int],
+) -> list[object]:
+    """Drop parent redirects that would bypass two stronger arm routes."""
+    planned_targets = _unique_planned_redirect_targets(tuple(modifications))
+    result: list[object] = []
+    for modification in modifications:
+        if not isinstance(modification, RedirectGoto):
+            result.append(modification)
+            continue
+        source = flow_graph.get_block(int(modification.from_serial))
+        if (
+            source is not None
+            and source.nsucc == 1
+            and int(modification.old_target) not in excluded_fork_serials
+            and _successor_is_fully_resolved_state_fork(
+                flow_graph,
+                int(modification.old_target),
+                planned_targets,
+                handler_entries,
+            )
+        ):
+            continue
+        result.append(modification)
+    return result
+
+
+def build_source_keyed_handler_redirects(
+    flow_graph,
+    handler_transitions: tuple[HandlerTransition, ...],
+) -> list[object]:
+    """Emit exact one-way redirects owned by snapshot-local handler evidence.
+
+    Both materialized state routes and resolver transfer-exit register snapshots
+    name the current block that owns the proven route.  Rewrite a one-way edge
+    directly, or the exact path-selected arm of a two-way owner, and abstain if
+    multiple facts disagree.
+    """
+    handler_entries = {
+        int(transition.handler) for transition in handler_transitions
+    }
+    candidates: dict[tuple[int, int], set[int]] = {}
+    terminal_candidates: dict[int, set[int]] = {}
+    for transition in handler_transitions:
+        for arm in transition.arms:
+            source = arm.source_keyed_block
+            target = arm.target_handler
+            if source is None or target is None:
+                continue
+            if int(source) not in arm.ordered_path:
+                continue
+            if arm.is_return:
+                source_block = flow_graph.get_block(int(source))
+                if source_block is None or source_block.nsucc != 1:
+                    continue
+                old = int(source_block.succs[0])
+                if old != int(target):
+                    continue
+                terminal_target = flow_graph.get_block(int(target))
+                if terminal_target is None or terminal_target.nsucc != 0:
+                    continue
+                canonical_stop = _exact_native_terminal_redirect_target(
+                    flow_graph,
+                    int(target),
+                )
+                if (
+                    canonical_stop is not None
+                    and int(canonical_stop) != int(target)
+                ):
+                    candidates.setdefault((int(source), old), set()).add(
+                        int(canonical_stop)
+                    )
+                continue
+            exit_serial = arm.exit_block
+            if (
+                exit_serial is not None
+                and arm.ordered_path
+                and int(arm.ordered_path[-1]) == int(exit_serial)
+            ):
+                exit_block = flow_graph.get_block(int(exit_serial))
+                if (
+                    exit_block is not None
+                    and exit_block.nsucc == 0
+                    and len(exit_block.preds) > 1
+                ):
+                    # A shared computed-goto suffix cannot be converted as a
+                    # whole block: doing so assigns one arm's route to every
+                    # predecessor.  Bypass only the predecessor edge owned by
+                    # this exact ordered path.  Calls and stores are observable,
+                    # so never skip a shared terminal containing either.
+                    if any(
+                        insn.kind in (InsnKind.CALL, InsnKind.STORE)
+                        for insn in exit_block.insn_snapshots
+                    ):
+                        continue
+                    if len(arm.ordered_path) < 2:
+                        continue
+                    predecessor = int(arm.ordered_path[-2])
+                    predecessor_block = flow_graph.get_block(predecessor)
+                    if (
+                        predecessor_block is None
+                        or predecessor_block.nsucc != 1
+                        or tuple(int(succ) for succ in predecessor_block.succs)
+                        != (int(exit_serial),)
+                        or predecessor not in {
+                            int(pred) for pred in exit_block.preds
+                        }
+                    ):
+                        continue
+                    candidates.setdefault(
+                        (predecessor, int(exit_serial)),
+                        set(),
+                    ).add(int(target))
+                    continue
+            block = flow_graph.get_block(int(source))
+            if block is None or block.nsucc not in (0, 1, 2):
+                continue
+            if block.nsucc == 0:
+                if block.kind in (BlockKind.STOP, BlockKind.EXTERNAL):
+                    continue
+                terminal_candidates.setdefault(int(source), set()).add(int(target))
+                continue
+            if block.nsucc == 1:
+                old = int(block.succs[0])
+            else:
+                if arm.branch_block is not None:
+                    continue
+                try:
+                    source_index = arm.ordered_path.index(int(source))
+                except ValueError:
+                    continue
+                if source_index + 1 >= len(arm.ordered_path):
+                    continue
+                old = int(arm.ordered_path[source_index + 1])
+                if old not in {int(succ) for succ in block.succs}:
+                    continue
+                old_block = flow_graph.get_block(old)
+                if old_block is not None:
+                    old_successors = tuple(int(succ) for succ in old_block.succs)
+                    if (
+                        len(old_successors) == 1
+                        and old_successors[0] in handler_entries
+                    ):
+                        # This arm already has a live, unique handler edge.
+                        # A state observed before the selecting branch can be
+                        # overwritten inside the arm; do not replace that
+                        # stronger edge with stale handler-tail evidence.
+                        continue
+            if old == int(target):
+                continue
+            candidates.setdefault((int(source), old), set()).add(int(target))
+    redirects: list[object] = []
+    for source, targets in sorted(terminal_candidates.items()):
+        if len(targets) != 1:
+            continue
+        redirects.append(
+            ConvertToGoto(
+                block_serial=source,
+                goto_target=next(iter(targets)),
+            )
+        )
+    for (source, old), targets in sorted(candidates.items()):
+        if len(targets) != 1:
+            continue
+        block = flow_graph.get_block(int(source))
+        if block is None:
+            continue
+        redirect_type = RedirectBranch if block.nsucc == 2 else RedirectGoto
+        redirects.append(
+            redirect_type(
+                from_serial=source,
+                old_target=old,
+                new_target=next(iter(targets)),
+            )
+        )
+    return redirects
+
+
+def build_exact_terminal_state_route_redirects(
+    flow_graph,
+    routes: tuple[MaterializedStateRoute, ...],
+    *,
+    state_var_reg: int | None,
+) -> list[object]:
+    """Project exact terminal state writers onto the canonical STOP."""
+    candidates: dict[tuple[int, int], set[int]] = {}
+    for route in routes:
+        if route.proof_kind != "terminal_state_route":
+            continue
+        source = int(route.source_block_serial)
+        state = int(route.state_constant) & 0xFFFFFFFF
+        if (
+            _source_local_constant_register_write(
+                flow_graph,
+                source,
+                state_var_reg,
+            )
+            != state
+        ):
+            continue
+        source_block = flow_graph.get_block(source)
+        target = flow_graph.get_block(int(route.target_handler_serial))
+        if (
+            source_block is None
+            or source_block.nsucc != 1
+            or target is None
+            or target.nsucc != 0
+        ):
+            continue
+        old = int(source_block.succs[0])
+        canonical_stop = _exact_native_terminal_redirect_target(
+            flow_graph,
+            int(route.target_handler_serial),
+        )
+        if canonical_stop is None or old == int(canonical_stop):
+            continue
+        candidates.setdefault((source, old), set()).add(int(canonical_stop))
+    return [
+        RedirectGoto(
+            from_serial=source,
+            old_target=old,
+            new_target=next(iter(targets)),
+        )
+        for (source, old), targets in sorted(candidates.items())
+        if len(targets) == 1
+    ]
+
+
+def _exact_terminal_state_writer_sources(
+    flow_graph,
+    routes: tuple[MaterializedStateRoute, ...],
+    *,
+    state_var_reg: int | None,
+) -> set[int]:
+    """Return terminal-route sources that perform the proven state write."""
+    sources: set[int] = set()
+    for route in routes:
+        if route.proof_kind != "terminal_state_route":
+            continue
+        source = int(route.source_block_serial)
+        state = int(route.state_constant) & 0xFFFFFFFF
+        target = flow_graph.get_block(int(route.target_handler_serial))
+        if (
+            target is not None
+            and target.nsucc == 0
+            and _source_local_constant_register_write(
+                flow_graph,
+                source,
+                state_var_reg,
+            )
+            == state
+        ):
+            sources.add(source)
+    return sources
+
+
+def _one_way_path_reaches(
+    flow_graph,
+    start_serial: int,
+    target_serial: int,
+    *,
+    max_hops: int = 8,
+) -> bool:
+    current = int(start_serial)
+    target = int(target_serial)
+    seen: set[int] = set()
+    for _hop in range(int(max_hops) + 1):
+        if current == target:
+            return True
+        if current in seen:
+            return False
+        seen.add(current)
+        block = flow_graph.get_block(current)
+        if block is None or len(block.succs) != 1:
+            return False
+        current = int(block.succs[0])
+    return False
+
+
+def _reconcile_conditional_bridge_target(
+    flow_graph,
+    exact_target: int | None,
+    state_target: int | None,
+) -> int | None:
+    if exact_target is None:
+        return state_target
+    if state_target is None or int(exact_target) == int(state_target):
+        return exact_target
+    if _one_way_path_reaches(flow_graph, int(state_target), int(exact_target)):
+        return exact_target
+    return None
+
+
+def build_materialized_conditional_handler_bridges(
+    flow_graph,
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+    *,
+    dispatcher=None,
+    materialized_state_routes: tuple[MaterializedStateRoute, ...] = (),
+    handler_entry_eas_by_serial: Mapping[int, int] | None = None,
+) -> list[object]:
+    """Restore exact handler predicates folded to one-way residual routes.
+
+    CALLS preanalysis records the live ``reg != 0`` predicate and both
+    state-routed target EAs before a later materialization round folds the
+    branch.  Reconnect it only when the current source, stale one-way edge, and
+    both target blocks are unique in this snapshot.
+    """
+    handler_entry_eas = handler_entry_eas_by_serial or {}
+    candidates: dict[
+        tuple[int, int, int],
+        set[tuple[int, int, int, int]],
+    ] = {}
+    live_candidates: dict[tuple[int, int], set[int]] = {}
+    live_preserved_candidates: dict[
+        tuple[int, int, int],
+        set[tuple[int, int, bool]],
+    ] = {}
+    route_target_candidates: dict[tuple[int, int], set[int]] = {}
+    for route in materialized_state_routes:
+        if flow_graph.get_block(int(route.target_handler_serial)) is None:
+            continue
+        route_target_candidates.setdefault(
+            (
+                int(route.source_block_serial),
+                int(route.state_constant) & 0xFFFFFFFF,
+            ),
+            set(),
+        ).add(int(route.target_handler_serial))
+    for transfer in transfers:
+        trace_exact_live = bool(
+            transfer.resolver_kind == "conditional_handler_bridge"
+            and transfer.predicate_preserve_live
+        )
+        if (
+            transfer.resolver_kind != "conditional_handler_bridge"
+            or transfer.condition_code != 5
+            or transfer.predicate_size is None
+            or transfer.true_target_ea is None
+            or transfer.false_target_ea is None
+        ):
+            continue
+        predicate_anchor_eas = {int(transfer.source_jmp_ea)}
+        if transfer.predicate_predecessor_ea is not None:
+            predicate_anchor_eas.add(int(transfer.predicate_predecessor_ea))
+        predicate_matches = {
+            int(block.serial)
+            for block in flow_graph.blocks.values()
+            if any(
+                int(insn.ea) == int(transfer.source_jmp_ea)
+                for insn in block.insn_snapshots
+            )
+        }
+        if len(predicate_matches) != 1:
+            live_predicate_matches = {
+                int(serial)
+                for serial in predicate_matches
+                if flow_graph.get_block(int(serial)) is not None
+                and flow_graph.get_block(int(serial)).preds
+                and flow_graph.get_block(int(serial)).insn_snapshots
+                and flow_graph.get_block(int(serial))
+                .insn_snapshots[-1]
+                .is_conditional_jump
+                and int(
+                    flow_graph.get_block(int(serial)).insn_snapshots[-1].ea
+                )
+                == int(transfer.source_jmp_ea)
+            }
+            if len(live_predicate_matches) == 1:
+                predicate_matches = live_predicate_matches
+        source_matches = predicate_matches or {
+            int(block.serial)
+            for block in flow_graph.blocks.values()
+            if int(block.start_ea) == int(transfer.source_block_ea)
+            or any(
+                int(insn.ea) in predicate_anchor_eas
+                for insn in block.insn_snapshots
+            )
+        }
+        if len(source_matches) != 1:
+            if trace_exact_live:
+                logger.info(
+                    "conditional bridge exact-live abstained: predicate=0x%X "
+                    "gate=source_match matches=%s source_ea=0x%X",
+                    int(transfer.source_jmp_ea),
+                    sorted(int(serial) for serial in source_matches),
+                    int(transfer.source_block_ea),
+                )
+            continue
+        source = next(iter(source_matches))
+        source_block = flow_graph.get_block(source)
+        if source_block is None or source_block.nsucc not in {1, 2}:
+            if trace_exact_live:
+                logger.info(
+                    "conditional bridge exact-live abstained: predicate=0x%X "
+                    "gate=source_shape source=blk%d@0x%X nsucc=%s",
+                    int(transfer.source_jmp_ea),
+                    int(source),
+                    (
+                        int(transfer.source_block_ea)
+                        if source_block is None
+                        else int(source_block.start_ea)
+                    ),
+                    None if source_block is None else int(source_block.nsucc),
+                )
+            continue
+        source_instructions = tuple(source_block.insn_snapshots)
+        predicate_eas = [int(insn.ea) for insn in source_instructions]
+        true_target_from_ea = find_unique_target_entry_block(
+            flow_graph, int(transfer.true_target_ea)
+        )
+        false_target_from_ea = find_unique_target_entry_block(
+            flow_graph, int(transfer.false_target_ea)
+        )
+        true_target_from_state = (
+            dispatcher.lookup(int(transfer.predicate_true_state) & 0xFFFFFFFF)
+            if dispatcher is not None
+            and transfer.predicate_true_state is not None
+            else None
+        )
+        false_target_from_state = (
+            dispatcher.lookup(int(transfer.predicate_false_state) & 0xFFFFFFFF)
+            if dispatcher is not None
+            and transfer.predicate_false_state is not None
+            else None
+        )
+        true_target_from_route = None
+        if transfer.predicate_true_state is not None:
+            route_candidates = set().union(
+                *(
+                    route_target_candidates.get(
+                        (
+                            int(route_source),
+                            int(transfer.predicate_true_state) & 0xFFFFFFFF,
+                        ),
+                        set(),
+                    )
+                    for route_source in {
+                        int(source),
+                        *(int(succ) for succ in source_block.succs),
+                    }
+                )
+            )
+            if len(route_candidates) == 1:
+                true_target_from_route = next(iter(route_candidates))
+        false_target_from_route = None
+        if transfer.predicate_false_state is not None:
+            route_candidates = set().union(
+                *(
+                    route_target_candidates.get(
+                        (
+                            int(route_source),
+                            int(transfer.predicate_false_state) & 0xFFFFFFFF,
+                        ),
+                        set(),
+                    )
+                    for route_source in {
+                        int(source),
+                        *(int(succ) for succ in source_block.succs),
+                    }
+                )
+            )
+            if len(route_candidates) == 1:
+                false_target_from_route = next(iter(route_candidates))
+        if transfer.predicate_preserve_live:
+            def route_matches_exact_target(
+                route_serial: int | None,
+                exact_target_ea: int,
+            ) -> bool:
+                if route_serial is None:
+                    return False
+                route = int(route_serial)
+                mapped_entry_ea = handler_entry_eas.get(route)
+                if mapped_entry_ea is not None:
+                    if int(mapped_entry_ea) == int(exact_target_ea):
+                        return True
+                    exact_entry = find_unique_target_entry_block(
+                        flow_graph,
+                        int(exact_target_ea),
+                    )
+                    exact_block = (
+                        flow_graph.get_block(int(exact_entry))
+                        if exact_entry is not None
+                        else None
+                    )
+                    if (
+                        exact_block is not None
+                        and exact_block.insn_snapshots
+                        and int(exact_block.start_ea) <= int(mapped_entry_ea)
+                        <= max(
+                            int(instruction.ea)
+                            for instruction in exact_block.insn_snapshots
+                        )
+                    ):
+                        return True
+                    mapped_native_entry = find_unique_target_entry_block(
+                        flow_graph,
+                        int(mapped_entry_ea),
+                    )
+                    return (
+                        exact_entry is not None
+                        and mapped_native_entry is not None
+                        and _one_way_path_reaches(
+                            flow_graph,
+                            int(exact_entry),
+                            int(mapped_native_entry),
+                        )
+                    )
+                route_block = flow_graph.get_block(route)
+                return (
+                    route_block is not None
+                    and int(route_block.start_ea) == int(exact_target_ea)
+                )
+
+            if not route_matches_exact_target(
+                true_target_from_route,
+                int(transfer.true_target_ea),
+            ):
+                true_target_from_route = None
+            if not route_matches_exact_target(
+                false_target_from_route,
+                int(transfer.false_target_ea),
+            ):
+                false_target_from_route = None
+        true_target_without_route = _reconcile_conditional_bridge_target(
+            flow_graph,
+            true_target_from_ea,
+            true_target_from_state,
+        )
+        true_target = (
+            true_target_from_route
+            if true_target_from_route is not None
+            else true_target_without_route
+        )
+        false_target_without_route = _reconcile_conditional_bridge_target(
+            flow_graph,
+            false_target_from_ea,
+            false_target_from_state,
+        )
+        false_target = (
+            false_target_from_route
+            if false_target_from_route is not None
+            else false_target_without_route
+        )
+        if transfer.predicate_preserve_live and (
+            true_target_from_route is None
+            or false_target_from_route is None
+        ):
+            if trace_exact_live:
+                logger.info(
+                    "conditional bridge exact-live abstained: predicate=0x%X "
+                    "gate=atomic_routes source=blk%d@0x%X true_route=%s "
+                    "false_route=%s",
+                    int(transfer.source_jmp_ea),
+                    int(source),
+                    int(source_block.start_ea),
+                    true_target_from_route,
+                    false_target_from_route,
+                )
+            continue
+        if (
+            source_block.nsucc == 2
+        ):
+            if transfer.predicate_true_is_taken is None:
+                if trace_exact_live:
+                    logger.info(
+                        "conditional bridge exact-live abstained: predicate=0x%X "
+                        "gate=arm_polarity source=blk%d@0x%X",
+                        int(transfer.source_jmp_ea),
+                        int(source),
+                        int(source_block.start_ea),
+                    )
+                continue
+            predicate = next(
+                (
+                    insn
+                    for insn in reversed(source_instructions)
+                    if int(insn.ea) == int(transfer.source_jmp_ea)
+                ),
+                None,
+            )
+            taken = (
+                int(predicate.d.block_ref)
+                if predicate is not None
+                and predicate.d is not None
+                and predicate.d.block_ref is not None
+                else None
+            )
+            successors = tuple(int(succ) for succ in source_block.succs)
+            if taken is None or taken not in successors:
+                if trace_exact_live:
+                    logger.info(
+                        "conditional bridge exact-live abstained: predicate=0x%X "
+                        "gate=taken_successor source=blk%d@0x%X taken=%s successors=%s",
+                        int(transfer.source_jmp_ea),
+                        int(source),
+                        int(source_block.start_ea),
+                        taken,
+                        successors,
+                    )
+                continue
+            taken_target = (
+                true_target
+                if transfer.predicate_true_is_taken
+                else false_target
+            )
+            preserve_exact_predicate = (
+                transfer.predicate_preserve_live
+                and true_target_from_route is not None
+                and false_target_from_route is not None
+            )
+            if preserve_exact_predicate:
+                if trace_exact_live:
+                    logger.info(
+                        "conditional bridge exact-live resolved: predicate=0x%X "
+                        "source=blk%d@0x%X true=%s false=%s true_ea=%s "
+                        "false_ea=%s true_state=%s false_state=%s "
+                        "true_route=%s false_route=%s",
+                        int(transfer.source_jmp_ea),
+                        int(source),
+                        int(source_block.start_ea),
+                        true_target,
+                        false_target,
+                        true_target_from_ea,
+                        false_target_from_ea,
+                        true_target_from_state,
+                        false_target_from_state,
+                        true_target_from_route,
+                        false_target_from_route,
+                    )
+                if (
+                    true_target is None
+                    or false_target is None
+                    or int(true_target) == int(false_target)
+                ):
+                    continue
+                if trace_exact_live:
+                    logger.info(
+                        "conditional bridge exact-live planned: predicate=0x%X "
+                        "source=blk%d@0x%X old=blk%d@0x%X false=blk%d@0x%X "
+                        "true=blk%d@0x%X mode=preserve",
+                        int(transfer.source_jmp_ea),
+                        int(source),
+                        int(source_block.start_ea),
+                        int(taken),
+                        int(flow_graph.get_block(int(taken)).start_ea),
+                        int(false_target),
+                        int(flow_graph.get_block(int(false_target)).start_ea),
+                        int(true_target),
+                        int(flow_graph.get_block(int(true_target)).start_ea),
+                    )
+                live_preserved_candidates.setdefault(
+                    (source, int(transfer.source_jmp_ea), int(taken)),
+                    set(),
+                ).add(
+                    (
+                        int(false_target),
+                        int(true_target),
+                        bool(transfer.predicate_true_is_taken),
+                    )
+                )
+                continue
+            if taken_target is None:
+                if trace_exact_live:
+                    logger.info(
+                        "conditional bridge exact-live abstained: predicate=0x%X "
+                        "gate=taken_target source=blk%d@0x%X true=%s false=%s "
+                        "true_ea=%s false_ea=%s true_state=%s false_state=%s "
+                        "true_route=%s false_route=%s",
+                        int(transfer.source_jmp_ea),
+                        int(source),
+                        int(source_block.start_ea),
+                        true_target,
+                        false_target,
+                        true_target_from_ea,
+                        false_target_from_ea,
+                        true_target_from_state,
+                        false_target_from_state,
+                        true_target_from_route,
+                        false_target_from_route,
+                    )
+                continue
+            if trace_exact_live:
+                logger.info(
+                    "conditional bridge exact-live planned: predicate=0x%X "
+                    "source=blk%d@0x%X old=blk%d@0x%X target=blk%d@0x%X "
+                    "mode=one_arm true=%s false=%s true_ea=%s false_ea=%s "
+                    "true_state=%s false_state=%s true_route=%s false_route=%s",
+                    int(transfer.source_jmp_ea),
+                    int(source),
+                    int(source_block.start_ea),
+                    int(taken),
+                    int(flow_graph.get_block(int(taken)).start_ea),
+                    int(taken_target),
+                    int(flow_graph.get_block(int(taken_target)).start_ea),
+                    true_target,
+                    false_target,
+                    true_target_from_ea,
+                    false_target_from_ea,
+                    true_target_from_state,
+                    false_target_from_state,
+                    true_target_from_route,
+                    false_target_from_route,
+                )
+            live_candidates.setdefault((source, taken), set()).add(
+                int(taken_target)
+            )
+            continue
+
+        if (
+            true_target is None
+            or false_target is None
+            or int(true_target) == int(false_target)
+        ):
+            continue
+
+        # A folded one-way branch must be reconstructed, so unlike the live
+        # two-way path above it requires an exact register identity.
+        if transfer.predicate_register is None:
+            continue
+
+        # A register-vs-register comparison is safe while its original 2-way
+        # branch is live (handled above), but cannot be reconstructed as the
+        # legacy synthetic ``register != 0`` condition after folding.
+        if (
+            transfer.predicate_compare_register is not None
+            or transfer.predicate_compare_constant is not None
+        ):
+            continue
+
+        if int(transfer.source_jmp_ea) in predicate_eas:
+            rewrite_ea = int(transfer.source_jmp_ea)
+        else:
+            if transfer.predicate_predecessor_ea is None:
+                continue
+            try:
+                predecessor_index = predicate_eas.index(
+                    int(transfer.predicate_predecessor_ea)
+                )
+            except ValueError:
+                continue
+            if predecessor_index + 1 >= len(source_instructions):
+                continue
+            rewrite_ea = int(source_instructions[predecessor_index + 1].ea)
+        old = int(source_block.succs[0])
+        key = (source, rewrite_ea, old)
+        candidates.setdefault(key, set()).add(
+            (
+                int(false_target),
+                int(true_target),
+                int(transfer.predicate_register),
+                int(transfer.predicate_size),
+            )
+        )
+
+    result: list[object] = []
+    for (source, predicate_ea, old), proofs in sorted(
+        live_preserved_candidates.items()
+    ):
+        if len(proofs) != 1:
+            continue
+        false_target, true_target, true_is_taken = next(iter(proofs))
+        result.append(
+            LowerConditionalStateTransition(
+                source_serial=int(source),
+                old_dispatcher_serial=int(old),
+                rewrite_from_ea=int(predicate_ea),
+                condition_operand=PreserveLivePredicateCondition(
+                    predicate_ea=int(predicate_ea),
+                    true_is_taken=bool(true_is_taken),
+                ),
+                false_target_serial=int(false_target),
+                true_target_serial=int(true_target),
+                proof_id=(
+                    "conditional_handler_bridge:"
+                    f"source_ea=0x{flow_graph.get_block(source).start_ea:X}:"
+                    f"predicate_ea=0x{predicate_ea:X}"
+                ),
+                reason="resolver_proven_live_conditional_handler_bridge",
+            )
+        )
+    for (source, old), targets in sorted(live_candidates.items()):
+        if len(targets) != 1:
+            continue
+        target = next(iter(targets))
+        if int(old) == int(target):
+            continue
+        result.append(
+            RedirectBranch(
+                from_serial=int(source),
+                old_target=int(old),
+                new_target=int(target),
+            )
+        )
+    for (source, predicate_ea, old), proofs in sorted(candidates.items()):
+        if len(proofs) != 1:
+            continue
+        false_target, true_target, predicate_reg, predicate_size = next(
+            iter(proofs)
+        )
+        result.append(
+            LowerConditionalStateTransition(
+                source_serial=source,
+                old_dispatcher_serial=old,
+                rewrite_from_ea=predicate_ea,
+                condition_operand=SyntheticRegisterNonzeroCondition(
+                    predicate_reg=predicate_reg,
+                    predicate_size=predicate_size,
+                ),
+                false_target_serial=false_target,
+                true_target_serial=true_target,
+                proof_id=(
+                    "conditional_handler_bridge:"
+                    f"source_ea=0x{flow_graph.get_block(source).start_ea:X}:"
+                    f"predicate_ea=0x{predicate_ea:X}"
+                ),
+                reason="resolver_proven_conditional_handler_bridge",
+            )
+        )
+    return result
+
+
+def _normalize_degenerate_branch_redirects(
+    flow_graph,
+    modifications: list[object],
+) -> list[object]:
+    """Replace duplicate-successor branch rewrites with an explicit goto."""
+    successors = {
+        int(serial): [int(succ) for succ in block.succs]
+        for serial, block in flow_graph.blocks.items()
+    }
+    normalized: list[object] = []
+    for modification in modifications:
+        if isinstance(modification, ConvertToGoto):
+            successors[int(modification.block_serial)] = [
+                int(modification.goto_target)
+            ]
+            normalized.append(modification)
+            continue
+        if not isinstance(modification, (RedirectGoto, RedirectBranch)):
+            normalized.append(modification)
+            continue
+        source = int(modification.from_serial)
+        old = int(modification.old_target)
+        new = int(modification.new_target)
+        current = successors.get(source, [])
+        if old not in current:
+            normalized.append(modification)
+            continue
+        if (
+            isinstance(modification, RedirectBranch)
+            and old != new
+            and new in current
+        ):
+            replacement = ConvertToGoto(block_serial=source, goto_target=new)
+            successors[source] = [new]
+            normalized.append(replacement)
+            continue
+        current[current.index(old)] = new
+        normalized.append(modification)
+    return normalized
+
+
 def build_conditional_arm_redirects(
     flow_graph,
     dispatcher,
@@ -2104,6 +3390,7 @@ def build_conditional_arm_redirects(
     existing_sources: set[int] | None = None,
     is_indirect: bool = False,
     carrier_via_blocks: set[int] | None = None,
+    infer_unmatched_returns: bool = True,
 ) -> list[object]:
     """Emit per-arm redirects for conditional handlers, anchored on the branch.
 
@@ -2152,10 +3439,23 @@ def build_conditional_arm_redirects(
     branch-anchored redirect so the carrier is not bypassed.  ``carrier_via_blocks``
     is empty for every non-carrier shape, leaving those byte-identical.
 
+    Materialized computed-goto dispatchers can have handler arms whose state
+    target is not yet proven.  Such an unmatched arm must remain on its original
+    edge: treating ``next_state is None`` as a return can redirect a live body
+    arm to the function exit and make the body disappear under DCE.  Callers for
+    that profile set ``infer_unmatched_returns=False``; the default preserves the
+    established stack-state behavior byte-for-byte.
+
     """
     disp = int(dispatcher_entry_serial) if dispatcher_entry_serial is not None else None
     if disp is None:
         return []
+    dispatcher_block = flow_graph.get_block(disp)
+    dispatcher_children = (
+        {int(successor) for successor in dispatcher_block.succs}
+        if dispatcher_block is not None
+        else set()
+    )
     default_target = dispatcher.default_target
     sources = existing_sources if existing_sources is not None else set()
     carriers = {int(b) for b in (carrier_via_blocks or ())}
@@ -2211,6 +3511,8 @@ def build_conditional_arm_redirects(
         write_blocks = {int(a.write_block) for a in handler.arms if a.write_block is not None}
         shared_write_block = len(write_blocks) == 1
         for arm in handler.arms:
+            if not infer_unmatched_returns and arm.next_state is None:
+                continue
             new = default_target if arm.is_return else arm.target_handler
             if shared_write_block and arm.branch_block is not None:
                 # Both arms reach the dispatcher through one *shared exit* block
@@ -2258,6 +3560,25 @@ def build_conditional_arm_redirects(
                 continue
             # Distinct write blocks per arm: each is its own dispatcher
             # predecessor; only fill in arms the back-edge model left unredirected.
+            # A computed-goto BST can enter one of the dispatch root's two
+            # range-navigation children after a unique per-arm glue block. The
+            # distant scan boundary is then shared and is not a direct root
+            # predecessor. Redirect the unique glue edge instead: its semantic
+            # writes still execute, while the state-dependent routing spine is
+            # bypassed with the arm's proven target.
+            arm_successor = _arm_branch_successor(arm)
+            if arm.branch_block is not None and arm_successor is not None:
+                arm_block = flow_graph.get_block(int(arm_successor))
+                if arm_block is not None:
+                    arm_succs = tuple(int(successor) for successor in arm_block.succs)
+                    arm_preds = tuple(int(predecessor) for predecessor in arm_block.preds)
+                    if (
+                        len(arm_succs) == 1
+                        and arm_succs[0] in dispatcher_children
+                        and arm_preds == (int(arm.branch_block),)
+                    ):
+                        _add(int(arm_successor), arm_succs[0], new)
+                        continue
             wb = arm.write_block
             if wb is None:
                 continue
@@ -2554,6 +3875,7 @@ def build_loop_guard_exit_redirects(
     handler_transitions: tuple[HandlerTransition, ...],
     *,
     dispatcher_entry_serial: int,
+    infer_unmatched_returns: bool = True,
 ) -> list[object]:
     """Redirect a loop-guard-exit dispatcher's terminal handler to the exit corridor.
 
@@ -2589,6 +3911,8 @@ def build_loop_guard_exit_redirects(
         if hb is None:
             continue
         for arm in handler.arms:
+            if not infer_unmatched_returns and arm.next_state is None:
+                continue
             exit_block = arm.exit_block
             if exit_block is None or int(exit_block) == disp:
                 continue
@@ -2776,11 +4100,44 @@ def build_shared_merge_conditional_redirects(
     return redirects, suppressed
 
 
+def build_resolver_proven_indirect_call_neutralizations(
+    flow_graph,
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+    modifications: tuple[object, ...],
+    *,
+    handler_serials: frozenset[int],
+) -> list[NopInstructions]:
+    """NOP stale call lifts only when one planned handler edge replaces them."""
+    redirected_targets: dict[int, set[int]] = {}
+    for modification in modifications:
+        if not isinstance(modification, RedirectGoto):
+            continue
+        redirected_targets.setdefault(
+            int(modification.from_serial), set()
+        ).add(int(modification.new_target))
+    plans = plan_resolver_proven_indirect_call_neutralizations(
+        transfers,
+        flow_graph,
+        redirected_targets_by_source={
+            source: tuple(sorted(targets))
+            for source, targets in redirected_targets.items()
+        },
+        allowed_target_serials=handler_serials,
+    )
+    return [
+        NopInstructions(
+            block_serial=int(plan.source_block_serial),
+            insn_eas=(int(plan.source_jmp_ea),),
+        )
+        for plan in plans
+    ]
+
+
 def emit_minimal_unflatten(
     flow_graph,
     dispatcher,
     *,
-    state_var_stkoff: int,
+    state_var_stkoff: int | None,
     dispatcher_entry_serial: int | None,
     pre_header_serial: int | None = None,
     initial_state: int | None = None,
@@ -2796,6 +4153,15 @@ def emit_minimal_unflatten(
     entry_bridge_requires_witness: bool = False,
     exit_path_effect_recovery: bool = False,
     recover_multi_entry_back_edges: bool = False,
+    state_var_reg: int | None = None,
+    materialized_indirect_transfers: tuple[MaterializedIndirectTransfer, ...] = (),
+    materialized_state_routes: tuple[MaterializedStateRoute, ...] = (),
+    handler_entry_eas_by_serial: Mapping[int, int] | None = None,
+    materialized_computed_goto_profile: bool = False,
+    condition_chain_dag: DecisionDag | None = None,
+    condition_chain_handlers: frozenset[int] = frozenset(),
+    dispatcher_region_serials: frozenset[int] = frozenset(),
+    entry_bridge_evidence: EntryBridgeEvidence | None = None,
 ) -> PatchPlan:
     """Recover back-edge transitions and emit the dispatcher-bypass ``PatchPlan``.
 
@@ -2819,6 +4185,14 @@ def emit_minimal_unflatten(
     """
     if dispatcher_entry_serial is None:
         return compile_patch_plan([], flow_graph)
+    # A register-resident state variable (``state_var_reg`` set and
+    # ``state_var_stkoff`` None) carries no stack
+    # offset. ``_soff`` is the None-safe int form threaded into the stkoff-keyed
+    # refinement helpers below; the core transition recovery reads the register
+    # cell via ``state_var_reg`` (the partitioned fixpoint already tracks it in
+    # ``out_reg_maps``). ``state_var_reg is None`` -> ``_soff == int(stkoff)`` and
+    # every path is byte-identical to the stack behaviour.
+    _soff = int(state_var_stkoff) if state_var_stkoff is not None else None
     # S4 C3 flip (ticket llr-1szn): the back-edge next-states now come from the sound
     # region-partitioned multi-cell fixpoint (run_snapshot_constant_fixpoint, the SAME
     # _transfer_snapshot_constant_block transfer) instead of the ad-hoc per-region walk
@@ -2830,13 +4204,36 @@ def emit_minimal_unflatten(
     transitions = recover_state_write_transitions_via_partitioned_fixpoint(
         flow_graph,
         dispatcher,
-        int(state_var_stkoff),
+        state_var_stkoff,
         dispatcher_entry_serial=int(dispatcher_entry_serial),
         recover_terminal_tail=is_indirect,
         initial_state=initial_state,
         emu=emu,
         live_block_for=live_block_for,
         include_multi_entry_back_edges=recover_multi_entry_back_edges,
+        state_var_reg=state_var_reg,
+    )
+    route_handler_serials = condition_chain_handlers
+    if materialized_computed_goto_profile:
+        route_handler_serials = frozenset(
+            set(condition_chain_handlers).union(
+                int(route.target_handler_serial)
+                for route in materialized_state_routes
+            )
+        )
+    # Resolver-target evidence is an opt-in, fail-closed refinement for the
+    # false-terminal default route of a materialized computed goto. Exact
+    # dispatcher rows remain authoritative; the helper returns every unrelated
+    # transition byte-identically.
+    transitions = resolve_materialized_indirect_transfer_targets(
+        transitions,
+        flow_graph,
+        dispatcher,
+        materialized_indirect_transfers,
+        materialized_state_routes=materialized_state_routes,
+        condition_chain_dag=condition_chain_dag,
+        condition_chain_handlers=route_handler_serials,
+        state_var_reg=state_var_reg,
     )
     terminal_carrier_convergence = transitions_use_terminal_stack_alias_guard(
         transitions
@@ -2897,6 +4294,23 @@ def emit_minimal_unflatten(
                 initial_state is not None
                 and dispatcher.lookup(int(initial_state) & 0xFFFFFFFF) is not None
             )
+            # d81-3rja step 1: a register-conditional prologue (the initial state is
+            # carried in a scratch register while the state var holds a decoy) is
+            # bridged by the register-conditional pass in build_state_write_redirects,
+            # so the scalar ``initial_state`` may legitimately be absent -- do not bail.
+            if not bridged and state_var_reg is not None:
+                bridged = bool(
+                    _recover_register_conditional_entry(
+                        flow_graph,
+                        dispatcher,
+                        int(dispatcher_entry_serial),
+                        state_var_reg=int(state_var_reg),
+                        materialized_indirect_transfers=materialized_indirect_transfers,
+                        materialized_state_routes=materialized_state_routes,
+                        condition_chain_handlers=route_handler_serials,
+                        entry_bridge_evidence=entry_bridge_evidence,
+                    )
+                )
             if not bridged:
                 if logger.info_on:
                     logger.info(
@@ -2912,13 +4326,19 @@ def emit_minimal_unflatten(
         dispatcher_entry_serial=dispatcher_entry_serial,
         pre_header_serial=pre_header_serial,
         initial_state=initial_state,
-        state_var_stkoff=int(state_var_stkoff),
+        state_var_stkoff=_soff,
+        state_var_reg=state_var_reg,
         branch_witness_map=branch_witness_map,
         branch_witness_emu=branch_witness_emu,
         entry_bridge_exit_path_blocks=entry_bridge_exit_path_blocks,
         entry_bridge_requires_witness=entry_bridge_requires_witness,
         strict_pre_header_prologue=recover_multi_entry_back_edges,
         allow_multi_entry_entry_bridge=recover_multi_entry_back_edges,
+        materialized_indirect_transfers=materialized_indirect_transfers,
+        materialized_state_routes=materialized_state_routes,
+        condition_chain_handlers=route_handler_serials,
+        infer_unmatched_returns=not materialized_computed_goto_profile,
+        entry_bridge_evidence=entry_bridge_evidence,
     )
     # Conditional/multi-arm transitions (ticket llr-aga1): the back-edge model
     # above emits one redirect per dispatcher predecessor and collapses a
@@ -2928,29 +4348,68 @@ def emit_minimal_unflatten(
     # arms; emit the missing arm redirects additively, vetoed on any source edge
     # the back-edge model already resolved so the unconditional case stays
     # byte-identical.
-    handler_transitions = recover_handler_transitions(
-        flow_graph,
-        dispatcher,
-        int(state_var_stkoff),
-        dispatcher_entry_serial=int(dispatcher_entry_serial),
-    )
-    loop_carrier_route_blocks = _loop_carrier_route_blocks(
-        flow_graph,
-        dispatcher,
-        transitions,
-        fact_view,
-    )
-    if loop_carrier_route_blocks and logger.info_on:
-        logger.info(
-            "unflat minimal unflatten: loop_carrier_routes=%s",
-            ",".join("blk%d" % b for b in sorted(loop_carrier_route_blocks)),
+    # The multi-arm scanner reads either state storage form. The loop-carrier
+    # refinements remain stack-only because they specifically inspect stack alias
+    # plumbing, but a register-resident handler can still select distinct next
+    # states on its two branch arms.
+    if _soff is not None:
+        handler_transitions = recover_handler_transitions(
+            flow_graph,
+            dispatcher,
+            _soff,
+            dispatcher_entry_serial=int(dispatcher_entry_serial),
+            dispatcher_region_serials=dispatcher_region_serials,
+            authoritative_handler_serials=route_handler_serials,
         )
-    latch_redirects, latch_suppressed = build_loop_carrier_latch_redirects(
+        loop_carrier_route_blocks = _loop_carrier_route_blocks(
+            flow_graph,
+            dispatcher,
+            transitions,
+            fact_view,
+        )
+        if loop_carrier_route_blocks and logger.info_on:
+            logger.info(
+                "unflat minimal unflatten: loop_carrier_routes=%s",
+                ",".join("blk%d" % b for b in sorted(loop_carrier_route_blocks)),
+            )
+        latch_redirects, latch_suppressed = build_loop_carrier_latch_redirects(
+            flow_graph,
+            transitions,
+            fact_view,
+            dispatcher_entry_serial=int(dispatcher_entry_serial),
+            state_var_stkoff=_soff,
+        )
+    else:
+        handler_transitions = recover_handler_transitions(
+            flow_graph,
+            dispatcher,
+            None,
+            state_var_reg=state_var_reg,
+            dispatcher_entry_serial=int(dispatcher_entry_serial),
+            dispatcher_region_serials=dispatcher_region_serials,
+            authoritative_handler_serials=route_handler_serials,
+        )
+        latch_redirects, latch_suppressed = [], set()
+    handler_transitions = resolve_materialized_handler_transition_targets(
+        handler_transitions,
+        materialized_state_routes,
+        route_handler_serials,
+        dispatcher_block_serials=dispatcher_region_serials,
+    )
+    handler_transitions = resolve_materialized_handler_exit_states(
+        handler_transitions,
+        materialized_state_routes,
+        route_handler_serials,
+    )
+    terminal_state_writer_sources = _exact_terminal_state_writer_sources(
         flow_graph,
-        transitions,
-        fact_view,
-        dispatcher_entry_serial=int(dispatcher_entry_serial),
-        state_var_stkoff=int(state_var_stkoff),
+        materialized_state_routes,
+        state_var_reg=state_var_reg,
+    )
+    terminal_state_route_mods = build_exact_terminal_state_route_redirects(
+        flow_graph,
+        materialized_state_routes,
+        state_var_reg=state_var_reg,
     )
     if latch_suppressed:
         mods = [
@@ -2963,6 +4422,100 @@ def emit_minimal_unflatten(
         ]
     if latch_redirects:
         mods = list(mods) + latch_redirects
+    source_keyed_mods = build_source_keyed_handler_redirects(
+        flow_graph,
+        handler_transitions,
+    )
+    source_keyed_edges = _existing_redirect_keys(source_keyed_mods)
+    source_keyed_edges.update(
+        _existing_redirect_keys(terminal_state_route_mods)
+    )
+    source_keyed_edges.update(
+        _exact_live_state_edge_keys(flow_graph, materialized_state_routes)
+    )
+    if source_keyed_edges:
+        mods = [
+            mod
+            for mod in mods
+            if not (
+                isinstance(mod, (RedirectGoto, RedirectBranch))
+                and (int(mod.from_serial), int(mod.old_target))
+                in source_keyed_edges
+            )
+        ]
+    if source_keyed_mods:
+        mods = list(mods) + source_keyed_mods
+        # Source-keyed evidence may resolve both arms of an imported handler
+        # fork after the coarse back-edge pass already planned a parent
+        # redirect.  Re-run the existing fork-preservation gate now that the
+        # stronger arm routes are present so the parent cannot bypass them.
+        mods = _preserve_fully_resolved_state_forks(
+            flow_graph,
+            list(mods),
+            handler_entries=set(route_handler_serials),
+            excluded_fork_serials={int(dispatcher_entry_serial)},
+        )
+    if terminal_state_route_mods:
+        existing_terminal_redirects = {
+            (
+                int(mod.from_serial),
+                int(mod.old_target),
+                int(mod.new_target),
+            )
+            for mod in mods
+            if isinstance(mod, (RedirectGoto, RedirectBranch))
+        }
+        mods = list(mods) + [
+            mod
+            for mod in terminal_state_route_mods
+            if (
+                int(mod.from_serial),
+                int(mod.old_target),
+                int(mod.new_target),
+            )
+            not in existing_terminal_redirects
+        ]
+    conditional_bridge_mods = build_materialized_conditional_handler_bridges(
+        flow_graph,
+        materialized_indirect_transfers,
+        dispatcher=dispatcher,
+        materialized_state_routes=materialized_state_routes,
+        handler_entry_eas_by_serial=handler_entry_eas_by_serial,
+    )
+    if terminal_state_writer_sources:
+        conditional_bridge_mods = [
+            mod
+            for mod in conditional_bridge_mods
+            if not (
+                (
+                    isinstance(mod, (RedirectGoto, RedirectBranch))
+                    and int(mod.old_target) in terminal_state_writer_sources
+                )
+                or (
+                    isinstance(mod, LowerConditionalStateTransition)
+                    and int(mod.old_dispatcher_serial)
+                    in terminal_state_writer_sources
+                )
+            )
+        ]
+    if conditional_bridge_mods:
+        bridge_sources = {
+            (
+                int(mod.source_serial)
+                if isinstance(mod, LowerConditionalStateTransition)
+                else int(mod.from_serial)
+            )
+            for mod in conditional_bridge_mods
+        }
+        mods = [
+            mod
+            for mod in mods
+            if not (
+                isinstance(mod, (RedirectGoto, RedirectBranch))
+                and int(mod.from_serial) in bridge_sources
+            )
+        ]
+        mods = list(mods) + conditional_bridge_mods
     arm_mods = build_conditional_arm_redirects(
         flow_graph,
         dispatcher,
@@ -2976,10 +4529,11 @@ def emit_minimal_unflatten(
                 flow_graph,
                 transitions,
                 disp=int(dispatcher_entry_serial),
-                state_var_stkoff=int(state_var_stkoff),
+                state_var_stkoff=_soff,
                 default_target=dispatcher.default_target,
             )
         ),
+        infer_unmatched_returns=not materialized_computed_goto_profile,
     )
     guard_candidates = build_loop_carrier_guard_transitions(
         flow_graph,
@@ -3092,7 +4646,12 @@ def emit_minimal_unflatten(
     # residual) so the carrier stays on-path. Gated ``D810_USE_DEF_VETO`` (default OFF
     # -> byte-identical); the state variable's own severance is the unflattening and is
     # never vetoed.
-    if use_def_safety is not None and live_function is not None:
+    # d81-3rja: the use-def severance veto is stkoff-keyed (it identifies the state
+    # var by stack offset to allow severing it while protecting other stack carriers).
+    # A register-resident state var carries no stack offset, so the veto cannot run;
+    # skip it (register severance is the intended unflattening). Byte-identical for
+    # the stack path (``_soff is not None``).
+    if use_def_safety is not None and live_function is not None and _soff is not None:
         # Conservative bail (ticket llr-wlzb): on a shape where unflattening would
         # orphan a non-state carrier (the pointer-indirected accumulator whose
         # setup/math handlers get severed), abandon the whole unflatten and leave the
@@ -3105,7 +4664,7 @@ def emit_minimal_unflatten(
                 use_def_safety=use_def_safety,
                 live_function=live_function,
                 pre_cfg=flow_graph,
-                state_var_stkoff=int(state_var_stkoff),
+                state_var_stkoff=_soff,
             )
             if severed:
                 if logger.info_on:
@@ -3121,14 +4680,14 @@ def emit_minimal_unflatten(
             use_def_safety=use_def_safety,
             live_function=live_function,
             pre_cfg=flow_graph,
-            state_var_stkoff=int(state_var_stkoff),
+            state_var_stkoff=_soff,
         )
-    if exit_path_effect_recovery:
+    if exit_path_effect_recovery and _soff is not None:
         exit_path_effect_plan = plan_state_exit_path_effect_lowerings(
             flow_graph=flow_graph,
             modifications=tuple(mods),
             dispatcher_entry_serial=int(dispatcher_entry_serial),
-            state_var_stkoff=int(state_var_stkoff),
+            state_var_stkoff=_soff,
         )
         if exit_path_effect_plan.modifications:
             terminal_anchors = {
@@ -3212,9 +4771,23 @@ def emit_minimal_unflatten(
     exit_redirects = build_loop_guard_exit_redirects(
         flow_graph, dispatcher, handler_transitions,
         dispatcher_entry_serial=int(dispatcher_entry_serial),
+        infer_unmatched_returns=not materialized_computed_goto_profile,
     )
     if exit_redirects:
         mods = list(mods) + exit_redirects
+    indirect_call_neutralizations = (
+        build_resolver_proven_indirect_call_neutralizations(
+            flow_graph,
+            materialized_indirect_transfers,
+            tuple(mods),
+            handler_serials=route_handler_serials,
+        )
+        if materialized_computed_goto_profile
+        else []
+    )
+    if indirect_call_neutralizations:
+        mods = list(mods) + indirect_call_neutralizations
+    mods = _normalize_degenerate_branch_redirects(flow_graph, list(mods))
     plan = compile_patch_plan(list(mods), flow_graph)
     if terminal_carrier_convergence:
         plan = plan.with_metadata(

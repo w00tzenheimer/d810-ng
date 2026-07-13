@@ -30,9 +30,10 @@ def test_registry_loads_initial_cases() -> None:
         "terminal_tail_split_guard",
         "terminal_tail_unique_continuation",
         "badwhile_direct_triangle_case",
-        "badwhile_trampoline_triangle_case",
-        "badwhile_duplicate_group_triangle",
-    }
+            "badwhile_trampoline_triangle_case",
+            "badwhile_duplicate_group_triangle",
+            "rhad_indirect_dispatch",
+        }
 
 
 def test_command_rendering_includes_docker_dump_command() -> None:

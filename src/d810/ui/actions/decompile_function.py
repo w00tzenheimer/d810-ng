@@ -7,6 +7,9 @@ from __future__ import annotations
 from d810.core import typing
 
 from d810.core.logging import getLogger
+from d810.capabilities.detached_handler_snippets import (
+    prepare_detached_handler_snippets,
+)
 from d810.ui.actions.base import D810ActionHandler
 
 logger = getLogger("D810.ui")
@@ -47,7 +50,13 @@ class DecompileFunction(D810ActionHandler):
 
         # Trigger decompilation (D810ng hooks will run automatically)
         try:
-            idaapi_shim.decompile(func_ea)
+            cfunc = idaapi_shim.decompile(func_ea)
+            captured = prepare_detached_handler_snippets(
+                int(func_ea),
+                live_mba=cfunc.mba if cfunc is not None else None,
+            )
+            if captured:
+                idaapi_shim.decompile(func_ea)
             # Open the pseudocode window
             idaapi_shim.open_pseudocode(func_ea, 0)
         except Exception as exc:

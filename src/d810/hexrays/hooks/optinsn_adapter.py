@@ -5,6 +5,10 @@ from collections import defaultdict
 
 import ida_hexrays
 
+from d810.hexrays.hooks.optimization_suppression import (
+    d810_optimization_is_suppressed,
+)
+
 from d810.core import getLogger, typing
 from d810.core.cymode import CythonMode
 from d810.core.rule_scope import PIPELINE_INSTRUCTION
@@ -637,6 +641,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         return names
 
     def optimize(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t) -> bool:
+        if d810_optimization_is_suppressed():
+            return False
         # optimizer_log.info("Trying to optimize {0}".format(format_minsn_t(ins)))
         allowed_rule_names = self._resolve_active_instruction_rule_names(blk)
         scheduled_rule_names = self._run_later_rule_names

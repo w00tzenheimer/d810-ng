@@ -685,22 +685,33 @@ def _snapshot_stage_for_maturity_name(maturity_name: str) -> SnapshotForm:
 def _build_lvar_stkoff_map(mba: "ida_hexrays.mba_t") -> dict[int, int]:
     """Resolve ``lvar_idx -> frame stkoff`` once per function (llr-lxas S1).
 
-    Reads ``mba.vars[idx].location.stkoff()`` for every lvar that has a stack
-    location.  Register-located lvars (and any var whose ``location`` has no
-    ``stkoff``) raise on ``.stkoff()`` -- those are skipped, so the resulting
-    map only contains true frame slots.  A failure on any single var must not
-    gate the lift, so each lookup is guarded individually.
+    ``mba.vars`` is valid only from ``MMAT_LVARS`` onward.  Earlier optimizer
+    maturities therefore return an empty map without touching the SWIG vector.
+    At ``MMAT_LVARS`` and later, reads
+    ``mba.vars[idx].location.stkoff()`` only after ``is_stkoff()`` proves
+    the location is stack-based.  The SDK requires that precondition; calling
+    ``stkoff()`` on a register location can cross a fatal SWIG/C++ assertion
+    rather than raising a catchable Python exception.  A failure on any single
+    var still must not gate the lift, so each checked lookup is guarded.
     """
     stkoff_map: dict[int, int] = {}
+    try:
+        if int(mba.maturity) < int(ida_hexrays.MMAT_LVARS):
+            return stkoff_map
+    except Exception:
+        return stkoff_map
     try:
         var_qty = mba.vars.size()
     except Exception:
         return stkoff_map
     for idx in range(var_qty):
         try:
-            stkoff_map[idx] = int(mba.vars[idx].location.stkoff())
+            location = mba.vars[idx].location
+            if not location.is_stkoff():
+                continue
+            stkoff_map[idx] = int(location.stkoff())
         except Exception:
-            # Register-located lvar (or no stack location) -- not a frame slot.
+            # Invalid/transient lvar metadata must not gate portable lifting.
             continue
     return stkoff_map
 
@@ -1234,6 +1245,12 @@ class IDAIRTranslator:
                 false_target_serial=false_target,
                 true_target_serial=true_target,
                 proof_id=proof_id,
+                state_register=state_register,
+                state_size=state_size,
+                false_state=false_state,
+                true_state=true_state,
+                false_state_write_ea=false_state_write_ea,
+                true_state_write_ea=true_state_write_ea,
             ):
                 modifier.queue_lower_conditional_state_transition(
                     source_serial=src,
@@ -1243,6 +1260,12 @@ class IDAIRTranslator:
                     false_target_serial=false_target,
                     true_target_serial=true_target,
                     proof_id=proof_id,
+                    state_register=state_register,
+                    state_size=state_size,
+                    false_state=false_state,
+                    true_state=true_state,
+                    false_state_write_ea=false_state_write_ea,
+                    true_state_write_ea=true_state_write_ea,
                     description=(
                         f"lower conditional state transition {src}: "
                         f"{dispatcher}->{false_target}/{true_target}"

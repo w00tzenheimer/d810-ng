@@ -31,7 +31,7 @@ discovery + delivery because both differ fundamentally:
   (a data-structure scan). Delivery: *crefs* -- the state var indexes the table,
   so there is no per-target condition to lose and Hex-Rays rebuilds the switch.
 * **Comparison-tree (binary search)** -- ``cmp state,K; setcc/cmov; jmp reg`` with
-  ``target = dword[table]+KEY`` (Rhadamanthys ``sub_40A560``). Discovery +
+  ``target = dword[table]+KEY``. Discovery +
   delivery live in :mod:`d810.optimizers.microcode.flow.jumps.computed_goto_resolver` (concolic
   execution for the x64 cmov shape; a static const-prop fixpoint for the x86
   binary search). Delivery: *condition-preserving byte-patch* to an explicit
@@ -44,6 +44,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from d810.analyses.control_flow.materialized_indirect_transfer import (
+    MaterializedIndirectTransfer,
+    TerminalReturnCarrierRequest,
+)
 from d810.core.logging import getLogger
 
 logger = getLogger("D810.hexrays.preanalysis.indirect_jump_labels")
@@ -940,6 +944,72 @@ _INDIRECT_MATERIALIZATION_HANDLER = "hexrays.indirect_jump_label_materialization
 # computed-goto dispatchers. Populated by the flowchart event subscriber; queried
 # by the unflatten unflattener as the address-agnostic ``_is_indirect`` signal.
 _INDIRECT_DISPATCHER_FUNCTION_EAS: set[int] = set()
+# Resolver-proven transfer records survive byte-patch materialization so the
+# post-materialization CFF pipeline can reconnect an otherwise unmatched state
+# transition to its live FlowGraph target.  This stays function-scoped and is
+# cleared with the ordinary materialization registry; it is evidence, not a
+# second dispatcher model.
+_MATERIALIZED_INDIRECT_TRANSFERS: dict[int, tuple[MaterializedIndirectTransfer, ...]] = {}
+_TERMINAL_RETURN_CARRIER_REQUESTS: dict[
+    int,
+    tuple[TerminalReturnCarrierRequest, ...],
+] = {}
+
+
+def record_materialized_indirect_transfers(
+    function_ea: int,
+    transfers: tuple[MaterializedIndirectTransfer, ...],
+) -> None:
+    """Accumulate immutable resolver proof across Hex-Rays redo rounds."""
+    key = int(function_ea)
+    if not transfers:
+        _MATERIALIZED_INDIRECT_TRANSFERS.pop(key, None)
+        return
+    previous = _MATERIALIZED_INDIRECT_TRANSFERS.get(key, ())
+    _MATERIALIZED_INDIRECT_TRANSFERS[key] = tuple(
+        dict.fromkeys((*previous, *transfers))
+    )
+
+
+def get_materialized_indirect_transfers(
+    function_ea: int,
+) -> tuple[MaterializedIndirectTransfer, ...]:
+    """Return the current function's materialized computed-goto evidence."""
+    return _MATERIALIZED_INDIRECT_TRANSFERS.get(int(function_ea), ())
+
+
+def record_terminal_return_carrier_requests(
+    function_ea: int,
+    requests: tuple[TerminalReturnCarrierRequest, ...],
+) -> None:
+    """Accumulate exact terminal-carrier capture requests by function."""
+    key = int(function_ea)
+    if not requests:
+        return
+    previous = _TERMINAL_RETURN_CARRIER_REQUESTS.get(key, ())
+    _TERMINAL_RETURN_CARRIER_REQUESTS[key] = tuple(
+        dict.fromkeys((*previous, *requests))
+    )
+
+
+def get_terminal_return_carrier_requests(
+    function_ea: int,
+) -> tuple[TerminalReturnCarrierRequest, ...]:
+    """Return terminal-carrier requests proven by an earlier CALLS graph."""
+    return _TERMINAL_RETURN_CARRIER_REQUESTS.get(int(function_ea), ())
+
+
+def clear_materialized_indirect_dispatcher_evidence(function_ea: int) -> None:
+    """Drop resolver-owned profile evidence for one function identity.
+
+    Function EAs are database-local.  A long-lived Python process may close one
+    IDB and open another whose unrelated function occupies the same address, so
+    resolver uninstall must not leave an address-only profile marker behind.
+    """
+    key = int(function_ea)
+    _INDIRECT_DISPATCHER_FUNCTION_EAS.discard(key)
+    _MATERIALIZED_INDIRECT_TRANSFERS.pop(key, None)
+    _TERMINAL_RETURN_CARRIER_REQUESTS.pop(key, None)
 
 
 def _on_flowchart_preanalysis(*, function_ea: int, mba: object, decision: dict) -> None:
@@ -968,6 +1038,8 @@ def register_indirect_materialization(goto_table_info: Mapping[str, object]) -> 
     _INDIRECT_MATERIALIZATION_GOTO_TABLE = dict(goto_table_info or {})
     _INDIRECT_MATERIALIZED_FUNCTION_EAS.clear()
     _INDIRECT_DISPATCHER_FUNCTION_EAS.clear()
+    _MATERIALIZED_INDIRECT_TRANSFERS.clear()
+    _TERMINAL_RETURN_CARRIER_REQUESTS.clear()
     register_flowchart_preanalysis_handler(
         _INDIRECT_MATERIALIZATION_HANDLER,
         _on_flowchart_preanalysis,
@@ -985,6 +1057,8 @@ def reset_indirect_materialization() -> None:
     _INDIRECT_MATERIALIZATION_GOTO_TABLE = {}
     _INDIRECT_MATERIALIZED_FUNCTION_EAS.clear()
     _INDIRECT_DISPATCHER_FUNCTION_EAS.clear()
+    _MATERIALIZED_INDIRECT_TRANSFERS.clear()
+    _TERMINAL_RETURN_CARRIER_REQUESTS.clear()
     unregister_flowchart_preanalysis_handler(_INDIRECT_MATERIALIZATION_HANDLER)
 
 
@@ -1060,7 +1134,12 @@ def mark_indirect_dispatcher(function_ea: int) -> None:
 
 
 __all__ = [
+    "clear_materialized_indirect_dispatcher_evidence",
     "mark_indirect_dispatcher",
+    "record_materialized_indirect_transfers",
+    "get_materialized_indirect_transfers",
+    "record_terminal_return_carrier_requests",
+    "get_terminal_return_carrier_requests",
     "create_dispatcher_target_instructions",
     "IndirectLabelMaterializationPlan",
     "is_materialized_indirect_dispatcher",

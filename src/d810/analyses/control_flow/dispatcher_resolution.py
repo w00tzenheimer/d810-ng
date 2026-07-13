@@ -55,6 +55,13 @@ class StateDispatcherMap:
     default_target_block: int | None = None
     default_row_kind: str | None = None
     table_provenance: TableProvenance | None = None
+    # Register id of a REGISTER-resident state variable (d81-3rja): set ONLY when
+    # the voted state var is a register with no stack home
+    # (``state_var_stkoff is None``). Every stack-resident golden keeps this
+    # ``None``, so the disjoint register-lowering path never fires for them.
+    # Appended last with a default so the 9 positional/keyword construction sites
+    # stay byte-identical.
+    state_var_reg: int | None = None
 
     def state_to_handler(self) -> dict[int, int]:
         """Return exact routable ``state_const -> target_block`` rows.

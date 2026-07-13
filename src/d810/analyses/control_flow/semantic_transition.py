@@ -28,6 +28,7 @@ class StateTransitionFact:
     source_state_const_hex: str | None = None
     successor_kind: str = "branch"
     state_var_stkoff: int | None = None
+    state_var_reg: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +38,8 @@ class StateWriteAnchor:
     block_serial: int
     state_const: int
     state_var_stkoff: int | None = None
+    state_var_reg: int | None = None
+    instruction_ea: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,26 +76,31 @@ def _hex_u64(value: int) -> str:
 
 def _state_write_lookup(
     anchors: tuple[StateWriteAnchor, ...],
-) -> dict[tuple[int, int | None], int]:
-    lookup: dict[tuple[int, int | None], int] = {}
+) -> dict[tuple[int, int | None, int | None], int]:
+    lookup: dict[tuple[int, int | None, int | None], int] = {}
     for anchor in anchors:
-        key = (int(anchor.block_serial), anchor.state_var_stkoff)
+        key = (
+            int(anchor.block_serial),
+            anchor.state_var_stkoff,
+            anchor.state_var_reg,
+        )
         lookup.setdefault(key, int(anchor.state_const) & 0xFFFFFFFFFFFFFFFF)
     return lookup
 
 
 def _select_state_write(
-    lookup: dict[tuple[int, int | None], int],
+    lookup: dict[tuple[int, int | None, int | None], int],
     *,
     block_serial: int,
     state_var_stkoff: int | None,
+    state_var_reg: int | None,
 ) -> int | None:
-    exact = lookup.get((int(block_serial), state_var_stkoff))
+    exact = lookup.get((int(block_serial), state_var_stkoff, state_var_reg))
     if exact is not None:
         return exact
     if state_var_stkoff is not None:
         return lookup.get((int(block_serial), None))
-    for (candidate_block, _candidate_stkoff), state_const in lookup.items():
+    for (candidate_block, _candidate_stkoff, _candidate_reg), state_const in lookup.items():
         if candidate_block == int(block_serial):
             return state_const
     return None
@@ -234,6 +242,7 @@ def resolve_state_transitions_with_dispatcher_map(
                     write_lookup,
                     block_serial=target_block,
                     state_var_stkoff=fact.state_var_stkoff,
+                    state_var_reg=fact.state_var_reg,
                 )
                 if next_state is not None:
                     next_state_hex = _hex_u64(next_state)
@@ -312,6 +321,7 @@ def facts_from_validated_view(
                         state_var_stkoff=_maybe_int(
                             payload.get("state_var_stkoff")
                         ),
+                        state_var_reg=_maybe_int(payload.get("state_var_reg")),
                     )
                 )
             except (TypeError, ValueError):
@@ -331,6 +341,8 @@ def facts_from_validated_view(
                         state_var_stkoff=_maybe_int(
                             payload.get("state_var_stkoff")
                         ),
+                        state_var_reg=_maybe_int(payload.get("state_var_reg")),
+                        instruction_ea=_maybe_int(payload.get("instruction_ea")),
                     )
                 )
             except (TypeError, ValueError):
