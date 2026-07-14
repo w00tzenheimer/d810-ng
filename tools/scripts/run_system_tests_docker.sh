@@ -16,7 +16,9 @@
 #   shell     Run SETUP then start an interactive bash (docker run -it)
 #   exec      Run SETUP then exec COMMAND with ARGS (e.g. exec -- python -c 'print(1)' or exec -- bash -c '...')
 #
-# SETUP (same for all commands): export IDA/PYTHONPATH env, pip install -e .[dev,emulation], python -m d810.speedups.install
+# SETUP (same for all commands): export IDA/PYTHONPATH env; install Python
+# dependencies unless the image carries d810's baked-runtime label; optionally
+# build native Cython speedups.
 #
 # Options (system/test/shell/exec):
 #   -w, --worktree REL      Use worktree at REPO_ROOT/WORKTREE_ROOT/REL as /work. REL is relative to
@@ -56,6 +58,9 @@
 #   IDA_PREFIX, IDA_INSTALL_DIR, D810_LIBCLANG_PATH, PYTHONPATH, D810_NO_CYTHON, D810_TEST_BINARY  Set for tests
 #
 # Environment (host):
+#   Precedence: exported process environment > repository .env > defaults.
+#   When one source displaces another, the runner prints the winning source and
+#   value. Sensitive values are redacted.
 #   D810_DOCKER_IMAGE       Docker image (default: idapro-9.3)
 #   D810_REPO_ROOT         Repo root (default: git rev-parse --show-toplevel from cwd)
 #   D810_WORKTREE_ROOT     Dir under repo root for worktrees (default: .worktrees)
@@ -82,8 +87,132 @@
 #   ./run_system_tests_docker.sh dump -f sub_7FFD3338C040 -p hodur_flag2.json -o sub7FFD_full_$(date +%Y%m%d%H%M%S).txt -l -- --dump-microcode-d810 --dump-terminal-return-valranges --dump-microcode-maturity LOCOPT,CALLS,GLBOPT1
 set -e
 
-DOCKER_IMAGE="${D810_DOCKER_IMAGE:-idapro-9.3}"
-DOCKER_MEMORY="${D810_DOCKER_MEMORY:-4g}"
+DOTENV_LOADED_KEYS=""
+ENV_OVERRIDE_TRACED_KEYS=""
+
+_trim_whitespace() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+_display_env_value() {
+  local name="$1"
+  local value="$2"
+  case "$name" in
+    *TOKEN*|*KEY*|*SECRET*|*PASSWORD*|*CREDENTIAL*) printf '<redacted>' ;;
+    *) printf '%s' "$value" ;;
+  esac
+}
+
+_trace_override() {
+  local name="$1"
+  local value="$2"
+  local source="$3"
+  local displaced_source="$4"
+  local displaced_value="$5"
+  printf '[env] %s=%s source=%s, overrides %s=%s\n' \
+    "$name" \
+    "$(_display_env_value "$name" "$value")" \
+    "$source" \
+    "$displaced_source" \
+    "$(_display_env_value "$name" "$displaced_value")"
+  ENV_OVERRIDE_TRACED_KEYS="$ENV_OVERRIDE_TRACED_KEYS $name"
+}
+
+_load_dotenv_non_overriding() {
+  local path="$1"
+  local raw line assignment name value current line_number=0
+  [ -f "$path" ] || return 0
+
+  while IFS= read -r raw || [ -n "$raw" ]; do
+    line_number=$((line_number + 1))
+    raw="${raw%$'\r'}"
+    line="$(_trim_whitespace "$raw")"
+    case "$line" in
+      ""|\#*) continue ;;
+      export[[:space:]]*) assignment="$(_trim_whitespace "${line#export}")" ;;
+      *) assignment="$line" ;;
+    esac
+
+    if [[ ! "$assignment" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      echo "ERROR: $path:$line_number: malformed entry" >&2
+      return 1
+    fi
+    name="${assignment%%=*}"
+    value="$(_trim_whitespace "${assignment#*=}")"
+    case "$value" in
+      \"*)
+        if [ "${value%\"}" = "$value" ] || [ "${#value}" -lt 2 ]; then
+          echo "ERROR: $path:$line_number: unterminated double quote" >&2
+          return 1
+        fi
+        value="${value:1:${#value}-2}"
+        ;;
+      \'*)
+        if [ "${value%\'}" = "$value" ] || [ "${#value}" -lt 2 ]; then
+          echo "ERROR: $path:$line_number: unterminated single quote" >&2
+          return 1
+        fi
+        value="${value:1:${#value}-2}"
+        ;;
+    esac
+
+    if printenv "$name" >/dev/null 2>&1; then
+      current="$(printenv "$name")"
+      if [ "$current" != "$value" ]; then
+        _trace_override "$name" "$current" "process environment" ".env" "$value"
+      fi
+    else
+      export "$name=$value"
+      DOTENV_LOADED_KEYS="$DOTENV_LOADED_KEYS $name"
+    fi
+  done < "$path"
+}
+
+_trace_default_override() {
+  local name="$1"
+  local default="$2"
+  local value source
+  printenv "$name" >/dev/null 2>&1 || return 0
+  value="$(printenv "$name")"
+  [ "$value" != "$default" ] || return 0
+  case " $ENV_OVERRIDE_TRACED_KEYS " in *" $name "*) return 0 ;; esac
+  case " $DOTENV_LOADED_KEYS " in
+    *" $name "*) source=".env" ;;
+    *) source="process environment" ;;
+  esac
+  _trace_override "$name" "$value" "$source" "default" "$default"
+}
+
+if printenv D810_REPO_ROOT >/dev/null 2>&1; then
+  DOTENV_ROOT="$D810_REPO_ROOT"
+else
+  DOTENV_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+fi
+if [ -n "$DOTENV_ROOT" ]; then
+  _load_dotenv_non_overriding "$DOTENV_ROOT/.env" || exit 1
+fi
+
+_trace_default_override D810_DOCKER_IMAGE idapro-9.3
+_trace_default_override D810_DOCKER_MEMORY 4g
+_trace_default_override D810_NO_CYTHON 1
+_trace_default_override D810_TEST_BINARY libobfuscated.dll
+_trace_default_override D810_WORKTREE_ROOT .worktrees
+
+DOCKER_IMAGE="${D810_DOCKER_IMAGE-idapro-9.3}"
+DOCKER_MEMORY="${D810_DOCKER_MEMORY-4g}"
+NO_CYTHON="${D810_NO_CYTHON-1}"
+TEST_BINARY="${D810_TEST_BINARY-libobfuscated.dll}"
+[ -n "$DOCKER_IMAGE" ] || { echo "ERROR: D810_DOCKER_IMAGE is set but empty" >&2; exit 1; }
+[ -n "$DOCKER_MEMORY" ] || { echo "ERROR: D810_DOCKER_MEMORY is set but empty" >&2; exit 1; }
+RUNTIME_LABEL_KEY="org.d810.test-runtime"
+RUNTIME_LABEL_VALUE="dev-emulation-z3-v1"
+
+_image_has_baked_runtime() {
+  [ "$(docker image inspect --format "{{ index .Config.Labels \"$RUNTIME_LABEL_KEY\" }}" "$DOCKER_IMAGE" 2>/dev/null || true)" = "$RUNTIME_LABEL_VALUE" ]
+}
 
 # Convert memory string (e.g., "20g", "4G", "512m") to bytes for RLIMIT_DATA enforcement.
 # Docker --memory is NOT enforced on macOS Docker Desktop; resource.setrlimit IS enforced
@@ -126,7 +255,7 @@ if [ "$CMD" != "system" ] && [ "$CMD" != "test" ] && [ "$CMD" != "dump" ] && [ "
 fi
 
 WORK_DIR="$REPO_ROOT"
-WORKTREE_ROOT="${D810_WORKTREE_ROOT:-.worktrees}"
+WORKTREE_ROOT="${D810_WORKTREE_ROOT-.worktrees}"
 WORKTREE_REL=""
 DUMP_FUNCTION=""
 DUMP_MATURITY=""
@@ -270,7 +399,7 @@ echo ""
 
 ENV_IDA="IDA_PREFIX=/app/ida IDA_INSTALL_DIR=/app/ida D810_LIBCLANG_PATH=/app/ida/libclang.so"
 ENV_PYTHON="PYTHONPATH=${PYWORK}:/app/ida/python:\$PYTHONPATH"
-ENV_TEST="D810_NO_CYTHON=${D810_NO_CYTHON:-1} D810_TEST_BINARY=${D810_TEST_BINARY:-libobfuscated.dll}"
+ENV_TEST="D810_NO_CYTHON=$NO_CYTHON D810_TEST_BINARY=$TEST_BINARY"
 [ -n "${D810_DIAG_SNAPSHOT:-}" ] && ENV_TEST="$ENV_TEST D810_DIAG_SNAPSHOT=$D810_DIAG_SNAPSHOT"
 [ -n "${D810_FACT_LIFECYCLE:-}" ] && ENV_TEST="$ENV_TEST D810_FACT_LIFECYCLE=$D810_FACT_LIFECYCLE"
 [ -n "$ENABLE_DIAG_SNAPSHOT" ] && ENV_TEST="$ENV_TEST D810_DIAG_SNAPSHOT=1"
@@ -306,10 +435,12 @@ _d810_extra_env_flags() {
 IDA_VENV_PIP="/app/ida/.venv/bin/pip"
 IDA_VENV_PYTHON="/app/ida/.venv/bin/python"
 
-# One-time setup: export env, pip install -e .[dev,emulation], d810.speedups.install,
-# then BEST-EFFORT compile the Cython speedups in-container when explicitly
-# enabled.  The default D810_NO_CYTHON=1 must skip this build: an OOM kill of
-# the build container cannot be caught by the shell's fallback.
+# Per-container setup exports the runtime environment and installs dependencies
+# when using an unlabelled base image. Images labelled as d810 test runtimes
+# already contain dev, emulation, and isolated Z3 dependencies, so their install
+# step is omitted. BEST-EFFORT Cython compilation remains independent and runs
+# when explicitly enabled. The default D810_NO_CYTHON=1 must skip this build: an
+# OOM kill of the build container cannot be caught by the shell's fallback.
 # (instead of silently falling back to pure-Python). The build needs a C++
 # toolchain + the IDA SDK; setup.py auto-downloads the SDK from GitHub when
 # IDA_SDK is unset and links against the live IDA runtime (libida.so) via
@@ -317,12 +448,17 @@ IDA_VENV_PYTHON="/app/ida/.venv/bin/python"
 # neither setuptools nor Cython, so pip MUST build-isolate to install the
 # build-system.requires (setuptools/wheel/Cython). If the build fails, the suite
 # still runs on the pure-Python fallback — the '|| echo' below keeps exit 0.
-if [ "${D810_NO_CYTHON:-1}" = "1" ]; then
+if [ "$NO_CYTHON" = "1" ]; then
   SPEEDUPS_BUILD_CMD="echo '[speedups] native build disabled by D810_NO_CYTHON=1'"
 else
   SPEEDUPS_BUILD_CMD="D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q || echo '[speedups] build failed, falling back to pure-Python'"
 fi
-SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON && $IDA_VENV_PIP install -e '.[dev,emulation]' -q && $IDA_VENV_PYTHON -m d810.speedups.install && { $SPEEDUPS_BUILD_CMD; }"
+if _image_has_baked_runtime; then
+  DEPENDENCY_SETUP="echo '[setup] baked runtime dependencies detected; install skipped'"
+else
+  DEPENDENCY_SETUP="$IDA_VENV_PIP install -e '.[dev,emulation]' -q && $IDA_VENV_PYTHON -m d810.speedups.install"
+fi
+SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON && $DEPENDENCY_SETUP && { $SPEEDUPS_BUILD_CMD; }"
 
 # Safely reassemble an array of args into a string suitable for embedding in
 # a bash -c command that gets re-parsed by another shell (e.g. inside the
@@ -366,8 +502,8 @@ run_bash_it() {
     -e "CMD=$CMD" \
     -e "PYTHON=$IDA_VENV_PYTHON" \
     -e "PIP=$IDA_VENV_PIP" \
-    -e "D810_NO_CYTHON=${D810_NO_CYTHON:-1}" \
-    -e "D810_TEST_BINARY=${D810_TEST_BINARY:-libobfuscated.dll}" \
+    -e "D810_NO_CYTHON=$NO_CYTHON" \
+    -e "D810_TEST_BINARY=$TEST_BINARY" \
     --entrypoint /bin/bash "$DOCKER_IMAGE" -lc "$inner"
 }
 
@@ -385,8 +521,8 @@ run_bash_exec() {
     -e "CMD=exec" \
     -e "PYTHON=$IDA_VENV_PYTHON" \
     -e "PIP=$IDA_VENV_PIP" \
-    -e "D810_NO_CYTHON=${D810_NO_CYTHON:-1}" \
-    -e "D810_TEST_BINARY=${D810_TEST_BINARY:-libobfuscated.dll}" \
+    -e "D810_NO_CYTHON=$NO_CYTHON" \
+    -e "D810_TEST_BINARY=$TEST_BINARY" \
     --entrypoint /bin/bash "$DOCKER_IMAGE" -lc "$inner" -- "${EXEC_ARGS[@]}"
 }
 

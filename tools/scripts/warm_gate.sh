@@ -2,11 +2,10 @@
 # warm_gate.sh — persistent-container DSL gate for fast convergence loops.
 #
 # The normal run_system_tests_docker.sh runs `pip install -e .[dev]` +
-# speedups.install on EVERY invocation (~30-90s of each ~2.5min gate). For an
-# editable install on a mounted volume, that reinstall is redundant: source edits
-# are picked up live (PYTHONPATH=/work/src + the -e symlink). This helper boots ONE
-# container, installs ONCE, then runs the gate via `docker exec` — cutting each
-# iteration to well under a minute.
+# speedups.install on EVERY invocation (~30-90s of each ~2.5min gate). Source
+# edits are picked up live through PYTHONPATH=/work/src. This helper boots ONE
+# container and runs the gate via `docker exec`. Images carrying d810's test-
+# runtime label skip setup; other images install once for compatibility.
 #
 # Usage (run from the worktree root):
 #   tools/scripts/warm_gate.sh up                 # boot + one-time setup
@@ -31,6 +30,8 @@ PIPBIN="/app/ida/.venv/bin/pip"
 ENV_IDA='IDA_PREFIX=/app/ida IDA_INSTALL_DIR=/app/ida D810_LIBCLANG_PATH=/app/ida/libclang.so'
 ENV_PY='PYTHONPATH=/work/src:/app/ida/python:$PYTHONPATH'
 ENV_TEST="D810_NO_CYTHON=${D810_NO_CYTHON:-1} D810_TEST_BINARY=${D810_TEST_BINARY:-libobfuscated.dll} D810_MEMORY_LIMIT_BYTES=${MEM_BYTES}"
+RUNTIME_LABEL_KEY="org.d810.test-runtime"
+RUNTIME_LABEL_VALUE="dev-emulation-z3-v1"
 DSL='tests/system/e2e/test_libdeobfuscated_dsl.py'
 HARD='high_fan_in_pattern or switch_case_ollvm_pattern or nested_deep or _hodur_func or unwrap_loops or hardened_cond_chain_simple or abc_xor_dispatch'
 
@@ -41,6 +42,18 @@ _setup() {
   echo "[warm] one-time setup (pip install -e .[dev] + speedups) ..."
   docker exec "$NAME" bash -lc "export $ENV_IDA $ENV_PY && $PIPBIN install -e .[dev] -q && $PYBIN -m d810.speedups.install" \
     && echo "[warm] setup complete."
+}
+
+_image_has_baked_runtime() {
+  [ "$(docker image inspect --format "{{ index .Config.Labels \"$RUNTIME_LABEL_KEY\" }}" "$IMAGE" 2>/dev/null)" = "$RUNTIME_LABEL_VALUE" ]
+}
+
+_setup_unless_baked() {
+  if _image_has_baked_runtime; then
+    echo "[warm] baked runtime dependencies detected; setup skipped."
+  else
+    _setup
+  fi
 }
 
 cmd="${1:-}"; shift || true
@@ -55,7 +68,7 @@ case "$cmd" in
         --memory "$MEMORY" -e "D810_MEMORY_LIMIT_BYTES=${MEM_BYTES}" \
         -v "${WORK_DIR}:/work" -v "${WORK_DIR}/.tmp/logs:/root/.idapro/logs" \
         -w /work --entrypoint /bin/bash "$IMAGE" -lc "sleep infinity" >/dev/null
-      _setup
+      _setup_unless_baked
     fi
     ;;
   setup) _running || { echo "[warm] not up; run 'up' first" >&2; exit 1; }; _setup ;;
