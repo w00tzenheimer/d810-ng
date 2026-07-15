@@ -12,12 +12,16 @@ why a candidate was rejected or left unchanged.
 The existing flat rule tree remains available as an advanced configuration
 surface. It is no longer the primary model for attacking a function.
 
-This design has two linked deliverables:
+This design has four linked deliverables:
 
 1. A correctness prerequisite that makes source configuration, effective
    runtime configuration, and config-v2 round trips truthful and lossless.
 2. A native dockable workbench for the interactive loop of inspect -> analyze
    -> deobfuscate -> explain -> compare -> refine.
+3. A Recipe Composer for assembling registered passes into function-local or
+   project-level deobfuscation recipes without authoring Python inside IDA.
+4. A dedicated Diagnostics Explorer and Cleaner for inspecting, sorting, and
+   safely deleting generated SQLite databases and individual snapshots.
 
 The design does not turn every pass contract or diagnostic row into an editable
 graph. D810 should expose evidence and decisions first, with low-level controls
@@ -77,6 +81,8 @@ answer:
 - What evidence or safety condition caused that result?
 - What changed in the pseudocode, and is the result better than native output?
 - Can a problematic rule or inference be scoped to this function?
+- Can the effective registered-pass pipeline be refined and saved as a recipe?
+- Which diagnostic run and snapshot explain the current result?
 
 This user should not need to know the producing obfuscator or select a vendor
 profile before D810 attempts structural detection.
@@ -97,9 +103,10 @@ screen.
 
 ### 3.3 Not a target: visual pipeline programmer
 
-This design does not create a node editor for authoring pass graphs. Project
-JSON and Python registration remain the authority for advanced pipeline
-construction.
+This design does not create a node editor or Python authoring environment.
+Project JSON and Python registration remain the authority for implementing and
+registering new passes. The UI composes only registered passes and explains the
+transforms owned by those passes.
 
 ### 3.4 Goals
 
@@ -113,7 +120,12 @@ The workbench must:
 - distinguish ineligibility, no match, abstention, blockage, and failure;
 - let users compare native and D810 output against a fresh, identified oracle;
 - support safe per-function refinement without bypassing manager, persistence,
-  or cache-invalidation boundaries; and
+  or cache-invalidation boundaries;
+- let users assemble, validate, apply, and persist ordered recipes of registered
+  passes;
+- expose diagnostic databases and snapshots through structured, anchored views;
+- clean selected snapshots or databases with explicit scope, active-session
+  protection, transactional integrity, and bulk retention operations; and
 - keep contributor-only configuration and diagnostics available through
   progressive disclosure.
 
@@ -142,14 +154,25 @@ The workbench must:
 10. **Thin Qt adapters.** Collection, status mapping, config round trips, and
     command validation are pure Python. Qt renders models and forwards user
     intent.
+11. **Registered passes are the composition boundary.** Transforms are visible
+    as explanatory children of their owning pass. A transform is independently
+    composable only after it is wrapped by a registered pass with contracts,
+    scheduling, maturity, safety, and backend policy.
+12. **Logic first, not extracted later.** New actions follow the established
+    D810 pattern: pure `*_logic.py` modules, direct unit tests, thin IDA/Qt
+    handlers, lifecycle wrappers, and registration.
+13. **Destructive scope is explicit.** Diagnostic cleanup commands name whether
+    they affect selected snapshots, every snapshot in one database, selected
+    databases, or all closed diagnostic databases.
 
 ## 5. Selected approach and rejected alternatives
 
-### 5.1 Selected: compatibility repair plus function workbench
+### 5.1 Selected: compatibility repair plus specialized native workbenches
 
 Repair config-v2 truthfulness first, then build a read-only evidence workbench,
-then add scoped actions and comparison. This provides immediate safety and
-lets the interaction model grow on stable application services.
+then add scoped actions, comparison, registered-pass recipe composition, and a
+dedicated diagnostic explorer. This provides immediate safety and lets each
+interaction model grow on stable application services.
 
 ### 5.2 Rejected: patch the existing rule tree only
 
@@ -168,7 +191,8 @@ That is not required for the interactive reverse-engineering loop.
 ## 6. Information architecture
 
 The workbench is a persistent dock beside the pseudocode view. It has four
-regions.
+primary regions and opens two specialized companion docks for recipe
+composition and diagnostic database management.
 
 ### 6.1 Function context strip
 
@@ -247,6 +271,10 @@ Primary actions:
 - **Compare**: show native and latest D810 pseudocode with freshness metadata.
 - **Function overrides**: open the existing function-scoped rule/tags/notes
   workflow.
+- **Edit recipe**: open the Recipe Composer seeded from the function's effective
+  runtime pipeline.
+- **Diagnostics**: open the Diagnostics Explorer on the current function and
+  latest matching run.
 - **Refresh**: rebuild the view from current state without rerunning analysis.
 - **Export evidence**: export the manifest, outcomes, diagnostic DB reference,
   and anchored findings for the function.
@@ -262,6 +290,84 @@ Advanced content:
 
 Start and Stop remain available as engine-level controls, but they are not the
 main call to action for a function.
+
+### 6.5 Recipe Composer
+
+The Recipe Composer has a searchable registered-pass catalog, an ordered draft
+pipeline, and a pass detail pane. The catalog may be sorted and filtered. The
+draft pipeline remains in execution order and is never visually sorted by
+status, name, or maturity.
+
+Users can add, remove, enable, disable, and reorder registered passes. They can
+edit only options with declared structured serializers. Every edit reruns pure
+contract preflight. The composer may recommend missing prerequisites or an
+ordering change, but it never inserts or reorders passes without confirmation.
+
+Selecting a pass shows its contract, maturity, requirements, outputs,
+preservation, invalidation, safety policy, backend route, rules, and owned
+transforms. Transforms are explanatory children. They are not independently
+addable unless registered as contracted passes.
+
+The actions are:
+
+- **Reset to effective pipeline**;
+- **Analyze recipe**, limited to contract validation and proven mutation-free
+  analysis paths;
+- **Apply once**, without persistence;
+- **Save for this function**; and
+- **Save as project profile**, available only through the lossless config-v2
+  serializer.
+
+A saved function recipe is a complete ordered pipeline, not a delta against a
+project. It stores stable pass IDs, structured options, schema version, and
+source/runtime provenance. Every use revalidates the recipe against the current
+registry. Unknown passes, unsupported options, or failed contracts block
+execution with an actionable explanation.
+
+Existing saved rule overrides remain separate and authoritative. Effective
+function behavior is resolved in this order:
+
+1. Select the project pipeline or saved function recipe.
+2. Apply existing inference and function-rule overlays inside that pipeline.
+3. Preflight the resulting contracts.
+4. Execute through the manager lifecycle.
+
+### 6.6 Diagnostics Explorer and Cleaner
+
+Diagnostics use a dedicated dock rather than a raw SQLite console or a tab that
+overloads the function workbench. The database list defaults to newest run
+first and can sort by run time, function, file size, snapshot count, or path.
+The snapshot list defaults to newest snapshot first and can sort by timestamp,
+maturity, phase, block count, or row count. Latest ordering uses recorded
+timestamps with deterministic ID/path tie breakers, not filename lexicography.
+
+Selecting a snapshot opens structured views for blocks, instructions,
+state-machine CFGs, modifications, facts, conflicts, provenance, and rendered
+programs. Diagnostic locations use anchored block identities and support
+jump-to-EA. The explorer reuses the non-mutating diagnostic reader boundary and
+pure query helpers; it does not expose arbitrary SQL execution.
+
+Cleanup supports multi-selection and these explicit operations:
+
+- delete selected snapshots;
+- delete all snapshots in the selected database;
+- keep the latest N snapshots;
+- delete snapshots older than a selected time;
+- delete selected diagnostic databases;
+- delete all closed diagnostic databases; and
+- vacuum selected databases.
+
+The active capture database is protected. A bulk command reports it as skipped
+instead of partially deleting it. File deletion uses reversible quarantine when
+possible. Snapshot deletion presents the database path, exact snapshot IDs,
+affected row count, and active-session exclusions before confirmation.
+
+The diagnostic schema owns the authoritative set and deletion order of
+snapshot-owned tables. Cleanup validates that registry against the database
+before enabling mutation and fails closed if an unknown table contains a
+`snapshot_id` column. Dependent rows are deleted by exact snapshot ID, the
+parent `snapshots` rows are deleted last, and no cleanup operation uses a broad
+function-EA predicate as a substitute for snapshot identity.
 
 ## 7. Outcome vocabulary
 
@@ -330,6 +436,35 @@ final pseudocode changed or that the change was correct.
 3. Saving an override triggers one queued redecompile.
 4. The workbench labels the run as function-overridden and records which
    effective rules changed.
+
+### 8.5 Function recipe refinement
+
+1. The user opens the Recipe Composer from the current function.
+2. The composer copies the effective runtime pipeline into an unsaved draft.
+3. The user adds, removes, or reorders registered passes and edits supported
+   options.
+4. Pure preflight refreshes after every edit and explains blocked or unsafe
+   combinations.
+5. The user applies the draft once, saves the full recipe for the function, or
+   materializes a config-v2 project profile.
+6. A saved recipe uses the existing function identity and invalidation path;
+   existing rule, inference, tag, and note persistence remains intact.
+
+### 8.6 Diagnostic inspection and cleanup
+
+1. The user opens Diagnostics from a pass outcome or the action bar.
+2. The explorer selects the current function's latest database and latest
+   snapshot while preserving sort and filter controls.
+3. The user inspects structured rows or jumps to an anchored EA.
+4. For cleanup, the service builds a read-only deletion plan before enabling
+   confirmation.
+5. Snapshot-owned rows are deleted by exact snapshot ID inside one transaction;
+   the parent snapshot row is deleted last.
+6. Orphan and integrity checks run before commit. A failure rolls back the
+   complete operation.
+7. WAL checkpoint and optional vacuum occur after logical deletion. A vacuum
+   failure is reported separately and does not relabel committed deletion as
+   failed.
 
 ## 9. Config-v2 correctness contract
 
@@ -412,7 +547,25 @@ The service responsibilities are:
 The UI does not import pass registries, diagnostic ORM models, persistence
 implementations, or mutation backends directly.
 
-### 10.2 Pure workbench model
+### 10.2 Specialized application services
+
+Three IDA-independent services support the companion workflows:
+
+- `RecipeService` exposes registered pass metadata, creates drafts, applies
+  draft operations, runs contract preflight, and submits apply/save commands;
+- `DiagnosticInventoryService` discovers diagnostic databases and returns
+  immutable, sortable database and snapshot summaries through read-only
+  connections; and
+- `DiagnosticCleanupService` builds explicit cleanup plans, protects active
+  sessions, executes exact transactional deletion, verifies integrity, and
+  reports logical deletion, WAL, and vacuum outcomes separately.
+
+Qt does not read pass registries, issue SQL, or decide cleanup ownership. The
+services accept protocols for registries, persistence, diagnostic connections,
+active-session state, and the filesystem so their behavior is testable with
+fakes and temporary databases.
+
+### 10.3 Pure workbench model
 
 The application service returns a `DeobfuscationWorkbenchSnapshot` containing:
 
@@ -429,13 +582,31 @@ The application service returns a `DeobfuscationWorkbenchSnapshot` containing:
 The types live outside `d810.ui` so headless tools and tests can consume the
 same truth.
 
-### 10.3 Pure UI projection
+Recipe and diagnostic services return additional immutable records:
+
+- `PassCatalogEntry`, `PipelineRecipeDraft`, `RecipeValidation`, and
+  `FunctionPipelineOverride`;
+- `DiagnosticDatabaseSummary`, `DiagnosticSnapshotSummary`,
+  `DiagnosticCleanupPlan`, and `DiagnosticCleanupResult`.
+
+### 10.4 Established action-logic pattern
 
 `d810.ui.workbench_logic` maps the immutable snapshot into row text, status
 color roles, tooltips, filters, and action enablement. It has no IDA or Qt
 imports.
 
-### 10.4 Thin native adapter
+Recipe and diagnostic presentation decisions follow the same existing action
+pattern in `src/d810/ui`: pure `*_logic.py` modules own row projection, sorting,
+filtering, selection summaries, confirmation text, and button enablement. They
+are imported directly by `tests/unit/ui/test_*_logic.py`. IDA/Qt handlers own
+only glue, lifecycle, rendering, and navigation.
+
+This is a construction rule, not a later refactor. No business decision is
+first implemented in a widget callback with a promise to extract it later.
+The action stack follows the existing four layers: pure logic -> IDA/Qt handler
+glue -> action lifecycle wrapper -> registration.
+
+### 10.5 Thin native adapter
 
 `d810.ui.workbench_panel` owns:
 
@@ -449,7 +620,12 @@ imports.
 Qt callbacks submit commands to the application service. They do not perform
 analysis, query SQLite, parse configs, or mutate rule state themselves.
 
-### 10.5 Existing components to reuse
+Architecture gates for the new modules prohibit UI adapters from importing
+`sqlite3`, diagnostic ORM models, persistence implementations, pass registries,
+config parsers, or mutation backends. Pure action-logic modules may depend only
+on immutable models and IDA/Qt-free protocols.
+
+### 10.6 Existing components to reuse
 
 - `pipeline_v2_hook_activation` for effective hook/rule expansion;
 - `pipeline_contract_preflight_manifest` for structured pass contracts and
@@ -457,10 +633,18 @@ analysis, query SQLite, parse configs, or mutate rule state themselves.
 - `ReconOutcomeLog` and consumer adapters for cross-consumer outcomes;
 - `RuleScopeService` and `RuleScopeRuntime` for function/inference overlays and
   invalidation;
+- `FunctionRules`, `FunctionRuleConfig`, and existing function tags/notes saves
+  without changing their persistence semantics;
+- `PassRegistry`, `PassSpec`, and `PipelineConfig` as the registered-pass recipe
+  boundary;
 - `OptimizationStatistics` for supporting counts;
-- `SQLiteOptimizationStorage` and diagnostic snapshot readers for persisted
-  evidence;
+- `SQLiteOptimizationStorage` as the storage backend for a sibling typed
+  function-recipe record, not an overloaded `function_rules` payload;
+- `read_diag_db`, diagnostic snapshot models, and pure query helpers for
+  persisted evidence and the explorer;
 - the native dock/tree/filter pattern in `DeobfuscationStatsPanel`;
+- the existing `*_logic.py` plus `tests/unit/ui/test_*_logic.py` action-testing
+  convention;
 - existing actions for Deobfuscate, Function rules, Stats, Start, Stop,
   Loggers, and Profile.
 
@@ -484,6 +668,16 @@ flowchart LR
     Projection --> Panel["Docked native panel"]
     Panel --> Commands["Analyze, Deobfuscate, Compare, Override, Export"]
     Commands --> Service
+    Panel --> RecipeUI["Recipe Composer adapter"]
+    RecipeUI --> RecipeLogic["Pure recipe action logic"]
+    RecipeLogic --> RecipeService["Recipe service"]
+    RecipeService --> Runtime
+    Panel --> DiagUI["Diagnostics adapter"]
+    DiagUI --> DiagLogic["Pure diagnostic action logic"]
+    DiagLogic --> Inventory["Inventory service"]
+    DiagLogic --> Cleanup["Cleanup service"]
+    Inventory --> Evidence
+    Cleanup --> Evidence
 ```
 
 Hex-Rays callbacks never update Qt widgets directly. Runtime events enqueue a
@@ -524,6 +718,16 @@ line-level diff. The freshness contract is required in either presentation.
 | Invalid project config | Show source path and validation error; do not fall back silently |
 | Unsupported v2 edit | Keep view mode and explain which field lacks a serializer |
 | Missing diagnostic DB | Evidence marked unavailable; successful deobfuscation is not relabeled failed |
+| Unknown registered pass | Block recipe execution and identify the missing stable pass ID |
+| Invalid recipe option | Keep the draft and identify the option path and serializer failure |
+| Unsafe recipe order | Block execution and show the unmet contract or ordering dependency |
+| Stale recipe provenance | Show the saved and current runtime identities; revalidate before use |
+| Unsupported diagnostic schema | Open metadata read-only when possible; disable destructive actions |
+| Active diagnostic database | Keep it visible and locked; bulk cleanup reports it as skipped |
+| Diagnostic database locked | Make no changes and report the database path and lock failure |
+| Snapshot deletion failure | Roll back the whole exact-snapshot transaction and retain the original DB |
+| Integrity or orphan check failure | Roll back before commit and report the failing invariant |
+| Vacuum failure after commit | Report cleanup committed and compaction failed as separate outcomes |
 | Contract preflight failure | Stage Blocked with missing and available namespaces |
 | Safety veto | Stage Abstained with policy and anchored reason |
 | Mutation or verifier exception | Stage Failed; preserve the last valid snapshot and artifact links |
@@ -545,11 +749,27 @@ Unit tests run without IDA and cover:
 - pass-manifest ordering and status mapping;
 - distinction among Not eligible, No match, Abstained, Blocked, and Failed;
 - action enablement for every engine/function/freshness state;
+- pass catalog projection and deterministic draft ordering;
+- recipe add/remove/reorder operations, full-recipe serialization, registry
+  revalidation, and separation from existing function rule saves;
+- diagnostic database/snapshot latest sorting, filtering, retention selection,
+  cleanup-plan projection, confirmation summaries, and button enablement;
 - stale generation rejection;
 - rule-scope and active-inference summaries;
 - anchored diagnostic formatting that never emits a block serial without EA;
 - export payload determinism;
-- Qt/IDA import absence in service and projection modules.
+- Qt/IDA import absence in service and projection modules;
+- direct coverage of every new `*_logic.py` module under
+  `tests/unit/ui/test_*_logic.py`, matching the existing action convention.
+
+Temporary SQLite fixture tests additionally cover:
+
+- exact deletion of one or many snapshot IDs across every snapshot-owned table;
+- delete all snapshots, keep latest N, delete older than, and deterministic tie
+  breakers;
+- parent-row-last ordering, rollback, orphan detection, and integrity failure;
+- active database protection, locked databases, WAL checkpoint behavior,
+  logical-delete versus vacuum outcomes, and legacy/unsupported schemas.
 
 ### 14.2 IDA system/runtime tests
 
@@ -560,6 +780,8 @@ Runtime tests cover:
 - queued refresh after decompilation and override invalidation;
 - jump-to-EA actions;
 - action compatibility IDs;
+- thin recipe and diagnostics handlers forwarding immutable commands without
+  making policy decisions;
 - Analyze does not invoke mutation;
 - Deobfuscate uses the existing manager lifecycle exactly once;
 - stale callback results cannot replace current-function data.
@@ -594,6 +816,11 @@ feature is called done, test in a live IDA workbench:
 - context-menu and hotkey entry points;
 - config-v2 source/runtime labeling;
 - function override and redecompile flow;
+- recipe composition, apply-once, saved-function recipe, and existing rule
+  override interaction;
+- diagnostic newest-first sorting, structured inspection, selected snapshot
+  deletion, delete all snapshots, delete all closed databases, and active DB
+  protection;
 - native/D810 comparison freshness;
 - readable long diagnostics and anchored navigation.
 
@@ -628,15 +855,45 @@ feature is called done, test in a live IDA workbench:
 - freshness tracking;
 - native versus D810 pseudocode and metrics view.
 
-### Slice 4: v2-aware advanced editing
+### Slice 4: Recipe Composer
+
+- registered-pass catalog and explanatory transform children;
+- ordered draft operations and pure contract preflight;
+- apply once and full saved function recipe;
+- reuse of existing function-rule, tag, note, invalidation, and refresh paths;
+- project-profile save remains disabled until the lossless v2 serializer exists.
+
+### Slice 5: v2-aware advanced editing
 
 - structured serializers only for explicitly supported config-v2 fields;
 - pass/rule selection editing with full validation;
 - routing overrides;
 - atomic save/reload validation.
 
+### Diagnostics workstream D0: read-only explorer
+
+- database discovery, newest-first default ordering, sorting, filtering, and
+  function/run grouping;
+- snapshot inventory and structured diagnostic views;
+- outcome-to-database/snapshot navigation and jump-to-EA;
+- pure inventory service and action-logic tests.
+
+### Diagnostics workstream D1: transactional cleaner
+
+- exact selected-snapshot and delete-all-snapshots plans;
+- keep latest N, delete older than, selected database, and all-closed-database
+  cleanup;
+- active-session protection, transactional dependent-row deletion,
+  parent-row-last ordering, rollback, orphan/integrity checks, WAL handling,
+  quarantine, and vacuum reporting;
+- fixture coverage for every snapshot-owned table and supported legacy schema.
+
 Each slice is independently useful. Slice 0 is mandatory before exposing any
-new config editing. Slice 4 does not block the function workbench.
+new config editing. The read-only Diagnostics D0 workstream can proceed after
+its application-service boundary is defined. Diagnostics D1 depends on D0 and
+the schema-owned cleanup service. Recipe Composer depends on Slice 0 and the
+manager workbench service; project-profile save additionally depends on Slice
+5.
 
 This design is an epic boundary, not one implementation plan. After design
 approval, each slice receives a child ticket and its own implementation plan.
@@ -646,9 +903,13 @@ have met their acceptance gates.
 ## 16. Non-goals
 
 - No visual node editor for arbitrary pass pipelines.
+- No Python pass or transform implementation environment inside IDA. Users
+  author and register new Python implementations in their normal editor.
 - No vendor-selection wizard as the primary routing mechanism.
 - No generic "force unsafe rewrite" control.
 - No embedding the full diagnostics CLI or a SQL console in the panel.
+- No ambiguous global "Delete all" action. Every destructive action names its
+  database/snapshot scope and active-session exclusions.
 - No fixture extraction, MASM rebuilding, test registration, or CI execution
   in the primary workbench. Evidence export hands those tasks to the existing
   contributor CLI workflow.
@@ -673,7 +934,15 @@ The workbench effort is done only when:
    manager lifecycle.
 7. Function overrides retain existing persistence, precedence, and cache
    invalidation semantics.
-8. Native/D810 comparison enforces freshness and identifies its oracle.
-9. Pure, runtime, E2E, and live IDA acceptance tiers pass.
-10. Architecture gates confirm that business logic is outside Qt adapters and
+8. Registered-pass recipes can be validated, applied once, saved for a
+   function, and revalidated without overloading existing rule saves.
+9. The Diagnostics Explorer sorts databases and snapshots deterministically,
+   exposes structured anchored evidence, and never needs arbitrary SQL.
+10. Snapshot and database cleanup supports selected and explicit bulk scopes,
+    protects active sessions, and proves transactional integrity.
+11. Native/D810 comparison enforces freshness and identifies its oracle.
+12. Pure, runtime, E2E, and live IDA acceptance tiers pass.
+13. New presentation and action decisions live in tested `*_logic.py` modules;
+    Qt/IDA handlers remain lifecycle, rendering, event, and navigation glue.
+14. Architecture gates confirm that business logic is outside Qt adapters and
     UI code has not bypassed manager/backend boundaries.
