@@ -10,7 +10,11 @@ from d810.backends.hexrays.registration import register_hexrays_backend_provider
 from d810.hexrays.utils.ida_utils import ensure_hexrays_available
 from d810.backends.mba.ida import adapt_rules
 from d810.core import typing
-from d810.core.config import D810Configuration, ProjectConfiguration
+from d810.core.config import (
+    D810Configuration,
+    ProjectConfiguration,
+    RuleConfiguration,
+)
 from d810.core.config_v2_defaults import (
     ConfigV2DefaultSelection,
     format_config_v2_default_selection_status,
@@ -28,6 +32,12 @@ from d810.core.rule_scope import RuleScopeEvent
 from d810.core.stats import OptimizationStatistics
 from d810.core.typing import TYPE_CHECKING
 from d810.mba.rules import VerifiableRule
+from d810.manager.project_runtime import (
+    ProjectRuntimeSnapshot,
+    build_project_runtime_snapshot,
+    clone_runtime_project as clone_runtime_project_command,
+    save_legacy_project as save_legacy_project_command,
+)
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
 from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
@@ -85,6 +95,7 @@ class D810State(metaclass=SingletonMeta):
         self.last_pipeline_v2_hook_mode: str | None = None
         self.last_config_v2_default_selection: ConfigV2DefaultSelection | None = None
         self.current_runtime_project: ProjectConfiguration | None = None
+        self.current_project_runtime_snapshot: ProjectRuntimeSnapshot | None = None
         self._is_loaded: bool = False
         self.gui = None
         self.log_dir = self.d810_config.log_dir / D810_LOG_DIR_NAME
@@ -149,6 +160,14 @@ class D810State(metaclass=SingletonMeta):
         else:
             project_ins_rules = tuple(runtime_project.ins_rules)
             project_blk_rules = tuple(runtime_project.blk_rules)
+
+        self.current_project_runtime_snapshot = build_project_runtime_snapshot(
+            source_project=self.current_project,
+            runtime_project=runtime_project,
+            default_selection=default_selection,
+            hook_activation=hook_activation,
+            hook_mode=self.last_pipeline_v2_hook_mode,
+        )
 
         for rule in self.known_ins_rules:
             for rule_conf in project_ins_rules:
@@ -225,6 +244,42 @@ class D810State(metaclass=SingletonMeta):
                 runtime_project.path,
             )
         return self.current_project
+
+    def get_project_runtime_snapshot(self) -> ProjectRuntimeSnapshot:
+        snapshot = self.current_project_runtime_snapshot
+        if snapshot is None:
+            raise RuntimeError("No project runtime snapshot is available")
+        return snapshot
+
+    def clone_current_runtime_project(
+        self,
+        destination: pathlib.Path,
+        description: str,
+    ) -> ProjectConfiguration:
+        return clone_runtime_project_command(
+            runtime_project=self.current_runtime_project,
+            destination=destination,
+            description=description,
+        )
+
+    def save_legacy_project(
+        self,
+        *,
+        snapshot: ProjectRuntimeSnapshot | None,
+        source: ProjectConfiguration | None,
+        destination: pathlib.Path,
+        description: str,
+        ins_rules: typing.Sequence[RuleConfiguration],
+        blk_rules: typing.Sequence[RuleConfiguration],
+    ) -> ProjectConfiguration:
+        return save_legacy_project_command(
+            snapshot=snapshot,
+            source=source,
+            destination=destination,
+            description=description,
+            ins_rules=ins_rules,
+            blk_rules=blk_rules,
+        )
 
     def _register_backend_analysis_providers(self) -> None:
         """Register backend-supplied analysis seams before runtime starts."""
