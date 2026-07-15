@@ -24,3 +24,7 @@ The current configuration UI distinguishes legacy and config-v2 projects; routed
 **2026-07-15T23:21:51Z**
 
 Implementation plan saved at docs/superpowers/plans/2026-07-15-truthful-config-v2-project-ui.md. It defines lossless atomic core persistence, a manager-owned immutable snapshot and guarded command facade, pure project_config_logic action tests, thin ida_ui wiring, and the exact OLLVM 11-pass/180-instruction-rule/6-block-rule regression.
+
+**2026-07-15T23:52:40Z**
+
+Automated Slice 0 gates passed in diff/truthful-config-v2-project-ui through f31191d24: 127 focused tests; 5728 unit tests passed, 29 skipped, 9 baseline warnings, 162 subtests; ast-grep/import-linter/diff gates clean; OLLVM probe is exact 11/180/6; graph refreshed. Live IDA/Qt acceptance is intentionally deferred after the wrong IDA process was targeted; ticket remains open.
