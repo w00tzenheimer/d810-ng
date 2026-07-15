@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
@@ -332,6 +333,40 @@ class DetachedSnippetTerminalRoutePlan:
     target_ea: int
 
 
+def select_boundary_owned_terminal_source_blocks(
+    *,
+    source_native_ea_by_block: Mapping[int, int],
+    predecessor_blocks_by_source: Mapping[int, frozenset[int]],
+    redirect_endpoint_blocks_by_old_successor_ea: Mapping[
+        int,
+        frozenset[int],
+    ],
+) -> frozenset[int]:
+    """Select terminal blocks wholly bypassed by applied redirect ports.
+
+    A stable old-successor match is necessary but not sufficient: every live
+    predecessor of the terminal must be an endpoint that was redirected away
+    from that successor.  This prevents one applied port from hiding an
+    unrelated incoming path.  A terminal with no predecessors is safe to
+    suppress once an applied redirect port proves that it is an obsolete
+    successor.
+    """
+    selected: set[int] = set()
+    for source_block, native_ea in source_native_ea_by_block.items():
+        if int(native_ea) not in redirect_endpoint_blocks_by_old_successor_ea:
+            continue
+        covering_endpoints = redirect_endpoint_blocks_by_old_successor_ea[
+            int(native_ea)
+        ]
+        predecessors = predecessor_blocks_by_source.get(
+            int(source_block),
+            frozenset(),
+        )
+        if predecessors.issubset(covering_endpoints):
+            selected.add(int(source_block))
+    return frozenset(selected)
+
+
 def plan_detached_snippet_terminal_routes(
     evidence: tuple[DetachedSnippetTerminalEvidence, ...],
     *,
@@ -339,6 +374,7 @@ def plan_detached_snippet_terminal_routes(
     source_blocks_by_imported_ea: Mapping[int, int],
     target_blocks_by_ea: Mapping[int, int],
     zero_way_source_blocks: frozenset[int],
+    already_routed_source_blocks: frozenset[int] = frozenset(),
 ) -> tuple[DetachedSnippetTerminalRoutePlan, ...]:
     """Join imported exits to unique native resolver targets, or abstain.
 
@@ -364,6 +400,7 @@ def plan_detached_snippet_terminal_routes(
             source is None
             or target is None
             or int(source) not in zero_way_source_blocks
+            or int(source) in already_routed_source_blocks
             or int(source) == int(target)
         ):
             continue
@@ -401,6 +438,188 @@ def merge_detached_snippet_ranges(
     return tuple(merged)
 
 
+class DetachedSnippetBoundaryPortOwner(str, Enum):
+    """Which MBA owns one stable-EA boundary-port endpoint."""
+
+    IMPORTED = "imported"
+    LIVE = "live"
+
+
+@dataclass(frozen=True, slots=True)
+class DetachedSnippetDirectBoundaryPort:
+    """One proven direct route with stable native-EA identity."""
+
+    source_block_ea: int
+    source_instruction_ea: int
+    endpoint_block_ea: int
+    old_successor_eas: tuple[int, ...]
+    target_ea: int
+    state_register: int | None
+    state_constant: int | None
+    source_owner: DetachedSnippetBoundaryPortOwner
+    endpoint_owner: DetachedSnippetBoundaryPortOwner
+    target_owner: DetachedSnippetBoundaryPortOwner
+    delivery_mode: str
+    resolver_kind: str
+    old_successor_owners: tuple[DetachedSnippetBoundaryPortOwner, ...] = ()
+
+
+def make_resolver_cut_boundary_port(
+    *,
+    source_block_ea: int,
+    source_instruction_ea: int,
+    target_ea: int,
+    source_owner: DetachedSnippetBoundaryPortOwner,
+    target_owner: DetachedSnippetBoundaryPortOwner,
+    provenance: str,
+) -> DetachedSnippetDirectBoundaryPort:
+    """Represent one exact indirect cut without inventing state evidence."""
+    return DetachedSnippetDirectBoundaryPort(
+        source_block_ea=int(source_block_ea),
+        source_instruction_ea=int(source_instruction_ea),
+        endpoint_block_ea=int(source_block_ea),
+        old_successor_eas=(),
+        target_ea=int(target_ea),
+        state_register=None,
+        state_constant=None,
+        source_owner=source_owner,
+        endpoint_owner=source_owner,
+        target_owner=target_owner,
+        delivery_mode="terminal_goto",
+        resolver_kind=str(provenance),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class DetachedSnippetConditionalBoundaryPort:
+    """One predicate with replacement arms and optional surviving old arms."""
+
+    source_block_ea: int
+    predicate_ea: int
+    old_taken_target_ea: int | None
+    old_fallthrough_target_ea: int | None
+    taken_target_ea: int
+    fallthrough_target_ea: int
+    state_register: int | None
+    taken_state: int | None
+    fallthrough_state: int | None
+    source_owner: DetachedSnippetBoundaryPortOwner
+    taken_target_owner: DetachedSnippetBoundaryPortOwner
+    fallthrough_target_owner: DetachedSnippetBoundaryPortOwner
+    resolver_kind: str
+    old_taken_target_owner: DetachedSnippetBoundaryPortOwner | None = None
+    old_fallthrough_target_owner: DetachedSnippetBoundaryPortOwner | None = None
+    logical_source_anchor_ea: int | None = None
+    predicate_ida_stkoff: int | None = None
+    predicate_size: int | None = None
+    condition_code: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AppliedDetachedSnippetConditionalBoundaryPort:
+    """One applied conditional port with maturity-stable arm anchors.
+
+    The native target EA can name the middle of a PREOPT union block after
+    backwards dependency closure.  Each anchor tuple therefore retains the
+    instruction EAs of the exact created target block selected by the importer.
+    No maturity-local block serial or live Hex-Rays object crosses this seam.
+    """
+
+    port: DetachedSnippetConditionalBoundaryPort
+    taken_target_anchor_eas: tuple[int, ...]
+    fallthrough_target_anchor_eas: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AppliedDetachedSnippetDirectBoundaryPort:
+    """One applied direct port with maturity-stable endpoint anchors.
+
+    The native endpoint and target can both belong to the imported PREOPT
+    union.  The anchor tuples retain the exact blocks selected by the atomic
+    importer without leaking maturity-local block serials across the boundary.
+    """
+
+    port: DetachedSnippetDirectBoundaryPort
+    endpoint_anchor_eas: tuple[int, ...]
+    target_anchor_eas: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DetachedSnippetBoundaryPorts:
+    """Conflict-free immutable port captures attached to one template."""
+
+    direct: tuple[DetachedSnippetDirectBoundaryPort, ...]
+    conditional: tuple[DetachedSnippetConditionalBoundaryPort, ...]
+
+
+def normalize_detached_snippet_boundary_ports(
+    direct: tuple[DetachedSnippetDirectBoundaryPort, ...],
+    conditional: tuple[DetachedSnippetConditionalBoundaryPort, ...],
+) -> DetachedSnippetBoundaryPorts:
+    """Deduplicate exact port captures and reject conflicting source proofs."""
+    direct_by_source: dict[
+        tuple[int, int, int, str, str], DetachedSnippetDirectBoundaryPort
+    ] = {}
+    for port in direct:
+        source = (
+            int(port.source_block_ea),
+            int(port.source_instruction_ea),
+            int(port.endpoint_block_ea),
+            port.source_owner.value,
+            port.endpoint_owner.value,
+        )
+        previous = direct_by_source.setdefault(source, port)
+        if previous != port:
+            raise ValueError(
+                "conflicting direct boundary port for "
+                f"source=0x{source[0]:X} instruction=0x{source[1]:X}"
+            )
+
+    conditional_by_source: dict[
+        tuple[int, int, str], DetachedSnippetConditionalBoundaryPort
+    ] = {}
+    for port in conditional:
+        source = (
+            int(port.source_block_ea),
+            int(port.predicate_ea),
+            port.source_owner.value,
+        )
+        previous = conditional_by_source.setdefault(source, port)
+        if previous != port:
+            raise ValueError(
+                "conflicting conditional boundary port for "
+                f"source=0x{source[0]:X} predicate=0x{source[1]:X}"
+            )
+
+    direct_source_instructions = {
+        (source_block_ea, source_instruction_ea, source_owner)
+        for (
+            source_block_ea,
+            source_instruction_ea,
+            _endpoint_block_ea,
+            source_owner,
+            _endpoint_owner,
+        ) in direct_by_source
+    }
+    overlap = direct_source_instructions.intersection(conditional_by_source)
+    if overlap:
+        source_block_ea, source_instruction_ea, _source_owner = min(overlap)
+        raise ValueError(
+            "conflicting boundary port kinds for "
+            f"source=0x{source_block_ea:X} instruction=0x{source_instruction_ea:X}"
+        )
+    return DetachedSnippetBoundaryPorts(
+        direct=tuple(
+            port
+            for _source, port in sorted(direct_by_source.items())
+        ),
+        conditional=tuple(
+            port
+            for _source, port in sorted(conditional_by_source.items())
+        ),
+    )
+
+
 def select_unique_block_native_ea(
     block_start_ea: int,
     instruction_eas: tuple[int, ...],
@@ -423,6 +642,21 @@ def select_unique_block_native_ea(
     if 0 < start_ea < 0xFFFFFFFFFFFFFFFF:
         return start_ea
     return None
+
+
+def block_intersects_owned_ranges(
+    block_start_ea: int,
+    instruction_eas: tuple[int, ...],
+    ranges: tuple[tuple[int, int], ...],
+) -> bool:
+    """Whether a native block anchor or instruction belongs to the ranges."""
+    candidates = {int(block_start_ea)}
+    candidates.update(int(ea) for ea in instruction_eas)
+    return any(
+        int(start_ea) <= candidate < int(end_ea)
+        for candidate in candidates
+        for start_ea, end_ea in ranges
+    )
 
 
 def plan_detached_snippet_routes(
@@ -721,12 +955,18 @@ __all__ = [
     "ConditionalHandlerBridgePlan",
     "ConditionalHandlerTargetTopology",
     "ConditionalRouteEvidence",
+    "AppliedDetachedSnippetConditionalBoundaryPort",
+    "AppliedDetachedSnippetDirectBoundaryPort",
     "conditional_bridge_requires_pre_dce_preservation",
     "conditional_bridge_route_evidence_converged",
     "DetachedHandlerIslandCandidate",
     "DetachedHandlerIslandPlan",
     "DetachedRouteEvidence",
     "DetachedSnippetRoutePlan",
+    "DetachedSnippetBoundaryPortOwner",
+    "DetachedSnippetBoundaryPorts",
+    "DetachedSnippetConditionalBoundaryPort",
+    "DetachedSnippetDirectBoundaryPort",
     "DetachedSnippetReplacementEvidence",
     "DetachedSnippetReplacementPlan",
     "DetachedSnippetTerminalEvidence",
@@ -736,7 +976,10 @@ __all__ = [
     "plan_detached_snippet_routes",
     "plan_live_handler_template_replacements",
     "plan_detached_snippet_terminal_routes",
+    "select_boundary_owned_terminal_source_blocks",
     "merge_detached_snippet_ranges",
+    "make_resolver_cut_boundary_port",
+    "normalize_detached_snippet_boundary_ports",
     "plan_conditional_handler_bridges",
     "select_detached_source_path",
 ]

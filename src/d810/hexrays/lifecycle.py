@@ -20,6 +20,7 @@ class DecompilationEvent(enum.Enum):
     MATURITY_CHANGED = "decompilation.maturity.changed"
     POST_D810_CAPTURE = "decompilation.post_d810.capture"
     HEXRAYS_FLOWCHART_READY = "decompilation.hexrays.flowchart.ready"
+    HEXRAYS_PREOPT_READY = "decompilation.hexrays.preopt.ready"
     HEXRAYS_LOCOPT_READY = "decompilation.hexrays.locopt.ready"
     HEXRAYS_BUILD_CALLINFO = "decompilation.hexrays.callinfo.build"
     HEXRAYS_CALLS_DONE = "decompilation.hexrays.calls_done"

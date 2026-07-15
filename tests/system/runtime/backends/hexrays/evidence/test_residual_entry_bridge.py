@@ -8,6 +8,7 @@ import ida_hexrays
 from d810.backends.hexrays.evidence.residual_entry_bridge import (
     predicate_arm_reaches_ea,
     recognize_conditional_handler_bridges,
+    recognize_preoptimized_residual_entry_bridge,
     recognize_residual_entry_bridge,
 )
 
@@ -49,12 +50,35 @@ def _derived(size=4):
     return SimpleNamespace(t=ida_hexrays.mop_d, size=size)
 
 
-def _insn(opcode, ea, *, l=None, r=None, d=None):
-    return SimpleNamespace(opcode=opcode, ea=ea, l=l, r=r, d=d, next=None)
+def _nested(opcode, *, left, size=1):
+    return SimpleNamespace(
+        t=ida_hexrays.mop_d,
+        d=_insn(opcode, 0, left=left),
+        size=size,
+    )
+
+
+def _insn(opcode, ea, *, left=None, r=None, d=None):
+    return SimpleNamespace(opcode=opcode, ea=ea, l=left, r=r, d=d, next=None)
 
 
 def _mba(blocks):
-    return SimpleNamespace(qty=len(blocks), get_mblock=lambda serial: blocks.get(int(serial)))
+    return SimpleNamespace(
+        qty=len(blocks),
+        get_mblock=lambda serial: blocks.get(int(serial)),
+        stkoff_vd2ida=lambda off: int(off) - 0x40,
+    )
+
+
+def _block_instructions(block):
+    current = block.head
+    result = []
+    while current is not None:
+        result.append(current)
+        if current is block.tail:
+            break
+        current = current.next
+    return tuple(result)
 
 
 def _bridge_mba(*, predicate=None, store_destination=None):
@@ -64,20 +88,20 @@ def _bridge_mba(*, predicate=None, store_destination=None):
         {
             0: _Block(
                 [
-                    _insn(ida_hexrays.m_mov, 0x0F0, l=_number(0x20), d=_reg(8)),
-                    _insn(ida_hexrays.m_mov, 0x0F4, l=_number(0x10), d=_reg(STATE_REGISTER)),
+                    _insn(ida_hexrays.m_mov, 0x0F0, left=_number(0x20), d=_reg(8)),
+                    _insn(ida_hexrays.m_mov, 0x0F4, left=_number(0x10), d=_reg(STATE_REGISTER)),
                     _insn(
                         ida_hexrays.m_jnz,
                         0x100,
-                        l=predicate,
+                        left=predicate,
                         r=_number(0),
                         d=SimpleNamespace(b=2),
                     )
                 ],
                 [1, 2],
             ),
-            1: _Block([_insn(ida_hexrays.m_mov, 0x110, l=_reg(8), d=_reg(STATE_REGISTER))], [2]),
-            2: _Block([_insn(ida_hexrays.m_mov, 0x120, l=_reg(STATE_REGISTER), d=store_destination)], []),
+            1: _Block([_insn(ida_hexrays.m_mov, 0x110, left=_reg(8), d=_reg(STATE_REGISTER))], [2]),
+            2: _Block([_insn(ida_hexrays.m_mov, 0x120, left=_reg(STATE_REGISTER), d=store_destination)], []),
         }
     )
 
@@ -87,11 +111,13 @@ def test_recognizes_default_plus_one_arm_overwrite_into_merged_state_store():
 
     assert result is not None
     assert result.predicate_ea == 0x100
+    assert result.conditional_tail_ea == 0x100
     assert result.condition_code == 5
     assert result.stack_cell_identity == (0x80, 4)
     assert result.taken_state_constant == 0x10
     assert result.fallthrough_state_constant == 0x20
     assert result.source_store_ea == 0x120
+    assert result.canonical_predicate_stack_identity == (-0x20, 4)
 
 
 def test_abstains_when_predicate_is_not_a_direct_frame_operand():
@@ -100,6 +126,239 @@ def test_abstains_when_predicate_is_not_a_direct_frame_operand():
 
 def test_abstains_when_merge_store_is_not_a_direct_stack_cell():
     assert recognize_residual_entry_bridge(_bridge_mba(store_destination=_reg(4))) is None
+
+
+def _preoptimized_bridge_mba(
+    *,
+    condition_register=99,
+    branch_register=99,
+    native_ea_target=False,
+):
+    branch_target = (
+        SimpleNamespace(
+            t=ida_hexrays.mop_v,
+            g=0x120,
+            b=None,
+        )
+        if native_ea_target
+        else SimpleNamespace(t=ida_hexrays.mop_b, b=2)
+    )
+    return _mba(
+        {
+            0: _Block(
+                [
+                    _insn(
+                        ida_hexrays.m_setz,
+                        0x100,
+                        left=_stack(0x20),
+                        r=_number(0),
+                        d=_reg(condition_register),
+                    ),
+                    _insn(
+                        ida_hexrays.m_mov,
+                        0x104,
+                        left=_number(0x20),
+                        d=_reg(8),
+                    ),
+                    _insn(
+                        ida_hexrays.m_mov,
+                        0x108,
+                        left=_number(0x10),
+                        d=_reg(STATE_REGISTER),
+                    ),
+                    _insn(
+                        ida_hexrays.m_jcnd,
+                        0x10C,
+                        left=_nested(
+                            ida_hexrays.m_lnot,
+                            left=_reg(branch_register),
+                        ),
+                        d=branch_target,
+                    ),
+                ],
+                [],
+            ),
+            1: _Block(
+                [
+                    _insn(
+                        ida_hexrays.m_mov,
+                        0x110,
+                        left=_reg(8),
+                        d=_reg(STATE_REGISTER),
+                    )
+                ],
+                [],
+            ),
+            2: _Block(
+                [
+                    _insn(
+                        ida_hexrays.m_mov,
+                        0x120,
+                        left=_reg(STATE_REGISTER),
+                        d=_stack(0x80),
+                    )
+                ],
+                [],
+            ),
+        }
+    )
+
+
+def test_recognizes_preoptimized_setz_lnot_cmov_lowering_without_cfg_edges():
+    result = recognize_preoptimized_residual_entry_bridge(
+        _preoptimized_bridge_mba()
+    )
+
+    assert result is not None
+    assert result.predicate_ea == 0x100
+    assert result.conditional_tail_ea == 0x10C
+    assert result.condition_code == 5
+    assert result.predicate_stack_identity == (0x20, 4)
+    assert result.stack_cell_identity == (0x80, 4)
+    assert result.taken_state_constant == 0x10
+    assert result.fallthrough_state_constant == 0x20
+    assert result.source_store_ea == 0x120
+    assert result.canonical_stack_cell_identity == (0x40, 4)
+    assert result.canonical_predicate_stack_identity == (-0x20, 4)
+    assert result.predicate_block_ea == 0x100
+    assert result.taken_arm_entry_ea == 0x120
+    assert result.fallthrough_arm_entry_ea == 0x110
+
+
+def test_preoptimized_recognizer_abstains_on_unrelated_condition_flag():
+    assert (
+        recognize_preoptimized_residual_entry_bridge(
+            _preoptimized_bridge_mba(branch_register=100)
+        )
+        is None
+    )
+
+
+def test_preoptimized_recognizer_resolves_native_ea_branch_target():
+    result = recognize_preoptimized_residual_entry_bridge(
+        _preoptimized_bridge_mba(native_ea_target=True)
+    )
+
+    assert result is not None
+    assert result.source_store_ea == 0x120
+
+
+def test_preoptimized_recognizer_applies_register_moves_before_state_store():
+    mba = _mba(
+        {
+            0: _Block(
+                [
+                    _insn(
+                        ida_hexrays.m_setz,
+                        0x100,
+                        left=_stack(0x20),
+                        r=_number(0),
+                        d=_reg(99),
+                    ),
+                    _insn(
+                        ida_hexrays.m_mov,
+                        0x104,
+                        left=_number(0x10),
+                        d=_reg(STATE_REGISTER),
+                    ),
+                    _insn(
+                        ida_hexrays.m_jcnd,
+                        0x108,
+                        left=_nested(ida_hexrays.m_lnot, left=_reg(99)),
+                        d=SimpleNamespace(t=ida_hexrays.mop_b, b=2),
+                    ),
+                ],
+                [],
+            ),
+            1: _Block(
+                [
+                    _insn(
+                        ida_hexrays.m_mov,
+                        0x110,
+                        left=_number(0x30),
+                        d=_reg(9),
+                    ),
+                    _insn(
+                        ida_hexrays.m_mov,
+                        0x114,
+                        left=_reg(9),
+                        d=_reg(STATE_REGISTER),
+                    ),
+                    _insn(
+                        ida_hexrays.m_mov,
+                        0x120,
+                        left=_reg(STATE_REGISTER),
+                        d=_stack(0x80),
+                    ),
+                ],
+                [],
+            ),
+            2: _Block(
+                [
+                    _insn(
+                        ida_hexrays.m_mov,
+                        0x120,
+                        left=_reg(STATE_REGISTER),
+                        d=_stack(0x80),
+                    )
+                ],
+                [],
+            ),
+        }
+    )
+
+    result = recognize_preoptimized_residual_entry_bridge(mba)
+
+    assert result is not None
+    assert result.taken_state_constant == 0x10
+    assert result.fallthrough_state_constant == 0x30
+
+
+def test_preoptimized_recognizer_abstains_when_flag_is_overwritten_before_branch():
+    mba = _preoptimized_bridge_mba()
+    source = mba.get_mblock(0)
+    instructions = list(_block_instructions(source))
+    instructions.insert(
+        -1,
+        _insn(
+            ida_hexrays.m_mov,
+            0x10A,
+            left=_number(1),
+            d=_reg(99),
+        ),
+    )
+    mba = _mba(
+        {
+            0: _Block(instructions, []),
+            1: mba.get_mblock(1),
+            2: mba.get_mblock(2),
+        }
+    )
+
+    assert recognize_preoptimized_residual_entry_bridge(mba) is None
+
+
+def test_preoptimized_recognizer_abstains_on_mid_block_native_ea_target():
+    mba = _preoptimized_bridge_mba(native_ea_target=True)
+    target = mba.get_mblock(2)
+    target_instructions = [
+        _insn(
+            ida_hexrays.m_mov,
+            0x118,
+            left=_number(0),
+            d=_reg(55),
+        ),
+        *_block_instructions(target),
+    ]
+    mba = _mba(
+        {
+            0: mba.get_mblock(0),
+            1: mba.get_mblock(1),
+            2: _Block(target_instructions, []),
+        }
+    )
+
+    assert recognize_preoptimized_residual_entry_bridge(mba) is None
 
 
 def _handler_bridge_mba(
@@ -118,7 +377,7 @@ def _handler_bridge_mba(
             _insn(
                 ida_hexrays.m_mov,
                 0x200,
-                l=_number(0xA5A94B86),
+                left=_number(0xA5A94B86),
                 d=_reg(STATE_REGISTER),
             )
         )
@@ -127,7 +386,7 @@ def _handler_bridge_mba(
             _insn(
                 ida_hexrays.m_mov,
                 0x208,
-                l=_number(1),
+                left=_number(1),
                 d=_reg(44),
             )
         )
@@ -135,7 +394,7 @@ def _handler_bridge_mba(
         _insn(
             opcode,
             0x210,
-            l=predicate,
+            left=predicate,
             r=compared,
             d=SimpleNamespace(b=2),
         )
@@ -152,7 +411,7 @@ def _handler_bridge_mba(
                     _insn(
                         ida_hexrays.m_mov,
                         0x220,
-                        l=_number(0x304E8694),
+                        left=_number(0x304E8694),
                         d=_reg(STATE_REGISTER),
                     )
                 ],

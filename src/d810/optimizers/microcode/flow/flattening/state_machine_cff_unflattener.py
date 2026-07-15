@@ -142,6 +142,8 @@ from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
 )
 from d810.hexrays.mutation.detached_handler_island import (
     find_unique_live_block_by_ea,
+    imported_detached_snippet_conditional_boundary_evidence,
+    imported_detached_snippet_direct_boundary_evidence,
     imported_detached_snippet_target_eas,
 )
 from d810.passes.function_pass_manager import FunctionPassManager
@@ -1182,9 +1184,36 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             if materialized_computed_goto_profile
             else None
         )
+        imported_conditional_boundary_evidence = (
+            imported_detached_snippet_conditional_boundary_evidence(mba)
+            if materialized_computed_goto_profile
+            else ()
+        )
+        imported_direct_boundary_evidence = (
+            imported_detached_snippet_direct_boundary_evidence(mba)
+            if materialized_computed_goto_profile
+            else ()
+        )
+        if materialized_computed_goto_profile:
+            logger.info(
+                "imported boundary-port evidence: direct=%d conditional=%d "
+                "predicates=%s",
+                len(imported_direct_boundary_evidence),
+                len(imported_conditional_boundary_evidence),
+                [
+                    "0x%X" % int(evidence.port.predicate_ea)
+                    for evidence in imported_conditional_boundary_evidence
+                ],
+            )
         analysis_seeds = {
             "range_evidence": range_evidence,
             "materialized_indirect_transfers": materialized_indirect_transfers,
+            "imported_direct_boundary_evidence": (
+                imported_direct_boundary_evidence
+            ),
+            "imported_conditional_boundary_evidence": (
+                imported_conditional_boundary_evidence
+            ),
             "materialized_state_routes": materialized_state_routes,
             "materialized_handler_entry_eas": materialized_handler_entry_eas,
             "residual_entry_bridge_evidence": residual_entry_bridge_evidence,

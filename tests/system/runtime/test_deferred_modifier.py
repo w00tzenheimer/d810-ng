@@ -685,6 +685,74 @@ def test_conditional_lowering_helper_remaps_later_branch_targets(monkeypatch):
     assert captured == [(21, 10)]
 
 
+def test_restore_pruned_conditional_preserves_predicate_and_builds_both_arms(
+    monkeypatch,
+) -> None:
+    class _BlockReference:
+        def __init__(self) -> None:
+            self.t = ida_hexrays.mop_z
+            self.b = -1
+
+        def make_blkref(self, serial: int) -> None:
+            self.t = ida_hexrays.mop_b
+            self.b = int(serial)
+
+    mba = _FakeMBA()
+    guard = _FakeBlock(10, start=0x40C10A)
+    guard.mba = mba
+    guard.head = None
+    guard.nsucc = lambda: 0
+    guard.tail = SimpleNamespace(
+        opcode=ida_hexrays.m_jnz,
+        ea=0x40C12C,
+        d=_BlockReference(),
+    )
+    taken_target = _FakeBlock(20, start=0x40C20C)
+    taken_target.mba = mba
+    fallthrough_target = _FakeBlock(30, start=0x40C16A)
+    fallthrough_target.mba = mba
+    mba.blocks = {
+        int(guard.serial): guard,
+        int(taken_target.serial): taken_target,
+        int(fallthrough_target.serial): fallthrough_target,
+    }
+    mba.qty = 40
+
+    def _copy_block_keep(_mba, _guard, insertion_serial):
+        helper = _FakeBlock(int(insertion_serial), start=0xF1C10000)
+        helper.mba = mba
+        helper.head = None
+        helper.make_nop = lambda _insn: None  # type: ignore[attr-defined]
+        for block in tuple(mba.blocks.values()):
+            if int(block.serial) >= int(insertion_serial):
+                block.serial += 1
+        mba.blocks = {int(block.serial): block for block in mba.blocks.values()}
+        mba.blocks[int(helper.serial)] = helper
+        mba.qty += 1
+        return helper
+
+    monkeypatch.setattr(dm, "copy_block_keep", _copy_block_keep)
+    monkeypatch.setattr(dm, "insert_goto_instruction", lambda *_a, **_k: None)
+    monkeypatch.setattr(dm.ida_hexrays, "mop_t", _BlockReference)
+
+    modifier = dm.DeferredGraphModifier(mba)
+    assert modifier.restore_pruned_conditional_now(
+        guard,
+        taken_target=taken_target,
+        fallthrough_target=fallthrough_target,
+    )
+
+    helper = mba.get_mblock(11)
+    assert guard.type == ida_hexrays.BLT_2WAY
+    assert tuple(guard.succset) == (11, int(taken_target.serial))
+    assert guard.tail.ea == 0x40C12C
+    assert guard.tail.d.t == ida_hexrays.mop_b
+    assert guard.tail.d.b == int(taken_target.serial)
+    assert tuple(helper.succset) == (int(fallthrough_target.serial),)
+    assert tuple(helper.predset) == (int(guard.serial),)
+    assert int(guard.serial) in tuple(taken_target.predset)
+
+
 def test_conditional_lowering_helpers_keep_target_identity_across_two_insertions(
     monkeypatch,
 ):

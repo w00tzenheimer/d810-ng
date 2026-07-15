@@ -367,6 +367,36 @@ def _source_local_constant_register_write(
     return result
 
 
+def _block_writes_state_cell(ctx: "_ResolverContext", block: BlockSnapshot) -> bool:
+    """Whether *block* directly writes the configured dispatcher state cell.
+
+    The multi-entry scan is allowed to move a transition anchor away from the
+    dispatcher's immediate predecessor, but it must still anchor on an actual
+    state writer.  Reading a constant inherited from an earlier block is not
+    proof that this block owns the transition.
+    """
+    for instruction in block.insn_snapshots:
+        _left, _right, destination = operand_storages(instruction)
+        _left_kind, _right_kind, destination_kind = operand_kinds(instruction)
+        if ctx.state_var_reg is not None:
+            if _storage_dest_locator(destination, destination_kind) == (
+                "reg",
+                int(ctx.state_var_reg),
+            ):
+                return True
+            continue
+        if ctx.state_var_gaddr is not None:
+            if _storage_global_offset(destination) == int(ctx.state_var_gaddr):
+                return True
+            continue
+        if _storage_dest_locator(destination, destination_kind) == (
+            "stk",
+            int(ctx.effective_stkoff),
+        ):
+            return True
+    return False
+
+
 def resolve_materialized_indirect_transfer_targets(
     transitions: tuple[StateWriteTransition, ...],
     flow_graph: FlowGraph,
@@ -2017,6 +2047,7 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
     live_block_for: "object | None" = None,
     include_multi_entry_back_edges: bool = False,
     state_var_reg: int | None = None,
+    dispatcher_region_serials: frozenset[int] = frozenset(),
 ) -> tuple[StateWriteTransition, ...]:
     """B2 shadow: predecessor-partitioned multi-cell fold -> the Case-2 ``via_block`` split.
 
@@ -2164,6 +2195,8 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
     out: list[StateWriteTransition] = []
     visited_sources: set[int] = set()
     for pred in sorted(int(p) for p in disp_block.preds):
+        if pred in dispatcher_region_serials:
+            continue
         block = flow_graph.get_block(pred)
         if block is None:
             continue
@@ -2268,6 +2301,8 @@ def _recover_multi_entry_state_write_transitions(
             continue
         block = flow_graph.get_block(serial)
         if block is None or int(getattr(block, "nsucc", 0)) != 1:
+            continue
+        if not _block_writes_state_cell(ctx, block):
             continue
         succ = int(block.succs[0])
         if succ == disp:

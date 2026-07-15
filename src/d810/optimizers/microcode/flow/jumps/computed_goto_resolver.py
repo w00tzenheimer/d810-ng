@@ -82,6 +82,7 @@ from d810.analyses.control_flow.call_abi import (
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     MaterializedStateRoute,
+    TerminalReturnCarrierRequest,
     find_unique_target_block,
     find_unique_target_entry_block,
     route_materialized_transfer_chain,
@@ -476,6 +477,8 @@ def _build_residual_state_route_evidence(
     """
     existing = {
         (
+            int(transfer.source_block_ea),
+            int(transfer.source_jmp_ea),
             int(transfer.selector_state_constant) & _MASK32,
             int(transfer.target_eas[0]),
         )
@@ -484,23 +487,22 @@ def _build_residual_state_route_evidence(
         and transfer.selector_state_constant is not None
         and len(transfer.target_eas) == 1
     }
-    candidates: dict[
-        tuple[int, int], tuple[int, int]
-    ] = {}
+    candidates: set[tuple[int, int, int, int]] = set()
     for source_serial, state_constant, target_ea in plans:
         state = int(state_constant) & _MASK32
         target = int(target_ea)
-        key = (state, target)
-        if key in existing:
-            continue
         write_ea = state_write_sites.get((int(source_serial), state))
         source = flow_graph.get_block(int(source_serial))
         if write_ea is None or source is None or int(source.start_ea) <= 0:
             continue
-        candidate = (int(write_ea), int(source.start_ea))
-        previous = candidates.get(key)
-        if previous is None or candidate < previous:
-            candidates[key] = candidate
+        candidate = (
+            int(source.start_ea),
+            int(write_ea),
+            state,
+            target,
+        )
+        if candidate not in existing:
+            candidates.add(candidate)
 
     return tuple(
         MaterializedIndirectTransfer(
@@ -512,9 +514,7 @@ def _build_residual_state_route_evidence(
             selector_state_constant=state_constant,
             resolver_kind="residual_state_route_evidence",
         )
-        for (state_constant, target_ea), (write_ea, source_ea) in sorted(
-            candidates.items()
-        )
+        for source_ea, write_ea, state_constant, target_ea in sorted(candidates)
     )
 
 
@@ -5841,6 +5841,22 @@ def _recover_condition_chain_handler_transfers_from_mba(
         or recovery.state_var_reg is None
     ):
         return ()
+    dispatcher_entry = graph.get_block(int(dmap.dispatcher_entry_block))
+    if dispatcher_entry is None or int(dispatcher_entry.start_ea) <= 0:
+        return ()
+    dispatcher_entry_ea = int(dispatcher_entry.start_ea)
+    dispatcher_router_eas = tuple(
+        sorted(
+            {
+                int(block.start_ea)
+                for serial in dmap.dispatcher_blocks
+                if (block := graph.get_block(int(serial))) is not None
+                and int(block.start_ea) > 0
+            }
+        )
+    )
+    if not dispatcher_router_eas:
+        return ()
     existing_states = {
         int(transfer.selector_state_constant)
         for transfer in transfers
@@ -5882,6 +5898,8 @@ def _recover_condition_chain_handler_transfers_from_mba(
                     selector_state_var_reg=int(recovery.state_var_reg),
                     selector_state_constant=state,
                     resolver_kind="live_state_dispatcher_row_evidence",
+                    dispatcher_entry_ea=dispatcher_entry_ea,
+                    dispatcher_router_eas=dispatcher_router_eas,
                 )
             )
             existing_live_states.add(state)
@@ -5896,6 +5914,8 @@ def _recover_condition_chain_handler_transfers_from_mba(
                 selector_state_var_reg=int(recovery.state_var_reg),
                 selector_state_constant=state,
                 resolver_kind="condition_chain_handler_evidence",
+                dispatcher_entry_ea=dispatcher_entry_ea,
+                dispatcher_router_eas=dispatcher_router_eas,
             )
         )
         existing_states.add(state)
@@ -6536,6 +6556,104 @@ def _live_mba_native_eas(
     return frozenset(live_eas)
 
 
+def _capture_terminal_return_carrier_requests(
+    function_ea: int,
+    requests: tuple[TerminalReturnCarrierRequest, ...],
+) -> int:
+    """Capture pending terminal carriers independently of snippet topology."""
+    import ida_hexrays  # type: ignore[import-untyped]
+    import idaapi  # type: ignore[import-untyped]
+
+    from d810.hexrays.mutation.detached_handler_island import (
+        capture_terminal_return_carrier_template,
+        has_terminal_return_carrier_template,
+    )
+
+    captured = 0
+    for request in requests:
+        if has_terminal_return_carrier_template(function_ea, request):
+            continue
+        if not _native_target_is_return_epilogue(
+            int(request.terminal_target_ea)
+        ):
+            logger.info(
+                "terminal return-carrier capture abstained: source=0x%X "
+                "target=0x%X reason=target_not_epilogue",
+                int(request.source_handler_ea),
+                int(request.terminal_target_ea),
+            )
+            continue
+        source_end_ea = _block_end(int(request.source_handler_ea))
+        if int(source_end_ea) <= int(request.source_handler_ea):
+            continue
+        ranges = ida_hexrays.mba_ranges_t()
+        ranges.ranges.push_back(
+            idaapi.range_t(
+                int(request.source_handler_ea),
+                int(source_end_ea),
+            )
+        )
+        failure = ida_hexrays.hexrays_failure_t()
+        try:
+            snippet = ida_hexrays.gen_microcode(
+                ranges,
+                failure,
+                None,
+                int(ida_hexrays.DECOMP_NO_WAIT),
+                ida_hexrays.MMAT_LOCOPT,
+            )
+        except Exception:
+            logger.info(
+                "terminal return-carrier LOCOPT generation failed: "
+                "source=0x%X end=0x%X",
+                int(request.source_handler_ea),
+                int(source_end_ea),
+                exc_info=True,
+            )
+            snippet = None
+        if snippet is None or not capture_terminal_return_carrier_template(
+            function_ea,
+            request,
+            snippet,
+        ):
+            logger.info(
+                "terminal return-carrier capture abstained: source=0x%X "
+                "target=0x%X state=0x%X reason=no_unique_template",
+                int(request.source_handler_ea),
+                int(request.terminal_target_ea),
+                int(request.state_constant) & _MASK32,
+            )
+            continue
+        captured += 1
+        logger.info(
+            "terminal return-carrier captured: func=0x%X source=0x%X "
+            "target=0x%X state=0x%X blocks=%d",
+            function_ea,
+            int(request.source_handler_ea),
+            int(request.terminal_target_ea),
+            int(request.state_constant) & _MASK32,
+            int(snippet.qty),
+        )
+    return captured
+
+
+def prepare_terminal_return_carrier_templates(function_ea: int) -> int:
+    """Consume pending CALLS carrier evidence between decompilations."""
+    global _SNIPPET_CAPTURE_ACTIVE, _SNIPPET_CAPTURE_PROFILE_EA
+
+    key = int(function_ea)
+    requests = get_terminal_return_carrier_requests(key)
+    if not requests or _SNIPPET_CAPTURE_ACTIVE:
+        return 0
+    _SNIPPET_CAPTURE_PROFILE_EA = key
+    _SNIPPET_CAPTURE_ACTIVE = True
+    try:
+        return _capture_terminal_return_carrier_requests(key, requests)
+    finally:
+        _SNIPPET_CAPTURE_ACTIVE = False
+        _SNIPPET_CAPTURE_PROFILE_EA = None
+
+
 def prepare_detached_handler_snippets(
     function_ea: int,
     *,
@@ -6561,11 +6679,9 @@ def prepare_detached_handler_snippets(
     from d810.hexrays.mutation.detached_handler_island import (
         capture_detached_replacement_snippet_template,
         capture_detached_snippet_template,
-        capture_terminal_return_carrier_template,
         detached_snippet_requires_analyzed_calls,
         has_detached_replacement_snippet_template,
         has_detached_snippet_template,
-        has_terminal_return_carrier_template,
         imported_detached_snippet_instruction_origins,
     )
 
@@ -6798,70 +6914,10 @@ def prepare_detached_handler_snippets(
                         int(replacement.qty),
                     )
 
-        for request in terminal_carrier_requests:
-            if has_terminal_return_carrier_template(key, request):
-                continue
-            if not _native_target_is_return_epilogue(
-                int(request.terminal_target_ea)
-            ):
-                logger.info(
-                    "terminal return-carrier capture abstained: source=0x%X "
-                    "target=0x%X reason=target_not_epilogue",
-                    int(request.source_handler_ea),
-                    int(request.terminal_target_ea),
-                )
-                continue
-            source_end_ea = _block_end(int(request.source_handler_ea))
-            if int(source_end_ea) <= int(request.source_handler_ea):
-                continue
-            ranges = ida_hexrays.mba_ranges_t()
-            ranges.ranges.push_back(
-                idaapi.range_t(
-                    int(request.source_handler_ea),
-                    int(source_end_ea),
-                )
-            )
-            failure = ida_hexrays.hexrays_failure_t()
-            try:
-                snippet = ida_hexrays.gen_microcode(
-                    ranges,
-                    failure,
-                    None,
-                    int(ida_hexrays.DECOMP_NO_WAIT),
-                    ida_hexrays.MMAT_LOCOPT,
-                )
-            except Exception:
-                logger.info(
-                    "terminal return-carrier LOCOPT generation failed: "
-                    "source=0x%X end=0x%X",
-                    int(request.source_handler_ea),
-                    int(source_end_ea),
-                    exc_info=True,
-                )
-                snippet = None
-            if snippet is None or not capture_terminal_return_carrier_template(
-                key,
-                request,
-                snippet,
-            ):
-                logger.info(
-                    "terminal return-carrier capture abstained: source=0x%X "
-                    "target=0x%X state=0x%X reason=no_unique_template",
-                    int(request.source_handler_ea),
-                    int(request.terminal_target_ea),
-                    int(request.state_constant) & _MASK32,
-                )
-                continue
-            captured += 1
-            logger.info(
-                "terminal return-carrier captured: func=0x%X source=0x%X "
-                "target=0x%X state=0x%X blocks=%d",
-                key,
-                int(request.source_handler_ea),
-                int(request.terminal_target_ea),
-                int(request.state_constant) & _MASK32,
-                int(snippet.qty),
-            )
+        captured += _capture_terminal_return_carrier_requests(
+            key,
+            terminal_carrier_requests,
+        )
     finally:
         _SNIPPET_CAPTURE_ACTIVE = False
         _SNIPPET_CAPTURE_PROFILE_EA = None
@@ -7385,6 +7441,7 @@ __all__ = [
     "materialize_computed_gotos",
     "resolve_and_materialize",
     "prepare_detached_handler_snippets",
+    "prepare_terminal_return_carrier_templates",
     "recover_conditional_handler_bridge_transfers_from_mba",
     "install",
     "uninstall",

@@ -56,3 +56,33 @@ def test_detached_planner_uses_first_surviving_instruction_as_live_target(
 
     assert captured["live_eas"] == frozenset({0x1020, 0x1028, 0x1030})
     assert captured["live_target_eas"] == frozenset({0x1020, 0x1028})
+
+
+def test_terminal_return_carrier_preopt_handler_records_modification(
+    monkeypatch,
+) -> None:
+    mba = object()
+    restored: list[tuple[object, int]] = []
+
+    monkeypatch.setattr(
+        island,
+        "restore_terminal_return_carriers",
+        lambda current_mba, function_ea: (
+            restored.append((current_mba, function_ea)) or 1
+        ),
+    )
+
+    decision: dict[str, object] = {"request_redo": False}
+
+    island._restore_preopt_terminal_return_carriers(
+        function_ea=0x40A560,
+        mba=mba,
+        decision=decision,
+    )
+
+    assert restored == [(mba, 0x40A560)]
+    assert decision == {
+        "request_redo": False,
+        "microcode_modified": True,
+        "details": {"terminal_return_carriers": 1},
+    }

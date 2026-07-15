@@ -2508,25 +2508,38 @@ class DeferredGraphModifier:
         block: ida_hexrays.mblock_t,
     ) -> None:
         """Close a non-adjacent one-way fallthrough with an explicit goto."""
-        goto_instruction = ida_hexrays.minsn_t(block.tail)
+        instruction_ea = int(
+            self.mba.alloc_fict_ea(int(self.mba.entry_ea) + 1)
+        )
+        goto_instruction = ida_hexrays.minsn_t(
+            instruction_ea if block.tail is None else block.tail
+        )
         block.insert_into_block(goto_instruction, block.tail)
         block.make_nop(goto_instruction)
         goto_instruction.opcode = int(ida_hexrays.m_goto)
         goto_instruction.l.make_blkref(int(block.succset[0]))
         goto_instruction.r.erase()
         goto_instruction.d.erase()
-        goto_instruction.setaddr(
-            int(self.mba.alloc_fict_ea(int(self.mba.entry_ea) + 1))
-        )
+        goto_instruction.setaddr(instruction_ea)
         block.flags |= int(ida_hexrays.MBL_GOTO)
         block.mark_lists_dirty()
 
-    def insert_nop_block_now(self, source_serial: int) -> int:
+    def insert_nop_block_now(
+        self,
+        source_serial: int,
+        *,
+        force_adjacent: bool = False,
+    ) -> int:
         """Insert an owned NOP block after a source block."""
         source = self.mba.get_mblock(int(source_serial))
         if source is None:
             raise RuntimeError(f"insert_nop_block: missing source {source_serial}")
-        return int(insert_nop_blk(source).serial)
+        return int(
+            insert_nop_blk(
+                source,
+                force_adjacent=bool(force_adjacent),
+            ).serial
+        )
 
     def redirect_one_way_now(
         self,
@@ -2546,6 +2559,131 @@ class DeferredGraphModifier:
                 verify=verify,
             )
         )
+
+    def restore_pruned_conditional_now(
+        self,
+        source: ida_hexrays.mblock_t,
+        *,
+        taken_target: ida_hexrays.mblock_t,
+        fallthrough_target: ida_hexrays.mblock_t,
+    ) -> bool:
+        """Restore both CFG arms around a surviving conditional tail.
+
+        Hex-Rays can retain the predicate instruction while pruning every CFG
+        successor of a detached native tail.  Rebuild the two-way shape with
+        an adjacent fallthrough helper, preserving the original condition and
+        changing only its block-reference destination.
+        """
+        tail = source.tail
+        if (
+            source.nsucc() != 0
+            or tail is None
+            or not ida_hexrays.is_mcode_jcond(int(tail.opcode))
+            or taken_target is fallthrough_target
+        ):
+            return False
+
+        helper_serial = self._build_fallthrough_goto_helper(
+            source,
+            fallthrough_target,
+        )
+        if helper_serial is None:
+            return False
+        helper = self.mba.get_mblock(int(helper_serial))
+        if helper is None or int(helper.serial) != int(source.serial) + 1:
+            return False
+
+        taken_serial = int(taken_target.serial)
+        tail.d = ida_hexrays.mop_t()
+        tail.d.make_blkref(taken_serial)
+        source.flags &= ~int(ida_hexrays.MBL_GOTO)
+        source.type = int(ida_hexrays.BLT_2WAY)
+        source.succset.push_back(int(helper.serial))
+        source.succset.push_back(taken_serial)
+        if int(source.serial) not in {int(pred) for pred in helper.predset}:
+            helper.predset.push_back(int(source.serial))
+        if int(source.serial) not in {
+            int(pred) for pred in taken_target.predset
+        }:
+            taken_target.predset.push_back(int(source.serial))
+        self.mark_blocks_dirty_now(
+            source,
+            helper,
+            taken_target,
+            fallthrough_target,
+        )
+        return True
+
+    def restore_pruned_direct_now(
+        self,
+        source: ida_hexrays.mblock_t,
+        target: ida_hexrays.mblock_t,
+    ) -> bool:
+        """Restore one proven edge from a live zero-way detached endpoint."""
+        if source.nsucc() != 0:
+            return False
+        tail = source.tail
+        closing_tail = (
+            tail is not None
+            and (
+                ida_hexrays.is_mcode_jcond(int(tail.opcode))
+                or int(tail.opcode)
+                in {
+                    int(ida_hexrays.m_goto),
+                    int(ida_hexrays.m_ijmp),
+                    int(ida_hexrays.m_jtbl),
+                    int(ida_hexrays.m_ret),
+                }
+            )
+        )
+        insert_goto_instruction(
+            source,
+            int(target.serial),
+            nop_previous_instruction=closing_tail,
+        )
+        source.type = int(ida_hexrays.BLT_1WAY)
+        source.flags |= int(ida_hexrays.MBL_GOTO)
+        source.succset.push_back(int(target.serial))
+        if int(source.serial) not in {int(pred) for pred in target.predset}:
+            target.predset.push_back(int(source.serial))
+        self.mark_blocks_dirty_now(source, target)
+        return True
+
+    def restore_pruned_call_continuation_now(
+        self,
+        source: ida_hexrays.mblock_t,
+        target: ida_hexrays.mblock_t,
+    ) -> bool:
+        """Restore a proven continuation without appending after a raw call.
+
+        At early maturities an ``m_call`` with no argument-list destination is
+        block-closing.  Its continuation must therefore be represented by the
+        physically adjacent successor block, never by appending an ``m_goto``
+        after the call in the same block.
+        """
+        tail = source.tail
+        if (
+            int(source.nsucc()) != 0
+            or tail is None
+            or int(tail.opcode)
+            not in {int(ida_hexrays.m_call), int(ida_hexrays.m_icall)}
+        ):
+            return False
+        helper_serial = self._build_fallthrough_goto_helper(source, target)
+        if helper_serial is None:
+            return False
+        helper = self.mba.get_mblock(int(helper_serial))
+        if (
+            helper is None
+            or int(helper.serial) != int(source.serial) + 1
+        ):
+            return False
+        source.type = int(ida_hexrays.BLT_1WAY)
+        source.succset.push_back(int(helper.serial))
+        if int(source.serial) not in {int(pred) for pred in helper.predset}:
+            helper.predset.push_back(int(source.serial))
+        self.mark_blocks_dirty_now(source, helper, target)
+        return True
 
     def reanchor_block_instructions_now(
         self,

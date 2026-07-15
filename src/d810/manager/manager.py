@@ -664,6 +664,15 @@ class D810Manager:
             run_flowchart_preanalysis_handlers,
         )
 
+        from d810.hexrays.preanalysis.preopt_preanalysis import (
+            run_preopt_preanalysis_handlers,
+        )
+
+        self.event_emitter.on(
+            DecompilationEvent.HEXRAYS_PREOPT_READY,
+            run_preopt_preanalysis_handlers,
+        )
+
         from d810.hexrays.preanalysis.locopt_preanalysis import (
             run_locopt_preanalysis_handlers,
         )

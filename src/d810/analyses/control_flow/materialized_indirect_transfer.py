@@ -85,6 +85,13 @@ class MaterializedIndirectTransfer:
     #: Set only when exact predicate-EA handler replay, rather than a native
     #: residual corridor, authorized the bridge.
     predicate_preserve_live: bool = False
+    #: Stable native entry of the recovered dispatcher that authorized this
+    #: row.  Consumers use it only as a CFG cut point; maturity-local block
+    #: serials never cross the evidence boundary.
+    dispatcher_entry_ea: int | None = None
+    #: Stable native entries of every block in the recovered dispatcher region.
+    #: Boundary consumers cut only edges entering this proven set.
+    dispatcher_router_eas: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,9 +313,17 @@ def plan_residual_state_route_bridges(
 ) -> tuple[ResidualStateRouteBridgePlan, ...]:
     """Plan unambiguous live-MBA edges from residual route evidence.
 
-    The producer already proved the state write and exact target.  This planner
-    only binds their stable EAs to the current maturity and requires the source
-    to remain one-way, so no payload branch can be erased.
+    The producer retains every proven source because early-maturity boundary
+    capture needs the complete native transfer relation.  This legacy LOCOPT
+    bridge has a narrower ownership rule: activating two detached roots for the
+    same ``(state, target)`` can replace a still-live dispatcher frontier with
+    an imported clone.  After rejecting ambiguous per-source rows, therefore,
+    bind only the deterministic lowest-EA source for each state/target pair.
+
+    Every selected source must still bind by stable EA to a one-way block at
+    the current maturity, so no payload branch can be erased.  The unselected
+    same-state sources remain on the dispatcher and are handled by ordinary
+    state-machine lowering.
     """
     by_source: dict[int, set[ResidualStateRouteBridgePlan]] = {}
     for transfer in transfers:
@@ -337,12 +352,31 @@ def plan_residual_state_route_bridges(
             state_constant=int(transfer.selector_state_constant) & 0xFFFFFFFF,
         )
         by_source.setdefault(int(source_serial), set()).add(plan)
+    unambiguous_sources = tuple(
+        next(iter(plans))
+        for plans in by_source.values()
+        if len(plans) == 1
+    )
+    by_state_target: dict[
+        tuple[int, int],
+        list[ResidualStateRouteBridgePlan],
+    ] = {}
+    for plan in unambiguous_sources:
+        by_state_target.setdefault(
+            (int(plan.state_constant), int(plan.target_ea)),
+            [],
+        ).append(plan)
     return tuple(
         sorted(
             (
-                next(iter(plans))
-                for plans in by_source.values()
-                if len(plans) == 1
+                min(
+                    plans,
+                    key=lambda plan: (
+                        int(plan.source_write_ea),
+                        int(plan.source_block_serial),
+                    ),
+                )
+                for plans in by_state_target.values()
             ),
             key=lambda plan: (
                 int(plan.source_write_ea),
